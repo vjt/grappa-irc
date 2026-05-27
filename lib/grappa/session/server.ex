@@ -26,15 +26,14 @@ defmodule Grappa.Session.Server do
   `Grappa.Networks.SessionPlan.resolve/1` (Networks owns the data, Session
   owns the connection).
 
-  Trade-off: a `:transient` restart replays the SAME cached opts
-  the supervisor child spec captured at first start — credential
-  changes in the DB don't propagate until the operator forces a
-  re-spawn through the LIVE BEAM (via `scripts/iex.sh` calling
-  into `Credentials.unbind_credential/2`, NOT bare
-  `mix grappa.unbind_network` which runs in a separate BEAM and
-  cannot reach the prod registry) or the next deploy. Full
-  rationale on `Grappa.Session` moduledoc; Phase 5 may add
-  `Session.refresh/2` if hot-reload is needed.
+  `:transient` restart replays the SAME cached opts the supervisor
+  child spec captured at first start, BUT `init/1` re-resolves the
+  plan from the DB on every invocation via the injected
+  `refresh_plan` closure — credential / visitor row rotations
+  (`update_nick/2`, `update_last_joined_channels/2`, operator
+  config edits) propagate to live state on the very next restart.
+  See `t:refresh_plan_check/0` for the contract + the Azzurra
+  2026-05-27 incident driver.
 
   ## Phase 1 protocol scope
 
@@ -197,35 +196,48 @@ defmodule Grappa.Session.Server do
 
   @typedoc """
   Opaque function-reference indirection that lets `Session.Server`
-  ask the producing context (Networks / Visitors) "does the DB row
-  for this subject still exist?" without statically aliasing either
-  module. Boundary-clean for the same reason as `visitor_committer`
-  + `credential_failer`: both context boundaries already deps
+  ask the producing context (Networks / Visitors) "re-resolve the
+  fresh plan from the DB" without statically aliasing either module.
+  Boundary-clean for the same reason as `visitor_committer` +
+  `credential_failer`: both context boundaries already deps
   `Grappa.Session` for `stop_session`, so the reverse direction
   cannot be expressed without closing a cycle.
 
-  Returns `true` when the operator-owned DB row for the subject
-  (`Networks.Credential` for `{:user, _}`, `Visitor` for
-  `{:visitor, _}`) is still present. Returns `false` once the
-  operator deletes it (`Visitors.delete/1`, `Operator.delete_visitor!/1`,
-  `Credentials.unbind_credential/2`, or any DB-driven
-  reaping). `Session.Server.init/1` calls it at the top of init and
-  short-circuits with `{:stop, :no_subject_row}` when it returns
-  `false` — which makes the `:transient` policy STOP the restart
-  loop (`:transient` only restarts on abnormal exit; a `:normal`
-  return from init counts as normal termination, so the
-  DynamicSupervisor removes the child permanently).
+  Called at the top of `Session.Server.init/1` on EVERY init —
+  both first boot AND `:transient` respawn. The closure returns
+  `{:ok, plan}` where `plan` is the fresh `t:Grappa.Session.start_opts/0`
+  the producer just re-derived from the current DB row(s); init then
+  merges it over the cached opts via `Map.merge(opts, plan)` so DB
+  values win on shared keys (`:nick`, `:autojoin_channels`,
+  `:password`, `:host`, `:port`, `:tls`, etc) while opts-only keys
+  (`:network_id`, `:notify_pid`, `:notify_ref`, test fixtures) survive.
 
-  Without this, an operator-driven delete races the supervisor's
-  restart of a transient worker that was already mid-respawn —
-  `Visitors.delete/1` removes the DB row, but the next respawn
-  cycle (scheduled by the supervisor when the previous instance
-  crashed on a 433/etc) still runs, immediately collides again,
-  and the loop continues until backoff caps out hours later. The
-  subject_row_present? gate fires at the top of init so the cycle
-  ends on the very first restart after the row is gone.
+  `{:error, :not_found}` replaces the prior `subject_row_present? ->
+  false` branch — same `:ignore` semantics, strictly more
+  informative shape (the producer says "row is gone" with the same
+  call that would otherwise return the fresh plan).
+
+  ## Why this matters — the zombie-respawn class of bug
+
+  `DynamicSupervisor.start_child/2` caches the original child spec
+  (`{Server, opts}`) at spawn time. A `:transient` restart replays
+  the SAME cached opts — credential / visitor row changes in the DB
+  do NOT propagate. Pre-`refresh_plan`, every restart re-registered
+  upstream with the boot-time nick and the boot-time autojoin set,
+  even if the user had `/NICK`ed away or joined channels since.
+
+  Incident driver (2026-05-27 Azzurra): visitor connected as
+  `kazam02`, `/NICK kazamobile` persisted (`visitors.nick` rotated),
+  upstream `:ssl_closed` triggered restart, respawn used the cached
+  `kazam02` + empty autojoin → zombie session, DB and live state
+  divergent, no channels rejoined.
+
+  The closure also subsumes the prior delete-race fix: if the
+  operator removes the row between spawn and restart, `:not_found`
+  ends the restart loop on the very first cycle (same outcome as
+  the old `subject_row_present? -> false`).
   """
-  @type subject_row_present_check :: (-> boolean())
+  @type refresh_plan_check :: (-> {:ok, map()} | {:error, :not_found})
 
   @typedoc """
   Per-channel window state (CP15 — event-driven windows). The Session
@@ -297,7 +309,7 @@ defmodule Grappa.Session.Server do
           optional(:visitor_nick_persister) => visitor_nick_persister(),
           optional(:credential_failer) => credential_failer(),
           optional(:last_joined_persister) => last_joined_persister(),
-          optional(:subject_row_present?) => subject_row_present_check()
+          optional(:refresh_plan) => refresh_plan_check()
         }
 
   @type t :: %{
@@ -479,33 +491,31 @@ defmodule Grappa.Session.Server do
     :ok = Log.set_session_context(opts.subject_label, opts.network_slug)
 
     # Operator-deleted subject row → terminate cleanly so the
-    # DynamicSupervisor stops the `:transient` respawn loop. Without
-    # this gate, an operator-driven `Visitors.delete/1` (or admin
-    # DELETE /admin/sessions/:id while a respawn is in flight) races
-    # the supervisor's restart of the previous crash cycle: the
-    # operator removes the DB row, the restart fires anyway with
-    # cached `init_opts`, the new instance hits the SAME upstream
-    # failure (typically 433 nickname-in-use), crashes, and triggers
-    # another restart — backoff caps out hours later while a zombie
-    # `Session.Server` sits in `state.subject` pointing at a
-    # non-existent visitor row.
+    # DynamicSupervisor stops the `:transient` respawn loop.
+    # Stale-cached-opts (the zombie respawn class — 2026-05-27
+    # Azzurra `kazamobile`/`kazam02` incident) → re-resolve the plan
+    # from the DB so `state.nick` / `state.autojoin` / credentials
+    # reflect live truth instead of the supervisor's frozen child
+    # spec. Both failure modes share one closure: `refresh_plan`
+    # returns `{:ok, plan}` (we merge it over the cached opts so DB
+    # wins on shared keys) or `{:error, :not_found}` (`:ignore`
+    # breaks the respawn loop — `:transient` treats init's `:ignore`
+    # as normal termination, supervisor drops the child permanently).
     #
-    # `:normal` exit from init counts as normal termination for the
-    # `:transient` policy → DynamicSupervisor removes the child
-    # permanently. The opts callback is optional (test fixtures +
-    # the original Bootstrap call site don't supply it); when
-    # absent the check is a no-op and the previous loop-tolerant
-    # behaviour stands. Production call sites
-    # (`Networks.SessionPlan.resolve/1` +
-    # `Visitors.SessionPlan.resolve/1`) supply the closure.
-    case Map.get(opts, :subject_row_present?) do
-      check when is_function(check, 0) ->
-        if check.() do
-          do_init(opts)
-        else
-          Logger.info("session init: subject DB row gone — stopping cleanly to break respawn loop")
+    # The closure is optional: test fixtures + the original Bootstrap
+    # call site that doesn't supply it stay on the cached-opts path.
+    # Production call sites (`Networks.SessionPlan.resolve/1` +
+    # `Visitors.SessionPlan.resolve/1`) inject it.
+    case Map.get(opts, :refresh_plan) do
+      refresh when is_function(refresh, 0) ->
+        case refresh.() do
+          {:ok, fresh_plan} ->
+            do_init(Map.merge(opts, fresh_plan))
 
-          :ignore
+          {:error, :not_found} ->
+            Logger.info("session init: subject DB row gone — stopping cleanly to break respawn loop")
+
+            :ignore
         end
 
       nil ->

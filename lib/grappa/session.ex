@@ -150,7 +150,7 @@ defmodule Grappa.Session do
           optional(:visitor_nick_persister) => Server.visitor_nick_persister(),
           optional(:credential_failer) => Server.credential_failer(),
           optional(:last_joined_persister) => Server.last_joined_persister(),
-          optional(:subject_row_present?) => Server.subject_row_present_check()
+          optional(:refresh_plan) => Server.refresh_plan_check()
         }
 
   @doc """

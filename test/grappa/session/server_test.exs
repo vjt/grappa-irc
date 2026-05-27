@@ -30,9 +30,9 @@ defmodule Grappa.Session.ServerTest do
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
   alias Grappa.IRC.Message
-  alias Grappa.{IRCServer, PubSub.Topic, Scrollback, Session}
+  alias Grappa.{IRCServer, PubSub.Topic, Repo, Scrollback, Session}
   alias Grappa.Networks.{Credentials, SessionPlan}
-  alias Grappa.Session.{AwayState, Backoff, GhostRecovery, WindowState}
+  alias Grappa.Session.{AwayState, Backoff, GhostRecovery, Server, WindowState}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -136,7 +136,7 @@ defmodule Grappa.Session.ServerTest do
       # `{:stop, _}` → `Server.start_link/1` returns `{:error, _}`.
       # Post-fix: `init/1` returns ok-with-continue, Client spawn happens
       # async in `handle_continue`, `start_link/1` returns `{:ok, pid}`.
-      assert {:ok, pid} = Grappa.Session.Server.start_link(init_opts)
+      assert {:ok, pid} = Server.start_link(init_opts)
       assert is_pid(pid)
 
       # The connect failure surfaces async — `Client.start_link/1` returns
@@ -150,6 +150,96 @@ defmodule Grappa.Session.ServerTest do
       # separate path for `Client.start_link/1` itself returning `{:error,
       # _}` (e.g. a `{:missing_password, _}` validation failure).
       assert_receive {:EXIT, ^pid, {:client_exit, {:connect_failed, _}}}, 1_500
+    end
+  end
+
+  describe "refresh_plan (post-zombie respawn fix)" do
+    # `DynamicSupervisor.start_child/2` caches the original child spec; a
+    # `:transient` restart replays the SAME `init_opts` the supervisor
+    # captured at first spawn. Without re-resolving the plan from the DB,
+    # `state.nick` / `state.autojoin` freeze at the boot-time values even
+    # after `Visitors.update_nick/2` and `last_joined_persister` have
+    # rotated the DB row. The Azzurra incident (2026-05-27): visitor
+    # connected as `kazam02`, `/NICK kazamobile` persisted, upstream
+    # `:ssl_closed` triggered restart, respawn re-registered as `kazam02`
+    # with empty autojoin → zombie session, DB and live state divergent.
+    #
+    # Fix: `init/1` accepts an opt `refresh_plan: (-> {:ok, plan} |
+    # {:error, :not_found})`. When present, the closure runs FIRST,
+    # the returned plan wins on shared keys via `Map.merge(opts,
+    # plan)`, then `do_init` proceeds with the merged opts. `:not_found`
+    # replaces the prior `subject_row_present? -> false` branch — same
+    # `:ignore` semantics, strictly more informative shape.
+
+    test "refresh_plan return value overrides stale opts (nick + autojoin)" do
+      {server, port} = start_server()
+
+      # autojoin_channels: [] so the merge result equals last_joined_channels
+      # alone — keeps the assertion focused on the fresh-vs-stale axis,
+      # not on the (separately tested) operator-autojoin + snapshot merge.
+      {user, network, credential} =
+        setup_user_and_network(port, %{nick: "stale-nick", autojoin_channels: []})
+
+      Process.flag(:trap_exit, true)
+
+      # Build the stale opts as if the supervisor had cached them at
+      # first spawn — nick="stale-nick", autojoin=[]. Real production
+      # path: the visitor joined #fresh-room after spawn (persisted to
+      # last_joined_channels), then /NICK fresh-nick (persisted to the
+      # row). DB now has fresh values; cached opts have stale values.
+      {:ok, stale_plan} = SessionPlan.resolve(credential)
+      stale_opts = Map.merge(stale_plan, %{user_id: user.id, network_id: network.id})
+
+      # Mutate the DB to the "fresh" shape post-rotation. resolve/1 will
+      # see these on the next call — the test's refresh_plan closure
+      # simulates exactly what the production Networks/Visitors
+      # SessionPlan closure does on respawn.
+      {:ok, _} =
+        credential
+        |> Ecto.Changeset.change(nick: "fresh-nick", last_joined_channels: ["#fresh-room"])
+        |> Repo.update()
+
+      refresh_plan = fn ->
+        cred = Credentials.get_credential!(user, network)
+        SessionPlan.resolve(cred)
+      end
+
+      init_opts = Map.put(stale_opts, :refresh_plan, refresh_plan)
+
+      {:ok, pid} = Server.start_link(init_opts)
+      :ok = await_handshake(server)
+
+      state = :sys.get_state(pid)
+
+      # Pre-fix: state.nick == "stale-nick" (opts won), autojoin == [].
+      # Post-fix: refresh_plan ran, fresh values from DB won.
+      assert state.nick == "fresh-nick"
+      assert state.autojoin == ["#fresh-room"]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "refresh_plan returning {:error, :not_found} → :ignore (no spawn)" do
+      port = pick_unused_port()
+      {user, network, _} = setup_user_and_network(port)
+      Process.flag(:trap_exit, true)
+
+      # Build a stale plan (the supervisor's cached child spec). Then
+      # the operator deletes the row → refresh_plan returns :not_found.
+      credential = Credentials.get_credential!(user, network)
+      {:ok, stale_plan} = SessionPlan.resolve(credential)
+      stale_opts = Map.merge(stale_plan, %{user_id: user.id, network_id: network.id})
+
+      init_opts =
+        Map.put(stale_opts, :refresh_plan, fn -> {:error, :not_found} end)
+
+      # `:ignore` from a child spec is a normal termination for the
+      # `:transient` policy — the DynamicSupervisor drops the child
+      # permanently and the respawn loop ends. (The accompanying
+      # `Logger.info "subject DB row gone"` line is operator-facing
+      # observability, not contract — logger level in the test env is
+      # `:warning` so it would be filtered anyway.)
+      assert :ignore = Server.start_link(init_opts)
     end
   end
 

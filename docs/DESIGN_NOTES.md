@@ -10472,3 +10472,64 @@ the keypair verbatim. `mix grappa.gen_vapid` is a first-time-only
 install primitive; running it against an existing DB invalidates
 every push subscription with no recovery path short of forcing
 every user to re-subscribe.
+
+## 2026-05-27 — `refresh_plan` closure ends the zombie-respawn-with-stale-state class
+
+**Symptom (Azzurra `kazamobile`/`kazam02` incident):** visitor
+`31f1d0d9-…` connects to Azzurra with boot-time nick `kazam02`,
+issues `/NICK kazamobile` → `visitors.nick` rotated to
+`kazamobile`, joins `#sniffo` / `#sbiffo` → `last_joined_channels`
+rotated. Upstream `:ssl_closed` 22 minutes later → Session.Server
+crashes → `:transient` restart replays cached `init_opts` with
+nick=`kazam02` + autojoin=`[]`. New session registers upstream as
+`kazam02`, joins nothing. DB says `kazamobile`/3 channels; live
+state says `kazam02`/0 channels. User's browser sees an empty
+sidebar.
+
+**Root cause:** `DynamicSupervisor.start_child/2` caches the
+original child spec at spawn time. The `:transient` restart
+replays the SAME `{Server, opts}` — no DB re-read, no plan
+refresh. Documented as a known trade-off in `Session.Server`
+moduledoc since Phase 1 ("`Session.refresh/2` if hot-reload is
+needed" was the punt). Every persisted DB rotation
+(`Visitors.update_nick/2`, `Credentials.update_last_joined_channels/3`,
+operator config edits) freezes at boot until the operator forces
+a respawn through the live BEAM.
+
+**Fix:** generalize the prior `subject_row_present?` closure
+(cluster cp51, S2 — operator-delete fail-fast) into
+`refresh_plan` with strictly more informative shape:
+
+```elixir
+# Was: (-> boolean())   — "is the row still here?"
+# Now: (-> {:ok, plan} | {:error, :not_found})
+#      — "give me the fresh plan, or tell me the row is gone"
+```
+
+`Session.Server.init/1` runs the closure on EVERY init (boot AND
+`:transient` restart). On `{:ok, fresh}`, `Map.merge(opts, fresh)`
+so DB values win on shared keys (`:nick`, `:autojoin_channels`,
+`:password`, `:host`, `:port`, `:tls`) while opts-only keys
+(`:network_id`, `:notify_pid`, test fixtures) survive. On
+`{:error, :not_found}`, `:ignore` → DynamicSupervisor drops the
+child (same outcome as the prior false-branch, single mechanism
+now). `Networks.SessionPlan` and `Visitors.SessionPlan` both
+inject the closure; closure body re-fetches the row (by
+`(user_id, network_id)` or `visitor.id`) and re-invokes
+`resolve/1` so `pick_server!`, `Cloak`-decryption, and
+`merge_autojoin` all run with current data.
+
+**Why not a separate `Session.refresh/2` verb (the original Phase
+5 punt):** that would be a manual operator action — the zombie
+sits in production until someone notices and intervenes. The
+closure runs on the supervisor's existing restart trigger, so
+recovery is automatic on the very next crash cycle. Strictly
+better, same surface area.
+
+**Apply rule:** any future per-session state that derives from
+DB rows (credentials, visitors, network config) should flow
+through `refresh_plan` — never bake the value into the child
+spec at spawn time. The pattern is reusable: producer modules
+own the resolution, Session.Server consumes opaque closures, no
+boundary cycle, no operator intervention required for staleness
+recovery.

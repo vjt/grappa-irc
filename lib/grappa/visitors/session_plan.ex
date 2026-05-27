@@ -125,16 +125,33 @@ defmodule Grappa.Visitors.SessionPlan do
       last_joined_persister: fn channels ->
         Visitors.update_last_joined_channels(visitor.id, channels)
       end,
-      # Operator-delete fail-fast: when `Visitors.delete/1` (or the
-      # Reaper) removes the visitor row while this Session.Server is
-      # mid-respawn, the next restart cycle hits this gate and returns
-      # `:ignore` from init — DynamicSupervisor drops the child
-      # permanently instead of looping forever on the same upstream
-      # failure (typical: nick collision 433 against a logged-in user
-      # who took the same nick). Boundary-clean same as the callbacks
-      # above. Closes the operator-driven zombie session class.
-      subject_row_present?: fn ->
-        Visitors.get(visitor.id) != nil
+      # Re-resolve the plan from the DB on every `Session.Server.init/1`
+      # invocation — both first boot AND `:transient` restart.
+      # `DynamicSupervisor` caches the spawn-time child spec; without
+      # this closure, `state.nick` / `state.autojoin` / credentials
+      # freeze at the boot-time values even after `update_nick/2` or
+      # `update_last_joined_channels/2` rotated the DB row. The
+      # 2026-05-27 Azzurra `kazamobile`/`kazam02` incident.
+      #
+      # `{:error, :not_found}` subsumes the prior `subject_row_present?`
+      # fail-fast (visitor row reaped / operator-deleted between spawn
+      # and restart) AND the `:network_unconfigured` / `:no_server`
+      # cases that `resolve/1` itself returns when the surrounding
+      # config went away: in all three the subject is no longer
+      # viable, so `Server.init/1` returns `:ignore` and the
+      # supervisor drops the child permanently. Operator manually
+      # re-spawns once the underlying config is fixed.
+      refresh_plan: fn ->
+        case Visitors.get(visitor.id) do
+          nil ->
+            {:error, :not_found}
+
+          fresh ->
+            case resolve(fresh) do
+              {:ok, _} = ok -> ok
+              {:error, _} -> {:error, :not_found}
+            end
+        end
       end
     }
   end

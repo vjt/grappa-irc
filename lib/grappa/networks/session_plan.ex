@@ -111,17 +111,32 @@ defmodule Grappa.Networks.SessionPlan do
       last_joined_persister: fn channels ->
         Credentials.update_last_joined_channels(user.id, cred.network_id, channels)
       end,
-      # Operator-delete fail-fast: when `Credentials.unbind_credential/2`
-      # (or any other path that removes the credential row) fires while
-      # this Session.Server is mid-respawn, the next restart cycle hits
-      # this gate and returns `:ignore` from init — DynamicSupervisor
-      # drops the child permanently instead of looping. Boundary-clean
-      # same as the callbacks above. Closes the operator-driven zombie
-      # session class.
-      subject_row_present?: fn ->
+      # Re-resolve the plan from the DB on every `Session.Server.init/1`
+      # invocation — both first boot AND `:transient` restart.
+      # `DynamicSupervisor` caches the spawn-time child spec; without
+      # this closure, `state.nick` / `state.autojoin` / credentials
+      # freeze at the boot-time values even after the operator rotated
+      # the credential row. Symmetric with the visitor-side
+      # `Visitors.SessionPlan.refresh_plan` closure — same shape, same
+      # `Server.init/1` `Map.merge(opts, plan)` reception.
+      #
+      # `{:error, :not_found}` subsumes the prior `subject_row_present?`
+      # fail-fast (credential unbound between spawn and restart) AND
+      # `resolve/1`'s `:no_server` / `:user_not_found` rescues: in all
+      # cases the subject is no longer viable, so `Server.init/1`
+      # returns `:ignore` and the supervisor drops the child
+      # permanently. Operator re-spawns once the underlying config
+      # is fixed.
+      refresh_plan: fn ->
         case Credentials.get_credential_by_ids(user.id, cred.network_id) do
-          {:ok, _} -> true
-          {:error, :not_found} -> false
+          {:ok, fresh_cred} ->
+            case resolve(fresh_cred) do
+              {:ok, _} = ok -> ok
+              {:error, _} -> {:error, :not_found}
+            end
+
+          {:error, :not_found} = err ->
+            err
         end
       end
     }

@@ -1339,7 +1339,7 @@ defmodule Grappa.NetworksTest do
       assert plan.host == "h"
     end
 
-    test "plan injects subject_row_present? closure that follows the credential row" do
+    test "plan injects refresh_plan closure that re-resolves from DB on every call" do
       user = user_fixture()
       net = network_fixture()
       {:ok, _} = Servers.add_server(net, %{host: "h", port: 6667})
@@ -1353,12 +1353,28 @@ defmodule Grappa.NetworksTest do
 
       cred = Credentials.get_credential!(user, net)
       assert {:ok, plan} = SessionPlan.resolve(cred)
-      assert is_function(plan.subject_row_present?, 0)
+      assert is_function(plan.refresh_plan, 0)
 
-      assert plan.subject_row_present?.() == true
+      # First call: row present, nick matches the cached plan.
+      assert {:ok, fresh1} = plan.refresh_plan.()
+      assert fresh1.nick == "vjt"
 
+      # Mutate the row → next call sees the fresh nick (this is the
+      # whole point: `Session.Server.init/1` calls refresh_plan on
+      # every `:transient` restart so the live state cannot diverge
+      # from the DB).
+      {:ok, _} =
+        cred
+        |> Ecto.Changeset.change(nick: "vjt-renamed")
+        |> Grappa.Repo.update()
+
+      assert {:ok, fresh2} = plan.refresh_plan.()
+      assert fresh2.nick == "vjt-renamed"
+
+      # Unbind → `:not_found` (subsumes the prior subject_row_present?
+      # false branch — same semantics, strictly more informative shape).
       :ok = Credentials.unbind_credential(user, net)
-      assert plan.subject_row_present?.() == false
+      assert plan.refresh_plan.() == {:error, :not_found}
     end
   end
 end

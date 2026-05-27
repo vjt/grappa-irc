@@ -82,21 +82,34 @@ defmodule Grappa.Visitors.SessionPlanTest do
       assert :ok = opts.credential_failer.("k-lined")
     end
 
-    # Operator-delete fail-fast: the `subject_row_present?` closure
-    # lets `Session.Server.init/1` bail out cleanly when the visitor
-    # row has been removed mid-respawn, preventing the zombie
-    # respawn loop class.
-    test "plan injects subject_row_present? closure that follows the DB row" do
+    # Post-zombie-respawn fix (2026-05-27): `refresh_plan` closure
+    # subsumes the prior `subject_row_present?` shape. `Session.Server.init/1`
+    # calls it on EVERY init (boot + `:transient` restart) and merges
+    # the returned plan over the cached opts so DB rotations
+    # (`update_nick/2`, `update_last_joined_channels/2`) propagate to
+    # live state. `{:error, :not_found}` ends the respawn loop
+    # cleanly when the visitor row is gone (operator-delete /
+    # Reaper).
+    test "plan injects refresh_plan closure that re-resolves from DB on every call" do
       network_with_server(slug: "azzurra", port: 6667)
       {:ok, visitor} = Visitors.find_or_provision_anon("vjt-gate", "azzurra", "1.2.3.4")
 
       assert {:ok, opts} = SessionPlan.resolve(visitor)
-      assert is_function(opts.subject_row_present?, 0)
+      assert is_function(opts.refresh_plan, 0)
 
-      assert opts.subject_row_present?.() == true
+      # First call: row present, nick matches.
+      assert {:ok, fresh1} = opts.refresh_plan.()
+      assert fresh1.nick == "vjt-gate"
 
+      # Mutate the row → next call sees the fresh nick.
+      assert {:ok, _} = Visitors.update_nick(visitor.id, "vjt-rotated")
+
+      assert {:ok, fresh2} = opts.refresh_plan.()
+      assert fresh2.nick == "vjt-rotated"
+
+      # Reaper / operator-delete → `:not_found`.
       :ok = Visitors.delete(visitor.id)
-      assert opts.subject_row_present?.() == false
+      assert opts.refresh_plan.() == {:error, :not_found}
     end
   end
 end
