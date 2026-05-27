@@ -65,20 +65,11 @@ echo "[deploy] npm ci + vite build (cicchetto bundle)"
 )
 
 echo "[deploy] Grappa.Release.migrate()"
-# `bin/grappa eval` needs the runtime env (DATABASE_PATH, SECRET_KEY_BASE,
-# GRAPPA_ENCRYPTION_KEY, etc.) sourced from /usr/local/etc/grappa/grappa.env
-# — the file the rc.d wrapper reads at service start. Without this, the
-# eval boots config/runtime.exs which raises on the first missing env var.
-ENV_FILE="${GRAPPA_ENV_FILE:-/usr/local/etc/grappa/grappa.env}"
-if [ ! -r "${ENV_FILE}" ]; then
-	echo "[deploy] ERROR: ${ENV_FILE} not readable — cannot run release eval"
-	exit 1
-fi
-set -a
-# shellcheck disable=SC1090
-. "${ENV_FILE}"
-set +a
-"${RELEASE_PATH}/bin/grappa" eval 'Grappa.Release.migrate()'
+# Delegate to jail_release.sh which has the canonical
+# source-env-then-exec-bin/grappa flow (used by all other operator
+# verbs against the live BEAM). One code path for the release entry
+# point; deploy.sh does NOT re-implement env sourcing inline.
+"${REPO_ROOT}/infra/freebsd/jail_release.sh" eval 'Grappa.Release.migrate()'
 
 # rc.d restart needs root. The deploy runs as the grappa user; sudo or
 # doas is required for the service swap. If neither is available, this
