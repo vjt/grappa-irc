@@ -231,13 +231,15 @@ if config_env() == :prod do
 
   # Logger file sink target. Application.start attaches a :logger_std_h
   # handler writing `<log_dir>/grappa.log` with rotation, additive to
-  # :console. Default `runtime/log` sits next to the sqlite DB so the
-  # existing host bind-mount (compose dev) / jail runtime dir
-  # (bastille prod) covers it without an extra volume. Empty string
-  # disables the file sink (rely on stdout capture only).
+  # :console. Default derives from DATABASE_PATH's parent + "/log" so
+  # all on-disk state stays under one runtime/ root regardless of the
+  # operator's chosen runtime_root (mix release CWD is _build/.../rel/
+  # grappa, NOT the repo root — a relative "runtime/log" default would
+  # land under the release tree and File.mkdir_p! would eacces).
+  # Empty string disables the file sink (stdout capture only).
   log_dir =
     case System.get_env("LOG_DIR") do
-      nil -> "runtime/log"
+      nil -> Path.join(Path.dirname(database_path), "log")
       "" -> nil
       dir -> dir
     end
