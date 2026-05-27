@@ -10240,3 +10240,120 @@ test mis-attribute. The cost is 6 extra runs (~3 min) vs hours
 of phantom-regression hunt. Per `feedback_recurring_e2e_not_flake`
 the inverse rule (recurring fails ARE real) still applies — but
 "recurring" needs the sample size to be load-bearing.
+
+## 2026-05-27 — bastille deploy SHIPPED + log routing under runtime/
+
+Two related ships closed the bastille workstream that's been
+blocking ★ ROADMAP since cp50.
+
+### Bastille deploy SHIPPED
+
+Native Elixir release (`mix release --overwrite`) running inside a
+FreeBSD bastille jail on m42 (10.66.6.7 + 6 IPv6 addresses for the
+outbound rotation pool). irc.sniffo.org / irc.sindro.me both
+serving live; Docker prod replaced. Tooling lives under
+`infra/freebsd/` — `deploy.sh`, `jail_install_rcd.sh`,
+`jail_git_pull.sh`, `jail_release.sh`, `jail_install_nginx.sh`,
+`jail_db_*.sh`, `ndp_keepalive.sh`, `rc.d/grappa`,
+`rc.d/grappa_ndp_keepalive`, `grappa.env.example`.
+
+Operator workflow:
+```
+sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/deploy.sh
+```
+runs `git pull --ff-only` → `mix deps.get --only prod` → `mix
+compile --warnings-as-errors` → `mix release --overwrite` → `npm
+ci && npm run build` (cic bundle) → `Grappa.Release.migrate()` →
+`service grappa restart` (with epmd-kill between stop + start —
+old BEAM doesn't shut down epmd, next start sees `name
+grappa@grappa in use`) → `/healthz` poll loop. No hot-reload —
+release rebuilds always swap the BEAM wholesale; sessions reset on
+every deploy.
+
+Cluster `bastille_deploy_pipeline_hardened` memory captures the
+pipeline post-recovery (root + run_as_grappa + epmd-kill + cic
+vite build self-sufficient under `sudo bastille cmd grappa
+deploy.sh`).
+
+### Log routing under runtime/
+
+Two-pass refactor settled the on-disk log layout:
+
+**First pass (over-engineered, reverted)**: attached a
+`:logger_std_h` handler in `Grappa.Application.start/2` writing
+`runtime/log/grappa.log` AS WELL AS the rc.d-side `RELEASE_TMP`
+redirecting run_erl's stdout tee to `runtime/log/log/erlang.log.*`.
+Same lines on disk twice, two paths, two rotation sets. Revert
+dropped the Elixir-side file sink (the run_erl tee covers the
+prod role; in dev compose, Docker json-file driver covers it).
+
+Two bugs surfaced during the first pass that earned commits even
+after the revert:
+
+1. **`runtime/log` as a relative path crashed prod** — `mix
+   release` CWD is `_build/.../rel/grappa/`, not the repo root, so
+   `File.mkdir_p!("runtime/log")` raised `:eacces` under the
+   grappa user. `config/runtime.exs` now derives all on-disk
+   defaults from `Path.dirname(database_path)` so anything new
+   keys off an already-absolute path. (Footgun lives only in
+   release builds — `mix phx.server` in dev hides it behind a
+   sensible CWD.)
+
+2. **`RELEASE_TMP='...' . envfile && cmd` doesn't persist** —
+   POSIX `VAR=val cmd` syntax sets VAR only for the single `cmd`
+   (here, the `.` source builtin). The subsequent `bin/grappa
+   daemon` invocation saw the release's default `RELEASE_TMP`
+   (`_build/.../rel/grappa/tmp`), confirmed via `procstat -e
+   $BEAM_PID`. Fixed by switching to `export
+   RELEASE_TMP='...';` as a separate statement in
+   `infra/freebsd/rc.d/grappa`'s `grappa_runas/1`.
+
+**Second pass (final layout)**: `RELEASE_TMP=runtime` (not
+`runtime/log`) because run_erl ALWAYS creates its own `log/` and
+`pipe/` subdirs under RELEASE_TMP. Setting RELEASE_TMP to
+`runtime/log` produced the double-nested `runtime/log/log/`. The
+final on-disk layout:
+
+```
+runtime/
+├── log/erlang.log.*  ← run_erl tee of BEAM stdout
+├── pipe/erlang.pipe.1.{r,w}  ← run_erl named pipe (bin/grappa remote)
+├── grappa_prod.db (+ -shm + -wal)
+├── uploads/
+├── bun-cache/
+└── cicchetto-dist/
+```
+
+`runtime/pid` would land here too if run_erl wrote one — the rc.d
+declares `pidfile=$grappa_runtime_tmp/pid` but `service grappa
+status` actually delegates to `bin/grappa pid` which queries epmd,
+so the file is unused.
+
+### CI flake side-fix
+
+While the bastille work was landing, `admin_events_test.exs` setup
+flunked with `SessionRegistry never drained — stale entries: [...]`
+on 10 consecutive setups (run 26505322757). Same rotating-cascade
+pattern as `feedback_ci_cascade_rotating_set` — green locally,
+fails on GHA under coveralls load.
+
+`Session.stop_session/2` returns once the worker pid is dead but
+the Registry's OWN monitor-DOWN handler runs in its own process
+and cleans the entry asynchronously. The setup's single 50ms
+post-force-stop sleep was too tight on the loaded runner. Replaced
+with a 200×10ms (2s) poll matching the upstream passive-wait shape.
+
+### Lessons
+
+- `mix release` and `mix phx.server` are NOT interchangeable boot
+  paths for on-disk defaults — anything that mkdir_p's a relative
+  path will silently work in dev and `:eacces` in prod release.
+  Derive from already-absolute env-driven paths.
+- Two parallel log sinks for the same stream is always a smell.
+  When you find yourself with `app.log` AND `erlang.log` containing
+  the same lines, pick the OTP-canonical one (run_erl tee in
+  releases, Docker logs in containers) and drop the other.
+- `VAR=val cmd` POSIX assignment is per-command. When `cmd` is
+  `.` (source), the assignment dies with the source. Use `export
+  VAR;` when the binding has to survive to a later command in the
+  same line.

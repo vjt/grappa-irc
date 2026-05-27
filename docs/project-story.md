@@ -2806,3 +2806,87 @@ trusting the marketing — the gap between "what the package does"
 and "what your system needs from it" is exactly where security
 bugs hide.
 
+
+---
+
+## Episode — bastille shipped, log routing under runtime/ (2026-05-27)
+
+The bastille deploy workstream that's blocked ★ ROADMAP since cp50
+shipped today. m42 prod is now a native Elixir release in a
+FreeBSD bastille jail; irc.sniffo.org and irc.sindro.me serve from
+it. Docker prod is retired. The pipeline is `sudo bastille cmd
+grappa /home/grappa/grappa/infra/freebsd/deploy.sh` and it's
+self-sufficient — pull, mix release, vite build, migrate, restart,
+healthcheck.
+
+The session that actually shipped the work was the cleanup pass on
+where logs land. The bouncer's been writing app-level Logger output
+to stdout forever (`scripts/monitor.sh` for the dev container,
+inherits to syslog in prod) and that was fine. Then I added a
+`:logger_std_h` file handler in `Grappa.Application.start/2` writing
+`runtime/log/grappa.log` so the operator could tail the app log
+from the host filesystem. Plus I'd set `RELEASE_TMP=runtime/log` in
+the rc.d so run_erl's stdout-tee (`erlang.log.*`) would also land
+under runtime/. Both shipped, both worked.
+
+vjt asked: "why do we have runtime/log/grappa.log AND
+runtime/log/log/erlang.log.1 — they're the same thing?" They were.
+Same lines from the same Logger backend, written twice, in two
+files, with two independent rotation sets. One sink was always
+going to be redundant.
+
+The choice was easy once stated plainly: drop the Elixir file sink,
+keep the run_erl tee. The run_erl path is OTP-canonical, survives
+`mix release --overwrite` (because RELEASE_TMP points outside the
+release tree), and works without an Application-callback. The
+Elixir file sink was nice but additive — it carried the maintenance
+burden of a custom handler config for no benefit the run_erl tee
+didn't already provide.
+
+The revert deleted 116 lines (4 config files + the Application
+helper + a bunch of env-var plumbing in compose.yaml + .env.example
++ grappa.env.example + CLAUDE.md). The keeper changes from the
+first pass survived in two commits: the `RELEASE_TMP` export fix
+(POSIX `VAR=val cmd` doesn't persist past the `.` source builtin
+— had to convert to `export VAR;`) and the relative-path footgun
+hunt (`runtime/log` defaulted relative, mix release CWD is
+`_build/.../rel/grappa/`, grappa user can't write there). Then a
+second fix because `RELEASE_TMP=runtime/log` produced
+`runtime/log/log/erlang.log.*` — run_erl always creates its own
+`log/` subdir under RELEASE_TMP, so the right value is `runtime`
+(one level up), letting `runtime/log/` and `runtime/pipe/` land at
+the canonical paths.
+
+Total deploys to prod for this whole arc: 4. Three bug-fix
+restarts in fast sequence (file-sink eacces crash, RELEASE_TMP
+unexported, double-nested log path) plus the final clean revert.
+Each one ate ~30s of session uptime — visitor reconnects all
+worked.
+
+A CI flake fell out of the bigger session. While the bastille work
+was landing, `admin_events_test.exs` setup started flunking with
+"SessionRegistry never drained" — 10 in a row on the same GHA run.
+Local green, CI red. Same rotating-cascade pattern as
+`feedback_ci_cascade_rotating_set`: the canonical "test-order
+state pollution under coveralls load." The setup helper aggressively
+force-stops leaked Session pids, then sleeps 50ms before checking
+the Registry is empty. `Session.stop_session/2` returns once the
+pid is dead, but the Registry's own monitor-DOWN cleanup runs in a
+separate process and is asynchronous. 50ms is plenty locally;
+under CI ETS contention it's not. Replaced the single sleep with a
+200×10ms poll matching the upstream passive-wait shape and CI went
+green.
+
+**Law:** *Two sinks for the same stream is always a smell.* When
+you find yourself with `app.log` AND `erlang.log` containing the
+same lines, pick the OTP-canonical one and drop the other. Don't
+keep both because "they might diverge someday" — they won't, and
+the cost of converging two parallel rotation sets after they DO
+diverge is much higher than the cost of consolidating now.
+
+**Law (corollary):** *`mix release` and `mix phx.server` are not
+interchangeable boot paths for on-disk defaults.* Anything that
+mkdir_p's a relative path will silently work in dev and `:eacces`
+in a release. Derive on-disk defaults from already-absolute
+env-driven paths so the only difference between dev and prod is
+the value of the env var, not the path-resolution semantics.

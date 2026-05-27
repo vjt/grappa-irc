@@ -557,18 +557,16 @@ The project is past Phase 1-3 and most of Phase 4. The road to
 **PUBLIC OPEN** is a sequence of focused clusters, each shipped to
 the live operator before the next begins. Current order:
 
-1. **Bastille deploy** — FreeBSD bastille jail target prod runtime,
-   sibling to the existing docker-compose path (GitHub issue #8).
-2. **Voice TTS+STT (Web Speech API on-device)** — per-channel TTS +
+1. **Voice TTS+STT (Web Speech API on-device)** — per-channel TTS +
    STT toggle via the browser's Web Speech API. On-device, no third-
    party round-trip; Vosk/piper WASM offline path stays as the
    long-tail fallback for browsers without Web Speech support.
-3. **UI polish cluster** — its own multi-bucket effort, mobile-first.
+2. **UI polish cluster** — its own multi-bucket effort, mobile-first.
    Mobile UX needs a real pass: responsive breakpoints beyond the
    single 768px line, touch-target sizing, sidebar ergonomics, input
    bar density, scroll behavior. The current mobile layout is
    functional but not polished.
-4. **PUBLIC OPEN** — the milestone where grappa stops being a
+3. **PUBLIC OPEN** — the milestone where grappa stops being a
    single-operator setup hosting `it-opers` people and becomes a
    self-hostable bouncer anyone can deploy. Pre-conditions: every
    cluster above CLOSED, Phase 5 hardening done (TLS verification,
@@ -576,9 +574,10 @@ the live operator before the next begins. Current order:
    schema published.
 
 Recently closed (per-cluster history with bucket-level detail in
-[`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md)): e2e flake triage,
-UX-8 scroll cluster, wireTypes.ts codegen, BUGHUNT-1/2/3
-pre-bastille bug-hunt.
+[`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md)): bastille deploy
+(FreeBSD jail prod runtime, live on m42 since 2026-05-27),
+e2e flake triage, UX-8 scroll cluster, wireTypes.ts codegen,
+BUGHUNT-1/2/3 pre-bastille bug-hunt.
 
 Beyond PUBLIC OPEN, Phase 6 IRCv3 listener facade is the long-tail
 work — drop-in compatibility with existing IRCv3 mobile clients

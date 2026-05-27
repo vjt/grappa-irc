@@ -11,27 +11,29 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**Bastille deploy workstream** — GitHub issue #8 (`GH_CONFIG_DIR=./.gh
-gh issue view 8`). FreeBSD bastille jail target prod runtime; current
-deploy is docker-compose. Likely parallel target
-(`scripts/deploy-bastille.sh` sibling to `scripts/deploy.sh`), not a
-Docker→Bastille rewrite. Verify scope from #8 before assuming.
+_(empty — bastille deploy SHIPPED 2026-05-27; m42 prod live on
+irc.sniffo.org / irc.sindro.me. Pick the next cluster from the
+roadmap below.)_
 
 ---
 
-★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22):**
+★ **POST-BASTILLE ROADMAP — canonical source of truth (vjt 2026-05-27):**
 
-1. **Bastille deploy workstream** — GitHub issue #8 (`GH_CONFIG_DIR=./.gh
-   gh issue view 8`). FreeBSD bastille jail target prod runtime; current
-   deploy is docker-compose. Likely parallel target
-   (`scripts/deploy-bastille.sh` sibling to `scripts/deploy.sh`), not a
-   Docker→Bastille rewrite. Verify scope from #8 before assuming.
+1. **Voice TTS+STT (Web Speech API on-device)** — per-channel TTS +
+   STT toggle via the browser's Web Speech API. On-device, no
+   third-party round-trip; Vosk/piper WASM offline path stays as
+   the long-tail fallback for browsers without Web Speech support.
+2. **UI polish cluster** — its own multi-bucket effort, mobile-first.
+   Responsive breakpoints beyond the single 768px line, touch-target
+   sizing, sidebar ergonomics, input bar density, scroll behavior.
+3. **PUBLIC OPEN** — the milestone where grappa stops being a
+   single-operator setup and becomes a self-hostable bouncer anyone
+   can deploy. Pre-conditions: every cluster above CLOSED, Phase 5
+   hardening done (TLS verification, eviction policy, NickServ
+   proxy), self-hoster docs, OpenAPI schema published.
 
-Bastille goes on a green-suite + structurally-typed-boundary +
-no-known-regressions substrate — not during cleanup.
-
-Memory pointer (single source of truth lives HERE, not in memory):
-`project_post_rev_roadmap.md` is a one-liner pointer to this section.
+Memory pointer: `project_post_rev_roadmap.md` is a one-liner pointer
+to this section.
 
 ---
 
