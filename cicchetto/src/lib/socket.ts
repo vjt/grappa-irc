@@ -69,7 +69,22 @@ createRoot(() => {
   createEffect(
     on(token, (t, prev) => {
       if (t === null) {
+        // Logout — drop the socket AND its module-level reference so a
+        // subsequent login rebuilds from scratch. Pre-fix (2026-05-27)
+        // we only called `_socket.disconnect()` but kept the instance;
+        // the next login's `getSocket()` returned the disconnected
+        // instance and its internal state (channels, refs, params
+        // closure) carried the old session. phoenix.js's `connect()`
+        // on a disconnected instance does NOT re-evaluate `params()`
+        // reliably across the disconnect-reconnect boundary, so the
+        // new bearer never landed on the handshake and the WS never
+        // came back up after a visitor logout+relogin. Symptom:
+        // network HTTP shows fresh POST /auth/login + GET /networks,
+        // but the BEAM log shows zero `CONNECTED TO GrappaWeb.UserSocket`
+        // and zero JOINED grappa:user:... events for the new visitor id.
         if (_socket?.isConnected()) _socket.disconnect();
+        _socket = null;
+        _userChannel = null;
         return;
       }
       const s = getSocket();

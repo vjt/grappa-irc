@@ -112,6 +112,35 @@ describe("socket singleton", () => {
     expect(h.mockSocketInstance.connect).toHaveBeenCalledTimes(2);
   });
 
+  it("logout+login constructs a fresh Socket instance (2026-05-27)", async () => {
+    // Pre-fix logout only called disconnect() on the existing Socket
+    // and left `_socket` non-null. The next login's `getSocket()`
+    // returned the disconnected instance and `connect()` on it did
+    // NOT re-evaluate the params callback in a way the next handshake
+    // observed — the WS never came back up after a visitor
+    // logout+relogin. Symptom: BEAM log shows POST /auth/login + the
+    // REST burst, but no `CONNECTED TO GrappaWeb.UserSocket` and no
+    // `JOINED grappa:user:...` for the new visitor id, so
+    // members_seeded / window_state / topic_changed broadcasts have
+    // no subscriber and the MembersPane never populates.
+    localStorage.setItem("grappa-token", "tok-A");
+    const auth = await import("../lib/auth");
+    await import("../lib/socket");
+    expect(h.socketCtor).toHaveBeenCalledTimes(1);
+
+    h.mockSocketInstance.isConnected.mockReturnValue(true);
+    auth.setToken(null);
+    h.mockSocketInstance.isConnected.mockReturnValue(false);
+
+    auth.setToken("tok-B");
+
+    // Two Socket instances: one for tok-A, fresh one for tok-B.
+    expect(h.socketCtor).toHaveBeenCalledTimes(2);
+    // The second construction's params callback returns tok-B.
+    const opts2 = h.socketCtor.mock.calls[1]?.[1] as { params: () => { token: string } };
+    expect(opts2.params()).toEqual({ token: "tok-B" });
+  });
+
   it("joinChannel builds the topic-vocabulary string and calls channel.join()", async () => {
     localStorage.setItem("grappa-token", "tok-1");
     const socket = await import("../lib/socket");
