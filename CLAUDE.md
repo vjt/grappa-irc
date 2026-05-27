@@ -599,16 +599,13 @@ section is RULES, that file is HOW.
     sqlite — adjust at the schema layer if needed.
 - **Log file**: container's stdout, captured by Docker JSON logger
   (max 5MB × 3 files in dev, 10MB × 5 in prod). Tail via
-  `scripts/monitor.sh`. ADDITIVE on-disk sink:
-  `Grappa.Application.start/2` attaches a `:logger_std_h` handler
-  (configured via `:grappa, :log_dir` — default `runtime/log/`)
-  writing `grappa.log` with the same formatter + metadata allowlist
-  as `:console` (10 MiB × 5 rotation). Disabled in test
-  (`:log_dir nil`). On the FreeBSD jail, `infra/freebsd/rc.d/grappa`
-  also points `RELEASE_TMP` at `<repo>/runtime/log` so `run_erl`'s
-  `erlang.log.*` + the daemon pid file land under `runtime/` instead
-  of `_build/prod/rel/grappa/tmp/` (which a fresh `mix release` blows
-  away).
+  `scripts/monitor.sh`. On the FreeBSD jail, `bin/grappa daemon`'s
+  `run_erl` tees the BEAM's stdout to
+  `runtime/log/log/erlang.log.*` + writes the pid file under
+  `runtime/log/`, driven by `RELEASE_TMP` exported by
+  `infra/freebsd/rc.d/grappa`. The rotation set survives
+  `mix release --overwrite` (which would otherwise blow away
+  `_build/.../tmp/log/`).
 - **Config**: DB-driven (Phase 2 sub-task 2j replaced the TOML loader).
   Operator binds users + networks via mix tasks: `mix grappa.create_user`
   creates a `User` row, `mix grappa.bind_network --auth ...` writes a

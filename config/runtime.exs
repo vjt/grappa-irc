@@ -229,23 +229,6 @@ if config_env() == :prod do
 
   config :logger, level: String.to_existing_atom(System.get_env("LOG_LEVEL") || "info")
 
-  # Logger file sink target. Application.start attaches a :logger_std_h
-  # handler writing `<log_dir>/grappa.log` with rotation, additive to
-  # :console. Default derives from DATABASE_PATH's parent + "/log" so
-  # all on-disk state stays under one runtime/ root regardless of the
-  # operator's chosen runtime_root (mix release CWD is _build/.../rel/
-  # grappa, NOT the repo root — a relative "runtime/log" default would
-  # land under the release tree and File.mkdir_p! would eacces).
-  # Empty string disables the file sink (stdout capture only).
-  log_dir =
-    case System.get_env("LOG_DIR") do
-      nil -> Path.join(Path.dirname(database_path), "log")
-      "" -> nil
-      dir -> dir
-    end
-
-  config :grappa, :log_dir, log_dir
-
   # T31 admission captcha — operator-set provider, secret, and public
   # site key. Read at boot by FallbackController + Admission.verify_captcha
   # via Application.get_env (the documented exception, see those modules'

@@ -20,12 +20,6 @@ config :grappa, Grappa.Repo,
 # covers both.
 config :grappa, :uploads_storage_root, Path.expand("../runtime/uploads_dev", __DIR__)
 
-# Logger file sink — Application.start attaches a :logger_std_h handler
-# writing to `<log_dir>/grappa.log` with rotation. Sibling of the
-# sqlite DB under `runtime/` so the host bind-mount covers it without
-# a compose.yaml edit. Set to `nil` to disable (test env).
-config :grappa, :log_dir, Path.expand("../runtime/log", __DIR__)
-
 config :grappa, GrappaWeb.Endpoint,
   http: [ip: {0, 0, 0, 0}, port: 4000],
   check_origin: false,
