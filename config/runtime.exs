@@ -229,6 +229,21 @@ if config_env() == :prod do
 
   config :logger, level: String.to_existing_atom(System.get_env("LOG_LEVEL") || "info")
 
+  # Logger file sink target. Application.start attaches a :logger_std_h
+  # handler writing `<log_dir>/grappa.log` with rotation, additive to
+  # :console. Default `runtime/log` sits next to the sqlite DB so the
+  # existing host bind-mount (compose dev) / jail runtime dir
+  # (bastille prod) covers it without an extra volume. Empty string
+  # disables the file sink (rely on stdout capture only).
+  log_dir =
+    case System.get_env("LOG_DIR") do
+      nil -> "runtime/log"
+      "" -> nil
+      dir -> dir
+    end
+
+  config :grappa, :log_dir, log_dir
+
   # T31 admission captcha — operator-set provider, secret, and public
   # site key. Read at boot by FallbackController + Admission.verify_captcha
   # via Application.get_env (the documented exception, see those modules'

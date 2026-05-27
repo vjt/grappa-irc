@@ -56,6 +56,14 @@ defmodule Grappa.Application do
     # pattern.
     :ok = Grappa.OutboundV6Pool.boot()
 
+    # Logger file sink. Additive to :console — same formatter +
+    # metadata allowlist as the console handler so a file tail and a
+    # `scripts/monitor.sh` tail show identical lines. Configured via
+    # `:grappa, :log_dir` (boot-time read, runtime banned); see
+    # config/{dev,runtime,test}.exs. Disabled when nil (test env, or
+    # operator-set `LOG_DIR=` empty).
+    :ok = setup_file_log()
+
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a
     # reorder is a deliberate choice.
@@ -227,6 +235,55 @@ defmodule Grappa.Application do
   # pattern in `test/grappa/admin_events_test.exs`.
   @spec attach_admin_telemetry?() :: boolean()
   defp attach_admin_telemetry?, do: Application.get_env(:grappa, :attach_admin_telemetry, true)
+
+  # Logger file sink — attach a :logger_std_h handler that mirrors the
+  # default `:console` handler (same formatter, same metadata allowlist)
+  # but writes to `<log_dir>/grappa.log`. `:logger_std_h` rotates at
+  # 10 MiB × 5 files which matches the docker json-file limits in
+  # compose.yaml, so dev container + jail release converge on the
+  # same on-disk footprint.
+  #
+  # Idempotent: a second add (e.g. after a Phoenix.CodeReloader cycle
+  # that re-runs Application.start) returns `{:error, {:already_exist, _}}`
+  # — treated as :ok. `:logger` is started before Application.start by
+  # the OTP boot sequence, so the handler API is always available here.
+  @spec setup_file_log() :: :ok
+  defp setup_file_log do
+    case Application.get_env(:grappa, :log_dir) do
+      nil ->
+        :ok
+
+      log_dir when is_binary(log_dir) ->
+        File.mkdir_p!(log_dir)
+        path = Path.join(log_dir, "grappa.log")
+
+        {:ok, console} = :logger.get_handler_config(:default)
+
+        # Carry over the default handler's :logger_std_h config (burst
+        # limits, flush thresholds, etc.) so the file sink behaves the
+        # same under load as the console handler — only the sink type
+        # (file vs standard_io) + rotation knobs differ.
+        std_h_config =
+          console.config
+          |> Map.put(:type, :file)
+          |> Map.put(:file, String.to_charlist(path))
+          |> Map.put(:max_no_bytes, 10 * 1024 * 1024)
+          |> Map.put(:max_no_files, 5)
+
+        config = %{
+          config: std_h_config,
+          level: console.level,
+          formatter: console.formatter,
+          filters: console.filters,
+          filter_default: console.filter_default
+        }
+
+        case :logger.add_handler(:grappa_file, :logger_std_h, config) do
+          :ok -> :ok
+          {:error, {:already_exist, _}} -> :ok
+        end
+    end
+  end
 
   @impl Application
   def config_change(changed, _, removed) do

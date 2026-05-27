@@ -104,6 +104,10 @@ services:
       # per upstream connect so each peer sees a rotating rDNS
       # identity. Empty (default) = kernel-default source selection.
       GRAPPA_OUTBOUND_V6_POOL: ${GRAPPA_OUTBOUND_V6_POOL:-}
+      # Logger file sink dir. Default `runtime/log` is covered by the
+      # ./runtime bind-mount above (file rotated at 10MiB × 5). Empty
+      # disables the on-disk sink; stdout still flows to docker logs.
+      LOG_DIR: ${LOG_DIR:-/app/runtime/log}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
       interval: 5s

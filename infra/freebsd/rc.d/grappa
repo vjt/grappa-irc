@@ -41,9 +41,14 @@ load_rc_config "$name"
 : ${grappa_user:="grappa"}
 : ${grappa_release_root:="/home/grappa/grappa/_build/prod/rel/grappa"}
 : ${grappa_env_file:=""}
+# Where run_erl (mix release daemon) writes erlang.log.*, heart logs,
+# and the pid file. Defaults to `<repo>/runtime/log` so all on-disk
+# output lives under runtime/ next to the sqlite DB. Operator can
+# override via /etc/rc.conf.d/grappa.
+: ${grappa_runtime_tmp:="/home/grappa/grappa/runtime/log"}
 
 command="${grappa_release_root}/bin/grappa"
-pidfile="${grappa_release_root}/tmp/pid"
+pidfile="${grappa_runtime_tmp}/pid"
 extra_commands="reload remote_console release_info"
 
 start_cmd="grappa_start"
@@ -67,18 +72,21 @@ grappa_runas() {
 	# Run a release subcommand as grappa_user with the env file sourced.
 	# The env file (if set) is read inside the subshell so secrets are
 	# only in memory for the lifetime of the child process.
+	# RELEASE_TMP redirects run_erl's erlang.log.* + pid file from the
+	# release's `_build/.../tmp/` (rebuilt on every `mix release`) to
+	# the persistent runtime dir under `<repo>/runtime/log`.
 	local subcmd="$1"
 	local envsrc=""
 	if [ -n "${grappa_env_file}" ] && [ -r "${grappa_env_file}" ]; then
 		envsrc=". ${grappa_env_file} && export \$(grep -Eo '^[A-Z_][A-Z0-9_]*' ${grappa_env_file}) && "
 	fi
-	su -m "${grappa_user}" -c "${envsrc}${command} ${subcmd}"
+	su -m "${grappa_user}" -c "RELEASE_TMP='${grappa_runtime_tmp}' ${envsrc}${command} ${subcmd}"
 }
 
 grappa_start() {
 	grappa_env_export
-	mkdir -p "${grappa_release_root}/tmp"
-	chown "${grappa_user}":"${grappa_user}" "${grappa_release_root}/tmp"
+	mkdir -p "${grappa_runtime_tmp}"
+	chown "${grappa_user}":"${grappa_user}" "${grappa_runtime_tmp}"
 	echo "Starting grappa."
 	grappa_runas "daemon"
 }

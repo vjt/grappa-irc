@@ -40,6 +40,11 @@ config :grappa, GrappaWeb.Endpoint,
 
 config :logger, level: :warning
 
+# No file-log handler in test env: ExUnit captures :console via its own
+# capture_log helpers; a parallel file sink would race across
+# `MIX_TEST_PARTITION` shards on the same handle.
+config :grappa, :log_dir, nil
+
 # Test-infra cluster (2026-05-12, post-mega-cluster): force ExUnit to
 # run one test case at a time. The Application starts ONCE per
 # `mix test` process, so `Grappa.Session.Backoff`,
