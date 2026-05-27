@@ -3287,3 +3287,62 @@ control surface you have is the input bytes. Adding a no-op field to
 bust the hash is a legitimate fix, but mark it as load-bearing in a
 comment — the next person to "clean up" the manifest will delete the
 field that's holding the entire install path together.*
+
+## S56 — 2026-05-27 — The session IP that should've been a public IP
+
+Closing cp52 S1, post-PWA-fix, ready to shut down. vjt fires off one
+last question: "how is it possible that we have a user session with
+ip 137.0.0.1? is xff not working?" The IP wasn't actually `137.0.0.1`
+— vjt was eyeballing and reading loopback as something else — but
+the instinct was right. I queried the live DB and saw the bug:
+every post-bastille user session had `ip = "127.0.0.1"`. Months of
+audit-trail data, silently collapsed to loopback.
+
+The wrapper plug (`RemoteIpFromProxy`) was built in cp51 to defend
+`Plugs.LoopbackOnly` against the docker-exec spoof: shell user sets
+`X-Forwarded-For: 127.0.0.1`, bare `RemoteIp` rewrites
+`conn.remote_ip`, gate accepts, attacker reloads the BEAM. The fix
+was to bypass `RemoteIp` for any loopback peer, on the theory that
+loopback = container shell, exclusively.
+
+That theory was true for the Docker substrate. It became false the
+day grappa moved into the bastille jail. nginx now runs *in the
+same jail*, proxies via 127.0.0.1:4000. Every legitimate user
+request surfaces with `peer = 127.0.0.1` AND nginx-set X-F-F. The
+bypass silently dropped the rewrite. The audit trail filled with
+loopback IPs and nobody noticed for weeks — the cic admin UI shows
+the column, the operator sees it, but it looks plausible enough
+that "all the loopback rows" reads as a column-layout artifact, not
+a data corruption.
+
+The fix is to widen the trust rule from "loopback always means
+shell" to a 3-row matrix: loopback-no-XFF = shell, trust peer;
+loopback-with-XFF = local nginx reverse-proxy, trust XFF;
+non-loopback = anything else, delegate to RemoteIp. The shell-spoof
+attack is now *technically* possible — `curl -H "X-Forwarded-For:
+127.0.0.1"` from a loopback peer would pass `LoopbackOnly` — but
+the attacker who can run that command already has
+`sudo bastille cmd grappa` or `docker exec grappa`, which is
+root-equivalent. They can drop sqlite, kill the BEAM, rewrite the
+codebase. Hardening `/admin/reload` against them is theatre. The
+defense at this layer is *network reachability* — nginx doesn't
+proxy `/admin/*`, grappa binds 127.0.0.1 only. Documented as
+explicitly-accepted residual risk in both moduledocs.
+
+The deploy itself ended up cold, not the hot deploy I'd planned.
+The diff included the `deploy.sh` refactor from cp52 S1 (collapse
+inline npm into `jail_cic_build.sh`), and the preflight rule at
+`preflight.ex:255` correctly forces COLD on `infra/freebsd/deploy.sh`
+edits — "running an old version of the deploy script after the new
+one landed risks divergent behavior." Sessions reset ~5s. The
+preflight worked as designed; the cost was the cost of bundling
+the wrapper fix with the deploy.sh refactor instead of shipping
+them on separate deploys.
+
+*Law: when an environment assumption flips — what used to be a
+single-source signal (loopback = container shell) now means two
+different things (shell OR local reverse-proxy) — every gate that
+read the signal at face value needs revisiting. The trap isn't the
+new shape; it's that the gate keeps returning answers, just
+*wrong* ones, and nothing crashes loudly enough to surface the
+flip.*
