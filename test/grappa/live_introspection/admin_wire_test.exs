@@ -2,13 +2,14 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
   @moduledoc """
   Wire-shape contract for the operator-facing `GET /admin/sessions`
   endpoint (M-cluster M-4). Converts a `Grappa.LiveIntrospection.SessionEntry`
-  + a resolved subject_label to a JSON-encodable map.
+  + a resolved subject_label + an optional last_seen_at to a
+  JSON-encodable map.
   """
   use ExUnit.Case, async: true
 
   alias Grappa.LiveIntrospection.{AdminWire, SessionEntry}
 
-  test "session_to_admin_json/2 stringifies subject_kind + projects live_state subfields + subject_label" do
+  test "session_to_admin_json/3 stringifies subject_kind + projects live_state subfields + subject_label" do
     uuid = Ecto.UUID.generate()
 
     entry = %SessionEntry{
@@ -22,7 +23,7 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
       introspection_degraded: []
     }
 
-    json = AdminWire.session_to_admin_json(entry, "M\\Grappa")
+    json = AdminWire.session_to_admin_json(entry, "M\\Grappa", nil)
 
     assert json.subject_kind == "visitor"
     assert json.subject_id == uuid
@@ -37,7 +38,7 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
     assert is_binary(json.live_state.pid_inspect)
   end
 
-  test "session_to_admin_json/2 user-subject shape" do
+  test "session_to_admin_json/3 user-subject shape" do
     uuid = Ecto.UUID.generate()
 
     entry = %SessionEntry{
@@ -51,7 +52,7 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
       introspection_degraded: [:joined_channels]
     }
 
-    json = AdminWire.session_to_admin_json(entry, "vjt")
+    json = AdminWire.session_to_admin_json(entry, "vjt", nil)
 
     assert json.subject_kind == "user"
     assert json.subject_id == uuid
@@ -79,13 +80,13 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
       introspection_degraded: []
     }
 
-    json = AdminWire.session_to_admin_json(entry, nil)
+    json = AdminWire.session_to_admin_json(entry, nil, nil)
 
     assert json.subject_label == nil
     assert json.subject_id == uuid
   end
 
-  test "session_to_admin_json/2 rejects non-string non-nil labels at the guard" do
+  test "session_to_admin_json/3 rejects non-string non-nil labels at the guard" do
     entry = %SessionEntry{
       subject: {:user, Ecto.UUID.generate()},
       network_id: 1,
@@ -100,7 +101,71 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
     # Guard `is_binary(label) or is_nil(label)` — anything else is a
     # contract violation that surfaces as FunctionClauseError.
     assert_raise FunctionClauseError, fn ->
-      AdminWire.session_to_admin_json(entry, :atom_label)
+      AdminWire.session_to_admin_json(entry, :atom_label, nil)
+    end
+  end
+
+  test "last_seen_at: DateTime → ISO8601 string on the wire" do
+    # The controller looks up MAX(accounts_sessions.last_seen_at) per
+    # subject id and passes the DateTime (or nil) as the third arg.
+    # Wire renders it via `DateTime.to_iso8601/1` so the cic admin
+    # console can `new Date(...)` it directly.
+    uuid = Ecto.UUID.generate()
+    {:ok, dt, _} = DateTime.from_iso8601("2026-05-27T18:30:00.123456Z")
+
+    entry = %SessionEntry{
+      subject: {:user, uuid},
+      network_id: 1,
+      pid: self(),
+      alive: true,
+      mailbox_len: 0,
+      memory_bytes: 0,
+      joined_channels: [],
+      introspection_degraded: []
+    }
+
+    json = AdminWire.session_to_admin_json(entry, "vjt", dt)
+
+    assert json.last_seen_at == "2026-05-27T18:30:00.123456Z"
+  end
+
+  test "last_seen_at: nil surfaces the no-cookie-session honesty signal" do
+    # Bootstrap-spawned session for a user credential whose browser
+    # never logged in (operator boot path) has no cookie session —
+    # nil signals "we have a live bouncer but no recent browser
+    # touch", distinct from "browser logged in N seconds ago".
+    uuid = Ecto.UUID.generate()
+
+    entry = %SessionEntry{
+      subject: {:user, uuid},
+      network_id: 1,
+      pid: self(),
+      alive: true,
+      mailbox_len: 0,
+      memory_bytes: 0,
+      joined_channels: [],
+      introspection_degraded: []
+    }
+
+    json = AdminWire.session_to_admin_json(entry, "vjt", nil)
+
+    assert json.last_seen_at == nil
+  end
+
+  test "session_to_admin_json/3 rejects non-DateTime non-nil last_seen_at at the guard" do
+    entry = %SessionEntry{
+      subject: {:user, Ecto.UUID.generate()},
+      network_id: 1,
+      pid: self(),
+      alive: true,
+      mailbox_len: 0,
+      memory_bytes: 0,
+      joined_channels: [],
+      introspection_degraded: []
+    }
+
+    assert_raise FunctionClauseError, fn ->
+      AdminWire.session_to_admin_json(entry, "vjt", "2026-01-01T00:00:00Z")
     end
   end
 end

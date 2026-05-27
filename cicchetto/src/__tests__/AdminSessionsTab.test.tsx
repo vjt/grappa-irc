@@ -35,6 +35,7 @@ const USER_SESSION: AdminSession = {
   subject_kind: "user",
   subject_id: "11111111-1111-1111-1111-111111111111",
   subject_label: "vjt",
+  last_seen_at: null,
   network_id: 1,
   live_state: {
     alive: true,
@@ -50,6 +51,7 @@ const VISITOR_SESSION: AdminSession = {
   subject_kind: "visitor",
   subject_id: "22222222-2222-2222-2222-222222222222",
   subject_label: "M\\Grappa",
+  last_seen_at: null,
   network_id: 1,
   live_state: {
     alive: true,
@@ -65,6 +67,7 @@ const DEGRADED_SESSION: AdminSession = {
   subject_kind: "user",
   subject_id: "33333333-3333-3333-3333-333333333333",
   subject_label: "degraded-user",
+  last_seen_at: null,
   network_id: 2,
   live_state: {
     alive: true,
@@ -80,6 +83,7 @@ const DEAD_SESSION: AdminSession = {
   subject_kind: "user",
   subject_id: "44444444-4444-4444-4444-444444444444",
   subject_label: "dead-user",
+  last_seen_at: null,
   network_id: 1,
   live_state: {
     alive: false,
@@ -99,6 +103,7 @@ const ALIVE_UNKNOWN_SESSION: AdminSession = {
   subject_kind: "user",
   subject_id: "55555555-5555-5555-5555-555555555555",
   subject_label: "alive-unknown-user",
+  last_seen_at: null,
   network_id: 1,
   live_state: {
     alive: false,
@@ -119,6 +124,7 @@ const ORPHAN_SESSION: AdminSession = {
   subject_kind: "visitor",
   subject_id: "66666666-6666-6666-6666-666666666666",
   subject_label: null,
+  last_seen_at: null,
   network_id: 1,
   live_state: {
     alive: true,
@@ -258,6 +264,39 @@ describe("AdminSessionsTab", () => {
     const badge = await screen.findByLabelText(/pid registered but/i);
     expect(badge.classList.contains("dead")).toBe(true);
     expect(badge.textContent).toContain("pid registered but dead");
+  });
+
+  it("renders em-dash for last_seen_at when null (no cookie session)", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION]);
+
+    render(() => <AdminSessionsTab />);
+
+    const row = await screen.findByTestId(`admin-session-row-${rowId(USER_SESSION)}`);
+    // Null `last_seen_at` → em-dash in the cell, with the
+    // "no browser login on record" tooltip explaining the signal.
+    expect(row.textContent).toContain("—");
+    const lastSeenCell = row.querySelector("td[title='no browser login on record']");
+    expect(lastSeenCell).not.toBeNull();
+    expect(lastSeenCell?.textContent).toBe("—");
+  });
+
+  it("renders relative time for last_seen_at when a cookie session exists", async () => {
+    const api = await import("../lib/api");
+    // 90 seconds ago → "1m" per the floor-by-60 bucketing.
+    const ninetySecondsAgo = new Date(Date.now() - 90_000).toISOString();
+    const RECENT_SESSION: AdminSession = {
+      ...USER_SESSION,
+      last_seen_at: ninetySecondsAgo,
+    };
+    vi.mocked(api.adminListSessions).mockResolvedValue([RECENT_SESSION]);
+
+    render(() => <AdminSessionsTab />);
+
+    const row = await screen.findByTestId(`admin-session-row-${rowId(USER_SESSION)}`);
+    const lastSeenCell = row.querySelector(`td[title='${ninetySecondsAgo}']`);
+    expect(lastSeenCell).not.toBeNull();
+    expect(lastSeenCell?.textContent).toBe("1m");
   });
 
   it("renders 'alive unknown' when 'alive' itself is in introspection_degraded (M4)", async () => {

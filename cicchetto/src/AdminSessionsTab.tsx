@@ -226,7 +226,7 @@ const AdminSessionsTab: Component = () => {
               <th>network</th>
               <th>mailbox</th>
               <th>memory</th>
-              <th>channels</th>
+              <th>last seen</th>
               <th>degraded</th>
               <th />
             </tr>
@@ -244,7 +244,9 @@ const AdminSessionsTab: Component = () => {
                     <td>{s.network_id}</td>
                     <td>{s.live_state.mailbox_len}</td>
                     <td>{renderKb(s.live_state.memory_bytes)}</td>
-                    <td>{renderChannelCount(s.live_state.joined_channels)}</td>
+                    <td title={s.last_seen_at ?? "no browser login on record"}>
+                      {renderLastSeen(s.last_seen_at)}
+                    </td>
                     <td>{renderDegraded(s.live_state.introspection_degraded, id)}</td>
                     <td class="admin-sessions-actions">
                       <InlineConfirmButton
@@ -334,9 +336,27 @@ function renderKb(bytes: number): string {
   return `${Math.round(bytes / 1024)} KB`;
 }
 
-function renderChannelCount(channels: string[] | null): string {
-  if (channels === null) return "?";
-  return String(channels.length);
+// Compact relative-time render for the operator console.
+// null → em-dash (no cookie session on record, see AdminSession
+// type comment). DateTime in the future (clock skew across host
+// vs jail) renders as "now". Past windows: "Ns" / "Nm" / "Nh" /
+// "Nd" — bumped at most once per minute by the server (the
+// underlying `last_seen_at` is cadence-capped), so sub-minute
+// precision is illusory anyway.
+function renderLastSeen(iso: string | null): string {
+  if (iso === null) return "—";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "?";
+  const deltaMs = Date.now() - then;
+  if (deltaMs < 0) return "now";
+  const s = Math.floor(deltaMs / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  return `${d}d`;
 }
 
 function renderDegraded(degraded: string[], id: string) {

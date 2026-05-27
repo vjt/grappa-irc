@@ -52,28 +52,40 @@ defmodule Grappa.LiveIntrospection.AdminWire do
           subject_kind: String.t(),
           subject_id: String.t(),
           subject_label: String.t() | nil,
+          last_seen_at: String.t() | nil,
           network_id: pos_integer(),
           live_state: live_state_json()
         }
 
   @doc """
-  Render one `SessionEntry` + its resolved `subject_label` to the
-  admin JSON shape. `subject_kind` is the atom-as-string (`"user"` |
-  `"visitor"`); `subject_id` is the inner UUID. `subject_label` is
-  the human-readable display name (`user.name` / `visitor.nick`) or
+  Render one `SessionEntry` + its resolved `subject_label` +
+  optional `last_seen_at` to the admin JSON shape.
+
+  `subject_kind` is the atom-as-string (`"user"` | `"visitor"`);
+  `subject_id` is the inner UUID. `subject_label` is the
+  human-readable display name (`user.name` / `visitor.nick`) or
   `nil` when the DB row was missing at composition time.
 
-  The caller (the controller) owns the label resolution because
-  `LiveIntrospection`'s boundary explicitly excludes `Accounts` /
-  `Visitors` deps. Keeps the pure live-state module DB-free.
+  `last_seen_at` is the MAX(`accounts_sessions.last_seen_at`)
+  across all the subject's cookie sessions — rendered as ISO8601
+  (`DateTime.to_iso8601/1`) — or `nil` when no cookie exists
+  (Bootstrap-spawned bouncer with no browser login). Same U-0
+  honesty rule as `subject_label`.
+
+  The caller (the controller) owns the resolution of BOTH the
+  label AND the last_seen lookup because `LiveIntrospection`'s
+  boundary explicitly excludes `Accounts` / `Visitors` deps.
+  Keeps the pure live-state module DB-free.
   """
-  @spec session_to_admin_json(SessionEntry.t(), String.t() | nil) :: t()
-  def session_to_admin_json(%SessionEntry{subject: {kind, id}} = entry, label)
-      when is_binary(label) or is_nil(label) do
+  @spec session_to_admin_json(SessionEntry.t(), String.t() | nil, DateTime.t() | nil) :: t()
+  def session_to_admin_json(%SessionEntry{subject: {kind, id}} = entry, label, last_seen_at)
+      when (is_binary(label) or is_nil(label)) and
+             (is_struct(last_seen_at, DateTime) or is_nil(last_seen_at)) do
     %{
       subject_kind: Atom.to_string(kind),
       subject_id: id,
       subject_label: label,
+      last_seen_at: encode_last_seen(last_seen_at),
       network_id: entry.network_id,
       live_state: %{
         alive: entry.alive,
@@ -85,4 +97,7 @@ defmodule Grappa.LiveIntrospection.AdminWire do
       }
     }
   end
+
+  defp encode_last_seen(nil), do: nil
+  defp encode_last_seen(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 end

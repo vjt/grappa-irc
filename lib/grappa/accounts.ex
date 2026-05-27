@@ -156,6 +156,49 @@ defmodule Grappa.Accounts do
   end
 
   @doc """
+  Batched MAX(`last_seen_at`) across cookie sessions, keyed by
+  subject id. Used by `GrappaWeb.Admin.SessionsController` to
+  surface "when did this subject's browser last touch the bouncer"
+  alongside live BEAM state (mailbox, memory).
+
+  `subject_kind` discriminates the column: `:user` selects
+  `user_id`, `:visitor` selects `visitor_id`. Result map keys are
+  ONLY ids that had at least one cookie session — missing ids
+  signal the U-0 honesty case (`nil` on the wire: bouncer pid
+  exists but no browser ever logged in).
+
+  MAX across N cookie rows per subject collapses multi-device
+  users to "most recent touch." Both `Accounts.authenticate/1`
+  (REST plug) and `UserSocket.connect/3` (WS upgrade) bump
+  `last_seen_at`, cadence-capped at 60 s — so the timestamp is
+  per-minute precision in practice, ISO8601 microseconds on the
+  wire only because the underlying column is `:utc_datetime_usec`.
+
+  Empty input → `%{}` (skip the round-trip).
+  """
+  @spec max_last_seen_by_subject_ids(:user | :visitor, [Ecto.UUID.t()]) ::
+          %{Ecto.UUID.t() => DateTime.t()}
+  def max_last_seen_by_subject_ids(_, []), do: %{}
+
+  def max_last_seen_by_subject_ids(:user, ids) when is_list(ids) do
+    Session
+    |> where([s], s.user_id in ^ids)
+    |> group_by([s], s.user_id)
+    |> select([s], {s.user_id, max(s.last_seen_at)})
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  def max_last_seen_by_subject_ids(:visitor, ids) when is_list(ids) do
+    Session
+    |> where([s], s.visitor_id in ^ids)
+    |> group_by([s], s.visitor_id)
+    |> select([s], {s.visitor_id, max(s.last_seen_at)})
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  @doc """
   Every user row, ordered by `name` ascending. Operator-facing —
   the M-6 admin console (`GET /admin/users`) materializes the full
   table. Users are operator-curated (low cardinality); full

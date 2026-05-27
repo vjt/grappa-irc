@@ -1118,6 +1118,13 @@ export type AdminSession = {
   subject_kind: "user" | "visitor";
   subject_id: string;
   subject_label: string | null;
+  // ISO8601 of MAX(accounts_sessions.last_seen_at) across the
+  // subject's cookie sessions, or null when no cookie ever existed
+  // (Bootstrap-spawned bouncer with no browser login). Bumped at
+  // most every 60s by REST + WS authn paths — minute-resolution in
+  // practice. Useful diagnostic for "is the user actually using
+  // the PWA" alongside the live BEAM state.
+  last_seen_at: string | null;
   network_id: number;
   live_state: AdminSessionLiveState;
 };

@@ -77,10 +77,21 @@ defmodule GrappaWeb.Admin.SessionsController do
     {user_ids, visitor_ids} = partition_subject_ids(entries)
     users = Accounts.get_users_by_ids(user_ids)
     visitors = Visitors.get_by_ids(visitor_ids)
+    # MAX(accounts_sessions.last_seen_at) per subject. Two batched
+    # queries (one per subject_kind, same shape as the labels lookup)
+    # so the controller's DB cost stays O(1) regardless of session
+    # count. Missing keys → `nil` on the wire, same U-0 honesty rule
+    # the label resolution uses.
+    user_last_seen = Accounts.max_last_seen_by_subject_ids(:user, user_ids)
+    visitor_last_seen = Accounts.max_last_seen_by_subject_ids(:visitor, visitor_ids)
 
     rows =
       Enum.map(entries, fn entry ->
-        AdminWire.session_to_admin_json(entry, resolve_label(entry, users, visitors))
+        AdminWire.session_to_admin_json(
+          entry,
+          resolve_label(entry, users, visitors),
+          resolve_last_seen(entry, user_last_seen, visitor_last_seen)
+        )
       end)
 
     json(conn, %{sessions: rows})
@@ -115,6 +126,12 @@ defmodule GrappaWeb.Admin.SessionsController do
       nil -> nil
     end
   end
+
+  defp resolve_last_seen(%{subject: {:user, id}}, user_last_seen, _),
+    do: Map.get(user_last_seen, id)
+
+  defp resolve_last_seen(%{subject: {:visitor, id}}, _, visitor_last_seen),
+    do: Map.get(visitor_last_seen, id)
 
   @doc """
   T32 disconnect verb — parks the credential + stops the pid (user

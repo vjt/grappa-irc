@@ -165,6 +165,86 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
       # without a DB anchor.
       assert row["live_state"]["alive"] == true
     end
+
+    test "last_seen_at is populated when a cookie session exists for the subject", %{conn: conn} do
+      # Operator-facing diagnostic: alongside live BEAM state (mailbox,
+      # memory, pid_inspect) the admin needs to know "when did this
+      # subject's browser last touch the bouncer." The closest-existing
+      # signal is `accounts_sessions.last_seen_at` — bumped by both REST
+      # `Accounts.authenticate/1` plug AND WS `UserSocket.connect/3`,
+      # cadence-capped at 60s. Surfaces on the wire as a top-level
+      # `last_seen_at: ISO8601 | null` field per row.
+      #
+      # MAX across all the subject's cookie sessions: multi-device users
+      # collapse to "most recent device touch". Visitors typically have
+      # exactly one (the anon flow provisions a single cookie).
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
+
+      assert Process.alive?(pid)
+
+      # Provision a cookie session for THE visitor (the subject of the
+      # Session.Server row above). `create_session/4` writes
+      # `last_seen_at = now` per `Grappa.Accounts.Session` default.
+      {:ok, visitor_cookie} =
+        Accounts.create_session({:visitor, visitor.id}, nil, nil, [])
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/sessions")
+
+      body = json_response(conn, 200)
+
+      row = Enum.find(body["sessions"], &(&1["subject_id"] == visitor.id))
+      assert row != nil
+      assert is_binary(row["last_seen_at"])
+      # Parses as an ISO8601 timestamp within the last second (fresh).
+      assert {:ok, parsed, _} = DateTime.from_iso8601(row["last_seen_at"])
+      assert DateTime.diff(DateTime.utc_now(), parsed, :second) <= 2
+
+      # Sanity: the surfaced timestamp matches the cookie's last_seen_at
+      # within microsecond precision — proves we sourced from
+      # `accounts_sessions`, not from a wall-clock-now placeholder.
+      assert DateTime.compare(parsed, visitor_cookie.last_seen_at) == :eq
+    end
+
+    test "last_seen_at: null when the subject has no cookie session", %{conn: conn} do
+      # The supervisor-spawned Session.Server (e.g. Bootstrap-driven
+      # boot of a `:connected` user credential) does NOT presuppose any
+      # browser ever logged in — a logged-out user can still have an
+      # active bouncer pid joining channels. In that case the wire
+      # surface honestly reports `last_seen_at: null` instead of
+      # fabricating a "session start time" stand-in. The U-0 honesty
+      # rule applied to a new dimension.
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
+
+      assert Process.alive?(pid)
+      # Note: `start_visitor_session_for/2` does NOT create an
+      # `accounts_sessions` row — it goes through `SpawnOrchestrator`
+      # directly, mirroring the Bootstrap path. So the cookie table is
+      # empty for this visitor by construction.
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/sessions")
+
+      body = json_response(conn, 200)
+
+      row = Enum.find(body["sessions"], &(&1["subject_id"] == visitor.id))
+      assert row != nil
+      assert row["last_seen_at"] == nil
+    end
   end
 
   # ---------------------------------------------------------------------------
