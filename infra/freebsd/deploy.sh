@@ -68,10 +68,13 @@ run_as_grappa() {
 
 echo "[deploy] git pull --ff-only"
 # Capture the pre-pull SHA so preflight can diff against the new HEAD
-# regardless of how many commits ago the last deploy was.
-prev_sha=$(cd "${REPO_ROOT}" && git rev-parse HEAD)
+# regardless of how many commits ago the last deploy was. Read as the
+# grappa user — root can't `git rev-parse` in a grappa-owned dir
+# without `git config --global --add safe.directory ...`, which we'd
+# rather not require host-wide. `run_as_grappa` already cd's to REPO_ROOT.
+prev_sha=$(run_as_grappa 'git rev-parse HEAD' | tail -1)
 run_as_grappa 'git pull --ff-only && git log --oneline -3'
-new_sha=$(cd "${REPO_ROOT}" && git rev-parse HEAD)
+new_sha=$(run_as_grappa 'git rev-parse HEAD' | tail -1)
 
 if [ "${prev_sha}" = "${new_sha}" ]; then
 	echo "[deploy] no commits since last HEAD (${prev_sha}) — nothing to do"
