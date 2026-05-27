@@ -330,7 +330,7 @@ defmodule Grappa.AdminEventsTest do
         {{{:session, :_, :_}, :_, :_}, [], [{{:"$_"}}]}
       ])
 
-    for {{:session, subject, network_id}, _pid, _value} <- leftover do
+    for {{:session, subject, network_id}, _, _} <- leftover do
       _ = Grappa.Session.stop_session(subject, network_id)
     end
 
