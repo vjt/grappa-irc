@@ -151,6 +151,7 @@ config :logger, :console,
     :capacity_rejected,
     :network_failed,
     :plan_failed,
+    :subject_row_gone,
     # Per-IRC-event context: who/what an event refers to (KICK target,
     # NICK_CHANGE new-nick, MODE arg, etc. — mirrors the Meta.@known_keys
     # allowlist so the same shape that hits the DB also hits the log line.

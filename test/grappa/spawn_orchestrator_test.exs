@@ -200,6 +200,34 @@ defmodule Grappa.SpawnOrchestratorTest do
     end
   end
 
+  describe "spawn/4 operator-delete fail-fast" do
+    test "subject_row_present? returning false → {:ok, :ignored}, no session spawned" do
+      vjt = user_fixture(name: "ignored-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+      slug = "ignored-#{System.unique_integer([:positive])}"
+      {network, plan} = setup_credential(vjt, slug, port)
+      :ok = clear_registry_for(network.id)
+
+      subject = {:user, vjt.id}
+
+      # Override the production `subject_row_present?` closure with a
+      # constant-false stub so init/1 short-circuits even though the
+      # credential row IS present in the fixture DB. This isolates the
+      # init-gate behaviour from the DB row lifecycle.
+      gated_plan = Map.put(plan, :subject_row_present?, fn -> false end)
+
+      assert {:ok, :ignored} =
+               SpawnOrchestrator.spawn(
+                 subject,
+                 network.id,
+                 gated_plan,
+                 capacity_input(network.id, :bootstrap_user)
+               )
+
+      assert Session.whereis(subject, network.id) == nil
+    end
+  end
+
   describe "spawn/4 admission rejection" do
     test "user_cap_exceeded — returns {:error, :user_cap_exceeded}, no session spawned" do
       vjt_a = user_fixture(name: "capa-#{System.unique_integer([:positive])}")

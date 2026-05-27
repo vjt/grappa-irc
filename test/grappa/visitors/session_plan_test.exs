@@ -81,5 +81,22 @@ defmodule Grappa.Visitors.SessionPlanTest do
 
       assert :ok = opts.credential_failer.("k-lined")
     end
+
+    # Operator-delete fail-fast: the `subject_row_present?` closure
+    # lets `Session.Server.init/1` bail out cleanly when the visitor
+    # row has been removed mid-respawn, preventing the zombie
+    # respawn loop class.
+    test "plan injects subject_row_present? closure that follows the DB row" do
+      network_with_server(slug: "azzurra", port: 6667)
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt-gate", "azzurra", "1.2.3.4")
+
+      assert {:ok, opts} = SessionPlan.resolve(visitor)
+      assert is_function(opts.subject_row_present?, 0)
+
+      assert opts.subject_row_present?.() == true
+
+      :ok = Visitors.delete(visitor.id)
+      assert opts.subject_row_present?.() == false
+    end
   end
 end

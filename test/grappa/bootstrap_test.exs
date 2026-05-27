@@ -632,6 +632,11 @@ defmodule Grappa.BootstrapTest do
                Bootstrap.classify_outcome({:ok, :already_started, self()}, lk, acc)
     end
 
+    test "{:ok, :ignored} → +1 subject_row_gone", %{acc: acc, log_keys: lk} do
+      assert %Result{subject_row_gone: 1, spawned: 0, network_failed: 0} =
+               Bootstrap.classify_outcome({:ok, :ignored}, lk, acc)
+    end
+
     test "every Admission.capacity_error_atoms/0 atom routes to a known bucket",
          %{acc: acc, log_keys: lk} do
       # Source-of-truth iteration: the closed set lives in

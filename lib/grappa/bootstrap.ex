@@ -164,14 +164,16 @@ defmodule Grappa.Bootstrap do
               already_running: 0,
               capacity_rejected: 0,
               network_failed: 0,
-              plan_failed: 0
+              plan_failed: 0,
+              subject_row_gone: 0
 
     @type t :: %__MODULE__{
             spawned: non_neg_integer(),
             already_running: non_neg_integer(),
             capacity_rejected: non_neg_integer(),
             network_failed: non_neg_integer(),
-            plan_failed: non_neg_integer()
+            plan_failed: non_neg_integer(),
+            subject_row_gone: non_neg_integer()
           }
   end
 
@@ -265,7 +267,8 @@ defmodule Grappa.Bootstrap do
       already_running: a.already_running + b.already_running,
       capacity_rejected: a.capacity_rejected + b.capacity_rejected,
       network_failed: a.network_failed + b.network_failed,
-      plan_failed: a.plan_failed + b.plan_failed
+      plan_failed: a.plan_failed + b.plan_failed,
+      subject_row_gone: a.subject_row_gone + b.subject_row_gone
     }
   end
 
@@ -279,7 +282,8 @@ defmodule Grappa.Bootstrap do
       already_running: stats.already_running,
       capacity_rejected: stats.capacity_rejected,
       network_failed: stats.network_failed,
-      plan_failed: stats.plan_failed
+      plan_failed: stats.plan_failed,
+      subject_row_gone: stats.subject_row_gone
     )
 
     stats
@@ -322,7 +326,8 @@ defmodule Grappa.Bootstrap do
       already_running: stats.already_running,
       capacity_rejected: stats.capacity_rejected,
       network_failed: stats.network_failed,
-      plan_failed: stats.plan_failed
+      plan_failed: stats.plan_failed,
+      subject_row_gone: stats.subject_row_gone
     )
 
     stats
@@ -424,6 +429,18 @@ defmodule Grappa.Bootstrap do
     # "expected idempotent restart" from "capacity policy tripped."
     Logger.debug("session already started", log_keys)
     %{acc | already_running: acc.already_running + 1}
+  end
+
+  def classify_outcome({:ok, :ignored}, log_keys, acc) do
+    # Session.Server.init/1 returned `:ignore` because the
+    # subject's DB row is gone (operator-driven delete that fired
+    # while this Session.Server was mid-respawn loop). Honest log
+    # bucket — distinct from `:already_running` (expected
+    # idempotent restart) and `:capacity_rejected` (admission
+    # policy). DynamicSupervisor drops the child permanently;
+    # bouncer state stays consistent with the DB.
+    Logger.info("session skipped — subject row gone", log_keys)
+    %{acc | subject_row_gone: acc.subject_row_gone + 1}
   end
 
   def classify_outcome({:error, cap_err}, log_keys, acc)

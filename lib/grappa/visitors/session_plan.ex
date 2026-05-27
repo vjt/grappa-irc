@@ -124,6 +124,17 @@ defmodule Grappa.Visitors.SessionPlan do
       # mutation overwrites and the row is gone anyway.
       last_joined_persister: fn channels ->
         Visitors.update_last_joined_channels(visitor.id, channels)
+      end,
+      # Operator-delete fail-fast: when `Visitors.delete/1` (or the
+      # Reaper) removes the visitor row while this Session.Server is
+      # mid-respawn, the next restart cycle hits this gate and returns
+      # `:ignore` from init — DynamicSupervisor drops the child
+      # permanently instead of looping forever on the same upstream
+      # failure (typical: nick collision 433 against a logged-in user
+      # who took the same nick). Boundary-clean same as the callbacks
+      # above. Closes the operator-driven zombie session class.
+      subject_row_present?: fn ->
+        Visitors.get(visitor.id) != nil
       end
     }
   end

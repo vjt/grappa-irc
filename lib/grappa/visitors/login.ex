@@ -346,6 +346,14 @@ defmodule Grappa.Visitors.Login do
           {:error, {:already_started, pid}} ->
             {:ok, pid}
 
+          :ignore ->
+            # `Session.Server.init/1` short-circuited because the
+            # visitor row is gone (operator-driven `Visitors.delete/1`
+            # raced this login). Surface as upstream-unreachable; the
+            # caller is the synchronous login probe-connect path and
+            # has no use for further differentiation.
+            {:error, :upstream_unreachable}
+
           {:error, _} ->
             {:error, :upstream_unreachable}
         end

@@ -110,6 +110,19 @@ defmodule Grappa.Networks.SessionPlan do
       # boundary-clean (Networks deps Session, not the reverse).
       last_joined_persister: fn channels ->
         Credentials.update_last_joined_channels(user.id, cred.network_id, channels)
+      end,
+      # Operator-delete fail-fast: when `Credentials.unbind_credential/2`
+      # (or any other path that removes the credential row) fires while
+      # this Session.Server is mid-respawn, the next restart cycle hits
+      # this gate and returns `:ignore` from init — DynamicSupervisor
+      # drops the child permanently instead of looping. Boundary-clean
+      # same as the callbacks above. Closes the operator-driven zombie
+      # session class.
+      subject_row_present?: fn ->
+        case Credentials.get_credential_by_ids(user.id, cred.network_id) do
+          {:ok, _} -> true
+          {:error, :not_found} -> false
+        end
       end
     }
   end

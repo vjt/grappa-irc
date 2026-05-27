@@ -1338,5 +1338,27 @@ defmodule Grappa.NetworksTest do
       assert {:ok, plan} = SessionPlan.resolve(cred)
       assert plan.host == "h"
     end
+
+    test "plan injects subject_row_present? closure that follows the credential row" do
+      user = user_fixture()
+      net = network_fixture()
+      {:ok, _} = Servers.add_server(net, %{host: "h", port: 6667})
+
+      {:ok, _} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      cred = Credentials.get_credential!(user, net)
+      assert {:ok, plan} = SessionPlan.resolve(cred)
+      assert is_function(plan.subject_row_present?, 0)
+
+      assert plan.subject_row_present?.() == true
+
+      :ok = Credentials.unbind_credential(user, net)
+      assert plan.subject_row_present?.() == false
+    end
   end
 end

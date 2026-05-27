@@ -170,6 +170,11 @@ defmodule Grappa.SpawnOrchestrator do
       already registered (Bootstrap restart idempotency,
       NetworksController PATCH-while-already-up). The pid is the
       live process; caller should treat as no-op.
+    * `{:ok, :ignored}` — admission cleared, but `Session.Server.init/1`
+      returned `:ignore` because the operator-owned DB row for the
+      subject is gone (`Visitors.delete/1`, `Credentials.unbind_credential/2`).
+      No pid; the DynamicSupervisor dropped the child permanently.
+      Caller treats as no-op and may emit a Logger.info diagnostic.
     * `{:error, reason}` — either an `Admission.capacity_error()`
       (the cap or circuit tripped) OR a wrapped
       `{:start_failed, term()}` for any other
@@ -179,6 +184,7 @@ defmodule Grappa.SpawnOrchestrator do
   @type spawn_outcome ::
           {:ok, :spawned, pid()}
           | {:ok, :already_started, pid()}
+          | {:ok, :ignored}
           | {:error, Admission.capacity_error()}
           | {:error, {:start_failed, term()}}
 
@@ -202,6 +208,7 @@ defmodule Grappa.SpawnOrchestrator do
         case Session.start_session(subject, network_id, plan) do
           {:ok, pid} -> {:ok, :spawned, pid}
           {:error, {:already_started, pid}} -> {:ok, :already_started, pid}
+          :ignore -> {:ok, :ignored}
           {:error, reason} -> {:error, {:start_failed, reason}}
         end
 

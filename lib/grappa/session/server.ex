@@ -196,6 +196,38 @@ defmodule Grappa.Session.Server do
   @type last_joined_persister :: ([String.t()] -> :ok | {:error, term()})
 
   @typedoc """
+  Opaque function-reference indirection that lets `Session.Server`
+  ask the producing context (Networks / Visitors) "does the DB row
+  for this subject still exist?" without statically aliasing either
+  module. Boundary-clean for the same reason as `visitor_committer`
+  + `credential_failer`: both context boundaries already deps
+  `Grappa.Session` for `stop_session`, so the reverse direction
+  cannot be expressed without closing a cycle.
+
+  Returns `true` when the operator-owned DB row for the subject
+  (`Networks.Credential` for `{:user, _}`, `Visitor` for
+  `{:visitor, _}`) is still present. Returns `false` once the
+  operator deletes it (`Visitors.delete/1`, `Operator.delete_visitor!/1`,
+  `Credentials.unbind_credential/2`, or any DB-driven
+  reaping). `Session.Server.init/1` calls it at the top of init and
+  short-circuits with `{:stop, :no_subject_row}` when it returns
+  `false` — which makes the `:transient` policy STOP the restart
+  loop (`:transient` only restarts on abnormal exit; a `:normal`
+  return from init counts as normal termination, so the
+  DynamicSupervisor removes the child permanently).
+
+  Without this, an operator-driven delete races the supervisor's
+  restart of a transient worker that was already mid-respawn —
+  `Visitors.delete/1` removes the DB row, but the next respawn
+  cycle (scheduled by the supervisor when the previous instance
+  crashed on a 433/etc) still runs, immediately collides again,
+  and the loop continues until backoff caps out hours later. The
+  subject_row_present? gate fires at the top of init so the cycle
+  ends on the very first restart after the row is gone.
+  """
+  @type subject_row_present_check :: (-> boolean())
+
+  @typedoc """
   Per-channel window state (CP15 — event-driven windows). The Session
   Server is the single source of truth; cic projects from broadcast
   events on the per-channel topic.
@@ -264,7 +296,8 @@ defmodule Grappa.Session.Server do
           optional(:visitor_committer) => visitor_committer(),
           optional(:visitor_nick_persister) => visitor_nick_persister(),
           optional(:credential_failer) => credential_failer(),
-          optional(:last_joined_persister) => last_joined_persister()
+          optional(:last_joined_persister) => last_joined_persister(),
+          optional(:subject_row_present?) => subject_row_present_check()
         }
 
   @type t :: %{
@@ -445,6 +478,42 @@ defmodule Grappa.Session.Server do
   def init(opts) do
     :ok = Log.set_session_context(opts.subject_label, opts.network_slug)
 
+    # Operator-deleted subject row → terminate cleanly so the
+    # DynamicSupervisor stops the `:transient` respawn loop. Without
+    # this gate, an operator-driven `Visitors.delete/1` (or admin
+    # DELETE /admin/sessions/:id while a respawn is in flight) races
+    # the supervisor's restart of the previous crash cycle: the
+    # operator removes the DB row, the restart fires anyway with
+    # cached `init_opts`, the new instance hits the SAME upstream
+    # failure (typically 433 nickname-in-use), crashes, and triggers
+    # another restart — backoff caps out hours later while a zombie
+    # `Session.Server` sits in `state.subject` pointing at a
+    # non-existent visitor row.
+    #
+    # `:normal` exit from init counts as normal termination for the
+    # `:transient` policy → DynamicSupervisor removes the child
+    # permanently. The opts callback is optional (test fixtures +
+    # the original Bootstrap call site don't supply it); when
+    # absent the check is a no-op and the previous loop-tolerant
+    # behaviour stands. Production call sites
+    # (`Networks.SessionPlan.resolve/1` +
+    # `Visitors.SessionPlan.resolve/1`) supply the closure.
+    case Map.get(opts, :subject_row_present?) do
+      check when is_function(check, 0) ->
+        if check.() do
+          do_init(opts)
+        else
+          Logger.info("session init: subject DB row gone — stopping cleanly to break respawn loop")
+
+          :ignore
+        end
+
+      nil ->
+        do_init(opts)
+    end
+  end
+
+  defp do_init(opts) do
     # Trap exits so a `Client` crash arrives as `{:EXIT, client_pid,
     # reason}` in our mailbox instead of brutally killing this Session
     # via the link. Lets us record a Backoff failure BEFORE returning

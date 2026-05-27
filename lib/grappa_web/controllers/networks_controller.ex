@@ -238,8 +238,26 @@ defmodule GrappaWeb.NetworksController do
     }
 
     case Grappa.SpawnOrchestrator.spawn({:user, user_id}, network_id, plan, capacity_input) do
-      {:ok, _, pid} ->
+      {:ok, :spawned, pid} ->
         {:ok, pid}
+
+      {:ok, :already_started, pid} ->
+        {:ok, pid}
+
+      {:ok, :ignored} ->
+        # `Session.Server.init/1` short-circuited because the
+        # credential row was unbound between this controller's
+        # admission check and the spawn. The most likely cause is a
+        # racing `DELETE /admin/credentials/:user_id/:network_id`.
+        # Surface as :not_found so the operator sees the same
+        # `404` they'd see from `Credentials.get_credential/2`
+        # returning `:not_found` upstream.
+        Logger.warning("PATCH /connect: subject row gone mid-spawn",
+          user: user.id,
+          network_id: network_id
+        )
+
+        {:error, :not_found}
 
       {:error, reason} = err ->
         Logger.warning("PATCH /connect: session spawn rejected",
