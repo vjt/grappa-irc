@@ -4,27 +4,59 @@ defmodule GrappaWeb.AdminController do
 
   ## `POST /admin/reload`
 
-  Triggers `Phoenix.CodeReloader.reload/1` against the live endpoint.
-  The reloader walks `:code.modified_modules/0` (Erlang built-in:
-  modules whose source on disk is newer than the loaded BEAM), purges
-  + reloads via Mix's compile-elixir tracker. Live processes
-  (`Grappa.Session.Server`, `Grappa.IRC.Client`, etc.) keep their
-  GenServer state — Erlang's 2-version code-loading guarantee means
-  the next callback runs the new code without restart.
+  Walks `:code.modified_modules/0` (Erlang built-in: modules whose
+  .beam on disk has a different hash than the loaded BEAM) and
+  reloads each via `:code.purge/1` + `:code.load_file/1`. Returns
+  `200 OK` with JSON `%{"reloaded" => ["Elixir.Mod.Name", ...]}` —
+  the list is empty when nothing changed, useful as positive
+  evidence in deploy scripts.
 
-  Returns `200 ok` on success. Failures (compile error in the new
-  code, reloader misconfigured) bubble out of the controller; Phoenix's
-  fallback rendering takes care of the 500.
+  ### Why not `Phoenix.CodeReloader`
+
+  `Phoenix.CodeReloader.reload/1` returns `:ok` in prod but does
+  NOT recompile or reload anything: it requires Mix (which is
+  available in `mix phx.server` but NOT in `mix release` artifacts)
+  and the dev-only `code_reloader: true` config-flag plumbing. The
+  jail uses release boot (`bin/grappa daemon`) so Mix is absent;
+  Docker prod also runs `MIX_ENV=prod` where the reloader silently
+  no-ops. The previous shape "POST → :ok → trust it" hid the
+  failure (see `feedback_hot_deploy_silent_noop_prod`).
+
+  `:code.modified_modules/0` is a release-friendly OTP built-in
+  that compares BEAM hash on disk vs in memory — no Mix dependency,
+  no compile-time config requirement. Works identically in dev,
+  Docker prod, and FreeBSD jail.
+
+  ### Hot-deploy responsibilities split
+
+  This endpoint reloads modules WHOSE .BEAM ON DISK IS ALREADY
+  FRESH. Making the .beam fresh is the caller's responsibility:
+
+    * Docker (mix phx.server): `docker exec grappa mix compile`
+      writes new .beam to `_build/${MIX_ENV}/lib/grappa/ebin/`.
+    * FreeBSD jail (release): `mix release --overwrite` writes new
+      .beam to `_build/prod/rel/grappa/lib/grappa-X.Y/ebin/` (the
+      path that the daemon's `code:get_path/0` includes).
+
+  Either path → POST /admin/reload → live BEAM picks up the new
+  .beam. Sessions (Session.Server, IRC.Client, etc.) keep state
+  thanks to Erlang's 2-version code-loading guarantee.
 
   Hot-deploy workflow:
 
+      # Docker
+      docker exec grappa mix compile
       docker exec grappa curl -fsS -X POST http://localhost:4000/admin/reload
+
+      # Bastille jail
+      sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/deploy.sh
 
   Module-shape changes that can't be hot-swapped (mix.lock bump,
   supervision tree restructure, struct shape change in long-lived
-  GenServer state) require the cold path — `scripts/deploy.sh`. The
-  unified `scripts/deploy.sh` (B6+B7) auto-detects unsafe diffs via a
-  git-diff preflight and refuses to hot-deploy them.
+  GenServer state) require the cold path —
+  `scripts/deploy.sh` (Docker) or
+  `infra/freebsd/deploy.sh --force-cold` (jail). Both auto-detect
+  unsafe diffs via the shared `Grappa.Deploy.Preflight` classifier.
 
   ## `POST /admin/cic-bundle-changed`
 
@@ -51,10 +83,25 @@ defmodule GrappaWeb.AdminController do
   @doc "POST /admin/reload → reload all modified modules in the running BEAM."
   @spec reload(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def reload(conn, _) do
-    case Phoenix.CodeReloader.reload(GrappaWeb.Endpoint) do
-      :ok -> text(conn, "ok")
-      {:error, msg} -> conn |> put_status(:internal_server_error) |> text(msg)
-    end
+    reloaded =
+      Enum.map(:code.modified_modules(), fn mod ->
+        # `:code.load_file/1` purges the current version + loads
+        # fresh. Returns `{:module, mod}` on success or `{:error,
+        # reason}` on failure (no .beam on disk, atom name mismatch,
+        # etc). Errors here are operator-actionable — surface them.
+        case :code.load_file(mod) do
+          {:module, ^mod} -> {mod, :ok}
+          {:error, reason} -> {mod, {:error, reason}}
+        end
+      end)
+
+    json(conn, %{
+      reloaded: for({mod, :ok} <- reloaded, do: Atom.to_string(mod)),
+      failed:
+        for {mod, {:error, reason}} <- reloaded do
+          %{module: Atom.to_string(mod), reason: inspect(reason)}
+        end
+    })
   end
 
   @doc "POST /admin/cic-bundle-changed → re-read bundle hash + broadcast on every user-topic."

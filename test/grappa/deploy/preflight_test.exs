@@ -58,6 +58,26 @@ defmodule Grappa.Deploy.PreflightTest do
       assert {:cold, reasons} = Preflight.classify_paths([".dockerignore"])
       assert {:image_substrate, [".dockerignore"]} in reasons
     end
+
+    test "infra/freebsd/rc.d/grappa → cold (jail rc wrapper, read at service start)" do
+      file = "infra/freebsd/rc.d/grappa"
+      assert {:cold, reasons} = Preflight.classify_paths([file])
+      assert {:image_substrate, [^file]} = List.keyfind(reasons, :image_substrate, 0)
+    end
+
+    test "infra/freebsd/deploy.sh → cold (jail deploy script — running it from old version risks divergent behavior)" do
+      file = "infra/freebsd/deploy.sh"
+      assert {:cold, reasons} = Preflight.classify_paths([file])
+      assert {:image_substrate, [^file]} = List.keyfind(reasons, :image_substrate, 0)
+    end
+
+    test "infra/freebsd/jail_release.sh → HOT (operator verb, invoked on-demand, no service restart impact)" do
+      assert {:hot, []} = Preflight.classify_paths(["infra/freebsd/jail_release.sh"])
+    end
+
+    test "infra/freebsd/grappa.env.example → HOT (template only, /usr/local/etc/grappa/grappa.env is out-of-repo)" do
+      assert {:hot, []} = Preflight.classify_paths(["infra/freebsd/grappa.env.example"])
+    end
   end
 
   describe "classify_paths/1 — Class 5: migrations" do
@@ -88,6 +108,12 @@ defmodule Grappa.Deploy.PreflightTest do
 
     test "infra/snippets/admin/cors.conf → cold (H20 deeper-paths gap)" do
       file = "infra/snippets/admin/cors.conf"
+      assert {:cold, reasons} = Preflight.classify_paths([file])
+      assert {:nginx, [^file]} = List.keyfind(reasons, :nginx, 0)
+    end
+
+    test "infra/freebsd/nginx.conf → cold (jail nginx config, parallel to Docker's infra/nginx.conf)" do
+      file = "infra/freebsd/nginx.conf"
       assert {:cold, reasons} = Preflight.classify_paths([file])
       assert {:nginx, [^file]} = List.keyfind(reasons, :nginx, 0)
     end

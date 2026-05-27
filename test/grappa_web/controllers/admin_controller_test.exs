@@ -27,14 +27,22 @@ defmodule GrappaWeb.AdminControllerTest do
   alias Grappa.Cic.Bundle
 
   describe "POST /admin/reload — loopback gate" do
-    test "allows 127.0.0.1 with 200 ok body", %{conn: conn} do
+    test "allows 127.0.0.1 with 200 JSON response listing reloaded modules", %{conn: conn} do
+      # Post-CodeReloader-noop fix: response is JSON
+      # `%{"reloaded" => [module_string, ...]}`. Reloaded list is
+      # `:code.modified_modules/0` at request time → typically `[]` in
+      # the test sandbox (committed code matches loaded BEAM), but
+      # the shape is the contract.
       conn = post(conn, "/admin/reload")
-      assert response(conn, 200) == "ok"
+      body = json_response(conn, 200)
+      assert is_list(body["reloaded"])
+      assert Enum.all?(body["reloaded"], &is_binary/1)
     end
 
-    test "allows ::1 with 200 ok body", %{conn: conn} do
+    test "allows ::1 with 200 JSON response", %{conn: conn} do
       conn = post(%{conn | remote_ip: {0, 0, 0, 0, 0, 0, 0, 1}}, "/admin/reload")
-      assert response(conn, 200) == "ok"
+      body = json_response(conn, 200)
+      assert is_list(body["reloaded"])
     end
 
     test "denies non-loopback remote_ip with 403", %{conn: conn} do
@@ -73,7 +81,8 @@ defmodule GrappaWeb.AdminControllerTest do
         |> Plug.Conn.put_req_header("x-forwarded-for", "192.168.1.100")
         |> post("/admin/reload")
 
-      assert response(conn, 200) == "ok"
+      body = json_response(conn, 200)
+      assert is_list(body["reloaded"])
     end
 
     test "spoofed X-Forwarded-For: 127.0.0.1 from non-loopback peer is denied (403)",

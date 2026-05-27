@@ -235,7 +235,14 @@ defmodule Grappa.Deploy.Preflight do
 
   # Class 4: image substrate. Includes prior bash regex matches PLUS the
   # H20 gaps: compose.override.yaml, compose.oneshot.yaml, bin/grappa,
-  # .dockerignore.
+  # .dockerignore. Plus the FreeBSD bastille jail equivalents:
+  # `infra/freebsd/rc.d/grappa` (rc wrapper read at service start) and
+  # `infra/freebsd/deploy.sh` itself (running an old version of the
+  # deploy script after the new one landed risks divergent behavior on
+  # the next operator invocation). Operator-on-demand verbs
+  # (`infra/freebsd/jail_*.sh`) and template-only files
+  # (`grappa.env.example`) stay HOT — touching them doesn't impact the
+  # running daemon.
   defp image_substrate?("Dockerfile"), do: true
   defp image_substrate?(".dockerignore"), do: true
   defp image_substrate?("compose.yaml"), do: true
@@ -244,6 +251,8 @@ defmodule Grappa.Deploy.Preflight do
   defp image_substrate?("compose.oneshot.yaml"), do: true
   defp image_substrate?("bin/start.sh"), do: true
   defp image_substrate?("bin/grappa"), do: true
+  defp image_substrate?("infra/freebsd/rc.d/grappa"), do: true
+  defp image_substrate?("infra/freebsd/deploy.sh"), do: true
   defp image_substrate?(_), do: false
 
   # Class 5: migrations. The hot path skips `mix ecto.migrate`; new
@@ -252,8 +261,11 @@ defmodule Grappa.Deploy.Preflight do
 
   # Class 6: nginx config + ALL infra/snippets (H20 deeper-paths gap —
   # prior regex was `^infra/(nginx\.conf|snippets/)` which only matched
-  # files DIRECTLY under snippets/, not nested ones).
+  # files DIRECTLY under snippets/, not nested ones). Plus the bastille
+  # jail's parallel `infra/freebsd/nginx.conf` (the jail's internal
+  # nginx between the BEAM and the host nginx that fronts public TLS).
   defp nginx?("infra/nginx.conf"), do: true
+  defp nginx?("infra/freebsd/nginx.conf"), do: true
   defp nginx?(path), do: String.starts_with?(path, "infra/snippets/")
 
   # Class 7 (H20+H21): ALL config/*.exs. SECRET_SIGNING_SALT was

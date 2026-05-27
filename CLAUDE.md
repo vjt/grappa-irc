@@ -201,53 +201,86 @@ discipline, see **`docs/TESTING.md`**.
 
 ### Hot vs cold deploy — when each path triggers
 
-`scripts/deploy.sh` (post-CP23 S4) replaces the previous "always cold"
-path. After `git pull --ff-only` it diffs `HEAD@{1}..HEAD` and
-classifies the change:
+Both substrates share one preflight: `lib/grappa/deploy/preflight.ex`
+classifies a `(prev_sha, new_sha)` diff as HOT or COLD. The substrate
+scripts (`scripts/deploy.sh` for Docker, `infra/freebsd/deploy.sh`
+for the m42 bastille jail) shell out to `mix run --no-start -e
+'Grappa.Deploy.Preflight.cli([from, to])'`, dispatch on exit code.
 
-- **HOT** (default — `Phoenix.CodeReloader` swaps modules in the live
-  BEAM, sessions preserved, container ID unchanged): `lib/*.ex` edits,
-  `cicchetto/src/` edits (cic bundle deploy is its own path — see
-  `scripts/deploy-cic.sh`), most config tweaks.
-- **COLD** (image rebuild + `--force-recreate` — sessions die,
-  ~30s downtime) is forced when any of:
-  - `mix.lock` or `mix.exs` changed (deps + version + apps callback)
-  - `lib/grappa/application.ex` changed (supervision tree read at
-    boot only)
-  - state-shape change in a long-lived `GenServer` — `defstruct`,
-    `@type t :: %{...}`, or `init/1` map literal modified.
-    Authoritative module list is
-    `lib/grappa/hot_reload/long_lived_modules.ex` (`@modules` +
-    `@state_helpers`); `deploy.sh` parses that file at preflight
-    time so the doc + script + Dialyzer cannot drift.
-    The marker-line regex catches added/removed declaration lines;
-    field additions INSIDE an existing `@type t :: %{...}` block
-    are caught by the AST oracle at `scripts/_extract_state_block.awk`.
-  - `Dockerfile`, `compose.yaml`, `bin/start.sh` (image substrate)
-  - `priv/repo/migrations/*` — hot path skips `mix ecto.migrate`;
-    new tables/columns 500 on first query post-reload, BEAM
-    crash-loops if Bootstrap reads them.
-  - `infra/nginx.conf` or `infra/snippets/*` — hot path doesn't
-    reload nginx; CSP allowlist drift particularly bad: new
-    captcha provider won't take effect, cic widgets 404.
+**Module reload uses `:code.modified_modules/0` + `:code.load_file/1`
+directly — NOT `Phoenix.CodeReloader`.** The Phoenix reloader is a
+dev-only facility: it depends on Mix (absent in `mix release`
+artifacts → no-op on the FreeBSD jail) and is gated behind a config
+check that silently no-ops in `MIX_ENV=prod` even when Mix is
+present (was wrongly trusted on Docker prod — see the 2026-05-16
+M-4 incident). `POST /admin/reload` walks `:code.modified_modules/0`
+and `:code.load_file/1`s each — release-friendly, Mix-free, works
+identically in dev, Docker prod, and the jail release.
 
-Conservative bias: in doubt, COLD. `Phoenix.CodeReloader` does NOT
-refuse unsafe diffs at runtime — it accepts the reload, returns
-`ok`, and lets the crash arrive at the next message that exposes the
-shape change (could be hours later). The preflight in `deploy.sh` is
-the only line of defense.
+The .beam-on-disk must be fresh BEFORE the reload POST. That's the
+substrate's job:
+- **Docker**: `docker exec grappa mix compile` writes
+  `_build/${MIX_ENV}/lib/grappa/ebin/*.beam`.
+- **Jail**: `mix release --overwrite` (as `grappa` user) writes
+  `_build/prod/rel/grappa/lib/grappa-X.Y/ebin/*.beam` — the
+  daemon's `code:get_path/0` includes that release-internal path;
+  the parallel `_build/prod/lib/grappa/ebin/` is NOT on the daemon's
+  code path so `mix compile` alone is insufficient. The release
+  rebuild is the difference between "new .beam on disk somewhere"
+  and "new .beam on disk where the live BEAM looks."
 
-`scripts/deploy-cic.sh` is independent — runs the `cicchetto-build`
-oneshot then POSTs `/admin/cic-bundle-changed`. The server broadcasts
-the new bundle hash on every live user-topic; cic's
-`BundleRefreshBanner` surfaces a refresh CTA on mismatch with the
-hash baked into the page the browser loaded. Cic deploys never
-trigger a server restart; server deploys never trigger a cic refresh.
+**HOT** (default when preflight returns HOT — sessions preserved,
+daemon pid unchanged): `lib/*.ex` edits, `cicchetto/src/` edits
+(cic bundle deploy is its own path), most config tweaks.
+
+**COLD** (forced by `--force-cold` or any of these diff classes
+— Docker: image rebuild + `--force-recreate`, ~30s downtime;
+jail: `mix release --overwrite` + `service grappa restart`, ~10-30s
+downtime):
+
+- `mix.lock` / `mix.exs` (deps + version + apps callback)
+- `lib/grappa/application.ex` (supervision tree read at boot only)
+- state-shape change in a long-lived `GenServer` — `defstruct`,
+  `@type t :: %{...}`, or `init/1` map literal modified.
+  Authoritative module list: `lib/grappa/hot_reload/long_lived_modules.ex`
+  (`@modules` + `@state_helpers`). The preflight reads the SoT
+  directly via `LongLivedModules.all/0` + extracts the state block
+  via the Elixir tokenizer (no regex, no awk).
+- `Dockerfile`, `compose.yaml`, `bin/start.sh`, `bin/grappa` —
+  Docker image substrate
+- `infra/freebsd/rc.d/grappa`, `infra/freebsd/deploy.sh` — jail
+  substrate. Operator-on-demand verbs
+  (`infra/freebsd/jail_*.sh`) and `grappa.env.example` are HOT.
+- `priv/repo/migrations/*` — hot path skips `mix ecto.migrate`;
+  new tables/columns 500 on first query post-reload, Bootstrap
+  crash-loops if it reads them.
+- `infra/nginx.conf`, `infra/freebsd/nginx.conf`, or
+  `infra/snippets/*` — hot path doesn't reload nginx; CSP
+  allowlist drift particularly bad (new captcha provider won't
+  take effect, cic widgets 404).
+- `config/*.exs` (any) — SECRET_SIGNING_SALT motivation; runtime
+  config is hot-safe via `runtime.exs` but compile-time
+  `config.exs` requires a recompile boot.
+
+Conservative bias: in doubt, COLD. `:code.load_file/1` does NOT
+refuse unsafe diffs at runtime — it loads the new .beam, returns
+`{:module, _}`, and lets the crash arrive at the next message
+that exposes the shape change (could be hours later). The
+preflight is the only line of defense.
+
+`scripts/deploy-cic.sh` is independent (Docker) — runs the
+`cicchetto-build` oneshot then POSTs `/admin/cic-bundle-changed`.
+On the jail, the cic bundle is rebuilt on COLD only by
+`infra/freebsd/deploy.sh` (no separate cic-only flow yet; add one
+when the `cicchetto/src/` edits start happening between server
+deploys). The server broadcasts the new bundle hash on every live
+user-topic; cic's `BundleRefreshBanner` surfaces a refresh CTA on
+mismatch with the hash baked into the page the browser loaded.
+Server deploys never auto-trigger a cic refresh.
 
 When the auto-detect gets it wrong (rare), `--force-hot` and
-`--force-cold` override the preflight. Use the override sparingly
-and document why in the commit message — both lessons are easier
-than debugging a deferred shape-mismatch crash.
+`--force-cold` override the preflight on both substrates. Use
+sparingly and document why in the commit message.
 
 **The container IS the runtime.** No local Elixir installation, no host
 `mix deps.get`. All commands run inside the `grappa` container. NEVER run
