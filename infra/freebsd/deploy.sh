@@ -1,48 +1,60 @@
 #!/bin/sh
 # Grappa native FreeBSD deploy — git pull + mix release + rc.d restart.
 #
-# Run inside the jail as the grappa user:
-#   /home/grappa/grappa/infra/freebsd/deploy.sh
+# Run inside the jail as ROOT (the rc.d restart at the end needs it):
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/deploy.sh
 #
 # Counterpart of `scripts/deploy.sh` for the Docker-based deploy: same
 # end-to-end "pull → build → restart → healthcheck" arc, different
 # substrate. NO hot-reload — release rebuilds always swap the BEAM
 # wholesale. Sessions reset on every deploy.
 #
+# The script runs as root but delegates every build step to
+# `su -l grappa -c '...'` so the build artifacts (deps cache, _build,
+# node_modules, cicchetto/dist) stay owned by the grappa user. Only
+# the rc.d `service grappa restart` at the end runs as root directly.
+#
 # Exit codes: 0 ok, non-zero on any failure (set -e).
 
 set -eu
 
 REPO_ROOT="${REPO_ROOT:-/home/grappa/grappa}"
-RELEASE_PATH="${REPO_ROOT}/_build/prod/rel/grappa"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:4000/healthz}"
 HEALTHCHECK_RETRIES="${HEALTHCHECK_RETRIES:-30}"
 HEALTHCHECK_SLEEP="${HEALTHCHECK_SLEEP:-2}"
 
-# Mix's hard-link-based compile lock fails inside bastille jails
-# when /tmp is on a different ZFS dataset from the grappa user's
-# home (cross-uid hard link returns "not owner"). The lock is only
-# a safety net against concurrent mix invocations on the same tree
-# — the deploy runs serially, so disabling it is safe.
-export MIX_OS_CONCURRENCY_LOCK=0
-
-cd "${REPO_ROOT}"
+# All build steps run as the grappa user. `su -l grappa -c` strips
+# the environment (login shell), so MIX_OS_CONCURRENCY_LOCK and PATH
+# must be re-set inside each invocation. PATH includes the Erlang
+# bin dir explicitly so `mix` is found without depending on the
+# grappa user's .profile.
+run_as_grappa() {
+	cmd="$1"
+	su -l grappa -c "
+		set -eu
+		export PATH=/usr/local/lib/erlang28/bin:\$PATH
+		export MIX_OS_CONCURRENCY_LOCK=0
+		export MIX_ENV=prod
+		cd '${REPO_ROOT}'
+		${cmd}
+	"
+}
 
 echo "[deploy] git pull --ff-only"
-git pull --ff-only
+run_as_grappa 'git pull --ff-only && git log --oneline -3'
 
 echo "[deploy] mix deps.get --only prod"
-MIX_ENV=prod mix deps.get --only prod
+run_as_grappa 'mix deps.get --only prod'
 
 echo "[deploy] mix compile --warnings-as-errors"
-MIX_ENV=prod mix compile --warnings-as-errors
+run_as_grappa 'mix compile --warnings-as-errors'
 
 # Migrations BEFORE rc.d restart — same reasoning as the Docker
 # cold-path in scripts/deploy.sh: the release would 500 on first
 # query against an outdated schema. `Grappa.Release.migrate/0`
 # runs Ecto.Migrator without needing Mix on disk.
 echo "[deploy] mix release --overwrite"
-MIX_ENV=prod mix release --overwrite
+run_as_grappa 'mix release --overwrite'
 
 # cicchetto bundle — vite build via npm. Required after a fresh
 # `git clone` (cicchetto/dist/ is gitignored), and on every deploy
@@ -54,15 +66,15 @@ MIX_ENV=prod mix release --overwrite
 # braces: even when nothing in cicchetto/src/ changed, `npm run
 # build` is fast (~40ms incremental), so we don't try to skip.
 echo "[deploy] npm ci + vite build (cicchetto bundle)"
-(
-	cd "${REPO_ROOT}/cicchetto"
+run_as_grappa '
+	cd "'"${REPO_ROOT}"'/cicchetto"
 	if [ -f package-lock.json ]; then
 		npm ci 2>&1 | tail -10
 	else
 		npm install 2>&1 | tail -10
 	fi
 	npm run build 2>&1 | tail -10
-)
+'
 
 echo "[deploy] Grappa.Release.migrate()"
 # Delegate to jail_release.sh which has the canonical
@@ -71,20 +83,8 @@ echo "[deploy] Grappa.Release.migrate()"
 # point; deploy.sh does NOT re-implement env sourcing inline.
 "${REPO_ROOT}/infra/freebsd/jail_release.sh" eval 'Grappa.Release.migrate()'
 
-# rc.d restart needs root. The deploy runs as the grappa user; sudo or
-# doas is required for the service swap. If neither is available, this
-# script will fail loudly here — that's the right behavior.
-if command -v sudo >/dev/null 2>&1; then
-	SU="sudo"
-elif command -v doas >/dev/null 2>&1; then
-	SU="doas"
-else
-	echo "[deploy] ERROR: neither sudo nor doas available — cannot restart service"
-	exit 1
-fi
-
 echo "[deploy] service grappa restart"
-${SU} service grappa restart
+service grappa restart
 
 echo "[deploy] healthcheck loop (${HEALTHCHECK_URL})"
 i=0
