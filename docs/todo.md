@@ -47,9 +47,6 @@ to this section.
 - **compose.ts:601 ChannelPushError branching consumer** — wire to
   handle the typed class symmetrically with `ApiError`.
   Bucket-sized polish.
-- **`_build/prod` cleanup procedure** still undocumented in operator
-  runbook (REV-C/D carry-forward; HOT path means it stopped recurring,
-  not that it's solved). Future infra-polish target.
 - **27-item LOW set** — opportunistic. Notable themes per
   2026-05-22 review § "LOW findings": dead-code clauses in
   `Identifier.services_sender?`, empty-reason `send_away/2` accepting
@@ -60,7 +57,9 @@ to this section.
 - **`feedback_deploy_preflight_empty_diff_after_merge` recurrence
   (REV-I)** — script-level fix candidate: detect same-SHA + recent
   merge-commit + demand explicit flag. Wider than any single REV
-  bucket; future-bucket target.
+  bucket; future-bucket target. (Note: `infra/freebsd/deploy.sh`
+  added the `prev_sha == new_sha → nothing to do` guard in cp51 S3;
+  port the same guard back to `scripts/deploy.sh`.)
 - **`apply/3` test pattern for Elixir 1.19 set-theoretic type checker
   (REV-H)** — earns a feedback memory if it bites a 3rd time.
 - **SolidJS function-ref gotcha (REV-G)** — `feedback_solidjs_for_ref_leak`
@@ -158,7 +157,7 @@ Phase 5 cluster opens):
 - **Visitor nick collision pre-check** — a visitor login with a nick
   already held by a logged-in user on the same network creates a
   Session.Server that fails forever on upstream 433. The
-  `subject_row_present?` init gate (S2 cp51) recovers cleanly once
+  `refresh_plan` init gate (cp51 S2 + S3) recovers cleanly once
   the operator deletes the row, but the user-facing UX is "session
   fails silently, contact operator." A `POST /auth/login` pre-check
   that queries the live Registry for collision-and-rejects would

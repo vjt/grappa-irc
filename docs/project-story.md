@@ -3039,3 +3039,183 @@ feature. If `grep -r "INSERT INTO <table>"` returns nothing
 across `lib/`, the producer was never written, and the consumer
 is silently degraded. Audit at schema-creation time, not at
 feature-rollout time.*
+
+## Episode — kazamobile, the zombie that named itself, and a hot-deploy path that finally worked (2026-05-27)
+
+The bug arrived as a one-liner from the operator: "one visitor
+disconnected and never reconnected, the nick is kazamobile and
+the visitor row is still in db but the client is not connected."
+
+The remsh tells the truth. Visitor row in the DB: nick
+`kazamobile`. Session.Server live state on the registered pid:
+nick `kazam02`. That's not a "user gone, bouncer still running"
+divergence — that's a *visitor inhabiting two parallel
+realities*. The DB knows what the user typed; the live BEAM
+remembers what the bouncer connected as.
+
+Log timeline made it obvious. 18:27 visitor spawn, boot nick
+`kazam02`. 18:28 user issues `/NICK kazamobile`, upstream echoes
+back, `visitors.nick` rotates. 18:37 manual joins to `#sniffo`
+and `#sbiffo`, `last_joined_channels` rotates. 18:49 upstream
+TCP drops with `:ssl_closed`. Restart cycle kicks in. 18:49:31
+`Phase 1 TLS posture` log line from the new IRC.Client. Then —
+nothing. No `JOINED` for any channel. No autojoin loop. The
+respawned session just sat there registered upstream as
+`kazam02`, joined nothing.
+
+The thing that made this hit hard was the moduledoc paragraph in
+`Session.Server` since Phase 1:
+
+> Trade-off: a `:transient` restart replays the SAME cached opts
+> the supervisor child spec captured at first start — credential
+> changes in the DB don't propagate until the operator forces a
+> re-spawn through the LIVE BEAM.
+
+Documented as a known limitation. Not "we should fix this
+someday" but "this is how it works, here's the workaround." For
+months that paragraph sat there as load-bearing documentation
+of a class of bug that the day someone hit it would feel like a
+fresh discovery. Yesterday's `subject_row_present?` fix already
+had the right shape — an optional closure consulted by `init/1`,
+injected by the SessionPlan modules, returning a boolean. The
+zombie kazamobile was the same architectural seam asking for one
+more level of detail: don't tell me "does the row still exist?",
+tell me *what the row contains right now*.
+
+The fix turned out smaller than the diagnosis. `(-> boolean())`
+became `(-> {:ok, plan} | {:error, :not_found})`. `init/1`
+calls it on every init (boot and restart both), merges the fresh
+plan over the cached opts so DB wins on the keys that come from
+the DB (`:nick`, `:autojoin_channels`, `:password`) and opts
+wins on the keys that don't (`:network_id`, `:notify_pid`, test
+fixtures). The `:not_found` branch keeps the prior operator-delete
+fail-fast — same `:ignore` exit, same supervisor drops the child
+permanently. One closure, two failure modes, single mechanism.
+
+vjt asked a question that almost derailed the whole approach
+mid-design. I had been working up to a full refactor — pass
+closures, replumb Bootstrap, restructure the spawn chain. The
+question: "this looks very complicated. can we just save the
+state along the way and restore it on reconnection?" The state
+was already saved (the DB had the right values the whole time).
+The bug wasn't about persistence; it was about who reads the
+persisted state on the restart path. Six lines per SessionPlan,
+five-line case in init/1, swap the type of an existing closure
+slot. The simplest version of the fix had been hiding inside the
+elaborate version the whole time.
+
+Once that landed and deployed, vjt's follow-up: "abbiamo un
+timestamp del 'last activity'? possiamo mostrarlo in admin
+console?" The diagnosis we'd just done required remsh +
+`:sys.get_state` to confirm "user gone, bouncer still
+connected." That should be a glance at the admin table.
+`accounts_sessions.last_seen_at` already existed — bumped at
+most every 60s by both REST and WS authn paths. Two batched
+queries from the controller (one per subject_kind, parallel to
+the existing labels lookup), top-level field on the wire,
+relative-time render in cic, drop the redundant `channels`
+column (LiveBadge already shows joined count). Half an hour of
+work because the data was already there. Sometimes the right
+feature is just deciding to show what you already have.
+
+Then: hot deploy on the bastille jail. The script said "NO
+hot-reload — release rebuilds always swap the BEAM wholesale"
+since cp50, because nobody had needed it yet. vjt's question:
+"can we ensure that hot deploy works on freebsd? last deploy was
+cold and could have been hot." Time to find out what was in the
+way.
+
+The diagnosis went through three layers before landing. Layer
+one: `Phoenix.CodeReloader.reload/1` returns `:ok` on the jail
+release. I had assumed it worked. Live test: bump a function,
+call reload, query the new function via rpc → `UndefinedFunctionError:
+module Grappa.Accounts is not available`. Module loaded; function
+not. Reload was a silent no-op.
+
+Memory caught it. `feedback_hot_deploy_silent_noop_prod`, dated
+2026-05-16: "`Phoenix.CodeReloader` is a dev-time facility. In
+prod it is a no-op." Already burned by this exact bug nine days
+ago. The memory documented the symptom (M-4 visitor controller
+returning `UndefinedFunctionError` after a hot deploy claimed
+success) and four candidate long-term fixes, none of which had
+been done.
+
+vjt's response when I explained why we couldn't keep the Phoenix
+reloader: "ok no va bene se e dev only vaffanculo." The Erlang
+:code primitives replaced it in ten lines. `:code.modified_modules/0`
+walks the loaded BEAMs and compares against on-disk hashes —
+release-friendly, no Mix dependency, works identically in dev,
+Docker, and the jail. `:code.load_file/1` per modified module
+does the swap.
+
+Layer two: even after the reload was correct, the .beam on disk
+had to be in the right place. The jail daemon's `code:get_path/0`
+includes `_build/prod/rel/grappa/lib/grappa-X.Y/ebin/`, not the
+parallel `_build/prod/lib/grappa/ebin/` where `mix compile`
+writes. `mix release --overwrite` is the step that gets new .beam
+to the daemon-visible path. Verified live: pre-release-rebuild
+`:code.modified_modules() == []`; post-rebuild, exactly the
+three modules from the pending commit.
+
+Layer three: the loopback gate. `POST /admin/reload` is
+loopback-only. Bastille thin jails ship with `lo0` UP but no IP
+assigned. The BEAM binds to `0.0.0.0`, which on the jail resolves
+to "all assigned addresses" — only the jail's IPv4
+(`10.66.6.7`). curl from inside the jail to `127.0.0.1` either
+failed or arrived with `remote_ip=10.66.6.7`, which the gate
+rightly 403'd. Original instinct was to extend the gate to
+accept the jail IP; vjt's: "piu facile, aggiungi 127.0.0.1 alla
+lo0." `bastille network -a grappa add lo0 127.0.0.1` —
+auto-restarts the jail with the alias persisted in jail.conf.
+`sockstat` now shows `tcp4 *:4000` instead of `10.66.6.7:4000`.
+Curl from loopback works. Gate gets `remote_ip=127.0.0.1`. 200.
+
+Smoke test for hot deploy needed something that would actually
+demonstrate code propagation. vjt: "test hot deploy incrementing
+the grappa version in response to ctcp version." Bumping
+`@version` in `mix.exs` triggers COLD (mix.exs is in the
+preflight cold-class). `--force-hot` overrides it. The
+`Grappa.Version.current/0` module reads `mix.exs` live from disk
+on every call — its whole design is "bypass `Application.spec/2`
+staleness across hot reloads." So the version bump would surface
+via the live reader without the .app resource needing to
+regenerate.
+
+Two hot deploys in a row, because the first one tripped on
+"dubious ownership in repository at /home/grappa/grappa" — the
+`git rev-parse` for the pre-pull SHA was running as root in a
+grappa-owned tree. Five-line fix to route the SHA reads through
+the existing `run_as_grappa` helper. The second hot deploy:
+`mix release --overwrite` ✓, `POST /admin/reload` returned
+`{"failed":[],"reloaded":[]}` (no .beam changed because only
+mix.exs moved), `healthcheck after 0 retries`. Sessions
+preserved — the same pids `<0.2336.0>`, `<0.2338.0>` etc as
+before the deploy. `Grappa.Version.current/0` returns `"0.3.2"`,
+read live from the new mix.exs. Daemon never restarted.
+
+The session ended with prod live on 0.3.2, no users disconnected
+across two deploys (one cold, one hot), and the hot path that
+had been "not yet" for weeks finally working end-to-end. The
+fix-stack underneath was four distinct issues: stale child-spec
+opts, dev-only CodeReloader masquerading as a prod tool, jail
+networking that omits loopback by default, git ownership checks
+against a delegated build user. Each of them had a workaround
+that had been "good enough" until the day it wasn't. The day it
+wasn't came as a one-liner from the operator about a visitor
+that didn't reconnect.
+
+**Law:** *A "known limitation" documented in code is a bug
+report scheduled for the day someone notices the symptom. If the
+fix is genuinely deferred, the docstring should explain the
+trigger conditions a future-reader can recognize, not just the
+mechanism. "Cached opts don't propagate" is too abstract;
+"`/NICK` rotation + upstream drop = zombie at the boot-time
+nick" is the failure-mode shape that lets the next person spot
+it from a log line.*
+
+**Law (corollary):** *Hot deploy that returns `:ok` and does
+nothing is worse than no hot deploy at all. The HTTP status code
+is not the contract; observable code propagation is. A reload
+endpoint should return positive evidence — module names that
+loaded, or a clear empty signal for "nothing to do." `{"reloaded":
+[]}` is a useful answer; `ok` is a lie waiting to happen.*
