@@ -334,18 +334,21 @@ defmodule Grappa.AdminEventsTest do
       _ = Grappa.Session.stop_session(subject, network_id)
     end
 
-    # Give the supervisor a tick to drain.
-    Process.sleep(50)
+    # CI-2026-05-27 flake: `Session.stop_session/2` can leave the
+    # Registry entry behind for a tick after the pid is dead —
+    # Registry's own monitor-DOWN cleanup runs in its own process and
+    # is asynchronous. A single 50ms sleep wasn't enough on the GHA
+    # runner under coveralls load (10 AdminEventsTest setups all
+    # flunked back-to-back, same root cause as the rotating-cascade
+    # memory). Poll up to 200×10ms (2s) for the entries to drain
+    # before flunking — same budget shape as the upstream
+    # passive-wait window.
+    case drain_after_force_stop(200) do
+      :ok ->
+        :ok
 
-    remaining =
-      Registry.select(Grappa.SessionRegistry, [
-        {{{:session, :_, :_}, :_, :_}, [], [{{:"$_"}}]}
-      ])
-
-    if remaining == [] do
-      :ok
-    else
-      flunk("SessionRegistry never drained — stale entries: #{inspect(remaining)}")
+      {:still_present, remaining} ->
+        flunk("SessionRegistry never drained — stale entries: #{inspect(remaining)}")
     end
   end
 
@@ -359,6 +362,28 @@ defmodule Grappa.AdminEventsTest do
       _ ->
         Process.sleep(10)
         wait_for_empty_session_registry!(remaining - 1)
+    end
+  end
+
+  defp drain_after_force_stop(0) do
+    remaining =
+      Registry.select(Grappa.SessionRegistry, [
+        {{{:session, :_, :_}, :_, :_}, [], [{{:"$_"}}]}
+      ])
+
+    if remaining == [], do: :ok, else: {:still_present, remaining}
+  end
+
+  defp drain_after_force_stop(attempts) do
+    case Registry.count_select(Grappa.SessionRegistry, [
+           {{{:session, :_, :_}, :_, :_}, [], [true]}
+         ]) do
+      0 ->
+        :ok
+
+      _ ->
+        Process.sleep(10)
+        drain_after_force_stop(attempts - 1)
     end
   end
 end
