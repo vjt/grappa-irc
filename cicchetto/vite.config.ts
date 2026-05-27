@@ -58,6 +58,20 @@ export default defineConfig({
       injectRegister: false,
       includeAssets: ["icon.svg", "icon-192.png", "icon-512.png"],
       manifest: {
+        // Stable PWA identity per W3C Manifest spec — resolved as a
+        // URL relative to the manifest origin (so this becomes
+        // `https://$host/cic`). NEVER fetched; used as the primary
+        // key by browsers + Android's WebAPK minter to answer "is
+        // this the same app?". NEVER change after a single user has
+        // installed — mutating it orphans existing installs and
+        // creates a parallel WebAPK on Android. Explicit (not
+        // Chrome-derived from start_url) so the manifest hash stays
+        // stable across start_url tweaks, and so the WebAPK minter's
+        // hash-keyed cache mints a fresh APK with current
+        // targetSdkVersion (otherwise stale cached APKs trip
+        // Play Protect's "developed for an earlier version of
+        // Android" block on new installs).
+        id: "/cic",
         name: "Cicchetto",
         short_name: "Cicchetto",
         description: "Grappa IRC bouncer — browser PWA client.",
