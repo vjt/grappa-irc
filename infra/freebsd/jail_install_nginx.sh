@@ -10,7 +10,11 @@ set -eu
 
 REPO_ROOT="/home/grappa/grappa"
 NGINX_ETC="/usr/local/etc/nginx"
-CIC_DIST="${REPO_ROOT}/cicchetto/dist"
+# Shared with the Docker substrate (`compose.yaml` bind-mounts
+# `./runtime/cicchetto-dist`) so `Grappa.Cic.Bundle.@bundle_path`
+# reads the same anchor everywhere. jail_cic_build.sh writes here via
+# `npm run build -- --outDir ../runtime/cicchetto-dist`.
+CIC_DIST="${REPO_ROOT}/runtime/cicchetto-dist"
 # Jail-writable path — bastille thin-jail mounts /usr/share read-only,
 # so the Docker side's /usr/share/nginx/html convention is off-limits.
 # nginx.conf's `root` directive points here.

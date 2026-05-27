@@ -156,24 +156,19 @@ fi
 # ---- Cold path ----
 
 # cic bundle — vite build via npm. Required after a fresh `git clone`
-# (cicchetto/dist/ is gitignored), and on every deploy that touched
-# cicchetto/src/. The nginx symlink /usr/local/www/cic →
-# cicchetto/dist/ is set up once by jail_install_nginx.sh; an empty
-# dist/ here makes nginx loop on `try_files $uri /index.html` (the
-# "rewrite or internal redirection cycle" 500). Belt-and-braces: even
-# when nothing in cicchetto/src/ changed, `npm run build` is fast
-# (~40ms incremental). HOT path skips this — module reload doesn't
-# need new cic; cic deploys are orthogonal (see deploy-cic.sh).
-echo "[deploy] npm ci + vite build (cicchetto bundle)"
-run_as_grappa '
-	cd "'"${REPO_ROOT}"'/cicchetto"
-	if [ -f package-lock.json ]; then
-		npm ci 2>&1 | tail -10
-	else
-		npm install 2>&1 | tail -10
-	fi
-	npm run build 2>&1 | tail -10
-'
+# (runtime/cicchetto-dist/ is gitkeep-only) and on every deploy that
+# touched cicchetto/src/. The nginx symlink /usr/local/www/cic →
+# runtime/cicchetto-dist/ is set up once by jail_install_nginx.sh;
+# an empty dist here makes nginx loop on `try_files $uri /index.html`
+# (the "rewrite or internal redirection cycle" 500). Belt-and-braces:
+# even when nothing in cicchetto/src/ changed, `npm run build` is fast
+# (~40ms incremental). HOT path skips this — module reload doesn't need
+# new cic; cic deploys are orthogonal (see jail_deploy_cic.sh).
+#
+# Shared with jail_cic_build.sh — one code path for the vite build +
+# outDir, so an outDir tweak doesn't have to be applied in two places.
+echo "[deploy] vite build (cicchetto bundle)"
+"${REPO_ROOT}/infra/freebsd/jail_cic_build.sh"
 
 echo "[deploy] Grappa.Release.migrate()"
 # Delegate to jail_release.sh which has the canonical

@@ -9,7 +9,7 @@
 # What it does (mirrors scripts/deploy-cic.sh for Docker):
 #   1. git pull --ff-only (so the working tree matches what we're about
 #      to build — operator can skip the separate jail_git_pull.sh step)
-#   2. npm ci + vite build into cicchetto/dist/ (jail_cic_build.sh)
+#   2. npm ci + vite build into runtime/cicchetto-dist/ (jail_cic_build.sh)
 #   3. POST /admin/cic-bundle-changed so the live BEAM re-reads the
 #      new index.html and broadcasts the bundle hash on every
 #      user-topic. cic clients compare against the hash baked into
