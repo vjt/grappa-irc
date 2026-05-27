@@ -309,15 +309,44 @@ defmodule Grappa.AdminEventsTest do
   # (genuine Registry monitor-DOWN async cleanup latency under ETS
   # contention), more concurrent test pids feeding it. 5s still
   # surfaces a true hang clearly.
+  #
+  # 2026-05-27: stale-session escalation. Visitor sessions whose
+  # IRCServer port closed mid-test enter a `:transient` respawn loop
+  # (DynamicSupervisor restarts on `:connect_failed`, backoff delays
+  # the next attempt). The Registry entry survives across the
+  # entire backoff window. Pure-passive wait can't drain those —
+  # force-stop them so the next test's setup gets a clean registry.
   defp wait_for_empty_session_registry!, do: wait_for_empty_session_registry!(500)
 
   defp wait_for_empty_session_registry!(0) do
+    # Last-chance: aggressively stop every leaked `:session` entry so
+    # a true hang (vs. async-cleanup-latency) doesn't crash this test
+    # AND every subsequent one. `Session.stop_session/2` is sync +
+    # supervisor-mediated; on `:transient` workers it terminates the
+    # pid AND removes it from the dynamic supervisor's children list,
+    # so a respawn loop stops here.
     leftover =
       Registry.select(Grappa.SessionRegistry, [
         {{{:session, :_, :_}, :_, :_}, [], [{{:"$_"}}]}
       ])
 
-    flunk("SessionRegistry never drained — stale entries: #{inspect(leftover)}")
+    for {{:session, subject, network_id}, _pid, _value} <- leftover do
+      _ = Grappa.Session.stop_session(subject, network_id)
+    end
+
+    # Give the supervisor a tick to drain.
+    Process.sleep(50)
+
+    remaining =
+      Registry.select(Grappa.SessionRegistry, [
+        {{{:session, :_, :_}, :_, :_}, [], [{{:"$_"}}]}
+      ])
+
+    if remaining == [] do
+      :ok
+    else
+      flunk("SessionRegistry never drained — stale entries: #{inspect(remaining)}")
+    end
   end
 
   defp wait_for_empty_session_registry!(remaining) do
