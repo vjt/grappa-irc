@@ -84,7 +84,13 @@ echo "[deploy] Grappa.Release.migrate()"
 "${REPO_ROOT}/infra/freebsd/jail_release.sh" eval 'Grappa.Release.migrate()'
 
 echo "[deploy] service grappa restart"
-service grappa restart
+# epmd is started by the old BEAM but NOT killed on rc.d stop —
+# next start sees `name grappa@grappa already in use` and refuses.
+# Hard-kill epmd between stop and start to force a clean re-register.
+service grappa stop || true
+pkill epmd 2>/dev/null || true
+sleep 1
+service grappa start
 
 echo "[deploy] healthcheck loop (${HEALTHCHECK_URL})"
 i=0
