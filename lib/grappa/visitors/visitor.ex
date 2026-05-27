@@ -16,8 +16,7 @@ defmodule Grappa.Visitors.Visitor do
     forever, removed only via operator `Visitors.delete/1`.
   - Reaped by `Grappa.Visitors.Reaper` when
     `expires_at IS NOT NULL AND expires_at <= now()`. CASCADE wipes
-    related rows in `visitor_channels`, `messages`,
-    `accounts_sessions`.
+    related rows in `messages`, `accounts_sessions`.
 
   ## Per-row network pinning
   `network_slug` is fixed at row creation. A config rotation
@@ -31,7 +30,21 @@ defmodule Grappa.Visitors.Visitor do
 
   alias Grappa.EncryptedBinary
   alias Grappa.IRC.Identifier
-  alias Grappa.Visitors.VisitorChannel
+
+  # Hard ceiling on the per-visitor `last_joined_channels` snapshot.
+  # Mirror of `Grappa.Networks.Credential.@last_joined_channels_max`.
+  # Bounds the JSON column write + boot-time merge cost so a
+  # pathological session can't grow the snapshot without limit.
+  @last_joined_channels_max 200
+
+  @doc """
+  Returns the schema-level cap on `last_joined_channels` length. Public
+  so the context helper (`Visitors.update_last_joined_channels/2`) can
+  pre-truncate the input list using the same constant the changeset
+  validator enforces.
+  """
+  @spec last_joined_channels_max() :: unquote(@last_joined_channels_max)
+  def last_joined_channels_max, do: @last_joined_channels_max
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
@@ -40,7 +53,7 @@ defmodule Grappa.Visitors.Visitor do
           password_encrypted: binary() | nil,
           expires_at: DateTime.t() | nil,
           ip: String.t() | nil,
-          channels: [VisitorChannel.t()] | Ecto.Association.NotLoaded.t(),
+          last_joined_channels: [String.t()],
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -53,8 +66,7 @@ defmodule Grappa.Visitors.Visitor do
     field :password_encrypted, EncryptedBinary, redact: true
     field :expires_at, :utc_datetime_usec
     field :ip, :string
-
-    has_many :channels, VisitorChannel, foreign_key: :visitor_id
+    field :last_joined_channels, {:array, :string}, default: []
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -197,6 +209,44 @@ defmodule Grappa.Visitors.Visitor do
   def ip_changeset(%__MODULE__{} = visitor, new_ip)
       when is_binary(new_ip) or is_nil(new_ip) do
     change(visitor, %{ip: new_ip})
+  end
+
+  @doc """
+  Overwrites the `last_joined_channels` snapshot. Mirror of the
+  user-side `Grappa.Networks.Credential.changeset/2` path for the
+  same field — `Session.Server` writes via this changeset on every
+  self-JOIN / self-PART / self-KICK so a graceful or crash restart
+  can rehydrate the channel list at boot.
+
+  Canonicalises each entry (`Identifier.canonical_channel/1`) so the
+  on-disk shape matches what `Session.Server.init/1` re-canonicalises
+  at the autojoin entry-point. Caps to `last_joined_channels_max/0`
+  entries at the changeset boundary so any bypass of the context
+  helper (`Visitors.update_last_joined_channels/2`) still observes
+  the ceiling.
+  """
+  @spec last_joined_channels_changeset(t(), [String.t()]) :: Ecto.Changeset.t()
+  def last_joined_channels_changeset(%__MODULE__{} = visitor, channels)
+      when is_list(channels) do
+    canonical = Enum.map(channels, &canonicalize_entry/1)
+
+    visitor
+    |> cast(%{last_joined_channels: canonical}, [:last_joined_channels])
+    |> validate_change(:last_joined_channels, &validate_channel_list/2)
+    |> validate_length(:last_joined_channels, max: @last_joined_channels_max)
+  end
+
+  defp canonicalize_entry(name) when is_binary(name), do: Identifier.canonical_channel(name)
+  defp canonicalize_entry(other), do: other
+
+  defp validate_channel_list(field, list) when is_list(list) do
+    Enum.flat_map(list, fn name ->
+      cond do
+        not is_binary(name) -> [{field, "must contain only strings"}]
+        not Identifier.valid_channel?(name) -> [{field, "invalid channel name: #{inspect(name)}"}]
+        true -> []
+      end
+    end)
   end
 
   defp validate_nick(field, value) when is_binary(value) do

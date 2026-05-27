@@ -21,8 +21,9 @@ defmodule Grappa.AuthFixtures do
 
   alias Grappa.{Accounts, Accounts.Session, Accounts.User, Networks, Repo}
   alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers, SessionPlan}
+  alias Grappa.Visitors
   alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
-  alias Grappa.Visitors.{Visitor, VisitorChannel}
+  alias Grappa.Visitors.Visitor
 
   @doc """
   Inserts a `%User{}` directly with `password_hash: "x"` — does NOT
@@ -245,18 +246,20 @@ defmodule Grappa.AuthFixtures do
   end
 
   @doc """
-  Inserts a `%VisitorChannel{}` row pinning `(visitor, network_slug, name)`.
-  Mirrors `Networks.Channel`-shape fixture for user subjects. Used by
+  Appends `name` to the visitor's `last_joined_channels` snapshot
+  and returns the updated `%Visitor{}`. Mirrors the user-side
+  `Networks.Credential.last_joined_channels` write path. Used by
   ChannelsController visitor-branch tests + visitor SessionPlan tests.
-  """
-  @spec visitor_channel_fixture(Visitor.t(), String.t()) :: VisitorChannel.t()
-  def visitor_channel_fixture(%Visitor{} = visitor, name) when is_binary(name) do
-    {:ok, channel} =
-      %{visitor_id: visitor.id, network_slug: visitor.network_slug, name: name}
-      |> VisitorChannel.changeset()
-      |> Repo.insert()
 
-    channel
+  Prepends (rather than appends) because the snapshot is a set —
+  `Session.Server` iterates `Map.keys(state.members)`, and the
+  REST surface sorts alphabetically before rendering.
+  """
+  @spec visitor_channel_fixture(Visitor.t(), String.t()) :: Visitor.t()
+  def visitor_channel_fixture(%Visitor{} = visitor, name) when is_binary(name) do
+    fresh = Repo.get!(Visitor, visitor.id)
+    :ok = Visitors.update_last_joined_channels(visitor.id, [name | fresh.last_joined_channels])
+    Repo.get!(Visitor, visitor.id)
   end
 
   @doc """

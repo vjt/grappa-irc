@@ -17,9 +17,9 @@ defmodule Mix.Tasks.Grappa.ReapVisitors do
   instructions that point here. This task drains the orphaned rows so
   the next boot succeeds.
 
-  CASCADE: the visitor row's deletion wipes `visitor_channels`,
-  `messages`, and `accounts_sessions` in the same transaction (FK
-  ON DELETE CASCADE on all three).
+  CASCADE: the visitor row's deletion wipes
+  `messages` and `accounts_sessions` in the same transaction (FK
+  ON DELETE CASCADE on both).
 
   ## Bootstrap suppression
 

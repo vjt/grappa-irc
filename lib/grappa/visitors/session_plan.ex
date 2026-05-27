@@ -112,6 +112,18 @@ defmodule Grappa.Visitors.SessionPlan do
           # on `:not_found`); log the race here so it is not lost.
           {:error, :not_found} -> :ok
         end
+      end,
+      # Visitor-parity rejoin-on-restart: mirror of the user-side
+      # `Networks.SessionPlan`'s `last_joined_persister`. Forwards the
+      # `Map.keys(state.members)` snapshot to `visitors.last_joined_channels`
+      # via the context helper so a graceful or crash restart rehydrates
+      # the channel list. Closure captures the visitor id; a concurrent
+      # reap between snapshot write and Repo round-trip surfaces as
+      # `{:error, :not_found}` inside `update_last_joined_channels/2`,
+      # which `Session.Server`'s logger swallows non-fatally — the next
+      # mutation overwrites and the row is gone anyway.
+      last_joined_persister: fn channels ->
+        Visitors.update_last_joined_channels(visitor.id, channels)
       end
     }
   end

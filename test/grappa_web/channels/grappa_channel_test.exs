@@ -171,8 +171,8 @@ defmodule GrappaWeb.GrappaChannelTest do
   # Visitor counterpart: welcomes the session using the visitor's own nick
   # (`grappa-snap` is hard-coded above for the user-class helper and would
   # not match the visitor's `state.nick`). Visitor session_plan carries
-  # `autojoin = []` (visitor_channels seeded only by Visitors.commit_join),
-  # so the JOIN is driven explicitly via `Session.send_join/4` rather
+  # `autojoin = []` (visitor's `last_joined_channels` empty for a fresh
+  # row), so the JOIN is driven explicitly via `Session.send_join/4` rather
   # than waiting for the 001-autojoin loop.
   defp welcome_visitor_on_channel(server, subject, network_id, nick, channel) do
     :ok = await_handshake(server)

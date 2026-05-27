@@ -86,7 +86,7 @@ defmodule Grappa.Operator do
 
   @doc """
   Synchronously terminate the visitor's `Session.Server` (if any) and
-  delete the DB row. CASCADE wipes `visitor_channels`, `messages`,
+  delete the DB row. CASCADE wipes `messages`,
   `accounts_sessions`, `query_windows`, `push_subscriptions`,
   `user_settings`, `read_cursors` in the same transaction (V CP32
   visitor-parity invariant).

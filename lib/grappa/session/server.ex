@@ -2232,9 +2232,7 @@ defmodule Grappa.Session.Server do
   @spec persist_last_joined(Grappa.Session.subject(), pos_integer(), [String.t()], last_joined_persister() | nil) :: :ok
   defp persist_last_joined(_, _, _, nil), do: :ok
 
-  defp persist_last_joined({:visitor, _}, _, _, _), do: :ok
-
-  defp persist_last_joined({:user, _}, _, channels, fun)
+  defp persist_last_joined(_, _, channels, fun)
        when is_function(fun, 1) do
     case fun.(channels) do
       :ok ->

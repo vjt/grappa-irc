@@ -14,7 +14,7 @@ defmodule Grappa.Visitors.Reaper do
 
   Each tick calls `sweep/0`, which enumerates `Visitors.list_expired/0`
   and invokes `Visitors.delete/1` per row. The DB-level FK ON DELETE
-  CASCADE on `visitor_channels`, `messages`, `query_windows`,
+  CASCADE on `messages`, `query_windows`,
   `push_subscriptions`, `user_settings`, and `read_cursors` (every
   table that carries a `visitor_id` FK after the visitor-parity
   cluster) wipes the dependent rows in the same transaction.

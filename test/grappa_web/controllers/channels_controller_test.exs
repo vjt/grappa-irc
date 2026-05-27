@@ -711,8 +711,8 @@ defmodule GrappaWeb.ChannelsControllerTest do
   # tuple already (LANDED in tasks 19/20); this test pins that the
   # controller actions read `:current_subject` from the conn assigns and
   # thread it through correctly. The autojoin source for visitors is
-  # `Visitors.list_autojoin_channels/1` — visitor_channels rows pinned
-  # to (visitor.id, network_slug) — mirror of `Credential.autojoin_channels`
+  # `Visitors.list_autojoin_channels/1` — `visitors.last_joined_channels`
+  # JSON column — mirror of `Credential.last_joined_channels`
   # for users.
   describe "visitor subject — channel surface" do
     test "GET index returns visitor's autojoin channels (no session)",

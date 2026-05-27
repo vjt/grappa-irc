@@ -20,7 +20,7 @@ defmodule Grappa.Visitors do
     * `list_active/0` — `Grappa.Bootstrap` respawn enumeration.
     * `list_expired/0` — `Grappa.Visitors.Reaper` sweep enumeration.
     * `delete/1` — Reaper + operator path. The DB-level FK ON DELETE
-      CASCADE on `visitor_channels`, `messages`, and `sessions` wipes
+      CASCADE on `messages`, and `sessions` wipes
       the dependent rows in a single transaction.
     * `purge_if_anon/1` — co-terminus-with-session deletion verb (W11).
       Anon visitor → `Repo.delete` → CASCADE wipes everything.
@@ -59,7 +59,7 @@ defmodule Grappa.Visitors do
       Grappa.Repo,
       Grappa.Session
     ],
-    exports: [AdminWire, Login, SessionPlan, Visitor, VisitorChannel, Wire]
+    exports: [AdminWire, Login, SessionPlan, Visitor, Wire]
 
   import Ecto.Query
 
@@ -378,8 +378,7 @@ defmodule Grappa.Visitors do
 
   @doc """
   Delete a visitor row. The DB-level FK ON DELETE CASCADE on
-  `visitor_channels`, `messages`, and `sessions` wipes dependents
-  in the same transaction.
+  `messages`, and `sessions` wipes dependents in the same transaction.
   """
   @spec delete(Ecto.UUID.t()) :: :ok | {:error, :not_found}
   def delete(visitor_id) when is_binary(visitor_id) do
@@ -437,7 +436,7 @@ defmodule Grappa.Visitors do
   unblock the `Grappa.Bootstrap` W7 hard-error path (Task 20) when
   the operator has intentionally dropped a network from the DB.
 
-  CASCADE: the `visitor_id` FKs on `visitor_channels`, `messages`,
+  CASCADE: the `visitor_id` FKs on `messages`,
   and `accounts_sessions` all carry `ON DELETE CASCADE`; the bulk
   delete fires those at the DB layer in a single transaction.
   """
@@ -449,22 +448,51 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  Visitor-side autojoin channel list — names of `visitor_channels` rows
-  pinned to `(visitor.id, visitor.network_slug)`. Mirror of
-  `Networks.Credential.autojoin_channels` for user subjects (single
+  Visitor-side autojoin channel list — the `last_joined_channels`
+  snapshot persisted by `Session.Server` on every self-JOIN /
+  self-PART / self-KICK. Mirror of
+  `Networks.Credential.last_joined_channels` for user subjects (single
   source consumed by `Grappa.Visitors.SessionPlan` for Bootstrap-respawn
   rejoin AND `GrappaWeb.ChannelsController.index/2` for the cicchetto
   sidebar render).
+
+  Visitors have no operator-bound autojoin (mirror of
+  `Credential.autojoin_channels`) — the snapshot IS the rejoin list.
   """
   @spec list_autojoin_channels(Visitor.t()) :: [String.t()]
-  def list_autojoin_channels(%Visitor{id: visitor_id, network_slug: slug})
-      when is_binary(visitor_id) and is_binary(slug) do
-    query =
-      from c in Grappa.Visitors.VisitorChannel,
-        where: c.visitor_id == ^visitor_id and c.network_slug == ^slug,
-        select: c.name
+  def list_autojoin_channels(%Visitor{last_joined_channels: channels})
+      when is_list(channels),
+      do: channels
 
-    Repo.all(query)
+  @doc """
+  Overwrite the per-visitor `last_joined_channels` snapshot. Mirror of
+  `Grappa.Networks.Credentials.update_last_joined_channels/3` for
+  visitor subjects — called by `Session.Server` on every self-JOIN /
+  self-PART / self-KICK so a graceful or crash restart can rehydrate
+  the channel list at boot.
+
+  Truncated to `Visitor.last_joined_channels_max/0` entries (200) so a
+  pathological session can't grow the JSON column without limit.
+  Returns `:ok` on success, `{:error, :not_found}` if the visitor was
+  reaped between snapshot write and now (race tolerated — next
+  Bootstrap cycle skips the absent visitor naturally).
+  """
+  @spec update_last_joined_channels(Ecto.UUID.t(), [String.t()]) ::
+          :ok | {:error, :not_found | Ecto.Changeset.t()}
+  def update_last_joined_channels(visitor_id, channels)
+      when is_binary(visitor_id) and is_list(channels) do
+    capped = Enum.take(channels, Visitor.last_joined_channels_max())
+
+    case Repo.get(Visitor, visitor_id) do
+      nil ->
+        {:error, :not_found}
+
+      %Visitor{} = visitor ->
+        case visitor |> Visitor.last_joined_channels_changeset(capped) |> Repo.update() do
+          {:ok, _} -> :ok
+          {:error, changeset} -> {:error, changeset}
+        end
+    end
   end
 
   @doc """
@@ -538,8 +566,7 @@ defmodule Grappa.Visitors do
   @doc """
   Anon-only co-terminus delete (W11). If the visitor exists and
   `password_encrypted` is nil, delete the row — CASCADE wipes the
-  associated accounts_sessions, visitor_channels, and messages in a
-  single transaction. Registered visitor (`password_encrypted` set):
+  associated accounts_sessions and messages in a single transaction. Registered visitor (`password_encrypted` set):
   no-op, the NickServ-password identity persists across logouts.
   Missing row: no-op (idempotent under concurrent deletion).
 
