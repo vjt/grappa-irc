@@ -74,13 +74,15 @@ grappa_runas() {
 	# only in memory for the lifetime of the child process.
 	# RELEASE_TMP redirects run_erl's erlang.log.* + pid file from the
 	# release's `_build/.../tmp/` (rebuilt on every `mix release`) to
-	# the persistent runtime dir under `<repo>/runtime/log`.
+	# the persistent runtime dir under `<repo>/runtime/log`. Must be
+	# `export`-ed (not `VAR=val cmd` prefix) so it survives past the
+	# `. ${grappa_env_file}` source and lands on the final ${command}.
 	local subcmd="$1"
 	local envsrc=""
 	if [ -n "${grappa_env_file}" ] && [ -r "${grappa_env_file}" ]; then
 		envsrc=". ${grappa_env_file} && export \$(grep -Eo '^[A-Z_][A-Z0-9_]*' ${grappa_env_file}) && "
 	fi
-	su -m "${grappa_user}" -c "RELEASE_TMP='${grappa_runtime_tmp}' ${envsrc}${command} ${subcmd}"
+	su -m "${grappa_user}" -c "export RELEASE_TMP='${grappa_runtime_tmp}'; ${envsrc}${command} ${subcmd}"
 }
 
 grappa_start() {
