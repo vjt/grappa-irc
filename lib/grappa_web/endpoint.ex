@@ -45,23 +45,22 @@ defmodule GrappaWeb.Endpoint do
   plug Plug.RequestId
 
   # Honor X-Forwarded-For / X-Real-IP from nginx so `conn.remote_ip`
-  # resolves to the real client (not the docker-bridge nginx IP).
-  # Placed AFTER RequestId so the request-id log prefix is set first,
-  # BEFORE Telemetry so every telemetry event already sees the
-  # rewritten IP. The wrapper plug overwrites `conn.remote_ip`
+  # resolves to the real client (not the docker-bridge or jail-loopback
+  # nginx IP). Placed AFTER RequestId so the request-id log prefix is
+  # set first, BEFORE Telemetry so every telemetry event already sees
+  # the rewritten IP. The wrapper plug overwrites `conn.remote_ip`
   # in-place; downstream code (Logger metadata, captcha verify,
   # visitor.ip audit) needs no changes.
   #
-  # `RemoteIpFromProxy` is a thin wrapper that conditionally bypasses
-  # the underlying `RemoteIp` plug when the TCP peer is loopback.
-  # SECURITY-CRITICAL: without the bypass, `docker exec grappa curl
-  # -H "X-Forwarded-For: 1.2.3.4" http://localhost:4000/admin/reload`
-  # would rewrite `conn.remote_ip` to `{1, 2, 3, 4}` and BYPASS
-  # `Plugs.LoopbackOnly` (which gates `/admin/reload` +
-  # `/admin/cic-bundle-changed`). The wrapper inspects the TCP peer
-  # FIRST and leaves loopback peers alone — RemoteIp itself never
-  # consults the peer IP (only the X-F-F chain), so the gate has to
-  # live at the wrapper layer.
+  # `RemoteIpFromProxy` is a thin wrapper around `RemoteIp` with one
+  # extra rule: peer-loopback + no-XFF → trust the peer (operator
+  # shell, healthcheck). All other shapes — including peer-loopback
+  # + has-XFF — delegate to RemoteIp so the local nginx reverse-proxy
+  # path (bastille jail + docker prod both have nginx + grappa on the
+  # same host with grappa bound to 127.0.0.1:4000) surfaces the real
+  # client IP instead of `127.0.0.1`. See the wrapper's moduledoc for
+  # the full trust matrix and the explicitly-accepted shell-spoof
+  # residual risk.
   plug GrappaWeb.Plugs.RemoteIpFromProxy,
     headers: ~w[x-forwarded-for x-real-ip]
 

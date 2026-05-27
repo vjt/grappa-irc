@@ -19,18 +19,22 @@ defmodule GrappaWeb.Plugs.LoopbackOnly do
   basic-auth or session-cookie), this plug stays as the inner gate;
   the auth layer is the outer one.
 
-  ## Interaction with `RemoteIp` plug
+  ## Interaction with `RemoteIpFromProxy`
 
-  `GrappaWeb.Endpoint`'s `RemoteIp` plug rewrites `conn.remote_ip`
-  from the `X-Forwarded-For` chain BEFORE this plug fires. The
-  endpoint configures `clients: ["127.0.0.0/8", "::1/128"]` so
-  loopback peers are treated as terminal clients — X-F-F headers
-  arriving from loopback are IGNORED, keeping this gate honest.
-  Without that `clients:` override, an attacker with container
-  shell could spoof `curl -H "X-Forwarded-For: 1.2.3.4"
-  http://localhost:4000/admin/reload` and `conn.remote_ip` would
-  become `{1, 2, 3, 4}`, bypassing the gate. See `endpoint.ex` for
-  the security-critical config.
+  `GrappaWeb.Endpoint`'s `RemoteIpFromProxy` plug runs FIRST and may
+  rewrite `conn.remote_ip` from `X-Forwarded-For` when the peer is
+  loopback AND XFF is present (the local-nginx-as-reverse-proxy
+  shape — bastille jail + docker prod). That means a loopback peer
+  who sets `X-Forwarded-For: 127.0.0.1` will reach this plug with
+  `conn.remote_ip = {127, 0, 0, 1}` and pass the gate. This is
+  **explicitly accepted**: anyone with shell access on the host
+  (`sudo bastille cmd grappa`, `docker exec grappa`) already has
+  root-equivalent access — they can kill the BEAM, drop sqlite,
+  rewrite the codebase. POST /admin/reload is the least interesting
+  thing they could do. The defense at this layer is network
+  reachability (nginx doesn't proxy /admin/*, grappa binds 127.0.0.1
+  only), NOT input validation against an attacker with the keys.
+  See `RemoteIpFromProxy` moduledoc for the full trust matrix.
   """
   @behaviour Plug
 

@@ -1,15 +1,17 @@
 defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
   @moduledoc """
   `RemoteIpFromProxy` — endpoint-level wrapper plug that delegates
-  to the `RemoteIp` hex package EXCEPT when the TCP peer is loopback
-  (`127.0.0.0/8` or `::1`). Loopback peers are operator/container-
-  shell access; X-F-F headers from that surface are always spoof
-  attempts and MUST be ignored to keep `Plugs.LoopbackOnly` honest.
+  to the `RemoteIp` hex package, with a loopback-peer rule:
 
-  Tests instantiate the wrapper with the SAME options the Endpoint
-  installs so a config-shape drift (someone deletes the wrapper, or
-  swaps the plug back to bare `RemoteIp`) fails here before it ships
-  to prod.
+      | peer        | XFF present | trust  | conn.remote_ip after  |
+      |-------------|-------------|--------|-----------------------|
+      | loopback    | no          | peer   | loopback (untouched)  |
+      | loopback    | yes         | XFF    | rewritten from chain  |
+      | non-loopback| any         | RemoteIp default (chain walk if XFF set, peer otherwise) |
+
+  The loopback+XFF row is the bastille-jail (and Docker) shape:
+  nginx runs on the same host and proxies via loopback. Tests pin
+  the matrix so a config-shape drift fails here before it ships.
   """
   use ExUnit.Case, async: true
 
@@ -23,7 +25,7 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
     RemoteIpFromProxy.call(conn, opts)
   end
 
-  describe "nginx-shaped request (peer = docker bridge, real client behind X-F-F)" do
+  describe "non-loopback peer (docker bridge, public client, etc)" do
     test "rewrites conn.remote_ip to the X-Forwarded-For client" do
       conn = call({172, 17, 0, 2}, [{"x-forwarded-for", "203.0.113.42"}])
       assert conn.remote_ip == {203, 0, 113, 42}
@@ -64,51 +66,56 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
     end
   end
 
-  describe "loopback peer (container-shell context — LoopbackOnly defense)" do
-    test "leaves remote_ip as loopback when peer is 127.0.0.1, even with X-F-F set" do
-      # SECURITY CRITICAL: `docker exec grappa curl -H "X-Forwarded-For:
-      # 1.2.3.4" http://localhost:4000/admin/reload`. Without the
-      # wrapper's loopback bypass, bare RemoteIp would rewrite
-      # conn.remote_ip to {1,2,3,4} (or worse, {127,0,0,1} on a
-      # `X-Forwarded-For: 127.0.0.1` spoof) and bypass
-      # Plugs.LoopbackOnly.
-      conn = call({127, 0, 0, 1}, [{"x-forwarded-for", "1.2.3.4"}])
-      assert conn.remote_ip == {127, 0, 0, 1}
-    end
-
-    test "leaves remote_ip as 127.0.0.1 when X-F-F spoofs another loopback IP" do
-      # Tighter: a loopback peer spoofing X-Forwarded-For: 127.0.0.1
-      # would, under bare RemoteIp + permissive client allowlist, pass
-      # the LoopbackOnly gate. The wrapper bypass prevents the rewrite
-      # so the gate sees the genuine loopback peer (which IS allowed),
-      # but no rewrite happened — the audit log line tied to the
-      # request would still show 127.0.0.1 as the true source.
-      conn = call({127, 0, 0, 1}, [{"x-forwarded-for", "127.0.0.1"}])
-      assert conn.remote_ip == {127, 0, 0, 1}
-    end
-
-    test "any 127/8 peer (not just 127.0.0.1) bypasses the rewrite" do
-      conn = call({127, 5, 5, 5}, [{"x-forwarded-for", "1.2.3.4"}])
-      assert conn.remote_ip == {127, 5, 5, 5}
-    end
-
-    test "leaves remote_ip as ::1 when peer is IPv6 loopback, even with X-F-F set" do
-      conn = call({0, 0, 0, 0, 0, 0, 0, 1}, [{"x-forwarded-for", "1.2.3.4"}])
-      assert conn.remote_ip == {0, 0, 0, 0, 0, 0, 0, 1}
-    end
-
-    test "loopback peer with X-Real-IP set is also ignored" do
-      conn = call({127, 0, 0, 1}, [{"x-real-ip", "1.2.3.4"}])
-      assert conn.remote_ip == {127, 0, 0, 1}
-    end
-
-    test "loopback peer WITHOUT proxy headers stays loopback (sanity)" do
+  describe "loopback peer WITHOUT proxy headers (operator shell / direct curl)" do
+    test "v4 loopback peer with no headers passes through unchanged" do
       conn = call({127, 0, 0, 1}, [])
       assert conn.remote_ip == {127, 0, 0, 1}
     end
+
+    test "v6 loopback peer with no headers passes through unchanged" do
+      conn = call({0, 0, 0, 0, 0, 0, 0, 1}, [])
+      assert conn.remote_ip == {0, 0, 0, 0, 0, 0, 0, 1}
+    end
+
+    test "any 127/8 peer with no headers stays loopback" do
+      conn = call({127, 5, 5, 5}, [])
+      assert conn.remote_ip == {127, 5, 5, 5}
+    end
   end
 
-  describe "no proxy headers" do
+  describe "loopback peer WITH proxy headers (local nginx reverse-proxying)" do
+    test "v4 loopback peer with X-F-F is rewritten to the real client IP" do
+      # bastille jail + docker prod both have nginx on the same host as
+      # grappa, proxying via 127.0.0.1:4000. Without this row, every
+      # legitimate user session would persist `ip = "127.0.0.1"` (the
+      # cp52 S2 incident — user sessions across all of post-bastille
+      # showed loopback in the audit trail).
+      conn = call({127, 0, 0, 1}, [{"x-forwarded-for", "203.0.113.42"}])
+      assert conn.remote_ip == {203, 0, 113, 42}
+    end
+
+    test "v4 loopback peer with X-Real-IP is rewritten too" do
+      conn = call({127, 0, 0, 1}, [{"x-real-ip", "198.51.100.7"}])
+      assert conn.remote_ip == {198, 51, 100, 7}
+    end
+
+    test "v6 loopback peer with X-F-F is rewritten" do
+      conn = call({0, 0, 0, 0, 0, 0, 0, 1}, [{"x-forwarded-for", "203.0.113.42"}])
+      assert conn.remote_ip == {203, 0, 113, 42}
+    end
+
+    test "loopback peer with X-F-F chain walks like a normal proxy" do
+      conn =
+        call(
+          {127, 0, 0, 1},
+          [{"x-forwarded-for", "203.0.113.42, 10.0.0.5"}]
+        )
+
+      assert conn.remote_ip == {203, 0, 113, 42}
+    end
+  end
+
+  describe "no proxy headers, non-loopback peer" do
     test "peer IP passes through unchanged" do
       conn = call({203, 0, 113, 42}, [])
       assert conn.remote_ip == {203, 0, 113, 42}
