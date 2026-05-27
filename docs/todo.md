@@ -155,6 +155,14 @@ Phase 5 cluster opens):
   (used by `scripts/bun.sh` and `compose.prod.yaml`) are moving major
   tags. Pin to digests (`oven/bun:1@sha256:…`) for reproducible
   builds.
+- **Visitor nick collision pre-check** — a visitor login with a nick
+  already held by a logged-in user on the same network creates a
+  Session.Server that fails forever on upstream 433. The
+  `subject_row_present?` init gate (S2 cp51) recovers cleanly once
+  the operator deletes the row, but the user-facing UX is "session
+  fails silently, contact operator." A `POST /auth/login` pre-check
+  that queries the live Registry for collision-and-rejects would
+  prevent the class entirely. Smaller bucket.
 
 ## Low / Observation
 

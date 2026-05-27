@@ -2890,3 +2890,152 @@ mkdir_p's a relative path will silently work in dev and `:eacces`
 in a release. Derive on-disk defaults from already-absolute
 env-driven paths so the only difference between dev and prod is
 the value of the env var, not the path-resolution semantics.
+
+## Episode — three bugs in a stack: visitor rejoin, the AdminEvents flake, and a zombie session that wouldn't die (2026-05-27)
+
+Started the session intending to fix one bug. Ended it having
+fixed three, each one a deeper layer of the same architectural
+class. The thread that connects them: `:transient` workers in a
+`DynamicSupervisor` are not safe to delete from the outside.
+
+**Visitor rejoin first.** vjt noticed visitors don't rejoin
+channels after a bouncer restart. Users do. Five minutes of
+grep later: `Grappa.Visitors.list_autojoin_channels/1` reads from
+a `visitor_channels` table whose schema's own moduledoc admits the
+writer never landed. *"writes will land when the
+visitor-rejoin-on-restart cluster lands a producer."* The cluster
+that comment was waiting for? The one we were sitting in.
+
+Easy fix in concept — schema-mirror the users' shape: add
+`visitors.last_joined_channels`, drop the unused table, wire the
+same `last_joined_persister` callback users have used since CP22.
+The interesting part is the meta-finding: an empty table sitting
+in the schema for THREE WEEKS, dependent on a producer that
+nobody ever wrote, with no test asserting it had any rows. We've
+been shipping a feature that's been off for the entire visitor
+lifetime of the bouncer. Nobody noticed because the visitors
+themselves treated it as normal — fresh nick every time, empty
+channels, manual /join each session.
+
+Cold-deployed at 14:47. While the deploy was happening, CI
+failed on `master` for the rejoin commit.
+
+**Second bug: the AdminEventsTest flake.** Ten
+`Grappa.AdminEventsTest` setups flunked in a row on the same CI
+run with `SessionRegistry never drained — stale entries: [...]`.
+Local: green. Repeatable green, even under `--repeat-until-failure
+20`. The flake had been chased four times already (commits
+b17fd71, a9e0c24, fd52a96, 1108808) — each iteration bumped the
+drain budget. Each iteration treated the symptom.
+
+Trace: the setup helper grabs `Registry.select` to find leaked
+`:session` entries from prior tests, calls
+`Session.stop_session/2` for each. `stop_session` does
+`whereis` → `terminate_child` → wait for `:DOWN`. Fine in
+isolation. But the leaked pids belong to `:transient` workers
+whose linked `IRC.Client` crashed on `:tcp_closed` at end-of-test
+(the fake IRCServer dies with the test pid). Abnormal exit →
+DynamicSupervisor restart → new pid registers under the same key.
+The setup's `whereis` returns the OLD pid (sometimes), or `nil`
+(during the restart window), or the NEW pid (after). Drain loop
+races the supervisor's own scheduling.
+
+The real fix lives one layer up. `auth_fixtures.ex` —
+`start_session_for/2`, `start_visitor_session_for/2` — spawn
+`Session.Server` workers and return the pid with NO teardown
+registered. End-of-test IRCServer death → respawn loop that
+outlives the test pid → registry poison. Two-pronged fix:
+register an `ExUnit.Callbacks.on_exit` callback that calls
+`DynamicSupervisor.terminate_child` (atomic, removes the child
+from the supervision tree, no restart possible), AND replace the
+AdminEventsTest setup's inline drain with
+`Grappa.AdmissionStateHelpers.reset_session_supervisor/0` — the
+canonical helper that walks `which_children` instead of the
+Registry. ~110 lines of inferior reimplementation deleted.
+
+CI green on the next push.
+
+**Third bug came back through the front door.** After the deploy
+vjt opened `bin/grappa list-sessions` and saw:
+
+```
+visitor 59d570d6-...  azzurra  pid=<0.2538.0>  alive=true  members={}  autojoin=[]
+```
+
+No corresponding row in the `visitors` table. The classic
+"runtime/DB divergence" honesty signal that
+`AdminSessionsTab` was specifically designed to surface (per
+CLAUDE.md "DB state and live state are separate sources of
+truth"). Now we had to actually deal with one.
+
+Logs told the story: visitor logged in with nick "vjt". Same nick
+the registered user already had on azzurra IRC. Upstream 433
+nick-in-use → Session.Server crash → transient restart → 433 →
+crash → ... vjt fired three admin `DELETE /admin/sessions/...:1`
++ one `POST .../disconnect`. Each killed the live pid. Each was
+followed by a new pid registering itself within seconds, because
+the supervisor had ALREADY scheduled the next restart from the
+previous crash cycle. By the time the dust settled the backoff
+was at 25 minutes (failure_count=9) and the slot was unrecoverable
+without a full app restart.
+
+Same root cause as the test flake — `:transient` worker in a
+DynamicSupervisor that doesn't consult external state on
+respawn. The test fix used `on_exit` to call
+`DynamicSupervisor.terminate_child`. That doesn't generalise to
+production — there's no `on_exit` at the operator-action
+boundary.
+
+The architectural fix: `Session.Server.init/1` accepts an optional
+`subject_row_present?` closure. If it returns `false`, init
+returns `:ignore`. `:ignore` is OTP-canonical for "don't start
+me" — DynamicSupervisor accepts it as a normal-shutdown signal,
+removes the child from supervision, and stops restarting. Both
+`Networks.SessionPlan` and `Visitors.SessionPlan` supply the
+closure (DB-row check). Test fixtures and manual spawns omit it —
+init treats nil as "no gate" for backwards compat.
+
+Plumbing extended through `SpawnOrchestrator` (`{:ok, :ignored}`
+outcome), `Bootstrap.Result` (`subject_row_gone` counter), the
+NetworksController, and the visitor login path. Four new tests
+pin the closure follows DB row deletes, the orchestrator
+classifies the new outcome, the Bootstrap counter increments
+correctly.
+
+vjt asked a side question on the way out: are the dev/test VAPID
+keys committed to the repo a security risk? Short answer no —
+they're labelled as fixtures, they don't sign production
+subscriptions, and a leak gets you push-spam to whoever
+subscribed via localhost. The longer answer mattered more: the
+deeper question came up because of a fourth bug that bit during
+the same session — push notifications across the board returning
+FCM 403 + Apple 400 since the bastille migration. Root cause was
+`mix grappa.gen_vapid` having been run on the new jail, generating
+fresh keys, while the existing subscriptions in the migrated DB
+were signed against the Docker prod keys. Recovery was a
+verbatim env swap. Lesson: VAPID keys are state, like Cloak keys
+and the release cookie — never regenerated mid-deploy, never
+treated as deployment config that can be freshly populated per
+host.
+
+By end-of-session: three commits, four memories saved (including
+the cross-substrate-migration VAPID note), three production
+incidents fully fixed at the architectural root rather than the
+symptom. Two of them ended a multi-commit history of band-aids
+on the same symptom.
+
+**Law:** *`:transient` GenServers under a DynamicSupervisor are
+not "kill from the outside" safe. They survive their own crashes
+by design. Anything that wants to permanently shut one down must
+either (a) call `terminate_child` via the supervisor (test-side
+`on_exit`, admin endpoint) AND ensure no restart is in flight, or
+(b) make `init/1` consult external state and return `:ignore`
+when that state says "no." Telling the live pid to die without
+one of those two is racing a restart you can't see scheduled.*
+
+**Law (corollary):** *An empty table that's been sitting in the
+schema for weeks isn't waiting for a feature — it IS the missing
+feature. If `grep -r "INSERT INTO <table>"` returns nothing
+across `lib/`, the producer was never written, and the consumer
+is silently degraded. Audit at schema-creation time, not at
+feature-rollout time.*

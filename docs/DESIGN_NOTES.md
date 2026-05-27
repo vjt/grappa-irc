@@ -10357,3 +10357,118 @@ with a 200×10ms (2s) poll matching the upstream passive-wait shape.
   `.` (source), the assignment dies with the source. Use `export
   VAR;` when the binding has to survive to a later command in the
   same line.
+
+---
+
+## 2026-05-27 — post-bastille runtime fixes: visitor rejoin, zombie respawn gate, VAPID-as-state
+
+Three production-discovered classes, all caused by gaps that didn't
+show up under pre-bastille operation. All fixed same day, all
+cold-deployed to m42.
+
+### Visitor channels rejoin: schema-parity with users
+
+**Symptom:** visitor sessions respawn on bouncer restart but join
+ZERO channels. Users rejoin correctly.
+
+**Root cause:** `Grappa.Visitors.list_autojoin_channels/1` queried a
+`visitor_channels` table that had been created back in
+`20260502080806_create_visitor_channels.exs` but **never had a
+writer**. The schema's own moduledoc admitted *"writes will land
+when the visitor-rejoin-on-restart cluster lands a producer"* — that
+cluster never landed. Independently, `Session.Server.persist_last_joined/4`
+short-circuited visitor subjects via
+`defp persist_last_joined({:visitor, _}, _, _, _), do: :ok` —
+silent no-op.
+
+**Fix:** schema-mirror parity with users. Migration
+`20260527123810_visitors_last_joined_channels` adds
+`visitors.last_joined_channels` (JSON array, same shape as the
+existing `network_credentials.last_joined_channels`) and DROPs the
+unused `visitor_channels` table. `Visitors.SessionPlan.build_plan/3`
+now wires the canonical `last_joined_persister` closure pattern
+that users have used since CP22. The visitor no-op in
+`persist_last_joined/4` is gone — both subject classes route
+through the same persistence code path.
+
+**Apply rule:** when two subject classes (`{:user, _}` /
+`{:visitor, _}`) share an architectural verb (autojoin
+persistence, scrollback, read cursor), they MUST share a code
+path. A discriminant `case` on subject_kind inside the verb is a
+boundary violation — it lets one class silently degrade while
+the other continues working.
+
+### `Session.Server.init/1` subject-row-present gate
+
+**Symptom (production incident):** `bin/grappa list-sessions`
+showed a visitor pid alive WITHOUT a corresponding `visitors` row.
+Operator-driven `Visitors.delete/1` + three admin DELETEs failed to
+remove it. Backoff at 25 minutes (failure_count=9). No clean
+shutdown short of full app restart.
+
+**Root cause:** `Session.Server` is a `:transient` child of
+`Grappa.SessionSupervisor` (DynamicSupervisor). When an upstream
+failure (typical: 433 nick-in-use against a logged-in user with the
+same nick) crashes the Server, the supervisor schedules a restart.
+The operator-driven `DELETE /admin/sessions/:id` calls
+`Session.stop_session/2` which races the supervisor's restart
+window — `whereis → nil` between the dying pid and the new one,
+`stop_session` returns `:ok`, and an instant later the new pid
+registers itself with cached `init_opts` referencing a now-deleted
+DB row. Loop continues at exponential backoff until cap.
+
+Same mechanism that poisoned the CI singleton-lane
+`AdminEventsTest` (see `feedback_session_fixture_on_exit_cleanup`),
+but in production with no test-harness `on_exit` to save it.
+
+**Fix:** `Session.Server.init/1` consults an optional
+`subject_row_present?` closure at the top of init. When it returns
+`false`, init returns `:ignore` — which is a NORMAL-shutdown signal
+to `:transient`, so DynamicSupervisor drops the child PERMANENTLY
+instead of looping. Both `Networks.SessionPlan.build_plan/4` and
+`Visitors.SessionPlan.build_plan/3` supply the closure (calls
+`Credentials.get_credential_by_ids/2` and `Visitors.get/1`
+respectively). Boundary-clean: same opaque function-ref pattern as
+`credential_failer` + `last_joined_persister`.
+
+Plumbing extends through the spawn chain:
+- `SpawnOrchestrator.spawn/4` adds `{:ok, :ignored}` outcome.
+- `Bootstrap.Result` adds `subject_row_gone` counter + log line.
+- `NetworksController` maps `:ignored` → `{:error, :not_found}`
+  (likely a racing unbind during `PATCH /connect`).
+- `Visitors.Login` maps to `:upstream_unreachable`.
+
+**Apply rule:** any `:transient` GenServer whose `init/1` depends on
+DB state MUST verify that state at init time — never trust cached
+`init_opts` across restarts. The supervisor restart is a fresh
+process; treat it as one.
+
+### VAPID keys are state, not deployment config
+
+**Symptom:** post-bastille migration, push notifications fail with
+FCM 403 and Apple Web Push 400 on every subscription. Service
+worker registered cleanly; subscriptions persist in the DB; sends
+never arrive.
+
+**Root cause:** during bastille deploy `mix grappa.gen_vapid` was
+run to populate the new jail's env, generating a fresh ECDSA P-256
+keypair (`BKSBT...`). The existing `push_subscriptions` rows had
+been firmed by browsers against the Docker prod keypair
+(`BFslT...`) and replicated verbatim by the DB migration. Push
+services (FCM, Apple, Mozilla autopush) reject deliveries whose
+VAPID JWT is signed by a different key than the one the
+subscription was created against — that's the whole point of VAPID
+identification.
+
+**Fix:** swapped `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` in
+`/usr/local/etc/grappa/grappa.env` with the Docker values; clean
+restart of grappa. Existing subscriptions recovered immediately.
+
+**Apply rule:** treat the VAPID keypair as application STATE
+(alongside `GRAPPA_ENCRYPTION_KEY`, `SECRET_KEY_BASE`,
+`RELEASE_COOKIE`), NOT as deployment configuration that can be
+freshly generated per host. Cross-substrate migration must copy
+the keypair verbatim. `mix grappa.gen_vapid` is a first-time-only
+install primitive; running it against an existing DB invalidates
+every push subscription with no recovery path short of forcing
+every user to re-subscribe.
