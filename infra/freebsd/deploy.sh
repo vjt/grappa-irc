@@ -19,6 +19,13 @@ HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:4000/healthz}"
 HEALTHCHECK_RETRIES="${HEALTHCHECK_RETRIES:-30}"
 HEALTHCHECK_SLEEP="${HEALTHCHECK_SLEEP:-2}"
 
+# Mix's hard-link-based compile lock fails inside bastille jails
+# when /tmp is on a different ZFS dataset from the grappa user's
+# home (cross-uid hard link returns "not owner"). The lock is only
+# a safety net against concurrent mix invocations on the same tree
+# — the deploy runs serially, so disabling it is safe.
+export MIX_OS_CONCURRENCY_LOCK=0
+
 cd "${REPO_ROOT}"
 
 echo "[deploy] git pull --ff-only"
