@@ -168,6 +168,21 @@ defmodule GrappaWeb.GrappaChannelTest do
     flush_server(server)
   end
 
+  # Visitor counterpart: welcomes the session using the visitor's own nick
+  # (`grappa-snap` is hard-coded above for the user-class helper and would
+  # not match the visitor's `state.nick`). Visitor session_plan carries
+  # `autojoin = []` (visitor_channels seeded only by Visitors.commit_join),
+  # so the JOIN is driven explicitly via `Session.send_join/4` rather
+  # than waiting for the 001-autojoin loop.
+  defp welcome_visitor_on_channel(server, subject, network_id, nick, channel) do
+    :ok = await_handshake(server)
+    IRCServer.feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
+    :ok = Session.send_join(subject, network_id, channel, nil)
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #{channel}"), 1_000)
+    IRCServer.feed(server, ":#{nick}!u@h JOIN :#{channel}\r\n")
+    flush_server(server)
+  end
+
   defp flush_server(server) do
     token = "flush-#{System.unique_integer([:positive])}"
     IRCServer.feed(server, "PING :#{token}\r\n")
@@ -386,6 +401,58 @@ defmodule GrappaWeb.GrappaChannelTest do
         by: "alice",
         reason: "behave"
       })
+    end
+
+    test "after-join snapshot: pushes cached members_seeded for visitor subjects (2026-05-27)" do
+      # Pre-fix `push_channel_snapshot/4` routed through `safe_get_user/1`
+      # which raised `Ecto.NoResultsError` on the `"visitor:" <> id`
+      # prefix and was rescued to `:error` — visitor snapshots never
+      # pushed. Live incident: a visitor `/join`ed `#sbiffo`, server
+      # received NAMES (state.members + seeded_channels populated) and
+      # broadcast `members_seeded` BEFORE cic's WS topic subscribe
+      # landed → no subscriber, broadcast dropped → cic's MembersPane
+      # stayed empty. The user-class equivalent of this test
+      # ("CP15 B3") already covered the user path; this is the visitor
+      # parity case.
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+
+      welcome_visitor_on_channel(
+        irc_server,
+        {:visitor, visitor.id},
+        network.id,
+        visitor.nick,
+        "#snap"
+      )
+
+      IRCServer.feed(
+        irc_server,
+        ":irc.test.org 353 #{visitor.nick} = #snap :@op_a +voice_a plain_b\r\n"
+      )
+
+      IRCServer.feed(
+        irc_server,
+        ":irc.test.org 366 #{visitor.nick} #snap :End of /NAMES list\r\n"
+      )
+
+      flush_server(irc_server)
+
+      topic = Topic.channel("visitor:" <> visitor.id, network.slug, "#snap")
+
+      {:ok, _, _} =
+        ("visitor:" <> visitor.id)
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{
+        kind: :members_seeded,
+        channel: "#snap",
+        members: members
+      })
+
+      assert Enum.any?(members, &match?(%{nick: "op_a"}, &1))
+      assert Enum.any?(members, &match?(%{nick: "voice_a"}, &1))
+      assert Enum.any?(members, &match?(%{nick: "plain_b"}, &1))
     end
 
     test "after-join snapshot: pushes window_state join_failed with reason + numeric when session is :failed (CP15 B3)" do

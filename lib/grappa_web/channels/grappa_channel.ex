@@ -880,24 +880,24 @@ defmodule GrappaWeb.GrappaChannel do
   # deploy-reconnect race — cic reconnects to a session whose original
   # broadcasts already fired before the WS subscribe, so without these
   # the members pane stays empty and the window stays in :pending.
+  #
+  # Visitor parity (2026-05-27): `user_name` carries `"visitor:" <> id`
+  # for visitor sockets — delegate to `resolve_subject/1` so both
+  # subject kinds replay the cold snapshot. Pre-fix only the user
+  # branch ran (`safe_get_user/1` raised `Ecto.NoResultsError` on the
+  # `"visitor:"` prefix and was rescued to `:error`), so visitors who
+  # WS-subscribed after the upstream JOIN's NAMES landed never saw the
+  # members list — the broadcast had already fired with no subscribers.
   @spec push_channel_snapshot(String.t(), String.t(), String.t(), Phoenix.Socket.t()) :: :ok
   defp push_channel_snapshot(user_name, network_slug, channel, socket) do
-    case safe_get_user(user_name) do
-      {:ok, user} ->
-        case Networks.get_network_by_slug(network_slug) do
-          {:ok, %Network{} = network} ->
-            subject = {:user, user.id}
-            push_topic_if_cached(subject, network, channel, socket)
-            push_modes_if_cached(subject, network, channel, socket)
-            push_members_if_seeded(subject, network, channel, socket)
-            push_window_state_if_known(subject, network, channel, socket)
-
-          {:error, :not_found} ->
-            :ok
-        end
-
-      :error ->
-        :ok
+    with {:ok, subject} <- resolve_subject(user_name),
+         {:ok, %Network{} = network} <- Networks.get_network_by_slug(network_slug) do
+      push_topic_if_cached(subject, network, channel, socket)
+      push_modes_if_cached(subject, network, channel, socket)
+      push_members_if_seeded(subject, network, channel, socket)
+      push_window_state_if_known(subject, network, channel, socket)
+    else
+      _ -> :ok
     end
   end
 
