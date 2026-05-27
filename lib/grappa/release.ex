@@ -30,9 +30,9 @@ defmodule Grappa.Release do
   `Grappa.EncryptedBinary`).
   """
 
-  @app :grappa
-
   use Boundary, top_level?: true, deps: [Grappa.Repo]
+
+  @app :grappa
 
   @doc """
   Runs all pending migrations against the configured repos.
@@ -46,7 +46,10 @@ defmodule Grappa.Release do
     load_app()
 
     for repo <- repos() do
-      {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :up, all: true))
+      case Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :up, all: true)) do
+        {:ok, _, _} -> :ok
+        {:error, reason} -> raise "migration failed: #{inspect(reason)}"
+      end
     end
 
     :ok
@@ -59,8 +62,11 @@ defmodule Grappa.Release do
   @spec rollback(module(), non_neg_integer()) :: :ok
   def rollback(repo, version) when is_atom(repo) and is_integer(version) do
     load_app()
-    {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :down, to: version))
-    :ok
+
+    case Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :down, to: version)) do
+      {:ok, _, _} -> :ok
+      {:error, reason} -> raise "rollback failed: #{inspect(reason)}"
+    end
   end
 
   defp repos do
@@ -68,6 +74,14 @@ defmodule Grappa.Release do
   end
 
   defp load_app do
-    Application.load(@app)
+    # Application.load/1 returns `:ok | {:error, {:already_loaded, _} | term()}`.
+    # `:already_loaded` is the expected steady-state inside a release boot
+    # (boot script loads .app files before evaluating `eval`); treat it as
+    # success. Any other error halts the migrate/rollback flow.
+    case Application.load(@app) do
+      :ok -> :ok
+      {:error, {:already_loaded, _}} -> :ok
+      {:error, reason} -> raise "Application.load(#{@app}) failed: #{inspect(reason)}"
+    end
   end
 end
