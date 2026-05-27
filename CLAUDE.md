@@ -600,9 +600,9 @@ section is RULES, that file is HOW.
 - **Log file**: container's stdout, captured by Docker JSON logger
   (max 5MB × 3 files in dev, 10MB × 5 in prod). Tail via
   `scripts/monitor.sh`. On the FreeBSD jail, `bin/grappa daemon`'s
-  `run_erl` tees the BEAM's stdout to
-  `runtime/log/log/erlang.log.*` + writes the pid file under
-  `runtime/log/`, driven by `RELEASE_TMP` exported by
+  `run_erl` tees the BEAM's stdout to `runtime/log/erlang.log.*`
+  (plus `runtime/pipe/` for `bin/grappa remote` + `runtime/pid` for
+  the daemon), driven by `RELEASE_TMP=runtime` exported by
   `infra/freebsd/rc.d/grappa`. The rotation set survives
   `mix release --overwrite` (which would otherwise blow away
   `_build/.../tmp/log/`).

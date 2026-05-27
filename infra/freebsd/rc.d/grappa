@@ -41,11 +41,14 @@ load_rc_config "$name"
 : ${grappa_user:="grappa"}
 : ${grappa_release_root:="/home/grappa/grappa/_build/prod/rel/grappa"}
 : ${grappa_env_file:=""}
-# Where run_erl (mix release daemon) writes erlang.log.*, heart logs,
-# and the pid file. Defaults to `<repo>/runtime/log` so all on-disk
-# output lives under runtime/ next to the sqlite DB. Operator can
-# override via /etc/rc.conf.d/grappa.
-: ${grappa_runtime_tmp:="/home/grappa/grappa/runtime/log"}
+# Where run_erl (mix release daemon) writes its `log/erlang.log.*`,
+# `pipe/`, and `pid` files. Defaults to `<repo>/runtime` so the
+# erlang.log directory lands at the canonical `runtime/log/` path
+# (sibling of `runtime/grappa_prod.db`, `runtime/uploads/`). Setting
+# this to `runtime/log` would produce `runtime/log/log/erlang.log.*`
+# because run_erl always creates its own `log/` subdir under
+# RELEASE_TMP. Operator override via /etc/rc.conf.d/grappa.
+: ${grappa_runtime_tmp:="/home/grappa/grappa/runtime"}
 
 command="${grappa_release_root}/bin/grappa"
 pidfile="${grappa_runtime_tmp}/pid"
