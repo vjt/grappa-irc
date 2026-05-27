@@ -2,7 +2,7 @@ defmodule Grappa.MixProject do
   use Mix.Project
 
   @app :grappa
-  @version "0.3.0"
+  @version "0.3.1"
 
   def project do
     [
