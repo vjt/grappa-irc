@@ -213,6 +213,11 @@ defmodule Grappa.Push.SenderTest do
         Plug.Conn.resp(conn, 201, "")
       end)
 
+      # Pre-warm the Finch pool (see warm-pool note in the
+      # mixed-success/410 test below). Matches the Bypass route shape
+      # so it accepts the request — POST /wp/<anything>.
+      _ = Req.post(bypass_url <> "/wp/warm", body: "")
+
       user = user_fixture()
       subject = {:user, user.id}
       _ = subscription_fixture(subject, "#{bypass_url}/wp/a")
@@ -265,6 +270,17 @@ defmodule Grappa.Push.SenderTest do
           _ -> Plug.Conn.resp(conn, 500, "unexpected")
         end
       end)
+
+      # Pre-warm the Finch pool for this Bypass host:port. The Sender's
+      # Task.async_stream fan-out races two parallel requests through
+      # the SAME pool (same scheme+host+port); under CI load Finch's
+      # `Pool.Manager.maybe_start_pool/4` registers the supervisor for
+      # the first request but the 2nd request arrives BEFORE a worker
+      # is registered → `:not_ready` → surfaces as `pool_not_available`
+      # in our Sender's defensive rescue, error tallied. Warming with a
+      # synchronous pre-call guarantees the pool has a ready worker
+      # before the parallel fan-out.
+      _ = Req.post(bypass_url <> "/wp/warm", body: "")
 
       user = user_fixture()
       subject = {:user, user.id}
