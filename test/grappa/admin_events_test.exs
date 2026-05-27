@@ -11,7 +11,7 @@ defmodule Grappa.AdminEventsTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{AdminEvents, Repo}
+  alias Grappa.{AdminEvents, AdmissionStateHelpers, Repo}
   alias Grappa.AdminEvents.Wire
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
@@ -27,17 +27,29 @@ defmodule Grappa.AdminEventsTest do
   ]
 
   setup do
-    # Drain stale `{:session, _, _}` entries from prior tests' fake
-    # registrations. `register_fake_session/2` registers under the
-    # test pid; on test exit, Registry cleans entries via monitor-DOWN
-    # which is ASYNC. Next test's Network row gets `id = 1` again
-    # (sandbox transactional rollback), so prior-test stale entries
-    # on network_id=1 inflate `live_counts_for_network/1` and
-    # `:cap_counts_changed` broadcasts assert wrong counts. `on_exit`
-    # cannot help: `Registry.unregister/2` only unregisters the
-    # CALLER's entries, and on_exit runs in a fresh pid. Drain at
-    # setup makes each test self-defending.
-    wait_for_empty_session_registry!()
+    # Drain stale `{:session, _, _}` entries left by prior tests.
+    # `AdmissionStateHelpers.reset_session_supervisor/0` is the canonical
+    # purge — it walks `DynamicSupervisor.which_children/1` and calls
+    # `terminate_child/2` (atomic: removes the child AND prevents
+    # restart, so `:transient` workers in a `:connect_failed` respawn
+    # loop are killed for good), then sweeps the Registry for any
+    # leaked pids (`GenServer.stop/3` with a 2s budget per pid),
+    # then polls until `Registry.count` reaches 0 (15s budget).
+    #
+    # Pre-fix this setup re-implemented the drain inline via
+    # `Registry.select` + `Session.stop_session/2` — but that walks
+    # the Registry, which can race the DynamicSupervisor's restart of
+    # a `:transient` worker whose Client just crashed on
+    # `:tcp_closed` (window between `whereis → nil` and the new pid
+    # registering itself). The canonical helper goes through the
+    # supervisor directly, sidestepping the race entirely.
+    #
+    # The other half of this fix is `AuthFixtures.start_session_for/2`
+    # + `start_visitor_session_for/2` now register an `on_exit`
+    # callback that calls `DynamicSupervisor.terminate_child/2` for
+    # the spawned pid — that prevents the leak at the source so
+    # this setup-time drain is empty in the steady-state case.
+    AdmissionStateHelpers.reset_session_supervisor()
 
     # AdminEvents is started by Grappa.Application; clear buffer state
     # per-test by record-then-snapshot-then-drop. Since record/1 is a
@@ -286,104 +298,5 @@ defmodule Grappa.AdminEventsTest do
     key = SessionServer.registry_key(subject, network_id)
     {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
     on_exit(fn -> _ = Registry.unregister(Grappa.SessionRegistry, key) end)
-  end
-
-  # Setup-time drain. Registry-monitor-DOWN cleanup of dead test pids
-  # is asynchronous; without this, sibling-test stale entries on the
-  # same auto-incremented `network_id` survive into the next test and
-  # inflate `live_counts_for_network/1`. Poll the match-spec used by
-  # admission until empty; bounded so a true hang surfaces as a clear
-  # test crash instead of a timeout deep inside `assert_receive`.
-  #
-  # GREEN-CI batch 2 (2026-05-23): bumped budget from 50×10ms (500ms)
-  # to 200×10ms (2s). CI runner under load consistently shows 4 stale
-  # entries surviving the original 500ms window — the issue is genuine
-  # cleanup latency (Registry monitor-DOWN ASYNC cleanup of dead pids
-  # under CI ETS contention), not a bug. 2s is still tight enough that
-  # a true hang surfaces clearly.
-  #
-  # BUGHUNT-2 pre-baseline (2026-05-24): bumped budget from 200×10ms
-  # (2s) to 500×10ms (5s). Local-dev full-suite load under more
-  # parallelism (post UX-8 + codegen + BUGHUNT-1 mature suite) again
-  # exceeds the prior budget — same root cause as GREEN-CI batch 2
-  # (genuine Registry monitor-DOWN async cleanup latency under ETS
-  # contention), more concurrent test pids feeding it. 5s still
-  # surfaces a true hang clearly.
-  #
-  # 2026-05-27: stale-session escalation. Visitor sessions whose
-  # IRCServer port closed mid-test enter a `:transient` respawn loop
-  # (DynamicSupervisor restarts on `:connect_failed`, backoff delays
-  # the next attempt). The Registry entry survives across the
-  # entire backoff window. Pure-passive wait can't drain those —
-  # force-stop them so the next test's setup gets a clean registry.
-  defp wait_for_empty_session_registry!, do: wait_for_empty_session_registry!(500)
-
-  defp wait_for_empty_session_registry!(0) do
-    # Last-chance: aggressively stop every leaked `:session` entry so
-    # a true hang (vs. async-cleanup-latency) doesn't crash this test
-    # AND every subsequent one. `Session.stop_session/2` is sync +
-    # supervisor-mediated; on `:transient` workers it terminates the
-    # pid AND removes it from the dynamic supervisor's children list,
-    # so a respawn loop stops here.
-    leftover =
-      Registry.select(Grappa.SessionRegistry, [
-        {{{:session, :_, :_}, :_, :_}, [], [{{:"$_"}}]}
-      ])
-
-    for {{:session, subject, network_id}, _, _} <- leftover do
-      _ = Grappa.Session.stop_session(subject, network_id)
-    end
-
-    # CI-2026-05-27 flake: `Session.stop_session/2` can leave the
-    # Registry entry behind for a tick after the pid is dead —
-    # Registry's own monitor-DOWN cleanup runs in its own process and
-    # is asynchronous. A single 50ms sleep wasn't enough on the GHA
-    # runner under coveralls load (10 AdminEventsTest setups all
-    # flunked back-to-back, same root cause as the rotating-cascade
-    # memory). Poll up to 200×10ms (2s) for the entries to drain
-    # before flunking — same budget shape as the upstream
-    # passive-wait window.
-    case drain_after_force_stop(200) do
-      :ok ->
-        :ok
-
-      {:still_present, remaining} ->
-        flunk("SessionRegistry never drained — stale entries: #{inspect(remaining)}")
-    end
-  end
-
-  defp wait_for_empty_session_registry!(remaining) do
-    case Registry.count_select(Grappa.SessionRegistry, [
-           {{{:session, :_, :_}, :_, :_}, [], [true]}
-         ]) do
-      0 ->
-        :ok
-
-      _ ->
-        Process.sleep(10)
-        wait_for_empty_session_registry!(remaining - 1)
-    end
-  end
-
-  defp drain_after_force_stop(0) do
-    remaining =
-      Registry.select(Grappa.SessionRegistry, [
-        {{{:session, :_, :_}, :_, :_}, [], [{{:"$_"}}]}
-      ])
-
-    if remaining == [], do: :ok, else: {:still_present, remaining}
-  end
-
-  defp drain_after_force_stop(attempts) do
-    case Registry.count_select(Grappa.SessionRegistry, [
-           {{{:session, :_, :_}, :_, :_}, [], [true]}
-         ]) do
-      0 ->
-        :ok
-
-      _ ->
-        Process.sleep(10)
-        drain_after_force_stop(attempts - 1)
-    end
   end
 end
