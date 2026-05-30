@@ -26,6 +26,7 @@ const SERVICES = new Set([
   "botserv",
   "hostserv",
   "helpserv",
+  "rootserv",
 ]);
 
 export function isServicesSender(s: string): boolean {

@@ -75,6 +75,66 @@ describe("parseSlash — /join", () => {
       verb: "join",
     });
   });
+
+  // Bundle B (issue follow-up #30 pre-work): bare-name UX
+  it("/join sniffo → auto-prepends # (UX shortcut)", () => {
+    expect(parseSlash("/join sniffo")).toEqual({
+      kind: "join",
+      channel: "#sniffo",
+      key: null,
+    });
+  });
+
+  it("/j sniffo → alias of /join + auto-prepend", () => {
+    expect(parseSlash("/j sniffo")).toEqual({
+      kind: "join",
+      channel: "#sniffo",
+      key: null,
+    });
+  });
+
+  it("/j #sniffo → alias, no double prepend", () => {
+    expect(parseSlash("/j #sniffo")).toEqual({
+      kind: "join",
+      channel: "#sniffo",
+      key: null,
+    });
+  });
+
+  it("/j sniffo secret → alias + key", () => {
+    expect(parseSlash("/j sniffo secret")).toEqual({
+      kind: "join",
+      channel: "#sniffo",
+      key: "secret",
+    });
+  });
+
+  it("/join &local → does not double-prepend on & prefix", () => {
+    expect(parseSlash("/join &local")).toEqual({
+      kind: "join",
+      channel: "&local",
+      key: null,
+    });
+  });
+
+  // Comma-safety (review fix #5): IRC JOIN treats `,` as multi-channel
+  // separator; auto-prepending `#` to `foo,bar` would join `#foo`
+  // AND `bar` (unprefixed second). Reject the ambiguous shape with
+  // a helpful error pointing to the explicit `#foo,#bar` form.
+  it("/j foo,bar → error (bare names with commas are ambiguous for multi-join)", () => {
+    expect(parseSlash("/j foo,bar")).toMatchObject({
+      kind: "error",
+      verb: "j",
+    });
+  });
+
+  it("/j #foo,#bar → passes through (already explicitly multi-prefixed)", () => {
+    expect(parseSlash("/j #foo,#bar")).toEqual({
+      kind: "join",
+      channel: "#foo,#bar",
+      key: null,
+    });
+  });
 });
 
 describe("parseSlash — /part", () => {
@@ -103,20 +163,86 @@ describe("parseSlash — /part", () => {
   });
 });
 
-describe("parseSlash — /topic", () => {
-  it("/topic bare → show cached topic", () => {
-    expect(parseSlash("/topic")).toEqual({ kind: "topic-show" });
+describe("parseSlash — /topic (context-aware, #23)", () => {
+  it("/topic bare → show {channel: null} (resolves to current channel in compose)", () => {
+    expect(parseSlash("/topic")).toEqual({ kind: "topic-show", channel: null });
   });
 
-  it("/topic -delete → clear topic", () => {
-    expect(parseSlash("/topic -delete")).toEqual({ kind: "topic-clear" });
+  it("/topic -delete → clear {channel: null} (current channel)", () => {
+    expect(parseSlash("/topic -delete")).toEqual({ kind: "topic-clear", channel: null });
   });
 
-  it("/topic <text> → set topic", () => {
+  it("/topic <text> → set {channel: null} (current channel)", () => {
     expect(parseSlash("/topic ciao mondo")).toEqual({
       kind: "topic-set",
+      channel: null,
       text: "ciao mondo",
     });
+  });
+
+  it("/topic #chan → show {channel: '#chan'}", () => {
+    expect(parseSlash("/topic #sniffo")).toEqual({ kind: "topic-show", channel: "#sniffo" });
+  });
+
+  it("/topic #chan <text> → set {channel: '#chan', text}", () => {
+    expect(parseSlash("/topic #sniffo porco dio")).toEqual({
+      kind: "topic-set",
+      channel: "#sniffo",
+      text: "porco dio",
+    });
+  });
+
+  it("/topic #chan -delete → clear {channel: '#chan'}", () => {
+    expect(parseSlash("/topic #sniffo -delete")).toEqual({
+      kind: "topic-clear",
+      channel: "#sniffo",
+    });
+  });
+
+  it("/topic &local <text> → set on local-scope channel (& prefix)", () => {
+    expect(parseSlash("/topic &local hello")).toEqual({
+      kind: "topic-set",
+      channel: "&local",
+      text: "hello",
+    });
+  });
+
+  it("/topic body that happens to start with a non-channel char stays current-channel set", () => {
+    expect(parseSlash("/topic cristo cane")).toEqual({
+      kind: "topic-set",
+      channel: null,
+      text: "cristo cane",
+    });
+  });
+
+  // Review fix #4: bare-# escape for topic bodies that legitimately
+  // start with a channel sigil. `/topic # <body>` says "no channel
+  // arg — `<body>` is the body even if it starts with #/&/+/!".
+  it("/topic # <body that starts with #> → current-channel set, no channel-arg extraction", () => {
+    expect(parseSlash("/topic # #urgent maintenance")).toEqual({
+      kind: "topic-set",
+      channel: null,
+      text: "#urgent maintenance",
+    });
+  });
+
+  it("/topic # <body that starts with !> → current-channel set", () => {
+    expect(parseSlash("/topic # !announce downtime")).toEqual({
+      kind: "topic-set",
+      channel: null,
+      text: "!announce downtime",
+    });
+  });
+
+  it("/topic # -delete → clears current channel (escape applies to control verbs too)", () => {
+    expect(parseSlash("/topic # -delete")).toEqual({
+      kind: "topic-clear",
+      channel: null,
+    });
+  });
+
+  it("/topic # (bare escape, nothing after) → show current channel", () => {
+    expect(parseSlash("/topic #")).toEqual({ kind: "topic-show", channel: null });
   });
 });
 
@@ -165,12 +291,14 @@ describe("parseSlash — /query and /q (DM aliases)", () => {
     expect(parseSlash("/q alice")).toEqual({ kind: "query", target: "alice" });
   });
 
-  it("/query missing nick → error", () => {
-    expect(parseSlash("/query")).toMatchObject({ kind: "error", verb: "query" });
+  // Bundle B: bare /query / /q now parses to {target: null}. compose.ts
+  // resolves: on a query window → close; elsewhere → error.
+  it("/query bare → {target: null} (close-current-query semantics in compose)", () => {
+    expect(parseSlash("/query")).toEqual({ kind: "query", target: null });
   });
 
-  it("/q missing nick → error", () => {
-    expect(parseSlash("/q")).toMatchObject({ kind: "error", verb: "q" });
+  it("/q bare → {target: null}", () => {
+    expect(parseSlash("/q")).toEqual({ kind: "query", target: null });
   });
 });
 
@@ -484,5 +612,82 @@ describe("parseSlash — /lusers (P-0d)", () => {
 
   it("ignores any trailing args (LUSERS is param-less)", () => {
     expect(parseSlash("/lusers ignored")).toEqual({ kind: "lusers" });
+  });
+});
+
+describe("parseSlash — services shortcuts (#20)", () => {
+  it.each([
+    ["cs", "ChanServ"],
+    ["ns", "NickServ"],
+    ["ms", "MemoServ"],
+    ["os", "OperServ"],
+    ["hs", "HostServ"],
+    ["rs", "RootServ"],
+  ])("/%s <cmd> → msg target=%s", (verb, target) => {
+    expect(parseSlash(`/${verb} HELP`)).toEqual({
+      kind: "msg",
+      target,
+      body: "HELP",
+    });
+  });
+
+  it("/ns IDENTIFY preserves the rest verbatim (multi-token body)", () => {
+    expect(parseSlash("/ns IDENTIFY hunter2 backup_pw")).toEqual({
+      kind: "msg",
+      target: "NickServ",
+      body: "IDENTIFY hunter2 backup_pw",
+    });
+  });
+
+  it.each(["cs", "ns", "ms", "os", "hs", "rs"])(
+    "/%s with no body → error",
+    (verb) => {
+      expect(parseSlash(`/${verb}`)).toMatchObject({ kind: "error", verb });
+    },
+  );
+});
+
+describe("parseSlash — /quote", () => {
+  it("/quote <line> → {line}", () => {
+    expect(parseSlash("/quote PING :foo.bar")).toEqual({
+      kind: "quote",
+      line: "PING :foo.bar",
+    });
+  });
+
+  it("/quote bare → error", () => {
+    expect(parseSlash("/quote")).toMatchObject({ kind: "error", verb: "quote" });
+  });
+
+  it("/quote with multi-token line preserves the whole tail", () => {
+    expect(parseSlash("/quote PRIVMSG #x :hello world")).toEqual({
+      kind: "quote",
+      line: "PRIVMSG #x :hello world",
+    });
+  });
+});
+
+describe("parseSlash — /oper", () => {
+  it("/oper <name> <password> → {name, password}", () => {
+    expect(parseSlash("/oper vjt s3cret")).toEqual({
+      kind: "oper",
+      name: "vjt",
+      password: "s3cret",
+    });
+  });
+
+  it("/oper bare → error", () => {
+    expect(parseSlash("/oper")).toMatchObject({ kind: "error", verb: "oper" });
+  });
+
+  it("/oper <name> (no password) → error", () => {
+    expect(parseSlash("/oper vjt")).toMatchObject({ kind: "error", verb: "oper" });
+  });
+
+  it("/oper rejects multi-word password (IRC OPER takes a single token)", () => {
+    expect(parseSlash("/oper vjt this is my passphrase")).toMatchObject({
+      kind: "error",
+      verb: "oper",
+    });
   });
 });

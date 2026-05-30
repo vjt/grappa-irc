@@ -869,49 +869,17 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  # Sets the topic on `channel` upstream AND persists a `:topic`
-  # scrollback row + broadcasts to the per-channel PubSub topic — same
-  # atomic-from-caller's-view shape as `:send_privmsg`. Symmetric with
-  # how the operator's own outbound TOPIC should appear in their own
-  # scrollback view alongside everyone else's.
+  # Sends `TOPIC <channel> :<body>` upstream. NO optimistic persist +
+  # broadcast here — issue #22: the upstream IRC server echoes the TOPIC
+  # back, EventRouter's unsolicited-TOPIC handler builds the canonical
+  # :topic persist effect + :topic_changed broadcast. Persisting here
+  # too duplicated the scrollback row + emitted a second topic_changed
+  # event. UX trade-off accepted: topic visibly updates after one RTT.
   def handle_call({:send_topic, channel, body}, _, state)
       when is_binary(channel) and is_binary(body) do
-    attrs =
-      Session.put_subject_id(
-        %{
-          network_id: state.network_id,
-          channel: channel,
-          server_time: System.system_time(:millisecond),
-          kind: :topic,
-          sender: state.nick,
-          body: body,
-          meta: %{}
-        },
-        state.subject
-      )
-
-    case Scrollback.persist_event(attrs) do
-      {:ok, message} ->
-        :ok =
-          Grappa.PubSub.broadcast_event(
-            Topic.channel(state.subject_label, state.network_slug, channel),
-            Wire.message_payload(message)
-          )
-
-        case Client.send_topic(state.client, channel, body) do
-          :ok ->
-            {:reply, {:ok, message}, state}
-
-          {:error, :invalid_line} = err ->
-            Logger.error("client rejected topic AFTER persist — facade bypass?",
-              channel: channel
-            )
-
-            {:reply, err, state}
-        end
-
-      {:error, _} = err ->
-        {:reply, err, state}
+    case Client.send_topic(state.client, channel, body) do
+      :ok -> {:reply, :ok, state}
+      {:error, _} = err -> {:reply, err, state}
     end
   end
 
@@ -937,6 +905,42 @@ defmodule Grappa.Session.Server do
   # before `Client.send_quit/2` got a chance to run.
   def handle_call({:send_quit, reason}, _, state) when is_binary(reason) do
     case Client.send_quit(state.client, reason) do
+      :ok -> {:reply, :ok, state}
+      {:error, _} = err -> {:reply, err, state}
+    end
+  end
+
+  # Bundle C — /oper <name> <password> upstream. Password REDACTED from
+  # any log line: this handler emits a STATIC message body (no string
+  # interpolation of user input) and threads the operator name through
+  # the already-allowlisted `:nick` Logger metadata key. Static message
+  # body is load-bearing — if the operator inverts arg order and types
+  # `/oper <password> <name>`, the password lands in the `name` slot;
+  # an interpolated message would write that password to disk. The
+  # Client.send_oper call wraps a private send_line which only logs
+  # `reject_invalid_line/1` on the rejection path (which carries no
+  # body), so the secret can't leak there either.
+  def handle_call({:send_oper, name, password}, _, state)
+      when is_binary(name) and is_binary(password) do
+    Logger.info("OPER request submitted", verb: :oper, nick: name)
+
+    case Client.send_oper(state.client, name, password) do
+      :ok -> {:reply, :ok, state}
+      {:error, _} = err -> {:reply, err, state}
+    end
+  end
+
+  # Bundle C — /quote <raw IRC line> escape hatch. Whole line is
+  # validated (no embedded CRLF/NUL) at the Client boundary then sent
+  # verbatim. We log the byte size (not the body) to keep operator
+  # observability without dumping arbitrary user input — operators
+  # who need to debug the wire can use the existing IRC log stream.
+  def handle_call({:send_raw, line}, _, state) when is_binary(line) do
+    Logger.debug("raw IRC line submitted via /quote (#{byte_size(line)} bytes)",
+      verb: :raw
+    )
+
+    case Client.send_raw(state.client, line) do
       :ok -> {:reply, :ok, state}
       {:error, _} = err -> {:reply, err, state}
     end

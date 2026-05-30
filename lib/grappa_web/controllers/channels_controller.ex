@@ -260,8 +260,9 @@ defmodule GrappaWeb.ChannelsController do
   @doc """
   `POST /networks/:network_id/channels/:channel_id/topic` — body
   `{"body": "new topic"}`. Casts `TOPIC <channel> :<body>` upstream
-  through the subject's session AND persists a `:topic` scrollback
-  row.
+  through the subject's session. Upstream echoes back and EventRouter
+  persists the canonical `:topic` scrollback row + broadcasts (single
+  write path, closes #22 duplicate-display).
   """
   @spec topic(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request | :no_session | :invalid_line}
@@ -272,7 +273,7 @@ defmodule GrappaWeb.ChannelsController do
 
     with :ok <- BodyLimit.check(body),
          :ok <- validate_channel_name(channel),
-         {:ok, _} <- Session.send_topic(subject, network.id, channel, body) do
+         :ok <- Session.send_topic(subject, network.id, channel, body) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})

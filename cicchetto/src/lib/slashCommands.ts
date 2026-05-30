@@ -34,14 +34,32 @@
 // reason is always a plain string — callers do not need to handle the
 // `:` prefix variant after this parser strips it.
 //
-// /topic verb branches:
-//   - `/topic`         → topic-show (render cached topic inline)
-//   - `/topic -delete` → topic-clear (irssi convention for unsetting topic)
-//   - `/topic <text>`  → topic-set (set channel topic to text)
+// /topic verb branches (context-aware, issue #23):
+//   - `/topic`                  → topic-show {channel: null}    (current chan)
+//   - `/topic -delete`          → topic-clear {channel: null}   (current chan)
+//   - `/topic <text>`           → topic-set {channel: null, text}
+//   - `/topic #chan`            → topic-show {channel: "#chan"}
+//   - `/topic #chan <text>`     → topic-set {channel: "#chan", text}
+//   - `/topic #chan -delete`    → topic-clear {channel: "#chan"}
+// Parser stays pure — resolving null channel against the focused window
+// (and bailing if not on a channel window) is compose.ts's job.
 //
 // Aliases:
 //   - `/q` == `/query` (both produce {kind: "query"})
+//   - `/j` == `/join`  (both produce {kind: "join"})
 //   - `/watch` == `/highlight` (both produce {kind: "watchlist"})
+//
+// Services shortcuts (issue #20) — rewrite to {kind: "msg", target}:
+//   - `/cs <cmd>` → ChanServ
+//   - `/ns <cmd>` → NickServ
+//   - `/ms <cmd>` → MemoServ
+//   - `/os <cmd>` → OperServ
+//   - `/hs <cmd>` → HostServ
+//   - `/rs <cmd>` → RootServ
+//
+// Power-user verbs:
+//   - `/quote <line>` → raw IRC frame (escape hatch)
+//   - `/oper <name> <password>` → IRC OPER (password redacted in logs)
 //
 // /watch /highlight subverbs: `add <pattern>` / `del <pattern>` / `list`.
 // Server-side /user_settings API is not yet implemented — handlers in
@@ -53,12 +71,12 @@ export type SlashCommand =
   | { kind: "me"; body: string }
   | { kind: "join"; channel: string; key: string | null }
   | { kind: "part"; channel: string | null; reason: string | null }
-  | { kind: "topic-show" }
-  | { kind: "topic-set"; text: string }
-  | { kind: "topic-clear" }
+  | { kind: "topic-show"; channel: string | null }
+  | { kind: "topic-set"; channel: string | null; text: string }
+  | { kind: "topic-clear"; channel: string | null }
   | { kind: "nick"; nick: string }
   | { kind: "msg"; target: string; body: string }
-  | { kind: "query"; target: string }
+  | { kind: "query"; target: string | null }
   | { kind: "quit"; reason: string | null }
   | { kind: "disconnect"; network: string | null; reason: string | null }
   | { kind: "connect"; network: string }
@@ -85,6 +103,8 @@ export type SlashCommand =
   | { kind: "watchlist"; action: "add"; pattern: string }
   | { kind: "watchlist"; action: "del"; pattern: string }
   | { kind: "watchlist"; action: "list" }
+  | { kind: "quote"; line: string }
+  | { kind: "oper"; name: string; password: string }
   | { kind: "error"; verb: string; message: string };
 
 function err(verb: string, message: string): SlashCommand {
@@ -144,11 +164,29 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     // support). Second positional token is the optional key. Tokens
     // beyond the second are rejected — keys per RFC 2812 are a single
     // word (no embedded spaces).
+    //
+    // Issue #30/-pre / B (this bundle): bare-name UX — `/j sniffo`
+    // and `/join sniffo` auto-prepend `#` so users don't have to type
+    // the prefix. Names that already carry an RFC channel-prefix
+    // [#&+!] are left untouched.
+    //
+    // Comma-safety: IRC JOIN treats `,` as a multi-channel separator
+    // (`JOIN #a,#b` joins both). Auto-prepending `#` to `foo,bar` would
+    // yield `#foo,bar` — `#foo` joins, `bar` (unprefixed) yields an
+    // unspecified-channel server error. Reject the auto-prepend path
+    // when the bare name contains `,`; the user must spell out each
+    // channel with its sigil (`/join #foo,#bar`).
     const toks = tokens(rest);
-    const channel = toks[0];
-    if (!channel) return err(verb, "/join requires a channel name");
+    const raw = toks[0];
+    if (!raw) return err(verb, `/${verb} requires a channel name`);
     if (toks.length > 2)
-      return err(verb, "/join: too many arguments (expected /join <chan> [key])");
+      return err(verb, `/${verb}: too many arguments (expected /${verb} <chan> [key])`);
+    if (!/^[#&+!]/.test(raw) && raw.includes(","))
+      return err(
+        verb,
+        `/${verb}: bare names with commas are ambiguous — spell each channel out (e.g. /${verb} #${raw.split(",").join(",#")})`,
+      );
+    const channel = /^[#&+!]/.test(raw) ? raw : `#${raw}`;
     const key = toks[1] ?? null;
     return { kind: "join", channel, key };
   },
@@ -161,9 +199,45 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   },
 
   topic: (_verb, rest) => {
-    if (rest === "") return { kind: "topic-show" };
-    if (rest.trim() === "-delete") return { kind: "topic-clear" };
-    return { kind: "topic-set", text: rest };
+    // Context-aware /topic (issue #23):
+    //   /topic                        → show topic of current channel
+    //   /topic <text>                 → set current channel's topic to <text>
+    //   /topic -delete                → clear current channel's topic
+    //   /topic #chan                  → show topic of #chan
+    //   /topic #chan <text>           → set #chan's topic to <text>
+    //   /topic #chan -delete          → clear #chan's topic
+    //   /topic # <text>               → ESCAPE: set current channel's topic
+    //                                   to <text> when <text> begins with
+    //                                   a channel sigil (so /topic #urgent
+    //                                   ... can express "literal #urgent
+    //                                   in topic body of current channel")
+    //
+    // Resolution of "current channel" + bail-if-not-in-channel happens
+    // in compose.ts (parser stays pure — no selectedChannel() coupling).
+    // The explicit channel is recognized by the RFC channel-prefix set
+    // [#&+!]. The bare `#` escape (a single `#` followed by whitespace)
+    // is the irssi convention for "the next thing is body, not a
+    // channel arg" — required because some topic bodies legitimately
+    // begin with `#hashtag`/`!urgent`/etc.
+    if (rest === "") return { kind: "topic-show", channel: null };
+    if (rest.trim() === "-delete") return { kind: "topic-clear", channel: null };
+    // Bare-# escape: `/topic # ...` → current channel, body is the rest.
+    if (rest === "#" || rest.startsWith("# ") || rest.startsWith("#\t")) {
+      const body = rest.slice(1).trim();
+      if (body === "") return { kind: "topic-show", channel: null };
+      if (body === "-delete") return { kind: "topic-clear", channel: null };
+      return { kind: "topic-set", channel: null, text: body };
+    }
+    if (/^[#&+!]/.test(rest)) {
+      const sp = rest.search(/\s/);
+      if (sp === -1) return { kind: "topic-show", channel: rest };
+      const channel = rest.slice(0, sp);
+      const body = rest.slice(sp + 1).trim();
+      if (body === "") return { kind: "topic-show", channel };
+      if (body === "-delete") return { kind: "topic-clear", channel };
+      return { kind: "topic-set", channel, text: body };
+    }
+    return { kind: "topic-set", channel: null, text: rest };
   },
 
   nick: (verb, rest) => {
@@ -184,10 +258,13 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     return { kind: "msg", target, body };
   },
 
-  query: (verb, rest) => {
+  query: (_verb, rest) => {
+    // /query <nick> opens; bare /query on a query window closes it
+    // (handled in compose.ts, which has selectedChannel() context).
+    // Parser stays pure — emit {target: null} on bare; compose decides
+    // whether the current window kind permits the close-semantics.
     const [target] = tokens(rest);
-    if (!target) return err(verb, `/${verb} requires a nick`);
-    return { kind: "query", target };
+    return { kind: "query", target: target ?? null };
   },
 
   // /q is an alias for /query — registered as separate key below.
@@ -304,13 +381,77 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
 
   watch: (verb, rest) => parseWatchlist(verb, rest),
   highlight: (verb, rest) => parseWatchlist(verb, rest),
+
+  // Issue #20 — services shortcuts. Each one rewrites to a {kind: "msg"}
+  // command targeting the canonical ServiceNick. Empty body → error (no
+  // point sending an empty PRIVMSG to ChanServ et al). Server responses
+  // route to the `$server` window via the services-sender allowlist
+  // (lib/grappa/irc/identifier.ex + cicchetto/src/lib/servicesSender.ts —
+  // kept in lockstep). The compose.ts `msg` arm already short-circuits
+  // services targets to `sendPrivmsg` without opening a query window.
+  cs: (_verb, rest) => parseServiceShortcut("cs", "ChanServ", rest),
+  ns: (_verb, rest) => parseServiceShortcut("ns", "NickServ", rest),
+  ms: (_verb, rest) => parseServiceShortcut("ms", "MemoServ", rest),
+  os: (_verb, rest) => parseServiceShortcut("os", "OperServ", rest),
+  hs: (_verb, rest) => parseServiceShortcut("hs", "HostServ", rest),
+  rs: (_verb, rest) => parseServiceShortcut("rs", "RootServ", rest),
+
+  // /quote <raw irc line> — escape hatch. Sends the raw bytes
+  // verbatim upstream (CRLF appended by the client). Pure-parser pass-
+  // through; compose.ts pushes the line via Phoenix Channel to
+  // GrappaChannel.handle_in("raw", ...) → Session.send_raw → Client
+  // socket. No validation here; CRLF/NUL injection rejected at the
+  // wire boundary.
+  quote: (verb, rest) => {
+    if (rest === "") return err(verb, "/quote requires a raw IRC line");
+    return { kind: "quote", line: rest };
+  },
+
+  // /oper <name> <password> — IRC OPER command. Pure parser; the
+  // password is captured but NEVER logged or persisted in cic (it
+  // travels over WS to the bouncer, which redacts it before any log
+  // line by emitting a static log message body — no interpolation).
+  // BOTH fields must be single tokens with no embedded whitespace —
+  // IRC OPER is a 2-token wire frame, and a multi-word "password"
+  // would be silently truncated by the server to its first token
+  // (yielding a confusing 464 ERR_PASSWDMISMATCH for the user) AND
+  // splice the trailing tokens into positional arg slots upstream.
+  // The bouncer-side `Identifier.safe_oper_token?/1` mirrors this
+  // check as the wire-boundary guard.
+  oper: (verb, rest) => {
+    const sp = rest.search(/\s/);
+    if (sp === -1) return err(verb, "/oper requires <name> <password>");
+    const name = rest.slice(0, sp);
+    const password = rest.slice(sp + 1).trim();
+    if (name === "" || password === "") return err(verb, "/oper requires <name> <password>");
+    if (/\s/.test(password))
+      return err(
+        verb,
+        "/oper password must be a single token (IRC OPER takes one whitespace-delimited password)",
+      );
+    return { kind: "oper", name, password };
+  },
 };
 
-// /q is an alias for /query — same handler, but error messages use verb "q".
-// DISPATCH.query is always defined (it's a key in the initializer above).
+function parseServiceShortcut(verb: string, target: string, rest: string): SlashCommand {
+  if (rest === "") return err(verb, `/${verb} requires a command to send to ${target}`);
+  return { kind: "msg", target, body: rest };
+}
+
+// Post-init aliases. Adding to DISPATCH after the literal initializer
+// keeps the type narrowed in the original block while still surfacing
+// aliases through the same Handler indirection.
+//   /q → /query (same handler)
+//   /j → /join  (same handler)
+// All five service-msg shortcuts (/cs /ns /ms /os /hs /rs) live as
+// independent DISPATCH entries below; they rewrite to {kind: "msg"}.
 const queryHandler = DISPATCH.query;
 if (queryHandler) {
   (DISPATCH as Record<string, Handler>).q = queryHandler;
+}
+const joinHandler = DISPATCH.join;
+if (joinHandler) {
+  (DISPATCH as Record<string, Handler>).j = joinHandler;
 }
 
 export function parseSlash(input: string): SlashCommand {

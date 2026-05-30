@@ -235,8 +235,8 @@ defmodule Grappa.IRC.IdentifierTest do
   # allowlist intentionally rejects ops nicks like `Conserv` / `Reserv`
   # — bucket H/S4 closed the same misclassification class for outbound.
   describe "services_sender?/1" do
-    test "accepts the seven well-known services nicks (case-insensitive)" do
-      for nick <- ~w(NickServ ChanServ MemoServ OperServ BotServ HostServ HelpServ) do
+    test "accepts the eight well-known services nicks (case-insensitive)" do
+      for nick <- ~w(NickServ ChanServ MemoServ OperServ BotServ HostServ HelpServ RootServ) do
         assert Identifier.services_sender?(nick), "expected #{nick} to classify as services"
         assert Identifier.services_sender?(String.downcase(nick))
         assert Identifier.services_sender?(String.upcase(nick))
@@ -284,6 +284,38 @@ defmodule Grappa.IRC.IdentifierTest do
           refute Identifier.services_sender?(s)
         end
       end
+    end
+  end
+
+  describe "safe_oper_token?/1 (#20 bundle)" do
+    test "accepts non-empty single tokens with no whitespace or control bytes" do
+      for s <- ~w(vjt admin-op s3cret hunter2 op_with_underscore) do
+        assert Identifier.safe_oper_token?(s), "expected #{s} to pass"
+      end
+    end
+
+    test "rejects empty string" do
+      refute Identifier.safe_oper_token?("")
+    end
+
+    test "rejects strings containing space or tab" do
+      refute Identifier.safe_oper_token?("vjt extra")
+      refute Identifier.safe_oper_token?("admin\tname")
+      refute Identifier.safe_oper_token?(" leading")
+      refute Identifier.safe_oper_token?("trailing ")
+    end
+
+    test "rejects strings containing CR/LF/NUL (line-token superset)" do
+      refute Identifier.safe_oper_token?("evil\r\nKILL")
+      refute Identifier.safe_oper_token?("evil\nfoo")
+      refute Identifier.safe_oper_token?("evil\rfoo")
+      refute Identifier.safe_oper_token?("evil\x00foo")
+    end
+
+    test "rejects non-binary input" do
+      refute Identifier.safe_oper_token?(nil)
+      refute Identifier.safe_oper_token?(:atom)
+      refute Identifier.safe_oper_token?(42)
     end
   end
 end

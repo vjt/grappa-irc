@@ -2511,24 +2511,48 @@ defmodule Grappa.Session.ServerTest do
   end
 
   describe "send_topic/4" do
-    test "persists a :topic scrollback row, broadcasts, and writes TOPIC upstream" do
+    test "writes TOPIC upstream; upstream echo persists row + broadcasts (single path, #22)" do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "#italia")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
       pid = start_session_for(user, network)
       :ok = await_handshake(server)
 
-      assert {:ok, message} =
+      assert :ok =
                Session.send_topic({:user, user.id}, network.id, "#italia", "new topic")
-
-      assert message.kind == :topic
-      assert message.channel == "#italia"
-      assert message.body == "new topic"
-      assert message.sender == "grappa-test"
 
       {:ok, line} =
         IRCServer.wait_for_line(server, &String.starts_with?(&1, "TOPIC "), 1_000)
 
       assert line == "TOPIC #italia :new topic\r\n"
+
+      # Echo the TOPIC back as the canonical upstream confirmation —
+      # EventRouter persists the :topic row + broadcasts. Pre-#22 the
+      # send-side handler also persisted+broadcast, producing a duplicate.
+      IRCServer.feed(server, ":grappa-test!u@h TOPIC #italia :new topic\r\n")
+
+      msg =
+        assert_message_event(
+          kind: "topic",
+          body: "new topic",
+          sender: "grappa-test",
+          channel: "#italia",
+          network: network.slug
+        )
+
+      assert is_integer(msg.id)
+
+      # #22 sentinel: the duplicate broadcast that pre-fix arrived from
+      # the send-side handler must NOT land. Use a tight refute_receive
+      # window since the persist+broadcast is fully synchronous.
+      refute_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "message", message: %{kind: "topic"}}
+                     },
+                     150
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -5505,6 +5529,136 @@ defmodule Grappa.Session.ServerTest do
     test "no_session for unknown (user, network)" do
       assert {:error, :no_session} =
                Session.send_topic_clear({:user, Ecto.UUID.generate()}, 999_999, "#x")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Bundle C (#20 follow-up) — /oper + /quote facades
+  # ---------------------------------------------------------------------------
+
+  describe "send_oper/4" do
+    test "writes OPER <name> <password> upstream" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert :ok = Session.send_oper({:user, user.id}, network.id, "vjt", "s3cret")
+
+      {:ok, line} =
+        IRCServer.wait_for_line(server, &String.starts_with?(&1, "OPER "), 1_000)
+
+      assert line == "OPER vjt s3cret\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # Phase 3 sweep A4 — locks the password-redaction contract. Bundle C
+    # promises "password REDACTED in any log line" via a static log body
+    # (no interpolation of user input). If a future edit reintroduces
+    # `#{password}` interpolation OR swaps the positional args, this
+    # sentinel catches it before ship.
+    test "logs OPER submission with redacted password (no interpolation of secret)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Test env sets `config :logger, level: :warning` (config/test.exs)
+      # so :info-level logs are filtered globally before any capture
+      # handler sees them. Per-module level override scopes the bump
+      # to Grappa.Session.Server only, leaving neighbour async tests
+      # on the default warning stream. Cleanup via on_exit.
+      Logger.put_module_level(Grappa.Session.Server, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Session.Server) end)
+
+      log =
+        capture_log(fn ->
+          assert :ok =
+                   Session.send_oper({:user, user.id}, network.id, "vjt", "h0pefully-redacted")
+
+          {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "OPER "), 1_000)
+        end)
+
+      assert log =~ "OPER request submitted"
+      assert log =~ "nick=vjt"
+
+      refute log =~ "h0pefully-redacted",
+             "password leaked into log line — Session.Server.handle_call({:send_oper, _}) must use a STATIC message body"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "rejects CRLF in name before whereis lookup" do
+      assert {:error, :invalid_line} =
+               Session.send_oper({:user, Ecto.UUID.generate()}, 999_999, "vjt\r\nKILL", "p")
+    end
+
+    test "rejects CRLF in password before whereis lookup" do
+      assert {:error, :invalid_line} =
+               Session.send_oper({:user, Ecto.UUID.generate()}, 999_999, "vjt", "p\r\nKILL")
+    end
+
+    # Bundle C follow-up: stricter `safe_oper_token?` rejects empty
+    # fields and embedded whitespace — both lead to a malformed OPER
+    # wire frame and (worse, for the whitespace case) the password
+    # leaking into a positional slot upstream.
+    test "rejects empty name" do
+      assert {:error, :invalid_line} =
+               Session.send_oper({:user, Ecto.UUID.generate()}, 999_999, "", "pw")
+    end
+
+    test "rejects empty password" do
+      assert {:error, :invalid_line} =
+               Session.send_oper({:user, Ecto.UUID.generate()}, 999_999, "vjt", "")
+    end
+
+    test "rejects whitespace in name (would leak password into positional slot)" do
+      assert {:error, :invalid_line} =
+               Session.send_oper({:user, Ecto.UUID.generate()}, 999_999, "vjt extra", "pw")
+    end
+
+    test "rejects whitespace in password (IRC OPER takes a single token)" do
+      assert {:error, :invalid_line} =
+               Session.send_oper({:user, Ecto.UUID.generate()}, 999_999, "vjt", "pw with spaces")
+    end
+
+    test "no_session for unknown (user, network)" do
+      assert {:error, :no_session} =
+               Session.send_oper({:user, Ecto.UUID.generate()}, 999_999, "vjt", "pw")
+    end
+  end
+
+  describe "send_raw/3" do
+    test "ships the raw IRC line verbatim with trailing CRLF" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert :ok = Session.send_raw({:user, user.id}, network.id, "PING :foo.bar")
+
+      {:ok, line} =
+        IRCServer.wait_for_line(server, &String.starts_with?(&1, "PING"), 1_000)
+
+      assert line == "PING :foo.bar\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "rejects embedded CRLF (frame-smuggling guard)" do
+      assert {:error, :invalid_line} =
+               Session.send_raw({:user, Ecto.UUID.generate()}, 999_999, "PING\r\nQUIT :pwn")
+    end
+
+    test "rejects empty line" do
+      assert {:error, :invalid_line} =
+               Session.send_raw({:user, Ecto.UUID.generate()}, 999_999, "")
+    end
+
+    test "no_session for unknown (user, network)" do
+      assert {:error, :no_session} =
+               Session.send_raw({:user, Ecto.UUID.generate()}, 999_999, "PING :x")
     end
   end
 

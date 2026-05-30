@@ -440,18 +440,15 @@ defmodule Grappa.Session do
 
   @doc """
   Sets the topic on `channel` for the session's `(subject, network_id)`.
-  Synchronously persists a `:topic` scrollback row, broadcasts on the
-  per-channel PubSub topic, and writes `TOPIC <chan> :<body>` upstream —
-  single-source path, mirror of `send_privmsg/4`.
+  Writes `TOPIC <chan> :<body>` upstream; the upstream server echoes the
+  TOPIC back and `EventRouter` persists the canonical `:topic` scrollback
+  row + broadcasts on the per-channel PubSub topic (single-write path —
+  closes #22 duplicate-display).
 
-  Returns `{:ok, message}` with the persisted row, `{:error, :no_session}`
-  if no session is registered, `{:error, :invalid_line}` for CRLF/NUL
-  injection, or `{:error, Ecto.Changeset.t()}` on validation failure.
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`.
   """
   @spec send_topic(subject(), integer(), String.t(), String.t()) ::
-          {:ok, Grappa.Scrollback.Message.t()}
-          | {:error, :no_session | :invalid_line | send_transport_error()}
-          | {:error, Ecto.Changeset.t()}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_topic(subject, network_id, channel, body)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(body) do
@@ -476,6 +473,51 @@ defmodule Grappa.Session do
       when is_subject(subject) and is_integer(network_id) and is_binary(new_nick) do
     if Identifier.safe_line_token?(new_nick) do
       call_session(subject, network_id, {:send_nick, new_nick})
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
+  Sends `OPER <name> <password>` upstream for the session's
+  `(subject, network_id)`. Both fields go through
+  `Identifier.safe_oper_token?/1`: non-empty, no whitespace, no
+  CR/LF/NUL. Bouncer DOES NOT log the password — the
+  `Session.Server` handler emits a static log message body, threading
+  only the operator name through the allowlisted `:nick` metadata key.
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
+  if either field violates the safe-oper-token predicate.
+
+  Bundle C (#20 follow-up): /oper slash-command implementation.
+  """
+  @spec send_oper(subject(), integer(), String.t(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
+  def send_oper(subject, network_id, name, password)
+      when is_subject(subject) and is_integer(network_id) and is_binary(name) and
+             is_binary(password) do
+    if Identifier.safe_oper_token?(name) and Identifier.safe_oper_token?(password) do
+      call_session(subject, network_id, {:send_oper, name, password})
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
+  Sends a raw IRC line upstream for the session's `(subject,
+  network_id)` — `/quote` escape hatch. The line is shipped verbatim
+  with a trailing `\\r\\n`; the IRC server is authoritative on
+  whether the verb is valid. Rejects embedded CR/LF/NUL (would let
+  callers smuggle additional frames). Returns `:ok`,
+  `{:error, :no_session}`, or `{:error, :invalid_line}`.
+
+  Bundle C (#20 follow-up): /quote slash-command implementation.
+  """
+  @spec send_raw(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
+  def send_raw(subject, network_id, line)
+      when is_subject(subject) and is_integer(network_id) and is_binary(line) do
+    if line != "" and Identifier.safe_line_token?(line) do
+      call_session(subject, network_id, {:send_raw, line})
     else
       {:error, :invalid_line}
     end

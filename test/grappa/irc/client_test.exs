@@ -444,6 +444,27 @@ defmodule Grappa.IRC.ClientTest do
       assert Process.alive?(client),
              "IRC.Client crashed instead of returning {:error, _}"
     end
+
+    # Bundle C (#20 follow-up)
+    test "send_oper/3 emits OPER <name> <password>\\r\\n" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_oper(client, "vjt", "s3cret")
+
+      assert {:ok, "OPER vjt s3cret\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "OPER"), 1_000)
+    end
+
+    test "send_raw/2 ships the line verbatim with trailing CRLF" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_raw(client, "PING :foo.bar")
+
+      assert {:ok, "PING :foo.bar\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PING"), 1_000)
+    end
   end
 
   describe "inbound: server → client → dispatch_to" do
@@ -1083,6 +1104,35 @@ defmodule Grappa.IRC.ClientTest do
     test "send_nick/2 rejects spaces / CRLF in nick", %{client: client} do
       assert {:error, :invalid_line} = Client.send_nick(client, "vjt away")
       assert {:error, :invalid_line} = Client.send_nick(client, "vjt\r\nQUIT")
+    end
+
+    # Bundle C (#20 follow-up)
+    test "send_oper/3 rejects CRLF in either field", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_oper(client, "vjt\r\nKILL", "pw")
+      assert {:error, :invalid_line} = Client.send_oper(client, "vjt", "pw\r\nKILL me")
+    end
+
+    # Stricter `safe_oper_token?` boundary — empty fields and embedded
+    # whitespace are rejected at the Client layer so a non-cic caller
+    # (test harness, Phase 6 listener facade) can't slip a malformed
+    # OPER frame past this door even if the Session facade is bypassed.
+    test "send_oper/3 rejects empty name or password", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_oper(client, "", "pw")
+      assert {:error, :invalid_line} = Client.send_oper(client, "vjt", "")
+    end
+
+    test "send_oper/3 rejects whitespace in either field", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_oper(client, "vjt extra", "pw")
+      assert {:error, :invalid_line} = Client.send_oper(client, "vjt", "pw with spaces")
+      assert {:error, :invalid_line} = Client.send_oper(client, "vjt\textra", "pw")
+    end
+
+    test "send_raw/2 rejects embedded CRLF (no frame-smuggling)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_raw(client, "PING foo\r\nQUIT :pwn")
+    end
+
+    test "send_raw/2 rejects empty line", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_raw(client, "")
     end
 
     # send_pong/2 PING token is parser-supplied; `Grappa.IRC.Parser`

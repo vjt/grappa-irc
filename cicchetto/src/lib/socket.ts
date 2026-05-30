@@ -359,6 +359,47 @@ export function pushChannelTopicSet(networkId: number, channel: string, text: st
   _userChannel.push("topic_set", { network_id: networkId, channel, text });
 }
 
+// Bundle C (#20 follow-up) — /oper <name> <password>. The password
+// travels over the WS frame; the bouncer (Session.Server.handle_call
+// {:send_oper, ...}) redacts it from any log line by emitting a
+// static message body (no interpolation) before sending OPER upstream.
+// Server replies arrive as 381 RPL_YOUREOPER (success) or 491 / 464
+// (failure) numerics routed via the existing numeric-routing path.
+//
+// Returns a Promise (not fire-and-forget) so the compose box surfaces
+// `invalid_line`, `visitor_not_allowed`, `no_session`, or disconnected
+// (`not connected`) failures as inline alerts — credential-bearing
+// verbs MUST NOT silently no-op (CLAUDE.md `feedback_no_silent_drops_closed`).
+export function pushOper(networkId: number, name: string, password: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (_userChannel === null) {
+      reject(new Error("not connected"));
+      return;
+    }
+    _userChannel
+      .push("oper", { network_id: networkId, name, password })
+      .receive("ok", () => resolve())
+      .receive("error", (err: unknown) => reject(channelPushError(err)));
+  });
+}
+
+// Bundle C (#20 follow-up) — /quote <raw IRC line>. Same Promise shape
+// as pushOper: a silently-dropped /quote leaves the operator typing into
+// the void, so the compose-box error path MUST see WS-disconnected or
+// server-side {:error,_} replies.
+export function pushRaw(networkId: number, line: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (_userChannel === null) {
+      reject(new Error("not connected"));
+      return;
+    }
+    _userChannel
+      .push("raw", { network_id: networkId, line })
+      .receive("ok", () => resolve())
+      .receive("error", (err: unknown) => reject(channelPushError(err)));
+  });
+}
+
 // /whois <nick> → WHOIS nick — pushes on the user-level channel.
 // Server-side `handle_in("whois", ...)` handler in GrappaChannel is
 // pending (C5 gap: cicchetto side landed; server side deferred to next bucket).

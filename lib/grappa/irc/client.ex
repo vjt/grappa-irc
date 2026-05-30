@@ -308,6 +308,46 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
+  Sends `OPER <name> <password>\\r\\n`. Both fields go through the
+  stricter `Identifier.safe_oper_token?/1` predicate: non-empty,
+  no whitespace, no CR/LF/NUL. Rationale: IRC OPER is a 2-token
+  wire frame; a space in either field would split the frame at
+  the wrong boundary, leak the password into a positional slot,
+  and/or yield silent 464 ERR_PASSWDMISMATCH replies (multi-word
+  passwords are truncated to the first token by the server). The
+  password is opaque to this client — the upstream server validates
+  it and replies with numeric 381 (RPL_YOUREOPER, success) or 491
+  (ERR_NOOPERHOST) / 464 (ERR_PASSWDMISMATCH) on failure.
+  Bouncer-side: never log the line —
+  `Session.Server.handle_call({:send_oper, ...})` redacts the
+  password by emitting a static log message body (no interpolation).
+  """
+  @spec send_oper(pid(), String.t(), String.t()) :: send_result()
+  def send_oper(client, name, password) do
+    if Identifier.safe_oper_token?(name) and Identifier.safe_oper_token?(password),
+      do: send_line(client, "OPER #{name} #{password}\r\n"),
+      else: reject_invalid_line(:oper)
+  end
+
+  @doc """
+  Raw IRC line escape hatch — used by `/quote` (issue #20 bundle).
+  Validates that `line` has no embedded CR/LF/NUL (which would let the
+  caller smuggle additional commands or terminate the frame early),
+  then appends the trailing `\\r\\n` and ships it verbatim. The IRC
+  server is the authority on protocol legality; this helper is the
+  bouncer's "send anything that's a single safe line" door.
+
+  Rejects empty `line` (the wire would be just `\\r\\n` which is
+  protocol-illegal anyway).
+  """
+  @spec send_raw(pid(), String.t()) :: send_result()
+  def send_raw(client, line) do
+    if line != "" and Identifier.safe_line_token?(line),
+      do: send_line(client, [line, "\r\n"]),
+      else: reject_invalid_line(:raw)
+  end
+
+  @doc """
   Sends `AWAY :<reason>\\r\\n` (set) or bare `AWAY\\r\\n` (unset).
 
   - `send_away(client, reason)` with a non-nil `reason` sends `AWAY :reason`.
@@ -553,6 +593,8 @@ defmodule Grappa.IRC.Client do
            | :whowas
            | :who
            | :names
+           | :oper
+           | :raw
 
   @spec reject_invalid_line(verb()) :: {:error, :invalid_line}
   defp reject_invalid_line(verb) do

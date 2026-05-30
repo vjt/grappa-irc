@@ -61,7 +61,7 @@ defmodule Grappa.IRC.Identifier do
   # `Conserv` / `Dataserv` / `Reserv` are real ops nicks that MUST NOT
   # be misclassified as services). Bucket G unifies on the allowlist so
   # every door uses the same predicate.
-  @services ~w(nickserv chanserv memoserv operserv botserv hostserv helpserv)
+  @services ~w(nickserv chanserv memoserv operserv botserv hostserv helpserv rootserv)
 
   @doc "True iff the input is a syntactically valid IRC nickname."
   @spec valid_nick?(term()) :: boolean()
@@ -166,6 +166,33 @@ defmodule Grappa.IRC.Identifier do
     do: not String.contains?(s, ["\r", "\n", "\x00"])
 
   def safe_line_token?(_), do: false
+
+  @doc """
+  True iff `s` is a non-empty single-token field safe to ship as one
+  whitespace-delimited slot of an IRC command (e.g. `OPER <name>
+  <password>`). Rejects empty string, any ASCII whitespace, and
+  CR/LF/NUL (the safe_line_token? superset).
+
+  Stricter than `safe_line_token?/1`: an OPER `name` containing a
+  space would split into multiple wire-tokens and the bouncer would
+  emit `OPER first second <password>\\r\\n` — the IRC server would
+  parse name=first, password=second, with the real password leaking
+  into a positional slot. Same for `password`: IRC OPER takes a
+  single-token password — a multi-word value is silently truncated to
+  the first token by the server, leaving the operator with an
+  inexplicable 464 ERR_PASSWDMISMATCH.
+
+  Used by `Grappa.IRC.Client.send_oper/3` and the
+  `Grappa.Session.send_oper/4` facade to gate both fields. Stricter
+  rule lives here so future verbs that need single-token semantics
+  (e.g. SASL plain) share one predicate instead of re-implementing it.
+  """
+  @spec safe_oper_token?(term()) :: boolean()
+  def safe_oper_token?(s) when is_binary(s) and s != "" do
+    not String.contains?(s, ["\r", "\n", "\x00", " ", "\t"])
+  end
+
+  def safe_oper_token?(_), do: false
 
   @doc """
   True iff `s` is the nick of a well-known IRC services entity (NickServ,

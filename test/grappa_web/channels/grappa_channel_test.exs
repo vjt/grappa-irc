@@ -1194,6 +1194,117 @@ defmodule GrappaWeb.GrappaChannelTest do
       {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "TOPIC #snap :\r\n"), 1_000)
     end
 
+    # Bundle C (#20 follow-up) — /oper bridge
+    test "oper: sends OPER <name> <password> upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "oper", %{
+          "network_id" => network.id,
+          "name" => "vjt",
+          "password" => "s3cret"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "OPER vjt s3cret\r\n"), 1_000)
+    end
+
+    test "oper: rejects CRLF in either field at the channel boundary", %{
+      socket: socket,
+      network: network
+    } do
+      for evil <- ["bad\r\nKILL", "bad\nfoo", "bad\rfoo", "bad\x00foo"] do
+        ref_a =
+          push(socket, "oper", %{
+            "network_id" => network.id,
+            "name" => evil,
+            "password" => "pw"
+          })
+
+        assert_reply(ref_a, :error, %{error: "invalid_line"})
+
+        ref_b =
+          push(socket, "oper", %{
+            "network_id" => network.id,
+            "name" => "vjt",
+            "password" => evil
+          })
+
+        assert_reply(ref_b, :error, %{error: "invalid_line"})
+      end
+    end
+
+    # Bundle C (#20 follow-up) — stricter `:oper_token` validator
+    # rejects empty fields and embedded whitespace at the channel
+    # boundary (defense-in-depth — Session.send_oper also gates, but
+    # this catches malformed pushes before they hop the GenServer).
+    test "oper: rejects empty name or password at the channel boundary", %{
+      socket: socket,
+      network: network
+    } do
+      for {name, pw} <- [{"", "pw"}, {"vjt", ""}, {"", ""}] do
+        ref =
+          push(socket, "oper", %{
+            "network_id" => network.id,
+            "name" => name,
+            "password" => pw
+          })
+
+        assert_reply(ref, :error, %{error: "invalid_line"})
+      end
+    end
+
+    test "oper: rejects whitespace in name or password at the channel boundary", %{
+      socket: socket,
+      network: network
+    } do
+      for {name, pw} <- [
+            {"vjt extra", "pw"},
+            {"vjt", "pw with spaces"},
+            {"vjt\textra", "pw"}
+          ] do
+        ref =
+          push(socket, "oper", %{
+            "network_id" => network.id,
+            "name" => name,
+            "password" => pw
+          })
+
+        assert_reply(ref, :error, %{error: "invalid_line"})
+      end
+    end
+
+    # Bundle C (#20 follow-up) — /quote bridge
+    test "raw: ships the line verbatim with trailing CRLF", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "raw", %{
+          "network_id" => network.id,
+          "line" => "PING :foo.bar"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "PING :foo.bar\r\n"), 1_000)
+    end
+
+    test "raw: rejects embedded CRLF (no frame-smuggling)", %{
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "raw", %{
+          "network_id" => network.id,
+          "line" => "PING\r\nQUIT :pwn"
+        })
+
+      assert_reply(ref, :error, %{error: "invalid_line"})
+    end
+
     # CP22 cluster B (channel-client-polish #14) — /who bridge: cic pushes
     # `"who"` with %{network_id, channel}; channel relays to
     # Session.send_who/3, which primes who_pending + emits WHO upstream.

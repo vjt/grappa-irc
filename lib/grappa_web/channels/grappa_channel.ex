@@ -681,6 +681,43 @@ defmodule GrappaWeb.GrappaChannel do
     )
   end
 
+  # Bundle C (#20 follow-up) — /oper <name> <password> upstream.
+  # Visitor-blocked: visitors cannot OPER. The password travels over
+  # the WS frame and is REDACTED in any server-side log line (see
+  # `Session.Server.handle_call({:send_oper, ...})`). Field validation
+  # uses the stricter `:oper_token` predicate so a hand-crafted push
+  # with name/password containing spaces or empty strings fails at
+  # this boundary — `OPER  \\r\\n` (empty) and `OPER name extra pw\\r\\n`
+  # (space-leak) are both rejected here.
+  def handle_in(
+        "oper",
+        %{"network_id" => network_id, "name" => name, "password" => password},
+        socket
+      )
+      when is_integer(network_id) and is_binary(name) and is_binary(password) do
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(oper_token: name, oper_token: password) end,
+      fn user -> Session.send_oper({:user, user.id}, network_id, name, password) end
+    )
+  end
+
+  # Bundle C (#20 follow-up) — /quote <raw IRC line>. Visitor-blocked:
+  # the escape hatch is a registered-user power tool; bouncer enforces
+  # the same CRLF/NUL safety as every other outbound verb.
+  def handle_in(
+        "raw",
+        %{"network_id" => network_id, "line" => line},
+        socket
+      )
+      when is_integer(network_id) and is_binary(line) do
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(line: line) end,
+      fn user -> Session.send_raw({:user, user.id}, network_id, line) end
+    )
+  end
+
   # C1.4 — open a DM (query) window.
   #
   # Payload: `%{"network_id" => integer, "target_nick" => string}`.
@@ -1040,6 +1077,7 @@ defmodule GrappaWeb.GrappaChannel do
            | {:nicks, [String.t()]}
            | {:mask, String.t()}
            | {:line, String.t()}
+           | {:oper_token, String.t()}
            | {:params, [String.t()]}
 
   @spec validate_args([validate_arg()]) ::
@@ -1075,6 +1113,12 @@ defmodule GrappaWeb.GrappaChannel do
 
   defp validate_args([{:line, value} | rest]) do
     if Identifier.safe_line_token?(value),
+      do: validate_args(rest),
+      else: {:error, :invalid_line}
+  end
+
+  defp validate_args([{:oper_token, value} | rest]) do
+    if Identifier.safe_oper_token?(value),
       do: validate_args(rest),
       else: {:error, :invalid_line}
   end
@@ -1221,7 +1265,7 @@ defmodule GrappaWeb.GrappaChannel do
     with {:ok, _} <- validate_args(channel: channel, line: text),
          {:ok, _} <- check_not_visitor(user_name),
          {:ok, user} <- safe_get_user(user_name),
-         {:ok, _} <- Session.send_topic({:user, user.id}, network_id, channel, text) do
+         :ok <- Session.send_topic({:user, user.id}, network_id, channel, text) do
       {:reply, :ok, socket}
     else
       {:error, :invalid_channel} -> {:reply, {:error, %{error: "invalid_channel"}}, socket}

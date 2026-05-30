@@ -12,6 +12,7 @@ import { sendMessage as sendPrivmsg } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { isServicesSender } from "./servicesSender";
 import { parseSlash } from "./slashCommands";
+import { closeQueryWindow } from "./windowClose";
 import {
   pushAwaySet,
   pushAwayUnset,
@@ -29,6 +30,8 @@ import {
   pushChannelVoice,
   pushLusers,
   pushNames,
+  pushOper,
+  pushRaw,
   pushWatchlistAdd,
   pushWatchlistDel,
   pushWatchlistList,
@@ -235,25 +238,29 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           break;
         }
         case "topic-show": {
-          // Bare /topic — render cached topic inline. The cached topic
-          // lives in userTopic.ts; rendering is pure UI. Return a
-          // special error that ComposeBox can display inline.
+          // Bare /topic or /topic #chan — render cached topic inline.
+          // The cached topic lives in channelTopic.ts; rendering is pure UI.
           // TODO(C3): wire to TopicBar's cached topic for inline render.
-          return { error: "/topic (bare) — inline render wired in C3 (TopicBar)" };
+          const ch = cmd.channel ?? getActiveChannel();
+          if (!ch) return { error: "/topic requires a channel — switch to one or use /topic #chan" };
+          return { error: `/topic ${ch} (bare) — inline render wired in C3 (TopicBar)` };
         }
         case "topic-set": {
-          // /topic <text> — set topic via REST (existing postTopic path).
-          await postTopic(t, networkSlug, channelName, cmd.text);
+          // /topic <text> or /topic #chan <text> — set topic via REST.
+          // Explicit channel wins; otherwise current channel; otherwise bail.
+          const ch = cmd.channel ?? getActiveChannel();
+          if (!ch) return { error: "/topic requires a channel — switch to one or use /topic #chan <text>" };
+          await postTopic(t, networkSlug, ch, cmd.text);
           result = { ok: true };
           break;
         }
         case "topic-clear": {
-          // /topic -delete — clear topic via channel event.
-          const sel = selectedChannel();
-          if (!sel) return { error: "/topic -delete requires an active channel window" };
+          // /topic -delete or /topic #chan -delete — clear topic via channel event.
+          const ch = cmd.channel ?? getActiveChannel();
+          if (!ch) return { error: "/topic -delete requires a channel — switch to one or use /topic #chan -delete" };
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/topic -delete: network not found" };
-          pushChannelTopicClear(networkId, sel.channelName);
+          pushChannelTopicClear(networkId, ch);
           result = { ok: true };
           break;
         }
@@ -296,6 +303,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "query": {
           // /query <nick> / /q <nick> — open query window and switch focus.
           // No message sent (spec #1: /query opens window without sending).
+          // /query (bare) / /q (bare) on a query-kind window → CLOSES it
+          // (irssi convention; this bundle, issue follow-up to #12). Bare
+          // /query on any other window kind → error (parser still emits
+          // {target: null} for both — semantics resolved here).
           //
           // canonicalQueryNick: see /msg case above.
           //
@@ -303,6 +314,25 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // for NickServ would be a dead window (services route to $server
           // server-side). Surface as a user-facing error so the operator
           // can re-issue `/msg <Xserv> ...` if they wanted to send.
+          //
+          // Cross-network safety (bare-close path): resolve the network
+          // ID from the SELECTED window's own networkSlug, not from
+          // compose's `networkSlug` arg — the two can diverge if the
+          // submit was queued before a window switch. Using compose's
+          // networkSlug with sel.channelName would no-op or close a
+          // wrong-network row when they disagree.
+          if (cmd.target === null) {
+            const sel = selectedChannel();
+            if (sel?.kind === "query") {
+              const selNetId = networkIdBySlug(sel.networkSlug);
+              if (selNetId === undefined)
+                return { error: "/query: selected window's network not found" };
+              closeQueryWindow(selNetId, sel.channelName);
+              result = { ok: true };
+              break;
+            }
+            return { error: "/query <nick> required (bare /query closes the current query window only)" };
+          }
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/query: network not found" };
           if (isServicesSender(cmd.target)) {
@@ -574,6 +604,34 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           result = {
             ok: `watchlist (${watchResult.patterns.length}): ${watchResult.patterns.join(", ") || "(empty)"}`,
           };
+          break;
+        }
+        // Bundle C (#20 follow-up) — /quote <raw IRC line>. Push to
+        // GrappaChannel.handle_in("raw", _); server validates CRLF/NUL
+        // then ships verbatim to the upstream socket. AWAIT the push
+        // so disconnected/error replies surface as inline compose-box
+        // alerts (no silent green ✓ on a dropped escape-hatch frame).
+        case "quote": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/quote: network not found" };
+          await pushRaw(networkId, cmd.line);
+          result = { ok: true };
+          break;
+        }
+        // Bundle C (#20 follow-up) — /oper <name> <password>. The password
+        // travels over the WS frame; bouncer redacts it from logs by
+        // emitting a static log body before sending OPER upstream.
+        // Result lands as a 381 RPL_YOUREOPER (success) / 491 (bad host)
+        // / 464 (bad pw) numeric — the existing numeric-routing path
+        // persists those as :notice rows. AWAIT the push: a credential-
+        // bearing verb MUST NOT silently no-op when the WS is down or
+        // the server-side validator rejects (CLAUDE.md
+        // `feedback_no_silent_drops_closed`).
+        case "oper": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/oper: network not found" };
+          await pushOper(networkId, cmd.name, cmd.password);
+          result = { ok: true };
           break;
         }
         // ---------------------------------------------------------------
