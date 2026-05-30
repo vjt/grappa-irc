@@ -101,7 +101,7 @@ defmodule Grappa.Visitors.Reaper do
     {:ok, deleted}
   end
 
-  @spec reap_visitor(Visitors.Visitor.t()) :: :ok | {:error, term()}
+  @spec reap_visitor(Visitors.Visitor.t()) :: :ok | {:error, :not_found}
   defp reap_visitor(v) do
     with :ok <- stop_visitor_session(v),
          :ok <- Visitors.delete(v.id) do
