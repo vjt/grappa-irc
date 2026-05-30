@@ -41,11 +41,13 @@ defmodule Grappa.Visitors.Reaper do
   application's deps (see `lib/grappa/application.ex`).
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.AdminEvents, Grappa.Visitors]
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.AdminEvents, Grappa.Networks, Grappa.Session, Grappa.Visitors]
 
   use GenServer
 
-  alias Grappa.{AdminEvents, Visitors}
+  alias Grappa.{AdminEvents, Networks, Session, Visitors}
   alias Grappa.AdminEvents.Wire, as: AdminWire
 
   require Logger
@@ -65,11 +67,12 @@ defmodule Grappa.Visitors.Reaper do
   end
 
   @doc """
-  Synchronous sweep — enumerates expired visitors and deletes each
-  one. Returns `{:ok, count}` with the number of rows enumerated
-  (per-row delete failures still count toward the total because the
-  enumeration is the contract; the operator-facing failure surface
-  is the `Logger.error` line, not the return value).
+  Synchronous sweep — enumerates expired visitors, stops each visitor's
+  live `Session.Server` when its network still exists, then deletes the
+  row. Returns `{:ok, count}` with the number of rows successfully
+  deleted. Per-row stop/delete failures log + continue; the
+  operator-facing failure surface is the `Logger.error` line, not the
+  return value.
   """
   @spec sweep() :: {:ok, non_neg_integer()}
   def sweep do
@@ -77,7 +80,7 @@ defmodule Grappa.Visitors.Reaper do
 
     deleted =
       Enum.reduce(expired, 0, fn v, acc ->
-        case Visitors.delete(v.id) do
+        case reap_visitor(v) do
           :ok ->
             # M-11: per-row reap event for the admin events stream.
             # Emitted ONLY on successful delete — a failed delete logs
@@ -96,6 +99,35 @@ defmodule Grappa.Visitors.Reaper do
       end)
 
     {:ok, deleted}
+  end
+
+  @spec reap_visitor(Visitors.Visitor.t()) :: :ok | {:error, term()}
+  defp reap_visitor(v) do
+    with :ok <- stop_visitor_session(v),
+         :ok <- Visitors.delete(v.id) do
+      :ok
+    end
+  end
+
+  @spec stop_visitor_session(Visitors.Visitor.t()) :: :ok
+  defp stop_visitor_session(%Visitors.Visitor{id: id, network_slug: slug}) do
+    case Networks.get_network_by_slug(slug) do
+      {:ok, network} ->
+        :ok = Session.stop_session({:visitor, id}, network.id)
+
+      {:error, :not_found} ->
+        # Same orphan-network shape as Operator.delete_visitor/1: no
+        # network row means no viable live session can be resolved from
+        # the visitor row, but the DB delete still reaches the promised
+        # post-condition via CASCADE. Keep this informational, not an
+        # error, so one stale slug does not poison the whole sweep.
+        Logger.warning("reaper visitor network missing; deleting row without session stop",
+          visitor_id: id,
+          network: slug
+        )
+
+        :ok
+    end
   end
 
   @impl GenServer
