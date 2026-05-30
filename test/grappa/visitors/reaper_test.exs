@@ -13,10 +13,22 @@ defmodule Grappa.Visitors.ReaperTest do
   """
   use Grappa.DataCase, async: false
 
-  import Grappa.AuthFixtures, only: [network_fixture: 1]
+  import Grappa.AuthFixtures, only: [network_fixture: 1, start_visitor_session_for: 2, visitor_with_network: 2]
 
-  alias Grappa.{Push, QueryWindows, ReadCursor, UserSettings, Visitors}
+  alias Grappa.{AdmissionStateHelpers, Push, QueryWindows, ReadCursor, Session, UserSettings, Visitors}
   alias Grappa.Visitors.{Reaper, Visitor}
+
+  setup do
+    AdmissionStateHelpers.reset_all()
+    :ok
+  end
+
+  defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
+
+  defp start_irc_server do
+    {:ok, server} = Grappa.IRCServer.start_link(passthrough_handler())
+    {server, Grappa.IRCServer.port(server)}
+  end
 
   defp expire(visitor) do
     query = from(v in Visitor, where: v.id == ^visitor.id)
@@ -37,6 +49,23 @@ defmodule Grappa.Visitors.ReaperTest do
 
     test "returns {:ok, 0} when nothing to reap" do
       assert {:ok, 0} = Reaper.sweep()
+    end
+
+    test "terminates live Session.Server before deleting expired visitor row" do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port, [])
+      pid = start_visitor_session_for(visitor, network)
+      ref = Process.monitor(pid)
+
+      assert Process.alive?(pid)
+      assert Session.whereis({:visitor, visitor.id}, network.id) == pid
+
+      expire(visitor)
+
+      assert {:ok, 1} = Reaper.sweep()
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}
+      assert Session.whereis({:visitor, visitor.id}, network.id) == nil
+      refute Repo.reload(visitor)
     end
 
     test "NULL expires_at row (NickServ-identified) survives sweep — IS-NOT-NULL guard" do
