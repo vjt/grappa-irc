@@ -81,6 +81,20 @@ if [ "${prev_sha}" = "${new_sha}" ]; then
 	exit 0
 fi
 
+# Self-modifying-deploy-script trap (live-repro 2026-05-31):
+# `/bin/sh` may buffer the script file (read-ahead). If THIS deploy
+# updates `infra/freebsd/deploy.sh` itself (via git pull above), the
+# running shell continues executing the PRE-PULL bytes — every fix to
+# the deploy pipeline silently no-ops on the first deploy that ships
+# it. Re-exec ourselves so the NEW script bytes run for everything
+# downstream of git-pull. Guard via DEPLOY_REEXECED env so we only
+# re-exec once (otherwise infinite loop).
+if [ -z "${DEPLOY_REEXECED:-}" ] && ! cmp -s "${REPO_ROOT}/infra/freebsd/deploy.sh" "$0" 2>/dev/null; then
+	echo "[deploy] deploy.sh changed during git-pull — re-exec to load new bytes"
+	export DEPLOY_REEXECED=1
+	exec "${REPO_ROOT}/infra/freebsd/deploy.sh" "$@"
+fi
+
 # ---- Preflight (auto mode only; explicit --force-* skips) ----
 #
 # Source of truth: `lib/grappa/deploy/preflight.ex` (the Elixir module
