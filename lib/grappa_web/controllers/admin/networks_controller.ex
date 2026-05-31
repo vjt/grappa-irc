@@ -145,6 +145,8 @@ defmodule GrappaWeb.Admin.NetworksController do
   def create(conn, params) do
     with {:ok, attrs} <- create_attrs(params),
          {:ok, net} <- Networks.create_network(attrs) do
+      :ok = emit_network_created(net, conn)
+
       conn
       |> put_status(:created)
       |> json(
@@ -168,8 +170,21 @@ defmodule GrappaWeb.Admin.NetworksController do
     with {:ok, parsed} <- parse_id(id),
          {:ok, net} <- fetch_network(parsed),
          :ok <- Networks.delete_network(net) do
+      :ok = emit_network_deleted(net, conn)
       conn |> put_status(:no_content) |> text("")
     end
+  end
+
+  defp emit_network_created(net, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(AdminEventsWire.network_created(net.id, net.slug, actor_id, actor_name))
+  end
+
+  defp emit_network_deleted(net, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(AdminEventsWire.network_deleted(net.id, net.slug, actor_id, actor_name))
   end
 
   # `Plug.Conn` URL params come in as strings; safely parse → `{:error,

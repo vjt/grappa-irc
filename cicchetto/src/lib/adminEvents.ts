@@ -88,6 +88,18 @@ function ingest(ev: WireAdminEvent): void {
     case "session_terminated":
     case "network_caps_updated":
     case "circuit_reset":
+    case "user_created":
+    case "user_updated":
+    case "user_password_changed":
+    case "user_deleted":
+    case "network_created":
+    case "network_deleted":
+    case "server_added":
+    case "server_updated":
+    case "server_removed":
+    case "credential_bound":
+    case "credential_updated":
+    case "credential_unbound":
       setEvents((prev) => cap([ev, ...prev]));
       return;
     case "cap_counts_changed":

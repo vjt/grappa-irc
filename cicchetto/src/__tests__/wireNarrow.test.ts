@@ -786,6 +786,197 @@ describe("narrowAdminEvent (REV-G H24)", () => {
   });
 });
 
+describe("narrowAdminEvent — bucket 4 mutation kinds", () => {
+  // Non-null actor enforced: every admin-mutation event carries
+  // {actor_user_id, actor_user_name} as strings. A null/missing
+  // value drops the whole payload via the narrower's per-field guard.
+
+  it("user_created — valid passes", () => {
+    const ev = {
+      kind: "user_created",
+      user_id: "u",
+      user_name: "n",
+      is_admin: false,
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    };
+    expect(narrowAdminEvent(ev)).toEqual(ev);
+  });
+
+  it("user_updated — invalid is_admin drops", () => {
+    expect(
+      narrowAdminEvent({
+        kind: "user_updated",
+        user_id: "u",
+        user_name: "n",
+        is_admin: "yes",
+        actor_user_id: "a",
+        actor_user_name: "v",
+        at: "t",
+      }),
+    ).toBeNull();
+  });
+
+  it("user_password_changed — null actor drops", () => {
+    expect(
+      narrowAdminEvent({
+        kind: "user_password_changed",
+        user_id: "u",
+        user_name: "n",
+        actor_user_id: null,
+        actor_user_name: null,
+        at: "t",
+      }),
+    ).toBeNull();
+  });
+
+  it("user_deleted — valid passes", () => {
+    const ev = {
+      kind: "user_deleted",
+      user_id: "u",
+      user_name: "n",
+      actor_user_id: "a",
+      actor_user_name: "v",
+      at: "t",
+    };
+    expect(narrowAdminEvent(ev)).toEqual(ev);
+  });
+
+  it("network_created — valid passes", () => {
+    const ev = {
+      kind: "network_created",
+      network_id: 7,
+      network_slug: "azzurra",
+      actor_user_id: "a",
+      actor_user_name: "v",
+      at: "t",
+    };
+    expect(narrowAdminEvent(ev)).toEqual(ev);
+  });
+
+  it("network_deleted — non-string slug drops", () => {
+    expect(
+      narrowAdminEvent({
+        kind: "network_deleted",
+        network_id: 7,
+        network_slug: null,
+        actor_user_id: "a",
+        actor_user_name: "v",
+        at: "t",
+      }),
+    ).toBeNull();
+  });
+
+  it("server_added — valid passes", () => {
+    const ev = {
+      kind: "server_added",
+      network_id: 7,
+      network_slug: "azzurra",
+      server_id: 42,
+      host: "irc.example.test",
+      port: 6697,
+      tls: true,
+      actor_user_id: "a",
+      actor_user_name: "v",
+      at: "t",
+    };
+    expect(narrowAdminEvent(ev)).toEqual(ev);
+  });
+
+  it("server_updated — non-boolean tls drops", () => {
+    expect(
+      narrowAdminEvent({
+        kind: "server_updated",
+        network_id: 7,
+        network_slug: "azzurra",
+        server_id: 42,
+        host: "h",
+        port: 6697,
+        tls: "true",
+        actor_user_id: "a",
+        actor_user_name: "v",
+        at: "t",
+      }),
+    ).toBeNull();
+  });
+
+  it("server_removed — no tls field (only added/updated carry tls)", () => {
+    const ev = {
+      kind: "server_removed",
+      network_id: 7,
+      network_slug: "azzurra",
+      server_id: 42,
+      host: "h",
+      port: 6697,
+      actor_user_id: "a",
+      actor_user_name: "v",
+      at: "t",
+    };
+    expect(narrowAdminEvent(ev)).toEqual(ev);
+  });
+
+  it("credential_bound — valid passes", () => {
+    const ev = {
+      kind: "credential_bound",
+      user_id: "u",
+      user_name: "n",
+      network_id: 7,
+      network_slug: "azzurra",
+      nick: "vjt",
+      actor_user_id: "a",
+      actor_user_name: "v",
+      at: "t",
+    };
+    expect(narrowAdminEvent(ev)).toEqual(ev);
+  });
+
+  it("credential_updated — unknown session_action drops", () => {
+    expect(
+      narrowAdminEvent({
+        kind: "credential_updated",
+        user_id: "u",
+        user_name: "n",
+        network_id: 7,
+        network_slug: "azzurra",
+        session_action: "restarted",
+        actor_user_id: "a",
+        actor_user_name: "v",
+        at: "t",
+      }),
+    ).toBeNull();
+  });
+
+  it("credential_updated — :stopped session_action passes", () => {
+    const ev = {
+      kind: "credential_updated",
+      user_id: "u",
+      user_name: "n",
+      network_id: 7,
+      network_slug: "azzurra",
+      session_action: "stopped",
+      actor_user_id: "a",
+      actor_user_name: "v",
+      at: "t",
+    };
+    expect(narrowAdminEvent(ev)).toEqual(ev);
+  });
+
+  it("credential_unbound — valid passes", () => {
+    const ev = {
+      kind: "credential_unbound",
+      user_id: "u",
+      user_name: "n",
+      network_id: 7,
+      network_slug: "azzurra",
+      actor_user_id: "a",
+      actor_user_name: "v",
+      at: "t",
+    };
+    expect(narrowAdminEvent(ev)).toEqual(ev);
+  });
+});
+
 describe("narrowAdminSnapshot (REV-G H24)", () => {
   it("returns null on non-object", () => {
     expect(narrowAdminSnapshot(null)).toBeNull();

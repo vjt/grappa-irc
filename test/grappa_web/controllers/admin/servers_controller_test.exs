@@ -22,6 +22,7 @@ defmodule GrappaWeb.Admin.ServersControllerTest do
 
   alias Grappa.{Accounts, Networks}
   alias Grappa.Networks.Servers
+  alias Grappa.PubSub.Topic
 
   defp admin_session do
     {user, session} = user_and_session()
@@ -204,6 +205,113 @@ defmodule GrappaWeb.Admin.ServersControllerTest do
 
       conn = conn |> put_bearer(session.id) |> delete("/admin/networks/#{net2.id}/servers/#{server.id}")
       assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+  end
+
+  # Bucket 4 — admin event emission on every server mutation. Subscribe
+  # to the topic per-test (mailbox-scoped); we don't reset the singleton
+  # ring buffer because servers tests run async — the assertion targets
+  # ONLY this test's emission via assert_receive's pattern match.
+  describe "admin event emission (bucket 4)" do
+    test "POST emits :server_added with operator attribution", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      net = fresh_network()
+      net_id = net.id
+      net_slug = net.slug
+      session = admin_session()
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/networks/#{net.id}/servers",
+          Jason.encode!(%{host: "evt-add.test", port: 6697, tls: true})
+        )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :server_added,
+                         network_id: ^net_id,
+                         network_slug: ^net_slug,
+                         host: "evt-add.test",
+                         port: 6697,
+                         tls: true,
+                         actor_user_id: actor_id,
+                         actor_user_name: actor_name
+                       }
+                     },
+                     500
+
+      assert is_binary(actor_id)
+      assert is_binary(actor_name)
+    end
+
+    test "PUT emits :server_updated with operator attribution", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      net = fresh_network()
+      net_id = net.id
+      net_slug = net.slug
+      {:ok, server} = Servers.add_server(net, %{host: "evt-up.test", port: 6697})
+      sid = server.id
+      session = admin_session()
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put(
+          "/admin/networks/#{net.id}/servers/#{server.id}",
+          Jason.encode!(%{port: 6667, tls: false})
+        )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :server_updated,
+                         network_id: ^net_id,
+                         network_slug: ^net_slug,
+                         server_id: ^sid,
+                         port: 6667,
+                         tls: false
+                       }
+                     },
+                     500
+    end
+
+    test "DELETE emits :server_removed with operator attribution", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      net = fresh_network()
+      net_id = net.id
+      net_slug = net.slug
+      {:ok, server} = Servers.add_server(net, %{host: "evt-del.test", port: 6697})
+      sid = server.id
+      session = admin_session()
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> delete("/admin/networks/#{net.id}/servers/#{server.id}")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :server_removed,
+                         network_id: ^net_id,
+                         network_slug: ^net_slug,
+                         server_id: ^sid,
+                         host: "evt-del.test",
+                         port: 6697
+                       }
+                     },
+                     500
     end
   end
 end

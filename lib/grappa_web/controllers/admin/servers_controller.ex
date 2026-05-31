@@ -29,9 +29,11 @@ defmodule GrappaWeb.Admin.ServersController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Admission, Networks}
+  alias Grappa.{AdminEvents, Admission, Networks}
+  alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias Grappa.Networks.Servers
   alias Grappa.Networks.Servers.AdminWire, as: ServerWire
+  alias GrappaWeb.Admin.AuthPlug
 
   @doc """
   Create a server endpoint under `network_id`. Body fields: `host`
@@ -46,6 +48,8 @@ defmodule GrappaWeb.Admin.ServersController do
          {:ok, net} <- fetch_network(parsed_nid),
          {:ok, attrs} <- server_attrs(params, ["host", "port", "tls", "priority", "enabled"]),
          {:ok, server} <- Servers.add_server(net, attrs) do
+      :ok = emit_server_event(:added, net, server, conn)
+
       conn
       |> put_status(:created)
       |> json(ServerWire.server_to_admin_json(server))
@@ -66,6 +70,7 @@ defmodule GrappaWeb.Admin.ServersController do
          {:ok, server} <- Servers.get_server(net, parsed_sid),
          {:ok, attrs} <- server_attrs(params, ["host", "port", "tls", "priority", "enabled"]),
          {:ok, updated} <- Servers.update_server(server, attrs) do
+      :ok = emit_server_event(:updated, net, updated, conn)
       json(conn, ServerWire.server_to_admin_json(updated))
     end
   end
@@ -83,9 +88,61 @@ defmodule GrappaWeb.Admin.ServersController do
          {:ok, net} <- fetch_network(parsed_nid),
          {:ok, server} <- Servers.get_server(net, parsed_sid),
          :ok <- Servers.delete_server(server) do
+      :ok = emit_server_removed(net, server, conn)
       counts = Admission.live_counts_for_network(parsed_nid)
       json(conn, %{network_session_count: counts.visitors + counts.users})
     end
+  end
+
+  # Shared add/update emitter — both events carry identical fields
+  # (host/port/tls + ids); discriminator is the `op` atom.
+  defp emit_server_event(op, net, server, conn) when op in [:added, :updated] do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    event =
+      case op do
+        :added ->
+          AdminEventsWire.server_added(
+            net.id,
+            net.slug,
+            server.id,
+            server.host,
+            server.port,
+            server.tls,
+            actor_id,
+            actor_name
+          )
+
+        :updated ->
+          AdminEventsWire.server_updated(
+            net.id,
+            net.slug,
+            server.id,
+            server.host,
+            server.port,
+            server.tls,
+            actor_id,
+            actor_name
+          )
+      end
+
+    AdminEvents.record(event)
+  end
+
+  defp emit_server_removed(net, server, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(
+      AdminEventsWire.server_removed(
+        net.id,
+        net.slug,
+        server.id,
+        server.host,
+        server.port,
+        actor_id,
+        actor_name
+      )
+    )
   end
 
   defp parse_id(v) when is_binary(v) do

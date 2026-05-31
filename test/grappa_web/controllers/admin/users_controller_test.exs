@@ -26,10 +26,15 @@ defmodule GrappaWeb.Admin.UsersControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, AdmissionStateHelpers}
+  alias Grappa.{Accounts, AdminEvents, AdmissionStateHelpers}
+  alias Grappa.PubSub.Topic
 
   setup do
     AdmissionStateHelpers.reset_session_supervisor()
+    # Bucket 4: reset the AdminEvents ring buffer per-test so the
+    # snapshot-assertion path (head-of-buffer check) isn't polluted
+    # by prior tests. Same pattern as NetworksControllerTest.
+    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
     :ok
   end
 
@@ -361,6 +366,165 @@ defmodule GrappaWeb.Admin.UsersControllerTest do
 
       conn = conn |> put_bearer(session.id) |> delete("/admin/users/#{bogus_id}")
       assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+  end
+
+  describe "admin event emission (bucket 4)" do
+    test "POST emits :user_created with actor + is_admin flag", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+      name = "evt-create-#{System.unique_integer([:positive])}"
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/users",
+          Jason.encode!(%{name: name, password: String.duplicate("x", 20)})
+        )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :user_created,
+                         user_name: ^name,
+                         is_admin: false,
+                         actor_user_id: actor_id,
+                         actor_user_name: actor_name
+                       }
+                     },
+                     500
+
+      assert is_binary(actor_id)
+      assert is_binary(actor_name)
+    end
+
+    test "POST with is_admin: true emits :user_created with is_admin true", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+      name = "evt-cadmin-#{System.unique_integer([:positive])}"
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/users",
+          Jason.encode!(%{name: name, password: String.duplicate("x", 20), is_admin: true})
+        )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{kind: :user_created, user_name: ^name, is_admin: true}
+                     },
+                     500
+    end
+
+    test "PATCH emits :user_updated only when is_admin actually changes", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+
+      {:ok, target} =
+        Accounts.create_user(%{
+          name: "evt-up-#{System.unique_integer([:positive])}",
+          password: String.duplicate("x", 20)
+        })
+
+      target_id = target.id
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/admin/users/#{target.id}", Jason.encode!(%{is_admin: true}))
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{kind: :user_updated, user_id: ^target_id, is_admin: true}
+                     },
+                     500
+
+      # No-op PATCH (same value) does NOT emit a second event.
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/admin/users/#{target.id}", Jason.encode!(%{is_admin: true}))
+
+      refute_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       payload: %{kind: :user_updated}
+                     },
+                     100
+    end
+
+    test "PUT /password emits :user_password_changed (no password in payload)", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+
+      {:ok, target} =
+        Accounts.create_user(%{
+          name: "evt-pw-#{System.unique_integer([:positive])}",
+          password: String.duplicate("x", 20)
+        })
+
+      target_id = target.id
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put(
+          "/admin/users/#{target.id}/password",
+          Jason.encode!(%{password: String.duplicate("y", 22)})
+        )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: payload
+                     },
+                     500
+
+      assert payload.kind == :user_password_changed
+      assert payload.user_id == target_id
+      refute Map.has_key?(payload, :password)
+    end
+
+    test "DELETE emits :user_deleted with actor", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+
+      {:ok, target} =
+        Accounts.create_user(%{
+          name: "evt-del-#{System.unique_integer([:positive])}",
+          password: String.duplicate("x", 20)
+        })
+
+      target_id = target.id
+      target_name = target.name
+
+      _ = conn |> put_bearer(session.id) |> delete("/admin/users/#{target.id}")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :user_deleted,
+                         user_id: ^target_id,
+                         user_name: ^target_name
+                       }
+                     },
+                     500
     end
   end
 end

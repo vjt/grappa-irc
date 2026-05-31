@@ -47,9 +47,11 @@ defmodule GrappaWeb.Admin.CredentialsController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, LiveIntrospection, Networks}
+  alias Grappa.{Accounts, AdminEvents, LiveIntrospection, Networks}
+  alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias Grappa.Networks.Credentials
   alias Grappa.Networks.Credentials.AdminWire
+  alias GrappaWeb.Admin.AuthPlug
 
   @doc """
   Enumerate every (user, network) credential row + project
@@ -84,6 +86,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
          {:ok, network} <- fetch_network(network_id),
          {:ok, updated, action} <-
            Credentials.update_credential_with_session_lifecycle(user, network, attrs) do
+      :ok = emit_credential_updated(user, network, action, conn)
       live = LiveIntrospection.lookup_session({:user, updated.user_id}, updated.network_id)
 
       json(
@@ -111,6 +114,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
          {:ok, user} <- fetch_user(user_id),
          {:ok, network} <- fetch_network(network_id),
          {:ok, cred} <- bind_with_conflict_classification(user, network, attrs) do
+      :ok = emit_credential_bound(user, network, cred, conn)
       live = LiveIntrospection.lookup_session({:user, cred.user_id}, cred.network_id)
 
       conn
@@ -134,8 +138,56 @@ defmodule GrappaWeb.Admin.CredentialsController do
          {:ok, network} <- fetch_network(network_id),
          {:ok, _} <- Credentials.get_credential(user, network),
          :ok <- Credentials.unbind_credential(user, network) do
+      :ok = emit_credential_unbound(user, network, conn)
       conn |> put_status(:no_content) |> text("")
     end
+  end
+
+  defp emit_credential_bound(user, network, cred, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(
+      AdminEventsWire.credential_bound(
+        user.id,
+        user.name,
+        network.id,
+        network.slug,
+        cred.nick,
+        actor_id,
+        actor_name
+      )
+    )
+  end
+
+  defp emit_credential_updated(user, network, action, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(
+      AdminEventsWire.credential_updated(
+        user.id,
+        user.name,
+        network.id,
+        network.slug,
+        action,
+        actor_id,
+        actor_name
+      )
+    )
+  end
+
+  defp emit_credential_unbound(user, network, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(
+      AdminEventsWire.credential_unbound(
+        user.id,
+        user.name,
+        network.id,
+        network.slug,
+        actor_id,
+        actor_name
+      )
+    )
   end
 
   defp fetch_user(id) do

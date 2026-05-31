@@ -373,6 +373,35 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       assert body["error"] == "validation_failed"
       assert Map.has_key?(body["field_errors"], "slug")
     end
+
+    # Bucket 4 — POST emits :network_created with operator attribution
+    test "POST emits :network_created admin event with actor", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      slug = "emit-create-#{System.unique_integer([:positive])}"
+      session = admin_session()
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/admin/networks", Jason.encode!(%{slug: slug}))
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :network_created,
+                         network_slug: ^slug,
+                         actor_user_id: actor_id,
+                         actor_user_name: actor_name
+                       }
+                     },
+                     500
+
+      assert is_binary(actor_id)
+      assert is_binary(actor_name)
+    end
   end
 
   describe "DELETE /admin/networks/:id — admin-panel bucket 1" do
@@ -424,6 +453,34 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       body = json_response(conn, 409)
       assert body["error"] == "credentials_present"
       assert body["credential_count"] == 1
+    end
+
+    # Bucket 4 — DELETE emits :network_deleted with operator attribution
+    test "DELETE emits :network_deleted admin event with actor", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      slug = "emit-del-#{System.unique_integer([:positive])}"
+      {:ok, net} = Networks.find_or_create_network(%{slug: slug})
+      net_id = net.id
+      session = admin_session()
+
+      _ = conn |> put_bearer(session.id) |> delete("/admin/networks/#{net.id}")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :network_deleted,
+                         network_id: ^net_id,
+                         network_slug: ^slug,
+                         actor_user_id: actor_id,
+                         actor_user_name: actor_name
+                       }
+                     },
+                     500
+
+      assert is_binary(actor_id)
+      assert is_binary(actor_name)
     end
   end
 end

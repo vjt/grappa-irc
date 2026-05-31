@@ -533,6 +533,171 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         actor_user_name: r.actor_user_name as string | null,
         at: r.at as string,
       };
+    case "user_created":
+    case "user_updated":
+      if (
+        typeof r.user_id !== "string" ||
+        typeof r.user_name !== "string" ||
+        typeof r.is_admin !== "boolean" ||
+        typeof r.actor_user_id !== "string" ||
+        typeof r.actor_user_name !== "string"
+      )
+        return null;
+      return {
+        kind: r.kind,
+        user_id: r.user_id,
+        user_name: r.user_name,
+        is_admin: r.is_admin,
+        actor_user_id: r.actor_user_id,
+        actor_user_name: r.actor_user_name,
+        at: r.at as string,
+      };
+    case "user_password_changed":
+    case "user_deleted":
+      if (
+        typeof r.user_id !== "string" ||
+        typeof r.user_name !== "string" ||
+        typeof r.actor_user_id !== "string" ||
+        typeof r.actor_user_name !== "string"
+      )
+        return null;
+      return {
+        kind: r.kind,
+        user_id: r.user_id,
+        user_name: r.user_name,
+        actor_user_id: r.actor_user_id,
+        actor_user_name: r.actor_user_name,
+        at: r.at as string,
+      };
+    case "network_created":
+    case "network_deleted":
+      if (
+        typeof r.network_id !== "number" ||
+        typeof r.network_slug !== "string" ||
+        typeof r.actor_user_id !== "string" ||
+        typeof r.actor_user_name !== "string"
+      )
+        return null;
+      return {
+        kind: r.kind,
+        network_id: r.network_id,
+        network_slug: r.network_slug,
+        actor_user_id: r.actor_user_id,
+        actor_user_name: r.actor_user_name,
+        at: r.at as string,
+      };
+    case "server_added":
+    case "server_updated":
+      if (
+        typeof r.network_id !== "number" ||
+        typeof r.network_slug !== "string" ||
+        typeof r.server_id !== "number" ||
+        typeof r.host !== "string" ||
+        typeof r.port !== "number" ||
+        typeof r.tls !== "boolean" ||
+        typeof r.actor_user_id !== "string" ||
+        typeof r.actor_user_name !== "string"
+      )
+        return null;
+      return {
+        kind: r.kind,
+        network_id: r.network_id,
+        network_slug: r.network_slug,
+        server_id: r.server_id,
+        host: r.host,
+        port: r.port,
+        tls: r.tls,
+        actor_user_id: r.actor_user_id,
+        actor_user_name: r.actor_user_name,
+        at: r.at as string,
+      };
+    case "server_removed":
+      if (
+        typeof r.network_id !== "number" ||
+        typeof r.network_slug !== "string" ||
+        typeof r.server_id !== "number" ||
+        typeof r.host !== "string" ||
+        typeof r.port !== "number" ||
+        typeof r.actor_user_id !== "string" ||
+        typeof r.actor_user_name !== "string"
+      )
+        return null;
+      return {
+        kind: "server_removed",
+        network_id: r.network_id,
+        network_slug: r.network_slug,
+        server_id: r.server_id,
+        host: r.host,
+        port: r.port,
+        actor_user_id: r.actor_user_id,
+        actor_user_name: r.actor_user_name,
+        at: r.at as string,
+      };
+    case "credential_bound":
+      if (
+        typeof r.user_id !== "string" ||
+        typeof r.user_name !== "string" ||
+        typeof r.network_id !== "number" ||
+        typeof r.network_slug !== "string" ||
+        typeof r.nick !== "string" ||
+        typeof r.actor_user_id !== "string" ||
+        typeof r.actor_user_name !== "string"
+      )
+        return null;
+      return {
+        kind: "credential_bound",
+        user_id: r.user_id,
+        user_name: r.user_name,
+        network_id: r.network_id,
+        network_slug: r.network_slug,
+        nick: r.nick,
+        actor_user_id: r.actor_user_id,
+        actor_user_name: r.actor_user_name,
+        at: r.at as string,
+      };
+    case "credential_updated":
+      if (
+        typeof r.user_id !== "string" ||
+        typeof r.user_name !== "string" ||
+        typeof r.network_id !== "number" ||
+        typeof r.network_slug !== "string" ||
+        typeof r.session_action !== "string" ||
+        (r.session_action !== "left_alone" && r.session_action !== "stopped") ||
+        typeof r.actor_user_id !== "string" ||
+        typeof r.actor_user_name !== "string"
+      )
+        return null;
+      return {
+        kind: "credential_updated",
+        user_id: r.user_id,
+        user_name: r.user_name,
+        network_id: r.network_id,
+        network_slug: r.network_slug,
+        session_action: r.session_action,
+        actor_user_id: r.actor_user_id,
+        actor_user_name: r.actor_user_name,
+        at: r.at as string,
+      };
+    case "credential_unbound":
+      if (
+        typeof r.user_id !== "string" ||
+        typeof r.user_name !== "string" ||
+        typeof r.network_id !== "number" ||
+        typeof r.network_slug !== "string" ||
+        typeof r.actor_user_id !== "string" ||
+        typeof r.actor_user_name !== "string"
+      )
+        return null;
+      return {
+        kind: "credential_unbound",
+        user_id: r.user_id,
+        user_name: r.user_name,
+        network_id: r.network_id,
+        network_slug: r.network_slug,
+        actor_user_id: r.actor_user_id,
+        actor_user_name: r.actor_user_name,
+        at: r.at as string,
+      };
     case "cap_counts_changed":
       // REV-H H5 (2026-05-22): network_slug is required non-null on
       // this arm. The server-side broadcaster early-returns when the

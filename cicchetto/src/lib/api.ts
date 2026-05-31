@@ -894,6 +894,129 @@ export type WireAdminEvent =
       max_concurrent_visitor_sessions: number | null;
       max_concurrent_user_sessions: number | null;
       at: string;
+    }
+  // ----- Admin-panel bucket 4 mutation events ----------------------
+  //
+  // Operator-initiated CRUD on users / networks / servers /
+  // credentials. All carry non-null actor (admin gate guarantees a
+  // logged-in operator at the controller). Wire shapes mirror
+  // `lib/grappa/admin_events/wire.ex` constructors.
+  | {
+      kind: "user_created";
+      user_id: string;
+      user_name: string;
+      is_admin: boolean;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "user_updated";
+      user_id: string;
+      user_name: string;
+      is_admin: boolean;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "user_password_changed";
+      user_id: string;
+      user_name: string;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "user_deleted";
+      user_id: string;
+      user_name: string;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "network_created";
+      network_id: number;
+      network_slug: string;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "network_deleted";
+      network_id: number;
+      network_slug: string;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "server_added";
+      network_id: number;
+      network_slug: string;
+      server_id: number;
+      host: string;
+      port: number;
+      tls: boolean;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "server_updated";
+      network_id: number;
+      network_slug: string;
+      server_id: number;
+      host: string;
+      port: number;
+      tls: boolean;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "server_removed";
+      network_id: number;
+      network_slug: string;
+      server_id: number;
+      host: string;
+      port: number;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "credential_bound";
+      user_id: string;
+      user_name: string;
+      network_id: number;
+      network_slug: string;
+      nick: string;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "credential_updated";
+      user_id: string;
+      user_name: string;
+      network_id: number;
+      network_slug: string;
+      session_action: "left_alone" | "stopped";
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
+    }
+  | {
+      kind: "credential_unbound";
+      user_id: string;
+      user_name: string;
+      network_id: number;
+      network_slug: string;
+      actor_user_id: string;
+      actor_user_name: string;
+      at: string;
     };
 
 export type AdminSnapshotPayload = { events: WireAdminEvent[] };

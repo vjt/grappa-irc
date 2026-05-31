@@ -21,11 +21,13 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, AdmissionStateHelpers, Networks}
+  alias Grappa.{Accounts, AdminEvents, AdmissionStateHelpers, Networks}
   alias Grappa.Networks.Credentials
+  alias Grappa.PubSub.Topic
 
   setup do
     AdmissionStateHelpers.reset_session_supervisor()
+    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
     :ok
   end
 
@@ -512,6 +514,112 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
       body = json_response(conn, 200)
       assert body["auth_method"] == "sasl"
       assert body["session_action"] == "left_alone"
+    end
+  end
+
+  describe "admin event emission (bucket 4)" do
+    test "POST emits :credential_bound with actor", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+      target = user_fixture(name: "evt-bind-#{System.unique_integer([:positive])}")
+
+      {:ok, network} =
+        Networks.find_or_create_network(%{slug: "evt-bind-#{System.unique_integer([:positive])}"})
+
+      target_id = target.id
+      net_id = network.id
+      net_slug = network.slug
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/credentials",
+          Jason.encode!(%{
+            user_id: target.id,
+            network_id: network.id,
+            nick: "bobo",
+            auth_method: "none"
+          })
+        )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :credential_bound,
+                         user_id: ^target_id,
+                         network_id: ^net_id,
+                         network_slug: ^net_slug,
+                         nick: "bobo",
+                         actor_user_id: actor_id,
+                         actor_user_name: actor_name
+                       }
+                     },
+                     500
+
+      assert is_binary(actor_id)
+      assert is_binary(actor_name)
+    end
+
+    test "PATCH cosmetic-only emits :credential_updated with session_action :left_alone",
+         %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+      {user, network, _} = bound_credential()
+      user_id = user.id
+      net_id = network.id
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch(
+          "/admin/credentials/#{user.id}/#{network.id}",
+          Jason.encode!(%{realname: "Operator Bob"})
+        )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :credential_updated,
+                         user_id: ^user_id,
+                         network_id: ^net_id,
+                         session_action: :left_alone
+                       }
+                     },
+                     500
+    end
+
+    test "DELETE emits :credential_unbound with actor", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+      {user, network, _} = bound_credential()
+      user_id = user.id
+      net_id = network.id
+      net_slug = network.slug
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> delete("/admin/credentials/#{user.id}/#{network.id}")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :credential_unbound,
+                         user_id: ^user_id,
+                         network_id: ^net_id,
+                         network_slug: ^net_slug
+                       }
+                     },
+                     500
     end
   end
 end

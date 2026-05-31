@@ -204,6 +204,194 @@ defmodule Grappa.AdminEvents.WireTest do
     end
   end
 
+  # ----- Admin-panel bucket 4 mutation constructors -------------------
+  #
+  # Each describe block pins (a) the wire shape, (b) the closed-union
+  # `kind:` discriminator, (c) the actor-presence invariant: admin-
+  # mutation events ALWAYS carry a non-nil operator, so a nil actor
+  # arm trips `FunctionClauseError` at the boundary (different from
+  # the visitor/session events whose `validate_actor/2` accepts the
+  # system-path nil pair).
+
+  describe "user_created/5" do
+    test "renders the typed wire shape" do
+      event = Wire.user_created("u-uuid", "alice", false, "actor-id", "vjt")
+      assert event.kind == :user_created
+      assert event.user_id == "u-uuid"
+      assert event.user_name == "alice"
+      assert event.is_admin == false
+      assert event.actor_user_id == "actor-id"
+      assert event.actor_user_name == "vjt"
+      assert is_binary(event.at)
+    end
+
+    test "admin-promote on create renders is_admin: true" do
+      event = Wire.user_created("u-uuid", "bob", true, "actor-id", "vjt")
+      assert event.is_admin == true
+    end
+
+    test "rejects nil actor (admin-only path, no system emitter)" do
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :user_created, ["u-uuid", "alice", false, nil, nil])
+      end
+    end
+  end
+
+  describe "user_updated/5" do
+    test "renders with is_admin flip" do
+      event = Wire.user_updated("u-uuid", "alice", true, "actor-id", "vjt")
+      assert event.kind == :user_updated
+      assert event.is_admin == true
+    end
+
+    test "rejects non-boolean is_admin" do
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :user_updated, ["u-uuid", "alice", "true", "actor", "vjt"])
+      end
+    end
+  end
+
+  describe "user_password_changed/4" do
+    test "renders the typed wire shape (no password body)" do
+      event = Wire.user_password_changed("u-uuid", "alice", "actor-id", "vjt")
+      assert event.kind == :user_password_changed
+      assert event.user_id == "u-uuid"
+      assert event.user_name == "alice"
+      refute Map.has_key?(event, :password)
+    end
+
+    test "rejects nil actor" do
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :user_password_changed, ["u-uuid", "alice", nil, nil])
+      end
+    end
+  end
+
+  describe "user_deleted/4" do
+    test "renders the typed wire shape" do
+      event = Wire.user_deleted("u-uuid", "alice", "actor-id", "vjt")
+      assert event.kind == :user_deleted
+      assert event.user_id == "u-uuid"
+    end
+  end
+
+  describe "network_created/4" do
+    test "renders the typed wire shape" do
+      event = Wire.network_created(7, "azzurra", "actor-id", "vjt")
+      assert event.kind == :network_created
+      assert event.network_id == 7
+      assert event.network_slug == "azzurra"
+    end
+
+    test "rejects empty slug" do
+      assert_raise FunctionClauseError, fn ->
+        Wire.network_created(7, "", "actor-id", "vjt")
+      end
+    end
+  end
+
+  describe "network_deleted/4" do
+    test "renders the typed wire shape" do
+      event = Wire.network_deleted(7, "azzurra", "actor-id", "vjt")
+      assert event.kind == :network_deleted
+      assert event.network_id == 7
+    end
+  end
+
+  describe "server_added/8" do
+    test "renders the typed wire shape" do
+      event = Wire.server_added(7, "azzurra", 42, "irc.example.org", 6697, true, "actor-id", "vjt")
+      assert event.kind == :server_added
+      assert event.network_id == 7
+      assert event.network_slug == "azzurra"
+      assert event.server_id == 42
+      assert event.host == "irc.example.org"
+      assert event.port == 6697
+      assert event.tls == true
+    end
+
+    test "plain-text endpoint" do
+      event = Wire.server_added(7, "azzurra", 42, "irc.example.org", 6667, false, "a", "vjt")
+      assert event.tls == false
+      assert event.port == 6667
+    end
+
+    test "rejects empty slug" do
+      assert_raise FunctionClauseError, fn ->
+        Wire.server_added(7, "", 42, "irc.example.org", 6697, true, "a", "vjt")
+      end
+    end
+  end
+
+  describe "server_updated/8" do
+    test "renders the typed wire shape" do
+      event =
+        Wire.server_updated(7, "azzurra", 42, "irc.example.org", 6697, true, "actor-id", "vjt")
+
+      assert event.kind == :server_updated
+      assert event.host == "irc.example.org"
+    end
+  end
+
+  describe "server_removed/7" do
+    test "renders the typed wire shape" do
+      event = Wire.server_removed(7, "azzurra", 42, "irc.example.org", 6697, "actor-id", "vjt")
+      assert event.kind == :server_removed
+      assert event.server_id == 42
+      refute Map.has_key?(event, :tls)
+    end
+  end
+
+  describe "credential_bound/7" do
+    test "renders the typed wire shape" do
+      event =
+        Wire.credential_bound("u-uuid", "alice", 7, "azzurra", "alice_irc", "actor-id", "vjt")
+
+      assert event.kind == :credential_bound
+      assert event.user_id == "u-uuid"
+      assert event.user_name == "alice"
+      assert event.network_id == 7
+      assert event.network_slug == "azzurra"
+      assert event.nick == "alice_irc"
+    end
+
+    test "rejects empty slug" do
+      assert_raise FunctionClauseError, fn ->
+        Wire.credential_bound("u-uuid", "alice", 7, "", "nick", "a", "vjt")
+      end
+    end
+  end
+
+  describe "credential_updated/7" do
+    test ":left_alone session action" do
+      event =
+        Wire.credential_updated("u-uuid", "alice", 7, "azzurra", :left_alone, "actor-id", "vjt")
+
+      assert event.kind == :credential_updated
+      assert event.session_action == :left_alone
+    end
+
+    test ":stopped session action" do
+      event = Wire.credential_updated("u-uuid", "alice", 7, "azzurra", :stopped, "a", "vjt")
+      assert event.session_action == :stopped
+    end
+
+    test "rejects unknown session_action" do
+      assert_raise FunctionClauseError, fn ->
+        Wire.credential_updated("u-uuid", "alice", 7, "azzurra", :restarted, "a", "vjt")
+      end
+    end
+  end
+
+  describe "credential_unbound/6" do
+    test "renders the typed wire shape" do
+      event = Wire.credential_unbound("u-uuid", "alice", 7, "azzurra", "actor-id", "vjt")
+      assert event.kind == :credential_unbound
+      assert event.user_id == "u-uuid"
+      assert event.network_slug == "azzurra"
+    end
+  end
+
   describe "from_telemetry/3" do
     test "translates :circuit, :open" do
       event =

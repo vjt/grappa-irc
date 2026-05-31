@@ -41,7 +41,19 @@ export type AdminEventsWireEventKind =
   | "session_terminated"
   | "network_caps_updated"
   | "circuit_reset"
-  | "cap_counts_changed";
+  | "cap_counts_changed"
+  | "user_created"
+  | "user_updated"
+  | "user_password_changed"
+  | "user_deleted"
+  | "network_created"
+  | "network_deleted"
+  | "server_added"
+  | "server_updated"
+  | "server_removed"
+  | "credential_bound"
+  | "credential_updated"
+  | "credential_unbound";
 
 export type AdminEventsWireCircuitOpenEvent = {
   kind: "circuit_open";
@@ -163,6 +175,135 @@ export type AdminEventsWireCapCountsChangedEvent = {
   at: string;
 };
 
+export type AdminEventsWireUserCreatedEvent = {
+  kind: "user_created";
+  user_id: string;
+  user_name: string;
+  is_admin: boolean;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireUserUpdatedEvent = {
+  kind: "user_updated";
+  user_id: string;
+  user_name: string;
+  is_admin: boolean;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireUserPasswordChangedEvent = {
+  kind: "user_password_changed";
+  user_id: string;
+  user_name: string;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireUserDeletedEvent = {
+  kind: "user_deleted";
+  user_id: string;
+  user_name: string;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireNetworkCreatedEvent = {
+  kind: "network_created";
+  network_id: number;
+  network_slug: string;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireNetworkDeletedEvent = {
+  kind: "network_deleted";
+  network_id: number;
+  network_slug: string;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireServerAddedEvent = {
+  kind: "server_added";
+  network_id: number;
+  network_slug: string;
+  server_id: number;
+  host: string;
+  port: number;
+  tls: boolean;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireServerUpdatedEvent = {
+  kind: "server_updated";
+  network_id: number;
+  network_slug: string;
+  server_id: number;
+  host: string;
+  port: number;
+  tls: boolean;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireServerRemovedEvent = {
+  kind: "server_removed";
+  network_id: number;
+  network_slug: string;
+  server_id: number;
+  host: string;
+  port: number;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireCredentialBoundEvent = {
+  kind: "credential_bound";
+  user_id: string;
+  user_name: string;
+  network_id: number;
+  network_slug: string;
+  nick: string;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireCredentialUpdatedEvent = {
+  kind: "credential_updated";
+  user_id: string;
+  user_name: string;
+  network_id: number;
+  network_slug: string;
+  session_action: "left_alone" | "stopped";
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
+export type AdminEventsWireCredentialUnboundEvent = {
+  kind: "credential_unbound";
+  user_id: string;
+  user_name: string;
+  network_id: number;
+  network_slug: string;
+  actor_user_id: string;
+  actor_user_name: string;
+  at: string;
+};
+
 export type AdminEventsWireEvent =
   | AdminEventsWireCircuitOpenEvent
   | AdminEventsWireCircuitCloseEvent
@@ -176,7 +317,19 @@ export type AdminEventsWireEvent =
   | AdminEventsWireSessionTerminatedEvent
   | AdminEventsWireNetworkCapsUpdatedEvent
   | AdminEventsWireCircuitResetEvent
-  | AdminEventsWireCapCountsChangedEvent;
+  | AdminEventsWireCapCountsChangedEvent
+  | AdminEventsWireUserCreatedEvent
+  | AdminEventsWireUserUpdatedEvent
+  | AdminEventsWireUserPasswordChangedEvent
+  | AdminEventsWireUserDeletedEvent
+  | AdminEventsWireNetworkCreatedEvent
+  | AdminEventsWireNetworkDeletedEvent
+  | AdminEventsWireServerAddedEvent
+  | AdminEventsWireServerUpdatedEvent
+  | AdminEventsWireServerRemovedEvent
+  | AdminEventsWireCredentialBoundEvent
+  | AdminEventsWireCredentialUpdatedEvent
+  | AdminEventsWireCredentialUnboundEvent;
 
 // === Grappa.Cic.Wire ===
 

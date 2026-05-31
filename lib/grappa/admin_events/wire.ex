@@ -58,6 +58,18 @@ defmodule Grappa.AdminEvents.Wire do
           | :network_caps_updated
           | :circuit_reset
           | :cap_counts_changed
+          | :user_created
+          | :user_updated
+          | :user_password_changed
+          | :user_deleted
+          | :network_created
+          | :network_deleted
+          | :server_added
+          | :server_updated
+          | :server_removed
+          | :credential_bound
+          | :credential_updated
+          | :credential_unbound
 
   @type circuit_open_event :: %{
           kind: :circuit_open,
@@ -186,6 +198,147 @@ defmodule Grappa.AdminEvents.Wire do
           at: String.t()
         }
 
+  # ----- Admin-panel bucket 4 mutation events -------------------------
+  #
+  # Operators run users / networks / servers / credentials CRUD through
+  # the admin REST surface. Every mutation point in
+  # `GrappaWeb.Admin.{Users,Networks,Servers,Credentials}Controller`
+  # threads `AdminEvents.record/1` so the Events tab shows what
+  # changed. All carry actor_user_id + actor_user_name (the operator);
+  # `:admin_authn` upstream guarantees a non-nil actor at the
+  # controller boundary, so the validator demands non-nil here (the
+  # `validate_admin_actor/2` helper rejects nil pairs at the wire
+  # boundary).
+
+  @type user_created_event :: %{
+          kind: :user_created,
+          user_id: String.t(),
+          user_name: String.t(),
+          is_admin: boolean(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type user_updated_event :: %{
+          kind: :user_updated,
+          user_id: String.t(),
+          user_name: String.t(),
+          is_admin: boolean(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type user_password_changed_event :: %{
+          kind: :user_password_changed,
+          user_id: String.t(),
+          user_name: String.t(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type user_deleted_event :: %{
+          kind: :user_deleted,
+          user_id: String.t(),
+          user_name: String.t(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type network_created_event :: %{
+          kind: :network_created,
+          network_id: integer(),
+          network_slug: String.t(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type network_deleted_event :: %{
+          kind: :network_deleted,
+          network_id: integer(),
+          network_slug: String.t(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type server_added_event :: %{
+          kind: :server_added,
+          network_id: integer(),
+          network_slug: String.t(),
+          server_id: integer(),
+          host: String.t(),
+          port: integer(),
+          tls: boolean(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type server_updated_event :: %{
+          kind: :server_updated,
+          network_id: integer(),
+          network_slug: String.t(),
+          server_id: integer(),
+          host: String.t(),
+          port: integer(),
+          tls: boolean(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type server_removed_event :: %{
+          kind: :server_removed,
+          network_id: integer(),
+          network_slug: String.t(),
+          server_id: integer(),
+          host: String.t(),
+          port: integer(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type credential_bound_event :: %{
+          kind: :credential_bound,
+          user_id: String.t(),
+          user_name: String.t(),
+          network_id: integer(),
+          network_slug: String.t(),
+          nick: String.t(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type credential_updated_event :: %{
+          kind: :credential_updated,
+          user_id: String.t(),
+          user_name: String.t(),
+          network_id: integer(),
+          network_slug: String.t(),
+          session_action: :left_alone | :stopped,
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
+  @type credential_unbound_event :: %{
+          kind: :credential_unbound,
+          user_id: String.t(),
+          user_name: String.t(),
+          network_id: integer(),
+          network_slug: String.t(),
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
+          at: String.t()
+        }
+
   @type event ::
           circuit_open_event()
           | circuit_close_event()
@@ -200,6 +353,18 @@ defmodule Grappa.AdminEvents.Wire do
           | network_caps_updated_event()
           | circuit_reset_event()
           | cap_counts_changed_event()
+          | user_created_event()
+          | user_updated_event()
+          | user_password_changed_event()
+          | user_deleted_event()
+          | network_created_event()
+          | network_deleted_event()
+          | server_added_event()
+          | server_updated_event()
+          | server_removed_event()
+          | credential_bound_event()
+          | credential_updated_event()
+          | credential_unbound_event()
 
   ## ----- Constructors --------------------------------------------------
   ##
@@ -565,6 +730,351 @@ defmodule Grappa.AdminEvents.Wire do
   defp validate_cap_max_pair(max_v, max_u)
        when (is_integer(max_v) or is_nil(max_v)) and (is_integer(max_u) or is_nil(max_u)),
        do: :ok
+
+  ## ----- Admin-panel bucket 4 constructors ----------------------------
+  ##
+  ## Mutation events emitted from the admin REST controllers
+  ## (`/admin/users`, `/admin/networks`, `/admin/networks/.../servers`,
+  ## `/admin/credentials`). All require a non-nil actor — `:admin_authn`
+  ## upstream guarantees `current_subject == {:user, %User{is_admin:
+  ## true}}` at the controller, so a nil actor is a contract violation
+  ## (not a system path). `validate_admin_actor/2` enforces this at the
+  ## wire boundary; the same fail-loud signal as the closed-union
+  ## arms.
+
+  # Stricter sibling of `validate_actor/2`: admin-mutation events
+  # always carry a real operator, so the (nil, nil) arm is rejected.
+  # The function head matches BOTH strings; non-binaries trip
+  # FunctionClauseError at the boundary.
+  defp validate_admin_actor(id, name) when is_binary(id) and is_binary(name), do: :ok
+
+  @doc false
+  @spec user_created(String.t(), String.t(), boolean(), String.t(), String.t()) ::
+          user_created_event()
+  def user_created(user_id, user_name, is_admin, actor_user_id, actor_user_name)
+      when is_binary(user_id) and is_binary(user_name) and is_boolean(is_admin) do
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :user_created,
+      user_id: user_id,
+      user_name: user_name,
+      is_admin: is_admin,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec user_updated(String.t(), String.t(), boolean(), String.t(), String.t()) ::
+          user_updated_event()
+  def user_updated(user_id, user_name, is_admin, actor_user_id, actor_user_name)
+      when is_binary(user_id) and is_binary(user_name) and is_boolean(is_admin) do
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :user_updated,
+      user_id: user_id,
+      user_name: user_name,
+      is_admin: is_admin,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec user_password_changed(String.t(), String.t(), String.t(), String.t()) ::
+          user_password_changed_event()
+  def user_password_changed(user_id, user_name, actor_user_id, actor_user_name)
+      when is_binary(user_id) and is_binary(user_name) do
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :user_password_changed,
+      user_id: user_id,
+      user_name: user_name,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec user_deleted(String.t(), String.t(), String.t(), String.t()) :: user_deleted_event()
+  def user_deleted(user_id, user_name, actor_user_id, actor_user_name)
+      when is_binary(user_id) and is_binary(user_name) do
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :user_deleted,
+      user_id: user_id,
+      user_name: user_name,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec network_created(integer(), String.t(), String.t(), String.t()) ::
+          network_created_event()
+  def network_created(network_id, network_slug, actor_user_id, actor_user_name)
+      when is_integer(network_id) and is_binary(network_slug) and network_slug != "" do
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :network_created,
+      network_id: network_id,
+      network_slug: network_slug,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec network_deleted(integer(), String.t(), String.t(), String.t()) ::
+          network_deleted_event()
+  def network_deleted(network_id, network_slug, actor_user_id, actor_user_name)
+      when is_integer(network_id) and is_binary(network_slug) and network_slug != "" do
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :network_deleted,
+      network_id: network_id,
+      network_slug: network_slug,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec server_added(
+          integer(),
+          String.t(),
+          integer(),
+          String.t(),
+          integer(),
+          boolean(),
+          String.t(),
+          String.t()
+        ) :: server_added_event()
+  def server_added(
+        network_id,
+        network_slug,
+        server_id,
+        host,
+        port,
+        tls,
+        actor_user_id,
+        actor_user_name
+      ) do
+    :ok = validate_server_event_args(network_id, network_slug, server_id, host, port, tls)
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :server_added,
+      network_id: network_id,
+      network_slug: network_slug,
+      server_id: server_id,
+      host: host,
+      port: port,
+      tls: tls,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec server_updated(
+          integer(),
+          String.t(),
+          integer(),
+          String.t(),
+          integer(),
+          boolean(),
+          String.t(),
+          String.t()
+        ) :: server_updated_event()
+  def server_updated(
+        network_id,
+        network_slug,
+        server_id,
+        host,
+        port,
+        tls,
+        actor_user_id,
+        actor_user_name
+      ) do
+    :ok = validate_server_event_args(network_id, network_slug, server_id, host, port, tls)
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :server_updated,
+      network_id: network_id,
+      network_slug: network_slug,
+      server_id: server_id,
+      host: host,
+      port: port,
+      tls: tls,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec server_removed(
+          integer(),
+          String.t(),
+          integer(),
+          String.t(),
+          integer(),
+          String.t(),
+          String.t()
+        ) :: server_removed_event()
+  def server_removed(
+        network_id,
+        network_slug,
+        server_id,
+        host,
+        port,
+        actor_user_id,
+        actor_user_name
+      )
+      when is_integer(network_id) and is_binary(network_slug) and network_slug != "" and
+             is_integer(server_id) and is_binary(host) and is_integer(port) do
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :server_removed,
+      network_id: network_id,
+      network_slug: network_slug,
+      server_id: server_id,
+      host: host,
+      port: port,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  # Split out to keep the 8-arg server_added/server_updated heads below
+  # Credo's cyclomatic gate.
+  defp validate_server_event_args(network_id, network_slug, server_id, host, port, tls)
+       when is_integer(network_id) and is_binary(network_slug) and network_slug != "" and
+              is_integer(server_id) and is_binary(host) and is_integer(port) and is_boolean(tls),
+       do: :ok
+
+  @doc false
+  @spec credential_bound(
+          String.t(),
+          String.t(),
+          integer(),
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t()
+        ) :: credential_bound_event()
+  def credential_bound(
+        user_id,
+        user_name,
+        network_id,
+        network_slug,
+        nick,
+        actor_user_id,
+        actor_user_name
+      )
+      when is_binary(user_id) and is_binary(user_name) and is_integer(network_id) and
+             is_binary(network_slug) and network_slug != "" and is_binary(nick) do
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :credential_bound,
+      user_id: user_id,
+      user_name: user_name,
+      network_id: network_id,
+      network_slug: network_slug,
+      nick: nick,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec credential_updated(
+          String.t(),
+          String.t(),
+          integer(),
+          String.t(),
+          :left_alone | :stopped,
+          String.t(),
+          String.t()
+        ) :: credential_updated_event()
+  def credential_updated(
+        user_id,
+        user_name,
+        network_id,
+        network_slug,
+        session_action,
+        actor_user_id,
+        actor_user_name
+      )
+      when is_binary(user_id) and is_binary(user_name) and is_integer(network_id) and
+             is_binary(network_slug) and network_slug != "" and
+             session_action in [:left_alone, :stopped] do
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :credential_updated,
+      user_id: user_id,
+      user_name: user_name,
+      network_id: network_id,
+      network_slug: network_slug,
+      session_action: session_action,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec credential_unbound(
+          String.t(),
+          String.t(),
+          integer(),
+          String.t(),
+          String.t(),
+          String.t()
+        ) :: credential_unbound_event()
+  def credential_unbound(
+        user_id,
+        user_name,
+        network_id,
+        network_slug,
+        actor_user_id,
+        actor_user_name
+      )
+      when is_binary(user_id) and is_binary(user_name) and is_integer(network_id) and
+             is_binary(network_slug) and network_slug != "" do
+    :ok = validate_admin_actor(actor_user_id, actor_user_name)
+
+    %{
+      kind: :credential_unbound,
+      user_id: user_id,
+      user_name: user_name,
+      network_id: network_id,
+      network_slug: network_slug,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
 
   ## ----- Telemetry adapter ---------------------------------------------
 

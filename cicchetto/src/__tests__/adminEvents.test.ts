@@ -351,6 +351,146 @@ describe("adminEvents — REV-A C1 upload_reaped + uploads_swept ingestion", () 
   });
 });
 
+// Bucket 4 — admin-mutation events from the REST controllers. Each
+// arm is ingested into the audit ring (NOT the live-counts
+// projection); a missing arm would fail `tsc` via `assertNever` in
+// the `ingest()` switch. These tests pin the runtime behavior for
+// every kind.
+describe("adminEvents — bucket 4 mutation kinds", () => {
+  const NEW_KINDS = [
+    {
+      kind: "user_created",
+      user_id: "u-1",
+      user_name: "alice",
+      is_admin: false,
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "user_updated",
+      user_id: "u-1",
+      user_name: "alice",
+      is_admin: true,
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "user_password_changed",
+      user_id: "u-1",
+      user_name: "alice",
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "user_deleted",
+      user_id: "u-1",
+      user_name: "alice",
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "network_created",
+      network_id: 7,
+      network_slug: "azzurra",
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "network_deleted",
+      network_id: 7,
+      network_slug: "azzurra",
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "server_added",
+      network_id: 7,
+      network_slug: "azzurra",
+      server_id: 42,
+      host: "irc.example.test",
+      port: 6697,
+      tls: true,
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "server_updated",
+      network_id: 7,
+      network_slug: "azzurra",
+      server_id: 42,
+      host: "irc.example.test",
+      port: 6697,
+      tls: false,
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "server_removed",
+      network_id: 7,
+      network_slug: "azzurra",
+      server_id: 42,
+      host: "irc.example.test",
+      port: 6697,
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "credential_bound",
+      user_id: "u-1",
+      user_name: "alice",
+      network_id: 7,
+      network_slug: "azzurra",
+      nick: "ali",
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "credential_updated",
+      user_id: "u-1",
+      user_name: "alice",
+      network_id: 7,
+      network_slug: "azzurra",
+      session_action: "stopped",
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+    {
+      kind: "credential_unbound",
+      user_id: "u-1",
+      user_name: "alice",
+      network_id: 7,
+      network_slug: "azzurra",
+      actor_user_id: "a",
+      actor_user_name: "vjt",
+      at: "t",
+    },
+  ] as const;
+
+  for (const ev of NEW_KINDS) {
+    it(`ingests ${ev.kind} into the events ring`, () => {
+      const fake = makeFakeChannel();
+      installAdminEvents(fake.channel);
+
+      fake.fireEvent(ev as WireAdminEvent);
+
+      const list = adminEvents();
+      expect(list.length).toBe(1);
+      expect(list[0]?.kind).toBe(ev.kind);
+    });
+  }
+});
+
 // REV-G H24 (2026-05-22) — runtime narrower boundary regression.
 //
 // Pre-REV-G the channel.on handlers cast payloads directly without

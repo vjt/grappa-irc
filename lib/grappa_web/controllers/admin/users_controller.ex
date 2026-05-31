@@ -42,8 +42,10 @@ defmodule GrappaWeb.Admin.UsersController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, LiveIntrospection}
+  alias Grappa.{Accounts, AdminEvents, LiveIntrospection}
   alias Grappa.Accounts.AdminWire
+  alias Grappa.AdminEvents.Wire, as: AdminEventsWire
+  alias GrappaWeb.Admin.AuthPlug
 
   @doc """
   Enumerate every user row + project per-row live_session_count.
@@ -69,6 +71,7 @@ defmodule GrappaWeb.Admin.UsersController do
     with {:ok, attrs} <- admin_attrs(params),
          %Grappa.Accounts.User{} = user <- Accounts.get_user(id),
          {:ok, updated} <- Accounts.update_admin_flags(user, attrs) do
+      :ok = maybe_emit_user_updated(user, updated, conn)
       counts = LiveIntrospection.count_sessions_by_user()
       json(conn, AdminWire.user_to_admin_json(updated, Map.get(counts, updated.id, 0)))
     else
@@ -87,6 +90,7 @@ defmodule GrappaWeb.Admin.UsersController do
   def create(conn, params) do
     with {:ok, attrs} <- create_attrs(params),
          {:ok, user} <- create_then_maybe_admin(attrs) do
+      :ok = emit_user_created(user, conn)
       counts = LiveIntrospection.count_sessions_by_user()
 
       conn
@@ -108,6 +112,7 @@ defmodule GrappaWeb.Admin.UsersController do
     with {:ok, attrs} <- password_attrs(params),
          %Grappa.Accounts.User{} = user <- Accounts.get_user(id),
          {:ok, updated} <- Accounts.update_password(user, attrs) do
+      :ok = emit_user_password_changed(updated, conn)
       counts = LiveIntrospection.count_sessions_by_user()
       json(conn, AdminWire.user_to_admin_json(updated, Map.get(counts, updated.id, 0)))
     else
@@ -127,8 +132,41 @@ defmodule GrappaWeb.Admin.UsersController do
   def delete(conn, %{"id" => id}) when is_binary(id) do
     with {:ok, user} <- fetch_user(id),
          :ok <- Accounts.delete_user(user) do
+      :ok = emit_user_deleted(user, conn)
       conn |> put_status(:no_content) |> text("")
     end
+  end
+
+  # Bucket 4 — emit `:user_created` with operator actor attribution
+  # after a successful insert.
+  defp emit_user_created(user, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(AdminEventsWire.user_created(user.id, user.name, user.is_admin, actor_id, actor_name))
+  end
+
+  # Bucket 4 — emit `:user_updated` ONLY when is_admin actually
+  # changed. Silent on no-op PUTs (operator clicks twice; same value).
+  defp maybe_emit_user_updated(previous, updated, _)
+       when previous.is_admin == updated.is_admin,
+       do: :ok
+
+  defp maybe_emit_user_updated(_, updated, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(AdminEventsWire.user_updated(updated.id, updated.name, updated.is_admin, actor_id, actor_name))
+  end
+
+  defp emit_user_password_changed(user, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(AdminEventsWire.user_password_changed(user.id, user.name, actor_id, actor_name))
+  end
+
+  defp emit_user_deleted(user, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(AdminEventsWire.user_deleted(user.id, user.name, actor_id, actor_name))
   end
 
   defp fetch_user(id) do

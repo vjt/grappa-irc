@@ -71,6 +71,32 @@ function renderEvent(ev: WireAdminEvent): string {
       // covers the future case where this kind is ever surfaced in
       // the Events tab (e.g. debug snapshot rerun).
       return `${networkLabel(ev.network_slug, ev.network_id)} live: visitors=${ev.visitors}/${capLabel(ev.max_concurrent_visitor_sessions)}, users=${ev.users}/${capLabel(ev.max_concurrent_user_sessions)}`;
+    // Admin-panel bucket 4 mutation arms — non-null actor enforced
+    // server-side by the `:admin_authn` upstream.
+    case "user_created":
+      return `user ${ev.user_name}${ev.is_admin ? " (admin)" : ""} created${actorSuffix(ev.actor_user_name)}`;
+    case "user_updated":
+      return `user ${ev.user_name} is_admin=${ev.is_admin}${actorSuffix(ev.actor_user_name)}`;
+    case "user_password_changed":
+      return `user ${ev.user_name} password rotated${actorSuffix(ev.actor_user_name)}`;
+    case "user_deleted":
+      return `user ${ev.user_name} deleted${actorSuffix(ev.actor_user_name)}`;
+    case "network_created":
+      return `network ${ev.network_slug} created${actorSuffix(ev.actor_user_name)}`;
+    case "network_deleted":
+      return `network ${ev.network_slug} deleted${actorSuffix(ev.actor_user_name)}`;
+    case "server_added":
+      return `server ${ev.host}:${ev.port}${ev.tls ? " +tls" : ""} added to ${ev.network_slug}${actorSuffix(ev.actor_user_name)}`;
+    case "server_updated":
+      return `server ${ev.host}:${ev.port}${ev.tls ? " +tls" : ""} updated on ${ev.network_slug}${actorSuffix(ev.actor_user_name)}`;
+    case "server_removed":
+      return `server ${ev.host}:${ev.port} removed from ${ev.network_slug}${actorSuffix(ev.actor_user_name)}`;
+    case "credential_bound":
+      return `${ev.user_name} bound to ${ev.network_slug} as ${ev.nick}${actorSuffix(ev.actor_user_name)}`;
+    case "credential_updated":
+      return `${ev.user_name}@${ev.network_slug} credential updated (${ev.session_action})${actorSuffix(ev.actor_user_name)}`;
+    case "credential_unbound":
+      return `${ev.user_name} unbound from ${ev.network_slug}${actorSuffix(ev.actor_user_name)}`;
     default:
       return assertNever(ev);
   }
