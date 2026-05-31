@@ -10533,3 +10533,85 @@ spec at spawn time. The pattern is reusable: producer modules
 own the resolution, Session.Server consumes opaque closures, no
 boundary cycle, no operator intervention required for staleness
 recovery.
+
+---
+
+## 2026-05-31 — admin panel CRUD cluster CLOSED
+
+Closes the M-cluster gap where `mix grappa.create_user`,
+`mix grappa.bind_network`, `mix grappa.add_server`, etc. were the
+ONLY mutation surface — admin REST was read-only-plus-narrow-PATCH.
+Six buckets, all hot deploys, no migration. Mix tasks retained for
+operator scripting; REST endpoints share the same context functions.
+
+### Buckets
+
+* **B1** — Network + Server CRUD context + REST (commit `00cfbf8`).
+  `Networks.create_network/1` + `delete_network/1` (with
+  `:credentials_present` + `:scrollback_present` refusals);
+  `Servers.update_server/2`, `delete_server/1`, `get_server/2`.
+  POST/DELETE `/admin/networks`; POST/PUT/DELETE
+  `/admin/networks/:nid/servers/:id`. New `Servers.AdminWire`
+  module + extended `FallbackController` (`:credentials_present`
+  tuple + `:already_exists`).
+* **B2** — User CRUD + last-admin guard + password rotation
+  (commit `7157c2e`). `Accounts.delete_user/1` cascades to
+  bearer-auth sessions + scrollback + credentials atomically;
+  `update_admin_flags/2` extended with `:last_admin` guard at the
+  context boundary; `update_password/2` + dedicated `PUT
+  /admin/users/:id/password` endpoint. Self-rotation allowed; last-
+  admin demotion / delete refused. FallbackController gets
+  `:last_admin` → 422.
+* **B3** — Credentials full CRUD + session-lifecycle wrapper
+  (commit `fd33f81`). `Credentials.update_credential_with_session_lifecycle/3`
+  wraps `update_credential/3` with an A-2 decision table: password
+  / auth_method change ON a live session → `Session.stop_session/2`
+  (operator re-`/connect`s); cosmetic-only fields → `:left_alone`.
+  Wire field `session_action:` surfaces the side-effect.
+* **B4** — AdminEvents broadcasts (commit `81dd7e7`). 11 new
+  constructors in `Grappa.AdminEvents.Wire`: `:user_created`,
+  `:user_updated`, `:user_password_changed`, `:user_deleted`,
+  `:network_created`, `:network_deleted`, `:server_added`,
+  `:server_updated`, `:server_removed`, `:credential_bound`,
+  `:credential_updated`, `:credential_unbound`. All gated by
+  `validate_admin_actor/2` (non-nil operator required —
+  `:admin_authn` upstream guarantees it). Cic mirrors:
+  `WireAdminEvent` union + `narrowAdminEvent` runtime narrower +
+  `ingest()` dispatch + `renderEvent` human strings + regenerated
+  `wireTypes.ts` codegen. `tsc`'s `assertNever` enforces 4-way
+  parity (cic + server + narrower + renderer).
+* **B5** — cic UI (commit `311faa3`). Three tabs:
+  `AdminUsersTab` (list + header create-form + per-row
+  Promote/Demote + Rotate password inline + Delete InlineConfirm),
+  `AdminCredentialsTab` (triple-fetch on mount; bind form + edit
+  with patch-diff + session_action toast + unbind), and extended
+  `AdminNetworksTab` (header create-form + per-row Delete with
+  409-aware "N bound credential(s)" message + Servers disclosure
+  per-row that lazily fetches `GET /admin/networks/:nid/servers`
+  + add-server form + per-server TLS toggle + delete). Typed API
+  helpers in `cicchetto/src/lib/api.ts` mirror every endpoint.
+* **B6** — Playwright e2e + docs + final deploy (this entry).
+  Four new specs (`admin-users`, `admin-credentials`,
+  `admin-network-crud`, `admin-server-crud`); each spec
+  best-effort-cleans its created rows. Browser smoke = the
+  Playwright walks themselves.
+
+### Design decisions captured at plan time
+
+See `docs/plans/admin-panel.md` for A-1 through A-9 (PubSub
+broadcast strategy; running-session lifecycle on credential update;
+split user-password endpoint; last-admin invariant; refuse-not-
+cascade on network delete; leave-session-alone on server delete;
+wire modules per resource; auth method enum reuse; composite vs
+surrogate credential id).
+
+### Why two batched deploys instead of six
+
+Buckets 1-3 + bucket 4 each deploy independently (REST + wire
+extensions are backwards-compatible); buckets 5-6 ship together
+because the cic UI (B5) only works against B4-emitted events and
+the e2e specs (B6) exercise the full surface end-to-end. The
+operator can roll back the cic bundle independently of the BEAM
+release — `scripts/deploy-cic.sh` is decoupled — so the two-deploy
+cadence preserves rollback granularity at the seam where it matters
+most (server vs client).

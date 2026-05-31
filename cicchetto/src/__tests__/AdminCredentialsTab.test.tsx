@@ -109,8 +109,9 @@ describe("AdminCredentialsTab — list render", () => {
     render(() => <AdminCredentialsTab />);
     await waitFor(() => expect(screen.queryByTestId("admin-credentials-table")).not.toBeNull());
 
-    expect(screen.queryByTestId(`admin-credential-row-${CRED.user_id}:${CRED.network_id}`)).not
-      .toBeNull();
+    expect(
+      screen.queryByTestId(`admin-credential-row-${CRED.user_id}:${CRED.network_id}`),
+    ).not.toBeNull();
     expect(
       screen.queryByTestId(`admin-credential-row-${ORPHAN_CRED.user_id}:${ORPHAN_CRED.network_id}`),
     ).not.toBeNull();
@@ -232,8 +233,9 @@ describe("AdminCredentialsTab — unbind flow", () => {
       );
     });
     await waitFor(() => {
-      expect(screen.queryByTestId(`admin-credential-row-${CRED.user_id}:${CRED.network_id}`))
-        .toBeNull();
+      expect(
+        screen.queryByTestId(`admin-credential-row-${CRED.user_id}:${CRED.network_id}`),
+      ).toBeNull();
     });
   });
 });

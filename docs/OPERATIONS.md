@@ -14,6 +14,16 @@ dispatcher cd's to the main repo for docker compose and forwards
 worktree volumes via oneshot bindings (same machinery as
 `scripts/*.sh`).
 
+> **2026-05-31 admin-panel CRUD cluster:** every mix-task verb below
+> now has a REST equivalent under `/admin/*` (admin-gated). Prefer
+> the **AdminPane in cic** (browser UI) for ad-hoc operator actions
+> — it surfaces the same context functions through typed forms +
+> inline-confirm destructive verbs + a live AdminEvents stream so the
+> mutation is visible to other admins in real time. The mix verbs
+> stay as the scripting / boot-time / no-browser path; both routes
+> share the same context functions, so behavior is identical.
+>
+
 ```
 bin/grappa help                  # list verbs grouped by category
 bin/grappa help <verb>           # per-verb help
