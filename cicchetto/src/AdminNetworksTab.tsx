@@ -5,11 +5,18 @@ import { liveCountsByNetworkId } from "./lib/adminEvents";
 import {
   type AdminNetwork,
   type AdminNetworkCapsPatch,
+  type AdminServer,
   ApiError,
+  adminAddServer,
+  adminCreateNetwork,
+  adminDeleteNetwork,
+  adminDeleteServer,
   adminListNetworks,
+  adminListServers,
   adminPatchNetworkCaps,
   adminResetCircuit,
   adminRunReaper,
+  adminUpdateServer,
 } from "./lib/api";
 import { token } from "./lib/auth";
 
@@ -130,6 +137,23 @@ const AdminNetworksTab: Component = () => {
   const [loading, setLoading] = createSignal(false);
   const [reapResult, setReapResult] = createSignal<{ count: number; at: string } | null>(null);
 
+  // Bucket 5 — Create network form (singleton at header).
+  const [createSlug, setCreateSlug] = createSignal<string>("");
+  const [creating, setCreating] = createSignal(false);
+
+  // Bucket 5 — Servers disclosure per network. `expandedNetworkId` is
+  // the open row's id or null. `serversByNetworkId` caches the fetched
+  // list per network so re-expanding doesn't refetch. `serverFormByNetworkId`
+  // holds the add-server form state per network.
+  const [expandedNetworkId, setExpandedNetworkId] = createSignal<number | null>(null);
+  const [serversByNetworkId, setServersByNetworkId] = createStore<Record<number, AdminServer[]>>(
+    {},
+  );
+  const [serverForm, setServerForm] = createStore<
+    Record<number, { host: string; port: string; tls: boolean }>
+  >({});
+  const [serverConfirmKey, setServerConfirmKey] = createSignal<string | null>(null);
+
   const seedEditsFromServer = (rows: AdminNetwork[]): void => {
     setEdits(
       produce((draft) => {
@@ -231,6 +255,153 @@ const AdminNetworksTab: Component = () => {
     }
   };
 
+  const onCreateNetwork = async (e: Event): Promise<void> => {
+    e.preventDefault();
+    const t = token();
+    if (t === null) return;
+    const slug = createSlug().trim();
+    if (slug === "") return;
+    setCreating(true);
+    setError(null);
+    try {
+      await adminCreateNetwork(t, { slug });
+      setCreateSlug("");
+      await refresh();
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "create_failed";
+      setError(`create: ${code}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const onDeleteNetwork = async (net: AdminNetwork): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    setError(null);
+    try {
+      await adminDeleteNetwork(t, net.id);
+      await refresh();
+      setConfirmingKey(null);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        const count =
+          typeof err.info.credential_count === "number" ? err.info.credential_count : null;
+        if (err.code === "credentials_present" && count !== null) {
+          setError(`delete (${net.slug}): ${count} bound credential(s) — unbind first`);
+        } else if (err.code === "scrollback_present") {
+          setError(`delete (${net.slug}): scrollback present — purge first`);
+        } else {
+          setError(`delete (${net.slug}): ${err.code}`);
+        }
+      } else {
+        setError(`delete (${net.slug}): request_failed`);
+      }
+      setConfirmingKey(null);
+    }
+  };
+
+  const onToggleExpand = async (net: AdminNetwork): Promise<void> => {
+    if (expandedNetworkId() === net.id) {
+      setExpandedNetworkId(null);
+      return;
+    }
+    setExpandedNetworkId(net.id);
+    setServerForm(
+      produce((draft) => {
+        if (draft[net.id] === undefined) {
+          draft[net.id] = { host: "", port: "6697", tls: true };
+        }
+      }),
+    );
+    // First-open fetch (cache thereafter).
+    if (serversByNetworkId[net.id] === undefined) {
+      const t = token();
+      if (t === null) return;
+      try {
+        const list = await adminListServers(t, net.id);
+        setServersByNetworkId(
+          produce((draft) => {
+            draft[net.id] = list;
+          }),
+        );
+      } catch (err) {
+        const code = err instanceof ApiError ? err.code : "request_failed";
+        setError(`servers (${net.slug}): ${code}`);
+      }
+    }
+  };
+
+  const refreshServers = async (net: AdminNetwork): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    try {
+      const list = await adminListServers(t, net.id);
+      setServersByNetworkId(
+        produce((draft) => {
+          draft[net.id] = list;
+        }),
+      );
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "request_failed";
+      setError(`servers (${net.slug}): ${code}`);
+    }
+  };
+
+  const onAddServer = async (net: AdminNetwork, e: Event): Promise<void> => {
+    e.preventDefault();
+    const t = token();
+    if (t === null) return;
+    const f = serverForm[net.id];
+    if (f === undefined || f.host.trim() === "") return;
+    const port = Number.parseInt(f.port, 10);
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+      setError(`add server: invalid port`);
+      return;
+    }
+    setError(null);
+    try {
+      await adminAddServer(t, net.id, { host: f.host.trim(), port, tls: f.tls });
+      setServerForm(
+        produce((draft) => {
+          draft[net.id] = { host: "", port: "6697", tls: true };
+        }),
+      );
+      await refreshServers(net);
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "request_failed";
+      setError(`add server (${net.slug}): ${code}`);
+    }
+  };
+
+  const onToggleServerTls = async (net: AdminNetwork, s: AdminServer): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    setError(null);
+    try {
+      await adminUpdateServer(t, net.id, s.id, { tls: !s.tls });
+      await refreshServers(net);
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "request_failed";
+      setError(`update server (${s.host}:${s.port}): ${code}`);
+    }
+  };
+
+  const onDeleteServer = async (net: AdminNetwork, s: AdminServer): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    setError(null);
+    try {
+      await adminDeleteServer(t, net.id, s.id);
+      await refreshServers(net);
+      setServerConfirmKey(null);
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "request_failed";
+      setError(`delete server (${s.host}:${s.port}): ${code}`);
+      setServerConfirmKey(null);
+    }
+  };
+
   onMount(() => {
     void refresh();
   });
@@ -267,6 +438,31 @@ const AdminNetworksTab: Component = () => {
         </p>
       </Show>
 
+      <form
+        class="admin-networks-create-form"
+        onSubmit={(e) => {
+          void onCreateNetwork(e);
+        }}
+        data-testid="admin-networks-create-form"
+      >
+        <input
+          type="text"
+          placeholder="new network slug (e.g. azzurra)"
+          value={createSlug()}
+          onInput={(e) => setCreateSlug((e.currentTarget as HTMLInputElement).value)}
+          data-testid="admin-networks-create-slug"
+          aria-label="new network slug"
+          required
+        />
+        <button
+          type="submit"
+          disabled={creating() || createSlug().trim() === ""}
+          data-testid="admin-networks-create-submit"
+        >
+          Create network
+        </button>
+      </form>
+
       <Show when={error() !== null}>
         <p class="admin-error" role="alert" data-testid="admin-networks-error">
           failed: {error()} — click ↻ refresh to retry
@@ -302,76 +498,136 @@ const AdminNetworksTab: Component = () => {
           <tbody>
             <For each={networks() ?? []}>
               {(net) => (
-                <tr class="admin-networks-row" data-testid={`admin-network-row-${net.slug}`}>
-                  <td>{net.slug}</td>
-                  <td
-                    data-testid={`admin-network-live-visitors-${net.slug}`}
-                    title={`${effectiveLive(net).visitors} live visitor sessions of ${renderCap(
-                      net.max_concurrent_visitor_sessions,
-                    )} cap`}
-                  >
-                    {effectiveLive(net).visitors}/{renderCap(net.max_concurrent_visitor_sessions)}
-                  </td>
-                  <td>
-                    <CapInput
-                      slug={net.slug}
-                      field="max_concurrent_visitor_sessions"
-                      value={edits[net.slug]?.max_concurrent_visitor_sessions ?? ""}
-                      onInput={(v) => onEditCap(net.slug, "max_concurrent_visitor_sessions", v)}
-                    />
-                  </td>
-                  <td
-                    data-testid={`admin-network-live-users-${net.slug}`}
-                    title={`${effectiveLive(net).users} live user sessions of ${renderCap(
-                      net.max_concurrent_user_sessions,
-                    )} cap`}
-                  >
-                    {effectiveLive(net).users}/{renderCap(net.max_concurrent_user_sessions)}
-                  </td>
-                  <td>
-                    <CapInput
-                      slug={net.slug}
-                      field="max_concurrent_user_sessions"
-                      value={edits[net.slug]?.max_concurrent_user_sessions ?? ""}
-                      onInput={(v) => onEditCap(net.slug, "max_concurrent_user_sessions", v)}
-                    />
-                  </td>
-                  <td>
-                    <CapInput
-                      slug={net.slug}
-                      field="max_per_client"
-                      value={edits[net.slug]?.max_per_client ?? ""}
-                      onInput={(v) => onEditCap(net.slug, "max_per_client", v)}
-                    />
-                  </td>
-                  <td>
-                    <CircuitBadge net={net} />
-                  </td>
-                  <td class="admin-networks-actions">
-                    <button
-                      type="button"
-                      class="admin-network-save-btn"
-                      disabled={!isDirtyAndValid(net, edits[net.slug])}
-                      onClick={() => {
-                        void onSave(net);
-                      }}
-                      data-testid={`admin-network-save-${net.slug}`}
+                <>
+                  <tr class="admin-networks-row" data-testid={`admin-network-row-${net.slug}`}>
+                    <td>
+                      <button
+                        type="button"
+                        class="admin-network-expand-btn"
+                        onClick={() => {
+                          void onToggleExpand(net);
+                        }}
+                        data-testid={`admin-network-expand-${net.slug}`}
+                        aria-expanded={expandedNetworkId() === net.id}
+                      >
+                        {expandedNetworkId() === net.id ? "▾" : "▸"} {net.slug}
+                      </button>
+                    </td>
+                    <td
+                      data-testid={`admin-network-live-visitors-${net.slug}`}
+                      title={`${effectiveLive(net).visitors} live visitor sessions of ${renderCap(
+                        net.max_concurrent_visitor_sessions,
+                      )} cap`}
                     >
-                      Save
-                    </button>
-                    <Show when={net.circuit_state !== null}>
-                      <InlineConfirmButton
-                        idleLabel="Reset Circuit"
-                        confirmLabel="Confirm reset?"
-                        armed={confirmingKey() === resetKey(net.slug)}
-                        onArm={() => setConfirmingKey(resetKey(net.slug))}
-                        onConfirm={() => onResetCircuit(net)}
-                        testId={`admin-network-reset-circuit-${net.slug}`}
-                        extraClass="reset-circuit-btn"
+                      {effectiveLive(net).visitors}/{renderCap(net.max_concurrent_visitor_sessions)}
+                    </td>
+                    <td>
+                      <CapInput
+                        slug={net.slug}
+                        field="max_concurrent_visitor_sessions"
+                        value={edits[net.slug]?.max_concurrent_visitor_sessions ?? ""}
+                        onInput={(v) => onEditCap(net.slug, "max_concurrent_visitor_sessions", v)}
                       />
-                    </Show>
-                  </td>
-                </tr>
+                    </td>
+                    <td
+                      data-testid={`admin-network-live-users-${net.slug}`}
+                      title={`${effectiveLive(net).users} live user sessions of ${renderCap(
+                        net.max_concurrent_user_sessions,
+                      )} cap`}
+                    >
+                      {effectiveLive(net).users}/{renderCap(net.max_concurrent_user_sessions)}
+                    </td>
+                    <td>
+                      <CapInput
+                        slug={net.slug}
+                        field="max_concurrent_user_sessions"
+                        value={edits[net.slug]?.max_concurrent_user_sessions ?? ""}
+                        onInput={(v) => onEditCap(net.slug, "max_concurrent_user_sessions", v)}
+                      />
+                    </td>
+                    <td>
+                      <CapInput
+                        slug={net.slug}
+                        field="max_per_client"
+                        value={edits[net.slug]?.max_per_client ?? ""}
+                        onInput={(v) => onEditCap(net.slug, "max_per_client", v)}
+                      />
+                    </td>
+                    <td>
+                      <CircuitBadge net={net} />
+                    </td>
+                    <td class="admin-networks-actions">
+                      <button
+                        type="button"
+                        class="admin-network-save-btn"
+                        disabled={!isDirtyAndValid(net, edits[net.slug])}
+                        onClick={() => {
+                          void onSave(net);
+                        }}
+                        data-testid={`admin-network-save-${net.slug}`}
+                      >
+                        Save
+                      </button>
+                      <Show when={net.circuit_state !== null}>
+                        <InlineConfirmButton
+                          idleLabel="Reset Circuit"
+                          confirmLabel="Confirm reset?"
+                          armed={confirmingKey() === resetKey(net.slug)}
+                          onArm={() => setConfirmingKey(resetKey(net.slug))}
+                          onConfirm={() => onResetCircuit(net)}
+                          testId={`admin-network-reset-circuit-${net.slug}`}
+                          extraClass="reset-circuit-btn"
+                        />
+                      </Show>
+                      <InlineConfirmButton
+                        idleLabel="Delete"
+                        confirmLabel="Confirm delete?"
+                        armed={confirmingKey() === `delete:${net.slug}`}
+                        onArm={() => setConfirmingKey(`delete:${net.slug}`)}
+                        onConfirm={() => onDeleteNetwork(net)}
+                        testId={`admin-network-delete-${net.slug}`}
+                        extraClass="delete-btn"
+                      />
+                    </td>
+                  </tr>
+                  <Show when={expandedNetworkId() === net.id}>
+                    <tr
+                      class="admin-networks-servers-row"
+                      data-testid={`admin-network-servers-${net.slug}`}
+                    >
+                      <td colspan="8">
+                        <ServersDisclosure
+                          net={net}
+                          servers={serversByNetworkId[net.id] ?? []}
+                          form={serverForm[net.id] ?? { host: "", port: "6697", tls: true }}
+                          onFormChange={(patch) =>
+                            setServerForm(
+                              produce((draft) => {
+                                const cur = draft[net.id] ?? {
+                                  host: "",
+                                  port: "6697",
+                                  tls: true,
+                                };
+                                draft[net.id] = { ...cur, ...patch };
+                              }),
+                            )
+                          }
+                          onAddServer={(e) => {
+                            void onAddServer(net, e);
+                          }}
+                          onToggleTls={(s) => {
+                            void onToggleServerTls(net, s);
+                          }}
+                          confirmingServerKey={serverConfirmKey()}
+                          onArmServerDelete={(key) => setServerConfirmKey(key)}
+                          onDeleteServer={(s) => {
+                            void onDeleteServer(net, s);
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  </Show>
+                </>
               )}
             </For>
           </tbody>
@@ -485,5 +741,125 @@ function isDirtyAndValid(net: AdminNetwork, edit: RowEdit | undefined): boolean 
   if (body === null) return false;
   return Object.keys(body).length > 0;
 }
+
+// Servers disclosure: per-network add-server form + list with
+// inline TLS toggle and delete-confirm per row. State lives in
+// the parent so refresh cascades into the same draft (parent
+// owns the refetch trigger).
+const ServersDisclosure: Component<{
+  net: AdminNetwork;
+  servers: AdminServer[];
+  form: { host: string; port: string; tls: boolean };
+  onFormChange: (patch: Partial<{ host: string; port: string; tls: boolean }>) => void;
+  onAddServer: (e: Event) => void;
+  onToggleTls: (s: AdminServer) => void;
+  confirmingServerKey: string | null;
+  onArmServerDelete: (key: string | null) => void;
+  onDeleteServer: (s: AdminServer) => void;
+}> = (props) => {
+  return (
+    <div class="admin-network-servers-disclosure">
+      <form
+        class="admin-network-server-add-form"
+        onSubmit={props.onAddServer}
+        data-testid={`admin-network-add-server-form-${props.net.slug}`}
+      >
+        <input
+          type="text"
+          placeholder="host"
+          value={props.form.host}
+          onInput={(e) => props.onFormChange({ host: (e.currentTarget as HTMLInputElement).value })}
+          data-testid={`admin-network-add-server-host-${props.net.slug}`}
+          aria-label={`new server host for ${props.net.slug}`}
+          required
+        />
+        <input
+          type="number"
+          placeholder="port"
+          min="1"
+          max="65535"
+          value={props.form.port}
+          onInput={(e) => props.onFormChange({ port: (e.currentTarget as HTMLInputElement).value })}
+          data-testid={`admin-network-add-server-port-${props.net.slug}`}
+          aria-label={`new server port for ${props.net.slug}`}
+          required
+        />
+        <label>
+          <input
+            type="checkbox"
+            checked={props.form.tls}
+            onChange={(e) =>
+              props.onFormChange({ tls: (e.currentTarget as HTMLInputElement).checked })
+            }
+            data-testid={`admin-network-add-server-tls-${props.net.slug}`}
+          />
+          TLS
+        </label>
+        <button
+          type="submit"
+          disabled={props.form.host.trim() === ""}
+          data-testid={`admin-network-add-server-submit-${props.net.slug}`}
+        >
+          Add server
+        </button>
+      </form>
+      <Show when={props.servers.length === 0}>
+        <p class="muted" data-testid={`admin-network-servers-empty-${props.net.slug}`}>
+          no servers
+        </p>
+      </Show>
+      <Show when={props.servers.length > 0}>
+        <table
+          class="admin-network-servers-table"
+          data-testid={`admin-network-servers-table-${props.net.slug}`}
+        >
+          <thead>
+            <tr>
+              <th>host</th>
+              <th>port</th>
+              <th>tls</th>
+              <th>priority</th>
+              <th>enabled</th>
+              <th>
+                <span class="sr-only">actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <For each={props.servers}>
+              {(s) => (
+                <tr data-testid={`admin-network-server-row-${props.net.slug}-${s.id}`}>
+                  <td>{s.host}</td>
+                  <td>{s.port}</td>
+                  <td>{s.tls ? "yes" : "no"}</td>
+                  <td>{s.priority}</td>
+                  <td>{s.enabled ? "yes" : "no"}</td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => props.onToggleTls(s)}
+                      data-testid={`admin-network-server-toggle-tls-${props.net.slug}-${s.id}`}
+                    >
+                      {s.tls ? "Disable TLS" : "Enable TLS"}
+                    </button>
+                    <InlineConfirmButton
+                      idleLabel="Delete"
+                      confirmLabel="Confirm delete?"
+                      armed={props.confirmingServerKey === `${props.net.id}:${s.id}`}
+                      onArm={() => props.onArmServerDelete(`${props.net.id}:${s.id}`)}
+                      onConfirm={() => props.onDeleteServer(s)}
+                      testId={`admin-network-server-delete-${props.net.slug}-${s.id}`}
+                      extraClass="delete-btn"
+                    />
+                  </td>
+                </tr>
+              )}
+            </For>
+          </tbody>
+        </table>
+      </Show>
+    </div>
+  );
+};
 
 export default AdminNetworksTab;

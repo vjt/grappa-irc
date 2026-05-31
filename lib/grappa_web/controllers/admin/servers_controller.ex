@@ -36,6 +36,24 @@ defmodule GrappaWeb.Admin.ServersController do
   alias GrappaWeb.Admin.AuthPlug
 
   @doc """
+  List servers for `network_id`. Returns `200 OK` with
+  `%{servers: [...]}` ordered by `add_server/2`'s ascending priority
+  then id. Operator-facing — `:admin_authn` upstream gates.
+  """
+  @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found}
+  def index(conn, %{"network_id" => nid}) do
+    with {:ok, parsed_nid} <- parse_id(nid),
+         {:ok, net} <- fetch_network(parsed_nid) do
+      rows =
+        net
+        |> Servers.list_servers()
+        |> Enum.map(&ServerWire.server_to_admin_json/1)
+
+      json(conn, %{servers: rows})
+    end
+  end
+
+  @doc """
   Create a server endpoint under `network_id`. Body fields: `host`
   (required), `port` (required), `tls?`, `priority?`, `enabled?`.
   Returns `201 Created` + the server JSON shape.

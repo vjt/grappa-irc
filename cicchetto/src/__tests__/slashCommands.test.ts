@@ -639,12 +639,9 @@ describe("parseSlash — services shortcuts (#20)", () => {
     });
   });
 
-  it.each(["cs", "ns", "ms", "os", "hs", "rs"])(
-    "/%s with no body → error",
-    (verb) => {
-      expect(parseSlash(`/${verb}`)).toMatchObject({ kind: "error", verb });
-    },
-  );
+  it.each(["cs", "ns", "ms", "os", "hs", "rs"])("/%s with no body → error", (verb) => {
+    expect(parseSlash(`/${verb}`)).toMatchObject({ kind: "error", verb });
+  });
 });
 
 describe("parseSlash — /quote", () => {

@@ -1736,3 +1736,310 @@ export async function patchNetwork(
   if (!res.ok) throw await readError(res);
   return (await res.json()) as CredentialJson;
 }
+
+// ----- Admin-panel buckets 2-5 — REST CRUD wrappers -------------------
+//
+// Mirrors of the bucket-1/2/3 admin REST surface. All require an
+// admin bearer token; visitor / non-admin sessions collapse to 403
+// upstream (`:admin_authn`). Shapes match `Grappa.{Accounts,Networks,
+// Networks.Servers,Networks.Credentials}.AdminWire.t()` server-side.
+
+export type AdminUser = {
+  id: string;
+  name: string;
+  is_admin: boolean;
+  inserted_at: string;
+  updated_at: string;
+  live_session_count: number;
+};
+
+export type AdminUsersResponse = { users: AdminUser[] };
+
+export async function adminListUsers(token: string): Promise<AdminUser[]> {
+  const res = await fetch("/admin/users", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as AdminUsersResponse;
+  return body.users;
+}
+
+export type AdminUserCreate = {
+  name: string;
+  password: string;
+  is_admin?: boolean;
+};
+
+export async function adminCreateUser(token: string, body: AdminUserCreate): Promise<AdminUser> {
+  const res = await fetch("/admin/users", {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminUser;
+}
+
+export async function adminUpdateUserAdmin(
+  token: string,
+  id: string,
+  is_admin: boolean,
+): Promise<AdminUser> {
+  const res = await fetch(`/admin/users/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ is_admin }),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminUser;
+}
+
+export async function adminUpdateUserPassword(
+  token: string,
+  id: string,
+  password: string,
+): Promise<AdminUser> {
+  const res = await fetch(`/admin/users/${encodeURIComponent(id)}/password`, {
+    method: "PUT",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminUser;
+}
+
+export async function adminDeleteUser(token: string, id: string): Promise<void> {
+  const res = await fetch(`/admin/users/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// Bucket 1 — Network create/delete REST CRUD.
+
+export type AdminNetworkCreate = {
+  slug: string;
+  max_concurrent_visitor_sessions?: number | null;
+  max_concurrent_user_sessions?: number | null;
+  max_per_client?: number | null;
+};
+
+export async function adminCreateNetwork(
+  token: string,
+  body: AdminNetworkCreate,
+): Promise<AdminNetwork> {
+  const res = await fetch("/admin/networks", {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminNetwork;
+}
+
+export async function adminDeleteNetwork(token: string, id: number): Promise<void> {
+  const res = await fetch(`/admin/networks/${encodeURIComponent(String(id))}`, {
+    method: "DELETE",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// Bucket 1 — Server CRUD scoped under a network.
+
+export type AdminServer = {
+  id: number;
+  network_id: number;
+  host: string;
+  port: number;
+  tls: boolean;
+  priority: number;
+  enabled: boolean;
+  inserted_at: string;
+  updated_at: string;
+};
+
+export type AdminServerCreate = {
+  host: string;
+  port: number;
+  tls?: boolean;
+  priority?: number;
+  enabled?: boolean;
+};
+
+export type AdminServerUpdate = Partial<AdminServerCreate>;
+
+export type AdminServerDeleteResponse = { network_session_count: number };
+
+export type AdminServersResponse = { servers: AdminServer[] };
+
+export async function adminListServers(token: string, networkId: number): Promise<AdminServer[]> {
+  const res = await fetch(`/admin/networks/${encodeURIComponent(String(networkId))}/servers`, {
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as AdminServersResponse;
+  return body.servers;
+}
+
+export async function adminAddServer(
+  token: string,
+  networkId: number,
+  body: AdminServerCreate,
+): Promise<AdminServer> {
+  const res = await fetch(`/admin/networks/${encodeURIComponent(String(networkId))}/servers`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminServer;
+}
+
+export async function adminUpdateServer(
+  token: string,
+  networkId: number,
+  serverId: number,
+  body: AdminServerUpdate,
+): Promise<AdminServer> {
+  const res = await fetch(
+    `/admin/networks/${encodeURIComponent(String(networkId))}/servers/${encodeURIComponent(
+      String(serverId),
+    )}`,
+    {
+      method: "PUT",
+      headers: buildHeaders(token),
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminServer;
+}
+
+export async function adminDeleteServer(
+  token: string,
+  networkId: number,
+  serverId: number,
+): Promise<AdminServerDeleteResponse> {
+  const res = await fetch(
+    `/admin/networks/${encodeURIComponent(String(networkId))}/servers/${encodeURIComponent(
+      String(serverId),
+    )}`,
+    {
+      method: "DELETE",
+      headers: buildHeaders(token),
+    },
+  );
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminServerDeleteResponse;
+}
+
+// Bucket 3 — Credential CRUD. URL composite (`:user_id/:network_id`)
+// reflects the schema's composite primary key (no surrogate id).
+
+export type AdminCredentialLiveState = AdminLiveState;
+
+export type AdminCredential = {
+  user_id: string;
+  network_id: number;
+  network_slug: string;
+  nick: string;
+  realname: string | null;
+  sasl_user: string | null;
+  auth_method: string;
+  auth_command_template: string | null;
+  autojoin_channels: string[];
+  last_joined_channels: string[];
+  connection_state: ConnectionState;
+  connection_state_reason: string | null;
+  connection_state_changed_at: string | null;
+  inserted_at: string;
+  updated_at: string;
+  live_state: AdminCredentialLiveState | null;
+  // Present on PUT responses only; index/GET shape excludes it.
+  session_action?: "left_alone" | "stopped";
+};
+
+export type AdminCredentialsResponse = { credentials: AdminCredential[] };
+
+export async function adminListCredentials(
+  token: string,
+  filters?: { user_id?: string; network_id?: number },
+): Promise<AdminCredential[]> {
+  const params = new URLSearchParams();
+  if (filters?.user_id !== undefined) params.set("user_id", filters.user_id);
+  if (filters?.network_id !== undefined) params.set("network_id", String(filters.network_id));
+  const qs = params.toString();
+  const url = qs === "" ? "/admin/credentials" : `/admin/credentials?${qs}`;
+  const res = await fetch(url, { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as AdminCredentialsResponse;
+  return body.credentials;
+}
+
+export type AdminCredentialCreate = {
+  user_id: string;
+  network_id: number;
+  nick: string;
+  auth_method: string;
+  password?: string;
+  sasl_user?: string;
+  realname?: string;
+  auth_command_template?: string;
+  autojoin_channels?: string[];
+};
+
+export async function adminBindCredential(
+  token: string,
+  body: AdminCredentialCreate,
+): Promise<AdminCredential> {
+  const res = await fetch("/admin/credentials", {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminCredential;
+}
+
+export type AdminCredentialUpdate = {
+  nick?: string;
+  sasl_user?: string;
+  realname?: string;
+  auth_method?: string;
+  auth_command_template?: string;
+  password?: string;
+  autojoin_channels?: string[];
+};
+
+export async function adminUpdateCredential(
+  token: string,
+  userId: string,
+  networkId: number,
+  body: AdminCredentialUpdate,
+): Promise<AdminCredential> {
+  const res = await fetch(
+    `/admin/credentials/${encodeURIComponent(userId)}/${encodeURIComponent(String(networkId))}`,
+    {
+      method: "PATCH",
+      headers: buildHeaders(token),
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminCredential;
+}
+
+export async function adminUnbindCredential(
+  token: string,
+  userId: string,
+  networkId: number,
+): Promise<void> {
+  const res = await fetch(
+    `/admin/credentials/${encodeURIComponent(userId)}/${encodeURIComponent(String(networkId))}`,
+    {
+      method: "DELETE",
+      headers: buildHeaders(token),
+    },
+  );
+  if (!res.ok) throw await readError(res);
+}

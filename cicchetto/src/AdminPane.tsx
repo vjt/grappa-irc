@@ -1,9 +1,11 @@
 import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js";
+import AdminCredentialsTab from "./AdminCredentialsTab";
 import AdminDebugTab from "./AdminDebugTab";
 import AdminEventsTab from "./AdminEventsTab";
 import AdminNetworksTab from "./AdminNetworksTab";
 import AdminSessionsTab from "./AdminSessionsTab";
 import AdminSettingsTab from "./AdminSettingsTab";
+import AdminUsersTab from "./AdminUsersTab";
 import AdminVisitorsTab from "./AdminVisitorsTab";
 import { startAdminEventsSubscription, uninstallAdminEvents } from "./lib/adminEvents";
 
@@ -39,7 +41,15 @@ export type Props = {
   onClose: () => void;
 };
 
-type TabKey = "visitors" | "sessions" | "networks" | "events" | "settings" | "debug";
+type TabKey =
+  | "visitors"
+  | "sessions"
+  | "networks"
+  | "users"
+  | "credentials"
+  | "events"
+  | "settings"
+  | "debug";
 
 const AdminPane: Component<Props> = (props) => {
   const [currentTab, setCurrentTab] = createSignal<TabKey>("visitors");
@@ -114,6 +124,30 @@ const AdminPane: Component<Props> = (props) => {
           type="button"
           role="tab"
           class="admin-tab"
+          aria-selected={isActive("users")}
+          aria-controls="admin-tab-users"
+          id="admin-tab-users-handle"
+          data-testid="admin-tab-users"
+          onClick={() => setCurrentTab("users")}
+        >
+          Users
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="admin-tab"
+          aria-selected={isActive("credentials")}
+          aria-controls="admin-tab-credentials"
+          id="admin-tab-credentials-handle"
+          data-testid="admin-tab-credentials"
+          onClick={() => setCurrentTab("credentials")}
+        >
+          Credentials
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="admin-tab"
           aria-selected={isActive("events")}
           aria-controls="admin-tab-events"
           id="admin-tab-events-handle"
@@ -175,6 +209,26 @@ const AdminPane: Component<Props> = (props) => {
           class="admin-tab-panel"
         >
           <AdminNetworksTab />
+        </div>
+      </Show>
+      <Show when={isActive("users")}>
+        <div
+          role="tabpanel"
+          id="admin-tab-users"
+          aria-labelledby="admin-tab-users-handle"
+          class="admin-tab-panel"
+        >
+          <AdminUsersTab />
+        </div>
+      </Show>
+      <Show when={isActive("credentials")}>
+        <div
+          role="tabpanel"
+          id="admin-tab-credentials"
+          aria-labelledby="admin-tab-credentials-handle"
+          class="admin-tab-panel"
+        >
+          <AdminCredentialsTab />
         </div>
       </Show>
       <Show when={isActive("events")}>

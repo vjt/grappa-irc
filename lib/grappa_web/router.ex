@@ -115,6 +115,7 @@ defmodule GrappaWeb.Router do
     # Admin-panel bucket 1 (2026-05-31) — strict-create + delete + server CRUD.
     post "/networks", NetworksController, :create
     delete "/networks/:id", NetworksController, :delete
+    get "/networks/:network_id/servers", ServersController, :index
     post "/networks/:network_id/servers", ServersController, :create
     put "/networks/:network_id/servers/:id", ServersController, :update
     delete "/networks/:network_id/servers/:id", ServersController, :delete

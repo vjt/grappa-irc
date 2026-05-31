@@ -12,7 +12,6 @@ import { sendMessage as sendPrivmsg } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { isServicesSender } from "./servicesSender";
 import { parseSlash } from "./slashCommands";
-import { closeQueryWindow } from "./windowClose";
 import {
   pushAwaySet,
   pushAwayUnset,
@@ -39,6 +38,7 @@ import {
   pushWhois,
   pushWhowas,
 } from "./socket";
+import { closeQueryWindow } from "./windowClose";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
 
 // Per-channel compose state. Owns:
@@ -242,14 +242,18 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // The cached topic lives in channelTopic.ts; rendering is pure UI.
           // TODO(C3): wire to TopicBar's cached topic for inline render.
           const ch = cmd.channel ?? getActiveChannel();
-          if (!ch) return { error: "/topic requires a channel — switch to one or use /topic #chan" };
+          if (!ch)
+            return { error: "/topic requires a channel — switch to one or use /topic #chan" };
           return { error: `/topic ${ch} (bare) — inline render wired in C3 (TopicBar)` };
         }
         case "topic-set": {
           // /topic <text> or /topic #chan <text> — set topic via REST.
           // Explicit channel wins; otherwise current channel; otherwise bail.
           const ch = cmd.channel ?? getActiveChannel();
-          if (!ch) return { error: "/topic requires a channel — switch to one or use /topic #chan <text>" };
+          if (!ch)
+            return {
+              error: "/topic requires a channel — switch to one or use /topic #chan <text>",
+            };
           await postTopic(t, networkSlug, ch, cmd.text);
           result = { ok: true };
           break;
@@ -257,7 +261,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "topic-clear": {
           // /topic -delete or /topic #chan -delete — clear topic via channel event.
           const ch = cmd.channel ?? getActiveChannel();
-          if (!ch) return { error: "/topic -delete requires a channel — switch to one or use /topic #chan -delete" };
+          if (!ch)
+            return {
+              error:
+                "/topic -delete requires a channel — switch to one or use /topic #chan -delete",
+            };
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/topic -delete: network not found" };
           pushChannelTopicClear(networkId, ch);
@@ -331,7 +339,9 @@ const exports_ = identityScopedStore((onIdentityChange) => {
               result = { ok: true };
               break;
             }
-            return { error: "/query <nick> required (bare /query closes the current query window only)" };
+            return {
+              error: "/query <nick> required (bare /query closes the current query window only)",
+            };
           }
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/query: network not found" };

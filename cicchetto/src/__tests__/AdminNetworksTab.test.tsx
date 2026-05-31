@@ -15,6 +15,12 @@ vi.mock("../lib/api", async () => {
     adminPatchNetworkCaps: vi.fn(),
     adminRunReaper: vi.fn(),
     adminResetCircuit: vi.fn(),
+    adminCreateNetwork: vi.fn(),
+    adminDeleteNetwork: vi.fn(),
+    adminListServers: vi.fn(),
+    adminAddServer: vi.fn(),
+    adminDeleteServer: vi.fn(),
+    adminUpdateServer: vi.fn(),
   };
 });
 
@@ -505,6 +511,149 @@ describe("AdminNetworksTab", () => {
       });
       const usersCell = screen.getByTestId(`admin-network-live-users-${BAHAMUT.slug}`);
       expect(usersCell.textContent).toBe("2/3");
+    });
+  });
+
+  // Admin-panel bucket 5 — network CRUD + servers disclosure
+  describe("network create / delete (bucket 5)", () => {
+    it("submits the create form to adminCreateNetwork", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      vi.mocked(api.adminCreateNetwork).mockResolvedValue(AZZURRA);
+      render(() => <AdminNetworksTab />);
+      await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
+
+      const slug = screen.getByTestId("admin-networks-create-slug") as HTMLInputElement;
+      fireEvent.input(slug, { target: { value: "newchat" } });
+      fireEvent.click(screen.getByTestId("admin-networks-create-submit"));
+
+      await waitFor(() => {
+        expect(api.adminCreateNetwork).toHaveBeenCalledWith(
+          "test-bearer",
+          expect.objectContaining({ slug: "newchat" }),
+        );
+      });
+    });
+
+    it("delete inline-confirm fires adminDeleteNetwork", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      vi.mocked(api.adminDeleteNetwork).mockResolvedValue(undefined);
+      render(() => <AdminNetworksTab />);
+      await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
+
+      const btn = screen.getByTestId(`admin-network-delete-${BAHAMUT.slug}`);
+      expect(btn.textContent).toBe("Delete");
+      fireEvent.click(btn);
+      expect(btn.textContent).toBe("Confirm delete?");
+      fireEvent.click(btn);
+      await waitFor(() => {
+        expect(api.adminDeleteNetwork).toHaveBeenCalledWith("test-bearer", BAHAMUT.id);
+      });
+    });
+
+    it("surfaces 409 credentials_present with the operator-facing message", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      const err = new api.ApiError(409, "credentials_present", { credential_count: 3 });
+      vi.mocked(api.adminDeleteNetwork).mockRejectedValue(err);
+      render(() => <AdminNetworksTab />);
+      await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
+
+      const btn = screen.getByTestId(`admin-network-delete-${BAHAMUT.slug}`);
+      fireEvent.click(btn);
+      fireEvent.click(btn);
+      await waitFor(() => {
+        const errBanner = screen.getByTestId("admin-networks-error");
+        expect(errBanner.textContent).toContain("3 bound credential");
+      });
+    });
+  });
+
+  describe("servers disclosure (bucket 5)", () => {
+    it("expands a network row, lists servers, and adds a new one", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      vi.mocked(api.adminListServers).mockResolvedValue([
+        {
+          id: 1,
+          network_id: BAHAMUT.id,
+          host: "irc.example.test",
+          port: 6697,
+          tls: true,
+          priority: 0,
+          enabled: true,
+          inserted_at: "2026-05-31T00:00:00Z",
+          updated_at: "2026-05-31T00:00:00Z",
+        },
+      ]);
+      vi.mocked(api.adminAddServer).mockResolvedValue({
+        id: 2,
+        network_id: BAHAMUT.id,
+        host: "irc.example2.test",
+        port: 6697,
+        tls: true,
+        priority: 0,
+        enabled: true,
+        inserted_at: "2026-05-31T00:00:00Z",
+        updated_at: "2026-05-31T00:00:00Z",
+      });
+      render(() => <AdminNetworksTab />);
+      await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
+
+      fireEvent.click(screen.getByTestId(`admin-network-expand-${BAHAMUT.slug}`));
+      await waitFor(() =>
+        expect(screen.queryByTestId(`admin-network-servers-table-${BAHAMUT.slug}`)).not.toBeNull(),
+      );
+      await waitFor(() =>
+        expect(api.adminListServers).toHaveBeenCalledWith("test-bearer", BAHAMUT.id),
+      );
+
+      fireEvent.input(screen.getByTestId(`admin-network-add-server-host-${BAHAMUT.slug}`), {
+        target: { value: "irc.example2.test" },
+      });
+      fireEvent.click(screen.getByTestId(`admin-network-add-server-submit-${BAHAMUT.slug}`));
+
+      await waitFor(() => {
+        expect(api.adminAddServer).toHaveBeenCalledWith(
+          "test-bearer",
+          BAHAMUT.id,
+          expect.objectContaining({ host: "irc.example2.test", port: 6697, tls: true }),
+        );
+      });
+    });
+
+    it("delete-server inline-confirm fires adminDeleteServer", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      vi.mocked(api.adminListServers).mockResolvedValue([
+        {
+          id: 1,
+          network_id: BAHAMUT.id,
+          host: "irc.example.test",
+          port: 6697,
+          tls: true,
+          priority: 0,
+          enabled: true,
+          inserted_at: "2026-05-31T00:00:00Z",
+          updated_at: "2026-05-31T00:00:00Z",
+        },
+      ]);
+      vi.mocked(api.adminDeleteServer).mockResolvedValue({ network_session_count: 0 });
+      render(() => <AdminNetworksTab />);
+      await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
+
+      fireEvent.click(screen.getByTestId(`admin-network-expand-${BAHAMUT.slug}`));
+      await waitFor(() =>
+        expect(screen.queryByTestId(`admin-network-servers-table-${BAHAMUT.slug}`)).not.toBeNull(),
+      );
+
+      const delBtn = screen.getByTestId(`admin-network-server-delete-${BAHAMUT.slug}-1`);
+      fireEvent.click(delBtn);
+      fireEvent.click(delBtn);
+      await waitFor(() => {
+        expect(api.adminDeleteServer).toHaveBeenCalledWith("test-bearer", BAHAMUT.id, 1);
+      });
     });
   });
 });
