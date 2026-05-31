@@ -83,6 +83,20 @@ export async function login(
   setToken(t);
 }
 
+// Visitor session-sharing — install a bearer + subject pair minted via
+// `POST /auth/share/consume`. Same effect as `login()` minus the
+// request: the consume endpoint already verified the one-shot signed
+// token + minted a fresh accounts_sessions row for the SAME visitor.
+// Callers (the `/share/:token` SPA route) need a write path that lands
+// on the same localStorage keys without re-running the credential
+// dance. Without an explicit helper, the consume route would either
+// reach for the module-private SUBJECT_KEY or duplicate the JSON write
+// + setToken pair — both drift hazards.
+export function installSharedSession(token: string, subject: api.Subject): void {
+  localStorage.setItem(SUBJECT_KEY, JSON.stringify(subject));
+  setToken(token);
+}
+
 // C3 — localStorage is mutated by the user (devtools), browser
 // extensions, and any successful XSS. JSON.parse without runtime
 // narrowing would let a tampered {"kind":"user"} (missing id/name)

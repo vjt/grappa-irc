@@ -170,6 +170,11 @@ vi.mock("../lib/theme", () => ({
 vi.mock("../lib/auth", () => ({
   logout: vi.fn().mockResolvedValue(undefined),
   token: () => tokenHolder.value,
+  // Visitor session-sharing — SettingsDrawer reads `getSubject()` to
+  // gate the share-session entry visibility (visitor-only). Shell.test
+  // doesn't care about the entry, but if the mock doesn't expose
+  // `getSubject` the drawer crashes the moment Shell renders it.
+  getSubject: () => null,
 }));
 
 // UX-4 bucket M (2026-05-19) — Shell.tsx's bootstrap effect calls

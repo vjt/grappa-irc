@@ -8,7 +8,7 @@ import {
   onMount,
   Show,
 } from "solid-js";
-import { logout, token } from "./lib/auth";
+import { getSubject, logout, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { activeHost } from "./lib/image-upload";
 import {
@@ -33,6 +33,7 @@ import {
   type NotificationPrefs,
   putNotificationPrefs,
 } from "./lib/userSettings";
+import ShareSessionModal from "./ShareSessionModal";
 
 // Right-overlay drawer: theme toggle + notifications (push permission +
 // per-trigger prefs + device list) + optional "admin console" entry
@@ -72,6 +73,10 @@ const SettingsDrawer: Component<Props> = (props) => {
   // cache on drawer mount, saveUploadTtlSeconds round-trips on
   // change. `null` = "use the active host's defaultTtl".
   const [uploadTtlSavingError, setUploadTtlSavingError] = createSignal<string | null>(null);
+  // Visitor session-sharing modal open state. Hidden for user
+  // subjects entirely (users have passwords, no need to share).
+  const [shareOpen, setShareOpen] = createSignal(false);
+  const isVisitor = (): boolean => getSubject()?.kind === "visitor";
   // Comma-separated UI shadows for the two whitelist text inputs — the
   // server stores normalized lists; cic edits are joined with ", " and
   // re-split on PUT so partial typing doesn't drop characters.
@@ -598,6 +603,17 @@ const SettingsDrawer: Component<Props> = (props) => {
           </button>
         </Show>
 
+        <Show when={isVisitor()}>
+          <button
+            type="button"
+            class="share-session-entry"
+            data-testid="share-session-entry"
+            onClick={() => setShareOpen(true)}
+          >
+            share session
+          </button>
+        </Show>
+
         <button
           type="button"
           class="logout"
@@ -624,6 +640,7 @@ const SettingsDrawer: Component<Props> = (props) => {
           done
         </button>
       </aside>
+      <ShareSessionModal open={shareOpen()} onClose={() => setShareOpen(false)} />
     </>
   );
 };

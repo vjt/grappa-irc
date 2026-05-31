@@ -5,6 +5,7 @@ import { render } from "solid-js/web";
 import InstallSplash, { INSTALL_CHOICE_KEY, shouldShowInstallSplash } from "./InstallSplash";
 import Login from "./Login";
 import { bootstrapAuth, isAuthenticated } from "./lib/auth";
+import ShareConsume from "./ShareConsume";
 // Side-effect-only: registers the WS subscribe createRoot so per-
 // channel join effects fire once `user()` + `channelsBySlug()` resolve.
 // Pre-A4 this lifecycle was implicit (Shell imported `lib/networks`,
@@ -168,6 +169,12 @@ render(
       </Show>
       <Router>
         <Route path="/login" component={Login} />
+        {/* Visitor session-sharing landing — outside RequireAuth so
+            the link works even when the destination device has no
+            existing bearer. The route auto-consumes the one-shot
+            signed token and navigates into Shell once localStorage
+            is populated. */}
+        <Route path="/share/:token" component={ShareConsume} />
         <Route
           path="/"
           component={() => (

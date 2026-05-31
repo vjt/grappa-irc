@@ -15,9 +15,16 @@ vi.mock("../lib/fontSize", () => ({
   setFontSize: vi.fn(),
 }));
 
+const subjectHolder = vi.hoisted(() => ({
+  current: null as
+    | { kind: "user"; id: string; name: string }
+    | { kind: "visitor"; id: string; nick: string; network_slug: string }
+    | null,
+}));
 vi.mock("../lib/auth", () => ({
   logout: vi.fn().mockResolvedValue(undefined),
   token: () => "test-bearer",
+  getSubject: () => subjectHolder.current,
 }));
 
 // M-cluster M-7 — admin gate. SettingsDrawer reads `isAdmin()` from
@@ -78,6 +85,27 @@ vi.mock("../lib/imageUploadOrchestrator", () => ({
   uploadTtlSecondsValue: () => uploadTtlHolder.current,
 }));
 
+// Visitor session-sharing — drawer mounts ShareSessionModal as a
+// sibling. Mock to a passthrough so the drawer tests don't reach into
+// fetch/clipboard for the mint flow (ShareSessionModal has its own
+// test file). The reactive `<Show>` wrapping is load-bearing — a
+// `props.open ? ... : null` ternary is evaluated ONCE at component
+// construction and never re-runs when the parent toggles the signal.
+vi.mock("../ShareSessionModal", async () => {
+  const { Show } = await import("solid-js");
+  return {
+    default: (props: { open: boolean; onClose: () => void }) => (
+      <Show when={props.open}>
+        <div data-testid="share-modal-stub">
+          <button type="button" onClick={props.onClose}>
+            stub close
+          </button>
+        </div>
+      </Show>
+    ),
+  };
+});
+
 import SettingsDrawer from "../SettingsDrawer";
 
 const wrap = (open: boolean, onClose = vi.fn(), onOpenAdmin = vi.fn()) =>
@@ -89,6 +117,7 @@ beforeEach(() => {
   // state where me() returns null. Admin entry MUST be hidden.
   meHolder.current = null;
   uploadTtlHolder.current = null;
+  subjectHolder.current = null;
 });
 
 describe("SettingsDrawer", () => {
@@ -419,6 +448,54 @@ describe("SettingsDrawer (bucket M — upload-TTL fieldset)", () => {
     fireEvent.change(select, { target: { value: "" } });
     await waitFor(() => {
       expect(orch.saveUploadTtlSeconds).toHaveBeenCalledWith("test-bearer", null);
+    });
+  });
+});
+
+// Visitor session-sharing — the "share session" entry is
+// visitor-only. Server still 403s for user subjects, but the cic UI
+// hides the entry point so users never see a button that would just
+// fail. Tests three subject states: user (hide), visitor (show),
+// not-loaded (hide).
+describe("SettingsDrawer (share session — visitor only)", () => {
+  it("hides share-session entry when subject is a user", () => {
+    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
+    wrap(true);
+    expect(screen.queryByTestId("share-session-entry")).toBeNull();
+  });
+
+  it("shows share-session entry when subject is a visitor", () => {
+    subjectHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "alice",
+      network_slug: "azzurra",
+    };
+    wrap(true);
+    expect(screen.getByTestId("share-session-entry")).toBeInTheDocument();
+  });
+
+  it("hides share-session entry when subject is not loaded", () => {
+    subjectHolder.current = null;
+    wrap(true);
+    expect(screen.queryByTestId("share-session-entry")).toBeNull();
+  });
+
+  it("clicking the share-session entry mounts the modal", async () => {
+    subjectHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "alice",
+      network_slug: "azzurra",
+    };
+    wrap(true);
+    // Closed by default — modal stub absent.
+    expect(screen.queryByTestId("share-modal-stub")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("share-session-entry"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("share-modal-stub")).toBeInTheDocument();
     });
   });
 });
