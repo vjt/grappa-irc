@@ -1348,6 +1348,22 @@ defmodule Grappa.Session.Server do
       {:error, :invalid_line} = err ->
         Logger.warning("send_join call rejected: invalid channel name", channel: inspect(channel))
         {:reply, err, state}
+
+      # Transport-level failure: client has no live socket (upstream
+      # TLS handshake failed, k-line tore down the connection, Session
+      # is in backoff between reconnect attempts, etc.). Surface as
+      # `{:error, :not_connected}` so FallbackController emits a clean
+      # 400 with the existing `not_connected` wire body instead of
+      # bubbling a CaseClauseError that 500s the cic /join request.
+      # Don't crash the Session — it's mid-reconnect and the next
+      # backoff tick will retry the socket.
+      {:error, reason} ->
+        Logger.warning("send_join call rejected: transport unavailable",
+          channel: inspect(channel),
+          reason: inspect(reason)
+        )
+
+        {:reply, {:error, :not_connected}, state}
     end
   end
 
@@ -1391,6 +1407,21 @@ defmodule Grappa.Session.Server do
 
       {:error, :invalid_line} ->
         Logger.warning("send_part cast rejected: invalid channel name", channel: inspect(channel))
+        {:noreply, state}
+
+      # Transport-level failure (no socket, closed, etc.). Local
+      # cleanup already ran above (PartCleanup.cleanup_local +
+      # broadcast_channels_changed); the upstream PART wire frame is
+      # the best-effort echo that doesn't gate the operator's intent.
+      # Log + swallow so a mid-reconnect /part doesn't crash the
+      # Session.Server (it would respawn cleanly but the cast caller
+      # has no way to surface a tagged error anyway).
+      {:error, reason} ->
+        Logger.warning("send_part cast rejected: transport unavailable",
+          channel: inspect(channel),
+          reason: inspect(reason)
+        )
+
         {:noreply, state}
     end
   end
@@ -1604,6 +1635,20 @@ defmodule Grappa.Session.Server do
 
           {:error, :invalid_line} ->
             Logger.warning("autojoin skipped: invalid channel name", channel: inspect(channel))
+            acc
+
+          # Transport gone between RPL_WELCOME and this iteration of
+          # the autojoin reduce — extremely rare (we just received a
+          # 001 numeric ON this socket) but possible if upstream tore
+          # the connection down between the 001 reply and the autojoin
+          # loop tick. Skip + log; next reconnect's RPL_WELCOME will
+          # re-fire the autojoin loop from scratch.
+          {:error, reason} ->
+            Logger.warning("autojoin skipped: transport unavailable",
+              channel: inspect(channel),
+              reason: inspect(reason)
+            )
+
             acc
         end
       end)
