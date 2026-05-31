@@ -65,10 +65,20 @@ defmodule Grappa.Deploy.PreflightTest do
       assert {:image_substrate, [^file]} = List.keyfind(reasons, :image_substrate, 0)
     end
 
-    test "infra/freebsd/deploy.sh → cold (jail deploy script — running it from old version risks divergent behavior)" do
-      file = "infra/freebsd/deploy.sh"
-      assert {:cold, reasons} = Preflight.classify_paths([file])
-      assert {:image_substrate, [^file]} = List.keyfind(reasons, :image_substrate, 0)
+    test "infra/freebsd/deploy.sh → HOT (deploy orchestrator; shell script, doesn't touch live BEAM / rc.d / next-spawn env)" do
+      # Live-repro 2026-05-31: two consecutive prod incidents triggered
+      # by deploy.sh edits forcing COLD. Restarting the BEAM to pick up
+      # a SHELL SCRIPT edit was 30s of pointless downtime — the new
+      # bytes are on disk for the next deploy regardless of how this
+      # one classifies. See preflight.ex moduledoc for the rule
+      # rationale; see d8f354c + 55f0415 for the parallel wait-loop +
+      # re-exec-guard fixes that close the COLD-path race this rule
+      # avoided in the first place.
+      assert {:hot, []} = Preflight.classify_paths(["infra/freebsd/deploy.sh"])
+    end
+
+    test "scripts/deploy.sh → HOT (Docker deploy orchestrator; symmetric with the FreeBSD deploy.sh rule)" do
+      assert {:hot, []} = Preflight.classify_paths(["scripts/deploy.sh"])
     end
 
     test "infra/freebsd/jail_release.sh → HOT (operator verb, invoked on-demand, no service restart impact)" do

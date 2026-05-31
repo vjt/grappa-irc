@@ -236,13 +236,19 @@ defmodule Grappa.Deploy.Preflight do
   # Class 4: image substrate. Includes prior bash regex matches PLUS the
   # H20 gaps: compose.override.yaml, compose.oneshot.yaml, bin/grappa,
   # .dockerignore. Plus the FreeBSD bastille jail equivalents:
-  # `infra/freebsd/rc.d/grappa` (rc wrapper read at service start) and
-  # `infra/freebsd/deploy.sh` itself (running an old version of the
-  # deploy script after the new one landed risks divergent behavior on
-  # the next operator invocation). Operator-on-demand verbs
-  # (`infra/freebsd/jail_*.sh`) and template-only files
-  # (`grappa.env.example`) stay HOT — touching them doesn't impact the
-  # running daemon.
+  # `infra/freebsd/rc.d/grappa` (rc wrapper read at service start).
+  #
+  # Deploy ORCHESTRATORS — `scripts/deploy.sh` (Docker) and
+  # `infra/freebsd/deploy.sh` (jail) — are intentionally NOT in this
+  # list. They're shell scripts the operator invokes; nothing about
+  # them lands in the running BEAM, the rc.d daemon, or the next
+  # container spawn. COLD-restarting the live BEAM to "pick up" a
+  # deploy.sh edit was 30s of pointless downtime — the new bytes are
+  # on disk for the NEXT deploy regardless of how this one classifies.
+  # See d8f354c + 55f0415 (2026-05-31) — two consecutive prod
+  # incidents triggered by a deploy.sh edit forcing COLD + the COLD
+  # path racing on the epmd "name in use" trap. Fixed both layers:
+  # this rule + the wait-loop + the re-exec guard.
   defp image_substrate?("Dockerfile"), do: true
   defp image_substrate?(".dockerignore"), do: true
   defp image_substrate?("compose.yaml"), do: true
@@ -252,7 +258,6 @@ defmodule Grappa.Deploy.Preflight do
   defp image_substrate?("bin/start.sh"), do: true
   defp image_substrate?("bin/grappa"), do: true
   defp image_substrate?("infra/freebsd/rc.d/grappa"), do: true
-  defp image_substrate?("infra/freebsd/deploy.sh"), do: true
   defp image_substrate?(_), do: false
 
   # Class 5: migrations. The hot path skips `mix ecto.migrate`; new
