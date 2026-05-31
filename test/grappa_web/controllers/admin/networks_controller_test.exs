@@ -311,4 +311,119 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       assert json_response(conn, 400) == %{"error" => "bad_request"}
     end
   end
+
+  describe "POST /admin/networks — admin-panel bucket 1" do
+    test "401 without bearer", %{conn: conn} do
+      conn = post(conn, "/admin/networks", %{slug: "x"})
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "403 for non-admin user", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/admin/networks", Jason.encode!(%{slug: "x"}))
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "201 + body for a fresh slug", %{conn: conn} do
+      session = admin_session()
+      slug = "create-#{System.unique_integer([:positive])}"
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/admin/networks", Jason.encode!(%{slug: slug, max_per_client: 3}))
+
+      body = json_response(conn, 201)
+      assert body["slug"] == slug
+      assert body["max_per_client"] == 3
+      assert is_integer(body["id"])
+    end
+
+    test "409 already_exists on duplicate slug", %{conn: conn} do
+      session = admin_session()
+      slug = "dup-#{System.unique_integer([:positive])}"
+      {:ok, _} = Networks.find_or_create_network(%{slug: slug})
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/admin/networks", Jason.encode!(%{slug: slug}))
+
+      assert json_response(conn, 409) == %{"error" => "already_exists"}
+    end
+
+    test "422 on invalid slug", %{conn: conn} do
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/admin/networks", Jason.encode!(%{slug: "Bad Slug!"}))
+
+      body = json_response(conn, 422)
+      assert body["error"] == "validation_failed"
+      assert Map.has_key?(body["field_errors"], "slug")
+    end
+  end
+
+  describe "DELETE /admin/networks/:id — admin-panel bucket 1" do
+    test "401 without bearer", %{conn: conn} do
+      conn = delete(conn, "/admin/networks/999999")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "403 for non-admin user", %{conn: conn} do
+      {_, session} = user_and_session()
+      conn = conn |> put_bearer(session.id) |> delete("/admin/networks/999999")
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "404 for unknown id", %{conn: conn} do
+      session = admin_session()
+      conn = conn |> put_bearer(session.id) |> delete("/admin/networks/999999999")
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+
+    test "204 on empty network (no credentials, no scrollback)", %{conn: conn} do
+      slug = "del-empty-#{System.unique_integer([:positive])}"
+      {:ok, net} = Networks.find_or_create_network(%{slug: slug})
+      session = admin_session()
+
+      conn = conn |> put_bearer(session.id) |> delete("/admin/networks/#{net.id}")
+      assert response(conn, 204) == ""
+      assert Networks.get_network(net.id) == nil
+    end
+
+    test "409 credentials_present with count when bound credentials exist", %{conn: conn} do
+      slug = "del-bound-#{System.unique_integer([:positive])}"
+      {:ok, net} = Networks.find_or_create_network(%{slug: slug})
+
+      {:ok, target_user} =
+        Accounts.create_user(%{
+          name: "target-#{System.unique_integer([:positive])}",
+          password: String.duplicate("x", 20)
+        })
+
+      {:ok, _} =
+        Grappa.Networks.Credentials.bind_credential(target_user, net, %{
+          nick: "n",
+          auth_method: :none
+        })
+
+      session = admin_session()
+      conn = conn |> put_bearer(session.id) |> delete("/admin/networks/#{net.id}")
+      body = json_response(conn, 409)
+      assert body["error"] == "credentials_present"
+      assert body["credential_count"] == 1
+    end
+  end
 end

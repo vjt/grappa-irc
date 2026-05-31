@@ -110,4 +110,51 @@ defmodule Grappa.Networks.Servers do
     {n, _} = Repo.delete_all(query)
     {:ok, n}
   end
+
+  @doc """
+  Id-keyed sibling of the (host, port)-keyed `remove_server/3` for the
+  REST surface (admin-panel bucket 1 — `DELETE /admin/networks/:nid/servers/:id`).
+  Returns `{:error, :not_found}` when the server doesn't belong to the
+  network (or doesn't exist) — same scoping rule as `get_server/2`.
+  """
+  @spec get_server(Network.t(), integer()) :: {:ok, Server.t()} | {:error, :not_found}
+  def get_server(%Network{id: network_id}, id) when is_integer(id) do
+    case Repo.get(Server, id) do
+      %Server{network_id: ^network_id} = server -> {:ok, server}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Updates `server` with the given attrs (host / port / tls / priority /
+  enabled). Same `:already_exists` mapping as `add_server/2` when an
+  update would collide with a sibling `(host, port)` on the same
+  network; other validation errors come back as a changeset.
+  """
+  @spec update_server(Server.t(), map()) ::
+          {:ok, Server.t()} | {:error, :already_exists | Ecto.Changeset.t()}
+  def update_server(%Server{} = server, attrs) when is_map(attrs) do
+    changeset = Server.changeset(server, attrs)
+
+    case Repo.update(changeset) do
+      {:ok, updated} -> {:ok, updated}
+      {:error, %Ecto.Changeset{errors: errors} = cs} -> classify_server_error(errors, cs)
+    end
+  end
+
+  @doc """
+  Deletes `server`. Idempotent — a `:stale_entry_error` from
+  `Repo.delete/1` (the row was already gone) collapses to `:ok` so an
+  operator UI double-tap doesn't 500. Other errors raise.
+  """
+  @spec delete_server(Server.t()) :: :ok
+  def delete_server(%Server{} = server) do
+    case Repo.delete(server, stale_error_field: :id) do
+      {:ok, _} -> :ok
+      # Stale entry — already gone. Operator UI may double-tap; same
+      # `:ok` contract as the second-call shape on `remove_server/3`
+      # (whose `delete_all` returns `{:ok, 0}`).
+      {:error, %Ecto.Changeset{errors: [{:id, _}]}} -> :ok
+    end
+  end
 end

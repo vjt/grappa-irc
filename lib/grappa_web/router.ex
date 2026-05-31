@@ -112,6 +112,12 @@ defmodule GrappaWeb.Router do
     # M-cluster M-5 (operator console networks pane):
     get "/networks", NetworksController, :index
     patch "/networks/:slug", NetworksController, :update
+    # Admin-panel bucket 1 (2026-05-31) — strict-create + delete + server CRUD.
+    post "/networks", NetworksController, :create
+    delete "/networks/:id", NetworksController, :delete
+    post "/networks/:network_id/servers", ServersController, :create
+    put "/networks/:network_id/servers/:id", ServersController, :update
+    delete "/networks/:network_id/servers/:id", ServersController, :delete
     post "/reaper/run", ReaperController, :run
     post "/circuit/:network_id/reset", CircuitController, :reset
 

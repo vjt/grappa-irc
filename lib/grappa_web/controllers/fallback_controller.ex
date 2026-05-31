@@ -59,9 +59,12 @@ defmodule GrappaWeb.FallbackController do
            | :cannot_disconnect_self
            | :insufficient_storage
            | :unsupported_media_type
+           | :already_exists
+           | :scrollback_present
            | {:invalid_setting, String.t()}
            | {:file_too_large, pos_integer()}
            | {:anon_collision, non_neg_integer()}
+           | {:credentials_present, non_neg_integer()}
            | Grappa.Admission.error()
            | Ecto.Changeset.t()}
         ) :: Plug.Conn.t()
@@ -433,6 +436,40 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:unprocessable_entity)
     |> json(%{error: "cannot_disconnect_self"})
+  end
+
+  # Admin-panel bucket 1 — strict-create REST surfaces. The
+  # `:already_exists` atom collapses 409 Conflict for `POST /admin/networks`
+  # (duplicate slug) and `POST /admin/networks/:nid/servers`
+  # (duplicate `(host, port)` per network). Distinct from the changeset
+  # `validation_failed` 422 path because the request shape was valid —
+  # the conflict is with existing data.
+  def call(conn, {:error, :already_exists}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "already_exists"})
+  end
+
+  # Admin-panel bucket 1 — `DELETE /admin/networks/:id` with bound
+  # credentials. Threads `N = credential_count` through the tuple shape
+  # (same encoding as `{:network_circuit_open, retry_after}`) so the
+  # operator UI can render "you have 3 users on this network — unbind
+  # them first" without a second roundtrip.
+  def call(conn, {:error, {:credentials_present, n}}) when is_integer(n) and n >= 0 do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "credentials_present", credential_count: n})
+  end
+
+  # Admin-panel bucket 1 — `DELETE /admin/networks/:id` (and the
+  # pre-existing `unbind_credential/2` cascade-on-empty) refuses when
+  # archival scrollback would be orphaned. Lifted from
+  # `Credentials.unbind_credential/2` into the typed FallbackController
+  # contract so both REST surfaces collapse on the same wire body.
+  def call(conn, {:error, :scrollback_present}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "scrollback_present"})
   end
 
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do

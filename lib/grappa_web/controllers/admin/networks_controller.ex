@@ -131,6 +131,92 @@ defmodule GrappaWeb.Admin.NetworksController do
     Enum.find(NetworkCircuit.entries(), fn {id, _, _, _, _} -> id == network_id end)
   end
 
+  @doc """
+  Admin-panel bucket 1 — strict-create network. Body whitelist mirrors
+  the `Network.changeset/2` cast list (`slug` + the three caps).
+  Returns `201 Created` with the new row in the same shape as the
+  `index/2` projection (with `circuit_state: nil` and zero
+  `live_counts` since there can't be any live sessions yet). Errors:
+  `409 already_exists` (duplicate slug), `422 validation_failed` (bad
+  slug / negative cap).
+  """
+  @spec create(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :already_exists | :bad_request | Ecto.Changeset.t()}
+  def create(conn, params) do
+    with {:ok, attrs} <- create_attrs(params),
+         {:ok, net} <- Networks.create_network(attrs) do
+      conn
+      |> put_status(:created)
+      |> json(
+        net
+        |> NetworkWire.network_to_admin_json()
+        |> Map.put(:circuit_state, nil)
+        |> Map.put(:live_counts, %{visitors: 0, users: 0})
+      )
+    end
+  end
+
+  @doc """
+  Admin-panel bucket 1 — delete network. Refuses via FallbackController
+  on `{:credentials_present, N}` (409) or `:scrollback_present` (409);
+  unknown id → 404. Returns `204 No Content` on success.
+  """
+  @spec delete(Plug.Conn.t(), map()) ::
+          Plug.Conn.t()
+          | {:error, :not_found | :scrollback_present | {:credentials_present, non_neg_integer()}}
+  def delete(conn, %{"id" => id}) do
+    with {:ok, parsed} <- parse_id(id),
+         {:ok, net} <- fetch_network(parsed),
+         :ok <- Networks.delete_network(net) do
+      conn |> put_status(:no_content) |> text("")
+    end
+  end
+
+  # `Plug.Conn` URL params come in as strings; safely parse → `{:error,
+  # :not_found}` on a non-integer string rather than letting
+  # `String.to_integer/1` raise a 500.
+  defp parse_id(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {n, ""} -> {:ok, n}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp fetch_network(id) do
+    case Networks.get_network(id) do
+      %Grappa.Networks.Network{} = net -> {:ok, net}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp create_attrs(params) do
+    allowed = [
+      "slug",
+      "max_concurrent_visitor_sessions",
+      "max_concurrent_user_sessions",
+      "max_per_client"
+    ]
+
+    extra = Map.keys(params) -- allowed
+
+    if extra == [] do
+      {:ok, take_atomized(params, allowed)}
+    else
+      {:error, :bad_request}
+    end
+  end
+
+  defp take_atomized(params, keys) do
+    Enum.reduce(keys, %{}, fn key, acc -> put_if_present(acc, params, key) end)
+  end
+
+  defp put_if_present(acc, params, key) do
+    case Map.fetch(params, key) do
+      {:ok, v} -> Map.put(acc, String.to_existing_atom(key), v)
+      :error -> acc
+    end
+  end
+
   defp circuit_entries_by_network_id do
     Map.new(NetworkCircuit.entries(), fn {network_id, _, _, _, _} = entry ->
       {network_id, entry}

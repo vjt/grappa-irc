@@ -1377,4 +1377,99 @@ defmodule Grappa.NetworksTest do
       assert plan.refresh_plan.() == {:error, :not_found}
     end
   end
+
+  # Admin-panel bucket 1 — explicit `create_network/1` (`POST /admin/networks`)
+  # + `delete_network/1` (`DELETE /admin/networks/:id`). `find_or_create_network/1`
+  # stays the operator entry-point for idempotent insert; the new
+  # `create_network/1` is the strict-create REST surface that returns
+  # `{:error, :already_exists}` instead of returning the existing row.
+  describe "create_network/1 (admin-panel bucket 1)" do
+    test "creates a network on first call" do
+      slug = "create-#{System.unique_integer([:positive])}"
+      assert {:ok, %Network{slug: ^slug} = net} = Networks.create_network(%{slug: slug})
+      assert is_integer(net.id)
+    end
+
+    test "returns :already_exists on second call (strict, not idempotent)" do
+      slug = "create-dupe-#{System.unique_integer([:positive])}"
+      assert {:ok, _} = Networks.create_network(%{slug: slug})
+      assert {:error, :already_exists} = Networks.create_network(%{slug: slug})
+    end
+
+    test "rejects an invalid slug with a changeset error" do
+      assert {:error, %Ecto.Changeset{} = cs} = Networks.create_network(%{slug: "Bad Slug!"})
+      assert "must be lowercase alphanumeric with _ or -, 1-32 chars" in errors_on(cs).slug
+    end
+
+    test "accepts admission caps at create time" do
+      slug = "create-caps-#{System.unique_integer([:positive])}"
+
+      assert {:ok, net} =
+               Networks.create_network(%{
+                 slug: slug,
+                 max_concurrent_visitor_sessions: 5,
+                 max_per_client: 2
+               })
+
+      assert net.max_concurrent_visitor_sessions == 5
+      assert net.max_per_client == 2
+    end
+  end
+
+  describe "delete_network/1 (admin-panel bucket 1)" do
+    test "deletes an empty network (no credentials, no scrollback)" do
+      net = network_fixture()
+      assert :ok = Networks.delete_network(net)
+      assert Repo.get(Network, net.id) == nil
+    end
+
+    test "cascade-deletes servers (FK :delete_all)" do
+      net = network_fixture()
+      {:ok, _} = Servers.add_server(net, %{host: "irc.example.test", port: 6697})
+      assert :ok = Networks.delete_network(net)
+      assert Repo.get(Network, net.id) == nil
+      assert Enum.filter(Repo.all(Server), &(&1.network_id == net.id)) == []
+    end
+
+    test "refuses when bound credentials exist (returns {:credentials_present, N})" do
+      net = network_fixture()
+      user = user_fixture()
+
+      {:ok, _} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          auth_method: :none
+        })
+
+      assert {:error, {:credentials_present, 1}} = Networks.delete_network(net)
+      # Network row stays — the typed error is the operator's cue to
+      # unbind first.
+      assert Repo.get(Network, net.id) != nil
+    end
+
+    test "refuses when scrollback rows exist (returns :scrollback_present)" do
+      net = network_fixture()
+      user = user_fixture()
+
+      # Seed a single scrollback row — has_messages_for_network?/1
+      # short-circuits on the first row.
+      {:ok, _} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "#smoke",
+          sender: "alice",
+          body: "hi",
+          kind: :privmsg,
+          server_time: System.system_time(:millisecond)
+        })
+
+      assert {:error, :scrollback_present} = Networks.delete_network(net)
+      assert Repo.get(Network, net.id) != nil
+    end
+
+    test "returns :not_found for an unknown id (idempotency-by-rejection)" do
+      assert {:error, :not_found} = Networks.delete_network(%Network{id: 999_999_999})
+    end
+  end
 end

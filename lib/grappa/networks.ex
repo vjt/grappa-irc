@@ -60,13 +60,14 @@ defmodule Grappa.Networks do
       NoServerError,
       Server,
       Servers,
+      Servers.AdminWire,
       SessionPlan,
       Wire
     ]
 
   import Ecto.Query, only: [from: 2]
 
-  alias Grappa.{Accounts, Repo, Session}
+  alias Grappa.{Accounts, Repo, Scrollback, Session}
   alias Grappa.Accounts.User
   alias Grappa.Networks.{Credential, Network, Wire}
   alias Grappa.PubSub.Topic
@@ -166,6 +167,77 @@ defmodule Grappa.Networks do
       %Network{} = net -> {:ok, net}
       nil -> {:error, :not_found}
     end
+  end
+
+  @doc """
+  Strict-create sibling of `find_or_create_network/1` for the admin
+  REST surface (`POST /admin/networks`, admin-panel bucket 1). Returns
+  `{:error, :already_exists}` when the slug is taken — operator
+  POSTing an existing slug is an operator-side mistake, not the
+  idempotent fall-through `find_or_create_network/1` carries for
+  bootstrap-path callers. Other validation errors come back as a
+  changeset for FallbackController's `validation_failed` shape.
+  """
+  @spec create_network(map()) ::
+          {:ok, Network.t()} | {:error, :already_exists | Ecto.Changeset.t()}
+  def create_network(attrs) when is_map(attrs) do
+    changeset = Network.changeset(%Network{}, attrs)
+
+    case Repo.insert(changeset) do
+      {:ok, net} ->
+        {:ok, net}
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        if uniqueness_violation?(cs, :slug),
+          do: {:error, :already_exists},
+          else: {:error, cs}
+    end
+  end
+
+  @doc """
+  Deletes a network row. Refuses with `{:error, {:credentials_present, N}}`
+  when any user has a credential bound — operator must unbind every
+  credential first (per admin-panel A-5: no silent cascade across other
+  users' sessions). Refuses with `{:error, :scrollback_present}` when
+  archival messages would be orphaned — same gate as
+  `Credentials.unbind_credential/2`'s cascade-on-empty path. Servers
+  cascade via the FK `:delete_all` from `network_servers`.
+
+  Returns `{:error, :not_found}` for an unknown / stale id —
+  idempotency-by-rejection (matches `Networks.disconnect/2`'s
+  `:not_connected` posture).
+  """
+  @spec delete_network(Network.t()) ::
+          :ok
+          | {:error,
+             :not_found
+             | :scrollback_present
+             | {:credentials_present, non_neg_integer()}}
+  def delete_network(%Network{id: network_id}) when is_integer(network_id) do
+    case Repo.get(Network, network_id) do
+      nil ->
+        {:error, :not_found}
+
+      %Network{} = net ->
+        cred_count = count_credentials_for_network(network_id)
+
+        cond do
+          cred_count > 0 ->
+            {:error, {:credentials_present, cred_count}}
+
+          Scrollback.has_messages_for_network?(network_id) ->
+            {:error, :scrollback_present}
+
+          true ->
+            {:ok, _} = Repo.delete(net)
+            :ok
+        end
+    end
+  end
+
+  defp count_credentials_for_network(network_id) do
+    query = from(c in Credential, where: c.network_id == ^network_id)
+    Repo.aggregate(query, :count, :user_id)
   end
 
   @doc """
