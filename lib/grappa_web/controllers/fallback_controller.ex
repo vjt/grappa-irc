@@ -62,6 +62,8 @@ defmodule GrappaWeb.FallbackController do
            | :already_exists
            | :scrollback_present
            | :last_admin
+           | :share_token_expired
+           | :share_token_consumed
            | {:invalid_setting, String.t()}
            | {:file_too_large, pos_integer()}
            | {:anon_collision, non_neg_integer()}
@@ -482,6 +484,28 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:unprocessable_entity)
     |> json(%{error: "last_admin"})
+  end
+
+  # Visitor session-sharing consume — token signature valid but TTL
+  # elapsed. 410 Gone signals "this resource (the share link) is
+  # permanently unavailable" so cic UI renders "this link expired"
+  # rather than a generic 401-style "log in again." Distinct atom from
+  # `:share_token_consumed` (same status, different reason) so cic
+  # copy + telemetry can split.
+  def call(conn, {:error, :share_token_expired}) do
+    conn
+    |> put_status(:gone)
+    |> json(%{error: "share_token_expired"})
+  end
+
+  # Visitor session-sharing consume — token signature valid + TTL OK
+  # but the one-shot ETS ledger says it was already redeemed. 410 Gone
+  # for the same reason as `:share_token_expired` — the link is
+  # permanently unusable from this point forward.
+  def call(conn, {:error, :share_token_consumed}) do
+    conn
+    |> put_status(:gone)
+    |> json(%{error: "share_token_consumed"})
   end
 
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do

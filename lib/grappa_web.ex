@@ -37,6 +37,7 @@ defmodule GrappaWeb do
         Grappa.Uploads,
         Grappa.UserSettings,
         Grappa.Visitors,
+        Grappa.Visitors.ShareTokens,
         Grappa.WSPresence,
         GrappaWeb.BodyLimit
       ] ++

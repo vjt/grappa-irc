@@ -162,6 +162,12 @@ defmodule GrappaWeb.Router do
     pipe_through :api
 
     post "/login", AuthController, :login
+    # Visitor session-sharing consume — unauthenticated by design. The
+    # signed one-shot token IS the auth credential. Verified +
+    # one-shot-checked + visitor-existence-checked inside the
+    # controller; failure modes collapse via FallbackController to
+    # 400 / 401 / 404 / 410.
+    post "/share/consume", ShareTokenController, :consume
   end
 
   # VAPID public key — push notifications cluster B2 (2026-05-14).
@@ -198,6 +204,12 @@ defmodule GrappaWeb.Router do
     # `Grappa.UserSettings.{get,put}_upload_ttl_seconds`.
     get "/me/settings/upload-ttl-seconds", UserSettingsController, :show_upload_ttl_seconds
     put "/me/settings/upload-ttl-seconds", UserSettingsController, :update_upload_ttl_seconds
+
+    # Visitor session-sharing mint — visitor-only (users get 403).
+    # Returns a short-TTL Phoenix-signed token + ISO8601 expires_at.
+    # The cic SPA wraps the token in a shareable URL; the consume
+    # endpoint lives under /auth above (unauthenticated by design).
+    post "/me/share-token", ShareTokenController, :mint
 
     get "/networks", NetworksController, :index
 
