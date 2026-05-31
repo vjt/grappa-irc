@@ -53,7 +53,7 @@ describe("ShareSessionModal", () => {
     await waitFor(() => {
       const input = screen.getByTestId("share-modal-url") as HTMLInputElement;
       // Hash route, token URL-encoded
-      expect(input.value).toContain("/#/share/signed-token-payload");
+      expect(input.value).toContain("/share/signed-token-payload");
     });
 
     expect(screen.getByTestId("share-modal-countdown").textContent).toMatch(
@@ -85,7 +85,7 @@ describe("ShareSessionModal", () => {
 
     await waitFor(() => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        expect.stringContaining("/#/share/abc"),
+        expect.stringContaining("/share/abc"),
       );
     });
 

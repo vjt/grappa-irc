@@ -106,7 +106,12 @@ const ShareSessionModal: Component<Props> = (props) => {
     setError(null);
     try {
       const { token: shareToken, expires_at } = await mintShareToken(t);
-      const url = `${window.location.origin}/#/share/${encodeURIComponent(shareToken)}`;
+      // Plain path route (NOT hash) — `@solidjs/router` v0.16 uses
+      // path-mode by default; the hash isn't visible to the router.
+      // nginx's `try_files $uri /index.html` falls back to the SPA
+      // for any unknown path, so /share/<token> reaches the
+      // ShareConsume route.
+      const url = `${window.location.origin}/share/${encodeURIComponent(shareToken)}`;
       setShareUrl(url);
       setExpiresAt(new Date(expires_at));
     } catch (err) {
