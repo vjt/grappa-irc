@@ -83,6 +83,23 @@ defmodule Grappa.Networks.Credentials.AdminWire do
           live_state: live_state_json() | nil
         }
 
+  @typedoc """
+  Admin-panel bucket 3 — outcome of the PUT credential update against
+  any running `Session.Server` for `{:user, user_id} × network_id`.
+
+    * `:left_alone` — no live session, OR the change set didn't include
+      `:password` / `:auth_method` (cosmetic-only fields like autojoin or
+      realname). Operator sees no behavior change. Also covers the
+      "auth-touching change against a parked / unbootstrapped credential"
+      case: there's nothing to stop, so the wire is honest and uniform.
+    * `:stopped` — change set included `:password` / `:auth_method`, AND
+      a live session existed. `Session.stop_session/2` killed it; operator
+      must `/connect` to bring it back under the new creds. Per plan A-2,
+      we don't auto-respawn — the `POST /networks/:slug/connect` verb is
+      the operator-facing path that re-runs admission + spawn.
+  """
+  @type session_action :: :left_alone | :stopped
+
   @doc """
   Render a Credential row + optional live SessionEntry to the admin
   JSON shape. `live` is `nil` when no `Session.Server` is registered
@@ -124,5 +141,16 @@ defmodule Grappa.Networks.Credentials.AdminWire do
       joined_channels: entry.joined_channels,
       introspection_degraded: entry.introspection_degraded
     }
+  end
+
+  @doc """
+  Attaches a `session_action:` field to a credential JSON map (the
+  bucket-3 PUT response shape). Defined here, not at the controller,
+  so the wire-shape evolution stays in one place.
+  """
+  @spec with_session_action(t(), session_action()) :: map()
+  def with_session_action(%{} = json, action)
+      when action in [:left_alone, :stopped] do
+    Map.put(json, :session_action, action)
   end
 end

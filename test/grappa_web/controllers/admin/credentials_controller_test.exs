@@ -227,7 +227,12 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
       assert json_response(conn, 400) == %{"error" => "bad_request"}
     end
 
-    test "400 on whitelist breach — password", %{conn: conn} do
+    test "admin-panel bucket 3 — accepts password change (whitelist extended)", %{conn: conn} do
+      # Pre-bucket-3 the M-6 PATCH whitelist excluded `password` —
+      # operators had to use the `mix grappa.update_network_credential`
+      # mix task to rotate. Bucket 3 lifts the rotation into REST via
+      # the session-lifecycle wrapper (`session_action:` field rides
+      # the response). This test pins the new behavior.
       {user, network, _} = bound_credential()
       session = admin_session()
 
@@ -240,7 +245,8 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
           Jason.encode!(%{password: "rotated"})
         )
 
-      assert json_response(conn, 400) == %{"error" => "bad_request"}
+      body = json_response(conn, 200)
+      assert body["session_action"] == "left_alone"
     end
 
     test "400 on whitelist breach — password_encrypted", %{conn: conn} do
@@ -275,6 +281,237 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
       body = json_response(conn, 422)
       assert body["error"] == "validation_failed"
       assert Map.has_key?(body["field_errors"], "password")
+    end
+  end
+
+  describe "POST /admin/credentials — admin-panel bucket 3" do
+    test "401 without bearer", %{conn: conn} do
+      conn = post(conn, "/admin/credentials", %{})
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "403 for non-admin user", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/admin/credentials", Jason.encode!(%{}))
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "201 + binds a credential (auth_method: :none, no password)", %{conn: conn} do
+      target_user = user_fixture(name: "bind-#{System.unique_integer([:positive])}")
+      {:ok, network} = Networks.find_or_create_network(%{slug: "bind-#{System.unique_integer([:positive])}"})
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/credentials",
+          Jason.encode!(%{
+            user_id: target_user.id,
+            network_id: network.id,
+            nick: "vjt",
+            auth_method: "none"
+          })
+        )
+
+      body = json_response(conn, 201)
+      assert body["user_id"] == target_user.id
+      assert body["network_id"] == network.id
+      assert body["nick"] == "vjt"
+      assert body["auth_method"] == "none"
+      refute Map.has_key?(body, "password")
+      refute Map.has_key?(body, "password_encrypted")
+
+      # Verify cred persisted.
+      assert {:ok, _} = Credentials.get_credential(target_user, network)
+    end
+
+    test "201 + binds with auth_method :auto + password", %{conn: conn} do
+      target_user = user_fixture(name: "bind-pw-#{System.unique_integer([:positive])}")
+      {:ok, network} = Networks.find_or_create_network(%{slug: "bind-pw-#{System.unique_integer([:positive])}"})
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/credentials",
+          Jason.encode!(%{
+            user_id: target_user.id,
+            network_id: network.id,
+            nick: "vjt",
+            auth_method: "auto",
+            password: "upstream-secret"
+          })
+        )
+
+      body = json_response(conn, 201)
+      assert body["auth_method"] == "auto"
+      refute Map.has_key?(body, "password")
+    end
+
+    test "404 when user_id doesn't exist", %{conn: conn} do
+      {:ok, network} = Networks.find_or_create_network(%{slug: "bind-no-u-#{System.unique_integer([:positive])}"})
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/credentials",
+          Jason.encode!(%{
+            user_id: Ecto.UUID.generate(),
+            network_id: network.id,
+            nick: "vjt",
+            auth_method: "none"
+          })
+        )
+
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+
+    test "404 when network_id doesn't exist", %{conn: conn} do
+      target_user = user_fixture(name: "bind-no-n-#{System.unique_integer([:positive])}")
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/credentials",
+          Jason.encode!(%{
+            user_id: target_user.id,
+            network_id: 999_999_999,
+            nick: "vjt",
+            auth_method: "none"
+          })
+        )
+
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+
+    test "409 already_exists on duplicate (user, network) binding", %{conn: conn} do
+      {user, network, _} = bound_credential()
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/credentials",
+          Jason.encode!(%{
+            user_id: user.id,
+            network_id: network.id,
+            nick: "x",
+            auth_method: "none"
+          })
+        )
+
+      assert json_response(conn, 409) == %{"error" => "already_exists"}
+    end
+
+    test "422 on validation failure (invalid nick)", %{conn: conn} do
+      target_user = user_fixture(name: "bind-bad-nick-#{System.unique_integer([:positive])}")
+      {:ok, network} = Networks.find_or_create_network(%{slug: "bind-bn-#{System.unique_integer([:positive])}"})
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/credentials",
+          Jason.encode!(%{
+            user_id: target_user.id,
+            network_id: network.id,
+            nick: "bad nick with spaces",
+            auth_method: "none"
+          })
+        )
+
+      assert json_response(conn, 422)["error"] == "validation_failed"
+    end
+  end
+
+  describe "DELETE /admin/credentials/:user_id/:network_id — admin-panel bucket 3" do
+    test "401 without bearer", %{conn: conn} do
+      conn = delete(conn, "/admin/credentials/some-uuid/123")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "403 for non-admin user", %{conn: conn} do
+      {_, session} = user_and_session()
+      conn = conn |> put_bearer(session.id) |> delete("/admin/credentials/some-uuid/123")
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "204 on success + credential is gone", %{conn: conn} do
+      {user, network, _} = bound_credential()
+      session = admin_session()
+
+      conn = conn |> put_bearer(session.id) |> delete("/admin/credentials/#{user.id}/#{network.id}")
+      assert response(conn, 204) == ""
+
+      assert {:error, :not_found} = Credentials.get_credential(user, network)
+    end
+
+    test "404 when binding doesn't exist", %{conn: conn} do
+      session = admin_session()
+      bogus_user_id = Ecto.UUID.generate()
+
+      conn = conn |> put_bearer(session.id) |> delete("/admin/credentials/#{bogus_user_id}/999")
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+  end
+
+  describe "PATCH password / auth_method — admin-panel bucket 3 extension" do
+    test "200 + accepts password change with session_action: :left_alone (no live session)", %{conn: conn} do
+      {user, network, _} = bound_credential()
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch(
+          "/admin/credentials/#{user.id}/#{network.id}",
+          Jason.encode!(%{password: "rotated-secret"})
+        )
+
+      body = json_response(conn, 200)
+      # session_action surfaces the lifecycle outcome — :left_alone
+      # because no live Session.Server was running for this (user, net)
+      # in this test (no Bootstrap, no operator /connect).
+      assert body["session_action"] == "left_alone"
+    end
+
+    test "200 + accepts auth_method change with fresh password", %{conn: conn} do
+      {user, network, _} = bound_credential()
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch(
+          "/admin/credentials/#{user.id}/#{network.id}",
+          Jason.encode!(%{auth_method: "sasl", password: "sasl-pw"})
+        )
+
+      body = json_response(conn, 200)
+      assert body["auth_method"] == "sasl"
+      assert body["session_action"] == "left_alone"
     end
   end
 end

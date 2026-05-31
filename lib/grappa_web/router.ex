@@ -132,6 +132,9 @@ defmodule GrappaWeb.Router do
     put "/users/:id/password", UsersController, :update_password
     get "/credentials", CredentialsController, :index
     patch "/credentials/:user_id/:network_id", CredentialsController, :update
+    # Admin-panel bucket 3 (2026-05-31): credential bind / unbind via REST.
+    post "/credentials", CredentialsController, :create
+    delete "/credentials/:user_id/:network_id", CredentialsController, :delete
 
     # UX-6-B1 (2026-05-20): admin server-settings + uploads registry.
     # Settings cover the embedded image uploader (active_host pick +

@@ -498,6 +498,74 @@ defmodule Grappa.NetworksTest do
     end
   end
 
+  # Admin-panel bucket 3 — `update_credential_with_session_lifecycle/3`
+  # decision matrix (per plan A-2). The wrapper threads
+  # `session_action: :left_alone | :stopped` based on (a) whether the
+  # change set touches password / auth_method and (b) whether a live
+  # Session.Server exists for the (user, network) key.
+  describe "update_credential_with_session_lifecycle/3 (admin-panel bucket 3)" do
+    setup do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, cred} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          password: "old-pw",
+          auth_method: :auto
+        })
+
+      {:ok, user: user, net: net, cred: cred}
+    end
+
+    test "cosmetic-only attrs → :left_alone (no auth touching)", %{user: user, net: net} do
+      assert {:ok, _, :left_alone} =
+               Credentials.update_credential_with_session_lifecycle(user, net, %{
+                 realname: "Marcello"
+               })
+    end
+
+    test "autojoin change → :left_alone", %{user: user, net: net} do
+      assert {:ok, _, :left_alone} =
+               Credentials.update_credential_with_session_lifecycle(user, net, %{
+                 autojoin_channels: ["#smoke"]
+               })
+    end
+
+    test "password change without live session → :left_alone (nothing to stop)",
+         %{user: user, net: net} do
+      assert {:ok, _, :left_alone} =
+               Credentials.update_credential_with_session_lifecycle(user, net, %{
+                 password: "rotated"
+               })
+    end
+
+    test "auth_method change with fresh password without live session → :left_alone",
+         %{user: user, net: net} do
+      assert {:ok, _, :left_alone} =
+               Credentials.update_credential_with_session_lifecycle(user, net, %{
+                 auth_method: :sasl,
+                 password: "sasl-pw"
+               })
+    end
+
+    test "returns :not_found when (user, net) is not bound" do
+      orphan_user = user_fixture()
+      orphan_net = network_fixture()
+
+      assert {:error, :not_found} =
+               Credentials.update_credential_with_session_lifecycle(orphan_user, orphan_net, %{
+                 nick: "x"
+               })
+    end
+
+    test "validation error surfaces as changeset (no session lifecycle effect)",
+         %{user: user, net: net} do
+      assert {:error, %Ecto.Changeset{}} =
+               Credentials.update_credential_with_session_lifecycle(user, net, %{nick: "bad nick"})
+    end
+  end
+
   describe "list_credentials_for_user/1" do
     test "returns every binding for a user with networks preloaded" do
       user = user_fixture()

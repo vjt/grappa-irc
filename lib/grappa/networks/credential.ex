@@ -232,6 +232,18 @@ defmodule Grappa.Networks.Credential do
     |> validate_length(:last_joined_channels, max: @last_joined_channels_max)
     |> put_encrypted_password()
     |> put_default_connection_state_changed_at()
+    # Admin-panel bucket 3 — pre-fix `bind_credential/3` (via the
+    # REST `POST /admin/credentials`) raised `Ecto.ConstraintError`
+    # on a duplicate `(user_id, network_id)` because the composite
+    # PK unique-violation surfaced as an exception, not a changeset
+    # error. Declaring the constraint here lets `Repo.insert/2` map
+    # it to a normal changeset error keyed on `:user_id`; the
+    # controller's `pk_collision?/1` classifier then collapses it
+    # to `{:error, :already_exists}` for the 409 wire body.
+    |> unique_constraint(:user_id,
+      name: :network_credentials_user_id_network_id_index,
+      message: "credential already exists for this (user, network)"
+    )
   end
 
   # UX-4 bucket A — canonicalise channel names in both array columns

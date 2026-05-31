@@ -68,23 +68,111 @@ defmodule GrappaWeb.Admin.CredentialsController do
 
   @doc """
   Edit operator-allowed fields on the binding. Body whitelist:
-  `autojoin_channels`, `nick`, `sasl_user`, `realname`, `auth_method`.
+  `autojoin_channels`, `nick`, `sasl_user`, `realname`, `auth_method`,
+  `auth_command_template`, `password` (admin-panel bucket 3 — extended
+  from the M-6 narrow whitelist to support password rotation +
+  auth_method swap with fresh password, both through the
+  session-lifecycle wrapper).
   """
   @spec update(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}
   def update(conn, %{"user_id" => raw_user_id, "network_id" => raw_network_id} = params) do
     with {:ok, user_id} <- parse_uuid(raw_user_id),
          {:ok, network_id} <- parse_int(raw_network_id),
-         {:ok, attrs} <- cred_attrs(params),
-         %Grappa.Accounts.User{} = user <- Accounts.get_user(user_id),
-         %Grappa.Networks.Network{} = network <- Networks.get_network(network_id),
-         {:ok, updated} <- Credentials.update_credential(user, network, attrs) do
+         {:ok, attrs} <- update_attrs(params),
+         {:ok, user} <- fetch_user(user_id),
+         {:ok, network} <- fetch_network(network_id),
+         {:ok, updated, action} <-
+           Credentials.update_credential_with_session_lifecycle(user, network, attrs) do
       live = LiveIntrospection.lookup_session({:user, updated.user_id}, updated.network_id)
-      json(conn, AdminWire.credential_to_admin_json(updated, live))
-    else
-      nil -> {:error, :not_found}
-      other -> other
+
+      json(
+        conn,
+        updated
+        |> AdminWire.credential_to_admin_json(live)
+        |> AdminWire.with_session_action(action)
+      )
     end
+  end
+
+  @doc """
+  Admin-panel bucket 3 — POST /admin/credentials. Strict-create bind.
+  Body fields: `user_id`, `network_id`, `nick`, `auth_method`,
+  optional `password`, `sasl_user`, `realname`, `auth_command_template`,
+  `autojoin_channels`. Returns `201 Created` with the credential JSON
+  shape (no password / password_encrypted leakage).
+  """
+  @spec create(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :not_found | :already_exists | :bad_request | Ecto.Changeset.t()}
+  def create(conn, params) do
+    with {:ok, user_id} <- get_required_uuid(params, "user_id"),
+         {:ok, network_id} <- get_required_int(params, "network_id"),
+         {:ok, attrs} <- create_attrs(params),
+         {:ok, user} <- fetch_user(user_id),
+         {:ok, network} <- fetch_network(network_id),
+         {:ok, cred} <- bind_with_conflict_classification(user, network, attrs) do
+      live = LiveIntrospection.lookup_session({:user, cred.user_id}, cred.network_id)
+
+      conn
+      |> put_status(:created)
+      |> json(AdminWire.credential_to_admin_json(cred, live))
+    end
+  end
+
+  @doc """
+  Admin-panel bucket 3 — DELETE /admin/credentials/:user_id/:network_id.
+  Delegates to `Credentials.unbind_credential/2` which carries the
+  cascade-on-empty network drop, scrollback gate, and live-session
+  stop. Returns `204 No Content` on success.
+  """
+  @spec delete(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :not_found | :scrollback_present | :bad_request}
+  def delete(conn, %{"user_id" => raw_user_id, "network_id" => raw_network_id}) do
+    with {:ok, user_id} <- parse_uuid(raw_user_id),
+         {:ok, network_id} <- parse_int(raw_network_id),
+         {:ok, user} <- fetch_user(user_id),
+         {:ok, network} <- fetch_network(network_id),
+         {:ok, _} <- Credentials.get_credential(user, network),
+         :ok <- Credentials.unbind_credential(user, network) do
+      conn |> put_status(:no_content) |> text("")
+    end
+  end
+
+  defp fetch_user(id) do
+    case Accounts.get_user(id) do
+      %Grappa.Accounts.User{} = user -> {:ok, user}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp fetch_network(id) do
+    case Networks.get_network(id) do
+      %Grappa.Networks.Network{} = network -> {:ok, network}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp bind_with_conflict_classification(user, network, attrs) do
+    case Credentials.bind_credential(user, network, attrs) do
+      {:ok, cred} ->
+        {:ok, cred}
+
+      {:error, %Ecto.Changeset{errors: errors} = cs} ->
+        if pk_collision?(errors), do: {:error, :already_exists}, else: {:error, cs}
+    end
+  end
+
+  # The Credential schema has a composite primary key on
+  # (user_id, network_id); Ecto's `Repo.insert/2` on a duplicate
+  # surfaces a `:user_id` (or `:network_id`) unique-constraint error.
+  defp pk_collision?(errors) do
+    Enum.any?(errors, fn
+      {field, {_, opts}} when field in [:user_id, :network_id] ->
+        Keyword.get(opts, :constraint) == :unique
+
+      _ ->
+        false
+    end)
   end
 
   defp parse_uuid(raw) when is_binary(raw) do
@@ -101,26 +189,60 @@ defmodule GrappaWeb.Admin.CredentialsController do
     end
   end
 
-  # Whitelist the five operator-editable fields; EVERYTHING else (esp.
-  # `password`, `password_encrypted`, `connection_state_*`,
-  # `last_joined_channels`, `user_id`, `network_id`) collapses to 400
-  # bad_request. Matches M-5 NetworksController.caps_attrs/1 +
-  # M-6 UsersController.admin_attrs/1 pattern.
-  @allowed_cred_keys ~w(autojoin_channels nick sasl_user realname auth_method)
+  defp parse_int(raw) when is_integer(raw), do: {:ok, raw}
 
-  defp cred_attrs(params) do
+  defp get_required_uuid(params, key) do
+    case Map.get(params, key) do
+      v when is_binary(v) -> parse_uuid(v)
+      _ -> {:error, :bad_request}
+    end
+  end
+
+  defp get_required_int(params, key) do
+    case Map.get(params, key) do
+      v when is_integer(v) -> {:ok, v}
+      v when is_binary(v) -> parse_int(v)
+      _ -> {:error, :bad_request}
+    end
+  end
+
+  # PATCH whitelist (admin-panel bucket 3 extension): adds `password`
+  # and `auth_command_template` to the pre-existing M-6 set. Password
+  # changes route through `update_credential_with_session_lifecycle/3`
+  # which kills the live session per A-2.
+  @allowed_update_keys ~w(autojoin_channels nick sasl_user realname auth_method
+                          auth_command_template password)
+
+  defp update_attrs(params) do
     keys = Map.keys(params) -- ["user_id", "network_id"]
-    extra = keys -- @allowed_cred_keys
+    extra = keys -- @allowed_update_keys
 
     if extra == [] do
-      {:ok, atomize(params)}
+      {:ok, atomize(params, @allowed_update_keys)}
     else
       {:error, :bad_request}
     end
   end
 
-  defp atomize(params) do
-    Enum.reduce(@allowed_cred_keys, %{}, fn key, acc ->
+  # POST whitelist (admin-panel bucket 3): strict-create. user_id +
+  # network_id required (parsed separately above); the rest are the
+  # operator-editable fields.
+  @allowed_create_keys ~w(nick sasl_user realname auth_method
+                          auth_command_template password autojoin_channels)
+
+  defp create_attrs(params) do
+    keys = Map.keys(params) -- ["user_id", "network_id"]
+    extra = keys -- @allowed_create_keys
+
+    if extra == [] and Map.has_key?(params, "nick") and Map.has_key?(params, "auth_method") do
+      {:ok, atomize(params, @allowed_create_keys)}
+    else
+      {:error, :bad_request}
+    end
+  end
+
+  defp atomize(params, allowed) do
+    Enum.reduce(allowed, %{}, fn key, acc ->
       case Map.fetch(params, key) do
         {:ok, v} -> Map.put(acc, String.to_existing_atom(key), maybe_atomize_auth_method(key, v))
         :error -> acc
