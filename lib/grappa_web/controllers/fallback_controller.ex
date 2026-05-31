@@ -61,6 +61,7 @@ defmodule GrappaWeb.FallbackController do
            | :unsupported_media_type
            | :already_exists
            | :scrollback_present
+           | :last_admin
            | {:invalid_setting, String.t()}
            | {:file_too_large, pos_integer()}
            | {:anon_collision, non_neg_integer()}
@@ -470,6 +471,17 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:conflict)
     |> json(%{error: "scrollback_present"})
+  end
+
+  # Admin-panel bucket 2 — `PUT /admin/users/:id` (demote) +
+  # `DELETE /admin/users/:id` refuse when the target is the sole
+  # admin (would lock the deployment out of its own admin panel).
+  # 422 because the request is well-formed AND authorized; just
+  # semantically invalid. Same wire shape as `:cannot_disconnect_self`.
+  def call(conn, {:error, :last_admin}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "last_admin"})
   end
 
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do

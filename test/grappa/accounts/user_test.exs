@@ -122,4 +122,54 @@ defmodule Grappa.Accounts.UserTest do
       assert cs.changes == %{is_admin: true}
     end
   end
+
+  # Admin-panel bucket 2 — narrow password-only changeset for the
+  # dedicated rotation endpoint (`PUT /admin/users/:id/password`).
+  # Same length bounds as `changeset/2` (8..256), but does NOT
+  # require `:name` — a password rotation doesn't ask the operator
+  # to re-supply the existing name.
+  describe "password_changeset/2 (admin-panel bucket 2)" do
+    test "accepts a valid password and stages a new Argon2 hash" do
+      user = %User{id: "u1", name: "vjt", password_hash: "old"}
+
+      cs = User.password_changeset(user, %{password: "fresh horse battery staple"})
+
+      assert cs.valid?
+      # Hash is staged (not the plaintext); virtual `:password` field
+      # is also present.
+      assert Map.has_key?(cs.changes, :password_hash)
+      assert cs.changes.password == "fresh horse battery staple"
+      refute cs.changes.password_hash == "old"
+    end
+
+    test "rejects a too-short password" do
+      cs = User.password_changeset(%User{}, %{password: "short"})
+      refute cs.valid?
+      assert {:password, {_, _}} = List.keyfind(cs.errors, :password, 0)
+    end
+
+    test "rejects missing password" do
+      cs = User.password_changeset(%User{}, %{})
+      refute cs.valid?
+      assert {:password, {_, _}} = List.keyfind(cs.errors, :password, 0)
+    end
+
+    test "ignores stray keys (name / is_admin / password_hash)" do
+      cs =
+        User.password_changeset(%User{name: "vjt"}, %{
+          password: "valid password here",
+          name: "evil",
+          is_admin: true,
+          password_hash: "stuffed"
+        })
+
+      assert cs.valid?
+      refute Map.has_key?(cs.changes, :name)
+      refute Map.has_key?(cs.changes, :is_admin)
+      # `:password_hash` IS in `:changes` because the put_password_hash
+      # helper sets it from a valid `:password`; the test verifies the
+      # value is NOT the operator-supplied junk.
+      refute cs.changes.password_hash == "stuffed"
+    end
+  end
 end

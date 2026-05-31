@@ -95,4 +95,42 @@ defmodule Grappa.Accounts.User do
     |> cast(attrs, [:is_admin])
     |> validate_required([:is_admin])
   end
+
+  @doc """
+  Narrow changeset for password rotation (admin-panel bucket 2 —
+  `PUT /admin/users/:id/password`). Same length bounds as
+  `changeset/2` (8..256) but does NOT require `:name` — operator
+  rotation doesn't ask for the existing name to be re-supplied.
+
+  Casts `:password` only; ignores `:name`, `:is_admin`, etc. so the
+  endpoint can't smuggle other field mutations through the
+  password-only surface. The validity gate re-uses the same
+  `put_password_hash/1` private the create changeset uses, so the
+  hashing pipeline is single-sourced.
+  """
+  @spec password_changeset(t(), %{optional(:password) => String.t()}) :: Ecto.Changeset.t()
+  def password_changeset(%__MODULE__{} = user, attrs) do
+    # We require the operator to SUPPLY a `:password` key explicitly in
+    # `attrs`. `validate_required([:password])` alone wouldn't catch a
+    # missing key when `user.password` (virtual) carries a stale value
+    # from a prior `cast/3` round-trip — Ecto's required-check passes
+    # if the field is present in either changes OR data. Force the
+    # check off the raw params keyset so the operator boundary stays
+    # honest regardless of how `user` got materialized.
+    user
+    |> cast(attrs, [:password])
+    |> validate_password_present(attrs)
+    |> validate_length(:password, min: 8, max: 256)
+    |> put_password_hash()
+  end
+
+  defp validate_password_present(changeset, attrs) do
+    keys = attrs |> Map.keys() |> Enum.map(&to_string/1)
+
+    if "password" in keys do
+      changeset
+    else
+      add_error(changeset, :password, "can't be blank", validation: :required)
+    end
+  end
 end

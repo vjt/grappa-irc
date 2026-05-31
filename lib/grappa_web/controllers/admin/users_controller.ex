@@ -64,7 +64,7 @@ defmodule GrappaWeb.Admin.UsersController do
   Toggle `is_admin` on `:id`. Body whitelist: `is_admin` only.
   """
   @spec update(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}
+          Plug.Conn.t() | {:error, :not_found | :bad_request | :last_admin | Ecto.Changeset.t()}
   def update(conn, %{"id" => id} = params) when is_binary(id) do
     with {:ok, attrs} <- admin_attrs(params),
          %Grappa.Accounts.User{} = user <- Accounts.get_user(id),
@@ -77,6 +77,107 @@ defmodule GrappaWeb.Admin.UsersController do
     end
   end
 
+  @doc """
+  Admin-panel bucket 2 — create a user. Body: `name`, `password`,
+  optional `is_admin`. Returns `201 Created` with the user JSON
+  shape (no password / password_hash leakage).
+  """
+  @spec create(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t()}
+  def create(conn, params) do
+    with {:ok, attrs} <- create_attrs(params),
+         {:ok, user} <- create_then_maybe_admin(attrs) do
+      counts = LiveIntrospection.count_sessions_by_user()
+
+      conn
+      |> put_status(:created)
+      |> json(AdminWire.user_to_admin_json(user, Map.get(counts, user.id, 0)))
+    end
+  end
+
+  @doc """
+  Admin-panel bucket 2 — rotate a user's password. Dedicated
+  endpoint (`PUT /admin/users/:id/password`) so the operator
+  doesn't conflate the `:is_admin` toggle with credential
+  rotation. Body: `%{password: string}`. Auth sessions are NOT
+  revoked (token is session-id, not derived from password).
+  """
+  @spec update_password(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}
+  def update_password(conn, %{"id" => id} = params) when is_binary(id) do
+    with {:ok, attrs} <- password_attrs(params),
+         %Grappa.Accounts.User{} = user <- Accounts.get_user(id),
+         {:ok, updated} <- Accounts.update_password(user, attrs) do
+      counts = LiveIntrospection.count_sessions_by_user()
+      json(conn, AdminWire.user_to_admin_json(updated, Map.get(counts, updated.id, 0)))
+    else
+      nil -> {:error, :not_found}
+      other -> other
+    end
+  end
+
+  @doc """
+  Admin-panel bucket 2 — delete a user. Cascades to bearer-auth
+  sessions, scrollback, and per-(user, network) credentials via
+  FK ON DELETE CASCADE. Refuses with `:last_admin` when the
+  target is the sole admin.
+  """
+  @spec delete(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :not_found | :last_admin}
+  def delete(conn, %{"id" => id}) when is_binary(id) do
+    with {:ok, user} <- fetch_user(id),
+         :ok <- Accounts.delete_user(user) do
+      conn |> put_status(:no_content) |> text("")
+    end
+  end
+
+  defp fetch_user(id) do
+    case Accounts.get_user(id) do
+      %Grappa.Accounts.User{} = user -> {:ok, user}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  # Two-step: `create_user/1` insists on the create-shape changeset
+  # (no `is_admin`); `update_admin_flags/2` applies the optional
+  # promotion afterwards. Both run inside the same Repo sandbox /
+  # SQLite single-writer window so the operator-visible effect is
+  # atomic.
+  defp create_then_maybe_admin(attrs) do
+    with {:ok, user} <- Accounts.create_user(Map.take(attrs, [:name, :password])),
+         {:ok, user} <- maybe_promote(user, attrs) do
+      {:ok, user}
+    end
+  end
+
+  defp maybe_promote(user, %{is_admin: true}) do
+    Accounts.update_admin_flags(user, %{is_admin: true})
+  end
+
+  defp maybe_promote(user, _), do: {:ok, user}
+
+  defp create_attrs(params) do
+    allowed = ["name", "password", "is_admin"]
+    extra = Map.keys(params) -- allowed
+
+    if extra == [] and Map.has_key?(params, "name") and Map.has_key?(params, "password") do
+      {:ok, take_atomized(params, allowed)}
+    else
+      if extra == [], do: {:error, :bad_request}, else: {:error, :bad_request}
+    end
+  end
+
+  defp password_attrs(params) do
+    allowed = ["password"]
+    extra = Map.keys(params) -- ["id" | allowed]
+
+    if extra == [] do
+      {:ok, take_atomized(params, allowed)}
+    else
+      {:error, :bad_request}
+    end
+  end
+
   # Whitelist the single editable flag. Extra keys → 400; matches
   # M-5 NetworksController.caps_attrs/1 pattern exactly.
   defp admin_attrs(params) do
@@ -85,18 +186,20 @@ defmodule GrappaWeb.Admin.UsersController do
     extra = keys -- allowed
 
     if extra == [] do
-      {:ok, atomize(params, allowed)}
+      {:ok, take_atomized(params, allowed)}
     else
       {:error, :bad_request}
     end
   end
 
-  defp atomize(params, allowed) do
-    Enum.reduce(allowed, %{}, fn key, acc ->
-      case Map.fetch(params, key) do
-        {:ok, v} -> Map.put(acc, String.to_existing_atom(key), v)
-        :error -> acc
-      end
-    end)
+  defp take_atomized(params, keys) do
+    Enum.reduce(keys, %{}, fn key, acc -> put_if_present(acc, params, key) end)
+  end
+
+  defp put_if_present(acc, params, key) do
+    case Map.fetch(params, key) do
+      {:ok, v} -> Map.put(acc, String.to_existing_atom(key), v)
+      :error -> acc
+    end
   end
 end

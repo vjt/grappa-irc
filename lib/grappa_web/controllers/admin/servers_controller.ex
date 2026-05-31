@@ -106,7 +106,7 @@ defmodule GrappaWeb.Admin.ServersController do
   # other keys with `:bad_request` so a typo (`tlss: true`) doesn't
   # silently no-op the field the operator meant to set.
   defp server_attrs(params, allowed) do
-    extra = Map.keys(params) -- (allowed ++ ["network_id", "id"])
+    extra = Map.keys(params) -- ["network_id" | ["id" | allowed]]
 
     if extra == [] do
       {:ok, take_atomized(params, allowed)}

@@ -67,8 +67,16 @@ defmodule Grappa.AccountsTest do
       assert %User{is_admin: true} = Accounts.get_user!(user.id)
     end
 
-    test "toggles is_admin: true → false (demotion)", %{user: user} do
+    test "toggles is_admin: true → false (demotion) when another admin exists", %{user: user} do
+      # Admin-panel bucket 2 — `update_admin_flags/2` now refuses to
+      # demote the LAST admin (`:last_admin`). The pre-existing test
+      # demoted a sole admin, which is now an explicit error path
+      # (covered in `update_admin_flags/2 — last-admin guard`
+      # describe block below). To keep the happy-path demotion test
+      # alive, seed a second admin first.
       {:ok, promoted} = Accounts.update_admin_flags(user, %{is_admin: true})
+      {:ok, second} = Accounts.create_user(%{name: "second-admin", password: @password})
+      {:ok, _} = Accounts.update_admin_flags(second, %{is_admin: true})
 
       assert {:ok, %User{is_admin: false}} =
                Accounts.update_admin_flags(promoted, %{is_admin: false})
@@ -166,6 +174,125 @@ defmodule Grappa.AccountsTest do
       idx_z = Enum.find_index(names, &(&1 == z.name))
       assert idx_a < idx_m
       assert idx_m < idx_z
+    end
+  end
+
+  # Admin-panel bucket 2 — last-admin guard. Server-side hard-stop
+  # against demoting the last admin (would lock the deployment out
+  # of its own admin panel).
+  describe "update_admin_flags/2 — last-admin guard" do
+    test "refuses to demote the sole admin (returns :last_admin)" do
+      {:ok, user} = Accounts.create_user(%{name: "sole", password: @password})
+      {:ok, sole} = Accounts.update_admin_flags(user, %{is_admin: true})
+
+      assert {:error, :last_admin} = Accounts.update_admin_flags(sole, %{is_admin: false})
+
+      # DB row unchanged — typed error is the operator's cue, not a
+      # silent rollback.
+      assert %User{is_admin: true} = Accounts.get_user!(sole.id)
+    end
+
+    test "allows demoting one admin when a second admin exists" do
+      {:ok, raw_a} = Accounts.create_user(%{name: "admin-a", password: @password})
+      {:ok, b} = Accounts.create_user(%{name: "admin-b", password: @password})
+      {:ok, a} = Accounts.update_admin_flags(raw_a, %{is_admin: true})
+      {:ok, _} = Accounts.update_admin_flags(b, %{is_admin: true})
+
+      assert {:ok, %User{is_admin: false}} =
+               Accounts.update_admin_flags(a, %{is_admin: false})
+    end
+
+    test "allows promoting a non-admin regardless of admin count" do
+      {:ok, target} = Accounts.create_user(%{name: "target", password: @password})
+
+      assert {:ok, %User{is_admin: true}} =
+               Accounts.update_admin_flags(target, %{is_admin: true})
+    end
+  end
+
+  describe "update_password/2 (admin-panel bucket 2)" do
+    test "re-hashes and persists a new password (Argon2 round-trip)" do
+      {:ok, user} = Accounts.create_user(%{name: "rotate", password: @password})
+      original_hash = user.password_hash
+
+      assert {:ok, %User{} = updated} =
+               Accounts.update_password(user, %{password: "new horse battery staple"})
+
+      refute updated.password_hash == original_hash
+      assert Argon2.verify_pass("new horse battery staple", updated.password_hash)
+      refute Argon2.verify_pass(@password, updated.password_hash)
+    end
+
+    test "rejects a too-short password" do
+      {:ok, user} = Accounts.create_user(%{name: "rotate-short", password: @password})
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Accounts.update_password(user, %{password: "short"})
+
+      assert errors_on(cs)[:password] != nil
+    end
+
+    test "rejects missing password" do
+      {:ok, user} = Accounts.create_user(%{name: "rotate-missing", password: @password})
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Accounts.update_password(user, %{})
+
+      assert errors_on(cs)[:password] != nil
+    end
+
+    test "leaves auth sessions intact (token = session.id, not derived from password)" do
+      {:ok, user} = Accounts.create_user(%{name: "rotate-session", password: @password})
+      {:ok, session} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+
+      assert {:ok, _} = Accounts.update_password(user, %{password: "another secret pw"})
+
+      assert {:ok, fetched} = Accounts.authenticate(session.id)
+      assert fetched.id == session.id
+    end
+  end
+
+  describe "delete_user/1 (admin-panel bucket 2)" do
+    test "deletes a clean user (no sessions, no credentials)" do
+      {:ok, user} = Accounts.create_user(%{name: "del-clean", password: @password})
+
+      assert :ok = Accounts.delete_user(user)
+      assert Accounts.get_user(user.id) == nil
+    end
+
+    test "cascades to bearer-auth sessions via FK ON DELETE CASCADE" do
+      {:ok, user} = Accounts.create_user(%{name: "del-sess", password: @password})
+      {:ok, session} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+
+      assert :ok = Accounts.delete_user(user)
+      # `authenticate/1` on a cascaded session returns :not_found
+      # (the row is physically gone).
+      assert {:error, :not_found} = Accounts.authenticate(session.id)
+    end
+
+    test "refuses to delete the sole admin (returns :last_admin)" do
+      {:ok, user} = Accounts.create_user(%{name: "sole-admin", password: @password})
+      {:ok, sole} = Accounts.update_admin_flags(user, %{is_admin: true})
+
+      assert {:error, :last_admin} = Accounts.delete_user(sole)
+      # User row stays.
+      assert Accounts.get_user(sole.id) != nil
+    end
+
+    test "allows deleting one admin when a second admin exists" do
+      {:ok, raw_a} = Accounts.create_user(%{name: "del-admin-a", password: @password})
+      {:ok, b} = Accounts.create_user(%{name: "del-admin-b", password: @password})
+      {:ok, a} = Accounts.update_admin_flags(raw_a, %{is_admin: true})
+      {:ok, _} = Accounts.update_admin_flags(b, %{is_admin: true})
+
+      assert :ok = Accounts.delete_user(a)
+      assert Accounts.get_user(a.id) == nil
+      assert Accounts.get_user(b.id) != nil
+    end
+
+    test "returns :not_found for an unknown id (idempotency-by-rejection)" do
+      assert {:error, :not_found} =
+               Accounts.delete_user(%User{id: Ecto.UUID.generate()})
     end
   end
 end

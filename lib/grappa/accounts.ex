@@ -228,11 +228,95 @@ defmodule Grappa.Accounts do
   Narrow surface: accepts only `%{is_admin: boolean()}` (User's
   `admin_changeset/2` ignores any other key) so a controller body
   can't smuggle name / password mutations through the admin endpoint.
+
+  ## Last-admin guard (admin-panel bucket 2, A-4)
+
+  Refuses to demote the LAST admin with `{:error, :last_admin}` —
+  would lock the deployment out of its own admin panel. The check
+  counts other admins (excluding `user.id`) BEFORE the update; SQLite's
+  single-writer model serializes concurrent demotes naturally (the
+  second tx observes the first's commit). A future Postgres migration
+  would need an advisory lock here; documented in plan R-2.
   """
   @spec update_admin_flags(User.t(), %{required(:is_admin) => boolean()}) ::
-          {:ok, User.t()} | {:error, Ecto.Changeset.t()}
+          {:ok, User.t()} | {:error, :last_admin | Ecto.Changeset.t()}
   def update_admin_flags(%User{} = user, attrs) do
-    user |> User.admin_changeset(attrs) |> Repo.update()
+    if demoting_last_admin?(user, attrs) do
+      {:error, :last_admin}
+    else
+      user |> User.admin_changeset(attrs) |> Repo.update()
+    end
+  end
+
+  defp demoting_last_admin?(%User{is_admin: true, id: id}, %{is_admin: false}) do
+    other_admins_count(id) == 0
+  end
+
+  defp demoting_last_admin?(%User{is_admin: true, id: id}, %{"is_admin" => false}) do
+    other_admins_count(id) == 0
+  end
+
+  defp demoting_last_admin?(_, _), do: false
+
+  defp other_admins_count(exclude_id) do
+    query = from(u in User, where: u.is_admin == true and u.id != ^exclude_id)
+    Repo.aggregate(query, :count, :id)
+  end
+
+  @doc """
+  Rotates `user`'s plaintext password (admin-panel bucket 2 —
+  `PUT /admin/users/:id/password`). Re-hashes via Argon2id at the
+  changeset boundary; auth sessions are NOT revoked because the
+  bearer token IS the session row id (no derived-from-password
+  material in the token), so existing sessions keep working.
+
+  Operators that need to evict every active session must call
+  `revoke_session/1` (or future `revoke_sessions_for_user/1`) on
+  the relevant rows alongside.
+  """
+  @spec update_password(User.t(), %{optional(:password) => String.t()}) ::
+          {:ok, User.t()} | {:error, Ecto.Changeset.t()}
+  def update_password(%User{} = user, attrs) when is_map(attrs) do
+    user |> User.password_changeset(attrs) |> Repo.update()
+  end
+
+  @doc """
+  Deletes `user` (admin-panel bucket 2 — `DELETE /admin/users/:id`).
+  Refuses with `{:error, :last_admin}` when `user` is the sole admin
+  (per A-4: same lockout class as demoting the last admin). Returns
+  `{:error, :not_found}` for an unknown id.
+
+  ## Cascade
+
+  FK `ON DELETE CASCADE` on `sessions.user_id`, `messages.user_id`,
+  and `network_credentials.user_id` (verified at the migrations):
+  auth sessions, scrollback, and per-(user, network) credentials are
+  removed atomically by SQLite alongside the user row.
+  `messages.network_id` is `:restrict`, but the cascade fires on
+  `user_id` first; the network row itself stays (shared infra).
+
+  Live `Session.Server` processes attached to the user's credentials
+  are NOT explicitly stopped here — the DynamicSupervisor's children
+  will crash on the next mailbox call against an absent DB row and
+  the `:transient` restart strategy will trip its init-gate
+  (`subject_row_present?: false → :ignore`), draining the registry
+  on its own. This is the same path `Visitors.delete_visitor/1`
+  relies on for visitor teardown.
+  """
+  @spec delete_user(User.t()) :: :ok | {:error, :not_found | :last_admin}
+  def delete_user(%User{id: id} = user) when is_binary(id) do
+    case Repo.get(User, id) do
+      nil ->
+        {:error, :not_found}
+
+      %User{} = current ->
+        if current.is_admin and other_admins_count(id) == 0 do
+          {:error, :last_admin}
+        else
+          {:ok, _} = Repo.delete(user)
+          :ok
+        end
+    end
   end
 
   @doc """

@@ -124,6 +124,12 @@ defmodule GrappaWeb.Router do
     # M-cluster M-6 (operator console users + credentials panes):
     get "/users", UsersController, :index
     patch "/users/:id", UsersController, :update
+    # Admin-panel bucket 2 (2026-05-31): user CRUD + dedicated
+    # password rotation endpoint (split from PATCH so the is_admin
+    # toggle and password rotation stay independent verbs).
+    post "/users", UsersController, :create
+    delete "/users/:id", UsersController, :delete
+    put "/users/:id/password", UsersController, :update_password
     get "/credentials", CredentialsController, :index
     patch "/credentials/:user_id/:network_id", CredentialsController, :update
 

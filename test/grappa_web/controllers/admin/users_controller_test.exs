@@ -172,4 +172,195 @@ defmodule GrappaWeb.Admin.UsersControllerTest do
       assert json_response(conn, 400) == %{"error" => "bad_request"}
     end
   end
+
+  describe "POST /admin/users — admin-panel bucket 2" do
+    test "401 without bearer", %{conn: conn} do
+      conn = post(conn, "/admin/users", %{})
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "403 for non-admin user", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/admin/users", Jason.encode!(%{name: "x", password: "y"}))
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "201 + body for a fresh user, no password leaked", %{conn: conn} do
+      session = admin_session()
+      name = "create-#{System.unique_integer([:positive])}"
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/admin/users", Jason.encode!(%{name: name, password: "valid password here"}))
+
+      body = json_response(conn, 201)
+      assert body["name"] == name
+      assert body["is_admin"] == false
+      assert is_binary(body["id"])
+      refute Map.has_key?(body, "password")
+      refute Map.has_key?(body, "password_hash")
+    end
+
+    test "201 with is_admin: true creates an admin", %{conn: conn} do
+      session = admin_session()
+      name = "create-admin-#{System.unique_integer([:positive])}"
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/users",
+          Jason.encode!(%{name: name, password: "valid password here", is_admin: true})
+        )
+
+      body = json_response(conn, 201)
+      assert body["is_admin"] == true
+    end
+
+    test "422 on validation failure (short password)", %{conn: conn} do
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/admin/users", Jason.encode!(%{name: "n", password: "short"}))
+
+      assert json_response(conn, 422)["error"] == "validation_failed"
+    end
+
+    test "400 on extra keys (whitelist breach)", %{conn: conn} do
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/users",
+          Jason.encode!(%{name: "n", password: "valid password here", evil: "x"})
+        )
+
+      assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+  end
+
+  describe "PUT /admin/users/:id/password — admin-panel bucket 2" do
+    test "401 without bearer", %{conn: conn} do
+      conn = put(conn, "/admin/users/some-id/password", %{password: "x"})
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "403 for non-admin user", %{conn: conn} do
+      {target, _} = user_and_session()
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put("/admin/users/#{target.id}/password", Jason.encode!(%{password: "x"}))
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "200 + rotates the password, leaves auth sessions intact", %{conn: conn} do
+      {target, _} = user_and_session()
+      admin_session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(admin_session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put(
+          "/admin/users/#{target.id}/password",
+          Jason.encode!(%{password: "rotated horse staple"})
+        )
+
+      body = json_response(conn, 200)
+      assert body["id"] == target.id
+      refute Map.has_key?(body, "password_hash")
+
+      reloaded = Accounts.get_user!(target.id)
+      assert Argon2.verify_pass("rotated horse staple", reloaded.password_hash)
+    end
+
+    test "404 on unknown id", %{conn: conn} do
+      session = admin_session()
+      bogus_id = Ecto.UUID.generate()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put("/admin/users/#{bogus_id}/password", Jason.encode!(%{password: "valid pw 123"}))
+
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+
+    test "422 on short password", %{conn: conn} do
+      {target, _} = user_and_session()
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put("/admin/users/#{target.id}/password", Jason.encode!(%{password: "short"}))
+
+      assert json_response(conn, 422)["error"] == "validation_failed"
+    end
+  end
+
+  describe "DELETE /admin/users/:id — admin-panel bucket 2" do
+    test "401 without bearer", %{conn: conn} do
+      conn = delete(conn, "/admin/users/some-id")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "403 for non-admin user", %{conn: conn} do
+      {target, _} = user_and_session()
+      {_, session} = user_and_session()
+      conn = conn |> put_bearer(session.id) |> delete("/admin/users/#{target.id}")
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "204 on success, cascades auth sessions via FK", %{conn: conn} do
+      {target, target_session} = user_and_session()
+      session = admin_session()
+
+      conn = conn |> put_bearer(session.id) |> delete("/admin/users/#{target.id}")
+      assert response(conn, 204) == ""
+      assert Accounts.get_user(target.id) == nil
+      assert {:error, :not_found} = Accounts.authenticate(target_session.id)
+    end
+
+    test "422 last_admin when target is the sole admin", %{conn: conn} do
+      # Set up two admins, then delete one so the remaining is the sole.
+      {actor, actor_session} = user_and_session()
+      {:ok, _} = Accounts.update_admin_flags(actor, %{is_admin: true})
+
+      # Actor is the sole admin — delete attempts on self must refuse.
+      conn = conn |> put_bearer(actor_session.id) |> delete("/admin/users/#{actor.id}")
+      assert json_response(conn, 422) == %{"error" => "last_admin"}
+      assert Accounts.get_user(actor.id) != nil
+    end
+
+    test "404 on unknown id", %{conn: conn} do
+      session = admin_session()
+      bogus_id = Ecto.UUID.generate()
+
+      conn = conn |> put_bearer(session.id) |> delete("/admin/users/#{bogus_id}")
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+  end
 end
