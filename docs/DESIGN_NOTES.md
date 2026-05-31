@@ -10615,3 +10615,141 @@ operator can roll back the cic bundle independently of the BEAM
 release — `scripts/deploy-cic.sh` is decoupled — so the two-deploy
 cadence preserves rollback granularity at the seam where it matters
 most (server vs client).
+
+---
+
+## 2026-05-31 — Visitor session sharing via one-time link
+
+Closing the multi-device gap for anonymous users. Pre-change: a
+visitor opens cic on a second device, types the same nick → 409
+`anon_collision` because `Visitors.Login` tries to provision a fresh
+visitor row and hits the `(nick, network_slug)` unique constraint.
+Registered users with a password just log in twice; visitors have no
+password, so the link IS the auth mechanism.
+
+### Mental model
+
+Same as a user opening multiple browser tabs — both devices stay
+connected, both subscribe to the same PubSub topics
+(`grappa:user:visitor:<id>/...`), both see real-time fan-out. The
+difference is the credential exchange: mint a signed token on
+device A, redeem it on device B, both end up holding distinct
+`accounts_sessions` rows pointing to the SAME `visitors.id`.
+
+This is sharing, NOT transfer — device A's bearer stays alive.
+
+### Architecture
+
+Token storage: **Phoenix.Token + supervised ETS one-shot set.**
+Zero migrations, HOT-deploy-friendly *at the schema level*. ETS
+over DB because the threat model is benign (operator clicks own
+link twice), TTL is short (10 min), and losing the consumed-set
+on BEAM restart opens at most a TTL-bounded reuse window for
+already-signed tokens — acceptable. Future DB-backed hardening
+(`visitor_share_tokens` table with `consumed_at` + reaper) is a
+mechanical migration if the threat model ever shifts.
+
+Supervision: new `Grappa.Visitors.ShareTokens` GenServer owns
+ETS table `:visitor_share_tokens_used`. Sits before Endpoint in
+the boot order alongside the other ETS singletons (Backoff,
+NetworkCircuit) — consume controller can never race a missing
+table.
+
+### Endpoints
+
+* `POST /me/share-token` — authenticated (`:authn`), visitor-only
+  (user subject → 403 `forbidden`). Returns `{token, expires_at}`.
+  `token` is `Phoenix.Token.sign(endpoint, "visitor-share-v1",
+  visitor.id)` with `max_age: 600`. `expires_at` is the absolute
+  UTC ISO8601 timestamp for the cic countdown.
+* `POST /auth/share/consume` — UNAUTHENTICATED (the signed token
+  IS the credential). Body `{token}`. Flow:
+  1. `Phoenix.Token.verify` — bad sig → 401, expired → 410
+     `share_token_expired`.
+  2. `ShareTokens.mark_consumed/1` — atomic `:ets.insert_new/2`;
+     collision → 410 `share_token_consumed`.
+  3. `Visitors.get/1` — visitor reaped mid-window → 404 `not_found`.
+  4. `Accounts.create_session({:visitor, id}, ip, ua, client_id)`
+     — fresh bearer minted for the SAME visitor row.
+
+  Returns the same shape as `/auth/login`:
+  `{token, subject: {kind: "visitor", id, nick, network_slug}}`.
+
+The 410 wire-shape atoms split (`share_token_expired` vs
+`share_token_consumed`) deliberately — both are "permanently
+unusable" semantically, but cic copy + telemetry need to tell
+them apart. Lifted at the controller boundary via a private
+helper so the ETS module's `{:error, :already_consumed}` contract
+stays oblivious to HTTP wire strings.
+
+### cic side
+
+* SettingsDrawer gains a visitor-only "share session" button
+  (gated on `getSubject()?.kind === "visitor"`).
+* `ShareSessionModal` mints on open, displays URL +
+  copy-to-clipboard + live countdown. Refetches a fresh token per
+  open transition (closing + reopening orphans the previous URL —
+  acceptable; alternative would be silently invalidating a
+  clipboard-only URL the operator may still be carrying).
+* SPA route `/share/:token` (plain path, NOT hash — @solidjs/router
+  v0.16 uses path mode by default; nginx falls back to index.html
+  per `try_files $uri /index.html` in the shared
+  `infra/snippets/locations-api.conf`). Auto-consumes on mount;
+  on success writes `grappa-token` + `grappa-subject` via the new
+  `installSharedSession()` helper in `auth.ts` (symmetric with
+  what `login()` does, transactional pair) and navigates to `/`.
+* Error paths surface the wire-shape atom inline (`share_token_
+  expired`, `share_token_consumed`, `not_found`, `unauthorized`)
+  so the user can tell "link expired" from "already used elsewhere."
+  Both 410 server-side; the atom is the only distinguisher.
+
+### Multi-device WS fan-out
+
+Both devices hold tokens that resolve to the SAME visitor row →
+both UserSocket connections assign the same
+`user_name = "visitor:<id>"` → both subscribe to the same PubSub
+topics → fan-out is automatic via `phoenix.js` fastlane. Channel
+join authz in `grappa_channel.ex:200-207` compares the topic's
+user prefix to `socket.assigns.user_name`; both sockets pass the
+same gate. No channel-auth changes needed.
+
+### Telemetry
+
+`[:grappa, :visitor, :share_token, :minted | :consumed | :rejected]`.
+`:rejected` carries `metadata.reason` so PromEx can bucket the
+four failure modes (`:unauthorized`, `:share_token_expired`,
+`:share_token_consumed`, `:not_found`) separately.
+
+### Out-of-scope
+
+* No rate limit beyond the global `Plug.Throttle` baseline. The
+  bearer-protected `/me/share-token` is gated by `:authn`; the
+  unauthenticated `/auth/share/consume` reaches a 401 / 410 with
+  no DB-side work for invalid tokens (`Phoenix.Token.verify` is
+  HMAC-only, no DB roundtrip).
+* No "list active share tokens" admin surface. ETS lookup-by-token
+  is the only access pattern; surfacing the set would require
+  iterating + binding to the visitor it was minted for, which the
+  signed-token-only design doesn't naturally support. If operators
+  start needing this, that's the signal to switch to the DB-table
+  variant.
+* No PubSub broadcast on mint/consume. The visitor doesn't need
+  to know "another device just joined" — both devices see the
+  same scrollback, that IS the signal.
+
+### HOT-vs-COLD deploy decision (load-bearing)
+
+ETS + Phoenix.Token = zero migration, no `@type t :: ...` field
+additions, no schema changes. The ONE supervision-tree change
+(adding `Grappa.Visitors.ShareTokens` as a new child) is the
+classic HOT-deploy footgun: `Phoenix.CodeReloader.reload!/1`
+recompiles modules but does NOT call `Application.start/2` again,
+so a newly-added supervised child is NOT spawned on a HOT reload.
+The consume controller's first call would crash with `ArgumentError`
+on the missing ETS table. Per
+`feedback_hot_deploy_corrupts_build_prod`: this is a class of
+diff that requires `--force-cold` despite passing the deploy.sh
+preflight (which looks for `@type` field-add patterns + schema
+files, not supervision-tree shape). Flagged to vjt at deploy time
+per the bucket-8 plan — recommend COLD.
+

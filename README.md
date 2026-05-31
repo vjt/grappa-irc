@@ -521,6 +521,7 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 - [x] Session tokens (Argon2-hashed password → bearer-token sessions, sliding 7-day idle)
 - [x] Per-user isolation (cross-user join authz at the channel layer)
 - [x] Two-tier visitor identity model: anonymous (48h sliding TTL, data co-terminus with session) + NickServ-identified (infinite, `expires_at = NULL` written when upstream confirms `+r`). Returning identified visitors re-authenticate with their NickServ password and reuse their existing visitor row across devices. Visitor surface is feature-equal with the registered-user surface (CP32 visitor-parity cluster, 2026-05-15) — see [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) for the parity invariant.
+- [x] Visitor session sharing via one-time link (2026-05-31). Settings → "share session" mints a 10-minute Phoenix-signed token; opening the link on a second device redeems it through `POST /auth/share/consume` and lands a fresh bearer for the SAME visitor row — both devices stay connected (sharing, not transfer). One-shot semantics enforced by `Grappa.Visitors.ShareTokens`'s ETS ledger (`:ets.insert_new/2`). User subjects get 403 — feature is meaningless for password-holding identities.
 
 ### Phase 3 — client walking skeleton ✓
 - [x] PWA shell, manifest, service worker
