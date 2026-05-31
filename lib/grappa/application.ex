@@ -17,6 +17,7 @@ defmodule Grappa.Application do
       Grappa.Uploads.Reaper,
       Grappa.Vault,
       Grappa.Visitors.Reaper,
+      Grappa.Visitors.ShareTokens,
       Grappa.WSPresence,
       GrappaWeb
     ]
@@ -126,6 +127,12 @@ defmodule Grappa.Application do
         # AdminEvents-targeting tests honest without bleeding into
         # unrelated suites.
         {Grappa.AdminEvents, attach_telemetry: attach_admin_telemetry?()},
+        # ShareTokens: ETS-backed one-shot set for visitor share-link
+        # token redemption. Must come before Endpoint so the consume
+        # controller never races a missing table. No upstream deps;
+        # placed here to sit alongside the other ETS singletons
+        # (Backoff, NetworkCircuit) for ordering clarity.
+        Grappa.Visitors.ShareTokens,
         # max_restarts: 10_000, max_seconds: 60 — DynamicSupervisor's
         # default (3 restarts in 5s) is GLOBAL across all children; one
         # upstream network-wide outage causing several Session.Server
