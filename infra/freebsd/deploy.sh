@@ -181,7 +181,35 @@ echo "[deploy] service grappa restart"
 # epmd is started by the old BEAM but NOT killed on rc.d stop —
 # next start sees `name grappa@grappa already in use` and refuses.
 # Hard-kill epmd between stop and start to force a clean re-register.
+#
+# `service grappa stop` is ASYNCHRONOUS — it signals the BEAM daemon
+# and returns immediately. The BEAM takes a few seconds to fully exit
+# (drain sockets, run terminate callbacks, flush Logger). If we
+# pkill epmd while the old BEAM is still alive, the BEAM may respawn
+# epmd, and the new `service grappa start` then races against the
+# still-registered old `grappa@grappa` node name → "name in use"
+# refusal → BEAM crashes → deploy fails (live-repro 2026-05-31:
+# deploy.sh ran stop+pkill+sleep1+start, then new BEAM crashed at
+# 15:12:02 with "Protocol 'inet_tcp': the name grappa@grappa seems
+# to be in use by another Erlang node" because the old BEAM was
+# still alive + still registered when the new one tried to claim
+# the same short-name).
+#
+# Wait-loop on the BEAM pid: poll until pgrep returns no match (or
+# 20s timeout, then SIGKILL as a last resort). Only THEN pkill epmd
+# + start fresh.
 service grappa stop || true
+i=0
+while pgrep -q beam.smp 2>/dev/null; do
+	if [ "${i}" -ge 20 ]; then
+		echo "[deploy] WARNING: old BEAM didn't exit in 20s — SIGKILL"
+		pkill -9 beam.smp 2>/dev/null || true
+		sleep 1
+		break
+	fi
+	i=$((i + 1))
+	sleep 1
+done
 pkill epmd 2>/dev/null || true
 sleep 1
 service grappa start
