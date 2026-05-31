@@ -1,6 +1,7 @@
 import { type Component, Show } from "solid-js";
 import { setArchiveModalNetwork } from "./lib/archive";
 import { archiveSlugForSelection } from "./lib/archiveContext";
+import { isMobile } from "./lib/theme";
 
 // UX-4 bucket L (2026-05-19) — sticky chrome bar at the top of
 // `.shell-main`. Always rendered, regardless of selected window kind
@@ -12,8 +13,12 @@ import { archiveSlugForSelection } from "./lib/archiveContext";
 // Slots (left → right):
 //   * Spacer — pushes the right group to the far right.
 //   * Archive button (📂) — opens ArchiveModal for the currently-
-//     selected window's network. Hidden when no network context
-//     (home / mentions / pre-select). Visibility predicate lives in
+//     selected window's network. MOBILE-ONLY: on desktop the
+//     Sidebar already exposes the parked/archived rows inline via
+//     `<details class="sidebar-archive">` (Sidebar.tsx ~L523),
+//     making this button redundant noise. The ArchiveModal itself
+//     remains for mobile where sidebar real estate is scarce.
+//     Visibility-on-mobile predicate (no-network guard) lives in
 //     `lib/archiveContext.ts` so the mobile members-drawer launcher
 //     (Shell.tsx) uses the SAME rule.
 //   * Settings cog (⚙) — opens SettingsDrawer. Always visible.
@@ -42,7 +47,7 @@ const ShellChrome: Component<Props> = (props) => {
   return (
     <header class="shell-chrome" data-testid="shell-chrome">
       <span class="shell-chrome-spacer" />
-      <Show when={archiveSlugForSelection()}>
+      <Show when={isMobile() && archiveSlugForSelection()}>
         {(slug) => (
           <button
             type="button"

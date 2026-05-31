@@ -529,7 +529,14 @@ const Sidebar: Component<Props> = () => {
                 }}
               >
                 <summary>Archive</summary>
-                <ul>
+                {/* UX-5 BH (post-bundle fix) — the canonical row style
+                    in `themes/default.css` is scoped to
+                    `.sidebar-network-section li .sidebar-window-btn`.
+                    Inheriting that class on the archive's inner `<ul>`
+                    restores monospace + dark-theme styling for archived
+                    rows (without it, the UA defaults bleed through —
+                    white background, system serif font, etc). */}
+                <ul class="sidebar-network-section sidebar-archive-list">
                   <For each={visibleArchiveForNetwork(network.slug, network.id)}>
                     {(entry) => {
                       const key = archiveKey(network.slug, entry.target);

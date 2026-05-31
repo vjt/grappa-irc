@@ -34,11 +34,22 @@ vi.mock("../lib/selection", () => ({
   selectedChannel: () => mockSelected,
 }));
 
+// Post-bundle desktop fix — ShellChrome's archive button is now gated on
+// `isMobile()` so desktop doesn't render it (Sidebar's `<details
+// class="sidebar-archive">` already exposes parked rows inline). Mirror
+// the Shell.test.tsx pattern: a mutable hoisted holder so individual
+// describe blocks can flip mobile/desktop.
+const mobileState = vi.hoisted(() => ({ value: true }));
+vi.mock("../lib/theme", () => ({
+  isMobile: () => mobileState.value,
+}));
+
 import ShellChrome from "../ShellChrome";
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockSelected = null;
+  mobileState.value = true;
 });
 
 describe("ShellChrome (bucket L)", () => {
@@ -106,6 +117,36 @@ describe("ShellChrome (bucket L)", () => {
       render(() => <ShellChrome onOpenSettings={vi.fn()} />);
       fireEvent.click(screen.getByTestId("shell-chrome-archive"));
       expect(mockSetArchiveModalNetwork).toHaveBeenCalledWith("freenode");
+    });
+  });
+
+  // Post-bundle desktop fix — on desktop the archive button is
+  // suppressed: Sidebar's `<details class="sidebar-archive">` already
+  // exposes parked/archived rows inline so a separate chrome button
+  // is redundant. The mobile assertions above keep the rule that on
+  // narrow viewports the button surfaces (the sidebar is collapsed
+  // behind a drawer there).
+  describe("archive button visibility (desktop mode)", () => {
+    beforeEach(() => {
+      mobileState.value = false;
+    });
+
+    it("hides archive button on desktop even when a channel window is selected", () => {
+      mockSelected = { networkSlug: "freenode", channelName: "#italia", kind: "channel" };
+      render(() => <ShellChrome onOpenSettings={vi.fn()} />);
+      expect(screen.queryByTestId("shell-chrome-archive")).toBeNull();
+    });
+
+    it("hides archive button on desktop even when a query window is selected", () => {
+      mockSelected = { networkSlug: "freenode", channelName: "alice", kind: "query" };
+      render(() => <ShellChrome onOpenSettings={vi.fn()} />);
+      expect(screen.queryByTestId("shell-chrome-archive")).toBeNull();
+    });
+
+    it("hides archive button on desktop even when a server window is selected", () => {
+      mockSelected = { networkSlug: "freenode", channelName: "$server", kind: "server" };
+      render(() => <ShellChrome onOpenSettings={vi.fn()} />);
+      expect(screen.queryByTestId("shell-chrome-archive")).toBeNull();
     });
   });
 });
