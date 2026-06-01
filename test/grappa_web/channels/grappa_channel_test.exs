@@ -498,8 +498,8 @@ defmodule GrappaWeb.GrappaChannelTest do
   # nil when no cursor exists yet). cic uses this to skip a per-window
   # REST round-trip on subscribe; the bulk envelope from /me is the
   # boot-time path.
-  describe "join reply — read cursor (CP29 R-3)" do
-    test "channel topic join returns nil when no cursor exists" do
+  describe "join reply — read cursor (CP29 R-3) + unread count (2026-06-01)" do
+    test "channel topic join returns nil cursor + zero unread when no cursor exists and channel empty" do
       user_name = "rc-cursor-nil-#{System.unique_integer([:positive])}"
       _ = user_fixture(name: user_name)
 
@@ -513,10 +513,10 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert reply == %{read_cursor: nil}
+      assert reply == %{read_cursor: nil, unread_count: 0}
     end
 
-    test "channel topic join returns the cursor id when present" do
+    test "channel topic join returns the cursor id and unread count (cursor at tail → 0)" do
       user_name = "rc-cursor-hit-#{System.unique_integer([:positive])}"
       user = user_fixture(name: user_name)
 
@@ -543,7 +543,121 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert reply == %{read_cursor: msg.id}
+      assert reply == %{read_cursor: msg.id, unread_count: 0}
+    end
+
+    test "channel topic join surfaces the unread count when rows exist past the cursor" do
+      user_name = "rc-unread-count-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
+
+      {:ok, network} =
+        Networks.find_or_create_network(%{slug: "rc-net-#{System.unique_integer([:positive])}"})
+
+      {:ok, anchor} =
+        ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#busy",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "old"
+        })
+
+      {:ok, _} = Grappa.ReadCursor.set({:user, user.id}, network.id, "#busy", anchor.id)
+
+      for i <- 1..3 do
+        {:ok, _} =
+          ScrollbackHelpers.insert(%{
+            user_id: user.id,
+            network_id: network.id,
+            channel: "#busy",
+            server_time: 1 + i,
+            kind: :privmsg,
+            sender: "peer",
+            body: "msg #{i}"
+          })
+      end
+
+      topic = Topic.channel(user_name, network.slug, "#busy")
+
+      {:ok, reply, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert reply == %{read_cursor: anchor.id, unread_count: 3}
+    end
+
+    test "channel topic join with no cursor yet counts every row as unread" do
+      user_name = "rc-no-cursor-all-unread-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
+
+      {:ok, network} =
+        Networks.find_or_create_network(%{slug: "rc-net-#{System.unique_integer([:positive])}"})
+
+      for i <- 1..2 do
+        {:ok, _} =
+          ScrollbackHelpers.insert(%{
+            user_id: user.id,
+            network_id: network.id,
+            channel: "#never-opened",
+            server_time: i,
+            kind: :privmsg,
+            sender: "peer",
+            body: "msg #{i}"
+          })
+      end
+
+      topic = Topic.channel(user_name, network.slug, "#never-opened")
+
+      {:ok, reply, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert reply == %{read_cursor: nil, unread_count: 2}
+    end
+
+    test "channel topic join surfaces the unread count for visitor subjects too" do
+      slug = "rc-net-visitor-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug)
+
+      {:ok, anchor} =
+        ScrollbackHelpers.insert(%{
+          visitor_id: visitor.id,
+          network_id: network.id,
+          channel: "#visited",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "anchor"
+        })
+
+      {:ok, _} = Grappa.ReadCursor.set({:visitor, visitor.id}, network.id, "#visited", anchor.id)
+
+      for i <- 1..2 do
+        {:ok, _} =
+          ScrollbackHelpers.insert(%{
+            visitor_id: visitor.id,
+            network_id: network.id,
+            channel: "#visited",
+            server_time: 1 + i,
+            kind: :privmsg,
+            sender: "peer",
+            body: "msg #{i}"
+          })
+      end
+
+      topic = Topic.channel("visitor:" <> visitor.id, network.slug, "#visited")
+
+      {:ok, reply, _} =
+        ("visitor:" <> visitor.id)
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert reply == %{read_cursor: anchor.id, unread_count: 2}
     end
 
     test "user-level topic join returns an empty join reply (no cursor concept)" do
