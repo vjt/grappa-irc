@@ -401,9 +401,9 @@ Seven visual and UX improvements to the message history pane:
 
 - **Day separators (C7.1)** — when consecutive messages cross a local-timezone day boundary, a `── <weekday, month day> ──` rule is injected between them. Computed entirely client-side from `server_time` (epoch-ms).
 - **Muted events (C7.2)** — JOIN / PART / QUIT / NICK / MODE / TOPIC / KICK lines are rendered at 85% font-size and 0.75 opacity. PRIVMSG / NOTICE / ACTION lines stay full-contrast so content dominates.
-- **Unread marker (C7.3)** — on focus switch to a channel, a `── unread ──` rule is inserted before the first message received after your last visit. Position is computed from `localStorage` read-cursor (`rc:<slug>:<channel>` key, epoch-ms).
+- **Unread marker (C7.3)** — on focus switch to a channel, a `── unread ──` rule is inserted before the first message received after your last visit. Position is computed from the server-side per-`(network, channel)` read-cursor (synced cross-device via the `Topic.user/1` `read_cursor_set` broadcast). The marker collapses on the next render whenever the cursor advances past it — including sending a message in the currently-focused window, not just on focus-leave.
 - **Scroll-to-bottom button (C7.4)** — a `↓` floating button appears when scrolled more than 50px from the tail. Clicking it smooth-scrolls to the bottom and resumes auto-follow.
-- **Msg vs events badges (C7.5)** — unread indicators split into two counters: **messages** (PRIVMSG / NOTICE / ACTION → bold accent badge) and **events** (JOIN / PART / QUIT / NICK / MODE / TOPIC / KICK → dimmer muted indicator). Both reset to zero on window focus. Both desktop Sidebar and mobile BottomBar show the split.
+- **Msg vs events badges (C7.5)** — unread indicators split into two counters: **messages** (PRIVMSG / NOTICE / ACTION → bold accent badge) and **events** (JOIN / PART / QUIT / NICK / MODE / TOPIC / KICK → dimmer muted indicator). Both derive from `(scrollback, read-cursor, /me seed)` — no incremental bump store; recomputing the count from the cursor is the single source of truth. Cross-device sync falls out for free: send in tab A, tab B's badge for the same channel does NOT bump (tab A's cursor write fans on `Topic.user/1`, tab B's memo recomputes past it). Both desktop Sidebar and mobile BottomBar show the split.
 - **Clickable nicks (C7.6)** — sender buttons in PRIVMSG / NOTICE / ACTION lines are interactive: left-click opens a query (DM) window and switches focus; right-click shows the same `UserContextMenu` as the members pane (op/deop/voice/kick/ban/WHOIS/query). Zero new components.
 - **Watchlist highlight (C7.7)** — PRIVMSG / NOTICE / ACTION lines where the body matches the watchlist get `.scrollback-highlight` (soft accent left-border). MVP: watchlist = own nick only. Named separately from `.scrollback-mention` so a future `/watch` verb can extend it to a configurable nick list without touching the mention rendering path.
 
@@ -577,8 +577,10 @@ the live operator before the next begins. Current order:
 Recently closed (per-cluster history with bucket-level detail in
 [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md)): bastille deploy
 (FreeBSD jail prod runtime, live on m42 since 2026-05-27),
-e2e flake triage, UX-8 scroll cluster, wireTypes.ts codegen,
-BUGHUNT-1/2/3 pre-bastille bug-hunt.
+unread-badges-from-cursor (msg/events counters derive from
+`(scrollback, cursor, seed)` + cross-device sync), e2e flake triage,
+UX-8 scroll cluster, wireTypes.ts codegen, BUGHUNT-1/2/3
+pre-bastille bug-hunt.
 
 Beyond PUBLIC OPEN, Phase 6 IRCv3 listener facade is the long-tail
 work — drop-in compatibility with existing IRCv3 mobile clients
