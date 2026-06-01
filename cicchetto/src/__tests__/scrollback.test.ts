@@ -41,10 +41,27 @@ vi.mock("../lib/reconnectBackfill", () => ({
   recordSeen: vi.fn(),
 }));
 
+// 2026-06-01 (unread-badges-from-cursor cluster, bucket D):
+// scrollback.sendMessage now plumbs the persisted row's id into a
+// forward-only cursor advance via readCursor. Mock the readCursor
+// surface so the test can drive `getReadCursor` deterministically
+// and assert `setReadCursor` was invoked with the expected id without
+// hitting the real fetch path.
+const mockGetReadCursor = vi.fn<(slug: string, chan: string) => number | null>(() => null);
+const mockSetReadCursor =
+  vi.fn<(bearer: string, slug: string, chan: string, id: number) => Promise<void>>();
+vi.mock("../lib/readCursor", () => ({
+  getReadCursor: (slug: string, chan: string) => mockGetReadCursor(slug, chan),
+  setReadCursor: (bearer: string, slug: string, chan: string, id: number) =>
+    mockSetReadCursor(bearer, slug, chan, id),
+}));
+
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
   vi.clearAllMocks();
+  mockGetReadCursor.mockReturnValue(null);
+  mockSetReadCursor.mockResolvedValue(undefined);
 });
 
 describe("scrollback verbs", () => {
@@ -151,6 +168,76 @@ describe("scrollback verbs", () => {
     const scrollback = await import("../lib/scrollback");
     await scrollback.sendMessage("freenode", "#grappa", "hello world");
     expect(api.sendMessage).toHaveBeenCalledWith("tok", "freenode", "#grappa", "hello world");
+  });
+
+  // Bucket D — post-success cursor advance. The id from the 201 body
+  // must drive a `setReadCursor` write (forward-only) so the in-pane
+  // unread marker collapses and any second device of this operator
+  // drops the just-sent row from its derived badge count.
+  it("sendMessage advances the read cursor to the returned row id when no cursor is set", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: 42,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 0,
+      kind: "privmsg",
+      sender: "alice",
+      body: "hello",
+      meta: {},
+    });
+    mockGetReadCursor.mockReturnValue(null);
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.sendMessage("freenode", "#grappa", "hello world");
+    expect(mockSetReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 42);
+  });
+
+  it("sendMessage advances the read cursor when the returned id strictly exceeds the current cursor", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: 100,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 0,
+      kind: "privmsg",
+      sender: "alice",
+      body: "hi",
+      meta: {},
+    });
+    mockGetReadCursor.mockReturnValue(50);
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.sendMessage("freenode", "#grappa", "hi");
+    expect(mockSetReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 100);
+  });
+
+  it("sendMessage does NOT write the cursor when the returned id is not strictly greater than the current cursor", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: 50,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 0,
+      kind: "privmsg",
+      sender: "alice",
+      body: "stale",
+      meta: {},
+    });
+    mockGetReadCursor.mockReturnValue(50);
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.sendMessage("freenode", "#grappa", "stale");
+    expect(mockSetReadCursor).not.toHaveBeenCalled();
+  });
+
+  it("sendMessage with no token short-circuits before POST and does not touch the cursor", async () => {
+    // No grappa-token in localStorage → token() returns null.
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.sendMessage("freenode", "#grappa", "ignored");
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(mockSetReadCursor).not.toHaveBeenCalled();
   });
 
   it("appendToScrollback dedupes by id (first wins)", async () => {

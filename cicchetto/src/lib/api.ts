@@ -1589,8 +1589,12 @@ export async function listMessagesAfter(
 // 201 + the persisted Wire row; the same row also fires on the
 // per-channel PubSub topic, so a connected client receives it via WS
 // push and the store's existing event handler appends it to scrollback.
-// The REST response is the secondary confirmation, not the primary
-// surface for the new row.
+//
+// The render path is WS-driven; callers that want the row id (e.g.
+// scrollback.ts's bucket-D post-success cursor advance) keep ONLY the
+// id from this body and let the WS echo own the insert. Reading the
+// body for any other purpose risks double-rendering on the race where
+// WS lands first.
 export async function sendMessage(
   token: string,
   networkSlug: string,

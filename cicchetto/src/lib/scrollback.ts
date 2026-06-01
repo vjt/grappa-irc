@@ -8,6 +8,7 @@ import {
 import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
+import { getReadCursor, setReadCursor } from "./readCursor";
 import { getResumeCursor, recordSeen } from "./reconnectBackfill";
 
 // Per-channel scrollback store: the source of truth for messages
@@ -190,9 +191,34 @@ const exports = identityScopedStore((onIdentityChange) => {
     if (!t) return;
     // Server persists+broadcasts atomically — the WS push will deliver
     // the same row to this socket and `appendToScrollback` will display
-    // it. We don't read the 201 body to avoid double-rendering on the
-    // race where WS lands first.
-    await apiSendMessage(t, slug, name, body);
+    // it. The 201 body is the same persisted row; we keep ONLY its `id`
+    // (not its body) for the post-success cursor advance below. The
+    // render path is still WS-driven, so reading the id here does not
+    // introduce a second insert.
+    //
+    // Unread-badges-from-cursor cluster, bucket D — auto-advance the
+    // read cursor on send-in-focused-window. Without this advance the
+    // in-pane `── XX unread ──` marker and the sidebar badge would stay
+    // stale until focus-leave / browser-blur / scroll-settle wrote the
+    // cursor; worse, on a second device the operator's own send would
+    // bump THEIR derived count (the WS broadcast filter catches own-
+    // presence rows but not own-content). The server's
+    // `read_cursor_set` WS event fans the new cursor to all of this
+    // user's other devices, dropping the just-sent message from their
+    // derived `unreadCounts` memo in selection.ts.
+    //
+    // Mirrors selection.ts:291 `setCursorIfAdvances`'s forward-only
+    // gate inline rather than importing — scrollback ↔ selection
+    // already has a one-way edge (selection imports
+    // loadInitialScrollback from here) and closing the cycle would
+    // re-introduce the vitest `undefined` capture observed in bucket C
+    // (networks ↔ selection). Three-line inline body + the doc here
+    // is cheaper than hoisting `setCursorIfAdvances` to a leaf module
+    // for a single second caller.
+    const row = await apiSendMessage(t, slug, name, body);
+    const current = getReadCursor(slug, name);
+    if (current !== null && row.id <= current) return;
+    void setReadCursor(t, slug, name, row.id);
   };
 
   // CP29 R-5 — refresh-on-WS-join-ok. Called from `subscribe.ts`'s 5

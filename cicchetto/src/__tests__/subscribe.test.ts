@@ -206,6 +206,17 @@ const seedStubs = async () => {
     body: "echo",
     meta: {},
   });
+  // Bucket D (2026-06-01): scrollback.sendMessage now drives a
+  // forward-only `setReadCursor` write post-success via readCursor.ts's
+  // real fetch helper. Without a stub here the helper hits the real
+  // `fetch` with a relative URL and surfaces an unhandled
+  // `ERR_INVALID_URL` from vitest's jsdom. Stub once in seedStubs so
+  // every test using these stubs is safe; individual tests that need
+  // to assert on cursor writes can still `vi.spyOn(readCursor,
+  // "setReadCursor")` to override the default mock (see the
+  // explicit-spy test at line 546 for the contract).
+  const readCursor = await import("../lib/readCursor");
+  vi.spyOn(readCursor, "setReadCursor").mockResolvedValue(undefined);
 };
 
 const fireMessageEvent = (
