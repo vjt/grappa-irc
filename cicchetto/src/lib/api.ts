@@ -420,6 +420,23 @@ export type MessageKind =
   | "kick"
   | "server_event";
 
+// Kind class for the unread-badge memo derivation (2026-06-01,
+// unread-badges-from-cursor cluster). Content kinds are the "real
+// messages" the operator wants the bold sidebar/bottom-bar badge for;
+// presence kinds are the dimmer indicator. The classifier is
+// single-sourced here so the in-pane unread marker, the sidebar memo,
+// and the bottom-bar memo all share one definition — pre-cluster the
+// predicate was duplicated inline at `subscribe.ts:231` and again at
+// ScrollbackPane's in-pane marker filter.
+export const CONTENT_KINDS: ReadonlySet<MessageKind> = new Set<MessageKind>([
+  "privmsg",
+  "notice",
+  "action",
+]);
+
+export const isContentKind = (k: MessageKind): boolean => CONTENT_KINDS.has(k);
+export const isPresenceKind = (k: MessageKind): boolean => !CONTENT_KINDS.has(k);
+
 export type ScrollbackMessage = {
   id: number;
   network: string;

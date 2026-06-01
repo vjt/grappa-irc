@@ -15,6 +15,12 @@ const apiHolder = vi.hoisted(() => ({
 }));
 vi.mock("../lib/api", () => ({
   consumeShareToken: apiHolder.consumeShareToken,
+  // 2026-06-01 (unread-badges-from-cursor cluster, bucket B2):
+  // selection.ts now imports isContentKind from api.ts for the badge
+  // memo derivation. Any test importing selection (directly or
+  // transitively) needs the classifier in its api mock.
+  isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
+  isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
 }));
 
 const authHolder = vi.hoisted(() => ({

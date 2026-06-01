@@ -48,6 +48,8 @@ vi.mock("../lib/readCursor", () => ({
   applyJoinReply: vi.fn(),
   applyReadCursorSet: vi.fn(),
   getReadCursor: vi.fn(() => null),
+  readCursors: vi.fn(() => ({})),
+  decodeCursorKey: vi.fn(() => null),
   clearReadCursors: vi.fn(),
 }));
 
@@ -84,30 +86,24 @@ beforeEach(() => {
 });
 
 describe("selection store", () => {
-  it("bumpUnread increments per-key counter monotonically", async () => {
+  it("setServerSeedCount seeds messagesUnread + eventsUnread memos for the key", async () => {
     localStorage.setItem("grappa-token", "tok");
     const selection = await import("../lib/selection");
     const key = channelKey("freenode", "#grappa");
-    selection.bumpUnread(key);
-    selection.bumpUnread(key);
-    selection.bumpUnread(key);
-    expect(selection.unreadCounts()[key]).toBe(3);
+    selection.setServerSeedCount(key, { messages: 3, events: 1 });
+    expect(selection.messagesUnread()[key]).toBe(3);
+    expect(selection.eventsUnread()[key]).toBe(1);
+    expect(selection.unreadCounts()[key]).toBe(4);
   });
 
-  it("selecting a channel clears its accumulated unread count", async () => {
+  it("setServerSeedCount is idempotent on equal-value updates (no re-render)", async () => {
     localStorage.setItem("grappa-token", "tok");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMessages).mockResolvedValue([]);
     const selection = await import("../lib/selection");
     const key = channelKey("freenode", "#grappa");
-    selection.bumpUnread(key);
-    expect(selection.unreadCounts()[key]).toBe(1);
-    selection.setSelectedChannel({
-      networkSlug: "freenode",
-      channelName: "#grappa",
-      kind: "channel",
-    });
-    expect(selection.unreadCounts()[key]).toBeUndefined();
+    selection.setServerSeedCount(key, { messages: 2, events: 0 });
+    const first = selection.serverSeedCounts();
+    selection.setServerSeedCount(key, { messages: 2, events: 0 });
+    expect(selection.serverSeedCounts()).toBe(first);
   });
 
   it("selecting a channel fires loadInitialScrollback exactly once across re-selections", async () => {
@@ -140,12 +136,12 @@ describe("selection store", () => {
     expect(api.listMessages).toHaveBeenCalledTimes(2);
   });
 
-  it("token rotation clears selectedChannel + unreadCounts", async () => {
+  it("token rotation clears selectedChannel + serverSeedCounts", async () => {
     localStorage.setItem("grappa-token", "tokA");
     const auth = await import("../lib/auth");
     const selection = await import("../lib/selection");
     const key = channelKey("freenode", "#grappa");
-    selection.bumpUnread(key);
+    selection.setServerSeedCount(key, { messages: 5, events: 0 });
     selection.setSelectedChannel({
       networkSlug: "freenode",
       channelName: "#grappa",
@@ -156,15 +152,16 @@ describe("selection store", () => {
     await vi.waitFor(() => {
       expect(selection.selectedChannel()).toBeNull();
     });
+    expect(selection.messagesUnread()[key]).toBeUndefined();
     expect(selection.unreadCounts()[key]).toBeUndefined();
   });
 
-  it("logout (token → null) clears selectedChannel + unreadCounts", async () => {
+  it("logout (token → null) clears selectedChannel + serverSeedCounts", async () => {
     localStorage.setItem("grappa-token", "tokA");
     const auth = await import("../lib/auth");
     const selection = await import("../lib/selection");
     const key = channelKey("freenode", "#grappa");
-    selection.bumpUnread(key);
+    selection.setServerSeedCount(key, { messages: 5, events: 0 });
     selection.setSelectedChannel({
       networkSlug: "freenode",
       channelName: "#grappa",
@@ -174,57 +171,127 @@ describe("selection store", () => {
     await vi.waitFor(() => {
       expect(selection.selectedChannel()).toBeNull();
     });
+    expect(selection.messagesUnread()[key]).toBeUndefined();
     expect(selection.unreadCounts()[key]).toBeUndefined();
   });
 
-  // C7.5: msg-vs-events badge split.
-  describe("msg-vs-events badge split (C7.5)", () => {
-    it("bumpMessageUnread increments messagesUnread for the key", async () => {
+  // 2026-06-01 (unread-badges-from-cursor cluster, bucket B2): the
+  // unread/messages/events badge counts are DERIVED memos over
+  // (scrollbackByChannel, readCursors, serverSeedCounts). Pre-cluster
+  // they were independent bump-on-WS-receive signals that drifted from
+  // the cursor — see the moduledoc comment in selection.ts. The
+  // describe block below replaces the deleted bump-store tests with
+  // memo-derivation tests; the cross-cluster invariant tests (parked-
+  // network redirect, close-window picker, idempotent setter) remain
+  // untouched because they exercise orthogonal selection-effect arms.
+  describe("memo derivation from cursor + scrollback + seed (2026-06-01)", () => {
+    it("memos return zero (empty maps) when no seed and no scrollback", async () => {
       localStorage.setItem("grappa-token", "tok");
       const selection = await import("../lib/selection");
       const key = channelKey("freenode", "#grappa");
-      selection.bumpMessageUnread(key);
-      selection.bumpMessageUnread(key);
-      expect(selection.messagesUnread()[key]).toBe(2);
-    });
-
-    it("bumpEventUnread increments eventsUnread for the key", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const selection = await import("../lib/selection");
-      const key = channelKey("freenode", "#grappa");
-      selection.bumpEventUnread(key);
-      expect(selection.eventsUnread()[key]).toBe(1);
-    });
-
-    it("setSelectedChannel clears both messagesUnread and eventsUnread for the key", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const key = channelKey("freenode", "#grappa");
-      selection.bumpMessageUnread(key);
-      selection.bumpEventUnread(key);
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
       expect(selection.messagesUnread()[key]).toBeUndefined();
       expect(selection.eventsUnread()[key]).toBeUndefined();
+      expect(selection.unreadCounts()[key]).toBeUndefined();
     });
 
-    it("token rotation clears messagesUnread + eventsUnread", async () => {
-      localStorage.setItem("grappa-token", "tokA");
-      const auth = await import("../lib/auth");
+    it("memos prefer local scrollback over seed when scrollback is hydrated", async () => {
+      // Server seed says 5 messages — but local scrollback has 2 rows
+      // past the (null) cursor (cursor = 0 default). Local wins.
+      localStorage.setItem("grappa-token", "tok");
       const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
       const key = channelKey("freenode", "#grappa");
-      selection.bumpMessageUnread(key);
-      selection.bumpEventUnread(key);
-      auth.setToken("tokB");
-      await vi.waitFor(() => {
-        expect(selection.messagesUnread()[key]).toBeUndefined();
+      selection.setServerSeedCount(key, { messages: 5, events: 0 });
+
+      scrollback.appendToScrollback(key, {
+        id: 10,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 1,
+        kind: "privmsg",
+        sender: "alice",
+        body: "one",
+        meta: {},
       });
-      expect(selection.eventsUnread()[key]).toBeUndefined();
+      scrollback.appendToScrollback(key, {
+        id: 11,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 2,
+        kind: "join",
+        sender: "bob",
+        body: "",
+        meta: {},
+      });
+
+      expect(selection.messagesUnread()[key]).toBe(1); // privmsg
+      expect(selection.eventsUnread()[key]).toBe(1); // join
+      expect(selection.unreadCounts()[key]).toBe(2);
+    });
+
+    it("memos fall back to seed when no scrollback rows exist for the key", async () => {
+      // Cold-start path: server seeds a count for a channel the user
+      // hasn't opened yet (no scrollback hydrated). Seed is the
+      // displayed count.
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      const seedKey = channelKey("freenode", "#never-opened");
+      selection.setServerSeedCount(seedKey, { messages: 7, events: 2 });
+
+      expect(selection.messagesUnread()[seedKey]).toBe(7);
+      expect(selection.eventsUnread()[seedKey]).toBe(2);
+      expect(selection.unreadCounts()[seedKey]).toBe(9);
+    });
+
+    it("memo splits scrollback rows by content vs presence kind", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const key = channelKey("freenode", "#mixed");
+
+      const rows: Array<["privmsg" | "join" | "part" | "notice", number]> = [
+        ["privmsg", 1],
+        ["notice", 2],
+        ["join", 3],
+        ["part", 4],
+        ["privmsg", 5],
+      ];
+      for (const [kind, id] of rows) {
+        scrollback.appendToScrollback(key, {
+          id,
+          network: "freenode",
+          channel: "#mixed",
+          server_time: id,
+          kind,
+          sender: "u",
+          body: "x",
+          meta: {},
+        });
+      }
+
+      expect(selection.messagesUnread()[key]).toBe(3); // privmsg+notice+privmsg
+      expect(selection.eventsUnread()[key]).toBe(2); // join+part
+      expect(selection.unreadCounts()[key]).toBe(5);
+    });
+
+    it("applySeedEnvelope bulk-hydrates the seed map from {slug: {chan: {messages, events}}}", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      selection.applySeedEnvelope({
+        freenode: {
+          "#grappa": { messages: 3, events: 1 },
+          "#cic": { messages: 0, events: 2 },
+        },
+        oftc: {
+          "#bnc": { messages: 9, events: 0 },
+        },
+      });
+
+      expect(selection.messagesUnread()[channelKey("freenode", "#grappa")]).toBe(3);
+      expect(selection.eventsUnread()[channelKey("freenode", "#grappa")]).toBe(1);
+      expect(selection.messagesUnread()[channelKey("freenode", "#cic")]).toBeUndefined();
+      expect(selection.eventsUnread()[channelKey("freenode", "#cic")]).toBe(2);
+      expect(selection.messagesUnread()[channelKey("oftc", "#bnc")]).toBe(9);
     });
   });
 
@@ -340,50 +407,73 @@ describe("selection store", () => {
   // must clear — same semantic as cicchetto-select clear, just triggered
   // by visibility transition instead of selection change.
   //
-  // Without this, a user who blurs the browser, accumulates unread badge
-  // bumps via subscribe.ts (effective-focus = false → bump), and then
-  // returns to the browser would still see the badge sitting on the
-  // currently-selected window even though they're now actively reading.
-  describe("badge clear on browser-focus-regain", () => {
-    it("badges for selected window clear when browser regains focus", async () => {
+  // Post-2026-06-01 contract: focus-regain does NOT clear badge counts
+  // (they're derived from cursor + scrollback and drop automatically
+  // as the cursor advances). It DOES clear mention counts which remain
+  // bump-based.
+  describe("focus-regain: mentions clear, badge memos untouched", () => {
+    it("mentionCounts for selected window clear when browser regains focus", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
       const selection = await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
       const key = channelKey("freenode", "#grappa");
       selection.setSelectedChannel({
         networkSlug: "freenode",
         channelName: "#grappa",
         kind: "channel",
       });
-      // Simulate the subscribe.ts blurred-arrival path: badges bumped
-      // because effective-focus was false at msg arrival.
       setVisibilityForTest(false);
       await Promise.resolve();
-      selection.bumpUnread(key);
-      selection.bumpMessageUnread(key);
-      selection.bumpEventUnread(key);
-      expect(selection.unreadCounts()[key]).toBe(1);
-      expect(selection.messagesUnread()[key]).toBe(1);
-      expect(selection.eventsUnread()[key]).toBe(1);
+      mentions.bumpMention(key);
+      expect(mentions.mentionCounts()[key]).toBe(1);
 
-      // Browser regains focus → user is now reading → badges should clear.
       setVisibilityForTest(true);
       await Promise.resolve();
 
-      expect(selection.unreadCounts()[key]).toBeUndefined();
-      expect(selection.messagesUnread()[key]).toBeUndefined();
-      expect(selection.eventsUnread()[key]).toBeUndefined();
+      expect(mentions.mentionCounts()[key]).toBeUndefined();
     });
 
-    it("badges for OTHER (non-selected) windows are NOT touched on focus-regain", async () => {
-      // Anti-spec guard: focus-regain only clears the SELECTED window's
-      // badges. A msg accumulated on a different window while away must
-      // remain visibly unread until the user navigates there.
+    it("badge memos are untouched by focus-regain — they derive from cursor + scrollback", async () => {
+      // Pre-cluster, focus-regain CLEARED the bump-store badges. Post-
+      // cluster, the memos derive from `(scrollbackByChannel,
+      // readCursors, serverSeedCounts)` so the cursor write — owned by
+      // ScrollbackPane's visibility/scroll-settle arms, not this file
+      // — is what drops the count. This test pins the negative
+      // contract: focus-regain on its own MUST NOT touch the badge
+      // memos for a channel cic hasn't hydrated scrollback for. Use a
+      // key OTHER than the selected window so the selection-arm's
+      // loadInitialScrollback doesn't race and hydrate `[]` for the
+      // tested key (which would override the seed). Production: when
+      // a channel has unread state but isn't focused, the seed is
+      // what drives the sidebar badge.
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
       const selection = await import("../lib/selection");
+      const seededKey = channelKey("freenode", "#has-unread");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#focused-other",
+        kind: "channel",
+      });
+      selection.setServerSeedCount(seededKey, { messages: 3, events: 0 });
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      setVisibilityForTest(true);
+      await Promise.resolve();
+
+      expect(selection.messagesUnread()[seededKey]).toBe(3);
+      expect(selection.unreadCounts()[seededKey]).toBe(3);
+    });
+
+    it("focus-regain does NOT clear OTHER (non-selected) windows' mentionCounts", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
       const selKey = channelKey("freenode", "#grappa");
       const otherKey = channelKey("freenode", "#cicchetto");
       selection.setSelectedChannel({
@@ -393,56 +483,56 @@ describe("selection store", () => {
       });
       setVisibilityForTest(false);
       await Promise.resolve();
-      selection.bumpMessageUnread(selKey);
-      selection.bumpMessageUnread(otherKey);
+      mentions.bumpMention(selKey);
+      mentions.bumpMention(otherKey);
 
       setVisibilityForTest(true);
       await Promise.resolve();
 
-      expect(selection.messagesUnread()[selKey]).toBeUndefined();
-      // Other window's badge survives — user hasn't read it yet.
-      expect(selection.messagesUnread()[otherKey]).toBe(1);
+      expect(mentions.mentionCounts()[selKey]).toBeUndefined();
+      expect(mentions.mentionCounts()[otherKey]).toBe(1);
     });
 
-    it("focus-regain with no selected window is a no-op", async () => {
+    it("focus-regain with no selected window is a no-op for mentions", async () => {
       localStorage.setItem("grappa-token", "tok");
       const selection = await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
       const key = channelKey("freenode", "#grappa");
-      // No setSelectedChannel — selection is null.
-      selection.bumpMessageUnread(key);
+      // No setSelectedChannel — selection is null. Use selection
+      // import to ensure the module evaluates and installs its arms.
+      void selection;
+      mentions.bumpMention(key);
       setVisibilityForTest(false);
       await Promise.resolve();
       setVisibilityForTest(true);
       await Promise.resolve();
 
-      // Badge for unselected channel left intact (focus-regain found no
-      // selection to clear).
-      expect(selection.messagesUnread()[key]).toBe(1);
+      expect(mentions.mentionCounts()[key]).toBe(1);
     });
 
-    it("initial visibility=true does NOT spuriously clear bumped badges", async () => {
-      // Mirror of the cursor-set "initial run" guard. Module load fires
-      // the visibility effect with prev===undefined; that initial run must
-      // not clear pre-existing badges (e.g. from history-restore on cold
-      // start or future cross-tab sync).
+    it("initial visibility=true does NOT spuriously clear bumped mentions", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
       const selection = await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
       const key = channelKey("freenode", "#grappa");
       selection.setSelectedChannel({
         networkSlug: "freenode",
         channelName: "#grappa",
         kind: "channel",
       });
-      // Bump AFTER selection (the select path itself clears badges; we want
-      // to assert the visibility-effect's initial run does not double-clear
-      // a fresh bump).
-      selection.bumpMessageUnread(key);
+      mentions.bumpMention(key);
       // No setVisibilityForTest — visibility stays true (initial state).
       await Promise.resolve();
 
-      expect(selection.messagesUnread()[key]).toBe(1);
+      // Initial visibility-effect run with prev===undefined must NOT
+      // re-fire mention-clear; the selection-arm DID clear at select
+      // time so the assertion is "after selection cleared it, bumping
+      // again leaves the count visible." If the visibility effect
+      // re-fired on initial mount, the mention added post-selection
+      // would also clear.
+      expect(mentions.mentionCounts()[key]).toBe(1);
     });
   });
 
@@ -1145,31 +1235,30 @@ describe("selection store", () => {
       expect(mentions.mentionCounts()[key]).toBeUndefined();
     });
 
-    it("selecting a query window clears messagesUnread + eventsUnread + unreadCounts", async () => {
-      // Symmetric counterpart of C7.5 "setSelectedChannel clears both
-      // messagesUnread and eventsUnread" — kind: "query".
+    it("selecting a query window does NOT spuriously clear the seed/memo badge counts of OTHER windows", async () => {
+      // Post-cluster contract: selection.ts no longer wipes badge counts
+      // (they derive from cursor + scrollback). Selecting a window MUST
+      // NOT touch the memos of OTHER windows whose scrollback hasn't
+      // been hydrated yet. Use a different key from the selected one
+      // so loadInitialScrollback doesn't race and override the seed
+      // with the mocked-empty list.
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
       const selection = await import("../lib/selection");
-      const key = channelKey("freenode", "vjt");
-      selection.bumpUnread(key);
-      selection.bumpMessageUnread(key);
-      selection.bumpEventUnread(key);
+      const otherKey = channelKey("freenode", "bob");
+      selection.setServerSeedCount(otherKey, { messages: 2, events: 1 });
       selection.setSelectedChannel({
         networkSlug: "freenode",
         channelName: "vjt",
         kind: "query",
       });
-      expect(selection.unreadCounts()[key]).toBeUndefined();
-      expect(selection.messagesUnread()[key]).toBeUndefined();
-      expect(selection.eventsUnread()[key]).toBeUndefined();
+      expect(selection.messagesUnread()[otherKey]).toBe(2);
+      expect(selection.eventsUnread()[otherKey]).toBe(1);
+      expect(selection.unreadCounts()[otherKey]).toBe(3);
     });
 
     it("browser-focus-regain clears mentionCounts for the selected query window", async () => {
-      // Symmetric counterpart of UX-5 BU bug-1 fix — kind: "query".
-      // Pre-regression (channel path) cleared mentions on focus-regain;
-      // K asserts the PM path does too.
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -1192,35 +1281,7 @@ describe("selection store", () => {
       expect(mentions.mentionCounts()[key]).toBeUndefined();
     });
 
-    it("browser-focus-regain clears messagesUnread + eventsUnread + unreadCounts for the selected query window", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const key = channelKey("freenode", "vjt");
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "vjt",
-        kind: "query",
-      });
-      setVisibilityForTest(false);
-      await Promise.resolve();
-      selection.bumpUnread(key);
-      selection.bumpMessageUnread(key);
-      selection.bumpEventUnread(key);
-
-      setVisibilityForTest(true);
-      await Promise.resolve();
-
-      expect(selection.unreadCounts()[key]).toBeUndefined();
-      expect(selection.messagesUnread()[key]).toBeUndefined();
-      expect(selection.eventsUnread()[key]).toBeUndefined();
-    });
-
-    it("focus-regain on selected query window does NOT clear OTHER PM windows' badges", async () => {
-      // Anti-spec guard: focus-regain only clears the SELECTED window's
-      // badges. Mention sitting on a different DM peer must remain visibly
-      // unread until the operator navigates there.
+    it("focus-regain on selected query window does NOT clear OTHER PM windows' mentions", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);

@@ -46,6 +46,28 @@ export const getReadCursor = (networkSlug: string, channel: string): number | nu
 };
 
 /**
+ * Reactive signal of the entire cursor map keyed by `${slug} ${chan}`.
+ * Exposed for memos that derive from the FULL set of cursors (not just
+ * one — see `selection.ts`'s `unreadCounts`/`messagesUnread`/
+ * `eventsUnread` memos which re-key per channelKey across all hydrated
+ * channels). Direct callers should still prefer `getReadCursor/2` for
+ * single-key lookups so the signal-map shape stays an implementation
+ * detail of this module.
+ */
+export const readCursors = (): Record<string, number> => cursors();
+
+/**
+ * Cursor map key shape — exported so the consumer memo can decode a
+ * `${slug} ${chan}` map key back into its parts without re-deriving
+ * the separator. Mirrors `cacheKey/2`.
+ */
+export const decodeCursorKey = (key: string): { slug: string; channel: string } | null => {
+  const sep = key.indexOf(" ");
+  if (sep === -1) return null;
+  return { slug: key.slice(0, sep), channel: key.slice(sep + 1) };
+};
+
+/**
  * Bulk-hydrate the signal map from the `/me` envelope's `read_cursors`
  * nested map (`%{slug => %{chan => id}}`). Called once at login by the
  * networks resource. Replaces the entire map — `/me` is the cold-load

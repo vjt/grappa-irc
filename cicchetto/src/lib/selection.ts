@@ -1,4 +1,5 @@
-import { createEffect, createSignal, on, untrack } from "solid-js";
+import { createEffect, createMemo, createSignal, on, untrack } from "solid-js";
+import { isContentKind } from "./api";
 import { token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { isDocumentVisible } from "./documentVisibility";
@@ -7,8 +8,8 @@ import { clearMentionsForKey } from "./mentions";
 import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
 import { channelsBySlug, networkBySlug, networks } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
-import { getReadCursor, setReadCursor } from "./readCursor";
-import { loadInitialScrollback } from "./scrollback";
+import { getReadCursor, readCursors, setReadCursor } from "./readCursor";
+import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
 import {
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
@@ -23,38 +24,45 @@ import { windowIsPresent } from "./windowState";
 //
 // Lifted out of the original `networks.ts` god-module per A4. Owns:
 //   * `selectedChannel` — the (slug, name, kind) tuple of the focused pane.
-//   * `unreadCounts` — per-ChannelKey count of WS-received messages
-//     while that channel was NOT selected. Cleared when a channel
-//     becomes selected.
-//   * `bumpUnread(key)` — cross-module ingestion verb consumed by
-//     `subscribe.ts`'s WS event handler when a message arrives on a
-//     non-selected channel.
-//   * Selection-change effect: clears unread for the newly-selected
-//     channel AND fires `scrollback.loadInitialScrollback` to backfill
-//     history (the load-once gate lives in scrollback.ts).
+//   * `serverSeedCounts` — the per-channel `{messages, events}` count
+//     pair seeded from the server's per-channel join reply
+//     (`unread_count`) and `/me` envelope (`unread_counts`). Used as a
+//     fallback when local scrollback hasn't been hydrated for a
+//     channel (cold start or never-opened channel).
+//   * `unreadCounts` / `messagesUnread` / `eventsUnread` — DERIVED memos
+//     over `(scrollbackByChannel, readCursors, serverSeedCounts)`. For
+//     each known channel, the memo counts local rows with `id > cursor`
+//     split by content vs presence kind. When local scrollback is empty
+//     for a channel, falls back to `serverSeedCounts[key]`.
+//   * Selection-change effect: fires `scrollback.loadInitialScrollback`
+//     to backfill history (the load-once gate lives in scrollback.ts)
+//     + clears mention counts for the focused window. Badge counts
+//     drop automatically as the cursor advances (via scroll-settle,
+//     focus-leave, browser-blur, send) — no explicit clear needed.
 //
-// Identity-scoped via identityScopedStore (dup-A3 close): four resets
-// registered, one per signal. The two business createEffects (selection
-// transition cursor-set + isDocumentVisible visibility transitions)
-// stay inline — orthogonal to identity rotation.
+// 2026-06-01 (unread-badges-from-cursor cluster, bucket B2): the four
+// increment stores (`unreadCounts`, `messagesUnread`, `eventsUnread`,
+// `mentionCounts`) used to drift any time the bump-on-receive
+// predicate diverged from the in-pane cursor-vs-tail predicate. Two
+// bugs surfaced from this:
+//   1. Cross-session own-message bump — sending on phone bumped the
+//      laptop badge because the WS broadcast filter caught own
+//      presence + own server-numeric echoes but NOT own content.
+//   2. Marker-stuck-on-send-in-focused — sending in the focused window
+//      didn't reset the in-pane `── XX unread ──` marker because the
+//      cursor only advanced on focus-leave + browser-blur.
+// Server-derived counts collapse both structurally: cursor advances on
+// send (bucket D), broadcasts `read_cursor_set`, both devices' derived
+// counts drop in unison. `mentionCounts` stays bump-based — it's a
+// body-text predicate, not pure count-after-cursor — but the bump
+// path now gates on own-sender too (`mentions.ts`).
 //
-// C4.0: `SelectedChannel` gains a `kind: WindowKind` discriminator,
-// replacing the band-aid `channelName !== ":server"` literal used in
-// Shell.tsx's TopicBar guard (Hotfix #2, 50a3d88). The TopicBar guard
-// now reads `sel().kind === "channel"` — directly asserts spec #20.
-// Every setSelectedChannel call site passes `kind` explicitly; no
-// defaults.
-//
-// C7.5: msg-vs-events badge split. Per-window unread state is split into
-// two independent counters:
-//   * `messagesUnread` — bumped only on PRIVMSG / NOTICE / ACTION
-//     (content kinds). Bold/prominent badge in Sidebar + BottomBar.
-//   * `eventsUnread` — bumped only on JOIN / PART / QUIT / MODE / NICK /
-//     TOPIC (presence kinds). Dimmer indicator.
-// Both reset to zero when the window is focused (same as unreadCounts).
-// `bumpUnread` is kept for the mention-count side-effect path in
-// subscribe.ts that still needs the aggregate count for bumpMention.
-// `bumpMessageUnread` and `bumpEventUnread` are the new routed verbs.
+// Identity-scoped via identityScopedStore: two resets registered — one
+// for `serverSeedCounts`, one for `selectedChannel`. The derived memos
+// auto-reset when their upstream signals (scrollback, cursors, seeds)
+// reset on identity transition. Selection-effect arms (selection
+// transition, visibility transition, network connection-state, close-
+// watcher) stay inline — orthogonal to identity rotation.
 
 export type SelectedChannel = {
   networkSlug: string;
@@ -62,15 +70,30 @@ export type SelectedChannel = {
   kind: WindowKind;
 } | null;
 
+/**
+ * Per-channel seed count pair: `messages` (content kinds) + `events`
+ * (presence kinds). Hydrated from the server's join reply (`unread_count`
+ * — total, not split) and the `/me` envelope (`unread_counts` — split).
+ *
+ * `unread_count` from the per-channel join reply is summed against
+ * `messages` for simplicity: the join-time seed is a one-shot fallback
+ * value, and the memo prefers local scrollback the moment any row for
+ * that channel lands. The split-by-kind precision comes from `/me`
+ * (bucket C) — until that lands, the join-reply seed treats every
+ * unread row as a "messages" count which slightly overcounts the bold
+ * badge on cold-start for never-opened channels. Acceptable interim
+ * because cic loads scrollback the moment the operator focuses a
+ * channel, at which point the local-derived count takes over.
+ */
+export type ServerSeedCount = { messages: number; events: number };
+
 const exports = identityScopedStore((onIdentityChange) => {
-  const [unreadCounts, setUnreadCounts] = createSignal<Record<ChannelKey, number>>({});
-  const [messagesUnread, setMessagesUnread] = createSignal<Record<ChannelKey, number>>({});
-  const [eventsUnread, setEventsUnread] = createSignal<Record<ChannelKey, number>>({});
+  const [serverSeedCounts, setServerSeedCountsRaw] = createSignal<
+    Record<ChannelKey, ServerSeedCount>
+  >({});
   const [selectedChannel, setSelectedChannelRaw] = createSignal<SelectedChannel>(null);
 
-  onIdentityChange(() => setUnreadCounts({}));
-  onIdentityChange(() => setMessagesUnread({}));
-  onIdentityChange(() => setEventsUnread({}));
+  onIdentityChange(() => setServerSeedCountsRaw({}));
   onIdentityChange(() => setSelectedChannelRaw(null));
 
   // UX-5 bucket BU (2026-05-19): idempotent setter. Re-clicking an
@@ -83,7 +106,7 @@ const exports = identityScopedStore((onIdentityChange) => {
   // mentions arm crossed the invariant. Operator perception: clicking
   // the open channel "did something" (red badge cleared without the
   // operator having read anything new). Post-BU the mentions clear is
-  // consolidated into clearBadgesForWindow (gated by the visibility +
+  // consolidated into the focus arm (gated by the visibility +
   // selection arms in this file), AND the setter short-circuits at
   // its boundary so no observer sees a non-transition.
   //
@@ -105,19 +128,132 @@ const exports = identityScopedStore((onIdentityChange) => {
     setSelectedChannelRaw(next);
   };
 
-  const bumpUnread = (key: ChannelKey) => {
-    setUnreadCounts((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
+  /**
+   * Seeds the per-channel `{messages, events}` count. Called from
+   * `subscribe.ts`'s `applyJoinReply` arm with `{messages:
+   * unread_count, events: 0}` (the join reply doesn't split), and
+   * from `readCursor.ts`'s `applyMeEnvelope` arm with the split shape
+   * directly (bucket C). Replaces the existing key; the memo derives
+   * from this map only when local scrollback is absent for the key.
+   */
+  const setServerSeedCount = (key: ChannelKey, seed: ServerSeedCount): void => {
+    setServerSeedCountsRaw((prev) => {
+      const existing = prev[key];
+      if (existing && existing.messages === seed.messages && existing.events === seed.events) {
+        return prev;
+      }
+      return { ...prev, [key]: seed };
+    });
   };
 
-  // C7.5: content kinds bump messagesUnread.
-  const bumpMessageUnread = (key: ChannelKey) => {
-    setMessagesUnread((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
+  /**
+   * Bulk-hydrate the seed map from the `/me` envelope's
+   * `unread_counts` nested map (`%{slug => %{chan => {messages,
+   * events}}}`). Replaces the entire map — same cold-load semantic as
+   * `applyMeEnvelope` in `readCursor.ts`. Bucket C wires the call
+   * site.
+   */
+  const applySeedEnvelope = (
+    envelope: Record<string, Record<string, ServerSeedCount>>,
+  ): void => {
+    const next: Record<ChannelKey, ServerSeedCount> = {};
+    for (const [slug, perChannel] of Object.entries(envelope)) {
+      for (const [chan, counts] of Object.entries(perChannel)) {
+        if (
+          counts &&
+          typeof counts.messages === "number" &&
+          typeof counts.events === "number"
+        ) {
+          next[channelKey(slug, chan)] = counts;
+        }
+      }
+    }
+    setServerSeedCountsRaw(next);
   };
 
-  // C7.5: presence kinds bump eventsUnread.
-  const bumpEventUnread = (key: ChannelKey) => {
-    setEventsUnread((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
-  };
+  // ---------------------------------------------------------------
+  // Derived memos: messages/events/total unread per channel.
+  //
+  // For each known channel (union of `serverSeedCounts` keys + any
+  // `scrollbackByChannel` keys), compute `{messages, events}` from
+  //   * local scrollback rows with id > cursor split by isContentKind,
+  //   * OR the seed value when local scrollback is empty for the key.
+  //
+  // The memos return plain `Record<ChannelKey, number>` to keep the
+  // export shape byte-identical to the pre-refactor signals — every
+  // consumer (Sidebar, BottomBar, Shell, focus-rule) continues to read
+  // `messagesUnread()[key] ?? 0` without changes.
+  // ---------------------------------------------------------------
+  type Computed = { messages: number; events: number };
+
+  const perChannelUnread = createMemo((): Record<ChannelKey, Computed> => {
+    const sb = scrollbackByChannel();
+    const cursors = readCursors();
+    const seeds = serverSeedCounts();
+
+    const result: Record<ChannelKey, Computed> = {};
+
+    // Seed-only channels — the cold-start path where the operator
+    // hasn't opened the channel yet so local scrollback is empty.
+    // Keep the seed as the displayed count; once they focus and we
+    // hydrate scrollback, the local-derived branch below takes over
+    // automatically (and the cursor write that follows drops the
+    // count to zero, dropping the key from the displayed map).
+    for (const [rawKey, seed] of Object.entries(seeds)) {
+      const key = rawKey as ChannelKey;
+      result[key] = { messages: seed.messages, events: seed.events };
+    }
+
+    // Locally-hydrated channels — count rows past the cursor by kind.
+    // Override any seed entry: local truth wins because the seed is
+    // a sync-time snapshot that may be stale by the time we render.
+    for (const [rawKey, rows] of Object.entries(sb)) {
+      const key = rawKey as ChannelKey;
+      const decoded = decodeChannelKey(key);
+      if (decoded === null) continue;
+      const cursorMapKey = `${decoded.slug} ${decoded.name}`;
+      const cursor = cursors[cursorMapKey] ?? 0;
+
+      let msgs = 0;
+      let evts = 0;
+      for (const row of rows) {
+        if (row.id <= cursor) continue;
+        if (isContentKind(row.kind)) msgs++;
+        else evts++;
+      }
+      result[key] = { messages: msgs, events: evts };
+    }
+
+    return result;
+  });
+
+  const messagesUnread = createMemo((): Record<ChannelKey, number> => {
+    const out: Record<ChannelKey, number> = {};
+    for (const [rawKey, c] of Object.entries(perChannelUnread())) {
+      const key = rawKey as ChannelKey;
+      if (c.messages > 0) out[key] = c.messages;
+    }
+    return out;
+  });
+
+  const eventsUnread = createMemo((): Record<ChannelKey, number> => {
+    const out: Record<ChannelKey, number> = {};
+    for (const [rawKey, c] of Object.entries(perChannelUnread())) {
+      const key = rawKey as ChannelKey;
+      if (c.events > 0) out[key] = c.events;
+    }
+    return out;
+  });
+
+  const unreadCounts = createMemo((): Record<ChannelKey, number> => {
+    const out: Record<ChannelKey, number> = {};
+    for (const [rawKey, c] of Object.entries(perChannelUnread())) {
+      const key = rawKey as ChannelKey;
+      const total = c.messages + c.events;
+      if (total > 0) out[key] = total;
+    }
+    return out;
+  });
 
   // UX-8 (b): scroll-settle cursor update — forward-only gate.
   // Reads the current cursor for (slug, name) via getReadCursor; POSTs
@@ -141,36 +277,18 @@ const exports = identityScopedStore((onIdentityChange) => {
     void setReadCursor(bearer, networkSlug, channelName, candidateId);
   };
 
-  // Shared badge-clear helper used by both the cicchetto-select arm
-  // (focus arrives via selection change) and the browser-focus-regain arm
-  // (focus arrives via visibility transition). Same semantic: "user is now
-  // actively reading this window; nothing should be unread." Wipes all
-  // four badge stores for the (slug, channel) pair.
+  // Mention-only focus clear — counterpart to the deleted
+  // `clearBadgesForWindow`. The three unread memos derive from
+  // `(scrollbackByChannel, readCursors, serverSeedCounts)` and drop
+  // automatically as the cursor advances, so the focus arm doesn't
+  // need to touch them. `mentionCounts` IS body-text-predicate-based
+  // (`mentions.ts`) and stays incrementally tracked — clear it
+  // explicitly when the operator's eyes land on the window.
   //
-  // UX-5 bucket BU (2026-05-19): mentionCounts joined the unified clear.
-  // Prior shape had `mentions.ts`'s own `on(selectedChannel)` effect doing
-  // the mention clear — but that arm did NOT fire on visibility-regain,
-  // leaving the red badge stale after blur-then-focus on the selected
-  // window. Now ALL FOUR sinks derive from the same "is operator reading?"
-  // gate (selected AND tab visible+focused).
-  const clearBadgesForWindow = (networkSlug: string, channelName: string): void => {
-    const key = channelKey(networkSlug, channelName);
-    setUnreadCounts((prev) => {
-      if (!(key in prev) || prev[key] === 0) return prev;
-      const { [key]: _drop, ...rest } = prev;
-      return rest;
-    });
-    setMessagesUnread((prev) => {
-      if (!(key in prev)) return prev;
-      const { [key]: _drop, ...rest } = prev;
-      return rest;
-    });
-    setEventsUnread((prev) => {
-      if (!(key in prev)) return prev;
-      const { [key]: _drop, ...rest } = prev;
-      return rest;
-    });
-    clearMentionsForKey(key);
+  // Fired from both the cicchetto-select arm AND the visibility-regain
+  // arm — same "is operator actively reading?" gate, single helper.
+  const clearMentionsForFocus = (networkSlug: string, channelName: string): void => {
+    clearMentionsForKey(channelKey(networkSlug, channelName));
   };
 
   createEffect(
@@ -179,11 +297,10 @@ const exports = identityScopedStore((onIdentityChange) => {
       // `on(key, …)` effect + `onCleanup` — the pane owns its DOM
       // geometry and writes the honest `lastFullyVisibleRowId`, not
       // the store-tail. This effect retains the orthogonal arms:
-      // badge-clear, MRU-record, scrollback hydrate.
+      // mention-clear, MRU-record, scrollback hydrate.
 
       if (!sel) return;
-      // C7.5: clear all three badge stores on focus.
-      clearBadgesForWindow(sel.networkSlug, sel.channelName);
+      clearMentionsForFocus(sel.networkSlug, sel.channelName);
       // UX-4 bucket E: record channel/query focus into MRU. Only
       // channel + query enter MRU — home is the final fallback target
       // (recording it would make it the default next-pick and short-
@@ -199,28 +316,28 @@ const exports = identityScopedStore((onIdentityChange) => {
     }),
   );
 
-  // Browser visibility arm — focus-regain badge clear only. The
+  // Browser visibility arm — focus-regain mention clear only. The
   // TRUE→FALSE (browser blur) cursor-write moved to ScrollbackPane's
   // own visibility effect (BUGHUNT-2) — the pane owns its DOM
   // geometry and writes the honest lastFullyVisibleRowId.
   //
   //   FALSE → TRUE (browser focus regain): clear the selected window's
-  //     badges. Same semantic as cicchetto-select; the user is now reading
-  //     and badges sitting on the focused window are immediately stale.
-  //     Without this, badges accumulated by subscribe.ts during the blur
-  //     period would persist until the user navigated away and back.
+  //     mention badge. The unread/messages/events memos derive from
+  //     cursor + scrollback and drop on their own as the cursor
+  //     advances (scroll-settle / focus-leave / send). Mentions need
+  //     an explicit clear because they're body-text predicate, not
+  //     count-after-cursor.
   //
   // Guards:
   //   * `prev === undefined` → initial run on module load; not a transition.
   //   * No selected window → nothing to act on.
-  //   * clearBadgesForWindow no-ops internally on absent badges.
   createEffect(
     on(isDocumentVisible, (visible, prev) => {
       if (prev === undefined) return;
       const sel = untrack(selectedChannel);
       if (!sel) return;
       if (prev === false && visible === true) {
-        clearBadgesForWindow(sel.networkSlug, sel.channelName);
+        clearMentionsForFocus(sel.networkSlug, sel.channelName);
       }
     }),
   );
@@ -458,11 +575,11 @@ const exports = identityScopedStore((onIdentityChange) => {
     unreadCounts,
     messagesUnread,
     eventsUnread,
+    serverSeedCounts,
     selectedChannel,
     setSelectedChannel,
-    bumpUnread,
-    bumpMessageUnread,
-    bumpEventUnread,
+    setServerSeedCount,
+    applySeedEnvelope,
     setCursorIfAdvances,
   };
 });
@@ -470,9 +587,9 @@ const exports = identityScopedStore((onIdentityChange) => {
 export const unreadCounts = exports.unreadCounts;
 export const messagesUnread = exports.messagesUnread;
 export const eventsUnread = exports.eventsUnread;
+export const serverSeedCounts = exports.serverSeedCounts;
 export const selectedChannel = exports.selectedChannel;
 export const setSelectedChannel = exports.setSelectedChannel;
-export const bumpUnread = exports.bumpUnread;
-export const bumpMessageUnread = exports.bumpMessageUnread;
-export const bumpEventUnread = exports.bumpEventUnread;
+export const setServerSeedCount = exports.setServerSeedCount;
+export const applySeedEnvelope = exports.applySeedEnvelope;
 export const setCursorIfAdvances = exports.setCursorIfAdvances;

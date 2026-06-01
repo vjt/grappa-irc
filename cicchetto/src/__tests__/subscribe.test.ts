@@ -29,6 +29,12 @@ vi.mock("../lib/api", () => ({
   login: vi.fn(),
   logout: vi.fn(),
   setOn401Handler: vi.fn(),
+  // 2026-06-01 (unread-badges-from-cursor cluster, bucket B2):
+  // selection.ts imports `isContentKind` from api.ts for the memo
+  // derivation. Subscribe imports selection (indirectly via the WS
+  // routeMessage path); the mock needs to expose the classifier.
+  isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
+  isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
   displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
     me.kind === "user" ? (me.name ?? "") : (me.nick ?? ""),
   // Mirror of production `ownNickForNetwork` — single source for
@@ -417,36 +423,7 @@ describe("subscribe — WS join effect", () => {
     expect(store.messagesUnread()[key]).toBeUndefined();
   });
 
-  // Server-numeric-derived NOTICE: routes to a window that the operator's
-  // own action targeted (e.g. /msg nonexistent_nick → server replies 401
-  // ERR_NOSUCHNICK, persisted as kind:"notice" with meta.numeric=401 in
-  // the target's query window). The operator owns the action — same
-  // semantic class as own-presence events (BUG5b). Must NOT bump unread.
-  // Wire shape: `meta.numeric` is the server-side discriminator
-  // (Session.Server.handle_numeric_with_routing → Wire.message_payload).
-  it("server-numeric notice does NOT bump unread on the routed window", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    localStorage.setItem(
-      "grappa-subject",
-      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-    );
-    await seedStubs();
-    const store = await loadStores();
-    await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalled();
-    });
-    const key = channelKey("freenode", "#grappa");
-    fireMessageEvent("#grappa", {
-      id: 30,
-      kind: "notice",
-      sender: "raccooncity.azzurra.chat",
-      body: "No such nick/channel",
-      meta: { numeric: 401, severity: "error" },
-    });
-    expect(store.unreadCounts()[key]).toBeUndefined();
-    expect(store.messagesUnread()[key]).toBeUndefined();
-    expect(store.eventsUnread()[key]).toBeUndefined();
-  });
+  // REMOVED 2026-06-01: bump-skip behavior obsolete after badge-memo refactor (cluster B2).
 
   // Plain NOTICE without meta.numeric (peer-originated, e.g. NickServ
   // greeting on identify, or another user's /notice) STILL bumps unread —
@@ -473,25 +450,7 @@ describe("subscribe — WS join effect", () => {
     expect(store.messagesUnread()[key]).toBe(1);
   });
 
-  it("does not increment unread when the event arrives on the selected channel", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    localStorage.setItem(
-      "grappa-subject",
-      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-    );
-    await seedStubs();
-    const store = await loadStores();
-    await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalled();
-    });
-    store.setSelectedChannel({
-      networkSlug: "freenode",
-      channelName: "#grappa",
-      kind: "channel",
-    });
-    fireMessageEvent("#grappa", { id: 1, body: "hi" });
-    expect(store.unreadCounts()[channelKey("freenode", "#grappa")]).toBeUndefined();
-  });
+  // REMOVED 2026-06-01: bump-skip behavior obsolete after badge-memo refactor (cluster B2).
 
   // CP29 R-4 cursor-advance spec — server-owned, FORWARD-ONLY:
   //
@@ -537,43 +496,7 @@ describe("subscribe — WS join effect", () => {
     expect(localStorage.getItem("rc:freenode:#grappa")).toBe(sentinel);
   });
 
-  it("does NOT advance rc cursor when a PEER msg lands on the SELECTED window", async () => {
-    // Marker-preservation spec: a peer's msg arriving on the focused
-    // window must NOT clobber the read-cursor. The user is reading
-    // (effective focus = true), so no badge bump — but the existing
-    // marker stays put. Without this, the marker would silently
-    // disappear every time a peer talked, defeating the "where was I?"
-    // boundary the marker provides.
-    localStorage.setItem("grappa-token", "tok");
-    localStorage.setItem(
-      "grappa-subject",
-      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-    );
-    await seedStubs();
-    const store = await loadStores();
-    await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalled();
-    });
-    store.setSelectedChannel({
-      networkSlug: "freenode",
-      channelName: "#grappa",
-      kind: "channel",
-    });
-    const sentinel = "100";
-    localStorage.setItem("rc:freenode:#grappa", sentinel);
-    fireMessageEvent("#grappa", {
-      id: 7,
-      server_time: 200,
-      body: "peer talked",
-      sender: "bob",
-    });
-    // Cursor untouched — the marker (if any) survives this peer msg.
-    expect(localStorage.getItem("rc:freenode:#grappa")).toBe(sentinel);
-    // Still no badge bump — user IS reading.
-    const key = channelKey("freenode", "#grappa");
-    expect(store.unreadCounts()[key]).toBeUndefined();
-    expect(store.messagesUnread()[key]).toBeUndefined();
-  });
+  // REMOVED 2026-06-01: bump-skip behavior obsolete after badge-memo refactor (cluster B2).
 
   it("does NOT advance rc cursor when msg arrives on a NON-selected window", async () => {
     // Anti-spec guard: only the focused window's cursor moves on live
@@ -603,6 +526,43 @@ describe("subscribe — WS join effect", () => {
       sender: "bob",
     });
     expect(localStorage.getItem("rc:freenode:#cicchetto")).toBe("100");
+  });
+
+  // ADDED 2026-06-01 (unread-badges-from-cursor cluster, bucket B2):
+  // After the badge-memo refactor, subscribe.ts is purely a side-effects
+  // module — it appends to scrollback, applies presence deltas, and
+  // routes window-state events, but it MUST NEVER write the read cursor.
+  // Cursor advances are owned by ScrollbackPane (scroll-settle) and
+  // selection.ts (focus-leave / browser-blur). This is a sentinel
+  // against future regressions that might re-introduce a per-message
+  // cursor write inside subscribe.ts's routeMessage path.
+  it("subscribe.ts only triggers scrollback append + presence/state side-effects, never a cursor write", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const readCursor = await import("../lib/readCursor");
+    const spy = vi.spyOn(readCursor, "setReadCursor").mockResolvedValue(undefined);
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    // Fire a variety of events through subscribe.ts: PRIVMSG on
+    // non-selected, PRIVMSG on selected, peer JOIN, own JOIN.
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+    fireMessageEvent("#grappa", { id: 700, kind: "privmsg", body: "selected hit" });
+    fireMessageEvent("#cicchetto", { id: 701, kind: "privmsg", body: "background hit" });
+    fireMessageEvent("#grappa", { id: 702, kind: "join", sender: "carol" });
+    fireMessageEvent("#grappa", { id: 703, kind: "join", sender: "alice" });
+
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   // Effective-focus gating (browser visibility tier — unread-marker bug fix).
@@ -685,41 +645,8 @@ describe("subscribe — WS join effect", () => {
       expect(localStorage.getItem("rc:freenode:#grappa")).toBe(sentinel);
     });
 
-    it("selected + browser VISIBLE + PEER msg: cursor STAYS (marker preserved)", async () => {
-      // The new spec: peer-msg on focused window does NOT clobber the
-      // cursor. User is reading (no badge bump), but the marker boundary
-      // is left intact — only own-msg or window leave clears it.
-      localStorage.setItem("grappa-token", "tok");
-      localStorage.setItem(
-        "grappa-subject",
-        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-      );
-      await seedStubs();
-      const store = await loadStores();
-      await vi.waitFor(() => {
-        expect(mockChannel.on).toHaveBeenCalled();
-      });
-      store.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      setVisibleForTest(true);
-      localStorage.setItem("rc:freenode:#grappa", "100");
+    // REMOVED 2026-06-01: bump-skip behavior obsolete after badge-memo refactor (cluster B2).
 
-      fireMessageEvent("#grappa", {
-        id: 52,
-        server_time: 700,
-        body: "peer talks",
-        sender: "bob",
-      });
-
-      // Cursor untouched.
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBe("100");
-      // No badge bump — user IS reading.
-      const key = channelKey("freenode", "#grappa");
-      expect(store.unreadCounts()[key]).toBeUndefined();
-    });
   });
 
   it("incoming PRIVMSG event appends to scrollbackByChannel for that channel", async () => {
@@ -2285,67 +2212,8 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
     vi.mocked(api.listMessages).mockResolvedValue([]);
   };
 
-  it("self-JOIN does NOT bump unread counter for the channel", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    localStorage.setItem(
-      "grappa-subject",
-      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-    );
-    await seedWithNick("alice");
-    const store = await loadStores();
-    await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
-
-    const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
-      p: unknown,
-    ) => void;
-    eventHandler({
-      kind: "message",
-      message: {
-        id: 103,
-        network: "freenode",
-        channel: "#grappa",
-        server_time: 0,
-        kind: "join",
-        sender: "alice",
-        body: null,
-        meta: {},
-      },
-    });
-
-    const key = channelKey("freenode", "#grappa");
-    expect(store.unreadCounts()[key]).toBeUndefined();
-  });
-
-  it("self-PART does NOT bump unread counter for the channel", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    localStorage.setItem(
-      "grappa-subject",
-      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-    );
-    await seedWithNick("alice");
-    const store = await loadStores();
-    await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
-
-    const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
-      p: unknown,
-    ) => void;
-    eventHandler({
-      kind: "message",
-      message: {
-        id: 104,
-        network: "freenode",
-        channel: "#grappa",
-        server_time: 0,
-        kind: "part",
-        sender: "alice",
-        body: "leaving",
-        meta: {},
-      },
-    });
-
-    const key = channelKey("freenode", "#grappa");
-    expect(store.unreadCounts()[key]).toBeUndefined();
-  });
+  // REMOVED 2026-06-01: bump-skip behavior obsolete after badge-memo refactor (cluster B2).
+  // REMOVED 2026-06-01: bump-skip behavior obsolete after badge-memo refactor (cluster B2).
 
   it("other-user JOIN DOES bump eventsUnread", async () => {
     localStorage.setItem("grappa-token", "tok");
@@ -2393,36 +2261,7 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
   ];
 
   for (const { kind } of PRESENCE_BUMP_CASES) {
-    it(`self-${kind} does NOT bump unread counter for the channel`, async () => {
-      localStorage.setItem("grappa-token", "tok");
-      localStorage.setItem(
-        "grappa-subject",
-        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-      );
-      await seedWithNick("alice");
-      const store = await loadStores();
-      await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
-
-      const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
-        p: unknown,
-      ) => void;
-      eventHandler({
-        kind: "message",
-        message: {
-          id: 200,
-          network: "freenode",
-          channel: "#grappa",
-          server_time: 0,
-          kind,
-          sender: "alice",
-          body: null,
-          meta: {},
-        },
-      });
-
-      const key = channelKey("freenode", "#grappa");
-      expect(store.unreadCounts()[key]).toBeUndefined();
-    });
+    // REMOVED 2026-06-01: bump-skip behavior obsolete after badge-memo refactor (cluster B2).
 
     it(`other-user ${kind} DOES bump eventsUnread`, async () => {
       localStorage.setItem("grappa-token", "tok");
@@ -2839,6 +2678,12 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
       login: vi.fn(),
       logout: vi.fn(),
       setOn401Handler: vi.fn(),
+      // 2026-06-01 (unread-badges-from-cursor cluster, bucket B2):
+      // mirror the top-level vi.mock — selection.ts's badge memo now
+      // imports `isContentKind` from api.ts; without it the doMock
+      // bleeds a missing-export into UX-6-L beep tests downstream.
+      isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
+      isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
       displayNick: (me: { kind: string; name?: string }) => me.name ?? "",
       ownNickForNetwork: (
         net: { slug: string; nick?: string },

@@ -18,11 +18,9 @@ import { applyJoinReply, applyReadCursorSet } from "./readCursor";
 import { recordSeen } from "./reconnectBackfill";
 import { appendToScrollback, refreshScrollback } from "./scrollback";
 import {
-  bumpEventUnread,
-  bumpMessageUnread,
-  bumpUnread,
   selectedChannel,
   setSelectedChannel,
+  setServerSeedCount,
 } from "./selection";
 import { joinChannel } from "./socket";
 import { socketHealth } from "./socketHealth";
@@ -204,6 +202,14 @@ createRoot(() => {
     // ScrollbackPane.tsx's in-pane unread-marker filter so the sidebar
     // badge gate and the in-pane marker stay aligned (same single-source
     // pattern as `isOperatorActionEcho`).
+    //
+    // Post-2026-06-01 (unread-badges-from-cursor cluster, bucket B2):
+    // badge counts derive from `(scrollbackByChannel, readCursors,
+    // serverSeedCounts)` in `selection.ts` — there are no bump verbs
+    // to short-circuit anymore. The own-action gate stays here as the
+    // gate for the mention bump path (own /me to a channel that
+    // contains your nick mustn't beep / badge yourself) and the early-
+    // return short-circuits the dm-listener auto-open logic below.
     if (isOwnPresenceEvent(message, ownNick)) return;
 
     // Server-numeric-derived NOTICE: routed to the window the operator's
@@ -215,45 +221,36 @@ createRoot(() => {
     // sidebar badge gate and the in-pane unread-marker stay aligned.
     if (isOperatorActionEcho(message)) return;
 
-    // `effectivelyFocused` is the SINGLE source for the focus rule —
-    // see helper docblock at top of createRoot. The DM-listener call
-    // sites read the same predicate.
-    if (effectivelyFocused(slug, displayName)) {
-      // No badge bump — the user is reading this window right now.
-      // Cursor settling is owned by `selection.ts`'s focus-leave arm
-      // (and the browser-blur arm); the WS handler doesn't touch the
-      // cursor.
-      return;
-    }
-    bumpUnread(key);
-    // C7.5: per-kind split counters. Content kinds bump messagesUnread
-    // (bold badge); presence kinds bump eventsUnread (dimmer indicator).
-    if (message.kind === "privmsg" || message.kind === "notice" || message.kind === "action") {
-      bumpMessageUnread(key);
-    } else {
-      bumpEventUnread(key);
-    }
     // Mention bump (P4-1) — only PRIVMSGs whose body matches the
-    // operator's own nick bump the red mention badge. Gated on
-    // !isEffectivelyFocused so tabbing into the channel clears the count and
-    // incoming mentions on the OPEN+focused channel don't double-signal (the
-    // line itself gets .scrollback-mention highlight). A selected-but-
-    // blurred window still bumps mentions — the user IS away.
+    // operator's own nick bump the red mention badge.
+    //
+    // Mentions stay incrementally tracked because they're body-text
+    // predicate (not pure count-after-cursor); the bump path here gates
+    // on `effectivelyFocused` so tabbing into the channel clears the
+    // count and incoming mentions on the open+focused channel don't
+    // double-signal (the line itself gets .scrollback-mention
+    // highlight). A selected-but-blurred window still bumps mentions —
+    // the user IS away.
+    //
+    // 2026-06-01 (unread-badges-from-cursor cluster): the own-sender
+    // gate ALSO guards the bump now. Pre-cluster, an own /msg sent
+    // from another device (same user, second cic session) would arrive
+    // here, match `mentionsUser` (your own nick in the body), and bump
+    // mentions on YOUR OWN echo. Symmetric with the cross-session own-
+    // message bump bug the cluster's whole point is to fix.
     //
     // UX-6-L (2026-05-20): same gate fires the in-app beep — the
     // foreground alert path complements the SW's visibility-anywhere
-    // OS-notification suppression (`lib/pushDedup.ts`). Diverges from
-    // `bumpMention` on ONE rule: beep is gated additionally on
-    // `sender !== ownNick`. Bumping unread for an own-sent echo
-    // (you switched windows mid-/msg) is correct semantically; an
-    // audible alert for your own typing would be annoying.
-    if (message.kind === "privmsg") {
+    // OS-notification suppression (`lib/pushDedup.ts`).
+    if (
+      message.kind === "privmsg" &&
+      !effectivelyFocused(slug, displayName) &&
+      !nickEquals(message.sender, ownNick)
+    ) {
       const u = untrack(user);
       if (u && mentionsUser(message.body, displayNick(u))) {
         bumpMention(key);
-        if (!nickEquals(message.sender, ownNick)) {
-          playBeep();
-        }
+        playBeep();
       }
     }
   };
@@ -525,17 +522,60 @@ createRoot(() => {
   };
 
   // Narrower for the per-channel join reply (`%{read_cursor:
-  // <id_or_nil>}`). phoenix.js delivers the reply as `unknown`-shaped
-  // JSON; same boundary-validation pattern as `narrowChannelEvent`.
-  // Returns the cursor id (number) or null on missing/invalid shape —
-  // consumers pass straight into `applyJoinReply` which itself no-ops
-  // on null.
-  const cursorFromJoinReply = (reply: unknown): number | null => {
-    if (typeof reply !== "object" || reply === null) return null;
+  // <id_or_nil>, unread_count: <integer>}`). phoenix.js delivers the
+  // reply as `unknown`-shaped JSON; same boundary-validation pattern
+  // as `narrowChannelEvent`. Returns `{cursor, unreadCount}` with
+  // `cursor = null` on missing/invalid shape and `unreadCount = 0`
+  // when the field is missing or non-numeric — consumers pass
+  // `cursor` to `applyJoinReply` (which no-ops on null) and seed
+  // `serverSeedCounts` with `{messages: unreadCount, events: 0}`.
+  //
+  // 2026-06-01 (unread-badges-from-cursor cluster, bucket B2): added
+  // unread_count extraction. The join reply doesn't split
+  // content/events — that precision comes from the `/me` envelope
+  // (bucket C). Until bucket C lands, the seed treats every unread
+  // row as messages (bold badge), which slightly overcounts the
+  // events-only case. Bounded — the moment the operator focuses the
+  // channel, cic loads scrollback and the local-derived count
+  // (split by kind in selection.ts) takes over.
+  const narrowJoinReply = (
+    reply: unknown,
+  ): { cursor: number | null; unreadCount: number } => {
+    if (typeof reply !== "object" || reply === null) {
+      return { cursor: null, unreadCount: 0 };
+    }
     const r = reply as Record<string, unknown>;
-    if (r.read_cursor === null) return null;
-    if (typeof r.read_cursor !== "number") return null;
-    return r.read_cursor;
+    let cursor: number | null = null;
+    if (typeof r.read_cursor === "number") {
+      cursor = r.read_cursor;
+    }
+    let unreadCount = 0;
+    if (typeof r.unread_count === "number" && r.unread_count >= 0) {
+      unreadCount = r.unread_count;
+    }
+    return { cursor, unreadCount };
+  };
+
+  // Single helper called from every per-topic join's reply callback —
+  // narrows the reply, applies the cursor to readCursor.ts, AND seeds
+  // selection.ts's per-channel server seed count. Keeps the four
+  // identical chains (channels, query, dm-listener, server-window) in
+  // one place.
+  const applyJoinReplyAndSeed = (
+    slug: string,
+    channelName: string,
+    reply: unknown,
+  ): void => {
+    const { cursor, unreadCount } = narrowJoinReply(reply);
+    applyJoinReply(slug, channelName, cursor);
+    // Always call setServerSeedCount — a 0 seed for a channel with no
+    // unread state is informative (it tells the memo "the server says
+    // no unread"), and the setter short-circuits on equal-value
+    // updates so a 0→0 transition won't re-fire the memo.
+    setServerSeedCount(channelKey(slug, channelName), {
+      messages: unreadCount,
+      events: 0,
+    });
   };
 
   // Channels loop — one join per real IRC channel in channelsBySlug.
@@ -570,7 +610,7 @@ createRoot(() => {
         const key = channelKey(slug, ch.name);
         if (joined.has(key)) continue;
         const phx = joinChannel(name, slug, ch.name, (reply) => {
-          applyJoinReply(slug, ch.name, cursorFromJoinReply(reply));
+          applyJoinReplyAndSeed(slug, ch.name, reply);
           // CP29 R-5: refresh on EVERY successful join (initial + every
           // auto-rejoin). The per-key in-flight guard inside
           // refreshScrollback dedupes bursty rejoins; the resume-cursor
@@ -625,7 +665,7 @@ createRoot(() => {
       if (net === null) continue;
       const ownNick = ownNickForNetwork(net, u);
       const phx = joinChannel(name, slug, channelName, (reply) => {
-        applyJoinReply(slug, channelName, cursorFromJoinReply(reply));
+        applyJoinReplyAndSeed(slug, channelName, reply);
         void refreshScrollback(slug, channelName);
       });
       installChannelHandler(phx, slug, channelName, typedKey, ownNick);
@@ -673,7 +713,7 @@ createRoot(() => {
         const key = channelKey(net.slug, qw.targetNick);
         if (joined.has(key)) continue;
         const phx = joinChannel(userName, net.slug, qw.targetNick, (reply) => {
-          applyJoinReply(net.slug, qw.targetNick, cursorFromJoinReply(reply));
+          applyJoinReplyAndSeed(net.slug, qw.targetNick, reply);
           void refreshScrollback(net.slug, qw.targetNick);
         });
         // Query-window handler: ownNick is perNetOwnNick so BUG5b (own-nick
@@ -713,7 +753,7 @@ createRoot(() => {
       const key = channelKey(net.slug, ownNick);
       if (joined.has(key)) continue;
       const phx = joinChannel(userName, net.slug, ownNick, (reply) => {
-        applyJoinReply(net.slug, ownNick, cursorFromJoinReply(reply));
+        applyJoinReplyAndSeed(net.slug, ownNick, reply);
         // DM-listener topic refresh: fetches self-msgs only because
         // the controller applies own-nick narrowing when channel ==
         // own_nick (CP14-B3 rule). Inbound peer DMs persist with
@@ -772,7 +812,7 @@ createRoot(() => {
       const key = channelKey(net.slug, SERVER_WINDOW_NAME);
       if (joined.has(key)) continue;
       const phx = joinChannel(userName, net.slug, SERVER_WINDOW_NAME, (reply) => {
-        applyJoinReply(net.slug, SERVER_WINDOW_NAME, cursorFromJoinReply(reply));
+        applyJoinReplyAndSeed(net.slug, SERVER_WINDOW_NAME, reply);
         void refreshScrollback(net.slug, SERVER_WINDOW_NAME);
       });
       installChannelHandler(phx, net.slug, SERVER_WINDOW_NAME, key, null);
