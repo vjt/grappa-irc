@@ -372,4 +372,76 @@ describe("networks resources", () => {
       expect(networks.networkIdBySlug("libera")).toBe(7);
     });
   });
+
+  // Bucket C (2026-06-01) — /me carries an `unread_counts` envelope
+  // alongside `read_cursors`. The networks resource's /me arm primes
+  // selection.ts's `serverSeedCounts` so cold-load sidebar badges
+  // render the right messages/events split for cursored channels the
+  // user hasn't focused yet in this session.
+  describe("/me unread_counts envelope", () => {
+    it("hydrates selection.serverSeedCounts from m.unread_counts at login", async () => {
+      const { channelKey } = await import("../lib/channelKey");
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listNetworks).mockResolvedValue([
+        {
+          id: 1,
+          slug: "freenode",
+          nick: "vjt",
+          connection_state: "connected",
+          connection_state_reason: null,
+          connection_state_changed_at: null,
+          inserted_at: "x",
+          updated_at: "y",
+        },
+      ]);
+      vi.mocked(api.listChannels).mockResolvedValue([]);
+      vi.mocked(api.me).mockResolvedValue({
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        is_admin: false,
+        inserted_at: "x",
+        read_cursors: { freenode: { "#grappa": 42 } },
+        unread_counts: {
+          freenode: {
+            "#grappa": { messages: 5, events: 2 },
+          },
+        },
+      });
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const networks = await import("../lib/networks");
+      const selection = await import("../lib/selection");
+      await vi.waitFor(() => expect(networks.user()).toBeDefined());
+
+      const key = channelKey("freenode", "#grappa");
+      expect(selection.messagesUnread()[key]).toBe(5);
+      expect(selection.eventsUnread()[key]).toBe(2);
+      expect(selection.unreadCounts()[key]).toBe(7);
+    });
+
+    it("omits the seed entirely when /me has no unread_counts field (older server)", async () => {
+      const { channelKey } = await import("../lib/channelKey");
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listNetworks).mockResolvedValue([]);
+      vi.mocked(api.listChannels).mockResolvedValue([]);
+      vi.mocked(api.me).mockResolvedValue({
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        is_admin: false,
+        inserted_at: "x",
+        // No unread_counts — applySeedEnvelope({}) clears the map.
+      });
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const networks = await import("../lib/networks");
+      const selection = await import("../lib/selection");
+      await vi.waitFor(() => expect(networks.user()).toBeDefined());
+
+      // No keys hydrated when server omits the field.
+      expect(selection.messagesUnread()[channelKey("freenode", "#grappa")]).toBeUndefined();
+      expect(selection.eventsUnread()[channelKey("freenode", "#grappa")]).toBeUndefined();
+    });
+  });
 });

@@ -374,6 +374,51 @@ defmodule Grappa.Scrollback do
   end
 
   @doc """
+  Same predicate as `count_after/5` but returns the count split into a
+  `{content, presence}` pair as `%{messages: integer, events: integer}`.
+
+  Sole consumer: the `/me` `unread_counts` envelope (bucket C, 2026-06-01)
+  — cic's per-channel sidebar badge renders messages (bold) and events
+  (faint) separately, so the cold-load seed needs the split too. A
+  single query with a CASE-WHEN GROUP BY beats two `count_after/5`
+  round-trips per (slug, channel) cursor at login time.
+
+  Content kinds (`:privmsg | :notice | :action`) match the cic
+  `isContentKind` predicate (`cicchetto/src/lib/api.ts`); every other
+  kind (`:join | :part | :quit | :nick_change | :mode | :topic |
+  :kick | :server_event`) counts under `:events`. The split is the
+  same one the cic derived memos use (`selection.ts`'s
+  `perChannelUnread`), so the seed → local-derived hand-off carries no
+  visual jump.
+
+  Returns `%{messages: 0, events: 0}` for past-tail / impossible
+  subject / empty partition — never a missing key, so callers can
+  pattern-match without a default.
+  """
+  @spec count_after_split(subject(), integer(), String.t(), integer(), String.t() | nil) ::
+          %{messages: non_neg_integer(), events: non_neg_integer()}
+  def count_after_split(subject, network_id, channel, after_id, own_nick \\ nil)
+      when is_integer(network_id) and is_integer(after_id) and
+             (is_binary(own_nick) or is_nil(own_nick)) do
+    query =
+      Message
+      |> subject_where(subject)
+      |> where([m], m.network_id == ^network_id)
+      |> channel_or_dm_where(channel, own_nick)
+      |> where([m], m.id > ^after_id)
+      |> group_by([m], fragment("CASE WHEN ? IN ('privmsg','notice','action') THEN 1 ELSE 0 END", m.kind))
+      |> select([m], {
+        fragment("CASE WHEN ? IN ('privmsg','notice','action') THEN 1 ELSE 0 END", m.kind),
+        count(m.id)
+      })
+
+    Enum.reduce(Repo.all(query), %{messages: 0, events: 0}, fn
+      {1, n}, acc -> %{acc | messages: n}
+      {0, n}, acc -> %{acc | events: n}
+    end)
+  end
+
+  @doc """
   Fetches a window of `limit` rows centered on `around_id` for
   `(subject, network_id, channel)`.
 

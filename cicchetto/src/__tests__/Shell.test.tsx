@@ -117,6 +117,7 @@ vi.mock("../lib/selection", () => ({
   unreadCounts: () => ({}),
   messagesUnread: () => ({}),
   eventsUnread: () => ({}),
+  applySeedEnvelope: vi.fn(),
 }));
 
 vi.mock("../lib/scrollback", () => ({

@@ -65,6 +65,7 @@ vi.mock("../lib/queryWindows", () => ({
 }));
 vi.mock("../lib/selection", () => ({
   setSelectedChannel: vi.fn(),
+  applySeedEnvelope: vi.fn(),
 }));
 
 import MembersPane from "../MembersPane";

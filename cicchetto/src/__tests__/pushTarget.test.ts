@@ -14,6 +14,7 @@ import { setSelectedChannel } from "../lib/selection";
 
 vi.mock("../lib/selection", () => ({
   setSelectedChannel: vi.fn(),
+  applySeedEnvelope: vi.fn(),
 }));
 
 vi.mock("../lib/networks", () => ({

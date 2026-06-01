@@ -63,6 +63,7 @@ vi.mock("../lib/selection", () => ({
   unreadCounts: () => ({ "freenode #bnc": 3 }),
   messagesUnread: () => ({ "freenode #bnc": 3, "freenode $server": 7 }),
   eventsUnread: () => ({ "freenode $server": 2 }),
+  applySeedEnvelope: vi.fn(),
 }));
 
 vi.mock("../lib/mentions", () => ({

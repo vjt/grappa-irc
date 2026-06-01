@@ -77,6 +77,7 @@ vi.mock("../lib/selection", () => ({
   setSelectedChannel: vi.fn(),
   unreadCounts: vi.fn(() => ({})),
   bumpUnread: vi.fn(),
+  applySeedEnvelope: vi.fn(),
 }));
 
 vi.mock("../lib/scrollback", () => ({

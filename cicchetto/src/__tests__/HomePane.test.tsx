@@ -69,6 +69,7 @@ vi.mock("../lib/auth", () => ({
 
 vi.mock("../lib/selection", () => ({
   setSelectedChannel: (sel: unknown) => setSelectedChannelMock(sel),
+  applySeedEnvelope: vi.fn(),
 }));
 
 vi.mock("../lib/friendlyApiError", () => ({

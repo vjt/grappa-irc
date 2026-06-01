@@ -60,6 +60,7 @@ vi.mock("../lib/mentionsWindow", () => ({
 vi.mock("../lib/selection", () => ({
   selectedChannel: vi.fn(() => null),
   setSelectedChannel: vi.fn(),
+  applySeedEnvelope: vi.fn(),
 }));
 
 vi.mock("../lib/bundleHash", () => ({

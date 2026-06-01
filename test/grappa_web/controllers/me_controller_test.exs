@@ -36,6 +36,9 @@ defmodule GrappaWeb.MeControllerTest do
       assert body["is_admin"] == false
       # CP29 R-3: read_cursors envelope. Empty for a fresh subject.
       assert body["read_cursors"] == %{}
+      # Bucket C (2026-06-01): unread_counts envelope. Empty for a
+      # fresh subject (no cursors → no entries).
+      assert body["unread_counts"] == %{}
       # UX-4 bucket B: home_data envelope. Fresh user with zero
       # credentials → empty networks list (NOT nil — nil is the
       # visitor signal).
@@ -101,6 +104,9 @@ defmodule GrappaWeb.MeControllerTest do
       assert is_binary(body["expires_at"])
       # CP29 R-3: read_cursors envelope present for visitors too.
       assert body["read_cursors"] == %{}
+      # Bucket C (2026-06-01): unread_counts envelope present for
+      # visitors too. Empty for a fresh visitor (no cursors).
+      assert body["unread_counts"] == %{}
       # UX-4 bucket B: visitors get `home_data: nil` — visitor home is
       # cic-only help text (no server roundtrip). The discriminator
       # nil vs %{networks: [...]} is how cic dispatches
@@ -158,6 +164,103 @@ defmodule GrappaWeb.MeControllerTest do
 
       body = json_response(conn, 200)
       assert body["read_cursors"][network.slug] == %{"#a" => m1.id}
+    end
+  end
+
+  # Bucket C (2026-06-01) — unread_counts envelope mirrors the
+  # cursor envelope shape; cic's `applySeedEnvelope` consumes the
+  # {messages, events} pair byte-for-byte. End-to-end check that the
+  # controller threads cursors → `bulk_unread_split_for_subject/2`
+  # and the renderer preserves the nested shape.
+  describe "GET /me — unread_counts envelope" do
+    test "returns nested {slug => chan => {messages, events}} for cursored channels",
+         %{conn: conn} do
+      {user, session} = user_and_session()
+
+      {network, _} =
+        network_with_server(port: 7405, slug: "unread-#{System.unique_integer([:positive])}")
+
+      _ = credential_fixture(user, network)
+
+      # Anchor cursor at row 0 so every following row is unread.
+      {:ok, anchor} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#a",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "anchor"
+        })
+
+      {:ok, _} = Grappa.ReadCursor.set({:user, user.id}, network.id, "#a", anchor.id)
+
+      # Two content + one presence row after the cursor.
+      for {i, kind, body} <- [{2, :privmsg, "m1"}, {3, :notice, "m2"}] do
+        {:ok, _} =
+          Grappa.ScrollbackHelpers.insert(%{
+            user_id: user.id,
+            network_id: network.id,
+            channel: "#a",
+            server_time: i,
+            kind: kind,
+            sender: "vjt",
+            body: body
+          })
+      end
+
+      {:ok, _} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#a",
+          server_time: 4,
+          kind: :join,
+          sender: "vjt",
+          body: nil
+        })
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/me")
+
+      body = json_response(conn, 200)
+
+      assert body["unread_counts"][network.slug] == %{
+               "#a" => %{"messages" => 2, "events" => 1}
+             }
+    end
+
+    test "channels without a cursor are absent from unread_counts", %{conn: conn} do
+      {user, session} = user_and_session()
+
+      {network, _} =
+        network_with_server(port: 7406, slug: "noseed-#{System.unique_integer([:positive])}")
+
+      _ = credential_fixture(user, network)
+
+      {:ok, _} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#cursorless",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "no-cursor"
+        })
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/me")
+
+      body = json_response(conn, 200)
+      # No cursor was set → no entry in unread_counts (cic falls back
+      # to the per-channel join reply seed from bucket B1).
+      refute Map.has_key?(body["unread_counts"], network.slug)
     end
   end
 

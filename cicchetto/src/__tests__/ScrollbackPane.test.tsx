@@ -12,6 +12,7 @@ vi.mock("../lib/selection", () => ({
   selectedChannel: () => null,
   setCursorIfAdvances: (slug: unknown, channel: unknown, id: unknown) =>
     mockSetCursorIfAdvances(slug, channel, id),
+  applySeedEnvelope: vi.fn(),
 }));
 
 // Mock the store boundary, not the REST/WS plumbing — ScrollbackPane is

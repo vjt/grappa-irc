@@ -55,6 +55,17 @@ const exports = createRoot(() => {
     // the field (older test mocks predating the field landing in
     // `MeResponse`) — production /me always emits it.
     applyMeEnvelope(m.read_cursors ?? {});
+    // Bucket C (2026-06-01) — the parallel `unread_counts` cold-load
+    // primer for `selection.ts`'s `serverSeedCounts` lives inside
+    // selection.ts itself (an `on(user)` effect there reads
+    // `m.unread_counts` and calls `applySeedEnvelope`). Routing the
+    // call back through networks.ts would close a networks ↔ selection
+    // import cycle that breaks under vitest module re-entry: the named
+    // binding `applySeedEnvelope` resolves to `undefined` because
+    // selection.ts is still mid-eval when networks.ts captures it.
+    // selection.ts already imports `user` from this module for its
+    // existing selection-clear arm, so the new effect is one extra
+    // line in a module that already lives downstream.
     return m;
   });
 

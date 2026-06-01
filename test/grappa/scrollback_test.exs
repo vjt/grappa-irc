@@ -876,6 +876,67 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
+  # Bucket C (2026-06-01) — `count_after_split/5` returns the count
+  # split into `%{messages, events}` via a single CASE-WHEN GROUP BY.
+  # cic's `serverSeedCounts` consumes this shape (each badge renders
+  # messages bold + events faint separately).
+  describe "count_after_split/5" do
+    test "zero cursor splits all rows by content vs presence kind",
+         %{user: user, network: net} do
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :notice}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :action}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 3, %{kind: :join, body: nil}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 4, %{kind: :part, body: nil}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 5, %{kind: :quit, body: nil}))
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0) ==
+               %{messages: 3, events: 3}
+    end
+
+    test "returns %{messages: 0, events: 0} for empty partition",
+         %{user: user, network: net} do
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#empty", 0) ==
+               %{messages: 0, events: 0}
+    end
+
+    test "returns %{messages: 0, events: 0} for past-tail cursor",
+         %{user: user, network: net} do
+      for i <- 0..2, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 999_999_999) ==
+               %{messages: 0, events: 0}
+    end
+
+    test "respects after_id strict-greater predicate",
+         %{user: user, network: net} do
+      {:ok, m0} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :join, body: nil}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :privmsg}))
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", m0.id) ==
+               %{messages: 1, events: 1}
+    end
+
+    test "channel-only partition — content-only channel returns events: 0",
+         %{user: user, network: net} do
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :notice}))
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0) ==
+               %{messages: 2, events: 0}
+    end
+
+    test "presence-only channel returns messages: 0",
+         %{user: user, network: net} do
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :join, body: nil}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :mode, body: nil}))
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0) ==
+               %{messages: 0, events: 2}
+    end
+  end
+
   # CP14 B3 — DM history bidirectional via :dm_with.
   #
   # Bug: cic's loadInitialScrollback(peer) for a DM (query) window

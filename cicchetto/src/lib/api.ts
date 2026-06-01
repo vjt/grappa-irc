@@ -90,6 +90,22 @@ export type LoginResponse = {
 // envelope unconditionally).
 export type ReadCursorsEnvelope = Record<string, Record<string, number>>;
 
+// Bucket C (2026-06-01) — `/me` `unread_counts` envelope. Nested
+// `%{slug => %{chan => {messages, events}}}` mirror of `read_cursors`,
+// keyed only for channels the subject already has a cursor on (no
+// cursor = absent; cic falls back to the per-channel join reply seed
+// from bucket B1). cic consumes via `networks.ts`'s `/me` resource
+// arm: after `applyMeEnvelope(m.read_cursors)`, `applySeedEnvelope(
+// m.unread_counts)` populates `selection.ts`'s `serverSeedCounts`
+// signal so cold-load sidebar badges render the right messages/events
+// split for never-focused channels. Optional in the type for the same
+// reason `read_cursors` is — older test mocks may omit it; production
+// /me always emits it.
+export type UnreadCountsEnvelope = Record<
+  string,
+  Record<string, { messages: number; events: number }>
+>;
+
 // REV-H H2 (2026-05-22) — closed enumeration of upstream IRC
 // connection states. Mirror of server-side
 // `Grappa.Networks.Credential.connection_state()` atom union
@@ -149,6 +165,10 @@ export type MeResponse =
       is_admin: boolean;
       inserted_at: string;
       read_cursors?: ReadCursorsEnvelope;
+      // Bucket C (2026-06-01) — `/me` unread_counts envelope. See
+      // `UnreadCountsEnvelope` typedoc above. Optional for the same
+      // reason `read_cursors` is.
+      unread_counts?: UnreadCountsEnvelope;
       // UX-4 bucket B — required for user subjects (server's
       // `MeJSON.show/1` user clause sets it unconditionally). Optional
       // on the type so test mocks predating the field landing don't
@@ -162,6 +182,9 @@ export type MeResponse =
       network_slug: string;
       expires_at: string;
       read_cursors?: ReadCursorsEnvelope;
+      // Bucket C (2026-06-01) — visitors get the same envelope shape;
+      // empty `{}` for a fresh visitor (no cursors yet).
+      unread_counts?: UnreadCountsEnvelope;
       // UX-4 bucket B — visitor home is cic-only help text by design.
       // Server's `MeJSON.show/1` visitor clause sets `home_data: nil`
       // unconditionally. Optional + literal-null narrows the

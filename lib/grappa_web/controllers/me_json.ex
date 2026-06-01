@@ -5,7 +5,7 @@ defmodule GrappaWeb.MeJSON do
   per-kind timestamp:
 
     * user    → `{kind: "user", id, name, is_admin, inserted_at,
-      read_cursors, home_data}` — delegates to
+      read_cursors, unread_counts, home_data}` — delegates to
       `Grappa.Accounts.Wire.user_to_json/1` so the `:password_hash` /
       virtual `:password` allowlist lives in one place. `is_admin`
       (M-cluster M-1) lands here so cic can gate the admin-drawer
@@ -13,7 +13,7 @@ defmodule GrappaWeb.MeJSON do
       `GET /admin/me`. `home_data` (UX-4 bucket B) carries the
       networks list cic's HomePane renders.
     * visitor → `{kind: "visitor", id, nick, network_slug, expires_at,
-      read_cursors, home_data: nil}` — delegates to
+      read_cursors, unread_counts, home_data: nil}` — delegates to
       `Grappa.Visitors.Wire.visitor_to_json/1` so the
       `:password_encrypted` allowlist lives in one place. See
       `Grappa.Visitors.Wire` moduledoc for the full leak-defense
@@ -27,6 +27,17 @@ defmodule GrappaWeb.MeJSON do
   Loaded once at login by cic so it can render correct unread badges
   without a per-window REST round-trip. Empty `%{}` for a fresh
   subject. Per plan O1.
+
+  ## unread_counts envelope (bucket C, 2026-06-01)
+
+  Nested map: `%{network_slug => %{channel => %{messages: int, events:
+  int}}}`. Same nesting as `read_cursors`; same plan-O1 grouping.
+  Built inline by `MeController.show/2` from
+  `Grappa.Scrollback.count_after_split/5` per cursor (slug→id index
+  resolved controller-side to keep `Scrollback` free of a `Networks`
+  dep edge). Channels without a cursor row are absent — cic falls
+  back to the per-channel join reply seed (bucket B1) for those. Cic
+  consumes via `selection.ts`'s `applySeedEnvelope`.
 
   ## home_data envelope (UX-4 bucket B)
 
@@ -46,6 +57,17 @@ defmodule GrappaWeb.MeJSON do
   """
   @type read_cursors :: %{String.t() => %{String.t() => integer()}}
 
+  @typedoc """
+  Unread-count envelope: nested `%{slug => %{channel => %{messages,
+  events}}}` per plan O1. The pair shape mirrors cic
+  `selection.ts`'s `ServerSeedCount` type byte-for-byte.
+  """
+  @type unread_counts :: %{
+          String.t() => %{
+            String.t() => %{messages: non_neg_integer(), events: non_neg_integer()}
+          }
+        }
+
   @type me_json ::
           %{
             kind: String.t(),
@@ -54,6 +76,7 @@ defmodule GrappaWeb.MeJSON do
             is_admin: boolean(),
             inserted_at: DateTime.t(),
             read_cursors: read_cursors(),
+            unread_counts: unread_counts(),
             home_data: NetworksWire.home_data()
           }
           | %{
@@ -63,28 +86,51 @@ defmodule GrappaWeb.MeJSON do
               network_slug: String.t(),
               expires_at: DateTime.t() | nil,
               read_cursors: read_cursors(),
+              unread_counts: unread_counts(),
               home_data: nil
             }
 
   @doc "Renders the `:show` action — discriminated union per subject kind."
   @spec show(
-          %{user: User.t(), read_cursors: read_cursors(), home_data: NetworksWire.home_data()}
-          | %{visitor: Visitor.t(), read_cursors: read_cursors(), home_data: nil}
+          %{
+            user: User.t(),
+            read_cursors: read_cursors(),
+            unread_counts: unread_counts(),
+            home_data: NetworksWire.home_data()
+          }
+          | %{
+              visitor: Visitor.t(),
+              read_cursors: read_cursors(),
+              unread_counts: unread_counts(),
+              home_data: nil
+            }
         ) :: me_json()
-  def show(%{user: %User{} = user, read_cursors: cursors, home_data: home_data})
+  def show(%{
+        user: %User{} = user,
+        read_cursors: cursors,
+        unread_counts: unread_counts,
+        home_data: home_data
+      })
       when is_map(home_data) do
     user
     |> Wire.user_to_json()
     |> Map.put(:kind, "user")
     |> Map.put(:read_cursors, cursors)
+    |> Map.put(:unread_counts, unread_counts)
     |> Map.put(:home_data, home_data)
   end
 
-  def show(%{visitor: %Visitor{} = visitor, read_cursors: cursors, home_data: nil}) do
+  def show(%{
+        visitor: %Visitor{} = visitor,
+        read_cursors: cursors,
+        unread_counts: unread_counts,
+        home_data: nil
+      }) do
     visitor
     |> VisitorsWire.visitor_to_json()
     |> Map.put(:kind, "visitor")
     |> Map.put(:read_cursors, cursors)
+    |> Map.put(:unread_counts, unread_counts)
     |> Map.put(:home_data, nil)
   end
 end

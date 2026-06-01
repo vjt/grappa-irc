@@ -15,6 +15,7 @@ let mockSelected: {
 
 vi.mock("../lib/selection", () => ({
   selectedChannel: () => mockSelected,
+  applySeedEnvelope: vi.fn(),
 }));
 
 import { vi } from "vitest";

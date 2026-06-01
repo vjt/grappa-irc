@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/selection", () => ({
   setSelectedChannel: vi.fn(),
+  applySeedEnvelope: vi.fn(),
 }));
 
 vi.mock("../lib/networks", () => ({

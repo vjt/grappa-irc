@@ -32,6 +32,7 @@ let mockSelected: {
 } | null = null;
 vi.mock("../lib/selection", () => ({
   selectedChannel: () => mockSelected,
+  applySeedEnvelope: vi.fn(),
 }));
 
 // Post-bundle desktop fix — ShellChrome's archive button is now gated on

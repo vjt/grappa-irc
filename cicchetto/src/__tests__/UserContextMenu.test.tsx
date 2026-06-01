@@ -45,6 +45,7 @@ vi.mock("../lib/queryWindows", () => ({
 vi.mock("../lib/selection", () => ({
   setSelectedChannel: (...args: unknown[]) => mockSetSelectedChannel(...args),
   selectedChannel: vi.fn(() => null),
+  applySeedEnvelope: vi.fn(),
 }));
 
 // We also need to mock pushWhois — UserContextMenu uses pushWhois from socket.ts.

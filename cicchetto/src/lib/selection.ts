@@ -6,7 +6,7 @@ import { isDocumentVisible } from "./documentVisibility";
 import { identityScopedStore } from "./identityScopedStore";
 import { clearMentionsForKey } from "./mentions";
 import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
-import { channelsBySlug, networkBySlug, networks } from "./networks";
+import { channelsBySlug, networkBySlug, networks, user } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { getReadCursor, readCursors, setReadCursor } from "./readCursor";
 import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
@@ -170,6 +170,29 @@ const exports = identityScopedStore((onIdentityChange) => {
     }
     setServerSeedCountsRaw(next);
   };
+
+  // Bucket C (2026-06-01) — wire `/me` `unread_counts` envelope into
+  // `serverSeedCounts`. The hand-off lives here (not in networks.ts's
+  // `/me` resource fetcher) because networks.ts ↔ selection.ts is a
+  // circular import pair: a top-level `import { applySeedEnvelope }
+  // from "./selection"` in networks.ts captures `undefined` under
+  // vitest re-entry (selection.ts is mid-eval when networks.ts pulls
+  // the binding). Reading `user()` reactively from this side is the
+  // one-way arrow that avoids the cycle — selection.ts already imports
+  // `networks`/`channelsBySlug`/`networkBySlug`, so adding `user` to
+  // the same import doesn't grow the surface.
+  //
+  // The effect fires on every `user()` change: cold-load login, token
+  // rotation, refetch after admin-mid-session demote. On the null
+  // arms (logout, pre-login resource still resolving) the seed map
+  // resets via the identity-rotation `onIdentityChange` arm above; no
+  // explicit clear needed here.
+  createEffect(
+    on(user, (m) => {
+      if (m == null) return;
+      applySeedEnvelope(m.unread_counts ?? {});
+    }),
+  );
 
   // ---------------------------------------------------------------
   // Derived memos: messages/events/total unread per channel.
