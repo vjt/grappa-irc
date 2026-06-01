@@ -156,7 +156,7 @@ defmodule Grappa.Operator do
   defp stop_visitor_session(%Visitor{id: id, network_slug: slug}) do
     case Networks.get_network_by_slug(slug) do
       {:ok, network} ->
-        :ok = Session.stop_session({:visitor, id}, network.id)
+        :ok = Session.stop_session({:visitor, id}, network.id, "visitor deleted by admin")
 
       {:error, :not_found} ->
         # Visitor row pinned to a network that no longer exists. The DB

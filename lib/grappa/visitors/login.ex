@@ -280,7 +280,7 @@ defmodule Grappa.Visitors.Login do
   defp preempt_and_respawn(visitor, network, input, timeouts) do
     :ok = Accounts.revoke_sessions_for_visitor(visitor.id)
     :ok = Visitors.purge_if_anon(visitor.id)
-    :ok = Session.stop_session({:visitor, visitor.id}, network.id)
+    :ok = Session.stop_session({:visitor, visitor.id}, network.id, "session replaced")
     :ok = Backoff.reset({:visitor, visitor.id}, network.id)
 
     with {:ok, _} <- spawn_and_await(visitor, network, timeouts) do

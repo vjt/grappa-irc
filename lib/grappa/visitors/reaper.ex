@@ -113,7 +113,7 @@ defmodule Grappa.Visitors.Reaper do
   defp stop_visitor_session(%Visitors.Visitor{id: id, network_slug: slug}) do
     case Networks.get_network_by_slug(slug) do
       {:ok, network} ->
-        :ok = Session.stop_session({:visitor, id}, network.id)
+        :ok = Session.stop_session({:visitor, id}, network.id, "visitor session expired")
 
       {:error, :not_found} ->
         # Same orphan-network shape as Operator.delete_visitor/1: no

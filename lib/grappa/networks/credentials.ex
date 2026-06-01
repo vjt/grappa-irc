@@ -167,7 +167,7 @@ defmodule Grappa.Networks.Credentials do
   defp maybe_stop_session(_, _, :left_alone), do: :ok
 
   defp maybe_stop_session(%User{id: uid}, %Network{id: nid}, :stopped) do
-    :ok = Session.stop_session({:user, uid}, nid)
+    :ok = Session.stop_session({:user, uid}, nid, "credentials changed")
   end
 
   @doc """
@@ -331,7 +331,7 @@ defmodule Grappa.Networks.Credentials do
     # consumer, Session no longer deps Networks → the
     # `Networks → Session` edge is legal and we go through the
     # canonical facade.
-    :ok = Session.stop_session({:user, user_id}, network_id)
+    :ok = Session.stop_session({:user, user_id}, network_id, "credentials unbound")
 
     # Wrap in a transaction so the credential delete + the
     # last-binding check + the network delete are atomic. Without it,

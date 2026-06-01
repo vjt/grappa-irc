@@ -218,7 +218,7 @@ defmodule GrappaWeb.AuthController do
   defp stop_visitor_session(%Visitor{} = visitor) do
     case Networks.get_network_by_slug(visitor.network_slug) do
       {:ok, %Networks.Network{id: network_id}} ->
-        :ok = Session.stop_session({:visitor, visitor.id}, network_id)
+        :ok = Session.stop_session({:visitor, visitor.id}, network_id, "logged out")
 
       {:error, :not_found} ->
         Logger.warning("visitor logout but network not found",
@@ -242,7 +242,7 @@ defmodule GrappaWeb.AuthController do
     Grappa.SessionRegistry
     |> Registry.select([{pattern, [], [:"$1"]}])
     |> Enum.each(fn network_id ->
-      :ok = Session.stop_session({:user, user_id}, network_id)
+      :ok = Session.stop_session({:user, user_id}, network_id, "logged out")
     end)
 
     :ok

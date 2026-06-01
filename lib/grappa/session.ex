@@ -208,6 +208,50 @@ defmodule Grappa.Session do
   """
   @spec stop_session(subject(), integer()) :: :ok
   def stop_session(subject, network_id) when is_subject(subject) and is_integer(network_id) do
+    do_stop_session(subject, network_id)
+  end
+
+  @doc """
+  Same as `stop_session/2`, but sends `QUIT :<quit_reason>` upstream
+  BEFORE the supervisor stop so the peer IRC server sees a descriptive
+  quit message (`vjt has quit (visitor session expired)`) instead of the
+  generic `Session.Server.terminate/2` shutdown fallback
+  (`grappa shutting down`, which is reserved for true bouncer-wide
+  shutdown — SIGTERM, `Application.stop`).
+
+  `Session.Server.terminate/2` still fires its own QUIT for the no-
+  pre-QUIT path (`stop_session/2`), but uses the static `"grappa
+  shutting down"` line. Whenever the caller knows WHY the session is
+  stopping — visitor TTL reaper, web logout, admin delete-visitor,
+  visitor relogin replacing a prior row — use this variant so the
+  upstream message reflects intent.
+
+  Best-effort pre-QUIT: a `:no_session` is the happy case (no live pid
+  is the whole point of the stop), and a transport error (`:no_socket`,
+  `:closed`, an `:inet.posix/0` atom, or `:timeout` from the GenServer
+  call) means the socket already broke before we got here — all swallow
+  and the supervisor stop still runs.
+
+  `:invalid_line` is NOT swallowed: it means the caller passed bytes
+  that fail `Identifier.safe_line_token?/1` (CR/LF/NUL in the reason),
+  which is a programming error in the caller, not a runtime condition.
+  Mirroring `Operator.best_effort_quit/2`'s loud-fail pattern so a bad
+  reason crashes here with a useful match error instead of silently
+  reverting to the generic shutdown line.
+  """
+  @spec stop_session(subject(), integer(), String.t()) :: :ok
+  def stop_session(subject, network_id, quit_reason)
+      when is_subject(subject) and is_integer(network_id) and is_binary(quit_reason) do
+    case send_quit(subject, network_id, quit_reason) do
+      :ok -> :ok
+      {:error, :no_session} -> :ok
+      {:error, transport} when transport != :invalid_line and is_atom(transport) -> :ok
+    end
+
+    do_stop_session(subject, network_id)
+  end
+
+  defp do_stop_session(subject, network_id) do
     case whereis(subject, network_id) do
       nil ->
         :ok

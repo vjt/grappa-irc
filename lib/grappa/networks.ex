@@ -544,7 +544,7 @@ defmodule Grappa.Networks do
     cred = preload_user_and_network(cred)
     subject = {:user, cred.user_id}
 
-    :ok = Session.stop_session(subject, cred.network_id)
+    :ok = Session.stop_session(subject, cred.network_id, reason)
 
     updated = transition!(cred, :failed, reason)
     broadcast_state_change(updated, :connected, :failed, reason)

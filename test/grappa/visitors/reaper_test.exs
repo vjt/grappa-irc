@@ -52,7 +52,7 @@ defmodule Grappa.Visitors.ReaperTest do
     end
 
     test "terminates live Session.Server before deleting expired visitor row" do
-      {_, port} = start_irc_server()
+      {server, port} = start_irc_server()
       {visitor, network} = visitor_with_network(port, [])
       pid = start_visitor_session_for(visitor, network)
       ref = Process.monitor(pid)
@@ -66,6 +66,13 @@ defmodule Grappa.Visitors.ReaperTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _}
       assert Session.whereis({:visitor, visitor.id}, network.id) == nil
       refute Repo.reload(visitor)
+
+      assert {:ok, _} =
+               Grappa.IRCServer.wait_for_line(
+                 server,
+                 &(&1 == "QUIT :visitor session expired\r\n"),
+                 1_000
+               )
     end
 
     test "NULL expires_at row (NickServ-identified) survives sweep — IS-NOT-NULL guard" do
