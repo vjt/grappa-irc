@@ -262,6 +262,64 @@ defmodule GrappaWeb.MeControllerTest do
       # to the per-channel join reply seed from bucket B1).
       refute Map.has_key?(body["unread_counts"], network.slug)
     end
+
+    # PROD HOTFIX 2026-06-01 — `ReadCursor.bulk_for_subject/1` returns
+    # `c.last_read_message_id` as-is; the column is nullable so a row
+    # with explicit-no-cursor or legacy-null state surfaces as a nil
+    # in the envelope. Pre-fix `build_unread_counts/2` passed the nil
+    # straight to `Scrollback.count_after_split/5` whose head guard is
+    # `is_integer(after_id)` → FunctionClauseError → 500 on the whole
+    # /me response → cic's `user()` signal stays unresolved → Shell
+    # renders the cold "select a channel below" placeholder with no
+    # admin console. vjt hit this on prod with a nil cursor on #bofh.
+    test "channels with a nil cursor in the envelope are dropped (no 500)",
+         %{conn: conn} do
+      {user, session} = user_and_session()
+
+      {network, _} =
+        network_with_server(port: 7407, slug: "nilcur-#{System.unique_integer([:positive])}")
+
+      _ = credential_fixture(user, network)
+
+      # Insert a cursor row with `last_read_message_id: nil` directly via
+      # `Repo.insert!` — the public `ReadCursor.set/4` API only accepts
+      # integer ids, so we go around it to reproduce the legacy/explicit
+      # nil-id state that DOES exist in vjt's prod DB.
+      Grappa.Repo.insert!(%Grappa.ReadCursor.Cursor{
+        user_id: user.id,
+        visitor_id: nil,
+        network_id: network.id,
+        channel: "#nilcursor",
+        last_read_message_id: nil
+      })
+
+      # Persist some rows so a buggy build_unread_counts would
+      # actually try to count them.
+      for {i, kind} <- [{1, :privmsg}, {2, :notice}] do
+        {:ok, _} =
+          Grappa.ScrollbackHelpers.insert(%{
+            user_id: user.id,
+            network_id: network.id,
+            channel: "#nilcursor",
+            server_time: i,
+            kind: kind,
+            sender: "vjt",
+            body: "row-#{i}"
+          })
+      end
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/me")
+
+      # Pre-fix: this assertion never ran — the controller 500'd.
+      # Post-fix: nil-cursor entry is filtered out, network slug
+      # absent from unread_counts (cic falls back to join_reply seed).
+      body = json_response(conn, 200)
+      assert is_map(body["unread_counts"])
+      refute Map.has_key?(body["unread_counts"], network.slug)
+    end
   end
 
   describe "GET /me — defensive fall-through" do

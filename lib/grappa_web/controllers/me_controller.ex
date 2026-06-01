@@ -124,9 +124,24 @@ defmodule GrappaWeb.MeController do
   # `%{slug => %{channel => %{messages, events}}}` shape that mirrors
   # the cursor envelope; missing slugs (stale cursor referencing a
   # network that's since been deleted) are dropped.
+  #
+  # Nil-cursor entries are dropped too: `ReadCursor.bulk_for_subject/1`
+  # selects `c.last_read_message_id` as-is, and the column is nullable
+  # (a cursor row may exist with `nil` id from a legacy POST or an
+  # explicit-no-cursor state). The bucket C contract — documented in
+  # the `Unread-counts envelope` moduledoc and asserted in
+  # `me_controller_test.exs:"channels without a cursor are absent
+  # from unread_counts"` — is "channels without a cursor are absent;
+  # cic falls back to the per-channel join_reply seed (bucket B1)".
+  # A nil cursor IS "no cursor", so skipping matches the contract.
+  # Without this guard, `count_after_split/5`'s `is_integer(after_id)`
+  # head clause throws FunctionClauseError and the entire /me response
+  # 500s — cic then has no `user()` value and the Shell renders the
+  # cold "select a channel below" placeholder with no admin console.
+  # PROD HOTFIX 2026-06-01: vjt's `#bofh` cursor row had nil id.
   @spec build_unread_counts(
           Grappa.Scrollback.subject(),
-          %{String.t() => %{String.t() => integer()}}
+          %{String.t() => %{String.t() => integer() | nil}}
         ) :: %{String.t() => %{String.t() => %{messages: non_neg_integer(), events: non_neg_integer()}}}
   defp build_unread_counts(_, cursor_envelope) when map_size(cursor_envelope) == 0,
     do: %{}
@@ -142,6 +157,7 @@ defmodule GrappaWeb.MeController do
 
         channel_counts =
           for {channel, cursor} <- per_channel,
+              is_integer(cursor),
               reduce: %{} do
             inner ->
               Map.put(
@@ -151,7 +167,14 @@ defmodule GrappaWeb.MeController do
               )
           end
 
-        Map.put(acc, slug, channel_counts)
+        # Skip slugs whose channels all had nil cursors — keeps the
+        # envelope shape uniform with the "no cursor at all" case
+        # (`refute Map.has_key?`) downstream consumers already test.
+        if map_size(channel_counts) == 0 do
+          acc
+        else
+          Map.put(acc, slug, channel_counts)
+        end
     end
   end
 end
