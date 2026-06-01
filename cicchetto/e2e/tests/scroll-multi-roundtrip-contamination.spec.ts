@@ -154,5 +154,3 @@ test.describe("scroll-multi-roundtrip — N back-and-forths preserve destination
     }
   });
 });
-</content>
-</invoke>
