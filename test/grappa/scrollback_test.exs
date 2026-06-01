@@ -734,6 +734,148 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
+  # Cursor-derived unread-badge primitive (2026-06-01). Mirrors
+  # `fetch_after/6`'s predicate so the count exactly matches what an
+  # uncapped fetch would return — Phoenix Channel `join_reply` + cic
+  # fallback seed share the same source of truth as the local
+  # scrollback-derived count cic computes on its own.
+  describe "count_after/5" do
+    test "zero cursor counts every row for (subject, network, channel)",
+         %{user: user, network: net} do
+      for i <- 0..4, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
+
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0) == 5
+    end
+
+    test "cursor at the newest row id returns 0",
+         %{user: user, network: net} do
+      latest =
+        for i <- 0..2 do
+          {:ok, m} = ScrollbackHelpers.insert(sample(user, net, i))
+          m
+        end
+        |> List.last()
+
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", latest.id) == 0
+    end
+
+    test "past-tail cursor returns 0", %{user: user, network: net} do
+      for i <- 0..2, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
+
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 999_999_999) == 0
+    end
+
+    test "counts only rows strictly greater than after_id",
+         %{user: user, network: net} do
+      rows =
+        for i <- 0..4 do
+          {:ok, m} = ScrollbackHelpers.insert(sample(user, net, i))
+          m
+        end
+
+      [_, _, m2 | _] = rows
+
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", m2.id) == 2
+    end
+
+    test "isolated by (subject, network, channel) — same shape as fetch_after",
+         %{user: user, network: net} do
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "freenode-#{uniq()}"})
+      {:ok, alice} = Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{body: "mine"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{channel: "#other", body: "wrong-chan"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, other_net, 2, %{body: "wrong-net"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(alice, net, 3, %{sender: "alice", body: "wrong-user"}))
+
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0) == 1
+    end
+
+    test "DM bidirectional — peer target counts inbound + outbound after the cursor",
+         %{user: user, network: net} do
+      {:ok, outbound} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "peer",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "vjt-grappa",
+          body: "out",
+          meta: %{},
+          dm_with: "peer"
+        })
+
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 101,
+          kind: :privmsg,
+          sender: "peer",
+          body: "in",
+          meta: %{},
+          dm_with: "peer"
+        })
+
+      assert Scrollback.count_after(
+               {:user, user.id},
+               net.id,
+               "peer",
+               outbound.id - 1,
+               "vjt-grappa"
+             ) == 2
+    end
+
+    test "own-nick window narrows to self-msgs only — inbound DMs don't inflate",
+         %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "peer",
+          body: "from-peer",
+          meta: %{},
+          dm_with: "peer"
+        })
+
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 101,
+          kind: :privmsg,
+          sender: "vjt-grappa",
+          body: "to-self",
+          meta: %{},
+          dm_with: "vjt-grappa"
+        })
+
+      assert Scrollback.count_after(
+               {:user, user.id},
+               net.id,
+               "vjt-grappa",
+               0,
+               "vjt-grappa"
+             ) == 1
+    end
+
+    test "is NOT capped by @max_limit — surface the true unread count",
+         %{user: user, network: net} do
+      cap = Scrollback.max_page_size()
+
+      for i <- 0..(cap + 4), do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
+
+      total = cap + 5
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0) == total
+    end
+  end
+
   # CP14 B3 — DM history bidirectional via :dm_with.
   #
   # Bug: cic's loadInitialScrollback(peer) for a DM (query) window

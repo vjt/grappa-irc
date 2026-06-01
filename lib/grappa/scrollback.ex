@@ -326,6 +326,54 @@ defmodule Grappa.Scrollback do
   end
 
   @doc """
+  Counts rows for `(subject, network_id, channel)` whose `id` is
+  strictly greater than `after_id`. Returns an integer.
+
+  Sole consumer: the unread-badges-from-cursor refactor (2026-06-01).
+  Phoenix Channel `join_reply/1` calls `count_after(subject,
+  network.id, channel, cursor || 0)` to seed cic's per-channel unread
+  badge with the server-authoritative count at sync time; cic then
+  derives the live count by counting local scrollback rows with `id >
+  cursor` and falls back to this seed when scrollback hasn't been
+  hydrated yet (or for channels the user has never opened in this
+  session).
+
+  Same predicates as `fetch_after/6` so the count exactly matches what
+  a `fetch_after(..., :infinity)` would return — modulo the
+  `@max_limit` cap, which `count_after/4` deliberately does not apply.
+  Counts unbounded by definition: a channel with 10k unread rows
+  must surface as `10000`, not `@max_limit`.
+
+  ## `own_nick`
+
+  Mirrors the `fetch_after/6` contract (CP14 B3 narrowing rule). When
+  `own_nick` equals `channel` (case-insensitive), the count restricts
+  to self-msgs so every inbound DM doesn't inflate the own-nick
+  window's unread count. Pass `nil` when the caller doesn't have a
+  session — the channel-shape default applies. The Phoenix Channel
+  `join_reply` path threads the current credential's nick when it can
+  resolve one, `nil` otherwise.
+
+  Returns `0` for the past-tail case (`after_id >= max(id)`), `0` for
+  the impossible-subject case (no rows match the subject + network),
+  and the total count for `after_id = 0` (the initial-cursor case
+  before the user has ever clicked).
+  """
+  @spec count_after(subject(), integer(), String.t(), integer(), String.t() | nil) ::
+          non_neg_integer()
+  def count_after(subject, network_id, channel, after_id, own_nick \\ nil)
+      when is_integer(network_id) and is_integer(after_id) and
+             (is_binary(own_nick) or is_nil(own_nick)) do
+    Message
+    |> subject_where(subject)
+    |> where([m], m.network_id == ^network_id)
+    |> channel_or_dm_where(channel, own_nick)
+    |> where([m], m.id > ^after_id)
+    |> select([m], count(m.id))
+    |> Repo.one()
+  end
+
+  @doc """
   Fetches a window of `limit` rows centered on `around_id` for
   `(subject, network_id, channel)`.
 
