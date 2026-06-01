@@ -709,9 +709,13 @@ export type WireUserEvent =
       // user-topic (P-0f flipped from per-channel; operators usually
       // invite peers to channels they are NOT in). cic appends a
       // synthetic ephemeral row to the per-network store keyed on
-      // target channel, and `InviteAckRows` renders inline in the
-      // $server window scrollback. NOT persisted — immediate-
-      // feedback signal, not audit log.
+      // target channel; ScrollbackPane's `rows()` memo interleaves it
+      // into the $server window timeline by wallclock `at` so it
+      // settles at its arrival position alongside server-message
+      // arrivals (pre-2026-06-01 the prior sibling component pinned
+      // acks to the bottom regardless of subsequent server messages —
+      // vjt prod report). NOT persisted — immediate-feedback signal,
+      // not audit log.
       kind: "invite_ack";
       network: string;
       channel: string;

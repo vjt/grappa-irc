@@ -10,12 +10,12 @@ import {
   onMount,
   Show,
 } from "solid-js";
-import InviteAckRows from "./InviteAckRows";
 import LusersCard from "./LusersCard";
 import { ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
 import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { isDocumentVisible } from "./lib/documentVisibility";
+import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { linkify } from "./lib/linkify";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
@@ -665,7 +665,15 @@ type SeparatorRow = { type: "separator"; label: string; id: string };
 // clean discriminated union (no `kind` subfield conditionals inside SeparatorRow).
 type UnreadMarkerRow = { type: "unread-marker"; count: number; id: string };
 type MessageRow = { type: "message"; msg: ScrollbackMessage };
-type Row = SeparatorRow | UnreadMarkerRow | MessageRow;
+// 2026-06-01 (invite-ack timeline fix): invite-ack rows are now part
+// of the same `rows()` memo as messages and separators — pre-fix they
+// rendered as a sibling AFTER the `<For each={rows()}>` inside the
+// scrollback container and visually pinned to the bottom regardless of
+// subsequent server-message arrivals (vjt prod report). Interleaving
+// by wallclock `at` (epoch ms, same unit as ScrollbackMessage's
+// server_time) puts each ack at its arrival position in the timeline.
+type InviteAckRow = { type: "invite-ack"; entry: InviteAckEntry; channel: string; id: string };
+type Row = SeparatorRow | UnreadMarkerRow | MessageRow | InviteAckRow;
 
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
@@ -824,8 +832,24 @@ const ScrollbackPane: Component<Props> = (props) => {
   //   sessionTopId bound prevents NEW arrivals during the focus session
   //   from spawning a fresh marker — they're live-read by definition.
   const rows = createMemo((): Row[] => {
-    const msgs = messages();
-    if (!msgs || msgs.length === 0) return [];
+    const msgs = messages() ?? [];
+    // 2026-06-01: invite-ack rows for the $server window only. Mirrors
+    // the previous `<Show when={props.kind === "server"}>` gate on
+    // the now-deleted sibling render. Flatten across all target-channel
+    // buckets — one $server window aggregates invites issued to any
+    // channel on the network, sorted into the timeline by wallclock
+    // `at` alongside server-message arrivals so they no longer pin
+    // visually to the bottom.
+    const inviteAckEntries: Array<{ entry: InviteAckEntry; channel: string }> = [];
+    if (props.kind === "server") {
+      const networkEntries = inviteAckBySlug()[props.networkSlug];
+      if (networkEntries) {
+        for (const [chan, list] of Object.entries(networkEntries)) {
+          for (const entry of list) inviteAckEntries.push({ entry, channel: chan });
+        }
+      }
+    }
+    if (msgs.length === 0 && inviteAckEntries.length === 0) return [];
     const cursor = getReadCursor(props.networkSlug, props.channelName);
     const sessionTop = sessionTopId();
     // How many messages have id strictly after the cursor AND
@@ -891,6 +915,33 @@ const ScrollbackPane: Component<Props> = (props) => {
       }
       result.push({ type: "message", msg });
       prevTime = msg.server_time;
+    }
+    // 2026-06-01: weave invite-ack rows into the timeline by wallclock
+    // `at` vs message `server_time`. Forward pass: insertion index is
+    // the position of the FIRST message-row whose `server_time > entry.at`,
+    // or the end of the list when no such message exists. Invite-ack
+    // rows skip the unread-marker / day-separator logic on purpose —
+    // they're ephemeral operator-action echoes, not server-persisted
+    // rows. Stable across re-renders: sorted by `(at, ts)` first so
+    // same-ms acks keep insertion order via the closure-monotonic `ts`.
+    if (inviteAckEntries.length > 0) {
+      inviteAckEntries.sort((a, b) => a.entry.at - b.entry.at || a.entry.ts - b.entry.ts);
+      for (const { entry, channel } of inviteAckEntries) {
+        let insertAt = result.length;
+        for (let i = 0; i < result.length; i += 1) {
+          const r = result[i];
+          if (r?.type === "message" && r.msg.server_time > entry.at) {
+            insertAt = i;
+            break;
+          }
+        }
+        result.splice(insertAt, 0, {
+          type: "invite-ack",
+          entry,
+          channel,
+          id: `invite-ack-${entry.ts}`,
+        });
+      }
     }
     return result;
   });
@@ -1183,6 +1234,28 @@ const ScrollbackPane: Component<Props> = (props) => {
         // Programmatic activation `scrollIntoView` in scrollToActivation
         // must not inherit the leaving pane's timestamp.
         setLastInputEventAtMs(null);
+
+        // 2026-06-01 (scroll-contamination fix): re-arm auto-follow on
+        // every window activation. The `[data-testid="scrollback"]`
+        // <div> is the SAME DOM node across kind transitions (Shell.tsx
+        // bundles channel|query|server into ONE Match), so its
+        // `scrollTop` survives the swap — and the `atBottom` signal,
+        // unless explicitly reset here, carries the LEAVING pane's
+        // user-scrolled-up state into the arriving pane. When the
+        // arriving pane is cold (`messages()` empty/undefined),
+        // `scrollToActivation`'s rAF×2 body early-returns at :1089
+        // without resetting scroll OR `atBottom`. The length-effect
+        // at :1292 then reads stale `atBottom=false` once REST lands
+        // and skips the auto-snap, leaving the DOM at whatever
+        // scrollTop the browser preserved from the source pane. vjt
+        // prod-reported as "scroll contamination after few back and
+        // forths of focusing many windows". The auto-snap branch in
+        // `scrollToActivation` writes the new pane's true bottom on
+        // its own; if the operator scrolls up in the new pane, the
+        // first real onScroll restores `atBottom=false`. Re-arming
+        // here is therefore safe + correct — every activation starts
+        // tail-following, and the operator's own input takes it back.
+        setAtBottom(true);
 
         setMarkerScrolled(false);
         // CP29 R-4: capture the boundary as the highest message id present
@@ -1511,10 +1584,16 @@ const ScrollbackPane: Component<Props> = (props) => {
         data-testid="scrollback"
       >
         <Show
-          when={(messages()?.length ?? 0) > 0}
+          when={rows().length > 0}
           fallback={<p class="muted scrollback-empty">no messages yet</p>}
         >
-          {/* C7.1 + C7.3: render mixed rows (separator | unread-marker | message). */}
+          {/* C7.1 + C7.3 + invite-ack (2026-06-01): render mixed rows
+              (separator | unread-marker | message | invite-ack). The
+              invite-ack arm replaces the prior sibling-after-`<For>`
+              mount of `<InviteAckRows>` which visually pinned acks to
+              the bottom of the scrollback regardless of subsequent
+              server-message arrivals. Now interleaved by wallclock
+              `at` inside the `rows()` memo. */}
           <For each={rows()}>
             {(row) => {
               if (row.type === "separator") {
@@ -1555,6 +1634,17 @@ const ScrollbackPane: Component<Props> = (props) => {
                   </div>
                 );
               }
+              if (row.type === "invite-ack") {
+                return (
+                  <div class="invite-ack-row" data-testid="invite-ack-row">
+                    <span class="invite-ack-arrow">→</span>
+                    <span class="invite-ack-text">
+                      invited <NickText nick={row.entry.peer} extraClass="invite-ack-peer" /> to{" "}
+                      <span class="invite-ack-channel">{row.channel}</span>
+                    </span>
+                  </div>
+                );
+              }
               return (
                 <ScrollbackLine
                   msg={row.msg}
@@ -1567,14 +1657,6 @@ const ScrollbackPane: Component<Props> = (props) => {
               );
             }}
           </For>
-        </Show>
-        {/* P-0e + P-0f — invite-ack ephemeral synthetic rows. Mount on
-            $server window only (P-0f flipped from per-channel; operators
-            usually invite peers to channels they are NOT in, so the
-            channel-scoped routing silent-dropped in the common case).
-            Aggregates across all target channels for this network. */}
-        <Show when={props.kind === "server"}>
-          <InviteAckRows networkSlug={props.networkSlug} />
         </Show>
       </div>
       {/* C7.4: scroll-to-bottom floating button — shown when NOT at bottom. */}

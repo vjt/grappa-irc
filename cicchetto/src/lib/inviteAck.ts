@@ -26,11 +26,19 @@ import { identityScopedStore } from "./identityScopedStore";
 export type InviteAckEntry = {
   peer: string;
   // Monotonic insertion sequence (closure-local counter, NOT a clock).
-  // Used as stable sort key by `InviteAckRows` when aggregating rows
-  // across multiple target-channel buckets — `Date.now()`-resolution
-  // collisions in same-millisecond appends would otherwise reorder
-  // arrivals from different buckets unpredictably.
+  // Tiebreaker for same-ms appends — `at`-resolution collisions in
+  // burst appends would otherwise reorder arrivals from different
+  // buckets unpredictably.
   ts: number;
+  // Wallclock epoch ms at the moment the invite-ack arrived. Used by
+  // ScrollbackPane's `rows()` memo to interleave invite-ack rows into
+  // the $server window timeline by `server_time` — pre-2026-06-01 the
+  // entries mounted as a sibling AFTER the `<For>` inside the
+  // scrollback container so they visually pinned to the bottom
+  // regardless of subsequent server-message arrivals (vjt prod report).
+  // Server-emitted messages carry `server_time` in the same epoch-ms
+  // unit; sort key is just `at`.
+  at: number;
 };
 
 const exports_ = identityScopedStore((onIdentityChange) => {
@@ -55,7 +63,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // window-state lookups.
     const channelKey = canonicalChannel(channel);
     seq += 1;
-    const entry: InviteAckEntry = { peer, ts: seq };
+    const entry: InviteAckEntry = { peer, ts: seq, at: Date.now() };
     setInviteAckBySlug((prev) => {
       const networkEntries = prev[networkSlug] ?? {};
       const channelEntries = networkEntries[channelKey] ?? [];

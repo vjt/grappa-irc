@@ -660,10 +660,10 @@ createRoot(() => {
 
         case "invite_ack":
           // P-0e + P-0f — append a synthetic row to the per-network
-          // store keyed on target channel. `InviteAckRows` mounts on
-          // the $server window scrollback and renders one row per
-          // event. No focus change — server-window auto-yank would
-          // be antisocial.
+          // store keyed on target channel. ScrollbackPane's `rows()`
+          // memo interleaves invite-ack entries into the $server
+          // window timeline by wallclock `at`. No focus change —
+          // server-window auto-yank would be antisocial.
           appendInviteAck(payload.network, payload.channel, payload.peer);
           return;
 
