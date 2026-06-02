@@ -1537,9 +1537,28 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   // C7.4: scroll-to-bottom click handler — forces scroll to tail and
   // resumes auto-follow by setting atBottom(true).
+  //
+  // 2026-06-02 (scroll-to-bottom button contamination): the snap is
+  // INSTANT, not `behavior: "smooth"`. The `[data-testid="scrollback"]`
+  // <div> is the SAME DOM node across selectedChannel changes (Shell.tsx
+  // bundles channel|query|server into one non-keyed Match). A smooth
+  // scroll is an ASYNCHRONOUS animation that lives on that node — tap the
+  // button on a tall window, switch away mid-animation and back, and the
+  // in-flight animation SURVIVES the row swap, racing `scrollToActivation`
+  // on the shared node and leaving scrollTop at a stale/overshot offset
+  // (viewport below content = blank; restored only by a real scroll
+  // event). vjt prod-reported 2026-06-02. Mirror `scrollToActivation`'s
+  // no-marker branch (instant, layout-aware tail anchor) — every other
+  // scroll path in this file is instant for exactly this reason; nothing
+  // async then survives a window switch.
   const scrollToBottom = () => {
     if (!listRef) return;
-    listRef.scrollTo({ top: listRef.scrollHeight, behavior: "smooth" });
+    const tail = listRef.lastElementChild as HTMLElement | null;
+    if (tail?.scrollIntoView) {
+      tail.scrollIntoView({ block: "end" });
+    } else {
+      listRef.scrollTop = listRef.scrollHeight;
+    }
     setAtBottom(true);
   };
 
