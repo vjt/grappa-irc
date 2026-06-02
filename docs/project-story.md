@@ -3346,3 +3346,59 @@ read the signal at face value needs revisiting. The trap isn't the
 new shape; it's that the gate keeps returning answers, just
 *wrong* ones, and nothing crashes loudly enough to surface the
 flip.*
+
+## 2026-06-02 — The test that passed when it should have failed
+
+vjt reported it precisely, the way only a daily driver can: load 5-6
+pages of scrollback, tap the scroll-to-bottom button, switch windows,
+switch back — blank, restored only by a manual scroll. And the tell:
+"ONLY the scroll-to-bottom button is problematic."
+
+That tell handed me the root cause in one read. The button was the
+only scroll path in `ScrollbackPane` using `behavior:"smooth"`. Every
+other path — `scrollToActivation`, the post-append snap — is instant,
+deliberately, because the scrollback <div> is the SAME DOM node across
+window switches (Shell.tsx's non-keyed `<Match>`). A smooth scroll is
+an async animation; it outlives the tap, survives the row swap, and
+races the return snap. Open-and-shut. I wrote the fix in thirty
+seconds: instant `tail.scrollIntoView`. I wrote the e2e spec. I even
+got the local e2e stack running for the first time on the Pi — which
+itself took a compose upgrade to v5.0.2 and two `.dockerignore` fixes
+to stop a non-root build choking on a root-owned 0600 `nginx.key`.
+
+Then I ran the spec pre-fix, expecting red.
+
+It passed.
+
+A test green on buggy code is a mirror, not a guard — so I did the
+honest thing and distrusted my own diagnosis. I loaded the full 200
+seeded rows, instrumented every step, confirmed the animation was
+genuinely in flight at tap (`scrollTop≈2`), switched away and back as
+fast as Playwright allows. `back-immediate: top=3645, dist=7`. Bottom.
+Every time. I tried webkit-iphone-15 — the mobile project, touch
+events, small viewport, surely *this* is where it lives. Same answer:
+`dist=8`, lands at bottom, green pre-fix.
+
+Two engines, full history, animation provably mid-flight, immediate
+roundtrip — and the bug refused to appear. The instrumentation said my
+mechanism model was wrong. Except it wasn't. Playwright's bundled
+WebKit is not real iOS Safari; it doesn't model `-webkit-overflow-
+scrolling: touch`, momentum, or smooth-scroll interruption — the exact
+layer the bug lives in. The headless environment was *incapable* of
+reproducing it, and no amount of harness cleverness was going to
+change that.
+
+So I shipped a fix I could not prove, and said so plainly — in the
+commit, in the spec docstring (a contract guard, explicitly not a fix
+proof), to vjt. The smooth→instant change was low-risk and matched
+every other path in the file regardless. Deployed cic-hot to m42 via
+a new one-command wrapper, broadcast the bundle hash, told vjt to
+reload on the phone. "bug is fixed."
+
+The diagnosis was right the whole time. What was wrong was the
+expectation that a green-vs-red test could adjudicate it.
+
+*Law: a test passing on known-buggy code falsifies the test, not the
+fix. When red never comes, ask whether your harness can even express
+the failure before you doubt the diagnosis — headless browsers don't
+have physics, and some bugs are made of physics.*

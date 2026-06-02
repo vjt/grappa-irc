@@ -10753,3 +10753,30 @@ preflight (which looks for `@type` field-add patterns + schema
 files, not supervision-tree shape). Flagged to vjt at deploy time
 per the bucket-8 plan — recommend COLD.
 
+
+## 2026-06-02 — Scrollback scroll paths are INSTANT, never `behavior:"smooth"`
+
+The cic `ScrollbackPane` `[data-testid="scrollback"]` <div> is the SAME
+DOM node across `selectedChannel` changes (Shell.tsx bundles
+channel|query|server into one non-keyed `<Match>`, required for the
+BUGHUNT-2 leave-arm cursor write). Anything ASYNC on that node survives
+a window swap and races the next window's `scrollToActivation` snap.
+
+`scrollToBottom` (the C7.4 floating button) was the lone violator —
+`scrollTo({behavior:"smooth"})` starts a browser animation that outlives
+the tap. On real iOS Safari (`-webkit-overflow-scrolling: touch` +
+momentum) the surviving animation failed to reconcile with the return
+snap → blank pane, restored only by a manual scroll. vjt prod-reported
++ confirmed fixed on device.
+
+**Apply rule:** every scroll write in ScrollbackPane is INSTANT
+(`tail.scrollIntoView({block:"end"})` or `scrollTop = scrollHeight`),
+never `behavior:"smooth"`. Instant completes synchronously, so nothing
+is in flight when the node's content swaps. `scrollToActivation` and
+the post-append effect already followed this; the button now does too.
+Do not reintroduce smooth scrolling on the shared node.
+
+NOTE: NOT reproducible in Playwright (chromium OR webkit-iphone-15) —
+Playwright's bundled WebKit doesn't model real iOS scroll physics.
+Verify scroll/touch fixes on a real device. See memory
+`feedback_playwright_webkit_not_ios_scroll`.
