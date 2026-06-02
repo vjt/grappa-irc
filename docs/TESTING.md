@@ -222,6 +222,8 @@ These bite during cluster work; check the memory before re-investigating.
 
 * **`vendor/bats-core` not found** → `git submodule update --init vendor/bats-core`.
 * **`cicchetto/e2e/infra` empty** → `git submodule update --init`.
+* **`services.hub conflicts with imported resource`** (compose config parse) → docker compose is too old for the `include:` + per-service override pattern. Install **v5.0.2** (the CI pin in `.github/workflows/integration.yml`) into `~/.docker/cli-plugins/docker-compose` — user-local, no sudo. Stock distro plugins (e.g. Debian's 2.26.1) reject it.
+* **`checking context: no permission to read .../nginx-certs/nginx.key`** (image build) → running e2e as a NON-root user: `nginx-cert-init` writes the key root-owned 0600, and the classic (non-buildx) builder tars the context as the invoking user. Fixed in-repo via `.dockerignore` exclusions (root + `cicchetto/e2e/`); if it recurs, a new build context is pulling in the cert dir — add it to that context's `.dockerignore`. CI builds as root so never hits this.
 * **`Exqlite.Connection ... database is locked`** during `scripts/test.sh` → benign log noise from concurrent test teardown; the test still passes. If it ESCALATES to a failure, check `config/test.exs` pool size + `max_cases`.
 * **Bundle hash unchanged after a cic source edit** → not a cache bug (almost certainly). Verify via the sourcemap, then check that `tsc --noEmit` didn't silently fail by running `scripts/bun.sh run check` directly. See `feedback_minifier_mangles_identifiers`.
 * **`scripts/check.sh` hangs at the bats step in dev shell** → known sandbox-mode interaction; run gates individually for the duration of the session.
