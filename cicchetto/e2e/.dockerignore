@@ -1,0 +1,20 @@
+# Build-context ignore for the playwright-runner image (build context is
+# this dir; runner/Dockerfile COPYs only package.json, source is bind-
+# mounted at runtime via compose `.:/work`).
+#
+# Excludes:
+#   * nginx-certs/ — nginx-cert-init writes nginx.key as root-owned 0600.
+#     With the classic (non-buildx) builder the docker CLI tars the
+#     context as the invoking user; a non-root local dev can't read the
+#     key and the build dies with "checking context: no permission to
+#     read .../nginx-certs/nginx.key". CI builds as root so never hit it.
+#     The runner trusts the CA over the network at runtime — it never
+#     needs the key in its image. Also basic hygiene: a private key has
+#     no business in a build context.
+#   * runtime artifacts (reports, results, node_modules) — large, never
+#     COPYd, only bloat the context tarball.
+nginx-certs/
+test-results/
+playwright-report/
+node_modules/
+infra/

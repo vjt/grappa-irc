@@ -28,3 +28,14 @@ runtime/
 
 docs/
 node_modules/
+
+# e2e runtime artifacts — test-only, never needed in any grappa image.
+# nginx-cert-init writes cicchetto/e2e/nginx-certs/nginx.key as root-owned
+# 0600; with the classic (non-buildx) builder the docker CLI tars the
+# context as the invoking user, so a non-root local dev build of grappa:e2e
+# (context = repo root) dies with "checking context: no permission to read
+# .../nginx-certs/nginx.key". CI builds as root and never hits it. The
+# Elixir image has no use for the e2e dir regardless.
+cicchetto/e2e/nginx-certs/
+cicchetto/e2e/test-results/
+cicchetto/e2e/playwright-report/
