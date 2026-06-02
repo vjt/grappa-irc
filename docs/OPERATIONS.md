@@ -102,7 +102,9 @@ scripts/observer.sh          # observer_cli runtime introspection
 scripts/deploy.sh            # unified deploy: auto-detects hot-vs-cold via git-diff preflight
 scripts/deploy.sh --force-hot   # bypass preflight, hot-deploy unconditionally
 scripts/deploy.sh --force-cold  # skip preflight, cold-deploy (rebuild + recreate)
-scripts/deploy-cic.sh        # cic bundle deploy: vite build + broadcast bundle_hash for refresh banner
+scripts/deploy-cic.sh        # cic bundle deploy (Docker): vite build + broadcast bundle_hash for refresh banner
+scripts/deploy-m42.sh        # host-side wrapper: ssh m42 + sudo bastille cmd → infra/freebsd/deploy.sh (server)
+scripts/deploy-m42.sh --cic  # host-side wrapper: → jail_deploy_cic.sh (cic bundle, hot, no BEAM restart)
 scripts/register-dns.sh      # operator: register host in local DNS
 scripts/shell.sh             # bash inside container (debug only — bin/grappa shell preferred)
 ```
@@ -193,13 +195,36 @@ preflight is the only line of defense.
 
 `scripts/deploy-cic.sh` is independent (Docker) — runs the
 `cicchetto-build` oneshot then POSTs `/admin/cic-bundle-changed`.
-On the jail, the cic bundle is rebuilt on COLD only by
-`infra/freebsd/deploy.sh` (no separate cic-only flow yet; add one
-when the `cicchetto/src/` edits start happening between server
-deploys). The server broadcasts the new bundle hash on every live
-user-topic; cic's `BundleRefreshBanner` surfaces a refresh CTA on
-mismatch with the hash baked into the page the browser loaded.
-Server deploys never auto-trigger a cic refresh.
+On the jail, the server-side `infra/freebsd/deploy.sh` rebuilds the
+cic bundle on COLD only; the cic-only hot flow is
+`infra/freebsd/jail_deploy_cic.sh` (git pull + vite build +
+POST `/admin/cic-bundle-changed`, NO BEAM restart). The server
+broadcasts the new bundle hash on every live user-topic; cic's
+`BundleRefreshBanner` surfaces a refresh CTA on mismatch with the
+hash baked into the page the browser loaded. Server deploys never
+auto-trigger a cic refresh.
+
+### m42 (FreeBSD bastille jail) — host-side wrapper
+
+The `infra/freebsd/jail_*.sh` scripts run INSIDE the jail as root
+(`sudo bastille cmd grappa <script>`) and are documented "invoke from
+m42 host". `scripts/deploy-m42.sh` is the host-side caller that wraps
+the `ssh m42` + `bastille cmd` incantation — run it from any checkout
+with ssh access to m42:
+
+```
+scripts/deploy-m42.sh                # server deploy, auto hot/cold (infra/freebsd/deploy.sh)
+scripts/deploy-m42.sh --force-hot    # server, force hot (passthrough)
+scripts/deploy-m42.sh --force-cold   # server, force cold (passthrough)
+scripts/deploy-m42.sh --cic          # cic-only bundle, hot, no BEAM restart (jail_deploy_cic.sh)
+```
+
+**Push first.** The jail scripts `git pull --ff-only` from origin/main,
+so push before deploying. `deploy-m42.sh` fetches origin and refuses to
+run if local main is ahead (guards the "deployed a stale tree" trap).
+Overridable via `M42_HOST` / `JAIL` / `JAIL_REPO` env. Mirrors the
+Docker split: `deploy.sh` ↔ `deploy-m42.sh`, `deploy-cic.sh` ↔
+`deploy-m42.sh --cic`.
 
 When the auto-detect gets it wrong (rare), `--force-hot` and
 `--force-cold` override the preflight on both substrates. Use
