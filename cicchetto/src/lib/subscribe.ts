@@ -17,11 +17,7 @@ import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { applyJoinReply, applyReadCursorSet } from "./readCursor";
 import { recordSeen } from "./reconnectBackfill";
 import { appendToScrollback, refreshScrollback } from "./scrollback";
-import {
-  selectedChannel,
-  setSelectedChannel,
-  setServerSeedCount,
-} from "./selection";
+import { selectedChannel, setSelectedChannel, setServerSeedCount } from "./selection";
 import { joinChannel } from "./socket";
 import { socketHealth } from "./socketHealth";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
@@ -538,9 +534,7 @@ createRoot(() => {
   // events-only case. Bounded — the moment the operator focuses the
   // channel, cic loads scrollback and the local-derived count
   // (split by kind in selection.ts) takes over.
-  const narrowJoinReply = (
-    reply: unknown,
-  ): { cursor: number | null; unreadCount: number } => {
+  const narrowJoinReply = (reply: unknown): { cursor: number | null; unreadCount: number } => {
     if (typeof reply !== "object" || reply === null) {
       return { cursor: null, unreadCount: 0 };
     }
@@ -561,11 +555,7 @@ createRoot(() => {
   // selection.ts's per-channel server seed count. Keeps the four
   // identical chains (channels, query, dm-listener, server-window) in
   // one place.
-  const applyJoinReplyAndSeed = (
-    slug: string,
-    channelName: string,
-    reply: unknown,
-  ): void => {
+  const applyJoinReplyAndSeed = (slug: string, channelName: string, reply: unknown): void => {
     const { cursor, unreadCount } = narrowJoinReply(reply);
     applyJoinReply(slug, channelName, cursor);
     // Always call setServerSeedCount — a 0 seed for a channel with no

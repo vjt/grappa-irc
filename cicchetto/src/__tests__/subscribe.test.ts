@@ -657,7 +657,6 @@ describe("subscribe — WS join effect", () => {
     });
 
     // REMOVED 2026-06-01: bump-skip behavior obsolete after badge-memo refactor (cluster B2).
-
   });
 
   it("incoming PRIVMSG event appends to scrollbackByChannel for that channel", async () => {
