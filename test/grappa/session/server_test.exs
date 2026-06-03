@@ -310,7 +310,8 @@ defmodule Grappa.Session.ServerTest do
         autojoin_channels: [],
         host: "127.0.0.1",
         port: port,
-        tls: false
+        tls: false,
+        source_address: nil
       }
 
       Process.flag(:trap_exit, true)
@@ -3431,7 +3432,8 @@ defmodule Grappa.Session.ServerTest do
         autojoin_channels: [],
         host: "127.0.0.1",
         port: port,
-        tls: false
+        tls: false,
+        source_address: nil
         # Note: no credential_failer — visitor plans don't include it
       }
 

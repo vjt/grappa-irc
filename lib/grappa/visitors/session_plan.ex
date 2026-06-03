@@ -79,6 +79,7 @@ defmodule Grappa.Visitors.SessionPlan do
       host: server.host,
       port: server.port,
       tls: server.tls,
+      source_address: server.source_address,
       # Task 15: opaque function-reference indirection. Session.Server
       # cannot statically alias Grappa.Visitors (closes a Boundary
       # cycle — Visitors deps Session via Login). Every visitor plan

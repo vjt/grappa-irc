@@ -1355,6 +1355,48 @@ defmodule Grappa.NetworksTest do
       assert plan.host == "irc.example"
       assert plan.port == 6697
       assert plan.tls == true
+      assert plan.source_address == nil
+    end
+
+    test "carries the picked server's source_address into the plan" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, _} =
+        Servers.add_server(net, %{
+          host: "irc.example",
+          port: 6697,
+          tls: true,
+          source_address: "203.0.113.9"
+        })
+
+      {:ok, _} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      cred = Credentials.get_credential!(user, net)
+      assert {:ok, plan} = SessionPlan.resolve(cred)
+      assert plan.source_address == "203.0.113.9"
+    end
+
+    test "NULL source server yields source_address: nil in the plan" do
+      user = user_fixture()
+      net = network_fixture()
+      {:ok, _} = Servers.add_server(net, %{host: "irc.example", port: 6667})
+
+      {:ok, _} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      cred = Credentials.get_credential!(user, net)
+      assert {:ok, plan} = SessionPlan.resolve(cred)
+      assert plan.source_address == nil
     end
 
     test "returns {:error, :no_server} when the network has zero enabled servers" do

@@ -144,6 +144,7 @@ defmodule Grappa.Session do
           required(:host) => String.t(),
           required(:port) => :inet.port_number(),
           required(:tls) => boolean(),
+          required(:source_address) => String.t() | nil,
           optional(:notify_pid) => pid(),
           optional(:notify_ref) => reference(),
           optional(:visitor_committer) => Server.visitor_committer(),

@@ -92,6 +92,7 @@ defmodule Grappa.Networks.SessionPlan do
       host: server.host,
       port: server.port,
       tls: server.tls,
+      source_address: server.source_address,
       # Opaque callback injected so Session.Server can transition the
       # credential to :failed on hard upstream errors (k-line, permanent
       # SASL) without a static Networks dependency from Session. Session

@@ -25,6 +25,23 @@ defmodule Grappa.Visitors.SessionPlanTest do
       assert is_nil(opts.password)
       assert opts.network_slug == "azzurra"
       assert opts.autojoin_channels == []
+      assert opts.source_address == nil
+    end
+
+    test "carries the picked server's source_address into the plan" do
+      network_with_server(slug: "azzurra", port: 6667, source_address: "203.0.113.9")
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
+
+      assert {:ok, opts} = SessionPlan.resolve(visitor)
+      assert opts.source_address == "203.0.113.9"
+    end
+
+    test "NULL source server yields source_address: nil in the plan" do
+      network_with_server(slug: "azzurra", port: 6667)
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
+
+      assert {:ok, opts} = SessionPlan.resolve(visitor)
+      assert opts.source_address == nil
     end
 
     test "registered visitor → opts with auth_method=:nickserv_identify + plaintext password" do

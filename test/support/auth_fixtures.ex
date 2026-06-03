@@ -134,7 +134,15 @@ defmodule Grappa.AuthFixtures do
     tls = Keyword.get(attrs, :tls, false)
 
     {:ok, network} = Networks.find_or_create_network(%{slug: slug})
-    {:ok, server} = Servers.add_server(network, %{host: host, port: port, tls: tls})
+
+    {:ok, server} =
+      Servers.add_server(network, %{
+        host: host,
+        port: port,
+        tls: tls,
+        source_address: Keyword.get(attrs, :source_address)
+      })
+
     {network, server}
   end
 
