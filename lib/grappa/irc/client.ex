@@ -109,7 +109,8 @@ defmodule Grappa.IRC.Client do
           required(:realname) => String.t(),
           required(:sasl_user) => String.t(),
           required(:auth_method) => AuthFSM.auth_method(),
-          optional(:password) => String.t() | nil
+          optional(:password) => String.t() | nil,
+          optional(:source_address) => String.t() | nil
         }
 
   @type t :: %__MODULE__{
@@ -127,8 +128,9 @@ defmodule Grappa.IRC.Client do
   @enforce_keys [:transport, :dispatch_to, :fsm]
   defstruct [:socket, :transport, :dispatch_to, :fsm]
 
-  # Cluster visitor-auth hotfix: pre-crash throttle when do_connect/3
-  # fails (ECONNREFUSED, ECONNRESET, ssl handshake :closed, etc.).
+  # Cluster visitor-auth hotfix: pre-crash throttle when do_connect/4
+  # fails (ECONNREFUSED, ECONNRESET, ssl handshake :closed, the
+  # permanent {:source_family_mismatch, ...} misconfig, etc.).
   # Without it, the DynamicSupervisor's :transient restart cycle spins
   # at full CPU speed (~2000 attempts/sec for refused TCP) and
   # DoS-pummels upstream IRC servers — azzurra k-lined the bouncer's
@@ -648,7 +650,7 @@ defmodule Grappa.IRC.Client do
   def handle_continue({:connect, opts}, state) do
     host = to_charlist(opts.host)
 
-    case do_connect(host, opts.port, opts.tls) do
+    case do_connect(host, opts.port, opts.tls, Map.get(opts, :source_address)) do
       {:ok, socket} ->
         connected = %{state | socket: socket}
         # U-2 (UD7): announce the post-connect / post-TLS / pre-handshake
@@ -745,21 +747,84 @@ defmodule Grappa.IRC.Client do
   # lands.
   @connect_timeout_ms 30_000
 
-  defp do_connect(host, port, false) do
-    {opts, fam} = resolve_and_ifaddr(host)
-    :gen_tcp.connect(host, port, [:binary, fam, packet: :line, active: :once] ++ opts, @connect_timeout_ms)
+  defp do_connect(host, port, tls, source_address) do
+    case source_bind(host, source_address) do
+      {:ok, {bind_opts, fam}} ->
+        transport_connect(host, port, tls, bind_opts, fam)
+
+      {:error, {:source_family_mismatch, _, _, _} = reason} ->
+        # Permanent misconfig (e.g. a v4 source pinned to a v6-only
+        # upstream). Surface it loud; the existing connect-fail throttle
+        # + :transient give-up machinery handles the rest. `:error` is
+        # the allowlisted Logger key (config/config.exs) — the full
+        # tuple rides inside it, no metadata-allowlist churn.
+        Logger.error("outbound source-address family mismatch — refusing connect",
+          error: inspect(reason)
+        )
+
+        {:error, reason}
+    end
   end
 
-  defp do_connect(host, port, true) do
-    {opts, fam} = resolve_and_ifaddr(host)
+  defp transport_connect(host, port, false, bind_opts, fam) do
+    :gen_tcp.connect(host, port, [:binary, fam, packet: :line, active: :once] ++ bind_opts, @connect_timeout_ms)
+  end
 
+  defp transport_connect(host, port, true, bind_opts, fam) do
     :ssl.connect(
       host,
       port,
-      [:binary, fam, packet: :line, active: :once, verify: :verify_none] ++ opts,
+      [:binary, fam, packet: :line, active: :once, verify: :verify_none] ++ bind_opts,
       @connect_timeout_ms
     )
   end
+
+  # Fixed source present → bind that literal as `ifaddr` over its own
+  # family, after confirming the upstream is reachable in that family.
+  # NULL source → the existing rotating-pool / kernel-default path,
+  # verbatim. Deterministic for a fixed source (no per-connect roll) so
+  # the upstream sees a stable O-line host on every retry (spec §2).
+  @spec source_bind(charlist(), String.t() | nil) ::
+          {:ok, {keyword(), :inet | :inet6}}
+          | {:error, {:source_family_mismatch, String.t(), String.t(), :inet | :inet6}}
+  defp source_bind(host, nil), do: {:ok, resolve_and_ifaddr(host)}
+
+  defp source_bind(host, source) when is_binary(source) do
+    # parse_source_family/1 returns {fam, tuple} (tag-first, :inet idiom);
+    # we emit {opts, fam} below to match resolve_and_ifaddr/1's order.
+    {fam, source_tuple} = parse_source_family(source)
+
+    case :inet.getaddr(host, fam) do
+      {:ok, _} -> {:ok, {[ifaddr: source_tuple], fam}}
+      {:error, _} -> {:error, {:source_family_mismatch, source, to_string(host), fam}}
+    end
+  end
+
+  # The source string is a strict literal (validated at the Server
+  # changeset boundary), so exactly one parser succeeds. A failure here
+  # is a broken invariant — let it crash (no silent fallback).
+  @spec parse_source_family(String.t()) :: {:inet | :inet6, :inet.ip_address()}
+  defp parse_source_family(source) do
+    charlist = String.to_charlist(source)
+
+    case :inet.parse_ipv4strict_address(charlist) do
+      {:ok, v4} ->
+        {:inet, v4}
+
+      {:error, _} ->
+        {:ok, v6} = :inet.parse_ipv6strict_address(charlist)
+        {:inet6, v6}
+    end
+  end
+
+  @doc false
+  # Test-only seam for the family / ifaddr / mismatch logic. Production
+  # callers go through do_connect/4. Mirrors the __merge_autojoin_for_test__
+  # convention in Networks.SessionPlan — greppable, absent from public docs.
+  @spec __source_bind_for_test__(charlist(), String.t() | nil) ::
+          {:ok, {keyword(), :inet | :inet6}}
+          | {:error, {:source_family_mismatch, String.t(), String.t(), :inet | :inet6}}
+  def __source_bind_for_test__(host, source), do: source_bind(host, source)
 
   # Outbound v6 source-address selection.
   #

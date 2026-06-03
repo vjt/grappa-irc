@@ -82,6 +82,10 @@ defmodule Grappa.IRCServer do
   @spec port(pid()) :: :inet.port_number()
   def port(server), do: GenServer.call(server, :port)
 
+  @doc "Peer (client source) address of the accepted connection."
+  @spec peername(pid()) :: {:ok, {:inet.ip_address(), :inet.port_number()}} | {:error, :inet.posix()}
+  def peername(server), do: GenServer.call(server, :peername)
+
   @spec sent_lines(pid()) :: [binary()]
   def sent_lines(server), do: GenServer.call(server, :sent_lines)
 
@@ -163,6 +167,7 @@ defmodule Grappa.IRCServer do
 
   @impl GenServer
   def handle_call(:port, _, state), do: {:reply, state.port, state}
+  def handle_call(:peername, _, state), do: {:reply, :inet.peername(state.sock), state}
   def handle_call(:sent_lines, _, state), do: {:reply, Enum.reverse(state.sent), state}
 
   def handle_call({:wait_for, predicate, timeout}, from, state) do

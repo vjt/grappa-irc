@@ -467,6 +467,51 @@ defmodule Grappa.IRC.ClientTest do
     end
   end
 
+  describe "outbound source-address bind" do
+    test "binds a v4 source — server observes the bound peer, not the default" do
+      # Source 127.0.0.2 is a distinct loopback address from the default
+      # 127.0.0.1, so the observed peer proves the ifaddr bind took effect.
+      # Assumes 127.0.0.2 is loopback-bindable (Linux/RPi: all 127/8 is
+      # loopback; a non-Linux host would fail legibly with :eaddrnotavail).
+      {:ok, server} = IRCServer.start_link(fn state, _line -> {:reply, nil, state} end)
+      port = IRCServer.port(server)
+
+      _client = start_client(port, %{source_address: "127.0.0.2"})
+      :ok = await_handshake(server)
+
+      assert {:ok, {{127, 0, 0, 2}, _ephemeral}} = IRCServer.peername(server)
+    end
+
+    test "NULL source still connects via the pool/kernel-default path" do
+      {:ok, server} = IRCServer.start_link(fn state, _line -> {:reply, nil, state} end)
+      port = IRCServer.port(server)
+
+      _client = start_client(port, %{source_address: nil})
+      :ok = await_handshake(server)
+
+      assert {:ok, {{127, 0, 0, 1}, _ephemeral}} = IRCServer.peername(server)
+    end
+
+    test "source_bind/2: v4 source yields inet family + ifaddr tuple" do
+      assert {:ok, {[ifaddr: {127, 0, 0, 2}], :inet}} =
+               Client.__source_bind_for_test__(~c"127.0.0.1", "127.0.0.2")
+    end
+
+    test "source_bind/2: v6 source yields inet6 family + ifaddr tuple" do
+      assert {:ok, {[ifaddr: {0, 0, 0, 0, 0, 0, 0, 1}], :inet6}} =
+               Client.__source_bind_for_test__(~c"::1", "::1")
+    end
+
+    test "source_bind/2: source family vs upstream-only-other-family is a clear error" do
+      assert {:error, {:source_family_mismatch, "::1", "127.0.0.1", :inet6}} =
+               Client.__source_bind_for_test__(~c"127.0.0.1", "::1")
+    end
+
+    test "source_bind/2: NULL source delegates to the pool path (inet, no ifaddr)" do
+      assert {:ok, {[], :inet}} = Client.__source_bind_for_test__(~c"127.0.0.1", nil)
+    end
+  end
+
   describe "inbound: server → client → dispatch_to" do
     test "single PRIVMSG line dispatched as parsed Message struct" do
       {server, port} = start_server()
