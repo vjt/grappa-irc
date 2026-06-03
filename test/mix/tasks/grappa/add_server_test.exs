@@ -98,4 +98,26 @@ defmodule Mix.Tasks.Grappa.AddServerTest do
       end)
     end
   end
+
+  test "--source persists the server source_address", %{network: network} do
+    capture_io(fn ->
+      AddServer.run([
+        "--network",
+        "azzurra",
+        "--server",
+        "irc.azzurra.chat:6697",
+        "--source",
+        "203.0.113.9"
+      ])
+    end)
+
+    [server] = Servers.list_servers(network)
+    assert server.source_address == "203.0.113.9"
+  end
+
+  # System.halt/1 (called by Output.halt_changeset on invalid changeset)
+  # cannot be exercised in-process — it kills the BEAM unconditionally.
+  # The source_address strict-literal validation is covered by
+  # Grappa.Networks.ServerTest (Task 1). The operator-facing error path
+  # (invalid literal → halt) is verified by the operator smoke walkthrough.
 end

@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Grappa.AddServer do
-  @shortdoc "Adds a server endpoint to a network: --network --server host:port [--tls|--no-tls] [--priority]"
+  @shortdoc "Adds a server endpoint to a network: --network --server host:port [--tls|--no-tls] [--priority] [--source <ip>]"
 
   @moduledoc """
   Appends an additional server to an existing network's fail-over
@@ -11,11 +11,18 @@ defmodule Mix.Tasks.Grappa.AddServer do
       scripts/mix.sh grappa.add_server \\
         --network azzurra \\
         --server irc2.azzurra.chat:6697 \\
-        --priority 1
+        --priority 1 \\
+        --source 203.0.113.9
 
   The network must already exist (created via `grappa.bind_network`);
   this task NEVER creates the network. `--priority` defaults to 0.
   Re-adding the same `(network, host, port)` triple is a no-op.
+
+  `--source <ip>` pins the outbound source address for this server.
+  Must be a strict literal IPv4 or IPv6 address (no hostname, no CIDR).
+  An informational notice is printed when the address is also in
+  `GRAPPA_OUTBOUND_V6_POOL` (it will be excluded from the visitor pool
+  at boot — see `Grappa.OutboundV6Pool`).
 
   ## TLS default — port-sniffed
 
@@ -47,7 +54,7 @@ defmodule Mix.Tasks.Grappa.AddServer do
   alias Grappa.Networks.Servers
   alias Mix.Tasks.Grappa.{Boot, OptionParsing, Output}
 
-  @switches [network: :string, server: :string, tls: :boolean, priority: :integer]
+  @switches [network: :string, server: :string, tls: :boolean, priority: :integer, source: :string]
 
   # De-facto IRC-over-TLS port per RFC 7194 + ircv3 conventions.
   @tls_port 6697
@@ -67,13 +74,20 @@ defmodule Mix.Tasks.Grappa.AddServer do
       host: host,
       port: port,
       tls: Keyword.get(opts, :tls, port == @tls_port),
-      priority: Keyword.get(opts, :priority, 0)
+      priority: Keyword.get(opts, :priority, 0),
+      source_address: Keyword.get(opts, :source)
     }
 
     case Servers.add_server(network, attrs) do
-      {:ok, _} -> IO.puts("added server #{host}:#{port} to #{slug}")
-      {:error, :already_exists} -> IO.puts("server #{host}:#{port} already on #{slug}; no-op")
-      {:error, cs} -> Output.halt_changeset("adding server", cs)
+      {:ok, _} ->
+        IO.puts("added server #{host}:#{port} to #{slug}")
+        Output.maybe_notice_source_in_pool(Keyword.get(opts, :source))
+
+      {:error, :already_exists} ->
+        IO.puts("server #{host}:#{port} already on #{slug}; no-op")
+
+      {:error, cs} ->
+        Output.halt_changeset("adding server", cs)
     end
   end
 end

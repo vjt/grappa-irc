@@ -211,4 +211,27 @@ defmodule Mix.Tasks.Grappa.BindNetworkTest do
       BindNetwork.run(["--network", "azzurra", "--server", "h:6697", "--nick", "n"])
     end
   end
+
+  test "--source persists the server source_address", %{user: _user} do
+    capture_io(fn ->
+      BindNetwork.run([
+        "--user",
+        "vjt",
+        "--network",
+        "azzurra",
+        "--server",
+        "irc.azzurra.chat:6697",
+        "--nick",
+        "vjt-grappa",
+        "--auth",
+        "none",
+        "--source",
+        "203.0.113.9"
+      ])
+    end)
+
+    {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
+    [server] = Servers.list_servers(network)
+    assert server.source_address == "203.0.113.9"
+  end
 end

@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Grappa.BindNetwork do
-  @shortdoc "Binds a user to an IRC network: --user --network --server host:port [--tls|--no-tls] --nick [--password] [--auth] [--autojoin]"
+  @shortdoc "Binds a user to an IRC network: --user --network --server host:port [--tls|--no-tls] --nick [--password] [--auth] [--autojoin] [--source <ip>]"
 
   @moduledoc """
   Operator-side network binding. Idempotently creates the network +
@@ -15,9 +15,17 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
         --nick vjt-grappa \\
         --password '<NickServ password>' \\
         --auth auto \\
-        --autojoin '#grappa,#italy'
+        --autojoin '#grappa,#italy' \\
+        --source 203.0.113.9
 
   Required: `--user`, `--network`, `--server`, `--nick`, `--auth`.
+
+  `--source <ip>` pins the outbound source address for this server.
+  Must be a strict literal IPv4 or IPv6 address (no hostname, no CIDR).
+  An informational notice is printed when the address is also in
+  `GRAPPA_OUTBOUND_V6_POOL` (it will be excluded from the visitor pool
+  at boot — see `Grappa.OutboundV6Pool`).
+
   Valid `--auth` values: `auto | sasl | server_pass | nickserv_identify
   | none`. S29 H10: `--auth` lost its silent `auto` default — operator
   must pick the upstream auth shape explicitly because the legacy ircd
@@ -63,7 +71,8 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
     auth: :string,
     autojoin: :string,
     realname: :string,
-    sasl_user: :string
+    sasl_user: :string,
+    source: :string
   ]
 
   # De-facto IRC-over-TLS port per RFC 7194 + ircv3 conventions.
@@ -90,11 +99,20 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
     case Servers.add_server(network, %{
            host: host,
            port: port,
-           tls: Keyword.get(opts, :tls, port == @tls_port)
+           tls: Keyword.get(opts, :tls, port == @tls_port),
+           source_address: Keyword.get(opts, :source)
          }) do
-      {:ok, _} -> :ok
-      {:error, :already_exists} -> :ok
-      {:error, cs} -> Output.halt_changeset("binding server", cs)
+      {:ok, _} ->
+        Output.maybe_notice_source_in_pool(Keyword.get(opts, :source))
+
+      {:error, :already_exists} ->
+        # Pre-existing row keeps its prior source_address; the --source
+        # given here was NOT persisted, so no pool notice (it would imply
+        # a write that did not happen). Matches add_server.
+        :ok
+
+      {:error, cs} ->
+        Output.halt_changeset("binding server", cs)
     end
 
     cred_attrs = %{

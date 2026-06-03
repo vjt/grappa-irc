@@ -139,4 +139,24 @@ defmodule Grappa.Networks.ServersTest do
       assert Servers.list_source_addresses() == ["203.0.113.9"]
     end
   end
+
+  describe "add_server/2 source_address validation (reuse path)" do
+    # The mix tasks (grappa.add_server / grappa.bind_network) rely on the
+    # Server changeset's strict-literal validation propagating through the
+    # context. Task 1 tests Server.changeset/2 directly; this proves
+    # add_server/2 — the path the tasks call — surfaces the error rather
+    # than dropping source_address.
+    test "rejects an invalid source literal with a changeset error" do
+      {:ok, net} = Networks.find_or_create_network(%{slug: slug()})
+
+      assert {:error, %Ecto.Changeset{valid?: false} = cs} =
+               Servers.add_server(net, %{
+                 host: "irc.example.test",
+                 port: 6697,
+                 source_address: "not-an-ip"
+               })
+
+      assert Keyword.has_key?(cs.errors, :source_address)
+    end
+  end
 end
