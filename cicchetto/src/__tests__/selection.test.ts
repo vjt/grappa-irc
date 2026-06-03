@@ -1306,4 +1306,128 @@ describe("selection store", () => {
       expect(mentions.mentionCounts()[otherKey]).toBe(1);
     });
   });
+
+  // 2026-06-02 — decouple the sidebar badge from the read cursor. The
+  // badge means "have I opened this window?" and must clear on SELECT,
+  // independent of the cursor (which the in-pane marker still rides on,
+  // so the marker survives the select). selection.ts suppresses the
+  // focused-AND-visible window's message/event counts in perChannelUnread;
+  // the cursor is never written here (ScrollbackPane owns cursor writes).
+  // Spec: docs/superpowers/specs/2026-06-02-decouple-unread-badge-design.md
+  describe("focused-window badge suppression (2026-06-02)", () => {
+    const seedRows = async (key: ReturnType<typeof channelKey>, kind: "privmsg" | "join") => {
+      const scrollback = await import("../lib/scrollback");
+      const [, name] = key.split(" ");
+      for (const id of [1, 2, 3]) {
+        scrollback.appendToScrollback(key, {
+          id,
+          network: "freenode",
+          channel: name ?? "#grappa",
+          server_time: id,
+          kind,
+          sender: "bob",
+          body: kind === "privmsg" ? "x" : "",
+          meta: {},
+        });
+      }
+    };
+
+    it("selecting a visible window zeros its own message badge", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      await seedRows(key, "privmsg");
+      expect(selection.messagesUnread()[key]).toBe(3);
+
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+
+      expect(selection.messagesUnread()[key]).toBeUndefined();
+      expect(selection.unreadCounts()[key]).toBeUndefined();
+    });
+
+    it("does NOT suppress when the document is hidden (selected ≠ looking)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      await seedRows(key, "privmsg");
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+
+      expect(selection.messagesUnread()[key]).toBe(3);
+
+      setVisibilityForTest(true);
+      await Promise.resolve();
+      expect(selection.messagesUnread()[key]).toBeUndefined();
+    });
+
+    it("suppresses the event badge too (presence kinds)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      await seedRows(key, "join");
+      expect(selection.eventsUnread()[key]).toBe(3);
+
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+
+      expect(selection.eventsUnread()[key]).toBeUndefined();
+    });
+
+    it("re-exposes the count when the operator leaves the window", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      await seedRows(key, "privmsg");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      expect(selection.messagesUnread()[key]).toBeUndefined();
+
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#other",
+        kind: "channel",
+      });
+
+      expect(selection.messagesUnread()[key]).toBe(3);
+    });
+
+    it("does NOT suppress OTHER (non-selected) windows", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const otherKey = channelKey("freenode", "#cicchetto");
+      await seedRows(otherKey, "privmsg");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+
+      expect(selection.messagesUnread()[otherKey]).toBe(3);
+    });
+  });
 });

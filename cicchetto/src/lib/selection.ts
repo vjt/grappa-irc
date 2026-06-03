@@ -153,17 +153,11 @@ const exports = identityScopedStore((onIdentityChange) => {
    * `applyMeEnvelope` in `readCursor.ts`. Bucket C wires the call
    * site.
    */
-  const applySeedEnvelope = (
-    envelope: Record<string, Record<string, ServerSeedCount>>,
-  ): void => {
+  const applySeedEnvelope = (envelope: Record<string, Record<string, ServerSeedCount>>): void => {
     const next: Record<ChannelKey, ServerSeedCount> = {};
     for (const [slug, perChannel] of Object.entries(envelope)) {
       for (const [chan, counts] of Object.entries(perChannel)) {
-        if (
-          counts &&
-          typeof counts.messages === "number" &&
-          typeof counts.events === "number"
-        ) {
+        if (counts && typeof counts.messages === "number" && typeof counts.events === "number") {
           next[channelKey(slug, chan)] = counts;
         }
       }
@@ -245,6 +239,25 @@ const exports = identityScopedStore((onIdentityChange) => {
         else evts++;
       }
       result[key] = { messages: msgs, events: evts };
+    }
+
+    // 2026-06-02 — focused-window badge suppression. The operator is
+    // looking at this window (and the browser tab is visible), so it has
+    // nothing unread TO THEM right now: zero its count. Derived from
+    // selectedChannel + isDocumentVisible — the read cursor is NOT
+    // advanced, so the in-pane `── N unread ──` marker survives the
+    // select and clears on its own settle events (scroll / defocus /
+    // send). Gating on isDocumentVisible keeps a selected-but-backgrounded
+    // tab accruing its badge so a returning operator sees activity.
+    // Final overwrite so it covers both the seed-only and hydrated
+    // branches above. Spec:
+    // docs/superpowers/specs/2026-06-02-decouple-unread-badge-design.md
+    const focused = selectedChannel();
+    if (focused !== null && isDocumentVisible()) {
+      result[channelKey(focused.networkSlug, focused.channelName)] = {
+        messages: 0,
+        events: 0,
+      };
     }
 
     return result;
