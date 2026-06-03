@@ -826,11 +826,15 @@ const ScrollbackPane: Component<Props> = (props) => {
   //                    m.id > cursor AND
   //                    m.id <= sessionTopId  // pre-arrival only
   //                  ).length
-  //   The cursor is a stable value for the lifetime of this channel view;
-  //   it only advances when the user navigates AWAY from the window
-  //   (selection.ts on(selectedChannel)'s focus-leave hook). The
-  //   sessionTopId bound prevents NEW arrivals during the focus session
-  //   from spawning a fresh marker — they're live-read by definition.
+  //   The cursor is a stable value for the lifetime of this channel view:
+  //   it advances on the settle events (focus-leave, browser-blur,
+  //   scroll-settle, send — selection.ts / scrollback.ts), plus a one-shot
+  //   fresh-channel load-baseline (scrollback.ts `loadInitialScrollback`
+  //   marks the backlog read when no cursor exists yet). None of those
+  //   fire mid-view while the operator is reading, so the marker baseline
+  //   stays put. The sessionTopId bound prevents NEW arrivals during the
+  //   focus session from spawning a fresh marker — they're live-read by
+  //   definition.
   const rows = createMemo((): Row[] => {
     const msgs = messages() ?? [];
     // 2026-06-01: invite-ack rows for the $server window only. Mirrors

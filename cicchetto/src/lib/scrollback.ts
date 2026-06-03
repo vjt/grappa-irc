@@ -138,6 +138,31 @@ const exports = identityScopedStore((onIdentityChange) => {
     try {
       const page = await listMessages(t, slug, name);
       mergeIntoScrollback(key, page);
+      // RC2 (decouple-unread-badge) — baseline the read cursor to this
+      // backlog's tail when the channel has no cursor yet. Opening a
+      // fresh channel auto-scrolls to the newest row, so "cursor = tail"
+      // is the honest "you've seen the newest." Without it, a channel
+      // visited then defocused BEFORE the backlog hydrated leaves the
+      // cursor nil and the server's nil-cursor `unread_count` counts the
+      // whole backlog (m2-irssi-to-chan-defocused: 200 backlog + 1 → "201"
+      // instead of "1").
+      //
+      // Tail is the page's MAX id, not page[0] — `listMessages` returns
+      // server-DESC, but reduce-max is order-independent so the contract
+      // doesn't depend on page ordering.
+      //
+      // Gated on `getReadCursor === null` (NOT the forward-only gate
+      // sendMessage uses): a channel that already has a read position
+      // keeps it, so the in-pane `── XX unread ──` marker survives a
+      // re-open. The completion-time fire is robust to the leave-race —
+      // the load was triggered by focus; finishing after the operator
+      // navigated away still marks the backlog read. `loadInitialScrollback`
+      // only fires on focus, so unfocused new DMs stay unmarked (m4).
+      const head = page[0];
+      if (head && getReadCursor(slug, name) === null) {
+        const tail = page.reduce((max, m) => (m.id > max ? m.id : max), head.id);
+        void setReadCursor(t, slug, name, tail);
+      }
     } catch {
       // First-load failure leaves the empty seed in place; the pane
       // shows "no messages yet". A retry mechanism is Phase 5+.

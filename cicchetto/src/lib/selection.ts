@@ -36,9 +36,15 @@ import { windowIsPresent } from "./windowState";
 //     for a channel, falls back to `serverSeedCounts[key]`.
 //   * Selection-change effect: fires `scrollback.loadInitialScrollback`
 //     to backfill history (the load-once gate lives in scrollback.ts)
-//     + clears mention counts for the focused window. Badge counts
-//     drop automatically as the cursor advances (via scroll-settle,
-//     focus-leave, browser-blur, send) — no explicit clear needed.
+//     + clears mention counts for the focused window. As the cursor
+//     advances (via scroll-settle, focus-leave, browser-blur, send, and
+//     fresh-channel load-baseline in scrollback.ts) the derived counts
+//     fall on their own. The ONE count the cursor can't drop on its own
+//     is the focused-AND-visible window's: its cursor only moves on the
+//     NEXT settle, so `perChannelUnread` zeros that window's
+//     `{messages, events}` as a final overwrite (RC1, decouple-unread-
+//     badge) keyed on `selectedChannel` + `isDocumentVisible` — a
+//     backgrounded-but-selected tab keeps accruing.
 //
 // 2026-06-01 (unread-badges-from-cursor cluster, bucket B2): the four
 // increment stores (`unreadCounts`, `messagesUnread`, `eventsUnread`,
