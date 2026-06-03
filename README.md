@@ -125,6 +125,11 @@ bin/grappa create-user --name vjt --password "correct horse battery staple"
 # 2. Bind a network. auth_method picks the upstream auth method:
 #    auto | sasl | server_pass | nickserv_identify | none
 bin/grappa add-server --network azzurra --host irc.azzurra.chat --port 6697 --tls
+# Optional: pin the outbound source IP for this server entry (literal IPv4 or IPv6).
+# The address is excluded from the GRAPPA_OUTBOUND_V6_POOL at boot so a
+# dedicated operator IP is never drawn for visitor sessions.
+# bin/grappa add-server --network azzurra --host irc.azzurra.chat --port 6697 --tls \
+#   --source 2001:db8::1
 bin/grappa bind-network --user vjt --network azzurra \
   --nick vjt --password 'NICKSERV_PASS' --auth nickserv_identify \
   --autojoin '#italia,#hacking'

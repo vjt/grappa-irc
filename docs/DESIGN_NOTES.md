@@ -10820,3 +10820,89 @@ channel that already has a read position keeps it — the in-pane
 so it beats the leave-race; and `loadInitialScrollback` fires only on
 focus, so unfocused new DMs stay unmarked. Validated on the RPi local
 e2e: m2 green + full chromium+webkit suite 215 passed.
+
+
+## 2026-06-03 — Per-server fixed outbound source address
+
+Adds a nullable `source_address` column to `network_servers` so an
+operator can pin the outbound TCP source IP for a specific server entry.
+Full spec at `docs/superpowers/specs/2026-06-03-per-server-source-address-design.md`.
+
+### Why per-server, not per-network or per-credential
+
+The IRC server is the TCP connect target. Source binding is inherently
+a TCP-layer decision made at connect time, against a specific host:port.
+A network (`networks` row) groups several server alternatives; a
+credential (`network_servers_credentials`) is the auth identity. Neither
+is the right granularity — the source IP is a property of the outbound
+socket to a particular endpoint, so it lives on the server row. An
+operator running two server entries for the same network can pin
+different IPs to each (primary vs. fallback via different VPS
+interfaces), or pin one and leave the other pool-delegated.
+
+### Validation — literal IP only, stored canonical
+
+`network_servers` changesets reject anything that isn't a strict literal
+IPv4 or IPv6 address. `:inet.parse_ipv4strict_address/1` and
+`:inet.parse_ipv6strict_address/1` are the validators — they reject
+hostnames, CIDRs, zero-padded octets, and empty strings. The address is
+stored canonical via `:inet.ntoa/1` so the same IP always has the same
+DB representation regardless of how the operator typed it. NULL means
+"no source binding; use the kernel default or the outbound IPv6 pool."
+
+### Connect path — hard mismatch error, no silent fallback
+
+When `source_address` is set, `IRC.Client` derives the address family
+from the literal, then resolves the upstream host using
+`:inet.getaddr/2` in that same family to confirm reachability. A family
+mismatch — IPv4 source against a host that only resolves in IPv6, or
+vice versa — returns `{:error, {:source_family_mismatch, source, host,
+family}}` and routes through the existing connect-fail throttle. There
+is no silent fallback to the unbound path; the misconfiguration is loud
+and logged.
+
+The NULL-source path for pool-assigned IPv6 addresses continues to use
+`:inet_res.lookup/3` (pure DNS, skips /etc/hosts and numeric literals).
+The fixed-source path uses `:inet.getaddr/2` instead, for a deliberate
+reason: if the upstream host is a numeric literal or a /etc/hosts entry,
+`:inet_res.lookup/3` returns an empty list — which would spuriously trip
+the family-mismatch guard on every connect. `:inet.getaddr/2` resolves
+numeric literals + /etc/hosts AND answers the "is this host reachable in
+family F?" question correctly. The IPv4 source-bind path is new (the
+prior codebase only had IPv6 pool binding); both paths now share the
+`ifaddr:` option on the `:gen_tcp.connect/4` call.
+
+### Visitor-pool exclusion — subtract, never assert
+
+`Grappa.OutboundV6Pool.apply_exclusions/1` computes the effective pool
+as `raw_pool − fixed_sources` (tuple-normalized, idempotent). Before
+spawning any session, `Grappa.Bootstrap` collects every configured
+`source_address` across all network servers, calls
+`apply_exclusions/1`, and passes the reduced effective pool to
+`OutboundV6Pool`. The subtraction is silent — an IP that appears as
+both a pool entry and a fixed `source_address` is excluded from
+rotation without noise, and an IP that is a fixed source but was never
+in the pool is equally harmless. The boot log reports configured,
+excluded, and effective counts, and flags any dedicated-not-in-pool
+addresses. Pool-absent fixed sources are not an error.
+
+This means the visitor pool can never accidentally draw a dedicated
+operator IP. However, the guarantee is scoped to the pool: the bind is
+per-server, so any session that connects via a `source_address`-pinned
+server row uses that IP regardless of whether the session belongs to a
+registered user or a visitor. Keeping visitors off dedicated-operator
+networks is the operator's configuration responsibility — point visitor
+provisioning at networks whose server entries have no `source_address`.
+The exclusion logic protects the pool; it does not stop an operator
+from deliberately (or inadvertently) routing visitors through a
+dedicated-source server.
+
+### Config surface
+
+`mix grappa.add_server --source <ip>` and `mix grappa.bind_network
+--source <ip>` both accept and validate via the same changeset. Invalid
+input halts loudly. The task emits an informational notice when
+`--source` is also present in `GRAPPA_OUTBOUND_V6_POOL`, since that
+configuration means the address will be excluded from the pool at boot
+— not an error, but worth flagging to the operator at provisioning
+time.
