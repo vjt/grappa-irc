@@ -42,9 +42,7 @@ defmodule Mix.Tasks.Grappa.Output do
     case :inet.parse_address(String.to_charlist(source)) do
       {:ok, tuple} ->
         if tuple in Grappa.OutboundV6Pool.raw_pool() do
-          IO.puts(
-            "note: #{source} is in GRAPPA_OUTBOUND_V6_POOL; it will be excluded from the visitor pool"
-          )
+          IO.puts("note: #{source} is in GRAPPA_OUTBOUND_V6_POOL; it will be excluded from the visitor pool")
         end
 
         :ok

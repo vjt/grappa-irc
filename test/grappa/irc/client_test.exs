@@ -473,23 +473,23 @@ defmodule Grappa.IRC.ClientTest do
       # 127.0.0.1, so the observed peer proves the ifaddr bind took effect.
       # Assumes 127.0.0.2 is loopback-bindable (Linux/RPi: all 127/8 is
       # loopback; a non-Linux host would fail legibly with :eaddrnotavail).
-      {:ok, server} = IRCServer.start_link(fn state, _line -> {:reply, nil, state} end)
+      {:ok, server} = IRCServer.start_link(fn state, _ -> {:reply, nil, state} end)
       port = IRCServer.port(server)
 
-      _client = start_client(port, %{source_address: "127.0.0.2"})
+      _ = start_client(port, %{source_address: "127.0.0.2"})
       :ok = await_handshake(server)
 
-      assert {:ok, {{127, 0, 0, 2}, _ephemeral}} = IRCServer.peername(server)
+      assert {:ok, {{127, 0, 0, 2}, _}} = IRCServer.peername(server)
     end
 
     test "NULL source still connects via the pool/kernel-default path" do
-      {:ok, server} = IRCServer.start_link(fn state, _line -> {:reply, nil, state} end)
+      {:ok, server} = IRCServer.start_link(fn state, _ -> {:reply, nil, state} end)
       port = IRCServer.port(server)
 
-      _client = start_client(port, %{source_address: nil})
+      _ = start_client(port, %{source_address: nil})
       :ok = await_handshake(server)
 
-      assert {:ok, {{127, 0, 0, 1}, _ephemeral}} = IRCServer.peername(server)
+      assert {:ok, {{127, 0, 0, 1}, _}} = IRCServer.peername(server)
     end
 
     test "source_bind/2: v4 source yields inet family + ifaddr tuple" do

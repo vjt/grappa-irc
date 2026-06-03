@@ -10886,6 +10886,15 @@ in the pool is equally harmless. The boot log reports configured,
 excluded, and effective counts, and flags any dedicated-not-in-pool
 addresses. Pool-absent fixed sources are not an error.
 
+The exclusion is computed once, at boot. Adding (via `mix
+grappa.add_server --source` / `bind_network --source`) a fixed source
+that *overlaps* `GRAPPA_OUTBOUND_V6_POOL` to an already-running node
+writes the DB row immediately but does not refresh the live effective
+pool — only `Bootstrap` refines it, so the overlapping IP leaves the
+rotation on the next node restart. This is the unusual case (it requires
+the dedicated IP to also be in the env pool, which the provisioning
+notice already flags); the standard workflow is add-then-restart.
+
 This means the visitor pool can never accidentally draw a dedicated
 operator IP. However, the guarantee is scoped to the pool: the bind is
 per-server, so any session that connects via a `source_address`-pinned

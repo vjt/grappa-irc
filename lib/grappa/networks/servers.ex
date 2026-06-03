@@ -132,17 +132,18 @@ defmodule Grappa.Networks.Servers do
   """
   @spec list_source_addresses() :: [String.t()]
   def list_source_addresses do
-    Repo.all(
+    query =
       from s in Server,
         where: not is_nil(s.source_address),
         distinct: true,
         select: s.source_address
-    )
+
+    Repo.all(query)
   end
 
   @doc """
   Updates `server` with the given attrs (host / port / tls / priority /
-  enabled). Same `:already_exists` mapping as `add_server/2` when an
+  enabled / source_address). Same `:already_exists` mapping as `add_server/2` when an
   update would collide with a sibling `(host, port)` on the same
   network; other validation errors come back as a changeset.
   """

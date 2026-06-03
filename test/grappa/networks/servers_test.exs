@@ -130,7 +130,7 @@ defmodule Grappa.Networks.ServersTest do
 
     test "deduplicates a source shared by multiple servers" do
       {net1, _} = network_with_server(%{source_address: "203.0.113.9"})
-      {_net2, _} = network_with_server(%{source_address: "203.0.113.9"})
+      {_, _} = network_with_server(%{source_address: "203.0.113.9"})
 
       # second server on net1 with the same source, to also cover same-network dup
       {:ok, _} =
