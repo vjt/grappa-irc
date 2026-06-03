@@ -10780,3 +10780,43 @@ NOTE: NOT reproducible in Playwright (chromium OR webkit-iphone-15) —
 Playwright's bundled WebKit doesn't model real iOS scroll physics.
 Verify scroll/touch fixes on a real device. See memory
 `feedback_playwright_webkit_not_ios_scroll`.
+
+
+## 2026-06-03 — Fresh-channel open baselines the read cursor to the backlog tail (RC2)
+
+The unread-badge-from-cursor cluster derives a channel's badge purely
+from the server-owned read cursor (`unread_count` = rows with
+`id > cursor`; nil cursor = whole backlog). RC1 made the focused window
+drop its badge on select; RC2 closes the last red integration spec
+(`m2-irssi-to-chan-defocused`): a channel visited then DEFOCUSED before
+its 200-row REST backlog hydrated left the cursor nil, so the badge
+counted the whole backlog + the next inbound msg → "201" instead of "1".
+
+Fix (`scrollback.ts` `loadInitialScrollback`): after merging the loaded
+page, baseline the cursor to the page's MAX id when the channel has no
+cursor yet (`getReadCursor === null`).
+
+Two non-obvious constraints make this correct:
+
+- **Tail comes from the loaded REST page, never the store-after-merge.**
+  A live WS PRIVMSG can append to the store *during* the load; deriving
+  the baseline from the store would mark that new message read (badge
+  "0"). The REST page and the WS append are disjoint paths
+  (`listMessages` return value vs `appendToScrollback`), so the page max
+  excludes any concurrently-arriving message — it stays unread.
+
+- **The baseline is load-bearing on "fresh open scrolls to the newest
+  row."** Marking the ENTIRE backlog read is only honest because opening
+  a channel auto-scrolls to the bottom (`scrollToActivation`), so the
+  operator IS looking at the newest line. If a future change lands a
+  fresh open mid-history (jump-to-first-unread, deep-link to an old
+  message), this baseline would over-mark — revisit it together with any
+  such scroll-position change. The cursor-honest invariant couples the
+  two.
+
+Gated on `=== null` (not the forward-only gate `sendMessage` uses) so a
+channel that already has a read position keeps it — the in-pane
+`── XX unread ──` marker survives a re-open. Fires on load COMPLETION,
+so it beats the leave-race; and `loadInitialScrollback` fires only on
+focus, so unfocused new DMs stay unmarked. Validated on the RPi local
+e2e: m2 green + full chromium+webkit suite 215 passed.
