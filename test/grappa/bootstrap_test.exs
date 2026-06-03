@@ -611,6 +611,98 @@ defmodule Grappa.BootstrapTest do
     end
   end
 
+  describe "outbound pool exclusion" do
+    setup do
+      prior = Application.get_env(:grappa, :outbound_v6_pool, [])
+
+      on_exit(fn ->
+        Application.put_env(:grappa, :outbound_v6_pool, prior)
+        :ok = Grappa.OutboundV6Pool.boot()
+      end)
+
+      Application.put_env(:grappa, :outbound_v6_pool, [
+        {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x9000}
+      ])
+
+      :ok = Grappa.OutboundV6Pool.boot()
+    end
+
+    test "subtracts a configured fixed source that overlaps the pool, with an honest log" do
+      vjt = user_fixture(name: "pool-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+
+      slug = "pool-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+
+      {:ok, _} =
+        Servers.add_server(network, %{
+          host: "127.0.0.1",
+          port: port,
+          tls: false,
+          source_address: "2a03:4000:2:33c::9000"
+        })
+
+      {:ok, _} =
+        Credentials.bind_credential(vjt, network, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      on_exit(fn -> stop_session(vjt.id, network.id) end)
+
+      Logger.put_module_level(Grappa.Bootstrap, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+      log = capture_log(fn -> assert {:ok, %Result{}} = Bootstrap.run() end)
+
+      # Excluded from the effective pool — pick can no longer return it.
+      assert Grappa.OutboundV6Pool.effective_pool() == []
+      assert log =~ "outbound pool"
+      assert log =~ "1 excluded"
+    end
+
+    test "a dedicated source not in the pool is reported as not-in-pool, pool unchanged" do
+      # source_address that is NOT a member of the configured pool (the
+      # setup pool is 2a03:4000:2:33c::9000) — the normal dedicated-IP case.
+      vjt = user_fixture(name: "pool-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+
+      slug = "pool-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+
+      {:ok, _} =
+        Servers.add_server(network, %{
+          host: "127.0.0.1",
+          port: port,
+          tls: false,
+          source_address: "2001:db8::1"
+        })
+
+      {:ok, _} =
+        Credentials.bind_credential(vjt, network, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      on_exit(fn -> stop_session(vjt.id, network.id) end)
+
+      Logger.put_module_level(Grappa.Bootstrap, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+      log = capture_log(fn -> assert {:ok, %Result{}} = Bootstrap.run() end)
+
+      # pool keeps its single member (nothing overlapped → nothing removed)
+      assert Grappa.OutboundV6Pool.effective_pool() == [
+               {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x9000}
+             ]
+
+      assert log =~ "0 excluded"
+      assert log =~ "1 dedicated, not in pool"
+    end
+  end
+
   describe "classify_outcome/3 (REV-H H7 — closed-set + catch-all)" do
     # Direct unit tests on the testable seam. The dispatch is
     # tested via every documented success/failure shape, plus an

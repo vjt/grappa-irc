@@ -140,12 +140,18 @@ defmodule Grappa.Bootstrap do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Networks, Grappa.Session, Grappa.SpawnOrchestrator, Grappa.Visitors]
+    deps: [
+      Grappa.Networks,
+      Grappa.OutboundV6Pool,
+      Grappa.Session,
+      Grappa.SpawnOrchestrator,
+      Grappa.Visitors
+    ]
 
   use Task, restart: :transient
 
   alias Grappa.{Networks, Session, Visitors}
-  alias Grappa.Networks.{Credential, Credentials, Network, SessionPlan}
+  alias Grappa.Networks.{Credential, Credentials, Network, Servers, SessionPlan}
   alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
   alias Grappa.Visitors.Visitor
 
@@ -207,6 +213,14 @@ defmodule Grappa.Bootstrap do
     validate_visitor_networks!(visitors)
     validate_credential_servers!(credentials, visitors)
 
+    # Subtract every configured fixed source from the effective visitor
+    # pool BEFORE spawning, so no visitor session can pick/0 a dedicated
+    # oper IP (spec §3). Subtract-never-assert: overlap is silently
+    # excluded, never a boot failure. Two-phase: Application.start
+    # installed the raw env pool; this refines it to the effective pool
+    # while no session has spawned yet.
+    exclude_fixed_sources_from_pool()
+
     user_stats =
       case credentials do
         [] ->
@@ -220,6 +234,41 @@ defmodule Grappa.Bootstrap do
     visitor_stats = spawn_visitors(visitors)
 
     {:ok, sum_results(user_stats, visitor_stats)}
+  end
+
+  # Refines the effective OutboundV6Pool = raw - fixed sources before any
+  # session spawns. `apply_exclusions/1` is idempotent + subtract-never-
+  # assert (overlap is silently dropped, a v4 source against the v6 pool
+  # is a no-op), so this never fails the boot. Honest log states what we
+  # OBSERVED: configured / excluded / effective counts in the message
+  # string (no new Logger metadata-allowlist keys).
+  @spec exclude_fixed_sources_from_pool() :: :ok
+  defp exclude_fixed_sources_from_pool do
+    sources = Servers.list_source_addresses()
+    raw = Grappa.OutboundV6Pool.raw_pool()
+    :ok = Grappa.OutboundV6Pool.apply_exclusions(sources)
+    effective = Grappa.OutboundV6Pool.effective_pool()
+
+    # `excluded` = pool members actually removed (raw − effective).
+    # A configured source that was NOT in the pool is a dedicated IP that
+    # never overlapped the visitor pool — the normal, correct case — not
+    # an exclusion. Report it separately so the line is honest (CLAUDE.md
+    # log-honesty: state what was OBSERVED) instead of "0 excluded as
+    # fixed sources [ip]" reading like a contradiction.
+    excluded = length(raw) - length(effective)
+    not_in_pool = length(sources) - excluded
+
+    detail = if not_in_pool > 0, do: " (#{not_in_pool} dedicated, not in pool — OK)", else: ""
+
+    msg =
+      "outbound pool: #{length(raw)} configured, #{excluded} excluded as fixed " <>
+        "sources #{inspect(sources)}#{detail}, #{length(effective)} effective"
+
+    # Quiet on deployments not using the feature (no pool, no sources):
+    # an all-zero line every boot is noise, not signal.
+    if raw == [] and sources == [], do: Logger.debug(msg), else: Logger.info(msg)
+
+    :ok
   end
 
   # T-4 log-honesty: when the spawn loop runs against zero rows we MUST

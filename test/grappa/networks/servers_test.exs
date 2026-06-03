@@ -114,4 +114,29 @@ defmodule Grappa.Networks.ServersTest do
       assert :ok = Servers.delete_server(server)
     end
   end
+
+  describe "list_source_addresses/0" do
+    test "returns only non-NULL source addresses" do
+      {net, _} = network_with_server(%{source_address: "203.0.113.9"})
+      {:ok, _} = Servers.add_server(net, %{host: "irc2.example.org", port: 6697})
+
+      assert Servers.list_source_addresses() == ["203.0.113.9"]
+    end
+
+    test "returns [] when no server has a source" do
+      network_with_server()
+      assert Servers.list_source_addresses() == []
+    end
+
+    test "deduplicates a source shared by multiple servers" do
+      {net1, _} = network_with_server(%{source_address: "203.0.113.9"})
+      {_net2, _} = network_with_server(%{source_address: "203.0.113.9"})
+
+      # second server on net1 with the same source, to also cover same-network dup
+      {:ok, _} =
+        Servers.add_server(net1, %{host: "irc2.example.org", port: 6697, source_address: "203.0.113.9"})
+
+      assert Servers.list_source_addresses() == ["203.0.113.9"]
+    end
+  end
 end

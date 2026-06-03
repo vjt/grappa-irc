@@ -87,6 +87,10 @@ defmodule Grappa.OutboundV6Pool do
   @spec raw_pool() :: [:inet.ip6_address()]
   def raw_pool, do: :persistent_term.get(@raw_key, [])
 
+  @doc "The effective pool pick/0 currently draws from (raw minus exclusions)."
+  @spec effective_pool() :: [:inet.ip6_address()]
+  def effective_pool, do: :persistent_term.get(@key, [])
+
   # Source strings are already validated strict literals at the
   # Server changeset boundary, so a parse failure here is a broken
   # invariant — let it crash loud rather than silently drop an

@@ -126,6 +126,21 @@ defmodule Grappa.Networks.Servers do
   end
 
   @doc """
+  Every configured non-NULL outbound `source_address`, as canonical IP
+  strings. Consumed by `Grappa.Bootstrap` to subtract fixed sources
+  from the effective `OutboundV6Pool` before spawning sessions (spec §3).
+  """
+  @spec list_source_addresses() :: [String.t()]
+  def list_source_addresses do
+    Repo.all(
+      from s in Server,
+        where: not is_nil(s.source_address),
+        distinct: true,
+        select: s.source_address
+    )
+  end
+
+  @doc """
   Updates `server` with the given attrs (host / port / tls / priority /
   enabled). Same `:already_exists` mapping as `add_server/2` when an
   update would collide with a sibling `(host, port)` on the same
