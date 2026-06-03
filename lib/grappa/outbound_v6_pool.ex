@@ -27,6 +27,7 @@ defmodule Grappa.OutboundV6Pool do
   use Boundary, top_level?: true, deps: []
 
   @key {__MODULE__, :pool}
+  @raw_key {__MODULE__, :raw_pool}
 
   @doc """
   Boot-time hook: reads `:grappa, :outbound_v6_pool` (already parsed
@@ -39,6 +40,7 @@ defmodule Grappa.OutboundV6Pool do
   @spec boot() :: :ok
   def boot do
     pool = Application.get_env(:grappa, :outbound_v6_pool, [])
+    :persistent_term.put(@raw_key, pool)
     :persistent_term.put(@key, pool)
     :ok
   end
@@ -54,6 +56,45 @@ defmodule Grappa.OutboundV6Pool do
       [single] -> {:ok, single}
       pool -> {:ok, Enum.random(pool)}
     end
+  end
+
+  @doc """
+  Installs an *effective* pool = `raw_pool/0 -- exclusions`, written to
+  the `:persistent_term` key `pick/0` reads. `exclusion_ips` is a list
+  of literal IP strings (the configured per-server `source_address`es);
+  each is normalized to an `:inet` IP tuple before the set difference so
+  string-format differences (`::1` vs `0:0:..:1`) can't leak a dedicated
+  IP back into the pool. v4 exclusions against the v6 pool are disjoint
+  by family — a harmless no-op.
+
+  Idempotent: recomputes from the immutable raw pool every call, so
+  re-running with the same or an expanded exclusion set is safe. Called
+  by `Grappa.Bootstrap` before it spawns any session (spec §3).
+  """
+  @spec apply_exclusions([String.t()]) :: :ok
+  def apply_exclusions(exclusion_ips) when is_list(exclusion_ips) do
+    excluded = exclusion_ips |> Enum.map(&normalize/1) |> MapSet.new()
+    effective = Enum.reject(raw_pool(), &MapSet.member?(excluded, &1))
+    :persistent_term.put(@key, effective)
+    :ok
+  end
+
+  @doc """
+  The raw env-derived pool, before any exclusions. Operator-facing
+  surface for the `--source already in GRAPPA_OUTBOUND_V6_POOL` notice
+  in `mix grappa.bind_network` / `grappa.add_server`.
+  """
+  @spec raw_pool() :: [:inet.ip6_address()]
+  def raw_pool, do: :persistent_term.get(@raw_key, [])
+
+  # Source strings are already validated strict literals at the
+  # Server changeset boundary, so a parse failure here is a broken
+  # invariant — let it crash loud rather than silently drop an
+  # exclusion (which would leak a dedicated IP into the visitor pool).
+  @spec normalize(String.t()) :: :inet.ip_address()
+  defp normalize(ip_string) do
+    {:ok, tuple} = :inet.parse_address(String.to_charlist(ip_string))
+    tuple
   end
 
   @doc """

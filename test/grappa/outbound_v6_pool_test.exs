@@ -104,4 +104,48 @@ defmodule Grappa.OutboundV6PoolTest do
       assert picks |> Enum.uniq() |> length() == 3
     end
   end
+
+  describe "apply_exclusions/1 + raw_pool/0" do
+    setup do
+      Application.put_env(:grappa, :outbound_v6_pool, [
+        {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x9000},
+        {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x442}
+      ])
+
+      :ok = OutboundV6Pool.boot()
+    end
+
+    test "effective pool = raw minus the excluded source" do
+      :ok = OutboundV6Pool.apply_exclusions(["2a03:4000:2:33c::9000"])
+
+      assert OutboundV6Pool.raw_pool() == [
+               {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x9000},
+               {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x442}
+             ]
+
+      # pick/0 now only ever returns the surviving member
+      assert {:ok, {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x442}} = OutboundV6Pool.pick()
+    end
+
+    test "string-format variant of a pool member is still removed" do
+      # zero-padded / uncompressed spelling of ::9000 normalizes to the
+      # same tuple as the stored pool entry
+      :ok = OutboundV6Pool.apply_exclusions(["2a03:4000:0002:033c:0000:0000:0000:9000"])
+      refute {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x9000} in effective()
+    end
+
+    test "v4 exclusion against the v6 pool is a no-op" do
+      :ok = OutboundV6Pool.apply_exclusions(["203.0.113.7"])
+      assert length(effective()) == 2
+    end
+
+    test "is idempotent — re-running with the same exclusion is stable" do
+      :ok = OutboundV6Pool.apply_exclusions(["2a03:4000:2:33c::9000"])
+      :ok = OutboundV6Pool.apply_exclusions(["2a03:4000:2:33c::9000"])
+      assert length(effective()) == 1
+    end
+  end
+
+  # Reads the effective pool the way pick/0 does, for assertion.
+  defp effective, do: :persistent_term.get({OutboundV6Pool, :pool}, [])
 end
