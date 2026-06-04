@@ -11,7 +11,8 @@
 # Adds to /etc/rc.conf (or /etc/rc.conf.d/grappa_ndp_keepalive):
 #   grappa_ndp_keepalive_enable="YES"
 #   grappa_ndp_keepalive_env_file="/usr/local/etc/grappa/grappa.env"  # optional
-#   grappa_ndp_keepalive_interval="30"                                # optional, seconds
+#   grappa_ndp_keepalive_interval="10"                                # optional, seconds between bursts
+#   grappa_ndp_keepalive_count="3"                                    # optional, packets per burst per source
 #   grappa_ndp_keepalive_gateway="fe80::1%vtnet0"                     # optional, pin gateway (required in shared-IP jails)
 #
 # Wraps daemon(8) for pid + stop semantics; the actual loop lives in
@@ -26,7 +27,8 @@ load_rc_config "$name"
 
 : ${grappa_ndp_keepalive_enable:="NO"}
 : ${grappa_ndp_keepalive_env_file:="/usr/local/etc/grappa/grappa.env"}
-: ${grappa_ndp_keepalive_interval:="30"}
+: ${grappa_ndp_keepalive_interval:="10"}
+: ${grappa_ndp_keepalive_count:="3"}
 : ${grappa_ndp_keepalive_gateway:=""}
 : ${grappa_ndp_keepalive_script:="/home/grappa/grappa/infra/freebsd/ndp_keepalive.sh"}
 
@@ -47,6 +49,7 @@ grappa_ndp_keepalive_precmd() {
 	fi
 	export GRAPPA_ENV_FILE="${grappa_ndp_keepalive_env_file}"
 	export GRAPPA_NDP_KEEPALIVE_INTERVAL="${grappa_ndp_keepalive_interval}"
+	export GRAPPA_NDP_KEEPALIVE_COUNT="${grappa_ndp_keepalive_count}"
 	export GRAPPA_NDP_KEEPALIVE_GATEWAY="${grappa_ndp_keepalive_gateway}"
 }
 

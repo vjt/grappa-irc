@@ -6,8 +6,9 @@
 # Why: m42's upstream router ages NDP entries aggressively. A source
 # address that hasn't sent a packet recently goes stale; the next
 # outbound connect from it drops at the first hop until neighbor
-# solicitation resolves. Touching each source every 30s keeps the
-# entry warm at L2.
+# solicitation resolves. Touching each source every 10s with a short
+# burst keeps the entry warm at L2 — the burst survives single-packet
+# loss so one dropped solicitation doesn't let an entry age out.
 #
 # Gateway resolution order:
 #   1. GRAPPA_NDP_KEEPALIVE_GATEWAY env var (operator-pinned, e.g.
@@ -22,7 +23,8 @@
 set -u
 
 ENV_FILE="${GRAPPA_ENV_FILE:-/usr/local/etc/grappa/grappa.env}"
-INTERVAL="${GRAPPA_NDP_KEEPALIVE_INTERVAL:-30}"
+INTERVAL="${GRAPPA_NDP_KEEPALIVE_INTERVAL:-10}"
+COUNT="${GRAPPA_NDP_KEEPALIVE_COUNT:-3}"
 GATEWAY_OVERRIDE="${GRAPPA_NDP_KEEPALIVE_GATEWAY:-}"
 
 log() {
@@ -54,9 +56,9 @@ resolve_gateway() {
 }
 
 if [ -n "${GATEWAY_OVERRIDE}" ]; then
-	log "starting: interval=${INTERVAL}s gateway=${GATEWAY_OVERRIDE} (pinned) pool=${POOL}"
+	log "starting: interval=${INTERVAL}s count=${COUNT} gateway=${GATEWAY_OVERRIDE} (pinned) pool=${POOL}"
 else
-	log "starting: interval=${INTERVAL}s gateway=auto pool=${POOL}"
+	log "starting: interval=${INTERVAL}s count=${COUNT} gateway=auto pool=${POOL}"
 fi
 
 while true; do
@@ -71,11 +73,13 @@ while true; do
 	IFS=','
 	for SRC in ${POOL}; do
 		# ping(8) on FreeBSD 13+ handles both families; -6 forces v6,
-		# -S sets source address, -c 1 sends one packet, -W 2000ms
-		# bounds the wait. Output silenced — we only care about
+		# -S sets source address, -c ${COUNT} sends a short burst,
+		# -i 0.5 spaces them half a second apart (sub-second needs
+		# root — daemon(8) runs us as root), -W 2000ms bounds the
+		# per-packet wait. Output silenced — we only care about
 		# generating the NDP exchange, not measuring RTT.
-		ping -6 -S "${SRC}" -c 1 -W 2000 "${GW}" >/dev/null 2>&1 || \
-			log "ping from ${SRC} to ${GW} failed (rc=$?)"
+		ping -6 -S "${SRC}" -c "${COUNT}" -i 0.5 -W 2000 "${GW}" >/dev/null 2>&1 || \
+			log "ping burst from ${SRC} to ${GW} failed (rc=$?)"
 	done
 	IFS=$OLDIFS
 
