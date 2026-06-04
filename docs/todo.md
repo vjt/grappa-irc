@@ -170,6 +170,12 @@ Phase 5 cluster opens):
   compile time — changing the visitor network currently needs a cold
   rebuild. **Tracking: issue #42.** Surfaced while moving vjt to a
   dedicated-source network (CP54 2026-06-04, DESIGN_NOTES).
+- **cic: split "log out" into Quit IRC vs Disconnect cic** (vjt
+  2026-06-04) — **issue #43.** One button quits IRC (park all networks
+  via `PATCH /networks/:id {connection_state:"parked"}` + logout),
+  another just detaches cic leaving the bouncer connected (current
+  `auth.logout()`). Touch: `SettingsDrawer.tsx`, `lib/auth.ts`,
+  `lib/windowClose.ts`. Wiring, not new infra.
 - **`unbind` can't detach the last user from a visitor-only network**
   (2026-06-04) — `Credentials.unbind_credential/2` hits the
   cascade-on-empty path and rolls back `:scrollback_present` when the
