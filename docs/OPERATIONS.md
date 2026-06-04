@@ -30,8 +30,8 @@ bin/grappa help <verb>           # per-verb help
 
 # Boot-time verbs (mix tasks; auto-detect MIX_ENV from container):
 bin/grappa create-user --name <user> --password <pw>
-bin/grappa bind-network --user <user> --network <slug> --nick <nick> --auth <method>
-bin/grappa add-server --network <slug> --host <host> --port <port> [--tls]
+bin/grappa bind-network --user <user> --network <slug> --nick <nick> --auth <method> [--source <ip>]
+bin/grappa add-server --network <slug> --host <host> --port <port> [--tls] [--source <ip>]
 bin/grappa remove-server --network <slug> --host <host> --port <port>
 bin/grappa set-network-caps --network <slug> [--max-visitor-sessions N] [--max-user-sessions N] [--max-per-client N]
 bin/grappa unbind-network --user <user> --network <slug>
@@ -61,6 +61,40 @@ The Elixir entry points for live-state verbs live in
 `list_*_text!/0`, etc.) — one feature, one code path: the bash
 dispatcher is thin, the logic + text formatting is testable Elixir
 that survives a schema field rename.
+
+### Per-server outbound source address (`--source`)
+
+`bind-network` and `add-server` accept `--source <ip>` to pin the
+outbound TCP source address for **that server entry** (one
+`network_servers` row). Must be a strict literal IPv4 or IPv6 address
+(no hostname, no CIDR); stored canonical. NULL = kernel default / the
+`GRAPPA_OUTBOUND_V6_POOL` rotation. Full design:
+`docs/DESIGN_NOTES.md` (2026-06-03 entry) + the 2026-06-04 prod
+deployment entry.
+
+Operational facts that bite:
+
+- **Source is per-server, and the picker chooses ONE server per
+  network** (`Servers.pick_server!/1` → lowest priority). So two
+  subjects (e.g. an operator and the visitor pool) cannot get
+  different sources on the **same** network — they need **separate
+  `networks` rows** even if they point at the same IRC host:port.
+  Visitors are compile-pinned to `:visitor_network`
+  (`config/config.exs`), so the operator's dedicated-source network is
+  the one that moves to a new slug.
+- **No `update-server` verb.** To set/change `source_address` on an
+  existing server, `remove-server` then `add-server --source` (or the
+  AdminPane server-edit form).
+- **A `--source` that overlaps `GRAPPA_OUTBOUND_V6_POOL`** is excluded
+  from the visitor pool at boot (`OutboundV6Pool.apply_exclusions/1`);
+  the task prints a notice. The exclusion is recomputed only at
+  Bootstrap, so an overlapping add to a running node leaves the pool
+  until the next restart.
+- **The bind is per-server, not per-subject.** Any session that
+  resolves a `source_address`-pinned server uses that IP — visitor or
+  user alike. Keeping visitors off a dedicated-source network is the
+  operator's config responsibility (point `:visitor_network` at a
+  pool-only network).
 
 ## Developer scripts — `scripts/*.sh`
 
@@ -229,6 +263,60 @@ Docker split: `deploy.sh` ↔ `deploy-m42.sh`, `deploy-cic.sh` ↔
 When the auto-detect gets it wrong (rare), `--force-hot` and
 `--force-cold` override the preflight on both substrates. Use
 sparingly and document why in the commit message.
+
+### Running operator actions against the live jail (prod)
+
+Prod is a **bastille jail** (JID 6, `/usr/local/bastille/jails/grappa/root`,
+release at `/home/grappa/grappa`, DB `runtime/grappa_prod.db`, env
+`/usr/local/etc/grappa/grappa.env`). Reach it with
+`ssh root@m42` → `jexec 6 …`.
+
+- **`bin/grappa` (the dispatcher) is docker-only — it FAILS in the
+  jail** (`docker: not found`). It's a dev/RPi tool.
+- **Mix tasks don't work either** in the jail: a second BEAM collides
+  with the live node's Endpoint `:4000` in the shared netns.
+- **Drive the LIVE node via the release `rpc`** instead. Source the
+  env first (or `rpc` returns `:noconnection` — needs `RELEASE_COOKIE`):
+
+  ```sh
+  jexec 6 su -l grappa -c 'set -a; . /usr/local/etc/grappa/grappa.env; set +a;
+    /home/grappa/grappa/_build/prod/rel/grappa/bin/grappa rpc "<elixir>"'
+  ```
+
+  For multi-line Elixir, `scp` an `.exs` into the jail and
+  `Code.eval_file(~s(/path))` (the `~s()` sigil dodges quote-mangling
+  through ssh→jexec→su). Context fns are all on the live node
+  (`Grappa.Networks.*`, `…Credentials.*`, `Grappa.Session.stop_session/3`).
+- **`service grappa restart` has a stop/start node-name race** —
+  cold boot can abort with `name grappa@grappa … in use by another
+  Erlang node`. If so: confirm no `beam.smp`, check `epmd -names` is
+  clean, then a plain `service grappa start` (cold boot ~20s).
+- **`unbind_credential/2` refuses to drop the LAST user-credential
+  from a network that still has scrollback** (cascade-on-empty →
+  `:scrollback_present` rollback). To remove a binding while keeping
+  the network alive for visitors, delete the credential row directly +
+  `Session.stop_session`.
+
+**Jail outbound source IPs.** The jail is shared-IP
+(`jail.conf ip6=new`, `interface=vtnet0`); pool + per-server
+`source_address` IPs are `/128` aliases in `jail.conf ip6.addr`. To add
+a new source the jail can bind: append `vtnet0|<ip>/<prefix>` to
+`ip6.addr` (persist) + `jail -m jid=6 ip6.addr="…,vtnet0|<ip>/<prefix>"`
+(apply live, no restart). **Validated 2026-06-04: a shared-IP jail can
+bind a host-owned address, and jail teardown does NOT strip an address
+the host already owned** (jail(8) only removes what it added) — so the
+host's primary `::42` (rDNS `m42.openssl.it`, owned by `/etc/rc.conf`)
+is safe to share into the jail. Match the host's prefixlen (`::42/64`,
+not `/128`, or you collide with the host's on-link route).
+
+**fail2ban gotcha.** fail2ban runs on the **host** (9 jails incl.
+`http-404`, `http-ratelimit`, `recidive`). A cic client looping on a
+dead token (e.g. after a password rotation) racks up `REFUSED
+CONNECTION` / 404s and gets the source IP banned — which then blocks
+that IP's user **and** visitor sessions, looking like a "hung BEAM."
+Unban: `fail2ban-client unban <ip>` (global) on m42; fix the client
+(clear cic's `localStorage["grappa-token"]` → re-login) before it
+re-bans.
 
 ## Per-host compose overrides
 

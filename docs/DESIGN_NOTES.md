@@ -10915,3 +10915,73 @@ input halts loudly. The task emits an informational notice when
 configuration means the address will be excluded from the pool at boot
 — not an error, but worth flagging to the operator at provisioning
 time.
+
+## 2026-06-04 — Prod deployment: vjt on a dedicated source (`::42`)
+
+First real use of the per-server `source_address` feature in prod.
+Goal: vjt's outbound IRC appears from a stable dedicated IP
+(`2a03:4000:2:33c::42`, rDNS `m42.openssl.it`) while visitors keep
+rotating `GRAPPA_OUTBOUND_V6_POOL`. Operator runbook for the mechanics
+lives in `docs/OPERATIONS.md` (m42 section); this entry records the
+decisions.
+
+### Why a second `azzurra` network row (`azzurra-vjt`)
+
+`source_address` is per-server and `Servers.pick_server!/1` picks ONE
+server per network, so vjt and visitors — both on `azzurra` — could not
+get different sources from the same network row. Visitors are
+compile-pinned to `:visitor_network = "azzurra"` (`config/config.exs`,
+`Application.compile_env!`), so changing the visitor side needs a cold
+rebuild. The cheaper move (no rebuild): create `azzurra-vjt`
+(network_id 2, same `irc.azzurra.chat:6697`, `source_address=::42`),
+rebind vjt to it, leave visitors on `azzurra` (network_id 1, pool).
+
+### Scrollback is per-subject, so the move is migratable
+
+`messages`/`read_cursors`/`query_windows` are keyed by `network_id` +
+`user_id`/`visitor_id`. vjt's history (17,237 msgs, 47 cursors, 1
+window) was re-keyed `network_id 1 → 2` via `Repo.update_all` filtered
+on `user_id`, leaving visitor rows on net 1 untouched. Message ids are
+stable across the re-key so `read_cursors.last_read_message_id` FKs
+survive. Done on the live node after `Session.stop_session` quiesced
+vjt's net-1 session.
+
+### `unbind_credential/2` can't drop the last user on a network with
+scrollback
+
+Removing vjt from `azzurra` via `unbind_credential/2` would hit the
+cascade-on-empty path (no user-credentials left → try to delete the
+network) and roll back with `:scrollback_present` (net 1 still has
+visitor messages; `messages.network_id` FK is `:restrict`). It can't
+remove *just* the binding. A network used only by visitors looks
+"userless" to this check — a latent gap. Workaround used: delete the
+credential row directly + `Session.stop_session`, keeping `azzurra`
+alive for visitors. (Candidate follow-up: teach unbind that visitor
+presence counts, or add a "detach user, keep network" verb.)
+
+### Sharing the host's primary IP into a shared-IP jail is safe
+
+`::42` is the host's primary (`/etc/rc.conf ifconfig_vtnet0_ipv6`,
+`prefixlen 64`), not a pool `/128`. The grappa jail is shared-IP
+(`ip6=new`, `interface=vtnet0`). Concern: a jail stop stripping `::42`
+off `vtnet0` would kill host connectivity. **Validated empirically on a
+throwaway address: `jail(8)` only removes addresses it ADDED at jail
+start — an address the host already owned (present before the jail
+starts) survives jail teardown.** Since rc.conf assigns `::42` at boot
+before bastille starts jails, the jail never owns it → never strips it.
+Added as `vtnet0|::42/64` (match host prefixlen — `/128` would collide
+with the host's on-link `/64` route) via `jail.conf` + live `jail -m`.
+The `exec.poststop` guard considered earlier was dropped as unnecessary.
+
+### Incident: `service grappa restart` node-name race → ~2 min outage
+
+The restart to spawn vjt's new session aborted boot with `the name
+grappa@grappa seems to be in use by another Erlang node` — the stopping
+node hadn't released the sname before the new one bound it. The BEAM was
+down ~1–2 min until caught (status `stopped` + empty healthz). epmd was
+already clean; a plain `service grappa start` recovered. Lesson logged
+in OPERATIONS: prefer stop→verify-clean→start over `restart` on this
+substrate. (Separately: a password rotation mid-session invalidated
+vjt's cic token; the looping client tripped host fail2ban `http-404`,
+which looked like a hung BEAM but was an IP ban — see OPERATIONS
+fail2ban note.)

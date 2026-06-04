@@ -3402,3 +3402,59 @@ expectation that a green-vs-red test could adjudicate it.
 fix. When red never comes, ask whether your harness can even express
 the failure before you doubt the diagnosis — headless browsers don't
 have physics, and some bugs are made of physics.*
+
+## 2026-06-04 — A dedicated IP, a clean migration, and a "hung BEAM" that was a self-inflicted ban
+
+The ask was small: give vjt's outbound IRC a stable identity. The
+per-server `source_address` feature had shipped the day before; now it
+needed to meet prod. vjt and the visitor pool both lived on `azzurra`,
+and source binding is per-server with a single-server picker — so they
+could not share a network row and get different sources. One of them
+had to move. Visitors are compile-pinned to `:visitor_network`
+("azzurra", baked at compile time), so the cheap move was vjt: a new
+`azzurra-vjt` row pointed at the same host, sourced from a dedicated v6.
+
+Two things made me slow down. First, the scrollback. vjt had 17,237
+messages and 25 channels under that network_id, and moving him naively
+would have orphaned all of it. But `messages` carries `user_id`, so the
+history was separable — a targeted `Repo.update_all` re-keyed exactly
+his rows and left the 6,500 visitor messages where they were. I almost
+reached for `unbind_credential` to drop his old binding; reading it
+first saved me — it rolls back `:scrollback_present` when a network
+still has messages but no other user, which is precisely the
+visitor-only network shape. It literally cannot detach the last user
+from a network the visitors are still using. Direct row delete instead.
+
+Second, and the part vjt explicitly flagged: the dedicated IP was `::42`
+— the **host's primary address**, rDNS `m42.openssl.it`. "do not fuck
+the host." A shared-IP jail strips its `ip6.addr` entries on stop, and
+if that entry were the host's main IP, a jail restart would yank
+connectivity. I didn't trust my memory of `jail(8)`'s semantics, so I
+proved it: assigned a throwaway `::4242` to the host, shared it into a
+disposable jail, tore the jail down, and watched whether the host kept
+the address. It did. `jail(8)` only removes what it added; an address
+the host owned first survives. *Then* I touched `::42`. The setup went
+in clean — vjt outbound from `::42`, visitors from the pool, host
+intact.
+
+And then prod "hung." `service grappa restart` had raced its own node
+name on the way up (`grappa@grappa … in use`) and aborted boot — I
+caught the `stopped` status, cleared it with a plain `start`, ~two
+minutes down. Recovered. But minutes later vjt: "beam seems stuck,
+doesn't respond." The timing screamed that my surgery had broken
+something. It hadn't. The BEAM was idle, healthz returned `ok` in
+half a millisecond, vjt's session was still connected from `::42` the
+whole time. What had actually happened: vjt rotated his account password,
+his cic client kept retrying the WebSocket with a now-dead token, 315
+`REFUSED CONNECTION`s tripped fail2ban's `http-404` jail on the *host*,
+and his IP got banned — blocking his user and a visitor session alike,
+which looked exactly like "the visitor is broken too, so it's the
+server." `fail2ban-client unban`, clear cic's `grappa-token`, re-login.
+The scariest symptom of the day was two layers away from anything I had
+changed.
+
+*Law: when prod looks dead right after you changed it, verify the layer
+before you trust the correlation. A hung-looking BEAM that answers
+healthz in 500µs isn't hung — walk outward (token, proxy, firewall,
+the human's last action) before you walk back into your own diff. The
+symptom that points at your change is the most expensive coincidence.*

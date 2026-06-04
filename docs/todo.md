@@ -162,6 +162,21 @@ Phase 5 cluster opens):
   fails silently, contact operator." A `POST /auth/login` pre-check
   that queries the live Registry for collision-and-rejects would
   prevent the class entirely. Smaller bucket.
+- **De-compile-pin `:visitor_network`** (vjt 2026-06-04) — it's
+  `Application.compile_env!(:grappa, :visitor_network)` in
+  `lib/grappa/visitors/login.ex` (hardcoded `"azzurra"` in
+  `config/config.exs`). Should be a runtime/env decision
+  (`GRAPPA_VISITOR_NETWORK` in `config/runtime.exs`), not baked at
+  compile time — changing the visitor network currently needs a cold
+  rebuild. **Tracking: issue #42.** Surfaced while moving vjt to a
+  dedicated-source network (CP54 2026-06-04, DESIGN_NOTES).
+- **`unbind` can't detach the last user from a visitor-only network**
+  (2026-06-04) — `Credentials.unbind_credential/2` hits the
+  cascade-on-empty path and rolls back `:scrollback_present` when the
+  network still has (visitor) scrollback but no other user-credential.
+  Either teach the last-user check that visitor presence counts, or add
+  a "detach user, keep network" verb. Worked around in prod with a
+  direct credential-row delete. See DESIGN_NOTES 2026-06-04.
 
 ## Low / Observation
 
