@@ -1294,6 +1294,61 @@ static void draw_message_line(int y, int x, int width, int max_lines, const char
     }
 }
 
+static int input_display_lines(const char *prompt, const char *input, int width) {
+    if (width <= 0) return 1;
+    size_t total = strlen(prompt) + strlen(input);
+    int lines = (int)(total / (size_t)width) + 1;
+    return lines < 1 ? 1 : lines;
+}
+
+static void draw_input_box(int y, int x, int width, int height, const char *prompt, const char *input, int *cursor_y, int *cursor_x) {
+    if (width <= 0 || height <= 0) return;
+    for (int row = 0; row < height; row++) draw_fill(y + row, x, width, CP_INPUT);
+    int inner_x = x + 1;
+    int inner_w = width - 2;
+    if (inner_w <= 0) inner_w = width;
+
+    char *joined = xasprintf("%s%s", prompt, input);
+    int total_lines = input_display_lines(prompt, input, inner_w);
+    int first_line = total_lines > height ? total_lines - height : 0;
+    int pos = 0;
+    int row = 0;
+    const int prompt_len = (int)strlen(prompt);
+    const int joined_len = (int)strlen(joined);
+    while (row < height && pos < joined_len) {
+        int line_no = pos / inner_w;
+        int take = inner_w - (pos % inner_w);
+        if (take > joined_len - pos) take = joined_len - pos;
+        if (line_no >= first_line) {
+            attron(COLOR_PAIR(CP_INPUT) | A_BOLD);
+            for (int i = 0; i < take; i++) {
+                if (pos + i == prompt_len) attroff(COLOR_PAIR(CP_INPUT) | A_BOLD), attron(COLOR_PAIR(CP_INPUT));
+                mvaddch(y + row, inner_x + (pos % inner_w) + i, (unsigned char)joined[pos + i]);
+            }
+            attroff(COLOR_PAIR(CP_INPUT) | A_BOLD);
+            attroff(COLOR_PAIR(CP_INPUT));
+            row++;
+        }
+        pos += take;
+    }
+    if (joined_len == 0) draw_text(y, inner_x, inner_w, CP_INPUT, 0, "%s", "");
+
+    int cursor_pos = joined_len;
+    int cursor_line = cursor_pos / inner_w;
+    int cursor_col = cursor_pos % inner_w;
+    if (cursor_line < first_line) {
+        cursor_line = first_line;
+        cursor_col = 0;
+    }
+    if (cursor_line - first_line >= height) {
+        cursor_line = first_line + height - 1;
+        cursor_col = inner_w - 1;
+    }
+    *cursor_y = y + cursor_line - first_line;
+    *cursor_x = inner_x + cursor_col;
+    free(joined);
+}
+
 static const char *panel_name(enum panel_kind panel) {
     switch (panel) {
     case PANEL_CHAT: return "chat";
@@ -1773,11 +1828,18 @@ static void draw(struct app *app) {
     int main_x = side + 1;
     int main_w = cols - side - members - 2;
     int members_x = cols - members;
-    int compose_y = rows - 3;
-    int input_y = rows - 2;
     int chrome_y = 0;
     int topic_y = 1;
     struct window *w = &app->windows[app->current];
+    char prompt[MAX_CHANNEL + 4];
+    if (app->panel == PANEL_CHAT) snprintf(prompt, sizeof(prompt), "%s> ", w->channel);
+    else snprintf(prompt, sizeof(prompt), "%s> ", panel_name(app->panel));
+    int input_h = input_display_lines(prompt, app->input, main_w - 4);
+    int max_input_h = rows / 3;
+    if (max_input_h < 1) max_input_h = 1;
+    if (input_h > max_input_h) input_h = max_input_h;
+    int input_y = rows - input_h - 1;
+    int compose_y = input_y - 1;
     const char *topic_text = w->topic[0] ? w->topic : "(not loaded yet)";
     int topic_label_w = main_w / 3;
     if (topic_label_w < 12) topic_label_w = 12;
@@ -1845,12 +1907,10 @@ static void draw(struct app *app) {
             draw_text(scroll_y + 2 + (int)i, main_x + 1, main_w - 2, pair, attr, "%s", app->panel_lines[i]);
         }
         draw_text(compose_y, main_x + 1, main_w - 2, CP_MUTED, 0, "panel: %s | Esc or /chat returns to chat", panel_name(app->panel));
-        draw_fill(input_y, main_x + 1, main_w - 2, CP_INPUT);
-        char panel_prompt[64];
-        snprintf(panel_prompt, sizeof(panel_prompt), "%s> ", panel_name(app->panel));
-        draw_text(input_y, main_x + 2, main_w - 4, CP_INPUT, A_BOLD, "%s", panel_prompt);
-        draw_text(input_y, main_x + 2 + (int)strlen(panel_prompt), main_w - 4 - (int)strlen(panel_prompt), CP_INPUT, 0, "%s", app->input);
-        move(input_y, main_x + 2 + (int)strlen(panel_prompt) + (int)app->input_len);
+        int cursor_y = input_y;
+        int cursor_x = main_x + 2;
+        draw_input_box(input_y, main_x + 1, main_w - 2, input_h, prompt, app->input, &cursor_y, &cursor_x);
+        move(cursor_y, cursor_x);
         pthread_mutex_unlock(&app->lock);
         refresh();
         return;
@@ -1897,11 +1957,9 @@ static void draw(struct app *app) {
     draw_text(compose_y, main_x + 1, main_w - 2, CP_MUTED, 0,
               "[%s] PgUp/PgDn scroll | End bottom | Tab complete | Up/Down history | /open | /exit%s",
               w->channel, app->scrollback_pinned ? " | scrolled" : "");
-    char prompt[MAX_CHANNEL + 4];
-    snprintf(prompt, sizeof(prompt), "%s> ", w->channel);
-    draw_fill(input_y, main_x + 1, main_w - 2, CP_INPUT);
-    draw_text(input_y, main_x + 2, main_w - 4, CP_INPUT, A_BOLD, "%s", prompt);
-    draw_text(input_y, main_x + 2 + (int)strlen(prompt), main_w - 4 - (int)strlen(prompt), CP_INPUT, 0, "%s", app->input);
+    int cursor_y = input_y;
+    int cursor_x = main_x + 2;
+    draw_input_box(input_y, main_x + 1, main_w - 2, input_h, prompt, app->input, &cursor_y, &cursor_x);
 
     if (members) {
         draw_text(0, members_x + 1, members - 2, CP_ACCENT, A_BOLD, "members");
@@ -1910,7 +1968,7 @@ static void draw(struct app *app) {
         draw_text(4, members_x + 1, members - 2, CP_MUTED, 0, "member side pane");
     }
 
-    move(input_y, main_x + 2 + (int)strlen(prompt) + (int)app->input_len);
+    move(cursor_y, cursor_x);
     pthread_mutex_unlock(&app->lock);
     refresh();
 }
