@@ -2794,57 +2794,63 @@ int main(int argc, char **argv) {
     startup("starting (%s mode)", mode);
     SSL_library_init();
     SSL_load_error_strings();
-    struct app app;
-    memset(&app, 0, sizeof(app));
-    pthread_mutex_init(&app.lock, NULL);
-    pthread_mutex_init(&app.jobs_lock, NULL);
-    pthread_cond_init(&app.jobs_cond, NULL);
-    app.ws.fd = -1;
+    struct app *app = calloc(1, sizeof(*app));
+    if (!app) die("out of memory");
+    pthread_mutex_init(&app->lock, NULL);
+    pthread_mutex_init(&app->jobs_lock, NULL);
+    pthread_cond_init(&app->jobs_cond, NULL);
+    app->ws.fd = -1;
     startup("parsing server URL %s", argv[argi]);
-    if (!parse_url(argv[argi], &app.url)) die("invalid base URL: %s", argv[argi]);
+    if (!parse_url(argv[argi], &app->url)) die("invalid base URL: %s", argv[argi]);
     startup("initializing TLS context");
-    app.ssl_ctx = SSL_CTX_new(TLS_client_method());
-    if (!app.ssl_ctx) die("failed to create TLS context");
-    SSL_CTX_set_default_verify_paths(app.ssl_ctx);
-    SSL_CTX_set_verify(app.ssl_ctx, SSL_VERIFY_PEER, NULL);
+    app->ssl_ctx = SSL_CTX_new(TLS_client_method());
+    if (!app->ssl_ctx) die("failed to create TLS context");
+    SSL_CTX_set_default_verify_paths(app->ssl_ctx);
+    SSL_CTX_set_verify(app->ssl_ctx, SSL_VERIFY_PEER, NULL);
 
     const char *identifier = login_override ? login_override : argv[argi + 1];
     const char *password = login_override ? argv[argi + 1] : argv[argi + 2];
     char *login_id = login_identifier_for_mode(mode, identifier);
     startup("authenticating as %s", login_id);
-    if (!attach_or_login(&app, login_id, password)) {
+    if (!attach_or_login(app, login_id, password)) {
         free(login_id);
+        pthread_cond_destroy(&app->jobs_cond);
+        pthread_mutex_destroy(&app->jobs_lock);
+        pthread_mutex_destroy(&app->lock);
+        SSL_CTX_free(app->ssl_ctx);
+        free(app);
         return 1;
     }
-    startup("authenticated as %s", app.subject);
+    startup("authenticated as %s", app->subject);
     free(login_id);
     startup("loading networks and channels");
-    seed_state(&app);
-    startup("loading initial scrollback for %zu windows", app.window_count);
-    for (size_t i = 0; i < app.window_count; i++) fetch_scrollback(&app, &app.windows[i]);
+    seed_state(app);
+    startup("loading initial scrollback for %zu windows", app->window_count);
+    for (size_t i = 0; i < app->window_count; i++) fetch_scrollback(app, &app->windows[i]);
     startup("connecting websocket");
-    if (ws_connect(&app)) {
+    if (ws_connect(app)) {
         startup("joining websocket topics");
-        ws_join_topics(&app);
-        log_line(&app, "websocket connected");
+        ws_join_topics(app);
+        log_line(app, "websocket connected");
     } else {
         startup("websocket unavailable; continuing with REST");
-        log_line(&app, "websocket unavailable; REST send/fetch still works");
+        log_line(app, "websocket unavailable; REST send/fetch still works");
     }
     startup("starting background worker");
-    pthread_create(&app.worker, NULL, worker_main, &app);
+    pthread_create(&app->worker, NULL, worker_main, app);
     startup("entering terminal UI");
-    event_loop(&app);
-    pthread_mutex_lock(&app.jobs_lock);
-    app.worker_stop = true;
-    pthread_cond_signal(&app.jobs_cond);
-    pthread_mutex_unlock(&app.jobs_lock);
-    pthread_join(app.worker, NULL);
-    if (app.ws_connected) conn_close(&app.ws);
-    for (size_t i = 0; i < app.log_count; i++) free(app.log[i]);
-    pthread_cond_destroy(&app.jobs_cond);
-    pthread_mutex_destroy(&app.jobs_lock);
-    pthread_mutex_destroy(&app.lock);
-    SSL_CTX_free(app.ssl_ctx);
+    event_loop(app);
+    pthread_mutex_lock(&app->jobs_lock);
+    app->worker_stop = true;
+    pthread_cond_signal(&app->jobs_cond);
+    pthread_mutex_unlock(&app->jobs_lock);
+    pthread_join(app->worker, NULL);
+    if (app->ws_connected) conn_close(&app->ws);
+    for (size_t i = 0; i < app->log_count; i++) free(app->log[i]);
+    pthread_cond_destroy(&app->jobs_cond);
+    pthread_mutex_destroy(&app->jobs_lock);
+    pthread_mutex_destroy(&app->lock);
+    SSL_CTX_free(app->ssl_ctx);
+    free(app);
     return 0;
 }
