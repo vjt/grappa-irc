@@ -90,7 +90,7 @@ Thumbs.db
 *.log
 
 # ── Native terminal shottino build artifacts
-/tools/shottino/shottino
+/frontends/shottino/shottino
 
 # GitHub CLI config
 .gh
