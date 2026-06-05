@@ -39,6 +39,7 @@
 #define MAX_CHANNEL 256
 #define MAX_SLUG 128
 #define MAX_LINE 1024
+#define MAX_TOPIC 4096
 #define LOG_LINES 2000
 #define HTTP_MAX (4 * 1024 * 1024)
 #define WS_MAX_PAYLOAD (1024 * 1024)
@@ -130,7 +131,9 @@ struct network {
 struct window {
     char network[MAX_SLUG];
     char channel[MAX_CHANNEL];
-    char topic[MAX_LINE];
+    char topic[MAX_TOPIC];
+    char members[512][MAX_CHANNEL];
+    size_t member_count;
     long last_id;
     unsigned unread;
     bool joined_ws;
@@ -933,6 +936,49 @@ static void clear_current_unread_locked(struct app *app) {
     if (app->current < app->window_count) app->windows[app->current].unread = 0;
 }
 
+static void clear_active_window_log(struct app *app) {
+    pthread_mutex_lock(&app->lock);
+    if (app->current >= app->window_count) {
+        pthread_mutex_unlock(&app->lock);
+        return;
+    }
+    char key[MAX_SLUG + MAX_CHANNEL + 8];
+    snprintf(key, sizeof(key), "[%s/%s]", app->windows[app->current].network, app->windows[app->current].channel);
+    size_t write_i = 0;
+    for (size_t read_i = 0; read_i < app->log_count; read_i++) {
+        if (strncmp(app->log[read_i], key, strlen(key)) == 0) {
+            free(app->log[read_i]);
+            continue;
+        }
+        if (write_i != read_i) {
+            app->log[write_i] = app->log[read_i];
+            app->log_mentions[write_i] = app->log_mentions[read_i];
+            app->log_pending[write_i] = app->log_pending[read_i];
+        }
+        write_i++;
+    }
+    app->log_count = write_i;
+    app->scrollback_offset = 0;
+    app->scrollback_pinned = false;
+    clear_current_unread_locked(app);
+    pthread_mutex_unlock(&app->lock);
+}
+
+static void set_window_members(struct app *app, const char *network, const char *channel, char members[][MAX_CHANNEL], size_t count) {
+    pthread_mutex_lock(&app->lock);
+    for (size_t i = 0; i < app->window_count; i++) {
+        if (strcmp(app->windows[i].network, network) == 0 && strcmp(app->windows[i].channel, channel) == 0) {
+            app->windows[i].member_count = count > 512 ? 512 : count;
+            for (size_t j = 0; j < app->windows[i].member_count; j++) {
+                memcpy(app->windows[i].members[j], members[j], MAX_CHANNEL);
+                app->windows[i].members[j][MAX_CHANNEL - 1] = 0;
+            }
+            break;
+        }
+    }
+    pthread_mutex_unlock(&app->lock);
+}
+
 static void maybe_mark_unread(struct app *app, const char *network, const char *channel, bool live) {
     if (!live || !network[0] || !channel[0]) return;
     pthread_mutex_lock(&app->lock);
@@ -948,7 +994,7 @@ static void maybe_mark_unread(struct app *app, const char *network, const char *
 static void apply_topic_event(struct app *app, const char *json) {
     char network[MAX_SLUG] = "";
     char channel[MAX_CHANNEL] = "";
-    char text[MAX_LINE] = "";
+    char text[MAX_TOPIC] = "";
     json_find_string(json, "network", network, sizeof(network));
     json_find_string(json, "channel", channel, sizeof(channel));
     const char *topic = strstr(json, "\"topic\"");
@@ -964,8 +1010,26 @@ static void apply_topic_event(struct app *app, const char *json) {
     pthread_mutex_unlock(&app->lock);
 }
 
+static void apply_members_seeded_event(struct app *app, const char *json) {
+    char network[MAX_SLUG] = "";
+    char channel[MAX_CHANNEL] = "";
+    char members[512][MAX_CHANNEL];
+    size_t count = 0;
+    json_find_string(json, "network", network, sizeof(network));
+    json_find_string(json, "channel", channel, sizeof(channel));
+    const char *p = json;
+    while ((p = strstr(p, "\"nick\"")) && count < 512) {
+        char nick[MAX_CHANNEL] = "";
+        if (json_find_string(p, "nick", nick, sizeof(nick)) && nick[0]) snprintf(members[count++], MAX_CHANNEL, "%s", nick);
+        p += 6;
+    }
+    if (network[0] && channel[0]) set_window_members(app, network, channel, members, count);
+}
+
 static void remember_url(struct app *app, const char *body);
 static bool message_mentions_me(struct app *app, const char *network, const char *sender, const char *body);
+static bool nick_case_equal(const char *a, const char *b);
+static const char *own_nick_for_network(struct app *app, const char *network);
 
 static void log_message_json(struct app *app, const char *json, bool live) {
     long id = 0;
@@ -985,9 +1049,18 @@ static void log_message_json(struct app *app, const char *json, bool live) {
     json_find_string(json, "body", body, sizeof(body));
     json_find_string(json, "kind", kind, sizeof(kind));
     if (!body[0]) return;
+
+    char display_channel[MAX_CHANNEL];
+    snprintf(display_channel, sizeof(display_channel), "%s", channel);
+    const char *own_nick = own_nick_for_network(app, network);
+    if (live && own_nick && nick_case_equal(channel, own_nick) && sender[0] && !nick_case_equal(sender, own_nick)) {
+        snprintf(display_channel, sizeof(display_channel), "%s", sender);
+        add_window_ex(app, network, display_channel, false);
+    }
+
     bool had_pending = has_matching_pending_echo(app, network, channel, body);
-    if (!had_pending && !live && has_matching_confirmed_line(app, network, channel, sender, body)) return;
-    clear_matching_pending_echo(app, network, channel, body);
+    if (!had_pending && !live && has_matching_confirmed_line(app, network, display_channel, sender, body)) return;
+    clear_matching_pending_echo(app, network, display_channel, body);
 
     if (id > 0 && network[0] && channel[0]) {
         pthread_mutex_lock(&app->lock);
@@ -1008,19 +1081,19 @@ static void log_message_json(struct app *app, const char *json, bool live) {
 
     pthread_mutex_lock(&app->lock);
     for (size_t i = 0; i < app->window_count; i++) {
-        if (network[0] && channel[0] && strcmp(app->windows[i].network, network) == 0 && strcmp(app->windows[i].channel, channel) == 0 && id > app->windows[i].last_id) app->windows[i].last_id = id;
+        if (network[0] && display_channel[0] && strcmp(app->windows[i].network, network) == 0 && strcmp(app->windows[i].channel, display_channel) == 0 && id > app->windows[i].last_id) app->windows[i].last_id = id;
     }
     pthread_mutex_unlock(&app->lock);
     remember_url(app, body);
-    maybe_mark_unread(app, network, channel, live);
+    maybe_mark_unread(app, network, display_channel, live);
     bool mention = message_mentions_me(app, network, sender, body);
     char clock[16];
     time_t ts = server_time > 100000000000L ? (time_t)(server_time / 1000) : time(NULL);
     struct tm tm;
     localtime_r(&ts, &tm);
     strftime(clock, sizeof(clock), "%H:%M", &tm);
-    if (strcmp(kind, "action") == 0) log_line_mention(app, mention, "[%s/%s] %s * %s %s", network, channel, clock, sender, body);
-    else log_line_mention(app, mention, "[%s/%s] %s <%s> %s", network, channel, clock, sender, body);
+    if (strcmp(kind, "action") == 0) log_line_mention(app, mention, "[%s/%s] %s * %s %s", network, display_channel, clock, sender, body);
+    else log_line_mention(app, mention, "[%s/%s] %s <%s> %s", network, display_channel, clock, sender, body);
 
     pthread_mutex_lock(&app->lock);
     if (!app->scrollback_pinned) app->scrollback_offset = 0;
@@ -1059,6 +1132,10 @@ static bool contains_ci(const char *haystack, const char *needle) {
         if (i == nlen) return true;
     }
     return false;
+}
+
+static bool nick_case_equal(const char *a, const char *b) {
+    return a && b && strcasecmp(a, b) == 0;
 }
 
 static bool message_mentions_me(struct app *app, const char *network, const char *sender, const char *body) {
@@ -1112,6 +1189,58 @@ static void draw_text(int y, int x, int max, int pair, attr_t attrs, const char 
     va_end(ap);
     attron(COLOR_PAIR(pair) | attrs);
     mvprintw(y, x, "%.*s", max, buf);
+    attroff(COLOR_PAIR(pair) | attrs);
+}
+
+static int wrapped_text_lines(const char *s, int width) {
+    if (width <= 0) return 0;
+    int lines = 1;
+    int col = 0;
+    for (const char *p = s; *p; p++) {
+        if (*p == '\n' || *p == '\r') {
+            lines++;
+            col = 0;
+            if (*p == '\r' && p[1] == '\n') p++;
+            continue;
+        }
+        if (col >= width) {
+            lines++;
+            col = 0;
+        }
+        col++;
+    }
+    return lines;
+}
+
+static void draw_wrapped_text(int y, int x, int width, int max_lines, int pair, attr_t attrs, const char *s) {
+    if (width <= 0 || max_lines <= 0) return;
+    int line = 0;
+    int col = 0;
+    attron(COLOR_PAIR(pair) | attrs);
+    move(y, x);
+    for (const char *p = s; *p && line < max_lines; p++) {
+        if (*p == '\r') {
+            if (p[1] == '\n') p++;
+            line++;
+            col = 0;
+            if (line < max_lines) move(y + line, x);
+            continue;
+        }
+        if (*p == '\n') {
+            line++;
+            col = 0;
+            if (line < max_lines) move(y + line, x);
+            continue;
+        }
+        if (col >= width) {
+            line++;
+            col = 0;
+            if (line >= max_lines) break;
+            move(y + line, x);
+        }
+        addch((unsigned char)*p);
+        col++;
+    }
     attroff(COLOR_PAIR(pair) | attrs);
 }
 
@@ -1577,6 +1706,7 @@ static void ws_pump(struct app *app) {
         }
         if (strstr(frame, "\"event\"") && strstr(frame, "\"kind\":\"message\"")) log_message_json(app, frame, true);
         else if (strstr(frame, "\"event\"") && strstr(frame, "\"kind\":\"topic_changed\"")) apply_topic_event(app, frame);
+        else if (strstr(frame, "\"event\"") && strstr(frame, "\"kind\":\"members_seeded\"")) apply_members_seeded_event(app, frame);
         else if (strstr(frame, "\"event\"") && strstr(frame, "\"kind\":\"query_windows_list\"")) apply_query_windows_list(app, frame);
         else if (strstr(frame, "\"phx_reply\"") && strstr(frame, "\"status\":\"error\"")) log_line(app, "channel join error: %.200s", frame);
         free(frame);
@@ -1593,12 +1723,28 @@ static void draw(struct app *app) {
     int main_x = side + 1;
     int main_w = cols - side - members - 2;
     int members_x = cols - members;
-    int chrome_y = 0;
-    int topic_y = 1;
     int compose_y = rows - 3;
     int input_y = rows - 2;
-    int scroll_y = 2;
-    int scroll_h = rows - 5;
+    int chrome_y = 0;
+    int topic_y = 1;
+    struct window *w = &app->windows[app->current];
+    const char *topic_text = w->topic[0] ? w->topic : "(not loaded yet)";
+    int topic_label_w = main_w / 3;
+    if (topic_label_w < 12) topic_label_w = 12;
+    if (topic_label_w > main_w - 12) topic_label_w = main_w / 2;
+    int topic_text_x = main_x + topic_label_w + 2;
+    int topic_text_w = main_w - topic_label_w - 3;
+    int topic_prefix_w = 7;
+    if (topic_text_w < topic_prefix_w + 8) topic_prefix_w = 0;
+    int topic_wrap_w = topic_text_w - topic_prefix_w;
+    if (topic_wrap_w < 1) topic_wrap_w = 1;
+    int topic_h = wrapped_text_lines(topic_text, topic_wrap_w);
+    int max_topic_h = compose_y - topic_y - 1;
+    if (max_topic_h < 1) max_topic_h = 1;
+    if (topic_h > max_topic_h) topic_h = max_topic_h;
+    int scroll_y = topic_y + topic_h;
+    int scroll_h = compose_y - 1 - scroll_y;
+    if (scroll_h < 0) scroll_h = 0;
 
     for (int y = 0; y < rows; y++) {
         draw_fill(y, 0, side, CP_ALT);
@@ -1607,7 +1753,7 @@ static void draw(struct app *app) {
     attron(COLOR_PAIR(CP_BORDER));
     mvvline(0, side, ACS_VLINE, rows);
     if (members) mvvline(0, members_x - 1, ACS_VLINE, rows);
-    mvhline(topic_y, main_x, ACS_HLINE, main_w);
+    mvhline(scroll_y, main_x, ACS_HLINE, main_w);
     mvhline(compose_y - 1, main_x, ACS_HLINE, main_w);
     attroff(COLOR_PAIR(CP_BORDER));
 
@@ -1634,13 +1780,12 @@ static void draw(struct app *app) {
         y++;
     }
 
-    struct window *w = &app->windows[app->current];
     draw_text(chrome_y, main_x + 1, main_w - 2, CP_MUTED, 0,
               "/archive  /settings  /admin  /chat  ws:%s", app->ws_connected ? "connected" : "offline");
-    draw_fill(topic_y, main_x, main_w, CP_ALT);
-    draw_text(topic_y, main_x + 1, main_w / 3, CP_ACCENT, A_BOLD, "%s/%s", w->network, w->channel);
-    draw_text(topic_y, main_x + 2 + (main_w / 3), main_w - (main_w / 3) - 3, CP_ALT, 0,
-              "topic: %s", w->topic[0] ? w->topic : "(not loaded yet)");
+    for (int ty = 0; ty < topic_h; ty++) draw_fill(topic_y + ty, main_x, main_w, CP_ALT);
+    draw_text(topic_y, main_x + 1, topic_label_w, CP_ACCENT, A_BOLD, "%s/%s", w->network, w->channel);
+    if (topic_prefix_w) draw_text(topic_y, topic_text_x, topic_text_w, CP_ALT, A_BOLD, "topic: ");
+    draw_wrapped_text(topic_y, topic_text_x + topic_prefix_w, topic_wrap_w, topic_h, CP_ALT, 0, topic_text);
 
     if (app->panel != PANEL_CHAT) {
         draw_text(scroll_y, main_x + 1, main_w - 2, CP_ACCENT, A_BOLD, "%s", panel_name(app->panel));
@@ -1847,6 +1992,18 @@ static void list_members_target(struct app *app, const char *network, const char
                 }
             }
         }
+        pthread_mutex_lock(&app->lock);
+        for (size_t wi = 0; wi < app->window_count; wi++) {
+            if (strcmp(app->windows[wi].network, network) == 0 && strcmp(app->windows[wi].channel, channel) == 0) {
+                app->windows[wi].member_count = count > 512 ? 512 : count;
+                for (size_t mi = 0; mi < app->windows[wi].member_count; mi++) {
+                    memcpy(app->windows[wi].members[mi], rows[mi].nick, MAX_CHANNEL);
+                    app->windows[wi].members[mi][MAX_CHANNEL - 1] = 0;
+                }
+                break;
+            }
+        }
+        pthread_mutex_unlock(&app->lock);
         log_line(app, "members %s (%zu):", channel, count);
         for (size_t i = 0; i < count; i++) {
             const char *label = rows[i].rank == 0 ? "op" : (rows[i].rank == 1 ? "halfop" : (rows[i].rank == 2 ? "voice" : "user"));
@@ -2127,7 +2284,7 @@ static void cycle_window(struct app *app, int delta) {
 }
 
 static const char *commands[] = {
-    "/admin", "/archive", "/away", "/ban", "/banlist", "/chat", "/close", "/connect", "/deop", "/devoice", "/disconnect",
+    "/admin", "/archive", "/away", "/ban", "/banlist", "/chat", "/clear", "/close", "/connect", "/deop", "/devoice", "/disconnect",
     "/invite", "/join", "/kick", "/lusers", "/me", "/members", "/mode", "/msg", "/names",
     "/nick", "/op", "/oper", "/part", "/q", "/query", "/quit", "/quote", "/settings", "/topic", "/umode",
     "/unban", "/users", "/voice", "/w", "/watch", "/whowas", "/who", "/whois", "/win", "/window"
@@ -2187,6 +2344,10 @@ static void complete_input(struct app *app) {
         }
     } else {
         const char *current_network = app->window_count > 0 ? app->windows[app->current].network : "";
+        if (app->window_count > 0) {
+            struct window *w = &app->windows[app->current];
+            for (size_t i = 0; i < w->member_count; i++) add_completion_candidate(candidates, &matches, w->members[i], stem);
+        }
         for (size_t i = 0; i < app->window_count; i++) {
             const char *name = app->windows[i].channel;
             add_completion_candidate(candidates, &matches, name, stem);
@@ -2236,7 +2397,7 @@ static void open_external_url(struct app *app, const char *url) {
 }
 
 static void show_help(struct app *app) {
-    log_line(app, "commands: /help /archive /settings /admin /chat /exit /quit /window N [/w N, /win N] /join #chan [/j] /part /close /msg nick text /query nick [/q nick] /me text");
+    log_line(app, "commands: /help /archive /settings /admin /chat /exit /quit /window N [/w N, /win N] /join #chan [/j] /part /close /clear /msg nick text /query nick [/q nick] /me text");
     log_line(app, "network: /connect slug /disconnect [slug] [reason] /nick nick /away [reason]");
     log_line(app, "info: /topic [text|-delete] /members [/users] /whois nick /whowas nick /who [#chan] /names [#chan] /lusers /watch add|del|list pattern");
     log_line(app, "ops: /op nicks /deop nicks /voice nicks /devoice nicks /kick nick [reason] /ban mask /unban mask /banlist /invite nick");
@@ -2256,6 +2417,7 @@ static void show_command_help(struct app *app, const char *raw) {
     else if (strcmp(cmd, "join") == 0 || strcmp(cmd, "j") == 0) log_line(app, "/join #chan [key], /j #chan [key] — join a channel");
     else if (strcmp(cmd, "part") == 0) log_line(app, "/part — part the current channel");
     else if (strcmp(cmd, "close") == 0) log_line(app, "/close — close current channel/query; channels PART, queries close the query window");
+    else if (strcmp(cmd, "clear") == 0) log_line(app, "/clear — clear the local visible buffer for the active window; does not delete server scrollback");
     else if (strcmp(cmd, "msg") == 0) log_line(app, "/msg nick text — send a private message and open/reuse the query window");
     else if (strcmp(cmd, "query") == 0 || strcmp(cmd, "q") == 0) log_line(app, "/query nick, /q nick — open a query window without sending a message");
     else if (strcmp(cmd, "me") == 0) log_line(app, "/me text — send an ACTION (/me) message to the current window");
@@ -2305,6 +2467,8 @@ static void handle_command(struct app *app, char *line) {
         open_panel(app, PANEL_ADMIN);
     } else if (strcmp(line, "/open") == 0) {
         open_external_url(app, app->last_url);
+    } else if (strcmp(line, "/clear") == 0) {
+        clear_active_window_log(app);
     } else if (strcmp(line, "/close") == 0) {
         struct window w;
         pthread_mutex_lock(&app->lock);
