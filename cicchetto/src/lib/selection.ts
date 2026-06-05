@@ -4,6 +4,7 @@ import { token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { isDocumentVisible } from "./documentVisibility";
 import { identityScopedStore } from "./identityScopedStore";
+import { saveLastFocused } from "./lastFocusedChannel";
 import { clearMentionsForKey } from "./mentions";
 import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
 import { channelsBySlug, networkBySlug, networks, user } from "./networks";
@@ -351,6 +352,21 @@ const exports = identityScopedStore((onIdentityChange) => {
       // and shouldn't take focus when an unrelated window closes.
       if (sel.kind === "channel" || sel.kind === "query") {
         recordFocus(channelKey(sel.networkSlug, sel.channelName));
+      }
+      // Issue #35 — persist the focused window per identity, so a
+      // PWA reload / browser restart lands the operator back on the
+      // last viewed channel instead of the cold-load `$home` default.
+      // Only restorable kinds (channel / query / server) are saved;
+      // `home` is the existing fallback target, `admin` is gated on
+      // is_admin (and would redirect home on demote anyway),
+      // `mentions` / `list` are ephemeral surfaces.
+      const me = untrack(user);
+      if (me && (sel.kind === "channel" || sel.kind === "query" || sel.kind === "server")) {
+        saveLastFocused(me.id, {
+          networkSlug: sel.networkSlug,
+          channelName: sel.channelName,
+          kind: sel.kind,
+        });
       }
       // Fire-and-forget: the verb guards itself via scrollback's
       // loadedChannels Set.
