@@ -184,6 +184,7 @@ struct app {
     char token[MAX_TOKEN];
     char token_path[PATH_MAX];
     char subject[MAX_SUBJECT];
+    char login_nick[MAX_CHANNEL];
     struct network networks[MAX_NETWORKS];
     size_t network_count;
     struct window windows[MAX_WINDOWS];
@@ -1179,6 +1180,7 @@ static void draw_fill(int y, int x, int n, int pair) {
 }
 
 static void draw_text(int y, int x, int max, int pair, attr_t attrs, const char *fmt, ...) __attribute__((format(printf, 6, 7)));
+static int split_message_line(const char *line, char *prefix, size_t prefix_sz, char *nick, size_t nick_sz, const char **body);
 
 static void draw_text(int y, int x, int max, int pair, attr_t attrs, const char *fmt, ...) {
     if (max <= 0) return;
@@ -1242,6 +1244,54 @@ static void draw_wrapped_text(int y, int x, int width, int max_lines, int pair, 
         col++;
     }
     attroff(COLOR_PAIR(pair) | attrs);
+}
+
+static int message_display_lines(const char *line, int width) {
+    if (width <= 0) return 1;
+    char prefix[256], nick[256];
+    const char *body;
+    if (split_message_line(line, prefix, sizeof(prefix), nick, sizeof(nick), &body)) {
+        int body_x = (int)strlen(prefix) + (int)strlen(nick) + 3;
+        int body_w = width - body_x;
+        if (body_w < 12) body_w = width > 12 ? width - 2 : width;
+        return wrapped_text_lines(body, body_w);
+    }
+    return wrapped_text_lines(line, width);
+}
+
+static void draw_message_line(int y, int x, int width, int max_lines, const char *line, bool mention_row, bool pending_row) {
+    if (width <= 0 || max_lines <= 0) return;
+    for (int row = 0; row < max_lines; row++) {
+        if (mention_row) draw_fill(y + row, x, width, CP_MENTION);
+    }
+
+    char prefix[256], nick[256];
+    const char *body;
+    if (split_message_line(line, prefix, sizeof(prefix), nick, sizeof(nick), &body)) {
+        int base_pair = mention_row ? CP_MENTION : (pending_row ? CP_MUTED : CP_MUTED);
+        int body_pair = mention_row ? CP_MENTION : (pending_row ? CP_MUTED : CP_MAIN);
+        attr_t body_attr = mention_row ? A_BOLD : (pending_row ? A_DIM : 0);
+        attr_t base_attr = pending_row ? A_DIM : 0;
+        draw_text(y, x, width, base_pair, base_attr, "%s", prefix);
+        int px = x + (int)strlen(prefix);
+        draw_text(y, px, 1, base_pair, base_attr, "<");
+        draw_text(y, px + 1, (int)strlen(nick), mention_row ? CP_MENTION : nick_pair(nick), A_BOLD | base_attr, "%s", nick);
+        draw_text(y, px + 1 + (int)strlen(nick), 1, base_pair, base_attr, ">");
+        int body_x = px + 3 + (int)strlen(nick);
+        int body_w = width - (body_x - x);
+        if (body_w < 12) {
+            body_x = x + 2;
+            body_w = width - 2;
+        }
+        draw_wrapped_text(y, body_x, body_w, max_lines, body_pair, body_attr, body);
+        if (pending_row && width > 11) draw_text(y + max_lines - 1, x + width - 11, 11, CP_MUTED, A_DIM, "[sending]");
+    } else if (find_url(line)) {
+        draw_wrapped_text(y, x, width, max_lines, looks_like_image_url(find_url(line)) ? CP_ACCENT : CP_MUTED, A_UNDERLINE, line);
+    } else if (strstr(line, "failed") || strstr(line, "error")) {
+        draw_wrapped_text(y, x, width, max_lines, CP_ERROR, 0, line);
+    } else {
+        draw_wrapped_text(y, x, width, max_lines, CP_MUTED, 0, line);
+    }
 }
 
 static const char *panel_name(enum panel_kind panel) {
@@ -1809,40 +1859,39 @@ static void draw(struct app *app) {
     char wanted_prefix[MAX_SLUG + MAX_CHANNEL + 8];
     snprintf(wanted_prefix, sizeof(wanted_prefix), "[%s/%s]", w->network, w->channel);
     size_t visible[LOG_LINES];
+    int heights[LOG_LINES];
     size_t visible_count = 0;
+    int total_visible_lines = 0;
     for (size_t i = 0; i < app->log_count; i++) {
         if (strncmp(app->log[i], "[", 1) != 0 || strncmp(app->log[i], wanted_prefix, strlen(wanted_prefix)) == 0) {
-            visible[visible_count++] = i;
+            visible[visible_count] = i;
+            heights[visible_count] = message_display_lines(app->log[i], main_w - 2);
+            if (heights[visible_count] < 1) heights[visible_count] = 1;
+            total_visible_lines += heights[visible_count];
+            visible_count++;
         }
     }
-    size_t max_start = visible_count > (size_t)scroll_h ? visible_count - (size_t)scroll_h : 0;
-    size_t start = app->scrollback_offset > max_start ? 0 : max_start - app->scrollback_offset;
-    for (size_t vi = start; vi < visible_count; vi++) {
-        size_t i = visible[vi];
-        int ly = scroll_y + (int)(vi - start);
-        if (ly >= compose_y - 1) break;
-        char prefix[256], nick[256];
-        const char *body;
-        bool mention_row = app->log_mentions[i];
-        bool pending_row = app->log_pending[i];
-        if (mention_row) draw_fill(ly, main_x + 1, main_w - 2, CP_MENTION);
-        if (split_message_line(app->log[i], prefix, sizeof(prefix), nick, sizeof(nick), &body)) {
-            int base_pair = mention_row ? CP_MENTION : (pending_row ? CP_MUTED : CP_MUTED);
-            int body_pair = mention_row ? CP_MENTION : (pending_row ? CP_MUTED : CP_MAIN);
-            attr_t body_attr = mention_row ? A_BOLD : (pending_row ? A_DIM : 0);
-            draw_text(ly, main_x + 1, main_w - 2, base_pair, pending_row ? A_DIM : 0, "%s", prefix);
-            int px = main_x + 1 + (int)strlen(prefix);
-            draw_text(ly, px, 1, base_pair, pending_row ? A_DIM : 0, "<");
-            draw_text(ly, px + 1, (int)strlen(nick), mention_row ? CP_MENTION : nick_pair(nick), A_BOLD | (pending_row ? A_DIM : 0), "%s", nick);
-            draw_text(ly, px + 1 + (int)strlen(nick), 1, base_pair, pending_row ? A_DIM : 0, ">");
-            draw_text(ly, px + 3 + (int)strlen(nick), main_w - (px - main_x) - (int)strlen(nick) - 4, body_pair, body_attr, "%s%s", body, pending_row ? "  [sending]" : "");
-        } else if (find_url(app->log[i])) {
-            draw_text(ly, main_x + 1, main_w - 2, looks_like_image_url(find_url(app->log[i])) ? CP_ACCENT : CP_MUTED, A_UNDERLINE, "%s", app->log[i]);
-        } else if (strstr(app->log[i], "failed") || strstr(app->log[i], "error")) {
-            draw_text(ly, main_x + 1, main_w - 2, CP_ERROR, 0, "%s", app->log[i]);
-        } else {
-            draw_text(ly, main_x + 1, main_w - 2, CP_MUTED, 0, "%s", app->log[i]);
+    int max_offset = total_visible_lines > scroll_h ? total_visible_lines - scroll_h : 0;
+    if ((int)app->scrollback_offset > max_offset) app->scrollback_offset = (size_t)max_offset;
+    int skip_lines = max_offset - (int)app->scrollback_offset;
+    int used_lines = 0;
+    for (size_t vi = 0; vi < visible_count; vi++) {
+        if (skip_lines >= heights[vi]) {
+            skip_lines -= heights[vi];
+            continue;
         }
+        size_t i = visible[vi];
+        if (skip_lines > 0) {
+            skip_lines = 0;
+            continue;
+        }
+        int available = scroll_h - used_lines;
+        int draw_lines = heights[vi];
+        if (draw_lines > available) draw_lines = available;
+        if (draw_lines <= 0) break;
+        draw_message_line(scroll_y + used_lines, main_x + 1, main_w - 2, draw_lines, app->log[i], app->log_mentions[i], app->log_pending[i]);
+        used_lines += draw_lines;
+        skip_lines = 0;
     }
 
     draw_text(compose_y, main_x + 1, main_w - 2, CP_MUTED, 0,
@@ -2213,6 +2262,7 @@ static const char *own_nick_for_network(struct app *app, const char *network) {
     for (size_t i = 0; i < app->network_count; i++) {
         if (strcmp(app->networks[i].slug, network) == 0 && app->networks[i].nick[0]) return app->networks[i].nick;
     }
+    if (app->login_nick[0]) return app->login_nick;
     const char *colon = strchr(app->subject, ':');
     return colon ? colon + 1 : app->subject;
 }
@@ -2810,6 +2860,7 @@ int main(int argc, char **argv) {
 
     const char *identifier = login_override ? login_override : argv[argi + 1];
     const char *password = login_override ? argv[argi + 1] : argv[argi + 2];
+    if (!login_override && strchr(identifier, '@') == NULL) snprintf(app->login_nick, sizeof(app->login_nick), "%s", identifier);
     char *login_id = login_identifier_for_mode(mode, identifier);
     startup("authenticating as %s", login_id);
     if (!attach_or_login(app, login_id, password)) {
