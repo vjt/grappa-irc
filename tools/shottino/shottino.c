@@ -144,7 +144,8 @@ enum job_kind {
     JOB_NICK,
     JOB_NETWORK_STATE,
     JOB_TOPIC,
-    JOB_MEMBERS
+    JOB_MEMBERS,
+    JOB_CLOSE_QUERY
 };
 
 struct job {
@@ -223,6 +224,7 @@ struct app {
 };
 
 static void die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void startup(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 static void die(const char *fmt, ...) {
     va_list ap;
@@ -231,6 +233,16 @@ static void die(const char *fmt, ...) {
     va_end(ap);
     fputc('\n', stderr);
     exit(1);
+}
+
+static void startup(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fputs("shottino: ", stderr);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    fflush(stderr);
+    va_end(ap);
 }
 
 static char *xasprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -850,6 +862,26 @@ static void add_window(struct app *app, const char *network, const char *channel
     add_window_ex(app, network, channel, true);
 }
 
+static void remove_window(struct app *app, const char *network, const char *channel) {
+    pthread_mutex_lock(&app->lock);
+    for (size_t i = 0; i < app->window_count; i++) {
+        if (strcmp(app->windows[i].network, network) == 0 && strcmp(app->windows[i].channel, channel) == 0) {
+            memmove(app->windows + i, app->windows + i + 1, sizeof(app->windows[0]) * (app->window_count - i - 1));
+            app->window_count--;
+            if (app->window_count == 0) {
+                app->current = 0;
+            } else if (app->current >= app->window_count) {
+                app->current = app->window_count - 1;
+            } else if (app->current > i) {
+                app->current--;
+            }
+            if (app->current < app->window_count) app->windows[app->current].unread = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&app->lock);
+}
+
 static void parse_channels(struct app *app, const char *network, const char *json) {
     const char *p = json;
     while ((p = strstr(p, "\"name\""))) {
@@ -1081,12 +1113,6 @@ static void draw_text(int y, int x, int max, int pair, attr_t attrs, const char 
     attron(COLOR_PAIR(pair) | attrs);
     mvprintw(y, x, "%.*s", max, buf);
     attroff(COLOR_PAIR(pair) | attrs);
-}
-
-static const char *display_kind_for_window(const char *channel) {
-    if (strcmp(channel, "$server") == 0) return "server";
-    if (channel[0] == '#' || channel[0] == '&' || channel[0] == '+' || channel[0] == '!') return "channel";
-    return "query";
 }
 
 static const char *panel_name(enum panel_kind panel) {
@@ -1611,9 +1637,10 @@ static void draw(struct app *app) {
     struct window *w = &app->windows[app->current];
     draw_text(chrome_y, main_x + 1, main_w - 2, CP_MUTED, 0,
               "/archive  /settings  /admin  /chat  ws:%s", app->ws_connected ? "connected" : "offline");
-    draw_text(topic_y, main_x + 1, main_w / 2, CP_ACCENT, A_BOLD, "window: %s/%s", w->network, w->channel);
-    draw_text(topic_y, main_x + 2 + (main_w / 2), main_w - (main_w / 2) - 3, CP_MUTED, 0,
-              "topic: [%s] topic snapshot pending", display_kind_for_window(w->channel));
+    draw_fill(topic_y, main_x, main_w, CP_ALT);
+    draw_text(topic_y, main_x + 1, main_w / 3, CP_ACCENT, A_BOLD, "%s/%s", w->network, w->channel);
+    draw_text(topic_y, main_x + 2 + (main_w / 3), main_w - (main_w / 3) - 3, CP_ALT, 0,
+              "topic: %s", w->topic[0] ? w->topic : "(not loaded yet)");
 
     if (app->panel != PANEL_CHAT) {
         draw_text(scroll_y, main_x + 1, main_w - 2, CP_ACCENT, A_BOLD, "%s", panel_name(app->panel));
@@ -1788,19 +1815,44 @@ static void list_members_target(struct app *app, const char *network, const char
     if (r.status == 204) {
         log_line(app, "members for %s are not seeded yet", channel);
     } else if (r.status >= 200 && r.status < 300) {
-        char out[2048] = "";
-        size_t used = 0;
+        struct member_row { char nick[MAX_CHANNEL]; char modes[32]; int rank; } rows[512];
+        size_t count = 0;
         const char *p = r.body;
-        while ((p = strstr(p, "\"nick\""))) {
+        while ((p = strstr(p, "\"nick\"")) && count < 512) {
             char nick[MAX_CHANNEL] = "";
+            char modes[32] = "";
             if (json_find_string(p, "nick", nick, sizeof(nick)) && nick[0]) {
-                int n = snprintf(out + used, sizeof(out) - used, "%s%s", used == 0 ? "" : " ", nick);
-                if (n < 0 || (size_t)n >= sizeof(out) - used) break;
-                used += (size_t)n;
+                const char *m = strstr(p, "\"modes\"");
+                if (m) {
+                    char *w = modes;
+                    const char *end = strchr(m, ']');
+                    while ((m = strchr(m, '"')) && (!end || m < end) && (size_t)(w - modes) + 2 < sizeof(modes)) {
+                        m++;
+                        if (*m && *m != 'm') *w++ = *m;
+                        m++;
+                    }
+                    *w = 0;
+                }
+                snprintf(rows[count].nick, sizeof(rows[count].nick), "%s", nick);
+                snprintf(rows[count].modes, sizeof(rows[count].modes), "%s", modes);
+                rows[count].rank = strchr(modes, '@') ? 0 : (strchr(modes, '%') ? 1 : (strchr(modes, '+') ? 2 : 3));
+                count++;
             }
             p += 6;
         }
-        log_line(app, "members %s: %s", channel, out[0] ? out : "(none)");
+        for (size_t i = 0; i < count; i++) {
+            for (size_t j = i + 1; j < count; j++) {
+                if (rows[j].rank < rows[i].rank || (rows[j].rank == rows[i].rank && strcasecmp(rows[j].nick, rows[i].nick) < 0)) {
+                    struct member_row tmp = rows[i]; rows[i] = rows[j]; rows[j] = tmp;
+                }
+            }
+        }
+        log_line(app, "members %s (%zu):", channel, count);
+        for (size_t i = 0; i < count; i++) {
+            const char *label = rows[i].rank == 0 ? "op" : (rows[i].rank == 1 ? "halfop" : (rows[i].rank == 2 ? "voice" : "user"));
+            log_line(app, "  %-6s %-3s %s", label, rows[i].modes[0] ? rows[i].modes : "-", rows[i].nick);
+        }
+        if (count == 0) log_line(app, "members %s: (none)", channel);
     } else {
         log_line(app, "members failed HTTP %d: %.200s", r.status, r.body);
     }
@@ -1874,17 +1926,46 @@ static void join_channel(struct app *app, const char *name) {
 }
 
 static void part_current(struct app *app) {
-    struct window *w = &app->windows[app->current];
-    char *net = url_encode(w->network);
-    char *chan = url_encode(w->channel);
+    char network[MAX_SLUG];
+    char channel[MAX_CHANNEL];
+    pthread_mutex_lock(&app->lock);
+    snprintf(network, sizeof(network), "%s", app->windows[app->current].network);
+    snprintf(channel, sizeof(channel), "%s", app->windows[app->current].channel);
+    pthread_mutex_unlock(&app->lock);
+    char *net = url_encode(network);
+    char *chan = url_encode(channel);
     char *path = xasprintf("/networks/%s/channels/%s", net, chan);
     free(net);
     free(chan);
     struct http_response r = http_request(app, "DELETE", path, NULL);
-    if (r.status >= 200 && r.status < 300) log_line(app, "parted %s", w->channel);
+    if (r.status >= 200 && r.status < 300) {
+        log_line(app, "parted %s", channel);
+        remove_window(app, network, channel);
+    }
     else log_line(app, "part failed HTTP %d: %.200s", r.status, r.body);
     free(path);
     free(r.body);
+}
+
+static void close_query_target(struct app *app, const char *network, const char *target) {
+    int id = 0;
+    for (size_t i = 0; i < app->network_count; i++) {
+        if (strcmp(app->networks[i].slug, network) == 0) {
+            id = app->networks[i].id;
+            break;
+        }
+    }
+    if (id == 0) {
+        log_line(app, "close query failed: unknown network %s", network);
+        return;
+    }
+    char *nick = json_escape(target);
+    char *payload = xasprintf("{\"network_id\":%d,\"target_nick\":\"%s\"}", id, nick);
+    free(nick);
+    ws_push_user(app, "close_query_window", payload);
+    free(payload);
+    remove_window(app, network, target);
+    log_line(app, "closed query %s", target);
 }
 
 static bool enqueue_job(struct app *app, struct job job) {
@@ -1947,6 +2028,9 @@ static void *worker_main(void *arg) {
             break;
         case JOB_MEMBERS:
             list_members_target(app, job.network, job.channel);
+            break;
+        case JOB_CLOSE_QUERY:
+            close_query_target(app, job.network, job.channel);
             break;
         }
     }
@@ -2043,7 +2127,7 @@ static void cycle_window(struct app *app, int delta) {
 }
 
 static const char *commands[] = {
-    "/admin", "/archive", "/away", "/ban", "/banlist", "/chat", "/connect", "/deop", "/devoice", "/disconnect",
+    "/admin", "/archive", "/away", "/ban", "/banlist", "/chat", "/close", "/connect", "/deop", "/devoice", "/disconnect",
     "/invite", "/join", "/kick", "/lusers", "/me", "/members", "/mode", "/msg", "/names",
     "/nick", "/op", "/oper", "/part", "/q", "/query", "/quit", "/quote", "/settings", "/topic", "/umode",
     "/unban", "/users", "/voice", "/w", "/watch", "/whowas", "/who", "/whois", "/win", "/window"
@@ -2152,7 +2236,7 @@ static void open_external_url(struct app *app, const char *url) {
 }
 
 static void show_help(struct app *app) {
-    log_line(app, "commands: /help /archive /settings /admin /chat /exit /quit /window N [/w N, /win N] /join #chan [/j] /part /msg nick text /query nick [/q nick] /me text");
+    log_line(app, "commands: /help /archive /settings /admin /chat /exit /quit /window N [/w N, /win N] /join #chan [/j] /part /close /msg nick text /query nick [/q nick] /me text");
     log_line(app, "network: /connect slug /disconnect [slug] [reason] /nick nick /away [reason]");
     log_line(app, "info: /topic [text|-delete] /members [/users] /whois nick /whowas nick /who [#chan] /names [#chan] /lusers /watch add|del|list pattern");
     log_line(app, "ops: /op nicks /deop nicks /voice nicks /devoice nicks /kick nick [reason] /ban mask /unban mask /banlist /invite nick");
@@ -2171,6 +2255,7 @@ static void show_command_help(struct app *app, const char *raw) {
     else if (strcmp(cmd, "window") == 0 || strcmp(cmd, "win") == 0 || strcmp(cmd, "w") == 0) log_line(app, "/window N, /win N, /w N — switch to window number N and clear its unread count");
     else if (strcmp(cmd, "join") == 0 || strcmp(cmd, "j") == 0) log_line(app, "/join #chan [key], /j #chan [key] — join a channel");
     else if (strcmp(cmd, "part") == 0) log_line(app, "/part — part the current channel");
+    else if (strcmp(cmd, "close") == 0) log_line(app, "/close — close current channel/query; channels PART, queries close the query window");
     else if (strcmp(cmd, "msg") == 0) log_line(app, "/msg nick text — send a private message and open/reuse the query window");
     else if (strcmp(cmd, "query") == 0 || strcmp(cmd, "q") == 0) log_line(app, "/query nick, /q nick — open a query window without sending a message");
     else if (strcmp(cmd, "me") == 0) log_line(app, "/me text — send an ACTION (/me) message to the current window");
@@ -2220,6 +2305,24 @@ static void handle_command(struct app *app, char *line) {
         open_panel(app, PANEL_ADMIN);
     } else if (strcmp(line, "/open") == 0) {
         open_external_url(app, app->last_url);
+    } else if (strcmp(line, "/close") == 0) {
+        struct window w;
+        pthread_mutex_lock(&app->lock);
+        w = app->windows[app->current];
+        pthread_mutex_unlock(&app->lock);
+        if (w.channel[0] == '#' || w.channel[0] == '&' || w.channel[0] == '+' || w.channel[0] == '!') {
+            struct job job = { .kind = JOB_PART };
+            snprintf(job.network, sizeof(job.network), "%s", w.network);
+            snprintf(job.channel, sizeof(job.channel), "%s", w.channel);
+            enqueue_job(app, job);
+        } else if (strcmp(w.channel, "$server") == 0) {
+            log_line(app, "cannot close server window");
+        } else {
+            struct job job = { .kind = JOB_CLOSE_QUERY };
+            snprintf(job.network, sizeof(job.network), "%s", w.network);
+            snprintf(job.channel, sizeof(job.channel), "%s", w.channel);
+            enqueue_job(app, job);
+        }
     } else if (strncmp(line, "/join ", 6) == 0 && line[6]) {
         struct job job = { .kind = JOB_JOIN };
         snprintf(job.network, sizeof(job.network), "%s", app->windows[app->current].network);
@@ -2231,10 +2334,7 @@ static void handle_command(struct app *app, char *line) {
         snprintf(job.channel, sizeof(job.channel), "%s", line + 3);
         enqueue_job(app, job);
     } else if (strcmp(line, "/part") == 0) {
-        struct job job = { .kind = JOB_PART };
-        snprintf(job.network, sizeof(job.network), "%s", app->windows[app->current].network);
-        snprintf(job.channel, sizeof(job.channel), "%s", app->windows[app->current].channel);
-        enqueue_job(app, job);
+        handle_command(app, "/close");
     } else if (strncmp(line, "/nick ", 6) == 0 && line[6]) {
         struct job job = { .kind = JOB_NICK };
         snprintf(job.network, sizeof(job.network), "%s", app->windows[app->current].network);
@@ -2527,6 +2627,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    startup("starting (%s mode)", mode);
     SSL_library_init();
     SSL_load_error_strings();
     struct app app;
@@ -2535,7 +2636,9 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&app.jobs_lock, NULL);
     pthread_cond_init(&app.jobs_cond, NULL);
     app.ws.fd = -1;
+    startup("parsing server URL %s", argv[argi]);
     if (!parse_url(argv[argi], &app.url)) die("invalid base URL: %s", argv[argi]);
+    startup("initializing TLS context");
     app.ssl_ctx = SSL_CTX_new(TLS_client_method());
     if (!app.ssl_ctx) die("failed to create TLS context");
     SSL_CTX_set_default_verify_paths(app.ssl_ctx);
@@ -2544,20 +2647,29 @@ int main(int argc, char **argv) {
     const char *identifier = login_override ? login_override : argv[argi + 1];
     const char *password = login_override ? argv[argi + 1] : argv[argi + 2];
     char *login_id = login_identifier_for_mode(mode, identifier);
+    startup("authenticating as %s", login_id);
     if (!attach_or_login(&app, login_id, password)) {
         free(login_id);
         return 1;
     }
+    startup("authenticated as %s", app.subject);
     free(login_id);
+    startup("loading networks and channels");
     seed_state(&app);
+    startup("loading initial scrollback for %zu windows", app.window_count);
     for (size_t i = 0; i < app.window_count; i++) fetch_scrollback(&app, &app.windows[i]);
+    startup("connecting websocket");
     if (ws_connect(&app)) {
+        startup("joining websocket topics");
         ws_join_topics(&app);
         log_line(&app, "websocket connected");
     } else {
+        startup("websocket unavailable; continuing with REST");
         log_line(&app, "websocket unavailable; REST send/fetch still works");
     }
+    startup("starting background worker");
     pthread_create(&app.worker, NULL, worker_main, &app);
+    startup("entering terminal UI");
     event_loop(&app);
     pthread_mutex_lock(&app.jobs_lock);
     app.worker_stop = true;
