@@ -89,5 +89,8 @@ Thumbs.db
 /.svelte-kit/
 *.log
 
+# ── Native terminal shottino build artifacts
+/tools/shottino/shottino
+
 # GitHub CLI config
 .gh
