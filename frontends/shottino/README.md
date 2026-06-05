@@ -31,13 +31,13 @@ make install
 ## Run
 
 ```sh
-tools/shottino/shottino --user https://grappa.example.net USER PASSWORD
+frontends/shottino/shottino --user https://grappa.example.net USER PASSWORD
 ```
 
 Or use an explicit grappa login email unrelated to the IRC nickname:
 
 ```sh
-tools/shottino/shottino --user --login-email user@example.net https://grappa.example.net PASSWORD
+frontends/shottino/shottino --user --login-email user@example.net https://grappa.example.net PASSWORD
 ```
 
 Auth modes:

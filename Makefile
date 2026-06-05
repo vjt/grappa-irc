@@ -1,4 +1,4 @@
-SHOTTINO_DIR := tools/shottino
+SHOTTINO_DIR := frontends/shottino
 
 .PHONY: all shottino install clean
 
