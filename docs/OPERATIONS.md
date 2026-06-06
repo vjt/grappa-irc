@@ -316,7 +316,65 @@ CONNECTION` / 404s and gets the source IP banned — which then blocks
 that IP's user **and** visitor sessions, looking like a "hung BEAM."
 Unban: `fail2ban-client unban <ip>` (global) on m42; fix the client
 (clear cic's `localStorage["grappa-token"]` → re-login) before it
-re-bans.
+re-bans. The **`http-400`** jail (`/usr/local/etc/fail2ban/jail.d/defaults.local`)
+carries an `ignoreregex` exempting `/read-cursor\b` 400s: cic POSTs the
+read-cursor with an invalid `message_id` on service-nick query windows
+(NickServ/ChanServ/OperServ) and would self-ban the operator otherwise
+(issue #44 tracks the cic fix). `\b` keeps a forged `/read-cursorEVIL`
+still bannable. Validate edits with
+`fail2ban-regex <line> <filter.conf> '<ignoreregex>'`.
+
+## CSP / security headers (nginx-added, NOT Phoenix)
+
+The Content-Security-Policy + sibling security headers
+(`X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`,
+…) are added by **nginx**, sourced from
+**`infra/snippets/security-headers.conf`** (this repo — single source).
+That one file is BOTH Docker-mounted under `--profile prod` AND
+installed into the jail at
+`/usr/local/etc/nginx/snippets/security-headers.conf` by
+`jail_install_nginx.sh`. **Phoenix emits no CSP** — confirm with
+`curl -sD - http://127.0.0.1:4000/ -o /dev/null` inside the jail (no
+`content-security-policy` line). The jail nginx serves the cic bundle
+statically (`root /usr/local/www/cic`); the host m42 nginx
+(`/usr/local/etc/nginx/sites/irc.openssl.it`) only proxies and does
+NOT add the CSP. Prod hosts: **`irc.sniffo.org` / `irc.sindro.me`**
+(`irc.openssl.it` is the host vhost name + redirect).
+
+**Captcha inline-script gotcha (2026-06-06).** The Turnstile/hCaptcha
+loader `api.js` (allowed via its host in `script-src`) does not just
+run from its origin — once executed it **injects a small inline
+`<script>`** into the document to bootstrap the challenge. With no
+`'unsafe-inline'` and no hash in `script-src`, the browser blocks that
+inline script (`script-src-elem`) and the captcha silently never
+initialises (Firefox: "blocked the execution of an inline script").
+Fix = pin the inline script by its CSP3 **sha256 hash** in `script-src`
+(currently `'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM='`),
+NEVER relax to `'unsafe-inline'` (that would also re-enable first-party
+inline XSS). **CAVEAT:** the hash IS the provider's inline-bootstrap
+bytes, so a provider-side widget update changes them → captcha breaks
+under CSP again; the browser console prints the replacement `sha256-…`
+to add. (Aside: prod ships with captcha **disabled** —
+`grappa.env` has no `GRAPPA_CAPTCHA_*` → provider `disabled`; the
+widget only renders where a provider is enabled.)
+
+**Deploying a CSP/snippet change to the jail** — no BEAM or cic rebuild
+needed; push to origin first, then pull + install the one snippet +
+`nginx -t` + reload (reload only fires if the test passes):
+
+```sh
+ssh m42 "sudo bastille cmd grappa su -l grappa -c 'cd /home/grappa/grappa && git pull --ff-only origin main'"
+ssh m42 "sudo bastille cmd grappa sh -c 'install -o root -g wheel -m 0644 \
+  /home/grappa/grappa/infra/snippets/security-headers.conf \
+  /usr/local/etc/nginx/snippets/security-headers.conf && nginx -t && service nginx reload'"
+```
+
+(or `jail_install_nginx.sh` for the full nginx config + all snippets +
+`nginx -t` + reload). Verify the live header:
+
+```sh
+ssh m42 "curl -fsSL -D - -o /dev/null https://irc.sniffo.org/ 2>&1 | grep -i script-src"
+```
 
 ## Per-host compose overrides
 
