@@ -11036,12 +11036,15 @@ the cursor reached.
 
 Why not suppress the broadcast instead (vjt asked): the server echo is
 what keeps cic mirroring server-owned state (CLAUDE.md "cic never
-originates state"). Killing it would force an optimistic local cursor
-write (banned) and break re-focus advance — the originating device's
-signal would go stale until reload, so the divider would freeze
-*permanently*, not until refocus. The broadcast is load-bearing for
-cross-device sync + re-focus + the server-owned invariant. Freeze the
-display, not the transport.
+originates state"). Killing it would break cross-device sync and re-focus
+advance — the originating device's signal would go stale until reload, so
+the divider would freeze *permanently*, not until refocus. The broadcast
+is load-bearing: it is the server-owned source every device mirrors.
+Freeze the display, not the transport. (Note: freezing the display does
+NOT require suppressing the broadcast OR forgoing an optimistic local
+write — the 2026-06-08 optimistic-advance entry below keeps the broadcast
+and advances the originating device early on top of it; the two are
+orthogonal.)
 
 Cross-device tradeoff (accepted, vjt: "consistency"): cic cannot
 distinguish an own scroll-settle echo from a peer's `read_cursor_set`
@@ -11061,59 +11064,48 @@ focus-acquisition re-latch).
 
 ## 2026-06-08 — Optimistic forward-only read-cursor advance
 
-Two unread bugs vjt prod-reported, one root cause. (1) Leaving a channel
-with nothing unread flashed a sidebar badge for a frame before it
-vanished. (2) An own-sent message sometimes rendered above the
-`── N unread ──` divider after stepping to another window and back.
+Two unread bugs, one root cause. (1) Leaving a channel with nothing
+unread flashed a sidebar badge for a frame. (2) An own-sent message
+sometimes rendered above the `── N unread ──` divider after stepping to
+another window and back.
 
-Root cause: the local read-cursor signal map (`readCursor.ts`) was
-ROUND-TRIP-ONLY. `setReadCursor` POSTed and the local map advanced ONLY
-when the server's `read_cursor_set` WS event echoed back
-(`applyReadCursorSet`). Every write had a stale-cursor window between
-POST and broadcast; reactivity firing in that gap read the OLD cursor:
-  * Badge flicker: the focused-window suppression in `perChannelUnread`
-    drops synchronously when `selectedChannel` flips, but the leave-arm's
-    cursor advance had not round-tripped, so the memo briefly recomputed
-    `count_after(stale cursor) > 0`.
-  * Own-msg-unread: the `markerCursorId` re-latch on focus acquisition
-    read the stale pre-send cursor when the return beat the echo.
+Root cause: the local read-cursor signal (`readCursor.ts`) was
+round-trip-only — `setReadCursor` POSTed, and the local map advanced only
+when the server's `read_cursor_set` echo landed (`applyReadCursorSet`).
+The interval between POST and echo is a stale-cursor window, and two
+reactive readers fire inside it: the focused-window badge suppression in
+`perChannelUnread` (drops synchronously when `selectedChannel` flips,
+before the leave-arm's advance round-trips → briefly recomputes a
+non-zero count) and the `markerCursorId` re-latch on focus acquisition
+(reads the stale pre-send cursor when a return beats the echo → own
+message counts as unread).
 
-Fix: `setReadCursor` advances the local signal OPTIMISTICALLY,
+Fix: `setReadCursor` advances the local signal optimistically,
 forward-only, before the POST — one place, every write path inherits it.
-The write collapses into the same synchronous Solid flush so the
-suppression-drop and marker re-latch see the fresh cursor.
+The advance lands in the same synchronous Solid flush as the
+suppression-drop and the re-latch, so both read the fresh cursor and the
+window closes.
 
-REVISES the freeze-contract entry above. That entry's "suppress the
-broadcast → forces an optimistic local cursor write (banned)" aside is
-narrowed here. The ban's load-bearing reasons were (a) server-owned read
-state / "cic never originates state", and (b) cross-device sync. Both
-still hold: the broadcast is RETAINED (not killed), so the echo remains
-the single source for peer sets and the only path that moves the cursor
-backward (unconditional last-write-wins). The optimistic write is
-forward-only and the echo re-affirms the exact same id — cic is not
-ORIGINATING a cursor value, it is reflecting its OWN authoritative write
-a few hundred ms early. The freeze contract is untouched: the in-pane
-divider reads the FROZEN `markerCursorId`, never the live signal, so a
-mid-read optimistic advance cannot yank the divider.
+This composes with the freeze-contract entry above; it does not reverse
+it. The broadcast stays — it is the server-owned source every device
+mirrors, the carrier for peer sets, and the only path that moves the
+cursor backward (last-write-wins). The optimistic advance only lets the
+ORIGINATING device skip its own round-trip latency, and the echo then
+re-affirms the same id; cic is reflecting its own server-bound write
+early, not originating a value the server never got. The display freeze
+is untouched: the divider reads the frozen `markerCursorId`, never the
+live signal.
 
-Tradeoff accepted (vjt: "ok with optimistic advance"): the old
-round-trip-only invariant — local cursor could never diverge from the
-server — is given up. On a FAILED POST the local cursor is left
-optimistically ahead and is NOT reverted. A naive revert would clobber a
-concurrent forward advance (the cross-device race forward-only prevents);
-a compare-and-swap revert is heavier than the problem. cic only writes
-ids it has actually read (visible tail / own send), so divergence is
-bounded to already-read rows — a NEW arrival still has `id > cursor` and
-shows unread correctly. It re-aligns on the next successful forward write
-or on `/me` / join-reply hydration; worst case a relogin right after a
-failed write re-surfaces already-read rows as unread once. A 422 from the
-server's `message_belongs?` guard is unreachable from cic (every posted
-id is a row cic rendered or sent in that channel).
+One tradeoff: a failed POST leaves the local cursor ahead of the server.
+It is not reverted — a revert would clobber a concurrent forward advance
+(the race forward-only exists to avoid). Because cic only ever writes ids
+it has already read, the drift is bounded to already-read rows (new
+arrivals still satisfy `id > cursor`) and re-aligns on the next forward
+write or on `/me` / join-reply hydration.
 
-Implementation: `cicchetto/src/lib/readCursor.ts` (`setReadCursor`
-optimistic block + moduledoc). Tests: `readCursor.test.ts` pins the
-optimistic forward-only advance at the primitive (deterministic
-root-cause guard); `unread-cursor-cluster.spec.ts` sentinel 3 (own
-message + fast away-and-back is never shown unread). The badge flicker is
-a sub-frame paint event Playwright cannot observe — the unit test guards
+Implementation: `readCursor.ts` (`setReadCursor` optimistic block).
+Tests: `readCursor.test.ts` pins the forward-only advance at the
+primitive (the deterministic guard); `unread-cursor-cluster.spec.ts`
+sentinel 3 covers own-message + fast away-and-back. The badge flicker is
+a sub-frame paint event Playwright can't observe — the unit test guards
 its root cause.
