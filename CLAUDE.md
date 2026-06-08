@@ -51,13 +51,11 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   `CHATHISTORY` listener facade (Phase 6) is a mechanical query
   translation, not a redesign.
 - **Read state is server-owned, per (subject, network, channel).**
-  Cursor stored as `last_read_message_id` (FK to `messages.id`). cic
-  reads the cursor from the subject envelope on login + per-window
-  from a topic event; cic POSTs the operator's current position via
-  `Grappa.ReadCursor.set/4` (last-write-wins) on every settle event
-  (focus-leave, browser-blur). Phase 6 IRCv3 facade exposes the same
-  cursor as `+draft/read-marker` MARKREAD lines on the listener side.
-  Removing server-side cursor is a breaking change.
+  Cursor = `last_read_message_id` (FK to `messages.id`). Removing
+  server-side cursor is a breaking change. The write cadence (settle
+  events), the cic in-pane divider freeze contract, and the Phase 6
+  `+draft/read-marker` MARKREAD facade are mechanics, not invariants —
+  see `docs/DESIGN_NOTES.md`.
 - **`CAP LS` + SASL is the only required upstream IRCv3 feature.**
   Everything else (`server-time`, `batch`, `labeled-response`, etc.) is
   opportunistic. Never assume upstream-side `CHATHISTORY` exists.

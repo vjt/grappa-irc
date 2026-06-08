@@ -10985,3 +10985,76 @@ substrate. (Separately: a password rotation mid-session invalidated
 vjt's cic token; the looping client tripped host fail2ban `http-404`,
 which looked like a hung BEAM but was an IP ban — see OPERATIONS
 fail2ban note.)
+
+## 2026-06-08 — Unread-divider freeze contract (cic) + read-cursor cadence relocated here
+
+Relocated from CLAUDE.md (it was over-specified there and had gone
+stale — it claimed settle = "focus-leave, browser-blur" only, omitting
+scroll-settle and this freeze). CLAUDE.md now keeps just the durable
+invariant (read state server-owned, per (subject, network, channel);
+`last_read_message_id` FK; removing server-side cursor is breaking).
+The **mechanics** live here.
+
+### Read-cursor write cadence (cic ↔ server)
+
+The cursor is server-owned. cic HYDRATES it from three sources: the
+`/me` envelope at login (`applyMeEnvelope`), the per-channel Phoenix
+join reply (`applyJoinReply` — refresh on every rejoin/reconnect), and
+live `read_cursor_set` WS events (`applyReadCursorSet` — cross-device
+sync). cic WRITES it forward-only (`setCursorIfAdvances` →
+`setReadCursor` POST → `Grappa.ReadCursor.set/4`, last-write-wins) on
+settle events: scroll-settle (500ms debounce, gated on recent operator
+input), focus-leave (channel switch), browser-blur (tab hidden / app
+switch), and send-in-focused-window. The server's `read_cursor_set`
+broadcast feeds the new id back into the signal map for BOTH the
+originating device and any peers — single applier path. Phase 6 will
+expose the same cursor as `+draft/read-marker` MARKREAD on the listener
+facade.
+
+### The divider FREEZE contract (the actual decision)
+
+Symptom (vjt): scrolling through an unread block yanked the in-pane
+"── N unread ──" divider down under your eyes — the `rows()` memo read
+the LIVE cursor, so a scroll-settle advance (or a cross-device
+`read_cursor_set`) re-ran it mid-read and shrank/removed the marker.
+
+Decision: the divider is FROZEN for the lifetime of a focus session.
+It derives from a snapshot signal `markerCursorId` (the frozen BOTTOM
+boundary), sibling to the pre-existing `sessionTopId` (frozen TOP
+boundary). The snapshot re-latches to the live cursor ONLY on a focus
+acquisition — channel-switch and tab/app visibility-return. Chose
+option (b) "any step-away-and-back advances it" over (a) "channel-switch
+only". The live cursor keeps advancing + POSTing as above; only the
+DISPLAY is frozen, so sidebar badges + `selection.ts` unread counts
+(which read the live signal map) stay current.
+
+Asymmetry, deliberate: on visibility-return `sessionTopId` (top) is
+PRESERVED — a brief blur is not "leaving the window", so messages that
+arrived while hidden stay live-read, no fresh marker — while
+`markerCursorId` (bottom) is RE-LATCHED so the divider settles to where
+the cursor reached.
+
+Why not suppress the broadcast instead (vjt asked): the server echo is
+what keeps cic mirroring server-owned state (CLAUDE.md "cic never
+originates state"). Killing it would force an optimistic local cursor
+write (banned) and break re-focus advance — the originating device's
+signal would go stale until reload, so the divider would freeze
+*permanently*, not until refocus. The broadcast is load-bearing for
+cross-device sync + re-focus + the server-owned invariant. Freeze the
+display, not the transport.
+
+Cross-device tradeoff (accepted, vjt: "consistency"): cic cannot
+distinguish an own scroll-settle echo from a peer's `read_cursor_set`
+at the applier boundary (same wire bytes, no client_id tag), so the
+freeze is uniform. A peer device reading the window no longer yanks
+your divider live — it reflects on your next refocus. Distinguishing
+the two would need client_id tagging on the broadcast (server + wire
+change); rejected as heavier than the problem.
+
+This REVISES the CP29 R-4 "Bug A" contract (which made the divider
+disappear immediately on any live advance). Implementation +
+freeze-safety reasoning: `cicchetto/src/ScrollbackPane.tsx` (the
+`markerCursorId` signal doc + the cold-latch effect's read-guard-first
+note); contract tests in `ScrollbackPane.test.tsx` (Bug A revised + the
+three freeze tests; REV-G H23 updated to drive marker removal via a
+focus-acquisition re-latch).
