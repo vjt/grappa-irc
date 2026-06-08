@@ -11109,3 +11109,38 @@ primitive (the deterministic guard); `unread-cursor-cluster.spec.ts`
 sentinel 3 covers own-message + fast away-and-back. The badge flicker is
 a sub-frame paint event Playwright can't observe — the unit test guards
 its root cause.
+
+## 2026-06-08 — Multiline compose → one PRIVMSG per line
+
+ComposeBox submits on Enter and inserts a newline on Shift+Enter, so a
+draft (or a pasted block) can hold embedded line breaks. Pre-fix the
+whole body went as one PRIVMSG and the server rejected it as
+`:invalid_line` — CR/LF are the IRC frame delimiters, forbidden inside a
+frame (`Identifier.safe_line_token?` = `not String.contains?(s, ["\r",
+"\n", "\x00"])`). The operator saw an "invalid" error and nothing sent.
+
+A multiline body is the operator asking for one message per line. cic
+splits client-side: `messageLines.ts` `splitMessageLines` splits on every
+line-ending form (CRLF, lone CR, LF — all forbidden on the wire, so all
+must split, not just LF) and drops blank lines (an empty PRIVMSG is
+itself invalid). A shared `sendBodyLines` in compose.ts applies it to the
+three free-text send sites: privmsg, /me (one ACTION per line), /msg.
+
+Division of labor, deliberate: the CLIENT owns newline splitting because
+only it knows the operator meant separate messages; the SERVER keeps
+owning 512-byte length splitting for a single long line
+(`lib/grappa/irc/line_split.ex`) because only it knows per-target frame
+overhead. The server's `:invalid_line` guard stays — it is the backstop
+that guarantees cic can never smuggle a raw CR/LF onto the wire.
+
+Accepted edges: (1) sends are sequential and non-transactional — a
+mid-fan-out POST failure leaves earlier lines sent and surfaces the error
+with the full draft preserved, so a retry re-sends the delivered lines.
+IRC has no atomic multi-send; partial delivery is the honest outcome.
+(2) An empty `/me` (no text) now sends nothing instead of a degenerate
+empty ACTION — a content-free action is not worth a frame.
+
+Tests: `messageLines.test.ts` (pure splitter — LF/CRLF/CR/embedded-CR,
+blank-drop, single-line identity), `compose.test.ts` (privmsg/me
+fan-out + CRLF/blank handling), `multiline-compose-fanout` e2e (the real
+server accepts the per-line sends end-to-end — jsdom can't prove that).
