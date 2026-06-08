@@ -72,14 +72,20 @@ import WhowasCard from "./WhowasCard";
 // dominate visually. PRESENCE_KINDS is the closed set.
 //
 // C7.3: Unread marker — when the user opens a channel with a stored read
-// cursor (via getReadCursor from readCursor.ts), messages after the cursor
-// are "unread". The rows() memo injects an `── XX unread messages ──`
-// marker row between the last read message and the first unread message.
-// On first mount of an unread window, the pane scrolls to the marker
-// (block: "start") so the user sees context-then-unread without manual
-// scroll. Cursor is advanced to the latest message's server_time when the
-// user reaches the bottom (atBottom = true). Client-side only — no server
-// MARKREAD per CLAUDE.md invariant.
+// cursor (server-owned; hydrated via getReadCursor from readCursor.ts),
+// messages after the cursor are "unread". The rows() memo injects an
+// `── XX unread messages ──` marker row between the last read message and
+// the first unread message. On first mount of an unread window, the pane
+// scrolls to the marker (block: "start") so the user sees
+// context-then-unread without manual scroll.
+//
+// FREEZE CONTRACT (2026-06-08): the divider derives from a FROZEN snapshot
+// of the cursor (`markerCursorId`), NOT the live value — it does not move
+// while the operator reads. It re-latches on focus acquisition
+// (channel-switch, visibility-return). The live cursor advances + POSTs to
+// the server on settle events (scroll-settle, focus-leave, blur, send) via
+// setCursorIfAdvances / setReadCursor; see the markerCursorId signal doc
+// below for the full contract.
 //
 // C7.4: Scroll-to-bottom floating button — appears when scrolled more than
 // SCROLL_BOTTOM_THRESHOLD_PX from the tail. Click → smooth-scroll to bottom
@@ -710,6 +716,22 @@ const ScrollbackPane: Component<Props> = (props) => {
   // window mount. Reset on channel switch (key change).
   const [markerScrolled, setMarkerScrolled] = createSignal(false);
 
+  // FREEZE CONTRACT (2026-06-08, vjt "step-away" request): the FROZEN
+  // bottom boundary of the unread block — sibling to `sessionTopId` (the
+  // frozen TOP boundary). The `rows` memo derives the divider from THIS
+  // snapshot, NOT the live `getReadCursor`, so a mid-view cursor advance
+  // (own scroll-settle echo OR cross-device `read_cursor_set`) does not
+  // yank the divider under the operator's eyes while they read. Re-latched
+  // to the live cursor on every focus acquisition — channel-switch (key
+  // effect) and tab/app visibility-return (option b) — so the divider
+  // settles to the new position when the operator steps away and back.
+  // `null` = not yet latched / no cursor known (cold-load pre-hydration);
+  // the cold-latch effect below picks up the first non-null cursor,
+  // mirroring the sessionTopId cold-mount latch. The live signal map stays
+  // the single source of truth for sidebar badges + selection.ts unread
+  // counts — only the in-pane divider reads this frozen snapshot.
+  const [markerCursorId, setMarkerCursorId] = createSignal<number | null>(null);
+
   // BUGHUNT-2: timestamp of the most recent real operator input event
   // (pointerdown / wheel / touchmove / qualifying keydown) on the
   // listRef. `null` until the operator interacts; reset to `null` on
@@ -820,19 +842,21 @@ const ScrollbackPane: Component<Props> = (props) => {
   // The first message never gets a day-separator before it.
   //
   // Unread computation (C7.3 / CLAUDE.md "derive, don't duplicate"):
-  //   cursor = getReadCursor(networkSlug, channelName) — server-owned id.
+  //   cursor = markerCursorId() — the FROZEN snapshot of the read cursor,
+  //            NOT the live getReadCursor. See the signal's doc comment:
+  //            it is latched at every focus acquisition and held constant
+  //            between, so the divider does not move while the operator
+  //            reads (the freeze contract).
   //   sessionTopId = max(message.id) captured at window mount (key change).
   //   unread count = messages.filter(m =>
   //                    m.id > cursor AND
   //                    m.id <= sessionTopId  // pre-arrival only
   //                  ).length
-  //   The cursor is a stable value for the lifetime of this channel view:
-  //   it advances on the settle events (focus-leave, browser-blur,
-  //   scroll-settle, send — selection.ts / scrollback.ts), plus a one-shot
-  //   fresh-channel load-baseline (scrollback.ts `loadInitialScrollback`
-  //   marks the backlog read when no cursor exists yet). None of those
-  //   fire mid-view while the operator is reading, so the marker baseline
-  //   stays put. The sessionTopId bound prevents NEW arrivals during the
+  //   Both bounds are frozen for the focus session: markerCursorId pins
+  //   the BOTTOM (last-read) edge, sessionTopId pins the TOP. A mid-view
+  //   live-cursor advance (scroll-settle echo, cross-device read_cursor_set)
+  //   does NOT move the divider — markerCursorId only re-latches on a focus
+  //   acquisition. The sessionTopId bound prevents NEW arrivals during the
   //   focus session from spawning a fresh marker — they're live-read by
   //   definition.
   const rows = createMemo((): Row[] => {
@@ -854,7 +878,8 @@ const ScrollbackPane: Component<Props> = (props) => {
       }
     }
     if (msgs.length === 0 && inviteAckEntries.length === 0) return [];
-    const cursor = getReadCursor(props.networkSlug, props.channelName);
+    // Freeze contract: read the FROZEN snapshot, not live getReadCursor.
+    const cursor = markerCursorId();
     const sessionTop = sessionTopId();
     // How many messages have id strictly after the cursor AND
     // at-or-before the focus-session boundary?
@@ -1269,6 +1294,13 @@ const ScrollbackPane: Component<Props> = (props) => {
         const msgs = messages();
         const top = msgs && msgs.length > 0 ? (msgs[msgs.length - 1]?.id ?? null) : null;
         setSessionTopId(top);
+        // Freeze contract: re-latch the FROZEN bottom boundary to the new
+        // window's live cursor. Channel-switch is a focus acquisition — the
+        // divider settles to wherever the cursor reached. `props` already
+        // point to the arriving window here (same reason the leave-arm above
+        // decodes `prevKey` for the LEAVING window). A `null` cursor (cold,
+        // unhydrated) is picked up by the cold-latch effect below.
+        setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
         scrollToActivation();
       },
       { defer: true },
@@ -1279,22 +1311,33 @@ const ScrollbackPane: Component<Props> = (props) => {
   // PWA backgrounded (visibility-hide, browser-tab-switch, OS app
   // switch) then re-opened. selection.ts owns the cursor settle on
   // false→true (clearBadgesForWindow); this effect owns the scroll
-  // settle. NO per-channel pre-work — visibility-return on the SAME
-  // selectedChannel must preserve markerScrolled / sessionTopId (the
-  // operator hasn't left the window; only the browser tab lost
-  // visibility). The function-ref signal owns markerRef lifecycle
-  // (REV-G H23).
+  // settle AND the freeze-contract bottom-boundary re-latch.
+  //
+  // Top/bottom boundaries diverge on visibility-return (deliberate, see
+  // the markerCursorId / sessionTopId doc comments):
+  //   * sessionTopId (TOP) is PRESERVED — a brief tab-blur is not
+  //     "leaving the window"; messages that arrived while hidden stay
+  //     live-read, no fresh marker. (Re-latching it would mis-classify
+  //     them.)
+  //   * markerCursorId (BOTTOM) is RE-LATCHED to the live cursor —
+  //     option (b): a step-away-and-back settles the divider to wherever
+  //     the cursor reached while frozen. The re-latch runs BEFORE
+  //     scrollToActivation so the activation scroll sees the updated
+  //     marker state.
+  // markerScrolled is likewise preserved (same window, no re-scroll-arm).
+  // The function-ref signal owns markerRef lifecycle (REV-G H23).
   //
   // `prev === undefined` guards the initial-mount run (signal owns
   // the prev sentinel pattern; mirrors selection.ts's identical guard
   // shape at on(isDocumentVisible)). false→true is the only edge this
-  // effect handles (scroll-back-to-activation). true→false cursor
-  // write lives in the BUGHUNT-2 blur-arm effect immediately below;
-  // selection.ts's redundant true→false copy is deleted in A6.
+  // effect handles. true→false cursor write lives in the BUGHUNT-2
+  // blur-arm effect immediately below; selection.ts's redundant
+  // true→false copy is deleted in A6.
   createEffect(
     on(isDocumentVisible, (visible, prev) => {
       if (prev === undefined) return;
       if (prev === false && visible === true) {
+        setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
         scrollToActivation();
       }
     }),
@@ -1306,8 +1349,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   // and POSTs via setCursorIfAdvances. Mirror of the leave-arm in
   // A3's key-effect, but for the no-key-change case.
   //
-  // No false→true arm — focus-regain does NOT advance cursor;
-  // marker stays where it is.
+  // No false→true arm here — focus-regain does NOT write the live
+  // cursor. (The DISPLAY snapshot IS re-latched on focus-regain by the
+  // sibling activation effect above — freeze contract option (b) — but
+  // that re-reads the existing cursor, it doesn't advance it.)
   //
   // `prev === undefined` guards the initial-mount run (mirrors the
   // sibling effect's identical guard).
@@ -1340,6 +1385,24 @@ const ScrollbackPane: Component<Props> = (props) => {
     const last = msgs[msgs.length - 1];
     if (last === undefined) return;
     setSessionTopId(last.id);
+  });
+
+  // Freeze contract: cold-latch the FROZEN bottom boundary. Mirror of the
+  // sessionTopId cold-mount latch above, but gated on the cursor signal
+  // instead of messages — the read cursor hydrates from /me + join-reply,
+  // which can land AFTER mount (the same race documented at the
+  // scroll-to-marker length-effect below). The key/visibility re-latch
+  // points set markerCursorId eagerly, but on a cold load they may run
+  // while the cursor is still null; this arm picks up the first non-null
+  // observation. Idempotent + freeze-safe: the `markerCursorId() !== null`
+  // guard is read FIRST, so once latched the effect no longer tracks the
+  // live cursor and a later mid-view advance can NOT re-run it — the
+  // divider stays frozen until a focus acquisition re-latches it.
+  createEffect(() => {
+    if (markerCursorId() !== null) return;
+    const c = getReadCursor(props.networkSlug, props.channelName);
+    if (c === null) return;
+    setMarkerCursorId(c);
   });
 
   // After Solid commits new DOM nodes, scroll to the tail iff the user

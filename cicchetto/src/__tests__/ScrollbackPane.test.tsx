@@ -1048,34 +1048,30 @@ describe("ScrollbackPane", () => {
       expect(marker).toHaveTextContent("1 unread");
     });
 
-    // Bug A repro (vjt step 5–8): the marker must DISAPPEAR when the cursor
-    // advances past every visible msg's id — even when the advance happens
-    // after the scrollback append, mid-mount.
+    // FREEZE CONTRACT (2026-06-08, vjt "step-away" request): the unread
+    // marker is FROZEN for the lifetime of a focus session. A bare
+    // mid-view cursor advance — own scroll-settle echo OR cross-device
+    // `read_cursor_set` — does NOT move the divider. The marker re-latches
+    // to the live cursor only on a focus acquisition (channel-switch = key
+    // change, or tab/app visibility-return). Rationale: the divider must
+    // not yank under the operator's eyes while they read; it settles to
+    // the new position when they step away and back.
     //
-    // CP29 R-4 production sequence (selection.ts focus-leave OR
-    // subscribe.ts read_cursor_set arm from cross-device sync):
-    //   1. appendToScrollback(key, msg)              — signal write
-    //   2. applyReadCursorSet(slug, name, msg.id)    — MUST be a signal write
-    // The `rows` createMemo in ScrollbackPane reads BOTH signals. After
-    // step 1 it invalidates and re-evaluates with the OLD cursor, injects
-    // the marker. After step 2 it MUST invalidate again and re-evaluate
-    // with the NEW cursor → marker disappears.
+    // This REVISES the original CP29 R-4 "Bug A" contract (which asserted
+    // the marker disappears immediately on any live-cursor advance). The
+    // signal map stays reactive — sidebar badges + selection.ts unread
+    // counts still update live; only ScrollbackPane's in-pane marker reads
+    // the frozen `markerCursorId` snapshot instead of the live cursor.
     //
-    // Pre-CP29-R4 the cursor was a synchronous localStorage read (not
-    // tracked); the C7.3 mock added reactivity to repro the bug. Post-R4
-    // production is intrinsically reactive (signal map) but the test
-    // still asserts the contract — a regression to non-reactive shape
-    // would re-surface vjt's exact symptom.
-    //
-    // The mid-test cursor advance MUST go through the mocked
-    // `applyReadCursorSet` API (the same wire-event applier prod uses)
-    // so a non-reactive readCursor module would surface the bug here.
-    it("Bug A: marker disappears after live-cursor advance lands post-mount", async () => {
+    // cic cannot distinguish own-echo from cross-device at the
+    // `applyReadCursorSet` boundary (same wire bytes), so the freeze is
+    // uniform: cross-device reads reflect on the next refocus, not
+    // mid-stare. Accepted tradeoff (vjt: "consistency").
+    it("Bug A (revised): bare cursor advance keeps the marker frozen; refocus releases it", async () => {
       const { applyReadCursorSet } = await import("../lib/readCursor");
       const proto = fixture[0];
       if (!proto) throw new Error("fixture[0] missing");
-      // Seed: 4 unread msgs from peer, cursor at 0 → marker shows "4 unread".
-      // sessionTopId latches to 13 (the highest id present at mount).
+      // 4 unread from peer, cursor at 0 → "4 unread". sessionTopId latches 13.
       const fourUnread: ScrollbackMessage[] = [
         { ...proto, id: 10, server_time: 100, sender: "vjt", body: "msg1" },
         { ...proto, id: 11, server_time: 101, sender: "vjt", body: "msg2" },
@@ -1084,18 +1080,77 @@ describe("ScrollbackPane", () => {
       ];
       seedReadCursor("freenode", "#grappa", 0);
       setScrollback({ "freenode #grappa": fourUnread });
+      setDocVisible(true);
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      // Initial render: marker visible with all 4 unread.
       expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
 
-      // Cursor advance to the latest visible id (mirrors selection.ts on
-      // focus-leave: server-side advance + WS broadcast → applyReadCursorSet).
+      // Bare mid-view advance to the latest id. NO focus event.
       applyReadCursorSet("freenode", "#grappa", 13);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      // FROZEN: marker unchanged despite the live cursor reaching sessionTopId.
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
 
+      // Refocus (tab/app visibility-return) re-latches the marker baseline
+      // to the live cursor → cursor caught up to sessionTopId → marker gone.
+      setDocVisible(false);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      setDocVisible(true);
       await waitFor(() => {
-        // RED pre-fix: marker is still in the DOM with "4 unread".
-        // GREEN post-fix: marker is gone — cursor caught up to sessionTopId.
         expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
+    });
+
+    it("marker stays frozen at its mount count while the cursor advances mid-view", async () => {
+      const { applyReadCursorSet } = await import("../lib/readCursor");
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 60, server_time: 100, sender: "alice", body: "u1" },
+        { ...proto, id: 61, server_time: 101, sender: "alice", body: "u2" },
+        { ...proto, id: 62, server_time: 102, sender: "alice", body: "u3" },
+        { ...proto, id: 63, server_time: 103, sender: "alice", body: "u4" },
+      ];
+      // cursor at 59 → marker before id 60, "4 unread". sessionTopId latches 63.
+      seedReadCursor("freenode", "#grappa", 59);
+      setScrollback({ "freenode #grappa": fourUnread });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Operator scroll-settle (or cross-device) advances the cursor partway
+      // through the unread block. NO focus event → divider must not move.
+      applyReadCursorSet("freenode", "#grappa", 62);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+    });
+
+    it("marker re-latches to the advanced cursor on visibility-return (option b)", async () => {
+      const { applyReadCursorSet } = await import("../lib/readCursor");
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 60, server_time: 100, sender: "alice", body: "u1" },
+        { ...proto, id: 61, server_time: 101, sender: "alice", body: "u2" },
+        { ...proto, id: 62, server_time: 102, sender: "alice", body: "u3" },
+        { ...proto, id: 63, server_time: 103, sender: "alice", body: "u4" },
+      ];
+      seedReadCursor("freenode", "#grappa", 59);
+      setScrollback({ "freenode #grappa": fourUnread });
+      setDocVisible(true);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Advance cursor to 62 while frozen — marker holds at 4.
+      applyReadCursorSet("freenode", "#grappa", 62);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Step away + back: divider re-latches to the live cursor (62) → only
+      // id 63 remains in (62, 63] → "1 unread".
+      setDocVisible(false);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      setDocVisible(true);
+      await waitFor(() => {
+        expect(screen.getByTestId("unread-marker")).toHaveTextContent("1 unread");
       });
     });
 
@@ -1192,22 +1247,30 @@ describe("ScrollbackPane", () => {
         // POST-visibility-return checkpoint.
         expect(screen.getByTestId("unread-marker")).toBeInTheDocument();
 
-        // Mid-channel cursor advance removes the marker DOM row. The
-        // marker's onCleanup hook fires, setMarkerRef(undefined).
+        // FREEZE CONTRACT (2026-06-08): a bare cursor advance no longer
+        // removes the marker — it's frozen. The marker DOM row now unmounts
+        // when a FOCUS acquisition re-latches the frozen boundary past the
+        // unread block. Advance the live cursor, then drive ONE
+        // visibility-return: that re-latches markerCursorId=53 → marker row
+        // unmounts → onCleanup fires setMarkerRef(undefined). (Yield between
+        // transitions so SolidJS flushes the false state — effect captures
+        // prev=false — before we flip back to true; otherwise both writes
+        // batch and the effect's prev=undefined guard returns early.)
         applyReadCursorSet("freenode", "#grappa", 53);
+        setDocVisible(false);
+        await new Promise((r) => queueMicrotask(() => r(undefined)));
+        setDocVisible(true);
         await waitFor(() => {
           expect(screen.queryByTestId("unread-marker")).toBeNull();
         });
 
-        // Clear the spy: from THIS point on, no scrollIntoView call is
-        // acceptable. Pre-REV-G the stale-ref path would fire
-        // scrollIntoView during the visibility-return effect.
+        // Clear the spy: the marker is now unmounted and its ref nulled.
+        // From THIS point a SECOND visibility-return must NOT scrollIntoView
+        // a stale detached marker node — the regression pin. Pre-REV-G the
+        // stale-ref path would fire scrollIntoView during the activation
+        // effect.
         scrollIntoViewSpy.mockClear();
 
-        // Drive visibility false→true on the SAME channel. Yield between
-        // transitions so SolidJS flushes the false state (effect captures
-        // prev=false) BEFORE we flip back to true — otherwise both writes
-        // batch and the effect's prev=undefined guard returns early.
         setDocVisible(false);
         await new Promise((r) => queueMicrotask(() => r(undefined)));
         setDocVisible(true);
