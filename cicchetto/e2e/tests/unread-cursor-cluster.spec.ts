@@ -262,4 +262,68 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
       await peer.disconnect("unread-cursor Z sentinel2 done");
     }
   });
+
+  // ── Sentinel 3: own-msg-not-unread on a fast away-and-back ───────────
+  //
+  // Regression pin for the optimistic-cursor fix (2026-06-08). The local
+  // read cursor was round-trip-only — it advanced ONLY when the server's
+  // `read_cursor_set` WS event echoed back. Sending in a fully-read
+  // channel then switching AWAY and BACK before that echo landed made the
+  // marker re-latch (key-effect) read the STALE pre-send cursor, so the
+  // operator's OWN just-sent message rendered above a `── 1 unread ──`
+  // divider. vjt prod-reported as "a message I sent appears as unread
+  // after I go on a different window and then go back".
+  //
+  // Fix: `setReadCursor` advances the local signal optimistically
+  // (forward-only) before the POST, so the send (bucket D) + the leave-
+  // arm both land the cursor synchronously and the switch-back re-latch
+  // reads the fresh value. Deterministic with the fix; without it the
+  // race depends on whether the <100ms testnet round-trip beats the
+  // switch-back — so this is a forward-contract pin + real-browser
+  // exercise, and the deterministic root-cause guard is the
+  // optimistic-advance unit test in src/__tests__/readCursor.test.ts.
+  //
+  // (The sibling symptom — sidebar badge flicker on focus-leave — is a
+  // sub-frame paint event Playwright cannot reliably observe; the same
+  // unit test guards its root cause.)
+  test("own message sent then a fast away-and-back is NOT shown unread", async ({
+    page,
+  }) => {
+    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+    const vjt = getSeededVjt();
+
+    // Clean baseline: channel fully-read at first focus so NO marker is
+    // present before the send — any marker after the send/switch is the
+    // bug, not a leftover.
+    await restoreReadCursorToTail(vjt.token, NETWORK_SLUG, CHANNEL);
+
+    await loginAs(page, vjt);
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+    await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0, {
+      timeout: 5_000,
+    });
+
+    // Send own PRIVMSG in the fully-read, focused channel.
+    const ownBody = `unread-cursor Z sentinel3 own ${crypto.randomUUID().slice(0, 8)}`;
+    await composeSend(page, ownBody);
+    await expect(ownNickRows(page, ownBody).first()).toBeVisible({ timeout: 5_000 });
+
+    // FAST away-and-back — deliberately NO settle wait between, to
+    // exercise the re-latch BEFORE the cursor round-trip would otherwise
+    // land. With the optimistic advance the cursor is already at the
+    // own-row id, so the re-latch sees a fully-read channel.
+    await selectChannel(page, NETWORK_SLUG, NETWORK_SLUG, { awaitWsReady: false });
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+    // The own message must NOT be marked unread: no divider injected.
+    await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0, {
+      timeout: 5_000,
+    });
+    await expect(ownNickRows(page, ownBody).first()).toBeVisible();
+
+    // Stability: settle the full round-trip and re-assert — a wrongly
+    // reactive path would have injected the marker by now.
+    await page.waitForTimeout(POST_SEND_SETTLE_MS);
+    await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0);
+  });
 });

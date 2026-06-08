@@ -1398,6 +1398,15 @@ const ScrollbackPane: Component<Props> = (props) => {
   // guard is read FIRST, so once latched the effect no longer tracks the
   // live cursor and a later mid-view advance can NOT re-run it — the
   // divider stays frozen until a focus acquisition re-latches it.
+  //
+  // Optimistic-cursor note (2026-06-08): setReadCursor now advances the
+  // live cursor optimistically, so the "first non-null observation" this
+  // arm latches CAN be an optimistic value if a cursor write (send /
+  // scroll-settle / blur) fires inside the cold-load-before-hydration
+  // window. Narrow corner (the channel is joined → join-reply has
+  // hydrated the cursor by the time the operator can interact), and the
+  // pre-optimistic code had the symmetric race (it latched whichever
+  // applyReadCursorSet echo landed first). Acceptable; flagged for honesty.
   createEffect(() => {
     if (markerCursorId() !== null) return;
     const c = getReadCursor(props.networkSlug, props.channelName);
