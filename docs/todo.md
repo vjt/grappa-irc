@@ -183,6 +183,15 @@ Phase 5 cluster opens):
   Either teach the last-user check that visitor presence counts, or add
   a "detach user, keep network" verb. Worked around in prod with a
   direct credential-row delete. See DESIGN_NOTES 2026-06-04.
+- **cic: guard read-cursor POST on invalid `message_id`** (2026-06-08)
+  — **issue #44.** `cicchetto/src/lib/readCursor.ts` `setReadCursor/4`
+  POSTs `{message_id}` with no positive-int guard; service-nick query
+  windows (NickServ/ChanServ/OperServ) settle before a real persisted
+  id exists → server 400s (31× on prod). Fix = skip the POST when
+  `messageId` isn't a positive integer. Stopgap shipped: the m42 host
+  `http-400` fail2ban jail now exempts `/read-cursor\b` 400s (CP55) so
+  the operator stops self-banning — remove that exemption is optional
+  once the cic guard lands.
 
 ## Low / Observation
 
@@ -206,6 +215,12 @@ Phase 5 cluster opens):
   the Connection header on upstream side, nginx forwards client's
   `Connection: close` and keepalive pool never warms. Pure perf,
   measurable only under sustained load.
+- **Captcha-enabled-on-prod discrepancy** (2026-06-08, CP55) — prod
+  `grappa.env` has NO `GRAPPA_CAPTCHA_*` → provider should be
+  `disabled` → no widget. Yet vjt saw the captcha widget (and its CSP
+  inline-script block) on prod. Confirm where the provider is actually
+  switched on, or whether it was a stale client state. The CSP fix
+  (sha256 in script-src, CP55) is correct regardless.
 
 ---
 
