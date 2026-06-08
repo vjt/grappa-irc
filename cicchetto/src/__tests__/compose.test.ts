@@ -233,6 +233,61 @@ describe("compose submit — slash command dispatch", () => {
     expect(result).toEqual({ ok: true });
   });
 
+  // Multiline fan-out: an embedded LF can't ride a single PRIVMSG (the
+  // server rejects it as :invalid_line — IRC frames are newline-
+  // delimited). A multiline compose (Shift+Enter / pasted block) must
+  // become one PRIVMSG per line. Pre-fix the whole body went as one send
+  // and bounced with an "invalid" error.
+  it("multiline :privmsg sends one PRIVMSG per line, in order", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "line one\nline two\nline three");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(sb.sendMessage).toHaveBeenCalledTimes(3);
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(1, "freenode", "#a", "line one");
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(2, "freenode", "#a", "line two");
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(3, "freenode", "#a", "line three");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("multiline :privmsg drops blank lines and strips CR (CRLF paste)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "a\r\n\r\nb\r\nc");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(sb.sendMessage).toHaveBeenCalledTimes(3);
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(1, "freenode", "#a", "a");
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(2, "freenode", "#a", "b");
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(3, "freenode", "#a", "c");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("multiline /me sends one ACTION per line", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/me waves\nthen bows");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(sb.sendMessage).toHaveBeenCalledTimes(2);
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(1, "freenode", "#a", "\x01ACTION waves\x01");
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(2, "freenode", "#a", "\x01ACTION then bows\x01");
+    expect(result).toEqual({ ok: true });
+  });
+
   it("/topic body posts to /topic endpoint", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");

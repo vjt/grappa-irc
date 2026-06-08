@@ -5,6 +5,7 @@ import type { ChannelKey } from "./channelKey";
 import { friendlyApiError } from "./friendlyApiError";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
+import { splitMessageLines } from "./messageLines";
 import { networkIdBySlug } from "./networks";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { quitAll } from "./quit";
@@ -71,6 +72,24 @@ type ComposeState = {
 type SubmitResult = { ok: true | string } | { error: string };
 
 const empty = (): ComposeState => ({ draft: "", history: [], historyCursor: null });
+
+// Multiline fan-out: split a free-text body into one PRIVMSG per line
+// (see messageLines.ts for the wire-framing why) and send each.
+// `action` wraps every line in CTCP ACTION framing for /me. Sequential
+// await preserves wire order; a single-line body loops exactly once, so
+// the common path is unchanged from the pre-split behavior. Shared by
+// the privmsg, me, and msg send sites — the only free-text paths whose
+// body can contain an operator-typed newline.
+const sendBodyLines = async (
+  slug: string,
+  target: string,
+  body: string,
+  action: boolean,
+): Promise<void> => {
+  for (const line of splitMessageLines(body)) {
+    await sendPrivmsg(slug, target, action ? `\x01ACTION ${line}\x01` : line);
+  }
+};
 
 const exports_ = identityScopedStore((onIdentityChange) => {
   const [composeByChannel, setComposeByChannel] = createSignal<Record<ChannelKey, ComposeState>>(
@@ -195,12 +214,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     try {
       switch (cmd.kind) {
         case "privmsg":
-          await sendPrivmsg(networkSlug, channelName, cmd.body);
+          // One PRIVMSG per line — an embedded newline can't ride a
+          // single IRC frame (server rejects as :invalid_line).
+          await sendBodyLines(networkSlug, channelName, cmd.body, false);
           result = { ok: true };
           break;
         case "me":
-          // CTCP ACTION framing: \x01ACTION <text>\x01
-          await sendPrivmsg(networkSlug, channelName, `\x01ACTION ${cmd.body}\x01`);
+          // CTCP ACTION framing per line: \x01ACTION <text>\x01.
+          await sendBodyLines(networkSlug, channelName, cmd.body, true);
           result = { ok: true };
           break;
         case "join":
@@ -297,14 +318,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/msg: network not found" };
           if (isServicesSender(cmd.target)) {
-            await sendPrivmsg(networkSlug, cmd.target, cmd.body);
+            await sendBodyLines(networkSlug, cmd.target, cmd.body, false);
             result = { ok: true };
             break;
           }
           const canonical = canonicalQueryNick(networkId, cmd.target);
           openQueryWindowState(networkId, canonical, new Date().toISOString());
           setSelectedChannel({ networkSlug, channelName: canonical, kind: "query" });
-          await sendPrivmsg(networkSlug, canonical, cmd.body);
+          await sendBodyLines(networkSlug, canonical, cmd.body, false);
           result = { ok: true };
           break;
         }
