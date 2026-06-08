@@ -3458,3 +3458,39 @@ before you trust the correlation. A hung-looking BEAM that answers
 healthz in 500µs isn't hung — walk outward (token, proxy, firewall,
 the human's last action) before you walk back into your own diff. The
 symptom that points at your change is the most expensive coincidence.*
+
+## 2026-06-08 — Freeze the display, not the transport
+
+vjt: scrolling through unread messages yanks the "── N unread ──"
+divider down under your eyes. Make it sit still while you read; advance
+it when you step away and come back. Simple ask. His first instinct for
+the fix — "can we just not broadcast the cursor update?" — was the
+tempting wrong layer. Kill the server echo and you break two things at
+once: cic stops mirroring the server-owned cursor (it'd have to invent
+the value locally, which the rules ban), and the originating device's
+own signal goes stale, so the divider would freeze *forever*, not until
+refocus. The broadcast is load-bearing. The yank was never the broadcast
+existing — it was the render *reacting* to it mid-read. So: freeze the
+display, not the transport. A snapshot of the cursor, latched at focus,
+held constant while the eyes are on the window; the live signal keeps
+flowing underneath for the badges. One memo line, one sibling latch to
+the boundary that was already frozen above it.
+
+The interesting part was downstream. The codebase already had a test —
+CP29 R-4's "Bug A" — asserting the exact opposite of the new ask: the
+marker MUST vanish the instant the cursor advances. Not a bug — a
+deliberate contract from a month ago. And the uniform freeze rippled
+past the scroll case vjt described: it also stopped send-in-window and
+cross-device reads from collapsing the divider live, because cic can't
+tell its own echo from a peer's at the wire. Three contracts, one new
+requirement overriding all of them. The move wasn't to quietly flip the
+assertions green — that's how you bury the next person. It was to
+surface each conflict, get vjt's "yes, consistency," and rewrite the
+tests to assert the *new correct* behavior, loudly, with the why in the
+diff.
+
+*Law: a green test can be guarding an obsolete contract. When a new
+requirement contradicts one, the test is neither sacred nor a rubber
+stamp — surface the conflict, get the call, then rewrite it to assert
+the new truth. Never flip a red test green to make the bar pass; flip it
+because the bar moved, and say so where the next reader will look.*
