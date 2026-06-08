@@ -11058,3 +11058,62 @@ freeze-safety reasoning: `cicchetto/src/ScrollbackPane.tsx` (the
 note); contract tests in `ScrollbackPane.test.tsx` (Bug A revised + the
 three freeze tests; REV-G H23 updated to drive marker removal via a
 focus-acquisition re-latch).
+
+## 2026-06-08 — Optimistic forward-only read-cursor advance
+
+Two unread bugs vjt prod-reported, one root cause. (1) Leaving a channel
+with nothing unread flashed a sidebar badge for a frame before it
+vanished. (2) An own-sent message sometimes rendered above the
+`── N unread ──` divider after stepping to another window and back.
+
+Root cause: the local read-cursor signal map (`readCursor.ts`) was
+ROUND-TRIP-ONLY. `setReadCursor` POSTed and the local map advanced ONLY
+when the server's `read_cursor_set` WS event echoed back
+(`applyReadCursorSet`). Every write had a stale-cursor window between
+POST and broadcast; reactivity firing in that gap read the OLD cursor:
+  * Badge flicker: the focused-window suppression in `perChannelUnread`
+    drops synchronously when `selectedChannel` flips, but the leave-arm's
+    cursor advance had not round-tripped, so the memo briefly recomputed
+    `count_after(stale cursor) > 0`.
+  * Own-msg-unread: the `markerCursorId` re-latch on focus acquisition
+    read the stale pre-send cursor when the return beat the echo.
+
+Fix: `setReadCursor` advances the local signal OPTIMISTICALLY,
+forward-only, before the POST — one place, every write path inherits it.
+The write collapses into the same synchronous Solid flush so the
+suppression-drop and marker re-latch see the fresh cursor.
+
+REVISES the freeze-contract entry above. That entry's "suppress the
+broadcast → forces an optimistic local cursor write (banned)" aside is
+narrowed here. The ban's load-bearing reasons were (a) server-owned read
+state / "cic never originates state", and (b) cross-device sync. Both
+still hold: the broadcast is RETAINED (not killed), so the echo remains
+the single source for peer sets and the only path that moves the cursor
+backward (unconditional last-write-wins). The optimistic write is
+forward-only and the echo re-affirms the exact same id — cic is not
+ORIGINATING a cursor value, it is reflecting its OWN authoritative write
+a few hundred ms early. The freeze contract is untouched: the in-pane
+divider reads the FROZEN `markerCursorId`, never the live signal, so a
+mid-read optimistic advance cannot yank the divider.
+
+Tradeoff accepted (vjt: "ok with optimistic advance"): the old
+round-trip-only invariant — local cursor could never diverge from the
+server — is given up. On a FAILED POST the local cursor is left
+optimistically ahead and is NOT reverted. A naive revert would clobber a
+concurrent forward advance (the cross-device race forward-only prevents);
+a compare-and-swap revert is heavier than the problem. cic only writes
+ids it has actually read (visible tail / own send), so divergence is
+bounded to already-read rows — a NEW arrival still has `id > cursor` and
+shows unread correctly. It re-aligns on the next successful forward write
+or on `/me` / join-reply hydration; worst case a relogin right after a
+failed write re-surfaces already-read rows as unread once. A 422 from the
+server's `message_belongs?` guard is unreachable from cic (every posted
+id is a row cic rendered or sent in that channel).
+
+Implementation: `cicchetto/src/lib/readCursor.ts` (`setReadCursor`
+optimistic block + moduledoc). Tests: `readCursor.test.ts` pins the
+optimistic forward-only advance at the primitive (deterministic
+root-cause guard); `unread-cursor-cluster.spec.ts` sentinel 3 (own
+message + fast away-and-back is never shown unread). The badge flicker is
+a sub-frame paint event Playwright cannot observe — the unit test guards
+its root cause.
