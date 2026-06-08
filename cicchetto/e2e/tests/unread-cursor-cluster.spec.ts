@@ -13,11 +13,11 @@
 //      `count_after(cursor)`, drops the just-sent row.
 //
 //   2. Send in a focused window with the in-pane `── XX unread ──`
-//      marker visible → marker collapses on the next render.
-//      Pre-cluster the marker stayed stale until focus-leave wrote
-//      the cursor on window-switch; post-D the cursor advances
-//      synchronously on send → derived `messagesUnread` recomputes
-//      to whatever later peer arrivals contributed (often 0).
+//      marker visible → the marker stays FROZEN (freeze contract,
+//      2026-06-08). The send advances the LIVE cursor, but the in-pane
+//      divider derives from the frozen `markerCursorId` snapshot and
+//      only re-latches on a focus acquisition — so the marker collapses
+//      on the next window-refocus, not on the send itself.
 //
 // One file, two cases, shared `describe` + `afterAll` restore — same
 // shape as `cursor-forward-only.spec.ts`. Per BUGHUNT-3 cascade rule,
@@ -175,8 +175,12 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
   //
   // Single browser context. Seed `── XX unread ──` marker on #bofh by
   // having a peer PRIVMSG while focus is on $server, switch focus to
-  // #bofh to render the marker, then send a message. Assert that the
-  // marker collapses on the next render.
+  // #bofh to render the marker, then send a message. FREEZE CONTRACT
+  // (2026-06-08, vjt step-away): the focused send advances the LIVE
+  // cursor but must NOT collapse the divider mid-session — the in-pane
+  // marker derives from the frozen `markerCursorId` snapshot. It only
+  // re-latches (and collapses, the cursor having caught up) on a focus
+  // acquisition. So: send → marker STAYS; window-refocus → marker GONE.
   //
   // Mechanism (NOT asserted directly — only the behavior is):
   //   - peer privmsg lands on #bofh while focus is on $server →
@@ -184,12 +188,14 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
   //     fanout to #bofh topic stores the row but DOESN'T touch
   //     cursor (focus on $server, leave-arm on $server doesn't fire
   //     for #bofh).
-  //   - switch focus to #bofh → ScrollbackPane's rows memo injects
-  //     `unread-marker` BEFORE the first row with id > cursor.
-  //   - send a PRIVMSG → bucket D advances cursor to the new row id
-  //     → derived rows memo sees cursor >= peer-row id → unread-
-  //     marker drops out.
-  test("focused send collapses the in-pane unread marker on the next render", async ({
+  //   - switch focus to #bofh → key-effect latches `markerCursorId` at
+  //     the pre-peer cursor → rows memo injects `unread-marker` BEFORE
+  //     the first row with id > snapshot.
+  //   - send a PRIVMSG → bucket D advances the LIVE cursor, but the
+  //     frozen snapshot holds → marker stays put.
+  //   - switch away ($server) and back → key-effect re-latches
+  //     `markerCursorId` to the advanced cursor → marker collapses.
+  test("focused send keeps the marker frozen; window-refocus collapses it", async ({
     page,
   }) => {
     if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
@@ -212,11 +218,11 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
       await peer.join(CHANNEL);
       peer.privmsg(CHANNEL, peerBody);
 
-      // Switch to #bofh — rows memo evaluates with cursor < peer-row
-      // id, injects the unread-marker. Wait for the peer row + marker
-      // to render before the focused send so the pre-condition is
-      // visible (otherwise a marker-already-gone state would silently
-      // pass the post-send assertion).
+      // Switch to #bofh — key-effect latches the snapshot at cursor <
+      // peer-row id, rows memo injects the unread-marker. Wait for the
+      // peer row + marker to render before the focused send so the
+      // pre-condition is visible (otherwise a marker-already-gone state
+      // would silently pass the post-send assertion).
       await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
       await expect(
         page.locator('[data-testid="scrollback-line"][data-kind="privmsg"]', {
@@ -227,19 +233,28 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
         timeout: 5_000,
       });
 
-      // Send an own-PRIVMSG in the focused #bofh. Bucket D advances
-      // the cursor to the new row id post-success.
+      // Send an own-PRIVMSG in the focused #bofh. Bucket D advances the
+      // LIVE cursor to the new row id post-success — but NOT the frozen
+      // marker snapshot.
       const ownBody = `unread-cursor Z sentinel2 own ${crypto.randomUUID().slice(0, 8)}`;
       await composeSend(page, ownBody);
       await expect(ownNickRows(page, ownBody).first()).toBeVisible({
         timeout: 5_000,
       });
 
-      // Marker collapses on the next render. Polled (not a snapshot)
-      // because the cursor-advance round-trip (POST + WS broadcast +
-      // apply + memo recompute + DOM commit) is async — same shape as
-      // the `bofhBadgeB` wait above, but here we have a positive
-      // event (`unread-marker` count → 0) to assert against.
+      // FREEZE: settle the full cursor-advance round-trip (POST + WS
+      // broadcast + apply + memo recompute + DOM commit) so a WRONGLY
+      // reactive marker would have collapsed by now — then assert it
+      // is STILL visible. This is the contract the old "collapse on
+      // send" test had backwards.
+      await page.waitForTimeout(POST_SEND_SETTLE_MS);
+      await expect(page.locator('[data-testid="unread-marker"]')).toBeVisible();
+
+      // Step away to $server and back to #bofh. The focus acquisition
+      // re-latches `markerCursorId` to the now-advanced cursor → the
+      // cursor has caught up to the tail → marker collapses.
+      await selectChannel(page, NETWORK_SLUG, NETWORK_SLUG, { awaitWsReady: false });
+      await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
       await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0, {
         timeout: 5_000,
       });
