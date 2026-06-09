@@ -11349,32 +11349,45 @@ Sobelow's 8 Low-confidence Traversal findings (uploads.ex ×5, reaper.ex
 below the project's configured `exit: "Medium"` gate (CI green by
 policy), consistent with annotating only where churn warrants it.
 
-### e2e timing flake: cp15-b6 + m6 `/msg` own-render (not a cascade)
+### e2e full-suite reds: cp15-b6 + m6 `/msg` own-render (NOT a cascade)
 
 The full-suite e2e run surfaced reds in `cp15-b6-archive-query-revival`
 and `m6-cicchetto-to-priv-opens-query`. Both passed **3/3 in isolation**,
-so the first read was "cascade" (the docs/TESTING.md decision tree maps
-3/3-iso-pass → state-order pollution). A proper bisect disproved that:
+so the first read was "cascade" (docs/TESTING.md maps 3/3-iso-pass →
+state-order pollution). A proper bisect disproved cascade, and a second
+full run separated the two specs into **two different root causes**:
 
 - cp15-b6 alone: 3/3 pass.
-- chromium prefix #1–12 + cp15-b6: pass.
-- chromium prefix #13–24 + cp15-b6: pass.
-- the FULL chromium prefix #1–24 + cp15-b6: pass (43/43).
-- the full ~190-spec suite: cp15-b6 **fails at 7.5s**, m6 **fails at 7.5s**.
+- chromium prefix #1–12 / #13–24 / full #1–24 + cp15-b6: all pass.
+- full ~190-spec suite, run 1: cp15-b6 fails 7.5s, m6 fails 7.5s.
+- full suite, run 2 (after a 5s→15s timeout bump): **m6 passes**;
+  cp15-b6 **still fails at 15s** with the query window open but empty
+  ("no messages yet") — the row is *absent*, not late.
 
-Same prefix, same spec position, opposite outcome → **timing, not state**.
-No upstream spec poisons anything. Both failures are the identical slow
-path: cic `/msg` compose → bouncer persists the outbound PRIVMSG → WS push
-→ own row renders in the query-window scrollback. That round-trip's
-`expect(...).toBeVisible({ timeout: 5_000 })` (Playwright's 5s default)
-is too tight under full-suite resource pressure on the Raspberry Pi dev
-box — it spiked past 5s (observed 7.5s) and tripped the one-shot budget.
-On faster CI (`integration.yml`, ubuntu) it stays well under 5s. This is
-the "rotating set" signature from docs/TESTING.md, but the root is host
-load, not a poisoner.
+Projects do not interleave (chromium runs fully before webkit), so no
+cross-project poisoning either. Two distinct causes:
 
-Fix: bump the WS/REST round-trip assertion timeouts in both specs from
-5s → 15s (cp15-b6 ×6, m6 ×2). The assertion still fails if the row never
-arrives — it just grants the real round-trip headroom on a loaded slow
-host instead of racing a 5s clock. Not a production bug; the bouncer
-persists + pushes the row correctly, only later than 5s under load.
+**m6 — genuine timing.** It already guards the DM-listener race (below).
+Its round-trip (cic `/msg` → bouncer persist → WS push → own row renders)
+just overran Playwright's 5s default under full-suite load on the
+Raspberry Pi dev box (7.5s observed). Bumping its two round-trip
+assertions to 15s fixes it. On CI (ubuntu) 5s was always enough.
+
+**cp15-b6 — the DM-listener race, and a bigger timeout never fixes it.**
+`selectChannel` awaits the *channel* topic join, not the *own-nick* topic
+join (sibling effects gated on `networks()` loading). Firing `/msg`
+before the own-nick subscribe completes broadcasts the outbound PRIVMSG
+to **zero subscribers** → query window never opens → row never renders.
+This is the exact race `waitForDmListenerReady` exists to close (its
+docstring cites ~20% suite flake), and 7 sibling DM specs already call it
+(m4/m5/m6/cp14-b3/ux-6-k/ux-6-l/p0b) — cp15-b6 was the lone omission. A
+bigger timeout is futile because the row is absent, not slow. The real
+fix: `await waitForDmListenerReady(page, NETWORK_SLUG)` after
+`selectChannel`, before the first `/msg`.
+
+Fixes landed: (1) add the `waitForDmListenerReady` barrier to cp15-b6
+(root cause); (2) bump the WS/REST round-trip assertion timeouts 5s → 15s
+in both specs (cp15-b6 ×6, m6 ×2) for slow-host headroom — the assertion
+still fails if a row never arrives, it just stops racing a 5s clock on a
+loaded Pi. No production bug in either case; the bouncer persists + pushes
+correctly once a subscriber exists.

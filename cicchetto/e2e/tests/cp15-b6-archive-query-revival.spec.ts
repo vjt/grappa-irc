@@ -32,7 +32,12 @@
 // inherit the window. Peer disconnect cleans the upstream nick.
 
 import { test, expect } from "../fixtures/test";
-import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import {
+  composeSend,
+  loginAs,
+  selectChannel,
+  waitForDmListenerReady,
+} from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
@@ -60,6 +65,16 @@ test("CP15 B6 — /msg peer + close → archive entry; revive via /msg drops the
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, SEED_CHANNEL, { ownNick: NETWORK_NICK });
+  // Barrier against the documented DM-listener race (see
+  // waitForDmListenerReady): `selectChannel` awaits the channel topic
+  // join, NOT the own-nick topic join. Firing `/msg` before the own-nick
+  // subscribe completes means the outbound PRIVMSG broadcast fans out to
+  // zero subscribers → the query window never opens and the row never
+  // renders ("no messages yet"). This is what actually flaked cp15-b6 in
+  // the full suite (row absent even at 15s), not slow timing — the 7
+  // sibling DM specs (m4/m5/m6/cp14-b3/ux-6-k/ux-6-l/p0b) already guard
+  // this; cp15-b6 was the lone omission.
+  await waitForDmListenerReady(page, NETWORK_SLUG);
 
   // /msg opens the query window, focuses it, and sends the PRIVMSG
   // in one compose interaction. The PRIVMSG persists with dm_with =
