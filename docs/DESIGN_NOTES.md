@@ -11349,8 +11349,32 @@ Sobelow's 8 Low-confidence Traversal findings (uploads.ex ×5, reaper.ex
 below the project's configured `exit: "Medium"` gate (CI green by
 policy), consistent with annotating only where churn warrants it.
 
-The full-suite e2e run surfaced one red — `cp15-b6-archive-query-revival`
-(`/msg` archive revival) — which passed **3/3 in isolation**: a cascade
-(test-order state pollution from an upstream spec), not a regression and
-orthogonal to this cic-only change. Filed as a follow-up per the
-docs/TESTING.md cascade doctrine; no production code touched.
+### e2e timing flake: cp15-b6 + m6 `/msg` own-render (not a cascade)
+
+The full-suite e2e run surfaced reds in `cp15-b6-archive-query-revival`
+and `m6-cicchetto-to-priv-opens-query`. Both passed **3/3 in isolation**,
+so the first read was "cascade" (the docs/TESTING.md decision tree maps
+3/3-iso-pass → state-order pollution). A proper bisect disproved that:
+
+- cp15-b6 alone: 3/3 pass.
+- chromium prefix #1–12 + cp15-b6: pass.
+- chromium prefix #13–24 + cp15-b6: pass.
+- the FULL chromium prefix #1–24 + cp15-b6: pass (43/43).
+- the full ~190-spec suite: cp15-b6 **fails at 7.5s**, m6 **fails at 7.5s**.
+
+Same prefix, same spec position, opposite outcome → **timing, not state**.
+No upstream spec poisons anything. Both failures are the identical slow
+path: cic `/msg` compose → bouncer persists the outbound PRIVMSG → WS push
+→ own row renders in the query-window scrollback. That round-trip's
+`expect(...).toBeVisible({ timeout: 5_000 })` (Playwright's 5s default)
+is too tight under full-suite resource pressure on the Raspberry Pi dev
+box — it spiked past 5s (observed 7.5s) and tripped the one-shot budget.
+On faster CI (`integration.yml`, ubuntu) it stays well under 5s. This is
+the "rotating set" signature from docs/TESTING.md, but the root is host
+load, not a poisoner.
+
+Fix: bump the WS/REST round-trip assertion timeouts in both specs from
+5s → 15s (cp15-b6 ×6, m6 ×2). The assertion still fails if the row never
+arrives — it just grants the real round-trip headroom on a loaded slow
+host instead of racing a 5s clock. Not a production bug; the bouncer
+persists + pushes the row correctly, only later than 5s under load.
