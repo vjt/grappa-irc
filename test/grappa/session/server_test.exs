@@ -1300,7 +1300,7 @@ defmodule Grappa.Session.ServerTest do
       # as a PRIVMSG body — was self-echo-persisted with kind :privmsg, so
       # cic rendered it on the privmsg branch (`<nick> ACTION text`) instead
       # of the action branch (`* nick text`). The inbound EventRouter path
-      # already classified peer ACTIONs correctly (`ctcp_action?`); only the
+      # already classified peer ACTIONs correctly (`CTCP.action?/1`); only the
       # outbound persist path hardcoded :privmsg. Pin the fix at the persist
       # boundary — both the persisted row and the broadcast must carry :action.
       rfc_handler = fn state, line ->
