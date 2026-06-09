@@ -1062,6 +1062,18 @@ html.resize-dragging * {
 .scrollback-mirc-underline {
   text-decoration: underline;
 }
+.scrollback-mirc-strikethrough {
+  text-decoration: line-through;
+}
+/* Underline + strikethrough on the same run: a single `text-decoration`
+   can't compose across two separate class rules (last wins), so this
+   higher-specificity selector merges them. */
+.scrollback-mirc-underline.scrollback-mirc-strikethrough {
+  text-decoration: underline line-through;
+}
+.scrollback-mirc-monospace {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+}
 /* Reverse without explicit fg/bg: invert via filter so plain text
    stays readable on whatever the surrounding background is. With
    explicit fg/bg the renderRun helper swaps them on the inline style

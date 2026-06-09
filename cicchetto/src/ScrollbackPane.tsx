@@ -19,7 +19,7 @@ import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { linkify } from "./lib/linkify";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
-import { MIRC_PALETTE_16, parseMircFormat, type Run } from "./lib/mircFormat";
+import { parseMircFormat, type Run } from "./lib/mircFormat";
 import { networks, user } from "./lib/networks";
 import { senderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
@@ -246,11 +246,14 @@ const renderRun = (run: Run): JSX.Element => {
   // we don't have a "terminal default" — fall back to plain text colors
   // and let the .scrollback-mirc-reverse class style the swap (CSS owns
   // the visual). Inline style still applies the explicit fg/bg if set.
+  // fg/bg are already resolved CSS color strings (the parser owns palette +
+  // \x04 hex resolution — no lookup leaks here). Reverse swaps which slot
+  // each color lands in.
   if (run.fg !== undefined) {
-    style[run.reverse ? "background-color" : "color"] = MIRC_PALETTE_16[run.fg] ?? "";
+    style[run.reverse ? "background-color" : "color"] = run.fg;
   }
   if (run.bg !== undefined) {
-    style[run.reverse ? "color" : "background-color"] = MIRC_PALETTE_16[run.bg] ?? "";
+    style[run.reverse ? "color" : "background-color"] = run.bg;
   }
   // No-silent-drops bucket 4 (2026-05-14): linkify the run text so URLs
   // render as <a href target="_blank" rel="noopener noreferrer">. Done
@@ -266,6 +269,8 @@ const renderRun = (run: Run): JSX.Element => {
         "scrollback-mirc-bold": run.bold,
         "scrollback-mirc-italic": run.italic,
         "scrollback-mirc-underline": run.underline,
+        "scrollback-mirc-strikethrough": run.strikethrough,
+        "scrollback-mirc-monospace": run.monospace,
         "scrollback-mirc-reverse": run.reverse && run.fg === undefined && run.bg === undefined,
       }}
       style={style}

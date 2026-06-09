@@ -2247,6 +2247,71 @@ describe("ScrollbackPane", () => {
       // mIRC color 4 = red (#ff0000); jsdom parses inline style.
       expect(colored?.style.color).toBe("rgb(255, 0, 0)");
     });
+
+    it("renders \\x1e strikethrough with .scrollback-mirc-strikethrough", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "a\x1egone\x1eb",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const spans = document.querySelector(".scrollback-body")?.querySelectorAll("span");
+      expect(spans?.[1]?.classList.contains("scrollback-mirc-strikethrough")).toBe(true);
+      expect(spans?.[1]?.textContent).toBe("gone");
+      expect(spans?.[0]?.classList.contains("scrollback-mirc-strikethrough")).toBe(false);
+    });
+
+    it("renders \\x11 monospace with .scrollback-mirc-monospace", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "\x11code()\x11",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const span = document.querySelector(".scrollback-body span") as HTMLElement | null;
+      expect(span?.classList.contains("scrollback-mirc-monospace")).toBe(true);
+      expect(span?.textContent).toBe("code()");
+    });
+
+    it("renders \\x04 hex fg color via inline style", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "\x04ff8800orange\x04",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const colored = document.querySelector(".scrollback-body span") as HTMLElement | null;
+      // #ff8800 → jsdom rgb.
+      expect(colored?.style.color).toBe("rgb(255, 136, 0)");
+      expect(colored?.textContent).toBe("orange");
+    });
   });
 
   // UX-4 bucket K (2026-05-19) — canonical window-activation scroll.
