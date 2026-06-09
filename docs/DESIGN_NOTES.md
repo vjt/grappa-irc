@@ -11211,3 +11211,83 @@ in `unread-cursor-cluster.spec.ts` — which the 2026-06-08 freeze work
 had flipped to assert "send keeps it frozen" — is flipped back to the
 new contract: a focused send collapses the marker immediately, no
 window-switch.
+
+## 2026-06-09 — Own /me classified :action (issue #14) + full mIRC render
+
+Two CTCP/formatting display fixes. Issue #14 ("CTCP frames incl. /me
+ACTION surface as raw PRIVMSG text") was triaged as a cic display-layer
+gap; it was not. The screenshot symptom — `<nick> ACTION prova` — is
+cic's PRIVMSG render branch (the `<…>` brackets), which only fires for a
+`kind: :privmsg` row. The `:action` branch renders `* nick body` and was
+already correct (M10, peer ACTION, is green). So the offending row was
+PERSISTED as :privmsg.
+
+Root cause was server-side and outbound-only.
+`Session.Server.persist_and_send_fragments/4` — the self-echo persist
+path for the operator's OWN sends — hardcoded `kind: :privmsg` and never
+looked at the CTCP envelope. cic transmits a `/me` as
+`\x01ACTION text\x01` in a PRIVMSG body, so the operator's own action
+round-tripped as :privmsg and rendered raw. The INBOUND path
+(`EventRouter.privmsg_default`) had classified ACTIONs correctly all
+along — the two halves of every ACTION had simply drifted. M10's green
+status masked it because M10 exercises the inbound function, a different
+code path; the bug lives only on the outbound one, which is
+target-agnostic (so it broke own `/me` in both channels AND queries,
+exactly as the issue reported).
+
+The "is this a CTCP ACTION frame?" predicate existed as TWO private
+copies — `EventRouter.ctcp_action?/1` (lenient, prefix-only) and
+`LineSplit.ctcp_action?/1` (additionally required a trailing `\x01`).
+They were already inconsistent: LineSplit's stricter check meant a
+leading-only ACTION over the fragmentation budget took the NAIVE split
+path — the "garbage on the wire" case its own moduledoc warns against.
+Collapsed both onto one source, `Grappa.IRC.CTCP.action?/1` (the lenient
+prefix-only form; CTCP's closing delimiter is optional), now called from
+three sites: inbound classify, outbound classify (the fix), and
+envelope-preserving split. Single source for a wire-format question that
+the Phase 6 IRCv3 listener facade will also ask. `Scrollback.dm_peer/4`
+gets the real `kind` too — `:action` is already a dm-eligible kind, so
+own action-DMs thread their peer correctly.
+
+Division of labor stays: the SERVER classifies the kind (it owns the
+wire), cic renders by kind (it owns the display). The raw `\x01` stays
+in the stored body (round-trip fidelity); cic's `:action` branch strips
+the envelope at render, unchanged.
+
+### Full mIRC inline formatting render (Part B)
+
+`mircFormat.ts` already did the toggles bold/italic/underline/reverse +
+the 16-color `\x03` palette (clamped to 15). Extended to the full
+de-facto control set: `\x04` hex color (`\x04RRGGBB[,RRGGBB]`, bare or
+partial-hex = reset), `\x1e` strikethrough, `\x11` monospace, `\x03`
+extended palette 16-98 (the modern ircdocs table, no longer clamped),
+and `\x03` code 99 = the explicit "default" (reset).
+
+One design move: COLOR RESOLUTION MOVED INTO THE PARSER. Pre-fix a Run
+carried `fg: number` (a palette index) and ScrollbackPane's `renderRun`
+did `MIRC_PALETTE_16[fg]`. Adding `\x04` hex would have forced a second
+color representation (index vs literal) and pushed the palette table into
+the render layer. Instead a Run now carries an already-resolved CSS color
+string in `fg`/`bg` regardless of source, so `renderRun` is a dumb
+applier and the palette lives entirely in the parser (CLAUDE.md "no
+leaky abstractions"). The 99-entry palette and `\x04` hex both resolve to
+`#rrggbb` before they ever reach the DOM. Cost: the existing color
+vitest assertions moved from `fg: 4` to `fg: MIRC_PALETTE[4]` — clearer
+intent, and they read the production constant rather than a magic hex.
+
+Underline + strikethrough both want `text-decoration`, which a single
+property can't merge across two separate class rules (last wins), so a
+higher-specificity `.scrollback-mirc-underline.scrollback-mirc-strikethrough`
+selector composes them. Formatting composes with the existing linkify +
+ACTION-strip render paths — all three are render-time-only transforms on
+a body whose raw bytes stay in scrollback.
+
+Implementation: `lib/grappa/irc/ctcp.ex` (new shared classifier),
+`server.ex` + `event_router.ex` + `line_split.ex` (migrate/fix),
+`cicchetto/src/lib/mircFormat.ts` + `ScrollbackPane.tsx` + `default.css`.
+Tests: `ctcp_test.exs` (the predicate), `server_test.exs` (own ACTION
+persists :action — the regression), `mircFormat.test.ts` +
+`ScrollbackPane.test.tsx` (the parser + render), and two e2e —
+`issue14-own-action-render` (own `/me` renders `* nick`, never a privmsg
+row) and `mirc-full-format-render` (strike/mono/hex spans in a real
+browser, since jsdom is blind to CSS).
