@@ -19,6 +19,7 @@ import {
 import { isAdmin } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
+  deletePushSubscription,
   disablePush,
   type EnablePushResult,
   enablePush,
@@ -265,7 +266,6 @@ const SettingsDrawer: Component<Props> = (props) => {
   const removeDevice = async (id: string) => {
     const t = token();
     if (t === null) return;
-    const { deletePushSubscription } = await import("./lib/push");
     try {
       await deletePushSubscription(t, id);
       await refreshDevices();
