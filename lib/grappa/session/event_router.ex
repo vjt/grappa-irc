@@ -82,7 +82,7 @@ defmodule Grappa.Session.EventRouter do
   in `Session.Server.handle_info` — out of this router's scope.
   """
 
-  alias Grappa.IRC.{Identifier, Message}
+  alias Grappa.IRC.{CTCP, Identifier, Message}
   alias Grappa.{Scrollback, Session}
 
   @typedoc """
@@ -1822,12 +1822,10 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # CTCP framing: \x01<verb> ...\x01 — CLAUDE.md preserves verbatim in
-  # scrollback body. ACTION (CTCP /me) is the only verb that earns its
-  # own scrollback kind today; other CTCP verbs (VERSION, PING, etc.)
-  # produce :reply effects in Phase 5+.
-  defp ctcp_action?(<<0x01, "ACTION ", _::binary>>), do: true
-  defp ctcp_action?(_), do: false
+  # CTCP ACTION classification lives in `Grappa.IRC.CTCP.action?/1` — the
+  # single source shared with the outbound persist path (Session.Server)
+  # and the wire-frame splitter (LineSplit). See issue #14: the two paths
+  # had drifted (inbound :action, outbound :privmsg).
 
   # Extracts the CTCP verb from a `\x01VERB ...\x01` (or `\x01VERB\x01`)
   # body. Returns nil if the body doesn't start with \x01 or has no
@@ -1849,7 +1847,7 @@ defmodule Grappa.Session.EventRouter do
   # arms don't drift on body handling.
   @spec privmsg_default(Message.t(), state(), binary()) :: {:cont, state(), [effect()]}
   defp privmsg_default(%Message{params: [channel, _]} = msg, state, body) do
-    kind = if ctcp_action?(body), do: :action, else: :privmsg
+    kind = if CTCP.action?(body), do: :action, else: :privmsg
     sender = Message.sender_nick(msg)
     # UX-4 bucket G: PRIVMSG (or ACTION) from a well-known *serv sender
     # persists on the synthetic `$server` channel so it lands in the
