@@ -53,7 +53,7 @@ test("UX-6-B — picker → privacy modal (embedded) → upload → 📸 link �
 
   // The picker is the hidden file input — setInputFiles drives it
   // without an OS dialog.
-  const picker = page.locator("input[data-image-picker]");
+  const picker = page.locator("input[data-file-picker]");
   await picker.setInputFiles({
     name: "ux-6-b-embedded.png",
     mimeType: "image/png",
@@ -131,7 +131,7 @@ test("UX-6-B — privacy modal Cancel does NOT trigger upload (folded from i2 20
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
-  const picker = page.locator("input[data-image-picker]");
+  const picker = page.locator("input[data-file-picker]");
   await picker.setInputFiles({
     name: "ux-6-b-cancel.png",
     mimeType: "image/png",

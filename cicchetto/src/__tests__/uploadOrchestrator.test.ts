@@ -32,7 +32,8 @@ vi.mock("../lib/uploadHost", async () => {
 // propagation), videoTranscode.test.ts pins the transcode itself.
 // Deferred-resolver shape mirrors `pendingResolvers` below.
 //
-// Task 7 follow-up: the policy surface (constants + probe) lives in
+// Task 6 quality-review follow-up (landed with Task 7, 2026-06-09):
+// the policy surface (constants + probe) lives in
 // videoPolicy.ts — importActual the constants so the suite can't drift
 // from the real MAX_DURATION_SECONDS; only the probe is stubbed. The
 // transcode itself is loaded by the orchestrator via dynamic import()

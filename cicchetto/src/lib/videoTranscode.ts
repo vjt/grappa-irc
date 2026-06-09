@@ -25,8 +25,8 @@
 // source track's display height. The budget math + duration ceiling +
 // probe live in videoPolicy.ts (mediabunny-free) so the orchestrator
 // can import them statically while THIS module — the only mediabunny
-// importer — stays behind a dynamic import() in a lazy chunk (Task 7
-// review follow-up, 2026-06-09).
+// importer — stays behind a dynamic import() in a lazy chunk (Task 6
+// quality-review follow-up, landed with Task 7, 2026-06-09).
 //
 // Spec: docs/superpowers/specs/2026-06-09-video-doc-uploads-design.md
 

@@ -104,7 +104,7 @@ test.describe("I-2 litterbox path (admin-pinned host)", () => {
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
     await settingsHydrated;
 
-    const picker = page.locator("input[data-image-picker]");
+    const picker = page.locator("input[data-file-picker]");
     await picker.setInputFiles({
       name: "screenshot.png",
       mimeType: "image/png",
@@ -145,7 +145,7 @@ test.describe("I-2 litterbox path (admin-pinned host)", () => {
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
     await settingsHydrated;
 
-    const picker = page.locator("input[data-image-picker]");
+    const picker = page.locator("input[data-file-picker]");
     await picker.setInputFiles({
       name: "screenshot.png",
       mimeType: "image/png",

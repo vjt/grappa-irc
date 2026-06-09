@@ -345,16 +345,16 @@ describe("ComposeBox", () => {
       return { files: file !== null ? [file] : [], items, types };
     };
 
-    it("renders an image-picker button (camera icon)", () => {
+    it("renders a file-picker button (camera icon)", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const btn = screen.getByRole("button", { name: /upload image/i });
+      const btn = screen.getByRole("button", { name: /upload file/i });
       expect(btn).toBeInTheDocument();
     });
 
     it("renders a hidden file input that accepts ALL the host's MIME categories", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const input = document.querySelector(
-        "input[type='file'][data-image-picker]",
+        "input[type='file'][data-file-picker]",
       ) as HTMLInputElement | null;
       expect(input).not.toBeNull();
       // Task 7: accept spans every category the active host takes —
@@ -365,13 +365,13 @@ describe("ComposeBox", () => {
       expect(accept).toMatch(/application\/pdf/);
     });
 
-    it("clicking the image-picker button triggers the hidden input", () => {
+    it("clicking the file-picker button triggers the hidden input", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const input = document.querySelector(
-        "input[type='file'][data-image-picker]",
+        "input[type='file'][data-file-picker]",
       ) as HTMLInputElement;
       const clickSpy = vi.spyOn(input, "click");
-      const btn = screen.getByRole("button", { name: /upload image/i });
+      const btn = screen.getByRole("button", { name: /upload file/i });
       fireEvent.click(btn);
       expect(clickSpy).toHaveBeenCalled();
     });
@@ -388,7 +388,7 @@ describe("ComposeBox", () => {
       const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const input = document.querySelector(
-        "input[type='file'][data-image-picker]",
+        "input[type='file'][data-file-picker]",
       ) as HTMLInputElement;
       const file = sampleImage();
       Object.defineProperty(input, "files", {
@@ -536,11 +536,14 @@ describe("ComposeBox", () => {
       mockUploadStateValue = { filename: "screenshot.png", loaded: 512, total: 2048 };
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       expect(screen.getByText(/screenshot\.png/i)).toBeInTheDocument();
-      // Progress bar present (a meter, progress, or annotated div).
-      const progress =
-        document.querySelector("[role='progressbar']") ??
-        document.querySelector(".compose-box-upload-progress");
-      expect(progress).not.toBeNull();
+      // Wrapper is a polite live region (role="status") — NOT
+      // role="progressbar", whose Children Presentational=true would
+      // flatten the filename/phase/cancel out of the a11y tree. The
+      // native <progress> inside self-announces the bar semantics.
+      const wrapper = document.querySelector(".compose-box-upload-progress");
+      expect(wrapper).not.toBeNull();
+      expect(wrapper?.getAttribute("role")).toBe("status");
+      expect(wrapper?.querySelector("progress")).not.toBeNull();
     });
 
     it("transcoding phase renders the 'processing video…' label (Task 7)", () => {

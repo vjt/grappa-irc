@@ -1,12 +1,13 @@
-// Video upload policy — split out of videoTranscode.ts (Task 7 review
-// follow-up, 2026-06-09).
+// Video upload policy — split out of videoTranscode.ts (Task 6
+// quality-review follow-up, landed with Task 7, 2026-06-09).
 //
 // Everything the upload orchestrator needs SYNCHRONOUSLY about video
 // uploads lives here: the duration ceiling, the adaptive-resolution
 // budget math, and the <video>-element duration probe. Crucially this
 // module has NO mediabunny import — videoTranscode.ts (which does) is
 // loaded by the orchestrator via dynamic import(), so mediabunny's
-// ~800kB land in a lazy chunk instead of the cold-start main bundle.
+// bulk lands in a ~495kB lazy chunk fetched on first video upload,
+// instead of the cold-start main bundle (~305kB after the split).
 // Adding a mediabunny (or any other heavyweight) import here would
 // silently drag it back into the main chunk — don't.
 //
@@ -20,7 +21,7 @@
 // Spec: docs/superpowers/specs/2026-06-09-video-doc-uploads-design.md
 
 export const MAX_DURATION_SECONDS = 120;
-export const RESOLUTION_THRESHOLD_BPS = 2_000_000;
+const RESOLUTION_THRESHOLD_BPS = 2_000_000;
 const AUDIO_BUDGET_BPS = 128_000;
 const CAP_SAFETY = 0.95; // VBR overshoot margin
 // Degenerate cap/duration combos (tiny cap × near-ceiling duration)

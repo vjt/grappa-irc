@@ -200,16 +200,16 @@ const ComposeBox: Component<Props> = (props) => {
           ref={pickerInput}
           type="file"
           accept={Object.values(activeHost().acceptedMimeTypes).flat().join(",")}
-          data-image-picker
+          data-file-picker
           hidden
           onChange={onPickerChange}
         />
         <button
           type="button"
           class="compose-box-image-picker"
-          aria-label="upload image"
+          aria-label="upload file"
           onClick={onPickerClick}
-          title="upload image"
+          title="upload file"
         >
           {/* Camera icon — inline SVG, theme-agnostic. iOS Safari's
            * native picker on this single button already exposes
@@ -272,7 +272,13 @@ const ComposeBox: Component<Props> = (props) => {
           <Show
             when={st().error}
             fallback={
-              <div class="compose-box-upload-progress" role="progressbar">
+              // role="status" (polite live region), NOT role="progressbar":
+              // the native <progress> below self-announces, and ARIA
+              // progressbar has Children Presentational=true — it would
+              // flatten the filename / phase label / cancel button out of
+              // the a11y tree. status also announces the "processing
+              // video…" phase transition (Task 8 a11y review, 2026-06-09).
+              <div class="compose-box-upload-progress" role="status">
                 <span class="compose-box-upload-filename">{st().filename}</span>
                 <Show when={st().phase === "transcoding"}>
                   <span class="compose-box-upload-phase">processing video…</span>
