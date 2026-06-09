@@ -26,6 +26,39 @@ vi.mock("../lib/uploadHost", async () => {
   };
 });
 
+// Task 6 (2026-06-09) — the video branch awaits transcodeVideo before
+// the host POST. Mock at the module boundary: these tests pin the
+// orchestrator's dispatch policy (phases, fallback eligibility, cancel
+// propagation), videoTranscode.test.ts pins the transcode itself.
+// Deferred-resolver shape mirrors `pendingResolvers` below.
+const vt = vi.hoisted(() => ({
+  transcodes: [] as Array<{
+    file: File;
+    capBytes: number;
+    onProgress: (fraction: number) => void;
+    signal: AbortSignal;
+    resolve: (
+      result:
+        | { ok: File }
+        | { error: { kind: "too_long"; durationSeconds: number } }
+        | { error: { kind: "unsupported" } }
+        | { error: { kind: "failed"; message: string } },
+    ) => void;
+  }>,
+  probeDuration: vi.fn(async (_file: File): Promise<number | null> => null),
+}));
+
+vi.mock("../lib/videoTranscode", () => ({
+  MAX_DURATION_SECONDS: 120,
+  transcodeVideo: vi.fn(
+    (file: File, capBytes: number, onProgress: (fraction: number) => void, signal: AbortSignal) =>
+      new Promise((resolve) => {
+        vt.transcodes.push({ file, capBytes, onProgress, signal, resolve });
+      }),
+  ),
+  probeDuration: vt.probeDuration,
+}));
+
 import { channelKey } from "../lib/channelKey";
 import { sendMessage } from "../lib/scrollback";
 import { activeHost, type UploadHost } from "../lib/uploadHost";
@@ -107,6 +140,8 @@ const categoryHost = (): UploadHost =>
 
 beforeEach(() => {
   pendingResolvers = [];
+  vt.transcodes = [];
+  vt.probeDuration.mockResolvedValue(null);
   vi.mocked(sendMessage).mockClear();
   // Wipe localStorage between tests so privacy state doesn't leak.
   localStorage.clear();
@@ -401,19 +436,26 @@ describe("category dispatch", () => {
     expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://litter.catbox.moe/abc.png");
   });
 
-  it("video upload → 🎬-prefixed PRIVMSG; transform hook is identity (original file uploads)", async () => {
+  it("video upload → routed through the transcode → 🎬-prefixed PRIVMSG", async () => {
     const clip = new File([new Uint8Array(16)], "clip.mp4", { type: "video/mp4" });
     triggerUpload(key, slug, channel, clip);
 
-    expect(pendingResolvers.length).toBe(1);
-    // The transform hook slot ran as identity — Task 6 swaps in the
-    // actual transcode; this pins that the slot passes the file through.
-    expect(pendingResolvers[0]?.file).toBe(clip);
-    pendingResolvers[0]?.resolve("https://litter.catbox.moe/abc.mp4");
-    await Promise.resolve();
-    await Promise.resolve();
+    // Task 6: the transform hook is the transcode now — the host POST
+    // only fires once the transcode resolves.
+    expect(vt.transcodes.length).toBe(1);
+    expect(pendingResolvers.length).toBe(0);
+    const out = new File([new Uint8Array(8)], "clip.mp4", { type: "video/mp4" });
+    vt.transcodes[0]?.resolve({ ok: out });
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(1));
 
-    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "🎬 https://litter.catbox.moe/abc.mp4");
+    pendingResolvers[0]?.resolve("https://litter.catbox.moe/abc.mp4");
+    await vi.waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        slug,
+        channel,
+        "🎬 https://litter.catbox.moe/abc.mp4",
+      ),
+    );
   });
 
   it("unknown MIME → error listing supported types, host.upload NOT called", () => {
@@ -439,6 +481,138 @@ describe("category dispatch", () => {
     const st = uploadState(key);
     expect(st?.error).toMatch(/too large/i);
     expect(pendingResolvers.length).toBe(0);
+  });
+});
+
+// --------------------------------------------------------------------
+// Video transcode branch — Task 6 (2026-06-09)
+//
+// Policy split lives here: too_long is POLICY (hard reject, no
+// fallback); unsupported/failed are CAPABILITY (fall back to the
+// original under the same duration + cap gates, console.warn the
+// reason — no silent swallow). Cancel during a transcode aborts the
+// transcode signal and clears state without falling back.
+// --------------------------------------------------------------------
+
+describe("video transcode branch", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  const videoClip = (bytes = 16): File =>
+    new File([new Uint8Array(bytes)], "clip.mp4", { type: "video/mp4" });
+
+  beforeEach(() => {
+    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+    vi.mocked(activeHost).mockReturnValue(categoryHost());
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it("happy path: transcoding phase first, host receives the TRANSCODED file, 🎬 PRIVMSG", async () => {
+    const clip = videoClip();
+    triggerUpload(key, slug, channel, clip);
+
+    // Transcoding entry is visible before any upload starts.
+    expect(uploadState(key)?.phase).toBe("transcoding");
+    expect(uploadState(key)?.filename).toBe("clip.mp4");
+    expect(pendingResolvers.length).toBe(0);
+    expect(vt.transcodes.length).toBe(1);
+    expect(vt.transcodes[0]?.file).toBe(clip);
+    // The video cap (categoryHost: 5MB) drives the bitrate budget.
+    expect(vt.transcodes[0]?.capBytes).toBe(5 * 1024 * 1024);
+
+    // Transcode progress lands in the entry as a 0..1 fraction.
+    vt.transcodes[0]?.onProgress(0.5);
+    expect(uploadState(key)?.loaded).toBe(0.5);
+    expect(uploadState(key)?.total).toBe(1);
+
+    const out = new File([new Uint8Array(8)], "clip.mp4", { type: "video/mp4" });
+    vt.transcodes[0]?.resolve({ ok: out });
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(1));
+
+    // Referential check — the host uploads the transcode OUTPUT.
+    expect(pendingResolvers[0]?.file).toBe(out);
+    expect(uploadState(key)?.phase).toBe("uploading");
+
+    pendingResolvers[0]?.resolve("https://litter.catbox.moe/abc.mp4");
+    await vi.waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        slug,
+        channel,
+        "🎬 https://litter.catbox.moe/abc.mp4",
+      ),
+    );
+    expect(uploadState(key)).toBeNull();
+  });
+
+  it("too_long is POLICY: hard reject, no fallback, host.upload never called", async () => {
+    triggerUpload(key, slug, channel, videoClip());
+
+    vt.transcodes[0]?.resolve({ error: { kind: "too_long", durationSeconds: 300 } });
+    await vi.waitFor(() => expect(uploadState(key)?.error).toBe("Video too long (max 2 minutes)."));
+
+    expect(pendingResolvers.length).toBe(0);
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("unsupported + small original → ORIGINAL uploads, reason console.warn'd", async () => {
+    const clip = videoClip();
+    triggerUpload(key, slug, channel, clip);
+
+    vt.probeDuration.mockResolvedValue(30);
+    vt.transcodes[0]?.resolve({ error: { kind: "unsupported" } });
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(1));
+
+    expect(pendingResolvers[0]?.file).toBe(clip);
+    expect(warnSpy).toHaveBeenCalledWith("video transcode unavailable, uploading original:", {
+      kind: "unsupported",
+    });
+  });
+
+  it("unsupported + oversize original → cap error, no upload", async () => {
+    // 6MB original vs the categoryHost 5MB video cap.
+    triggerUpload(key, slug, channel, videoClip(6 * 1024 * 1024));
+
+    vt.transcodes[0]?.resolve({ error: { kind: "unsupported" } });
+    await vi.waitFor(() => expect(uploadState(key)?.error).toMatch(/too large/i));
+
+    expect(pendingResolvers.length).toBe(0);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it("failed + original over the 2-minute ceiling → too-long error, no fallback upload", async () => {
+    triggerUpload(key, slug, channel, videoClip());
+
+    vt.probeDuration.mockResolvedValue(200);
+    vt.transcodes[0]?.resolve({ error: { kind: "failed", message: "encoder blew up" } });
+    await vi.waitFor(() => expect(uploadState(key)?.error).toBe("Video too long (max 2 minutes)."));
+
+    expect(pendingResolvers.length).toBe(0);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it("cancel during transcode → state cleared, transcode signal aborted, no fallback", async () => {
+    triggerUpload(key, slug, channel, videoClip());
+    expect(uploadState(key)?.phase).toBe("transcoding");
+
+    cancelUpload(key);
+
+    expect(vt.transcodes[0]?.signal.aborted).toBe(true);
+    expect(uploadState(key)).toBeNull();
+
+    // The aborted conversion eventually settles as failed — the stale-
+    // controller guard must NOT resurrect state or fall back.
+    vt.transcodes[0]?.resolve({ error: { kind: "failed", message: "conversion canceled" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(uploadState(key)).toBeNull();
+    expect(pendingResolvers.length).toBe(0);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });
 

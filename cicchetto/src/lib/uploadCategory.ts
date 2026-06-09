@@ -46,3 +46,37 @@ const MIME_CATEGORIES: Record<string, UploadCategory> = Object.fromEntries([
 export function categoryOf(mime: string): UploadCategory | null {
   return MIME_CATEGORIES[mime] ?? null;
 }
+
+/** MIME → extension label for the unsupported-type error copy. Typed
+ *  exhaustively over the MIME unions above so a 15th MIME added to a
+ *  list without a label here is a compile error (Task 5 review
+ *  follow-up, 2026-06-09 — formerly a stringly `Record` in
+ *  uploadOrchestrator.ts that could silently drift). */
+export const MIME_EXT_LABEL: Record<
+  | (typeof IMAGE_MIMES)[number]
+  | (typeof VIDEO_MIMES)[number]
+  | (typeof DOCUMENT_MIMES_PORTABLE)[number]
+  | (typeof DOCUMENT_MIMES_OFFICE)[number],
+  string
+> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/apng": "apng",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+  "application/vnd.oasis.opendocument.text": "odt",
+  "application/vnd.oasis.opendocument.spreadsheet": "ods",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+};
+
+/** Widened lookup for host MIME lists (typed `ReadonlyArray<string>`).
+ *  Unknown MIME → echo the MIME itself rather than crash the copy. */
+export function mimeExtLabel(mime: string): string {
+  return (MIME_EXT_LABEL as Readonly<Record<string, string>>)[mime] ?? mime;
+}

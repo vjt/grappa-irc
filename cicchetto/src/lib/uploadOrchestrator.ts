@@ -1,9 +1,10 @@
 import { createSignal } from "solid-js";
 import type { ChannelKey } from "./channelKey";
 import { sendMessage } from "./scrollback";
-import { categoryOf, type UploadCategory } from "./uploadCategory";
+import { categoryOf, mimeExtLabel, type UploadCategory } from "./uploadCategory";
 import { activeHost, type UploadError, type UploadHost } from "./uploadHost";
 import { getUploadTtlSeconds, putUploadTtlSeconds } from "./userSettings";
+import { MAX_DURATION_SECONDS, probeDuration, transcodeVideo } from "./videoTranscode";
 
 // Upload orchestration — images cluster I-2 (2026-05-15), generalized
 // to video + document categories (uploads cluster Task 5, 2026-06-09;
@@ -41,9 +42,10 @@ export type UploadStateEntry = {
   filename: string;
   loaded: number;
   total: number;
-  /** Task 5 (2026-06-09): "transcoding" is driven by the Task 6 video
-   *  transcode; every entry this task emits is "uploading". The type
-   *  lands now so ComposeBox (Task 7) builds against it. */
+  /** "transcoding" while the Task 6 video transcode runs (loaded is a
+   *  0..1 fraction, total is 1); "uploading" during the host POST
+   *  (loaded/total in bytes). Meaningless when `error` is set — error
+   *  entries keep whatever phase the failure happened in. */
   phase: "transcoding" | "uploading";
   error?: string;
 };
@@ -189,30 +191,12 @@ function friendlyErrorMessage(err: UploadError): string {
   }
 }
 
-// MIME → extension label for the unsupported-type error copy. Mirrors
-// the uploadCategory.ts MIME lists — adding a MIME there means adding
-// its label here in the same commit.
-const MIME_EXT_LABEL: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/gif": "gif",
-  "image/webp": "webp",
-  "image/apng": "apng",
-  "video/mp4": "mp4",
-  "video/quicktime": "mov",
-  "video/webm": "webm",
-  "application/pdf": "pdf",
-  "text/plain": "txt",
-  "application/vnd.oasis.opendocument.text": "odt",
-  "application/vnd.oasis.opendocument.spreadsheet": "ods",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-};
-
 function unsupportedTypeMessage(host: UploadHost): string {
-  const exts = (["image", "video", "document"] satisfies UploadCategory[])
+  // Category list derived from the emoji map — one source of truth for
+  // "which categories exist" inside this module.
+  const exts = (Object.keys(CATEGORY_EMOJI) as UploadCategory[])
     .flatMap((category) => host.acceptedMimeTypes[category])
-    .map((mime) => MIME_EXT_LABEL[mime] ?? mime);
+    .map(mimeExtLabel);
   return `Unsupported file type — supported: ${exts.join(", ")}.`;
 }
 
@@ -246,14 +230,27 @@ async function dispatchUpload(
     return;
   }
 
-  // Transform hook — video transcode lands in Task 6; image/document
-  // pass through.
-  const uploadFile = file;
+  // Controller + inflight registration happen BEFORE the transform so
+  // cancelUpload can abort an in-flight video transcode, not just the
+  // host POST (Task 6, 2026-06-09).
+  const controller = new AbortController();
+  inflight.set(key, { controller, file, networkSlug, channelName });
+
+  // Transform hook — video → transcode (or fallback-to-original under
+  // the same policy gates); image/document pass through.
+  let uploadFile = file;
+  if (category === "video") {
+    const prepared = await prepareVideo(key, host, file, controller);
+    if (prepared === null) return; // error entry already set, or cancelled
+    uploadFile = prepared;
+    inflight.set(key, { controller, file: uploadFile, networkSlug, channelName });
+  }
 
   // Cap check runs on the file that will ACTUALLY upload — after the
   // transform, since the transcode changes the size.
   const cap = host.maxFileSizeBytes(category);
   if (cap !== null && uploadFile.size > cap) {
+    inflight.delete(key);
     const mb = Math.round(cap / (1024 * 1024));
     setEntry(key, {
       filename: uploadFile.name,
@@ -264,9 +261,6 @@ async function dispatchUpload(
     });
     return;
   }
-
-  const controller = new AbortController();
-  inflight.set(key, { controller, file: uploadFile, networkSlug, channelName });
 
   setEntry(key, {
     filename: uploadFile.name,
@@ -316,6 +310,78 @@ async function dispatchUpload(
         error: friendlyErrorMessage(err),
       });
     });
+}
+
+const VIDEO_TOO_LONG_MESSAGE = `Video too long (max ${MAX_DURATION_SECONDS / 60} minutes).`;
+
+// Video transform — Task 6 (2026-06-09). Returns the file to upload
+// (transcoded mp4, or the ORIGINAL on a capability fallback), or null
+// when an error entry was set / the upload was cancelled mid-transcode.
+//
+// Policy vs capability: `too_long` hard-rejects with no fallback (the
+// 2-minute ceiling is policy); `unsupported`/`failed` fall back to the
+// original under the SAME policy gates — duration re-checked here via
+// the <video>-element probe (which works without WebCodecs), size
+// enforced by dispatchUpload's downstream cap check. The fallback
+// reason is console.warn'd — no silent swallow.
+//
+// Stale-controller guard after every await: cancelUpload may have
+// aborted + cleared inflight while we were suspended; a cancelled
+// transcode settles as `failed` and must NOT resurrect state or fall
+// back to uploading the original.
+async function prepareVideo(
+  key: ChannelKey,
+  host: UploadHost,
+  file: File,
+  controller: AbortController,
+): Promise<File | null> {
+  setEntry(key, { filename: file.name, loaded: 0, total: 1, phase: "transcoding" });
+
+  // Hosts that report no video cap (null) still need a bitrate budget —
+  // size the transcode for the embedded default (50MiB) and let the
+  // host's actual limit reject the upload if it disagrees.
+  const capBytes = host.maxFileSizeBytes("video") ?? 50 * 1024 * 1024;
+  const result = await transcodeVideo(
+    file,
+    capBytes,
+    (fraction) => {
+      if (inflight.get(key)?.controller !== controller) return;
+      setEntry(key, { filename: file.name, loaded: fraction, total: 1, phase: "transcoding" });
+    },
+    controller.signal,
+  );
+  if (inflight.get(key)?.controller !== controller) return null; // cancelled
+
+  if ("ok" in result) return result.ok;
+
+  if (result.error.kind === "too_long") {
+    inflight.delete(key);
+    setEntry(key, {
+      filename: file.name,
+      loaded: 0,
+      total: 0,
+      phase: "transcoding",
+      error: VIDEO_TOO_LONG_MESSAGE,
+    });
+    return null;
+  }
+
+  // Capability failure → fall back to the original, reason logged.
+  console.warn("video transcode unavailable, uploading original:", result.error);
+  const durationSeconds = await probeDuration(file);
+  if (inflight.get(key)?.controller !== controller) return null; // cancelled
+  if (durationSeconds !== null && durationSeconds > MAX_DURATION_SECONDS) {
+    inflight.delete(key);
+    setEntry(key, {
+      filename: file.name,
+      loaded: 0,
+      total: 0,
+      phase: "transcoding",
+      error: VIDEO_TOO_LONG_MESSAGE,
+    });
+    return null;
+  }
+  return file;
 }
 
 export function triggerUpload(
