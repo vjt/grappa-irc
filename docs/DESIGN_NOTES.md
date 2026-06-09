@@ -11291,3 +11291,56 @@ persists :action — the regression), `mircFormat.test.ts` +
 `issue14-own-action-render` (own `/me` renders `* nick`, never a privmsg
 row) and `mirc-full-format-render` (strike/mono/hex spans in a real
 browser, since jsdom is blind to CSS).
+
+## 2026-06-09 — cic build to zero warnings (vite 8 / rolldown)
+
+`scripts/bun.sh run build` (tsc + `vite build`) emitted three warnings.
+The Elixir suite, cic vitest, and every static gate (credo/dialyzer/
+sobelow-Medium/format/audits/doctor/wireTypes/bats) were already green;
+this was the only non-clean surface. Three distinct causes, three fixes:
+
+1. **`INEFFECTIVE_DYNAMIC_IMPORT`** — `SettingsDrawer.tsx` statically
+   imported `./lib/push` *and* did a second `await import("./lib/push")`
+   in `removeDevice/2` for `deletePushSubscription`. A module already in
+   the main chunk can't be code-split out, so the dynamic form bought
+   nothing. Folded into the static import. Real defect in our code.
+
+2. **`[PLUGIN_TIMINGS]`** — vite 8 bundles with rolldown, whose
+   `pluginTimings` check prints "plugin `solid` spent significant time"
+   only when the host is under load. A non-deterministic perf advisory
+   about a third-party plugin's wall-clock — poison for a zero-warnings
+   gate (it randomly flips red). Disabled the dev-only check via
+   `build.rollupOptions.checks.pluginTimings = false`. It's one of ~18
+   independent boolean toggles; every correctness check stays on.
+
+3. **`inlineDynamicImports option is deprecated`** — the hard case.
+   `vite-plugin-pwa` (≤1.3.0, latest) hard-codes the service-worker
+   rollup output as `inlineDynamicImports: true`. Under rolldown that
+   option was renamed `codeSplitting: false`. The warning is emitted by
+   rolldown's **module-level consola logger** during output-option
+   binding — it bypasses the rollup `onwarn`/`onLog` pipeline entirely
+   (an `onwarn` filter was tried and confirmed dead), and the plugin's
+   `output` is a hardcoded literal we cannot override through
+   `injectManifest.rollupOptions` (typed `Omit<…,'output'>`). No config
+   path silences it. So the dependency is patched at the source via
+   native `bun patch`: the SW output becomes `codeSplitting: false`, the
+   documented successor. A service worker MUST be a single file (code
+   splitting would emit chunks it can't import), so the behavior is
+   byte-identical — only the option name changes. Carried as
+   `cicchetto/patches/vite-plugin-pwa@1.2.0.patch` +
+   `patchedDependencies`; reproducible on `bun install --frozen-lockfile`
+   (verified). **Caveat:** the patch is keyed to the exact version
+   `1.2.0`. A future bump silently stops applying it (bun does not error
+   on a stale-version patch) and the deprecation returns — drop the
+   patch once vite-plugin-pwa migrates to `codeSplitting` upstream.
+
+Sobelow's 8 Low-confidence Traversal findings (uploads.ex ×5, reaper.ex
+×2, version.ex ×1 — all server-managed paths) were left as-is: they sit
+below the project's configured `exit: "Medium"` gate (CI green by
+policy), consistent with annotating only where churn warrants it.
+
+The full-suite e2e run surfaced one red — `cp15-b6-archive-query-revival`
+(`/msg` archive revival) — which passed **3/3 in isolation**: a cascade
+(test-order state pollution from an upstream spec), not a regression and
+orthogonal to this cic-only change. Filed as a follow-up per the
+docs/TESTING.md cascade doctrine; no production code touched.
