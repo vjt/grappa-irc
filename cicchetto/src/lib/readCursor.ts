@@ -146,6 +146,15 @@ export const setReadCursor = async (
   channel: string,
   messageId: number,
 ): Promise<void> => {
+  // Positive-int boundary guard (issue #44). Service-nick query windows
+  // (NickServ/ChanServ/OperServ) settle/blur before a real persisted id
+  // exists, so the settle handler can hand us a 0 / NaN / non-integer id.
+  // The server's ReadCursorController guards `is_integer(message_id) and
+  // message_id > 0` and 400s everything else (31× on prod). There is
+  // nothing to mark read without a positive id — skip BOTH the optimistic
+  // local advance and the POST. Mirroring the server contract here (the
+  // module that owns the POST) means every caller inherits the guard.
+  if (!Number.isInteger(messageId) || messageId <= 0) return;
   // Optimistic local advance — forward-only. The signal map is otherwise
   // round-trip-only (applyReadCursorSet lands the id on the server's
   // `read_cursor_set` WS echo), which opens a stale-cursor window between

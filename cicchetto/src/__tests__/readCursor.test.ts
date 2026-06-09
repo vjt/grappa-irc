@@ -122,6 +122,58 @@ describe("readCursor", () => {
     await expect(setReadCursor("t", "n", "c", 1)).resolves.toBeUndefined();
   });
 
+  // Issue #44 — positive-int guard. Service-nick query windows
+  // (NickServ/ChanServ/OperServ) opened during auth flows settle/blur
+  // before a real persisted message id exists, so the settle handler
+  // hands setReadCursor a 0 / NaN / non-integer id. The server's
+  // ReadCursorController guards `is_integer(message_id) and message_id > 0`
+  // and 400s everything else (31× on prod). cic must not POST a cursor it
+  // has no positive id for — there is nothing to mark read. Mirror the
+  // server contract at the client boundary so EVERY caller inherits it.
+  describe("positive-int guard (issue #44)", () => {
+    it.each([
+      ["zero", 0],
+      ["negative", -1],
+      ["NaN", Number.NaN],
+      ["non-integer", 1.5],
+    ])("does NOT POST when messageId is %s", async (_label, badId) => {
+      const { setReadCursor } = await import("../lib/readCursor");
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await setReadCursor("tok", "azzurra", "NickServ", badId);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("does NOT advance the local cursor for an invalid messageId", async () => {
+      const { setReadCursor, getReadCursor, applyJoinReply, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
+      applyJoinReply("azzurra", "NickServ", 3);
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      // Use NaN, not 0: `NaN <= 3` is false, so a bad id SLIPS PAST the
+      // pre-existing forward-only optimistic gate — without the new guard
+      // setReadCursor would write NaN into the local signal. This pins the
+      // guard's advance-skip independently of the forward-only gate.
+      await setReadCursor("tok", "azzurra", "NickServ", Number.NaN);
+      expect(getReadCursor("azzurra", "NickServ")).toBe(3);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("still POSTs for a valid positive integer id", async () => {
+      const { setReadCursor } = await import("../lib/readCursor");
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ last_read_message_id: 5 }), { status: 200 }),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      await setReadCursor("tok", "azzurra", "NickServ", 5);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("optimistic local advance (flicker + own-msg-unread fix)", () => {
     // Root cause of two bugs: the local cursor signal was round-trip-only
     // (advanced ONLY when the server's read_cursor_set WS event echoed
