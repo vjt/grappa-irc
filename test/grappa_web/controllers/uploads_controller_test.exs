@@ -74,6 +74,32 @@ defmodule GrappaWeb.UploadsControllerTest do
       assert Uploads.valid_slug?(slug)
     end
 
+    test "POST /api/uploads accepts a >8MB file (Plug.Parsers :length regression)",
+         %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      # 9MB < the 10MB image cap, but > Plug.Parsers' 8MB multipart
+      # default. Must go through the REAL multipart parser: ConnTest
+      # map-params bypass Plug.Parsers, so build a raw multipart body.
+      png_magic = <<0x89, "PNG", 0x0D, 0x0A, 0x1A, 0x0A>>
+      bytes = png_magic <> :binary.copy(<<0>>, 9 * 1024 * 1024)
+      boundary = "plugparsersregression"
+
+      body =
+        "--#{boundary}\r\n" <>
+          ~s(Content-Disposition: form-data; name="file"; filename="big.png"\r\n) <>
+          "Content-Type: image/png\r\n\r\n" <>
+          bytes <> "\r\n--#{boundary}--\r\n"
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "multipart/form-data; boundary=#{boundary}")
+        |> post("/api/uploads", body)
+
+      assert %{"slug" => _} = json_response(conn, 201)
+    end
+
     test "default TTL is 24h when expire omitted", %{conn: conn} do
       {_, session} = user_and_session([])
 
