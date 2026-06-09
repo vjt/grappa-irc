@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setToken } from "../lib/auth";
 import { applyServerSettings, loadServerSettings, serverSettings } from "../lib/serverSettings";
 
@@ -64,8 +64,16 @@ describe("applyServerSettings/1 — wire → store shape", () => {
 
 describe("loadServerSettings/0 — REST initial fetch", () => {
   beforeEach(() => {
-    vi.unstubAllGlobals();
     setToken("test-token");
+  });
+
+  // Unstub in afterEach, NOT beforeEach: a describe-level beforeEach runs
+  // after setupTests' beforeEach and would strip the inert-WebSocket +
+  // localStorage stubs for every test in this block (resurrecting jsdom's
+  // real TCP-connecting WebSocket). afterEach gives the same clean fetch
+  // slate, and setupTests re-installs its stubs before the next test.
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("populates the signal from a successful GET /api/server-settings", async () => {
