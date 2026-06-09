@@ -11297,7 +11297,8 @@ browser, since jsdom is blind to CSS).
 `scripts/bun.sh run build` (tsc + `vite build`) emitted three warnings.
 The Elixir suite, cic vitest, and every static gate (credo/dialyzer/
 sobelow-Medium/format/audits/doctor/wireTypes/bats) were already green;
-this was the only non-clean surface. Three distinct causes, three fixes:
+this was the only non-clean surface. Two were fixed at the source; the
+third was deliberately left alone — see the toolchain note below.
 
 1. **`INEFFECTIVE_DYNAMIC_IMPORT`** — `SettingsDrawer.tsx` statically
    imported `./lib/push` *and* did a second `await import("./lib/push")`
@@ -11313,26 +11314,35 @@ this was the only non-clean surface. Three distinct causes, three fixes:
    `build.rollupOptions.checks.pluginTimings = false`. It's one of ~18
    independent boolean toggles; every correctness check stays on.
 
-3. **`inlineDynamicImports option is deprecated`** — the hard case.
-   `vite-plugin-pwa` (≤1.3.0, latest) hard-codes the service-worker
-   rollup output as `inlineDynamicImports: true`. Under rolldown that
-   option was renamed `codeSplitting: false`. The warning is emitted by
-   rolldown's **module-level consola logger** during output-option
-   binding — it bypasses the rollup `onwarn`/`onLog` pipeline entirely
-   (an `onwarn` filter was tried and confirmed dead), and the plugin's
-   `output` is a hardcoded literal we cannot override through
-   `injectManifest.rollupOptions` (typed `Omit<…,'output'>`). No config
-   path silences it. So the dependency is patched at the source via
-   native `bun patch`: the SW output becomes `codeSplitting: false`, the
-   documented successor. A service worker MUST be a single file (code
-   splitting would emit chunks it can't import), so the behavior is
-   byte-identical — only the option name changes. Carried as
-   `cicchetto/patches/vite-plugin-pwa@1.2.0.patch` +
-   `patchedDependencies`; reproducible on `bun install --frozen-lockfile`
-   (verified). **Caveat:** the patch is keyed to the exact version
-   `1.2.0`. A future bump silently stops applying it (bun does not error
-   on a stale-version patch) and the deprecation returns — drop the
-   patch once vite-plugin-pwa migrates to `codeSplitting` upstream.
+3. **`inlineDynamicImports option is deprecated`** — left as-is, on
+   purpose. `vite-plugin-pwa` (≤1.3.0, latest) hard-codes the
+   service-worker rollup output as `inlineDynamicImports: true`. Under
+   rolldown that option was renamed `codeSplitting: false`. The warning
+   is emitted by rolldown's **module-level consola logger** during
+   output-option binding — it bypasses the rollup `onwarn`/`onLog`
+   pipeline entirely (an `onwarn` filter was tried and confirmed dead),
+   and the plugin's `output` is a hardcoded literal we cannot override
+   through `injectManifest.rollupOptions` (typed `Omit<…,'output'>`). No
+   config path silences it; only patching the dependency does.
+
+   A native `bun patch` (SW output → `codeSplitting: false`, the
+   byte-identical successor — a SW must be a single file) WAS tried and
+   verified to zero the warning. It was then **dropped**, because it only
+   covers the bun build paths (local + e2e `cicchetto-build-test`). The
+   **bun ≠ npm toolchain split** is the reason: prod is the m42 FreeBSD
+   bastille jail, which has **no bun** (`pkg` has no port) and builds the
+   bundle with **npm** via `infra/freebsd/jail_cic_build.sh`. npm ignores
+   bun's `patchedDependencies`, and with no committed `package-lock.json`
+   it resolves `^1.2.0` fresh → 1.3.0 — so prod neither applies the patch
+   nor pins the version. Making prod clean too would mean a SECOND patch
+   mechanism (patch-package + a `postinstall` hook + an exact version
+   pin), heavier than a cosmetic deprecation in the deploy log warrants.
+   CI doesn't build cic at all (ci.yml is pure Elixir; the cic build +
+   vitest are local-only — see `feedback_cic_check_gate_masks_tsc`), so
+   nothing gates on this. The deprecation is upstream, harmless (the SW
+   builds identically), and will lift when vite-plugin-pwa migrates to
+   `codeSplitting`. Accepted on all paths rather than carry a patch that
+   can't reach the one place (prod) you'd most want it.
 
 Sobelow's 8 Low-confidence Traversal findings (uploads.ex ×5, reaper.ex
 ×2, version.ex ×1 — all server-managed paths) were left as-is: they sit
