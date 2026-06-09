@@ -124,5 +124,16 @@ export default defineConfig({
   build: {
     target: "es2022",
     sourcemap: true,
+    rollupOptions: {
+      // Vite 8 bundles with rolldown, whose `pluginTimings` check prints a
+      // non-deterministic "[PLUGIN_TIMINGS] plugin `solid` spent significant
+      // time" advisory whenever the host is under load. It times a
+      // third-party plugin's wall-clock — not a defect in our code — and
+      // fires intermittently, which is poison for a zero-warnings build
+      // gate (one slow CI run flips the gate red for no real reason).
+      // Disable the dev-only perf advisory so the gate is deterministic.
+      // See rolldown.rs/options/checks#plugintimings.
+      checks: { pluginTimings: false },
+    },
   },
 });
