@@ -1,12 +1,13 @@
 defmodule GrappaWeb.UploadsController do
   @moduledoc """
-  Embedded image upload — UX-6 bucket B1 (2026-05-20).
+  Embedded media upload (image / video / document) — UX-6 bucket B1
+  (2026-05-20), extended to per-category MIMEs (2026-06-09).
 
   ## POST /api/uploads (authenticated)
 
   Multipart body:
 
-    * `file` — binary, required. The image bytes.
+    * `file` — binary, required. The file bytes.
     * `expire` — integer string in seconds, optional. Translates to
       `expires_at = now + expire`. Allowed values: matches the
       `1h/12h/24h/72h` ladder (3600 / 43200 / 86400 / 259200) per
@@ -17,12 +18,14 @@ defmodule GrappaWeb.UploadsController do
   Boundary checks (in order — fail fast on the cheapest):
 
     1. Multipart shape — missing `file` → 400 bad_request.
-    2. MIME — must be one of the allowed image types → 415
-       unsupported. The cap category is DERIVED from the MIME at
-       request time, never stored.
+    2. MIME — must be a key of `@mime_categories` (image / video /
+       document allowlists) → 415 unsupported. The category is
+       DERIVED from the MIME at request time, never stored — no
+       schema change.
     3. Per-file cap — `byte_size(content) <= cap` where cap comes
        from `Grappa.ServerSettings.get_upload_per_file_cap_bytes/1`
-       for the derived category. Else 413 file_too_large.
+       for the derived category (image 10MiB / video 50MiB /
+       document 10MiB defaults). Else 413 file_too_large.
     4. Global cap — `live_bytes_sum + byte_size <= global_cap_bytes`.
        Else 507 insufficient_storage.
     5. Slug minted, file written, row inserted via
@@ -50,7 +53,26 @@ defmodule GrappaWeb.UploadsController do
   # multiple functions in the module each carry their own skip-list.
   Module.register_attribute(__MODULE__, :sobelow_skip, accumulate: true, persist: true)
 
-  @allowed_mimes ~w(image/png image/jpeg image/gif image/webp image/apng)
+  # MIME → cap-category map. Closed allowlist: unknown MIME → 415.
+  # The category picks WHICH per-file cap applies (a 50MiB video
+  # ceiling must not gift 50MiB to raw images); it is derived here
+  # per request and never persisted.
+  @mime_categories %{
+    "image/png" => :image,
+    "image/jpeg" => :image,
+    "image/gif" => :image,
+    "image/webp" => :image,
+    "image/apng" => :image,
+    "video/mp4" => :video,
+    "video/quicktime" => :video,
+    "video/webm" => :video,
+    "application/pdf" => :document,
+    "text/plain" => :document,
+    "application/vnd.oasis.opendocument.text" => :document,
+    "application/vnd.oasis.opendocument.spreadsheet" => :document,
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => :document,
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => :document
+  }
 
   @allowed_ttl_seconds [3600, 43_200, 86_400, 259_200]
   @default_ttl_seconds 86_400
@@ -140,8 +162,12 @@ defmodule GrappaWeb.UploadsController do
   defp parse_ttl(%{"expire" => _}), do: {:error, :bad_request}
   defp parse_ttl(_), do: {:ok, @default_ttl_seconds}
 
-  defp validate_mime(%Plug.Upload{content_type: ct}) when ct in @allowed_mimes,
-    do: {:ok, ct, :image}
+  defp validate_mime(%Plug.Upload{content_type: ct}) when is_binary(ct) do
+    case Map.fetch(@mime_categories, ct) do
+      {:ok, category} -> {:ok, ct, category}
+      :error -> {:error, :unsupported_media_type}
+    end
+  end
 
   defp validate_mime(_), do: {:error, :unsupported_media_type}
 

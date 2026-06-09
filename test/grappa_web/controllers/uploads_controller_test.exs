@@ -206,6 +206,91 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
   end
 
+  describe "POST /api/uploads — per-category MIMEs + caps" do
+    test "201 for an 11MB video/mp4 (above image cap, below video cap)", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("clip.mp4", "video/mp4", :binary.copy(<<0>>, 11 * 1024 * 1024))
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert %{"slug" => slug} = json_response(conn, 201)
+      assert Uploads.valid_slug?(slug)
+    end
+
+    test "413 file_too_large for an 11MB image/png (image cap is 10MiB)", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("huge.png", "image/png", :binary.copy(<<0>>, 11 * 1024 * 1024))
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert %{"error" => "file_too_large", "max_bytes" => max_bytes} = json_response(conn, 413)
+      assert max_bytes == 10 * 1024 * 1024
+    end
+
+    test "201 for application/pdf", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("doc.pdf", "application/pdf", "%PDF-FAKE")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert %{"slug" => slug} = json_response(conn, 201)
+      assert Uploads.valid_slug?(slug)
+    end
+
+    test "201 for text/plain", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("notes.txt", "text/plain", "plain text body")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert %{"slug" => slug} = json_response(conn, 201)
+      assert Uploads.valid_slug?(slug)
+    end
+
+    test "201 for video/quicktime", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("clip.mov", "video/quicktime", "MOV-FAKE-BYTES")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert %{"slug" => slug} = json_response(conn, 201)
+      assert Uploads.valid_slug?(slug)
+    end
+
+    test "415 unsupported_media_type for unknown MIME", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("evil.exe", "application/x-msdownload", "MZ-FAKE")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert json_response(conn, 415) == %{"error" => "unsupported_media_type"}
+    end
+  end
+
   describe "GET /uploads/:slug — happy path" do
     test "200 with file bytes when slug exists + alive", %{conn: conn} do
       {_, session} = user_and_session([])
@@ -296,5 +381,17 @@ defmodule GrappaWeb.UploadsControllerTest do
     path = Path.join(System.tmp_dir!(), "png_fixture_#{System.unique_integer([:positive])}.png")
     File.write!(path, "PNG-FAKE-BYTES")
     path
+  end
+
+  # ConnTest map-params bypass Plug.Parsers, so a %Plug.Upload{} built
+  # by hand exercises the controller's own validation path directly —
+  # any byte content works (the declared content_type is the boundary
+  # under test, not file magic).
+  defp upload_fixture(filename, content_type, bytes) do
+    path =
+      Path.join(System.tmp_dir!(), "upload_fixture_#{System.unique_integer([:positive])}")
+
+    File.write!(path, bytes)
+    %Plug.Upload{path: path, filename: filename, content_type: content_type}
   end
 end
