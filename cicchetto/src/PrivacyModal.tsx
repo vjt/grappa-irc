@@ -1,10 +1,6 @@
 import { type Component, createEffect, createSignal, onCleanup, Show } from "solid-js";
-import {
-  acknowledgePrivacy,
-  dismissUpload,
-  privacyModalState,
-} from "./lib/imageUploadOrchestrator";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
+import { acknowledgePrivacy, dismissUpload, privacyModalState } from "./lib/uploadOrchestrator";
 
 // First-upload privacy modal — images cluster I-2 (2026-05-15).
 //

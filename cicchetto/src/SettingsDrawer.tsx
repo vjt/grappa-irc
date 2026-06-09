@@ -11,11 +11,6 @@ import {
 import InlineConfirmButton from "./InlineConfirmButton";
 import { getSubject, logout, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
-import {
-  loadUploadTtlSeconds,
-  saveUploadTtlSeconds,
-  uploadTtlSecondsValue,
-} from "./lib/imageUploadOrchestrator";
 import { isAdmin } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
@@ -29,6 +24,11 @@ import {
 import { quitAll } from "./lib/quit";
 import { getTheme, setTheme, type ThemePref } from "./lib/theme";
 import { activeHost } from "./lib/uploadHost";
+import {
+  loadUploadTtlSeconds,
+  saveUploadTtlSeconds,
+  uploadTtlSecondsValue,
+} from "./lib/uploadOrchestrator";
 import { deviceClassIcon, parseUserAgent } from "./lib/userAgent";
 import {
   DEFAULT_NOTIFICATION_PREFS,

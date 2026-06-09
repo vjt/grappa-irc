@@ -80,11 +80,11 @@ vi.mock("../lib/userSettings", async () => {
 
 // UX-4 bucket M (2026-05-19) — SettingsDrawer imports the upload-TTL
 // signal accessors from the orchestrator. The orchestrator's signal
-// behaviour is exercised in `imageUploadOrchestrator.test.ts`; here
+// behaviour is exercised in `uploadOrchestrator.test.ts`; here
 // we mock the public surface so the drawer test stays focused on
 // drawer rendering + event wiring.
 const uploadTtlHolder = vi.hoisted(() => ({ current: null as number | null }));
-vi.mock("../lib/imageUploadOrchestrator", () => ({
+vi.mock("../lib/uploadOrchestrator", () => ({
   loadUploadTtlSeconds: vi.fn(async () => {
     /* no-op; SettingsDrawer test asserts on the call only */
   }),
@@ -425,7 +425,7 @@ describe("SettingsDrawer (bucket M — upload-TTL fieldset)", () => {
   });
 
   it("loads the server preference on mount", async () => {
-    const orch = await import("../lib/imageUploadOrchestrator");
+    const orch = await import("../lib/uploadOrchestrator");
     wrap(true);
     await waitFor(() => {
       expect(orch.loadUploadTtlSeconds).toHaveBeenCalledWith("test-bearer");
@@ -443,7 +443,7 @@ describe("SettingsDrawer (bucket M — upload-TTL fieldset)", () => {
   });
 
   it("selecting an option PUTs the matching seconds", async () => {
-    const orch = await import("../lib/imageUploadOrchestrator");
+    const orch = await import("../lib/uploadOrchestrator");
     wrap(true);
     const select = screen.getByTestId("upload-ttl-select") as HTMLSelectElement;
     // UX-6-B2: embeddedHost option value is "3600" (integer-seconds).
@@ -454,7 +454,7 @@ describe("SettingsDrawer (bucket M — upload-TTL fieldset)", () => {
   });
 
   it("selecting 'use site default' PUTs null (clear preference)", async () => {
-    const orch = await import("../lib/imageUploadOrchestrator");
+    const orch = await import("../lib/uploadOrchestrator");
     uploadTtlHolder.current = 3600;
     wrap(true);
     const select = screen.getByTestId("upload-ttl-select") as HTMLSelectElement;

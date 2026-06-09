@@ -1,14 +1,14 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../lib/imageUploadOrchestrator", () => ({
+vi.mock("../lib/uploadOrchestrator", () => ({
   privacyModalState: vi.fn(),
   acknowledgePrivacy: vi.fn(),
   dismissUpload: vi.fn(),
 }));
 
 import { channelKey } from "../lib/channelKey";
-import * as orch from "../lib/imageUploadOrchestrator";
+import * as orch from "../lib/uploadOrchestrator";
 import PrivacyModal from "../PrivacyModal";
 
 const TEST_KEY = channelKey("freenode", "#a");

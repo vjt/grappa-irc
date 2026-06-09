@@ -27,6 +27,8 @@ vi.mock("../lib/uploadHost", async () => {
 });
 
 import { channelKey } from "../lib/channelKey";
+import { sendMessage } from "../lib/scrollback";
+import { activeHost, type UploadHost } from "../lib/uploadHost";
 import {
   acknowledgePrivacy,
   cancelUpload,
@@ -39,9 +41,7 @@ import {
   triggerUpload,
   uploadState,
   uploadTtlSecondsValue,
-} from "../lib/imageUploadOrchestrator";
-import { sendMessage } from "../lib/scrollback";
-import { activeHost, type UploadHost } from "../lib/uploadHost";
+} from "../lib/uploadOrchestrator";
 import * as userSettings from "../lib/userSettings";
 
 const slug = "freenode";
@@ -54,7 +54,10 @@ const sampleImage = (): File =>
 const sampleNonImage = (): File => new File(["hello"], "notes.txt", { type: "text/plain" });
 
 // Test-controlled host so we can drive resolve/reject deterministically.
+// `file` is captured so category-dispatch + #49 tests can assert WHICH
+// file actually went over the wire.
 type Resolver = {
+  file: File;
   resolve: (url: string) => void;
   reject: (err: unknown) => void;
   onProgress: (loaded: number, total: number) => void;
@@ -75,9 +78,10 @@ const makeTestHost = (overrides: Partial<UploadHost> = {}): UploadHost => ({
   acceptedMimeTypes: { image: ["image/png", "image/jpeg"], video: [], document: [] },
   maxFileSizeBytes: () => 1024 * 1024,
   supportsProgress: true,
-  upload: (_file, _options, onProgress, signal) =>
+  upload: (file, _options, onProgress, signal) =>
     new Promise<string>((resolve, reject) => {
       pendingResolvers.push({
+        file,
         resolve,
         reject,
         onProgress: (loaded, total) => onProgress({ loaded, total }),
@@ -86,6 +90,20 @@ const makeTestHost = (overrides: Partial<UploadHost> = {}): UploadHost => ({
     }),
   ...overrides,
 });
+
+// Host accepting all three categories with distinct per-category caps —
+// category-dispatch tests (video+document uploads cluster Task 5,
+// 2026-06-09).
+const categoryHost = (): UploadHost =>
+  makeTestHost({
+    acceptedMimeTypes: {
+      image: ["image/png", "image/jpeg"],
+      video: ["video/mp4"],
+      document: ["application/pdf", "text/plain"],
+    },
+    maxFileSizeBytes: (category) =>
+      ({ image: 1024 * 1024, video: 5 * 1024 * 1024, document: 512 * 1024 })[category],
+  });
 
 beforeEach(() => {
   pendingResolvers = [];
@@ -176,12 +194,16 @@ describe("MIME + size pre-checks", () => {
     localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
   });
 
-  it("non-image MIME → state has error, no upload", () => {
+  it("MIME outside the host's accepted lists → error listing supported extensions, no upload", () => {
+    // text/plain is a document-category MIME, but the default test host
+    // accepts no documents — generalized unsupported-type message lists
+    // the extensions the host DOES take.
     triggerUpload(key, slug, channel, sampleNonImage());
 
     const st = uploadState(key);
     expect(st?.error).toBeTruthy();
-    expect(st?.error).toMatch(/image/i);
+    expect(st?.error).toMatch(/png/);
+    expect(st?.error).toMatch(/jpg/);
     expect(pendingResolvers.length).toBe(0);
   });
 
@@ -211,6 +233,9 @@ describe("upload lifecycle", () => {
     expect(pendingResolvers.length).toBe(1);
     expect(uploadState(key)?.filename).toBe("screenshot.png");
     expect(uploadState(key)?.error).toBeUndefined();
+    // Task 5 (2026-06-09): every entry carries a phase; "transcoding"
+    // is wired by the Task 6 video transcode.
+    expect(uploadState(key)?.phase).toBe("uploading");
   });
 
   it("progress events update uploadState's loaded/total", () => {
@@ -335,6 +360,143 @@ describe("cancel + dismiss + retry", () => {
 
     expect(pendingResolvers.length).toBe(2);
     expect(uploadState(key)?.error).toBeUndefined();
+  });
+});
+
+// --------------------------------------------------------------------
+// Category dispatch — video+document uploads cluster Task 5 (2026-06-09)
+//
+// Single pipeline: categoryOf → host accept gate → transform hook
+// (identity until the Task 6 video transcode) → per-category cap →
+// upload → emoji-prefixed PRIVMSG (📸/🎬/📄).
+// --------------------------------------------------------------------
+
+describe("category dispatch", () => {
+  beforeEach(() => {
+    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+    vi.mocked(activeHost).mockReturnValue(categoryHost());
+  });
+
+  it("document upload → host.upload called + 📄-prefixed PRIVMSG", async () => {
+    const pdf = new File(["%PDF-1.4"], "notes.pdf", { type: "application/pdf" });
+    triggerUpload(key, slug, channel, pdf);
+
+    expect(pendingResolvers.length).toBe(1);
+    pendingResolvers[0]?.resolve("https://litter.catbox.moe/abc.pdf");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📄 https://litter.catbox.moe/abc.pdf");
+    expect(uploadState(key)).toBeNull();
+  });
+
+  it("image upload → 📸-prefixed PRIVMSG (via the emoji map)", async () => {
+    triggerUpload(key, slug, channel, sampleImage());
+
+    expect(pendingResolvers.length).toBe(1);
+    pendingResolvers[0]?.resolve("https://litter.catbox.moe/abc.png");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://litter.catbox.moe/abc.png");
+  });
+
+  it("video upload → 🎬-prefixed PRIVMSG; transform hook is identity (original file uploads)", async () => {
+    const clip = new File([new Uint8Array(16)], "clip.mp4", { type: "video/mp4" });
+    triggerUpload(key, slug, channel, clip);
+
+    expect(pendingResolvers.length).toBe(1);
+    // The transform hook slot ran as identity — Task 6 swaps in the
+    // actual transcode; this pins that the slot passes the file through.
+    expect(pendingResolvers[0]?.file).toBe(clip);
+    pendingResolvers[0]?.resolve("https://litter.catbox.moe/abc.mp4");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "🎬 https://litter.catbox.moe/abc.mp4");
+  });
+
+  it("unknown MIME → error listing supported types, host.upload NOT called", () => {
+    const exe = new File([new Uint8Array(4)], "setup.exe", {
+      type: "application/x-msdownload",
+    });
+    triggerUpload(key, slug, channel, exe);
+
+    const st = uploadState(key);
+    expect(st?.error).toMatch(/png/);
+    expect(st?.error).toMatch(/mp4/);
+    expect(st?.error).toMatch(/pdf/);
+    expect(pendingResolvers.length).toBe(0);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("document over the document cap → cap error message, no upload", () => {
+    // 1MB pdf vs the categoryHost's 512KB document cap (image cap is
+    // 1MB — a flat cap would let this through).
+    const big = new File([new Uint8Array(1024 * 1024)], "big.pdf", { type: "application/pdf" });
+    triggerUpload(key, slug, channel, big);
+
+    const st = uploadState(key);
+    expect(st?.error).toMatch(/too large/i);
+    expect(pendingResolvers.length).toBe(0);
+  });
+});
+
+// --------------------------------------------------------------------
+// #49 — stale retry buffer
+//
+// lastAttempt must record the user's LATEST selection BEFORE any gate
+// can reject. Pre-fix it was written only after the pre-check passed,
+// so the error box's retry button re-dispatched the PREVIOUS file.
+// --------------------------------------------------------------------
+
+describe("#49 — stale retry buffer", () => {
+  beforeEach(() => {
+    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+  });
+
+  it("retry after a pre-check rejection retries the REJECTED file, not a prior one", async () => {
+    // 1) Successful small upload — pre-fix this poisons lastAttempt.
+    const small = new File([new Uint8Array(4)], "small.png", { type: "image/png" });
+    triggerUpload(key, slug, channel, small);
+    expect(pendingResolvers.length).toBe(1);
+    pendingResolvers[0]?.resolve("https://litter.catbox.moe/small.png");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // 2) Oversized file → pre-check rejection (host cap is 1MB).
+    const big = new File([new Uint8Array(2 * 1024 * 1024)], "big.png", { type: "image/png" });
+    triggerUpload(key, slug, channel, big);
+    expect(uploadState(key)?.error).toMatch(/too large/i);
+
+    // 3) Retry must re-attempt big.png — which fails the pre-check
+    // AGAIN, with big.png's name in the error box…
+    retryUpload(key);
+    expect(uploadState(key)?.filename).toBe("big.png");
+    expect(uploadState(key)?.error).toMatch(/too large/i);
+    // …and must NOT re-dispatch small.png to the host.
+    expect(pendingResolvers.length).toBe(1);
+  });
+
+  it("a new selection after a failed POST replaces the retry payload", async () => {
+    const a = new File([new Uint8Array(4)], "a.png", { type: "image/png" });
+    triggerUpload(key, slug, channel, a);
+    expect(pendingResolvers.length).toBe(1);
+    pendingResolvers[0]?.reject({ kind: "http", status: 413, body: "Payload Too Large" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(uploadState(key)?.error).toBeTruthy();
+
+    const b = new File([new Uint8Array(4)], "b.png", { type: "image/png" });
+    triggerUpload(key, slug, channel, b);
+    expect(pendingResolvers.length).toBe(2);
+    expect(pendingResolvers[1]?.file.name).toBe("b.png");
+    pendingResolvers[1]?.resolve("https://litter.catbox.moe/b.png");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://litter.catbox.moe/b.png");
+    expect(uploadState(key)).toBeNull();
   });
 });
 

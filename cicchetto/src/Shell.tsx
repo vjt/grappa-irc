@@ -22,7 +22,6 @@ import { archiveSlugForSelection } from "./lib/archiveContext";
 import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, setDraft, tabComplete } from "./lib/compose";
-import { loadUploadTtlSeconds } from "./lib/imageUploadOrchestrator";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import {
@@ -35,6 +34,7 @@ import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/ne
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
+import { loadUploadTtlSeconds } from "./lib/uploadOrchestrator";
 import {
   ADMIN_WINDOW_NAME,
   ADMIN_WINDOW_SLUG,

@@ -84,7 +84,7 @@ export async function putNotificationPrefs(
 //
 // Cic translates between the integer seconds and the host-specific
 // token spelling (`"24h"` for litterbox's wire format) at the
-// SettingsDrawer + imageUploadOrchestrator boundaries. The server stays
+// SettingsDrawer + uploadOrchestrator boundaries. The server stays
 // oblivious to per-host ladders.
 // ---------------------------------------------------------------------------
 

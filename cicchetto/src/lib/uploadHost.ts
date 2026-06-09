@@ -67,7 +67,7 @@ export type TtlOption = {
    *  The server-side preference is stored as an integer (seconds); cic
    *  translates between the host token and seconds at the SettingsDrawer
    *  boundary so the server stays oblivious to per-host token spellings.
-   *  Used by `imageUploadOrchestrator` to pick a matching `value` from
+   *  Used by `uploadOrchestrator` to pick a matching `value` from
    *  the active host's ladder given a stored-seconds preference. */
   seconds: number;
 };

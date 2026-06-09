@@ -1,15 +1,15 @@
 import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compose";
+import { networkBySlug } from "./lib/networks";
+import { activeHost } from "./lib/uploadHost";
 import {
   cancelUpload,
   dismissUpload,
   retryUpload,
   triggerUpload,
   uploadState,
-} from "./lib/imageUploadOrchestrator";
-import { networkBySlug } from "./lib/networks";
-import { activeHost } from "./lib/uploadHost";
+} from "./lib/uploadOrchestrator";
 import { windowStateByChannel } from "./lib/windowState";
 
 // Sticky-bottom compose surface. Reads + writes compose.ts state;
@@ -41,7 +41,7 @@ import { windowStateByChannel } from "./lib/windowState";
 // already exposes "Take Photo" so a separate camera-capture button
 // would be redundant), drag-drop (whole-form), clipboard paste
 // (textarea). All converge on `triggerUpload()` from
-// imageUploadOrchestrator; the orchestrator handles privacy modal
+// uploadOrchestrator; the orchestrator handles privacy modal
 // gating, MIME pre-check, TTL dropdown wiring, progress state,
 // auto-send. ComposeBox is the trigger surface only — no upload
 // logic lives here.

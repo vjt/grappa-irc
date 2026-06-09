@@ -1,11 +1,13 @@
 import { createSignal } from "solid-js";
 import type { ChannelKey } from "./channelKey";
 import { sendMessage } from "./scrollback";
-import { categoryOf } from "./uploadCategory";
+import { categoryOf, type UploadCategory } from "./uploadCategory";
 import { activeHost, type UploadError, type UploadHost } from "./uploadHost";
 import { getUploadTtlSeconds, putUploadTtlSeconds } from "./userSettings";
 
-// Image-upload orchestration — images cluster I-2 (2026-05-15).
+// Upload orchestration — images cluster I-2 (2026-05-15), generalized
+// to video + document categories (uploads cluster Task 5, 2026-06-09;
+// formerly `imageUploadOrchestrator.ts`).
 //
 // Sits between the cic compose surface (ComposeBox.tsx — picker /
 // camera / drag-drop / paste triggers) and the host transport layer
@@ -29,16 +31,29 @@ import { getUploadTtlSeconds, putUploadTtlSeconds } from "./userSettings";
 // resolved per-dispatch via `pickHostTokenFromSeconds/2`. See A6 + A7
 // in the brainstorm.
 //
-// IRC stays text only: on resolve, we build `📸 ${url}` and call
-// scrollback.sendMessage directly — bypasses compose.ts submit() so
-// the operator's draft text in the textarea stays untouched (per A7).
-// The image PRIVMSG is its own separate message; no draft clobbering.
+// IRC stays text only: on resolve, we build `${CATEGORY_EMOJI} ${url}`
+// (📸/🎬/📄 per category) and call scrollback.sendMessage directly —
+// bypasses compose.ts submit() so the operator's draft text in the
+// textarea stays untouched (per A7). The upload PRIVMSG is its own
+// separate message; no draft clobbering.
 
 export type UploadStateEntry = {
   filename: string;
   loaded: number;
   total: number;
+  /** Task 5 (2026-06-09): "transcoding" is driven by the Task 6 video
+   *  transcode; every entry this task emits is "uploading". The type
+   *  lands now so ComposeBox (Task 7) builds against it. */
+  phase: "transcoding" | "uploading";
   error?: string;
+};
+
+// Per-category PRIVMSG prefix — IRC stays text only; the emoji is the
+// whole "media type" signal on the wire.
+const CATEGORY_EMOJI: Record<UploadCategory, string> = {
+  image: "📸",
+  video: "🎬",
+  document: "📄",
 };
 
 type ActiveUpload = {
@@ -174,57 +189,108 @@ function friendlyErrorMessage(err: UploadError): string {
   }
 }
 
-function preCheck(host: UploadHost, file: File): string | null {
-  // Uploads cluster Task 4 (2026-06-09): the host interface is
-  // per-category, but this orchestrator still dispatches the IMAGE
-  // category only — Task 5 generalizes the pipeline (video transcode
-  // hook, per-category emoji prefix). Until then non-image files are
-  // rejected here exactly as before the UploadHost generalization.
-  const category = categoryOf(file.type);
-  if (category !== "image" || !host.acceptedMimeTypes.image.includes(file.type)) {
-    return `Only image files are supported (${host.acceptedMimeTypes.image
-      .map((m) => m.replace("image/", "."))
-      .join(", ")}).`;
-  }
-  const cap = host.maxFileSizeBytes("image");
-  if (cap !== null && file.size > cap) {
-    const mb = Math.round(cap / (1024 * 1024));
-    return `File is too large (max ${mb}MB).`;
-  }
-  return null;
+// MIME → extension label for the unsupported-type error copy. Mirrors
+// the uploadCategory.ts MIME lists — adding a MIME there means adding
+// its label here in the same commit.
+const MIME_EXT_LABEL: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/apng": "apng",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+  "application/vnd.oasis.opendocument.text": "odt",
+  "application/vnd.oasis.opendocument.spreadsheet": "ods",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+};
+
+function unsupportedTypeMessage(host: UploadHost): string {
+  const exts = (["image", "video", "document"] satisfies UploadCategory[])
+    .flatMap((category) => host.acceptedMimeTypes[category])
+    .map((mime) => MIME_EXT_LABEL[mime] ?? mime);
+  return `Unsupported file type — supported: ${exts.join(", ")}.`;
 }
 
-function dispatchUpload(
+// Single category-dispatched pipeline (uploads cluster Task 5):
+// categoryOf → host accept gate → transform hook → per-category cap →
+// upload → emoji-prefixed PRIVMSG. async so the Task 6 video transcode
+// can await inside the transform hook; callers fire-and-forget with
+// `void` — all observable state flows through uploadStates.
+async function dispatchUpload(
   key: ChannelKey,
   networkSlug: string,
   channelName: string,
   file: File,
-): void {
+): Promise<void> {
   const host = activeHost();
 
-  const preErr = preCheck(host, file);
-  if (preErr !== null) {
-    setEntry(key, { filename: file.name, loaded: 0, total: 0, error: preErr });
+  // #49 root fix: lastAttempt is the user's LATEST selection, recorded
+  // before any gate can reject — retry always retries what the error
+  // box shows, and a new selection always replaces a rejected one.
+  lastAttempt.set(key, { file, networkSlug, channelName });
+
+  const category = categoryOf(file.type);
+  if (category === null || !host.acceptedMimeTypes[category].includes(file.type)) {
+    setEntry(key, {
+      filename: file.name,
+      loaded: 0,
+      total: 0,
+      phase: "uploading",
+      error: unsupportedTypeMessage(host),
+    });
+    return;
+  }
+
+  // Transform hook — video transcode lands in Task 6; image/document
+  // pass through.
+  const uploadFile = file;
+
+  // Cap check runs on the file that will ACTUALLY upload — after the
+  // transform, since the transcode changes the size.
+  const cap = host.maxFileSizeBytes(category);
+  if (cap !== null && uploadFile.size > cap) {
+    const mb = Math.round(cap / (1024 * 1024));
+    setEntry(key, {
+      filename: uploadFile.name,
+      loaded: 0,
+      total: 0,
+      phase: "uploading",
+      error: `File is too large (max ${mb}MB).`,
+    });
     return;
   }
 
   const controller = new AbortController();
-  inflight.set(key, { controller, file, networkSlug, channelName });
-  lastAttempt.set(key, { file, networkSlug, channelName });
+  inflight.set(key, { controller, file: uploadFile, networkSlug, channelName });
 
-  setEntry(key, { filename: file.name, loaded: 0, total: file.size });
+  setEntry(key, {
+    filename: uploadFile.name,
+    loaded: 0,
+    total: uploadFile.size,
+    phase: "uploading",
+  });
 
   const ttl = pickHostTokenFromSeconds(host, uploadTtlSeconds()) ?? host.defaultTtl ?? undefined;
 
   host
     .upload(
-      file,
+      uploadFile,
       ttl !== undefined ? { ttl } : {},
       (p) => {
         // Ignore stale progress events from a cancelled-then-retried
         // upload — only the current inflight entry matters.
         if (inflight.get(key)?.controller !== controller) return;
-        setEntry(key, { filename: file.name, loaded: p.loaded, total: p.total });
+        setEntry(key, {
+          filename: uploadFile.name,
+          loaded: p.loaded,
+          total: p.total,
+          phase: "uploading",
+        });
       },
       controller.signal,
     )
@@ -232,8 +298,8 @@ function dispatchUpload(
       if (inflight.get(key)?.controller !== controller) return;
       inflight.delete(key);
       setEntry(key, null);
-      // Auto-send PRIVMSG with photocamera prefix — A7.
-      void sendMessage(networkSlug, channelName, `📸 ${url}`);
+      // Auto-send PRIVMSG with the per-category emoji prefix — A7.
+      void sendMessage(networkSlug, channelName, `${CATEGORY_EMOJI[category]} ${url}`);
     })
     .catch((err: UploadError) => {
       if (inflight.get(key)?.controller !== controller) return;
@@ -243,9 +309,10 @@ function dispatchUpload(
         return;
       }
       setEntry(key, {
-        filename: file.name,
+        filename: uploadFile.name,
         loaded: 0,
         total: 0,
+        phase: "uploading",
         error: friendlyErrorMessage(err),
       });
     });
@@ -264,7 +331,7 @@ export function triggerUpload(
     setModalState({ open: true, host, key });
     return;
   }
-  dispatchUpload(key, networkSlug, channelName, file);
+  void dispatchUpload(key, networkSlug, channelName, file);
 }
 
 export function acknowledgePrivacy(rememberChoice: boolean): void {
@@ -279,7 +346,7 @@ export function acknowledgePrivacy(rememberChoice: boolean): void {
   const pending = pendingPrivacyGated.get(pendingKey);
   if (pending === undefined) return;
   pendingPrivacyGated.delete(pendingKey);
-  dispatchUpload(pendingKey, pending.networkSlug, pending.channelName, pending.file);
+  void dispatchUpload(pendingKey, pending.networkSlug, pending.channelName, pending.file);
 }
 
 export function cancelUpload(key: ChannelKey): void {

@@ -21,7 +21,7 @@ let mockUploadStateValue: {
   error?: string;
 } | null = null;
 
-vi.mock("../lib/imageUploadOrchestrator", () => {
+vi.mock("../lib/uploadOrchestrator", () => {
   const actual = {
     triggerUpload: vi.fn(),
     cancelUpload: vi.fn(),
@@ -298,7 +298,7 @@ describe("ComposeBox", () => {
   // clipboard paste + inline progress + TTL dropdown.
   //
   // The privacy-modal flow + auto-send + per-host localStorage live in
-  // imageUploadOrchestrator (mocked at module level above). ComposeBox
+  // uploadOrchestrator (mocked at module level above). ComposeBox
   // is the trigger surface — its job is to hand File objects to
   // `triggerUpload(...)` and render whatever `uploadState(key)` returns.
   // ----------------------------------------------------------------
@@ -372,7 +372,7 @@ describe("ComposeBox", () => {
     });
 
     it("selecting a file via the picker calls triggerUpload with file + slug + channel", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const input = document.querySelector(
         "input[type='file'][data-image-picker]",
@@ -388,7 +388,7 @@ describe("ComposeBox", () => {
     });
 
     it("dropping an image file onto the form calls triggerUpload", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const form = document.querySelector(".compose-box") as HTMLFormElement;
 
@@ -399,7 +399,7 @@ describe("ComposeBox", () => {
     });
 
     it("dropping a NON-image file is ignored — triggerUpload NOT called", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const form = document.querySelector(".compose-box") as HTMLFormElement;
 
@@ -417,7 +417,7 @@ describe("ComposeBox", () => {
     });
 
     it("pasting an image file calls triggerUpload + does NOT modify textarea", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       const compose = await import("../lib/compose");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
@@ -436,7 +436,7 @@ describe("ComposeBox", () => {
     });
 
     it("pasting plain text does NOT trigger upload + leaves textarea paste behavior alone", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
 
@@ -463,7 +463,7 @@ describe("ComposeBox", () => {
 
     it("clicking cancel on a progress row calls cancelUpload", async () => {
       mockUploadStateValue = { filename: "screenshot.png", loaded: 512, total: 2048 };
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const cancelBtn = screen.getByRole("button", { name: /cancel/i });
       fireEvent.click(cancelBtn);
@@ -477,7 +477,7 @@ describe("ComposeBox", () => {
         total: 0,
         error: "Upload failed — network error.",
       };
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       expect(screen.getByText(/network error/i)).toBeInTheDocument();
 
