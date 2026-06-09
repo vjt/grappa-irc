@@ -1911,6 +1911,19 @@ html.resize-dragging * {
   border-color: #c00;
 }
 
+/* Issue #43 — "quit IRC" reuses the shared InlineConfirmButton but sits
+   in the settings drawer's full-width button stack (next to `.logout` /
+   `.admin-console-entry`), not a dense admin row. Override the compact
+   base sizing to match its neighbours; the base `.confirming` rule still
+   supplies the red armed treatment. `.logout`'s `margin-top: auto` keeps
+   the detach button (and this quit button right below it) anchored to
+   the drawer bottom. */
+.settings-drawer button.inline-confirm-btn.settings-quit {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  font-size: inherit;
+}
+
 /* UX-1 (2026-05-17) — Sidebar archive delete affordance. Borderless +
    muted to keep the dense per-row Archive list calm; the InlineConfirmButton
    base provides the .confirming red treatment when armed. The full-width

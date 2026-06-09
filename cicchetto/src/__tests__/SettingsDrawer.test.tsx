@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@solidjs/router", () => ({
@@ -25,6 +26,14 @@ vi.mock("../lib/auth", () => ({
   logout: vi.fn().mockResolvedValue(undefined),
   token: () => "test-bearer",
   getSubject: () => subjectHolder.current,
+}));
+
+// Issue #43 — "quit IRC" composite (park all user-networks + logout)
+// already ships in lib/quit.ts; the drawer wires the destructive button
+// to it. Mock the composite so the drawer test asserts the wiring, not
+// the park/logout fan-out (quit.ts has its own coverage).
+vi.mock("../lib/quit", () => ({
+  quitAll: vi.fn().mockResolvedValue(undefined),
 }));
 
 // M-cluster M-7 — admin gate. SettingsDrawer reads `isAdmin()` from
@@ -233,23 +242,25 @@ describe("SettingsDrawer notifications section", () => {
   });
 });
 
-// V6 visitor-parity: the drawer does NOT read me()/getSubject() and is
-// subject-agnostic by construction. This describe block pins that
-// invariant — if a visitor-gated branch ever sneaks in (e.g. "hide push
-// toggle for visitors") the assertions below break loudly. Mirrors the
-// user-shape tests with a visitor subject seeded in localStorage to
-// match the auth.ts contract; renders + asserts the same surface.
+// V6 visitor-parity: the NOTIFICATIONS + theme surface is subject-
+// agnostic — identical for visitor and user. This describe block pins
+// that invariant: if a visitor-gated branch ever sneaks into the push /
+// prefs / theme chrome (e.g. "hide push toggle for visitors") the
+// assertions below break loudly. The drawer DOES read getSubject() for
+// the subject-gated affordances (issue #43 logout split, share-session,
+// admin entry) — those have their own describe blocks; this one asserts
+// everything ELSE stays the same. Seeds the visitor into the mocked
+// `subjectHolder` (the source getSubject() actually reads — a localStorage
+// seed is inert under the auth mock), so the surface is exercised as a
+// real visitor, not the null/loading fallback.
 describe("SettingsDrawer (visitor subject)", () => {
   beforeEach(() => {
-    localStorage.setItem(
-      "grappa-subject",
-      JSON.stringify({
-        kind: "visitor",
-        id: "v1",
-        nick: "anon-vjt",
-        network_slug: "azzurra",
-      }),
-    );
+    subjectHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "anon-vjt",
+      network_slug: "azzurra",
+    };
   });
 
   it("renders the same notifications surface for visitor as for user", () => {
@@ -279,9 +290,11 @@ describe("SettingsDrawer (visitor subject)", () => {
     });
   });
 
-  it("renders theme + logout for visitor (same chrome as user)", () => {
+  it("renders theme + single 'log out' for visitor (notif/theme chrome same as user)", () => {
     wrap(true);
     expect(screen.getByLabelText(/auto/i)).toBeInTheDocument();
+    // Theme chrome is shared; the logout affordance is NOT — visitors get
+    // the single "log out" (the detach/quit split is user-only, issue #43).
     expect(screen.getByText(/log out/i)).toBeInTheDocument();
   });
 });
@@ -497,5 +510,71 @@ describe("SettingsDrawer (share session — visitor only)", () => {
     await waitFor(() => {
       expect(screen.getByTestId("share-modal-stub")).toBeInTheDocument();
     });
+  });
+});
+
+// Issue #43 — split the single "log out" into two affordances for
+// registered users: "detach" (today's logout — leave IRC connected) and
+// "quit" (park ALL networks + logout — bouncer offline). Visitors keep
+// the single "log out" (no persistent bouncer binding; the split is
+// meaningless). The split is gated on subject.kind === "user", so the
+// not-yet-loaded (null subject) state stays on the safe single button.
+describe("SettingsDrawer (issue #43 — split logout)", () => {
+  beforeEach(() => {
+    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
+  });
+
+  it("renders detach + quit for a registered user (no bare 'log out')", () => {
+    wrap(true);
+    expect(screen.getByTestId("detach-btn")).toHaveTextContent(/^detach$/i);
+    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/^quit$/i);
+    expect(screen.queryByText(/log out/i)).toBeNull();
+  });
+
+  it("clicking detach calls auth.logout, NOT quit.quitAll", async () => {
+    const auth = await import("../lib/auth");
+    const quit = await import("../lib/quit");
+    wrap(true);
+    fireEvent.click(screen.getByTestId("detach-btn"));
+    expect(auth.logout).toHaveBeenCalled();
+    expect(quit.quitAll).not.toHaveBeenCalled();
+  });
+
+  it("a single tap on quit arms it (shows confirm copy) but does NOT quit", async () => {
+    const quit = await import("../lib/quit");
+    wrap(true);
+    fireEvent.click(screen.getByTestId("quit-irc-btn"));
+    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/really quit IRC/i);
+    expect(quit.quitAll).not.toHaveBeenCalled();
+  });
+
+  it("two-tap on quit calls quit.quitAll", async () => {
+    const quit = await import("../lib/quit");
+    wrap(true);
+    fireEvent.click(screen.getByTestId("quit-irc-btn")); // arm
+    fireEvent.click(screen.getByTestId("quit-irc-btn")); // confirm
+    await waitFor(() => {
+      expect(quit.quitAll).toHaveBeenCalled();
+    });
+  });
+
+  it("closing the drawer disarms an armed quit button", async () => {
+    const [open, setOpen] = createSignal(true);
+    render(() => <SettingsDrawer open={open()} onClose={vi.fn()} onOpenAdmin={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("quit-irc-btn")); // arm
+    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/really quit IRC/i);
+    setOpen(false); // close
+    await Promise.resolve();
+    setOpen(true); // reopen
+    await Promise.resolve();
+    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/^quit$/i);
+  });
+
+  it("visitor keeps a single 'log out' (no detach/quit split)", () => {
+    subjectHolder.current = { kind: "visitor", id: "v1", nick: "guest", network_slug: "libera" };
+    wrap(true);
+    expect(screen.getByText(/log out/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("detach-btn")).toBeNull();
+    expect(screen.queryByTestId("quit-irc-btn")).toBeNull();
   });
 });

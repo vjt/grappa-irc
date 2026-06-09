@@ -11469,3 +11469,54 @@ The m6 spec's 15s round-trip timeout bump is now redundant (the fix
 renders the row) but kept as harmless slow-Pi headroom — reverting it
 risks re-flaking on the genuine 7.5s round-trip observed under full-suite
 load.
+
+## 2026-06-09 — cic: split "log out" into "detach" vs "quit" (issue #43)
+
+**Problem.** The single SettingsDrawer "log out" button was ambiguous
+about the bouncer. `auth.logout()` revokes the bearer + redirects to
+`/login` but never touches the upstream IRC session — by design, but it
+surprised the operator (2026-06-04): "logged out" of cic, then watched
+the IRC session keep filling scrollback.
+
+**Fix — two affordances for registered users, gated on subject kind.**
+The drawer now renders, for `getSubject()?.kind === "user"`:
+
+- **`detach`** — today's `logout()` flow, relabelled. Revokes the web
+  bearer, leaves the IRC session connected; reconnecting cic later picks
+  it back up.
+- **`quit`** — a destructive two-tap `InlineConfirmButton` (`quit` →
+  `really quit IRC?`) wired to the **pre-existing** `quitAll(null)`
+  composite (`lib/quit.ts`: park every `kind === "user"` network via
+  `PATCH /networks/:id {connection_state:"parked"}`, then `logout()`).
+  Parked persists across restart (Bootstrap skips `:parked` rows) — the
+  correct "stays off until I reconnect" semantic for a Quit affordance.
+
+This was **wiring, not new infra**: `quitAll` already backed the `/quit`
+compose verb and the visitor sidebar ×. Server side unchanged.
+
+**Visitors + the not-yet-loaded null subject keep the single `log out`.**
+Visitors have no persistent bouncer binding (logout tears the session
+down server-side), so the split is a meaningless distinction; gating on
+`kind === "user"` (not `!isVisitor()`) also keeps the loading/`null`
+subject on the safe single button.
+
+**Disarm-on-close.** The drawer stays mounted across open/close (CSS
+`.open` toggle, not `<Show>`), so an armed `quit` would survive a
+close→reopen one stray tap from killing the bouncer. A
+`createEffect(() => { if (!props.open) setQuitArmed(false) })` disarms on
+every close. The armed flag lives in the parent per the
+InlineConfirmButton contract.
+
+**Tests.** vitest pins the wiring with a mocked `quitAll`
+(`SettingsDrawer.test.tsx`: detach→logout-not-quitAll, single-tap arms
+without firing, two-tap→quitAll, disarm-on-close, visitor single
+button). The Playwright spec (`issue43-split-logout.spec.ts`) owns the
+real-browser render + arm-guard + disarm surface and **deliberately does
+NOT fire** the destructive confirm or a real detach — vjt's seeded
+token + IRC session are shared suite-wide, so parking the session or
+revoking the bearer would cascade-fail downstream specs. The quitAll
+park-all+logout composite already has full-stack coverage in
+`u-4-device-identity-change` + `ux-4-z-cluster-journey`; this spec is the
+NEW render/guard, not the pre-covered composite. The `m7-admin-gate`
+spec's registered-user positive twin moved from `log out` → the
+`detach-btn` testid.
