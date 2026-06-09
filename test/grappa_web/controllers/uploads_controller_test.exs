@@ -33,11 +33,7 @@ defmodule GrappaWeb.UploadsControllerTest do
     test "user subject: 201 with slug + url + expires_at", %{conn: conn} do
       {_, session} = user_and_session([])
 
-      upload = %Plug.Upload{
-        path: png_fixture(),
-        filename: "shot.png",
-        content_type: "image/png"
-      }
+      upload = upload_fixture("shot.png", "image/png", "PNG-FAKE-BYTES")
 
       conn =
         conn
@@ -59,11 +55,7 @@ defmodule GrappaWeb.UploadsControllerTest do
     test "visitor subject: 201", %{conn: conn} do
       {_, session} = visitor_and_session([])
 
-      upload = %Plug.Upload{
-        path: png_fixture(),
-        filename: "v.png",
-        content_type: "image/png"
-      }
+      upload = upload_fixture("v.png", "image/png", "PNG-FAKE-BYTES")
 
       conn =
         conn
@@ -103,11 +95,7 @@ defmodule GrappaWeb.UploadsControllerTest do
     test "default TTL is 24h when expire omitted", %{conn: conn} do
       {_, session} = user_and_session([])
 
-      upload = %Plug.Upload{
-        path: png_fixture(),
-        filename: "t.png",
-        content_type: "image/png"
-      }
+      upload = upload_fixture("t.png", "image/png", "PNG-FAKE-BYTES")
 
       conn =
         conn
@@ -136,11 +124,7 @@ defmodule GrappaWeb.UploadsControllerTest do
     test "415 unsupported_media_type for non-image mime", %{conn: conn} do
       {_, session} = user_and_session([])
 
-      upload = %Plug.Upload{
-        path: png_fixture(),
-        filename: "evil.exe",
-        content_type: "application/octet-stream"
-      }
+      upload = upload_fixture("evil.exe", "application/octet-stream", "PNG-FAKE-BYTES")
 
       conn =
         conn
@@ -153,11 +137,7 @@ defmodule GrappaWeb.UploadsControllerTest do
     test "400 for bad expire value", %{conn: conn} do
       {_, session} = user_and_session([])
 
-      upload = %Plug.Upload{
-        path: png_fixture(),
-        filename: "t.png",
-        content_type: "image/png"
-      }
+      upload = upload_fixture("t.png", "image/png", "PNG-FAKE-BYTES")
 
       conn =
         conn
@@ -172,11 +152,7 @@ defmodule GrappaWeb.UploadsControllerTest do
 
       :ok = ServerSettings.put_upload_per_file_cap_bytes(:image, 2)
 
-      upload = %Plug.Upload{
-        path: png_fixture(),
-        filename: "big.png",
-        content_type: "image/png"
-      }
+      upload = upload_fixture("big.png", "image/png", "PNG-FAKE-BYTES")
 
       conn =
         conn
@@ -191,11 +167,7 @@ defmodule GrappaWeb.UploadsControllerTest do
 
       :ok = ServerSettings.put_upload_global_cap_bytes(2)
 
-      upload = %Plug.Upload{
-        path: png_fixture(),
-        filename: "t.png",
-        content_type: "image/png"
-      }
+      upload = upload_fixture("t.png", "image/png", "PNG-FAKE-BYTES")
 
       conn =
         conn
@@ -296,14 +268,8 @@ defmodule GrappaWeb.UploadsControllerTest do
       {_, session} = user_and_session([])
 
       bytes = "PNGBYTES12345"
-      path = Path.join(System.tmp_dir!(), "tmp-up-#{System.unique_integer([:positive])}.png")
-      File.write!(path, bytes)
 
-      upload = %Plug.Upload{
-        path: path,
-        filename: "img.png",
-        content_type: "image/png"
-      }
+      upload = upload_fixture("img.png", "image/png", bytes)
 
       conn1 =
         conn
@@ -372,16 +338,6 @@ defmodule GrappaWeb.UploadsControllerTest do
   end
 
   # ---- helpers ------------------------------------------------------
-
-  defp png_fixture do
-    # Plug.Upload `:path` is consumed via File.read/1 at the
-    # controller layer; any valid file works for the unit-test
-    # boundary. Real PNG bytes are out of scope here (the cic-side
-    # MIME / extension gate is the actual content-validity boundary).
-    path = Path.join(System.tmp_dir!(), "png_fixture_#{System.unique_integer([:positive])}.png")
-    File.write!(path, "PNG-FAKE-BYTES")
-    path
-  end
 
   # ConnTest map-params bypass Plug.Parsers, so a %Plug.Upload{} built
   # by hand exercises the controller's own validation path directly —
