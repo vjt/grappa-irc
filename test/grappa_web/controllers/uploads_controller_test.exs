@@ -170,7 +170,7 @@ defmodule GrappaWeb.UploadsControllerTest do
     test "413 file_too_large when over per-file cap", %{conn: conn} do
       {_, session} = user_and_session([])
 
-      :ok = ServerSettings.put_upload_per_file_cap_bytes(2)
+      :ok = ServerSettings.put_upload_per_file_cap_bytes(:image, 2)
 
       upload = %Plug.Upload{
         path: png_fixture(),

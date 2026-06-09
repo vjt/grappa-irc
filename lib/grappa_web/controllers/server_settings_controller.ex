@@ -15,7 +15,9 @@ defmodule GrappaWeb.ServerSettingsController do
       %{
         upload: %{
           active_host: "embedded" | "litterbox",
-          per_file_cap_bytes: pos_integer(),
+          image_per_file_cap_bytes: pos_integer(),
+          video_per_file_cap_bytes: pos_integer(),
+          document_per_file_cap_bytes: pos_integer(),
           global_cap_bytes: pos_integer()
         }
       }

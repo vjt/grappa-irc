@@ -8,7 +8,9 @@ defmodule Grappa.ServerSettings.WireTest do
       view = %{
         upload: %{
           active_host: :embedded,
-          per_file_cap_bytes: 10_485_760,
+          image_per_file_cap_bytes: 10_485_760,
+          video_per_file_cap_bytes: 52_428_800,
+          document_per_file_cap_bytes: 10_485_760,
           global_cap_bytes: 10_737_418_240
         }
       }
@@ -17,7 +19,9 @@ defmodule Grappa.ServerSettings.WireTest do
 
       assert payload.kind == "server_settings_changed"
       assert payload.upload.active_host == "embedded"
-      assert payload.upload.per_file_cap_bytes == 10_485_760
+      assert payload.upload.image_per_file_cap_bytes == 10_485_760
+      assert payload.upload.video_per_file_cap_bytes == 52_428_800
+      assert payload.upload.document_per_file_cap_bytes == 10_485_760
       assert payload.upload.global_cap_bytes == 10_737_418_240
     end
 
@@ -25,7 +29,9 @@ defmodule Grappa.ServerSettings.WireTest do
       view = %{
         upload: %{
           active_host: :litterbox,
-          per_file_cap_bytes: 5_000_000,
+          image_per_file_cap_bytes: 5_000_000,
+          video_per_file_cap_bytes: 6_000_000,
+          document_per_file_cap_bytes: 7_000_000,
           global_cap_bytes: 999_999
         }
       }
@@ -33,7 +39,9 @@ defmodule Grappa.ServerSettings.WireTest do
       payload = Wire.server_settings_changed(view)
 
       assert payload.upload.active_host == "litterbox"
-      assert payload.upload.per_file_cap_bytes == 5_000_000
+      assert payload.upload.image_per_file_cap_bytes == 5_000_000
+      assert payload.upload.video_per_file_cap_bytes == 6_000_000
+      assert payload.upload.document_per_file_cap_bytes == 7_000_000
       assert payload.upload.global_cap_bytes == 999_999
     end
 
@@ -41,8 +49,10 @@ defmodule Grappa.ServerSettings.WireTest do
       view = %{
         upload: %{
           active_host: :embedded,
-          per_file_cap_bytes: 1,
-          global_cap_bytes: 2
+          image_per_file_cap_bytes: 1,
+          video_per_file_cap_bytes: 2,
+          document_per_file_cap_bytes: 3,
+          global_cap_bytes: 4
         }
       }
 
@@ -52,12 +62,23 @@ defmodule Grappa.ServerSettings.WireTest do
 
       assert decoded["kind"] == "server_settings_changed"
       assert decoded["upload"]["active_host"] == "embedded"
-      assert decoded["upload"]["per_file_cap_bytes"] == 1
-      assert decoded["upload"]["global_cap_bytes"] == 2
+      assert decoded["upload"]["image_per_file_cap_bytes"] == 1
+      assert decoded["upload"]["video_per_file_cap_bytes"] == 2
+      assert decoded["upload"]["document_per_file_cap_bytes"] == 3
+      assert decoded["upload"]["global_cap_bytes"] == 4
     end
 
     test "kind field is the discriminator cic dispatches on" do
-      view = %{upload: %{active_host: :embedded, per_file_cap_bytes: 1, global_cap_bytes: 2}}
+      view = %{
+        upload: %{
+          active_host: :embedded,
+          image_per_file_cap_bytes: 1,
+          video_per_file_cap_bytes: 2,
+          document_per_file_cap_bytes: 3,
+          global_cap_bytes: 4
+        }
+      }
+
       assert %{kind: "server_settings_changed"} = Wire.server_settings_changed(view)
     end
   end
@@ -66,12 +87,16 @@ defmodule Grappa.ServerSettings.WireTest do
     test "renders embedded with explicit field set" do
       assert %{
                active_host: "embedded",
-               per_file_cap_bytes: 10_485_760,
+               image_per_file_cap_bytes: 10_485_760,
+               video_per_file_cap_bytes: 52_428_800,
+               document_per_file_cap_bytes: 10_485_760,
                global_cap_bytes: 10_737_418_240
              } =
                Wire.upload_view(%{
                  active_host: :embedded,
-                 per_file_cap_bytes: 10_485_760,
+                 image_per_file_cap_bytes: 10_485_760,
+                 video_per_file_cap_bytes: 52_428_800,
+                 document_per_file_cap_bytes: 10_485_760,
                  global_cap_bytes: 10_737_418_240
                })
     end
@@ -80,14 +105,22 @@ defmodule Grappa.ServerSettings.WireTest do
       assert %{active_host: "litterbox"} =
                Wire.upload_view(%{
                  active_host: :litterbox,
-                 per_file_cap_bytes: 1,
-                 global_cap_bytes: 2
+                 image_per_file_cap_bytes: 1,
+                 video_per_file_cap_bytes: 2,
+                 document_per_file_cap_bytes: 3,
+                 global_cap_bytes: 4
                })
     end
 
     test "server_settings_changed/1 reuses the shared upload projection" do
       view = %{
-        upload: %{active_host: :litterbox, per_file_cap_bytes: 7, global_cap_bytes: 8}
+        upload: %{
+          active_host: :litterbox,
+          image_per_file_cap_bytes: 7,
+          video_per_file_cap_bytes: 8,
+          document_per_file_cap_bytes: 9,
+          global_cap_bytes: 10
+        }
       }
 
       changed = Wire.server_settings_changed(view)

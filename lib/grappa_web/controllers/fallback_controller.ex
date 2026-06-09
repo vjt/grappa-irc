@@ -112,8 +112,8 @@ defmodule GrappaWeb.FallbackController do
   end
 
   # UX-6-B1: `POST /api/uploads` size policing — admin-configurable
-  # per-file cap (default 10 MiB) read at request time from
-  # `Grappa.ServerSettings.get_upload_per_file_cap_bytes/0`. Distinct
+  # per-category per-file cap read at request time from
+  # `Grappa.ServerSettings.get_upload_per_file_cap_bytes/1`. Distinct
   # from `:body_too_large` (the JSON-payload cap on text endpoints)
   # because the cap value is dynamic, surfaced inline in the wire
   # body so cic can render the actionable threshold.

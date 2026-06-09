@@ -17,10 +17,12 @@ defmodule GrappaWeb.UploadsController do
   Boundary checks (in order — fail fast on the cheapest):
 
     1. Multipart shape — missing `file` → 400 bad_request.
-    2. MIME — must be one of the allowed image types → 415 unsupported.
-    3. Per-file cap — `byte_size(content) <= per_file_cap_bytes` from
-       `Grappa.ServerSettings.get_upload_per_file_cap_bytes/0`. Else
-       413 file_too_large.
+    2. MIME — must be one of the allowed image types → 415
+       unsupported. The cap category is DERIVED from the MIME at
+       request time, never stored.
+    3. Per-file cap — `byte_size(content) <= cap` where cap comes
+       from `Grappa.ServerSettings.get_upload_per_file_cap_bytes/1`
+       for the derived category. Else 413 file_too_large.
     4. Global cap — `live_bytes_sum + byte_size <= global_cap_bytes`.
        Else 507 insufficient_storage.
     5. Slug minted, file written, row inserted via
@@ -69,9 +71,9 @@ defmodule GrappaWeb.UploadsController do
 
     with {:ok, upload} <- extract_upload_field(params),
          {:ok, ttl_seconds} <- parse_ttl(params),
-         {:ok, mime} <- validate_mime(upload),
+         {:ok, mime, category} <- validate_mime(upload),
          {:ok, bytes} <- read_file(upload),
-         :ok <- check_per_file_cap(bytes),
+         :ok <- check_per_file_cap(bytes, category),
          :ok <-
            Uploads.check_global_cap(byte_size(bytes), ServerSettings.get_upload_global_cap_bytes()),
          {:ok, row} <-
@@ -138,7 +140,9 @@ defmodule GrappaWeb.UploadsController do
   defp parse_ttl(%{"expire" => _}), do: {:error, :bad_request}
   defp parse_ttl(_), do: {:ok, @default_ttl_seconds}
 
-  defp validate_mime(%Plug.Upload{content_type: ct}) when ct in @allowed_mimes, do: {:ok, ct}
+  defp validate_mime(%Plug.Upload{content_type: ct}) when ct in @allowed_mimes,
+    do: {:ok, ct, :image}
+
   defp validate_mime(_), do: {:error, :unsupported_media_type}
 
   # `path` is `Plug.Upload.path`, a tmp file synthesized by
@@ -151,8 +155,8 @@ defmodule GrappaWeb.UploadsController do
     end
   end
 
-  defp check_per_file_cap(bytes) do
-    cap = ServerSettings.get_upload_per_file_cap_bytes()
+  defp check_per_file_cap(bytes, category) do
+    cap = ServerSettings.get_upload_per_file_cap_bytes(category)
 
     if byte_size(bytes) <= cap do
       :ok

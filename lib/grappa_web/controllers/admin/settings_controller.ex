@@ -13,7 +13,9 @@ defmodule GrappaWeb.Admin.SettingsController do
         settings: %{
           upload: %{
             active_host: "embedded" | "litterbox",
-            per_file_cap_bytes: pos_integer(),
+            image_per_file_cap_bytes: pos_integer(),
+            video_per_file_cap_bytes: pos_integer(),
+            document_per_file_cap_bytes: pos_integer(),
             global_cap_bytes: pos_integer()
           }
         }
@@ -26,7 +28,9 @@ defmodule GrappaWeb.Admin.SettingsController do
       %{
         "upload" => %{
           "active_host" => "embedded" | "litterbox",
-          "per_file_cap_bytes" => pos_integer(),
+          "image_per_file_cap_bytes" => pos_integer(),
+          "video_per_file_cap_bytes" => pos_integer(),
+          "document_per_file_cap_bytes" => pos_integer(),
           "global_cap_bytes" => pos_integer()
         }
       }
@@ -117,11 +121,23 @@ defmodule GrappaWeb.Admin.SettingsController do
   defp apply_upload_key("active_host", "litterbox"), do: ServerSettings.put_upload_active_host(:litterbox)
   defp apply_upload_key("active_host", _), do: {:error, {:invalid_setting, "upload.active_host"}}
 
-  defp apply_upload_key("per_file_cap_bytes", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_upload_per_file_cap_bytes(n)
+  defp apply_upload_key("image_per_file_cap_bytes", n) when is_integer(n) and n > 0,
+    do: ServerSettings.put_upload_per_file_cap_bytes(:image, n)
 
-  defp apply_upload_key("per_file_cap_bytes", _),
-    do: {:error, {:invalid_setting, "upload.per_file_cap_bytes"}}
+  defp apply_upload_key("image_per_file_cap_bytes", _),
+    do: {:error, {:invalid_setting, "upload.image_per_file_cap_bytes"}}
+
+  defp apply_upload_key("video_per_file_cap_bytes", n) when is_integer(n) and n > 0,
+    do: ServerSettings.put_upload_per_file_cap_bytes(:video, n)
+
+  defp apply_upload_key("video_per_file_cap_bytes", _),
+    do: {:error, {:invalid_setting, "upload.video_per_file_cap_bytes"}}
+
+  defp apply_upload_key("document_per_file_cap_bytes", n) when is_integer(n) and n > 0,
+    do: ServerSettings.put_upload_per_file_cap_bytes(:document, n)
+
+  defp apply_upload_key("document_per_file_cap_bytes", _),
+    do: {:error, {:invalid_setting, "upload.document_per_file_cap_bytes"}}
 
   defp apply_upload_key("global_cap_bytes", n) when is_integer(n) and n > 0,
     do: ServerSettings.put_upload_global_cap_bytes(n)

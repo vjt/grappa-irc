@@ -854,13 +854,17 @@ defmodule GrappaWeb.GrappaChannelTest do
         kind: "server_settings_changed",
         upload: %{
           active_host: active_host,
-          per_file_cap_bytes: per_file_cap_bytes,
+          image_per_file_cap_bytes: image_cap,
+          video_per_file_cap_bytes: video_cap,
+          document_per_file_cap_bytes: document_cap,
           global_cap_bytes: global_cap_bytes
         }
       })
 
       assert active_host in ["embedded", "litterbox"]
-      assert is_integer(per_file_cap_bytes) and per_file_cap_bytes > 0
+      assert is_integer(image_cap) and image_cap > 0
+      assert is_integer(video_cap) and video_cap > 0
+      assert is_integer(document_cap) and document_cap > 0
       assert is_integer(global_cap_bytes) and global_cap_bytes > 0
     end
 

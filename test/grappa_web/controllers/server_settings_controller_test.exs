@@ -18,7 +18,9 @@ defmodule GrappaWeb.ServerSettingsControllerTest do
       conn = conn |> put_bearer(session.id) |> get("/api/server-settings")
       assert %{"upload" => upload} = json_response(conn, 200)
       assert upload["active_host"] == "embedded"
-      assert upload["per_file_cap_bytes"] == 10 * 1024 * 1024
+      assert upload["image_per_file_cap_bytes"] == 10 * 1024 * 1024
+      assert upload["video_per_file_cap_bytes"] == 50 * 1024 * 1024
+      assert upload["document_per_file_cap_bytes"] == 10 * 1024 * 1024
       assert upload["global_cap_bytes"] == 10 * 1024 * 1024 * 1024
     end
 
