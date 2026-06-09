@@ -2,6 +2,7 @@ import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compose";
 import { networkBySlug } from "./lib/networks";
+import { categoryOf } from "./lib/uploadCategory";
 import { activeHost } from "./lib/uploadHost";
 import {
   cancelUpload,
@@ -45,6 +46,14 @@ import { windowStateByChannel } from "./lib/windowState";
 // gating, MIME pre-check, TTL dropdown wiring, progress state,
 // auto-send. ComposeBox is the trigger surface only — no upload
 // logic lives here.
+//
+// Uploads cluster Task 7 (2026-06-09): the trigger surfaces widened
+// from image-only to every categorized MIME — `categoryOf()` is the
+// drop/paste filter, the picker's accept attr spans all the active
+// host's categories. The host accept-list + per-category cap checks
+// stay in the orchestrator (one gate, one error surface); the
+// category filter here only stops obviously-uninteresting payloads
+// (text selections, random binaries) from opening the upload UI.
 
 export type Props = {
   networkSlug: string;
@@ -76,7 +85,7 @@ const ComposeBox: Component<Props> = (props) => {
     setError(null);
   };
 
-  // ---- Image upload trigger surfaces -------------------------------
+  // ---- Upload trigger surfaces (all categories) --------------------
 
   const handleFile = (file: File): void => {
     triggerUpload(key(), props.networkSlug, props.channelName, file);
@@ -102,7 +111,7 @@ const ComposeBox: Component<Props> = (props) => {
     e.preventDefault();
     const file = e.dataTransfer?.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith("image/")) return;
+    if (categoryOf(file.type) === null) return;
     handleFile(file);
   };
 
@@ -112,7 +121,7 @@ const ComposeBox: Component<Props> = (props) => {
     for (const item of items) {
       if (item.kind !== "file") continue;
       const file = item.getAsFile();
-      if (file?.type.startsWith("image/")) {
+      if (file !== null && categoryOf(file.type) !== null) {
         e.preventDefault();
         handleFile(file);
         return;
@@ -187,12 +196,10 @@ const ComposeBox: Component<Props> = (props) => {
         onDragOver={onDragOver}
         onDrop={onDrop}
       >
-        {/* Image category only until Task 7 widens the picker to
-            video + document alongside the orchestrator pipeline (Task 5). */}
         <input
           ref={pickerInput}
           type="file"
-          accept={activeHost().acceptedMimeTypes.image.join(",")}
+          accept={Object.values(activeHost().acceptedMimeTypes).flat().join(",")}
           data-image-picker
           hidden
           onChange={onPickerChange}
@@ -267,6 +274,9 @@ const ComposeBox: Component<Props> = (props) => {
             fallback={
               <div class="compose-box-upload-progress" role="progressbar">
                 <span class="compose-box-upload-filename">{st().filename}</span>
+                <Show when={st().phase === "transcoding"}>
+                  <span class="compose-box-upload-phase">processing video…</span>
+                </Show>
                 <progress value={st().loaded} max={st().total} />
                 <button type="button" onClick={onCancelUpload}>
                   cancel

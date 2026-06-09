@@ -18,6 +18,7 @@ let mockUploadStateValue: {
   filename: string;
   loaded: number;
   total: number;
+  phase?: "transcoding" | "uploading";
   error?: string;
 } | null = null;
 
@@ -308,7 +309,16 @@ describe("ComposeBox", () => {
         type: "image/png",
       });
 
-    const sampleNonImage = (): File => new File(["hi"], "notes.txt", { type: "text/plain" });
+    // Uploads cluster Task 7 — drop/paste accept ANY categorized MIME
+    // (image/video/document); only category-less MIMEs are filtered.
+    const sampleVideo = (): File =>
+      new File([new Uint8Array(16)], "clip.mp4", { type: "video/mp4" });
+
+    const sampleDocument = (): File =>
+      new File(["%PDF-1.4"], "notes.pdf", { type: "application/pdf" });
+
+    const sampleUnknownType = (): File =>
+      new File([new Uint8Array(4)], "setup.exe", { type: "application/x-msdownload" });
 
     // jsdom 29 ships neither DataTransfer nor a constructible
     // ClipboardEvent that accepts a clipboardData option. Synthesise
@@ -341,15 +351,18 @@ describe("ComposeBox", () => {
       expect(btn).toBeInTheDocument();
     });
 
-    it("renders a hidden file input that accepts the host's MIME types", () => {
+    it("renders a hidden file input that accepts ALL the host's MIME categories", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const input = document.querySelector(
         "input[type='file'][data-image-picker]",
       ) as HTMLInputElement | null;
       expect(input).not.toBeNull();
-      // accept attr should list at least one image MIME
-      // (host.acceptedMimeTypes.image — image-only until Task 7).
-      expect(input?.getAttribute("accept")).toMatch(/image\//);
+      // Task 7: accept spans every category the active host takes —
+      // image + video + document, not image-only.
+      const accept = input?.getAttribute("accept") ?? "";
+      expect(accept).toMatch(/image\/png/);
+      expect(accept).toMatch(/video\/mp4/);
+      expect(accept).toMatch(/application\/pdf/);
     });
 
     it("clicking the image-picker button triggers the hidden input", () => {
@@ -398,12 +411,34 @@ describe("ComposeBox", () => {
       expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
     });
 
-    it("dropping a NON-image file is ignored — triggerUpload NOT called", async () => {
+    it("dropping a video file calls triggerUpload (Task 7 — drop accepts all categories)", async () => {
       const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const form = document.querySelector(".compose-box") as HTMLFormElement;
 
-      fireEvent.drop(form, { dataTransfer: makeDataTransfer(sampleNonImage()) });
+      const file = sampleVideo();
+      fireEvent.drop(form, { dataTransfer: makeDataTransfer(file) });
+
+      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+    });
+
+    it("dropping a document file calls triggerUpload (Task 7 — drop accepts all categories)", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const form = document.querySelector(".compose-box") as HTMLFormElement;
+
+      const file = sampleDocument();
+      fireEvent.drop(form, { dataTransfer: makeDataTransfer(file) });
+
+      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+    });
+
+    it("dropping a category-less MIME is ignored — triggerUpload NOT called", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const form = document.querySelector(".compose-box") as HTMLFormElement;
+
+      fireEvent.drop(form, { dataTransfer: makeDataTransfer(sampleUnknownType()) });
 
       expect(orch.triggerUpload).not.toHaveBeenCalled();
     });
@@ -450,6 +485,53 @@ describe("ComposeBox", () => {
       expect(orch.triggerUpload).not.toHaveBeenCalled();
     });
 
+    it("pasting a video file calls triggerUpload (Task 7 — paste accepts all categories)", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+
+      const file = sampleVideo();
+      const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(pasteEvent, "clipboardData", {
+        value: makeDataTransfer(file),
+        configurable: true,
+      });
+      ta.dispatchEvent(pasteEvent);
+
+      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+    });
+
+    it("pasting a document file calls triggerUpload (Task 7 — paste accepts all categories)", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+
+      const file = sampleDocument();
+      const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(pasteEvent, "clipboardData", {
+        value: makeDataTransfer(file),
+        configurable: true,
+      });
+      ta.dispatchEvent(pasteEvent);
+
+      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+    });
+
+    it("pasting a category-less MIME file is ignored — triggerUpload NOT called", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+
+      const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(pasteEvent, "clipboardData", {
+        value: makeDataTransfer(sampleUnknownType()),
+        configurable: true,
+      });
+      ta.dispatchEvent(pasteEvent);
+
+      expect(orch.triggerUpload).not.toHaveBeenCalled();
+    });
+
     it("renders the inline progress row when uploadState is non-null", () => {
       mockUploadStateValue = { filename: "screenshot.png", loaded: 512, total: 2048 };
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
@@ -459,6 +541,30 @@ describe("ComposeBox", () => {
         document.querySelector("[role='progressbar']") ??
         document.querySelector(".compose-box-upload-progress");
       expect(progress).not.toBeNull();
+    });
+
+    it("transcoding phase renders the 'processing video…' label (Task 7)", () => {
+      mockUploadStateValue = {
+        filename: "clip.mp4",
+        loaded: 0.4,
+        total: 1,
+        phase: "transcoding",
+      };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const label = document.querySelector(".compose-box-upload-phase");
+      expect(label).not.toBeNull();
+      expect(label?.textContent).toMatch(/processing video/i);
+    });
+
+    it("uploading phase does NOT render the transcoding label", () => {
+      mockUploadStateValue = {
+        filename: "clip.mp4",
+        loaded: 512,
+        total: 2048,
+        phase: "uploading",
+      };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      expect(document.querySelector(".compose-box-upload-phase")).toBeNull();
     });
 
     it("clicking cancel on a progress row calls cancelUpload", async () => {

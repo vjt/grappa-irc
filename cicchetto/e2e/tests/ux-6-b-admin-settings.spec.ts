@@ -93,7 +93,7 @@ test.describe("UX-6-B admin Settings tab", () => {
 
     // Zero image per-file cap → server returns 422 invalid_setting
     // with field: "upload.image_per_file_cap_bytes".
-    const perFile = page.getByTestId("admin-settings-per-file-cap");
+    const perFile = page.getByTestId("admin-settings-image-cap");
     await perFile.fill("0");
     await page.getByTestId("admin-settings-save").click();
 

@@ -1261,6 +1261,13 @@ html.resize-dragging * {
   font-family: var(--font-mono);
 }
 
+/* Task 7 — transcode-phase label ("processing video…") shown while the
+ * client-side video transcode runs, before the host POST starts. */
+.compose-box-upload-phase {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .compose-box-upload-progress progress {
   flex: 1;
 }

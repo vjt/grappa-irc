@@ -10,12 +10,10 @@ import { token } from "./lib/auth";
 //   * `upload.active_host` — `"embedded"` | `"litterbox"` pick. Drives
 //     cic's `activeHost()` selector (the embedded grappa-served path
 //     vs the catbox litterbox path).
-//   * `upload.image_per_file_cap_bytes` — per-file size limit for the
-//     image category, enforced at the `POST /api/uploads` boundary
-//     (413 file_too_large on overrun). The wire also carries
-//     `video_per_file_cap_bytes` + `document_per_file_cap_bytes`;
-//     Task 7 (uploads cluster) adds their inputs alongside — this
-//     form edits the image cap only until then.
+//   * `upload.{image,video,document}_per_file_cap_bytes` — per-file
+//     size limits per upload category (uploads cluster Task 7,
+//     2026-06-09), enforced at the `POST /api/uploads` boundary
+//     (413 file_too_large on overrun).
 //   * `upload.global_cap_bytes` — global disk-budget ceiling; uploads
 //     reject with 507 insufficient_storage when total live bytes +
 //     incoming would exceed the cap.
@@ -58,14 +56,45 @@ const AdminSettingsTab: Component = () => {
   // can edit + cancel without round-tripping the server view.
   const [activeHost, setActiveHost] = createSignal<"embedded" | "litterbox">("embedded");
   const [imageCapMB, setImageCapMB] = createSignal<number>(10);
+  const [videoCapMB, setVideoCapMB] = createSignal<number>(50);
+  const [documentCapMB, setDocumentCapMB] = createSignal<number>(10);
   const [globalCapGB, setGlobalCapGB] = createSignal<number>(10);
 
   const applyView = (view: AdminSettingsView): void => {
     setSettings(view);
     setActiveHost(view.upload.active_host);
     setImageCapMB(view.upload.image_per_file_cap_bytes / MIB);
+    setVideoCapMB(view.upload.video_per_file_cap_bytes / MIB);
+    setDocumentCapMB(view.upload.document_per_file_cap_bytes / MIB);
     setGlobalCapGB(view.upload.global_cap_bytes / GIB);
   };
+
+  // One row per per-type cap (uploads cluster Task 7) — same markup,
+  // same MB↔bytes conversion, same field-error binding; only the
+  // category differs. Static array, so a plain .map render is fine.
+  const capFields = [
+    {
+      testid: "admin-settings-image-cap",
+      label: "Image per-file cap (MB)",
+      field: "upload.image_per_file_cap_bytes",
+      value: imageCapMB,
+      set: setImageCapMB,
+    },
+    {
+      testid: "admin-settings-video-cap",
+      label: "Video per-file cap (MB)",
+      field: "upload.video_per_file_cap_bytes",
+      value: videoCapMB,
+      set: setVideoCapMB,
+    },
+    {
+      testid: "admin-settings-document-cap",
+      label: "Document per-file cap (MB)",
+      field: "upload.document_per_file_cap_bytes",
+      value: documentCapMB,
+      set: setDocumentCapMB,
+    },
+  ] as const;
 
   const refresh = async (): Promise<void> => {
     const t = token();
@@ -93,12 +122,11 @@ const AdminSettingsTab: Component = () => {
     setFieldError(null);
     try {
       const view = await adminPutSettings(t, {
-        // Partial subtree — the controller upserts present keys only,
-        // so the video/document caps stay untouched until Task 7 adds
-        // their inputs.
         upload: {
           active_host: activeHost(),
           image_per_file_cap_bytes: Math.round(imageCapMB() * MIB),
+          video_per_file_cap_bytes: Math.round(videoCapMB() * MIB),
+          document_per_file_cap_bytes: Math.round(documentCapMB() * MIB),
           global_cap_bytes: Math.round(globalCapGB() * GIB),
         },
       });
@@ -142,7 +170,7 @@ const AdminSettingsTab: Component = () => {
       <Show when={settings() !== null} fallback={<p>loading settings…</p>}>
         <form onSubmit={(e) => void onSave(e)} class="admin-settings-form" noValidate>
           <fieldset>
-            <legend>Image upload</legend>
+            <legend>Uploads</legend>
 
             <div class="admin-settings-field">
               <label for="admin-settings-active-host">Active host</label>
@@ -164,25 +192,27 @@ const AdminSettingsTab: Component = () => {
               </Show>
             </div>
 
-            <div class="admin-settings-field">
-              <label for="admin-settings-per-file-cap">Image per-file cap (MB)</label>
-              <input
-                id="admin-settings-per-file-cap"
-                data-testid="admin-settings-per-file-cap"
-                type="number"
-                min="1"
-                step="1"
-                value={imageCapMB()}
-                onInput={(e) => setImageCapMB(Number(e.currentTarget.value))}
-                disabled={saving()}
-                classList={{
-                  "admin-settings-field-error": fieldError() === "upload.image_per_file_cap_bytes",
-                }}
-              />
-              <Show when={fieldError() === "upload.image_per_file_cap_bytes"}>
-                <span class="admin-settings-field-error-msg">must be positive</span>
-              </Show>
-            </div>
+            {capFields.map((cap) => (
+              <div class="admin-settings-field">
+                <label for={cap.testid}>{cap.label}</label>
+                <input
+                  id={cap.testid}
+                  data-testid={cap.testid}
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={cap.value()}
+                  onInput={(e) => cap.set(Number(e.currentTarget.value))}
+                  disabled={saving()}
+                  classList={{
+                    "admin-settings-field-error": fieldError() === cap.field,
+                  }}
+                />
+                <Show when={fieldError() === cap.field}>
+                  <span class="admin-settings-field-error-msg">must be positive</span>
+                </Show>
+              </div>
+            ))}
 
             <div class="admin-settings-field">
               <label for="admin-settings-global-cap">Global cap (GB)</label>
