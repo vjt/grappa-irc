@@ -187,21 +187,22 @@ Phase 5 cluster opens):
   Either teach the last-user check that visitor presence counts, or add
   a "detach user, keep network" verb. Worked around in prod with a
   direct credential-row delete. See DESIGN_NOTES 2026-06-04.
-- **cic: guard read-cursor POST on invalid `message_id`** (2026-06-08)
-  — **issue #44.** `cicchetto/src/lib/readCursor.ts` `setReadCursor/4`
-  POSTs `{message_id}` with no positive-int guard; service-nick query
-  windows (NickServ/ChanServ/OperServ) settle before a real persisted
-  id exists → server 400s (31× on prod). Fix = skip the POST when
-  `messageId` isn't a positive integer. Stopgap shipped: the m42 host
-  `http-400` fail2ban jail now exempts `/read-cursor\b` 400s (CP55) so
-  the operator stops self-banning — remove that exemption is optional
-  once the cic guard lands.
 
 ## Low / Observation
 
-- Investigate `mix release` size on Debian-slim runtime image. If
-  obnoxiously big, evaluate Alpine + musl rebuild of `ecto_sqlite3`
-  NIFs.
+- **Remove m42 fail2ban `/read-cursor` 400-exemption** (post-#44) — the
+  cic positive-int guard landed + deployed (cp58, bundle `BF6Dside`).
+  Once prod access logs show `/read-cursor` 400s at zero (clients on the
+  new bundle), drop the CP55 `http-400` jail exemption for
+  `/read-cursor\b` on the m42 host.
+- **cic vitest flaky unhandled rejection** (2026-06-09) — full
+  `scripts/bun.sh run test` occasionally exits 1 with 2 "Uncaught
+  Exception: `location is not defined`" attributed to
+  `windowState.test.ts`, originating in `phoenix.mjs` socket teardown
+  (a reconnect timer firing during jsdom teardown where `window.location`
+  is undefined). Nondeterministic — all 1789 tests pass, re-run is clean,
+  `windowState.test.ts` alone exits 0. Stub `location` in the vitest
+  setup or null the phoenix socket in that file's afterEach.
 - `Grappa.version/0` (`lib/grappa.ex:28`) has zero callers. Either
   wire into `/healthz` JSON response (one-line change in
   `HealthController`) or drop the function.
