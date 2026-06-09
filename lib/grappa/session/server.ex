@@ -79,7 +79,7 @@ defmodule Grappa.Session.Server do
   """
   use GenServer, restart: :transient
 
-  alias Grappa.IRC.{AuthFSM, Client, Identifier, Message}
+  alias Grappa.IRC.{AuthFSM, Client, CTCP, Identifier, Message}
   alias Grappa.{Log, Mentions, Scrollback, Session, UserSettings}
   alias Grappa.PubSub.Topic
   alias Grappa.Push.Triggers, as: PushTriggers
@@ -2031,13 +2031,23 @@ defmodule Grappa.Session.Server do
     do: {:ok, last_message}
 
   defp persist_and_send_fragments(target, [fragment | rest], state, _) do
+    # Issue #14: the operator's own `/me` (cic sends `\x01ACTION text\x01`
+    # as a PRIVMSG body) must self-echo-persist as :action, NOT :privmsg —
+    # otherwise cic renders it on the privmsg branch (`<nick> ACTION text`)
+    # instead of the action branch (`* nick text`). Classify per fragment
+    # through the SAME `Grappa.IRC.CTCP.action?/1` the inbound EventRouter
+    # path uses, so both halves of every ACTION agree. The envelope is
+    # preserved on every fragment by `LineSplit.split_ctcp_action/2`, so
+    # each fragment still opens with `\x01ACTION ` and classifies correctly.
+    kind = if CTCP.action?(fragment), do: :action, else: :privmsg
+
     attrs =
       Session.put_subject_id(
         %{
           network_id: state.network_id,
           channel: target,
           server_time: System.system_time(:millisecond),
-          kind: :privmsg,
+          kind: kind,
           sender: state.nick,
           body: fragment,
           meta: %{},
@@ -2046,8 +2056,9 @@ defmodule Grappa.Session.Server do
           # outbound, target is the peer iff target is nick-shaped (no
           # #/&/!/+ sigil and not "$server"). The EventRouter inbound
           # path uses the same fn, so both halves of every DM thread
-          # land with matching `dm_with` values.
-          dm_with: Scrollback.dm_peer(:privmsg, target, state.nick, state.nick)
+          # land with matching `dm_with` values. `:action` is a
+          # dm-eligible kind alongside `:privmsg` (Scrollback.dm_peer/4).
+          dm_with: Scrollback.dm_peer(kind, target, state.nick, state.nick)
         },
         state.subject
       )

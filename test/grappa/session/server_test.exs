@@ -1294,6 +1294,56 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "outbound CTCP ACTION classification (issue #14)" do
+    test "operator's own /me persists as :action, not :privmsg" do
+      # Issue #14: the operator's own `/me` — cic sends `\x01ACTION text\x01`
+      # as a PRIVMSG body — was self-echo-persisted with kind :privmsg, so
+      # cic rendered it on the privmsg branch (`<nick> ACTION text`) instead
+      # of the action branch (`* nick text`). The inbound EventRouter path
+      # already classified peer ACTIONs correctly (`ctcp_action?`); only the
+      # outbound persist path hardcoded :privmsg. Pin the fix at the persist
+      # boundary — both the persisted row and the broadcast must carry :action.
+      rfc_handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(rfc_handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "#sniffo")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      action_body = "\x01ACTION waves at the channel\x01"
+
+      assert {:ok, msg} =
+               Session.send_privmsg({:user, user.id}, network.id, "#sniffo", action_body)
+
+      assert msg.kind == :action
+
+      assert_message_event(
+        kind: "action",
+        body: action_body,
+        sender: "grappa-test",
+        channel: "#sniffo",
+        network: network.slug
+      )
+
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 10, nil)
+      assert row.kind == :action
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "malformed inbound" do
     test "parse error logged, session stays alive" do
       {server, port} = start_server()
