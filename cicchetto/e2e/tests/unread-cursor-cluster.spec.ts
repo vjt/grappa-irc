@@ -175,12 +175,12 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
   //
   // Single browser context. Seed `── XX unread ──` marker on #bofh by
   // having a peer PRIVMSG while focus is on $server, switch focus to
-  // #bofh to render the marker, then send a message. FREEZE CONTRACT
-  // (2026-06-08, vjt step-away): the focused send advances the LIVE
-  // cursor but must NOT collapse the divider mid-session — the in-pane
-  // marker derives from the frozen `markerCursorId` snapshot. It only
-  // re-latches (and collapses, the cursor having caught up) on a focus
-  // acquisition. So: send → marker STAYS; window-refocus → marker GONE.
+  // #bofh to render the marker, then send a message. SEND-RELATCH
+  // (2026-06-09, vjt: "marker showing + you send → hide it"): a focused
+  // send is an explicit caught-up action and collapses the divider
+  // immediately — NO window-switch needed. The freeze contract still
+  // holds for PASSIVE advances (scroll-settle echo, cross-device); only
+  // an own send fires the `lastOwnSend` re-latch.
   //
   // Mechanism (NOT asserted directly — only the behavior is):
   //   - peer privmsg lands on #bofh while focus is on $server →
@@ -191,11 +191,11 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
   //   - switch focus to #bofh → key-effect latches `markerCursorId` at
   //     the pre-peer cursor → rows memo injects `unread-marker` BEFORE
   //     the first row with id > snapshot.
-  //   - send a PRIVMSG → bucket D advances the LIVE cursor, but the
-  //     frozen snapshot holds → marker stays put.
-  //   - switch away ($server) and back → key-effect re-latches
-  //     `markerCursorId` to the advanced cursor → marker collapses.
-  test("focused send keeps the marker frozen; window-refocus collapses it", async ({
+  //   - send a PRIVMSG → `sendMessage` advances the live cursor AND
+  //     publishes `lastOwnSend` → the pane's send-relatch effect
+  //     re-latches `markerCursorId` to the advanced cursor → marker
+  //     collapses on the next render.
+  test("focused send collapses the in-pane unread marker immediately", async ({
     page,
   }) => {
     if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
@@ -233,28 +233,17 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
         timeout: 5_000,
       });
 
-      // Send an own-PRIVMSG in the focused #bofh. Bucket D advances the
-      // LIVE cursor to the new row id post-success — but NOT the frozen
-      // marker snapshot.
+      // Send an own-PRIVMSG in the focused #bofh. `sendMessage` advances
+      // the live cursor AND fires `lastOwnSend` → the send-relatch effect
+      // hides the marker. No window-switch.
       const ownBody = `unread-cursor Z sentinel2 own ${crypto.randomUUID().slice(0, 8)}`;
       await composeSend(page, ownBody);
       await expect(ownNickRows(page, ownBody).first()).toBeVisible({
         timeout: 5_000,
       });
 
-      // FREEZE: settle the full cursor-advance round-trip (POST + WS
-      // broadcast + apply + memo recompute + DOM commit) so a WRONGLY
-      // reactive marker would have collapsed by now — then assert it
-      // is STILL visible. This is the contract the old "collapse on
-      // send" test had backwards.
-      await page.waitForTimeout(POST_SEND_SETTLE_MS);
-      await expect(page.locator('[data-testid="unread-marker"]')).toBeVisible();
-
-      // Step away to $server and back to #bofh. The focus acquisition
-      // re-latches `markerCursorId` to the now-advanced cursor → the
-      // cursor has caught up to the tail → marker collapses.
-      await selectChannel(page, NETWORK_SLUG, NETWORK_SLUG, { awaitWsReady: false });
-      await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+      // Marker collapses on the next render — polled, since the own row
+      // append + cursor advance + memo recompute + DOM commit is async.
       await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0, {
         timeout: 5_000,
       });

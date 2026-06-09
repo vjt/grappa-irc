@@ -27,7 +27,7 @@ import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
-import { loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
+import { lastOwnSend, loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
 import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
 import NickText from "./NickText";
@@ -1341,6 +1341,26 @@ const ScrollbackPane: Component<Props> = (props) => {
         scrollToActivation();
       }
     }),
+  );
+
+  // Send-relatch (2026-06-09, vjt: "marker showing + you send → hide
+  // it"). An own send is an explicit caught-up action, so it re-latches
+  // the frozen marker to the now-advanced live cursor — collapsing the
+  // divider immediately instead of waiting for a window-switch. Keyed:
+  // only a send to THIS pane's `(slug, channel)` hides its marker (a
+  // `/msg` elsewhere doesn't). `lastOwnSend` fires ONLY on an own send,
+  // so passive advances (scroll-settle echo, cross-device) stay frozen.
+  // `defer: true` skips the mount run — the key/cold-latch effects own
+  // the mount-time baseline.
+  createEffect(
+    on(
+      lastOwnSend,
+      (sent) => {
+        if (sent !== key()) return;
+        setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
+      },
+      { defer: true },
+    ),
   );
 
   // BUGHUNT-2: browser-blur cursor write. Fires on

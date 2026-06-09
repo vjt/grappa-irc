@@ -126,6 +126,7 @@ vi.mock("../lib/scrollback", () => ({
   loadInitialScrollback: vi.fn(),
   loadMore: vi.fn(),
   sendMessage: vi.fn(),
+  lastOwnSend: () => null,
 }));
 
 vi.mock("../lib/members", () => ({

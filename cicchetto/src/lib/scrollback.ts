@@ -77,13 +77,31 @@ const exports = identityScopedStore((onIdentityChange) => {
     Record<ChannelKey, ScrollbackMessage[]>
   >({});
 
-  // Identity-transition cleanup. Four registered resets fired by the
-  // factory's createEffect(on(token, ...)) — three Set.clear() + the
-  // signal flush. Order matches the pre-A3 inline shape.
+  // Send-relatch (2026-06-09): the channel-key of THIS device's most
+  // recent own send. `sendMessage` writes it; ScrollbackPane reads it to
+  // hide the frozen unread-marker on a focused send ("marker showing +
+  // you send → hide it"). It carries the send across the module boundary
+  // — nothing else marks "this advance was a send, not a passive cursor
+  // move", which is why scroll-settle / cross-device stay frozen.
+  //
+  // `equals: false` — this is an EVENT signal, not a state cell. Two
+  // sends to the SAME channel write the same key string; with the default
+  // Object.is dedup the second set would be a no-op and the marker
+  // wouldn't re-hide. Real case: send in #foo (hides) → switch away →
+  // peer messages #foo → switch back (marker re-shows) → reply in #foo
+  // (same key) → must hide again. Every send must notify.
+  const [lastOwnSend, setLastOwnSend] = createSignal<ChannelKey | null>(null, {
+    equals: false,
+  });
+
+  // Identity-transition cleanup. Five registered resets fired by the
+  // factory's createEffect(on(token, ...)) — three Set.clear() + two
+  // signal flushes. Order matches the pre-A3 inline shape.
   onIdentityChange(() => loadedChannels.clear());
   onIdentityChange(() => loadMoreInFlight.clear());
   onIdentityChange(() => loadMoreExhausted.clear());
   onIdentityChange(() => setScrollbackByChannel({}));
+  onIdentityChange(() => setLastOwnSend(null));
 
   // Insert an incoming message into the per-channel ascending list,
   // deduping by id. REST + WS can overlap: the row inserted by POST
@@ -242,8 +260,14 @@ const exports = identityScopedStore((onIdentityChange) => {
     // for a single second caller.
     const row = await apiSendMessage(t, slug, name, body);
     const current = getReadCursor(slug, name);
-    if (current !== null && row.id <= current) return;
-    void setReadCursor(t, slug, name, row.id);
+    if (current === null || row.id > current) {
+      void setReadCursor(t, slug, name, row.id);
+    }
+    // Send-relatch: fire AFTER the optimistic cursor advance above so the
+    // pane's hide-on-send effect reads the fresh cursor. Always fires on
+    // a successful send (even when the POST was skipped) — the marker
+    // must hide regardless.
+    setLastOwnSend(channelKey(slug, name));
   };
 
   // CP29 R-5 — refresh-on-WS-join-ok. Called from `subscribe.ts`'s 5
@@ -382,6 +406,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     purgeScrollback,
     refreshScrollback,
     sendMessage,
+    lastOwnSend,
   };
 });
 
@@ -392,3 +417,4 @@ export const loadMore = exports.loadMore;
 export const purgeScrollback = exports.purgeScrollback;
 export const refreshScrollback = exports.refreshScrollback;
 export const sendMessage = exports.sendMessage;
+export const lastOwnSend = exports.lastOwnSend;

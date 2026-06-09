@@ -1,3 +1,4 @@
+import { createEffect, createRoot, on } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
@@ -238,6 +239,101 @@ describe("scrollback verbs", () => {
     await scrollback.sendMessage("freenode", "#grappa", "ignored");
     expect(api.sendMessage).not.toHaveBeenCalled();
     expect(mockSetReadCursor).not.toHaveBeenCalled();
+  });
+
+  // Send-relatch (2026-06-09): sendMessage publishes the channel-key on
+  // `lastOwnSend` so ScrollbackPane can hide the frozen unread-marker on
+  // a focused send. Fires on EVERY successful send.
+  it("sendMessage publishes the channel-key on lastOwnSend", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: 100,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 0,
+      kind: "privmsg",
+      sender: "alice",
+      body: "hi",
+      meta: {},
+    });
+    mockGetReadCursor.mockReturnValue(50);
+    const scrollback = await import("../lib/scrollback");
+    expect(scrollback.lastOwnSend()).toBeNull();
+    await scrollback.sendMessage("freenode", "#grappa", "hi");
+    expect(scrollback.lastOwnSend()).toBe(channelKey("freenode", "#grappa"));
+  });
+
+  // Even when the cursor advance is skipped (returned id not strictly
+  // greater than the current cursor), the marker must still hide — so
+  // lastOwnSend fires regardless of the cursor branch.
+  it("sendMessage publishes lastOwnSend even when the cursor write is skipped", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: 50,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 0,
+      kind: "privmsg",
+      sender: "alice",
+      body: "stale",
+      meta: {},
+    });
+    mockGetReadCursor.mockReturnValue(50);
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.sendMessage("freenode", "#grappa", "stale");
+    expect(mockSetReadCursor).not.toHaveBeenCalled();
+    expect(scrollback.lastOwnSend()).toBe(channelKey("freenode", "#grappa"));
+  });
+
+  it("sendMessage with no token does not publish lastOwnSend", async () => {
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.sendMessage("freenode", "#grappa", "ignored");
+    expect(scrollback.lastOwnSend()).toBeNull();
+  });
+
+  // Send-relatch dedup guard (2026-06-09): `lastOwnSend` is an EVENT
+  // signal (`equals: false`). Two sends to the SAME channel write the
+  // same key string — the marker must re-hide on the SECOND one too
+  // (real case: send → switch away → peer msg → switch back, marker
+  // re-shows → reply → must hide). With the default Object.is dedup the
+  // second set is a no-op and a subscriber never re-runs. This pins the
+  // real signal notifying on every send, repeats included.
+  it("lastOwnSend notifies on EVERY send, even repeats to the same channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const row = (id: number): ScrollbackMessage => ({
+      id,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 0,
+      kind: "privmsg",
+      sender: "vjt",
+      body: "x",
+      meta: {},
+    });
+    vi.mocked(api.sendMessage).mockResolvedValueOnce(row(100)).mockResolvedValueOnce(row(101));
+    mockGetReadCursor.mockReturnValue(50);
+    const scrollback = await import("../lib/scrollback");
+
+    let fires = 0;
+    const dispose = createRoot((d) => {
+      // `defer: true` so creation doesn't count — only real sends do.
+      createEffect(on(scrollback.lastOwnSend, () => void fires++, { defer: true }));
+      return d;
+    });
+
+    await scrollback.sendMessage("freenode", "#grappa", "one");
+    await new Promise((r) => queueMicrotask(() => r(undefined)));
+    expect(fires).toBe(1);
+
+    // Second send → SAME channel-key string. Must still notify.
+    await scrollback.sendMessage("freenode", "#grappa", "two");
+    await new Promise((r) => queueMicrotask(() => r(undefined)));
+    expect(fires).toBe(2);
+
+    dispose();
   });
 
   it("appendToScrollback dedupes by id (first wins)", async () => {

@@ -40,6 +40,16 @@ vi.mock("../lib/documentVisibility", () => ({
   isDocumentVisible: () => docVisible(),
 }));
 
+// Send-relatch (2026-06-09): `lastOwnSend` is a signal in the real
+// module set by `sendMessage` to the channel-key of THIS device's own
+// send. ScrollbackPane reads it to hide the frozen marker on a focused
+// send. Signal-backed stand-in mirrors the reactive contract;
+// `pushOwnSend` is the test verb that fires a send.
+// `equals: false` mirrors production — `lastOwnSend` is an EVENT signal,
+// so a repeat send to the SAME channel must still notify (Object.is dedup
+// would otherwise drop it and the marker wouldn't re-hide).
+const [ownSend, setOwnSend] = createSignal<string | null>(null, { equals: false });
+const pushOwnSend = (key: string) => setOwnSend(key);
 vi.mock("../lib/scrollback", () => ({
   scrollbackByChannel: () => scrollback(),
   // BUGHUNT-2 B5: ScrollbackPane's onScroll calls `loadMore` when
@@ -49,6 +59,7 @@ vi.mock("../lib/scrollback", () => ({
   // `loadMore` (production imports it as `loadMore as
   // loadMoreScrollback`).
   loadMore: vi.fn(() => Promise.resolve()),
+  lastOwnSend: () => ownSend(),
 }));
 
 vi.mock("../lib/networks", () => ({
@@ -202,6 +213,7 @@ beforeEach(() => {
   setScrollback({});
   setUserNick(null);
   setDocVisible(true);
+  setOwnSend(null);
   mockMembersByChannel.mockReturnValue({});
   // Reset the C5.0 auto-focus shown-set between tests (test seam, see ScrollbackPane.tsx).
   resetAutoFocusedJoinsForTest();
@@ -1152,6 +1164,151 @@ describe("ScrollbackPane", () => {
       await waitFor(() => {
         expect(screen.getByTestId("unread-marker")).toHaveTextContent("1 unread");
       });
+    });
+
+    // Send-relatch (2026-06-09, vjt prod report): a focused OWN send must
+    // collapse the in-pane `── XX unread ──` divider immediately. The
+    // freeze contract (cp56) froze the divider against PASSIVE advances
+    // (scroll-settle echo, cross-device read_cursor_set) so it doesn't
+    // yank while reading — but it also stopped a SEND from clearing it,
+    // and vjt reported "a '1 unread' marker that didn't disappear on send
+    // a new message". A send is an explicit caught-up action (not a
+    // background advance), so it re-latches `markerCursorId` to the now-
+    // advanced live cursor, the way a focus acquisition does. Passive
+    // advances stay frozen — proven by the three tests above which drive
+    // `applyReadCursorSet` (NOT `lastOwnSend`) and still hold their count.
+    it("focused own send re-latches the marker → divider collapses immediately", async () => {
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      // 4 unread from a peer, cursor at 9 → marker before id 10, "4 unread".
+      // sessionTopId latches 13 at mount.
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 10, server_time: 100, sender: "alice", body: "u1" },
+        { ...proto, id: 11, server_time: 101, sender: "alice", body: "u2" },
+        { ...proto, id: 12, server_time: 102, sender: "alice", body: "u3" },
+        { ...proto, id: 13, server_time: 103, sender: "alice", body: "u4" },
+      ];
+      setUserNick("vjt");
+      seedReadCursor("freenode", "#grappa", 9);
+      setScrollback({ "freenode #grappa": fourUnread });
+      setDocVisible(true);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Operator sends in the focused channel. Production: the own row
+      // (id 14) appends via WS and `sendMessage` advances the live cursor
+      // optimistically to 14, then fires `lastOwnSend`. Mirror both: the
+      // cursor advance (seedReadCursor) AND the own-send signal.
+      const ownRow: ScrollbackMessage = {
+        ...proto,
+        id: 14,
+        server_time: 104,
+        sender: "vjt",
+        body: "my reply",
+      };
+      setScrollback({ "freenode #grappa": [...fourUnread, ownRow] });
+      seedReadCursor("freenode", "#grappa", 14);
+      pushOwnSend("freenode #grappa");
+
+      // Divider collapses on the next flush — NO window-switch needed.
+      await waitFor(() => {
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
+    });
+
+    // Send-relatch isolation: a send to a DIFFERENT window (e.g. `/msg`
+    // to a query) must NOT collapse THIS pane's frozen divider. The
+    // re-latch is keyed to the pane's own `(slug, channel)`.
+    it("own send to a DIFFERENT window leaves this pane's marker frozen", async () => {
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 10, server_time: 100, sender: "alice", body: "u1" },
+        { ...proto, id: 11, server_time: 101, sender: "alice", body: "u2" },
+        { ...proto, id: 12, server_time: 102, sender: "alice", body: "u3" },
+        { ...proto, id: 13, server_time: 103, sender: "alice", body: "u4" },
+      ];
+      setUserNick("vjt");
+      seedReadCursor("freenode", "#grappa", 9);
+      setScrollback({ "freenode #grappa": fourUnread });
+      setDocVisible(true);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Send lands on a sibling window's key — wrong (slug, channel).
+      pushOwnSend("freenode bob");
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+    });
+
+    // Send-relatch dedup guard (2026-06-09): a SECOND send to the same
+    // channel must also hide the marker. `lastOwnSend` carries the same
+    // key string both times; without `equals: false` SolidJS Object.is-
+    // dedups the repeat set → the effect never re-runs → the marker
+    // sticks. Repro: send in #foo (hides) → switch away → peer messages
+    // #foo → switch back, marker re-shows → reply in #foo (same key) →
+    // must hide. The switch-away-and-back is modelled by a remount
+    // (fresh sessionTopId), which is what a real channel-switch does.
+    it("a repeat send to the same channel re-hides a re-shown marker", async () => {
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      setUserNick("vjt");
+      const peerRows: ScrollbackMessage[] = [
+        { ...proto, id: 10, server_time: 10, sender: "alice", body: "u1" },
+        { ...proto, id: 11, server_time: 11, sender: "alice", body: "u2" },
+        { ...proto, id: 12, server_time: 12, sender: "alice", body: "u3" },
+        { ...proto, id: 13, server_time: 13, sender: "alice", body: "u4" },
+      ];
+      const ownR1: ScrollbackMessage = {
+        ...proto,
+        id: 14,
+        server_time: 14,
+        sender: "vjt",
+        body: "r1",
+      };
+
+      // First focus: marker showing (cursor 9 < peer ids, sessionTop 13).
+      seedReadCursor("freenode", "#grappa", 9);
+      setScrollback({ "freenode #grappa": peerRows });
+      setDocVisible(true);
+      const first = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Send #1 → marker hides (own row 14, cursor → 14).
+      setScrollback({ "freenode #grappa": [...peerRows, ownR1] });
+      seedReadCursor("freenode", "#grappa", 14);
+      pushOwnSend("freenode #grappa");
+      await waitFor(() => expect(screen.queryByTestId("unread-marker")).toBeNull());
+
+      // Switch away + back (remount = fresh sessionTopId). A peer messaged
+      // #foo while away (id 15) → cursor 14 < new sessionTop 15 → marker
+      // re-shows "1 unread".
+      first.unmount();
+      const peerWhileAway: ScrollbackMessage = {
+        ...proto,
+        id: 15,
+        server_time: 15,
+        sender: "alice",
+        body: "while away",
+      };
+      setScrollback({ "freenode #grappa": [...peerRows, ownR1, peerWhileAway] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("1 unread");
+
+      // Reply AGAIN in #foo — SAME channel-key as send #1. Must re-hide.
+      const ownR2: ScrollbackMessage = {
+        ...proto,
+        id: 16,
+        server_time: 16,
+        sender: "vjt",
+        body: "r2",
+      };
+      setScrollback({ "freenode #grappa": [...peerRows, ownR1, peerWhileAway, ownR2] });
+      seedReadCursor("freenode", "#grappa", 16);
+      pushOwnSend("freenode #grappa");
+      await waitFor(() => expect(screen.queryByTestId("unread-marker")).toBeNull());
     });
 
     // Bug A repro variant (vjt steps 7–8): subsequent post-mount arrivals
