@@ -31,7 +31,14 @@ if [ ! -f "$E2E_DIR/compose.yaml" ]; then
     die "missing $E2E_DIR/compose.yaml"
 fi
 if [ ! -d "$E2E_DIR/infra/bahamut" ]; then
-    die "azzurra-testnet submodule looks empty. Run: git submodule update --init"
+    # Git worktrees do NOT inherit the parent checkout's submodules, so a
+    # fresh worktree always lands here. Auto-init instead of dying on a
+    # manual step everyone forgets — idempotent and a no-op once present.
+    echo "testnet: azzurra-testnet submodule empty (fresh worktree?) — initialising…" >&2
+    git -C "$SRC_ROOT" submodule update --init cicchetto/e2e/infra >&2 \
+        || die "submodule auto-init failed — run: git -C '$SRC_ROOT' submodule update --init cicchetto/e2e/infra"
+    [ -d "$E2E_DIR/infra/bahamut" ] \
+        || die "azzurra-testnet submodule still empty after init — check $E2E_DIR/infra"
 fi
 if [ ! -f "$E2E_DIR/infra/.env" ]; then
     cp "$E2E_DIR/infra/.env.example" "$E2E_DIR/infra/.env"
@@ -61,7 +68,10 @@ case "$cmd" in
         # node_modules). The host bind-mount runtime/e2e/* is wiped in
         # the down branch, mirroring `down`.
         docker compose down -v --remove-orphans 2>&1 | tail -5 || true
-        rm -rf "$SRC_ROOT/runtime/e2e/grappa-runtime" "$SRC_ROOT/runtime/e2e/cicchetto-dist"
+        # e2e_force_rm (not plain rm) — a prior run can leave these
+        # root-owned, and a plain rm would abort under set -e, breaking
+        # the next bring-up. See _lib.sh.
+        e2e_force_rm "$SRC_ROOT/runtime/e2e/grappa-runtime" "$SRC_ROOT/runtime/e2e/cicchetto-dist"
         mkdir -p \
             "$SRC_ROOT/runtime/e2e/cicchetto-dist" \
             "$SRC_ROOT/runtime/e2e/grappa-runtime"
@@ -93,7 +103,7 @@ case "$cmd" in
     down)
         cd "$E2E_DIR"
         docker compose down -v --remove-orphans
-        rm -rf "$SRC_ROOT/runtime/e2e/grappa-runtime" "$SRC_ROOT/runtime/e2e/cicchetto-dist"
+        e2e_force_rm "$SRC_ROOT/runtime/e2e/grappa-runtime" "$SRC_ROOT/runtime/e2e/cicchetto-dist"
         ;;
     status)
         cd "$E2E_DIR"

@@ -122,10 +122,14 @@ Phase 5 cluster opens):
   storage. Cloak.Vault supports yubico-hsm, TPM, AWS KMS — configurable
   swap, no code change in Grappa. Document operator hardening path
   in README.
-- **Service worker requires secure context (HTTPS or localhost).**
-  `http://grappa.bad.ass` is neither — iOS Safari silently fails SW
-  registration; catch in `cicchetto/src/main.tsx:44` logs to console.
-  Offline shell cache won't function until Phase 5 TLS rollout.
+- **Verify iOS Safari SW registration on prod (TLS blocker resolved).**
+  Service workers need a secure context; prod has been HTTPS-live since
+  the 2026-05-27 bastille deploy (irc.sniffo.org / irc.sindro.me), so the
+  old "won't function until Phase 5 TLS rollout" blocker is GONE. Remaining
+  work is just confirming iOS Safari actually registers the SW on prod
+  (the `cicchetto/src/main.tsx:44` console catch fires only on bare-http
+  dev hosts, not a deliverable). Downgraded from blocker to a one-time
+  prod check.
 - **Move bearer token off WS query string.** Currently rides
   `?token=…` on the upgrade URL. Phase 3 redacts via
   `:filter_parameters` + nginx `access_log off`, but bearer still

@@ -139,6 +139,30 @@ e2e_export_uid() {
     fi
 }
 
+# Force-remove e2e-ephemeral paths even when a prior container run left
+# ROOT-OWNED files behind (cicchetto-dist / grappa-runtime / playwright
+# test-results sometimes land as uid 0 despite the --user drop, e.g. when
+# an image's entrypoint writes before su-exec, or a pre-`e2e_export_uid`
+# run wrote them). A plain `rm -rf` then fails with Permission denied,
+# and under `set -e` that aborts the NEXT `testnet up` with the symptoms
+# operators keep re-hitting: cicchetto-dist AccessDenied, sqlite
+# database_open_failed, "Pool overlaps". This used to be a manual
+# `sudo rm -rf runtime/e2e/* ...` ritual that everyone forgot. Now it's
+# automatic: plain rm first, then non-interactive sudo for whatever
+# survives and is root-owned. Never blocks (warns if it cannot clean —
+# the next compose write surfaces the real error loudly anyway).
+e2e_force_rm() {
+    rm -rf "$@" 2>/dev/null || true
+    local p
+    for p in "$@"; do
+        [ -e "$p" ] || continue
+        if sudo -n rm -rf "$p" 2>/dev/null; then
+            continue
+        fi
+        printf 'e2e_force_rm: could not remove root-owned %s — run: sudo rm -rf %s\n' "$p" "$p" >&2
+    done
+}
+
 # Probe the running grappa container for its MIX_ENV. Empty string when
 # no container is up. Used by scripts/mix.sh (auto-detect default) and
 # bin/grappa open-db (active env's DB file). Single source of truth so
