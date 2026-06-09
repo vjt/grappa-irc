@@ -11021,12 +11021,16 @@ the LIVE cursor, so a scroll-settle advance (or a cross-device
 Decision: the divider is FROZEN for the lifetime of a focus session.
 It derives from a snapshot signal `markerCursorId` (the frozen BOTTOM
 boundary), sibling to the pre-existing `sessionTopId` (frozen TOP
-boundary). The snapshot re-latches to the live cursor ONLY on a focus
-acquisition — channel-switch and tab/app visibility-return. Chose
-option (b) "any step-away-and-back advances it" over (a) "channel-switch
-only". The live cursor keeps advancing + POSTing as above; only the
-DISPLAY is frozen, so sidebar badges + `selection.ts` unread counts
-(which read the live signal map) stay current.
+boundary). The snapshot re-latches to the live cursor on a focus
+acquisition — channel-switch and tab/app visibility-return — AND on an
+own send (the 2026-06-09 send-relatch entry below; a send is an explicit
+caught-up action, so it hides the divider the same way a refocus does).
+Chose option (b) "any step-away-and-back advances it" over (a)
+"channel-switch only". The live cursor keeps advancing + POSTing as
+above; only the DISPLAY is frozen, so sidebar badges + `selection.ts`
+unread counts (which read the live signal map) stay current. PASSIVE
+advances — scroll-settle echo, cross-device `read_cursor_set` — never
+re-latch the snapshot; that is the freeze.
 
 Asymmetry, deliberate: on visibility-return `sessionTopId` (top) is
 PRESERVED — a brief blur is not "leaving the window", so messages that
@@ -11144,3 +11148,66 @@ Tests: `messageLines.test.ts` (pure splitter — LF/CRLF/CR/embedded-CR,
 blank-drop, single-line identity), `compose.test.ts` (privmsg/me
 fan-out + CRLF/blank handling), `multiline-compose-fanout` e2e (the real
 server accepts the per-line sends end-to-end — jsdom can't prove that).
+
+## 2026-06-09 — Send-relatch: hide the in-pane unread marker on a focused send
+
+vjt prod report: a "── 1 unread ──" divider that didn't disappear when
+he sent a new message in the focused channel. NOT a regression — it is
+the freeze contract (the entry above) doing exactly what it says. The
+in-pane divider derives from the FROZEN `markerCursorId` snapshot, which
+re-latched only on a focus acquisition (channel-switch / visibility-
+return). A send is neither, so the divider held until the next window-
+switch. The 2026-06-08 optimistic-cursor advance did not cause this; it
+made the refocus re-latch more reliable.
+
+The tension is real, and both halves are vjt's: "don't move the divider
+while I read" (freeze, cp56) vs "hide it when I send" (now). They can't
+both be served by watching the cursor, because a send and a passive
+scroll-settle BOTH advance the live cursor through the same
+`setReadCursor` — indistinguishable at the cursor. The send has to mark
+itself.
+
+Decision: a focused own send re-latches the marker, the same way a
+focus acquisition does. `sendMessage` (scrollback.ts) publishes its
+channel-key on a new `lastOwnSend` signal — the one fact not otherwise
+represented ("this advance was a send"). `ScrollbackPane` watches it and
+runs the identical `setMarkerCursorId(getReadCursor(...))` re-latch when
+the key matches THIS pane. Keyed, so a `/msg` to another window can't
+collapse this pane's divider. Fired ONLY from the own-send path, so
+passive advances (scroll-settle echo, cross-device `read_cursor_set`)
+never trigger it — the freeze holds for everything except the operator's
+own send.
+
+`lastOwnSend` is an EVENT signal (`equals: false`), not a state cell.
+Two sends to the same channel write the same key string; the default
+`Object.is` dedup would drop the second, and the marker wouldn't re-hide
+after the real sequence: send in #foo (hides) → switch away → peer
+messages #foo → switch back (marker re-shows) → reply in #foo (same key).
+Every send must notify. Bare channel-key string (no `{key,id}` object):
+the effect re-latches to the LIVE `getReadCursor`, never the send id, so
+the id would be dead weight — one signal, one writer, one reader.
+
+Why a signal and not a derivation (vjt pushed on this): the only
+this-device cursor advances are leave-arm, blur, scroll-settle, and
+send; the first three are the PASSIVE ones the freeze deliberately keeps
+frozen, so "did the cursor just move" can't tell a send apart. Deriving
+from an own-nick row at the tail would ALSO fire on a cross-device own
+send (own content from another device), which the freeze keeps frozen by
+choice — and needs prev-tail diffing to spot a fresh row. The signal is
+the lean, faithful mark.
+
+This REFINES the freeze entry above (which is amended to list the own
+send as a third re-latch trigger); it does not reverse it. Passive
+advances stay frozen; only the explicit send un-freezes.
+
+Implementation: `scrollback.ts` (`lastOwnSend` signal + `sendMessage`
+publish), `ScrollbackPane.tsx` (the keyed re-latch effect). Tests:
+`ScrollbackPane.test.tsx` (focused send collapses the marker; keyed
+isolation — a different-window send leaves it frozen; dedup repro — a
+repeat same-channel send re-hides a re-shown marker), `scrollback.test.ts`
+(publishes on send incl. the cursor-skip branch; null with no token;
+notifies on EVERY send incl. same-channel repeats). The sentinel-2 e2e
+in `unread-cursor-cluster.spec.ts` — which the 2026-06-08 freeze work
+had flipped to assert "send keeps it frozen" — is flipped back to the
+new contract: a focused send collapses the marker immediately, no
+window-switch.
