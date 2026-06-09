@@ -43,9 +43,52 @@ function makeLocalStorage(): Storage {
   };
 }
 
+// jsdom 29 ships a ws-backed WebSocket that opens REAL TCP connections.
+// Any test file where lib/socket's module-level token effect fires with a
+// non-null bearer (and phoenix isn't module-mocked) connects for real; the
+// connect fails, phoenix schedules reconnect-backoff timers on the Node
+// event loop, and a timer surviving the file's jsdom teardown crashes the
+// worker with "Uncaught Exception: location is not defined" attributed to
+// whichever test file runs next (flaky full-run exit 1, todo 2026-06-09).
+//
+// An inert stand-in kills the class: construction succeeds, nothing ever
+// connects, no open/error/close event ever fires, so phoenix never arms
+// its reconnect timer. Tests that exercise socket wiring mock the phoenix
+// Socket constructor anyway (socket.test.ts) and never reach this. Covered
+// by inert-websocket.test.ts.
+class InertWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+  readonly url: string;
+  readyState: number = InertWebSocket.CONNECTING;
+  binaryType = "blob";
+  onopen: ((ev: unknown) => void) | null = null;
+  onerror: ((ev: unknown) => void) | null = null;
+  onclose: ((ev: unknown) => void) | null = null;
+  onmessage: ((ev: unknown) => void) | null = null;
+  constructor(url: string | URL, _protocols?: string | string[]) {
+    this.url = String(url);
+  }
+  send(_data: unknown): void {}
+  close(_code?: number, _reason?: string): void {
+    this.readyState = InertWebSocket.CLOSED;
+  }
+  addEventListener(_type: string, _listener: unknown): void {}
+  removeEventListener(_type: string, _listener: unknown): void {}
+  dispatchEvent(_event: Event): boolean {
+    return false;
+  }
+}
+
 beforeEach(() => {
   // Fresh in-memory localStorage for every test — no state bleeds between cases.
   vi.stubGlobal("localStorage", makeLocalStorage());
+  // Inert WebSocket — see class comment. Re-installed every test so a
+  // vi.unstubAllGlobals() in some file's afterEach can't resurrect the
+  // real jsdom implementation for the rest of the worker's lifetime.
+  vi.stubGlobal("WebSocket", InertWebSocket);
 });
 
 // Solid testing-library doesn't auto-cleanup like RTL; missing this leaks
