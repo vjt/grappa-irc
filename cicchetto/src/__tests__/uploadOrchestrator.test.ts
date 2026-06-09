@@ -31,6 +31,12 @@ vi.mock("../lib/uploadHost", async () => {
 // orchestrator's dispatch policy (phases, fallback eligibility, cancel
 // propagation), videoTranscode.test.ts pins the transcode itself.
 // Deferred-resolver shape mirrors `pendingResolvers` below.
+//
+// Task 7 follow-up: the policy surface (constants + probe) lives in
+// videoPolicy.ts — importActual the constants so the suite can't drift
+// from the real MAX_DURATION_SECONDS; only the probe is stubbed. The
+// transcode itself is loaded by the orchestrator via dynamic import()
+// (mediabunny stays off the main chunk), which vi.mock intercepts too.
 const vt = vi.hoisted(() => ({
   transcodes: [] as Array<{
     file: File;
@@ -48,15 +54,18 @@ const vt = vi.hoisted(() => ({
   probeDuration: vi.fn(async (_file: File): Promise<number | null> => null),
 }));
 
+vi.mock("../lib/videoPolicy", async () => {
+  const actual = await vi.importActual<typeof import("../lib/videoPolicy")>("../lib/videoPolicy");
+  return { ...actual, probeDuration: vt.probeDuration };
+});
+
 vi.mock("../lib/videoTranscode", () => ({
-  MAX_DURATION_SECONDS: 120,
   transcodeVideo: vi.fn(
     (file: File, capBytes: number, onProgress: (fraction: number) => void, signal: AbortSignal) =>
       new Promise((resolve) => {
         vt.transcodes.push({ file, capBytes, onProgress, signal, resolve });
       }),
   ),
-  probeDuration: vt.probeDuration,
 }));
 
 import { channelKey } from "../lib/channelKey";
@@ -85,6 +94,13 @@ const sampleImage = (): File =>
   new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "screenshot.png", { type: "image/png" });
 
 const sampleNonImage = (): File => new File(["hello"], "notes.txt", { type: "text/plain" });
+
+// The orchestrator pulls videoTranscode in via dynamic import() (lazy
+// mediabunny chunk) — the transcode mock registers a microtask after
+// triggerUpload, never synchronously.
+const awaitTranscodeStart = async (n: number): Promise<void> => {
+  await vi.waitFor(() => expect(vt.transcodes.length).toBe(n));
+};
 
 // Test-controlled host so we can drive resolve/reject deterministically.
 // `file` is captured so category-dispatch + #49 tests can assert WHICH
@@ -442,7 +458,7 @@ describe("category dispatch", () => {
 
     // Task 6: the transform hook is the transcode now — the host POST
     // only fires once the transcode resolves.
-    expect(vt.transcodes.length).toBe(1);
+    await awaitTranscodeStart(1);
     expect(pendingResolvers.length).toBe(0);
     const out = new File([new Uint8Array(8)], "clip.mp4", { type: "video/mp4" });
     vt.transcodes[0]?.resolve({ ok: out });
@@ -518,7 +534,7 @@ describe("video transcode branch", () => {
     expect(uploadState(key)?.phase).toBe("transcoding");
     expect(uploadState(key)?.filename).toBe("clip.mp4");
     expect(pendingResolvers.length).toBe(0);
-    expect(vt.transcodes.length).toBe(1);
+    await awaitTranscodeStart(1);
     expect(vt.transcodes[0]?.file).toBe(clip);
     // The video cap (categoryHost: 5MB) drives the bitrate budget.
     expect(vt.transcodes[0]?.capBytes).toBe(5 * 1024 * 1024);
@@ -550,6 +566,7 @@ describe("video transcode branch", () => {
   it("too_long is POLICY: hard reject, no fallback, host.upload never called", async () => {
     triggerUpload(key, slug, channel, videoClip());
 
+    await awaitTranscodeStart(1);
     vt.transcodes[0]?.resolve({ error: { kind: "too_long", durationSeconds: 300 } });
     await vi.waitFor(() => expect(uploadState(key)?.error).toBe("Video too long (max 2 minutes)."));
 
@@ -563,6 +580,7 @@ describe("video transcode branch", () => {
     triggerUpload(key, slug, channel, clip);
 
     vt.probeDuration.mockResolvedValue(30);
+    await awaitTranscodeStart(1);
     vt.transcodes[0]?.resolve({ error: { kind: "unsupported" } });
     await vi.waitFor(() => expect(pendingResolvers.length).toBe(1));
 
@@ -576,6 +594,7 @@ describe("video transcode branch", () => {
     // 6MB original vs the categoryHost 5MB video cap.
     triggerUpload(key, slug, channel, videoClip(6 * 1024 * 1024));
 
+    await awaitTranscodeStart(1);
     vt.transcodes[0]?.resolve({ error: { kind: "unsupported" } });
     await vi.waitFor(() => expect(uploadState(key)?.error).toMatch(/too large/i));
 
@@ -587,6 +606,7 @@ describe("video transcode branch", () => {
     triggerUpload(key, slug, channel, videoClip());
 
     vt.probeDuration.mockResolvedValue(200);
+    await awaitTranscodeStart(1);
     vt.transcodes[0]?.resolve({ error: { kind: "failed", message: "encoder blew up" } });
     await vi.waitFor(() => expect(uploadState(key)?.error).toBe("Video too long (max 2 minutes)."));
 
@@ -597,6 +617,7 @@ describe("video transcode branch", () => {
   it("cancel during transcode → state cleared, transcode signal aborted, no fallback", async () => {
     triggerUpload(key, slug, channel, videoClip());
     expect(uploadState(key)?.phase).toBe("transcoding");
+    await awaitTranscodeStart(1);
 
     cancelUpload(key);
 
@@ -612,6 +633,28 @@ describe("video transcode branch", () => {
 
     expect(uploadState(key)).toBeNull();
     expect(pendingResolvers.length).toBe(0);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("re-trigger during an in-flight transcode aborts the previous controller (no orphaned encode)", async () => {
+    triggerUpload(key, slug, channel, videoClip());
+    await awaitTranscodeStart(1);
+    expect(vt.transcodes[0]?.signal.aborted).toBe(false);
+
+    // Second selection on the same channel while the first transcode
+    // is still burning CPU — the orchestrator must kill the first.
+    triggerUpload(key, slug, channel, videoClip());
+    await awaitTranscodeStart(2);
+    expect(vt.transcodes[0]?.signal.aborted).toBe(true);
+    expect(vt.transcodes[1]?.signal.aborted).toBe(false);
+
+    // The aborted first transcode settling late must not clobber the
+    // second upload's state (stale-controller guard).
+    vt.transcodes[0]?.resolve({ error: { kind: "failed", message: "conversion canceled" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(uploadState(key)?.phase).toBe("transcoding");
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });

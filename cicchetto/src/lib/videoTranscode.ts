@@ -22,7 +22,11 @@
 // 128kbps audio reserve; a comfortable budget (≥ 2 Mbps) gets 720p,
 // a starved one 480p. Never upscale — mediabunny scales to the
 // requested box unconditionally, so the target is clamped to the
-// source track's display height.
+// source track's display height. The budget math + duration ceiling +
+// probe live in videoPolicy.ts (mediabunny-free) so the orchestrator
+// can import them statically while THIS module — the only mediabunny
+// importer — stays behind a dynamic import() in a lazy chunk (Task 7
+// review follow-up, 2026-06-09).
 //
 // Spec: docs/superpowers/specs/2026-06-09-video-doc-uploads-design.md
 
@@ -36,20 +40,18 @@ import {
   Mp4OutputFormat,
   Output,
 } from "mediabunny";
+import {
+  MAX_DURATION_SECONDS,
+  MIN_VIDEO_BITRATE_BPS,
+  pickTargetHeight,
+  probeDuration,
+  videoBitrateBudget,
+} from "./videoPolicy";
 
 export type TranscodeError =
   | { kind: "too_long"; durationSeconds: number } // policy — hard reject, no fallback
   | { kind: "unsupported" } // capability — fallback eligible
   | { kind: "failed"; message: string }; // capability — fallback eligible
-
-export const MAX_DURATION_SECONDS = 120;
-export const RESOLUTION_THRESHOLD_BPS = 2_000_000;
-const AUDIO_BUDGET_BPS = 128_000;
-const CAP_SAFETY = 0.95; // VBR overshoot margin
-// Degenerate cap/duration combos (tiny cap × near-ceiling duration)
-// drive the budget to ≤ 0 — clamp so the encoder never sees a nonsense
-// bitrate; the over-cap output is rejected by the downstream cap check.
-const MIN_VIDEO_BITRATE_BPS = 100_000;
 
 // --------------------------------------------------------------------
 // Support gate — WebCodecs presence + avc encodability, session-cached.
@@ -71,58 +73,6 @@ export function videoTranscodeSupported(): Promise<boolean> {
  *  this — the gate cannot change mid-session. */
 export function __resetVideoTranscodeSupportForTests(): void {
   supportProbe = null;
-}
-
-// --------------------------------------------------------------------
-// Duration probe — <video> loadedmetadata. Deliberately NOT mediabunny:
-// it must work without WebCodecs so the 2-minute policy ceiling binds
-// on the fallback path. jsdom never fires loadedmetadata, so tests
-// swap the implementation via the seam below (same pattern as
-// uploadHost.ts `__setUploadTokenReader`).
-// --------------------------------------------------------------------
-
-function probeDurationViaVideoElement(file: File): Promise<number | null> {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file);
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.onloadedmetadata = () => {
-      URL.revokeObjectURL(url);
-      resolve(Number.isFinite(video.duration) ? video.duration : null);
-    };
-    video.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve(null);
-    };
-    video.src = url;
-  });
-}
-
-let probeDurationImpl: (file: File) => Promise<number | null> = probeDurationViaVideoElement;
-
-/** Duration in seconds via <video> metadata; null when the browser
- *  cannot read the file's metadata. */
-export function probeDuration(file: File): Promise<number | null> {
-  return probeDurationImpl(file);
-}
-
-/** Test-only seam — null restores the real <video>-element probe. */
-export function __setProbeDurationForTests(
-  fn: ((file: File) => Promise<number | null>) | null,
-): void {
-  probeDurationImpl = fn ?? probeDurationViaVideoElement;
-}
-
-// --------------------------------------------------------------------
-// Adaptive resolution policy — pure budget math, exported for tests.
-// --------------------------------------------------------------------
-
-function videoBitrateBudget(durationSeconds: number, capBytes: number): number {
-  return (capBytes * CAP_SAFETY * 8) / durationSeconds - AUDIO_BUDGET_BPS;
-}
-
-export function pickTargetHeight(durationSeconds: number, capBytes: number): 720 | 480 {
-  return videoBitrateBudget(durationSeconds, capBytes) >= RESOLUTION_THRESHOLD_BPS ? 720 : 480;
 }
 
 // --------------------------------------------------------------------

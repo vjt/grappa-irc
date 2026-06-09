@@ -4,7 +4,11 @@ import { sendMessage } from "./scrollback";
 import { categoryOf, mimeExtLabel, type UploadCategory } from "./uploadCategory";
 import { activeHost, type UploadError, type UploadHost } from "./uploadHost";
 import { getUploadTtlSeconds, putUploadTtlSeconds } from "./userSettings";
-import { MAX_DURATION_SECONDS, probeDuration, transcodeVideo } from "./videoTranscode";
+// Policy only — videoTranscode.ts (the sole mediabunny importer) is
+// loaded via dynamic import() inside prepareVideo so mediabunny's bulk
+// lands in a lazy chunk, off the cold-start main bundle (Task 7 review
+// follow-up, 2026-06-09).
+import { MAX_DURATION_SECONDS, probeDuration } from "./videoPolicy";
 
 // Upload orchestration — images cluster I-2 (2026-05-15), generalized
 // to video + document categories (uploads cluster Task 5, 2026-06-09;
@@ -230,6 +234,13 @@ async function dispatchUpload(
     return;
   }
 
+  // Re-trigger while a previous upload/transcode for this channel is
+  // still in flight: abort it before overwriting, or an orphaned
+  // transcode keeps burning CPU with no controller left to reach it.
+  // The stale-controller guards downstream make the old promise chain
+  // settle silently (Task 7 review follow-up, 2026-06-09).
+  inflight.get(key)?.controller.abort();
+
   // Controller + inflight registration happen BEFORE the transform so
   // cancelUpload can abort an in-flight video transcode, not just the
   // host POST (Task 6, 2026-06-09).
@@ -336,6 +347,11 @@ async function prepareVideo(
   controller: AbortController,
 ): Promise<File | null> {
   setEntry(key, { filename: file.name, loaded: 0, total: 1, phase: "transcoding" });
+
+  // Lazy chunk: mediabunny only loads the first time someone actually
+  // uploads a video. vi.mock intercepts dynamic import() too, so the
+  // test seam is unchanged.
+  const { transcodeVideo } = await import("./videoTranscode");
 
   // Hosts that report no video cap (null) still need a bitrate budget —
   // size the transcode for the embedded default (50MiB) and let the

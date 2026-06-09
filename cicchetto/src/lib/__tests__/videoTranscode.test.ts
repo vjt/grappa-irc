@@ -53,11 +53,9 @@ vi.mock("mediabunny", () => {
   };
 });
 
+import { __setProbeDurationForTests, MAX_DURATION_SECONDS, pickTargetHeight } from "../videoPolicy";
 import {
   __resetVideoTranscodeSupportForTests,
-  __setProbeDurationForTests,
-  MAX_DURATION_SECONDS,
-  pickTargetHeight,
   transcodeVideo,
   videoTranscodeSupported,
 } from "../videoTranscode";
