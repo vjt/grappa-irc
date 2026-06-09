@@ -66,6 +66,22 @@ beforeEach(() => {
 });
 
 describe("scrollback verbs", () => {
+  // Seed one rendered row into (freenode, #grappa) so sendMessage's
+  // anti-poison gate (#50) treats the window as a focused pane that
+  // already has content — the bucket-D cursor advance applies there, not
+  // to a brand-new EMPTY query window (covered by its own test below).
+  const seedRendered = (scrollback: typeof import("../lib/scrollback"), id: number): void =>
+    scrollback.appendToScrollback(channelKey("freenode", "#grappa"), {
+      id,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 0,
+      kind: "privmsg",
+      sender: "carol",
+      body: "prior",
+      meta: {},
+    });
+
   it("loadInitialScrollback merges REST DESC page into ASC scrollback", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
@@ -174,7 +190,10 @@ describe("scrollback verbs", () => {
   // Bucket D — post-success cursor advance. The id from the 201 body
   // must drive a `setReadCursor` write (forward-only) so the in-pane
   // unread marker collapses and any second device of this operator
-  // drops the just-sent row from its derived badge count.
+  // drops the just-sent row from its derived badge count. Gated on a
+  // non-empty pane (#50) — these tests seed a rendered row so the gate
+  // is satisfied and they exercise the forward-only branch, not the
+  // empty-pane skip (its own test follows).
   it("sendMessage advances the read cursor to the returned row id when no cursor is set", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
@@ -190,6 +209,7 @@ describe("scrollback verbs", () => {
     });
     mockGetReadCursor.mockReturnValue(null);
     const scrollback = await import("../lib/scrollback");
+    seedRendered(scrollback, 41);
     await scrollback.sendMessage("freenode", "#grappa", "hello world");
     expect(mockSetReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 42);
   });
@@ -209,6 +229,7 @@ describe("scrollback verbs", () => {
     });
     mockGetReadCursor.mockReturnValue(50);
     const scrollback = await import("../lib/scrollback");
+    seedRendered(scrollback, 50);
     await scrollback.sendMessage("freenode", "#grappa", "hi");
     expect(mockSetReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 100);
   });
@@ -228,7 +249,41 @@ describe("scrollback verbs", () => {
     });
     mockGetReadCursor.mockReturnValue(50);
     const scrollback = await import("../lib/scrollback");
+    // Seed so the skip is genuinely the forward-only branch (id 50 not >
+    // cursor 50), not the empty-pane anti-poison gate.
+    seedRendered(scrollback, 40);
     await scrollback.sendMessage("freenode", "#grappa", "stale");
+    expect(mockSetReadCursor).not.toHaveBeenCalled();
+  });
+
+  // #50 (m6) anti-poison — 2026-06-09. A `/msg` to a brand-new nick opens
+  // an EMPTY query window, then sends. If sendMessage advances the read
+  // cursor to the just-sent id while the pane has no rendered row, that
+  // cursor poisons refreshScrollback's resume point: getResumeCursor falls
+  // back to the read cursor (no row was ever recordSeen'd), so the join-ok
+  // recovery fetches `?after=<own-id>` → empty → the row is never recovered
+  // and the pane stays "no messages yet" until reload. The cursor must NOT
+  // advance past an unrendered row; with the pane empty it stays put so
+  // refreshScrollback resumes from 0 (see the refreshScrollback id=0 test)
+  // and recovers the send.
+  it("sendMessage does NOT advance the read cursor when the local pane is empty (issue #50 anti-poison)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: 42,
+      network: "freenode",
+      channel: "newbie",
+      server_time: 0,
+      kind: "privmsg",
+      sender: "vjt",
+      body: "hi there",
+      meta: {},
+    });
+    mockGetReadCursor.mockReturnValue(null);
+    const scrollback = await import("../lib/scrollback");
+    // No appendToScrollback for (freenode, newbie) → the pane is empty/
+    // absent, exactly the brand-new query-window shape.
+    await scrollback.sendMessage("freenode", "newbie", "hi there");
     expect(mockSetReadCursor).not.toHaveBeenCalled();
   });
 
@@ -282,6 +337,9 @@ describe("scrollback verbs", () => {
     });
     mockGetReadCursor.mockReturnValue(50);
     const scrollback = await import("../lib/scrollback");
+    // Seed so the cursor skip is the forward-only branch (id 50 not > 50),
+    // not the empty-pane anti-poison gate — lastOwnSend must fire either way.
+    seedRendered(scrollback, 40);
     await scrollback.sendMessage("freenode", "#grappa", "stale");
     expect(mockSetReadCursor).not.toHaveBeenCalled();
     expect(scrollback.lastOwnSend()).toBe(channelKey("freenode", "#grappa"));

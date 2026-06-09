@@ -240,7 +240,8 @@ const exports = identityScopedStore((onIdentityChange) => {
     // introduce a second insert.
     //
     // Unread-badges-from-cursor cluster, bucket D — auto-advance the
-    // read cursor on send-in-focused-window. Without this advance the
+    // read cursor on send-in-focused-window (gated below on a non-empty
+    // pane per issue #50). Without this advance the
     // in-pane `── XX unread ──` marker and the sidebar badge would stay
     // stale until focus-leave / browser-blur / scroll-settle wrote the
     // cursor; worse, on a second device the operator's own send would
@@ -259,15 +260,29 @@ const exports = identityScopedStore((onIdentityChange) => {
     // is cheaper than hoisting `setCursorIfAdvances` to a leaf module
     // for a single second caller.
     const row = await apiSendMessage(t, slug, name, body);
+    const key = channelKey(slug, name);
+    // Anti-poison gate (issue #50 / m6, 2026-06-09): only advance the
+    // cursor when the local pane already holds a rendered row. Advancing
+    // PAST an unrendered row poisons `refreshScrollback`'s resume cursor —
+    // `getResumeCursor` falls back to the read cursor when nothing was ever
+    // `recordSeen`'d, so on a brand-new query window (empty pane, own send)
+    // the join-ok recovery fetches `?after=<own-id>` → empty and the row
+    // never renders ("no messages yet" until reload). With rows present the
+    // advance is honest (predecessors are in the DOM); with an empty pane we
+    // leave the cursor put so refreshScrollback resumes from 0 and recovers
+    // the send. The marker-hide intent the advance also served is moot on an
+    // empty pane — there is no `── XX unread ──` divider to collapse.
+    const local = scrollbackByChannel()[key];
+    const hasRenderedRow = local !== undefined && local.length > 0;
     const current = getReadCursor(slug, name);
-    if (current === null || row.id > current) {
+    if (hasRenderedRow && (current === null || row.id > current)) {
       void setReadCursor(t, slug, name, row.id);
     }
     // Send-relatch: fire AFTER the optimistic cursor advance above so the
     // pane's hide-on-send effect reads the fresh cursor. Always fires on
     // a successful send (even when the POST was skipped) — the marker
     // must hide regardless.
-    setLastOwnSend(channelKey(slug, name));
+    setLastOwnSend(key);
   };
 
   // CP29 R-5 — refresh-on-WS-join-ok. Called from `subscribe.ts`'s 5

@@ -11367,11 +11367,15 @@ full run separated the two specs into **two different root causes**:
 Projects do not interleave (chromium runs fully before webkit), so no
 cross-project poisoning either. Two distinct causes:
 
-**m6 — genuine timing.** It already guards the DM-listener race (below).
-Its round-trip (cic `/msg` → bouncer persist → WS push → own row renders)
-just overran Playwright's 5s default under full-suite load on the
-Raspberry Pi dev box (7.5s observed). Bumping its two round-trip
-assertions to 15s fixes it. On CI (ubuntu) 5s was always enough.
+**m6 — first read "genuine timing", SUPERSEDED.** The initial diagnosis
+was that m6's round-trip (cic `/msg` → bouncer persist → WS push → own row
+renders) merely overran Playwright's 5s default under full-suite load on
+the Raspberry Pi (7.5s observed), so the 15s bump "fixed" it. That was
+wrong: the failure is the row being *absent*, not late — a genuine cic
+production bug in scrollback recovery (own-send read-cursor poison). See
+the 2026-06-09 entry "cic `/msg` to a new nick — own-send cursor poison"
+below for the real root cause + fix (issue #50). The 15s bump is kept as
+harmless slow-Pi headroom but was never the fix.
 
 **cp15-b6 — the DM-listener race, and a bigger timeout never fixes it.**
 `selectChannel` awaits the *channel* topic join, not the *own-nick* topic
@@ -11389,5 +11393,79 @@ Fixes landed: (1) add the `waitForDmListenerReady` barrier to cp15-b6
 (root cause); (2) bump the WS/REST round-trip assertion timeouts 5s → 15s
 in both specs (cp15-b6 ×6, m6 ×2) for slow-host headroom — the assertion
 still fails if a row never arrives, it just stops racing a 5s clock on a
-loaded Pi. No production bug in either case; the bouncer persists + pushes
-correctly once a subscriber exists.
+loaded Pi. cp15-b6 is a *test* bug (the missing barrier; the bouncer
+persists + pushes correctly once a subscriber exists). **m6 is NOT** — it
+is a real cic production bug (the own-send cursor poison), fixed in the
+next entry. The earlier "no production bug in either case" read applied
+only to cp15-b6.
+
+## 2026-06-09 — cic `/msg` to a new nick — own-send cursor poison (issue #50)
+
+The m6 flake above turned out to mask a real cic bug: `/msg <new-nick>
+<body>` to a nick with **no existing query window** could leave the
+freshly-opened window stuck on "no messages yet" — the operator's own
+outbound row never rendered — until a page reload. Intermittent, surfaces
+under load (the Pi loses the race the CI ubuntu box usually wins).
+
+**Root cause — own-send poisons the recovery cursor.** Three delivery
+paths for the own row, all defeated for a brand-new window:
+
+1. `loadInitialScrollback` fires from `setSelectedChannel` in the `/msg`
+   handler (`compose.ts` `:msg` case) *before* the POST, gets an empty
+   page, seeds an empty pane, marks the channel load-once.
+2. The live WS append needs the `(slug, peer)` channel-topic
+   subscription, which the query-windows loop in `subscribe.ts` joins
+   *reactively* after the window appears in `queryWindowsByNetwork`. If
+   the server broadcasts the row before that join completes, Phoenix
+   drops it (no replay to late subscribers).
+3. `refreshScrollback` (the CP29 R-5 join-ok recovery) is *supposed* to
+   backfill — but `sendMessage` had already advanced the server read
+   cursor to the **just-sent row's own id** (optimistic forward-only
+   advance, `readCursor.setReadCursor` writes the local signal
+   synchronously). `refreshScrollback` resolves its resume cursor via
+   `getResumeCursor`, which falls back to the read cursor when
+   `lastSeenIdByKey` is empty (nothing was ever `recordSeen`'d, because
+   nothing rendered). So it fetches `?after=<own-id>` → empty → the row
+   is never recovered.
+
+The read cursor lied: it claimed "read up to row N" before row N was ever
+rendered. Every *other* writer only advances the cursor to a row that IS
+in the pane (`loadInitialScrollback` → backlog tail; scroll-settle →
+visible row). `sendMessage` was the lone path that advanced **past** the
+rendered tail.
+
+**Fix — gate the advance at its source, not at the recovery.** In
+`sendMessage`, only advance the read cursor when the local pane already
+holds a rendered row (`scrollbackByChannel()[key]?.length > 0`). Empty
+pane → leave the cursor put → `getResumeCursor` returns null →
+`refreshScrollback` resumes from id 0 and recovers the send. Established
+channels are unaffected: once any row has rendered, `lastSeenIdByKey`
+shadows the read cursor in `getResumeCursor`, so the advance there is
+already honest and never consulted as a poisoned resume point. Bucket D's
+focused-send badge drop is preserved (a focused window with unread rows
+has a non-empty pane); it is moot on an empty pane (no `── XX unread ──`
+divider exists to collapse).
+
+**Rejected the issue's own proposed fix** (clamp `cursor = 0` inside
+`refreshScrollback` when the pane is empty). The channels loop
+(`subscribe.ts`) joins *every* channel eagerly while
+`loadInitialScrollback` is focus-only (`selection.ts`), so an unfocused
+channel with a `/me`-hydrated read cursor R has an empty pane when its
+join-ok `refreshScrollback` fires. The clamp would fetch `?after=0`
+(oldest 200, ASC) instead of `?after=R` — pulling ancient history and
+leaving an unreachable gap in the middle of the pane on later focus. The
+source-gate touches only the own-send path, so it has no such blast
+radius. (Spec inherited a bug; CLAUDE.md "challenge the spec".)
+
+**Known narrow corner (accepted):** if device A `/msg`-opens a query
+window that device B already has focused with content, A's own-send no
+longer writes the cursor (A's pane is empty), so B's badge for that window
+drops a beat later — on A's own join-ok `refreshScrollback` + the next
+settle — rather than instantly. The pre-fix code "helped" B here only by
+poisoning A's own recovery; prioritising A's row render is the correct
+trade.
+
+The m6 spec's 15s round-trip timeout bump is now redundant (the fix
+renders the row) but kept as harmless slow-Pi headroom — reverting it
+risks re-flaking on the genuine 7.5s round-trip observed under full-suite
+load.
