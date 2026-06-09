@@ -188,15 +188,10 @@ Phase 5 cluster opens):
   cic positive-int guard landed + deployed (cp58, bundle `BF6Dside`).
   Once prod access logs show `/read-cursor` 400s at zero (clients on the
   new bundle), drop the CP55 `http-400` jail exemption for
-  `/read-cursor\b` on the m42 host.
-- **cic vitest flaky unhandled rejection** (2026-06-09) — full
-  `scripts/bun.sh run test` occasionally exits 1 with 2 "Uncaught
-  Exception: `location is not defined`" attributed to
-  `windowState.test.ts`, originating in `phoenix.mjs` socket teardown
-  (a reconnect timer firing during jsdom teardown where `window.location`
-  is undefined). Nondeterministic — all 1789 tests pass, re-run is clean,
-  `windowState.test.ts` alone exits 0. Stub `location` in the vitest
-  setup or null the phoenix socket in that file's afterEach.
+  `/read-cursor\b` on the m42 host. Checked 2026-06-09 (deploy day):
+  log is `irc.openssl.it-access.log`, 400s from 6 distinct client IPs,
+  last 07/Jun — too early to drop (a stale-bundle PWA bursts ~31×400
+  vs maxretry 8 → bans a legit user). Recheck ≥2026-06-16.
 - `Grappa.version/0` (`lib/grappa.ex:28`) has zero callers. Either
   wire into `/healthz` JSON response (one-line change in
   `HealthController`) or drop the function.
