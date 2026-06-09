@@ -333,19 +333,22 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
       const up = r.upload;
       if (typeof up !== "object" || up === null) return null;
       const u = up as Record<string, unknown>;
+      const posInt = (v: unknown): v is number => typeof v === "number" && v > 0;
       if (
         (u.active_host !== "embedded" && u.active_host !== "litterbox") ||
-        typeof u.per_file_cap_bytes !== "number" ||
-        u.per_file_cap_bytes <= 0 ||
-        typeof u.global_cap_bytes !== "number" ||
-        u.global_cap_bytes <= 0
+        !posInt(u.image_per_file_cap_bytes) ||
+        !posInt(u.video_per_file_cap_bytes) ||
+        !posInt(u.document_per_file_cap_bytes) ||
+        !posInt(u.global_cap_bytes)
       )
         return null;
       return {
         kind: "server_settings_changed",
         upload: {
           active_host: u.active_host,
-          per_file_cap_bytes: u.per_file_cap_bytes,
+          image_per_file_cap_bytes: u.image_per_file_cap_bytes,
+          video_per_file_cap_bytes: u.video_per_file_cap_bytes,
+          document_per_file_cap_bytes: u.document_per_file_cap_bytes,
           global_cap_bytes: u.global_cap_bytes,
         },
       };

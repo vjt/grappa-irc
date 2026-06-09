@@ -783,7 +783,9 @@ export type WireUserEvent =
       kind: "server_settings_changed";
       upload: {
         active_host: "embedded" | "litterbox";
-        per_file_cap_bytes: number;
+        image_per_file_cap_bytes: number;
+        video_per_file_cap_bytes: number;
+        document_per_file_cap_bytes: number;
         global_cap_bytes: number;
       };
     }
@@ -1468,7 +1470,9 @@ export async function adminResetCircuit(
 export type AdminSettingsView = {
   upload: {
     active_host: "embedded" | "litterbox";
-    per_file_cap_bytes: number;
+    image_per_file_cap_bytes: number;
+    video_per_file_cap_bytes: number;
+    document_per_file_cap_bytes: number;
     global_cap_bytes: number;
   };
 };
@@ -1483,7 +1487,9 @@ export type AdminSettingsResponse = { settings: AdminSettingsView };
 export type AdminSettingsUpdate = {
   upload?: {
     active_host?: "embedded" | "litterbox";
-    per_file_cap_bytes?: number;
+    image_per_file_cap_bytes?: number;
+    video_per_file_cap_bytes?: number;
+    document_per_file_cap_bytes?: number;
     global_cap_bytes?: number;
   };
 };

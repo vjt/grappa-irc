@@ -19,7 +19,7 @@ import AdminSettingsTab from "../AdminSettingsTab";
 
 // UX-6-B2 (2026-05-21) — AdminSettingsTab unit suite. Covers:
 //   * GET /admin/settings on mount + form pre-population
-//   * unit conversion: per-file cap shown in MB, global in GB
+//   * unit conversion: image per-file cap shown in MB, global in GB
 //   * Save → PUT /admin/settings with full upload subtree
 //   * 422 invalid_setting surfaces the offending field highlight
 //   * generic ApiError surfaces in the top-of-tab error banner
@@ -31,7 +31,9 @@ import AdminSettingsTab from "../AdminSettingsTab";
 const DEFAULTS: AdminSettingsView = {
   upload: {
     active_host: "embedded",
-    per_file_cap_bytes: 10 * 1024 * 1024,
+    image_per_file_cap_bytes: 10 * 1024 * 1024,
+    video_per_file_cap_bytes: 50 * 1024 * 1024,
+    document_per_file_cap_bytes: 10 * 1024 * 1024,
     global_cap_bytes: 10 * 1024 * 1024 * 1024,
   },
 };
@@ -57,7 +59,9 @@ describe("AdminSettingsTab — initial render", () => {
     vi.mocked(api.adminGetSettings).mockResolvedValue({
       upload: {
         active_host: "litterbox",
-        per_file_cap_bytes: 5 * 1024 * 1024,
+        image_per_file_cap_bytes: 5 * 1024 * 1024,
+        video_per_file_cap_bytes: 50 * 1024 * 1024,
+        document_per_file_cap_bytes: 10 * 1024 * 1024,
         global_cap_bytes: 20 * 1024 * 1024 * 1024,
       },
     });
@@ -117,7 +121,7 @@ describe("AdminSettingsTab — save", () => {
       expect(api.adminPutSettings).toHaveBeenCalledWith("test-bearer", {
         upload: {
           active_host: "litterbox",
-          per_file_cap_bytes: 25 * 1024 * 1024,
+          image_per_file_cap_bytes: 25 * 1024 * 1024,
           global_cap_bytes: 50 * 1024 * 1024 * 1024,
         },
       });
@@ -148,7 +152,7 @@ describe("AdminSettingsTab — save", () => {
     vi.mocked(api.adminPutSettings).mockRejectedValue(
       new api.ApiError(422, "invalid_setting", {
         error: "invalid_setting",
-        field: "upload.per_file_cap_bytes",
+        field: "upload.image_per_file_cap_bytes",
       }),
     );
 

@@ -11,7 +11,6 @@ import {
 import InlineConfirmButton from "./InlineConfirmButton";
 import { getSubject, logout, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
-import { activeHost } from "./lib/image-upload";
 import {
   loadUploadTtlSeconds,
   saveUploadTtlSeconds,
@@ -29,6 +28,7 @@ import {
 } from "./lib/push";
 import { quitAll } from "./lib/quit";
 import { getTheme, setTheme, type ThemePref } from "./lib/theme";
+import { activeHost } from "./lib/uploadHost";
 import { deviceClassIcon, parseUserAgent } from "./lib/userAgent";
 import {
   DEFAULT_NOTIFICATION_PREFS,

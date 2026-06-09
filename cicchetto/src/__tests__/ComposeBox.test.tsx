@@ -32,8 +32,8 @@ vi.mock("../lib/imageUploadOrchestrator", () => {
   return actual;
 });
 
-vi.mock("../lib/image-upload", async () => {
-  const actual = await vi.importActual<typeof import("../lib/image-upload")>("../lib/image-upload");
+vi.mock("../lib/uploadHost", async () => {
+  const actual = await vi.importActual<typeof import("../lib/uploadHost")>("../lib/uploadHost");
   return actual;
 });
 
@@ -347,7 +347,8 @@ describe("ComposeBox", () => {
         "input[type='file'][data-image-picker]",
       ) as HTMLInputElement | null;
       expect(input).not.toBeNull();
-      // accept attr should list at least one image MIME (litterboxHost.acceptedMimeTypes).
+      // accept attr should list at least one image MIME
+      // (host.acceptedMimeTypes.image — image-only until Task 7).
       expect(input?.getAttribute("accept")).toMatch(/image\//);
     });
 

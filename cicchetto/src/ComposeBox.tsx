@@ -1,7 +1,6 @@
 import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compose";
-import { activeHost } from "./lib/image-upload";
 import {
   cancelUpload,
   dismissUpload,
@@ -10,6 +9,7 @@ import {
   uploadState,
 } from "./lib/imageUploadOrchestrator";
 import { networkBySlug } from "./lib/networks";
+import { activeHost } from "./lib/uploadHost";
 import { windowStateByChannel } from "./lib/windowState";
 
 // Sticky-bottom compose surface. Reads + writes compose.ts state;
@@ -187,10 +187,12 @@ const ComposeBox: Component<Props> = (props) => {
         onDragOver={onDragOver}
         onDrop={onDrop}
       >
+        {/* Image category only until Task 7 widens the picker to
+            video + document alongside the orchestrator pipeline (Task 5). */}
         <input
           ref={pickerInput}
           type="file"
-          accept={activeHost().acceptedMimeTypes.join(",")}
+          accept={activeHost().acceptedMimeTypes.image.join(",")}
           data-image-picker
           hidden
           onChange={onPickerChange}

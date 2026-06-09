@@ -1,15 +1,35 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { applyServerSettings, setServerSettings } from "../lib/serverSettings";
+import { DOCUMENT_MIMES_OFFICE, DOCUMENT_MIMES_PORTABLE, VIDEO_MIMES } from "../lib/uploadCategory";
 import {
-  __setImageUploadTokenReader,
+  __setUploadTokenReader,
   activeHost,
   availableHosts,
   embeddedHost,
-  type ImageHost,
   litterboxHost,
+  type UploadHost,
   type UploadProgress,
   xhrUpload,
-} from "../lib/image-upload";
-import { applyServerSettings } from "../lib/serverSettings";
+} from "../lib/uploadHost";
+
+// Wire-shaped upload subtree builder — the server pushes the three
+// per-category cap fields since uploads cluster Task 2 (385129f).
+const wireUpload = (
+  overrides: Partial<{
+    active_host: string;
+    image_per_file_cap_bytes: number;
+    video_per_file_cap_bytes: number;
+    document_per_file_cap_bytes: number;
+    global_cap_bytes: number;
+  }> = {},
+) => ({
+  active_host: "embedded",
+  image_per_file_cap_bytes: 10 * 1024 * 1024,
+  video_per_file_cap_bytes: 50 * 1024 * 1024,
+  document_per_file_cap_bytes: 10 * 1024 * 1024,
+  global_cap_bytes: 10 * 1024 * 1024 * 1024,
+  ...overrides,
+});
 
 // --------------------------------------------------------------
 // MockXMLHttpRequest — minimal stand-in for jsdom's XHR.
@@ -166,8 +186,8 @@ describe("litterboxHost — metadata", () => {
     expect(litterboxHost.defaultTtl).toBe("24h");
   });
 
-  it("acceptedMimeTypes lists the image suffixes the brainstorm pinned", () => {
-    expect(litterboxHost.acceptedMimeTypes).toEqual([
+  it("acceptedMimeTypes.image lists the image suffixes the brainstorm pinned", () => {
+    expect(litterboxHost.acceptedMimeTypes.image).toEqual([
       "image/png",
       "image/jpeg",
       "image/gif",
@@ -176,9 +196,21 @@ describe("litterboxHost — metadata", () => {
     ]);
   });
 
-  it("declares an upper file size", () => {
-    expect(typeof litterboxHost.maxFileSizeBytes).toBe("number");
-    expect(litterboxHost.maxFileSizeBytes).not.toBeNull();
+  it("acceptedMimeTypes.video lists the selectable video MIMEs", () => {
+    expect(litterboxHost.acceptedMimeTypes.video).toEqual(VIDEO_MIMES);
+  });
+
+  it("acceptedMimeTypes.document excludes docx/xlsx (litterbox blocks .doc* host-side)", () => {
+    expect(litterboxHost.acceptedMimeTypes.document).toEqual(DOCUMENT_MIMES_PORTABLE);
+    for (const office of DOCUMENT_MIMES_OFFICE) {
+      expect(litterboxHost.acceptedMimeTypes.document).not.toContain(office);
+    }
+  });
+
+  it("declares per-category upper file sizes (100/50/10 MiB)", () => {
+    expect(litterboxHost.maxFileSizeBytes("image")).toBe(100 * 1024 * 1024);
+    expect(litterboxHost.maxFileSizeBytes("video")).toBe(50 * 1024 * 1024);
+    expect(litterboxHost.maxFileSizeBytes("document")).toBe(10 * 1024 * 1024);
   });
 });
 
@@ -393,14 +425,14 @@ describe("litterboxHost.upload — progress callback", () => {
 
 // Synthetic CORS-friendly host exercises the supportsProgress=true
 // branch in xhrUpload — pins behaviour for the next provider impl.
-const corsFriendlyMockHost: ImageHost = {
+const corsFriendlyMockHost: UploadHost = {
   id: "cors-friendly-mock",
   displayName: "cors-friendly mock",
   retentionStatement: "Files are not actually stored anywhere.",
   ttlOptions: [],
   defaultTtl: null,
-  acceptedMimeTypes: ["image/png"],
-  maxFileSizeBytes: null,
+  acceptedMimeTypes: { image: ["image/png"], video: [], document: [] },
+  maxFileSizeBytes: () => null,
   supportsProgress: true,
   upload: (file, _options, onProgress, signal) => {
     const body = new FormData();
@@ -451,54 +483,42 @@ describe("availableHosts + activeHost", () => {
   });
 
   it("returns embeddedHost from activeHost() when signal is null (pre-snapshot)", () => {
-    // identityScopedStore: the only safe way to push `null` in a test
-    // is to apply a value then rely on a fresh token rotation. Simpler:
-    // assert the signal-driven branch (litterbox) flips back to
-    // embedded when set explicitly.
-    applyServerSettings({
-      upload: { active_host: "embedded", per_file_cap_bytes: 1, global_cap_bytes: 2 },
-    });
+    setServerSettings(null);
     expect(activeHost()).toBe(embeddedHost);
   });
 
   it("returns litterboxHost from activeHost() when admin pinned litterbox", () => {
-    applyServerSettings({
-      upload: { active_host: "litterbox", per_file_cap_bytes: 1, global_cap_bytes: 2 },
-    });
+    applyServerSettings({ upload: wireUpload({ active_host: "litterbox" }) });
     expect(activeHost()).toBe(litterboxHost);
   });
 
   it("returns embeddedHost when admin flips back to embedded", () => {
-    applyServerSettings({
-      upload: { active_host: "litterbox", per_file_cap_bytes: 1, global_cap_bytes: 2 },
-    });
-    applyServerSettings({
-      upload: { active_host: "embedded", per_file_cap_bytes: 1, global_cap_bytes: 2 },
-    });
+    applyServerSettings({ upload: wireUpload({ active_host: "litterbox" }) });
+    applyServerSettings({ upload: wireUpload({ active_host: "embedded" }) });
     expect(activeHost()).toBe(embeddedHost);
   });
 });
 
 // ----- Interface contract via in-memory mock ---------------------
 //
-// Documents how a second ImageHost would be authored. The interface
+// Documents how a second UploadHost would be authored. The interface
 // is verified by the TypeScript compiler at this declaration site
-// (the `: ImageHost` annotation forces the shape).
+// (the `: UploadHost` annotation forces the shape).
 
-const mockHost: ImageHost = {
+const mockHost: UploadHost = {
   id: "mock",
   displayName: "in-memory mock",
   retentionStatement: "Files are not actually stored anywhere.",
   ttlOptions: [],
   defaultTtl: null,
-  acceptedMimeTypes: ["image/png"],
-  maxFileSizeBytes: null,
+  acceptedMimeTypes: { image: ["image/png"], video: [], document: [] },
+  maxFileSizeBytes: () => null,
   supportsProgress: false,
   upload: (_file, _options, _onProgress, _signal) =>
     Promise.resolve("https://example.invalid/mock.png"),
 };
 
-describe("ImageHost interface — second-impl exemplar", () => {
+describe("UploadHost interface — second-impl exemplar", () => {
   it("a second impl satisfies the interface and resolves with a URL", async () => {
     const url = await mockHost.upload(sampleFile(), {}, () => {}, new AbortController().signal);
     expect(url).toBe("https://example.invalid/mock.png");
@@ -539,8 +559,8 @@ describe("embeddedHost — metadata", () => {
     expect(embeddedHost.defaultTtl).toBe("86400");
   });
 
-  it("acceptedMimeTypes lists the 5 image suffixes", () => {
-    expect(embeddedHost.acceptedMimeTypes).toEqual([
+  it("acceptedMimeTypes.image lists the 5 image suffixes", () => {
+    expect(embeddedHost.acceptedMimeTypes.image).toEqual([
       "image/png",
       "image/jpeg",
       "image/gif",
@@ -549,22 +569,51 @@ describe("embeddedHost — metadata", () => {
     ]);
   });
 
+  it("acceptedMimeTypes.video lists the selectable video MIMEs", () => {
+    expect(embeddedHost.acceptedMimeTypes.video).toEqual(VIDEO_MIMES);
+  });
+
+  it("acceptedMimeTypes.document includes the office formats litterbox blocks", () => {
+    expect(embeddedHost.acceptedMimeTypes.document).toEqual([
+      ...DOCUMENT_MIMES_PORTABLE,
+      ...DOCUMENT_MIMES_OFFICE,
+    ]);
+  });
+
   it("declares supportsProgress=true (same-origin, no CORS preflight)", () => {
     expect(embeddedHost.supportsProgress).toBe(true);
   });
+});
 
-  it("declares a fallback maxFileSizeBytes (10 MiB, mirrors server-side default)", () => {
-    expect(embeddedHost.maxFileSizeBytes).toBe(10 * 1024 * 1024);
+describe("embeddedHost.maxFileSizeBytes — reactive per-category cap", () => {
+  it("falls back to the server-default literals (10/50/10 MiB) when signal is null", () => {
+    setServerSettings(null);
+    expect(embeddedHost.maxFileSizeBytes("image")).toBe(10 * 1024 * 1024);
+    expect(embeddedHost.maxFileSizeBytes("video")).toBe(50 * 1024 * 1024);
+    expect(embeddedHost.maxFileSizeBytes("document")).toBe(10 * 1024 * 1024);
+  });
+
+  it("reads the admin-tuned per-category caps from the serverSettings signal", () => {
+    applyServerSettings({
+      upload: wireUpload({
+        image_per_file_cap_bytes: 1_111,
+        video_per_file_cap_bytes: 2_222,
+        document_per_file_cap_bytes: 3_333,
+      }),
+    });
+    expect(embeddedHost.maxFileSizeBytes("image")).toBe(1_111);
+    expect(embeddedHost.maxFileSizeBytes("video")).toBe(2_222);
+    expect(embeddedHost.maxFileSizeBytes("document")).toBe(3_333);
   });
 });
 
 describe("embeddedHost.upload — wire shape", () => {
   beforeEach(() => {
-    __setImageUploadTokenReader(() => "test-bearer");
+    __setUploadTokenReader(() => "test-bearer");
   });
 
   afterEach(() => {
-    __setImageUploadTokenReader(null);
+    __setUploadTokenReader(null);
   });
 
   it("POSTs multipart to /api/uploads (same-origin)", async () => {
@@ -619,7 +668,7 @@ describe("embeddedHost.upload — wire shape", () => {
   });
 
   it("attaches Authorization: Bearer header from the token reader", async () => {
-    __setImageUploadTokenReader(() => "abc-token-123");
+    __setUploadTokenReader(() => "abc-token-123");
     const upload = embeddedHost.upload(
       sampleFile(),
       { ttl: "86400" },
@@ -643,7 +692,7 @@ describe("embeddedHost.upload — wire shape", () => {
   });
 
   it("omits Authorization header when token is null", async () => {
-    __setImageUploadTokenReader(() => null);
+    __setUploadTokenReader(() => null);
     const upload = embeddedHost.upload(
       sampleFile(),
       { ttl: "86400" },
@@ -713,11 +762,11 @@ describe("embeddedHost.upload — wire shape", () => {
 
 describe("embeddedHost.upload — resolution + error mapping", () => {
   beforeEach(() => {
-    __setImageUploadTokenReader(() => "test-bearer");
+    __setUploadTokenReader(() => "test-bearer");
   });
 
   afterEach(() => {
-    __setImageUploadTokenReader(null);
+    __setUploadTokenReader(null);
   });
 
   it("resolves with the JSON response url field", async () => {
@@ -842,11 +891,11 @@ describe("embeddedHost.upload — resolution + error mapping", () => {
 
 describe("embeddedHost.upload — abort", () => {
   beforeEach(() => {
-    __setImageUploadTokenReader(() => "test-bearer");
+    __setUploadTokenReader(() => "test-bearer");
   });
 
   afterEach(() => {
-    __setImageUploadTokenReader(null);
+    __setUploadTokenReader(null);
   });
 
   it("aborts the XHR when the AbortSignal fires + rejects with {kind: abort}", async () => {
@@ -864,11 +913,11 @@ describe("embeddedHost.upload — abort", () => {
 
 describe("embeddedHost.upload — progress callback", () => {
   beforeEach(() => {
-    __setImageUploadTokenReader(() => "test-bearer");
+    __setUploadTokenReader(() => "test-bearer");
   });
 
   afterEach(() => {
-    __setImageUploadTokenReader(null);
+    __setUploadTokenReader(null);
   });
 
   it("DOES attach an upload progress listener (same-origin, no preflight)", async () => {

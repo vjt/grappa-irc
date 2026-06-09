@@ -1,14 +1,15 @@
 import { createSignal } from "solid-js";
 import type { ChannelKey } from "./channelKey";
-import { activeHost, type ImageHost, type UploadError } from "./image-upload";
 import { sendMessage } from "./scrollback";
+import { categoryOf } from "./uploadCategory";
+import { activeHost, type UploadError, type UploadHost } from "./uploadHost";
 import { getUploadTtlSeconds, putUploadTtlSeconds } from "./userSettings";
 
 // Image-upload orchestration — images cluster I-2 (2026-05-15).
 //
 // Sits between the cic compose surface (ComposeBox.tsx — picker /
 // camera / drag-drop / paste triggers) and the host transport layer
-// (image-upload.ts — pluggable ImageHost interface). Holds the
+// (uploadHost.ts — pluggable UploadHost interface). Holds the
 // per-channel upload-in-flight state, the singleton privacy-modal
 // gate, the cached upload-TTL preference, and the auto-send wiring.
 //
@@ -48,7 +49,7 @@ type ActiveUpload = {
 };
 
 export type PrivacyModalState =
-  | { open: true; host: ImageHost; key: ChannelKey }
+  | { open: true; host: UploadHost; key: ChannelKey }
   | { open: false; host: null; key: null };
 
 const [uploadStates, setUploadStates] = createSignal<Record<ChannelKey, UploadStateEntry>>({});
@@ -75,7 +76,7 @@ const pendingPrivacyGated = new Map<
 
 const PRIVACY_KEY_PREFIX = "image-upload-privacy-acknowledged";
 
-const privacyKey = (host: ImageHost): string => `${PRIVACY_KEY_PREFIX}:${host.id}`;
+const privacyKey = (host: UploadHost): string => `${PRIVACY_KEY_PREFIX}:${host.id}`;
 
 // UX-4 bucket M (2026-05-19) — upload-TTL is a per-user preference
 // persisted on the server (`user_settings.data["upload_ttl_seconds"]`)
@@ -128,7 +129,7 @@ export function resetUploadTtlSecondsForTests(): void {
 /** Translate a stored-seconds preference into a host-specific token
  *  from the active host's ladder. Returns `null` when no match exists
  *  (caller falls back to `host.defaultTtl`). */
-function pickHostTokenFromSeconds(host: ImageHost, seconds: number | null): string | null {
+function pickHostTokenFromSeconds(host: UploadHost, seconds: number | null): string | null {
   if (seconds === null) return null;
   const match = host.ttlOptions.find((opt) => opt.seconds === seconds);
   return match?.value ?? null;
@@ -173,14 +174,21 @@ function friendlyErrorMessage(err: UploadError): string {
   }
 }
 
-function preCheck(host: ImageHost, file: File): string | null {
-  if (!host.acceptedMimeTypes.includes(file.type)) {
-    return `Only image files are supported (${host.acceptedMimeTypes
+function preCheck(host: UploadHost, file: File): string | null {
+  // Uploads cluster Task 4 (2026-06-09): the host interface is
+  // per-category, but this orchestrator still dispatches the IMAGE
+  // category only — Task 5 generalizes the pipeline (video transcode
+  // hook, per-category emoji prefix). Until then non-image files are
+  // rejected here exactly as before the UploadHost generalization.
+  const category = categoryOf(file.type);
+  if (category !== "image" || !host.acceptedMimeTypes.image.includes(file.type)) {
+    return `Only image files are supported (${host.acceptedMimeTypes.image
       .map((m) => m.replace("image/", "."))
       .join(", ")}).`;
   }
-  if (host.maxFileSizeBytes !== null && file.size > host.maxFileSizeBytes) {
-    const mb = Math.round(host.maxFileSizeBytes / (1024 * 1024));
+  const cap = host.maxFileSizeBytes("image");
+  if (cap !== null && file.size > cap) {
+    const mb = Math.round(cap / (1024 * 1024));
     return `File is too large (max ${mb}MB).`;
   }
   return null;

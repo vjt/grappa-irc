@@ -10,8 +10,12 @@ import { token } from "./lib/auth";
 //   * `upload.active_host` — `"embedded"` | `"litterbox"` pick. Drives
 //     cic's `activeHost()` selector (the embedded grappa-served path
 //     vs the catbox litterbox path).
-//   * `upload.per_file_cap_bytes` — per-file size limit enforced at
-//     `POST /api/uploads` boundary (415 file_too_large on overrun).
+//   * `upload.image_per_file_cap_bytes` — per-file size limit for the
+//     image category, enforced at the `POST /api/uploads` boundary
+//     (413 file_too_large on overrun). The wire also carries
+//     `video_per_file_cap_bytes` + `document_per_file_cap_bytes`;
+//     Task 7 (uploads cluster) adds their inputs alongside — this
+//     form edits the image cap only until then.
 //   * `upload.global_cap_bytes` — global disk-budget ceiling; uploads
 //     reject with 507 insufficient_storage when total live bytes +
 //     incoming would exceed the cap.
@@ -53,13 +57,13 @@ const AdminSettingsTab: Component = () => {
   // Form-bound signals. Decoupled from `settings()` so the operator
   // can edit + cancel without round-tripping the server view.
   const [activeHost, setActiveHost] = createSignal<"embedded" | "litterbox">("embedded");
-  const [perFileCapMB, setPerFileCapMB] = createSignal<number>(10);
+  const [imageCapMB, setImageCapMB] = createSignal<number>(10);
   const [globalCapGB, setGlobalCapGB] = createSignal<number>(10);
 
   const applyView = (view: AdminSettingsView): void => {
     setSettings(view);
     setActiveHost(view.upload.active_host);
-    setPerFileCapMB(view.upload.per_file_cap_bytes / MIB);
+    setImageCapMB(view.upload.image_per_file_cap_bytes / MIB);
     setGlobalCapGB(view.upload.global_cap_bytes / GIB);
   };
 
@@ -89,9 +93,12 @@ const AdminSettingsTab: Component = () => {
     setFieldError(null);
     try {
       const view = await adminPutSettings(t, {
+        // Partial subtree — the controller upserts present keys only,
+        // so the video/document caps stay untouched until Task 7 adds
+        // their inputs.
         upload: {
           active_host: activeHost(),
-          per_file_cap_bytes: Math.round(perFileCapMB() * MIB),
+          image_per_file_cap_bytes: Math.round(imageCapMB() * MIB),
           global_cap_bytes: Math.round(globalCapGB() * GIB),
         },
       });
@@ -158,21 +165,21 @@ const AdminSettingsTab: Component = () => {
             </div>
 
             <div class="admin-settings-field">
-              <label for="admin-settings-per-file-cap">Per-file cap (MB)</label>
+              <label for="admin-settings-per-file-cap">Image per-file cap (MB)</label>
               <input
                 id="admin-settings-per-file-cap"
                 data-testid="admin-settings-per-file-cap"
                 type="number"
                 min="1"
                 step="1"
-                value={perFileCapMB()}
-                onInput={(e) => setPerFileCapMB(Number(e.currentTarget.value))}
+                value={imageCapMB()}
+                onInput={(e) => setImageCapMB(Number(e.currentTarget.value))}
                 disabled={saving()}
                 classList={{
-                  "admin-settings-field-error": fieldError() === "upload.per_file_cap_bytes",
+                  "admin-settings-field-error": fieldError() === "upload.image_per_file_cap_bytes",
                 }}
               />
-              <Show when={fieldError() === "upload.per_file_cap_bytes"}>
+              <Show when={fieldError() === "upload.image_per_file_cap_bytes"}>
                 <span class="admin-settings-field-error-msg">must be positive</span>
               </Show>
             </div>

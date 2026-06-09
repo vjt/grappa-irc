@@ -18,8 +18,8 @@ vi.mock("../lib/userSettings", async () => {
   };
 });
 
-vi.mock("../lib/image-upload", async () => {
-  const actual = await vi.importActual<typeof import("../lib/image-upload")>("../lib/image-upload");
+vi.mock("../lib/uploadHost", async () => {
+  const actual = await vi.importActual<typeof import("../lib/uploadHost")>("../lib/uploadHost");
   return {
     ...actual,
     activeHost: vi.fn(() => actual.litterboxHost),
@@ -27,7 +27,6 @@ vi.mock("../lib/image-upload", async () => {
 });
 
 import { channelKey } from "../lib/channelKey";
-import { activeHost, type ImageHost } from "../lib/image-upload";
 import {
   acknowledgePrivacy,
   cancelUpload,
@@ -42,6 +41,7 @@ import {
   uploadTtlSecondsValue,
 } from "../lib/imageUploadOrchestrator";
 import { sendMessage } from "../lib/scrollback";
+import { activeHost, type UploadHost } from "../lib/uploadHost";
 import * as userSettings from "../lib/userSettings";
 
 const slug = "freenode";
@@ -63,7 +63,7 @@ type Resolver = {
 
 let pendingResolvers: Resolver[] = [];
 
-const makeTestHost = (overrides: Partial<ImageHost> = {}): ImageHost => ({
+const makeTestHost = (overrides: Partial<UploadHost> = {}): UploadHost => ({
   id: "test-host",
   displayName: "test.host.example",
   retentionStatement: "TEST host — files exist for the next 24 hours.",
@@ -72,8 +72,8 @@ const makeTestHost = (overrides: Partial<ImageHost> = {}): ImageHost => ({
     { value: "24h", label: "24 hours", seconds: 86_400 },
   ],
   defaultTtl: "24h",
-  acceptedMimeTypes: ["image/png", "image/jpeg"],
-  maxFileSizeBytes: 1024 * 1024,
+  acceptedMimeTypes: { image: ["image/png", "image/jpeg"], video: [], document: [] },
+  maxFileSizeBytes: () => 1024 * 1024,
   supportsProgress: true,
   upload: (_file, _options, onProgress, signal) =>
     new Promise<string>((resolve, reject) => {
