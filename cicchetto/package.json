@@ -33,5 +33,8 @@
     "workbox-precaching": "^7.4.0",
     "workbox-routing": "^7.4.0",
     "workbox-window": "^7.4.0"
+  },
+  "patchedDependencies": {
+    "vite-plugin-pwa@1.2.0": "patches/vite-plugin-pwa@1.2.0.patch"
   }
 }

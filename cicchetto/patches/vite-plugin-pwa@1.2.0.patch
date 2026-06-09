@@ -1,0 +1,26 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 61d52cb..416ce2b 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -496,7 +496,7 @@ function prepareViteBuild(options2, viteOptions) {
+         input: options2.swSrc,
+         output: {
+           entryFileNames: swMjsName,
+-          inlineDynamicImports: true
++          codeSplitting: false
+         }
+       }
+     });
+diff --git a/dist/vite-build-BGK4YAIU.js b/dist/vite-build-BGK4YAIU.js
+index 9370ed6..e8d43e8 100644
+--- a/dist/vite-build-BGK4YAIU.js
++++ b/dist/vite-build-BGK4YAIU.js
+@@ -106,7 +106,7 @@ function prepareViteBuild(options, viteOptions) {
+         input: options.swSrc,
+         output: {
+           entryFileNames: swMjsName,
+-          inlineDynamicImports: true
++          codeSplitting: false
+         }
+       }
+     });
