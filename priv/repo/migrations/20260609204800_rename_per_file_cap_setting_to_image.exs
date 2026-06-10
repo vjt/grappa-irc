@@ -1,9 +1,12 @@
 defmodule Grappa.Repo.Migrations.RenamePerFileCapSettingToImage do
   use Ecto.Migration
 
-  # DML-only (no DDL) — hot-deployable per the #41 classifier. Renames
-  # the single per-file cap key to the image-specific key; video +
-  # document keys are born from code defaults, no rows needed.
+  # DML-only (no DDL) — hot-ELIGIBLE once #41's in-reload migrate
+  # lands; today Deploy.Preflight Class 5 forces any new migration
+  # file COLD, which is correct here: skipping this rename (forced
+  # hot) silently reverts a tuned image cap to the 10MiB default.
+  # Renames the single per-file cap key to the image-specific key;
+  # video + document keys are born from code defaults, no rows needed.
   def up do
     execute("""
     UPDATE server_settings

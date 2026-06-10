@@ -145,7 +145,11 @@ with a regression test.
 - DML migration renames the `upload.per_file_cap_bytes` row to
   `upload.image_per_file_cap_bytes` when present; the old key dies.
   No read-fallback on the old name (total migration, no half-state).
-  Pure DML, no DDL — hot-deployable per the #41 classifier.
+  Pure DML, no DDL — hot-eligible once #41's in-reload migrate
+  lands; today Deploy.Preflight forces any new migration file COLD
+  (correct: a forced-hot deploy would skip the rename and silently
+  revert a tuned image cap to the default). *(Amended at final
+  review — the original line overstated #41, which is still open.)*
 - `public_view/0`, `Wire`, `GET /api/server-settings`,
   `PUT /admin/settings`: three cap fields. cic `AdminSettingsTab`
   gets three inputs.
