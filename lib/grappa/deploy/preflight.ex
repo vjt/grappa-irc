@@ -187,28 +187,32 @@ defmodule Grappa.Deploy.Preflight do
   long-lived modules.
 
   Prints a human-readable verdict to stdout, then halts the BEAM with
-  exit 0 (HOT) or exit 1 (COLD). Bash callers consume the exit code
-  for the dispatch decision.
+  `exit_code/1` — 0 (HOT) or 3 (COLD). Shell callers case on the exit
+  code: 0 → hot, 3 → cold, anything else aborts the deploy. COLD is
+  deliberately NOT exit 1: a mix oneshot that crashes (missing env,
+  compile error, epmd trouble) exits 1, and a crash must never be
+  readable as a verdict — that's how the jail's env-less preflight
+  silently classified every deploy COLD (found live 2026-06-10).
   """
   @spec cli([String.t()]) :: no_return()
   def cli([from, to, substrate])
       when is_binary(from) and is_binary(to) and substrate in @substrate_strings do
     substrate = String.to_existing_atom(substrate)
+    verdict = classify(from, to, substrate, &git_diff_paths/2, &git_show/2)
 
-    case classify(from, to, substrate, &git_diff_paths/2, &git_show/2) do
+    case verdict do
       {:hot, []} ->
         IO.puts("  → no unsafe markers → HOT")
-        System.halt(0)
 
       {:cold, reasons} ->
         IO.puts("Cold-deploy required:")
 
-        for {kind, files} <- reasons do
+        Enum.each(reasons, fn {kind, files} ->
           IO.puts("  → #{kind}: #{Enum.join(files, ", ")}")
-        end
-
-        System.halt(1)
+        end)
     end
+
+    System.halt(exit_code(verdict))
   end
 
   def cli(_) do
@@ -219,6 +223,14 @@ defmodule Grappa.Deploy.Preflight do
 
     System.halt(2)
   end
+
+  @doc """
+  Verdict → CLI exit code: HOT 0, COLD 3. See `cli/1` for why COLD
+  is not 1 (crash/verdict ambiguity).
+  """
+  @spec exit_code(verdict()) :: 0 | 3
+  def exit_code({:hot, []}), do: 0
+  def exit_code({:cold, [_ | _]}), do: 3
 
   @doc """
   Classify a git diff range for the given deploy substrate. Uses

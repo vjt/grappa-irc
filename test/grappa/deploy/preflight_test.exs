@@ -112,6 +112,17 @@ defmodule Grappa.Deploy.PreflightTest do
     end
   end
 
+  describe "exit_code/1 — verdict-to-CLI exit code contract" do
+    test "HOT → 0" do
+      assert 0 = Preflight.exit_code({:hot, []})
+    end
+
+    test "COLD → 3 (NOT 1: a crashed mix oneshot exits 1, and a crash
+          must never be readable as a verdict)" do
+      assert 3 = Preflight.exit_code({:cold, [{:mix_deps, ["mix.lock"]}]})
+    end
+  end
+
   describe "classify_paths/2 — substrate is a closed set" do
     test "unknown substrate raises FunctionClauseError (loud usage error, never a silent guess)" do
       assert_raise FunctionClauseError, fn ->

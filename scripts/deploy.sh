@@ -105,9 +105,9 @@ preflight() {
     # Delegate the entire classification to Grappa.Deploy.Preflight via
     # a oneshot mix run. The module's `cli/1` prints "→ <kind>: <files>"
     # lines for each cold class triggered (or "→ no unsafe markers →
-    # HOT" if all green), then halts with exit 0 (HOT) or 1 (COLD).
-    # Exit 2+ is a usage/boot error, NOT a verdict — propagate it
-    # verbatim so the caller can abort instead of guessing COLD.
+    # HOT" if all green), then halts with exit 0 (HOT) or 3 (COLD).
+    # Anything else (1 = mix crash, 2 = usage error) is NOT a verdict —
+    # propagate it verbatim so the caller aborts instead of guessing.
     #
     # ~2-3s mix-boot cost is invisible — the cold path already does a
     # multi-minute container-rebuild + cicchetto-build oneshot.
@@ -121,13 +121,13 @@ if [ "$mode" = "auto" ]; then
     preflight "$prev_sha" "HEAD" || preflight_rc=$?
     case "$preflight_rc" in
         0) mode=hot ;;
-        1) mode=cold ;;
+        3) mode=cold ;;
         *)
-            # Usage error or mix-boot crash inside the preflight
-            # oneshot. Falling through to COLD here would convert a
-            # miswired call into a needless restart forever (and
+            # Mix crash (1), usage error (2), or anything else that is
+            # not a verdict. Falling through to COLD here would convert
+            # a miswired call into a needless restart forever (and
             # silently — COLD "looks safe"). Abort loudly instead.
-            echo "ERROR: preflight exited $preflight_rc (usage/boot error, not a verdict) — aborting deploy" >&2
+            echo "ERROR: preflight exited $preflight_rc (crash/usage, not a verdict) — aborting deploy" >&2
             exit "$preflight_rc"
             ;;
     esac

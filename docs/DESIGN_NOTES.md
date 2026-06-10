@@ -11774,8 +11774,25 @@ previously collapsed every non-zero preflight exit into COLD
 (`if cli…; then hot; else cold; fi`) — which would have turned the
 new "loud usage error, exit 2" into a silent session-dropping
 restart on every future deploy, the exact class this change kills.
-Both now case on the exit code: 0 → hot, 1 → cold, anything else
-aborts the deploy loudly.
+Both now case on the exit code: 0 → hot, 3 → cold, anything else
+aborts the deploy loudly. COLD moved from 1 to 3 because a crashed
+mix oneshot exits 1 — a crash must never be readable as a verdict.
+
+**The jail preflight had NEVER produced a verdict.** Found by live
+probe right after the hot deploy: `mix run` under `MIX_ENV=prod`
+evaluates `config/runtime.exs`, which raises on missing
+`DATABASE_PATH` — the daemon gets its env from rc.d, but
+`run_as_grappa`'s `su -l` login shell does not, so the jail's
+auto-mode preflight crashed with exit 1 on every invocation since
+the day it shipped, indistinguishable from a COLD verdict. Every
+"classified COLD" jail deploy was actually "preflight crashed".
+(Past cold deploys also contained legitimately-COLD diff classes,
+which is why nobody saw it.) Fixed: the jail deploy sources
+`/usr/local/etc/grappa/grappa.env` for the preflight oneshot (same
+`set -a` flow as `jail_release.sh`, abort-if-unreadable), and the
+1-vs-3 split above makes any future crash class abort instead of
+silently colding. The shipped-today re-exec guard is what lets the
+NEXT deploy pick all of this up before its preflight runs.
 
 **rc.d refresh.** The jail cold path (`infra/freebsd/deploy.sh`)
 now runs `jail_install_rcd.sh` — the existing idempotent installer,

@@ -33,6 +33,7 @@
 set -eu
 
 REPO_ROOT="${REPO_ROOT:-/home/grappa/grappa}"
+ENV_FILE="${ENV_FILE:-/usr/local/etc/grappa/grappa.env}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:4000/healthz}"
 HEALTHCHECK_RETRIES="${HEALTHCHECK_RETRIES:-30}"
 HEALTHCHECK_SLEEP="${HEALTHCHECK_SLEEP:-2}"
@@ -123,17 +124,30 @@ fi
 # the cost is the worst-case overhead vs the saved restart downtime.
 if [ "${mode}" = "auto" ]; then
 	echo "[deploy] preflight: classifying ${prev_sha}..${new_sha}"
+	# `mix run` under MIX_ENV=prod evaluates config/runtime.exs, which
+	# raises on missing DATABASE_PATH & co. — the daemon gets those
+	# from the env file via rc.d, but `su -l` login shells do not.
+	# Source it the same way jail_release.sh does (set -a exports
+	# every assignment), and refuse to run blind: an unreadable env
+	# file would crash the oneshot, and a crash must never decide a
+	# deploy mode (found live 2026-06-10 — the env-less preflight
+	# exited 1 on every run, indistinguishable from a COLD verdict).
+	if [ ! -r "${ENV_FILE}" ]; then
+		echo "[deploy] ERROR: env file ${ENV_FILE} not readable — cannot run preflight" >&2
+		exit 1
+	fi
 	preflight_rc=0
-	run_as_grappa "mix run --no-start -e 'Grappa.Deploy.Preflight.cli([\"${prev_sha}\", \"${new_sha}\", \"jail\"])'" || preflight_rc=$?
+	run_as_grappa "set -a; . '${ENV_FILE}'; set +a; mix run --no-start -e 'Grappa.Deploy.Preflight.cli([\"${prev_sha}\", \"${new_sha}\", \"jail\"])'" || preflight_rc=$?
 	case "${preflight_rc}" in
 		0) mode=hot ;;
-		1) mode=cold ;;
+		3) mode=cold ;;
 		*)
-			# Usage error or mix-boot crash inside the preflight oneshot.
-			# Falling through to COLD would convert a miswired call into
-			# a silent session-dropping restart on every future deploy —
-			# the exact incident class the substrate arg exists to kill.
-			echo "[deploy] ERROR: preflight exited ${preflight_rc} (usage/boot error, not a verdict) — aborting" >&2
+			# Mix crash (1), usage error (2), or anything else that is
+			# not a verdict. Falling through to COLD would convert a
+			# miswired call into a silent session-dropping restart on
+			# every future deploy — the exact incident class the
+			# substrate arg exists to kill.
+			echo "[deploy] ERROR: preflight exited ${preflight_rc} (crash/usage, not a verdict) — aborting" >&2
 			exit "${preflight_rc}"
 			;;
 	esac

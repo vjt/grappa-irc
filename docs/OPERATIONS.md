@@ -174,10 +174,17 @@ calling substrate**. The substrate scripts (`scripts/deploy.sh` for
 Docker, `infra/freebsd/deploy.sh` for the m42 bastille jail) shell
 out to `mix run --no-start -e 'Grappa.Deploy.Preflight.cli([from, to,
 substrate])'` with substrate `"docker"` / `"jail"`, dispatch on exit
-code: 0 → HOT, 1 → COLD, anything else (usage error, mix-boot crash)
-**aborts the deploy** — a miswired preflight must never degrade into
-a silent always-COLD guess. The substrate argument is required — a
-missing or unknown value is a usage error (exit 2). Most diff classes
+code: 0 → HOT, 3 → COLD, anything else (1 = mix crash, 2 = usage
+error) **aborts the deploy** — a crash or miswired call must never
+degrade into a silent always-COLD guess. COLD is deliberately not
+exit 1: a crashed mix oneshot exits 1, and on the jail the env-less
+preflight did exactly that on every run (found live 2026-06-10 —
+`runtime.exs` raises on missing `DATABASE_PATH` under
+`MIX_ENV=prod`; the jail deploy now sources
+`/usr/local/etc/grappa/grappa.env` for the preflight oneshot, same
+`set -a` flow as `jail_release.sh`). The substrate argument is
+required — a missing or unknown value is a usage error (exit 2).
+Most diff classes
 are substrate-independent; the boot-substrate files are scoped (see
 the COLD list below) so a Dockerfile diff no longer cold-restarts the
 jail (2026-06-10 incident: prod restarted, all IRC sessions dropped,
