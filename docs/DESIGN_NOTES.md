@@ -7456,7 +7456,9 @@ on every change to a module not actually tracked).
 
 The fix is **structural** rather than a tighter regex: the bash
 script becomes a thin wrapper around `mix run --no-start -e
-'Grappa.Deploy.Preflight.cli([from, to])'`. The new module
+'Grappa.Deploy.Preflight.cli([from, to])'` (2026-06-10: the cli now
+requires a third substrate arg, `"docker"` | `"jail"` — see the
+substrate-scoped entry). The new module
 `lib/grappa/deploy/preflight.ex` reads `LongLivedModules.all/0`
 directly — no string parsing, no regex, no awk. The hand-rolled
 brace-matching helper `scripts/_extract_state_block.awk` is
@@ -11748,28 +11750,61 @@ restart class this argument exists to kill.
 The flat Class-4 COLD list split into substrate-scoped classes:
 
 - **4a `:image_substrate`** (`Dockerfile`, `.dockerignore`,
-  `compose*.yaml`, `bin/start.sh`, `bin/grappa`) — COLD only when
-  classifying for `:docker`. The jail sees them as HOT.
+  `compose.*` as a PREFIX class, `bin/start.sh`, `bin/grappa`) —
+  COLD only when classifying for `:docker`. The jail sees them as
+  HOT. `compose.*` is a prefix, not an enumeration: H20 already
+  proved the enumeration failure mode twice (compose.override.yaml
+  and compose.oneshot.yaml were both missed by the prior allowlist);
+  diff paths are repo-relative so the prefix anchors at the root.
 - **4b `:rc_d`** (`infra/freebsd/rc.d/grappa`) — COLD only for
   `:jail`. Docker sees it as HOT. New reason atom because reporting
-  a jail rc script under `:image_substrate` is a lying label.
+  a jail rc script under `:image_substrate` is a lying label. Scoped
+  to the grappa wrapper deliberately: the sibling
+  `rc.d/grappa_ndp_keepalive` is a DIFFERENT rc(8) service —
+  cold-restarting the BEAM (dropping every IRC session) would not
+  refresh it, so it stays HOT and its bytes ride the cold-path
+  installer below.
 
 Everything else (deps, supervision tree, migrations, nginx, config,
 state-shape) stays substrate-independent. Deploy orchestrators stay
 excluded from COLD on both substrates (d8f354c reasoning unchanged).
 
-**rc.d auto-install.** The jail cold path
-(`infra/freebsd/deploy.sh`) now installs the repo rc.d wrapper to
-`/usr/local/etc/rc.d/grappa` when it drifted (root-owned 555, via
-`install`), before the restart. Closes the loop that bit the same
-day: the rc(8) PATH fix shipped in the repo but prod kept 422ing
-until the wrapper was hand-copied. An rc.d diff is COLD on the jail
-(4b), the cold path installs it, the restart boots through the new
-wrapper — no manual step left (OPERATIONS updated at the source).
+**Exit-code contract at the shell boundary.** Both orchestrators
+previously collapsed every non-zero preflight exit into COLD
+(`if cli…; then hot; else cold; fi`) — which would have turned the
+new "loud usage error, exit 2" into a silent session-dropping
+restart on every future deploy, the exact class this change kills.
+Both now case on the exit code: 0 → hot, 1 → cold, anything else
+aborts the deploy loudly.
 
-**Acceptance.** The fix's own deploy is the test: a diff of
-`lib/*.ex` + `scripts/` + `infra/freebsd/deploy.sh` + docs must
-classify HOT on the jail. Before this change it would have been HOT
-anyway (no class-4 file touched) — but the prior Dockerfile-only
-diff now classifies HOT-on-jail / COLD-on-docker, verified in the
-substrate-matrix tests (`test/grappa/deploy/preflight_test.exs`).
+**rc.d refresh.** The jail cold path (`infra/freebsd/deploy.sh`)
+now runs `jail_install_rcd.sh` — the existing idempotent installer,
+not a new inline copy — BETWEEN stop and start: the old daemon is
+stopped through the wrapper that started it, the new one boots
+through the new wrapper, and both rc.d wrappers get refreshed on
+every cold deploy. Closes the loop that bit the same day: the rc(8)
+PATH fix shipped in the repo but prod kept 422ing until the wrapper
+was hand-copied. No manual step left (OPERATIONS updated at the
+source).
+
+**Re-exec guard fixed (was dead code).** The 2026-05-31
+self-modifying-script guard compared
+`${REPO_ROOT}/infra/freebsd/deploy.sh` against `$0` — the SAME path
+under the documented bastille invocation, so it could never fire
+while /bin/sh kept executing pre-pull bytes from the renamed-away
+inode. It now re-execs when the pulled diff range contains
+`infra/freebsd/deploy.sh`, threading the original pre-pull SHA via
+`DEPLOY_PREV_SHA` (the re-exec'd run re-pulls a no-op and would
+otherwise see prev==new and exit "nothing to do" — the old guard had
+that second latent bug too).
+
+**Acceptance.** The fix's own deploy is the test — with one caveat
+found in review: the deploy that SHIPS this change still runs the
+old deploy.sh bytes (the old guard is the dead one), whose 2-arg
+`cli` call against the new 3-arg module exits 2 → old `if`/`else`
+reads that as COLD. So the shipping deploy goes out `--force-hot`
+(after verifying the range classifies HOT via the new classifier
+locally); the NEXT auto deploy exercises the full pipeline
+end-to-end. The prior Dockerfile-only diff now classifies
+HOT-on-jail / COLD-on-docker, pinned by the substrate-matrix tests
+(`test/grappa/deploy/preflight_test.exs`).

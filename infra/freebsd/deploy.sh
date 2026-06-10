@@ -76,22 +76,35 @@ prev_sha=$(run_as_grappa 'git rev-parse HEAD' | tail -1)
 run_as_grappa 'git pull --ff-only && git log --oneline -3'
 new_sha=$(run_as_grappa 'git rev-parse HEAD' | tail -1)
 
+# On re-exec (below), the pre-pull SHA from the FIRST invocation rides
+# in via DEPLOY_PREV_SHA — the re-exec'd run re-pulls a no-op, so its
+# own rev-parse-before-pull equals new_sha and the nothing-to-do check
+# would wrongly exit 0, silently skipping the whole deploy.
+prev_sha="${DEPLOY_PREV_SHA:-${prev_sha}}"
+
 if [ "${prev_sha}" = "${new_sha}" ]; then
 	echo "[deploy] no commits since last HEAD (${prev_sha}) — nothing to do"
 	exit 0
 fi
 
 # Self-modifying-deploy-script trap (live-repro 2026-05-31):
-# `/bin/sh` may buffer the script file (read-ahead). If THIS deploy
-# updates `infra/freebsd/deploy.sh` itself (via git pull above), the
-# running shell continues executing the PRE-PULL bytes — every fix to
-# the deploy pipeline silently no-ops on the first deploy that ships
-# it. Re-exec ourselves so the NEW script bytes run for everything
+# git pull replaces files by rename, so the running /bin/sh keeps
+# executing the PRE-PULL bytes from the old inode — every fix to the
+# deploy pipeline silently no-ops on the first deploy that ships it.
+# Re-exec ourselves so the NEW script bytes run for everything
 # downstream of git-pull. Guard via DEPLOY_REEXECED env so we only
 # re-exec once (otherwise infinite loop).
-if [ -z "${DEPLOY_REEXECED:-}" ] && ! cmp -s "${REPO_ROOT}/infra/freebsd/deploy.sh" "$0" 2>/dev/null; then
-	echo "[deploy] deploy.sh changed during git-pull — re-exec to load new bytes"
+#
+# Detection is by DIFF RANGE, not file comparison: the previous
+# `cmp -s "${REPO_ROOT}/infra/freebsd/deploy.sh" "$0"` guard compared
+# the post-pull file against itself ($0 IS the repo path under the
+# documented bastille invocation) and could never fire (found in the
+# 2026-06-10 substrate-preflight review).
+if [ -z "${DEPLOY_REEXECED:-}" ] \
+	&& run_as_grappa "git diff --name-only '${prev_sha}..${new_sha}'" | grep -qx 'infra/freebsd/deploy.sh'; then
+	echo "[deploy] deploy.sh changed in ${prev_sha}..${new_sha} — re-exec to load new bytes"
 	export DEPLOY_REEXECED=1
+	export DEPLOY_PREV_SHA="${prev_sha}"
 	exec "${REPO_ROOT}/infra/freebsd/deploy.sh" "$@"
 fi
 
@@ -110,11 +123,20 @@ fi
 # the cost is the worst-case overhead vs the saved restart downtime.
 if [ "${mode}" = "auto" ]; then
 	echo "[deploy] preflight: classifying ${prev_sha}..${new_sha}"
-	if run_as_grappa "mix run --no-start -e 'Grappa.Deploy.Preflight.cli([\"${prev_sha}\", \"${new_sha}\", \"jail\"])'"; then
-		mode=hot
-	else
-		mode=cold
-	fi
+	preflight_rc=0
+	run_as_grappa "mix run --no-start -e 'Grappa.Deploy.Preflight.cli([\"${prev_sha}\", \"${new_sha}\", \"jail\"])'" || preflight_rc=$?
+	case "${preflight_rc}" in
+		0) mode=hot ;;
+		1) mode=cold ;;
+		*)
+			# Usage error or mix-boot crash inside the preflight oneshot.
+			# Falling through to COLD would convert a miswired call into
+			# a silent session-dropping restart on every future deploy —
+			# the exact incident class the substrate arg exists to kill.
+			echo "[deploy] ERROR: preflight exited ${preflight_rc} (usage/boot error, not a verdict) — aborting" >&2
+			exit "${preflight_rc}"
+			;;
+	esac
 elif [ "${mode}" = "hot" ]; then
 	echo "[deploy] --force-hot: skipping preflight"
 elif [ "${mode}" = "cold" ]; then
@@ -191,19 +213,6 @@ echo "[deploy] Grappa.Release.migrate()"
 # point; deploy.sh does NOT re-implement env sourcing inline.
 "${REPO_ROOT}/infra/freebsd/jail_release.sh" eval 'Grappa.Release.migrate()'
 
-# rc.d wrapper: install the repo copy when it drifted from the live
-# one. The cold path is the only window where this is free (a service
-# restart follows anyway), and an rc.d diff classifies COLD on the
-# jail substrate (Preflight class :rc_d) — so the restart below always
-# boots through the NEW wrapper. Replaces the manual cp+restart step
-# that bit on 2026-06-10 (rc(8) PATH fix shipped in the repo, prod
-# kept 422ing until the wrapper was hand-copied). Runs as root: rc.d
-# scripts are root:wheel 555, the build user can't write there.
-if ! cmp -s "${REPO_ROOT}/infra/freebsd/rc.d/grappa" /usr/local/etc/rc.d/grappa; then
-	echo "[deploy] rc.d wrapper drifted — installing infra/freebsd/rc.d/grappa → /usr/local/etc/rc.d/grappa"
-	install -o root -g wheel -m 555 "${REPO_ROOT}/infra/freebsd/rc.d/grappa" /usr/local/etc/rc.d/grappa
-fi
-
 echo "[deploy] service grappa restart"
 # epmd is started by the old BEAM but NOT killed on rc.d stop —
 # next start sees `name grappa@grappa already in use` and refuses.
@@ -239,6 +248,23 @@ while pgrep -q beam.smp 2>/dev/null; do
 done
 pkill epmd 2>/dev/null || true
 sleep 1
+
+# rc.d wrappers: refresh from the repo BETWEEN stop and start, so the
+# OLD daemon was stopped through the wrapper that started it and the
+# new daemon boots through the NEW wrapper. Delegates to
+# jail_install_rcd.sh — the existing idempotent installer (one code
+# path, same convention as the jail_cic_build.sh + jail_release.sh
+# delegations above); it refreshes BOTH wrappers (grappa +
+# grappa_ndp_keepalive) and leaves existing rc.conf.d files alone.
+# An rc.d/grappa diff classifies COLD on the jail (Preflight class
+# :rc_d), so this is what makes a shipped wrapper change actually
+# take effect — replaces the manual cp+restart step that bit on
+# 2026-06-10 (rc(8) PATH fix shipped in the repo, prod kept 422ing
+# until the wrapper was hand-copied). Runs as root: rc.d scripts are
+# root:wheel 0555, the build user can't write there.
+echo "[deploy] refresh rc.d wrappers (jail_install_rcd.sh)"
+"${REPO_ROOT}/infra/freebsd/jail_install_rcd.sh"
+
 service grappa start
 
 echo "[deploy] healthcheck loop (${HEALTHCHECK_URL})"

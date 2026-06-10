@@ -174,10 +174,12 @@ calling substrate**. The substrate scripts (`scripts/deploy.sh` for
 Docker, `infra/freebsd/deploy.sh` for the m42 bastille jail) shell
 out to `mix run --no-start -e 'Grappa.Deploy.Preflight.cli([from, to,
 substrate])'` with substrate `"docker"` / `"jail"`, dispatch on exit
-code. The substrate argument is required — a missing or unknown value
-is a usage error (exit 2), never a guess. Most diff classes are
-substrate-independent; the boot-substrate files are scoped (see the
-COLD list below) so a Dockerfile diff no longer cold-restarts the
+code: 0 → HOT, 1 → COLD, anything else (usage error, mix-boot crash)
+**aborts the deploy** — a miswired preflight must never degrade into
+a silent always-COLD guess. The substrate argument is required — a
+missing or unknown value is a usage error (exit 2). Most diff classes
+are substrate-independent; the boot-substrate files are scoped (see
+the COLD list below) so a Dockerfile diff no longer cold-restarts the
 jail (2026-06-10 incident: prod restarted, all IRC sessions dropped,
 for bytes the jail never reads).
 
@@ -226,13 +228,17 @@ downtime):
   these, so they classify HOT there.
 - `infra/freebsd/rc.d/grappa` — **jail substrate only** (rc wrapper
   read at service start); Docker classifies it HOT. The jail cold
-  path auto-installs the repo copy to `/usr/local/etc/rc.d/grappa`
-  when it drifted, so the restart boots through the new wrapper.
-  Deploy orchestrators (`scripts/deploy.sh`,
-  `infra/freebsd/deploy.sh`), operator-on-demand verbs
-  (`infra/freebsd/jail_*.sh`) and `grappa.env.example` are HOT on
-  both substrates — nothing about them lands in the running BEAM
-  (d8f354c).
+  path runs `jail_install_rcd.sh` between stop and start, so the
+  restart boots through the new wrapper. The sibling
+  `rc.d/grappa_ndp_keepalive` is HOT on both substrates — it's a
+  different rc(8) service, and restarting the BEAM wouldn't refresh
+  it; the installer refreshes its bytes on every cold deploy, or run
+  `jail_install_rcd.sh` + `service grappa_ndp_keepalive restart` by
+  hand for an immediate pickup. Deploy orchestrators
+  (`scripts/deploy.sh`, `infra/freebsd/deploy.sh`),
+  operator-on-demand verbs (`infra/freebsd/jail_*.sh`) and
+  `grappa.env.example` are HOT on both substrates — nothing about
+  them lands in the running BEAM (d8f354c).
 - `priv/repo/migrations/*` — hot path skips `mix ecto.migrate`;
   new tables/columns 500 on first query post-reload, Bootstrap
   crash-loops if it reads them.
@@ -341,10 +347,10 @@ PATH without `/usr/local`, so `infra/freebsd/rc.d/grappa` prepends
 `/usr/local/bin:/usr/local/sbin` (found live 2026-06-10 — pkgs
 installed, every media upload still 422). An rc.d diff classifies
 COLD on the jail substrate, and the cold path in
-`infra/freebsd/deploy.sh` auto-installs the repo copy to
-`/usr/local/etc/rc.d/grappa` before the restart — no manual step.
-To apply an rc.d change without waiting for a deploy (or after a
-`--force-hot` that skipped it):
+`infra/freebsd/deploy.sh` runs `jail_install_rcd.sh` (idempotent,
+refreshes both rc.d wrappers) between stop and start — no manual
+step. To apply an rc.d change without waiting for a deploy (or after
+a `--force-hot` that skipped it):
 
 ```sh
 ssh root@m42 'jexec 6 cp /home/grappa/grappa/infra/freebsd/rc.d/grappa \

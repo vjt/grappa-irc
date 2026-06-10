@@ -106,24 +106,31 @@ preflight() {
     # a oneshot mix run. The module's `cli/1` prints "→ <kind>: <files>"
     # lines for each cold class triggered (or "→ no unsafe markers →
     # HOT" if all green), then halts with exit 0 (HOT) or 1 (COLD).
+    # Exit 2+ is a usage/boot error, NOT a verdict — propagate it
+    # verbatim so the caller can abort instead of guessing COLD.
     #
     # ~2-3s mix-boot cost is invisible — the cold path already does a
     # multi-minute container-rebuild + cicchetto-build oneshot.
-    if docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps \
+    docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps \
         -e MIX_ENV=dev grappa \
-        mix run --no-start -e "Grappa.Deploy.Preflight.cli([\"$from\", \"$to\", \"docker\"])"; then
-        return 0
-    else
-        return 1
-    fi
+        mix run --no-start -e "Grappa.Deploy.Preflight.cli([\"$from\", \"$to\", \"docker\"])"
 }
 
 if [ "$mode" = "auto" ]; then
-    if preflight "$prev_sha" "HEAD"; then
-        mode=hot
-    else
-        mode=cold
-    fi
+    preflight_rc=0
+    preflight "$prev_sha" "HEAD" || preflight_rc=$?
+    case "$preflight_rc" in
+        0) mode=hot ;;
+        1) mode=cold ;;
+        *)
+            # Usage error or mix-boot crash inside the preflight
+            # oneshot. Falling through to COLD here would convert a
+            # miswired call into a needless restart forever (and
+            # silently — COLD "looks safe"). Abort loudly instead.
+            echo "ERROR: preflight exited $preflight_rc (usage/boot error, not a verdict) — aborting deploy" >&2
+            exit "$preflight_rc"
+            ;;
+    esac
 elif [ "$mode" = "hot" ]; then
     echo "--force-hot: skipping preflight"
 elif [ "$mode" = "cold" ]; then

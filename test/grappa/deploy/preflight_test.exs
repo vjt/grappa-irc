@@ -34,9 +34,7 @@ defmodule Grappa.Deploy.PreflightTest do
   end
 
   describe "classify_paths/2 — Class 4a: Docker image files (COLD docker / HOT jail)" do
-    # The 2026-06-10 incident class: a Dockerfile-only diff cold-restarted
-    # the m42 jail (ALL IRC sessions dropped) for bytes the jail never
-    # reads. Docker-image files cold ONLY the docker substrate.
+    # The 2026-06-10 incident class — see the preflight.ex moduledoc.
     for file <- [
           "Dockerfile",
           ".dockerignore",
@@ -44,6 +42,7 @@ defmodule Grappa.Deploy.PreflightTest do
           "compose.override.yaml",
           "compose.override.yaml.example",
           "compose.oneshot.yaml",
+          "compose.staging.yaml",
           "bin/start.sh",
           "bin/grappa"
         ] do
@@ -56,6 +55,12 @@ defmodule Grappa.Deploy.PreflightTest do
       test "#{file} → hot on jail (jail never reads Docker image files)" do
         assert {:hot, []} = Preflight.classify_paths([unquote(file)], :jail)
       end
+    end
+  end
+
+  describe "classify_paths/2 — Class 4a: compose.* is a prefix class, not an enumeration" do
+    test "nested compose-named file is NOT class 4a (prefix anchors at repo root)" do
+      assert {:hot, []} = Preflight.classify_paths(["cicchetto/e2e/compose.test.yaml"], :docker)
     end
   end
 

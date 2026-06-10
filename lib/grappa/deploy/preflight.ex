@@ -71,6 +71,10 @@ defmodule Grappa.Deploy.Preflight do
   @type verdict :: {:hot, []} | {:cold, [reason()]}
 
   @substrates [:docker, :jail]
+  # CLI-boundary mirror of @substrates — derived, not hand-kept, so a
+  # third substrate can't be accepted by classify_paths/2 yet rejected
+  # at the cli/1 guard (or vice versa).
+  @substrate_strings Enum.map(@substrates, &Atom.to_string/1)
 
   @doc """
   Classify a list of changed paths for the given deploy substrate.
@@ -107,7 +111,7 @@ defmodule Grappa.Deploy.Preflight do
   `LongLivedModules.all/0`. Single-sourced from the SoT module — no
   string parsing, no regex.
 
-  Used by `classify/3` to know which touched files need a state-shape
+  Used by `classify/5` to know which touched files need a state-shape
   diff (Class 3).
   """
   @spec long_lived_module_files() :: [String.t()]
@@ -188,7 +192,7 @@ defmodule Grappa.Deploy.Preflight do
   """
   @spec cli([String.t()]) :: no_return()
   def cli([from, to, substrate])
-      when is_binary(from) and is_binary(to) and substrate in ["docker", "jail"] do
+      when is_binary(from) and is_binary(to) and substrate in @substrate_strings do
     substrate = String.to_existing_atom(substrate)
 
     case classify(from, to, substrate, &git_diff_paths/2, &git_show/2) do
@@ -280,12 +284,8 @@ defmodule Grappa.Deploy.Preflight do
   defp application?(path), do: path == "lib/grappa/application.ex"
 
   # Class 4a: Docker image substrate — applies ONLY when classifying
-  # for :docker (see filter_on/4). Includes prior bash regex matches
-  # PLUS the H20 gaps: compose.override.yaml, compose.oneshot.yaml,
-  # bin/grappa, .dockerignore. The 2026-06-10 incident: a Dockerfile
-  # diff cold-restarted the m42 JAIL (all IRC sessions dropped) for
-  # bytes the jail never reads — these files are invisible to the
-  # release + rc.d substrate.
+  # for :docker (see filter_on/4); the jail never reads these files
+  # (the 2026-06-10 incident — full story in the moduledoc).
   #
   # Deploy ORCHESTRATORS — `scripts/deploy.sh` (Docker) and
   # `infra/freebsd/deploy.sh` (jail) — are intentionally NOT in this
@@ -300,19 +300,24 @@ defmodule Grappa.Deploy.Preflight do
   # this rule + the wait-loop + the re-exec guard.
   defp docker_image?("Dockerfile"), do: true
   defp docker_image?(".dockerignore"), do: true
-  defp docker_image?("compose.yaml"), do: true
-  defp docker_image?("compose.override.yaml"), do: true
-  defp docker_image?("compose.override.yaml.example"), do: true
-  defp docker_image?("compose.oneshot.yaml"), do: true
   defp docker_image?("bin/start.sh"), do: true
   defp docker_image?("bin/grappa"), do: true
-  defp docker_image?(_), do: false
+  # compose.* is a PREFIX class, not an enumeration — H20 already
+  # proved the enumeration failure mode twice (compose.override.yaml
+  # and compose.oneshot.yaml were both missed by the prior allowlist).
+  # Diff paths are repo-relative, so the prefix only matches files at
+  # the repo root; a false-COLD on a hypothetical non-compose
+  # `compose.*` file is the cheap direction (Conservative bias).
+  defp docker_image?(path), do: String.starts_with?(path, "compose.")
 
   # Class 4b: jail rc.d wrapper — applies ONLY when classifying for
-  # :jail. rc(8) reads it at service start; the jail cold path
-  # auto-installs the repo copy to /usr/local/etc/rc.d/grappa when it
-  # drifted (infra/freebsd/deploy.sh), so COLD here is what makes the
-  # new wrapper actually take effect.
+  # :jail, and ONLY the grappa wrapper: this class means "the grappa
+  # service must restart to pick the file up". The sibling
+  # `infra/freebsd/rc.d/grappa_ndp_keepalive` is deliberately NOT
+  # here — it's a different rc(8) service, and cold-restarting the
+  # BEAM (dropping every IRC session) would not refresh it anyway.
+  # Its bytes are refreshed by jail_install_rcd.sh, which the jail
+  # cold path runs before every restart.
   defp rc_d?("infra/freebsd/rc.d/grappa"), do: true
   defp rc_d?(_), do: false
 
