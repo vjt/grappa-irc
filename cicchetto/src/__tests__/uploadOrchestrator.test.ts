@@ -326,6 +326,10 @@ describe("upload lifecycle", () => {
 
     expect(uploadState(key)?.error).toBeTruthy();
     expect(uploadState(key)?.error).toMatch(/network/i);
+    // No progress was ever OBSERVED (e.g. supportsProgress: false
+    // hosts) — the copy must stay generic, not claim "no bytes were
+    // sent" when megabytes may have flowed unobserved.
+    expect(uploadState(key)?.error).not.toMatch(/no bytes/i);
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
@@ -372,8 +376,10 @@ describe("upload lifecycle", () => {
     await Promise.resolve();
     expect(uploadState(key)?.error).toMatch(/12 of 52 MB/);
 
-    // Retry fails immediately — stale bytes-sent from attempt #1 must
-    // not leak into attempt #2's message.
+    // Retry fails with no progress observed — stale bytes-sent from
+    // attempt #1 must not leak into attempt #2's message, and "never
+    // observed" must NOT claim "no bytes were sent" (hosts with
+    // supportsProgress: false never fire progress at all).
     retryUpload(key);
     await vi.waitFor(() => expect(pendingResolvers.length).toBe(2));
     const second = pendingResolvers[1];
@@ -383,8 +389,9 @@ describe("upload lifecycle", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(uploadState(key)?.error).toMatch(/no bytes/i);
+    expect(uploadState(key)?.error).toMatch(/network error/i);
     expect(uploadState(key)?.error).not.toMatch(/12 of 52 MB/);
+    expect(uploadState(key)?.error).not.toMatch(/no bytes/i);
   });
 
   it("on reject (http 413), error message is friendly + mentions size or rejection", async () => {
@@ -665,7 +672,7 @@ describe("video transcode branch", () => {
     await vi.waitFor(() =>
       expect(uploadState(key)?.error).toMatch(/no H\.264 encoder \(WebCodecs\)/),
     );
-    expect(uploadState(key)?.error).toMatch(/too large \(max 5MB\)/i);
+    expect(uploadState(key)?.error).toMatch(/too large \(max 5 MB\)/i);
 
     expect(pendingResolvers.length).toBe(0);
     expect(warnSpy).toHaveBeenCalled();
@@ -677,7 +684,7 @@ describe("video transcode branch", () => {
     await awaitTranscodeStart(1);
     vt.transcodes[0]?.resolve({ error: { kind: "failed", message: "encoder blew up" } });
     await vi.waitFor(() => expect(uploadState(key)?.error).toMatch(/encoder blew up/));
-    expect(uploadState(key)?.error).toMatch(/too large \(max 5MB\)/i);
+    expect(uploadState(key)?.error).toMatch(/too large \(max 5 MB\)/i);
 
     expect(pendingResolvers.length).toBe(0);
   });

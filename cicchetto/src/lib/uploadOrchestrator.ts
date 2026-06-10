@@ -2,7 +2,7 @@ import { createSignal } from "solid-js";
 import type { ChannelKey } from "./channelKey";
 import { sendMessage } from "./scrollback";
 import { categoryOf, mimeExtLabel, type UploadCategory } from "./uploadCategory";
-import { activeHost, type UploadError, type UploadHost } from "./uploadHost";
+import { activeHost, type UploadError, type UploadHost, type UploadProgress } from "./uploadHost";
 import { getUploadTtlSeconds, putUploadTtlSeconds } from "./userSettings";
 // Policy only — videoTranscode.ts (the sole mediabunny importer) is
 // loaded via dynamic import() inside prepareVideo so mediabunny's bulk
@@ -175,28 +175,34 @@ export function privacyModalState(): PrivacyModalState {
   return modalState();
 }
 
-/** Last progress event of an upload attempt — the only forensic
- *  signal an XHR network error leaves (no status, no body). */
-type ProgressSnapshot = { loaded: number; total: number };
-
+// Single bytes→MB label for every upload error surface — three
+// messages render sizes; one spelling ("N MB", "<0.1" floor so a
+// nonzero count never reads as zero).
 function mbLabel(bytes: number): string {
   const mb = bytes / (1024 * 1024);
-  return mb >= 10 ? Math.round(mb).toString() : mb.toFixed(1);
+  if (mb < 0.1) return "<0.1";
+  if (mb >= 10 || Number.isInteger(mb)) return Math.round(mb).toString();
+  return mb.toFixed(1);
 }
 
-function friendlyErrorMessage(err: UploadError, lastProgress: ProgressSnapshot | null): string {
+function friendlyErrorMessage(err: UploadError, lastProgress: UploadProgress | null): string {
   switch (err.kind) {
     case "network": {
-      // Distinguish dropped-mid-upload (e.g. a proxy body cap cutting
-      // the stream — the 2026-06-10 nginx 4m edge cut) from
-      // never-connected. XHR error events carry no status; bytes sent
-      // is all we know.
-      if (lastProgress === null || lastProgress.loaded === 0) {
-        return "Upload failed — no bytes were sent (network or server unreachable?). Retry?";
+      // XHR error events carry no status; the last progress event is
+      // the only forensic signal. Three honest cases: progress never
+      // OBSERVED (null — hosts with supportsProgress: false never fire
+      // one, so claiming "no bytes" would be a lie), observed zero
+      // (server never took a byte), observed nonzero (the stream was
+      // cut — e.g. the 2026-06-10 host-nginx 4m body cap).
+      if (lastProgress === null) {
+        return "Upload failed — network error. Retry?";
+      }
+      if (lastProgress.loaded === 0) {
+        return "Upload failed — no bytes were sent (network or server unreachable). Retry?";
       }
       const sent = mbLabel(lastProgress.loaded);
       const of = lastProgress.total > 0 ? ` of ${mbLabel(lastProgress.total)}` : "";
-      return `Connection dropped mid-upload (${sent}${of} MB sent). Retry?`;
+      return `Upload failed — connection dropped (${sent}${of} MB sent). Retry?`;
     }
     case "abort":
       // Caller short-circuits this path (silent state clear) — included
@@ -282,13 +288,12 @@ async function dispatchUpload(
   const cap = host.maxFileSizeBytes(category);
   if (cap !== null && uploadFile.size > cap) {
     inflight.delete(key);
-    const mb = Math.round(cap / (1024 * 1024));
     setEntry(key, {
       filename: uploadFile.name,
       loaded: 0,
       total: 0,
       phase: "uploading",
-      error: `File is too large (max ${mb}MB).`,
+      error: `File is too large (max ${mbLabel(cap)} MB).`,
     });
     return;
   }
@@ -304,7 +309,7 @@ async function dispatchUpload(
 
   // Per-attempt closure — a retry gets a fresh null, so a stale
   // bytes-sent figure can never leak into the next attempt's error.
-  let lastProgress: ProgressSnapshot | null = null;
+  let lastProgress: UploadProgress | null = null;
 
   host
     .upload(
@@ -434,13 +439,12 @@ async function prepareVideo(
   const cap = host.maxFileSizeBytes("video");
   if (cap !== null && file.size > cap) {
     inflight.delete(key);
-    const mb = Math.round(cap / (1024 * 1024));
     setEntry(key, {
       filename: file.name,
       loaded: 0,
       total: 0,
       phase: "transcoding",
-      error: `Video processing failed (${reason}); the original is too large (max ${mb}MB).`,
+      error: `Video processing failed (${reason}); the original is too large (max ${mbLabel(cap)} MB).`,
     });
     return null;
   }
