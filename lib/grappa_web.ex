@@ -20,6 +20,7 @@ defmodule GrappaWeb do
         Grappa.Cic.Wire,
         Grappa.ClientId,
         Grappa.Health,
+        Grappa.HotReload,
         Grappa.IRC,
         Grappa.LiveIntrospection,
         Grappa.Networks,

@@ -4,9 +4,12 @@ defmodule GrappaWeb.AdminController do
 
   ## `POST /admin/reload`
 
-  Walks `:code.modified_modules/0` (Erlang built-in: modules whose
-  .beam on disk has a different hash than the loaded BEAM) and
-  reloads each via `:code.purge/1` + `:code.load_file/1`. Returns
+  Delegates to `Grappa.HotReload.reload_modified/0`: walks
+  `:code.modified_modules/0` (Erlang built-in: modules whose .beam on
+  disk has a different hash than the loaded BEAM) and reloads each
+  via `:code.soft_purge/1` + `:code.load_file/1` — see that module
+  for why soft-purge (the 2026-06-10 double-hot-deploy `:not_purged`
+  live repro, and why hard purge would drop IRC sessions). Returns
   `200 OK` with JSON `%{"reloaded" => ["Elixir.Mod.Name", ...]}` —
   the list is empty when nothing changed, useful as positive
   evidence in deploy scripts.
@@ -83,22 +86,12 @@ defmodule GrappaWeb.AdminController do
   @doc "POST /admin/reload → reload all modified modules in the running BEAM."
   @spec reload(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def reload(conn, _) do
-    reloaded =
-      Enum.map(:code.modified_modules(), fn mod ->
-        # `:code.load_file/1` purges the current version + loads
-        # fresh. Returns `{:module, mod}` on success or `{:error,
-        # reason}` on failure (no .beam on disk, atom name mismatch,
-        # etc). Errors here are operator-actionable — surface them.
-        case :code.load_file(mod) do
-          {:module, ^mod} -> {mod, :ok}
-          {:error, reason} -> {mod, {:error, reason}}
-        end
-      end)
+    %{reloaded: reloaded, failed: failed} = Grappa.HotReload.reload_modified()
 
     json(conn, %{
-      reloaded: for({mod, :ok} <- reloaded, do: Atom.to_string(mod)),
+      reloaded: Enum.map(reloaded, &Atom.to_string/1),
       failed:
-        for {mod, {:error, reason}} <- reloaded do
+        for {mod, reason} <- failed do
           %{module: Atom.to_string(mod), reason: inspect(reason)}
         end
     })
