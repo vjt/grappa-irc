@@ -11866,3 +11866,54 @@ locally); the NEXT auto deploy exercises the full pipeline
 end-to-end. The prior Dockerfile-only diff now classifies
 HOT-on-jail / COLD-on-docker, pinned by the substrate-matrix tests
 (`test/grappa/deploy/preflight_test.exs`).
+
+## 2026-06-11 — cic text selection dead (two stacked causes, one per platform)
+
+vjt: text selection doesn't work in cic, neither desktop nor mobile.
+One symptom, two independent root causes that happened to overlap:
+
+**Desktop: keepKeyboard's mousedown preventDefault.** The UX-3
+preserve-keyboard listener (document-level capture, `lib/keepKeyboard.ts`)
+preventDefaults every mousedown that lands outside an input while an
+input has focus. The module header claimed "No-op on desktop browsers" —
+false: the install was unconditional, and mousedown's default action is
+not just the focus shift, it is ALSO the start of a text-selection
+drag. With the compose box autofocused (the normal cic state), every
+attempt to drag-select scrollback text was cancelled at the capture
+phase. Fix: gate the handler on `isIos()` — iOS is the only platform
+with an on-screen keyboard to preserve, so anywhere else the
+preventDefault is pure loss. The gate sits in the handler (not at
+install) so the platform decision reads the live navigator and the
+deduped capture listener needs no uninstall path. Pinned by
+`src/__tests__/keepKeyboard.test.ts` (desktop UA: mousedown survives;
+iPhone UA: preserve still fires, focus transfer to other inputs still
+allowed).
+
+**iOS: the half-copied Telegram pattern.** UX-6 D9 (479b77d) adopted
+Telegram Web K's keyboard pattern wholesale, including
+`html.is-ios { -webkit-user-select: none }`. Telegram pairs that global
+kill with a selective re-enable on message text; the copy took the kill
+and skipped the re-enable, making ALL of cic unselectable on iOS — and
+no DESIGN_NOTES entry ever recorded user-select as a deliberate
+decision, confirming it rode along unexamined. Fix:
+`html.is-ios .scrollback { user-select: text }` — channels, queries and
+the server window all render through `.scrollback`, so message text is
+selectable again while app chrome (sidebar, BottomBar, members,
+buttons) stays unselectable, which is the global rule's actual point
+(no selection magnifier mid-scroll-gesture). The day-separator and
+unread-marker labels keep their own explicit `user-select: none`.
+`-webkit-touch-callout: none` stays — link long-press callout is a
+separate, deliberate native-app-feel decision, untouched by this bug.
+
+e2e guard: `e2e/tests/text-selection-restored.spec.ts` — chromium test
+drives the actual drag-select gesture with compose focused (the exact
+dead path); the @webkit test asserts the computed-style cascade on the
+iPhone-15 emulation surface (real long-press selection isn't
+emulatable — same limitation class as
+feedback_playwright_webkit_not_ios_scroll). Device-level dogfood on a
+real iPhone remains the final verification for the iOS half.
+
+Lesson (recurring shape): copying a reference pattern partially is
+worse than not copying it — the kill switch arrived without its
+counterweight. Same family as the "read the reference implementation
+COMPLETELY" rule.

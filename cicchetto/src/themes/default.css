@@ -171,6 +171,22 @@ html.is-ios {
   -webkit-touch-callout: none;
 }
 
+/* Dispatch-1 (2026-06-11) — selective re-enable of text selection.
+   The blanket `-webkit-user-select: none` above came in with the
+   Telegram Web K pattern (479b77d), but Telegram pairs the global
+   kill with a re-enable on message text — copying only the kill made
+   ALL of cic unselectable on iOS. Restore selection exactly where
+   users select: scrollback message text (channels, queries, server
+   window — all render through .scrollback). App chrome (sidebar,
+   bottom bar, members, buttons) stays non-selectable, which is the
+   point of the global rule: no selection magnifier popping up
+   mid-scroll-gesture. The day-separator and unread-marker labels
+   inside .scrollback keep their own explicit `user-select: none`. */
+html.is-ios .scrollback {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 html.is-ios body {
   height: calc(var(--vh, 1vh) * 100);
 }
