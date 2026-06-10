@@ -74,6 +74,17 @@ jobs:
       - name: Doctor (doc + @spec coverage)
         run: mix doctor
 
+      - name: Install media tools (MetadataStrip shells out to them)
+        # `Grappa.Uploads.MetadataStrip` (#39) is fail-CLOSED: tests
+        # exercise real exiftool/ffmpeg invocations on committed
+        # GPS-tagged fixtures. The Docker image gets these via
+        # `apk add`; this job runs on the bare runner via setup-beam,
+        # so install them here or every strip test fails with
+        # "exiftool not found on PATH" (red main 2026-06-10).
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libimage-exiftool-perl ffmpeg
+
       - name: Tests with coverage
         run: mix coveralls.json --warnings-as-errors
 

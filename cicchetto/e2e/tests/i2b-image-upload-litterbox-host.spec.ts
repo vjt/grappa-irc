@@ -22,6 +22,7 @@
 
 import { expect, test } from "../fixtures/test";
 import { type Page } from "@playwright/test";
+import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import {
   AUTOJOIN_CHANNELS,
@@ -108,11 +109,7 @@ test.describe("I-2 litterbox path (admin-pinned host)", () => {
     await picker.setInputFiles({
       name: "screenshot.png",
       mimeType: "image/png",
-      buffer: Buffer.from(
-        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478" +
-          "9c620001000005000d0a2db40000000049454e44ae426082",
-        "hex",
-      ),
+      buffer: Buffer.from(TINY_PNG_HEX, "hex"),
     });
 
     const modal = page.getByRole("dialog", { name: /Upload to litterbox\.catbox\.moe/i });
@@ -149,11 +146,7 @@ test.describe("I-2 litterbox path (admin-pinned host)", () => {
     await picker.setInputFiles({
       name: "screenshot.png",
       mimeType: "image/png",
-      buffer: Buffer.from(
-        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478" +
-          "9c620001000005000d0a2db40000000049454e44ae426082",
-        "hex",
-      ),
+      buffer: Buffer.from(TINY_PNG_HEX, "hex"),
     });
 
     const modal = page.getByRole("dialog", { name: /Upload to litterbox\.catbox\.moe/i });

@@ -34,15 +34,11 @@
 // in the e2e harness (sqlite + local disk + Reaper).
 
 import { expect, test } from "../fixtures/test";
+import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-
-// 1×1 transparent PNG — same magic bytes the i2 spec uses.
-const TINY_PNG_HEX =
-  "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478" +
-  "9c620001000005000d0a2db40000000049454e44ae426082";
 
 test("UX-6-B — picker → privacy modal (embedded) → upload → 📸 link → GET serves bytes", async ({
   page,
