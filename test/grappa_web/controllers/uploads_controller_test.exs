@@ -265,18 +265,8 @@ defmodule GrappaWeb.UploadsControllerTest do
 
   describe "GET /uploads/:slug — happy path" do
     test "200 with file bytes when slug exists + alive", %{conn: conn} do
-      {_, session} = user_and_session([])
-
       bytes = "PNGBYTES12345"
-
-      upload = upload_fixture("img.png", "image/png", bytes)
-
-      conn1 =
-        conn
-        |> put_bearer(session.id)
-        |> post("/api/uploads", %{"file" => upload})
-
-      %{"slug" => slug} = json_response(conn1, 201)
+      slug = uploaded_slug(conn, "img.png", "image/png", bytes)
 
       # NO auth on GET — fresh conn.
       get_conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
@@ -292,7 +282,7 @@ defmodule GrappaWeb.UploadsControllerTest do
     @range_bytes "0123456789ABCDEF"
 
     test "bytes=0-3 → 206 with the first four bytes", %{conn: conn} do
-      slug = uploaded_slug(conn, @range_bytes)
+      slug = uploaded_slug(conn, "clip.mp4", "video/mp4", @range_bytes)
 
       conn = ranged_get(slug, "bytes=0-3")
 
@@ -302,7 +292,7 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
 
     test "open-ended bytes=4- → 206 to EOF", %{conn: conn} do
-      slug = uploaded_slug(conn, @range_bytes)
+      slug = uploaded_slug(conn, "clip.mp4", "video/mp4", @range_bytes)
 
       conn = ranged_get(slug, "bytes=4-")
 
@@ -311,7 +301,7 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
 
     test "suffix bytes=-5 → 206 with the last five bytes", %{conn: conn} do
-      slug = uploaded_slug(conn, @range_bytes)
+      slug = uploaded_slug(conn, "clip.mp4", "video/mp4", @range_bytes)
 
       conn = ranged_get(slug, "bytes=-5")
 
@@ -320,7 +310,7 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
 
     test "last-byte-pos beyond EOF clamps", %{conn: conn} do
-      slug = uploaded_slug(conn, @range_bytes)
+      slug = uploaded_slug(conn, "clip.mp4", "video/mp4", @range_bytes)
 
       conn = ranged_get(slug, "bytes=8-999")
 
@@ -329,16 +319,19 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
 
     test "first-byte-pos beyond EOF → 416 with bytes */total", %{conn: conn} do
-      slug = uploaded_slug(conn, @range_bytes)
+      slug = uploaded_slug(conn, "clip.mp4", "video/mp4", @range_bytes)
 
       conn = ranged_get(slug, "bytes=99-")
 
       assert response(conn, 416) == ""
       assert get_resp_header(conn, "content-range") == ["bytes */16"]
+      # A 416 with public freshness would let a shared cache pin the
+      # bare URL dead for an hour.
+      assert get_resp_header(conn, "cache-control") == []
     end
 
     test "malformed Range → 200 full body", %{conn: conn} do
-      slug = uploaded_slug(conn, @range_bytes)
+      slug = uploaded_slug(conn, "clip.mp4", "video/mp4", @range_bytes)
 
       conn = ranged_get(slug, "bananas")
 
@@ -346,15 +339,28 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
 
     test "multi-range → 200 full body (we may ignore per RFC 9110)", %{conn: conn} do
-      slug = uploaded_slug(conn, @range_bytes)
+      slug = uploaded_slug(conn, "clip.mp4", "video/mp4", @range_bytes)
 
       conn = ranged_get(slug, "bytes=0-1,3-4")
 
       assert response(conn, 200) == @range_bytes
     end
 
+    test "zero-size on-disk file + Range → empty 200, not a crash", %{conn: conn, root: root} do
+      slug = uploaded_slug(conn, "clip.mp4", "video/mp4", @range_bytes)
+
+      # DB row says bytes > 0; disk diverged (truncation drift). The
+      # public surface must stay no-oracle — a 500 here would leak
+      # "row exists, file empty".
+      File.write!(Uploads.storage_path(root, slug), "")
+
+      conn = ranged_get(slug, "bytes=0-1")
+
+      assert response(conn, 200) == ""
+    end
+
     test "plain GET advertises accept-ranges: bytes", %{conn: conn} do
-      slug = uploaded_slug(conn, @range_bytes)
+      slug = uploaded_slug(conn, "clip.mp4", "video/mp4", @range_bytes)
 
       conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
 
@@ -416,10 +422,10 @@ defmodule GrappaWeb.UploadsControllerTest do
   # ---- helpers ------------------------------------------------------
 
   # Uploads `bytes` as an authenticated user, returns the public slug.
-  defp uploaded_slug(conn, bytes) do
+  defp uploaded_slug(conn, filename, mime, bytes) do
     {_, session} = user_and_session([])
 
-    upload = upload_fixture("clip.mp4", "video/mp4", bytes)
+    upload = upload_fixture(filename, mime, bytes)
 
     conn =
       conn

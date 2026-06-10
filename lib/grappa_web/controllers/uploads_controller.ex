@@ -154,14 +154,23 @@ defmodule GrappaWeb.UploadsController do
   # Single Range header → 206 slice / 416 / full 200 per
   # GrappaWeb.ByteRange's verdict. Zero or multiple Range headers →
   # full 200 (a server MAY ignore Range; multi-header is malformed
-  # anyway). iOS Safari requires the 206 path to play video at all.
+  # anyway), as is a zero-size on-disk file (DB validates bytes > 0,
+  # but disk truncation can diverge — ByteRange contracts total > 0,
+  # and an empty 200 preserves the no-oracle failure surface).
+  # iOS Safari requires the 206 path to play video at all.
   #
   # `path` comes from `Uploads.storage_path/2` which validates the
   # slug against `^[a-z2-7]{26}$` — no `..` traversal reachable.
   # Sobelow can't follow the validator across the call boundary.
   @sobelow_skip ["Traversal.SendFile"]
-  defp send_ranged(conn, path, size, [header]) do
-    case ByteRange.parse(header, size) do
+  defp send_ranged(conn, path, size, range_headers) do
+    verdict =
+      case range_headers do
+        [header] when size > 0 -> ByteRange.parse(header, size)
+        _ -> :ignore
+      end
+
+    case verdict do
       {:ok, {offset, length}} ->
         conn
         |> put_resp_header(
@@ -171,7 +180,11 @@ defmodule GrappaWeb.UploadsController do
         |> send_file(206, path, offset, length)
 
       :unsatisfiable ->
+        # Strip the freshness grant: a shared cache may store any
+        # explicitly-fresh final response, and a cached 416 would pin
+        # the bare URL dead for an hour.
         conn
+        |> delete_resp_header("cache-control")
         |> put_resp_header("content-range", "bytes */#{size}")
         |> send_resp(416, "")
 
@@ -179,9 +192,6 @@ defmodule GrappaWeb.UploadsController do
         send_file(conn, 200, path)
     end
   end
-
-  @sobelow_skip ["Traversal.SendFile"]
-  defp send_ranged(conn, path, _, _), do: send_file(conn, 200, path)
 
   # ------------------------------------------------------------------
   # Internal — extraction + validation

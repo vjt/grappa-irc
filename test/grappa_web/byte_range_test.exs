@@ -84,6 +84,12 @@ defmodule GrappaWeb.ByteRangeTest do
     test "negative first-byte-pos never parses as a bounded range" do
       assert ByteRange.parse("bytes=-5-3", 16) == :ignore
     end
+
+    test "signed positions violate the 1*DIGIT grammar" do
+      assert ByteRange.parse("bytes=+0-+3", 16) == :ignore
+      assert ByteRange.parse("bytes=+5-", 16) == :ignore
+      assert ByteRange.parse("bytes=0-+3", 16) == :ignore
+    end
   end
 
   describe "parse/2 — properties" do
@@ -111,7 +117,7 @@ defmodule GrappaWeb.ByteRangeTest do
       end
     end
 
-    property "satisfiable bounded ranges slice exactly [first, min(last, total-1)]" do
+    property "satisfiable bounded ranges slice exactly the in-file bytes of [first, last]" do
       check all(
               total <- integer(1..10_000),
               first <- integer(0..(total - 1)),
@@ -119,15 +125,24 @@ defmodule GrappaWeb.ByteRangeTest do
             ) do
         last = first + extra
 
+        # Independent oracle: count the requested byte positions that
+        # actually exist — NOT the production min/clamp formula.
+        expected_length = Enum.count(first..last, &(&1 < total))
+
         assert ByteRange.parse("bytes=#{first}-#{last}", total) ==
-                 {:ok, {first, min(last, total - 1) - first + 1}}
+                 {:ok, {first, expected_length}}
       end
     end
 
-    property "suffix ranges cover the tail of the file" do
+    property "suffix ranges cover exactly the tail of the file" do
       check all(total <- integer(1..10_000), n <- integer(1..12_000)) do
-        start = max(total - n, 0)
-        assert ByteRange.parse("bytes=-#{n}", total) == {:ok, {start, total - start}}
+        # Independent oracle: a suffix of n serves min(n, total) bytes
+        # ending at the last byte — derived from the RFC wording, not
+        # from the production max/subtraction shape.
+        expected_length = min(n, total)
+
+        assert ByteRange.parse("bytes=-#{n}", total) ==
+                 {:ok, {total - expected_length, expected_length}}
       end
     end
   end

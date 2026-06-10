@@ -84,10 +84,15 @@ defmodule GrappaWeb.ByteRange do
 
   defp ok_slice(offset, total), do: {:ok, {offset, total - offset}}
 
-  defp parse_pos(s) do
+  # RFC 9110 positions are 1*DIGIT — no sign. Integer.parse/1 alone
+  # would admit "+5"; the leading-digit guard closes that, and the
+  # {n, ""} full-consumption match rejects any trailing junk.
+  defp parse_pos(<<c, _::binary>> = s) when c in ?0..?9 do
     case Integer.parse(s) do
-      {n, ""} when n >= 0 -> {:ok, n}
+      {n, ""} -> {:ok, n}
       _ -> :error
     end
   end
+
+  defp parse_pos(_), do: :error
 end
