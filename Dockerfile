@@ -19,13 +19,19 @@ FROM elixir:1.19-otp-28-alpine
 # curl for the in-container /healthz probe + future hot-deploy POST;
 # inotify-tools for Phoenix code-reloader file watch (live in dev,
 # request-driven in prod, both rely on the same Erlang port driver).
+# exiftool + ffmpeg for Grappa.Uploads.MetadataStrip (#39): exiftool
+# strips images + mp4/mov losslessly; ffmpeg remuxes webm (the one
+# allowlisted upload type exiftool cannot write). Jail equivalent:
+# docs/OPERATIONS.md "Jail package dependencies".
 RUN apk add --no-cache \
         build-base \
         git \
         curl \
         sqlite-dev \
         ncurses \
-        inotify-tools
+        inotify-tools \
+        exiftool \
+        ffmpeg
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
