@@ -444,11 +444,14 @@ is due. Don't just look at todo.md.
    **Code review** → Fix → Commit → **Update docs** → **Merge** →
    **Deploy** → Health check → Update checkpoint.
    Code review is NEVER optional.
-3. **Merge BEFORE deploy.** `scripts/deploy.sh` reads from
-   `/srv/grappa` (main). Worktree code is NOT in the build context.
-   Workflow: rebase worktree onto main → merge to main →
-   `scripts/deploy.sh` (auto-detects hot-vs-cold; `--force-cold` if
-   the heuristic mis-classifies) → verify health → push.
+3. **Merge BEFORE deploy, push BEFORE prod.** Prod is the **m42
+   bastille jail** — `scripts/deploy-m42.sh` (server, auto hot/cold)
+   / `--cic` (bundle only). The jail pulls origin/main, so: rebase
+   worktree onto main → merge to main → push origin main →
+   deploy-m42 → verify health. Invoke deploy scripts by ABSOLUTE
+   path (`/srv/grappa/scripts/…`) — cwd drift runs another
+   checkout's copy. `scripts/deploy.sh` (Docker) drives the LOCAL
+   dev stack only; nothing production runs on the pi.
 4. **Docs before deploy.** Update affected living docs (DESIGN_NOTES,
    patterns/*.md if introduced, todo).
 5. Update checkpoint after each feature/fix. Flush before compaction.

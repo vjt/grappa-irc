@@ -90,7 +90,8 @@ flake-vs-cascade-vs-real-bug triage) is documented in one place:
    Cloak AES-GCM. **Back it up separately — losing it means losing
    every stored upstream password.**
 
-3. **Build the image + start the prod stack**:
+3. **Build the image + start the full stack** (the `prod` compose
+   profile — nginx + cic bundle):
    ```sh
    scripts/deploy.sh
    ```

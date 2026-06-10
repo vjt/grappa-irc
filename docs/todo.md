@@ -51,9 +51,9 @@ to this section.
   2026-05-22 review § "LOW findings": dead-code clauses in
   `Identifier.services_sender?`, empty-reason `send_away/2` accepting
   `AWAY :\r\n`, `Push.subscription.id` as `string` vs branded UUID,
-  `linkify` regex `\S+` unbounded, `image-upload.ts` localStorage vs
-  `token()` signal, `bin/start.sh` env-fiddling, `register-dns.sh`
-  placement.
+  `linkify` regex `\S+` unbounded, `uploadHost.ts` (ex
+  `image-upload.ts`) localStorage vs `token()` signal,
+  `bin/start.sh` env-fiddling, `register-dns.sh` placement.
 - **`feedback_deploy_preflight_empty_diff_after_merge` recurrence
   (REV-I)** — script-level fix candidate: detect same-SHA + recent
   merge-commit + demand explicit flag. Wider than any single REV
@@ -155,9 +155,9 @@ Phase 5 cluster opens):
   specs needed (`CAP LS 302`, `CHATHISTORY`, `server-time`, `batch`,
   `labeled-response`, SASL mechanisms). Reuse parser from Phase 1.
 - **Supply-chain hardening** — `oven/bun:1` and `nginx:alpine`
-  (used by `scripts/bun.sh` and `compose.prod.yaml`) are moving major
-  tags. Pin to digests (`oven/bun:1@sha256:…`) for reproducible
-  builds.
+  (used by `scripts/bun.sh` and `compose.yaml`'s `--profile prod`
+  nginx service) are moving major tags. Pin to digests
+  (`oven/bun:1@sha256:…`) for reproducible builds.
 - **Visitor nick collision pre-check** — a visitor login with a nick
   already held by a logged-in user on the same network creates a
   Session.Server that fails forever on upstream 433. The
@@ -225,9 +225,5 @@ Phase 5 cluster opens):
   prominently — not just "unread count." Needs last-seen marker
   per channel + server-computed "things addressed to you while away"
   list that cicchetto renders as top section before scrollback proper.
-  Phase 4/5 cicchetto UX.
-- **Auto-away management.** Client emits idle/active hints (focus,
-  tab visibility, lock screen if available); server flips presence
-  and AWAY status without user intervention. No `/away` typing.
-  Combine with addressed-on-return above. Phase 4 cicchetto + small
-  server hook.
+  Phase 4/5 cicchetto UX. (Its sibling wishlist item, auto-away, is
+  long shipped — `WSPresence` + cic visibility hints.)

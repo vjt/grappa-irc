@@ -110,7 +110,7 @@ stack (`cicchetto/e2e/compose.yaml`):
 * **grappa-e2e-seeder** (oneshot): runs `mix ecto.migrate` + seeds 3 users (`vjt`, `admin-vjt`, `m9b-test`, `m9b-victim`) + binds them to bahamut-test + seeds 200 scrollback lines on `#bofh`. Idempotent at clean-volume time only — re-seeding a non-fresh volume fails on duplicate user rows.
 * **grappa-test**: the bouncer, dev image, source bind-mounted, points at `bahamut-test:6667`.
 * **cicchetto-build-test** (oneshot): `bun install --frozen-lockfile && bun run build` into bind-mounted `runtime/e2e/cicchetto-dist/`.
-* **nginx-test**: same image + nginx.conf as prod; serves SPA dist + reverse-proxies grappa-test:4000.
+* **nginx-test**: same nginx image + config shape as the Docker full-stack profile (`infra/nginx.conf` — prod proper is the m42 jail's nginx, `infra/freebsd/nginx.conf`); serves SPA dist + reverse-proxies grappa-test:4000.
 * **playwright-runner**: official Playwright base, runs `npx playwright test` against `https://nginx-test` from inside the docker network.
 
 Cold bring-up: ~30s. Suite (~190 specs across chromium + webkit-iphone-15

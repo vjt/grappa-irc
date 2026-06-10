@@ -5,6 +5,14 @@ verbose catalogs (verbs, scripts, deploy machinery, per-host overrides,
 runtime data, monitoring). Keep this file in sync when adding a verb,
 script, deploy class, or runtime knob.
 
+**Substrates — read this first.** Dev/test = Docker on the pi
+(`scripts/*.sh`; the container is the runtime). **Prod = the m42
+FreeBSD bastille jail** (`scripts/deploy-m42.sh`; operator section
+below). The Docker `--profile prod` stack is the full-stack compose
+profile (nginx + cic bundle — the name predates the jail move) used
+for dev, e2e, and self-hosters; it is NOT this project's production.
+Nothing production runs on the pi.
+
 ## Operator dispatcher — `bin/grappa`
 
 `bin/grappa` is the host-side operator interface. One verb per task,
@@ -133,12 +141,12 @@ scripts/db.sh                # sqlite3 RO against runtime/grappa_dev.db
 scripts/healthcheck.sh       # curl /healthz
 scripts/monitor.sh           # docker compose logs -f
 scripts/observer.sh          # observer_cli runtime introspection
-scripts/deploy.sh            # unified deploy: auto-detects hot-vs-cold via git-diff preflight
-scripts/deploy.sh --force-hot   # bypass preflight, hot-deploy unconditionally
-scripts/deploy.sh --force-cold  # skip preflight, cold-deploy (rebuild + recreate)
-scripts/deploy-cic.sh        # cic bundle deploy (Docker): vite build + broadcast bundle_hash for refresh banner
-scripts/deploy-m42.sh        # host-side wrapper: ssh m42 + sudo bastille cmd → infra/freebsd/deploy.sh (server)
-scripts/deploy-m42.sh --cic  # host-side wrapper: → jail_deploy_cic.sh (cic bundle, hot, no BEAM restart)
+scripts/deploy.sh            # DEV (local Docker stack): auto-detects hot-vs-cold via git-diff preflight
+scripts/deploy.sh --force-hot   # dev, bypass preflight, hot-deploy unconditionally
+scripts/deploy.sh --force-cold  # dev, skip preflight, cold-deploy (rebuild + recreate)
+scripts/deploy-cic.sh        # DEV cic bundle (Docker): vite build + broadcast bundle_hash for refresh banner
+scripts/deploy-m42.sh        # PROD: ssh m42 + sudo bastille cmd → infra/freebsd/deploy.sh (server, auto hot/cold)
+scripts/deploy-m42.sh --cic  # PROD cic bundle: jail_deploy_cic.sh (hot, no BEAM restart)
 scripts/register-dns.sh      # operator: register host in local DNS
 scripts/shell.sh             # bash inside container (debug only — bin/grappa shell preferred)
 ```
@@ -171,10 +179,11 @@ directly — NOT `Phoenix.CodeReloader`.** The Phoenix reloader is a
 dev-only facility: it depends on Mix (absent in `mix release`
 artifacts → no-op on the FreeBSD jail) and is gated behind a config
 check that silently no-ops in `MIX_ENV=prod` even when Mix is
-present (was wrongly trusted on Docker prod — see the 2026-05-16
-M-4 incident). `POST /admin/reload` walks `:code.modified_modules/0`
+present (wrongly trusted back when prod still ran on Docker — the
+2026-05-16 M-4 incident; prod moved to the m42 jail 2026-05-27).
+`POST /admin/reload` walks `:code.modified_modules/0`
 and `:code.load_file/1`s each — release-friendly, Mix-free, works
-identically in dev, Docker prod, and the jail release.
+identically in the dev Docker stack and the jail release.
 
 The .beam-on-disk must be fresh BEFORE the reload POST. That's the
 substrate's job:
@@ -399,25 +408,30 @@ don't hardcode hostnames there.
 
 ## Runtime Data
 
-- **Database**: sqlite via `ecto_sqlite3`. WAL journal mode in prod
-  (set in `config/runtime.exs`). Files at `runtime/grappa_dev.db`
-  (dev) / `runtime/grappa_prod.db` (prod). Bind-mounted from the host
-  via `compose.yaml` so the volume survives container rebuilds.
+- **Database**: sqlite via `ecto_sqlite3`. WAL journal mode under
+  `MIX_ENV=prod` (set in `config/runtime.exs`). Files at
+  `runtime/grappa_dev.db` (dev) / `runtime/grappa_prod.db`
+  (`MIX_ENV=prod` — the m42 jail, or a Docker stack run with
+  `--env=prod`). Docker bind-mounts them from the host via
+  `compose.yaml`; the jail keeps them as plain files under
+  `/home/grappa/grappa/runtime/`.
 - **Migrations**: standard Ecto.
   - Write migration in `priv/repo/migrations/<timestamp>_<name>.exs`.
-  - Run: `scripts/mix.sh ecto.migrate`.
-  - Migration files travel with the bind-mounted source — `scripts/deploy.sh`
-    runs `mix ecto.migrate` as part of the cold path. New migrations are
-    NOT auto-detected as cold-required (they're idempotent at boot via the
-    existing migration runner) but adding a column that Bootstrap reads
-    races the supervision tree boot — when in doubt, `--force-cold`.
+  - Dev: `scripts/mix.sh ecto.migrate`.
+  - Deploys: the preflight classifies ANY new migration file as COLD
+    (Class 5 — there is no in-reload migrate until #41 lands). The
+    cold paths run it: Docker via `mix ecto.migrate`, the jail via
+    `Grappa.Release.migrate()` before `service grappa restart`.
+    Never `--force-hot` past a new migration — the DML is skipped
+    and the code reads defaults (the uploads-2 key-rename would have
+    silently reverted tuned caps this way).
   - Never apply DDL manually via raw SQL. Always Ecto.Migration so
     `schema_migrations` stays in sync.
   - Use `:text` for free-text columns. Don't bake length limits into
     sqlite — adjust at the schema layer if needed.
 - **Log file**: container's stdout, captured by Docker JSON logger
-  (max 5MB × 3 files in dev, 10MB × 5 in prod). Tail via
-  `scripts/monitor.sh`. On the FreeBSD jail, `bin/grappa daemon`'s
+  (5MB × 3 files; 10MB × 5 under `--profile prod`). Tail via
+  `scripts/monitor.sh`. On the FreeBSD jail (prod), `bin/grappa daemon`'s
   `run_erl` tees the BEAM's stdout to `runtime/log/erlang.log.*`
   (plus `runtime/pipe/` for `bin/grappa remote` + `runtime/pid` for
   the daemon), driven by `RELEASE_TMP=runtime` exported by
@@ -435,8 +449,10 @@ don't hardcode hostnames there.
 
 ## Monitoring
 
-- **Health**: `scripts/healthcheck.sh` (curl `/healthz`).
-- **Logs**: `scripts/monitor.sh` (docker compose logs -f).
+- **Health**: `scripts/healthcheck.sh` (curl `/healthz`) — dev. Prod:
+  `ssh m42 "sudo bastille cmd grappa curl -fsS http://127.0.0.1:4000/healthz"`.
+- **Logs**: `scripts/monitor.sh` (docker compose logs -f) — dev. Prod:
+  tail `runtime/log/erlang.log.*` inside the jail (see Runtime Data).
 - **Runtime introspection**: `scripts/observer.sh` (observer_cli — see
   every supervised process, mailbox depth, memory).
 - **Phoenix.LiveDashboard** mounted at `/admin` (dev only by default;
