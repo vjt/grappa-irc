@@ -1,15 +1,30 @@
 // Client-side video downscale — video+document uploads cluster Task 6
-// (2026-06-09).
+// (2026-06-09); skip-gate added with the metadata-strip cluster
+// (2026-06-10).
 //
 // mediabunny (WebCodecs under the hood): demux mp4/mov/webm → H.264
 // mp4 out, audio passthrough when the source track fits the container
 // (the iPhone AAC case — Chrome has no AAC encoder; an unmanageable
 // track is discarded with a mediabunny console warning and the output
-// proceeds video-only, non-blocking). Transcode-always when supported:
-// output is uniformly mp4 and metadata-free. NOTE the metadata death
-// is NOT mediabunny's default — `Conversion.init` COPIES input tags
-// unless told otherwise; the explicit `tags: {}` below is what makes
-// GPS/creation-time die by construction.
+// proceeds video-only, non-blocking). NOTE the metadata death is NOT
+// mediabunny's default — `Conversion.init` COPIES input tags unless
+// told otherwise; the explicit `tags: {}` below keeps the transcoded
+// output clean.
+//
+// Transcode-always is SUPERSEDED (2026-06-10, metadata-strip cluster):
+// privacy is a server guarantee now — grappa strips image/video
+// metadata fail-closed on every upload, so metadata removal is no
+// longer a reason to transcode. The transcode decision is pure
+// performance, on observable facts only (vjt rejected time/uplink
+// estimators): skip when the source is ALREADY the target shape —
+// H.264 in mp4, within the duration policy, overall bitrate at or
+// under what we'd produce, within the cap. Transcoding such a file
+// can't meaningfully shrink it; it only burns wall-clock and battery.
+// GPS/metadata presence is deliberately NOT consulted. iOS picker
+// caveat: iPhone Photos exports are typically 1080p+ at 8–16 Mbps, so
+// the gate rarely fires there — the win is desktop/already-modest
+// files. (The picker's own "preparing" pie is iOS's pre-File export,
+// unsuppressable from the web.)
 //
 // Policy vs capability split (the orchestrator's fallback contract):
 // - `too_long` is POLICY — duration is read via a <video> element's
@@ -37,10 +52,12 @@ import {
   Conversion,
   canEncodeVideo,
   Input,
+  Mp4InputFormat,
   Mp4OutputFormat,
   Output,
 } from "mediabunny";
 import {
+  AUDIO_BUDGET_BPS,
   MAX_DURATION_SECONDS,
   pickEncodeBitrate,
   pickTargetHeight,
@@ -78,6 +95,50 @@ export function __resetVideoTranscodeSupportForTests(): void {
 }
 
 // --------------------------------------------------------------------
+// Skip-gate — observable facts only (metadata-strip cluster,
+// 2026-06-10). All four must hold:
+//   1. container is mp4 (demuxed format, not the declared MIME — a
+//      .mov is NOT a match even though it's the same ISOBMFF family:
+//      the playability target is strictly H.264-in-mp4);
+//   2. primary video track codec is avc;
+//   3. overall bitrate (size×8/duration — video AND audio together)
+//      is at or under what our own encode would produce:
+//      pickEncodeBitrate for the policy height + the audio reserve.
+//      If the original is already under that, a transcode cannot
+//      meaningfully shrink it;
+//   4. size within the cap (an over-cap original MUST transcode —
+//      shrinking is the point).
+// Duration policy (≤ MAX_DURATION_SECONDS) is enforced by the caller
+// before this probe runs. Probe failures return false: an unreadable
+// container falls through to the normal transcode/capability path,
+// which owns the diagnostics.
+// --------------------------------------------------------------------
+
+async function alreadyTargetShape(
+  file: File,
+  durationSeconds: number,
+  capBytes: number,
+): Promise<boolean> {
+  if (file.size > capBytes) return false;
+
+  const policyHeight = pickTargetHeight(durationSeconds, capBytes);
+  const producedBps = pickEncodeBitrate(policyHeight, durationSeconds, capBytes) + AUDIO_BUDGET_BPS;
+  if ((file.size * 8) / durationSeconds > producedBps) return false;
+
+  const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
+  try {
+    const format = await input.getFormat();
+    if (!(format instanceof Mp4InputFormat)) return false;
+    const track = await input.getPrimaryVideoTrack();
+    return track !== null && track.codec === "avc";
+  } catch {
+    return false;
+  } finally {
+    input.dispose();
+  }
+}
+
+// --------------------------------------------------------------------
 // Transcode
 // --------------------------------------------------------------------
 
@@ -98,6 +159,15 @@ export async function transcodeVideo(
   const durationSeconds = await probeDuration(file);
   if (durationSeconds !== null && durationSeconds > MAX_DURATION_SECONDS) {
     return { error: { kind: "too_long", durationSeconds } };
+  }
+
+  // Skip-gate (2026-06-10): a source already in target shape uploads
+  // as-is. Checked BEFORE the capability gate on purpose — a
+  // compliant file on a no-WebCodecs platform skips the
+  // unsupported-fallback dance entirely.
+  if (durationSeconds !== null && (await alreadyTargetShape(file, durationSeconds, capBytes))) {
+    console.info("video already H.264/mp4 within policy — skipping transcode");
+    return { ok: file };
   }
 
   if (!(await videoTranscodeSupported())) {

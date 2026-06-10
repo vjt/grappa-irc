@@ -22,7 +22,10 @@
 
 export const MAX_DURATION_SECONDS = 120;
 const RESOLUTION_THRESHOLD_BPS = 2_000_000;
-const AUDIO_BUDGET_BPS = 128_000;
+// Exported for videoTranscode's skip-gate: a source file's OVERALL
+// bitrate (video + audio) is compared against what we'd produce —
+// pickEncodeBitrate (video only) plus this audio reserve.
+export const AUDIO_BUDGET_BPS = 128_000;
 const CAP_SAFETY = 0.95; // VBR overshoot margin
 // Degenerate cap/duration combos (tiny cap × near-ceiling duration)
 // drive the budget to ≤ 0 — clamp so the encoder never sees a nonsense

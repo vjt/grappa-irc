@@ -12,6 +12,12 @@ const h = vi.hoisted(() => ({
   conversionInit: vi.fn(),
   // Per-test source track height — the never-upscale clamp reads this.
   sourceHeight: 1080,
+  // Per-test demuxed shape for the skip-gate probe. Default mirrors
+  // sampleClip (a .mov): NOT mp4, so the gate stays closed unless a
+  // test opens it explicitly — pre-gate tests keep their behavior.
+  format: "mov" as "mp4" | "mov",
+  codec: "avc" as string | null,
+  getFormatThrows: false,
   // Captured Conversion.init options for assertion.
   lastInitOptions: null as null | {
     input: unknown;
@@ -29,9 +35,21 @@ vi.mock("mediabunny", () => {
     buffer: ArrayBuffer | null = null;
   }
   class Mp4OutputFormat {}
+  // The skip-gate discriminates the demuxed container via
+  // `instanceof Mp4InputFormat` — mirror the real class hierarchy's
+  // OBSERVABLE bit: mp4 and mov are distinct classes.
+  class Mp4InputFormat {}
+  class QuickTimeInputFormat {}
   class Input {
-    async getPrimaryVideoTrack(): Promise<{ getDisplayHeight: () => Promise<number> }> {
-      return { getDisplayHeight: async () => h.sourceHeight };
+    async getFormat(): Promise<unknown> {
+      if (h.getFormatThrows) throw new Error("unreadable container");
+      return h.format === "mp4" ? new Mp4InputFormat() : new QuickTimeInputFormat();
+    }
+    async getPrimaryVideoTrack(): Promise<{
+      getDisplayHeight: () => Promise<number>;
+      codec: string | null;
+    }> {
+      return { getDisplayHeight: async () => h.sourceHeight, codec: h.codec };
     }
     dispose(): void {}
   }
@@ -45,6 +63,7 @@ vi.mock("mediabunny", () => {
     ALL_FORMATS: [],
     BlobSource,
     BufferTarget,
+    Mp4InputFormat,
     Mp4OutputFormat,
     Input,
     Output,
@@ -111,6 +130,9 @@ const stubWebCodecs = (): void => {
 
 beforeEach(() => {
   h.sourceHeight = 1080;
+  h.format = "mov";
+  h.codec = "avc";
+  h.getFormatThrows = false;
   h.lastInitOptions = null;
   h.canEncodeVideo.mockClear();
   h.canEncodeVideo.mockResolvedValue(true);
@@ -435,5 +457,94 @@ describe("transcodeVideo", () => {
 
   it("MAX_DURATION_SECONDS is the spec'd 120s policy ceiling", () => {
     expect(MAX_DURATION_SECONDS).toBe(120);
+  });
+});
+
+// --------------------------------------------------------------------
+// Skip-gate — already-target-shape sources upload as-is (metadata-strip
+// cluster, 2026-06-10). Privacy is the SERVER's job now; this gate is
+// pure performance and consults observable facts only.
+// --------------------------------------------------------------------
+
+describe("transcodeVideo skip-gate", () => {
+  const cap = 50 * MiB;
+  const noProgress = (): void => {};
+  // 30s @ 50MiB → policy 720p, encode ceiling 4Mbps; +128k audio
+  // reserve → overall-bitrate threshold ≈ 15.5 MB for a 30s clip.
+
+  const mp4Clip = (bytes: number): File =>
+    new File([new Uint8Array(bytes)], "clip.mp4", { type: "video/mp4" });
+
+  it("H.264-in-mp4, in-policy, under-bitrate, under-cap → the ORIGINAL File comes back, no encode, no WebCodecs needed", async () => {
+    // Deliberately NO stubWebCodecs: a compliant file must skip even
+    // on platforms that cannot transcode at all.
+    h.format = "mp4";
+    const file = mp4Clip(16);
+
+    const result = await transcodeVideo(file, cap, noProgress, new AbortController().signal);
+
+    if (!("ok" in result)) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
+    expect(result.ok).toBe(file); // same File identity — untouched
+    expect(h.conversionInit).not.toHaveBeenCalled();
+  });
+
+  it("mov container does NOT skip — same ISOBMFF family, wrong target shape", async () => {
+    stubWebCodecs();
+    h.format = "mov";
+
+    const result = await transcodeVideo(mp4Clip(16), cap, noProgress, new AbortController().signal);
+
+    expect("ok" in result).toBe(true);
+    expect(h.conversionInit).toHaveBeenCalled();
+  });
+
+  it("non-avc codec in mp4 does NOT skip", async () => {
+    stubWebCodecs();
+    h.format = "mp4";
+    h.codec = "vp9";
+
+    await transcodeVideo(mp4Clip(16), cap, noProgress, new AbortController().signal);
+
+    expect(h.conversionInit).toHaveBeenCalled();
+  });
+
+  it("overall bitrate above what our encode would produce does NOT skip", async () => {
+    stubWebCodecs();
+    h.format = "mp4";
+    // 16 MiB over 30s ≈ 4.5 Mbps overall — above the 4 Mbps 720p
+    // ceiling + 128k audio reserve (≈ 4.128 Mbps ≈ 15.5 MB / 30s).
+    const result = await transcodeVideo(
+      mp4Clip(16 * MiB),
+      cap,
+      noProgress,
+      new AbortController().signal,
+    );
+
+    expect("ok" in result).toBe(true);
+    expect(h.conversionInit).toHaveBeenCalled();
+  });
+
+  it("over-cap original does NOT skip — shrinking is the point", async () => {
+    stubWebCodecs();
+    h.format = "mp4";
+    // 30s @ 1MiB cap: starved budget → the bitrate threshold
+    // (~996 kB) sits at the cap, so the cap check is what rejects a
+    // 2MiB file — pins condition 4 independently of condition 3.
+    const smallCap = 1 * MiB;
+
+    await transcodeVideo(mp4Clip(2 * MiB), smallCap, noProgress, new AbortController().signal);
+
+    expect(h.conversionInit).toHaveBeenCalled();
+  });
+
+  it("unreadable container (getFormat throws) falls through to the transcode path", async () => {
+    stubWebCodecs();
+    h.format = "mp4";
+    h.getFormatThrows = true;
+
+    const result = await transcodeVideo(mp4Clip(16), cap, noProgress, new AbortController().signal);
+
+    expect("ok" in result).toBe(true);
+    expect(h.conversionInit).toHaveBeenCalled();
   });
 });
