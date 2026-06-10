@@ -92,6 +92,16 @@ to this section.
 
 ## High
 
+- **e2e nginx-test must carry the prod CSP** (2026-06-10) — the
+  `security-headers.conf` snippet is absent from
+  `cicchetto/e2e/nginx-test.conf`, so 223 green e2e specs never saw
+  the missing `media-src blob:` that broke EVERY prod video upload
+  (the duration probe's blob: <video> load was CSP-blocked; fixed in
+  `6f3327c`). Include the snippet in the e2e nginx config and run the
+  full suite — first run under CSP may surface more latent blocks,
+  which is exactly the point. Same lesson as the nginx route
+  allowlist parity rule in CLAUDE.md.
+
 Phase 5 hardening (collected across multiple plans; ship together when
 Phase 5 cluster opens):
 
