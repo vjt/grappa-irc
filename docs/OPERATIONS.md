@@ -306,6 +306,22 @@ release at `/home/grappa/grappa`, DB `runtime/grappa_prod.db`, env
   the network alive for visitors, delete the credential row directly +
   `Session.stop_session`.
 
+**Jail package dependencies.** `Grappa.Uploads.MetadataStrip` (#39)
+shells out to `exiftool` (images + mp4/mov) and `ffmpeg` (webm remux).
+The Docker image installs both via the Dockerfile (`apk add exiftool
+ffmpeg` — dev/CI/e2e get them for free); the jail needs the FreeBSD
+packages installed ONCE, **before** deploying the strip release:
+
+```sh
+ssh root@m42 'pkg -j 6 install -y p5-Image-ExifTool ffmpeg'
+```
+
+The strip is fail-CLOSED: with the binaries missing, every image and
+video upload is rejected 422 `metadata_strip_failed` (documents
+unaffected). The error log names the missing binary
+(`exiftool not found on PATH — …`), so a post-deploy upload failing
+with that line means this step was skipped.
+
 **Jail outbound source IPs.** The jail is shared-IP
 (`jail.conf ip6=new`, `interface=vtnet0`); pool + per-server
 `source_address` IPs are `/128` aliases in `jail.conf ip6.addr`. To add

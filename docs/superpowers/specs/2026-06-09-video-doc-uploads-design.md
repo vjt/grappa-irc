@@ -90,9 +90,16 @@ export type TranscodeError =
   `RESOLUTION_THRESHOLD_BPS` (named constant, initial value 2 Mbps) →
   720p target height, else 480p. Never upscale (source below target →
   keep source height).
-- **Always transcode when supported**, even when the source already
+- ~~**Always transcode when supported**, even when the source already
   fits: output is uniformly H.264/mp4 and metadata-free (fresh
-  container — GPS/EXIF die by construction).
+  container — GPS/EXIF die by construction).~~ **SUPERSEDED
+  2026-06-10** (metadata-strip cluster, #39): privacy is a SERVER
+  guarantee — `Grappa.Uploads.MetadataStrip` strips every image/video
+  upload fail-closed, so metadata removal is no longer a reason to
+  transcode. The client transcode decision is pure performance: skip
+  when the source is already H.264-in-mp4 AND within duration policy
+  AND at-or-under the bitrate `pickEncodeBitrate` would target AND
+  under the per-type cap. See DESIGN_NOTES 2026-06-10.
 - Audio: mediabunny passthrough when the source track fits mp4 (AAC —
   the iPhone case, avoids Chrome's missing AAC encoder); unmanageable
   track → proceed video-only with a non-blocking warning.

@@ -11666,3 +11666,62 @@ the documented exception). e2e ships green on this whole mistake
 class until the CSP-parity todo lands — the planned integration run
 should also pin a ranged-fetch 206 through the nginx chain, since
 ConnTest can never see a proxy-layer Range strip.
+
+## 2026-06-10 — server-side metadata strip (#39): privacy is a server guarantee
+
+vjt's architectural call closing the iOS-picker "double processing"
+discussion: **privacy = server guarantee, client transcode decision =
+pure performance.** GPS/metadata presence must never sit in the
+client's transcode-or-not decision path, because the server strips
+metadata ALWAYS. This supersedes the uploads-2 spec's
+"always transcode when supported … metadata-free by construction"
+constraint (amended at the source, see
+`docs/superpowers/specs/2026-06-09-video-doc-uploads-design.md`):
+the transcode was carrying a privacy job it can't actually own — the
+fallback path uploaded originals with GPS intact, and litterbox
+uploads never saw a strip at all. A guarantee that holds only on the
+happy path is not a guarantee.
+
+**Where.** `Grappa.Uploads.MetadataStrip.run/2`, called inside
+`Uploads.create/3` before the file write — context-level so every
+door (REST today, any future facade) inherits it. The row's `bytes`
+is the STORED (stripped) size, keeping `live_bytes_sum/0` cap
+accounting honest against the disk.
+
+**Tooling (verified empirically, not from docs).** `exiftool -all=`
+for images (jpeg/png/gif/webp/apng) and QuickTime video (mp4/mov):
+lossless container rewrite — ffmpeg would RE-ENCODE jpeg (quality
+loss), which is why "one tool for everything" was rejected. Verified
+on GPS-tagged samples: EXIF APP1, PNG `eXIf`, `udta` `loci`/`©xyz`,
+`mdta` Keys (`com.apple.quicktime.location.ISO6709`) all removed;
+moov-before-mdat (faststart) preserved — a reordering would have
+silently broken iOS progressive playback (the layer-4 saga's hard
+lesson). webm is the one allowlisted type exiftool cannot write
+("Writing of WEBM files is not yet supported") → ffmpeg stream-copy
+remux (`-map_metadata -1 -map_chapters -1 -c copy`), encoded streams
+untouched.
+
+**Fail-closed.** Strip failure (garbage bytes, missing binary,
+image/video mime without a tool mapping) rejects the upload —
+`{:error, {:metadata_strip, reason}}` → 422 `metadata_strip_failed`.
+Reason is logged server-side, never echoed (tool stderr leaks tmp
+paths). The unmapped-mime clause is deliberate: a future allowlist
+addition without a strip mapping must break loudly in tests, not
+store-with-leak. Documents pass through byte-identical (vjt scope:
+images + videos; PDF/office metadata is a known accepted class).
+
+**Deps.** Dockerfile `apk add exiftool ffmpeg` (dev/CI/e2e inherit);
+jail needs `pkg -j 6 install p5-Image-ExifTool ffmpeg` BEFORE the
+deploy (OPERATIONS "Jail package dependencies") — fail-closed means
+missing binaries reject every media upload.
+
+**Fixtures.** Committed GPS-tagged binaries
+(`test/support/fixtures/uploads/` + `generate.sh` provenance):
+marker-string assertions (`Exif`, `eXIf`, `com.apple.quicktime`,
+coordinate strings) pin presence in the fixture AND absence in the
+stored artifact, tool-independent. Lifecycle/byte-arithmetic tests
+moved to `text/plain` (passthrough keeps size constants exact);
+media-path coverage moved UP into dedicated strip tests + door-level
+tests with real bytes — the old `"PNG-FAKE-BYTES"`-labeled-png tests
+exercised zero image semantics and cannot survive a fail-closed
+boundary.
