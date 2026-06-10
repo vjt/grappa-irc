@@ -39,7 +39,10 @@ export interface UploadHost {
   // id, displayName, retentionStatement, ttlOptions, defaultTtl,
   // supportsProgress, upload() — unchanged from ImageHost
   acceptedMimeTypes: Record<UploadCategory, ReadonlyArray<string>>;
-  maxFileSizeBytes: Record<UploadCategory, number | null>;
+  // amended during implementation: a function of category, not a Record —
+  // the embedded host's caps read the reactive serverSettings() signal at
+  // call time so admin-tuned caps apply without a reload.
+  maxFileSizeBytes(category: UploadCategory): number | null;
 }
 ```
 

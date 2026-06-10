@@ -11520,3 +11520,106 @@ park-all+logout composite already has full-stack coverage in
 NEW render/guard, not the pre-covered composite. The `m7-admin-gate`
 spec's registered-user positive twin moved from `log out` → the
 `detach-btn` testid.
+
+## 2026-06-09 — video + document uploads (uploads-2 cluster)
+
+The upload pipeline generalizes from image-only to three categories —
+image / video / document — across server caps, MIME admission, the cic
+host abstraction, and a client-side video transcode. Spec:
+`docs/superpowers/specs/2026-06-09-video-doc-uploads-design.md` (8
+tasks). Emoji prefixes on the wire: 📸 / 🎬 / 📄 — IRC stays text only;
+the emoji is the whole media-type signal.
+
+**Per-type caps + key migration, no read-fallback.** The single
+`upload.per_file_cap_bytes` becomes
+`upload.{image,video,document}_per_file_cap_bytes` (10/50/10 MiB
+defaults) — one 50 MiB ceiling for video must not gift 50 MiB to raw
+images. A DML migration renames the existing row; there is deliberately
+NO read-fallback on the old key, so a missed migration surfaces as the
+compiled-in default instead of a silent legacy read. An admin PUT still
+using the old key lands in the existing unknown-key warning clause:
+logged, rejected, not silent.
+
+**Server MIME→category map.** The flat image allowlist becomes
+`@mime_categories` in `UploadsController`: video (mp4 / quicktime /
+webm) and document (pdf / txt / odt / ods / docx / xlsx — no
+macro-enabled variants) join the five image types. The category is
+derived from the declared MIME per request and picks which cap applies;
+it is never stored — no schema change, nothing to backfill.
+
+**cic: ImageHost → UploadHost.** Per-category `acceptedMimeTypes` plus
+`maxFileSizeBytes(category)`; `categoryOf()` (`uploadCategory.ts`) is a
+1:1 ordered mirror of the server map — adding a MIME touches both files
+in the same commit. One orchestrator with a pre-upload transform hook
+(video → transcode, image/document → identity); no per-type orchestrator
+forks. The spec originally typed `maxFileSizeBytes` as a
+`Record<UploadCategory, number | null>` — amended during implementation
+to a function of category after review caught a latent bug in the
+pre-cluster embedded host: its cap pre-check captured `serverSettings()`
+once at module init while the comment claimed admin-tuned caps applied
+reactively. The comment was a lie. A literal can't be reactive; the
+function shape reads the signal at call time, so an admin cap change now
+reaches the ComposeBox pre-check without a reload.
+
+**mediabunny for the transcode.** One dependency, MPL-2.0, no wasm
+blob: demux + mux + WebCodecs orchestration + audio passthrough.
+Rejected: ffmpeg.wasm (25 MB download, COOP/COEP isolation
+requirements, mobile memory death) and a hand-rolled mp4box.js +
+WebCodecs frame loop + mp4-muxer stack (three deps and we own the frame
+loop + manual audio passthrough — exactly what the library already
+does). Two non-obvious findings are encoded in code + tests:
+`Conversion.init` COPIES input metadata tags unless given an explicit
+empty `tags: {}` — that one line is load-bearing for the
+"transcoded output is metadata-free by construction" guarantee — and
+mediabunny scales to the requested box unconditionally, so the target
+height is clamped to the source's display height to never upscale.
+
+**Transcode-always + adaptive resolution + policy ceiling.** When the
+capability gate passes (WebCodecs present + avc encodable), every video
+is transcoded — uniform mp4 out, GPS/creation-time dead with the
+container. Bitrate budget = (0.95 × video cap × 8) / duration − 128
+kbps audio reserve; budget ≥ 2 Mbps → 720p target, else 480p. The
+2-minute ceiling is POLICY, not capability: duration is read via a
+`<video>` element's `loadedmetadata` (works without WebCodecs), so it
+binds on every path.
+
+**Fallback-to-original decision trail.** vjt initially chose
+strict-reject on unsupported platforms; reverted to fallback-to-original
+for compatibility (an iPhone-shot clip from a WebCodecs-less browser
+should still send). Capability failures (`unsupported` / `failed`) fall
+back to uploading the original under the same policy gates, reason
+`console.warn`'d; `too_long` hard-rejects everywhere. The fallback
+original keeps its metadata — a known, accepted leak, documented in the
+spec; #39 (server-side metadata stripping) will generalize.
+
+**#49 root cause + fix.** The stale-retry bug: `lastAttempt` (the
+retry payload) was written only after the pre-checks passed, so an
+oversize rejection left the PREVIOUS file as the retry buffer and
+"retry" after picking a smaller file re-uploaded the rejected one. Fix:
+record the user's latest selection unconditionally, before any gate —
+retry now always retries what the error box shows.
+
+**Plug.Parsers latent 8 MB bug (Task 1).** The multipart parser's
+`:length` default is 8_000_000 bytes — a 9 MB upload 413'd at the
+parser while the admin-tuned cap said 10 MB was fine. Raised to a 64 MB
+ceiling scoped to `:multipart` only; a top-level `:length` would also
+have raised the JSON body ceiling 8× on memory-constrained prod. Policy
+stays in the per-type caps; the parser ceiling is just headroom above
+every cap.
+
+**Lazy-chunk split.** mediabunny was 60%+ of the cold-start main
+bundle for a feature most sessions never touch. `videoTranscode.ts`
+(the only mediabunny importer) sits behind a dynamic `import()` at the
+orchestrator's video branch; `videoPolicy.ts` (duration ceiling, budget
+math, `<video>` probe) is the static, mediabunny-free policy surface.
+Main chunk 799.59 kB → 304.41 kB (gzip 208.26 → 84.97 kB); the
+494.58 kB transcode chunk loads on first video upload.
+
+**e2e.** `uploads2-video-doc-upload.spec.ts`: document happy path
+(upload.txt → 📄 row + byte round-trip) and a chromium-only video test
+(tiny.mp4 → 🎬 row), deliberately transcode-agnostic — Playwright's
+chromium build may lack an avc encoder, in which case the documented
+capability fallback uploads the original and the same PRIVMSG lands.
+Harness gotcha encoded in the spec: `VideoEncoder` is
+`[SecureContext]`-gated, so the skip-probe must run on the app origin —
+probing `about:blank` false-skips.
