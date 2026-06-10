@@ -75,14 +75,18 @@ defmodule Grappa.UploadsTest do
   end
 
   describe "create/3 — happy path" do
+    # Lifecycle + byte-arithmetic tests use text/plain: MetadataStrip
+    # passes documents through byte-identical, so File.read!/byte_size
+    # assertions stay exact. Image/video bytes are REWRITTEN by the
+    # strip — those paths are pinned in "create/3 — metadata strip".
     test "writes file + inserts row for user subject", %{root: root} do
       user = user_fixture([])
-      bytes = "PNG-IMAGINARY-BYTES"
+      bytes = "PLAIN-TEXT-BYTES"
 
       attrs = %{
         subject: {:user, user.id},
-        mime: "image/png",
-        original_filename: "shot.png",
+        mime: "text/plain",
+        original_filename: "notes.txt",
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
@@ -92,19 +96,19 @@ defmodule Grappa.UploadsTest do
       assert row.slug == "aaaaaaaaaaaaaaaaaaaaaaaaaa"
       assert row.user_id == user.id
       assert is_nil(row.visitor_id)
-      assert row.mime == "image/png"
+      assert row.mime == "text/plain"
       assert row.bytes == byte_size(bytes)
-      assert row.original_filename == "shot.png"
+      assert row.original_filename == "notes.txt"
       assert File.read!(Path.join(root, row.slug)) == bytes
     end
 
     test "writes file + inserts row for visitor subject", %{root: root} do
       v = visitor_fixture([])
-      bytes = "JPG-BYTES"
+      bytes = "VISITOR-BYTES"
 
       attrs = %{
         subject: {:visitor, v.id},
-        mime: "image/jpeg",
+        mime: "text/plain",
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
@@ -112,7 +116,7 @@ defmodule Grappa.UploadsTest do
 
       assert row.visitor_id == v.id
       assert is_nil(row.user_id)
-      assert row.mime == "image/jpeg"
+      assert row.mime == "text/plain"
       assert row.bytes == byte_size(bytes)
       assert File.exists?(Path.join(root, row.slug))
     end
@@ -122,7 +126,7 @@ defmodule Grappa.UploadsTest do
 
       attrs = %{
         subject: {:user, user.id},
-        mime: "image/png",
+        mime: "text/plain",
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
@@ -135,7 +139,7 @@ defmodule Grappa.UploadsTest do
 
       attrs = %{
         subject: {:user, user.id},
-        mime: "image/png",
+        mime: "text/plain",
         original_filename: "../../etc/passwd",
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
@@ -161,7 +165,7 @@ defmodule Grappa.UploadsTest do
 
       attrs = %{
         subject: {:visitor, bogus_visitor_id},
-        mime: "image/png",
+        mime: "text/plain",
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
@@ -177,7 +181,7 @@ defmodule Grappa.UploadsTest do
     test "rejects unknown subject shape via validate_subject_xor", %{root: root} do
       attrs = %{
         subject: nil,
-        mime: "image/png",
+        mime: "text/plain",
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
@@ -198,7 +202,7 @@ defmodule Grappa.UploadsTest do
           bytes,
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
           storage_root: root
@@ -232,7 +236,7 @@ defmodule Grappa.UploadsTest do
       {:ok, row} =
         Uploads.create(
           "x",
-          %{subject: {:user, user.id}, mime: "image/png", expires_at: past},
+          %{subject: {:user, user.id}, mime: "text/plain", expires_at: past},
           storage_root: Path.join(System.tmp_dir!(), "grappa_uploads_get_expired_#{System.unique_integer([:positive])}")
         )
 
@@ -254,7 +258,7 @@ defmodule Grappa.UploadsTest do
             b,
             %{
               subject: {:user, user.id},
-              mime: "image/png",
+              mime: "text/plain",
               expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
             },
             storage_root: root
@@ -272,7 +276,7 @@ defmodule Grappa.UploadsTest do
           "ten-chars-",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
           storage_root: root
@@ -283,7 +287,7 @@ defmodule Grappa.UploadsTest do
           "five5",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
           storage_root: root
@@ -306,7 +310,7 @@ defmodule Grappa.UploadsTest do
           "a",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(now, -100, :second)
           },
           storage_root: root
@@ -317,7 +321,7 @@ defmodule Grappa.UploadsTest do
           "b",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(now, 3600, :second)
           },
           storage_root: root
@@ -328,7 +332,7 @@ defmodule Grappa.UploadsTest do
           "c",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(now, -100, :second)
           },
           storage_root: root
@@ -350,7 +354,7 @@ defmodule Grappa.UploadsTest do
           "aaaa",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
           storage_root: root
@@ -367,7 +371,7 @@ defmodule Grappa.UploadsTest do
           String.duplicate("a", 50),
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
           storage_root: root
@@ -386,7 +390,7 @@ defmodule Grappa.UploadsTest do
           "x",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
           storage_root: root
@@ -409,21 +413,21 @@ defmodule Grappa.UploadsTest do
       {:ok, u1} =
         Uploads.create(
           bytes,
-          %{subject: {:user, user.id}, mime: "image/png", expires_at: future},
+          %{subject: {:user, user.id}, mime: "text/plain", expires_at: future},
           storage_root: root
         )
 
       {:ok, u2} =
         Uploads.create(
           bytes,
-          %{subject: {:user, user.id}, mime: "image/png", expires_at: future},
+          %{subject: {:user, user.id}, mime: "text/plain", expires_at: future},
           storage_root: root
         )
 
       {:ok, uo} =
         Uploads.create(
           bytes,
-          %{subject: {:user, other.id}, mime: "image/png", expires_at: future},
+          %{subject: {:user, other.id}, mime: "text/plain", expires_at: future},
           storage_root: root
         )
 
@@ -461,6 +465,75 @@ defmodule Grappa.UploadsTest do
     test "is idempotent when user has no uploads" do
       user = user_fixture([])
       assert :ok = Uploads.delete_all_for_user(user.id)
+    end
+  end
+
+  describe "create/3 — metadata strip (#39)" do
+    # The strip mechanics (per-format markers, fail-closed dispatch)
+    # are pinned in Grappa.Uploads.MetadataStripTest; these tests pin
+    # the INTEGRATION: what create/3 stores is the stripped bytes,
+    # the row reflects the stored size, and a strip failure leaves
+    # neither file nor row behind.
+    import Grappa.UploadFixtures, only: [bytes: 1, markers: 1]
+
+    test "stores a GPS-tagged jpeg stripped — markers gone, row.bytes = stored size",
+         %{root: root} do
+      user = user_fixture([])
+      input = bytes(:gps_jpeg)
+
+      attrs = %{
+        subject: {:user, user.id},
+        mime: "image/jpeg",
+        expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
+      }
+
+      assert {:ok, row} = Uploads.create(input, attrs, storage_root: root)
+
+      stored = File.read!(Path.join(root, row.slug))
+      refute stored == input
+      assert row.bytes == byte_size(stored)
+
+      for marker <- markers(:gps_jpeg) do
+        assert :binary.match(stored, marker) == :nomatch,
+               "marker #{inspect(marker)} reached the storage root"
+      end
+    end
+
+    test "stores a GPS-tagged mp4 stripped", %{root: root} do
+      user = user_fixture([])
+      input = bytes(:gps_mp4)
+
+      attrs = %{
+        subject: {:user, user.id},
+        mime: "video/mp4",
+        expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
+      }
+
+      assert {:ok, row} = Uploads.create(input, attrs, storage_root: root)
+
+      stored = File.read!(Path.join(root, row.slug))
+
+      for marker <- markers(:gps_mp4) do
+        assert :binary.match(stored, marker) == :nomatch,
+               "marker #{inspect(marker)} reached the storage root"
+      end
+    end
+
+    test "strip failure rejects the upload — no file, no row", %{root: root} do
+      user = user_fixture([])
+      slug = "dddddddddddddddddddddddddd"
+
+      attrs = %{
+        subject: {:user, user.id},
+        mime: "image/jpeg",
+        expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
+      }
+
+      assert {:error, {:metadata_strip, _}} =
+               Uploads.create("not actually a jpeg", attrs, storage_root: root, slug: slug)
+
+      refute File.exists?(Path.join(root, slug))
+      assert Uploads.list_all() == []
     end
   end
 end

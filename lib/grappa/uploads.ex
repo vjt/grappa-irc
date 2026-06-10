@@ -17,8 +17,9 @@ defmodule Grappa.Uploads do
 
   ## Public surface
 
-    * `create/3` — accepts `{file_bytes, attrs, opts}`, writes to
-      disk, inserts row. `attrs` carries the subject (XOR
+    * `create/3` — accepts `{file_bytes, attrs, opts}`, strips
+      image/video metadata (`MetadataStrip` — fail-closed, #39),
+      writes to disk, inserts row. `attrs` carries the subject (XOR
       user/visitor FK), `mime`, optional `original_filename`,
       optional `expires_at`. `opts` carries `:storage_root` (DI for
       tests) + the random-slug + clock injection seams.
@@ -73,7 +74,7 @@ defmodule Grappa.Uploads do
   import Ecto.Query
 
   alias Grappa.{Repo, Subject}
-  alias Grappa.Uploads.Upload
+  alias Grappa.Uploads.{MetadataStrip, Upload}
 
   @slug_byte_size 16
   @slug_regex ~r/\A[a-z2-7]{26}\z/
@@ -148,8 +149,17 @@ defmodule Grappa.Uploads do
   end
 
   @doc """
-  Write `bytes` to disk + insert a row. Returns the inserted row or
-  an error.
+  Strip metadata, write the result to disk + insert a row. Returns
+  the inserted row or an error.
+
+  Image + video bytes go through `MetadataStrip.run/2` BEFORE the
+  file write — the privacy guarantee (#39) lives here in the
+  context so every door (REST controller, future listener facade)
+  inherits it. The row's `:bytes` reflects the STORED (stripped)
+  size, so cap accounting (`live_bytes_sum/0`) matches the disk.
+  Strip failures reject the upload with
+  `{:error, {:metadata_strip, reason}}` — fail-closed, never
+  stored-with-leak.
 
   `opts[:storage_root]` is the upload directory (typically
   `runtime/uploads`); tests inject a per-test temp path.
@@ -161,47 +171,55 @@ defmodule Grappa.Uploads do
   the row is NOT created.
   """
   @spec create(binary(), create_attrs(), create_opts()) ::
-          {:ok, Upload.t()} | {:error, Ecto.Changeset.t()} | {:error, {:fs, File.posix()}}
-  def create(bytes, %{subject: subject} = attrs, opts) when is_binary(bytes) do
+          {:ok, Upload.t()}
+          | {:error, Ecto.Changeset.t()}
+          | {:error, {:fs, File.posix()}}
+          | MetadataStrip.error()
+  def create(bytes, %{subject: subject, mime: mime} = attrs, opts) when is_binary(bytes) do
     storage_root = Keyword.fetch!(opts, :storage_root)
     slug = Keyword.get_lazy(opts, :slug, &mint_slug/0)
-
-    row_attrs =
-      attrs
-      |> Map.delete(:subject)
-      |> Map.put(:slug, slug)
-      |> Map.put(:bytes, byte_size(bytes))
-      |> Subject.put_subject_id(subject)
-
     path = storage_path(storage_root, slug)
 
-    with :ok <- File.mkdir_p(storage_root),
-         :ok <- File.write(path, bytes) do
-      try do
-        case %Upload{} |> Upload.insert_changeset(row_attrs) |> Repo.insert() do
-          {:ok, _} = ok ->
-            ok
+    with {:ok, stored_bytes} <- MetadataStrip.run(bytes, mime),
+         :ok <- File.mkdir_p(storage_root),
+         :ok <- File.write(path, stored_bytes) do
+      row_attrs =
+        attrs
+        |> Map.delete(:subject)
+        |> Map.put(:slug, slug)
+        |> Map.put(:bytes, byte_size(stored_bytes))
+        |> Subject.put_subject_id(subject)
 
-          {:error, %Ecto.Changeset{}} = err ->
-            # Row insert failed AFTER the file landed on disk —
-            # roll back the file write to avoid an orphan.
-            _ = File.rm(path)
-            err
-        end
-      rescue
-        # Sqlite reports FK violation names as nil; Ecto's
-        # `assoc_constraint` can't match and raises rather than
-        # returning a changeset. Catch, rm the orphan file, and
-        # re-shape as a generic constraint error the caller can
-        # surface as 422 / 400 if it cares.
-        e in Ecto.ConstraintError ->
-          _ = File.rm(path)
-          reraise e, __STACKTRACE__
-      end
+      insert_row(row_attrs, path)
     else
+      {:error, {:metadata_strip, _}} = err ->
+        err
+
       {:error, posix} when is_atom(posix) ->
         {:error, {:fs, posix}}
     end
+  end
+
+  defp insert_row(row_attrs, path) do
+    case %Upload{} |> Upload.insert_changeset(row_attrs) |> Repo.insert() do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, %Ecto.Changeset{}} = err ->
+        # Row insert failed AFTER the file landed on disk —
+        # roll back the file write to avoid an orphan.
+        _ = File.rm(path)
+        err
+    end
+  rescue
+    # Sqlite reports FK violation names as nil; Ecto's
+    # `assoc_constraint` can't match and raises rather than
+    # returning a changeset. Catch, rm the orphan file, and
+    # re-shape as a generic constraint error the caller can
+    # surface as 422 / 400 if it cares.
+    e in Ecto.ConstraintError ->
+      _ = File.rm(path)
+      reraise e, __STACKTRACE__
   end
 
   @doc """

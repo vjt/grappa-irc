@@ -67,11 +67,14 @@ defmodule GrappaWeb.Admin.UploadsControllerTest do
       v = visitor_fixture([])
       now = DateTime.add(DateTime.utc_now(), 3600, :second)
 
+      # text/plain passes through MetadataStrip byte-identical, so the
+      # live_bytes_sum arithmetic below stays exact (image/video bytes
+      # are rewritten by the strip — sizes would be tool-dependent).
       {:ok, u1} =
-        Uploads.create("a", %{subject: {:user, user.id}, mime: "image/png", expires_at: now}, storage_root: root)
+        Uploads.create("a", %{subject: {:user, user.id}, mime: "text/plain", expires_at: now}, storage_root: root)
 
       {:ok, u2} =
-        Uploads.create("bb", %{subject: {:visitor, v.id}, mime: "image/jpeg", expires_at: now}, storage_root: root)
+        Uploads.create("bb", %{subject: {:visitor, v.id}, mime: "text/plain", expires_at: now}, storage_root: root)
 
       {:ok, _} = Uploads.soft_delete(u2, DateTime.utc_now())
 
@@ -82,7 +85,7 @@ defmodule GrappaWeb.Admin.UploadsControllerTest do
       by_slug = Map.new(body["uploads"], &{&1["slug"], &1})
       assert by_slug[u1.slug]["subject_kind"] == "user"
       assert by_slug[u1.slug]["subject_id"] == user.id
-      assert by_slug[u1.slug]["mime"] == "image/png"
+      assert by_slug[u1.slug]["mime"] == "text/plain"
       assert by_slug[u1.slug]["deleted_at"] == nil
 
       assert by_slug[u2.slug]["subject_kind"] == "visitor"
@@ -107,7 +110,7 @@ defmodule GrappaWeb.Admin.UploadsControllerTest do
           "x",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
           storage_root: root
