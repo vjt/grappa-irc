@@ -53,7 +53,13 @@ vi.mock("mediabunny", () => {
   };
 });
 
-import { __setProbeDurationForTests, MAX_DURATION_SECONDS, pickTargetHeight } from "../videoPolicy";
+import {
+  __setProbeDurationForTests,
+  MAX_DURATION_SECONDS,
+  MIN_VIDEO_BITRATE_BPS,
+  pickEncodeBitrate,
+  pickTargetHeight,
+} from "../videoPolicy";
 import {
   __resetVideoTranscodeSupportForTests,
   transcodeVideo,
@@ -67,8 +73,18 @@ const sampleClip = (): File =>
 
 // Conversion mock whose execute() fills the output buffer — the happy
 // path. Tests that need failure/cancel override conversionInit inline.
+// `discardedTracks` mirrors mediabunny's `DiscardedTrack` shape
+// (conversion.d.ts): { track: InputTrack (with .type), reason: <typed
+// union>, trackOptions } — the isValid-false diagnostic reads
+// `track.type` + `reason`.
+type MockDiscardedTrack = {
+  track: { type: "video" | "audio" };
+  reason: string;
+  trackOptions: Record<string, unknown>;
+};
 type MockConversion = {
   isValid: boolean;
+  discardedTracks: MockDiscardedTrack[];
   onProgress?: (progress: number, processedTime: number) => unknown;
   execute: () => Promise<void>;
   cancel: () => Promise<void>;
@@ -79,6 +95,7 @@ const installHappyConversion = (): void => {
     h.lastInitOptions = opts;
     const conv: MockConversion = {
       isValid: true,
+      discardedTracks: [],
       execute: vi.fn(async () => {
         opts.output.target.buffer = new ArrayBuffer(16);
       }),
@@ -160,6 +177,28 @@ describe("pickTargetHeight", () => {
   });
 });
 
+describe("pickEncodeBitrate", () => {
+  it("generous cap (104s, 100MiB, 720p) → clamped to the 4Mbps ceiling, not the ~7.5Mbps budget", () => {
+    // The 2026-06-10 dogfood case: the raw budget is ~7.5Mbps — without
+    // the ceiling the output FILLS the cap (~95MiB of a 100MiB cap).
+    expect(pickEncodeBitrate(720, 104, 100 * MiB)).toBe(4_000_000);
+  });
+
+  it("generous cap at 480p → clamped to the 2Mbps ceiling", () => {
+    expect(pickEncodeBitrate(480, 104, 100 * MiB)).toBe(2_000_000);
+  });
+
+  it("starved cap (119s, 1MiB) → negative budget floored at MIN_VIDEO_BITRATE_BPS", () => {
+    expect(pickEncodeBitrate(480, 119, 1 * MiB)).toBe(MIN_VIDEO_BITRATE_BPS);
+  });
+
+  it("budget between floor and ceiling passes through un-clamped", () => {
+    // 30s @ 10MiB → floor((10MiB × 0.95 × 8) / 30 − 128k) = 2_528_392 —
+    // above the 100k floor, below the 4Mbps 720p ceiling.
+    expect(pickEncodeBitrate(720, 30, 10 * MiB)).toBe(2_528_392);
+  });
+});
+
 // --------------------------------------------------------------------
 // transcodeVideo
 // --------------------------------------------------------------------
@@ -195,7 +234,7 @@ describe("transcodeVideo", () => {
     expect(h.conversionInit).not.toHaveBeenCalled();
   });
 
-  it("gate closed (no WebCodecs) with a legal duration → unsupported", async () => {
+  it("gate closed (no WebCodecs) with a legal duration → unsupported, encoder detail", async () => {
     const result = await transcodeVideo(
       sampleClip(),
       cap,
@@ -203,11 +242,13 @@ describe("transcodeVideo", () => {
       new AbortController().signal,
     );
 
-    expect(result).toEqual({ error: { kind: "unsupported" } });
+    expect(result).toEqual({
+      error: { kind: "unsupported", detail: "no H.264 encoder (WebCodecs)" },
+    });
     expect(h.conversionInit).not.toHaveBeenCalled();
   });
 
-  it("unreadable metadata (probe null) with the gate open → unsupported (no budget without duration)", async () => {
+  it("unreadable metadata (probe null) with the gate open → unsupported, metadata detail (no budget without duration)", async () => {
     stubWebCodecs();
     __setProbeDurationForTests(async () => null);
 
@@ -218,7 +259,9 @@ describe("transcodeVideo", () => {
       new AbortController().signal,
     );
 
-    expect(result).toEqual({ error: { kind: "unsupported" } });
+    expect(result).toEqual({
+      error: { kind: "unsupported", detail: "unreadable video metadata" },
+    });
   });
 
   it("happy path: avc/mp4 out, adaptive height, budget bitrate, EMPTY tags, .mp4 filename", async () => {
@@ -240,8 +283,12 @@ describe("transcodeVideo", () => {
     expect(opts.video.codec).toBe("avc");
     // 30s @ 50MB → budget well above 2Mbps → 720p (source is 1080).
     expect(opts.video.height).toBe(720);
-    // floor((cap × 0.95 × 8) / duration − 128k audio budget).
-    expect(opts.video.bitrate).toBe(Math.floor((cap * 0.95 * 8) / 30 - 128_000));
+    // The encoder gets the CLAMPED policy bitrate, not the raw budget —
+    // 30s @ 50MiB budgets ~13Mbps, ceilinged at 4Mbps for 720p. Wiring
+    // is asserted via the production policy fn; the clamp values
+    // themselves are pinned in the pickEncodeBitrate describe.
+    expect(opts.video.bitrate).toBe(pickEncodeBitrate(720, 30, cap));
+    expect(opts.video.bitrate).toBe(4_000_000);
     // Load-bearing: mediabunny COPIES input metadata tags by default.
     // Empty tags is what makes "metadata dies with the container" true.
     expect(opts.tags).toEqual({});
@@ -267,6 +314,7 @@ describe("transcodeVideo", () => {
     h.conversionInit.mockImplementation(async (opts: NonNullable<typeof h.lastInitOptions>) => {
       const conv: MockConversion = {
         isValid: true,
+        discardedTracks: [],
         execute: vi.fn(async function (this: void) {
           conv.onProgress?.(0.5, 15);
           opts.output.target.buffer = new ArrayBuffer(16);
@@ -287,6 +335,7 @@ describe("transcodeVideo", () => {
     h.conversionInit.mockImplementation(async () => {
       const conv: MockConversion = {
         isValid: true,
+        discardedTracks: [],
         execute: vi.fn(async () => {
           throw new Error("encoder blew up");
         }),
@@ -305,11 +354,20 @@ describe("transcodeVideo", () => {
     expect(result).toEqual({ error: { kind: "failed", message: "encoder blew up" } });
   });
 
-  it("invalid conversion (isValid false) → unsupported, execute never runs", async () => {
+  it("invalid conversion (isValid false) → unsupported with discardedTracks detail, execute never runs", async () => {
     stubWebCodecs();
     const execute = vi.fn(async () => {});
     h.conversionInit.mockImplementation(async () => {
-      const conv: MockConversion = { isValid: false, execute, cancel: vi.fn(async () => {}) };
+      const conv: MockConversion = {
+        isValid: false,
+        // Mirrors mediabunny's DiscardedTrack shape — the diagnostic
+        // joins `track.type:reason` per discarded track.
+        discardedTracks: [
+          { track: { type: "video" }, reason: "undecodable_source_codec", trackOptions: {} },
+        ],
+        execute,
+        cancel: vi.fn(async () => {}),
+      };
       return conv;
     });
 
@@ -320,8 +378,32 @@ describe("transcodeVideo", () => {
       new AbortController().signal,
     );
 
-    expect(result).toEqual({ error: { kind: "unsupported" } });
+    expect(result).toEqual({
+      error: { kind: "unsupported", detail: "video:undecodable_source_codec" },
+    });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("invalid conversion with EMPTY discardedTracks → generic 'conversion invalid' detail", async () => {
+    stubWebCodecs();
+    h.conversionInit.mockImplementation(async () => {
+      const conv: MockConversion = {
+        isValid: false,
+        discardedTracks: [],
+        execute: vi.fn(async () => {}),
+        cancel: vi.fn(async () => {}),
+      };
+      return conv;
+    });
+
+    const result = await transcodeVideo(
+      sampleClip(),
+      cap,
+      noProgress,
+      new AbortController().signal,
+    );
+
+    expect(result).toEqual({ error: { kind: "unsupported", detail: "conversion invalid" } });
   });
 
   it("abort during conversion → conversion.cancel() called, result is failed", async () => {
@@ -337,7 +419,7 @@ describe("transcodeVideo", () => {
         }),
     );
     h.conversionInit.mockImplementation(async () => {
-      const conv: MockConversion = { isValid: true, execute, cancel };
+      const conv: MockConversion = { isValid: true, discardedTracks: [], execute, cancel };
       return conv;
     });
 

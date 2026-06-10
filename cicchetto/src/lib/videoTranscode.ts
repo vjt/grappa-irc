@@ -42,15 +42,17 @@ import {
 } from "mediabunny";
 import {
   MAX_DURATION_SECONDS,
-  MIN_VIDEO_BITRATE_BPS,
+  pickEncodeBitrate,
   pickTargetHeight,
   probeDuration,
-  videoBitrateBudget,
 } from "./videoPolicy";
 
 export type TranscodeError =
   | { kind: "too_long"; durationSeconds: number } // policy — hard reject, no fallback
-  | { kind: "unsupported" } // capability — fallback eligible
+  // capability — fallback eligible. `detail` is the diagnostic the
+  // error UI surfaces: on iOS Safari (the dogfood platform) there is
+  // no console, so a console-only reason is no reason at all.
+  | { kind: "unsupported"; detail: string }
   | { kind: "failed"; message: string }; // capability — fallback eligible
 
 // --------------------------------------------------------------------
@@ -98,23 +100,25 @@ export async function transcodeVideo(
     return { error: { kind: "too_long", durationSeconds } };
   }
 
-  if (!(await videoTranscodeSupported())) return { error: { kind: "unsupported" } };
+  if (!(await videoTranscodeSupported())) {
+    return { error: { kind: "unsupported", detail: "no H.264 encoder (WebCodecs)" } };
+  }
   if (durationSeconds === null) {
     // No duration → no bitrate budget. Capability failure: the
     // orchestrator falls back to the original under the same gates.
-    return { error: { kind: "unsupported" } };
+    return { error: { kind: "unsupported", detail: "unreadable video metadata" } };
   }
 
   const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
   try {
     const track = await input.getPrimaryVideoTrack();
-    if (track === null) return { error: { kind: "unsupported" } };
+    if (track === null) {
+      return { error: { kind: "unsupported", detail: "no video track in file" } };
+    }
     const sourceHeight = await track.getDisplayHeight();
-    const height = Math.min(pickTargetHeight(durationSeconds, capBytes), sourceHeight);
-    const bitrate = Math.max(
-      Math.floor(videoBitrateBudget(durationSeconds, capBytes)),
-      MIN_VIDEO_BITRATE_BPS,
-    );
+    const policyHeight = pickTargetHeight(durationSeconds, capBytes);
+    const height = Math.min(policyHeight, sourceHeight);
+    const bitrate = pickEncodeBitrate(policyHeight, durationSeconds, capBytes);
 
     const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
     const conversion = await Conversion.init({
@@ -128,7 +132,18 @@ export async function transcodeVideo(
       // metadata tags (GPS, creation time) into the fresh container.
       tags: {},
     });
-    if (!conversion.isValid) return { error: { kind: "unsupported" } };
+    if (!conversion.isValid) {
+      // discardedTracks carries mediabunny's typed reason per track
+      // (e.g. no_encodable_target_codec, undecodable_source_codec) —
+      // the ONLY diagnostic we get on iOS Safari, where the console
+      // is invisible. Surface it.
+      const reasons = conversion.discardedTracks
+        .map((t) => `${t.track.type}:${t.reason}`)
+        .join(", ");
+      return {
+        error: { kind: "unsupported", detail: reasons === "" ? "conversion invalid" : reasons },
+      };
+    }
 
     conversion.onProgress = (fraction) => onProgress(fraction);
     const onAbort = (): void => void conversion.cancel();

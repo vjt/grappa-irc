@@ -48,7 +48,7 @@ const vt = vi.hoisted(() => ({
       result:
         | { ok: File }
         | { error: { kind: "too_long"; durationSeconds: number } }
-        | { error: { kind: "unsupported" } }
+        | { error: { kind: "unsupported"; detail: string } }
         | { error: { kind: "failed"; message: string } },
     ) => void;
   }>,
@@ -582,25 +582,46 @@ describe("video transcode branch", () => {
 
     vt.probeDuration.mockResolvedValue(30);
     await awaitTranscodeStart(1);
-    vt.transcodes[0]?.resolve({ error: { kind: "unsupported" } });
+    vt.transcodes[0]?.resolve({
+      error: { kind: "unsupported", detail: "no H.264 encoder (WebCodecs)" },
+    });
     await vi.waitFor(() => expect(pendingResolvers.length).toBe(1));
 
     expect(pendingResolvers[0]?.file).toBe(clip);
     expect(warnSpy).toHaveBeenCalledWith("video transcode unavailable, uploading original:", {
       kind: "unsupported",
+      detail: "no H.264 encoder (WebCodecs)",
     });
   });
 
-  it("unsupported + oversize original → cap error, no upload", async () => {
-    // 6MB original vs the categoryHost 5MB video cap.
+  it("unsupported + oversize original → COMBINED error: transcode reason + cap, no upload", async () => {
+    // 6MB original vs the categoryHost 5MB video cap. iOS Safari has
+    // no console — the transcode-failure reason must ride the error UI
+    // alongside the cap rejection (2026-06-10 dogfood).
     triggerUpload(key, slug, channel, videoClip(6 * 1024 * 1024));
 
     await awaitTranscodeStart(1);
-    vt.transcodes[0]?.resolve({ error: { kind: "unsupported" } });
-    await vi.waitFor(() => expect(uploadState(key)?.error).toMatch(/too large/i));
+    vt.transcodes[0]?.resolve({
+      error: { kind: "unsupported", detail: "no H.264 encoder (WebCodecs)" },
+    });
+    await vi.waitFor(() =>
+      expect(uploadState(key)?.error).toMatch(/no H\.264 encoder \(WebCodecs\)/),
+    );
+    expect(uploadState(key)?.error).toMatch(/too large \(max 5MB\)/i);
 
     expect(pendingResolvers.length).toBe(0);
     expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it("failed + oversize original → COMBINED error carries the failure message", async () => {
+    triggerUpload(key, slug, channel, videoClip(6 * 1024 * 1024));
+
+    await awaitTranscodeStart(1);
+    vt.transcodes[0]?.resolve({ error: { kind: "failed", message: "encoder blew up" } });
+    await vi.waitFor(() => expect(uploadState(key)?.error).toMatch(/encoder blew up/));
+    expect(uploadState(key)?.error).toMatch(/too large \(max 5MB\)/i);
+
+    expect(pendingResolvers.length).toBe(0);
   });
 
   it("failed + original over the 2-minute ceiling → too-long error, no fallback upload", async () => {

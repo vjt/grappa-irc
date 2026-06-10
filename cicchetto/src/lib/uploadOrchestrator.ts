@@ -333,9 +333,11 @@ const VIDEO_TOO_LONG_MESSAGE = `Video too long (max ${MAX_DURATION_SECONDS / 60}
 // Policy vs capability: `too_long` hard-rejects with no fallback (the
 // 2-minute ceiling is policy); `unsupported`/`failed` fall back to the
 // original under the SAME policy gates — duration re-checked here via
-// the <video>-element probe (which works without WebCodecs), size
-// enforced by dispatchUpload's downstream cap check. The fallback
-// reason is console.warn'd — no silent swallow.
+// the <video>-element probe (which works without WebCodecs); the cap
+// check for the fallback original happens HERE with the transcode-
+// failure reason in the error copy (iOS Safari has no console — a
+// console-only reason is no reason). In-cap fallbacks still pass
+// through dispatchUpload's downstream cap check as a no-op.
 //
 // Stale-controller guard after every await: cancelUpload may have
 // aborted + cleared inflight while we were suspended; a cancelled
@@ -395,6 +397,26 @@ async function prepareVideo(
       total: 0,
       phase: "transcoding",
       error: VIDEO_TOO_LONG_MESSAGE,
+    });
+    return null;
+  }
+
+  // Cap-check the fallback original HERE, not downstream: the generic
+  // "File is too large" hides WHY a raw original reached the cap check
+  // at all, and on iOS Safari — the dogfood platform — the console is
+  // invisible, so the transcode-failure reason must ride the error UI
+  // (2026-06-10 iPhone dogfood: instant "too large" with zero clues).
+  const reason = result.error.kind === "unsupported" ? result.error.detail : result.error.message;
+  const cap = host.maxFileSizeBytes("video");
+  if (cap !== null && file.size > cap) {
+    inflight.delete(key);
+    const mb = Math.round(cap / (1024 * 1024));
+    setEntry(key, {
+      filename: file.name,
+      loaded: 0,
+      total: 0,
+      phase: "transcoding",
+      error: `Video processing failed (${reason}); the original is too large (max ${mb}MB).`,
     });
     return null;
   }

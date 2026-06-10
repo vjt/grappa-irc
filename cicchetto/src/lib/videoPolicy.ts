@@ -42,6 +42,30 @@ export function pickTargetHeight(durationSeconds: number, capBytes: number): 720
   return videoBitrateBudget(durationSeconds, capBytes) >= RESOLUTION_THRESHOLD_BPS ? 720 : 480;
 }
 
+// Visually-transparent ceilings per target height. Without them the
+// budget math FILLS the cap: a 100MiB cap on a 104s clip budgets
+// ~7.5Mbps of 720p H.264 where ~4Mbps is already transparent,
+// producing a ~95MiB file nobody asked for (2026-06-10 iPhone
+// dogfood). The budget stays the lower-bound driver (starved caps
+// still degrade gracefully); the ceiling bounds generous ones.
+export const MAX_VIDEO_BITRATE_BPS: Record<720 | 480, number> = {
+  720: 4_000_000,
+  480: 2_000_000,
+};
+
+/** Encoder bitrate for a clip: the cap-derived budget, floored at
+ *  MIN_VIDEO_BITRATE_BPS, ceilinged at the per-resolution transparent
+ *  bitrate. `height` is the POLICY height from pickTargetHeight (the
+ *  source clamp doesn't change the ceiling bucket). */
+export function pickEncodeBitrate(
+  height: 720 | 480,
+  durationSeconds: number,
+  capBytes: number,
+): number {
+  const budget = Math.floor(videoBitrateBudget(durationSeconds, capBytes));
+  return Math.min(Math.max(budget, MIN_VIDEO_BITRATE_BPS), MAX_VIDEO_BITRATE_BPS[height]);
+}
+
 // --------------------------------------------------------------------
 // Duration probe — <video> loadedmetadata. Deliberately NOT mediabunny:
 // it must work without WebCodecs so the 2-minute policy ceiling binds
