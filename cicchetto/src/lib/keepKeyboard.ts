@@ -30,14 +30,25 @@
 // (a tap on a different text field MUST allow the focus transfer so
 // the user can actually type in the new field).
 //
-// No-op on desktop browsers — there's no on-screen keyboard to
-// preserve and mousedown still behaves correctly.
+// iOS-only, gated in the handler via isIos(). mousedown's default
+// action is not just the focus shift — it is ALSO the start of a
+// text-selection drag, so preventDefault kills text selection wherever
+// it fires. With the compose box autofocused (the normal cic state)
+// that made scrollback text unselectable on desktop (Dispatch-1
+// text-selection bug, 2026-06-11). Desktop has no on-screen keyboard
+// to preserve, so the trade there is pure loss. The gate lives in the
+// handler rather than at install time so the platform decision reads
+// the live navigator and the deduped capture listener never needs an
+// uninstall path.
+
+import { isIos } from "./platform";
 
 function isTextEntry(el: Element | null): boolean {
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
 }
 
 function handleMouseDown(e: MouseEvent): void {
+  if (!isIos()) return;
   if (!isTextEntry(document.activeElement)) return;
   if (isTextEntry(e.target as Element | null)) return;
   e.preventDefault();
