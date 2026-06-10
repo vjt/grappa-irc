@@ -329,6 +329,64 @@ describe("upload lifecycle", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  // XHR network errors carry no status — the only forensic signal the
+  // client has is how far the upload got. The 2026-06-10 nginx 4m edge
+  // cut surfaced as a bare "network error" after megabytes had flowed;
+  // the copy must distinguish dropped-mid-upload from never-connected.
+  it("on reject (network) after progress, error says how much was sent", async () => {
+    triggerUpload(key, slug, channel, sampleImage());
+    const r = pendingResolvers[0];
+    if (!r) throw new Error("expected resolver");
+
+    r.onProgress(12 * 1024 * 1024, 52 * 1024 * 1024);
+    r.reject({ kind: "network" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(uploadState(key)?.error).toMatch(/dropped/i);
+    expect(uploadState(key)?.error).toMatch(/12 of 52 MB/);
+  });
+
+  it("on reject (network) with zero bytes sent, error suggests unreachable", async () => {
+    triggerUpload(key, slug, channel, sampleImage());
+    const r = pendingResolvers[0];
+    if (!r) throw new Error("expected resolver");
+
+    r.onProgress(0, 52 * 1024 * 1024);
+    r.reject({ kind: "network" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(uploadState(key)?.error).toMatch(/no bytes/i);
+    expect(uploadState(key)?.error).toMatch(/unreachable/i);
+  });
+
+  it("network-error progress context resets between attempts", async () => {
+    triggerUpload(key, slug, channel, sampleImage());
+    const first = pendingResolvers[0];
+    if (!first) throw new Error("expected resolver");
+
+    first.onProgress(12 * 1024 * 1024, 52 * 1024 * 1024);
+    first.reject({ kind: "network" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(uploadState(key)?.error).toMatch(/12 of 52 MB/);
+
+    // Retry fails immediately — stale bytes-sent from attempt #1 must
+    // not leak into attempt #2's message.
+    retryUpload(key);
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(2));
+    const second = pendingResolvers[1];
+    if (!second) throw new Error("expected resolver");
+
+    second.reject({ kind: "network" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(uploadState(key)?.error).toMatch(/no bytes/i);
+    expect(uploadState(key)?.error).not.toMatch(/12 of 52 MB/);
+  });
+
   it("on reject (http 413), error message is friendly + mentions size or rejection", async () => {
     triggerUpload(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];

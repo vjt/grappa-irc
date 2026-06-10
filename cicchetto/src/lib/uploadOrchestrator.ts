@@ -175,10 +175,29 @@ export function privacyModalState(): PrivacyModalState {
   return modalState();
 }
 
-function friendlyErrorMessage(err: UploadError): string {
+/** Last progress event of an upload attempt — the only forensic
+ *  signal an XHR network error leaves (no status, no body). */
+type ProgressSnapshot = { loaded: number; total: number };
+
+function mbLabel(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  return mb >= 10 ? Math.round(mb).toString() : mb.toFixed(1);
+}
+
+function friendlyErrorMessage(err: UploadError, lastProgress: ProgressSnapshot | null): string {
   switch (err.kind) {
-    case "network":
-      return "Upload failed — network error. Retry?";
+    case "network": {
+      // Distinguish dropped-mid-upload (e.g. a proxy body cap cutting
+      // the stream — the 2026-06-10 nginx 4m edge cut) from
+      // never-connected. XHR error events carry no status; bytes sent
+      // is all we know.
+      if (lastProgress === null || lastProgress.loaded === 0) {
+        return "Upload failed — no bytes were sent (network or server unreachable?). Retry?";
+      }
+      const sent = mbLabel(lastProgress.loaded);
+      const of = lastProgress.total > 0 ? ` of ${mbLabel(lastProgress.total)}` : "";
+      return `Connection dropped mid-upload (${sent}${of} MB sent). Retry?`;
+    }
     case "abort":
       // Caller short-circuits this path (silent state clear) — included
       // for exhaustiveness only.
@@ -283,6 +302,10 @@ async function dispatchUpload(
 
   const ttl = pickHostTokenFromSeconds(host, uploadTtlSeconds()) ?? host.defaultTtl ?? undefined;
 
+  // Per-attempt closure — a retry gets a fresh null, so a stale
+  // bytes-sent figure can never leak into the next attempt's error.
+  let lastProgress: ProgressSnapshot | null = null;
+
   host
     .upload(
       uploadFile,
@@ -291,6 +314,7 @@ async function dispatchUpload(
         // Ignore stale progress events from a cancelled-then-retried
         // upload — only the current inflight entry matters.
         if (inflight.get(key)?.controller !== controller) return;
+        lastProgress = { loaded: p.loaded, total: p.total };
         setEntry(key, {
           filename: uploadFile.name,
           loaded: p.loaded,
@@ -319,7 +343,7 @@ async function dispatchUpload(
         loaded: 0,
         total: 0,
         phase: "uploading",
-        error: friendlyErrorMessage(err),
+        error: friendlyErrorMessage(err, lastProgress),
       });
     });
 }
