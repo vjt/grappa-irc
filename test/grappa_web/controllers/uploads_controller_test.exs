@@ -287,6 +287,82 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
   end
 
+  describe "GET /uploads/:slug — Range requests (iOS video playback needs 206)" do
+    # 16 known bytes so content-range arithmetic is assertable by eye.
+    @range_bytes "0123456789ABCDEF"
+
+    test "bytes=0-3 → 206 with the first four bytes", %{conn: conn} do
+      slug = uploaded_slug(conn, @range_bytes)
+
+      conn = ranged_get(slug, "bytes=0-3")
+
+      assert response(conn, 206) == "0123"
+      assert get_resp_header(conn, "content-range") == ["bytes 0-3/16"]
+      assert get_resp_header(conn, "accept-ranges") == ["bytes"]
+    end
+
+    test "open-ended bytes=4- → 206 to EOF", %{conn: conn} do
+      slug = uploaded_slug(conn, @range_bytes)
+
+      conn = ranged_get(slug, "bytes=4-")
+
+      assert response(conn, 206) == "456789ABCDEF"
+      assert get_resp_header(conn, "content-range") == ["bytes 4-15/16"]
+    end
+
+    test "suffix bytes=-5 → 206 with the last five bytes", %{conn: conn} do
+      slug = uploaded_slug(conn, @range_bytes)
+
+      conn = ranged_get(slug, "bytes=-5")
+
+      assert response(conn, 206) == "BCDEF"
+      assert get_resp_header(conn, "content-range") == ["bytes 11-15/16"]
+    end
+
+    test "last-byte-pos beyond EOF clamps", %{conn: conn} do
+      slug = uploaded_slug(conn, @range_bytes)
+
+      conn = ranged_get(slug, "bytes=8-999")
+
+      assert response(conn, 206) == "89ABCDEF"
+      assert get_resp_header(conn, "content-range") == ["bytes 8-15/16"]
+    end
+
+    test "first-byte-pos beyond EOF → 416 with bytes */total", %{conn: conn} do
+      slug = uploaded_slug(conn, @range_bytes)
+
+      conn = ranged_get(slug, "bytes=99-")
+
+      assert response(conn, 416) == ""
+      assert get_resp_header(conn, "content-range") == ["bytes */16"]
+    end
+
+    test "malformed Range → 200 full body", %{conn: conn} do
+      slug = uploaded_slug(conn, @range_bytes)
+
+      conn = ranged_get(slug, "bananas")
+
+      assert response(conn, 200) == @range_bytes
+    end
+
+    test "multi-range → 200 full body (we may ignore per RFC 9110)", %{conn: conn} do
+      slug = uploaded_slug(conn, @range_bytes)
+
+      conn = ranged_get(slug, "bytes=0-1,3-4")
+
+      assert response(conn, 200) == @range_bytes
+    end
+
+    test "plain GET advertises accept-ranges: bytes", %{conn: conn} do
+      slug = uploaded_slug(conn, @range_bytes)
+
+      conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
+
+      assert response(conn, 200) == @range_bytes
+      assert get_resp_header(conn, "accept-ranges") == ["bytes"]
+    end
+  end
+
   describe "GET /uploads/:slug — failure modes (no oracle)" do
     test "404 for invalid slug shape", %{conn: conn} do
       conn = get(conn, "/uploads/" <> "..")
@@ -338,6 +414,28 @@ defmodule GrappaWeb.UploadsControllerTest do
   end
 
   # ---- helpers ------------------------------------------------------
+
+  # Uploads `bytes` as an authenticated user, returns the public slug.
+  defp uploaded_slug(conn, bytes) do
+    {_, session} = user_and_session([])
+
+    upload = upload_fixture("clip.mp4", "video/mp4", bytes)
+
+    conn =
+      conn
+      |> put_bearer(session.id)
+      |> post("/api/uploads", %{"file" => upload})
+
+    %{"slug" => slug} = json_response(conn, 201)
+    slug
+  end
+
+  # NO auth on GET — fresh conn, like a browser following the link.
+  defp ranged_get(slug, range_header) do
+    Phoenix.ConnTest.build_conn()
+    |> put_req_header("range", range_header)
+    |> get("/uploads/" <> slug)
+  end
 
   # ConnTest map-params bypass Plug.Parsers, so a %Plug.Upload{} built
   # by hand exercises the controller's own validation path directly —

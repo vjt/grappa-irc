@@ -36,15 +36,21 @@ defmodule GrappaWeb.UploadsController do
 
   ## GET /uploads/:slug (public, NO auth)
 
-  Streams the file via `Plug.Conn.send_file/3`. Validates slug shape
+  Streams the file via `Plug.Conn.send_file/5`. Validates slug shape
   + row + on-disk file. Any failure → 404 with no oracle.
   Cache-Control short to allow CDN/browser reuse of the immediate
   fetch without staleness on TTL expiry.
+
+  Honors single-range `Range:` requests (206 + `content-range`,
+  416 when unsatisfiable, full 200 when ignorable) via
+  `GrappaWeb.ByteRange` — iOS/macOS Safari refuse to play video
+  without byte-range support (2026-06-10 prod incident).
   """
 
   use GrappaWeb, :controller
 
   alias Grappa.{ServerSettings, Subject, Uploads}
+  alias GrappaWeb.ByteRange
 
   # `@sobelow_skip` is consumed by the Sobelow analyzer, not by the
   # Elixir compiler. Without this `register_attribute` it would emit
@@ -114,21 +120,18 @@ defmodule GrappaWeb.UploadsController do
   # GET /uploads/:slug
   # ------------------------------------------------------------------
 
-  # `path` comes from `Uploads.storage_path/2` which validates the
-  # slug against `^[a-z2-7]{26}$` — no `..` traversal reachable.
-  # Sobelow can't follow the validator across the call boundary.
-  @sobelow_skip ["Traversal.SendFile"]
   @doc false
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def show(conn, %{"slug" => slug}) when is_binary(slug) do
     with {:ok, row} <- Uploads.get_by_slug(slug, DateTime.utc_now()),
          path = Uploads.storage_path(storage_root(), row.slug),
-         true <- File.exists?(path) do
+         {:ok, %File.Stat{size: size}} <- File.stat(path) do
       conn
       |> put_resp_header("content-type", row.mime)
       |> put_resp_header("content-disposition", disposition_header(row))
       |> put_resp_header("cache-control", "public, max-age=3600")
-      |> send_file(200, path)
+      |> put_resp_header("accept-ranges", "bytes")
+      |> send_ranged(path, size, get_req_header(conn, "range"))
     else
       _ ->
         # No oracle — slug shape, row missing, deleted, expired, file
@@ -143,6 +146,42 @@ defmodule GrappaWeb.UploadsController do
   def show(conn, _) do
     conn |> put_status(:not_found) |> json(%{error: "not_found"})
   end
+
+  # ------------------------------------------------------------------
+  # Internal — Range serving
+  # ------------------------------------------------------------------
+
+  # Single Range header → 206 slice / 416 / full 200 per
+  # GrappaWeb.ByteRange's verdict. Zero or multiple Range headers →
+  # full 200 (a server MAY ignore Range; multi-header is malformed
+  # anyway). iOS Safari requires the 206 path to play video at all.
+  #
+  # `path` comes from `Uploads.storage_path/2` which validates the
+  # slug against `^[a-z2-7]{26}$` — no `..` traversal reachable.
+  # Sobelow can't follow the validator across the call boundary.
+  @sobelow_skip ["Traversal.SendFile"]
+  defp send_ranged(conn, path, size, [header]) do
+    case ByteRange.parse(header, size) do
+      {:ok, {offset, length}} ->
+        conn
+        |> put_resp_header(
+          "content-range",
+          "bytes #{offset}-#{offset + length - 1}/#{size}"
+        )
+        |> send_file(206, path, offset, length)
+
+      :unsatisfiable ->
+        conn
+        |> put_resp_header("content-range", "bytes */#{size}")
+        |> send_resp(416, "")
+
+      :ignore ->
+        send_file(conn, 200, path)
+    end
+  end
+
+  @sobelow_skip ["Traversal.SendFile"]
+  defp send_ranged(conn, path, _, _), do: send_file(conn, 200, path)
 
   # ------------------------------------------------------------------
   # Internal — extraction + validation
