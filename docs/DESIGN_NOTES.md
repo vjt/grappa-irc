@@ -11623,3 +11623,46 @@ capability fallback uploads the original and the same PRIVMSG lands.
 Harness gotcha encoded in the spec: `VideoEncoder` is
 `[SecureContext]`-gated, so the skip-probe must run on the app origin —
 probing `about:blank` false-skips.
+
+## 2026-06-10 — uploads Range/206 + the lost-'self' CSP rule (playback saga, layer 4)
+
+The prod video pipeline saga continued past the host-nginx body cap:
+uploads landed and transcoded correctly (faststart moov, H.264
+High + AAC-LC, coherent container) but the 🎬 link never played on
+the dogfood iPhone. Two independent delivery-layer defects:
+
+**1. No byte-range support.** `GET /uploads/:slug` answered every
+request — including `Range:` — with a 200 full body via
+`send_file(200, path)`. iOS/macOS Safari hard-require 206 from a
+media origin; without it the media document refuses playback
+entirely. Fix: `GrappaWeb.ByteRange` (RFC 9110 §14 single-range
+parser, three-way verdict `{:ok, {offset, length}}` /
+`:unsatisfiable` / `:ignore`) + controller wiring (206 +
+`content-range`, 416 without the freshness grant, `accept-ranges:
+bytes` advertised, full 200 for ignorable headers — RFC-sanctioned).
+
+*Altitude decision*: BEAM-side serving via `send_file/5` over
+nginx-native (X-Accel-Redirect to an internal location). The nginx
+route would get Range + edge caching for free but costs a
+per-substrate uploads-path config (jail vs Docker volume vs e2e vs
+dev-without-nginx, which still needs the Phoenix path as fallback —
+two code paths for one resource). One controller path works on all
+four substrates, and `send_file/5` is still zero-copy: Bandit hands
+offset+length to `:file.sendfile/5` on the plain-TCP upstream hop.
+Multi-range (`multipart/byteranges`) deliberately unimplemented —
+browser media players never send it, full-200 is the spec fallback,
+and the encoder would be mechanism heavier than the problem.
+
+**2. The lost-'self' CSP regression class.** The same-day `media-src
+blob:` fix (duration probe) silently REVOKED self-hosted media:
+declaring a fetch directive replaces the `default-src 'self'`
+fallback rather than extending it, and direct navigation to an
+/uploads mp4 renders in a media document whose synthesized `<video>`
+is governed by the response's own CSP. Fix: `media-src 'self'
+blob:`, plus the general rule hoisted to the top of
+`security-headers.conf`: every new fetch directive must restate
+'self' unless its absence is deliberate and commented (frame-src is
+the documented exception). e2e ships green on this whole mistake
+class until the CSP-parity todo lands — the planned integration run
+should also pin a ranged-fetch 206 through the nginx chain, since
+ConnTest can never see a proxy-layer Range strip.
