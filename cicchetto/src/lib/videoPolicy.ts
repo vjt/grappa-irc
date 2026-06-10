@@ -85,6 +85,16 @@ function probeDurationViaVideoElement(file: File): Promise<number | null> {
     };
     video.onerror = () => {
       URL.revokeObjectURL(url);
+      // MediaError code in the log: code 4 (SRC_NOT_SUPPORTED) is what
+      // a CSP-blocked blob: load reports — the 2026-06-10 dogfood
+      // incident would have been a one-look diagnosis with this line.
+      // Supplements (not replaces) the visible "unreadable video
+      // metadata" error copy on platforms that have a console.
+      console.warn(
+        "video metadata probe failed:",
+        video.error?.code ?? "no MediaError",
+        video.error?.message ?? "",
+      );
       resolve(null);
     };
     video.src = url;
