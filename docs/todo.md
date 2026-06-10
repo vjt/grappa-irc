@@ -100,7 +100,11 @@ to this section.
   `6f3327c`). Include the snippet in the e2e nginx config and run the
   full suite — first run under CSP may surface more latent blocks,
   which is exactly the point. Same lesson as the nginx route
-  allowlist parity rule in CLAUDE.md.
+  allowlist parity rule in CLAUDE.md. While in there: add one e2e
+  spec doing a ranged fetch of an uploaded file through nginx
+  asserting 206 + content-range (2026-06-10 Range support landed
+  controller-side; ConnTest can't see a proxy-layer Range strip —
+  same prod-only blind spot as the CSP).
 
 Phase 5 hardening (collected across multiple plans; ship together when
 Phase 5 cluster opens):
