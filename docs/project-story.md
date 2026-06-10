@@ -3494,3 +3494,32 @@ requirement contradicts one, the test is neither sacred nor a rubber
 stamp — surface the conflict, get the call, then rewrite it to assert
 the new truth. Never flip a red test green to make the bar pass; flip it
 because the bar moved, and say so where the next reader will look.*
+
+## Episode: the deploy that lied twice (2026-06-10, uploads-2)
+
+The video+document uploads cluster was the cleanest run yet — spec
+brainstormed question by question, eight TDD tasks each through
+two-stage review, two latent bugs found and killed before they were
+ever reported (Plug.Parsers' 8MB multipart default sitting under a
+10MB advertised cap; an embedded-host cap check reading a static
+literal behind a comment that *claimed* reactivity). Even the library
+verification step paid out: mediabunny silently copies input metadata
+tags unless you pass `tags: {}` — the privacy guarantee of "transcode
+strips GPS" was one missing option away from fiction, caught by
+reading the installed .d.ts before writing the wrapper.
+
+Then the deploy. Cold path classified correctly, migration ran,
+healthcheck green, exit 0 — and buried mid-output, a dead cic build:
+the jail's npm lock predated the bun-added mediabunny dep, `npm ci`
+refused, tsc died on the missing module, and `| tail` ate every
+nonzero exit because plain sh has no pipefail. Production ran the NEW
+wire with the OLD bundle — the exact mismatch three separate reviews
+had marked forbidden — under a green deploy banner. The fix was
+reading the output instead of the exit code, regenerating the lock
+in-jail, reshipping the bundle, then patching the build script to
+fail loudly.
+
+*Law: an exit code is a claim, not evidence. Any pipeline that decorates
+output (`| tail`, `| grep`) silently vouches for whatever died upstream
+— read the output of anything that touches production, and never let a
+formatting pipe stand between a failure and `set -e`.*
