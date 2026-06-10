@@ -322,6 +322,18 @@ unaffected). The error log names the missing binary
 (`exiftool not found on PATH — …`), so a post-deploy upload failing
 with that line means this step was skipped.
 
+The daemon must also SEE them: rc(8) services get rc.subr's stock
+PATH without `/usr/local`, so `infra/freebsd/rc.d/grappa` prepends
+`/usr/local/bin:/usr/local/sbin` (found live 2026-06-10 — pkgs
+installed, every media upload still 422). **deploy.sh does NOT
+reinstall the rc.d script** — it was copied at provision time; after
+changing it, install + restart by hand:
+
+```sh
+ssh root@m42 'jexec 6 cp /home/grappa/grappa/infra/freebsd/rc.d/grappa \
+  /usr/local/etc/rc.d/grappa && jexec 6 service grappa restart'
+```
+
 **Jail outbound source IPs.** The jail is shared-IP
 (`jail.conf ip6=new`, `interface=vtnet0`); pool + per-server
 `source_address` IPs are `/128` aliases in `jail.conf ip6.addr`. To add

@@ -85,7 +85,13 @@ grappa_runas() {
 	if [ -n "${grappa_env_file}" ] && [ -r "${grappa_env_file}" ]; then
 		envsrc=". ${grappa_env_file} && export \$(grep -Eo '^[A-Z_][A-Z0-9_]*' ${grappa_env_file}) && "
 	fi
-	su -m "${grappa_user}" -c "export RELEASE_TMP='${grappa_runtime_tmp}'; ${envsrc}${command} ${subcmd}"
+	# rc(8) services inherit rc.subr's stock PATH, which has NO
+	# /usr/local — pkg-installed binaries (exiftool, ffmpeg for
+	# Grappa.Uploads.MetadataStrip #39) are invisible to the BEAM's
+	# System.find_executable/1 without this prepend. Found live
+	# 2026-06-10: pkgs installed, yet every media upload 422'd
+	# fail-closed with "exiftool not found on PATH".
+	su -m "${grappa_user}" -c "export RELEASE_TMP='${grappa_runtime_tmp}'; export PATH=\"/usr/local/bin:/usr/local/sbin:\${PATH}\"; ${envsrc}${command} ${subcmd}"
 }
 
 grappa_start() {
