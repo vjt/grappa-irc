@@ -1259,6 +1259,14 @@ html.resize-dragging * {
 
 .compose-box-upload-filename {
   font-family: var(--font-mono);
+  /* iPhone dogfood (2026-06-10): flex items default to min-width:auto,
+   * so a long filename refuses to shrink and shoves the progress bar +
+   * cancel/retry buttons off-screen on narrow viewports. min-width: 0
+   * lets it yield; ellipsis keeps it legible. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Task 7 — transcode-phase label ("processing video…") shown while the
@@ -1266,10 +1274,20 @@ html.resize-dragging * {
 .compose-box-upload-phase {
   color: var(--muted);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .compose-box-upload-progress progress {
   flex: 1;
+  /* Keep a usable bar even when the filename is at its ellipsis floor. */
+  min-width: 3rem;
+}
+
+/* Error copy is the payload — let it take the leftover space and wrap;
+ * the truncating element in the row is the filename, not the message. */
+.compose-box-upload-error-msg {
+  flex: 1;
+  min-width: 0;
 }
 
 .compose-box-upload-progress button,
@@ -1280,6 +1298,9 @@ html.resize-dragging * {
   padding: 0 0.5rem;
   cursor: pointer;
   font-size: 0.8rem;
+  /* Never let the action buttons compress or vanish — they are the
+   * only recovery affordance on the row. */
+  flex-shrink: 0;
 }
 
 /* Privacy modal — full-viewport backdrop + centred dialog. */
