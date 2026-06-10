@@ -190,8 +190,18 @@ the COLD list below) so a Dockerfile diff no longer cold-restarts the
 jail (2026-06-10 incident: prod restarted, all IRC sessions dropped,
 for bytes the jail never reads).
 
-**Module reload uses `:code.modified_modules/0` + `:code.load_file/1`
-directly — NOT `Phoenix.CodeReloader`.** The Phoenix reloader is a
+**Module reload uses `:code.modified_modules/0` + soft-purge +
+`:code.load_file/1` (`Grappa.HotReload`) — NOT `Phoenix.CodeReloader`.**
+A module can be hot-reloaded repeatedly between restarts: the context
+soft-purges the old version first (a bare `load_file` fails
+`:not_purged` on the second reload — live-repro 2026-06-10). If a
+process still runs old code the reload refuses with
+`:old_code_in_use` instead of killing it, the response's `failed`
+list is non-empty, and the jail deploy aborts rather than declaring
+success. The jail deploy also writes `runtime/last-deployed-sha` on
+completion; a re-run with unchanged HEAD but a stale/missing marker
+re-drives the whole deploy (a prior run died mid-flight) instead of
+exiting "nothing to do". The Phoenix reloader is a
 dev-only facility: it depends on Mix (absent in `mix release`
 artifacts → no-op on the FreeBSD jail) and is gated behind a config
 check that silently no-ops in `MIX_ENV=prod` even when Mix is

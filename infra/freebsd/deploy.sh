@@ -83,9 +83,24 @@ new_sha=$(run_as_grappa 'git rev-parse HEAD' | tail -1)
 # would wrongly exit 0, silently skipping the whole deploy.
 prev_sha="${DEPLOY_PREV_SHA:-${prev_sha}}"
 
-if [ "${prev_sha}" = "${new_sha}" ]; then
-	echo "[deploy] no commits since last HEAD (${prev_sha}) — nothing to do"
+# Nothing-to-do requires BOTH: no new commits AND the last deploy
+# completed (marker written as the final step of both paths below).
+# "No new commits" alone is a lie when the previous deploy died
+# mid-flight — live-repro 2026-06-10: a deploy was killed between
+# `mix release` and the reload POST (SIGPIPE on the operator's ssh),
+# leaving fresh beams on disk and a stale BEAM live; every re-run
+# then exited "nothing to do" because the pull was a no-op, and prod
+# had to be recovered by hand (rpc purge + load). Fast paths state
+# what they OBSERVED: same HEAD + completed marker, not "no work".
+last_deployed=$(run_as_grappa "cat runtime/last-deployed-sha 2>/dev/null || true" | tail -1)
+
+if [ "${prev_sha}" = "${new_sha}" ] && [ "${last_deployed}" = "${new_sha}" ]; then
+	echo "[deploy] no commits since last HEAD (${prev_sha}) and that deploy completed — nothing to do"
 	exit 0
+fi
+
+if [ "${prev_sha}" = "${new_sha}" ]; then
+	echo "[deploy] HEAD unchanged (${new_sha}) but last COMPLETED deploy is '${last_deployed:-none}' — re-driving (prior deploy died mid-flight?)"
 fi
 
 # Self-modifying-deploy-script trap (live-repro 2026-05-31):
@@ -185,10 +200,24 @@ if [ "${mode}" = "hot" ]; then
 	echo "[deploy] POST ${RELOAD_URL}"
 	if response=$(curl -fsS -X POST "${RELOAD_URL}"); then
 		echo "[deploy] reload response: ${response}"
+		# HTTP 200 is NOT success — the endpoint reports per-module
+		# failures in-band (e.g. :old_code_in_use when a process still
+		# runs a prior hot-reload's old code; live-repro 2026-06-10 as
+		# :not_purged). Declaring "✓ complete" over a failed reload
+		# leaves prod silently running stale code.
+		case "${response}" in
+		*'"failed":[]'*) ;;
+		*)
+			echo "[deploy] ERROR: reload reported per-module failures (see response above)" >&2
+			echo "[deploy]   old code in use? retry once processes settle, or schedule a cold window" >&2
+			exit 1
+			;;
+		esac
 		echo "[deploy] healthcheck loop (${HEALTHCHECK_URL})"
 		i=0
 		while [ "${i}" -lt "${HEALTHCHECK_RETRIES}" ]; do
 			if curl -fsS -o /dev/null "${HEALTHCHECK_URL}"; then
+				run_as_grappa "printf '%s\n' '${new_sha}' > runtime/last-deployed-sha"
 				echo "[deploy] ✓ hot deploy complete (sessions preserved, daemon pid unchanged) after ${i} retries"
 				exit 0
 			fi
@@ -285,6 +314,7 @@ echo "[deploy] healthcheck loop (${HEALTHCHECK_URL})"
 i=0
 while [ "${i}" -lt "${HEALTHCHECK_RETRIES}" ]; do
 	if curl -fsS -o /dev/null "${HEALTHCHECK_URL}"; then
+		run_as_grappa "printf '%s\n' '${new_sha}' > runtime/last-deployed-sha"
 		echo "[deploy] ✓ cold deploy complete (sessions reset, daemon respawned) after ${i} retries"
 		exit 0
 	fi

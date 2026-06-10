@@ -11815,6 +11815,33 @@ inode. It now re-execs when the pulled diff range contains
 otherwise see prev==new and exit "nothing to do" — the old guard had
 that second latent bug too).
 
+**Deploy completion marker + reload honesty (same-day follow-up,
+live-repro'd shipping THIS cluster).** The shipping deploy was
+killed mid-flight (operator-side SIGPIPE) between `mix release` and
+the reload POST: fresh beams on disk, stale BEAM live — and every
+re-run exited "no commits since last HEAD — nothing to do", because
+the fast path equated "pull was a no-op" with "deployed". Recovery
+was manual (rpc soft-purge + load). Three fixes:
+
+- The jail deploy writes `runtime/last-deployed-sha` as the FINAL
+  step of both paths; nothing-to-do now requires same-HEAD AND
+  marker==HEAD, else it re-drives (an idle re-run costs one no-op
+  release rebuild).
+- `POST /admin/reload` returning HTTP 200 with `"failed":[...]` no
+  longer prints "✓ hot deploy complete" — the hot path greps for
+  `"failed":[]` and aborts otherwise.
+- The reload endpoint itself couldn't reload a module TWICE between
+  restarts: `:code.load_file/1` fails `:not_purged` when the old
+  slot is full (hit live: the second hot deploy of
+  `Grappa.Deploy.Preflight` in one day). Logic moved to the new
+  `Grappa.HotReload` context (controllers thin):
+  `:code.soft_purge/1` then load. soft, not hard — hard purge KILLS
+  processes still executing old code (= dropped IRC sessions from
+  the endpoint that exists to avoid restarts); the refusal surfaces
+  as `{mod, :old_code_in_use}` in `failed` and the deploy aborts
+  honestly. Pinned by `test/grappa/hot_reload_test.exs` incl. the
+  double-reload repro and a held-old-code refusal test.
+
 **Acceptance.** The fix's own deploy is the test — with one caveat
 found in review: the deploy that SHIPS this change still runs the
 old deploy.sh bytes (the old guard is the dead one), whose 2-arg
