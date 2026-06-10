@@ -165,15 +165,6 @@ Phase 5 cluster opens):
 
 ## Medium
 
-- **Substrate-aware deploy preflight** (vjt 2026-06-10, "too many
-  cold deploys"): `Deploy.Preflight` classifies `Dockerfile` /
-  `compose.yaml` / `bin/start.sh` as COLD on BOTH substrates, but
-  those are Docker-image concerns — on the m42 jail they force a
-  full BEAM restart (all IRC sessions drop) for diffs the jail never
-  reads. Pass the substrate to the classifier and scope the
-  Docker-substrate diff classes to Docker. The 2026-06-10
-  metadata-strip deploy restarted prod for a Dockerfile change whose
-  jail-side equivalent (pkg install) was already done by hand.
 - Open tracking issue / doc for **Phase 6 IRCv3 listener** — collect
   specs needed (`CAP LS 302`, `CHATHISTORY`, `server-time`, `batch`,
   `labeled-response`, SASL mechanisms). Reuse parser from Phase 1.

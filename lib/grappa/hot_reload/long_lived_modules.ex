@@ -16,7 +16,7 @@ defmodule Grappa.HotReload.LongLivedModules do
 
   `scripts/deploy.sh` runs a git-diff preflight before every deploy
   to refuse hot-deploy when this class of change is detected. The
-  preflight delegates to `Grappa.Deploy.Preflight.classify/4` (REV-C,
+  preflight delegates to `Grappa.Deploy.Preflight.classify/5` (REV-C,
   closes review C4) which:
 
     1. reads this module's `all/0` to enumerate the tracked module

@@ -110,7 +110,7 @@ fi
 # the cost is the worst-case overhead vs the saved restart downtime.
 if [ "${mode}" = "auto" ]; then
 	echo "[deploy] preflight: classifying ${prev_sha}..${new_sha}"
-	if run_as_grappa "mix run --no-start -e 'Grappa.Deploy.Preflight.cli([\"${prev_sha}\", \"${new_sha}\"])'"; then
+	if run_as_grappa "mix run --no-start -e 'Grappa.Deploy.Preflight.cli([\"${prev_sha}\", \"${new_sha}\", \"jail\"])'"; then
 		mode=hot
 	else
 		mode=cold
@@ -190,6 +190,19 @@ echo "[deploy] Grappa.Release.migrate()"
 # verbs against the live BEAM). One code path for the release entry
 # point; deploy.sh does NOT re-implement env sourcing inline.
 "${REPO_ROOT}/infra/freebsd/jail_release.sh" eval 'Grappa.Release.migrate()'
+
+# rc.d wrapper: install the repo copy when it drifted from the live
+# one. The cold path is the only window where this is free (a service
+# restart follows anyway), and an rc.d diff classifies COLD on the
+# jail substrate (Preflight class :rc_d) — so the restart below always
+# boots through the NEW wrapper. Replaces the manual cp+restart step
+# that bit on 2026-06-10 (rc(8) PATH fix shipped in the repo, prod
+# kept 422ing until the wrapper was hand-copied). Runs as root: rc.d
+# scripts are root:wheel 555, the build user can't write there.
+if ! cmp -s "${REPO_ROOT}/infra/freebsd/rc.d/grappa" /usr/local/etc/rc.d/grappa; then
+	echo "[deploy] rc.d wrapper drifted — installing infra/freebsd/rc.d/grappa → /usr/local/etc/rc.d/grappa"
+	install -o root -g wheel -m 555 "${REPO_ROOT}/infra/freebsd/rc.d/grappa" /usr/local/etc/rc.d/grappa
+fi
 
 echo "[deploy] service grappa restart"
 # epmd is started by the old BEAM but NOT killed on rc.d stop —

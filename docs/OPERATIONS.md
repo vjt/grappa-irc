@@ -169,10 +169,17 @@ on macOS, system bash 4+ on Linux. `brew install bash` if missing.
 ## Hot vs cold deploy — when each path triggers
 
 Both substrates share one preflight: `lib/grappa/deploy/preflight.ex`
-classifies a `(prev_sha, new_sha)` diff as HOT or COLD. The substrate
-scripts (`scripts/deploy.sh` for Docker, `infra/freebsd/deploy.sh`
-for the m42 bastille jail) shell out to `mix run --no-start -e
-'Grappa.Deploy.Preflight.cli([from, to])'`, dispatch on exit code.
+classifies a `(prev_sha, new_sha)` diff as HOT or COLD **for the
+calling substrate**. The substrate scripts (`scripts/deploy.sh` for
+Docker, `infra/freebsd/deploy.sh` for the m42 bastille jail) shell
+out to `mix run --no-start -e 'Grappa.Deploy.Preflight.cli([from, to,
+substrate])'` with substrate `"docker"` / `"jail"`, dispatch on exit
+code. The substrate argument is required — a missing or unknown value
+is a usage error (exit 2), never a guess. Most diff classes are
+substrate-independent; the boot-substrate files are scoped (see the
+COLD list below) so a Dockerfile diff no longer cold-restarts the
+jail (2026-06-10 incident: prod restarted, all IRC sessions dropped,
+for bytes the jail never reads).
 
 **Module reload uses `:code.modified_modules/0` + `:code.load_file/1`
 directly — NOT `Phoenix.CodeReloader`.** The Phoenix reloader is a
@@ -214,11 +221,18 @@ downtime):
   (`@modules` + `@state_helpers`). The preflight reads the SoT
   directly via `LongLivedModules.all/0` + extracts the state block
   via the Elixir tokenizer (no regex, no awk).
-- `Dockerfile`, `compose.yaml`, `bin/start.sh`, `bin/grappa` —
-  Docker image substrate
-- `infra/freebsd/rc.d/grappa`, `infra/freebsd/deploy.sh` — jail
-  substrate. Operator-on-demand verbs
-  (`infra/freebsd/jail_*.sh`) and `grappa.env.example` are HOT.
+- `Dockerfile`, `.dockerignore`, `compose*.yaml`, `bin/start.sh`,
+  `bin/grappa` — **Docker substrate only**; the jail never reads
+  these, so they classify HOT there.
+- `infra/freebsd/rc.d/grappa` — **jail substrate only** (rc wrapper
+  read at service start); Docker classifies it HOT. The jail cold
+  path auto-installs the repo copy to `/usr/local/etc/rc.d/grappa`
+  when it drifted, so the restart boots through the new wrapper.
+  Deploy orchestrators (`scripts/deploy.sh`,
+  `infra/freebsd/deploy.sh`), operator-on-demand verbs
+  (`infra/freebsd/jail_*.sh`) and `grappa.env.example` are HOT on
+  both substrates — nothing about them lands in the running BEAM
+  (d8f354c).
 - `priv/repo/migrations/*` — hot path skips `mix ecto.migrate`;
   new tables/columns 500 on first query post-reload, Bootstrap
   crash-loops if it reads them.
@@ -325,9 +339,12 @@ with that line means this step was skipped.
 The daemon must also SEE them: rc(8) services get rc.subr's stock
 PATH without `/usr/local`, so `infra/freebsd/rc.d/grappa` prepends
 `/usr/local/bin:/usr/local/sbin` (found live 2026-06-10 — pkgs
-installed, every media upload still 422). **deploy.sh does NOT
-reinstall the rc.d script** — it was copied at provision time; after
-changing it, install + restart by hand:
+installed, every media upload still 422). An rc.d diff classifies
+COLD on the jail substrate, and the cold path in
+`infra/freebsd/deploy.sh` auto-installs the repo copy to
+`/usr/local/etc/rc.d/grappa` before the restart — no manual step.
+To apply an rc.d change without waiting for a deploy (or after a
+`--force-hot` that skipped it):
 
 ```sh
 ssh root@m42 'jexec 6 cp /home/grappa/grappa/infra/freebsd/rc.d/grappa \

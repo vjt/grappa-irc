@@ -11725,3 +11725,51 @@ media-path coverage moved UP into dedicated strip tests + door-level
 tests with real bytes — the old `"PNG-FAKE-BYTES"`-labeled-png tests
 exercised zero image semantics and cannot survive a fail-closed
 boundary.
+
+## 2026-06-10 — substrate-scoped preflight classes (the Dockerfile-colds-the-jail defect)
+
+**Trigger.** The metadata-strip deploy (2026-06-10) cold-restarted
+prod — ALL IRC sessions dropped — because the diff touched
+`Dockerfile`. The jail never reads the Dockerfile: its substrate is
+`mix release` + rc(8), and the jail-side equivalent of that diff
+(`pkg install`) had already been done by hand. Second needless
+restart in one day ("TOO MANY COLD DEPLOYS PORCO DIO"). On an
+always-on bouncer every cold deploy is incident-grade, so a
+false-COLD is not "30s of downtime", it's every user's IRC session.
+
+**Decision.** `Grappa.Deploy.Preflight` classifies per-substrate.
+`classify_paths/2`, `classify/5` and `cli([from, to, substrate])`
+take an explicit `substrate :: :docker | :jail` — no default
+argument (CLAUDE.md ban): a missing substrate at the CLI is a usage
+error (exit 2) and an unknown atom raises `FunctionClauseError`.
+Guessing a substrate would silently re-introduce the cross-substrate
+restart class this argument exists to kill.
+
+The flat Class-4 COLD list split into substrate-scoped classes:
+
+- **4a `:image_substrate`** (`Dockerfile`, `.dockerignore`,
+  `compose*.yaml`, `bin/start.sh`, `bin/grappa`) — COLD only when
+  classifying for `:docker`. The jail sees them as HOT.
+- **4b `:rc_d`** (`infra/freebsd/rc.d/grappa`) — COLD only for
+  `:jail`. Docker sees it as HOT. New reason atom because reporting
+  a jail rc script under `:image_substrate` is a lying label.
+
+Everything else (deps, supervision tree, migrations, nginx, config,
+state-shape) stays substrate-independent. Deploy orchestrators stay
+excluded from COLD on both substrates (d8f354c reasoning unchanged).
+
+**rc.d auto-install.** The jail cold path
+(`infra/freebsd/deploy.sh`) now installs the repo rc.d wrapper to
+`/usr/local/etc/rc.d/grappa` when it drifted (root-owned 555, via
+`install`), before the restart. Closes the loop that bit the same
+day: the rc(8) PATH fix shipped in the repo but prod kept 422ing
+until the wrapper was hand-copied. An rc.d diff is COLD on the jail
+(4b), the cold path installs it, the restart boots through the new
+wrapper — no manual step left (OPERATIONS updated at the source).
+
+**Acceptance.** The fix's own deploy is the test: a diff of
+`lib/*.ex` + `scripts/` + `infra/freebsd/deploy.sh` + docs must
+classify HOT on the jail. Before this change it would have been HOT
+anyway (no class-4 file touched) — but the prior Dockerfile-only
+diff now classifies HOT-on-jail / COLD-on-docker, verified in the
+substrate-matrix tests (`test/grappa/deploy/preflight_test.exs`).

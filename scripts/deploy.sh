@@ -111,7 +111,7 @@ preflight() {
     # multi-minute container-rebuild + cicchetto-build oneshot.
     if docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps \
         -e MIX_ENV=dev grappa \
-        mix run --no-start -e "Grappa.Deploy.Preflight.cli([\"$from\", \"$to\"])"; then
+        mix run --no-start -e "Grappa.Deploy.Preflight.cli([\"$from\", \"$to\", \"docker\"])"; then
         return 0
     else
         return 1
