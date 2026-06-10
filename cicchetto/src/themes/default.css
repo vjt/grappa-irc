@@ -1262,8 +1262,12 @@ html.resize-dragging * {
   /* iPhone dogfood (2026-06-10): flex items default to min-width:auto,
    * so a long filename refuses to shrink and shoves the progress bar +
    * cancel/retry buttons off-screen on narrow viewports. min-width: 0
-   * lets it yield; ellipsis keeps it legible. */
+   * lets it yield; ellipsis keeps it legible. The 25% hard cap (second
+   * dogfood round) keeps the progress bar dominant even when space
+   * would technically fit more name — the bar is the information on
+   * this row, the name is just a reminder of what's uploading. */
   min-width: 0;
+  max-width: 25%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
