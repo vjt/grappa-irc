@@ -83,6 +83,16 @@ defmodule GrappaWeb.UploadsController do
   @allowed_ttl_seconds [3600, 43_200, 86_400, 259_200]
   @default_ttl_seconds 86_400
 
+  @doc """
+  The closed MIME → cap-category allowlist. Public so the
+  `Grappa.Uploads.MetadataStrip` lockstep test can assert every
+  image/video entry has a strip mapping — an allowlist addition
+  without one fails CLOSED at upload time (422); the test turns that
+  prod surprise into a red suite.
+  """
+  @spec mime_categories() :: %{String.t() => :image | :video | :document}
+  def mime_categories, do: @mime_categories
+
   # ------------------------------------------------------------------
   # POST /api/uploads
   # ------------------------------------------------------------------

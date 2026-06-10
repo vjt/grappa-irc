@@ -119,6 +119,12 @@ async function alreadyTargetShape(
   durationSeconds: number,
   capBytes: number,
 ): Promise<boolean> {
+  // The DECLARED type must be mp4 too, not just the demuxed
+  // container: the upload rides file.type as the stored content-type,
+  // and an mp4-branded file named .mov would be served as
+  // video/quicktime — Chrome refuses to play that content-type even
+  // over H.264 bytes. Such a file transcodes (gets renamed .mp4).
+  if (file.type !== "video/mp4") return false;
   if (file.size > capBytes) return false;
 
   const policyHeight = pickTargetHeight(durationSeconds, capBytes);

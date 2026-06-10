@@ -474,7 +474,7 @@ defmodule Grappa.UploadsTest do
     # the INTEGRATION: what create/3 stores is the stripped bytes,
     # the row reflects the stored size, and a strip failure leaves
     # neither file nor row behind.
-    import Grappa.UploadFixtures, only: [bytes: 1, markers: 1]
+    import Grappa.UploadFixtures, only: [bytes: 1, refute_markers!: 2]
 
     test "stores a GPS-tagged jpeg stripped — markers gone, row.bytes = stored size",
          %{root: root} do
@@ -492,11 +492,7 @@ defmodule Grappa.UploadsTest do
       stored = File.read!(Path.join(root, row.slug))
       refute stored == input
       assert row.bytes == byte_size(stored)
-
-      for marker <- markers(:gps_jpeg) do
-        assert :binary.match(stored, marker) == :nomatch,
-               "marker #{inspect(marker)} reached the storage root"
-      end
+      refute_markers!(stored, :gps_jpeg)
     end
 
     test "stores a GPS-tagged mp4 stripped", %{root: root} do
@@ -512,11 +508,7 @@ defmodule Grappa.UploadsTest do
       assert {:ok, row} = Uploads.create(input, attrs, storage_root: root)
 
       stored = File.read!(Path.join(root, row.slug))
-
-      for marker <- markers(:gps_mp4) do
-        assert :binary.match(stored, marker) == :nomatch,
-               "marker #{inspect(marker)} reached the storage root"
-      end
+      refute_markers!(stored, :gps_mp4)
     end
 
     test "strip failure rejects the upload — no file, no row", %{root: root} do

@@ -134,11 +134,7 @@ defmodule GrappaWeb.UploadsControllerTest do
 
       stored = File.read!(Uploads.storage_path(root, slug))
       refute stored == input
-
-      for marker <- Grappa.UploadFixtures.markers(:gps_jpeg) do
-        assert :binary.match(stored, marker) == :nomatch,
-               "marker #{inspect(marker)} reached the storage root through the door"
-      end
+      Grappa.UploadFixtures.refute_markers!(stored, :gps_jpeg)
     end
 
     test "422 metadata_strip_failed for garbage labeled as image", %{conn: conn} do
@@ -331,10 +327,7 @@ defmodule GrappaWeb.UploadsControllerTest do
       assert response(get_conn, 200) == File.read!(Uploads.storage_path(root, slug))
       assert [ct] = get_resp_header(get_conn, "content-type")
       assert ct =~ "image/png"
-
-      for marker <- Grappa.UploadFixtures.markers(:gps_png) do
-        assert :binary.match(response(get_conn, 200), marker) == :nomatch
-      end
+      Grappa.UploadFixtures.refute_markers!(response(get_conn, 200), :gps_png)
     end
   end
 

@@ -47,6 +47,41 @@ defmodule Grappa.UploadFixtures do
   def markers(:gps_mov), do: ["com.apple.quicktime", "Apple"]
   def markers(:tagged_webm), do: ["secret title", "GPS 41.9028,12.4964"]
 
+  @doc """
+  Assert every metadata marker for `name` is PRESENT in `binary` —
+  the fixture-rot guard: a regenerated fixture that lost its
+  metadata would otherwise make absence assertions pass while
+  validating nothing.
+  """
+  @spec assert_markers!(binary(), name()) :: :ok
+  def assert_markers!(binary, name) when is_binary(binary) do
+    Enum.each(markers(name), fn marker ->
+      if :binary.match(binary, marker) == :nomatch do
+        raise ExUnit.AssertionError,
+          message: "fixture #{name} lost its #{inspect(marker)} marker — regenerate it"
+      end
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Assert every metadata marker for `name` is ABSENT from `binary` —
+  the post-strip check, shared by the unit, context, and door-level
+  suites so the marker contract lives in one place.
+  """
+  @spec refute_markers!(binary(), name()) :: :ok
+  def refute_markers!(binary, name) when is_binary(binary) do
+    Enum.each(markers(name), fn marker ->
+      if :binary.match(binary, marker) != :nomatch do
+        raise ExUnit.AssertionError,
+          message: "marker #{inspect(marker)} (#{name}) survived the strip"
+      end
+    end)
+
+    :ok
+  end
+
   defp file_for(:gps_jpeg), do: "gps.jpg"
   defp file_for(:gps_png), do: "gps.png"
   defp file_for(:gps_mp4), do: "gps.mp4"

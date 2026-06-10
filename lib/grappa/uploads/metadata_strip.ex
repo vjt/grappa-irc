@@ -67,6 +67,16 @@ defmodule Grappa.Uploads.MetadataStrip do
   }
 
   @doc """
+  Whether `mime` has a strip tool mapped. Image/video mimes returning
+  `false` here FAIL CLOSED in `run/2` — the lockstep test against
+  `GrappaWeb.UploadsController.mime_categories/0` pins that every
+  allowlisted media type stays strippable.
+  """
+  @spec strippable?(String.t()) :: boolean()
+  def strippable?("video/webm"), do: true
+  def strippable?(mime) when is_binary(mime), do: Map.has_key?(@exiftool_exts, mime)
+
+  @doc """
   Strip embedded metadata from `bytes` according to `mime`.
 
   Returns `{:ok, stripped_bytes}` (byte-identical passthrough for
@@ -141,35 +151,53 @@ defmodule Grappa.Uploads.MetadataStrip do
 
   # The tools parse HOSTILE user bytes and exiftool has an RCE
   # history (CVE-2021-22204) — a compromised child must not find the
-  # deployment's secrets in its environment. `{name, nil}` REMOVES
-  # the variable (vs `env: []`, which only adds nothing). Names from
-  # grappa.env.example's secret block.
-  @scrubbed_env [
-    {"SECRET_KEY_BASE", nil},
-    {"SECRET_SIGNING_SALT", nil},
-    {"RELEASE_COOKIE", nil},
-    {"GRAPPA_ENCRYPTION_KEY", nil},
-    {"VAPID_PRIVATE_KEY", nil}
-  ]
+  # deployment's secrets in its environment. ALLOWLIST, not denylist:
+  # the child keeps only what a media tool needs, so a secret added
+  # to the deployment tomorrow cannot leak by omission. `{name, nil}`
+  # REMOVES the variable (vs `env: []`, which only adds nothing).
+  @kept_env ~w(PATH HOME LANG LC_ALL TMPDIR)
+
+  defp scrubbed_env do
+    for {name, _} <- System.get_env(), name not in @kept_env, do: {name, nil}
+  end
+
+  # Hard wall-clock ceiling on the child: a pathological crafted file
+  # that wedges ffmpeg/exiftool must not pin the request process (and
+  # the OS child) forever — System.cmd/3 itself has no timeout.
+  # timeout(1) ships in busybox (alpine container) AND FreeBSD base
+  # (m42 jail). SIGKILL directly: the tools are stateless over our
+  # tmp files, nothing graceful to preserve.
+  @tool_timeout_seconds 30
+  # GNU/busybox/FreeBSD timeout exit codes for an expired child:
+  # 124 (TERM default) / 137 (128+9 when -s KILL delivered).
+  @timeout_exit_codes [124, 137]
 
   defp run_tool(tool, in_path, out_path, mime) do
     exe_name = exe_name(tool)
 
-    case System.find_executable(exe_name) do
-      nil ->
-        strip_error(mime, "#{exe_name} not found on PATH — " <> install_hint(tool))
+    with {:ok, timeout_exe} <- find_exe("timeout", "part of busybox / FreeBSD base", mime),
+         {:ok, _} <- find_exe(exe_name, install_hint(tool), mime) do
+      argv =
+        ["-s", "KILL", Integer.to_string(@tool_timeout_seconds), exe_name] ++
+          args(tool, in_path, out_path)
 
-      exe ->
-        case System.cmd(exe, args(tool, in_path, out_path),
-               env: @scrubbed_env,
-               stderr_to_stdout: true
-             ) do
-          {_, 0} ->
-            :ok
+      case System.cmd(timeout_exe, argv, env: scrubbed_env(), stderr_to_stdout: true) do
+        {_, 0} ->
+          :ok
 
-          {output, code} ->
-            strip_error(mime, "#{exe_name} exit #{code}: #{String.trim(output)}")
-        end
+        {_, code} when code in @timeout_exit_codes ->
+          strip_error(mime, "#{exe_name} timed out after #{@tool_timeout_seconds}s")
+
+        {output, code} ->
+          strip_error(mime, "#{exe_name} exit #{code}: #{String.trim(output)}")
+      end
+    end
+  end
+
+  defp find_exe(name, hint, mime) do
+    case System.find_executable(name) do
+      nil -> strip_error(mime, "#{name} not found on PATH — #{hint}")
+      exe -> {:ok, exe}
     end
   end
 

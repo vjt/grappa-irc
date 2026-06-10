@@ -498,6 +498,17 @@ describe("transcodeVideo skip-gate", () => {
     expect(h.conversionInit).toHaveBeenCalled();
   });
 
+  it("mp4-branded content DECLARED video/quicktime does NOT skip — stored content-type would mismatch", async () => {
+    stubWebCodecs();
+    h.format = "mp4";
+    // sampleClip declares video/quicktime; the demuxed container says
+    // mp4. The upload would ride the declared type, so the gate must
+    // refuse and let the transcode rename it .mp4/video/mp4.
+    await transcodeVideo(sampleClip(), cap, noProgress, new AbortController().signal);
+
+    expect(h.conversionInit).toHaveBeenCalled();
+  });
+
   it("non-avc codec in mp4 does NOT skip", async () => {
     stubWebCodecs();
     h.format = "mp4";

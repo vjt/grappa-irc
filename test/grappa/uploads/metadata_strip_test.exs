@@ -1,7 +1,8 @@
 defmodule Grappa.Uploads.MetadataStripTest do
   use ExUnit.Case, async: true
 
-  import Grappa.UploadFixtures, only: [bytes: 1, mime: 1, markers: 1]
+  import Grappa.UploadFixtures,
+    only: [assert_markers!: 2, bytes: 1, mime: 1, refute_markers!: 2]
 
   alias Grappa.Uploads.MetadataStrip
 
@@ -15,21 +16,13 @@ defmodule Grappa.Uploads.MetadataStripTest do
     test "#{name}: strips every metadata marker" do
       name = unquote(name)
       input = bytes(name)
-
-      for marker <- markers(name) do
-        assert :binary.match(input, marker) != :nomatch,
-               "fixture #{name} lost its #{inspect(marker)} marker — regenerate it"
-      end
+      assert_markers!(input, name)
 
       assert {:ok, stripped} = MetadataStrip.run(input, mime(name))
       assert is_binary(stripped)
       assert byte_size(stripped) > 0
       refute stripped == input
-
-      for marker <- markers(name) do
-        assert :binary.match(stripped, marker) == :nomatch,
-               "marker #{inspect(marker)} survived the strip"
-      end
+      refute_markers!(stripped, name)
     end
   end
 
@@ -66,6 +59,18 @@ defmodule Grappa.Uploads.MetadataStripTest do
 
   test "video mime without a strip mapping fails closed" do
     assert {:error, {:metadata_strip, _}} = MetadataStrip.run(<<0>>, "video/x-matroska")
+  end
+
+  test "every allowlisted image/video mime has a strip mapping (controller lockstep)" do
+    # The two maps are maintained separately by design (web layer owns
+    # the boundary categories, context owns the tool dispatch) — this
+    # test is the lockstep guard: an allowlist addition without a
+    # strip mapping would 422 every upload of that type in prod.
+    for {mime, category} <- GrappaWeb.UploadsController.mime_categories(),
+        category in [:image, :video] do
+      assert MetadataStrip.strippable?(mime),
+             "#{mime} is in the upload allowlist but has no strip mapping"
+    end
   end
 
   test "document mimes pass through byte-identical" do
