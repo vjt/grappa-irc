@@ -22,14 +22,25 @@ exec su -l grappa -c '
 set -eu
 cd /home/grappa/grappa/cicchetto
 mkdir -p ../runtime/cicchetto-dist
-# Idempotent — npm ci re-syncs node_modules from package-lock; npm
-# install is fine on first run. Prefer ci for reproducible builds.
+# 2026-06-10 uploads-2 deploy lesson: `cmd | tail` makes the pipeline
+# exit status tail-s (plain sh has no pipefail), so set -e never fired
+# on npm failures and the deploy reported success over a STALE bundle.
+# Buffer to a log instead; print the tail only on failure (full log
+# stays on disk for diagnosis), and let set -e do its job.
+#
+# npm ci needs package-lock.json in sync with package.json; the lock
+# is generated in-jail (bun owns the canonical lock in-repo, FreeBSD
+# has no bun port) so a dep added via bun makes ci fail — fall back
+# to npm install, which regenerates the lock.
+log=../runtime/cic-build.log
 if [ -f package-lock.json ]; then
-	npm ci 2>&1 | tail -10
+	npm ci >"$log" 2>&1 || npm install >"$log" 2>&1 || { tail -20 "$log"; exit 1; }
 else
-	npm install 2>&1 | tail -10
+	npm install >"$log" 2>&1 || { tail -20 "$log"; exit 1; }
 fi
-npm run build -- --outDir ../runtime/cicchetto-dist --emptyOutDir 2>&1 | tail -20
+tail -3 "$log"
+npm run build -- --outDir ../runtime/cicchetto-dist --emptyOutDir >"$log" 2>&1 || { tail -30 "$log"; exit 1; }
+tail -8 "$log"
 echo "--- runtime/cicchetto-dist contents ---"
 ls -la ../runtime/cicchetto-dist/
 '
