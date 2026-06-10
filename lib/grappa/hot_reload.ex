@@ -1,19 +1,42 @@
 defmodule Grappa.HotReload do
   @moduledoc """
-  Hot-reload of modified modules in the running BEAM — the context
+  Hot-reload of the app's modules in the running BEAM — the context
   behind `POST /admin/reload` (see `GrappaWeb.AdminController` for
   the endpoint story and the why-not-`Phoenix.CodeReloader` history).
+
+  ## One uniform walk, by absolute path
+
+  `reload_modified/0` walks the grappa app's ebin directory and, per
+  beam file: loads it if the module was never loaded; soft-purges +
+  reloads it if the on-disk md5 differs from the loaded version's
+  `module_info(:md5)`; skips it otherwise. Dependencies are
+  deliberately out of scope — a dep change means `mix.lock` changed,
+  and the deploy preflight forces COLD for that class, so the app's
+  own ebin is the complete hot-reload surface.
+
+  Loading goes through `:code.load_abs/1` with the explicit beam
+  path, never `:code.load_file/1`. Three live repros (2026-06-10)
+  drove this design:
+
+  * `:code.modified_modules/0` only compares LOADED beams against
+    disk — a hot deploy that ADDS a module is invisible to it, and
+    releases run embedded mode (no lazy loading), so the first call
+    into the new module crashed `:undef`.
+  * The OTP 26+ cached code path does not see files added to a
+    directory after boot — `:code.load_file/1` returned `:nofile`
+    for a beam demonstrably sitting in a path-member dir. This bites
+    FOREVER (until cold restart) for any module first hot-deployed
+    post-boot, including this module's own first update.
+  * md5 comparison replaces `:code.modified_modules/0` because the
+    latter resolves through the same cached path.
 
   ## soft-purge, never purge
 
   Erlang keeps at most TWO versions of a module: current and old.
-  `:code.load_file/1` shifts current → old and loads the new beam as
-  current — which means a module hot-reloaded once already has both
-  slots full, and the SECOND hot reload fails `{:error, :not_purged}`
-  until the old version is purged. Found live 2026-06-10: the same
-  deploy day shipped two hot reloads of `Grappa.Deploy.Preflight`,
-  and the second one failed exactly this way (the previous inline
-  controller code never purged — while its own doc claimed it did).
+  Loading shifts current → old — which means a module hot-reloaded
+  once already has both slots full, and the SECOND hot reload fails
+  `{:error, :not_purged}` until the old version is purged (also hit
+  live 2026-06-10, while the endpoint's own doc claimed it purged).
 
   The purge MUST be `:code.soft_purge/1`, not `:code.purge/1`: hard
   purge KILLS every process still executing old code — on an
@@ -33,52 +56,28 @@ defmodule Grappa.HotReload do
   @type result :: %{reloaded: [module()], failed: [failure()]}
 
   @doc """
-  Reload every module whose .beam on disk differs from the loaded
-  version (`:code.modified_modules/0`), AND load every never-loaded
-  beam in the app's ebin. The .beam must already be fresh on disk —
-  that's the deploy script's job (see `GrappaWeb.AdminController`
-  moduledoc for the per-substrate split).
-
-  The second half exists because `:code.modified_modules/0` only
-  compares LOADED beams against disk — a hot deploy that ADDS a
-  module is invisible to it, and the first call into the new module
-  then crashes `:undef` (releases run embedded mode: no lazy
-  loading; live-repro 2026-06-10, third of the day). The load goes
-  through `:code.load_abs/1` rather than `:code.load_file/1` because
-  OTP's cached code path (OTP 26+) does not see files added to a
-  directory after boot — `load_file` reports `:nofile` even though
-  the beam is on a path member.
+  Walk the grappa app's ebin and reload every new or changed module.
+  The .beam files must already be fresh on disk — that's the deploy
+  script's job (see `GrappaWeb.AdminController` moduledoc for the
+  per-substrate split).
   """
   @spec reload_modified() :: result()
   def reload_modified do
-    ebin = :grappa |> :code.lib_dir() |> to_string() |> Path.join("ebin")
-    new_beams = load_new_beams(ebin)
-    modified = reload_modules(:code.modified_modules())
-
-    %{
-      reloaded: new_beams.reloaded ++ modified.reloaded,
-      failed: new_beams.failed ++ modified.failed
-    }
+    :grappa |> :code.lib_dir() |> to_string() |> Path.join("ebin") |> reload_from()
   end
 
   @doc """
-  Load every beam in `ebin_dir` whose module is not currently loaded.
-  Already-loaded modules are untouched (their refresh is
-  `reload_modules/1`'s job via the modified-modules walk).
+  Reload every beam under `ebin_dir` that is new (module not loaded)
+  or changed (on-disk md5 differs from the loaded version). Unchanged
+  modules are untouched.
   """
-  @spec load_new_beams(Path.t()) :: result()
-  def load_new_beams(ebin_dir) do
+  @spec reload_from(Path.t()) :: result()
+  def reload_from(ebin_dir) do
     results =
       for beam <- Path.wildcard(Path.join(ebin_dir, "*.beam")),
           mod = beam |> Path.basename(".beam") |> String.to_atom(),
-          :code.is_loaded(mod) == false do
-        # load_abs wants the path sans ".beam" extension.
-        beam_sans_ext = beam |> Path.rootname() |> String.to_charlist()
-
-        case :code.load_abs(beam_sans_ext) do
-          {:module, ^mod} -> {mod, :ok}
-          {:error, reason} -> {mod, {:error, reason}}
-        end
+          new_or_changed?(mod, beam) do
+        reload_one(mod, beam)
       end
 
     %{
@@ -87,24 +86,30 @@ defmodule Grappa.HotReload do
     }
   end
 
-  @doc """
-  Reload the given modules from disk. Per module: soft-purge any old
-  code (refusing with `:old_code_in_use` when a process still runs
-  it), then `:code.load_file/1`.
-  """
-  @spec reload_modules([module()]) :: result()
-  def reload_modules(mods) when is_list(mods) do
-    results = Enum.map(mods, &reload_one/1)
+  defp new_or_changed?(mod, beam) do
+    case :code.is_loaded(mod) do
+      false ->
+        true
 
-    %{
-      reloaded: for({mod, :ok} <- results, do: mod),
-      failed: for({mod, {:error, reason}} <- results, do: {mod, reason})
-    }
+      {:file, _} ->
+        case :beam_lib.md5(String.to_charlist(beam)) do
+          {:ok, {^mod, disk_md5}} -> disk_md5 != apply(mod, :module_info, [:md5])
+          # Unreadable/mismatched beam: surface via the load attempt
+          # rather than silently skipping a file that claims to be
+          # this module.
+          _ -> true
+        end
+    end
   end
 
-  defp reload_one(mod) do
+  defp reload_one(mod, beam) do
     if :code.soft_purge(mod) do
-      case :code.load_file(mod) do
+      # load_abs wants the path sans ".beam" extension. Never
+      # :code.load_file/1 here — see moduledoc (cached code path is
+      # blind to post-boot files).
+      beam_sans_ext = beam |> Path.rootname() |> String.to_charlist()
+
+      case :code.load_abs(beam_sans_ext) do
         {:module, ^mod} -> {mod, :ok}
         {:error, reason} -> {mod, {:error, reason}}
       end
