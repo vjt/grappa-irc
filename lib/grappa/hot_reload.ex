@@ -34,13 +34,57 @@ defmodule Grappa.HotReload do
 
   @doc """
   Reload every module whose .beam on disk differs from the loaded
-  version (`:code.modified_modules/0`). The .beam must already be
-  fresh on disk — that's the deploy script's job (see
-  `GrappaWeb.AdminController` moduledoc for the per-substrate split).
+  version (`:code.modified_modules/0`), AND load every never-loaded
+  beam in the app's ebin. The .beam must already be fresh on disk —
+  that's the deploy script's job (see `GrappaWeb.AdminController`
+  moduledoc for the per-substrate split).
+
+  The second half exists because `:code.modified_modules/0` only
+  compares LOADED beams against disk — a hot deploy that ADDS a
+  module is invisible to it, and the first call into the new module
+  then crashes `:undef` (releases run embedded mode: no lazy
+  loading; live-repro 2026-06-10, third of the day). The load goes
+  through `:code.load_abs/1` rather than `:code.load_file/1` because
+  OTP's cached code path (OTP 26+) does not see files added to a
+  directory after boot — `load_file` reports `:nofile` even though
+  the beam is on a path member.
   """
   @spec reload_modified() :: result()
   def reload_modified do
-    reload_modules(:code.modified_modules())
+    ebin = :grappa |> :code.lib_dir() |> to_string() |> Path.join("ebin")
+    new_beams = load_new_beams(ebin)
+    modified = reload_modules(:code.modified_modules())
+
+    %{
+      reloaded: new_beams.reloaded ++ modified.reloaded,
+      failed: new_beams.failed ++ modified.failed
+    }
+  end
+
+  @doc """
+  Load every beam in `ebin_dir` whose module is not currently loaded.
+  Already-loaded modules are untouched (their refresh is
+  `reload_modules/1`'s job via the modified-modules walk).
+  """
+  @spec load_new_beams(Path.t()) :: result()
+  def load_new_beams(ebin_dir) do
+    results =
+      for beam <- Path.wildcard(Path.join(ebin_dir, "*.beam")),
+          mod = beam |> Path.basename(".beam") |> String.to_atom(),
+          :code.is_loaded(mod) == false do
+        # load_abs wants the path sans ".beam" extension.
+        beam_sans_ext = beam |> Path.rootname() |> String.to_charlist()
+
+        case :code.load_abs(beam_sans_ext) do
+          {:module, ^mod} -> {mod, :ok}
+          {:error, reason} -> {mod, {:error, reason}}
+        end
+      end
+
+    %{
+      reloaded: for({mod, :ok} <- results, do: mod),
+      failed: for({mod, {:error, reason}} <- results, do: {mod, reason})
+    }
   end
 
   @doc """

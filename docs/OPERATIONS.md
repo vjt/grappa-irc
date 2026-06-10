@@ -198,7 +198,12 @@ soft-purges the old version first (a bare `load_file` fails
 process still runs old code the reload refuses with
 `:old_code_in_use` instead of killing it, the response's `failed`
 list is non-empty, and the jail deploy aborts rather than declaring
-success. The jail deploy also writes `runtime/last-deployed-sha` on
+success. Hot deploys that ADD modules are covered too: never-loaded
+beams in the app ebin are loaded via `:code.load_abs/1`
+(`:code.modified_modules/0` can't see them, embedded mode never
+lazy-loads, and the OTP 26+ cached code path makes plain `load_file`
+return `:nofile` for post-boot files — all three bit live
+2026-06-10). The jail deploy also writes `runtime/last-deployed-sha` on
 completion; a re-run with unchanged HEAD but a stale/missing marker
 re-drives the whole deploy (a prior run died mid-flight) instead of
 exiting "nothing to do". The Phoenix reloader is a

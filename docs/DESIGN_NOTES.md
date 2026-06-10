@@ -11842,6 +11842,20 @@ was manual (rpc soft-purge + load). Three fixes:
   honestly. Pinned by `test/grappa/hot_reload_test.exs` incl. the
   double-reload repro and a held-old-code refusal test.
 
+**Hot deploys that ADD a module (third live repro, same day).** The
+deploy shipping `Grappa.HotReload` itself proved the next gap:
+`:code.modified_modules/0` only compares LOADED beams against disk,
+so a brand-new module is invisible to the reload walk; releases run
+embedded mode (no lazy loading), so the reloaded `AdminController`'s
+first call into the new module 500'd `:undef`. And the recovery rpc
+showed a second trap: OTP's cached code path (OTP 26+) does not see
+files added to a directory after boot — `:code.load_file/1` reports
+`:nofile` for a beam that is demonstrably in a path member dir.
+`reload_modified/0` now also walks the app ebin for never-loaded
+beams and loads them via `:code.load_abs/1` (bypasses the path
+cache). Recovery one-liner for a node in this state:
+`jail_release.sh rpc ':code.load_abs(~c"<ebin>/Elixir.Mod.Name")'`.
+
 **Acceptance.** The fix's own deploy is the test — with one caveat
 found in review: the deploy that SHIPS this change still runs the
 old deploy.sh bytes (the old guard is the dead one), whose 2-arg

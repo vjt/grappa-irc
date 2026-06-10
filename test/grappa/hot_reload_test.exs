@@ -127,6 +127,51 @@ defmodule Grappa.HotReloadTest do
     assert %{reloaded: [], failed: []} = HotReload.reload_modules([])
   end
 
+  # The third live repro of 2026-06-10: a hot deploy that ADDS a new
+  # module is invisible to :code.modified_modules/0 (it only compares
+  # LOADED beams against disk), and the release's cached code path
+  # (OTP 26+) makes the new beam :nofile for plain :code.load_file/1.
+  # The endpoint must discover and load never-loaded beams from the
+  # app ebin explicitly, or the first call into the new module 500s
+  # with :undef (embedded mode never lazy-loads).
+  test "load_new_beams/1 loads a never-loaded beam from a directory (new-module hot deploy)" do
+    mod = HotReloadTestBrandNew
+    tmp = Path.join(System.tmp_dir!(), "hot_reload_new_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+
+    bin = compile_quietly(mod, "defmodule #{inspect(mod)} do\n  def version, do: 7\nend\n")
+    # compile_quietly loaded it as a side effect — unload so the module
+    # is genuinely "brand new" to the code server.
+    reset_code_server(mod)
+    File.write!(Path.join(tmp, "Elixir.#{inspect(mod)}.beam"), bin)
+
+    on_exit(fn ->
+      File.rm_rf!(tmp)
+      reset_code_server(mod)
+    end)
+
+    refute :code.is_loaded(mod)
+    assert %{reloaded: [^mod], failed: []} = HotReload.load_new_beams(tmp)
+    assert apply(mod, :version, []) == 7
+  end
+
+  test "load_new_beams/1 skips already-loaded modules" do
+    mod = HotReloadTestAlreadyLoaded
+    tmp = Path.join(System.tmp_dir!(), "hot_reload_skip_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+
+    bin = compile_quietly(mod, "defmodule #{inspect(mod)} do\n  def version, do: 1\nend\n")
+    # Leave it loaded (compile side effect) — only write the beam.
+    File.write!(Path.join(tmp, "Elixir.#{inspect(mod)}.beam"), bin)
+
+    on_exit(fn ->
+      File.rm_rf!(tmp)
+      reset_code_server(mod)
+    end)
+
+    assert %{reloaded: [], failed: []} = HotReload.load_new_beams(tmp)
+  end
+
   test "reload_modified/0 returns the same shape (zero modified modules in a test run)" do
     # In a test run nothing recompiles beams behind the code server's
     # back, so modified_modules is empty — this pins the wiring and
