@@ -11953,3 +11953,87 @@ Lesson (recurring shape): copying a reference pattern partially is
 worse than not copying it — the kill switch arrived without its
 counterweight. Same family as the "read the reference implementation
 COMPLETELY" rule.
+
+## 2026-06-11 — media links: in-app viewer modal (the in-scope navigation trap)
+
+vjt live-tested link behavior in the iOS standalone PWA (2026-06-10):
+plain website links are FINE — out-of-scope, so iOS opens the Safari
+view with full controls. Only MEDIA links misbehaved: a bare window
+with no controls, and returning to cic forced a full reload. Root
+cause, verified in code before fixing: own upload URLs are SAME-ORIGIN
+(`embeddedHost` resolves `Endpoint.url() + /uploads/<slug>`), the PWA
+manifest has no `scope` key and `start_url: "/"`, so the entire origin
+is in-PWA-scope — and iOS standalone navigates in-scope links IN PLACE
+regardless of `target="_blank"`. The PWA window itself became the raw
+media document: no browser chrome by definition (display: standalone),
+no back control, and the "reload on return" is just cic cold-booting
+after its window was navigated away. Out-of-scope links never had the
+bug, which is why only media links (= own uploads) hurt.
+
+Decision (vjt, 2026-06-10): on-CLICK in-app viewer modal for media
+URLs — X-close + "open in browser" — NOT a generic iframe modal for
+all links (X-Frame-Options blocks most of the web, iframe history is
+unreliable, and it would need a `frame-src` CSP loosening). Plain web
+links stay untouched. This does NOT lift the "IRC stays text only"
+invariant: that rule bans on-ARRIVAL rendering (previews, thumbnails,
+lightbox-on-arrival); a click is the user opening the resource — the
+modal is just WHERE it opens.
+
+Mechanics. `lib/mediaLink.ts` (pure, linkify-style) classifies a URL
+given the text segment preceding it: same-HOST `/uploads/<26-char-
+base32>` + trailing 📸/🎬 → image/video (the slug carries no
+extension — the uploadOrchestrator's emoji prefix is the only type
+signal on the wire); same-host media-extension URL → kind by
+extension; cross-host → null, ALWAYS. Two independent reasons for
+the cross-host exclusion: the CSP (`img-src 'self' data:`,
+`media-src 'self' blob:`) would block the modal's media element — the
+viewer ships with ZERO CSP changes — and cross-host links don't
+have the bug in the first place (litterbox URLs open correctly in the
+Safari view today). 📄 document uploads are excluded: rendering a PDF
+in-modal needs `<embed>`/`<iframe>`, which is the rejected design; a
+same-origin 📄 link still navigates in place on iOS standalone —
+known residual, waits for a complaint before earning machinery.
+
+HOST-equality, not full-origin equality — the e2e spec's first run
+caught why. The harness anchor rendered `http://localhost:4000/
+uploads/<slug>` against a `https://nginx-test` page: the e2e server
+minted URLs from its listen socket, not the public origin. Checking
+prod (live rpc, `GrappaWeb.Endpoint.url()`) showed the SAME defect:
+`http://irc.sniffo.org` — runtime.exs declared `url: [host: phx_host,
+port: 80]` with no scheme key, so every upload link ever posted is
+http:// on an https PWA. A strict origin check would have dead-
+lettered the entire upload history. Fix, both ends: (a) runtime.exs
+now roots `url:` at `https://PHX_HOST:443` in an env-agnostic block
+gated on PHX_HOST presence (empty-string-guarded — local dev compose
+passes `PHX_HOST: ${PHX_HOST:-}` and Elixir treats `""` as truthy);
+the e2e harness sets `PHX_HOST: nginx-test` and gains origin
+fidelity, prod mints honest https links from its next (cold —
+preflight class 7, config/*.exs) deploy, batched into a future
+restart window since (b) makes it non-urgent: the classifier matches
+on host (http/https only — linkify also admits ftp) and the click
+handler re-roots the href on the page origin via `normalizeMediaHref`
+before handing it to the viewer, so historical http:// bodies render
+without mixed-content blocks. The `--cic` deploy path doesn't move
+`runtime/last-deployed-sha` (only the server deploy.sh does), so the
+pending runtime.exs change stays inside the next server deploy's
+diff range — the marker machinery from this morning's deploy-honesty
+cluster is what makes "commit now, cold later" safe.
+`lib/mediaViewer.ts` is the two-verb signal store (archive-modal
+pattern; the click originates in module-scope renderRun where no
+component callback can reach); `MediaViewerModal.tsx` mounts at Shell
+root in both branches (PrivacyModal pattern) with the refcounted
+overlay scroll-lock, document-level Escape, button-backdrop close.
+The scrollback anchor KEEPS its href + `target="_blank"` — copy-link,
+middle-click, long-press all behave; only plain click is intercepted
+(`preventDefault` + open viewer). "Open in browser" inside the modal
+is a plain `target="_blank"` anchor: on desktop/Android a real tab;
+on iOS standalone it deliberately leaves the PWA — an explicit user
+choice, unlike the bug where a plain click did so.
+
+e2e (`media-link-modal-viewer.spec.ts`) rides the UX-6-B embedded-
+upload journey end-to-end and asserts the modal `<img>` reaches
+`naturalWidth > 0` — load-bearing: it proves the bytes actually
+rendered through nginx + CSP, not just that a dialog appeared. The
+iOS-standalone navigation behavior itself is not emulatable
+(feedback_playwright_webkit_not_ios_scroll class); vjt device dogfood
+is the final verification there.
