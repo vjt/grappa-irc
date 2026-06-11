@@ -22,7 +22,15 @@
 // modal's media element would pass this suite — prod-CSP fidelity
 // rests on the design guarantee that img-src/media-src 'self' covers
 // same-origin sources and the classifier admits nothing else.
+//
+// NOT covered here: the iOS-standalone x-safari-https href rewrite of
+// "open in browser" (dogfood fix 2026-06-11). The gate is
+// isIos() && isStandalonePwa() — false in every Playwright project,
+// and webkit emulation doesn't reproduce standalone-PWA navigation
+// anyway (feedback_playwright_webkit_not_ios_scroll, same class).
+// Unit tests pin the rewrite; device dogfood is the final word.
 
+import type { Page } from "@playwright/test";
 import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -30,12 +38,15 @@ import { expect, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
-test("📸 upload link click opens the in-app viewer instead of navigating", async ({ page }) => {
-  const vjt = getSeededVjt();
-  await loginAs(page, vjt);
-  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
-
-  // Upload a real PNG through the picker (UX-6-B journey).
+// UX-6-B embedded-upload journey: real PNG through the picker, real
+// POST /api/uploads, real IRC echo. Returns the scrollback media link
+// ready to click.
+async function uploadPngAndGetLink(page: Page): Promise<{
+  slug: string;
+  url: string;
+  row: ReturnType<Page["locator"]>;
+  link: ReturnType<Page["locator"]>;
+}> {
   const picker = page.locator("input[data-file-picker]");
   await picker.setInputFiles({
     name: "media-viewer.png",
@@ -59,6 +70,15 @@ test("📸 upload link click opens the in-app viewer instead of navigating", asy
   await expect(row.first()).toBeVisible({ timeout: 15_000 });
   const link = row.first().locator(".scrollback-link").first();
   await expect(link).toHaveClass(/scrollback-media-link/);
+  return { slug, url, row, link };
+}
+
+test("📸 upload link click opens the in-app viewer instead of navigating", async ({ page }) => {
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+  const { url, row, link } = await uploadPngAndGetLink(page);
 
   // Click → in-app viewer, NO navigation.
   const cicUrl = page.url();
@@ -76,7 +96,8 @@ test("📸 upload link click opens the in-app viewer instead of navigating", asy
   const naturalWidth = await img.evaluate((el) => (el as HTMLImageElement).naturalWidth);
   expect(naturalWidth).toBeGreaterThan(0);
 
-  // "open in browser" escape hatch — real anchor to the raw URL.
+  // "open in browser" escape hatch — real anchor to the raw URL on
+  // every non-iOS-standalone platform (chromium here).
   const external = viewer.getByRole("link", { name: /open in browser/i });
   await expect(external).toHaveAttribute("href", url);
   await expect(external).toHaveAttribute("target", "_blank");
@@ -86,6 +107,55 @@ test("📸 upload link click opens the in-app viewer instead of navigating", asy
   await expect(viewer).toBeHidden({ timeout: 5_000 });
   await expect(row.first()).toBeVisible();
   expect(page.url()).toBe(cicUrl);
+});
+
+test("viewer shows a load spinner until the media bytes arrive (dogfood fix 2026-06-11)", async ({
+  page,
+}) => {
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+  const { slug, link } = await uploadPngAndGetLink(page);
+
+  // Hold the media response open until the spinner has been asserted —
+  // a gate, not a sleep: fixed delays race the assertion and flake.
+  let releaseMedia = (): void => undefined;
+  const mediaGate = new Promise<void>((resolve) => {
+    releaseMedia = resolve;
+  });
+  await page.route(`**/uploads/${slug}`, async (route) => {
+    await mediaGate;
+    await route.continue();
+  });
+
+  await link.click();
+  const viewer = page.getByRole("dialog", { name: "Media viewer" });
+  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  const spinner = viewer.getByRole("status", { name: /loading/i });
+  await expect(spinner).toBeVisible();
+
+  releaseMedia();
+  await expect(spinner).toBeHidden({ timeout: 10_000 });
+  const img = viewer.locator("img.media-viewer-media");
+  await expect(img).toHaveJSProperty("complete", true, { timeout: 10_000 });
+  await page.unroute(`**/uploads/${slug}`);
+});
+
+test("unfetchable media shows failure text instead of spinning forever", async ({ page }) => {
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+  const { slug, link } = await uploadPngAndGetLink(page);
+  await page.route(`**/uploads/${slug}`, (route) => route.abort());
+
+  await link.click();
+  const viewer = page.getByRole("dialog", { name: "Media viewer" });
+  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  await expect(viewer.getByText(/failed to load/i)).toBeVisible({ timeout: 5_000 });
+  await expect(viewer.getByRole("status")).toBeHidden();
+  await page.unroute(`**/uploads/${slug}`);
 });
 
 test("plain web link is NOT intercepted — keeps the default anchor", async ({ page }) => {

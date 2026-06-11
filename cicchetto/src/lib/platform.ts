@@ -45,3 +45,36 @@ export function applyIosClass(): void {
     document.documentElement.classList.add("is-ios");
   }
 }
+
+// Installed-PWA (standalone display mode) detection. Two probes:
+// the standard display-mode media query, plus the proprietary
+// `navigator.standalone` boolean that iOS Safari pre-17 exposes
+// instead (the cast is intentional — the typedef omits it because
+// it's Safari-specific). Read live, not cached at module load:
+// callers gate per-interaction (media viewer) and tests stub the
+// probes per-case. The mode itself can't change without a reload,
+// so live reads cost nothing and never go stale.
+export function isStandalonePwa(): boolean {
+  if (typeof window === "undefined") return false;
+  if (
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(display-mode: standalone)").matches
+  ) {
+    return true;
+  }
+  return (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+}
+
+// iOS-standalone escape hatch for same-origin links (media viewer
+// dogfood bug, 2026-06-11): in-scope navigation ignores target=_blank,
+// so a same-origin anchor can NEVER leave the PWA by itself. The
+// x-safari-https:// / x-safari-http:// schemes hand the URL to real
+// Safari (iOS 17+; on iOS 16 the tap is inert — acceptable degrade,
+// the viewer modal still shows the media). Total function: anything
+// that isn't plain http(s) passes through unchanged.
+export function safariEscapeHref(href: string): string {
+  if (href.startsWith("https://") || href.startsWith("http://")) {
+    return `x-safari-${href}`;
+  }
+  return href;
+}

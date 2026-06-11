@@ -15,7 +15,7 @@ import "./lib/subscribe";
 import "./lib/userTopic";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
-import { applyIosClass } from "./lib/platform";
+import { applyIosClass, isStandalonePwa } from "./lib/platform";
 import { applyPushTargetFromUrl, installPushTargetListener } from "./lib/pushTarget";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing } from "./lib/socket";
@@ -149,13 +149,7 @@ const RequireAuth: Component<{ children: JSX.Element }> = (props) => {
 // reload — Chrome flips display-mode on the install transition,
 // which navigates away from the tab anyway; and the localStorage
 // choice only changes via the splash's own dismiss path.
-const isStandalone =
-  window.matchMedia("(display-mode: standalone)").matches ||
-  // iOS Safari pre-17 exposes standalone mode via this proprietary
-  // navigator property instead of the `display-mode` media query.
-  // The cast is intentional — the typedef doesn't include it because
-  // it's Safari-specific.
-  (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+const isStandalone = isStandalonePwa();
 const storedChoice = localStorage.getItem(INSTALL_CHOICE_KEY);
 const [showSplash, setShowSplash] = createSignal(
   shouldShowInstallSplash({ isStandalone, storedChoice }),
