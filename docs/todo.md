@@ -198,6 +198,16 @@ Phase 5 cluster opens):
 
 ## Low / Observation
 
+- **iOS device dogfood: text selection** (Dispatch-1 follow-up,
+  shipped 2026-06-11, bundle `BhVMIcil`) — long-press select in
+  scrollback incl. a SHORT channel (non-overflowing `.scrollback`
+  carries `touch-action: none`; emulation can't answer whether WebKit
+  starts long-press selection inside it) + selection inside the
+  compose box. DESIGN_NOTES 2026-06-11.
+- **Android keyboard-preserve observation** — keepKeyboard gate is
+  iOS-only since 2026-06-11 (Android behavior was never validated).
+  If Android PWA dogfood shows the on-screen keyboard dropping on
+  chrome taps while composing, widen the `isIos()` gate by one clause.
 - **Remove m42 fail2ban `/read-cursor` 400-exemption** (post-#44) — the
   cic positive-int guard landed + deployed (cp58, bundle `BF6Dside`).
   Once prod access logs show `/read-cursor` 400s at zero (clients on the
