@@ -145,6 +145,16 @@ run_deploy() {
     ! grep -q "run --no-start" "$ARGV_LOG"
 }
 
+@test "well-formed marker sha that is not a commit aborts loudly too" {
+    printf '%040d\n' 0 > "$REPO_ROOT/runtime/last-deployed-sha"
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"last-deployed-sha"* ]]
+    ! grep -q "run --no-start" "$ARGV_LOG"
+}
+
 @test "hot deploy completes and writes the marker as final step" {
     new="$(commit_upstream lib/base.txt)"
 

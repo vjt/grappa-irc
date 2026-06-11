@@ -38,8 +38,14 @@
 set -eu
 
 # epmd ships with the pkg-installed Erlang; rc(8) and root shells don't
-# have /usr/local paths (same pin as deploy.sh's run_as_grappa).
+# have /usr/local paths (same pin as deploy.sh's run_as_grappa). If the
+# pkg moves (erlang29) the binary silently vanishes from PATH and every
+# name_registered() check would read as "free" — warn loudly instead of
+# degrading the wait to BEAM-exit-only without a trace.
 PATH="/usr/local/lib/erlang28/bin:${PATH}"
+if ! command -v epmd >/dev/null 2>&1; then
+	echo "[beam-wait] WARNING: epmd binary not found on PATH (erlang pkg moved?) — name-release checks degraded to BEAM-exit only" >&2
+fi
 
 # `epmd -names` exits non-zero when no epmd is running — no daemon, no
 # registrations, name trivially free.

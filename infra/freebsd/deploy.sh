@@ -161,10 +161,25 @@ if [ "${mode}" = "auto" ]; then
 		# would crash the preflight oneshot with an opaque exit 1.
 		# Deliberately NOT a silent fallback to prev_sha: that would
 		# re-open the exact range hole this base exists to close.
-		if run_as_grappa "git cat-file -e '${last_deployed}^{commit}'" 2>/dev/null; then
+		# Shape check FIRST (full 40-hex sha), so marker bytes never
+		# reach a `su -c` command line unvalidated — a marker
+		# containing a quote would otherwise splice into the shell
+		# string git runs under.
+		marker_ok=no
+		if [ "${#last_deployed}" -eq 40 ]; then
+			case "${last_deployed}" in
+				*[!0-9a-f]*) ;;
+				*)
+					if run_as_grappa "git cat-file -e '${last_deployed}^{commit}'" 2>/dev/null; then
+						marker_ok=yes
+					fi
+					;;
+			esac
+		fi
+		if [ "${marker_ok}" = "yes" ]; then
 			preflight_base="${last_deployed}"
 		else
-			echo "[deploy] ERROR: runtime/last-deployed-sha contains '${last_deployed}' — not a commit in this repo" >&2
+			echo "[deploy] ERROR: runtime/last-deployed-sha contains '${last_deployed}' — not a full sha of a commit in this repo" >&2
 			echo "[deploy]   fix the marker (write the last deployed sha to runtime/last-deployed-sha) or rerun with an explicit --force-hot/--force-cold" >&2
 			exit 1
 		fi

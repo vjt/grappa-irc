@@ -149,7 +149,9 @@ grappa_start() {
 			return 1
 		fi
 		if [ "${_i}" -ge "${grappa_start_timeout}" ]; then
-			echo "ERROR: node not responsive after ${grappa_start_timeout}s — see ${grappa_runtime_tmp}/log/erlang.log.*" >&2
+			# "probes", not seconds: each pid RPC spawns a short-lived
+			# hidden node (~1s), so N probes is closer to 2N seconds.
+			echo "ERROR: node not responsive after ${grappa_start_timeout} probes — see ${grappa_runtime_tmp}/log/erlang.log.*" >&2
 			return 1
 		fi
 		_i=$((_i + 1))
