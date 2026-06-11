@@ -29,10 +29,26 @@
 //    key) while the PWA runs at `https://host`. Those bodies are
 //    permanent scrollback history — a strict origin check would dead-
 //    letter every historical upload link. The viewer must NEVER load
-//    an http src on the https page (mixed content); callers re-root
-//    the href via `normalizeMediaHref` before handing it to the
-//    viewer. Schemes other than http/https (linkify also admits ftp)
+//    an http src on the https page (mixed content), so the returned
+//    `href` is re-rooted on the page origin (path + query + hash
+//    preserved — `#t=` media fragments survive). One return value, not
+//    a separate normalize step: a classify-but-forget-to-normalize
+//    call site would ship the mixed-content block this exists to
+//    prevent. Schemes other than http/https (linkify also admits ftp)
 //    are excluded.
+//
+// ## Known limitation — emoji split across mIRC runs
+//
+// The 📸/🎬 signal is read from the text segment immediately preceding
+// the URL within ONE mIRC formatting run. A body that interleaves
+// control codes between emoji and URL (`\x0304📸\x03 https://…`, e.g.
+// a colorizing relay bridge) splits them into separate runs and the
+// link silently falls back to the plain anchor — the standalone
+// navigate-in-place behavior returns for those rows. cic's own mints
+// are always plain `📸 <url>`, so the real-world surface today is
+// zero. The durable fix is server-side: mint `/uploads/<slug>.<ext>`
+// so the URL itself carries the type — recorded in todo, not worth a
+// control-char-tolerant scan here.
 // 2. Own upload URL (`/uploads/<26-char-base32-slug>` — mirrors
 //    Grappa.Uploads @slug_regex) + trailing 📸/🎬 in the text
 //    immediately preceding the URL → image/video. The slug carries no
@@ -86,9 +102,32 @@ const EXTENSION_KIND: Record<string, MediaKind> = {
   wav: "audio",
 };
 
+export type MediaLink = { kind: MediaKind; href: string };
+
+// Page-origin host cache — origin is window.location.origin at the
+// only production call site, constant for the page lifetime; renderRun
+// classifies every URL segment on every scrollback re-render, so skip
+// re-parsing the same origin string each call.
+let cachedOrigin: string | null = null;
+let cachedOriginHost: string | null = null;
+
+function hostOf(origin: string): string | null {
+  if (origin !== cachedOrigin) {
+    cachedOrigin = origin;
+    try {
+      cachedOriginHost = new URL(origin).host;
+    } catch {
+      cachedOriginHost = null;
+    }
+  }
+  return cachedOriginHost;
+}
+
 /**
- * Classify a scrollback link as modal-viewable media, or null when the
- * default anchor behavior should stand.
+ * Classify a scrollback link as modal-viewable media. Returns the kind
+ * plus the viewer-safe href (re-rooted on the page origin — path,
+ * query and hash preserved), or null when the default anchor behavior
+ * should stand.
  *
  * @param href urlSegment.href (always scheme-qualified — linkify's
  *   toHref prepends https:// to bare-www matches).
@@ -101,7 +140,7 @@ export function classifyMediaLink(
   href: string,
   precedingText: string,
   origin: string,
-): MediaKind | null {
+): MediaLink | null {
   let url: URL;
   try {
     url = new URL(href);
@@ -112,8 +151,15 @@ export function classifyMediaLink(
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
   // Host (hostname + port) equality — see the moduledoc on why scheme
   // is deliberately NOT compared.
-  if (url.host !== new URL(origin).host) return null;
+  if (url.host !== hostOf(origin)) return null;
 
+  const kind = kindOf(url, precedingText);
+  if (kind === null) return null;
+
+  return { kind, href: `${origin}${url.pathname}${url.search}${url.hash}` };
+}
+
+function kindOf(url: URL, precedingText: string): MediaKind | null {
   if (UPLOADS_PATH_RE.test(url.pathname)) {
     const emoji = TRAILING_EMOJI_RE.exec(precedingText)?.[1];
     return emoji !== undefined ? (EMOJI_KIND[emoji] ?? null) : null;
@@ -121,17 +167,4 @@ export function classifyMediaLink(
 
   const extension = url.pathname.split(".").pop()?.toLowerCase() ?? "";
   return EXTENSION_KIND[extension] ?? null;
-}
-
-/**
- * Re-root a classified media href on the page origin. Historical prod
- * bodies carry `http://host/...` URLs (see moduledoc) — loading that
- * src inside the https page would be mixed content, so the viewer
- * always receives the page-origin form. Same-origin inputs pass
- * through unchanged. Only call with hrefs that `classifyMediaLink`
- * accepted — the URL is known-parseable and same-host.
- */
-export function normalizeMediaHref(href: string, origin: string): string {
-  const url = new URL(href);
-  return `${origin}${url.pathname}${url.search}`;
 }

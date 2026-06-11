@@ -1,6 +1,6 @@
 import { type Component, createEffect, Match, onCleanup, Show, Switch } from "solid-js";
 import { closeMediaViewer, mediaViewerState } from "./lib/mediaViewer";
-import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
+import { createOverlayLock } from "./lib/overlayScrollLock";
 
 // In-app media viewer modal — media-link cluster (2026-06-11).
 //
@@ -31,39 +31,24 @@ import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 // needs no a11y lint suppressions.
 
 const MediaViewerModal: Component = () => {
-  // UX-6 bucket A — refcounted overlay scroll-lock, edge-triggered
-  // push/pop via wasOpen closure (ArchiveModal/PrivacyModal shape).
-  // v4: the lock targets the modal element, looked up via
-  // queueMicrotask after Solid commits the render.
-  let wasOpen = false;
-  let lockedEl: HTMLElement | null = null;
-  createEffect(() => {
-    const open = mediaViewerState() !== null;
-    if (open && !wasOpen) {
-      wasOpen = true;
-      queueMicrotask(() => {
-        lockedEl = document.querySelector<HTMLElement>(".media-viewer-modal");
-        pushOverlay(lockedEl);
-      });
-    } else if (!open && wasOpen) {
-      wasOpen = false;
-      popOverlay(lockedEl);
-      lockedEl = null;
-    }
-  });
-  onCleanup(() => {
-    if (wasOpen) {
-      wasOpen = false;
-      popOverlay(lockedEl);
-      lockedEl = null;
-    }
-  });
+  // UX-6 bucket A — refcounted overlay scroll-lock (shared
+  // createOverlayLock wiring, extracted from the ArchiveModal/
+  // PrivacyModal copies during this cluster's review).
+  createOverlayLock(() => mediaViewerState() !== null, ".media-viewer-modal");
 
   const onKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === "Escape" && mediaViewerState() !== null) closeMediaViewer();
+    if (e.key === "Escape") closeMediaViewer();
   };
 
+  // Document-level Escape, registered ONLY while the viewer is open.
+  // This component is permanently mounted at Shell root (unlike
+  // UserContextMenu, which mounts per-open), so an unconditional
+  // listener would run on every keystroke app-wide forever; tracking
+  // the open signal scopes the listener to the viewer's visible
+  // lifetime. Document-level (not dialog onKeyDown) because focus
+  // stays wherever the operator clicked — scrollback, compose box.
   createEffect(() => {
+    if (mediaViewerState() === null) return;
     document.addEventListener("keydown", onKeyDown);
     onCleanup(() => document.removeEventListener("keydown", onKeyDown));
   });

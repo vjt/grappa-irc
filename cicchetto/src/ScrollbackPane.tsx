@@ -17,7 +17,7 @@ import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { linkify } from "./lib/linkify";
-import { classifyMediaLink, normalizeMediaHref } from "./lib/mediaLink";
+import { classifyMediaLink } from "./lib/mediaLink";
 import { openMediaViewer } from "./lib/mediaViewer";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
@@ -291,7 +291,7 @@ const renderRun = (run: Run): JSX.Element => {
           // links are untouched (cross-origin already opens correctly
           // in the iOS Safari view).
           const prev = segments[i() - 1];
-          const kind = classifyMediaLink(
+          const media = classifyMediaLink(
             seg.href,
             prev?.type === "text" ? prev.value : "",
             window.location.origin,
@@ -302,19 +302,22 @@ const renderRun = (run: Run): JSX.Element => {
               target="_blank"
               rel="noopener noreferrer"
               class="scrollback-link"
-              classList={{ "scrollback-media-link": kind !== null }}
+              classList={{ "scrollback-media-link": media !== null }}
               onClick={
-                kind === null
+                media === null
                   ? undefined
                   : (e) => {
+                      // Modifier/aux clicks keep browser-native
+                      // semantics (new tab / new window) — only the
+                      // plain primary click opens the viewer.
+                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+                        return;
+                      }
                       e.preventDefault();
-                      // Re-rooted on the page origin — historical prod
-                      // bodies carry http:// hrefs (mixed content if
-                      // loaded as-is on the https page).
-                      openMediaViewer(
-                        normalizeMediaHref(seg.href, window.location.origin),
-                        kind,
-                      );
+                      // media.href is re-rooted on the page origin —
+                      // historical prod bodies carry http:// hrefs
+                      // (mixed content if loaded as-is on https).
+                      openMediaViewer(media.href, media.kind);
                     }
               }
             >

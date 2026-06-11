@@ -1,4 +1,4 @@
-import { type Component, createEffect, createSignal, For, onCleanup, Show } from "solid-js";
+import { type Component, createEffect, createSignal, For, Show } from "solid-js";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { deleteArchiveEntry } from "./lib/api";
 import {
@@ -9,7 +9,7 @@ import {
 } from "./lib/archive";
 import { token } from "./lib/auth";
 import { networks } from "./lib/networks";
-import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
+import { createOverlayLock } from "./lib/overlayScrollLock";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 import NickText from "./NickText";
@@ -43,40 +43,12 @@ const ArchiveModal: Component = () => {
 
   // UX-6 bucket A — refcounted overlay scroll-lock. Tracks
   // `archiveModalNetwork()` (the "is the modal open?" signal — null
-  // when closed, slug when open). Edge-triggered push/pop via
-  // wasOpen closure so re-renders with the same value don't double-
-  // push. onCleanup pops if still open on unmount (defensive — the
-  // ArchiveModal component lives at Shell root so unmount only on
-  // route nav-away, where the leak would persist across sessions).
-  //
-  // v4: scroll-lock targets the .archive-modal element (the actual
-  // scroller). Since .archive-modal is rendered inside `<Show keyed>`
-  // (mounts when open, unmounts when closed), we look it up via
-  // querySelector in queueMicrotask to let SolidJS commit the render
-  // before we hand the element to body-scroll-lock-upgrade.
-  let wasOpen = false;
-  let lockedEl: HTMLElement | null = null;
-  createEffect(() => {
-    const open = archiveModalNetwork() !== null;
-    if (open && !wasOpen) {
-      wasOpen = true;
-      queueMicrotask(() => {
-        lockedEl = document.querySelector<HTMLElement>(".archive-modal");
-        pushOverlay(lockedEl);
-      });
-    } else if (!open && wasOpen) {
-      wasOpen = false;
-      popOverlay(lockedEl);
-      lockedEl = null;
-    }
-  });
-  onCleanup(() => {
-    if (wasOpen) {
-      wasOpen = false;
-      popOverlay(lockedEl);
-      lockedEl = null;
-    }
-  });
+  // when closed, slug when open). Shared createOverlayLock wiring —
+  // extracted 2026-06-11 when MediaViewerModal would have been the
+  // third verbatim copy of the edge-trigger + deferred-push block;
+  // see overlayScrollLock.ts for the semantics, including the
+  // same-task-close leak fix the copies lacked.
+  createOverlayLock(() => archiveModalNetwork() !== null, ".archive-modal");
 
   // BUGHUNT-1 B — seed the archive list on edge-trigger open. The
   // mobile chip (`BottomBar.tsx`'s `.bottom-bar-archive-chip`) calls

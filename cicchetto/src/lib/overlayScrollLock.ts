@@ -45,6 +45,8 @@
 // clears refcount + class + detaches the listener so vitest order
 // doesn't leak state across tests.
 
+import { createEffect, onCleanup } from "solid-js";
+
 const CLASS_NAME = "overlay-open";
 
 let count = 0;
@@ -143,4 +145,63 @@ export function __resetForTest(): void {
   const el = root();
   if (el !== null) el.classList.remove(CLASS_NAME);
   detachListener();
+}
+
+/**
+ * Component-side overlay-lock wiring — review extraction (2026-06-11).
+ * ArchiveModal, PrivacyModal and MediaViewerModal each carried a
+ * verbatim copy of this edge-triggered push/pop block; the third copy
+ * triggered the "implement once, reuse everywhere" extraction. Call
+ * from a component body (needs a Solid owner for createEffect /
+ * onCleanup):
+ *
+ *   createOverlayLock(() => myOpenSignal() !== null, ".my-modal");
+ *
+ * Edge-triggered via the wasOpen closure so re-renders with the same
+ * value don't double-push. The push is deferred a microtask (v4: the
+ * lock targets the modal element, which mounts inside `<Show>` — let
+ * Solid commit the render before querySelector). The microtask
+ * RE-CHECKS wasOpen: a same-task open→close (or open→unmount) runs
+ * popOverlay (clamped at 0) BEFORE the queued push fires, and an
+ * unconditional push would strand the refcount at 1 forever — no
+ * later overlay cycle could drain it (popOverlay clamps), leaving the
+ * `html.overlay-open` class + the non-passive document touchmove
+ * preventDefault attached until full reload (permanent iOS
+ * scroll-lock). Latent in the pre-extraction copies; fixed once here.
+ */
+export function createOverlayLock(isOpen: () => boolean, selector: string): void {
+  // wasOpen = desired state (tracks the signal edge); pushed = actual
+  // lock state (whether OUR push reached the refcount). Tracked
+  // separately so the deferred push can neither fire after a same-task
+  // close (wasOpen false → skip) nor double-fire after a same-task
+  // close+reopen queued two microtasks (pushed true → skip).
+  let wasOpen = false;
+  let pushed = false;
+  let lockedEl: HTMLElement | null = null;
+  const release = (): void => {
+    if (pushed) {
+      popOverlay(lockedEl);
+      pushed = false;
+    }
+    lockedEl = null;
+  };
+  createEffect(() => {
+    const open = isOpen();
+    if (open && !wasOpen) {
+      wasOpen = true;
+      queueMicrotask(() => {
+        if (!wasOpen || pushed) return;
+        lockedEl = document.querySelector<HTMLElement>(selector);
+        pushOverlay(lockedEl);
+        pushed = true;
+      });
+    } else if (!open && wasOpen) {
+      wasOpen = false;
+      release();
+    }
+  });
+  onCleanup(() => {
+    wasOpen = false;
+    release();
+  });
 }

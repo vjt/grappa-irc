@@ -6,21 +6,34 @@
 // could thread a callback down — a lib store is the established cic
 // shape for that. `MediaViewerModal.tsx` (mounted at Shell root in
 // both branches) renders the state; `lib/mediaLink.ts` decides which
-// links call `openMediaViewer`.
+// links call `openMediaViewer` (and supplies the page-origin-rooted
+// href).
+//
+// identityScopedStore (review fix, same reason as archive.ts:36-39):
+// token rotation/logout must close an open viewer — otherwise the
+// previous identity's media lingers on top of the new identity's
+// shell, scroll-lock included.
 
 import { createSignal } from "solid-js";
+import { identityScopedStore } from "./identityScopedStore";
 import type { MediaKind } from "./mediaLink";
 
 export type MediaViewerState = { href: string; kind: MediaKind };
 
-const [mediaViewerState, setMediaViewerState] = createSignal<MediaViewerState | null>(null);
+const exports_ = identityScopedStore((onIdentityChange) => {
+  const [mediaViewerState, setMediaViewerState] = createSignal<MediaViewerState | null>(null);
 
-export { mediaViewerState };
+  onIdentityChange(() => setMediaViewerState(null));
 
-export function openMediaViewer(href: string, kind: MediaKind): void {
-  setMediaViewerState({ href, kind });
-}
+  return {
+    mediaViewerState,
+    openMediaViewer(href: string, kind: MediaKind): void {
+      setMediaViewerState({ href, kind });
+    },
+    closeMediaViewer(): void {
+      setMediaViewerState(null);
+    },
+  };
+});
 
-export function closeMediaViewer(): void {
-  setMediaViewerState(null);
-}
+export const { mediaViewerState, openMediaViewer, closeMediaViewer } = exports_;

@@ -13,10 +13,15 @@
 //
 // The full vertical reuses the UX-6-B embedded-upload journey (real
 // POST /api/uploads, real IRC echo, real bytes served back) and then
-// drives the NEW click path. The `naturalWidth > 0` assertion is
-// load-bearing: it proves the modal <img> actually loaded the bytes
-// through nginx + the CSP (`img-src 'self'`) — a CSP block would
-// render a broken image with naturalWidth 0.
+// drives the NEW click path. The `naturalWidth > 0` assertion proves
+// the modal <img> actually loaded the bytes through nginx — NOT that
+// the production CSP admits them: e2e nginx-test.conf serves no
+// Content-Security-Policy header (the CSP lives only in
+// infra/snippets/security-headers.conf, prod-only). Until the
+// e2e-CSP-parity todo (High) lands, a CSP regression that blocks the
+// modal's media element would pass this suite — prod-CSP fidelity
+// rests on the design guarantee that img-src/media-src 'self' covers
+// same-origin sources and the classifier admits nothing else.
 
 import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
@@ -62,8 +67,9 @@ test("📸 upload link click opens the in-app viewer instead of navigating", asy
   await expect(viewer).toBeVisible({ timeout: 5_000 });
   expect(page.url()).toBe(cicUrl);
 
-  // The <img> actually loaded the bytes (proves CSP `img-src 'self'`
-  // admits the same-origin source — a block would leave naturalWidth 0).
+  // The <img> actually loaded the bytes through nginx (naturalWidth 0
+  // would mean a broken fetch). CSP is NOT exercised here — see the
+  // header comment.
   const img = viewer.locator("img.media-viewer-media");
   await expect(img).toHaveAttribute("src", url);
   await expect(img).toHaveJSProperty("complete", true, { timeout: 10_000 });

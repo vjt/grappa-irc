@@ -14,6 +14,17 @@ import Config
 # e2e catches (per CP11 S22 deploy-time bug post-mortem).
 # ===
 
+# Public hostname the bouncer is reached at via nginx. ONE read, one
+# empty-means-unset semantic — every PHX_HOST consumer below derives
+# from this binding (review 2026-06-11: three sites previously read
+# the env with three different empty-string semantics; `PHX_HOST=""`
+# produced a `check_origin: ["//"]` entry).
+phx_host =
+  case System.get_env("PHX_HOST") do
+    empty when empty in [nil, ""] -> nil
+    host -> host
+  end
+
 # Public-origin URL config — ALL envs, gated on PHX_HOST presence.
 # nginx terminates TLS at https://PHX_HOST, so URLs Phoenix generates
 # (today: only `UploadsController.public_url/1`, which lands in IRC
@@ -27,15 +38,10 @@ import Config
 # Hoisted OUT of the prod block so the e2e harness (MIX_ENV=dev,
 # PHX_HOST=nginx-test in cicchetto/e2e/compose.yaml) mints
 # origin-faithful URLs too. Local dev: compose.yaml passes
-# `PHX_HOST: ${PHX_HOST:-}` — the empty-string guard keeps the
-# config.exs localhost default in that case (Elixir treats "" as
-# truthy; a bare `if System.get_env(...)` would misfire).
-case System.get_env("PHX_HOST") do
-  empty when empty in [nil, ""] ->
-    :ok
-
-  public_host ->
-    config :grappa, GrappaWeb.Endpoint, url: [host: public_host, scheme: "https", port: 443]
+# `PHX_HOST: ${PHX_HOST:-}` — unset keeps the config.exs localhost
+# default.
+if phx_host do
+  config :grappa, GrappaWeb.Endpoint, url: [host: phx_host, scheme: "https", port: 443]
 end
 
 if config_env() == :prod do
@@ -145,17 +151,24 @@ if config_env() == :prod do
 
   port = String.to_integer(System.get_env("PORT") || "4000")
 
-  # Public hostname the bouncer is reached at via nginx (e.g. grappa.bad.ass).
-  # `check_origin:` — WebSocket handshake validates the browser's
-  # `Origin` header against this allowlist. Phoenix's default is to
-  # require Origin == endpoint URL host; without an explicit allow
-  # listing the public hostname, every Channels connect is rejected
-  # in prod (origin == http://grappa.bad.ass, endpoint URL host ==
-  # localhost). The `//` prefix matches both http and https so the
-  # Phase 5 TLS upgrade does not silently break Channels.
-  # (The `url:` role moved to the env-agnostic PHX_HOST block at the
-  # top of this file — single source for the public origin.)
-  phx_host = System.get_env("PHX_HOST") || "grappa.bad.ass"
+  # PHX_HOST is MANDATORY in prod (read once at the top of this file).
+  # Both its roles are load-bearing: `url:` roots generated links at
+  # the public https origin (a missing value would silently fall back
+  # to config.exs `host: "localhost"` and mint dead
+  # `http://localhost/uploads/<slug>` links into permanent IRC
+  # scrollback bodies), and `check_origin:` below gates every
+  # Channels WS handshake. The old `|| "grappa.bad.ass"` fallback was
+  # equally broken on the url side, just quieter — raise instead,
+  # same contract as DATABASE_PATH / SECRET_KEY_BASE above. The `//`
+  # prefix in check_origin matches both http and https so the Phase 5
+  # TLS upgrade does not silently break Channels.
+  phx_host =
+    phx_host ||
+      raise """
+      environment variable PHX_HOST is missing.
+      Set it to the public hostname nginx serves the bouncer at
+      (e.g. PHX_HOST=grappa.bad.ass) — see .env.example.
+      """
 
   # Extra origins accepted by the WebSocket handshake's `check_origin`
   # gate alongside the canonical PHX_HOST. Comma-separated, full origin

@@ -12032,8 +12032,46 @@ choice, unlike the bug where a plain click did so.
 
 e2e (`media-link-modal-viewer.spec.ts`) rides the UX-6-B embedded-
 upload journey end-to-end and asserts the modal `<img>` reaches
-`naturalWidth > 0` — load-bearing: it proves the bytes actually
-rendered through nginx + CSP, not just that a dialog appeared. The
-iOS-standalone navigation behavior itself is not emulatable
+`naturalWidth > 0` — proving the bytes rendered through nginx, but
+NOT through the CSP: e2e nginx-test.conf serves no CSP header (the
+e2e-CSP-parity todo, High, predates this cluster and is what would
+make that assertion CSP-load-bearing). The iOS-standalone navigation
+behavior itself is not emulatable
 (feedback_playwright_webkit_not_ios_scroll class); vjt device dogfood
 is the final verification there.
+
+Review fixes (same session): modifier/aux clicks (cmd/ctrl/shift/
+middle) bypass the intercept — browser-native new-tab semantics keep
+working on media links; the classifier returns `{kind, href}` with
+the page-origin-rooted href (path+query+hash — `#t=` media fragments
+survive) instead of a separate `normalizeMediaHref` step a future
+call site could forget, which would have shipped the exact
+mixed-content block the normalization prevents; `mediaViewer.ts`
+joined `identityScopedStore` (token rotation closes a lingering
+viewer, archive-modal precedent); the document-level Escape listener
+registers only while the viewer is open (the component is permanently
+mounted — an unconditional listener would run on every keystroke
+forever); and the third verbatim copy of the modal overlay-lock
+boilerplate triggered its extraction into
+`createOverlayLock(isOpen, selector)` in overlayScrollLock.ts —
+which also fixed a latent leak ALL the copies shared: a same-task
+open→close popped (clamped at zero) before the microtask-deferred
+push fired, stranding the refcount at 1 with no drain path —
+permanent iOS scroll-lock until reload. ArchiveModal and PrivacyModal
+migrated in the same commit (total consistency or nothing). On the
+server side, PHX_HOST is now mandatory in prod (raise, same contract
+as DATABASE_PATH): the old `|| "grappa.bad.ass"` fallback minted
+equally-dead links, just quietly, and PHX_HOST was previously read
+three times with three different empty-string semantics
+(`PHX_HOST=""` produced a `check_origin: ["//"]` entry) — one read,
+one nil-or-host binding now feeds both roles.
+
+Known residual (recorded, deferred): the 📸/🎬 type signal lives in
+message TEXT, read from the linkify segment preceding the URL within
+one mIRC formatting run — a body that interleaves control codes
+between emoji and URL (colorizing relay bridge) splits them into
+separate runs and the link falls back to the plain anchor (the
+navigate-in-place behavior returns for those rows). cic's own mints
+are always plain `📸 <url>`, so today's real surface is zero; the
+durable fix is server-side minting of `/uploads/<slug>.<ext>` so the
+URL itself carries the type (todo).

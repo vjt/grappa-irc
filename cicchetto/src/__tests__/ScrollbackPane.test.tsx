@@ -2237,6 +2237,40 @@ describe("ScrollbackPane", () => {
       expect(mediaViewerState()).toEqual({ href, kind: "video" });
     });
 
+    it("modifier-click (cmd/ctrl) is NOT intercepted — browser new-tab semantics stand", () => {
+      const href = `${window.location.origin}/uploads/abcdefghijklmnopqrstuvwxyz`;
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: `📸 ${href}`,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
+      // Record whether the component handler preventDefault'd, then
+      // suppress the default ourselves so jsdom doesn't attempt a real
+      // navigation (document bubble listener runs after the anchor's).
+      let preventedByHandler: boolean | null = null;
+      const recorder = (e: Event) => {
+        preventedByHandler = e.defaultPrevented;
+        e.preventDefault();
+      };
+      document.addEventListener("click", recorder);
+      link.dispatchEvent(ev);
+      document.removeEventListener("click", recorder);
+      expect(preventedByHandler).toBe(false);
+      expect(mediaViewerState()).toBeNull();
+    });
+
     it("plain web link is NOT media-classified — anchor keeps default behavior", () => {
       setScrollback({
         "freenode #grappa": [

@@ -198,6 +198,27 @@ Phase 5 cluster opens):
 
 ## Low / Observation
 
+- **Mint upload URLs with a type extension** (`/uploads/<slug>.<ext>`,
+  media-viewer residual 2026-06-11) — the in-app viewer's image/video
+  signal currently lives in message TEXT (the 📸/🎬 prefix read from
+  the linkify segment preceding the URL within one mIRC run); a body
+  interleaving control codes between emoji and URL (colorizing relay
+  bridge) splits runs and the link falls back to the plain anchor.
+  cic's own mints are always plain, so today's surface is zero. The
+  durable fix is server-side: encode the type in the URL itself, and
+  the emoji sniff becomes the historical fallback. DESIGN_NOTES
+  2026-06-11.
+- **Modal chrome CSS dedup** — `.media-viewer-backdrop` is the FOURTH
+  fixed/inset:0 dim backdrop block in default.css (after
+  image-upload, archive, context-menu) and `.media-viewer-close`
+  property-duplicates `.archive-modal-close`. A shared
+  `.modal-backdrop`/`.modal-close` base class would name the pattern;
+  theme-wide refactor, ride a UI-polish bucket.
+- **iOS device dogfood: media-link viewer** (Dispatch-2, 2026-06-11) —
+  tap a 📸/🎬 upload link in the standalone PWA: viewer opens in-app
+  (no bare-window navigation, no cic reload on return), X closes,
+  "open in browser" leaves the PWA deliberately. The navigate-in-place
+  behavior is not emulatable; device dogfood is final verification.
 - **iOS device dogfood: text selection** (Dispatch-1 follow-up,
   shipped 2026-06-11, bundle `BhVMIcil`) — long-press select in
   scrollback incl. a SHORT channel (non-overflowing `.scrollback`

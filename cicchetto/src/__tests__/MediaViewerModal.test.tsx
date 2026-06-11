@@ -94,4 +94,17 @@ describe("MediaViewerModal", () => {
     closeMediaViewer();
     expect(overlayCount()).toBe(0);
   });
+
+  it("same-task open→close does not strand the overlay refcount (deferred-push leak)", async () => {
+    // Review fix (2026-06-11): the deferred pushOverlay microtask must
+    // re-check the open flag — close runs popOverlay (clamped at 0)
+    // BEFORE the queued push fires, and an unconditional push would
+    // strand the count at 1 forever (popOverlay clamps, so no later
+    // overlay cycle drains it → permanent iOS scroll-lock).
+    render(() => <MediaViewerModal />);
+    openMediaViewer(IMAGE_URL, "image");
+    closeMediaViewer();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(overlayCount()).toBe(0);
+  });
 });
