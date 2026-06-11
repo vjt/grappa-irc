@@ -172,19 +172,30 @@ html.is-ios {
 }
 
 /* Dispatch-1 (2026-06-11) — selective re-enable of text selection.
-   The blanket `-webkit-user-select: none` above came in with the
-   Telegram Web K pattern (479b77d), but Telegram pairs the global
-   kill with a re-enable on message text — copying only the kill made
-   ALL of cic unselectable on iOS. Restore selection exactly where
-   users select: scrollback message text (channels, queries, server
-   window — all render through .scrollback). App chrome (sidebar,
-   bottom bar, members, buttons) stays non-selectable, which is the
-   point of the global rule: no selection magnifier popping up
-   mid-scroll-gesture. The day-separator and unread-marker labels
-   inside .scrollback keep their own explicit `user-select: none`. */
-html.is-ios .scrollback {
+   THE selectable-text policy point: the blanket kill above is
+   Telegram Web K's pattern, and Telegram pairs it with re-enables on
+   every surface users copy from. New copyable surface → add its
+   selector HERE, nowhere else. Currently: scrollback message text
+   (channels, queries, server window all render through .scrollback),
+   the topic modal's full-topic text, and editable fields (WebKit
+   honors inherited user-select:none inside inputs in some version
+   ranges). Deliberately NOT selectable: mentions rows (navigation
+   buttons — the target message is selectable in its channel),
+   topic-bar text (clickable, opens the modal), all other chrome.
+   Full arc: docs/DESIGN_NOTES.md 2026-06-11. */
+html.is-ios .scrollback,
+html.is-ios .topic-modal-text,
+html.is-ios input,
+html.is-ios textarea {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* The [Join] invite CTA is a button inside .scrollback — re-exclude
+   it so long-press doesn't pop the selection magnifier over a control. */
+html.is-ios .scrollback-invite-join {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 html.is-ios body {
@@ -1124,6 +1135,10 @@ html.resize-dragging * {
 
 .scrollback-day-separator-label {
   white-space: nowrap;
+  /* Both forms: iOS Safari <18.4 parses only the -webkit- prefix, and
+     the is-ios .scrollback re-enable sets the prefixed form on the
+     ancestor — unprefixed alone would lose the cascade there. */
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -1152,6 +1167,8 @@ html.resize-dragging * {
 
 .scrollback-unread-marker-label {
   white-space: nowrap;
+  /* Both forms — same reason as .scrollback-day-separator-label. */
+  -webkit-user-select: none;
   user-select: none;
 }
 

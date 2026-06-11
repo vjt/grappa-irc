@@ -1,28 +1,14 @@
-// Dispatch-1 (2026-06-11) — text selection dead on desktop AND mobile.
-//
-// Two stacked root causes, one per platform:
-//
-//   A. lib/keepKeyboard.ts preventDefaulted every mousedown landing
-//      outside an input while an input had focus. mousedown's default
-//      action includes STARTING A SELECTION DRAG, and the compose box
-//      is autofocused in the normal cic state — so scrollback text was
-//      unselectable on desktop despite the module claiming "No-op on
-//      desktop browsers." Fixed by gating the handler on isIos().
-//
-//   B. The Telegram Web K iOS keyboard pattern (479b77d) shipped
-//      `html.is-ios { -webkit-user-select: none }` without Telegram's
-//      paired re-enable on message text — ALL of cic unselectable on
-//      iOS. Fixed by `html.is-ios .scrollback { user-select: text }`.
+// Dispatch-1 — text selection dead on desktop (keepKeyboard mousedown
+// preventDefault) AND iOS (blanket -webkit-user-select: none). Full
+// arc: docs/DESIGN_NOTES.md 2026-06-11.
 //
 // Test 1 (chromium) drives a real mouse drag over a scrollback row
-// with compose focused — the exact gesture that was dead — and asserts
-// the browser selection is non-empty. Would have caught A.
-//
+// with compose focused — the exact gesture that was dead.
 // Test 2 (@webkit, iPhone 15 emulation → is-ios class applies) asserts
-// the CSS cascade outcome: global kill on <html> still present, .scrollback
-// re-enabled to `text`. Real long-press selection isn't emulatable
-// (feedback_playwright_webkit_not_ios_scroll — same limitation class);
-// the computed style is the testable boundary. Would have caught B.
+// the CSS cascade outcome; real long-press selection isn't emulatable
+// (same limitation class as feedback_playwright_webkit_not_ios_scroll),
+// so computed style is the testable boundary. Real-device dogfood
+// remains the final iOS verification.
 
 import { test, expect } from "../fixtures/test";
 import {
@@ -35,7 +21,11 @@ import {
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-const MESSAGE_BODY = "selection target: drag across me";
+// Date.now() suffix (house pattern, see ux-6-f spec): the e2e sqlite
+// scrollback persists across suite re-runs against a KEEP_STACK=1
+// stack — a static body would match two rows on the second run and
+// trip Playwright strict mode.
+const MESSAGE_BODY = `selection target: drag across me ${Date.now()}`;
 
 test("desktop — scrollback text is selectable while compose has focus", async ({ page }) => {
   const vjt = getSeededVjt();

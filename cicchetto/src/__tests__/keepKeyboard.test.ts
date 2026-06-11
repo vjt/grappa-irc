@@ -1,16 +1,7 @@
-// Dispatch-1 (2026-06-11) — text-selection-dead bug, root cause A.
-//
-// keepKeyboard's document-capture mousedown listener preventDefaults
-// every mousedown landing outside an input while an input has focus.
-// The default action of mousedown is not just the focus shift — it is
-// ALSO the start of a text-selection drag. With the compose box
-// autofocused (the normal cic state), preventDefault made scrollback
-// text unselectable on every platform, despite the module header
-// claiming "No-op on desktop browsers."
-//
-// Contract under test: the preserve behavior fires ONLY on iOS (the
-// platform with an on-screen keyboard to preserve). Everywhere else
-// the mousedown default action must survive so selection works.
+// Contract under test: the keyboard-preserve mousedown preventDefault
+// fires ONLY on iOS. Everywhere else the mousedown default action
+// must survive — it starts the text-selection drag (Dispatch-1 bug,
+// full arc: docs/DESIGN_NOTES.md 2026-06-11).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installKeyboardPreserve } from "../lib/keepKeyboard";

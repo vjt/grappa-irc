@@ -11880,14 +11880,30 @@ false: the install was unconditional, and mousedown's default action is
 not just the focus shift, it is ALSO the start of a text-selection
 drag. With the compose box autofocused (the normal cic state), every
 attempt to drag-select scrollback text was cancelled at the capture
-phase. Fix: gate the handler on `isIos()` — iOS is the only platform
-with an on-screen keyboard to preserve, so anywhere else the
-preventDefault is pure loss. The gate sits in the handler (not at
-install) so the platform decision reads the live navigator and the
-deduped capture listener needs no uninstall path. Pinned by
+phase. Fix: gate the handler on `isIos()` — the on-screen keyboard the
+listener exists to preserve is an iOS concern (the whole UX-3 arc was
+iOS dogfood), so anywhere else the preventDefault is pure loss. The
+gate sits in the handler (not at install) for test isolation: the
+document-level capture listener has no uninstall path, so an
+install-time gate would leak an ungated listener from an iOS-UA test
+into later desktop-UA tests. Pinned by
 `src/__tests__/keepKeyboard.test.ts` (desktop UA: mousedown survives;
 iPhone UA: preserve still fires, focus transfer to other inputs still
 allowed).
+
+Two scoping decisions made consciously, not by omission. Android also
+has an on-screen keyboard, and the old unconditional preventDefault
+plausibly preserved it too — but Android keyboard behavior was never
+validated (no Android dogfood; every UX-3/UX-6 iteration was iOS), so
+the gate scopes to the documented target rather than freezing an
+untested side effect; if Android dogfood shows keyboard drops, the
+gate widens by one clause. And iPad-with-trackpad stays imperfect:
+`isIos()` is deliberately true there (platform.ts iPadOS detection),
+so a hardware-pointer drag still gets preventDefaulted while compose
+is focused — fixing that properly needs on-screen-keyboard-visibility
+detection, which the UX-6 D arc showed is a tar pit. Touch long-press
+selection on iPad works via the CSS half; the trackpad edge waits for
+an actual complaint.
 
 **iOS: the half-copied Telegram pattern.** UX-6 D9 (479b77d) adopted
 Telegram Web K's keyboard pattern wholesale, including
@@ -11895,15 +11911,31 @@ Telegram Web K's keyboard pattern wholesale, including
 kill with a selective re-enable on message text; the copy took the kill
 and skipped the re-enable, making ALL of cic unselectable on iOS — and
 no DESIGN_NOTES entry ever recorded user-select as a deliberate
-decision, confirming it rode along unexamined. Fix:
-`html.is-ios .scrollback { user-select: text }` — channels, queries and
-the server window all render through `.scrollback`, so message text is
-selectable again while app chrome (sidebar, BottomBar, members,
-buttons) stays unselectable, which is the global rule's actual point
-(no selection magnifier mid-scroll-gesture). The day-separator and
-unread-marker labels keep their own explicit `user-select: none`.
+decision, confirming it rode along unexamined. Fix: complete the
+counterweight as a single policy block in default.css (`html.is-ios
+.scrollback, .topic-modal-text, input, textarea { user-select: text }`)
+— new copyable surface = one selector added there, no scattered
+re-enables. Channels, queries and the server window all render through
+`.scrollback`; the topic modal is where users copy topics (the topic
+BAR is clickable chrome and stays dead); editable fields get an
+explicit re-enable because WebKit honors inherited `user-select: none`
+inside inputs in some version ranges. Deliberately excluded: mentions
+rows (navigation buttons — the target message is selectable in its
+channel) and the `[Join]` invite CTA inside `.scrollback` (re-excluded
+explicitly so long-press doesn't pop the magnifier over a control).
+App chrome stays unselectable, which is the global rule's actual point
+(no selection magnifier mid-scroll-gesture).
 `-webkit-touch-callout: none` stays — link long-press callout is a
 separate, deliberate native-app-feel decision, untouched by this bug.
+
+Review caught the fix's own near-miss: the day-separator and
+unread-marker labels declared only UNPREFIXED `user-select: none`,
+which iOS Safari <18.4 doesn't parse — under the new prefixed `text`
+re-enable on the ancestor they'd have become selectable exactly where
+the comment promised they weren't. Both label rules now carry both
+forms. General rule for this theme file: any `user-select` declaration
+ships prefixed + unprefixed, or the iOS cascade splits from the spec
+one.
 
 e2e guard: `e2e/tests/text-selection-restored.spec.ts` — chromium test
 drives the actual drag-select gesture with compose focused (the exact
@@ -11911,7 +11943,11 @@ dead path); the @webkit test asserts the computed-style cascade on the
 iPhone-15 emulation surface (real long-press selection isn't
 emulatable — same limitation class as
 feedback_playwright_webkit_not_ios_scroll). Device-level dogfood on a
-real iPhone remains the final verification for the iOS half.
+real iPhone remains the final verification for the iOS half — include
+a SHORT channel (few lines, no overflow): non-overflowing `.scrollback`
+carries `touch-action: none` (UX-3 Z3 R4 default-deny), and whether
+WebKit starts long-press selection inside a `touch-action: none`
+container is exactly the class of thing emulation can't answer.
 
 Lesson (recurring shape): copying a reference pattern partially is
 worse than not copying it — the kill switch arrived without its
