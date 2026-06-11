@@ -52,18 +52,16 @@ to this section.
   `linkify` regex `\S+` unbounded, `uploadHost.ts` (ex
   `image-upload.ts`) localStorage vs `token()` signal,
   `bin/start.sh` env-fiddling, `register-dns.sh` placement.
-- **`feedback_deploy_preflight_empty_diff_after_merge` recurrence
-  (REV-I)** — script-level fix candidate: detect same-SHA + recent
-  merge-commit + demand explicit flag. Wider than any single REV
-  bucket; future-bucket target. (Note: `infra/freebsd/deploy.sh`
-  added the `prev_sha == new_sha → nothing to do` guard in cp51 S3;
-  port the same guard back to `scripts/deploy.sh`. Grown 2026-06-11
-  by the deploy-defect fixes: `scripts/deploy.sh` has NO
-  `last-deployed-sha` marker at all, so it also carries defect #7's
-  pre-pull-HEAD preflight base (`scripts/deploy.sh:68`) and the
-  mid-flight-death re-drive hole — port the whole marker mechanism
-  (write-on-completion + nothing-to-do gate + preflight base) in one
-  pass, not piecemeal. Local dev stack only, nothing production.)
+- **Deploy decision-lib extraction + docker parity → issue #51**
+  (subsumes the REV-I
+  `feedback_deploy_preflight_empty_diff_after_merge` same-SHA-guard
+  port): extract the bats-pinned jail decision logic (mode/verdict
+  dispatch, marker lifecycle, re-exec guard, reload honesty check)
+  into a shared POSIX-sh lib sourced by both orchestrators; docker's
+  three gaps (no marker, unchecked reload, no re-exec guard) close as
+  a side effect. Restart/build verbs stay substrate-specific. Full
+  spec + sequencing in the issue — AFTER the codebase review and a
+  jail-deploy soak period. Local dev stack only, nothing production.
 - **`apply/3` test pattern for Elixir 1.19 set-theoretic type checker
   (REV-H)** — earns a feedback memory if it bites a 3rd time.
 - **SolidJS function-ref gotcha (REV-G)** — `feedback_solidjs_for_ref_leak`
