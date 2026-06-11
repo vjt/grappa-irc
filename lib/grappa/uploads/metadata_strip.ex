@@ -13,11 +13,15 @@ defmodule Grappa.Uploads.MetadataStrip do
 
   Exception — the `@kept_tags` allowlist (#39 round 2): presentation-
   critical tags with no provenance payload are copied back after the
-  wipe. Today that is EXIF Orientation only (a 1-8 rotation value;
-  stripping it made every portrait phone photo render sideways).
-  Video rotation needs no entry: QuickTime stores it in the tkhd
-  track matrix, which is structure, not metadata — `-all=` never
-  touched it.
+  wipe, for image/* mimes only. Today that is EXIF Orientation (a 1-8
+  rotation value; stripping it made every portrait phone photo render
+  sideways). A JPEG that carried Orientation therefore keeps a MINIMAL
+  EXIF APP1 segment: the allowlisted tag plus exiftool's mandatory
+  IFD0 companion defaults (e.g. YCbCrPositioning=1 — a fixed default,
+  NOT copied from the source). Video rotation needs no entry:
+  QuickTime stores it in the tkhd track matrix, which is structure,
+  not metadata — `-all=` never touched it — so the video path stays a
+  blanket wipe.
 
   Failure mode is CLOSED: if the strip fails for any reason (tool
   missing, malformed file, unmapped media type) the upload is
@@ -30,7 +34,8 @@ defmodule Grappa.Uploads.MetadataStrip do
     * `exiftool -all=` — images (jpeg/png/gif/webp/apng) and
       QuickTime video (mp4/mov). Lossless: rewrites containers
       without re-encoding (ffmpeg would re-encode jpeg = quality
-      loss), removes EXIF APP1, PNG `eXIf`, `udta` `loci`/`©xyz`
+      loss), removes EXIF APP1 (modulo the `@kept_tags` minimal
+      survivor described above), PNG `eXIf`, `udta` `loci`/`©xyz`
       and `mdta` Keys atoms, preserves moov-before-mdat
       (faststart) ordering.
     * `ffmpeg -map_metadata -1 -map_chapters -1 -c copy` — webm
@@ -187,7 +192,7 @@ defmodule Grappa.Uploads.MetadataStrip do
          {:ok, _} <- find_exe(exe_name, install_hint(tool), mime) do
       argv =
         ["-s", "KILL", Integer.to_string(@tool_timeout_seconds), exe_name] ++
-          args(tool, in_path, out_path)
+          args(tool, in_path, out_path, mime)
 
       case System.cmd(timeout_exe, argv, env: scrubbed_env(), stderr_to_stdout: true) do
         {_, 0} ->
@@ -229,13 +234,25 @@ defmodule Grappa.Uploads.MetadataStrip do
 
   # `-o` writes a fresh output file (never exists — slug-unique name)
   # so a failed run can't leave a half-written in-place original.
-  defp args(:exiftool, in_path, out_path) do
+  #
+  # The copy-back applies to image/* ONLY (review fix): video needs no
+  # Orientation (QuickTime rotation lives in the tkhd display matrix —
+  # structure, not metadata) and a bare `-Tag` resolves against ALL
+  # groups of the original, including XMP and EXIF blocks embedded in
+  # QuickTime atoms — on the video path the flag would be a believed
+  # no-op that nothing pins, and a latent surprise once @kept_tags
+  # grows (an ICC profile copied back into an mp4 is nonsense).
+  defp args(:exiftool, in_path, out_path, "image/" <> _) do
     ["-q", "-all=", "-tagsfromfile", "@"] ++
       Enum.map(@kept_tags, &"-#{&1}") ++
       ["-o", out_path, in_path]
   end
 
-  defp args(:ffmpeg, in_path, out_path) do
+  defp args(:exiftool, in_path, out_path, _) do
+    ["-q", "-all=", "-o", out_path, in_path]
+  end
+
+  defp args(:ffmpeg, in_path, out_path, _) do
     [
       "-nostdin",
       "-loglevel",

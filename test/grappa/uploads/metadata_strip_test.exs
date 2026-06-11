@@ -12,7 +12,10 @@ defmodule Grappa.Uploads.MetadataStripTest do
   # marker-IS-present pre-assertion guards against fixture rot — a
   # regenerated fixture that lost its metadata would otherwise make
   # the absence assertion pass while validating nothing.
-  for name <- [:gps_jpeg, :gps_png, :gps_mp4, :gps_mov, :tagged_webm] do
+  # :oriented_jpeg participates: its markers deliberately exclude the
+  # bare "Exif" string (a minimal APP1 with the whitelisted Orientation
+  # legitimately survives), so the loop's absence assertions hold.
+  for name <- [:gps_jpeg, :gps_png, :gps_mp4, :gps_mov, :tagged_webm, :oriented_jpeg] do
     test "#{name}: strips every metadata marker" do
       name = unquote(name)
       input = bytes(name)
@@ -38,19 +41,21 @@ defmodule Grappa.Uploads.MetadataStripTest do
   end
 
   describe "presentation-critical tag whitelist (#39 round 2)" do
-    test "oriented_jpeg: privacy markers die, EXIF Orientation survives the strip" do
+    test "oriented_jpeg: EXIF Orientation survives the strip, GPS does not" do
       # vjt dogfood 2026-06-11: -all= alone also killed Orientation,
       # so every portrait phone photo rendered sideways (browsers
-      # honor the tag via image-orientation: from-image). The strip
-      # must wipe the privacy payload and copy the allowlisted
-      # presentation tags back.
+      # honor the tag via image-orientation: from-image). Marker
+      # strings can't see EXIF GPS (binary rationals), so the GPS
+      # absence is probed through exiftool — the oracle that would
+      # catch a copy-back widened beyond the allowlist (e.g. a group
+      # copy dragging the GPS IFD along with Orientation).
       input = bytes(:oriented_jpeg)
-      assert_markers!(input, :oriented_jpeg)
-      assert read_orientation(input) == 6
+      assert read_tag(input, "Orientation") == "6"
+      assert read_tag(input, "GPSLatitude") != nil
 
-      assert {:ok, stripped} = MetadataStrip.run(input, "image/jpeg")
-      refute_markers!(stripped, :oriented_jpeg)
-      assert read_orientation(stripped) == 6
+      assert {:ok, stripped} = MetadataStrip.run(input, mime(:oriented_jpeg))
+      assert read_tag(stripped, "Orientation") == "6"
+      assert read_tag(stripped, "GPSLatitude") == nil
     end
 
     test "files without Orientation still strip to a fully bare output" do
@@ -59,44 +64,42 @@ defmodule Grappa.Uploads.MetadataStripTest do
       # the bare "Exif" string, so this pins that the whitelist does
       # not fabricate an EXIF segment.
       input = bytes(:gps_jpeg)
-      assert read_orientation(input) == nil
+      assert read_tag(input, "Orientation") == nil
 
-      assert {:ok, stripped} = MetadataStrip.run(input, "image/jpeg")
+      assert {:ok, stripped} = MetadataStrip.run(input, mime(:gps_jpeg))
       refute_markers!(stripped, :gps_jpeg)
-      assert read_orientation(stripped) == nil
+      assert read_tag(stripped, "Orientation") == nil
     end
   end
 
   # exiftool read-back: the strip's own tool is the only honest oracle
-  # for "is the tag still present" — grepping raw bytes for the 0x0112
-  # TIFF tag would re-implement EXIF parsing, badly. `-n` returns the
-  # numeric value (6 = Rotate 90 CW); empty output = tag absent.
-  defp read_orientation(bytes) do
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "orientation-probe-#{System.unique_integer([:positive])}.jpg"
-      )
-
+  # for "is the tag still present" — grepping raw bytes would
+  # re-implement EXIF parsing, badly. `-n` returns raw values as
+  # strings ("6" = Rotate 90 CW); nil = tag absent. Probe filename
+  # uses mint_slug like production strip_via/4 — unique_integer is
+  # only unique within one BEAM VM, and /tmp may be shared.
+  defp read_tag(bytes, tag) do
+    path = Path.join(System.tmp_dir!(), "tag-probe-#{Grappa.Uploads.mint_slug()}.jpg")
     File.write!(path, bytes)
 
     try do
-      {out, 0} =
-        System.cmd("exiftool", ["-s3", "-n", "-Orientation", path], env: scrubbed_probe_env())
+      {out, 0} = System.cmd("exiftool", ["-s3", "-n", "-#{tag}", path], env: probe_env())
 
       case String.trim(out) do
         "" -> nil
-        value -> String.to_integer(value)
+        value -> value
       end
     after
       _ = File.rm(path)
     end
   end
 
-  # Same rationale as MetadataStrip's scrubbed_env/0: exiftool parses
-  # file bytes and has an RCE history (CVE-2021-22204) — the probe
-  # child keeps PATH only. `{name, nil}` REMOVES the variable.
-  defp scrubbed_probe_env do
+  # Satisfies credo's LeakyEnvironment check on System.cmd. This is
+  # NOT production's scrubbed_env/0 hostile-bytes rationale — the
+  # probe parses committed fixtures and the strip's own output, and
+  # the test env holds no deployment secrets — so PATH-only is plain
+  # hygiene, deliberately not a parallel copy of prod's @kept_env.
+  defp probe_env do
     for {name, _} <- System.get_env(), name != "PATH", do: {name, nil}
   end
 

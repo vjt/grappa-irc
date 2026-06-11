@@ -12173,3 +12173,24 @@ Already-stored sideways uploads are NOT migrated: the strip ran at
 upload time, the Orientation bytes are gone, and reconstructing them
 from pixel content is guesswork. Re-upload is the fix for the handful
 that exist.
+
+Review addenda (same session): the copy-back is gated to image/*
+mimes — mp4/mov go through the same exiftool dispatch, and a bare
+`-Orientation` resolves against ALL groups of the original (XMP,
+EXIF blocks embedded in QuickTime atoms), so on the video path the
+flag was a believed no-op nothing pinned and a latent surprise for
+future @kept_tags entries; video keeps the blanket wipe its
+rationale already argued for. The whitelist test gained an exiftool
+GPS read-back on the stripped output — byte markers cannot see EXIF
+GPS (binary rationals), so without the probe a copy-back widened
+beyond the allowlist would pass the suite green. Rejected
+alternative, recorded so it isn't re-proposed: physically
+auto-rotating pixels (jpegtran) then stripping everything. It's
+jpeg-only (PNG/WebP Orientation would still need the tag path, so
+the whitelist survives anyway), "lossless" rotation requires
+MCU-aligned dimensions (else edge trim or failure), and it adds a
+fourth binary dependency for zero privacy gain over a 1-8 integer.
+Also recorded: a stripped JPEG that kept Orientation carries
+exiftool's mandatory IFD0 companion defaults (YCbCrPositioning=1 —
+fixed default, NOT copied from the source); a privacy audit grepping
+stripped output should expect that minimal APP1 shape.
