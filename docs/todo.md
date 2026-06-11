@@ -11,7 +11,16 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-(empty)
+- **Next-session scope (vjt 2026-06-11)**: e2e CSP parity (High entry
+  below) + dogfood asks + **PWA home-screen icon notification badge**
+  (NEW: Badging API `navigator.setAppBadge`, iOS 16.4+ standalone;
+  derive count from server-owned read cursors — design questions in
+  /tmp/orchestrate-next.txt brief: mentions vs unread, WS vs SW-push
+  update path, clear trigger) + **#9 validation via deliberate cold
+  window at session end** (vjt ordered the restart; sessions reset
+  accepted).
+- **Codebase review gate: DUE, explicitly deferred by vjt 2026-06-11**
+  (token cost). Re-flag each session; vjt decides when it runs.
 
 ---
 
