@@ -37,6 +37,69 @@ defmodule Grappa.Uploads.MetadataStripTest do
     assert moov < mdat
   end
 
+  describe "presentation-critical tag whitelist (#39 round 2)" do
+    test "oriented_jpeg: privacy markers die, EXIF Orientation survives the strip" do
+      # vjt dogfood 2026-06-11: -all= alone also killed Orientation,
+      # so every portrait phone photo rendered sideways (browsers
+      # honor the tag via image-orientation: from-image). The strip
+      # must wipe the privacy payload and copy the allowlisted
+      # presentation tags back.
+      input = bytes(:oriented_jpeg)
+      assert_markers!(input, :oriented_jpeg)
+      assert read_orientation(input) == 6
+
+      assert {:ok, stripped} = MetadataStrip.run(input, "image/jpeg")
+      refute_markers!(stripped, :oriented_jpeg)
+      assert read_orientation(stripped) == 6
+    end
+
+    test "files without Orientation still strip to a fully bare output" do
+      # The copy-back must be a no-op when the tag is absent — the
+      # gps_jpeg fixture has no Orientation, and its markers include
+      # the bare "Exif" string, so this pins that the whitelist does
+      # not fabricate an EXIF segment.
+      input = bytes(:gps_jpeg)
+      assert read_orientation(input) == nil
+
+      assert {:ok, stripped} = MetadataStrip.run(input, "image/jpeg")
+      refute_markers!(stripped, :gps_jpeg)
+      assert read_orientation(stripped) == nil
+    end
+  end
+
+  # exiftool read-back: the strip's own tool is the only honest oracle
+  # for "is the tag still present" — grepping raw bytes for the 0x0112
+  # TIFF tag would re-implement EXIF parsing, badly. `-n` returns the
+  # numeric value (6 = Rotate 90 CW); empty output = tag absent.
+  defp read_orientation(bytes) do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "orientation-probe-#{System.unique_integer([:positive])}.jpg"
+      )
+
+    File.write!(path, bytes)
+
+    try do
+      {out, 0} =
+        System.cmd("exiftool", ["-s3", "-n", "-Orientation", path], env: scrubbed_probe_env())
+
+      case String.trim(out) do
+        "" -> nil
+        value -> String.to_integer(value)
+      end
+    after
+      _ = File.rm(path)
+    end
+  end
+
+  # Same rationale as MetadataStrip's scrubbed_env/0: exiftool parses
+  # file bytes and has an RCE history (CVE-2021-22204) — the probe
+  # child keeps PATH only. `{name, nil}` REMOVES the variable.
+  defp scrubbed_probe_env do
+    for {name, _} <- System.get_env(), name != "PATH", do: {name, nil}
+  end
+
   test "garbage bytes labeled image/jpeg are rejected, not stored" do
     assert {:error, {:metadata_strip, reason}} =
              MetadataStrip.run("not actually a jpeg", "image/jpeg")

@@ -24,7 +24,7 @@ defmodule Grappa.UploadFixtures do
 
   @fixtures_dir Path.expand("fixtures/uploads", __DIR__)
 
-  @type name :: :gps_jpeg | :gps_png | :gps_mp4 | :gps_mov | :tagged_webm
+  @type name :: :gps_jpeg | :gps_png | :gps_mp4 | :gps_mov | :tagged_webm | :oriented_jpeg
 
   @spec bytes(name()) :: binary()
   def bytes(name), do: File.read!(Path.join(@fixtures_dir, file_for(name)))
@@ -35,6 +35,7 @@ defmodule Grappa.UploadFixtures do
   def mime(:gps_mp4), do: "video/mp4"
   def mime(:gps_mov), do: "video/quicktime"
   def mime(:tagged_webm), do: "video/webm"
+  def mime(:oriented_jpeg), do: "image/jpeg"
 
   @doc """
   Byte sequences that prove metadata presence. Every marker appears
@@ -46,6 +47,11 @@ defmodule Grappa.UploadFixtures do
   def markers(:gps_mp4), do: ["com.apple.quicktime", "+41.9028+012.4964", "Apple"]
   def markers(:gps_mov), do: ["com.apple.quicktime", "Apple"]
   def markers(:tagged_webm), do: ["secret title", "GPS 41.9028,12.4964"]
+  # NO "Exif" marker here, deliberately: the strip whitelist (#39
+  # round 2) copies Orientation back, so a (minimal) EXIF segment
+  # legitimately SURVIVES in this fixture's stripped output. Markers
+  # are the privacy payload only.
+  def markers(:oriented_jpeg), do: ["Apple", "iPhone 15 Pro"]
 
   @doc """
   Assert every metadata marker for `name` is PRESENT in `binary` —
@@ -87,4 +93,5 @@ defmodule Grappa.UploadFixtures do
   defp file_for(:gps_mp4), do: "gps.mp4"
   defp file_for(:gps_mov), do: "gps.mov"
   defp file_for(:tagged_webm), do: "tagged.webm"
+  defp file_for(:oriented_jpeg), do: "oriented.jpg"
 end

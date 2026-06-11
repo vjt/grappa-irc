@@ -46,3 +46,15 @@ ffmpeg -y -loglevel error -f lavfi -i color=c=green:s=64x64:d=1 \
   -metadata title="secret title" \
   -metadata COMMENT="GPS 41.9028,12.4964" sample.webm
 mv sample.webm tagged.webm
+
+# oriented jpeg: EXIF Orientation=6 (Rotate 90 CW — portrait iPhone
+# shape) ALONGSIDE the GPS/identity leak tags. Pins the strip
+# whitelist: privacy tags must die, presentation-critical Orientation
+# must survive (#39 round 2 — -all= alone made every portrait photo
+# render sideways).
+ffmpeg -y -loglevel error -f lavfi -i color=c=cyan:s=32x48 -frames:v 1 oriented.jpg
+exiftool -q -overwrite_original \
+  -GPSLatitude=41.9028 -GPSLatitudeRef=N \
+  -GPSLongitude=12.4964 -GPSLongitudeRef=E \
+  -Make=Apple -Model="iPhone 15 Pro" \
+  -Orientation#=6 oriented.jpg

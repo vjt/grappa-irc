@@ -12140,3 +12140,36 @@ itself owned by device dogfood. The x-safari handoff is likewise not
 e2e-able (the gate is false in every Playwright project, and webkit
 emulation doesn't do standalone navigation) — pending vjt device
 verification, again.
+
+## 2026-06-11 — #39 round 2: the strip ate Orientation (whitelist, not blanket wipe)
+
+Dogfood of the metadata strip found the over-reach: `exiftool -all=`
+removes EVERY tag, and EXIF Orientation is a tag — so every portrait
+phone photo uploaded since the strip shipped renders sideways
+(browsers honor the tag via `image-orientation: from-image`; the
+pixels are stored unrotated). Privacy tags and presentation tags died
+together.
+
+Fix shape per vjt: an explicit ALLOWLIST of presentation-critical
+tags copied back after the wipe — exiftool's own idiom,
+`-all= -tagsfromfile @ -Orientation` (wipe, then copy the named tags
+from the original; no-op when absent). `@kept_tags` starts with
+Orientation only. The bar for an entry: rendering data with no
+provenance payload, AND a committed fixture pinning both directions
+(privacy markers die / kept tag survives) — ICC_Profile (wide-gamut
+color; iPhones shoot Display P3, stripping the profile washes colors)
+is the named next candidate but stays OUT until a profiled fixture
+exists, because an untested whitelist entry is a privacy hole nobody
+pinned (recorded in todo).
+
+Video rotation needed no entry and that asymmetry is worth recording:
+QuickTime rotation lives in the tkhd track display matrix — container
+STRUCTURE, not metadata — so `-all=` never touched it; and webm
+uploads come out of MediaRecorder with pixels already upright. The
+image-only scope of the bug is why vjt saw sideways photos but normal
+videos.
+
+Already-stored sideways uploads are NOT migrated: the strip ran at
+upload time, the Orientation bytes are gone, and reconstructing them
+from pixel content is guesswork. Re-upload is the fix for the handful
+that exist.

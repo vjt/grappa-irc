@@ -198,6 +198,14 @@ Phase 5 cluster opens):
 
 ## Low / Observation
 
+- **ICC_Profile strip-whitelist candidate** (#39 round 2 residual,
+  2026-06-11) — iPhones shoot Display P3; `-all=` strips the ICC
+  profile so wide-gamut photos render slightly washed. Same
+  presentation-critical class as Orientation (now whitelisted), but
+  the entry stays OUT of `@kept_tags` until a P3-profiled committed
+  fixture pins both directions — an untested whitelist entry is a
+  privacy hole nobody pinned. Needs a source .icc to build the
+  fixture (generate.sh can't fabricate one from nothing).
 - **Mint upload URLs with a type extension** (`/uploads/<slug>.<ext>`,
   media-viewer residual 2026-06-11) — the in-app viewer's image/video
   signal currently lives in message TEXT (the 📸/🎬 prefix read from

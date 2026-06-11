@@ -11,6 +11,14 @@ defmodule Grappa.Uploads.MetadataStrip do
   Clients never participate in the decision — cic's transcode gate
   is pure performance and explicitly does NOT consult metadata.
 
+  Exception — the `@kept_tags` allowlist (#39 round 2): presentation-
+  critical tags with no provenance payload are copied back after the
+  wipe. Today that is EXIF Orientation only (a 1-8 rotation value;
+  stripping it made every portrait phone photo render sideways).
+  Video rotation needs no entry: QuickTime stores it in the tkhd
+  track matrix, which is structure, not metadata — `-all=` never
+  touched it.
+
   Failure mode is CLOSED: if the strip fails for any reason (tool
   missing, malformed file, unmapped media type) the upload is
   rejected with `{:error, {:metadata_strip, reason}}` — never
@@ -207,9 +215,25 @@ defmodule Grappa.Uploads.MetadataStrip do
   defp install_hint(:exiftool), do: "apk add exiftool / pkg install p5-Image-ExifTool"
   defp install_hint(:ffmpeg), do: "apk add ffmpeg / pkg install ffmpeg"
 
+  # Presentation-critical tags copied BACK from the original after the
+  # wipe (#39 round 2, vjt 2026-06-11): `-all=` alone also killed EXIF
+  # Orientation, so every portrait phone photo rendered sideways
+  # (browsers honor the tag via `image-orientation: from-image`).
+  # `-all= -tagsfromfile @ -Tag` is exiftool's own preserve-while-
+  # stripping idiom; the copy-back is a no-op when the tag is absent.
+  # ALLOWLIST, not keep-by-default: a tag earns its place here only by
+  # being rendering data with no provenance payload. Candidates lacking
+  # a test fixture (ICC_Profile — wide-gamut color) stay OUT until one
+  # exists; an untested whitelist entry is a privacy hole nobody pinned.
+  @kept_tags ~w(Orientation)
+
   # `-o` writes a fresh output file (never exists — slug-unique name)
   # so a failed run can't leave a half-written in-place original.
-  defp args(:exiftool, in_path, out_path), do: ["-q", "-all=", "-o", out_path, in_path]
+  defp args(:exiftool, in_path, out_path) do
+    ["-q", "-all=", "-tagsfromfile", "@"] ++
+      Enum.map(@kept_tags, &"-#{&1}") ++
+      ["-o", out_path, in_path]
+  end
 
   defp args(:ffmpeg, in_path, out_path) do
     [
