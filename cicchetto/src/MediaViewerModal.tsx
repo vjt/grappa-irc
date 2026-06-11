@@ -9,7 +9,7 @@ import {
 } from "solid-js";
 import { closeMediaViewer, type MediaViewerState, mediaViewerState } from "./lib/mediaViewer";
 import { createOverlayLock } from "./lib/overlayScrollLock";
-import { isIos, isStandalonePwa, safariEscapeHref } from "./lib/platform";
+import { maybeEscapePwaClick } from "./lib/platform";
 
 // In-app media viewer modal — media-link cluster (2026-06-11).
 //
@@ -25,17 +25,18 @@ import { isIos, isStandalonePwa, safariEscapeHref } from "./lib/platform";
 // `classifyMediaLink` accepts. Mounted at Shell root in both branches
 // (PrivacyModal pattern).
 //
-// "Open in browser" is an anchor whose href depends on the platform.
-// Desktop, Android, and iOS browser tabs get the plain URL with
-// target=_blank — a real new tab. iOS STANDALONE cannot leave the PWA
-// via a same-origin anchor at all (in-scope navigation ignores target —
-// the same root cause this modal exists for; dogfood caught the first
-// shipped version navigating the PWA), so there the href is rewritten
-// to the x-safari-https:// scheme, which hands the URL to real Safari
-// (iOS 17+; inert tap on iOS 16 — acceptable degrade). The media
-// element needs no CSP change: `img-src 'self' data:` /
-// `media-src 'self' blob:` already cover same-origin sources, and the
-// classifier never admits cross-origin URLs.
+// "Open in browser" keeps the plain href + target=_blank (desktop,
+// Android, iOS browser tabs: a real new tab; long-press → Copy Link
+// yields the live URL). iOS STANDALONE cannot leave the PWA via a
+// same-origin anchor at all (in-scope navigation ignores target — the
+// same root cause this modal exists for; dogfood caught the first
+// shipped version navigating the PWA), so plain clicks delegate to the
+// shared maybeEscapePwaClick intercept, which hands the URL to real
+// Safari via the x-safari-https:// scheme (iOS 17+; inert tap on 16 —
+// acceptable degrade). The media element needs no CSP change:
+// `img-src 'self' data:` / `media-src 'self' blob:` already cover
+// same-origin sources, and the classifier never admits cross-origin
+// URLs.
 //
 // Escape uses a document-level keydown listener (UserContextMenu
 // pattern) — focus stays wherever the operator clicked (scrollback,
@@ -56,60 +57,73 @@ type MediaLoadStatus = "loading" | "ready" | "failed";
 // failure line.
 const MediaViewerBody: Component<{ state: MediaViewerState }> = (props) => {
   const [status, setStatus] = createSignal<MediaLoadStatus>("loading");
-  const ready = (): void => {
-    setStatus("ready");
+  // Transitions only leave "loading" (review fix): a transient
+  // mid-playback error must not unmount a ready element, and a suspend
+  // arriving after a failure must not resurrect a dead one.
+  const settle = (next: MediaLoadStatus) => (): void => {
+    if (status() === "loading") setStatus(next);
   };
-  const failed = (): void => {
-    setStatus("failed");
-  };
+  const ready = settle("ready");
+  const failed = settle("failed");
 
+  // video/audio readiness: loadedmetadata is the normal terminator
+  // (duration + dimensions; loadeddata never fires under
+  // preload=metadata). suspend is the iOS escape valve (review fix):
+  // under Low Power Mode / Data Saver WebKit downgrades the preload
+  // and fires NEITHER loadedmetadata NOR error before a play gesture —
+  // suspend is what it fires when it defers, and without it the
+  // spinner spins forever. The element is fully usable at that point.
   return (
     <div class="media-viewer-body">
       <Show when={status() === "loading"}>
         <div role="status" aria-label="Loading media" class="media-viewer-spinner" />
       </Show>
-      <Show when={status() === "failed"}>
-        <p class="media-viewer-error">failed to load — try "open in browser"</p>
-      </Show>
-      <Show when={status() !== "failed"}>
-        <Switch>
-          <Match when={props.state.kind === "image"}>
-            <img
-              class="media-viewer-media"
-              src={props.state.href}
-              alt={props.state.href}
-              onLoad={ready}
-              onError={failed}
-            />
-          </Match>
-          <Match when={props.state.kind === "video"}>
-            {/* playsinline: without it iOS hands the element to the
-                native fullscreen player, defeating the in-app
-                viewer. preload=metadata: show duration without
-                pulling the whole file. */}
-            {/* biome-ignore lint/a11y/useMediaCaption: user-uploaded IRC media — no caption track exists or can be authored for it */}
-            <video
-              class="media-viewer-media"
-              src={props.state.href}
-              controls
-              playsinline
-              preload="metadata"
-              onLoadedMetadata={ready}
-              onError={failed}
-            />
-          </Match>
-          <Match when={props.state.kind === "audio"}>
-            {/* biome-ignore lint/a11y/useMediaCaption: user-uploaded IRC media — no caption track exists or can be authored for it */}
-            <audio
-              class="media-viewer-media"
-              src={props.state.href}
-              controls
-              preload="metadata"
-              onLoadedMetadata={ready}
-              onError={failed}
-            />
-          </Match>
-        </Switch>
+      <Show
+        when={status() === "failed"}
+        fallback={
+          <Switch>
+            <Match when={props.state.kind === "image"}>
+              <img
+                class="media-viewer-media"
+                src={props.state.href}
+                alt={props.state.href}
+                onLoad={ready}
+                onError={failed}
+              />
+            </Match>
+            <Match when={props.state.kind === "video"}>
+              {/* playsinline: without it iOS hands the element to the
+                  native fullscreen player, defeating the in-app
+                  viewer. preload=metadata: show duration without
+                  pulling the whole file. */}
+              {/* biome-ignore lint/a11y/useMediaCaption: user-uploaded IRC media — no caption track exists or can be authored for it */}
+              <video
+                class="media-viewer-media"
+                src={props.state.href}
+                controls
+                playsinline
+                preload="metadata"
+                onLoadedMetadata={ready}
+                onSuspend={ready}
+                onError={failed}
+              />
+            </Match>
+            <Match when={props.state.kind === "audio"}>
+              {/* biome-ignore lint/a11y/useMediaCaption: user-uploaded IRC media — no caption track exists or can be authored for it */}
+              <audio
+                class="media-viewer-media"
+                src={props.state.href}
+                controls
+                preload="metadata"
+                onLoadedMetadata={ready}
+                onSuspend={ready}
+                onError={failed}
+              />
+            </Match>
+          </Switch>
+        }
+      >
+        <p class="muted media-viewer-error">failed to load — try "open in browser"</p>
       </Show>
     </div>
   );
@@ -138,12 +152,6 @@ const MediaViewerModal: Component = () => {
     onCleanup(() => document.removeEventListener("keydown", onKeyDown));
   });
 
-  // Evaluated per open (keyed Show re-runs the callback). Platform
-  // can't change mid-session, but per-open evaluation keeps the gates
-  // stub-friendly in tests and costs nothing.
-  const externalHref = (href: string): string =>
-    isIos() && isStandalonePwa() ? safariEscapeHref(href) : href;
-
   return (
     <Show when={mediaViewerState()} keyed>
       {(state) => (
@@ -157,10 +165,13 @@ const MediaViewerModal: Component = () => {
           <div role="dialog" aria-modal="true" aria-label="Media viewer" class="media-viewer-modal">
             <div class="media-viewer-header">
               <a
-                href={externalHref(state.href)}
+                href={state.href}
                 target="_blank"
                 rel="noopener noreferrer"
                 class="media-viewer-open-external"
+                onClick={(e) => {
+                  maybeEscapePwaClick(e, state.href);
+                }}
               >
                 open in browser
               </a>

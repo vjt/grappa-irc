@@ -78,3 +78,33 @@ export function safariEscapeHref(href: string): string {
   }
   return href;
 }
+
+// The composed escape policy — THE meaningful gate, exported as one
+// name so call sites can't recompose the halves wrong (review fix):
+// the isIos() half is load-bearing because Android/desktop installed
+// PWAs are standalone too and an x-safari- URL is inert there.
+// Returns the scheme-rewritten href when this platform needs the
+// handoff, null when the default anchor behavior already works.
+export function escapePwaHref(href: string): string | null {
+  if (!isIos() || !isStandalonePwa()) return null;
+  const escaped = safariEscapeHref(href);
+  return escaped === href ? null : escaped;
+}
+
+// Shared click handler for anchors that must LEAVE the PWA on iOS
+// standalone (media viewer "open in browser", same-host non-media
+// scrollback links). Contract: the anchor keeps its real href —
+// copy-link / long-press / middle-click semantics stay intact — and
+// only the plain primary click is escaped, same shape as
+// ScrollbackPane's media intercept. Navigation is same-window
+// location.assign: a scheme handoff needs no new browsing context,
+// and the new-window path is the one WebKit popup policy can swallow.
+// Returns whether the click was escaped.
+export function maybeEscapePwaClick(e: MouseEvent, href: string): boolean {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return false;
+  const escaped = escapePwaHref(href);
+  if (escaped === null) return false;
+  e.preventDefault();
+  window.location.assign(escaped);
+  return true;
+}

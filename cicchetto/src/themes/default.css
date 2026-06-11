@@ -3755,6 +3755,10 @@ html.resize-dragging * {
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: media-viewer-spin 0.8s linear infinite;
+  /* Overlay must never eat input: it sits exactly over the video's
+     centered native play control, and on iOS the tap it would swallow
+     is the very gesture that starts deferred loading (review fix). */
+  pointer-events: none;
 }
 
 @keyframes media-viewer-spin {
@@ -3763,8 +3767,9 @@ html.resize-dragging * {
   }
 }
 
+/* Color comes from the shared .muted utility (the component renders
+   class="muted media-viewer-error") — only layout lives here. */
 .media-viewer-error {
-  color: var(--muted);
   font-size: 0.9rem;
   margin: 0;
   padding: 0 1rem;

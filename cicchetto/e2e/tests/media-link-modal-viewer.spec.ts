@@ -30,7 +30,7 @@
 // anyway (feedback_playwright_webkit_not_ios_scroll, same class).
 // Unit tests pin the rewrite; device dogfood is the final word.
 
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -44,8 +44,8 @@ const CHANNEL = AUTOJOIN_CHANNELS[0];
 async function uploadPngAndGetLink(page: Page): Promise<{
   slug: string;
   url: string;
-  row: ReturnType<Page["locator"]>;
-  link: ReturnType<Page["locator"]>;
+  row: Locator;
+  link: Locator;
 }> {
   const picker = page.locator("input[data-file-picker]");
   await picker.setInputFiles({
@@ -109,17 +109,34 @@ test("📸 upload link click opens the in-app viewer instead of navigating", asy
   expect(page.url()).toBe(cicUrl);
 });
 
-test("viewer shows a load spinner until the media bytes arrive (dogfood fix 2026-06-11)", async ({
+test("viewer load states: failure text on unfetchable media, spinner until bytes arrive (dogfood fix 2026-06-11)", async ({
   page,
 }) => {
+  // ONE upload journey serves both load-state phases (workers: 1 — a
+  // second journey is pure wall time). Failure phase runs FIRST: a
+  // successfully fetched image would be served from memory cache on a
+  // later click, and cache hits bypass page.route interception — the
+  // abort would never fire and the phase would flake.
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
   const { slug, link } = await uploadPngAndGetLink(page);
+  const viewer = page.getByRole("dialog", { name: "Media viewer" });
 
-  // Hold the media response open until the spinner has been asserted —
-  // a gate, not a sleep: fixed delays race the assertion and flake.
+  // Phase 1 — unfetchable media: failure text, no forever-spinner.
+  await page.route(`**/uploads/${slug}`, (route) => route.abort());
+  await link.click();
+  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  await expect(viewer.getByText(/failed to load/i)).toBeVisible({ timeout: 5_000 });
+  await expect(viewer.getByRole("status")).toBeHidden();
+  await viewer.getByRole("button", { name: "Close media viewer" }).click();
+  await expect(viewer).toBeHidden({ timeout: 5_000 });
+  await page.unroute(`**/uploads/${slug}`);
+
+  // Phase 2 — hold the media response open until the spinner has been
+  // asserted: a gate, not a sleep (fixed delays race the assertion and
+  // flake).
   let releaseMedia = (): void => undefined;
   const mediaGate = new Promise<void>((resolve) => {
     releaseMedia = resolve;
@@ -130,7 +147,6 @@ test("viewer shows a load spinner until the media bytes arrive (dogfood fix 2026
   });
 
   await link.click();
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
   await expect(viewer).toBeVisible({ timeout: 5_000 });
   const spinner = viewer.getByRole("status", { name: /loading/i });
   await expect(spinner).toBeVisible();
@@ -139,23 +155,6 @@ test("viewer shows a load spinner until the media bytes arrive (dogfood fix 2026
   await expect(spinner).toBeHidden({ timeout: 10_000 });
   const img = viewer.locator("img.media-viewer-media");
   await expect(img).toHaveJSProperty("complete", true, { timeout: 10_000 });
-  await page.unroute(`**/uploads/${slug}`);
-});
-
-test("unfetchable media shows failure text instead of spinning forever", async ({ page }) => {
-  const vjt = getSeededVjt();
-  await loginAs(page, vjt);
-  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
-
-  const { slug, link } = await uploadPngAndGetLink(page);
-  await page.route(`**/uploads/${slug}`, (route) => route.abort());
-
-  await link.click();
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
-  await expect(viewer.getByText(/failed to load/i)).toBeVisible({ timeout: 5_000 });
-  await expect(viewer.getByRole("status")).toBeHidden();
-  await page.unroute(`**/uploads/${slug}`);
 });
 
 test("plain web link is NOT intercepted — keeps the default anchor", async ({ page }) => {

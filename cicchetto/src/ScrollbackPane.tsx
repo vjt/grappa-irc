@@ -17,7 +17,7 @@ import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { linkify } from "./lib/linkify";
-import { classifyMediaLink } from "./lib/mediaLink";
+import { classifyMediaLink, sameHostHref } from "./lib/mediaLink";
 import { openMediaViewer } from "./lib/mediaViewer";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
@@ -27,6 +27,7 @@ import { senderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
 import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
+import { maybeEscapePwaClick } from "./lib/platform";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
 import { lastOwnSend, loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
@@ -287,15 +288,24 @@ const renderRun = (run: Run): JSX.Element => {
           // cic). The preceding text segment carries the 📸/🎬 type
           // signal for own upload URLs (slug has no extension). The
           // anchor + href stay — copy-link / middle-click / long-press
-          // keep working; only plain click is intercepted. Non-media
-          // links are untouched (cross-origin already opens correctly
-          // in the iOS Safari view).
+          // keep working; only plain click is intercepted.
+          //
+          // Review fix (2026-06-11): the navigate-in-place bug class
+          // covers EVERY same-host link, not just modal-viewable media
+          // — 📄 docs (classifyMediaLink deliberately rejects them; the
+          // modal can't render PDFs) and emoji-split-run fallbacks.
+          // Those plain clicks delegate to the shared
+          // maybeEscapePwaClick handler (x-safari handoff on iOS
+          // standalone, no-op everywhere else). Cross-host links stay
+          // untouched: out-of-scope already opens correctly in the iOS
+          // Safari view.
           const prev = segments[i() - 1];
           const media = classifyMediaLink(
             seg.href,
             prev?.type === "text" ? prev.value : "",
             window.location.origin,
           );
+          const escapeHref = media === null ? sameHostHref(seg.href, window.location.origin) : null;
           return (
             <a
               href={seg.href}
@@ -304,9 +314,8 @@ const renderRun = (run: Run): JSX.Element => {
               class="scrollback-link"
               classList={{ "scrollback-media-link": media !== null }}
               onClick={
-                media === null
-                  ? undefined
-                  : (e) => {
+                media !== null
+                  ? (e) => {
                       // Modifier/aux clicks keep browser-native
                       // semantics (new tab / new window) — only the
                       // plain primary click opens the viewer.
@@ -319,6 +328,13 @@ const renderRun = (run: Run): JSX.Element => {
                       // (mixed content if loaded as-is on https).
                       openMediaViewer(media.href, media.kind);
                     }
+                  : escapeHref !== null
+                    ? (e) => {
+                        // escapeHref is origin-rooted for the same
+                        // mixed-content reason as media.href.
+                        maybeEscapePwaClick(e, escapeHref);
+                      }
+                    : undefined
               }
             >
               {seg.value}

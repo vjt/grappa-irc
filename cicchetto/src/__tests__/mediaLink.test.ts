@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyMediaLink } from "../lib/mediaLink";
+import { classifyMediaLink, sameHostHref } from "../lib/mediaLink";
 
 // Media-link cluster (2026-06-11) — classifier for the on-click media
 // viewer modal. Wire shape under test:
@@ -145,5 +145,40 @@ describe("classifyMediaLink", () => {
     it("empty href is null", () => {
       expect(classifyMediaLink("", "", ORIGIN)).toBeNull();
     });
+  });
+});
+
+// Review fix (2026-06-11): `sameHostHref` is the extracted host-match +
+// re-root half of classifyMediaLink, exported so ScrollbackPane can
+// apply the iOS-standalone escape to same-host NON-media links (📄
+// docs, emoji-split-run fallbacks) without re-implementing the
+// host/scheme/re-rooting rules.
+describe("sameHostHref", () => {
+  const SLUG_PATH = "/uploads/abcdefghijklmnopqrstuvwxyz";
+
+  it("same-host https URL returns the origin-rooted href", () => {
+    expect(sameHostHref(`${ORIGIN}${SLUG_PATH}`, ORIGIN)).toBe(`${ORIGIN}${SLUG_PATH}`);
+  });
+
+  it("historical http:// same-host URL is re-rooted onto the page origin", () => {
+    expect(sameHostHref(`http://grappa.example${SLUG_PATH}`, ORIGIN)).toBe(`${ORIGIN}${SLUG_PATH}`);
+  });
+
+  it("preserves path, query and hash through the re-root", () => {
+    expect(sameHostHref(`http://grappa.example/a/b?x=1#t=42`, ORIGIN)).toBe(
+      `${ORIGIN}/a/b?x=1#t=42`,
+    );
+  });
+
+  it("cross-host URL is null", () => {
+    expect(sameHostHref("https://litter.catbox.moe/abc.png", ORIGIN)).toBe(null);
+  });
+
+  it("non-http(s) scheme is null (linkify also admits ftp)", () => {
+    expect(sameHostHref("ftp://grappa.example/file", ORIGIN)).toBe(null);
+  });
+
+  it("unparseable href is null", () => {
+    expect(sameHostHref("https://", ORIGIN)).toBe(null);
   });
 });

@@ -123,6 +123,36 @@ function hostOf(origin: string): string | null {
   return cachedOriginHost;
 }
 
+// Shared host-match + re-root core: parse, admit only http(s), require
+// host equality with the page origin, and produce the origin-rooted
+// href (path + query + hash preserved).
+function sameHostUrl(href: string, origin: string): { url: URL; rooted: string } | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  // Host (hostname + port) equality — see the moduledoc on why scheme
+  // is deliberately NOT compared.
+  if (url.host !== hostOf(origin)) return null;
+
+  return { url, rooted: `${origin}${url.pathname}${url.search}${url.hash}` };
+}
+
+/**
+ * Same-host check + page-origin re-root WITHOUT media classification —
+ * for links that are not modal-eligible but still have the
+ * iOS-standalone navigate-in-place bug (📄 docs, emoji-split-run
+ * fallbacks; review fix 2026-06-11). Returns the origin-rooted href,
+ * or null for cross-host / non-http(s) / unparseable hrefs.
+ */
+export function sameHostHref(href: string, origin: string): string | null {
+  return sameHostUrl(href, origin)?.rooted ?? null;
+}
+
 /**
  * Classify a scrollback link as modal-viewable media. Returns the kind
  * plus the viewer-safe href (re-rooted on the page origin — path,
@@ -141,22 +171,13 @@ export function classifyMediaLink(
   precedingText: string,
   origin: string,
 ): MediaLink | null {
-  let url: URL;
-  try {
-    url = new URL(href);
-  } catch {
-    return null;
-  }
+  const match = sameHostUrl(href, origin);
+  if (match === null) return null;
 
-  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  // Host (hostname + port) equality — see the moduledoc on why scheme
-  // is deliberately NOT compared.
-  if (url.host !== hostOf(origin)) return null;
-
-  const kind = kindOf(url, precedingText);
+  const kind = kindOf(match.url, precedingText);
   if (kind === null) return null;
 
-  return { kind, href: `${origin}${url.pathname}${url.search}${url.hash}` };
+  return { kind, href: match.rooted };
 }
 
 function kindOf(url: URL, precedingText: string): MediaKind | null {

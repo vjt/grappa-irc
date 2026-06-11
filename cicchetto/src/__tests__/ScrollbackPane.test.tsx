@@ -4,6 +4,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
 import { closeMediaViewer, mediaViewerState } from "../lib/mediaViewer";
 
+// Review fix (2026-06-11): same-host NON-media links delegate plain
+// clicks to the shared iOS-standalone escape handler. The handler's
+// escaping branch calls window.location.assign (unforgeable AND
+// unimplemented in jsdom), so the boundary is mocked; decision logic
+// is pinned in platform.test.ts, this file pins the WIRING. Everything
+// else from lib/platform stays real.
+const mockMaybeEscapePwaClick = vi.fn((e: MouseEvent, _href: string): boolean => {
+  e.preventDefault();
+  return true;
+});
+vi.mock("../lib/platform", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/platform")>();
+  return {
+    ...actual,
+    maybeEscapePwaClick: (e: MouseEvent, href: string) => mockMaybeEscapePwaClick(e, href),
+  };
+});
+
 // C5.0 — JOIN-self auto-focus-switch: mock selection so we can assert
 // setSelectedChannel is called when own nick's JOIN event shows up.
 const mockSetSelectedChannel = vi.fn();
@@ -2310,6 +2328,76 @@ describe("ScrollbackPane", () => {
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
       expect(link.classList.contains("scrollback-media-link")).toBe(false);
+    });
+  });
+
+  // Review fix (2026-06-11): the in-place-navigation bug class covers
+  // EVERY same-host link, not just modal-viewable media. 📄 document
+  // uploads (classifyMediaLink deliberately rejects them — no PDF
+  // rendering in the modal) and emoji-split-run fallbacks keep the
+  // plain anchor, which iOS standalone navigates IN PLACE. Those
+  // clicks delegate to the shared escape handler instead (no-op on
+  // every other platform — pinned in platform.test.ts).
+  describe("same-host non-media links escape the iOS-standalone PWA", () => {
+    const seed = (body: string) => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      return document.querySelector(".scrollback-link") as HTMLAnchorElement;
+    };
+
+    beforeEach(() => {
+      mockMaybeEscapePwaClick.mockClear();
+    });
+
+    it("📄 same-host doc upload link: plain click delegates to the escape handler, href untouched", () => {
+      const href = `${window.location.origin}/uploads/abcdefghijklmnopqrstuvwxyz`;
+      const link = seed(`📄 ${href}`);
+      expect(link.classList.contains("scrollback-media-link")).toBe(false);
+      expect(link.getAttribute("href")).toBe(href);
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      expect(mockMaybeEscapePwaClick).toHaveBeenCalledTimes(1);
+      expect(mockMaybeEscapePwaClick.mock.calls[0]?.[1]).toBe(href);
+    });
+
+    it("historical http:// same-host link: handler receives the page-origin-rooted href", () => {
+      // Pre-fix prod minted http:// upload URLs (Endpoint url: had no
+      // scheme); the escape must hand Safari the live https URL, not
+      // the mixed-content one. Same re-rooting contract as the viewer.
+      const httpHref = `http://${window.location.host}/uploads/abcdefghijklmnopqrstuvwxyz`;
+      const link = seed(`📄 ${httpHref}`);
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      expect(mockMaybeEscapePwaClick.mock.calls[0]?.[1]).toBe(
+        `${window.location.origin}/uploads/abcdefghijklmnopqrstuvwxyz`,
+      );
+    });
+
+    it("cross-host link: click is NOT delegated — out-of-scope already opens correctly", () => {
+      const link = seed("docs at https://example.com/page");
+      let preventedByHandler: boolean | null = null;
+      const recorder = (e: Event) => {
+        preventedByHandler = e.defaultPrevented;
+        e.preventDefault();
+      };
+      document.addEventListener("click", recorder);
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      document.removeEventListener("click", recorder);
+      expect(mockMaybeEscapePwaClick).not.toHaveBeenCalled();
+      expect(preventedByHandler).toBe(false);
     });
   });
 
