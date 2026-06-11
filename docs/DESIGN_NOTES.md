@@ -12237,3 +12237,64 @@ Net state after recovery: PHX_HOST applied (Endpoint.url() now
 https://irc.sniffo.org — prod mints live upload links), 8/8 sessions
 respawned, marker honest at HEAD. Fixes handed off as the next
 dispatch.
+
+## 2026-06-11 — deploy defects #7–#9 fixed: marker range, force wins, stop means stopped
+
+The fix dispatch for the outage above. All three shapes follow the
+incident entry's spec.
+
+**#7 — preflight base = `runtime/last-deployed-sha`.** When the
+marker exists and is a real commit (`git cat-file -e`), it is the
+range base; the pre-pull HEAD remains the fallback ONLY when no
+marker exists (fresh install). A garbage marker (truncated write,
+rewritten history) aborts the deploy loudly with a fix-it hint —
+deliberately NOT a silent fallback to the pre-pull HEAD, which would
+re-open the exact range hole the marker closes. The re-exec guard
+keeps the pre-pull range: it answers "did THIS run's pull change the
+bytes I'm executing?", and a deploy.sh change that entered via an
+earlier cic pull is already the file the operator invoked. The
+Docker substrate (`scripts/deploy.sh`) is explicitly NOT ported in
+this pass — it has no marker infrastructure at all (no
+`last-deployed-sha` write anywhere), so the port is the whole marker
+mechanism, not one line; folded into the existing REV-I todo entry
+(same-SHA guard port) as one coherent future bucket. Docker drives
+the LOCAL dev stack only — nothing production rides that gap.
+
+**#8 — the nothing-to-do fast path applies in auto mode only.** An
+explicit `--force-hot`/`--force-cold` is an operator order; the skip
+log states what was observed (same HEAD + marker match) and, when
+forced past, which flag overrode it. The "re-driving" message now
+also names the common benign cause (cic deploys advancing HEAD)
+instead of implying every marker gap is a died-mid-flight deploy.
+
+**#9 — `infra/freebsd/jail_beam_wait.sh`, one implementation of the
+stop/start race lore.** Two verbs: `wait-stopped <node> <timeout>`
+(blocks until beam.smp exits AND epmd drops the name; escalates —
+SIGKILL after timeout, epmd restart only AFTER the BEAM is confirmed
+dead, preserving the 2026-05-31 lesson that pkill'ing epmd under a
+live BEAM re-races the registration) and `wait-name-free <node>
+<timeout>` (pre-start guard, NO escalation — the name's owner may be
+a live draining node that must not be shot). Call sites: rc.d
+`grappa_stop` (stop now means STOPPED), rc.d `grappa_start` (refuses
+a registered name, then polls the release `pid` RPC and treats a
+vanished beam.smp as an immediate loud boot failure — the outage's
+"Starting grappa."-and-walk-away is dead), and deploy.sh's cold path
+(replacing its inline pgrep loop + unconditional `pkill epmd`). The
+deploy.sh call site is load-bearing forever, not just for the
+transition: rc.d wrappers are refreshed BETWEEN stop and start, so
+any deploy shipping an rc.d fix stops through the PREVIOUSLY
+installed wrapper. New rc.conf.d knobs: `grappa_node`,
+`grappa_stop_timeout`, `grappa_start_timeout`,
+`grappa_name_wait_timeout`, `grappa_beam_wait`.
+
+**Testing**: new `test/infra/*.bats` (scripts/bats.sh now scans
+`test/bin/ test/infra/`) pin the decision logic — marker-vs-fallback
+range, garbage-marker abort, force-past-fast-path, re-exec range
+choice, cold-path stop/wait/refresh/start ordering, and the helper's
+escalation/no-escalation split — against a throwaway upstream+clone
+with PATH-stubbed `su`/`mix`/`curl`/`service`. The rc.d wrapper
+itself needs rc.subr (FreeBSD-only): its verification is the next
+real cold window on m42. The shipping deploy goes `--force-hot` +
+manual `jail_install_rcd.sh` — the wrapper install touches nothing
+live, and the BEAM already cold-booted once today (minimize
+restarts).

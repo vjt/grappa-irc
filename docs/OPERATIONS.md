@@ -212,6 +212,13 @@ artifacts → no-op on the FreeBSD jail) and is gated behind a config
 check that silently no-ops in `MIX_ENV=prod` even when Mix is
 present (wrongly trusted back when prod still ran on Docker — the
 2026-05-16 M-4 incident; prod moved to the m42 jail 2026-05-27).
+The marker is also the PREFLIGHT RANGE BASE: the jail classifies
+`marker..HEAD`, not pre-pull-HEAD..HEAD, because cic deploys
+(`jail_deploy_cic.sh`) advance the jail HEAD without applying server
+changes — a pre-pull base silently dropped server commits that landed
+between two cic deploys (defect #7, the 2026-06-11 outage). A
+garbage marker aborts the deploy loudly with a fix-it hint; only an
+ABSENT marker falls back to the pre-pull HEAD.
 `POST /admin/reload` walks `:code.modified_modules/0`
 and `:code.load_file/1`s each — release-friendly, Mix-free, works
 identically in the dev Docker stack and the jail release.
@@ -338,10 +345,17 @@ release at `/home/grappa/grappa`, DB `runtime/grappa_prod.db`, env
   `Code.eval_file(~s(/path))` (the `~s()` sigil dodges quote-mangling
   through ssh→jexec→su). Context fns are all on the live node
   (`Grappa.Networks.*`, `…Credentials.*`, `Grappa.Session.stop_session/3`).
-- **`service grappa restart` has a stop/start node-name race** —
-  cold boot can abort with `name grappa@grappa … in use by another
-  Erlang node`. If so: confirm no `beam.smp`, check `epmd -names` is
-  clean, then a plain `service grappa start` (cold boot ~20s).
+- **`service grappa restart` node-name race — fixed 2026-06-11**
+  (defect #9): `grappa_stop` now blocks until the BEAM exits and epmd
+  releases the name, and `grappa_start` refuses a registered name +
+  verifies the node comes up (an early boot death is a loud ERROR,
+  not a silent "Starting grappa."). Both sides delegate to
+  `infra/freebsd/jail_beam_wait.sh` — shared with deploy.sh's cold
+  path. If a restart still aborts with `name grappa@grappa … in use`
+  (e.g. a stale pre-fix wrapper): confirm no `beam.smp`, check
+  `epmd -names` is clean, then a plain `service grappa start`
+  (cold boot ~20s); re-run `jail_install_rcd.sh` to refresh the
+  wrapper.
 - **`unbind_credential/2` refuses to drop the LAST user-credential
   from a network that still has scrollback** (cascade-on-empty →
   `:scrollback_present` rollback). To remove a binding while keeping

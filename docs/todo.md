@@ -11,24 +11,7 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- **Deploy-machinery defects #7–#9** (2026-06-11 prod outage, ~15 min
-  — full incident anatomy in DESIGN_NOTES 2026-06-11 "prod outage"):
-  (7) `infra/freebsd/deploy.sh` preflight classifies pre-pull-HEAD..
-  new-HEAD instead of marker..new-HEAD — cic deploys advance the jail
-  HEAD, so server-side commits landing between cic deploys vanish
-  from every future preflight range (this silently skipped the
-  runtime.exs COLD). Base must be `runtime/last-deployed-sha` with
-  pre-pull HEAD as fallback; the deploy.sh re-exec guard keeps
-  pre-pull HEAD deliberately. Check the docker substrate
-  (`scripts/deploy.sh:68` same prev_sha shape + the REV-I same-SHA
-  guard port already queued below).
-  (8) `--force-cold` swallowed by the nothing-to-do fast path
-  (deploy.sh:97 exits before the force flag is consulted) — fast
-  path must apply in auto mode only.
-  (9) rc.d restart races the connection drain: stop returns while
-  the old node still holds the epmd name; new BEAM dies with
-  name-in-use and rc.d walks away silent. Stop must wait for name
-  release (or start retries), and an early boot death must be loud.
+(empty)
 
 ---
 
@@ -74,7 +57,13 @@ to this section.
   merge-commit + demand explicit flag. Wider than any single REV
   bucket; future-bucket target. (Note: `infra/freebsd/deploy.sh`
   added the `prev_sha == new_sha → nothing to do` guard in cp51 S3;
-  port the same guard back to `scripts/deploy.sh`.)
+  port the same guard back to `scripts/deploy.sh`. Grown 2026-06-11
+  by the deploy-defect fixes: `scripts/deploy.sh` has NO
+  `last-deployed-sha` marker at all, so it also carries defect #7's
+  pre-pull-HEAD preflight base (`scripts/deploy.sh:68`) and the
+  mid-flight-death re-drive hole — port the whole marker mechanism
+  (write-on-completion + nothing-to-do gate + preflight base) in one
+  pass, not piecemeal. Local dev stack only, nothing production.)
 - **`apply/3` test pattern for Elixir 1.19 set-theoretic type checker
   (REV-H)** — earns a feedback memory if it bites a 3rd time.
 - **SolidJS function-ref gotcha (REV-G)** — `feedback_solidjs_for_ref_leak`

@@ -83,24 +83,28 @@ new_sha=$(run_as_grappa 'git rev-parse HEAD' | tail -1)
 # would wrongly exit 0, silently skipping the whole deploy.
 prev_sha="${DEPLOY_PREV_SHA:-${prev_sha}}"
 
-# Nothing-to-do requires BOTH: no new commits AND the last deploy
-# completed (marker written as the final step of both paths below).
-# "No new commits" alone is a lie when the previous deploy died
-# mid-flight — live-repro 2026-06-10: a deploy was killed between
-# `mix release` and the reload POST (SIGPIPE on the operator's ssh),
-# leaving fresh beams on disk and a stale BEAM live; every re-run
-# then exited "nothing to do" because the pull was a no-op, and prod
-# had to be recovered by hand (rpc purge + load). Fast paths state
-# what they OBSERVED: same HEAD + completed marker, not "no work".
+# Nothing-to-do requires ALL of: auto mode, no new commits, AND the
+# last deploy completed (marker written as the final step of both
+# paths below). "No new commits" alone is a lie when the previous
+# deploy died mid-flight — live-repro 2026-06-10: a deploy was killed
+# between `mix release` and the reload POST (SIGPIPE on the operator's
+# ssh), leaving fresh beams on disk and a stale BEAM live; every
+# re-run then exited "nothing to do" because the pull was a no-op, and
+# prod had to be recovered by hand (rpc purge + load). And an explicit
+# --force-* is an operator order, not a heuristic input — the fast
+# path swallowing --force-cold left prod un-restarted on 2026-06-11
+# (defect #8). Fast paths state what they OBSERVED: same HEAD +
+# completed marker (+ which flag overrode), not "no work".
 last_deployed=$(run_as_grappa "cat runtime/last-deployed-sha 2>/dev/null || true" | tail -1)
 
 if [ "${prev_sha}" = "${new_sha}" ] && [ "${last_deployed}" = "${new_sha}" ]; then
-	echo "[deploy] no commits since last HEAD (${prev_sha}) and that deploy completed — nothing to do"
-	exit 0
-fi
-
-if [ "${prev_sha}" = "${new_sha}" ]; then
-	echo "[deploy] HEAD unchanged (${new_sha}) but last COMPLETED deploy is '${last_deployed:-none}' — re-driving (prior deploy died mid-flight?)"
+	if [ "${mode}" = "auto" ]; then
+		echo "[deploy] same HEAD (${new_sha}) + completed-deploy marker match — nothing to do"
+		exit 0
+	fi
+	echo "[deploy] same HEAD (${new_sha}) + completed-deploy marker match, but --force-${mode} overrides — proceeding"
+elif [ "${prev_sha}" = "${new_sha}" ]; then
+	echo "[deploy] HEAD unchanged (${new_sha}) but last COMPLETED server deploy is '${last_deployed:-none}' — driving the gap (cic deploys advance HEAD without applying server changes; or a prior deploy died mid-flight)"
 fi
 
 # Self-modifying-deploy-script trap (live-repro 2026-05-31):
@@ -138,7 +142,34 @@ fi
 # mix release --overwrite that follows in the cold path; for hot paths
 # the cost is the worst-case overhead vs the saved restart downtime.
 if [ "${mode}" = "auto" ]; then
-	echo "[deploy] preflight: classifying ${prev_sha}..${new_sha}"
+	# Preflight base: the last COMPLETED server deploy, not the
+	# pre-pull HEAD. jail_deploy_cic.sh also git-pulls, so every cic
+	# deploy advances the jail HEAD without applying server changes —
+	# a pre-pull-HEAD base silently drops any server-side commit that
+	# landed between two cic deploys (defect #7, live-repro
+	# 2026-06-11: the runtime.exs COLD change vanished from the range,
+	# the deploy went honestly-HOT over the wrong range, ~15 min
+	# outage followed). The re-exec guard above deliberately KEEPS the
+	# pre-pull HEAD: it answers "did THIS run's pull change the bytes
+	# I am executing?" — running-bytes staleness, to which the marker
+	# is irrelevant (a deploy.sh change pulled in by an earlier cic
+	# deploy is already the file we were invoked from).
+	preflight_base="${prev_sha}"
+	if [ -n "${last_deployed}" ]; then
+		# A garbage marker (truncated write, rewritten history) must
+		# abort LOUDLY here with a fix-it hint — fed to git diff it
+		# would crash the preflight oneshot with an opaque exit 1.
+		# Deliberately NOT a silent fallback to prev_sha: that would
+		# re-open the exact range hole this base exists to close.
+		if run_as_grappa "git cat-file -e '${last_deployed}^{commit}'" 2>/dev/null; then
+			preflight_base="${last_deployed}"
+		else
+			echo "[deploy] ERROR: runtime/last-deployed-sha contains '${last_deployed}' — not a commit in this repo" >&2
+			echo "[deploy]   fix the marker (write the last deployed sha to runtime/last-deployed-sha) or rerun with an explicit --force-hot/--force-cold" >&2
+			exit 1
+		fi
+	fi
+	echo "[deploy] preflight: classifying ${preflight_base}..${new_sha}"
 	# `mix run` under MIX_ENV=prod evaluates config/runtime.exs, which
 	# raises on missing DATABASE_PATH & co. — the daemon gets those
 	# from the env file via rc.d, but `su -l` login shells do not.
@@ -152,7 +183,7 @@ if [ "${mode}" = "auto" ]; then
 		exit 1
 	fi
 	preflight_rc=0
-	run_as_grappa "set -a; . '${ENV_FILE}'; set +a; mix run --no-start -e 'Grappa.Deploy.Preflight.cli([\"${prev_sha}\", \"${new_sha}\", \"jail\"])'" || preflight_rc=$?
+	run_as_grappa "set -a; . '${ENV_FILE}'; set +a; mix run --no-start -e 'Grappa.Deploy.Preflight.cli([\"${preflight_base}\", \"${new_sha}\", \"jail\"])'" || preflight_rc=$?
 	case "${preflight_rc}" in
 		0) mode=hot ;;
 		3) mode=cold ;;
@@ -256,41 +287,18 @@ echo "[deploy] Grappa.Release.migrate()"
 # point; deploy.sh does NOT re-implement env sourcing inline.
 "${REPO_ROOT}/infra/freebsd/jail_release.sh" eval 'Grappa.Release.migrate()'
 
-echo "[deploy] service grappa restart"
-# epmd is started by the old BEAM but NOT killed on rc.d stop —
-# next start sees `name grappa@grappa already in use` and refuses.
-# Hard-kill epmd between stop and start to force a clean re-register.
-#
-# `service grappa stop` is ASYNCHRONOUS — it signals the BEAM daemon
-# and returns immediately. The BEAM takes a few seconds to fully exit
-# (drain sockets, run terminate callbacks, flush Logger). If we
-# pkill epmd while the old BEAM is still alive, the BEAM may respawn
-# epmd, and the new `service grappa start` then races against the
-# still-registered old `grappa@grappa` node name → "name in use"
-# refusal → BEAM crashes → deploy fails (live-repro 2026-05-31:
-# deploy.sh ran stop+pkill+sleep1+start, then new BEAM crashed at
-# 15:12:02 with "Protocol 'inet_tcp': the name grappa@grappa seems
-# to be in use by another Erlang node" because the old BEAM was
-# still alive + still registered when the new one tried to claim
-# the same short-name).
-#
-# Wait-loop on the BEAM pid: poll until pgrep returns no match (or
-# 20s timeout, then SIGKILL as a last resort). Only THEN pkill epmd
-# + start fresh.
+echo "[deploy] service grappa stop"
+# The rc.d wrapper's stop is synchronous since defect #9 (2026-06-11
+# outage): it blocks until the BEAM has exited AND epmd released the
+# node name (jail_beam_wait.sh — the full stop/start race lore lives
+# there). Re-assert both conditions here anyway: the rc.d refresh
+# below runs BETWEEN stop and start, so any deploy that ships an rc.d
+# fix stops through the PREVIOUSLY INSTALLED wrapper — possibly one
+# that still returns mid-drain — and a timed-out wrapper wait must
+# never race the start. Same helper, second call site; instant when
+# the wrapper already waited.
 service grappa stop || true
-i=0
-while pgrep -q beam.smp 2>/dev/null; do
-	if [ "${i}" -ge 20 ]; then
-		echo "[deploy] WARNING: old BEAM didn't exit in 20s — SIGKILL"
-		pkill -9 beam.smp 2>/dev/null || true
-		sleep 1
-		break
-	fi
-	i=$((i + 1))
-	sleep 1
-done
-pkill epmd 2>/dev/null || true
-sleep 1
+"${REPO_ROOT}/infra/freebsd/jail_beam_wait.sh" wait-stopped grappa 20
 
 # rc.d wrappers: refresh from the repo BETWEEN stop and start, so the
 # OLD daemon was stopped through the wrapper that started it and the

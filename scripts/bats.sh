@@ -26,7 +26,7 @@ if [ ! -x "$bats_bin" ]; then
 fi
 
 if [ $# -eq 0 ]; then
-    set -- test/bin/
+    set -- test/bin/ test/infra/
 fi
 
 exec "$bats_bin" "$@"

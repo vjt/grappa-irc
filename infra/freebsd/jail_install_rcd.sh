@@ -19,9 +19,17 @@ ENV_FILE="/usr/local/etc/grappa/grappa.env"
 RC_SRC="${REPO_ROOT}/infra/freebsd/rc.d/grappa"
 RC_DST="/usr/local/etc/rc.d/grappa"
 RC_CONF="/etc/rc.conf.d/grappa"
+BEAM_WAIT_SRC="${REPO_ROOT}/infra/freebsd/jail_beam_wait.sh"
 
 echo "[install_rcd] copying ${RC_SRC} -> ${RC_DST}"
 install -o root -g wheel -m 0555 "${RC_SRC}" "${RC_DST}"
+
+# The wrapper's stop/start synchronization delegates to this helper
+# straight from the repo (same pattern as ndp_keepalive.sh below) — a
+# checkout with a lost exec bit would silently degrade stop back to
+# async, so re-assert it on every install.
+echo "[install_rcd] chmod +x ${BEAM_WAIT_SRC}"
+chmod 0555 "${BEAM_WAIT_SRC}"
 
 if [ ! -f "${RC_CONF}" ]; then
 	echo "[install_rcd] writing ${RC_CONF}"
