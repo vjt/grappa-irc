@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
+import { closeMediaViewer, mediaViewerState } from "../lib/mediaViewer";
 
 // C5.0 — JOIN-self auto-focus-switch: mock selection so we can assert
 // setSelectedChannel is called when own nick's JOIN event shows up.
@@ -2174,6 +2175,107 @@ describe("ScrollbackPane", () => {
       // bodyEl's textContent including the "." but not inside the link.
       const bodyEl = document.querySelector(".scrollback-body");
       expect(bodyEl?.textContent).toContain("https://example.com.");
+    });
+  });
+
+  // Media-link cluster (2026-06-11): same-origin upload URLs are
+  // in-PWA-scope — iOS standalone navigates them IN PLACE (raw media
+  // doc, no chrome, return reloads cic). classifyMediaLink-accepted
+  // links get a click intercept that opens the in-app viewer instead;
+  // everything else keeps the plain target=_blank anchor untouched.
+  describe("media links open the in-app viewer (media-link cluster)", () => {
+    beforeEach(() => {
+      closeMediaViewer();
+    });
+
+    it("📸-prefixed same-origin upload URL: click is intercepted and opens the viewer", () => {
+      const href = `${window.location.origin}/uploads/abcdefghijklmnopqrstuvwxyz`;
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: `📸 ${href}`,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link).not.toBeNull();
+      expect(link.classList.contains("scrollback-media-link")).toBe(true);
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+      expect(mediaViewerState()).toEqual({ href, kind: "image" });
+    });
+
+    it("🎬-prefixed same-origin upload URL opens the viewer with video kind", () => {
+      const href = `${window.location.origin}/uploads/zyxwvutsrqponmlkjihgfedcba`;
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "bob",
+            body: `🎬 ${href}`,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      expect(mediaViewerState()).toEqual({ href, kind: "video" });
+    });
+
+    it("plain web link is NOT media-classified — anchor keeps default behavior", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "check https://example.com please",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link.classList.contains("scrollback-media-link")).toBe(false);
+      expect(mediaViewerState()).toBeNull();
+    });
+
+    it("cross-origin 📸 URL (litterbox host) is NOT intercepted", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "📸 https://litter.catbox.moe/abc.png",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link.classList.contains("scrollback-media-link")).toBe(false);
     });
   });
 

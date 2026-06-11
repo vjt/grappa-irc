@@ -17,6 +17,8 @@ import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { linkify } from "./lib/linkify";
+import { classifyMediaLink, normalizeMediaHref } from "./lib/mediaLink";
+import { openMediaViewer } from "./lib/mediaViewer";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { parseMircFormat, type Run } from "./lib/mircFormat";
@@ -276,15 +278,50 @@ const renderRun = (run: Run): JSX.Element => {
       style={style}
     >
       <For each={segments}>
-        {(seg) =>
-          seg.type === "url" ? (
-            <a href={seg.href} target="_blank" rel="noopener noreferrer" class="scrollback-link">
+        {(seg, i) => {
+          if (seg.type !== "url") return seg.value;
+          // Media-link cluster (2026-06-11): same-origin media URLs get
+          // a click intercept → in-app viewer modal (lib/mediaViewer),
+          // because in-PWA-scope links navigate the iOS standalone
+          // window IN PLACE (raw media doc, no chrome, return reloads
+          // cic). The preceding text segment carries the 📸/🎬 type
+          // signal for own upload URLs (slug has no extension). The
+          // anchor + href stay — copy-link / middle-click / long-press
+          // keep working; only plain click is intercepted. Non-media
+          // links are untouched (cross-origin already opens correctly
+          // in the iOS Safari view).
+          const prev = segments[i() - 1];
+          const kind = classifyMediaLink(
+            seg.href,
+            prev?.type === "text" ? prev.value : "",
+            window.location.origin,
+          );
+          return (
+            <a
+              href={seg.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="scrollback-link"
+              classList={{ "scrollback-media-link": kind !== null }}
+              onClick={
+                kind === null
+                  ? undefined
+                  : (e) => {
+                      e.preventDefault();
+                      // Re-rooted on the page origin — historical prod
+                      // bodies carry http:// hrefs (mixed content if
+                      // loaded as-is on the https page).
+                      openMediaViewer(
+                        normalizeMediaHref(seg.href, window.location.origin),
+                        kind,
+                      );
+                    }
+              }
+            >
               {seg.value}
             </a>
-          ) : (
-            seg.value
-          )
-        }
+          );
+        }}
       </For>
     </span>
   );

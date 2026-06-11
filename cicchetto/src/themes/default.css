@@ -3659,3 +3659,91 @@ html.resize-dragging * {
   color: #d04040;
   font-size: 0.9em;
 }
+
+/* Media viewer modal — media-link cluster (2026-06-11). On-click
+   viewer for same-origin media URLs (own 📸/🎬 uploads): in-PWA-scope
+   links navigate the iOS standalone window in place, so the viewer
+   keeps the operator inside cic. z-index 1100/1101 — above the 1000
+   overlay tier (archive / privacy modals) because the viewer is opened
+   from scrollback and must win regardless of what else is open. */
+
+.media-viewer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  border: none;
+  padding: 0;
+  margin: 0;
+  appearance: none;
+  cursor: default;
+  z-index: 1100;
+}
+
+.media-viewer-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: max-content;
+  max-width: min(92vw, 72rem);
+  /* Keyboard-react viewport cap — same contract as .archive-modal. */
+  max-height: calc(var(--viewport-height, 100dvh) - 2rem);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 1101;
+}
+
+.media-viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.media-viewer-open-external {
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
+.media-viewer-close {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 0 0.25rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.media-viewer-close:hover {
+  color: var(--fg);
+}
+
+.media-viewer-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  min-height: 0;
+  overflow: auto;
+}
+
+.media-viewer-media {
+  display: block;
+  max-width: 100%;
+  /* Header row (~2.5rem) + body padding + viewport margin. */
+  max-height: calc(var(--viewport-height, 100dvh) - 8rem);
+  object-fit: contain;
+}
+
+/* <audio> has no intrinsic size — give the bare controls strip a
+   usable width. */
+audio.media-viewer-media {
+  width: min(80vw, 24rem);
+}
