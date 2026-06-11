@@ -11,9 +11,24 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-_(empty — bastille deploy SHIPPED 2026-05-27; m42 prod live on
-irc.sniffo.org / irc.sindro.me. Pick the next cluster from the
-roadmap below.)_
+- **Deploy-machinery defects #7–#9** (2026-06-11 prod outage, ~15 min
+  — full incident anatomy in DESIGN_NOTES 2026-06-11 "prod outage"):
+  (7) `infra/freebsd/deploy.sh` preflight classifies pre-pull-HEAD..
+  new-HEAD instead of marker..new-HEAD — cic deploys advance the jail
+  HEAD, so server-side commits landing between cic deploys vanish
+  from every future preflight range (this silently skipped the
+  runtime.exs COLD). Base must be `runtime/last-deployed-sha` with
+  pre-pull HEAD as fallback; the deploy.sh re-exec guard keeps
+  pre-pull HEAD deliberately. Check the docker substrate
+  (`scripts/deploy.sh:68` same prev_sha shape + the REV-I same-SHA
+  guard port already queued below).
+  (8) `--force-cold` swallowed by the nothing-to-do fast path
+  (deploy.sh:97 exits before the force flag is consulted) — fast
+  path must apply in auto mode only.
+  (9) rc.d restart races the connection drain: stop returns while
+  the old node still holds the epmd name; new BEAM dies with
+  name-in-use and rc.d walks away silent. Stop must wait for name
+  release (or start retries), and an early boot death must be loud.
 
 ---
 

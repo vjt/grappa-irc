@@ -12194,3 +12194,46 @@ Also recorded: a stripped JPEG that kept Orientation carries
 exiftool's mandatory IFD0 companion defaults (YCbCrPositioning=1 —
 fixed default, NOT copied from the source); a privacy audit grepping
 stripped output should expect that minimal APP1 shape.
+
+## 2026-06-11 — prod outage (~15 min): three stacked deploy defects, found live
+
+Applying the parked runtime.exs PHX_HOST cold change surfaced defects
+#7–#9 of the deploy-honesty saga, each one forcing the workaround
+that tripped the next:
+
+**#7 — preflight diffs the wrong range.** `infra/freebsd/deploy.sh`
+classifies `prev_sha..new_sha` where `prev_sha` is the PRE-PULL jail
+HEAD — not `runtime/last-deployed-sha`. But `jail_deploy_cic.sh` ALSO
+`git pull`s: every `--cic` deploy advances the jail HEAD without
+applying server changes, so any server-side commit that lands between
+two cic deploys vanishes from every future server deploy's preflight
+range. The runtime.exs commit (8244df3) entered the jail via a cic
+pull and the next server deploy honestly classified a range that no
+longer contained it → HOT verdict, cold change silently skipped. The
+cp63 assumption "the cold change rides the next server deploy's diff
+range automatically" was false — the marker exists precisely to be
+that base and isn't used for it (only for the nothing-to-do check).
+Fix shape: preflight base = marker when present, pre-pull HEAD as
+fallback. The deploy.sh self-modification re-exec guard correctly
+keeps pre-pull HEAD (running-bytes semantics, different question).
+
+**#8 — `--force-cold` can be silently swallowed.** The nothing-to-do
+fast path (same HEAD + marker match → exit 0) runs before the force
+flag is consulted. An operator explicitly demanding a restart got
+"nothing to do". Fix shape: fast path applies in auto mode only.
+
+**#9 — rc.d restart races the drain.** With #8 broken, the manual
+fallback was `service grappa restart`: stop returned while the old
+node was still DRAINING WebSocket connections, the new BEAM hit
+`the name grappa@grappa seems to be in use by another Erlang node`
+and died at boot — and rc.d printed "Starting grappa." and walked
+away. That unsupervised boot failure WAS the outage; recovery was a
+plain `service grappa start` once the old node was gone. Fix shape:
+stop must wait for BEAM exit + epmd name release before returning
+(or start must retry on name-in-use), and a boot that dies within
+seconds must be loud.
+
+Net state after recovery: PHX_HOST applied (Endpoint.url() now
+https://irc.sniffo.org — prod mints live upload links), 8/8 sessions
+respawned, marker honest at HEAD. Fixes handed off as the next
+dispatch.
