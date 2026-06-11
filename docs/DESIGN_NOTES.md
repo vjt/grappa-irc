@@ -12075,3 +12075,68 @@ navigate-in-place behavior returns for those rows). cic's own mints
 are always plain `📸 <url>`, so today's real surface is zero; the
 durable fix is server-side minting of `/uploads/<slug>.<ext>` so the
 URL itself carries the type (todo).
+
+## 2026-06-11 — media viewer dogfood: the escape hatch had the bug it escaped
+
+First device dogfood of the media-link viewer came back same-day with
+two defects, and the first one is an indictment of un-dogfooded
+comments: the modal's "open in browser" anchor — the deliberate
+leave-the-PWA affordance — NAVIGATED THE PWA IN PLACE. The shipped
+header comment claimed `target=_blank` "deliberately leaves the PWA"
+on iOS standalone; that claim was never device-verified and is false
+by this cluster's own verified root cause: iOS standalone ignores
+`target` for in-scope (same-origin) links, full stop. No anchor
+attribute escapes in-scope navigation.
+
+The only same-origin escape that exists is the `x-safari-https://`
+scheme handoff (real Safari, iOS 17+, inert on 16; the
+`window.open(url, '_system')` advice floating around is Cordova
+folklore, not WebKit). Mechanism matters as much as the scheme, and
+the v1 fix in this very session got it wrong before review caught it:
+rewriting the anchor's HREF breaks long-press → Copy Link (yields a
+dead x-safari URL) and contradicts the click-intercept-preserve-href
+contract ScrollbackPane's media links established one commit earlier.
+Final shape: href stays the live URL + `target=_blank` (right on every
+non-iOS-standalone platform), plain primary clicks delegate to a
+shared `maybeEscapePwaClick` — modifier guard, gate, preventDefault,
+SAME-WINDOW `location.assign` (a scheme handoff needs no new browsing
+context, and the new-window path is the one WebKit popup policy can
+swallow).
+
+The review panel's altitude finder then made the real catch: the bug
+CLASS is "any same-host link tapped in the standalone PWA", not "the
+modal's anchor". 📄 document uploads (deliberately rejected by
+`classifyMediaLink` — the modal can't render PDFs) and the
+emoji-split-run fallback rows documented one entry above were carrying
+the identical defect, waiting to be re-filed as a fresh dogfood bug.
+ScrollbackPane now routes plain clicks on same-host NON-media links
+through the same escape handler; `sameHostHref` is the extracted
+host-match + origin-re-root half of `classifyMediaLink`, so there is
+exactly one implementation of "is this ours and what URL do we
+actually use". The composed gate lives once in platform.ts as
+`escapePwaHref` — the `isIos()` half is load-bearing (Android/desktop
+installs are standalone too; an x-safari URL is inert there), which is
+exactly the kind of recomposition mistake a second call site would
+have made from the exported halves.
+
+Dogfood defect two — no loading feedback — grew three corrections in
+review: (a) media state transitions only leave `loading` (a transient
+mid-playback MEDIA_ERR_NETWORK must not unmount a playing element; a
+late `suspend` must not resurrect a failed one); (b) `suspend`
+terminates the spinner — iOS Low Power Mode / Data Saver downgrades
+`preload=metadata` and fires neither `loadedmetadata` nor `error`
+before a play gesture, so without it the spinner spun forever on
+exactly the platform the fix targets; (c) `pointer-events: none` on
+the spinner overlay, which otherwise sits precisely on the video's
+centered native play control and swallows the tap that would have
+started the deferred load.
+
+Testing boundary worth recording: jsdom's `window.location` is
+unforgeable AND unimplemented — `location.assign` can be neither
+spied nor allowed to run. The split that works: decision logic pinned
+pure (`escapePwaHref` gate matrix), component wiring pinned via a
+partial module mock of `maybeEscapePwaClick`, and the assign line
+itself owned by device dogfood. The x-safari handoff is likewise not
+e2e-able (the gate is false in every Playwright project, and webkit
+emulation doesn't do standalone navigation) — pending vjt device
+verification, again.

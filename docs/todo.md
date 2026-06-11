@@ -214,11 +214,25 @@ Phase 5 cluster opens):
   property-duplicates `.archive-modal-close`. A shared
   `.modal-backdrop`/`.modal-close` base class would name the pattern;
   theme-wide refactor, ride a UI-polish bucket.
-- **iOS device dogfood: media-link viewer** (Dispatch-2, 2026-06-11) —
-  tap a 📸/🎬 upload link in the standalone PWA: viewer opens in-app
-  (no bare-window navigation, no cic reload on return), X closes,
-  "open in browser" leaves the PWA deliberately. The navigate-in-place
-  behavior is not emulatable; device dogfood is final verification.
+- **e2e upload-journey helper dedup** (2026-06-11 review finding) —
+  the picker → privacy-modal → waitForResponse(POST /api/uploads) →
+  201 journey now has FOUR copies across spec files
+  (media-link-modal-viewer `uploadPngAndGetLink`, uploads2-video-doc
+  `uploadViaPicker`, ux-6-b-embedded-upload inline, i2b-litterbox
+  inline) and they have already drifted (timeout params). Hoist one
+  parameterized helper into `e2e/fixtures/` and migrate all four —
+  natural pairing with the e2e-CSP-parity session (todo High), which
+  touches the same suite.
+- **iOS device dogfood: media-link viewer ROUND 2** (2026-06-11,
+  post-dogfood fixes) — round 1 found "open in browser" navigating the
+  PWA + no spinner; both fixed (escape = x-safari-https handoff on
+  plain click, iOS 17+). Re-verify on device: (a) tap 📸/🎬 link →
+  viewer opens in-app, spinner while loading, media renders; (b) "open
+  in browser" → REAL Safari opens (not in-place navigation, not the
+  in-app browser sheet); (c) long-press "open in browser" → Copy Link
+  yields the live https URL (not x-safari-); (d) tap a 📄 doc upload
+  link → also hands off to Safari instead of navigating the PWA. None
+  of this is emulatable; device dogfood is final verification.
 - **iOS device dogfood: text selection** (Dispatch-1 follow-up,
   shipped 2026-06-11, bundle `BhVMIcil`) — long-press select in
   scrollback incl. a SHORT channel (non-overflowing `.scrollback`
