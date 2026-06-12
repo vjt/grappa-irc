@@ -11,14 +11,18 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- **Next-session scope (vjt 2026-06-11)**: e2e CSP parity (High entry
-  below) + dogfood asks + **PWA home-screen icon notification badge**
-  (NEW: Badging API `navigator.setAppBadge`, iOS 16.4+ standalone;
-  derive count from server-owned read cursors — design questions in
-  /tmp/orchestrate-next.txt brief: mentions vs unread, WS vs SW-push
-  update path, clear trigger) + **#9 validation via deliberate cold
-  window at session end** (vjt ordered the restart; sessions reset
-  accepted).
+- **Next-session scope (vjt 2026-06-11, updated 2026-06-12)**, in
+  order: (1) e2e CSP parity FINISH — worktree `grappa-e2e-csp` branch
+  `e2e-csp-parity` has guard + parity spec + journey dedup committed
+  and target-validated; remaining = full-suite run under the
+  violation guard (latent blocks may surface; triage per
+  docs/TESTING.md), code review, rebase+merge+push. The "e2e carries
+  no CSP" premise was FALSE — see cp64. (2) **PWA icon badge
+  implementation** — design APPROVED, spec =
+  `docs/plans/2026-06-12-pwa-icon-badge.md`; writing-plans → TDD.
+  (3) dogfood answers from vjt (checklist delivered, pending).
+  (4) **#9 validation via deliberate cold window at session END**
+  (vjt ordered the restart; sessions reset accepted).
 - **Codebase review gate: DUE, explicitly deferred by vjt 2026-06-11**
   (token cost). Re-flag each session; vjt decides when it runs.
 
@@ -102,20 +106,6 @@ to this section.
 ---
 
 ## High
-
-- **e2e nginx-test must carry the prod CSP** (2026-06-10) — the
-  `security-headers.conf` snippet is absent from
-  `cicchetto/e2e/nginx-test.conf`, so 223 green e2e specs never saw
-  the missing `media-src blob:` that broke EVERY prod video upload
-  (the duration probe's blob: <video> load was CSP-blocked; fixed in
-  `6f3327c`). Include the snippet in the e2e nginx config and run the
-  full suite — first run under CSP may surface more latent blocks,
-  which is exactly the point. Same lesson as the nginx route
-  allowlist parity rule in CLAUDE.md. While in there: add one e2e
-  spec doing a ranged fetch of an uploaded file through nginx
-  asserting 206 + content-range (2026-06-10 Range support landed
-  controller-side; ConnTest can't see a proxy-layer Range strip —
-  same prod-only blind spot as the CSP).
 
 Phase 5 hardening (collected across multiple plans; ship together when
 Phase 5 cluster opens):
@@ -233,15 +223,6 @@ Phase 5 cluster opens):
   property-duplicates `.archive-modal-close`. A shared
   `.modal-backdrop`/`.modal-close` base class would name the pattern;
   theme-wide refactor, ride a UI-polish bucket.
-- **e2e upload-journey helper dedup** (2026-06-11 review finding) —
-  the picker → privacy-modal → waitForResponse(POST /api/uploads) →
-  201 journey now has FOUR copies across spec files
-  (media-link-modal-viewer `uploadPngAndGetLink`, uploads2-video-doc
-  `uploadViaPicker`, ux-6-b-embedded-upload inline, i2b-litterbox
-  inline) and they have already drifted (timeout params). Hoist one
-  parameterized helper into `e2e/fixtures/` and migrate all four —
-  natural pairing with the e2e-CSP-parity session (todo High), which
-  touches the same suite.
 - **iOS device dogfood: media-link viewer ROUND 2** (2026-06-11,
   post-dogfood fixes) — round 1 found "open in browser" navigating the
   PWA + no spinner; both fixed (escape = x-safari-https handoff on
