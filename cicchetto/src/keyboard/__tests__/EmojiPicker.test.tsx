@@ -1,5 +1,18 @@
 import { fireEvent, render } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Mock the generated dataset down to a handful of emoji. The picker renders
+// one button per emoji, so the real ~1900-entry set makes a single render
+// take ~9s in jsdom — borderline against vitest's 5s timeout and flaky under
+// full-suite parallel load. The full dataset is verified by
+// emoji-data.test.ts; here we only need the component's tap/return wiring.
+vi.mock("../emoji-data", () => ({
+  EMOJI_CATEGORIES: [
+    { id: "smileys", label: "Smileys", emojis: ["😀", "🎉"] },
+    { id: "animals", label: "Animals", emojis: ["🐶"] },
+  ],
+}));
+
 import EmojiPicker from "../EmojiPicker";
 
 describe("EmojiPicker", () => {
