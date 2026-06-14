@@ -155,3 +155,43 @@
 .kbd-acc-spacer {
   flex: 1 1 auto;
 }
+
+.kbd-emoji {
+  display: flex;
+  flex-direction: column;
+  height: 260px;
+}
+.kbd-emoji-grid {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+.kbd-emoji-cat {
+  display: flex;
+  flex-wrap: wrap;
+}
+.kbd-emoji-cell {
+  width: 12.5%;
+  height: 44px;
+  background: transparent;
+  border: 0;
+  font-size: 28px;
+  line-height: 1;
+}
+.kbd-emoji-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-top: 1px solid var(--kbd-pill-border);
+  overflow-x: auto;
+}
+.kbd-emoji-abc {
+  background: transparent;
+  border: 0;
+  color: var(--kbd-key-text);
+  font-size: 15px;
+}
+.kbd-emoji-tab {
+  font-size: 18px;
+  text-decoration: none;
+}
