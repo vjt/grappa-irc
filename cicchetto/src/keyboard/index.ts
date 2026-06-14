@@ -1,3 +1,4 @@
+export { default as Keyboard } from "./Keyboard";
 export type {
   AccessoryButton,
   KeyboardIntent,
