@@ -30,4 +30,17 @@ describe("AcceleratorBar", () => {
     fireEvent.click(getByLabelText("close keyboard"));
     expect(onIntent).toHaveBeenCalledWith({ kind: "dismiss" });
   });
+
+  // vjt 2026-06-14 dogfood — arrows must read ◀ ▲ ▼ ▶ (left, up, down,
+  // right), not the original ◀ ▶ ▲ ▼. Asserts the rendered DOM order, the
+  // thing the user actually sees.
+  it("renders the arrow cluster in ◀ ▲ ▼ ▶ visual order", () => {
+    const { container } = render(() => (
+      <AcceleratorBar leftAccessories={accessories} onIntent={() => {}} />
+    ));
+    const arrows = Array.from(container.querySelectorAll(".kbd-acc-btn"))
+      .map((b) => b.textContent ?? "")
+      .filter((t) => "◀▲▼▶".includes(t));
+    expect(arrows).toEqual(["◀", "▲", "▼", "▶"]);
+  });
 });
