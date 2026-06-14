@@ -12458,3 +12458,85 @@ feedback) — revisit during grey-tuning.
 cells) with a "keep in sync" comment; if they drift the highlight
 misaligns. Consolidate into one `src/keyboard` metric during the
 on-device tuning pass (the natural moment the dims change).
+
+## 2026-06-14 — IRC keyboard: on-device dogfood fix round (real iPhone)
+
+vjt dogfooded the shipped keyboard on a real iPhone (Playwright webkit ≠
+iOS, as predicted) and it was a shit show. Six fixes across two
+deploys (cic-only, hot). Supersedes the "OUTSTANDING" caveats above where
+they conflict (notably: the reservation is now MEASURED, not a tuned
+`KB_HEIGHT_PX` constant).
+
+**The critical one — native keyboard appeared on focus.** `inputmode=
+"none"` was poked imperatively by a Shell `createEffect` keyed on
+`ircKeyboardEnabled()`. It only ran when the opt-in CHANGED, so a textarea
+re-created on channel switch / ComposeBox re-render carried no attr → iOS
+summoned the native keyboard AND woke the dormant `--vh`/visualViewport
+push-up machinery. Fix: bind it DECLARATIVELY + reactively on the
+ComposeBox `<textarea>` (`inputmode={ircKeyboardEnabled() ? "none" :
+undefined}`), so every render carries it. General rule: a one-shot
+imperative attr-set on a reactively re-created element is always a latent
+bug — make the attr part of the render.
+
+**Magnify + variation strip were invisible (but the gesture worked).**
+`.kbd-root` carries `transform` (the slide animation); a transformed
+element is the containing block for its `position:fixed` descendants, so
+the magnify (KeyCap) and strip (Keyboard) — positioned in VIEWPORT coords
+from `getBoundingClientRect` — anchored to `.kbd-root` and rendered
+off-screen. The gesture math (viewport coords) still committed variants,
+hence "swiping inserts but nothing shows." Fix: render both via Solid
+`<Portal>` to `document.body`, escaping the transform. The `--kbd-*`
+palette still cascades (vars on `:root`); `VariationStrip` stays a pure
+component (the Portal wraps its USE in Keyboard) so its isolation test is
+untouched.
+
+**fn-key white borders / minuscule spacebar.** The fn keys + space are
+`<button>`s, the letters are `<div>`s; the buttons inherited the UA
+border + appearance + system font. Added a button reset to `.kbd-key`
+(`appearance:none; border:0; margin/padding:0; font-family:inherit` —
+not the `font` shorthand, which would clobber the explicit font-size).
+Spacebar had no rule → inherited the one-unit basis; now fills the bottom
+row's slack.
+
+**Key-sizing model was wrong.** Rows used `flex:1`, so fewer-key rows got
+WIDER keys (row2's 9 letters wider than row1's 10). Stock iOS keeps the
+LETTER width constant and centers short rows. Replaced with a key-unit
+model: `--kbd-key-w = (row − 9 gaps) / 10`, letters span 1u, fn keys
+span `1.5u + ½gap` (makes row3 = shift+7+⌫ line up exactly with the
+10-unit rows), spacebar `flex:1 1 auto`. `justify-content:center` then
+insets short rows. Exact spans/greys still get pixel-tuned on-device.
+
+**Arrow order** ◀ ▲ ▼ ▶ (was ◀ ▶ ▲ ▼) — vjt preference; intents
+unchanged (◀▶ caret, ▲▼ history).
+
+**Emoji layer overflowed the channel bar.** It was a fixed `260px`,
+taller than the letter body. Bound to `--kbd-body-h` (4 rows + 3 gaps) so
+it occupies the SAME bounded area; grid scrolls, category bar pins.
+
+**Focus-driven show/hide replaces always-docked (vjt's design call).**
+The old `show()` had no focus dependency, so ✕ (which only blurred) left
+the keyboard docked. New model in `KeyboardHost`: a `wantKeyboard`
+open-intent set on compose-textarea `focusin`, cleared on ✕ (which also
+blurs) or when a different text field gains focus. `visible = mountable &&
+wantKeyboard`; the Keyboard stays mounted so the slide animates both ways.
+Per vjt: tapping the compose box re-opens; a channel switch keeps it open
+by re-focusing the re-created textarea (so the caret returns).
+`keepKeyboard.ts` already pins compose focus across taps on non-input
+chrome, so normal use never drops it — only ✕ / focusing elsewhere does.
+
+**Reservation is now MEASURED, not guessed.** `--irc-kb-height` moved
+from Shell to `KeyboardHost` and is set to the keyboard's live
+`offsetHeight` when visible (0 when hidden). The BottomBar + composer lift
+by exactly the rendered height on any device — the `KB_HEIGHT_PX ≈ 290`
+constant (which undershot and let the keyboard overlap the channel bar) is
+gone. `.shell-mobile`'s existing `max(env, var)` base rule +
+`:has(textarea:focus) { var }` rule consume it unchanged; keyboard-off
+layout is still byte-for-byte the prior values (var resolves 0).
+
+**Still to verify on the next dogfood pass:** the iOS lollipop magnify
+SHAPE (now visible but a plain rounded rect — the neck is unbuilt); exact
+key spans / greys / radii vs the reference PNGs; caret stability under
+`inputmode=none` while typing (untouched this round — `applyIntent`
+pre-sets `ta.value`, may survive; the `queueMicrotask` caret-restore
+escape hatch is still the fallback if it jumps). `CELL_WIDTH=44`
+duplication (above) also still pending.
