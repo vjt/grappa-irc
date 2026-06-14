@@ -1,0 +1,95 @@
+/* IRC custom keyboard — themed, CSS-only. All classes are .kbd-*
+   prefixed (extraction-safe; no collision with cic globals). Palette is
+   driven by the host's <html data-theme="…">. Concrete values are
+   stock-iOS-derived; verify against reference PNGs on-device. */
+
+:root[data-theme="irssi-dark"] {
+  --kbd-bg: #0d0d0f;
+  --kbd-key-bg: #3a3a3c;
+  --kbd-key-fn-bg: #2c2c2e;
+  --kbd-key-text: #ffffff;
+  --kbd-key-shadow: rgba(0, 0, 0, 0.5);
+  --kbd-magnify-bg: #4a4a4c;
+  --kbd-strip-bg: #2c2c2e;
+  --kbd-accent: #0a84ff;
+  --kbd-pill-bg: #1c1c1e;
+  --kbd-pill-border: rgba(255, 255, 255, 0.12);
+}
+
+:root[data-theme="mirc-light"] {
+  --kbd-bg: #d1d3d9;
+  --kbd-key-bg: #ffffff;
+  --kbd-key-fn-bg: #abb0ba;
+  --kbd-key-text: #000000;
+  --kbd-key-shadow: rgba(0, 0, 0, 0.3);
+  --kbd-magnify-bg: #ffffff;
+  --kbd-strip-bg: #f2f2f5;
+  --kbd-accent: #0a84ff;
+  --kbd-pill-bg: #ececed;
+  --kbd-pill-border: rgba(0, 0, 0, 0.12);
+}
+
+.kbd-root {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  background: var(--kbd-bg);
+  padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none; /* keys own the gesture; no scroll/zoom interference */
+  font-family: -apple-system, system-ui, sans-serif;
+}
+
+.kbd-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.kbd-row {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+.kbd-key {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--kbd-key-bg);
+  color: var(--kbd-key-text);
+  border-radius: 5px;
+  box-shadow: 0 1px 0 var(--kbd-key-shadow);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.kbd-key--fn {
+  background: var(--kbd-key-fn-bg);
+  flex-grow: 1.4;
+  font-size: 16px;
+}
+
+.kbd-key--active {
+  background: var(--kbd-magnify-bg);
+}
+
+.kbd-magnify {
+  position: fixed;
+  z-index: 60;
+  background: var(--kbd-magnify-bg);
+  color: var(--kbd-key-text);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  box-shadow: 0 2px 8px var(--kbd-key-shadow);
+  pointer-events: none;
+}

@@ -1,3 +1,5 @@
+@import "../keyboard/keyboard.css";
+
 /*
  * P4-1 theme system — single CSS file with mIRC-light + irssi-dark
  * presets via :root[data-theme="..."] blocks.
