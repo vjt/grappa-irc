@@ -1,11 +1,15 @@
-import { type Component, createSignal, For, Show } from "solid-js";
+import { type Component, createSignal, For, lazy, Show, Suspense } from "solid-js";
 import AcceleratorBar from "./AcceleratorBar";
-import EmojiPicker from "./EmojiPicker";
 import type { StripGeometry } from "./gesture";
 import KeyCap from "./KeyCap";
 import { LAYERS } from "./layouts";
 import type { KeyboardLayer, KeyboardProps } from "./types";
 import VariationStrip from "./VariationStrip";
+
+// Lazy: the emoji picker drags in the full ~1900-entry emoji-data table.
+// Code-split it so that table is NOT in the first-paint chunk — it loads
+// only when the emoji layer is first opened (design spec §12: lazy dataset).
+const EmojiPicker = lazy(() => import("./EmojiPicker"));
 
 const Keyboard: Component<KeyboardProps> = (props) => {
   const [layer, setLayer] = createSignal<KeyboardLayer>("letters");
@@ -45,10 +49,12 @@ const Keyboard: Component<KeyboardProps> = (props) => {
       <Show
         when={layer() !== "emoji"}
         fallback={
-          <EmojiPicker
-            onInsert={(e) => props.onIntent({ kind: "insertText", text: e })}
-            onReturn={() => setLayer("letters")}
-          />
+          <Suspense>
+            <EmojiPicker
+              onInsert={(e) => props.onIntent({ kind: "insertText", text: e })}
+              onReturn={() => setLayer("letters")}
+            />
+          </Suspense>
         }
       >
         <div class="kbd-rows">

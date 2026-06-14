@@ -49,12 +49,13 @@ describe("Keyboard", () => {
     expect(getByText("q")).toBeInTheDocument();
   });
 
-  it("switches to the emoji layer, mounting the picker", () => {
-    const { getByLabelText } = render(() => (
+  it("switches to the emoji layer, mounting the picker", async () => {
+    const { getByLabelText, findByLabelText } = render(() => (
       <Keyboard visible={true} leftAccessories={accessories} onIntent={() => {}} />
     ));
     fireEvent.click(getByLabelText("emoji"));
-    // EmojiPicker's ABC return button is the proof it mounted.
-    expect(getByLabelText("back to letters")).toBeInTheDocument();
+    // EmojiPicker is lazy()-loaded (code-split), so it resolves async — findBy
+    // waits for the dynamic import. Its ABC return button proves it mounted.
+    expect(await findByLabelText("back to letters")).toBeInTheDocument();
   });
 });
