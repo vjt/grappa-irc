@@ -93,3 +93,30 @@
   box-shadow: 0 2px 8px var(--kbd-key-shadow);
   pointer-events: none;
 }
+
+.kbd-strip {
+  position: fixed;
+  z-index: 61;
+  display: flex;
+  align-items: center;
+  background: var(--kbd-strip-bg);
+  border-radius: 10px;
+  box-shadow: 0 4px 14px var(--kbd-key-shadow);
+  padding: 0 4px;
+  pointer-events: none;
+}
+
+.kbd-strip-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  border-radius: 7px;
+  color: var(--kbd-key-text);
+  font-size: 24px;
+}
+
+.kbd-strip-cell--active {
+  background: var(--kbd-accent);
+  color: #fff;
+}
