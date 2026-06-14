@@ -143,24 +143,34 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
     page,
   }) => {
     const vjt = getSeededVjt();
-    await loginAs(page, vjt);
-
-    // Step 1 — focus the seeded channel and confirm scroll lands in a
-    // valid UX position (either bottom, when no unread marker; or
-    // marker-centered, when seed/WS chatter creates unreads).
-    //
-    // Pre-fix bug: scrollTop stayed at 0 — the operator saw the very
-    // first row of history, not the recent context. Post-fix: scrollTop
-    // is non-trivial (either bottom-anchored or marker-anchored).
-    //
-    // Seed expansion (m1-m11 + b3-replay-refresh + post-cluster peers
-    // since cp14-b1 wrote this spec) means #bofh's unread state at
-    // login depends on background WS arrivals. Both "no marker" and
-    // "marker centered" are CORRECT operator UX — see C7.3 contract.
-    // The SIBLING spec at :225 pins the marker-centered path
-    // explicitly; this one pins the "didn't get stuck at scrollTop=0"
-    // failure mode that motivated the cluster.
     if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+
+    // Step 1 — focus the seeded channel and confirm scroll lands at the
+    // bottom: the "no marker" path this scenario (Scenario 1) is named
+    // for. Pre-fix bug: scrollTop stayed at 0 — the operator saw the
+    // very first row of history, not the recent context.
+    //
+    // Precondition: mark #bofh fully read BEFORE login. The auto-reset
+    // (_vjtReset, fixtures/test.ts) re-seeds #bofh with freshly-
+    // timestamped rows and clears the read cursor; with no cursor
+    // hydrated, cic counts those recent rows as live-unread and pins the
+    // unread-marker to the very first row (scrollTop=0). That state is
+    // ORDER-DEPENDENT — absent in isolation (the seeder's rows are old
+    // by test time, so read), present after a prior spec's afterEach
+    // reset (rows seconds old, so unread) — which is why this spec
+    // passed solo (3/3) yet failed mid-suite: a marker pinned to the top
+    // breaks BOTH the "at bottom" and the "marker mid-pane" branches
+    // asserted below. Seeding the cursor to HEAD makes the documented
+    // "(no marker)" scenario deterministic. Sibling :226 symmetrically
+    // seeds its OWN mid-page cursor for the marker-centered scenario;
+    // this is the read-to-tail counterpart, not a workaround.
+    const headPage = await fetchScrollbackPage(vjt.token, CHANNEL);
+    expect(headPage.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+    const headId = headPage[0]?.id;
+    if (!headId) throw new Error("#bofh seed page empty — cannot seed read cursor to head");
+    await seedCursor(page, CHANNEL, headId);
+
+    await loginAs(page, vjt);
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
     await expect
