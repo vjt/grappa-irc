@@ -17,12 +17,14 @@ import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
 import DiagFloat from "./DiagFloat";
 import HomePane from "./HomePane";
+import KeyboardHost from "./KeyboardHost";
 import { ownNickForNetwork } from "./lib/api";
 import { archiveSlugForSelection } from "./lib/archiveContext";
 import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, setDraft, tabComplete } from "./lib/compose";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
+import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import {
   openAdminPanel,
@@ -433,6 +435,18 @@ const Shell: Component = () => {
     coldLoadAutoSelected = true;
   });
 
+  // IRC keyboard: suppress the native on-screen keyboard by setting
+  // inputmode="none" on the compose textarea when the opt-in is on. The
+  // custom keyboard div is mounted separately (KeyboardHost). When off,
+  // the attribute is removed and native behavior is byte-for-byte unchanged.
+  createEffect(() => {
+    const on = ircKeyboardEnabled();
+    const ta = document.querySelector<HTMLTextAreaElement>(".compose-box textarea");
+    if (!ta) return;
+    if (on) ta.setAttribute("inputmode", "none");
+    else ta.removeAttribute("inputmode");
+  });
+
   return (
     <Show
       when={isMobile()}
@@ -794,6 +808,7 @@ const Shell: Component = () => {
             })
           }
         />
+        <KeyboardHost />
       </div>
     </Show>
   );

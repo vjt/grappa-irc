@@ -11,6 +11,7 @@ import {
 import InlineConfirmButton from "./InlineConfirmButton";
 import { getSubject, logout, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
+import { getKeyboardPref, setKeyboardPref } from "./lib/keyboardPref";
 import { isAdmin } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
@@ -64,6 +65,7 @@ const SettingsDrawer: Component<Props> = (props) => {
   const navigate = useNavigate();
   const [pref, setPref] = createSignal<ThemePref>(getTheme());
   const [size, setSize] = createSignal<FontSizeKey>(getFontSize());
+  const [ircKbd, setIrcKbd] = createSignal<boolean>(getKeyboardPref());
 
   const [prefs, setPrefs] = createSignal<NotificationPrefs>(DEFAULT_NOTIFICATION_PREFS);
   const [devices, setDevices] = createSignal<PushDeviceSummary[]>([]);
@@ -395,6 +397,23 @@ const SettingsDrawer: Component<Props> = (props) => {
               onChange={onChange}
             />
             irssi dark
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>keyboard</legend>
+          <label>
+            <input
+              type="checkbox"
+              checked={ircKbd()}
+              data-testid="irc-keyboard-toggle"
+              onChange={(e) => {
+                const on = (e.currentTarget as HTMLInputElement).checked;
+                setIrcKbd(on);
+                setKeyboardPref(on);
+              }}
+            />
+            IRC keyboard (replaces the native keyboard on this device)
           </label>
         </fieldset>
 

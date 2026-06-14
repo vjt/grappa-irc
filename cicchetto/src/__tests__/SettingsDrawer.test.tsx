@@ -115,6 +115,7 @@ vi.mock("../ShareSessionModal", async () => {
   };
 });
 
+import { getKeyboardPref } from "../lib/keyboardPref";
 import SettingsDrawer from "../SettingsDrawer";
 
 const wrap = (open: boolean, onClose = vi.fn(), onOpenAdmin = vi.fn()) =>
@@ -576,5 +577,21 @@ describe("SettingsDrawer (issue #43 — split logout)", () => {
     expect(screen.getByText(/log out/i)).toBeInTheDocument();
     expect(screen.queryByTestId("detach-btn")).toBeNull();
     expect(screen.queryByTestId("quit-irc-btn")).toBeNull();
+  });
+});
+
+describe("SettingsDrawer IRC keyboard toggle", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("persists the keyboard opt-in and reflects it in the checkbox when toggled", () => {
+    const { getByTestId } = wrap(true);
+    const toggle = getByTestId("irc-keyboard-toggle") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    expect(getKeyboardPref()).toBe(true);
+    expect(toggle.checked).toBe(true); // UI reflects the persisted state
+    fireEvent.click(toggle); // off again clears the preference
+    expect(getKeyboardPref()).toBe(false);
+    expect(toggle.checked).toBe(false);
   });
 });
