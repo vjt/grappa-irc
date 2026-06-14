@@ -120,3 +120,38 @@
   background: var(--kbd-accent);
   color: #fff;
 }
+
+.kbd-acc-pill {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 2px 6px;
+  padding: 4px 8px;
+  background: var(--kbd-pill-bg);
+  border: 1px solid var(--kbd-pill-border);
+  border-radius: 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.kbd-acc-pill::-webkit-scrollbar {
+  display: none;
+}
+
+.kbd-acc-btn {
+  flex: 0 0 auto;
+  min-width: 36px;
+  height: 32px;
+  padding: 0 8px;
+  background: transparent;
+  border: 0;
+  color: var(--kbd-key-text);
+  font-size: 15px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.kbd-acc-sep {
+  flex: 0 0 8px;
+}
+.kbd-acc-spacer {
+  flex: 1 1 auto;
+}
