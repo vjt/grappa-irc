@@ -62,6 +62,18 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Button reset: the fn keys (shift/backspace/123/ABC/☺/return) and the
+     spacebar are <button>s; the letter keys are <div>s (KeyCap). Without
+     this reset the <button>s inherit the UA border + native appearance +
+     system font and render with a white outline that the <div>s don't
+     (dogfood bug, 2026-06-14). font-family (not the `font` shorthand) so
+     the explicit font-size below survives. */
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  font-family: inherit;
   background: var(--kbd-key-bg);
   color: var(--kbd-key-text);
   border-radius: 5px;
@@ -74,6 +86,12 @@
   background: var(--kbd-key-fn-bg);
   flex-grow: 1.4;
   font-size: 16px;
+}
+
+/* Spacebar spans several key-units (stock iOS). Without this it inherited
+   .kbd-key's flex:1 and rendered one-unit wide (dogfood bug, 2026-06-14). */
+.kbd-space {
+  flex: 5 1 0;
 }
 
 .kbd-key--active {
