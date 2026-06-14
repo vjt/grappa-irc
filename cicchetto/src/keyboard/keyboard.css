@@ -41,24 +41,37 @@
   -webkit-user-select: none;
   touch-action: none; /* keys own the gesture; no scroll/zoom interference */
   font-family: -apple-system, system-ui, sans-serif;
+  /* Key-unit sizing model (stock iOS). The LETTER key width is constant
+     across every row; rows with fewer keys are centered (justify-content)
+     rather than stretched. --kbd-key-w is one unit = (row − 9 gaps) / 10.
+     fn keys (shift/⌫/123/ABC/return) span ~1.5u; the spacebar fills the
+     bottom row's slack. --kbd-body-h is the layer area (4 rows + 3 gaps) so
+     the emoji layer occupies the SAME height as the letters (no overflow). */
+  --kbd-key-gap: 6px;
+  --kbd-row-gap: 11px;
+  --kbd-key-h: 44px;
+  --kbd-key-w: calc((100% - 9 * var(--kbd-key-gap)) / 10);
+  --kbd-body-h: calc(4 * var(--kbd-key-h) + 3 * var(--kbd-row-gap));
 }
 
 .kbd-rows {
   display: flex;
   flex-direction: column;
-  gap: 11px;
+  gap: var(--kbd-row-gap);
 }
 
 .kbd-row {
   display: flex;
   justify-content: center;
-  gap: 6px;
+  gap: var(--kbd-key-gap);
 }
 
 .kbd-key {
-  flex: 1 1 0;
+  /* Fixed one-unit basis (no grow): keeps letter width constant across rows
+     instead of stretching short rows wider than long ones (dogfood bug). */
+  flex: 0 0 var(--kbd-key-w);
   min-width: 0;
-  height: 44px;
+  height: var(--kbd-key-h);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -83,15 +96,18 @@
 }
 
 .kbd-key--fn {
+  /* shift / ⌫ / 123 / ABC / return span ~1.5u so row3 (shift + 7 + ⌫) and
+     the bottom row line up with the 10-unit letter rows. */
+  flex: 0 0 calc(1.5 * var(--kbd-key-w) + 0.5 * var(--kbd-key-gap));
   background: var(--kbd-key-fn-bg);
-  flex-grow: 1.4;
   font-size: 16px;
 }
 
-/* Spacebar spans several key-units (stock iOS). Without this it inherited
-   .kbd-key's flex:1 and rendered one-unit wide (dogfood bug, 2026-06-14). */
+/* Spacebar fills the bottom row's remaining width (stock iOS): the fn keys
+   around it are fixed, space takes the slack. Without a rule it inherited
+   .kbd-key's one-unit basis and rendered minuscule (dogfood bug). */
 .kbd-space {
-  flex: 5 1 0;
+  flex: 1 1 auto;
 }
 
 .kbd-key--active {
@@ -177,7 +193,11 @@
 .kbd-emoji {
   display: flex;
   flex-direction: column;
-  height: 260px;
+  /* Match the letter layer's body height so the emoji picker occupies the
+     SAME bounded area — it was a fixed 260px (taller than the letters), so
+     it overflowed the keyboard and covered the channel bar (dogfood bug).
+     The grid scrolls inside; the category bar pins at the bottom. */
+  height: var(--kbd-body-h);
 }
 .kbd-emoji-grid {
   flex: 1 1 auto;
