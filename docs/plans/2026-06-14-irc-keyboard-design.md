@@ -139,8 +139,9 @@ injected by the host as left-accessory config. Extraction later = copy
 
 ```ts
 // Semantic editing intents the keyboard emits. The host decides how to
-// apply them to whatever text surface it owns.
-export type KeyboardEvent =
+// apply them to whatever text surface it owns. Named KeyboardIntent (not
+// KeyboardEvent) to avoid clashing with the DOM KeyboardEvent global.
+export type KeyboardIntent =
   | { kind: "insertText"; text: string }      // a char, emoji, or variant
   | { kind: "deleteBackward" }                  // backspace
   | { kind: "submit" }                          // return
@@ -156,7 +157,7 @@ export interface AccessoryButton {
 }
 
 export interface KeyboardProps {
-  onEvent: (e: KeyboardEvent) => void;
+  onIntent: (i: KeyboardIntent) => void;
   leftAccessories: AccessoryButton[];   // host injects IRC keys here
   visible: boolean;                     // drives show/hide animation
   // theme is read from the host's data-theme via CSS vars — not a prop
@@ -172,7 +173,7 @@ event the host routes to the existing `compose.tabComplete` hop.
 - Owns the decision to mount (touch + `isMobile()` + opt-in setting).
 - Sets `inputmode="none"` on the compose textarea while active; restores
   it (removes the attr) when the setting is off.
-- Translates `KeyboardEvent`s onto the **existing** compose paths — one
+- Translates `KeyboardIntent`s onto the **existing** compose paths — one
   code path, every door:
   - `insertText` / `deleteBackward` / `moveCaret` → mutate
     `textarea.value` + `setSelectionRange` at the live caret, then call
