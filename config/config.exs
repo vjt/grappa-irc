@@ -230,6 +230,13 @@ config :logger, :console,
     :raw_verb,
     :raw_sender,
     :raw_params,
+    # Presence-event (join/part/quit) sender user@host — rides the
+    # persist meta so cic renders the irssi-style "nick [user@host] has
+    # joined/left/quit" line. Parsed from the IRC prefix; both keys
+    # present or neither (no half-populated mask). Mirrors
+    # Scrollback.Meta.@known_keys (A18 sync; meta_test.exs catches drift).
+    :sender_user,
+    :sender_host,
     # Nick-mutation tracing (C6 / S13): on RPL_WELCOME reconcile and
     # self-NICK rename, log lines pair `from: old-nick, to: new-nick`
     # so the operator can grep the lifecycle of a nick across a

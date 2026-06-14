@@ -12298,3 +12298,56 @@ real cold window on m42. The shipping deploy goes `--force-hot` +
 manual `jail_install_rcd.sh` — the wrapper install touches nothing
 live, and the BEAM already cold-booted once today (minimize
 restarts).
+
+## 2026-06-14 — user@host on join/part/quit (irssi-style presence lines)
+
+Real IRC clients show `nick [user@host] has joined` — Grappa rendered
+only the bare nick. The fix carries the sender's user@host (already
+fully parsed by `IRC.Parser` into the `{:nick, nick, user, host}`
+prefix tuple) through to the scrollback row and into cic's render.
+
+**Where the data was dropped, and where it's now caught.** The parser
+decomposes the prefix; `EventRouter`'s JOIN clause already lifted
+user@host into the in-memory `userhost_cache` (S2.4, for ban-mask
+derivation) but `build_persist/6` was called with `meta: %{}` for all
+three presence verbs, so the components never reached the DB or the
+wire. New `prefix_userhost/1` helper reads `msg.prefix` directly (NOT
+the cache — the cache exists for a different lifecycle, and PART/QUIT
+prefixes carry user@host on the wire regardless) and returns
+`%{sender_user: u, sender_host: h}` when BOTH are present, `%{}`
+otherwise. The both-or-neither guard mirrors the existing
+`userhost_cache` half-populate rule: a `+x`-cloaked prefix that strips
+either half yields no mask rather than a misleading partial one.
+
+**Storage = meta, deliberately not a column.** `:sender_user` /
+`:sender_host` join the `Scrollback.Meta` `@known_keys` allowlist
+(+ `@type t`, `@spec`, per-kind doc). This is the lightweight path: no
+migration (meta is a serialized column), so the server half is
+hot-deployable on an always-on bouncer. `Meta.dump/1` REJECTS
+non-allowlisted keys, so the keys MUST be in `@known_keys` for the
+insert to succeed — and the A18 sync test (`meta_test.exs`) forces the
+mirror addition to the Logger `:metadata` allowlist in
+`config/config.exs`. That config touch is what makes
+`Grappa.Deploy.Preflight` classify the diff COLD (Class 7: all
+`config/*.exs` → cold, conservative SECRET_SIGNING_SALT-class bias).
+The classification is correct-by-rule but over-conservative for THIS
+diff: the Logger allowlist governs only which keys a log line may
+print, and the feature never emits these as Logger metadata — it reads
+them off the scrollback `meta` map. So the change is functionally
+hot-safe and shipped `--force-hot` (server code reload) + `--cic`
+(bundle), both session-preserving.
+
+**cic.** `ScrollbackPane.tsx` gains `userhostSuffix/1` rendering the
+irssi-style ` [user@host]` between the nick and the verb for join/part/
+quit; empty string when meta lacks it, so a cloaked or pre-feature row
+renders the plain line unchanged. Forward/backward compatible across
+the two-deploy window in either order.
+
+**Tooling self-heal (same branch, separate commit).** Two fresh-worktree
+landmines hit during this work, fixed at the root: `scripts/bun.sh`
+auto-runs `bun install` when `cicchetto/node_modules` is absent (it's
+per-worktree, not shared like the bun cache — first `run test` died
+`vitest: command not found`), and `scripts/bats.sh` auto-inits the
+`vendor/bats-core` submodule when missing (was a hard `die` with a
+manual incantation). Mirrors the testnet.sh submodule auto-init pattern
+so `check.sh` + vitest work first-try from any new worktree.

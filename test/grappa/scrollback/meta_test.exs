@@ -19,6 +19,10 @@ defmodule Grappa.Scrollback.MetaTest do
 
       assert {:ok, %{numeric: 401, severity: :error}} =
                Meta.cast(%{numeric: 401, severity: :error})
+
+      # Presence-event (join/part/quit) sender user@host render hint.
+      assert {:ok, %{sender_user: "u", sender_host: "h"}} =
+               Meta.cast(%{sender_user: "u", sender_host: "h"})
     end
 
     test "string-keyed map: known keys atomized" do

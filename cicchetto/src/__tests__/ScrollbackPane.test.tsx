@@ -741,6 +741,64 @@ describe("ScrollbackPane", () => {
     });
   });
 
+  // Presence-event user@host (irssi-style "nick [user@host] has ...").
+  describe("presence user@host rendering", () => {
+    const cases: { kind: ScrollbackMessage["kind"]; verb: string }[] = [
+      { kind: "join", verb: "has joined" },
+      { kind: "part", verb: "has left" },
+      { kind: "quit", verb: "has quit" },
+    ];
+
+    for (const { kind, verb } of cases) {
+      it(`renders [user@host] from meta on ${kind} events`, () => {
+        setScrollback({
+          "freenode #grappa": [
+            {
+              id: 1,
+              network: "freenode",
+              channel: "#grappa",
+              server_time: 1_700_000_000_000,
+              kind,
+              sender: "alice",
+              body: kind === "join" ? null : "later",
+              meta: { sender_user: "~al", sender_host: "host.example.com" },
+            },
+          ],
+        });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        const line = screen.getByTestId("scrollback-line");
+        expect(line.textContent).toContain("alice [~al@host.example.com]");
+        expect(line.textContent).toContain(verb);
+        setScrollback({});
+      });
+    }
+
+    it("omits the bracket when meta carries no user@host (cloaked prefix)", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "alice",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).not.toContain("@");
+      expect(line.textContent).toContain("alice");
+    });
+  });
+
   // C7.2: Muted-events rendering.
   describe("muted-event rendering (C7.2)", () => {
     it("applies .scrollback-muted class to JOIN events", () => {

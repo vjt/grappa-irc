@@ -80,8 +80,15 @@ defmodule Grappa.Scrollback.Meta do
                                                                   Meta allowlist + Logger
                                                                   metadata sync intact, no
                                                                   nested string-keyed map.)
-      :join    | :part              →  %{}                       (channel + sender suffice)
-      :quit                         →  %{}                       (body carries optional reason)
+      :join    | :part              →  %{} OR %{sender_user: String.t(), sender_host: String.t()}
+                                                                 (sender's user@host from the IRC
+                                                                  prefix when present — render hint
+                                                                  for the irssi-style "nick [u@h]
+                                                                  has joined/left" line; both keys
+                                                                  present or neither — never half)
+      :quit                         →  %{} OR %{sender_user: String.t(), sender_host: String.t()}
+                                                                 (body carries optional reason;
+                                                                  user@host as for join/part)
       :nick_change                  →  %{new_nick: String.t()}
       :mode                         →  %{modes: String.t(), args: [String.t()]}
       :kick                         →  %{target: String.t()}     (body carries reason)
@@ -117,10 +124,12 @@ defmodule Grappa.Scrollback.Meta do
             | :raw_verb
             | :raw_sender
             | :raw_params
+            | :sender_user
+            | :sender_host
           ) => term()
         }
 
-  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params]a
+  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -142,7 +151,9 @@ defmodule Grappa.Scrollback.Meta do
           | :names_target
           | :raw_verb
           | :raw_sender
-          | :raw_params,
+          | :raw_params
+          | :sender_user
+          | :sender_host,
           ...
         ]
   def known_keys, do: @known_keys

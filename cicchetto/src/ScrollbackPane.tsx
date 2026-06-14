@@ -236,6 +236,17 @@ const lastFullyVisibleRowId = (listRef: HTMLDivElement): number | null => {
 // `body`-only lookup is the contract.
 const reasonOf = (msg: ScrollbackMessage): string | null => msg.body || null;
 
+// irssi-style " [user@host]" suffix for presence events (join/part/quit).
+// The server lifts the sender's user@host off the IRC prefix into the
+// persist meta (Grappa.Scrollback.Meta join/part/quit shape). Both keys
+// present or neither — a +x-cloaked prefix yields no mask, so this
+// returns "" and the line reads "* nick has joined" unchanged.
+const userhostSuffix = (msg: ScrollbackMessage): string => {
+  const user = msg.meta.sender_user;
+  const host = msg.meta.sender_host;
+  return typeof user === "string" && typeof host === "string" ? ` [${user}@${host}]` : "";
+};
+
 // CP13 S10: render an IRC body string with mIRC formatting expanded into
 // per-run <span> elements. Plain text (no control chars) collapses into a
 // single Run and renders as one <span>; the no-formatting fast path is
@@ -586,14 +597,16 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
     case "join":
       return (
         <span class="scrollback-body">
-          * {bareSenderSpan(msg.sender)} has joined {msg.channel}
+          * {bareSenderSpan(msg.sender)}
+          {userhostSuffix(msg)} has joined {msg.channel}
         </span>
       );
     case "part": {
       const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
-          * {bareSenderSpan(msg.sender)} has left {msg.channel}
+          * {bareSenderSpan(msg.sender)}
+          {userhostSuffix(msg)} has left {msg.channel}
           {reason ? ` (${reason})` : ""}
         </span>
       );
@@ -602,7 +615,8 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
-          * {bareSenderSpan(msg.sender)} has quit{reason ? ` (${reason})` : ""}
+          * {bareSenderSpan(msg.sender)}
+          {userhostSuffix(msg)} has quit{reason ? ` (${reason})` : ""}
         </span>
       );
     }

@@ -753,7 +753,9 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.channel == "#italia"
       assert attrs.sender == "alice"
       assert attrs.body == nil
-      assert attrs.meta == %{}
+      # S?: JOIN prefix user@host rides the persist meta so cic can render
+      # "alice [u@h] has joined" irssi-style.
+      assert attrs.meta == %{sender_user: "u", sender_host: "h"}
     end
 
     test "JOIN-self clears stale state.members[channel] then adds self + emits {:joined, channel}" do
@@ -809,6 +811,15 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:cont, _, effects} = EventRouter.route(m, state)
       refute Enum.any?(effects, &match?({:joined, _}, &1))
+    end
+
+    test "JOIN with partial prefix (nil user) emits empty persist meta" do
+      # +x cloaking strips user@host — don't half-populate the render hint.
+      state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
+      m = msg(:join, ["#italia"], {:nick, "alice", nil, "some.host"})
+
+      assert {:cont, _, [{:persist, :join, attrs}]} = EventRouter.route(m, state)
+      assert attrs.meta == %{}
     end
   end
 
@@ -902,7 +913,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert new_state.members["#italia"] == %{"vjt" => []}
       assert attrs.body == "see you"
-      assert attrs.meta == %{}
+      assert attrs.meta == %{sender_user: "u", sender_host: "h"}
     end
 
     test "PART with no reason emits body=nil" do
@@ -999,7 +1010,7 @@ defmodule Grappa.Session.EventRouterTest do
       Enum.each(effects, fn {:persist, :quit, attrs} ->
         assert attrs.sender == "alice"
         assert attrs.body == "Ping timeout"
-        assert attrs.meta == %{}
+        assert attrs.meta == %{sender_user: "u", sender_host: "h"}
       end)
 
       assert new_state.members["#italia"] == %{"vjt" => []}
@@ -1013,6 +1024,14 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:cont, _, [{:persist, :quit, %{body: nil}}]} =
                EventRouter.route(m, state)
+    end
+
+    test "QUIT with partial prefix (nil host) emits empty persist meta" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => []}}})
+      m = msg(:quit, ["bye"], {:nick, "alice", "u", nil})
+
+      assert {:cont, _, [{:persist, :quit, attrs}]} = EventRouter.route(m, state)
+      assert attrs.meta == %{}
     end
 
     test "QUIT for nick not in any channel emits no effects + no mutation" do

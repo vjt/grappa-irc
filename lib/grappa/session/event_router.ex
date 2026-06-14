@@ -377,7 +377,7 @@ defmodule Grappa.Session.EventRouter do
         channel,
         sender,
         nil,
-        %{}
+        prefix_userhost(msg)
       )
 
     # CP15 B1: self-JOIN echo promotes the per-channel window to :joined.
@@ -480,7 +480,7 @@ defmodule Grappa.Session.EventRouter do
         channel,
         sender,
         reason,
-        %{}
+        prefix_userhost(msg)
       )
 
     # CP15 B3: self-PART emits a :parted effect so Session.Server's
@@ -523,7 +523,7 @@ defmodule Grappa.Session.EventRouter do
 
         effects =
           for ch <- channels do
-            {_, eff} = build_persist(new_state, :quit, ch, sender, reason, %{})
+            {_, eff} = build_persist(new_state, :quit, ch, sender, reason, prefix_userhost(msg))
             eff
           end
 
@@ -2022,6 +2022,20 @@ defmodule Grappa.Session.EventRouter do
           map()
         ) ::
           {state(), effect()}
+  # Presence-event render hint: the sender's user@host lifted off the IRC
+  # prefix into the persist meta so cic can render the irssi-style
+  # "nick [user@host] has joined/left/quit" line without re-parsing.
+  # Both keys present or neither — a +x-cloaked prefix that strips either
+  # half yields `%{}` rather than a partial mask (mirrors the
+  # userhost_cache half-populate guard in the JOIN clause).
+  @spec prefix_userhost(Message.t()) ::
+          %{optional(:sender_user | :sender_host) => String.t()}
+  defp prefix_userhost(%Message{prefix: {:nick, _, user, host}})
+       when is_binary(user) and is_binary(host),
+       do: %{sender_user: user, sender_host: host}
+
+  defp prefix_userhost(%Message{}), do: %{}
+
   defp build_persist(state, kind, channel, sender, body, meta) do
     attrs =
       Session.put_subject_id(
