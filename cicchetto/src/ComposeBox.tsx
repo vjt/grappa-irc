@@ -1,6 +1,7 @@
 import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compose";
+import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { networkBySlug } from "./lib/networks";
 import { categoryOf } from "./lib/uploadCategory";
 import { activeHost } from "./lib/uploadHost";
@@ -238,6 +239,12 @@ const ComposeBox: Component<Props> = (props) => {
           placeholder={`message ${props.channelName}`}
           rows={1}
           aria-label="compose message"
+          // IRC keyboard: suppress the native on-screen keyboard while the
+          // opt-in is on. DECLARATIVE + reactive so every render of this
+          // textarea — including re-creation on channel switch — carries the
+          // attr; an imperative Shell effect missed freshly-rendered textareas
+          // and the native keyboard slipped through (dogfood bug, 2026-06-14).
+          inputmode={ircKeyboardEnabled() ? "none" : undefined}
         />
         {/* UX-6 bucket F (2026-05-21) — arrow glyph + aria-label
             preserve a11y + byRole queries. SVG (not Unicode ➤) so the
