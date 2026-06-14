@@ -24,7 +24,6 @@ import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, setDraft, tabComplete } from "./lib/compose";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
-import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import {
   openAdminPanel,
@@ -435,24 +434,14 @@ const Shell: Component = () => {
     coldLoadAutoSelected = true;
   });
 
-  // IRC keyboard: reserve layout height for the docked in-page keyboard via
-  // --irc-kb-height (consumed by .shell-mobile's padding-bottom in
-  // default.css). The in-page keyboard never shrinks the visual viewport,
-  // so the native --vh/visualViewport machinery stays untouched. KB_HEIGHT_PX
-  // is an approximation — tune on-device against the rendered keyboard. When
-  // off, the var is 0px → native layout is byte-for-byte unchanged.
-  //
-  // inputmode="none" suppression of the native keyboard is NOT done here:
-  // it's declarative on the ComposeBox <textarea> (inputmode={enabled ?
-  // "none" : undefined}). An imperative attr-poke here only fired when
-  // ircKeyboardEnabled() changed — it missed textareas re-created on channel
-  // switch, so a freshly-focused textarea had no attr and the native
-  // keyboard appeared (dogfood bug, 2026-06-14).
-  createEffect(() => {
-    const on = ircKeyboardEnabled();
-    const KB_HEIGHT_PX = 290;
-    document.documentElement.style.setProperty("--irc-kb-height", on ? `${KB_HEIGHT_PX}px` : "0px");
-  });
+  // IRC keyboard wiring lives entirely in KeyboardHost now:
+  //   • inputmode="none" is declarative on the ComposeBox <textarea>
+  //     (reactive to the opt-in) — see ComposeBox.tsx.
+  //   • the --irc-kb-height reservation is set by KeyboardHost from the
+  //     keyboard's MEASURED height + actual (focus-driven) visibility.
+  // Neither belongs on a Shell effect: the old imperative inputmode poke
+  // missed re-created textareas, and a flag-driven reservation reserved
+  // space even when the focus-driven keyboard was closed.
 
   return (
     <Show
