@@ -12351,3 +12351,110 @@ per-worktree, not shared like the bun cache — first `run test` died
 `vendor/bats-core` submodule when missing (was a hard `die` with a
 manual incantation). Mirrors the testnet.sh submodule auto-init pattern
 so `check.sh` + vitest work first-try from any new worktree.
+
+## 2026-06-14 — IRC-centric custom keyboard (opt-in, in-page, replaces the native iOS keyboard)
+
+Full design + TDD plan: `docs/plans/2026-06-14-irc-keyboard-design.md` +
+`docs/plans/2026-06-14-irc-keyboard-plan.md`. Shipped as 17 commits
+(subagent-driven TDD, two-stage review per task). Phone-portrait MVP;
+landscape/iPad, channel-switch keys, emoji search, skin tones deferred.
+
+**Why a custom keyboard at all.** An on-screen, IRC-first keyboard:
+arrows wired to input history (Up/Down → `recallPrev`/`recallNext`) +
+caret (Left/Right), a Termius-style accelerator pill (`Tab` / `/` / `#`
++ arrows + close), and an emoji layer — affordances the native keyboard
+can't give. Opt-in per device (`localStorage`, `lib/keyboardPref.ts`,
+mirrors `theme.ts`); NOT server-backed `userSettings` (that's
+cross-device IRC prefs — keyboard is a per-device display choice).
+
+**`inputmode="none"` is the load-bearing decision.** While enabled,
+Shell sets `inputmode="none"` on the compose `<textarea>`, so tapping it
+focuses without summoning the native keyboard; our in-page keyboard div
+renders separately. An in-page keyboard NEVER shrinks the visual
+viewport, which is why it SIDESTEPS the `--vh`/visualViewport/
+`position:fixed`/smart-scroll-pin machinery (UX-6 D9, 8 failed
+iterations) — that machinery exists for the NATIVE keyboard and stays
+dormant in IRC-kb mode. The `--vh` height calc was NOT touched.
+
+**The reservation caveat the spec missed.** The naive plan was
+`.shell-mobile { padding-bottom: var(--irc-kb-height) }`. But the
+in-page keyboard is ALWAYS docked when enabled AND the textarea stays
+focused under `inputmode=none` — so the existing
+`.shell-mobile:has(textarea:focus) { padding-bottom: 0 }` rule (which
+collapses the home-indicator inset when the NATIVE keyboard is up) would
+zero the reservation exactly when we need it. Fix: fold `--irc-kb-height`
+into BOTH bottom-inset declarations —
+`padding-bottom: max(env(safe-area-inset-bottom), var(--irc-kb-height,0px))`
+on the base rule and `padding-bottom: var(--irc-kb-height,0px)` on the
+`:has(...)` rule. `--irc-kb-height` is `0px` unless the keyboard is
+enabled (set in Shell), so with it off both resolve byte-for-byte to the
+prior values — native layout is unchanged. This is the only edit to
+`default.css`'s mobile machinery; the keyboard's own slide/animation CSS
+lives in `keyboard.css`.
+
+**Extraction boundary (a hard invariant, guarded).** Everything under
+`cicchetto/src/keyboard/` is a standalone component tree that imports
+ONLY from within `src/keyboard/` — no cic imports. The boundary type is
+`KeyboardIntent` (renamed from the spec's `KeyboardEvent` sketch to
+avoid the DOM global). The SOLE cic-coupled file is
+`cicchetto/src/KeyboardHost.tsx`: it resolves the live compose textarea
+(`.compose-box textarea`, same selector Shell uses), applies intents via
+the EXISTING `compose.ts` paths (`setDraft`/`recallPrev`/`recallNext`/
+`tabComplete`, submit via `form.requestSubmit()`), and gates mounting on
+opt-in + mobile + coarse-pointer. Tab-complete is a byte-for-byte mirror
+of `Shell.tsx`'s `cycleNickComplete`. `keyboard.css` uses only `.kbd-*`
+selectors; the `--irc-kb-height` reservation rule lives in cic
+(`default.css`), not in `keyboard.css`, to keep the module pure. A grep
+guard (plan Task 18 step 1) enforces this: `from "../…"` in
+`src/keyboard` production files must return nothing.
+
+**Locked gesture semantics (iOS-exact).** Long-press opens the variation
+strip; the highlight tracks the finger's X at the key Y-band OR over the
+strip, FREEZES when the finger rises above the strip top, and
+sticky-CANCELS when it drops below the pressed key. Release commits the
+highlighted variant (or the base on a tap). The engine (`gesture.ts`) is
+pure/DOM-free; the long-press TIMER lives in `KeyCap`. Strip-cell
+highlight is passed Keyboard → `VariationStrip` as `s().highlight()`,
+which Solid compiles to a reactive getter so the active cell tracks the
+drag — pinned by a regression test.
+
+**Plan deviations made during execution (and why).** (1) Plan Tasks 4
+(gesture core) + 5 (variation `move`) were MERGED into one commit: under
+this repo's `noUnusedLocals` (`tsc` TS6133) a core-only commit can't
+pass the type gate — the `cfg`/`strip`/`cancelled` fields exist solely
+to serve `move()`, so "declare fields" and "use fields" can't be
+separate clean commits. (2) `KeyboardHost.applyIntent`'s `moveCaret`
+collapses an active selection to its near edge (`start`/`end`) instead
+of stepping ±1 past it (native iOS text-selection persists under
+`inputmode=none`). (3) Every task finished with `scripts/bun.sh run
+build`, not just `vitest` — the plan's test snippets repeatedly tripped
+`noUncheckedIndexedAccess`; the fix is optional chaining on indexed
+array access, the repo convention. (4) The EmojiPicker test mocks the
+emoji dataset down to a few entries: rendering all ~1900 buttons took
+~9s in jsdom and timed out under full-suite parallel load on the Pi (it
+passed in isolation at 4.99s). The full dataset is covered by
+`emoji-data.test.ts`.
+
+**On-device dogfood — OUTSTANDING (Playwright webkit ≠ real iOS; must
+test on device).** Two items need real-iPhone verification before this
+is trustworthy: (1) **Caret under `inputmode=none`.** `applyIntent`
+sets the caret synchronously then calls `setDraft`; the compose textarea
+is Solid-controlled by `draft()`, so the re-render MAY clobber the
+caret. It might survive because `applyIntent` imperatively pre-sets
+`ta.value` (Solid's value binding may no-op when unchanged) — but this
+is browser-dependent and unverified. If the caret jumps, mirror Shell's
+`cycleNickComplete`: capture the intended caret and restore it in a
+`queueMicrotask` in the production `onIntent` handler (NOT in the pure,
+unit-tested `applyIntent`). (2) **Height reservation + layout:** confirm
+the composer clears the docked keyboard and tune `KB_HEIGHT_PX` (≈290)
+against the rendered keyboard; pixel-tune the `--kbd-*` greys/radii/
+shadow against the reference PNGs in `assets/`. Note
+`.kbd-key--active` reuses `--kbd-magnify-bg`, so in mirc-light a pressed
+key shows no rest/active distinction (the magnify balloon is the primary
+feedback) — revisit during grey-tuning.
+
+**Known follow-up (not blocking).** `CELL_WIDTH = 44` is duplicated in
+`KeyCap.tsx` (drives strip geometry) and `VariationStrip.tsx` (renders
+cells) with a "keep in sync" comment; if they drift the highlight
+misaligns. Consolidate into one `src/keyboard` metric during the
+on-device tuning pass (the natural moment the dims change).
