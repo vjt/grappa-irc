@@ -1,4 +1,5 @@
 import { type Component, createSignal, Show } from "solid-js";
+import { Portal } from "solid-js/web";
 import {
   computeStripGeometry,
   KeyGesture,
@@ -109,21 +110,29 @@ const KeyCap: Component<KeyCapProps> = (props) => {
       >
         {props.label}
       </div>
-      <Show when={magnify()}>
-        {(m) => (
-          <div
-            class="kbd-magnify"
-            style={{
-              left: `${m().x - 22}px`,
-              top: `${m().y - 52}px`,
-              width: "44px",
-              height: "48px",
-            }}
-          >
-            {props.label}
-          </div>
-        )}
-      </Show>
+      {/* Portal to <body>: .kbd-root carries `transform` (the slide
+          animation), which makes it the containing block for any
+          position:fixed descendant — so an in-tree magnify would anchor to
+          .kbd-root, not the viewport, and render off-screen. The balloon is
+          positioned with viewport coords (getBoundingClientRect), so it must
+          escape the transformed ancestor. (dogfood bug, 2026-06-14) */}
+      <Portal>
+        <Show when={magnify()}>
+          {(m) => (
+            <div
+              class="kbd-magnify"
+              style={{
+                left: `${m().x - 22}px`,
+                top: `${m().y - 52}px`,
+                width: "44px",
+                height: "48px",
+              }}
+            >
+              {props.label}
+            </div>
+          )}
+        </Show>
+      </Portal>
     </>
   );
 };

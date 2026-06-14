@@ -1,4 +1,5 @@
 import { type Component, createSignal, For, lazy, Show, Suspense } from "solid-js";
+import { Portal } from "solid-js/web";
 import AcceleratorBar from "./AcceleratorBar";
 import type { StripGeometry } from "./gesture";
 import KeyCap from "./KeyCap";
@@ -115,11 +116,17 @@ const Keyboard: Component<KeyboardProps> = (props) => {
         </div>
       </Show>
 
-      <Show when={strip()}>
-        {(s) => (
-          <VariationStrip variants={s().variants} geom={s().geom} highlight={s().highlight()} />
-        )}
-      </Show>
+      {/* Portal to <body>: same reason as KeyCap's magnify — .kbd-root's
+          `transform` would otherwise capture the strip's position:fixed and
+          anchor it to .kbd-root instead of the viewport. The geometry is in
+          viewport coords, so the strip must escape the transformed ancestor. */}
+      <Portal>
+        <Show when={strip()}>
+          {(s) => (
+            <VariationStrip variants={s().variants} geom={s().geom} highlight={s().highlight()} />
+          )}
+        </Show>
+      </Portal>
     </div>
   );
 };
