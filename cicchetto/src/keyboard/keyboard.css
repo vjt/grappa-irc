@@ -195,3 +195,20 @@
   font-size: 18px;
   text-decoration: none;
 }
+
+/* Slide in/out. visible=false adds .kbd-hidden (drops it below the fold).
+   Reduced-motion users get an instant toggle. The host reserves matching
+   layout height via --irc-kb-height (set in cic, NOT here — keyboard.css
+   stays extraction-pure: only .kbd-* selectors). */
+.kbd-root {
+  transform: translateY(0);
+  transition: transform 0.22s cubic-bezier(0.33, 0, 0.2, 1);
+}
+.kbd-root.kbd-hidden {
+  transform: translateY(100%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .kbd-root {
+    transition: none;
+  }
+}

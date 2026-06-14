@@ -2436,7 +2436,13 @@ html.resize-dragging * {
        (global, line 67) means the inset is consumed FROM the height,
        not added to it. */
     padding-top: env(safe-area-inset-top);
-    padding-bottom: env(safe-area-inset-bottom);
+    /* IRC-keyboard height reservation folded into the bottom inset: the
+       always-docked in-page keyboard (KeyboardHost) never shrinks the
+       visual viewport, so we reserve its height here instead. --irc-kb-height
+       is 0px unless the IRC keyboard is enabled (set in Shell), so when off
+       this resolves to env(safe-area-inset-bottom) — byte-for-byte the
+       previous value. When on, it dominates the home-indicator inset. */
+    padding-bottom: max(env(safe-area-inset-bottom), var(--irc-kb-height, 0px));
   }
 
   /* UX-6 bucket D11 (2026-05-21) — D1 restored after D9 removal
@@ -2452,7 +2458,13 @@ html.resize-dragging * {
      Collapsing the padding when a text input is focused
      (`:has(textarea:focus, input:focus)`) closes the gap. */
   .shell-mobile:has(textarea:focus, input:focus) {
-    padding-bottom: 0;
+    /* Native keyboard up → collapse the home-indicator inset (it would
+       double-count against the shrunken visual viewport). But in IRC-keyboard
+       mode the textarea is ALSO focused (inputmode=none keeps it focusable)
+       while the viewport does NOT shrink and the in-page keyboard is docked —
+       so reserve its height instead of collapsing to 0. --irc-kb-height is 0px
+       when the IRC keyboard is off, preserving the original collapse exactly. */
+    padding-bottom: var(--irc-kb-height, 0px);
   }
 
   /* Legacy fallback for browsers that don't grok `dvh` (Safari < 15.4).

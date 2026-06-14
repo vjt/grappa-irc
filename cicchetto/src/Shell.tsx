@@ -439,8 +439,17 @@ const Shell: Component = () => {
   // inputmode="none" on the compose textarea when the opt-in is on. The
   // custom keyboard div is mounted separately (KeyboardHost). When off,
   // the attribute is removed and native behavior is byte-for-byte unchanged.
+  //
+  // Also reserve layout height for the always-docked in-page keyboard via
+  // --irc-kb-height (consumed by .shell-mobile's padding-bottom in
+  // default.css). The in-page keyboard never shrinks the visual viewport,
+  // so the native --vh/visualViewport machinery stays untouched. KB_HEIGHT_PX
+  // is an approximation — tune on-device against the rendered keyboard. When
+  // off, the var is 0px → native layout is byte-for-byte unchanged.
   createEffect(() => {
     const on = ircKeyboardEnabled();
+    const KB_HEIGHT_PX = 290;
+    document.documentElement.style.setProperty("--irc-kb-height", on ? `${KB_HEIGHT_PX}px` : "0px");
     const ta = document.querySelector<HTMLTextAreaElement>(".compose-box textarea");
     if (!ta) return;
     if (on) ta.setAttribute("inputmode", "none");
