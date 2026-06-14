@@ -39,6 +39,39 @@ CICCHETTO_DIR="$SRC_ROOT/cicchetto"
 BUN_CACHE_DIR="$REPO_ROOT/runtime/bun-cache"
 mkdir -p "$CICCHETTO_DIR" "$BUN_CACHE_DIR"
 
+# Run bun inside the oven/bun:1 oneshot. Args are the trailing
+# `docker run` operands (any extra flags + image + `bun` + bun args),
+# so both the implicit install and the real invocation share one
+# definition of the mount/uid/cache wiring.
+run_bun() {
+    docker run --rm -i \
+        --user "$(id -u):$(id -g)" \
+        -v "$CICCHETTO_DIR:/app" \
+        -v "$BUN_CACHE_DIR:/cache" \
+        --tmpfs "/tmp:exec,uid=$(id -u),gid=$(id -g)" \
+        -e HOME=/tmp \
+        -e BUN_INSTALL_CACHE_DIR=/cache \
+        -w /app \
+        "$@"
+}
+
+# Self-heal a fresh worktree / clone: vitest, tsc, vite and biome all
+# live in cicchetto/node_modules, which is PER-WORKTREE (unlike the bun
+# download cache at runtime/bun-cache, which is shared). A new worktree
+# has no node_modules, so the first `run test` / `run build` / `run
+# check` would die with `vitest: command not found` (exit 127). Install
+# on demand. The install-family verbs manage node_modules themselves —
+# skip the pre-install for those (no point, and avoids double work).
+case "${1:-}" in
+    install | add | remove | update | outdated | pm | ci | link | unlink) ;;
+    *)
+        if [ ! -d "$CICCHETTO_DIR/node_modules" ]; then
+            printf 'scripts/bun.sh: cicchetto/node_modules missing — running bun install...\n' >&2
+            run_bun oven/bun:1 bun install >&2
+        fi
+        ;;
+esac
+
 # Vite dev/preview server binds 0.0.0.0:5173 inside the container. Expose
 # the port to the host (and thus to the LAN, for iPhone PWA install
 # testing) only for `run dev` / `run preview` — `bun add`, `run check`,
@@ -48,14 +81,4 @@ if [ "${1:-}" = "run" ] && { [ "${2:-}" = "dev" ] || [ "${2:-}" = "preview" ]; }
     PORT_ARGS=(-p 5173:5173)
 fi
 
-docker run --rm -i \
-    --user "$(id -u):$(id -g)" \
-    -v "$CICCHETTO_DIR:/app" \
-    -v "$BUN_CACHE_DIR:/cache" \
-    --tmpfs "/tmp:exec,uid=$(id -u),gid=$(id -g)" \
-    -e HOME=/tmp \
-    -e BUN_INSTALL_CACHE_DIR=/cache \
-    -w /app \
-    "${PORT_ARGS[@]}" \
-    oven/bun:1 \
-    bun "$@"
+run_bun "${PORT_ARGS[@]}" oven/bun:1 bun "$@"
