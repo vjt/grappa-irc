@@ -198,9 +198,16 @@
      it overflowed the keyboard and covered the channel bar (dogfood bug).
      The grid scrolls inside; the category bar pins at the bottom. */
   height: var(--kbd-body-h);
+  overflow: hidden; /* belt-and-suspenders: never spill past the bounded box */
 }
 .kbd-emoji-grid {
   flex: 1 1 auto;
+  /* min-height:0 is load-bearing: a flex item defaults to min-height:auto,
+     which refuses to shrink below its CONTENT — so the ~1900-emoji grid grew
+     to full content height, pushed the ABC/category bar off the bottom, and
+     the whole layer overflowed the channel bar (dogfood round 2). With
+     min-height:0 the grid shrinks to its flex basis and scrolls internally. */
+  min-height: 0;
   overflow-y: auto;
 }
 .kbd-emoji-cat {
