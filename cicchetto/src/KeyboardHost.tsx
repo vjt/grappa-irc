@@ -1,79 +1,59 @@
 import { type Component, createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 import type { KeyboardIntent } from "./keyboard";
 import { Keyboard } from "./keyboard";
-import { channelKey } from "./lib/channelKey";
+import { type ChannelKey, channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, tabComplete } from "./lib/compose";
 import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { selectedChannel } from "./lib/selection";
 import { isMobile } from "./lib/theme";
 
-// Callback set the pure applyIntent uses — kept injectable so the editing
-// math is unit-testable without the live compose store.
-export interface HostCallbacks {
-  onDraft: (value: string) => void;
-  onSubmit: () => void;
-  onHistory: (dir: "prev" | "next") => void;
-  onAccessory: (id: string) => void;
-  onDismiss: () => void;
-}
+// The editing intents that mutate text/caret (a subset of KeyboardIntent;
+// the control intents — submit/history/accessory/dismiss — are routed
+// separately by the host).
+export type EditIntent =
+  | { kind: "insertText"; text: string }
+  | { kind: "deleteBackward" }
+  | { kind: "moveCaret"; dir: "left" | "right" };
 
-// Pure editing application: mutate the textarea value + caret, then push
-// the new draft / route control intents.
-export function applyIntent(
-  intent: KeyboardIntent,
-  ta: HTMLTextAreaElement,
-  cb: HostCallbacks,
-): void {
-  const start = ta.selectionStart;
-  const end = ta.selectionEnd;
+// Pure editing math: given the current text + selection, return the next
+// text and the caret after applying an editing intent. No DOM. The host
+// feeds it the DRAFT-STORE text (the source of truth), NOT the live
+// textarea's value — under a fast keystroke burst the controlled textarea
+// is mid-re-render and reading ta.value drops characters (dogfood round 2).
+export function editText(
+  intent: EditIntent,
+  text: string,
+  selStart: number,
+  selEnd: number,
+): { text: string; caret: number } {
   switch (intent.kind) {
     case "insertText": {
-      const next = ta.value.slice(0, start) + intent.text + ta.value.slice(end);
-      ta.value = next;
-      const caret = start + intent.text.length;
-      ta.setSelectionRange(caret, caret);
-      cb.onDraft(next);
-      break;
+      const next = text.slice(0, selStart) + intent.text + text.slice(selEnd);
+      return { text: next, caret: selStart + intent.text.length };
     }
     case "deleteBackward": {
-      if (start !== end) {
-        const next = ta.value.slice(0, start) + ta.value.slice(end);
-        ta.value = next;
-        ta.setSelectionRange(start, start);
-        cb.onDraft(next);
-      } else if (start > 0) {
-        const next = ta.value.slice(0, start - 1) + ta.value.slice(start);
-        ta.value = next;
-        ta.setSelectionRange(start - 1, start - 1);
-        cb.onDraft(next);
+      if (selStart !== selEnd) {
+        return { text: text.slice(0, selStart) + text.slice(selEnd), caret: selStart };
       }
-      break;
+      if (selStart > 0) {
+        return { text: text.slice(0, selStart - 1) + text.slice(selStart), caret: selStart - 1 };
+      }
+      return { text, caret: selStart };
     }
     case "moveCaret": {
-      // With a live selection (reachable via native iOS text-selection even
-      // under inputmode=none), an arrow collapses to the near edge rather
-      // than stepping past it; only a collapsed caret moves by one char.
-      let pos: number;
-      if (start !== end) {
-        pos = intent.dir === "left" ? start : end;
-      } else {
-        pos = intent.dir === "left" ? Math.max(0, start - 1) : Math.min(ta.value.length, end + 1);
-      }
-      ta.setSelectionRange(pos, pos);
-      break;
+      // A live selection (reachable via native iOS text-selection even under
+      // inputmode=none) collapses to its near edge; a collapsed caret steps
+      // one char.
+      const caret =
+        selStart !== selEnd
+          ? intent.dir === "left"
+            ? selStart
+            : selEnd
+          : intent.dir === "left"
+            ? Math.max(0, selStart - 1)
+            : Math.min(text.length, selEnd + 1);
+      return { text, caret };
     }
-    case "submit":
-      cb.onSubmit();
-      break;
-    case "history":
-      cb.onHistory(intent.dir);
-      break;
-    case "accessory":
-      cb.onAccessory(intent.id);
-      break;
-    case "dismiss":
-      cb.onDismiss();
-      break;
   }
 }
 
@@ -154,47 +134,60 @@ const KeyboardHost: Component = () => {
     });
   });
 
+  // Apply an editing intent through the DRAFT STORE, not the live textarea.
+  // Reading ta.value mid-render dropped chars under fast typing; the store
+  // is synchronous + authoritative. The caret is then restored on the next
+  // microtask, AFTER Solid's controlled-value re-render has flushed (which
+  // otherwise yanks the caret to the end). Same shape as tab-complete.
+  const applyEdit = (intent: EditIntent, key: ChannelKey, ta: HTMLTextAreaElement) => {
+    const current = getDraft(key);
+    const { text, caret } = editText(intent, current, ta.selectionStart, ta.selectionEnd);
+    if (text !== current) setDraft(key, text);
+    queueMicrotask(() => ta.setSelectionRange(caret, caret));
+  };
+
   const onIntent = (intent: KeyboardIntent) => {
     const sel = selectedChannel();
     const ta = activeTextarea();
     if (!sel || !ta) return;
     const key = channelKey(sel.networkSlug, sel.channelName);
 
-    const cb: HostCallbacks = {
-      onDraft: (value) => setDraft(key, value),
-      onSubmit: () => {
+    switch (intent.kind) {
+      case "insertText":
+      case "deleteBackward":
+      case "moveCaret":
+        applyEdit(intent, key, ta);
+        break;
+      case "submit":
         // Mirror Enter: dispatch the form's submit so ComposeBox.doSubmit runs.
         ta.closest("form")?.requestSubmit();
-      },
-      onHistory: (dir) => (dir === "prev" ? recallPrev(key) : recallNext(key)),
-      onAccessory: (id) => {
-        if (id === "slash" || id === "hash") {
-          applyIntent({ kind: "insertText", text: id === "slash" ? "/" : "#" }, ta, cb);
-          return;
-        }
-        if (id === "tab") {
-          // Reuse the Shell.tsx cycleNickComplete approach:
-          // read from the draft store (not ta.value) so fast typing
-          // doesn't miss chars; schedule caret write on next microtask
-          // so the Solid signal write has flushed first.
+        break;
+      case "history":
+        if (intent.dir === "prev") recallPrev(key);
+        else recallNext(key);
+        break;
+      case "accessory":
+        if (intent.id === "slash" || intent.id === "hash") {
+          applyEdit({ kind: "insertText", text: intent.id === "slash" ? "/" : "#" }, key, ta);
+        } else if (intent.id === "tab") {
+          // Reuse the Shell.tsx cycleNickComplete approach: read from the
+          // draft store (not ta.value) so fast typing doesn't miss chars;
+          // schedule the caret write on the next microtask so the Solid
+          // signal write has flushed first.
           const current = getDraft(key);
           const result = tabComplete(key, current, ta.selectionStart, true);
           if (!result) return;
           setDraft(key, result.newInput);
-          queueMicrotask(() => {
-            ta.setSelectionRange(result.newCursor, result.newCursor);
-          });
+          queueMicrotask(() => ta.setSelectionRange(result.newCursor, result.newCursor));
         }
-      },
-      // Close the keyboard: drop the open-intent AND blur so the next focus
-      // re-opens it (vjt: tap the compose box to bring it back).
-      onDismiss: () => {
+        break;
+      case "dismiss":
+        // Drop the open-intent AND blur so the next focus re-opens it
+        // (vjt: tap the compose box to bring it back).
         setWantKeyboard(false);
         ta.blur();
-      },
-    };
-
-    applyIntent(intent, ta, cb);
+        break;
+    }
   };
 
   return (
