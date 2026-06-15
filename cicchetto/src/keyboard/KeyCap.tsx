@@ -28,6 +28,10 @@ export interface KeyCapProps {
     geom: StripGeometry;
     highlight: () => number | null;
   }) => void;
+  // Tear the strip down. Called when the gesture cancels mid-drag (finger
+  // dropped below the key) and unconditionally on release, so the strip
+  // never lingers on screen after the press ends (dogfood round 2).
+  onCloseVariants: () => void;
 }
 
 const KeyCap: Component<KeyCapProps> = (props) => {
@@ -82,7 +86,13 @@ const KeyCap: Component<KeyCapProps> = (props) => {
     if (!gesture) return;
     gesture.move(e.clientX, e.clientY);
     const p = gesture.phase();
-    if (p.kind === "longpress") setHighlight(p.highlight);
+    if (p.kind === "longpress") {
+      setHighlight(p.highlight);
+      // highlight === null while in long-press means the gesture cancelled
+      // (finger dropped below the key) — close the strip immediately, like
+      // iOS, instead of leaving it on screen until release.
+      if (p.highlight === null) props.onCloseVariants();
+    }
   };
 
   const finish = () => {
@@ -97,6 +107,10 @@ const KeyCap: Component<KeyCapProps> = (props) => {
       props.onCommit(variants[intent.index] ?? props.insertText);
     // cancel → no commit
     setHighlight(null);
+    // Always tear the strip down on release — a cancelled gesture never
+    // calls onCommit, so without this the strip stayed open forever after
+    // dragging below the key and releasing (dogfood round 2).
+    props.onCloseVariants();
   };
 
   return (

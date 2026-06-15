@@ -28,7 +28,9 @@ const Keyboard: Component<KeyboardProps> = (props) => {
   const commit = (text: string) => {
     props.onIntent({ kind: "insertText", text });
     if (shift()) setShift(false); // one-shot shift
-    setStrip(null);
+    // Strip teardown is owned by onCloseVariants (called from KeyCap.finish
+    // for every gesture end, commit OR cancel) — not here, so a cancelled
+    // long-press also closes it.
   };
 
   const ctrl = (label: string, aria: string, onClick: () => void, fnExtra = "") => (
@@ -73,6 +75,7 @@ const Keyboard: Component<KeyboardProps> = (props) => {
                           }
                           onCommit={commit}
                           onOpenVariants={(args) => setStrip(args)}
+                          onCloseVariants={() => setStrip(null)}
                         />
                       );
                     }
