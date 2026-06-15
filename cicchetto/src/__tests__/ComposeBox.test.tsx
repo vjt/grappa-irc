@@ -97,6 +97,24 @@ describe("ComposeBox", () => {
     expect(btn.querySelector("[data-testid='compose-send-glyph']")).not.toBeNull();
   });
 
+  // #59 — tapping the send button must NOT steal focus from the textarea
+  // (that collapses the on-screen keyboard). The handler preventDefaults
+  // the pointerdown; the click still submits. Needs a non-empty draft —
+  // the button is disabled (un-tappable) while the draft is empty.
+  it("#59 — send button preventDefaults pointerdown (no focus steal)", async () => {
+    const compose = await import("../lib/compose");
+    vi.mocked(compose.getDraft).mockReturnValue("hi");
+    try {
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const btn = screen.getByRole("button", { name: /send message/i });
+      const ev = new Event("pointerdown", { bubbles: true, cancelable: true });
+      btn.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+    } finally {
+      vi.mocked(compose.getDraft).mockReturnValue("");
+    }
+  });
+
   it("typing fires compose.setDraft", async () => {
     const compose = await import("../lib/compose");
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);

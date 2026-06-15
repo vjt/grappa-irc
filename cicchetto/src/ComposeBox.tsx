@@ -256,6 +256,13 @@ const ComposeBox: Component<Props> = (props) => {
           type="submit"
           aria-label="send message"
           disabled={sending() || getDraft(key()).trim() === ""}
+          // #59: keep the textarea focused when sending via the button.
+          // Tapping a <button> moves focus off the textarea, which collapses
+          // the on-screen keyboard (native on Android; also drops the
+          // IRC-keyboard focus model). preventDefault on pointerdown stops
+          // the focus steal — the click still fires + submits. Same trick as
+          // the keyboard keys + the image-picker button.
+          onPointerDown={(e) => e.preventDefault()}
         >
           <svg
             width="16"
