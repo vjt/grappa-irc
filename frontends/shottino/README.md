@@ -51,11 +51,30 @@ Auth modes:
   derived from the email.
 - `--visitor` logs in through grappa's visitor nick flow.
 - `--auto` preserves the server's default classifier behavior.
+- `--share https://grappa.example.net/share/<token>` consumes a visitor
+  session-share link instead of logging in. Both the server origin and the token
+  are read from the URL; no identifier or password is needed.
 
 Use `--user` for multi-machine reattach. The user subject is durable on the
 server, so channels/query windows/scrollback state are shared across clients.
 Visitor mode needs the saved bearer token to reattach without spawning a new
 visitor session.
+
+## Visitor session sharing
+
+Visitors have no password, so a registered-user login on a second device is not
+available to them. The share link closes that gap — it lets a visitor attach
+another device to the *same* session (shared scrollback and state):
+
+1. On the first device (any visitor client, e.g. cic or a shottino visitor
+   session), run `/share`. Shottino mints a short-TTL link
+   `https://<host>/share/<token>` via `POST /me/share-token` and prints it.
+   `/share` is visitor-only; a registered user gets a friendly rejection.
+2. On the second device, run
+   `shottino --share https://<host>/share/<token>`. Shottino consumes the token
+   (`POST /auth/share/consume`), mints a fresh per-device session for the same
+   visitor, and saves the bearer so subsequent launches reattach without
+   re-consuming the (one-shot, already-spent) link.
 
 Key bindings:
 
