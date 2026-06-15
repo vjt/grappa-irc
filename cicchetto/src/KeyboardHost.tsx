@@ -131,10 +131,11 @@ const KeyboardHost: Component = () => {
     // and never move it — so re-sync the host caret to wherever they put it.
     // `select` covers drag-selection (so typing then replaces the selection);
     // our own setSelectionRange is always collapsed and never fires `select`,
-    // so there's no feedback loop.
+    // so there's no feedback loop. Use e.target directly (no querySelector on
+    // every click — key taps are clicks too, and that ran on the hot path).
     const onUserReposition = (e: Event) => {
-      const ta = activeTextarea();
-      if (ta && e.target === ta) resyncCaret(ta);
+      const t = e.target;
+      if (t instanceof HTMLTextAreaElement && isComposeTextarea(t)) resyncCaret(t);
     };
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener("click", onUserReposition);

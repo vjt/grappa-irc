@@ -1,10 +1,10 @@
-import { type Component, createSignal, Show } from "solid-js";
-import { Portal } from "solid-js/web";
+import { type Component, createSignal } from "solid-js";
 import {
   computeStripGeometry,
   KeyGesture,
   LONG_PRESS_MS,
   MOVE_SLOP_PX,
+  type Rect,
   type StripGeometry,
   Y_BAND_PAD_PX,
 } from "./gesture";
@@ -36,12 +36,28 @@ export interface KeyCapProps {
 
 const KeyCap: Component<KeyCapProps> = (props) => {
   const [active, setActive] = createSignal(false);
-  const [magnify, setMagnify] = createSignal<{ x: number; y: number } | null>(null);
   const [highlight, setHighlight] = createSignal<number | null>(null);
 
   let gesture: KeyGesture | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let variants: string[] = [];
+
+  // Cache the key's viewport rect. getBoundingClientRect forces a SYNCHRONOUS
+  // reflow, and the previous keystroke's setDraft dirties layout — so calling
+  // it on every pointerdown jammed the main thread enough that iOS dropped
+  // fast taps entirely (the missed key gave no press-flash at all: the
+  // pointerdown never arrived). The keyboard is position:fixed and its keys
+  // don't move during a typing session, so compute the rect once and reuse it.
+  // (dogfood round 3 — the real root cause; the editing-layer fixes were all
+  // the wrong layer.)
+  let cachedRect: Rect | null = null;
+  const rectOf = (el: HTMLElement): Rect => {
+    if (!cachedRect) {
+      const r = el.getBoundingClientRect();
+      cachedRect = { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+    }
+    return cachedRect;
+  };
 
   const clearTimer = () => {
     if (timer !== null) clearTimeout(timer);
@@ -52,22 +68,21 @@ const KeyCap: Component<KeyCapProps> = (props) => {
     e.preventDefault(); // never steal focus from the textarea
     clearTimer(); // start each press clean — drop any timer a prior gesture left if its pointerup never reached us (capture-less edge)
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const rect = rectOf(e.currentTarget as HTMLElement);
     gesture = new KeyGesture({
-      keyRect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
+      keyRect: rect,
       moveSlopPx: MOVE_SLOP_PX,
       yBandPadPx: Y_BAND_PAD_PX,
     });
     gesture.down(e.clientX, e.clientY);
     setActive(true);
-    setMagnify({ x: (rect.left + rect.right) / 2, y: rect.top });
 
     variants = variantsFor(props.insertText);
     if (variants.length > 0) {
       timer = setTimeout(() => {
         if (!gesture) return;
         const geom = computeStripGeometry({
-          keyRect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
+          keyRect: rect,
           variantCount: variants.length,
           cellWidth: CELL_WIDTH,
           stripHeight: STRIP_HEIGHT,
@@ -75,7 +90,6 @@ const KeyCap: Component<KeyCapProps> = (props) => {
           viewportWidth: window.innerWidth,
         });
         gesture.openVariations(geom);
-        setMagnify(null);
         setHighlight(geom.defaultIndex);
         props.onOpenVariants({ variants, geom, highlight });
       }, LONG_PRESS_MS);
@@ -98,7 +112,6 @@ const KeyCap: Component<KeyCapProps> = (props) => {
   const finish = () => {
     clearTimer();
     setActive(false);
-    setMagnify(null);
     if (!gesture) return;
     const intent = gesture.up();
     gesture = null;
@@ -113,41 +126,20 @@ const KeyCap: Component<KeyCapProps> = (props) => {
     props.onCloseVariants();
   };
 
+  // No per-tap magnify balloon: it spawned a Portal DOM node on every press,
+  // adding main-thread work to the hot path that helped iOS drop fast taps.
+  // The press-flash (.kbd-key--active) is the lightweight feedback; a cheap
+  // shared magnify can come back later (it's deferred polish either way).
   return (
-    <>
-      <div
-        class={`kbd-key${props.fn ? " kbd-key--fn" : ""}${active() ? " kbd-key--active" : ""}`}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={finish}
-        onPointerCancel={finish}
-      >
-        {props.label}
-      </div>
-      {/* Portal to <body>: .kbd-root carries `transform` (the slide
-          animation), which makes it the containing block for any
-          position:fixed descendant — so an in-tree magnify would anchor to
-          .kbd-root, not the viewport, and render off-screen. The balloon is
-          positioned with viewport coords (getBoundingClientRect), so it must
-          escape the transformed ancestor. (dogfood bug, 2026-06-14) */}
-      <Portal>
-        <Show when={magnify()}>
-          {(m) => (
-            <div
-              class="kbd-magnify"
-              style={{
-                left: `${m().x - 22}px`,
-                top: `${m().y - 52}px`,
-                width: "44px",
-                height: "48px",
-              }}
-            >
-              {props.label}
-            </div>
-          )}
-        </Show>
-      </Portal>
-    </>
+    <div
+      class={`kbd-key${props.fn ? " kbd-key--fn" : ""}${active() ? " kbd-key--active" : ""}`}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={finish}
+      onPointerCancel={finish}
+    >
+      {props.label}
+    </div>
   );
 };
 
