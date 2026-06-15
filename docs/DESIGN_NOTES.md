@@ -12540,3 +12540,46 @@ key spans / greys / radii vs the reference PNGs; caret stability under
 pre-sets `ta.value`, may survive; the `queueMicrotask` caret-restore
 escape hatch is still the fallback if it jumps). `CELL_WIDTH=44`
 duplication (above) also still pending.
+
+### Round 2 (same day) — four more dogfood fixes
+
+The reactivity gamble above lost: typing fast DID drop characters. Fixed
+along with three other defects.
+
+- **Dropped keys → edit through the draft store, not `ta.value`.** The
+  editing path read the current text from the live textarea, but it's
+  Solid-controlled by `draft()` and a fast keystroke burst leaves it
+  mid-re-render, so `ta.value`/caret were stale and inserts landed at the
+  wrong offset. Split the math into a pure `editText(intent, text, sel) →
+  {text, caret}` and a host `applyEdit` that reads `getDraft` (synchronous,
+  authoritative), writes `setDraft`, and restores the caret on the next
+  microtask after Solid flushes — the same shape tab-complete already used.
+  `applyIntent`/`HostCallbacks` are gone; the unit test now exercises the
+  pure `editText`. **General rule: never read a controlled input's `.value`
+  as the source of truth — read the store that drives it.**
+
+- **Variation strip never closed.** A cancelled long-press never calls
+  `onCommit`, and strip teardown was glued to the commit path
+  (`Keyboard.commit → setStrip(null)`), so dragging below the key and
+  releasing left the strip stuck on screen. Gave `KeyCap` an
+  `onCloseVariants` callback, called both mid-drag the instant the gesture
+  cancels (highlight → null, closes immediately like iOS) and
+  unconditionally in `finish()`. Teardown now has ONE owner; the gesture
+  engine is untouched.
+
+- **Emoji layer still overflowed → `min-height:0` on the grid.** Bounding
+  `.kbd-emoji` to `--kbd-body-h` wasn't enough: `.kbd-emoji-grid` is a flex
+  item, and `min-height:auto` (the default) refuses to shrink below its
+  content, so the ~1900-cell grid grew to full height, pushed the ABC bar
+  off, and spilled over the channel bar. `min-height:0` lets it shrink to
+  its flex basis and scroll. The classic flexbox-overflow trap.
+
+- **Send button collapsed the keyboard (#59).** Tapping the `type=submit`
+  send button moved focus off the textarea (Android native kb collapse;
+  also dropped the IRC-kb focus model). `onPointerDown` preventDefault on
+  the button stops the focus steal — the click still submits. Same trick as
+  the keyboard keys + image-picker. Enter-to-send never had the bug.
+
+Still deferred to a visual pass: the lollipop magnify SHAPE, and exact key
+spans / greys / radii vs the reference PNGs. `CELL_WIDTH=44` dedup still
+pending.
