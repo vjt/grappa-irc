@@ -522,6 +522,50 @@ static char *url_encode(const char *s) {
     return out;
 }
 
+static char *url_decode(const char *s) {
+    size_t n = strlen(s);
+    char *out = malloc(n + 1);
+    if (!out) die("out of memory");
+    size_t j = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] == '%' && i + 2 < n && isxdigit((unsigned char)s[i + 1]) && isxdigit((unsigned char)s[i + 2])) {
+            out[j++] = (char)((hexval(s[i + 1]) << 4) | hexval(s[i + 2]));
+            i += 2;
+        } else {
+            out[j++] = s[i];
+        }
+    }
+    out[j] = 0;
+    return out;
+}
+
+static char *dup_range(const char *s, size_t len) {
+    char *out = malloc(len + 1);
+    if (!out) die("out of memory");
+    memcpy(out, s, len);
+    out[len] = 0;
+    return out;
+}
+
+// Split a share link `https://host[:port]/share/<token>` (the URL cic mints,
+// `${origin}/share/${token}`) into its base origin and the percent-decoded
+// token. Tolerates a hash-router artifact (`.../#/share/<token>`) and trailing
+// query/fragment after the token. Returns false if no `/share/` segment.
+static bool split_share_url(const char *url, char **base_out, char **token_out) {
+    const char *marker = strstr(url, "/share/");
+    if (!marker) return false;
+    const char *tok = marker + 7; // strlen("/share/")
+    size_t toklen = strcspn(tok, "?#");
+    if (toklen == 0) return false;
+    char *raw = dup_range(tok, toklen);
+    *token_out = url_decode(raw);
+    free(raw);
+    size_t baselen = (size_t)(marker - url);
+    if (baselen >= 2 && strncmp(marker - 2, "/#", 2) == 0) baselen -= 2; // strip hash-router "/#"
+    *base_out = dup_range(url, baselen);
+    return true;
+}
+
 static char *json_escape(const char *s) {
     size_t len = 0;
     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
@@ -1529,6 +1573,47 @@ static char *login_identifier_for_mode(const char *mode, const char *identifier)
     return xasprintf("%s", identifier);
 }
 
+// Visitor session-sharing — consume side. Unauthenticated by design: the
+// signed token IS the credential. POST /auth/share/consume {token} returns the
+// same wire shape as /auth/login ({token, subject}) for the SAME visitor row.
+static bool consume_share(struct app *app, const char *share_token) {
+    char *t = json_escape(share_token);
+    char *body = xasprintf("{\"token\":\"%s\"}", t);
+    free(t);
+    struct http_response r = http_request(app, "POST", "/auth/share/consume", body);
+    free(body);
+    if (r.status < 200 || r.status >= 300) {
+        fprintf(stderr, "share consume failed HTTP %d: %s\n", r.status, r.body);
+        free(r.body);
+        return false;
+    }
+    if (!json_find_string(r.body, "token", app->token, sizeof(app->token))) die("share consume response missing token");
+    parse_subject(r.body, app->subject, sizeof(app->subject));
+    if (!app->subject[0]) die("share consume response missing subject");
+    free(r.body);
+    return true;
+}
+
+// Mirror of attach_or_login for the share path: reattach a previously consumed
+// session if its bearer still validates, else consume the one-shot share token.
+// Keyed on a fixed "visitor-share" identifier so a relaunch with the (now
+// spent) link reattaches via the saved bearer instead of a doomed re-consume.
+static bool attach_or_consume(struct app *app, const char *base, const char *share_token) {
+    char *path = token_path_for(base, "visitor-share");
+    snprintf(app->token_path, sizeof(app->token_path), "%s", path);
+    if (load_saved_token(app, path) && validate_saved_token(app)) {
+        log_line(app, "reattached saved grappa session as %s", app->subject);
+        free(path);
+        return true;
+    }
+    app->token[0] = 0;
+    app->subject[0] = 0;
+    bool ok = consume_share(app, share_token);
+    if (ok) save_token(app, path);
+    free(path);
+    return ok;
+}
+
 static void logout_grappa(struct app *app) {
     struct http_response r = http_request(app, "DELETE", "/auth/logout", NULL);
     if (r.status == 204 || (r.status >= 200 && r.status < 300)) {
@@ -2394,7 +2479,7 @@ static void cycle_window(struct app *app, int delta) {
 static const char *commands[] = {
     "/admin", "/archive", "/away", "/ban", "/banlist", "/chat", "/clear", "/close", "/connect", "/deop", "/devoice", "/disconnect",
     "/invite", "/join", "/kick", "/lusers", "/me", "/members", "/mode", "/msg", "/names",
-    "/nick", "/op", "/oper", "/part", "/q", "/query", "/quit", "/quote", "/settings", "/topic", "/umode",
+    "/nick", "/op", "/oper", "/part", "/q", "/query", "/quit", "/quote", "/settings", "/share", "/topic", "/umode",
     "/unban", "/users", "/voice", "/w", "/watch", "/whowas", "/who", "/whois", "/win", "/window"
 };
 
@@ -2549,8 +2634,42 @@ static void show_command_help(struct app *app, const char *raw) {
     else if (strcmp(cmd, "quote") == 0) log_line(app, "/quote raw-line — send a raw IRC line through grappa");
     else if (strcmp(cmd, "oper") == 0) log_line(app, "/oper name password — send IRC OPER credentials; password is not logged");
     else if (strcmp(cmd, "open") == 0) log_line(app, "/open — open the most recent URL using xdg-open");
+    else if (strcmp(cmd, "share") == 0) log_line(app, "/share — (visitor only) mint a session-share link; open it on another device to attach it to this same session");
     else if (strcmp(cmd, "archive") == 0 || strcmp(cmd, "settings") == 0 || strcmp(cmd, "admin") == 0 || strcmp(cmd, "chat") == 0) log_line(app, "/%s — switch to the %s panel", cmd, cmd);
     else log_line(app, "no help for /%s; use /help for the command list", cmd);
+}
+
+// Visitor session-sharing — mint side. POST /me/share-token (visitor-only;
+// the server 403s a registered user) returns {token, expires_at}. We wrap the
+// token in `<base>/share/<token>` — the URL the other device feeds to
+// /share/<token> (consume) to land on this same session.
+static void mint_share_link(struct app *app) {
+    struct http_response r = http_request(app, "POST", "/me/share-token", NULL);
+    if (r.status == 403) {
+        log_line(app, "/share: solo le sessioni visitor possono generare un link di condivisione");
+        free(r.body);
+        return;
+    }
+    if (r.status < 200 || r.status >= 300) {
+        log_line(app, "/share failed HTTP %d: %.200s", r.status, r.body ? r.body : "");
+        free(r.body);
+        return;
+    }
+    char token[MAX_TOKEN];
+    char expires[64] = "";
+    if (!json_find_string(r.body, "token", token, sizeof(token))) {
+        log_line(app, "/share: response missing token");
+        free(r.body);
+        return;
+    }
+    json_find_string(r.body, "expires_at", expires, sizeof(expires));
+    free(r.body);
+    char *enc = url_encode(token);
+    snprintf(app->last_url, sizeof(app->last_url), "%s/share/%s", app->url.base, enc);
+    if (expires[0]) log_line(app, "share link (scade %s): %s", expires, app->last_url);
+    else log_line(app, "share link: %s", app->last_url);
+    log_line(app, "  aprilo sull'altro dispositivo, o /open per lanciarlo");
+    free(enc);
 }
 
 static void handle_command(struct app *app, char *line) {
@@ -2573,6 +2692,8 @@ static void handle_command(struct app *app, char *line) {
         open_panel(app, PANEL_SETTINGS);
     } else if (strcmp(line, "/admin") == 0) {
         open_panel(app, PANEL_ADMIN);
+    } else if (strcmp(line, "/share") == 0) {
+        mint_share_link(app);
     } else if (strcmp(line, "/open") == 0) {
         open_external_url(app, app->last_url);
     } else if (strcmp(line, "/clear") == 0) {
@@ -2792,7 +2913,7 @@ static void handle_command(struct app *app, char *line) {
             enqueue_fetch(app, app->windows[app->current].network, app->windows[app->current].channel);
         }
     } else {
-        log_line(app, "unknown command; supported verbs include /join /part /msg /query /me /nick /away /whois /whowas /who /names /lusers /op /deop /voice /devoice /kick /ban /unban /banlist /invite /quote /oper /watch /disconnect /connect /window /quit");
+        log_line(app, "unknown command; supported verbs include /join /part /msg /query /me /nick /away /whois /whowas /who /names /lusers /op /deop /voice /devoice /kick /ban /unban /banlist /invite /quote /oper /watch /share /disconnect /connect /window /quit");
     }
 }
 
@@ -2872,6 +2993,7 @@ int main(int argc, char **argv) {
     while (argi < argc && strncmp(argv[argi], "--", 2) == 0) {
         if (strcmp(argv[argi], "--user") == 0) mode = "user";
         else if (strcmp(argv[argi], "--visitor") == 0) mode = "visitor";
+        else if (strcmp(argv[argi], "--share") == 0) mode = "share";
         else if (strcmp(argv[argi], "--auto") == 0) mode = "auto";
         else if (strcmp(argv[argi], "--login-email") == 0) {
             if (argi + 1 >= argc) {
@@ -2890,12 +3012,15 @@ int main(int argc, char **argv) {
         }
         argi++;
     }
-    int expected = login_override ? 2 : 3;
+    bool share_mode = strcmp(mode, "share") == 0;
+    int expected = share_mode ? 1 : (login_override ? 2 : 3);
     if (argc - argi != expected) {
         fprintf(stderr, "usage: %s [--auto|--user|--visitor] https://grappa.example.net IDENTIFIER PASSWORD\n", argv[0]);
         fprintf(stderr, "       %s --user --login-email user@example.net https://grappa.example.net PASSWORD\n", argv[0]);
+        fprintf(stderr, "       %s --share https://grappa.example.net/share/<token>\n", argv[0]);
         fprintf(stderr, "       --user turns plain account names into name@shottino.local for grappa registered-user login\n");
         fprintf(stderr, "       --login-email uses EMAIL as the grappa login identifier; IRC nick comes from grappa credentials\n");
+        fprintf(stderr, "       --share consumes a visitor session-share link (mint one with /share); host + token come from the URL\n");
         return 2;
     }
 
@@ -2908,21 +3033,39 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&app->jobs_lock, NULL);
     pthread_cond_init(&app->jobs_cond, NULL);
     app->ws.fd = -1;
-    startup("parsing server URL %s", argv[argi]);
-    if (!parse_url(argv[argi], &app->url)) die("invalid base URL: %s", argv[argi]);
+    char *share_base = NULL, *share_token = NULL;
+    const char *server_url;
+    if (share_mode) {
+        if (!split_share_url(argv[argi], &share_base, &share_token))
+            die("invalid share URL; expected https://host/share/<token>");
+        server_url = share_base;
+    } else {
+        server_url = argv[argi];
+    }
+    startup("parsing server URL %s", server_url);
+    if (!parse_url(server_url, &app->url)) die("invalid base URL: %s", server_url);
     startup("initializing TLS context");
     app->ssl_ctx = SSL_CTX_new(TLS_client_method());
     if (!app->ssl_ctx) die("failed to create TLS context");
     SSL_CTX_set_default_verify_paths(app->ssl_ctx);
     SSL_CTX_set_verify(app->ssl_ctx, SSL_VERIFY_PEER, NULL);
 
-    const char *identifier = login_override ? login_override : argv[argi + 1];
-    const char *password = login_override ? argv[argi + 1] : argv[argi + 2];
-    if (!login_override && strchr(identifier, '@') == NULL) snprintf(app->login_nick, sizeof(app->login_nick), "%s", identifier);
-    char *login_id = login_identifier_for_mode(mode, identifier);
-    startup("authenticating as %s", login_id);
-    if (!attach_or_login(app, login_id, password)) {
+    bool authed;
+    if (share_mode) {
+        startup("consuming share link");
+        authed = attach_or_consume(app, app->url.base, share_token);
+        free(share_base);
+        free(share_token);
+    } else {
+        const char *identifier = login_override ? login_override : argv[argi + 1];
+        const char *password = login_override ? argv[argi + 1] : argv[argi + 2];
+        if (!login_override && strchr(identifier, '@') == NULL) snprintf(app->login_nick, sizeof(app->login_nick), "%s", identifier);
+        char *login_id = login_identifier_for_mode(mode, identifier);
+        startup("authenticating as %s", login_id);
+        authed = attach_or_login(app, login_id, password);
         free(login_id);
+    }
+    if (!authed) {
         pthread_cond_destroy(&app->jobs_cond);
         pthread_mutex_destroy(&app->jobs_lock);
         pthread_mutex_destroy(&app->lock);
@@ -2931,7 +3074,6 @@ int main(int argc, char **argv) {
         return 1;
     }
     startup("authenticated as %s", app->subject);
-    free(login_id);
     startup("loading networks and channels");
     seed_state(app);
     startup("loading initial scrollback for %zu windows", app->window_count);
