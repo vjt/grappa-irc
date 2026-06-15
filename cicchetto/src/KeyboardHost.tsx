@@ -90,13 +90,62 @@ const KeyboardHost: Component = () => {
   // replaces the always-docked model where X had no visible effect.
   const [wantKeyboard, setWantKeyboard] = createSignal(false);
 
+  // Authoritative caret for the compose textarea. Under inputmode=none the
+  // controlled textarea (value={draft()}) re-renders on every setDraft and
+  // iOS resets / mis-reports the selection — so reading ta.selectionStart
+  // between fast keystrokes dropped characters (the insert landed on a stale
+  // or phantom-selected range and replaced text). The host OWNS the caret
+  // instead (the custom keyboard is the sole input driver here); the DOM is
+  // re-synced only when the caret moves OUT of band — the user taps/selects
+  // in the textarea, or an external draft change (history / channel switch)
+  // settles. jsdom can't reproduce the iOS selection reset, so this is
+  // verified by the editText burst tests + on-device dogfood.
+  let caretStart = 0;
+  let caretEnd = 0;
+
+  // Set the host caret + push it to the DOM (visual) once Solid's
+  // controlled re-render has flushed.
+  const setCaret = (start: number, end: number, ta: HTMLTextAreaElement) => {
+    caretStart = start;
+    caretEnd = end;
+    queueMicrotask(() => ta.setSelectionRange(start, end));
+  };
+
+  // Re-read the live caret AFTER the browser settles — for out-of-band
+  // moves (user tap, history recall, channel switch) where nothing is
+  // racing the DOM caret so it's trustworthy again.
+  const resyncCaret = (ta: HTMLTextAreaElement) => {
+    queueMicrotask(() => {
+      caretStart = ta.selectionStart;
+      caretEnd = ta.selectionEnd;
+    });
+  };
+
   onMount(() => {
     const onFocusIn = (e: FocusEvent) => {
       if (isComposeTextarea(e.target)) setWantKeyboard(true);
       else if (isOtherTextEntry(e.target)) setWantKeyboard(false);
     };
+    // A tap / drag-select directly on the compose textarea is the only way
+    // the user moves the caret out of band — the keyboard keys preventDefault
+    // and never move it — so re-sync the host caret to wherever they put it.
+    // `select` covers drag-selection (so typing then replaces the selection);
+    // our own setSelectionRange is always collapsed and never fires `select`,
+    // so there's no feedback loop.
+    const onUserReposition = (e: Event) => {
+      const ta = activeTextarea();
+      if (ta && e.target === ta) resyncCaret(ta);
+    };
     document.addEventListener("focusin", onFocusIn);
-    onCleanup(() => document.removeEventListener("focusin", onFocusIn));
+    document.addEventListener("click", onUserReposition);
+    document.addEventListener("keyup", onUserReposition);
+    document.addEventListener("select", onUserReposition, true);
+    onCleanup(() => {
+      document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener("click", onUserReposition);
+      document.removeEventListener("keyup", onUserReposition);
+      document.removeEventListener("select", onUserReposition, true);
+    });
   });
 
   // Gate: opt-in ON + mobile viewport + coarse pointer (touch). Desktop
@@ -113,11 +162,18 @@ const KeyboardHost: Component = () => {
 
   // Stay open across channel switch (vjt: iOS-like). The compose textarea
   // can be re-created on switch; if the keyboard is open, re-focus the live
-  // one so the caret returns and the keyboard stays docked.
+  // one so the caret returns and the keyboard stays docked. Also re-sync the
+  // host caret to the new channel's draft (its own text + caret position).
   createEffect(() => {
     selectedChannel(); // track switches
     if (!visible()) return;
-    queueMicrotask(() => activeTextarea()?.focus());
+    queueMicrotask(() => {
+      const ta = activeTextarea();
+      if (!ta) return;
+      ta.focus();
+      caretStart = ta.selectionStart;
+      caretEnd = ta.selectionEnd;
+    });
   });
 
   // Reservation: lift the bottom chrome (composer + BottomBar) above the
@@ -134,16 +190,14 @@ const KeyboardHost: Component = () => {
     });
   });
 
-  // Apply an editing intent through the DRAFT STORE, not the live textarea.
-  // Reading ta.value mid-render dropped chars under fast typing; the store
-  // is synchronous + authoritative. The caret is then restored on the next
-  // microtask, AFTER Solid's controlled-value re-render has flushed (which
-  // otherwise yanks the caret to the end). Same shape as tab-complete.
+  // Apply an editing intent against the DRAFT STORE (synchronous, the source
+  // of truth) using the HOST-OWNED caret (not the racy DOM caret). Update
+  // the host caret + push it to the DOM.
   const applyEdit = (intent: EditIntent, key: ChannelKey, ta: HTMLTextAreaElement) => {
     const current = getDraft(key);
-    const { text, caret } = editText(intent, current, ta.selectionStart, ta.selectionEnd);
+    const { text, caret } = editText(intent, current, caretStart, caretEnd);
     if (text !== current) setDraft(key, text);
-    queueMicrotask(() => ta.setSelectionRange(caret, caret));
+    setCaret(caret, caret, ta);
   };
 
   const onIntent = (intent: KeyboardIntent) => {
@@ -163,22 +217,24 @@ const KeyboardHost: Component = () => {
         ta.closest("form")?.requestSubmit();
         break;
       case "history":
+        // Recall replaces the whole draft; let the caret settle to where the
+        // re-render lands (end of the recalled text) and re-sync.
         if (intent.dir === "prev") recallPrev(key);
         else recallNext(key);
+        resyncCaret(ta);
         break;
       case "accessory":
         if (intent.id === "slash" || intent.id === "hash") {
           applyEdit({ kind: "insertText", text: intent.id === "slash" ? "/" : "#" }, key, ta);
         } else if (intent.id === "tab") {
-          // Reuse the Shell.tsx cycleNickComplete approach: read from the
-          // draft store (not ta.value) so fast typing doesn't miss chars;
-          // schedule the caret write on the next microtask so the Solid
-          // signal write has flushed first.
+          // Reuse the Shell.tsx cycleNickComplete approach: draft store for
+          // text, HOST caret for position. tabComplete returns the new
+          // cursor; thread it back into the host caret.
           const current = getDraft(key);
-          const result = tabComplete(key, current, ta.selectionStart, true);
+          const result = tabComplete(key, current, caretStart, true);
           if (!result) return;
           setDraft(key, result.newInput);
-          queueMicrotask(() => ta.setSelectionRange(result.newCursor, result.newCursor));
+          setCaret(result.newCursor, result.newCursor, ta);
         }
         break;
       case "dismiss":

@@ -57,4 +57,28 @@ describe("editText", () => {
   it("moveCaret leaves the text unchanged", () => {
     expect(editText({ kind: "moveCaret", dir: "left" }, "abc", 2, 2).text).toBe("abc");
   });
+
+  // Round-3 dogfood: typing fast still dropped chars. Root cause was the
+  // host reading the CARET from the DOM — under inputmode=none iOS resets
+  // the controlled textarea's selection on each re-render, so a fast burst
+  // read a stale (often 0) position. These two tests pin the contrast.
+  it("a lying DOM caret (always 0) reverses the burst — the bug shape", () => {
+    let text = "";
+    for (const ch of "abc") {
+      // Simulate reading the DOM caret, which iOS keeps resetting to 0.
+      text = editText({ kind: "insertText", text: ch }, text, 0, 0).text;
+    }
+    expect(text).toBe("cba");
+  });
+
+  it("threading the host-owned caret keeps a fast burst correct", () => {
+    let text = "";
+    let caret = 0;
+    for (const ch of "porco dio") {
+      const r = editText({ kind: "insertText", text: ch }, text, caret, caret);
+      text = r.text;
+      caret = r.caret;
+    }
+    expect(text).toBe("porco dio");
+  });
 });
