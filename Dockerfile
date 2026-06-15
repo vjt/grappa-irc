@@ -13,7 +13,7 @@
 # path. Elixir + OTP are still pinned via the tag; alpine version
 # floats with whatever Docker library publishes for that tag.
 
-FROM elixir:1.19-otp-28-alpine
+FROM elixir:1.20.0-otp-29-alpine
 
 # build-base + git for hex deps; sqlite-dev for ecto_sqlite3 NIF link;
 # curl for the in-container /healthz probe + future hot-deploy POST;
