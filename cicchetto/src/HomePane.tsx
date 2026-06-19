@@ -42,6 +42,10 @@ const HomePaneVisitor: Component = () => {
         IRC channels appear in the sidebar. Pick one to start chatting. Your visitor session is
         ephemeral — when it expires, scrollback for this nick stays archived on the bouncer.
       </p>
+      <p class="muted">
+        This is IRC: to join a channel, tap the server tab below and <code>/join</code> it. To get
+        started, <code>/join #grappa</code>.
+      </p>
     </div>
   );
 };
