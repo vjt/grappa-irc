@@ -1588,6 +1588,127 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
   end
 
+  # Issue #62: `/away` returned a bare "Send failed" for visitors because
+  # the channel `handle_in("away", ...)` arms short-circuited every visitor
+  # subject with `visitor_no_away`. The rationale ("the facade only routes
+  # to user sessions") was factually wrong — each visitor owns a private,
+  # isolated `Session.Server` + upstream IRC connection, and
+  # `Session.set_explicit_away/3,4` already accepts `t:Session.subject/0`.
+  # Explicit `/away` is a per-connection user action (distinct from the
+  # WSPresence-driven auto-away that genuinely stays user-only). These tests
+  # mirror the C3 WHOIS carve-out: subject-aware dispatch so visitors hit
+  # the same `Session.set_explicit_away/unset_explicit_away` path users do.
+  describe "S3.4 — /away explicit away dispatch (user + visitor, issue #62)" do
+    test "user socket: away set sends AWAY :reason upstream and returns :ok" do
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+      welcome_session_on_channel(irc_server, "#snap")
+      topic = Topic.user(user.name)
+
+      {:ok, _, socket} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(socket, "away", %{
+          "action" => "set",
+          "network" => network.slug,
+          "reason" => "brb"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "AWAY :brb\r\n"), 1_000)
+    end
+
+    test "visitor socket: away set with live session sends AWAY :reason upstream" do
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "away", %{
+          "action" => "set",
+          "network" => network.slug,
+          "reason" => "gone-fishing"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "AWAY :gone-fishing\r\n"), 1_000)
+    end
+
+    test "visitor socket: away unset after set issues bare AWAY upstream" do
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      set_ref =
+        push(visitor_socket, "away", %{
+          "action" => "set",
+          "network" => network.slug,
+          "reason" => "afk"
+        })
+
+      assert_reply(set_ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "AWAY :afk"), 1_000)
+
+      unset_ref =
+        push(visitor_socket, "away", %{
+          "action" => "unset",
+          "network" => network.slug
+        })
+
+      assert_reply(unset_ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "AWAY\r\n"), 1_000)
+    end
+
+    test "visitor socket: away set without live session returns no_session (NOT visitor_no_away)" do
+      # The gate is gone; a visitor without a live `Session.Server` must now
+      # surface the SAME real reason a user does — `no_session` from the
+      # facade — never the dropped `visitor_no_away` short-circuit.
+      slug = "snap-visitor-away-noses-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "away", %{
+          "action" => "set",
+          "network" => network.slug,
+          "reason" => "brb"
+        })
+
+      assert_reply(ref, :error, %{error: "no_session"})
+    end
+  end
+
   # CP24 cluster post-cr-review bucket B reviewer add-on: read-only
   # ops verbs (`who`, `names`, `banlist`) were still routing through
   # `dispatch_ops_verb/2` post-bucket-A — visitors got `visitor_not_allowed`

@@ -12583,3 +12583,42 @@ along with three other defects.
 Still deferred to a visual pass: the lollipop magnify SHAPE, and exact key
 spans / greys / radii vs the reference PNGs. `CELL_WIDTH=44` dedup still
 pending.
+
+## 2026-06-19 — #62: visitor `/away` un-gated + channel-push errors get human copy
+
+Two defects, one report. Visitor `/away` returned a bare `Send failed`;
+authenticated users worked.
+
+**Defect A — the gate had a bogus rationale.** The channel
+`handle_in("away", ...)` arms short-circuited every visitor subject with
+`{:error, %{error: "visitor_no_away"}}`. The moduledoc justified it as "the
+`set_explicit_away/3` facade only routes to user sessions" — factually
+wrong. `Session.set_explicit_away/3,4` is guarded on `is_subject/1` and
+routes via `call_session(subject, …)`; it accepts `{:visitor, id}` exactly
+like `{:user, id}`. And each visitor owns a PRIVATE, isolated
+`Session.Server` + upstream IRC connection with a unique nick (Bootstrap
+`spawn_visitor` → unique `{:visitor, id}` registry key), so a visitor's
+`away_state` is per-connection — AWAY can't clobber anyone else. The gate
+conflated explicit `/away` (a per-connection user action) with the
+WSPresence-driven AUTO-away, which genuinely stays user-only because
+visitor sessions don't subscribe to `WSPresence`. Fix: delete the gate,
+make the away dispatch subject-aware via the existing `resolve_subject/1`
+(the same C3 WHOIS carve-out pattern). Net simplification — one code path
+replacing the `if visitor? … else` fork; `safe_get_user` →
+`resolve_subject`; the `dispatch_set_away`/`dispatch_unset_away` helpers
+now take `Session.subject()` instead of `Accounts.User.t()`.
+
+**Defect B — `compose.ts` swallowed every channel-push code into "send
+failed".** The submit catch only ran `friendlyApiError` for `ApiError`
+(REST); a `ChannelPushError` (the `/away` push reject shape) fell through
+to the generic `"send failed"` string, hiding the real reason. Violates
+the CLAUDE.md "no silent-swallow at boundaries" rule. Fix: a sibling
+`friendlyChannelError.ts` — same closed-union-token → human-copy
+discipline as `friendlyApiError` (loud `err.message` fallback for unmapped
+arms, exhaustive vitest matrix). Wired into the catch:
+`ApiError → friendlyApiError`, `ChannelPushError → friendlyChannelError`,
+else `"send failed"`. The now-dead `visitor_no_away` token is deliberately
+NOT mapped — a dead arm is silent UX rot (cf. the
+`captcha_provider_unavailable` history). Channel coverage note: there were
+ZERO channel-level `/away` tests before; the handler boundary AND the gate
+were untested, which is why this shipped.

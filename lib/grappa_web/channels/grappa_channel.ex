@@ -328,10 +328,18 @@ defmodule GrappaWeb.GrappaChannel do
 
   # S3.4 — /away slash-command: set explicit away.
   #
-  # Resolves the network slug to a network_id via `Networks.get_network_by_slug/1`,
-  # then delegates to `Session.set_explicit_away/3`. Returns `{:ok, _}` on success.
-  # Visitors are rejected — visitor sessions have no auto-away state and the
-  # `set_explicit_away/3` facade only routes to user sessions.
+  # Resolves the socket identity to a `t:Grappa.Session.subject/0` via
+  # `resolve_subject/1` and the network slug to a network_id via
+  # `Networks.get_network_by_slug/1`, then delegates to
+  # `Session.set_explicit_away/3,4`. Returns `{:ok, _}` on success.
+  #
+  # Issue #62: visitors ARE allowed — each visitor owns a private, isolated
+  # `Session.Server` + upstream IRC connection, and the `set_explicit_away`
+  # facade already accepts any `subject()`. Explicit `/away` is a
+  # per-connection user action; this is distinct from the WSPresence-driven
+  # AUTO-away, which stays user-only because visitor sessions don't subscribe
+  # to `WSPresence` (see DESIGN_NOTES, auto-away). Mirrors the C3 WHOIS
+  # carve-out: subject-aware dispatch, not a `visitor?` short-circuit.
   #
   # S4.3: reads `origin_window` from the payload (if present) and passes it to
   # Session.set_explicit_away/4 so 305/306 reply numerics route back to the
@@ -342,42 +350,31 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_binary(slug) and is_binary(reason) do
-    user_name = socket.assigns.user_name
-
-    if visitor?(user_name) do
-      {:reply, {:error, %{error: "visitor_no_away"}}, socket}
-    else
-      origin_window = Map.get(payload, "origin_window")
-      with_body_check(socket, reason, fn -> away_set_dispatch(socket, user_name, slug, reason, origin_window) end)
-    end
+    origin_window = Map.get(payload, "origin_window")
+    with_body_check(socket, reason, fn -> away_set_dispatch(socket, slug, reason, origin_window) end)
   end
 
   # S3.4 — /away slash-command: unset explicit away.
   #
-  # Visitors are rejected with `visitor_no_away`. Returns `{:error,
-  # %{error: "not_explicit"}}` if the session is not in `:away_explicit` state
-  # (mirrors `Session.unset_explicit_away/2`'s `{:error, :not_explicit}` return).
+  # Issue #62: subject-aware (visitors allowed, see the `set` arm above).
+  # Returns `{:error, %{error: "not_explicit"}}` if the session is not in
+  # `:away_explicit` state (mirrors `Session.unset_explicit_away/2`'s
+  # `{:error, :not_explicit}` return).
   #
   # S4.3: reads `origin_window` from payload and passes to Session facade.
   def handle_in("away", %{"action" => "unset", "network" => slug} = payload, socket)
       when is_binary(slug) do
-    user_name = socket.assigns.user_name
+    origin_window = Map.get(payload, "origin_window")
 
-    if visitor?(user_name) do
-      {:reply, {:error, %{error: "visitor_no_away"}}, socket}
+    with {:ok, subject} <- resolve_subject(socket.assigns.user_name),
+         {:ok, %Network{} = network} <- Networks.get_network_by_slug(slug),
+         :ok <- dispatch_unset_away(subject, network, origin_window) do
+      {:reply, :ok, socket}
     else
-      origin_window = Map.get(payload, "origin_window")
-
-      with {:ok, user} <- safe_get_user(user_name),
-           {:ok, %Network{} = network} <- Networks.get_network_by_slug(slug),
-           :ok <- dispatch_unset_away(user, network, origin_window) do
-        {:reply, :ok, socket}
-      else
-        :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
-        {:error, :not_found} -> {:reply, {:error, %{error: "network_not_found"}}, socket}
-        {:error, :no_session} -> {:reply, {:error, %{error: "no_session"}}, socket}
-        {:error, :not_explicit} -> {:reply, {:error, %{error: "not_explicit"}}, socket}
-      end
+      :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
+      {:error, :not_found} -> {:reply, {:error, %{error: "network_not_found"}}, socket}
+      {:error, :no_session} -> {:reply, {:error, %{error: "no_session"}}, socket}
+      {:error, :not_explicit} -> {:reply, {:error, %{error: "not_explicit"}}, socket}
     end
   end
 
@@ -1317,13 +1314,12 @@ defmodule GrappaWeb.GrappaChannel do
           Phoenix.Socket.t(),
           String.t(),
           String.t(),
-          String.t(),
           String.t() | nil
         ) :: {:reply, term(), Phoenix.Socket.t()}
-  defp away_set_dispatch(socket, user_name, slug, reason, origin_window) do
-    with {:ok, user} <- safe_get_user(user_name),
+  defp away_set_dispatch(socket, slug, reason, origin_window) do
+    with {:ok, subject} <- resolve_subject(socket.assigns.user_name),
          {:ok, %Network{} = network} <- Networks.get_network_by_slug(slug),
-         :ok <- dispatch_set_away(user, network, reason, origin_window) do
+         :ok <- dispatch_set_away(subject, network, reason, origin_window) do
       {:reply, :ok, socket}
     else
       :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
@@ -1420,26 +1416,29 @@ defmodule GrappaWeb.GrappaChannel do
   # S4.3: dispatch set_away with or without origin_window. When origin_window
   # is nil (cicchetto didn't send it — pre-C-bucket clients), falls back to
   # the 3-arg variant that doesn't track last_command_window.
-  @spec dispatch_set_away(Accounts.User.t(), Network.t(), String.t(), map() | nil) ::
+  #
+  # Issue #62: `subject` is the resolved `{:user, id} | {:visitor, id}` tuple
+  # from `resolve_subject/1` — the facade routes to whichever session owns it.
+  @spec dispatch_set_away(Session.subject(), Network.t(), String.t(), map() | nil) ::
           :ok | {:error, :no_session | :invalid_line}
-  defp dispatch_set_away(%Accounts.User{} = user, %Network{} = network, reason, nil) do
-    Session.set_explicit_away({:user, user.id}, network.id, reason)
+  defp dispatch_set_away(subject, %Network{} = network, reason, nil) when is_tuple(subject) do
+    Session.set_explicit_away(subject, network.id, reason)
   end
 
-  defp dispatch_set_away(%Accounts.User{} = user, %Network{} = network, reason, origin_window)
-       when is_map(origin_window) do
-    Session.set_explicit_away({:user, user.id}, network.id, reason, origin_window)
+  defp dispatch_set_away(subject, %Network{} = network, reason, origin_window)
+       when is_tuple(subject) and is_map(origin_window) do
+    Session.set_explicit_away(subject, network.id, reason, origin_window)
   end
 
   # S4.3: dispatch unset_away with or without origin_window.
-  @spec dispatch_unset_away(Accounts.User.t(), Network.t(), map() | nil) ::
+  @spec dispatch_unset_away(Session.subject(), Network.t(), map() | nil) ::
           :ok | {:error, :no_session | :not_explicit}
-  defp dispatch_unset_away(%Accounts.User{} = user, %Network{} = network, nil) do
-    Session.unset_explicit_away({:user, user.id}, network.id)
+  defp dispatch_unset_away(subject, %Network{} = network, nil) when is_tuple(subject) do
+    Session.unset_explicit_away(subject, network.id)
   end
 
-  defp dispatch_unset_away(%Accounts.User{} = user, %Network{} = network, origin_window)
-       when is_map(origin_window) do
-    Session.unset_explicit_away({:user, user.id}, network.id, origin_window)
+  defp dispatch_unset_away(subject, %Network{} = network, origin_window)
+       when is_tuple(subject) and is_map(origin_window) do
+    Session.unset_explicit_away(subject, network.id, origin_window)
   end
 end
