@@ -1,8 +1,9 @@
 import { createSignal } from "solid-js";
-import { ApiError, patchNetwork, postJoin, postNick, postPart, postTopic } from "./api";
+import { ApiError, ChannelPushError, patchNetwork, postJoin, postNick, postPart, postTopic } from "./api";
 import { token } from "./auth";
 import type { ChannelKey } from "./channelKey";
 import { friendlyApiError } from "./friendlyApiError";
+import { friendlyChannelError } from "./friendlyChannelError";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
 import { splitMessageLines } from "./messageLines";
@@ -687,7 +688,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       // human copy as the Login banner does, instead of leaking the
       // raw snake_case wire token into operator-visible alerts.
       // `feedback_no_localized_strings_server_side`.
-      return { error: e instanceof ApiError ? friendlyApiError(e) : "send failed" };
+      //
+      // Issue #62: channel-push rejections (ChannelPushError — `/away`
+      // set/unset) get the sibling `friendlyChannelError` treatment.
+      // Pre-fix every channel-push error collapsed into the generic
+      // "send failed" string, swallowing the real reason (the live
+      // incident: a visitor's `/away` showed "Send failed" with no clue).
+      if (e instanceof ApiError) return { error: friendlyApiError(e) };
+      if (e instanceof ChannelPushError) return { error: friendlyChannelError(e) };
+      return { error: "send failed" };
     }
 
     // Success: push the original draft (NOT the parsed cmd) onto history,
