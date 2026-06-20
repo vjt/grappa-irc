@@ -13,15 +13,14 @@
 //
 // The full vertical reuses the UX-6-B embedded-upload journey (real
 // POST /api/uploads, real IRC echo, real bytes served back) and then
-// drives the NEW click path. The `naturalWidth > 0` assertion proves
-// the modal <img> actually loaded the bytes through nginx — NOT that
-// the production CSP admits them: e2e nginx-test.conf serves no
-// Content-Security-Policy header (the CSP lives only in
-// infra/snippets/security-headers.conf, prod-only). Until the
-// e2e-CSP-parity todo (High) lands, a CSP regression that blocks the
-// modal's media element would pass this suite — prod-CSP fidelity
-// rests on the design guarantee that img-src/media-src 'self' covers
-// same-origin sources and the classifier admits nothing else.
+// drives the NEW click path. This all runs under the REAL prod CSP —
+// the e2e nginx serves infra/snippets/security-headers.conf via the
+// locations-api.conf include chain (verified + pinned by
+// nginx-csp-range-parity.spec.ts, e2e CSP parity 2026-06-11), and the
+// `_cspGuard` fixture fails any spec whose journey trips a
+// `securitypolicyviolation`. So `naturalWidth > 0` here proves both
+// that the bytes came through nginx AND that the CSP admits the
+// modal's media element.
 //
 // NOT covered here: the iOS-standalone x-safari-https href rewrite of
 // "open in browser" (dogfood fix 2026-06-11). The gate is
@@ -35,40 +34,31 @@ import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
+import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
-// UX-6-B embedded-upload journey: real PNG through the picker, real
-// POST /api/uploads, real IRC echo. Returns the scrollback media link
-// ready to click.
+// UX-6-B embedded-upload journey (shared fixtures/uploadJourney.ts):
+// real PNG through the picker, real POST /api/uploads, real IRC echo.
+// Returns the scrollback media link ready to click.
 async function uploadPngAndGetLink(page: Page): Promise<{
   slug: string;
   url: string;
   row: Locator;
   link: Locator;
 }> {
-  const picker = page.locator("input[data-file-picker]");
-  await picker.setInputFiles({
-    name: "media-viewer.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(TINY_PNG_HEX, "hex"),
-  });
-  const privacyModal = page.getByRole("dialog", { name: /Upload to .+grappa/i });
-  await expect(privacyModal).toBeVisible({ timeout: 5_000 });
-  const [uploadRes] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().includes("/api/uploads") && r.request().method() === "POST",
-      { timeout: 10_000 },
-    ),
-    privacyModal.locator("button", { hasText: /continue/i }).click(),
-  ]);
-  expect(uploadRes.status()).toBe(201);
-  const { slug, url } = (await uploadRes.json()) as { slug: string; url: string };
+  const { slug, url } = await uploadViaPicker(
+    page,
+    {
+      name: "media-viewer.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(TINY_PNG_HEX, "hex"),
+    },
+    { postTimeout: 10_000 },
+  );
 
   // 📸 PRIVMSG echoes back; the anchor carries the media-link class.
-  const row = scrollbackLine(page, "privmsg", "📸").filter({ hasText: slug });
-  await expect(row.first()).toBeVisible({ timeout: 15_000 });
-  const link = row.first().locator(".scrollback-link").first();
+  const { row, link } = await mediaScrollbackRow(page, "📸", slug);
   await expect(link).toHaveClass(/scrollback-media-link/);
   return { slug, url, row, link };
 }
@@ -88,8 +78,8 @@ test("📸 upload link click opens the in-app viewer instead of navigating", asy
   expect(page.url()).toBe(cicUrl);
 
   // The <img> actually loaded the bytes through nginx (naturalWidth 0
-  // would mean a broken fetch). CSP is NOT exercised here — see the
-  // header comment.
+  // would mean a broken fetch), under the prod CSP — see the header
+  // comment.
   const img = viewer.locator("img.media-viewer-media");
   await expect(img).toHaveAttribute("src", url);
   await expect(img).toHaveJSProperty("complete", true, { timeout: 10_000 });

@@ -31,6 +31,7 @@ import {
   NETWORK_NICK,
   NETWORK_SLUG,
 } from "../fixtures/seedData";
+import { LITTERBOX_MODAL_HEADING, pickFile } from "../fixtures/uploadJourney";
 
 const FIXTURE_URL = "https://litter.catbox.moe/i2-fixture.png";
 const CHANNEL = AUTOJOIN_CHANNELS[0];
@@ -105,15 +106,15 @@ test.describe("I-2 litterbox path (admin-pinned host)", () => {
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
     await settingsHydrated;
 
-    const picker = page.locator("input[data-file-picker]");
-    await picker.setInputFiles({
-      name: "screenshot.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(TINY_PNG_HEX, "hex"),
-    });
-
-    const modal = page.getByRole("dialog", { name: /Upload to litterbox\.catbox\.moe/i });
-    await expect(modal).toBeVisible({ timeout: 5_000 });
+    const modal = await pickFile(
+      page,
+      {
+        name: "screenshot.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(TINY_PNG_HEX, "hex"),
+      },
+      LITTERBOX_MODAL_HEADING,
+    );
     await expect(modal).toContainText("litterbox.catbox.moe");
 
     await modal.locator("button", { hasText: /continue/i }).click();
@@ -142,15 +143,15 @@ test.describe("I-2 litterbox path (admin-pinned host)", () => {
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
     await settingsHydrated;
 
-    const picker = page.locator("input[data-file-picker]");
-    await picker.setInputFiles({
-      name: "screenshot.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(TINY_PNG_HEX, "hex"),
-    });
-
-    const modal = page.getByRole("dialog", { name: /Upload to litterbox\.catbox\.moe/i });
-    await expect(modal).toBeVisible({ timeout: 5_000 });
+    const modal = await pickFile(
+      page,
+      {
+        name: "screenshot.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(TINY_PNG_HEX, "hex"),
+      },
+      LITTERBOX_MODAL_HEADING,
+    );
     await modal.locator("button", { hasText: /cancel/i }).click();
     await expect(modal).toBeHidden({ timeout: 5_000 });
 

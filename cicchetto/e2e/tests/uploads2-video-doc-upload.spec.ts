@@ -30,6 +30,7 @@ import type { Page } from "@playwright/test";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
+import { uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
@@ -43,35 +44,6 @@ async function openChannel(page: Page): Promise<void> {
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 }
 
-// Feed the picker, ack the privacy modal (fresh context per test →
-// the modal fires every time), then pin the POST /api/uploads
-// response.
-async function uploadViaPicker(
-  page: Page,
-  file: { name: string; mimeType: string; buffer: Buffer },
-  postTimeout: number,
-): Promise<{ slug: string; url: string }> {
-  const picker = page.locator("input[data-file-picker]");
-  await picker.setInputFiles(file);
-
-  // Embedded host is the server-side default — modal heading reads
-  // "Upload to this grappa server" (embeddedHost.displayName).
-  const modal = page.getByRole("dialog", { name: /Upload to .+grappa/i });
-  await expect(modal).toBeVisible({ timeout: 5_000 });
-
-  // Generous timeout: the video path lazy-loads the transcode chunk
-  // and runs the transcode (or its fallback probe) before the POST.
-  const [uploadRes] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().includes("/api/uploads") && r.request().method() === "POST",
-      { timeout: postTimeout },
-    ),
-    modal.locator("button", { hasText: /continue/i }).click(),
-  ]);
-  expect(uploadRes.status()).toBe(201);
-  return (await uploadRes.json()) as { slug: string; url: string };
-}
-
 test("uploads-2 — document: picker upload.txt → 📄 link in scrollback → GET serves bytes", async ({
   page,
 }) => {
@@ -80,7 +52,7 @@ test("uploads-2 — document: picker upload.txt → 📄 link in scrollback → 
   const { slug } = await uploadViaPicker(
     page,
     { name: "upload.txt", mimeType: "text/plain", buffer: body },
-    10_000,
+    { postTimeout: 10_000 },
   );
 
   // The 📄-prefixed PRIVMSG lands after the IRC echo.
@@ -113,7 +85,8 @@ test("uploads-2 — video (chromium): picker tiny.mp4 → transcode-or-fallback 
   const { slug } = await uploadViaPicker(
     page,
     { name: "tiny.mp4", mimeType: "video/mp4", buffer: fixture("tiny.mp4") },
-    60_000, // lazy mediabunny chunk + transcode (or fallback probe) precede the POST
+    // lazy mediabunny chunk + transcode (or fallback probe) precede the POST
+    { postTimeout: 60_000 },
   );
 
   const row = scrollbackLine(page, "privmsg", "🎬").filter({ hasText: slug });

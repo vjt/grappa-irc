@@ -1,4 +1,4 @@
-import { test as base } from "@playwright/test";
+import { test as base, expect as baseExpect } from "@playwright/test";
 import { resetSubject } from "./grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededAdmin, NETWORK_SLUG, VJT_USER } from "./seedData";
 
@@ -38,7 +38,80 @@ import { AUTOJOIN_CHANNELS, getSeededAdmin, NETWORK_SLUG, VJT_USER } from "./see
 // (compile-gated to dev/test Mix envs).
 const SEED_COUNT = 200;
 
-export const test = base.extend<{ _vjtReset: void }>({
+// `_cspGuard` (e2e CSP parity, 2026-06-11) — the e2e nginx serves the
+// REAL prod Content-Security-Policy (infra/snippets/
+// security-headers.conf via locations-api.conf, since 2026-05-22),
+// but a CSP-blocked resource only fails a spec if the spec happens to
+// assert the blocked outcome. That's how the missing `media-src
+// blob:` shipped (6f3327c): the blocked duration probe degraded the
+// video upload to its capability fallback, the transcode-agnostic
+// spec stayed green, and only prod dogfood saw it. This fixture
+// closes the class: every page in the context registers a
+// `securitypolicyviolation` listener (W3C CSP3 event, fires on the
+// document for every enforced block) and the teardown asserts ZERO
+// violations were collected. Any future directive regression turns
+// every spec that exercises the blocked path red.
+//
+// Scope limits, both deliberate:
+//   - document-context only: violations inside dedicated/service
+//     workers don't bubble to any document. The 6f3327c worker-src
+//     gap is still covered indirectly — the worker SPAWN from blob:
+//     is a document-context violation; only blocks INSIDE an
+//     already-running worker are invisible.
+//   - wrapped-import specs only: bare `@playwright/test` specs
+//     (admin-*, m9b-*) skip the guard, same as they skip the vjt
+//     reset. The media/upload surfaces that motivated this all
+//     import the wrapped `test`.
+interface CspViolation {
+  blockedURI: string;
+  violatedDirective: string;
+  documentURI: string;
+  sourceFile: string;
+  lineNumber: number;
+}
+
+export const test = base.extend<{ _vjtReset: void; _cspGuard: void }>({
+  _cspGuard: [
+    async ({ context }, use) => {
+      const violations: CspViolation[] = [];
+      await context.exposeBinding(
+        "__grappaCspViolation",
+        (_source, violation: CspViolation) => {
+          violations.push(violation);
+        },
+      );
+      await context.addInitScript(() => {
+        document.addEventListener("securitypolicyviolation", (e) => {
+          const report = (
+            window as unknown as {
+              __grappaCspViolation?: (v: {
+                blockedURI: string;
+                violatedDirective: string;
+                documentURI: string;
+                sourceFile: string;
+                lineNumber: number;
+              }) => void;
+            }
+          ).__grappaCspViolation;
+          report?.({
+            blockedURI: e.blockedURI,
+            violatedDirective: e.violatedDirective,
+            documentURI: e.documentURI,
+            sourceFile: e.sourceFile,
+            lineNumber: e.lineNumber,
+          });
+        });
+      });
+      await use();
+      baseExpect(
+        violations,
+        "CSP violations collected during the spec — a directive in " +
+          "infra/snippets/security-headers.conf blocks a resource this " +
+          "journey needs (the prod-only 6f3327c bug class)",
+      ).toEqual([]);
+    },
+    { auto: true },
+  ],
   _vjtReset: [
     async ({}, use) => {
       await use();
