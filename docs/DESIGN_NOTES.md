@@ -12622,3 +12622,35 @@ NOT mapped — a dead arm is silent UX rot (cf. the
 `captcha_provider_unavailable` history). Channel coverage note: there were
 ZERO channel-level `/away` tests before; the handler boundary AND the gate
 were untested, which is why this shipped.
+
+## 2026-06-20 — #31: visitor `/invite` un-gated (third carve-out, C3 lineage)
+
+Same shape as #62, third instance of the same root. The channel
+`handle_in("invite", ...)` arm routed through `dispatch_ops_verb/3`, which
+short-circuits every visitor subject with `visitor_not_allowed` before the
+verb dispatches. INVITE is a write verb — it was filed under the
+"state-mutating ops" bucket alongside op/kick/ban — but it does not mutate
+channel/server state the way those do: it sends an *invitation* the target
+may ignore, and the upstream IRC server is the real authority on whether
+the issuer may send it (must be on the channel; op for `+i`). A visitor is
+on the channels their own session joined, so inviting a friend to a channel
+they're in is exactly as legitimate as the WHO/NAMES they can already
+issue. `Session.send_invite/4` already accepts `t:Session.subject/0`
+(`is_subject/1` guard + `call_session/3`), so the fix is the mechanical C3
+migration: `dispatch_ops_verb/3` → `dispatch_subject_verb/3`, thunk takes
+`subject` instead of `user`. A visitor without a live `Session.Server` now
+gets `no_session` (the real reason) instead of the gate's
+`visitor_not_allowed`.
+
+The recurring lesson (C3 WHOIS → #62 `/away` → #31 `/invite`): the
+"ops verb = visitor-rejected" bucket conflated *transport entitlement*
+(does this subject own a session that can emit the line?) with
+*IRC-protocol authority* (will the server accept it?). The second is
+upstream's job, not the channel boundary's. The moduledoc blanket
+"all ops verbs reject visitor sockets" was the source of the drift — now
+rewritten to enumerate the state-mutating set explicitly and name the
+read-only + `/away` + `/invite` carve-outs, so the next visitor-eligible
+verb isn't mis-bucketed by pattern-copying. Tests mirror the C3 WHOIS trio:
+live-session → INVITE upstream, no-session → `no_session`, malformed-nick →
+`invalid_nick` (the inbound `Identifier` gate fires before the facade, so
+that one passed pre-fix — belt-and-braces).

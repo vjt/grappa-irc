@@ -113,7 +113,14 @@ defmodule GrappaWeb.GrappaChannel do
     missing) and broadcasts the updated `query_windows_list` on the user topic.
     Subject-scoped per V2.
 
-  All ops verbs reject visitor sockets and return `{:error, %{error: "visitor_not_allowed"}}`.
+  Visitor sockets are rejected (`visitor_not_allowed`) for the
+  state-mutating channel ops verbs (op/deop/voice/devoice/kick/ban/unban/
+  umode/mode/topic_set/topic_clear) plus the operator/escape-hatch verbs
+  (oper/raw). The read-only query verbs (whois/whowas/
+  who/names/banlist/lusers), `/away` (#62), and `/invite` (#31) are
+  visitor-eligible carve-outs: each visitor owns a private `Session.Server`
+  + upstream connection, and the upstream IRC server is the authority on
+  whether a given verb is permitted. See the per-clause comments.
 
   ## Outbound event shapes
 
@@ -496,16 +503,26 @@ defmodule GrappaWeb.GrappaChannel do
   end
 
   # /invite alice  →  INVITE alice #chan (RFC 2812: nick first, channel second)
+  #
+  # Issue #31: routes via `dispatch_subject_verb/3`, NOT `dispatch_ops_verb/3`.
+  # INVITE is a write verb, but visitors are entitled to issue it — each
+  # visitor owns a private, isolated `Session.Server` + upstream IRC
+  # connection, `Session.send_invite/4` already accepts `t:Session.subject/0`
+  # (guarded on `is_subject/1` + routed via `call_session/3`), and the
+  # upstream IRC server is the real authority on whether the invite is
+  # permitted (issuer must be on the channel; op for +i). Mirrors the #62
+  # `/away` and C3 WHOIS carve-outs — a visitor without a live session gets
+  # `no_session`, never the `visitor_not_allowed` short-circuit.
   def handle_in(
         "invite",
         %{"network_id" => network_id, "channel" => channel, "nick" => nick},
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_binary(nick) do
-    dispatch_ops_verb(
+    dispatch_subject_verb(
       socket,
       fn -> validate_args(channel: channel, nick: nick) end,
-      fn user -> Session.send_invite({:user, user.id}, network_id, channel, nick) end
+      fn subject -> Session.send_invite(subject, network_id, channel, nick) end
     )
   end
 

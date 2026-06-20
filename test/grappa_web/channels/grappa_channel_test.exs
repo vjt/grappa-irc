@@ -1709,6 +1709,99 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
   end
 
+  # Issue #31: visitors could not `/invite` — the channel
+  # `handle_in("invite", ...)` arm routed through `dispatch_ops_verb/2`,
+  # which short-circuits every visitor subject with `visitor_not_allowed`
+  # before the verb dispatches. INVITE is a write verb, but visitors are
+  # entitled to issue it: each visitor owns a private, isolated
+  # `Session.Server` + upstream IRC connection, `Session.send_invite/4`
+  # already accepts `t:Session.subject/0`, and the upstream IRC server is
+  # the real authority on whether the invite is permitted (must be on the
+  # channel; must be an op for +i). Mirrors the #62 `/away` + C3 WHOIS
+  # carve-outs: subject-aware dispatch so visitors hit the same
+  # `Session.send_invite/4` path users do.
+  describe "issue #31 — visitor /invite dispatch carve-out" do
+    test "visitor socket: invite with live session sends INVITE nick #chan upstream" do
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "invite", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nick" => "alice"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "INVITE alice #snap\r\n"), 1_000)
+    end
+
+    test "visitor socket: invite without session returns no_session (NOT visitor_not_allowed)" do
+      # The visitor exists but has no live `Session.Server`. The fix MUST
+      # surface `no_session` from `Session.send_invite/4`, never the
+      # pre-fix `dispatch_ops_verb/2` `visitor_not_allowed` short-circuit.
+      slug = "snap-visitor-inv-noses-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "invite", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nick" => "alice"
+        })
+
+      assert_reply(ref, :error, %{error: "no_session"})
+    end
+
+    test "visitor socket: invite with malformed nick returns invalid_nick" do
+      # Defense in depth — the inbound `Identifier.valid_nick?` gate fires
+      # BEFORE `Session.send_invite/4`, so visitors hit the same rejection
+      # users do (mirror of the C3 WHOIS malformed-nick test).
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "invite", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nick" => "bad\r\nQUIT"
+        })
+
+      assert_reply(ref, :error, %{error: "invalid_nick"})
+    end
+  end
+
   # CP24 cluster post-cr-review bucket B reviewer add-on: read-only
   # ops verbs (`who`, `names`, `banlist`) were still routing through
   # `dispatch_ops_verb/2` post-bucket-A — visitors got `visitor_not_allowed`
