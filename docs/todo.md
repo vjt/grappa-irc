@@ -11,17 +11,11 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- **Next-session scope (vjt 2026-06-11, updated 2026-06-12)**, in
-  order: (1) e2e CSP parity FINISH — worktree `grappa-e2e-csp` branch
-  `e2e-csp-parity` has guard + parity spec + journey dedup committed
-  and target-validated; remaining = full-suite run under the
-  violation guard (latent blocks may surface; triage per
-  docs/TESTING.md), code review, rebase+merge+push. The "e2e carries
-  no CSP" premise was FALSE — see cp64. (2) **PWA icon badge
-  implementation** — design APPROVED, spec =
-  `docs/plans/2026-06-12-pwa-icon-badge.md`; writing-plans → TDD.
-  (3) dogfood answers from vjt (checklist delivered, pending).
-  (4) **#9 validation via deliberate cold window at session END**
+- **Next-session scope (vjt 2026-06-11, updated 2026-06-20)**, in
+  order: (1) **PWA icon badge implementation** — design APPROVED, spec
+  = `docs/plans/2026-06-12-pwa-icon-badge.md`; writing-plans → TDD.
+  (2) dogfood answers from vjt (checklist delivered, pending).
+  (3) **#9 validation via deliberate cold window at session END**
   (vjt ordered the restart; sessions reset accepted).
 - **Codebase review gate: DUE, explicitly deferred by vjt 2026-06-11**
   (token cost). Re-flag each session; vjt decides when it runs.
