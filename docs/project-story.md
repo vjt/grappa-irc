@@ -3523,3 +3523,41 @@ fail loudly.
 output (`| tail`, `| grep`) silently vouches for whatever died upstream
 — read the output of anything that touches production, and never let a
 formatting pipe stand between a failure and `set -e`.*
+
+## Episode: the gate that cited a lie (2026-06-19, away-#62)
+
+A visitor typed `/away` and got "Send failed." An authenticated user on
+the same build typed `/away` and it worked. The bug report guessed
+right: something rejected the command for sessions without a registered
+identity. What it didn't know was that the rejection was *deliberate*,
+and that the reason written next to it was false.
+
+The channel handler short-circuited every visitor with `visitor_no_away`,
+and the moduledoc explained why: "the `set_explicit_away` facade only
+routes to user sessions." Read the facade and it says the opposite — it's
+guarded on `is_subject`, takes `{:visitor, id}` exactly like `{:user,
+id}`, and each visitor owns a private, isolated `Session.Server` with its
+own upstream IRC connection and unique nick. A visitor's AWAY is
+per-connection and harmless. The comment had conflated explicit `/away`
+(a user action) with the WSPresence-driven *auto*-away (which genuinely
+is user-only, because visitor sessions don't subscribe to presence). One
+true fact about auto-away got laundered into a false claim about explicit
+away, sat in a doc comment, and gated a normal IRC verb for months —
+because nobody re-derives a justification once it's written down. Deleting
+the gate made the code *shorter*: one subject-aware path replaced the
+`if visitor? … else` fork. Which is why vjt pushed back when the diff
+came back bigger than expected — the extra surface was a *second* defect
+(the client swallowing every channel-push error code into the same bare
+"Send failed"), correctly called out as separable.
+
+The session ended on a different flavour of the same rot. "Close any
+issue that's open but resolved." Five were: EXIF stripping whose module
+header literally read `(#39)`, two MODE-command bugs with passing
+upstream-wire tests, a server-window routing fix with e2e coverage. The
+work had shipped; the tracker never caught up. Same disease as the
+comment — the record drifting from the code — just pointed the other way.
+
+*Law: a guard's comment is a claim, not evidence. A wrong "why" outlives
+the code it described and gets copied forward as gospel — verify the
+rationale against the implementation before you trust it, especially
+before you build on top of it.*
