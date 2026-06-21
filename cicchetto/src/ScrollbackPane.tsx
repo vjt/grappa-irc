@@ -11,7 +11,7 @@ import {
   Show,
 } from "solid-js";
 import LusersCard from "./LusersCard";
-import { ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
+import { isContentKind, ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
 import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { isDocumentVisible } from "./lib/documentVisibility";
@@ -23,7 +23,7 @@ import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { parseMircFormat, type Run } from "./lib/mircFormat";
 import { networks, user } from "./lib/networks";
-import { senderPrefix } from "./lib/nickColor";
+import { senderPrefix, snapshotSenderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
 import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
@@ -504,14 +504,24 @@ const renderRawEvent = (
 };
 
 const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element => {
-  // UX-5 bucket BC2: per-message sender prefix glyph (@/%/+) derived
-  // from the LIVE members store keyed by (channel, sender). Scrollback
-  // rows are mode-agnostic on the wire — the prefix is a render-time
-  // join against `membersByChannel()` so re-renders track MODE events.
-  // Returns "" (not " ") for plain / unknown senders — see
-  // `senderPrefix` docstring in `lib/nickColor.ts`.
+  // UX-5 bucket BC2 + #25: per-message sender prefix glyph (@/%/+).
+  //
+  // For a CONTENT row (privmsg/action/notice) the SENDER's glyph is the
+  // grade snapshotted at SEND time by the server into `meta.sender_prefix`
+  // — NOT a live join against the members store. A render-time live join
+  // (the pre-#25 behaviour) retroactively re-prefixed a nick's old lines
+  // the instant their grade changed. An absent snapshot (plain sender, or
+  // a row persisted before #25 landed) renders no glyph — never a
+  // live-derived guess, which would reintroduce the bug.
+  //
+  // Everything else — presence-row senders (join/part/quit/mode) and the
+  // kick TARGET — keeps the live members join: those describe a "now"
+  // event, not a frozen send, so the current grade is the correct glyph.
   const prefixFor = (nick: string): "@" | "%" | "+" | "" => {
     if (!msg.channel) return "";
+    if (isContentKind(msg.kind) && nickEquals(nick, msg.sender)) {
+      return snapshotSenderPrefix(msg.meta);
+    }
     const key = channelKey(handlers.networkSlug, msg.channel);
     return senderPrefix(membersByChannel()[key], nick);
   };

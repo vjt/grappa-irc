@@ -2059,7 +2059,14 @@ defmodule Grappa.Session.EventRouter do
 
   defp prefix_userhost(%Message{}), do: %{}
 
+  # #25: content kinds whose sender shows an irssi-style @/%/+ glyph. The
+  # glyph must reflect the sender's grade AT SEND TIME, not their current
+  # grade — so it's snapshotted into meta here, not derived live by cic.
+  @content_kinds [:privmsg, :action, :notice]
+
   defp build_persist(state, kind, channel, sender, body, meta) do
+    meta = put_sender_prefix(meta, state, kind, channel, sender)
+
     attrs =
       Session.put_subject_id(
         %{
@@ -2083,6 +2090,30 @@ defmodule Grappa.Session.EventRouter do
 
     {state, {:persist, kind, attrs}}
   end
+
+  # #25: snapshot the sender's channel grade (@/%/+) onto a content row
+  # so a later MODE change can't retroactively re-prefix it. Only for
+  # content kinds on a real (sigil-prefixed) channel where the sender is
+  # a tracked member with a non-plain grade. Plain members, DM (nick)
+  # windows, and the synthetic "$server" window get no key — cic renders
+  # no glyph for an absent `meta.sender_prefix` (also the back-compat
+  # path for rows persisted before this landed).
+  @spec put_sender_prefix(map(), map(), atom(), String.t(), String.t()) :: map()
+  defp put_sender_prefix(meta, state, kind, channel, sender) when kind in @content_kinds do
+    with true <- channel_shaped?(channel),
+         sigils when is_list(sigils) <- get_in(state.members, [channel, sender]),
+         prefix when is_binary(prefix) <- Identifier.member_prefix(sigils) do
+      Map.put(meta, :sender_prefix, prefix)
+    else
+      _ -> meta
+    end
+  end
+
+  defp put_sender_prefix(meta, _, _, _, _), do: meta
+
+  @spec channel_shaped?(String.t()) :: boolean()
+  defp channel_shaped?(<<sigil, _::binary>>) when sigil in [?#, ?&, ?!, ?+], do: true
+  defp channel_shaped?(_), do: false
 
   # ---------------------------------------------------------------------------
   # S2.3 helpers — topic + channel-mode cache

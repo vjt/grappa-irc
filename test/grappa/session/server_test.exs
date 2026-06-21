@@ -1344,6 +1344,48 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "#25 outbound own sender-prefix snapshot" do
+    test "own channel message snapshots the operator's op grade into meta.sender_prefix" do
+      # Mirror of the inbound EventRouter capture for the outbound door:
+      # an operator who holds @ in the channel must have their own message
+      # frozen at @ so a later deop doesn't retroactively un-prefix it.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      topic = Topic.channel(user.name, network.slug, "#test")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      # Seed members so grappa-test is op (@) in #test, then wait for the
+      # members_seeded broadcast so the snapshot reads the op grade.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #test :@grappa-test alice\r\n")
+      IRCServer.feed(server, ":irc 366 grappa-test #test :End of /NAMES list.\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :members_seeded, channel: "#test"}},
+                     1_000
+
+      assert {:ok, _} = Session.send_privmsg({:user, user.id}, network.id, "#test", "hi all")
+
+      rows = Scrollback.fetch({:user, user.id}, network.id, "#test", nil, 10, nil)
+      privmsg = Enum.find(rows, &(&1.kind == :privmsg))
+      assert privmsg.meta.sender_prefix == "@"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "malformed inbound" do
     test "parse error logged, session stays alive" do
       {server, port} = start_server()

@@ -2050,7 +2050,11 @@ defmodule Grappa.Session.Server do
           kind: kind,
           sender: state.nick,
           body: fragment,
-          meta: %{},
+          # #25: snapshot the operator's own channel-grade glyph (@/%/+)
+          # so a later MODE change can't retroactively re-prefix their
+          # own outbound lines. Mirror of EventRouter.put_sender_prefix
+          # for the inbound side; nil → %{} for DM targets / plain grade.
+          meta: own_sender_prefix_meta(state, target),
           # CP14 B3 — outbound DM detection. `Scrollback.dm_peer/4` is
           # the single source for the rule (channel msg vs DM): for
           # outbound, target is the peer iff target is nick-shaped (no
@@ -2077,6 +2081,20 @@ defmodule Grappa.Session.Server do
       persist_and_send_fragments(target, rest, state, message)
     else
       {:error, _} = err -> err
+    end
+  end
+
+  # #25: the operator's own channel grade for an outbound content row,
+  # as `%{sender_prefix: "@" | "%" | "+"}` or `%{}` (DM target / plain /
+  # untracked). Canonicalises the target so the members lookup hits the
+  # same key EventRouter stores under.
+  @spec own_sender_prefix_meta(t(), String.t()) :: map()
+  defp own_sender_prefix_meta(state, target) do
+    sigils = get_in(state.members, [Identifier.canonical_channel(target), state.nick]) || []
+
+    case Identifier.member_prefix(sigils) do
+      nil -> %{}
+      prefix -> %{sender_prefix: prefix}
     end
   end
 

@@ -223,4 +223,26 @@ defmodule Grappa.IRC.Identifier do
   def services_sender?(s) when is_binary(s), do: String.downcase(s) in @services
 
   def services_sender?(_), do: false
+
+  # Channel-membership sigil precedence: op > halfop > voice. Mirrors
+  # cic's `memberSigil` (@ > % > +) so server snapshot and client render
+  # agree on which glyph a multi-moded member shows.
+  @member_prefix_precedence ["@", "%", "+"]
+
+  @doc """
+  The highest-precedence membership sigil (`@`/`%`/`+`) in a member's
+  mode-sigil list, or `nil` for a plain member / empty list / non-list.
+
+  `state.members[channel][nick]` stores sigils (`["@"]`, `["@", "+"]`,
+  `[]`); this reduces them to the single glyph cic shows. Used at
+  scrollback-persist time to SNAPSHOT a content row's sender grade into
+  `meta.sender_prefix`, so a later MODE change can't retroactively
+  re-prefix historical lines (#25).
+  """
+  @spec member_prefix(term()) :: String.t() | nil
+  def member_prefix(sigils) when is_list(sigils) do
+    Enum.find(@member_prefix_precedence, &(&1 in sigils))
+  end
+
+  def member_prefix(_), do: nil
 end

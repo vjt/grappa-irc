@@ -67,8 +67,15 @@ defmodule Grappa.Scrollback.Meta do
 
   ## Per-kind expected shapes
 
-      :privmsg | :action | :topic   →  %{}                       (body carries content)
-      :notice                       →  %{} OR %{numeric: 1..999, severity: :ok | :error}
+      :privmsg | :action | :topic   →  %{} OR %{sender_prefix: "@" | "%" | "+"}
+                                                                 (#25: content rows on a channel
+                                                                  snapshot the sender's grade glyph
+                                                                  at SEND time so a later MODE change
+                                                                  can't retroactively re-prefix them;
+                                                                  absent for plain senders / DMs /
+                                                                  $server. :topic carries %{}.)
+      :notice                       →  %{} OR %{sender_prefix: "@" | "%" | "+"}
+                                    OR %{numeric: 1..999, severity: :ok | :error}
                                                                  (server numerics route to :notice
                                                                   via NumericRouter; bare NOTICE has %{})
                                     OR %{raw_verb: String.t(), raw_sender: String.t() | nil,
@@ -126,10 +133,11 @@ defmodule Grappa.Scrollback.Meta do
             | :raw_params
             | :sender_user
             | :sender_host
+            | :sender_prefix
           ) => term()
         }
 
-  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host]a
+  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host sender_prefix]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -153,7 +161,8 @@ defmodule Grappa.Scrollback.Meta do
           | :raw_sender
           | :raw_params
           | :sender_user
-          | :sender_host,
+          | :sender_host
+          | :sender_prefix,
           ...
         ]
   def known_keys, do: @known_keys

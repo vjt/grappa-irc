@@ -12938,3 +12938,52 @@ the live own-nick is already the NEW one post-`own_nick_changed`. The
 events indicator IS the always-visible confirmation #61 asked for, so it
 stays; the OS/notify badge ignores it (presence kinds fail
 `should_notify?`).
+
+## 2026-06-21 — sender grade glyph snapshotted at send time (#25)
+
+A user's `@`/`%`/`+` channel-grade glyph was applied RETROACTIVELY to
+their past scrollback lines the instant their grade changed: cic's
+`prefixFor` derived the glyph at RENDER time by joining the row's sender
+against the LIVE members store, so an op/deop re-prefixed every old line
+of that nick. The glyph must reflect the sender's grade AT SEND time.
+
+Fix (snapshot — the issue's fix-direction a, not a flag-history
+timeline): the server captures the sender's grade into
+`meta.sender_prefix` at PERSIST time; cic renders content-row senders
+from that frozen value instead of live members.
+
+Server — one capture rule, both doors:
+  * `EventRouter.build_persist/6` merges `sender_prefix` into meta for
+    content kinds (`:privmsg`/`:action`/`:notice`) on a sigil-shaped
+    channel where the sender is a tracked member with a non-plain grade.
+    Centralising it in `build_persist` covers every inbound content row
+    (privmsg/action/notice, services-`$server` reroute and DM targets
+    correctly excluded by the channel-shape + member-lookup guards).
+  * `Session.Server.persist_and_send_fragments` mirrors it for the
+    operator's OWN outbound messages (`own_sender_prefix_meta/2`).
+  * `Grappa.IRC.Identifier.member_prefix/1` is the shared sigil-precedence
+    reducer (`@` > `%` > `+`), matching cic's `memberSigil` so server
+    snapshot and client render agree.
+  * `Scrollback.Meta` allowlists `:sender_prefix`. Per the
+    `known_keys ↔ Logger :metadata` sync test (architecture review A18),
+    `config/config.exs` must list it too — and because that's a
+    `config/*.exs` edit, the deploy preflight forces a **COLD** deploy
+    (sessions drop + respawn). Accepted with vjt; batched as the one
+    cold change of the session.
+
+cic: `ScrollbackPane.prefixFor` returns `nickColor.snapshotSenderPrefix(meta)`
+for the content row's OWN sender (`isContentKind && nick == msg.sender`);
+presence-row senders (join/part/quit/mode) and the kick TARGET keep the
+live members join — those describe a "now" event, not a frozen send. An
+absent snapshot (plain sender, or a row persisted before this landed)
+renders NO glyph, never a live-derived guess — so old rows lose their
+(wrong) glyph rather than show a stale one. The `meta` value is the
+untyped wire bag, validated against the three glyphs in
+`snapshotSenderPrefix`.
+
+Snapshot timing is genuinely "send time": `state.members` is updated by
+the MODE / 353-NAMES handlers that the session's FIFO mailbox processes
+before the next PRIVMSG is routed, so the grade read at persist reflects
+the grade in force when the line arrived. e2e `ux-5-bc2-nick-render`
+unaffected — it asserts nick colour, plain-sender-no-glyph, and bracket
+shape, never a live opped glyph.

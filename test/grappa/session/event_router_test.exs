@@ -1042,6 +1042,59 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  describe "route/2 — #25 sender-prefix snapshot on content rows" do
+    setup do
+      state =
+        base_state(%{
+          members: %{
+            "#italia" => %{"vjt" => ["@"], "alice" => ["+"], "bob" => [], "hop" => ["%"]}
+          }
+        })
+
+      {:ok, state: state}
+    end
+
+    test "channel PRIVMSG from an op snapshots meta.sender_prefix = @", %{state: state} do
+      m = msg(:privmsg, ["#italia", "hi"], {:nick, "vjt", "u", "h"})
+      assert {:cont, _, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+      assert attrs.meta.sender_prefix == "@"
+    end
+
+    test "channel PRIVMSG from a voiced user snapshots +", %{state: state} do
+      m = msg(:privmsg, ["#italia", "hi"], {:nick, "alice", "u", "h"})
+      assert {:cont, _, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+      assert attrs.meta.sender_prefix == "+"
+    end
+
+    test "channel PRIVMSG from a halfop snapshots %", %{state: state} do
+      m = msg(:privmsg, ["#italia", "hi"], {:nick, "hop", "u", "h"})
+      assert {:cont, _, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+      assert attrs.meta.sender_prefix == "%"
+    end
+
+    test "channel PRIVMSG from a plain member carries NO sender_prefix key", %{state: state} do
+      m = msg(:privmsg, ["#italia", "hi"], {:nick, "bob", "u", "h"})
+      assert {:cont, _, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+      refute Map.has_key?(attrs.meta, :sender_prefix)
+    end
+
+    test "ACTION + channel NOTICE snapshot the prefix too", %{state: state} do
+      action = msg(:privmsg, ["#italia", "\x01ACTION waves\x01"], {:nick, "vjt", "u", "h"})
+      assert {:cont, _, [{:persist, :action, a}]} = EventRouter.route(action, state)
+      assert a.meta.sender_prefix == "@"
+
+      notice = msg(:notice, ["#italia", "heads up"], {:nick, "alice", "u", "h"})
+      assert {:cont, _, [{:persist, :notice, n}]} = EventRouter.route(notice, state)
+      assert n.meta.sender_prefix == "+"
+    end
+
+    test "DM PRIVMSG (nick target) carries no sender_prefix", %{state: state} do
+      m = msg(:privmsg, ["vjt", "hi"], {:nick, "alice", "u", "h"})
+      assert {:cont, _, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+      refute Map.has_key?(attrs.meta, :sender_prefix)
+    end
+  end
+
   describe "route/2 — :nick (fan-out per channel where nick was member)" do
     test "NICK-other emits :persist :nick_change per channel + renames in members" do
       state =

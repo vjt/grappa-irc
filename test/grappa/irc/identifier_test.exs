@@ -318,4 +318,23 @@ defmodule Grappa.IRC.IdentifierTest do
       refute Identifier.safe_oper_token?(42)
     end
   end
+
+  describe "member_prefix/1 (#25 grade-snapshot helper)" do
+    test "returns the highest-precedence sigil (@ > % > +)" do
+      assert Identifier.member_prefix(["@"]) == "@"
+      assert Identifier.member_prefix(["%"]) == "%"
+      assert Identifier.member_prefix(["+"]) == "+"
+      assert Identifier.member_prefix(["+", "@"]) == "@"
+      assert Identifier.member_prefix(["+", "%"]) == "%"
+    end
+
+    test "returns nil for a plain member (empty list)" do
+      assert Identifier.member_prefix([]) == nil
+    end
+
+    test "returns nil for non-list input" do
+      assert Identifier.member_prefix(nil) == nil
+      assert Identifier.member_prefix("@") == nil
+    end
+  end
 end

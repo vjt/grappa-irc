@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ChannelMembers } from "../lib/memberTypes";
-import { NICK_PALETTE_SIZE, nickColorIndex, nickColorVar, senderPrefix } from "../lib/nickColor";
+import {
+  NICK_PALETTE_SIZE,
+  nickColorIndex,
+  nickColorVar,
+  senderPrefix,
+  snapshotSenderPrefix,
+} from "../lib/nickColor";
 
 // UX-5 bucket BC2 — deterministic nick-color hash + scrollback-side
 // mode-prefix glyph lookup. Pair feature: per-nick color (replaces
@@ -127,5 +133,24 @@ describe("senderPrefix", () => {
   it("is case-insensitive for the nick lookup (Alice/alice match)", () => {
     expect(senderPrefix(m({ Alice: ["@"] }), "alice")).toBe("@");
     expect(senderPrefix(m({ alice: ["@"] }), "Alice")).toBe("@");
+  });
+});
+
+describe("snapshotSenderPrefix (#25)", () => {
+  it("returns the snapshotted glyph from meta.sender_prefix", () => {
+    expect(snapshotSenderPrefix({ sender_prefix: "@" })).toBe("@");
+    expect(snapshotSenderPrefix({ sender_prefix: "%" })).toBe("%");
+    expect(snapshotSenderPrefix({ sender_prefix: "+" })).toBe("+");
+  });
+
+  it("returns '' when the key is absent (plain sender / pre-#25 row)", () => {
+    expect(snapshotSenderPrefix({})).toBe("");
+    expect(snapshotSenderPrefix({ new_nick: "x" })).toBe("");
+  });
+
+  it("returns '' for a malformed / non-glyph value (never a live guess)", () => {
+    expect(snapshotSenderPrefix({ sender_prefix: "~" })).toBe("");
+    expect(snapshotSenderPrefix({ sender_prefix: 1 })).toBe("");
+    expect(snapshotSenderPrefix({ sender_prefix: null })).toBe("");
   });
 });
