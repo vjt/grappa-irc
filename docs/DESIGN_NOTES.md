@@ -12735,3 +12735,43 @@ unfocused mention). The home-screen ICON badge (`setAppBadge`) lives on
 the OS launcher, needs granted notification permission on an installed
 PWA, and is invisible to Playwright — so the icon itself is **device
 dogfood** only.
+
+## 2026-06-21 — empty `/away` reason rejected (un-away footgun closed)
+
+An explicit-away reason of `""` built `AWAY :\r\n` upstream, which RFC
+2812 §4.6 defines as the bare-AWAY *un-away* line: setting away with an
+empty reason silently CLEARED away instead. `safe_line_token?/1` only
+screens CR/LF/NUL, so `""` slipped every guard. The channel boundary's
+`with_body_check` only screens `body_too_large`, so a crafted WS push
+`{action:"set", reason:""}` reached the wire.
+
+Fixed at two layers, deliberately:
+
+- **`Session.set_explicit_away/3,4`** (primary boundary) now guards
+  `reason != "" and safe_line_token?(reason)` → `{:error, :invalid_line}`.
+  This is the single chokepoint covering BOTH internal byte paths (the
+  labeled `@label= AWAY :` send_line and the plain `Client.send_away`),
+  and it rejects early — before the `whereis` lookup, ordered like the
+  other facade injection guards.
+- **`Client.send_away/2`** (byte boundary, defense-in-depth) now also
+  guards `reason != ""`, completing the symmetry its siblings already
+  had: `send_privmsg`/`send_part`/`send_oper`/`send_pong`/`send_raw` all
+  reject empty at this door precisely so a non-cic caller (test harness,
+  Phase 6 listener facade) can't slip a malformed frame past even if the
+  facade is bypassed. `send_away` was the lone exception — and the facade
+  docstring already *claimed* it mirrored `send_pong`. Now it does.
+
+The guard is `!= ""`, NOT `String.trim/1`: a whitespace-only reason is a
+valid (if blank-looking) `AWAY :   ` set, not the un-away line, and the
+`!= ""` shape matches `send_pong`. Pinned with a facade test so a future
+change can't tighten to trim-semantics and start rejecting spaces.
+
+cic side (`slashCommands.ts`): the `/away` parser mapped `/away :` (colon
+then nothing) to `{action:"set", reason:""}` — pre-fix a silent un-away,
+post-fix a "Send failed" alert. Collapsed both empty-reason cases (bare
+`/away`, `/away :`) into one `reason === "" → unset`, removing the now-
+redundant `rest === ""` early-return. The existing test asserted the
+buggy `set`/`""` shape; re-pointed to `unset`. Also fixed a pre-existing
+(CI-invisible — cic vitest is local-only) red in `compose.test.ts`: the
+`vi.mock("../lib/api")` block omitted `ChannelPushError`, so #62's
+`e instanceof ChannelPushError` threw for every non-ApiError rejection.

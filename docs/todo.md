@@ -50,14 +50,10 @@ to this section.
   if bandwidth permits, else future infra-polish cluster.
 - **REV-K LOW-3 cosmetic** — `info` field duplicates `error` key
   in ChannelPushError extractor. Trivial dedup; not blocking.
-- **compose.ts:601 ChannelPushError branching consumer** — wire to
-  handle the typed class symmetrically with `ApiError`.
-  Bucket-sized polish.
 - **27-item LOW set** — opportunistic. Notable themes per
   2026-05-22 review § "LOW findings": dead-code clauses in
-  `Identifier.services_sender?`, empty-reason `send_away/2` accepting
-  `AWAY :\r\n`, `Push.subscription.id` as `string` vs branded UUID,
-  `linkify` regex `\S+` unbounded, `uploadHost.ts` (ex
+  `Identifier.services_sender?`, `Push.subscription.id` as `string`
+  vs branded UUID, `linkify` regex `\S+` unbounded, `uploadHost.ts` (ex
   `image-upload.ts`) localStorage vs `token()` signal,
   `bin/start.sh` env-fiddling, `register-dns.sh` placement.
 - **Deploy decision-lib extraction + docker parity → issue #51**
@@ -246,9 +242,6 @@ Phase 5 cluster opens):
   log is `irc.openssl.it-access.log`, 400s from 6 distinct client IPs,
   last 07/Jun — too early to drop (a stale-bundle PWA bursts ~31×400
   vs maxretry 8 → bans a legit user). Recheck ≥2026-06-16.
-- `Grappa.version/0` (`lib/grappa.ex:28`) has zero callers. Either
-  wire into `/healthz` JSON response (one-line change in
-  `HealthController`) or drop the function.
 - Sqlite "Database busy" intermittent test flake — `Repo` /
   `Scrollback` / `Wire` occasionally fail inserts with
   `Exqlite.Error: Database busy`. Contention between `async: true`
