@@ -11,14 +11,15 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- **Next-session scope (vjt 2026-06-11, updated 2026-06-20)**, in
-  order: (1) **PWA icon badge implementation** — design APPROVED, spec
-  = `docs/plans/2026-06-12-pwa-icon-badge.md`; writing-plans → TDD.
-  (2) dogfood answers from vjt (checklist delivered, pending).
-  (3) **#9 validation via deliberate cold window at session END**
-  (vjt ordered the restart; sessions reset accepted).
-- **Codebase review gate: DUE, explicitly deferred by vjt 2026-06-11**
-  (token cost). Re-flag each session; vjt decides when it runs.
+- **Dogfood answers from vjt** (checklist delivered, pending):
+  media-viewer round 2, long-press text selection, #39 EXIF/ICC-profile
+  check, portrait-orientation upload. (The PWA badge ICON dogfood is
+  CLOSED — confirmed working on device 2026-06-21.)
+- **Codebase review gate: DUE, deferred by vjt** (token cost) — now
+  ~30 days / ~36 sessions past the last review (2026-05-22), well over
+  both thresholds. Re-flag each `/start`; vjt decides when it runs.
+  Bug/deploy fixes exempt; further FEATURE work formally sits on a red
+  gate.
 
 ---
 

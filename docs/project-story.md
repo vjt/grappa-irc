@@ -3561,3 +3561,51 @@ comment — the record drifting from the code — just pointed the other way.
 the code it described and gets copied forward as gospel — verify the
 rationale against the implementation before you trust it, especially
 before you build on top of it.*
+
+## Episode: the counter that couldn't live next to its predicate (2026-06-21, pwa-badge)
+
+The spec was the cleanest yet. One number — how many unread messages did
+the operator *choose* to be notified about — surfaced on the PWA's
+home-screen icon. One predicate: the exact `should_notify?` Web Push
+already fires on, so the icon and the OS notification can never disagree.
+Three doors to feed it: the login seed, the read-cursor broadcast, the
+push payload. The kind of feature where the design doc does the thinking
+and the code is transcription. Nine TDD phases, each green on the first
+real run.
+
+Then the dependency graph said no. The badge counter's natural home is
+obvious: right next to the predicate it reuses, inside the `Push`
+context. But counting badges means reaching across `Networks`,
+`ReadCursor`, and `Visitors` — and every one of those transitively
+depends on `Session`, and `Session` depends on `Push`. Put the counter in
+`Push` and you close a four-node cycle: `Push → Networks → Session →
+Push`. The namespace said "this belongs in Push." The boundary graph said
+"you may not." Both were right; only one gets a vote.
+
+So you invert. The counter becomes its own boundary sitting *above* Push,
+depending *down* onto the predicate. Doors #2 and #3 call it from the web
+layer, which already lives at the top. Door #1 — the push payload, fired
+from deep inside `Session → Push.Triggers`, *below* the counter — can't
+take a static reference up the graph without re-closing the cycle, so it
+reaches the counter through a config-injected behaviour seam resolved at
+runtime. The same trick the test stubs use, turned load-bearing.
+
+The second beat was the deploy, and it was an irony. grappa's whole
+hot-deploy machinery exists to *preserve IRC sessions* — reload modules
+into the live BEAM, never restart. So I hardened door #1 for the window
+where a hot reload swaps the new code in but `config.exs` hasn't been
+re-read: `BadgeSource.count` returns `nil`, the push still fires, the icon
+just isn't touched. Defensive, correct, tested. Then I shipped it — and
+the deploy went **cold anyway**, because the preflight classifies every
+`config/*.exs` change as cold, and I'd added exactly one config key. The
+cold rebuild compiled the config in at boot, all three doors came up
+whole, and the resilience I'd built never executed. It wasn't wasted —
+it's the right insurance for the *next* badge-touching hot deploy — but
+this time the structural caution and the deploy classifier solved the
+same problem from opposite ends, and the classifier got there first.
+
+*Law: the dependency graph, not the namespace, decides where code may
+live. A function's natural home — beside the code it reuses — can be
+forbidden by the cycle it would close; when the reuse points down and the
+aggregation points up, lift the aggregator to the top and invert the lone
+upward call through a runtime seam.*
