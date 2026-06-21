@@ -3609,3 +3609,54 @@ live. A function's natural home — beside the code it reuses — can be
 forbidden by the cycle it would close; when the reuse points down and the
 aggregation points up, lift the aggregator to the top and invert the lone
 upward call through a runtime seam.*
+
+## Episode: the docstring that promised a guard it didn't write (2026-06-21, away-empty)
+
+Two days after the away-#62 episode left its law — *a guard's comment is
+a claim, not evidence* — the same trap closed on the person who had just
+written it down.
+
+The job looked janitorial: pick something off the LOW cleanup bucket. The
+first surprise was that half the bucket was already dead. `Grappa.version/0`
+"has zero callers" — except it had been renamed to `Grappa.Version.current/0`
+and *gained* one (the CTCP VERSION reply). A "ChannelPushError consumer to
+wire up" — already wired, by #62, weeks ago. The todo had become a museum
+of fixed bugs nobody had buried. Two ghosts pruned before a line of code
+moved; the lesson the start of every session re-teaches is that a backlog
+entry is a claim about the past, and the past has usually moved on.
+
+The one real item was a quiet footgun. Set your away with an empty reason
+and the bouncer sent `AWAY :` upstream — which, per RFC 2812 §4.6, is
+precisely the line that *clears* away. Ask to go away with no message, get
+pulled back. `safe_line_token?/1` only screened CR/LF/NUL; the empty string
+sailed through every guard. The fix was one boolean at the `Session` facade,
+the single chokepoint above both byte paths. Red, then green. Clean.
+
+Then I wrote the docstring, and the docstring lied. "The emptiness check is
+the facade's job — mirrors `Client.send_pong`'s empty-token guard." It read
+well. At the byte layer it was false: `send_pong` rejects empty *at the
+socket boundary*, and `send_away` — the function the comment named as its
+twin — did not. Five sibling senders (`send_privmsg`, `send_part`,
+`send_oper`, `send_pong`, `send_raw`) all guard empty at that door, on
+purpose, so a future non-cic caller can't smuggle a malformed frame past a
+bypassed facade. `send_away` was the lone holdout. I had cited a symmetry to
+justify the fix, and the symmetry wasn't there.
+
+A review agent caught it — reading the same file I had, noticing that my own
+rationale named a guard the code didn't contain. The follow-up made the
+docstring true: `reason != ""` on `send_away`, mirroring the siblings for
+real. The away-#62 law had predicted this exact failure mode, and I walked
+into it inside the same week, authoring the false comment myself. The review
+also floated tightening to `String.trim` so a spaces-only reason would also
+reject — declined, because that diverges from `send_pong` and a blank-looking
+`AWAY :   ` is a *valid* set, not the un-away line; the distinction got
+pinned by a test so nobody "fixes" it later. On the way out, a vitest red the
+last checkpoint had shrugged off as "triage separately" turned out to be the
+same #62 `ChannelPushError`, landing in a test mock that never declared it —
+`instanceof undefined` throwing on every non-error path. Root-caused in
+passing.
+
+*Law: when your justification cites a safeguard, open the safeguard. The
+most persuasive wrong comment is the one you write yourself to explain a fix
+you believe in — the belief is exactly what stops you checking whether the
+thing you named is really there.*
