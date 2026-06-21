@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { type ShouldNotifyMessage, shouldNotify } from "../lib/pushTriggers";
 import truthTable from "../lib/shouldNotifyTruthTable.json";
-import { shouldNotify, type ShouldNotifyMessage } from "../lib/pushTriggers";
 import type { NotificationPrefs } from "../lib/userSettings";
 
 // PWA icon badge (2026-06-21) — `shouldNotify` is the foreground mirror

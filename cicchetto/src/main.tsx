@@ -13,9 +13,9 @@ import ShareConsume from "./ShareConsume";
 // app entry has to wire the side-effect module explicitly.
 import "./lib/subscribe";
 import "./lib/userTopic";
+import { mountBadgeSync } from "./lib/badge";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
-import { mountBadgeSync } from "./lib/badge";
 import { applyIosClass, isStandalonePwa } from "./lib/platform";
 import { applyPushTargetFromUrl, installPushTargetListener } from "./lib/pushTarget";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";

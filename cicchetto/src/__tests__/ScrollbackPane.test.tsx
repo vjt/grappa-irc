@@ -790,9 +790,7 @@ describe("ScrollbackPane", () => {
           },
         ],
       });
-      render(() => (
-        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
-      ));
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const line = screen.getByTestId("scrollback-line");
       expect(line.textContent).not.toContain("@");
       expect(line.textContent).toContain("alice");

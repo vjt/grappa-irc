@@ -1,5 +1,13 @@
 import { createSignal } from "solid-js";
-import { ApiError, ChannelPushError, patchNetwork, postJoin, postNick, postPart, postTopic } from "./api";
+import {
+  ApiError,
+  ChannelPushError,
+  patchNetwork,
+  postJoin,
+  postNick,
+  postPart,
+  postTopic,
+} from "./api";
 import { token } from "./auth";
 import type { ChannelKey } from "./channelKey";
 import { friendlyApiError } from "./friendlyApiError";

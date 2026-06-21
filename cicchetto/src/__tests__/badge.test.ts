@@ -1,12 +1,6 @@
 import { createRoot } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  badgeCount,
-  incrementBadge,
-  mountBadgeSync,
-  setBadge,
-  syncBadge,
-} from "../lib/badge";
+import { badgeCount, incrementBadge, mountBadgeSync, setBadge, syncBadge } from "../lib/badge";
 
 // PWA icon badge (2026-06-21) — `badge.ts` signal + the two surfaces it
 // drives: `navigator.setAppBadge` (the OS icon, feature-detected) and the

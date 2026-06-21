@@ -65,8 +65,7 @@ export function shouldNotify(
 
 function dmMatch(message: ShouldNotifyMessage, prefs: NotificationPrefs): boolean {
   return (
-    prefs.private_messages_all ||
-    prefs.private_messages_only.includes(message.sender.toLowerCase())
+    prefs.private_messages_all || prefs.private_messages_only.includes(message.sender.toLowerCase())
   );
 }
 
