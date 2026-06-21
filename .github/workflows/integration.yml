@@ -78,7 +78,7 @@ jobs:
       packages: read
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # azzurra-testnet (cicchetto/e2e/infra) is a public submodule —
           # `recursive` initializes it via the default GITHUB_TOKEN
