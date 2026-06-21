@@ -12,8 +12,23 @@ vi.mock("../lib/api", () => {
       this.code = code;
     }
   }
+  // compose.ts's catch does `e instanceof ChannelPushError` (#62) — the
+  // mock MUST export the class or that reference is `undefined` and the
+  // instanceof throws for EVERY non-ApiError rejection. Mirror the real
+  // shape (code + info) like the ApiError stub above.
+  class ChannelPushError extends Error {
+    readonly code: string;
+    readonly info: Record<string, unknown>;
+    constructor(code: string, info: Record<string, unknown> = {}) {
+      super(`channel push error: ${code}`);
+      this.name = "ChannelPushError";
+      this.code = code;
+      this.info = info;
+    }
+  }
   return {
     ApiError,
+    ChannelPushError,
     postTopic: vi.fn(),
     postNick: vi.fn(),
     postJoin: vi.fn(),
