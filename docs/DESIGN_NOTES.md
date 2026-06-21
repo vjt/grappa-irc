@@ -12806,3 +12806,47 @@ Registered visitors (cached NickServ password) are unaffected: their
 433 drives `GhostRecovery` (underscore-NICK + GHOST + IDENTIFY), whose
 FSM stays `:cont`, so the exit reason is never `:nick_rejected` and
 won't be misclassified.
+
+## 2026-06-21 — single NickServ IDENTIFY site on login (#27)
+
+A registered visitor logging in saw NickServ's "Password accettata …
+risulti identificato" NOTICE **twice**. Not a cic render bug — grappa
+put `PRIVMSG NickServ :IDENTIFY <pw>` on the wire twice:
+
+1. `IRC.AuthFSM.maybe_nickserv_identify/1` emits it at 001 RPL_WELCOME
+   for any `:nickserv_identify` plan. This is the canonical site: it
+   fires for **every** such spawn, including `Bootstrap` crash-respawn
+   where `Visitors.Login` never runs. The emission happens inside
+   `IRC.Client`, so it bypasses `Session.Server`'s `{:send_privmsg, …}`
+   call path (and therefore `NSInterceptor`); the password is instead
+   staged for the +r MODE observer via
+   `Session.Server.maybe_stage_pending_password/1`, fed from
+   `pending_password` (set at init from the `:nickserv_identify` plan).
+2. `Visitors.Login.preempt_and_respawn/4` then sent a **second**
+   IDENTIFY post-readiness through `send_post_login_identify/3`.
+
+The second send was pure redundancy. A case-2 visitor (row with
+`password_encrypted`) is *always* `:nickserv_identify` — visitor
+`auth_method` is only ever `:none | :nickserv_identify`
+(`Visitors.SessionPlan`, no SASL path) — so path (1) had already
+produced the same NOTICE and the same +r MODE before Login's send ran.
+The login.ex docstring's stated rationale ("so NickServ + the +r MODE
+observer can reconfirm registration") was satisfied entirely by path
+(1).
+
+Fix: delete the post-readiness send and its now-dead helpers
+(`send_post_login_identify/3`, `error_tag/1`, the `require Logger` they
+needed). No new state, no behavioural change beyond removing the
+duplicate. Side benefit: the deleted path was the one place login
+threaded the cleartext password through `Session.send_privmsg`, so
+dropping it removes a cleartext-handling site.
+
+Regression guard: `login_test.exs` now asserts IDENTIFY appears on the
+wire **exactly once**. Counting needs a TCP-order barrier — the
+post-readiness send was synchronous on grappa's side by the time
+`Login.login/2` returned, but the `IRCServer` fake reads the socket
+asynchronously, so a naive count races. The test pushes one more wire
+line (`PRIVMSG NickServ :HELP`) and waits for it; `packet: :line` +
+`active: :once` deliver in order, so once the barrier line is buffered
+every earlier line is too. The assertion fails against the old code
+(`got 2`) and passes after.

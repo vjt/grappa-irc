@@ -39,10 +39,14 @@ defmodule Grappa.Visitors.Login do
          `Session.Backoff.reset/2` (clear crash-backoff from prior
          session so an explicit user re-login isn't penalised),
          respawn fresh Session.Server, `NetworkCircuit.record_success/1`
-         on welcome, send `PRIVMSG NickServ :IDENTIFY <pwd>`
-         post-readiness so NickServ + the +r MODE observer
-         (Task 15) can reconfirm registration, then mint a fresh
-         Accounts.Session.
+         on welcome, then mint a fresh Accounts.Session. The NickServ
+         `IDENTIFY` is emitted by the AuthFSM at 001 for the
+         `:nickserv_identify` plan — the single IDENTIFY site (see
+         `Grappa.IRC.AuthFSM.maybe_nickserv_identify/1`, staged for the
+         +r MODE observer via `Session.Server.maybe_stage_pending_password/1`).
+         Login does NOT send a second one post-readiness (#27): a
+         duplicate IDENTIFY made NickServ reply with the "identified"
+         NOTICE twice.
 
        * **Case 3 — anon (`password_encrypted` nil).** Check
          capacity, then require a valid bearer token that resolves
@@ -69,8 +73,6 @@ defmodule Grappa.Visitors.Login do
   alias Grappa.Auth.IdentifierClassifier
   alias Grappa.Session.Backoff
   alias Grappa.Visitors.{SessionPlan, Visitor}
-
-  require Logger
 
   # B6.6 X3 (no-silent-drops 2026-05-14): bang form so a missing
   # `:visitor_network` config value crashes at compile time, not at
@@ -286,48 +288,9 @@ defmodule Grappa.Visitors.Login do
 
     with {:ok, _} <- spawn_and_await(visitor, network, timeouts) do
       :ok = NetworkCircuit.record_success(network.id)
-      send_post_login_identify(visitor, network, input.password)
       issue_token(visitor, input)
     end
   end
-
-  defp send_post_login_identify(visitor, network, password) do
-    case Session.send_privmsg(
-           {:visitor, visitor.id},
-           network.id,
-           "NickServ",
-           "IDENTIFY " <> password
-         ) do
-      {:ok, _} ->
-        :ok
-
-      {:error, reason} ->
-        # IDENTIFY failure is logged but does not block login. The
-        # NSInterceptor (Task 13) + +r MODE observer (Task 15) are
-        # the canonical confirmation paths; a transient failure here
-        # just means the user has to re-IDENTIFY manually via
-        # cicchetto, which the existing PRIVMSG surface already
-        # supports.
-        #
-        # H8 (S17 review): NEVER inspect/1 the raw reason — the
-        # `{:error, %Ecto.Changeset{}}` shape from a Scrollback insert
-        # validation failure carries the full row including the
-        # `body: "IDENTIFY <plaintext>"` field. inspect/1 would print
-        # the password to stdout (Phoenix `:filter_parameters`
-        # filters HTTP params only, not Logger metadata). Only the
-        # error tag is loggable.
-        Logger.warning(
-          "post-login IDENTIFY failed",
-          visitor_id: visitor.id,
-          reason: error_tag(reason)
-        )
-
-        :ok
-    end
-  end
-
-  defp error_tag(%Ecto.Changeset{}), do: :scrollback_insert_failed
-  defp error_tag(atom) when is_atom(atom), do: atom
 
   defp rotate_token(visitor, input) do
     :ok = Accounts.revoke_sessions_for_visitor(visitor.id)

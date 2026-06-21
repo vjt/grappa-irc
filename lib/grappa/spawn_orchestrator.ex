@@ -75,8 +75,7 @@ defmodule Grappa.SpawnOrchestrator do
       at all).
     * `Login` already wraps `NetworkCircuit.record_success/1` /
       `record_failure/1` around the spawn, plus
-      `Visitors.purge_if_anon/1` cleanup on failure, plus
-      `send_post_login_identify/3` post-readiness — adopting the
+      `Visitors.purge_if_anon/1` cleanup on failure — adopting the
       orchestrator would require either a giant `opts` keyword or
       multiple injected callbacks. Both are shared-data-with-type-flag
       anti-patterns per CLAUDE.md design discipline.

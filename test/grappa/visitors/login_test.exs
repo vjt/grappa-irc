@@ -176,8 +176,8 @@ defmodule Grappa.Visitors.LoginTest do
                Login.login(login_input(%{password: "wrong"}), [])
     end
 
-    test "matching password → preempt prior sessions, fresh token, IDENTIFY sent post-001",
-         %{server: server, visitor: visitor} do
+    test "matching password → preempt prior sessions, fresh token, IDENTIFY sent EXACTLY ONCE (#27)",
+         %{server: server, network: network, visitor: visitor} do
       # Plant a prior session so we can verify it's revoked post-preempt.
       {:ok, prior} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
@@ -186,7 +186,8 @@ defmodule Grappa.Visitors.LoginTest do
       :ok = await_handshake(server)
       feed_001(server, "vjt")
 
-      # Login sends `PRIVMSG NickServ :IDENTIFY s3cret` after readiness.
+      # AuthFSM emits `PRIVMSG NickServ :IDENTIFY s3cret` at 001 for the
+      # `:nickserv_identify` plan — the single source of truth.
       {:ok, identify_line} =
         IRCServer.wait_for_line(
           server,
@@ -200,6 +201,28 @@ defmodule Grappa.Visitors.LoginTest do
                Task.await(task, 10_000)
 
       assert returned_visitor.id == visitor.id
+
+      # #27 regression guard: grappa MUST send IDENTIFY exactly once.
+      # Pre-fix a SECOND copy was sent post-readiness by
+      # `Login.send_post_login_identify/3`, making NickServ reply with the
+      # "identified" NOTICE twice. Count needs a TCP-order barrier: the
+      # post-readiness send is synchronous on grappa's side by the time
+      # `Task.await` returns, but the fake reads the socket asynchronously.
+      # Push one more wire line and wait for it — `packet: :line` +
+      # `active: :once` deliver in order, so once the barrier line is
+      # buffered every earlier line (incl. any duplicate IDENTIFY) is too.
+      {:ok, _} = Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "HELP")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(server, &String.contains?(&1, "PRIVMSG NickServ :HELP"), 1_000)
+
+      identify_count =
+        server
+        |> IRCServer.sent_lines()
+        |> Enum.count(&String.contains?(&1, "PRIVMSG NickServ :IDENTIFY s3cret"))
+
+      assert identify_count == 1,
+             "expected exactly one IDENTIFY on the wire, got #{identify_count}"
 
       # Prior token revoked, new resolves.
       assert {:error, :revoked} = Accounts.authenticate(prior.id)

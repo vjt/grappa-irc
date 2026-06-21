@@ -2098,7 +2098,8 @@ defmodule Grappa.Session.Server do
 
   # Service-target path — wire-only, no Scrollback row, no PubSub
   # broadcast. Reply tag `{:ok, :no_persist}` keeps callers' `{:ok, _}`
-  # match-shape working (Visitors.Login.send_post_login_identify).
+  # match-shape working (e.g. a user's manual `PRIVMSG NickServ
+  # :IDENTIFY` from cicchetto).
   defp handle_service_target_send(target, body, state) do
     case Client.send_privmsg(state.client, target, body) do
       :ok ->
