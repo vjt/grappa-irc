@@ -12850,3 +12850,55 @@ line (`PRIVMSG NickServ :HELP`) and waits for it; `packet: :line` +
 `active: :once` deliver in order, so once the barrier line is buffered
 every earlier line is too. The assertion fails against the old code
 (`got 2`) and passes after.
+
+## 2026-06-21 — orphaned PWA icon badge reconciled on foreground
+
+The home-screen icon badge could stick at a stale non-zero count after
+the operator had read everything. Prod rpc against the live node
+(`Grappa.Push.BadgeCount.count/1` for the operator subject) returned
+`0` — the server count was correct; the drift was purely the OS
+icon-badge SURFACE.
+
+Root cause: the OS badge has TWO writers that share no state. The
+service worker's push handler (`cicchetto/src/service-worker.ts`
+`applyIconBadge`, push door #1) calls `navigator.setAppBadge` directly
+from the SW context while the app is backgrounded — it never touches the
+in-page `badgeCount` signal. The in-page `mountBadgeSync` effect
+(`cicchetto/src/lib/badge.ts`) only re-applies the surface when the
+signal *changes value* (Solid `===` equality). So on a warm foreground
+where the server count already equals the signal (typically 0-over-0
+once everything's read), `setBadge` is a no-op, the effect never
+re-fires, and the SW-set badge is orphaned. Cold launch was always fine
+— the `/me` seed + the `mountBadgeSync` mount reconcile — but a warm
+resume (the common iOS PWA case) had no reconcile point.
+
+Fix: `mountBadgeReconcile` registers a `visibilitychange` listener that,
+on every visible event, re-pulls the authoritative `/me` `badge_count`
+and `reconcileBadge` force-applies it to both surfaces, bypassing the
+signal-equality short-circuit. Reconciling to the SERVER count (not a
+blind clear-to-0, which was the first instinct floated) is load-bearing:
+a mention that genuinely arrived while backgrounded must KEEP its badge,
+so a clear-to-0 would wipe a real signal. The `badgeCount` signal stays
+the single source of truth — the reconcile just refreshes it from the
+server and forces the surface, closing the SW-writes-around-the-signal
+gap the badge.ts moduledoc now documents.
+
+Accepted tradeoffs (the fix is strictly better than a permanently-stuck
+badge, so these stay):
+
+  * A `/me` round-trip in flight when a fresher `read_cursor_set` lands
+    can resolve stale and briefly clobber the newer count. Transient —
+    it self-heals on the next `read_cursor_set` / visible event, same
+    eventually-correct tolerance the optimistic `incrementBadge` path
+    already documents. A request-sequencing guard would be heavier than
+    a one-round-trip flicker on an icon badge.
+  * Relies on `visibilitychange` firing on iOS standalone-PWA
+    background→foreground. True on iOS 16.4+ (the floor for the Badging
+    API anyway). Not reproducible in Playwright webkit (its visibility
+    model ≠ real iOS) — verified by on-device dogfood after deploy.
+
+The listener is app-lifetime (registered bare in `main.tsx`, disposer
+intentionally dropped — production PWA updates full-reload, so listeners
+never accumulate; the disposer exists for unit-test cleanup). No
+`createRoot` wrapper: it's a raw `addEventListener`, not a Solid
+reactive primitive, so there is no computation owner to scope.

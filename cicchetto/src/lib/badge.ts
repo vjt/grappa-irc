@@ -19,6 +19,14 @@
 // gets a proper reactive owner from the app root — same convention as
 // the other createRoot-wired effects. `syncBadge` is exported pure so
 // vitest can exercise the two surfaces without a reactive flush.
+//
+// The OS icon badge has a SECOND writer the signal can't see: the service
+// worker's push handler (`applyIconBadge`, door #1) calls `setAppBadge`
+// directly while the app is backgrounded. Because `mountBadgeSync` only
+// re-fires on a signal *change*, a warm foreground that reads 0-over-0
+// would orphan that SW-set badge. `mountBadgeReconcile` closes the gap:
+// on every visible event it re-pulls the authoritative `/me` count and
+// `reconcileBadge` force-applies it, bypassing the signal-equality skip.
 
 import { createEffect, createSignal } from "solid-js";
 
@@ -71,6 +79,55 @@ export function mountBadgeSync(): void {
   createEffect(() => {
     syncBadge(badgeCount());
   });
+}
+
+/**
+ * Force-resyncs both surfaces to the authoritative server count.
+ *
+ * Why a force-apply (not a bare `setBadge`): the OS icon badge has TWO
+ * writers. The service worker (`applyIconBadge`, push door #1) calls
+ * `navigator.setAppBadge` DIRECTLY from the SW context while the app is
+ * backgrounded — it never touches this `badgeCount` signal. The in-page
+ * `mountBadgeSync` effect only re-applies when the signal *changes*
+ * value. So after a warm foreground where the server count is already
+ * what the signal holds (typically 0→0 once everything's read), `setBadge`
+ * is a no-op and the SW-set OS badge is orphaned. `reconcileBadge` calls
+ * `syncBadge` unconditionally so the OS surface is reconciled to the
+ * server truth regardless of the signal delta.
+ */
+export function reconcileBadge(serverCount: number): void {
+  setBadge(serverCount);
+  syncBadge(badgeCount());
+}
+
+/**
+ * Reconciles the OS badge to the authoritative server count whenever the
+ * app becomes visible (PWA background→foreground, tab re-focus). Fixes
+ * the orphaned-SW-badge drift `reconcileBadge` documents: cold launch is
+ * already covered by the `/me` seed + `mountBadgeSync` mount, but a warm
+ * resume has no such reconcile point.
+ *
+ * `fetchServerCount` returns the live count (e.g. `/me`'s `badge_count`)
+ * or `null` when it can't be resolved (no bearer token, request failed) —
+ * in which case the badge is left untouched and the next visible event
+ * retries. The fetch is dependency-injected so the wiring is unit-testable
+ * without a network. Returns a disposer that removes the listener.
+ */
+export function mountBadgeReconcile(fetchServerCount: () => Promise<number | null>): () => void {
+  const onVisible = (): void => {
+    if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+    void fetchServerCount()
+      .then((n) => {
+        if (n !== null) reconcileBadge(n);
+      })
+      // Best-effort surface reconcile: a failed resync leaves the badge
+      // as-is and self-heals on the next visible event. Not a swallowed
+      // error path — there is nothing to recover and nothing to report.
+      .catch(() => {});
+  };
+
+  document.addEventListener("visibilitychange", onVisible);
+  return () => document.removeEventListener("visibilitychange", onVisible);
 }
 
 function applyAppBadge(n: number): void {

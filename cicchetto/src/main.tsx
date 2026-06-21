@@ -4,7 +4,8 @@ import { type Component, createEffect, createRoot, createSignal, type JSX, Show 
 import { render } from "solid-js/web";
 import InstallSplash, { INSTALL_CHOICE_KEY, shouldShowInstallSplash } from "./InstallSplash";
 import Login from "./Login";
-import { bootstrapAuth, isAuthenticated } from "./lib/auth";
+import { me } from "./lib/api";
+import { bootstrapAuth, isAuthenticated, token } from "./lib/auth";
 import ShareConsume from "./ShareConsume";
 // Side-effect-only: registers the WS subscribe createRoot so per-
 // channel join effects fire once `user()` + `channelsBySlug()` resolve.
@@ -13,7 +14,7 @@ import ShareConsume from "./ShareConsume";
 // app entry has to wire the side-effect module explicitly.
 import "./lib/subscribe";
 import "./lib/userTopic";
-import { mountBadgeSync } from "./lib/badge";
+import { mountBadgeReconcile, mountBadgeSync } from "./lib/badge";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
 import { applyIosClass, isStandalonePwa } from "./lib/platform";
@@ -54,6 +55,28 @@ applyIosClass();
 // from the `/me` seed, `read_cursor_set` broadcasts, the SW push, and
 // the optimistic foreground mention bump.
 createRoot(() => mountBadgeSync());
+
+// PWA icon badge foreground reconcile (#badge-orphan, 2026-06-21) — the
+// SW push path (door #1) writes `setAppBadge` directly off-signal while
+// the app is backgrounded; `mountBadgeSync` only re-fires on a signal
+// *change*, so a warm resume that reads everything (server count 0, signal
+// already 0) would orphan the SW-set OS badge. On every visible event,
+// re-pull the authoritative `/me` count (same number the cold-load seed
+// uses) and force-apply it. `null` (no token / fetch failed) leaves the
+// badge as-is and retries on the next visible event.
+//
+// App-lifetime listener — the returned disposer is intentionally not
+// retained (same as the bare `pagehide` / `beforeunload` /
+// `beforeinstallprompt` listeners below). A production PWA update does a
+// full page reload, so listeners never accumulate; the disposer exists
+// for unit-test cleanup. No `createRoot` wrapper: this registers a raw
+// `addEventListener`, not a Solid reactive primitive, so there is no
+// computation owner to scope.
+mountBadgeReconcile(async () => {
+  const t = token();
+  if (!t) return null;
+  return (await me(t)).badge_count ?? 0;
+});
 
 // UX-3 PENT — VisualViewport-driven height tracking. Writes
 // `--viewport-height: <px>` on <html> and re-writes on every
