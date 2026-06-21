@@ -146,6 +146,16 @@ defmodule Grappa.SessionTest do
       assert {:error, :no_session} =
                Session.set_explicit_away({:user, @user_id}, @network_id, "lunch", @origin_window)
     end
+
+    # Only the empty string is the un-away line. A whitespace-only reason
+    # is a valid (if blank-looking) `AWAY :   ` set — the guard is
+    # `reason != ""`, not a trim, matching `Client.send_pong`'s byte-empty
+    # guard. Pinned so a future change doesn't tighten to `String.trim/1`
+    # and silently start rejecting spaces-only reasons.
+    test "whitespace-only reason is accepted (not the empty un-away case)" do
+      assert {:error, :no_session} =
+               Session.set_explicit_away({:user, @user_id}, @network_id, "   ")
+    end
   end
 
   describe "list_channels/2" do

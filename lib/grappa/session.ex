@@ -603,9 +603,11 @@ defmodule Grappa.Session do
   An **empty** reason is rejected because `AWAY :\r\n` is the bare-AWAY
   un-away line (RFC 2812 §4.6) — accepting it here would silently CLEAR
   the away instead of setting it. `safe_line_token?/1` only screens
-  CR/LF/NUL, so the emptiness check is the facade's job (mirrors
-  `Client.send_pong`'s empty-token guard). Clearing away is
-  `unset_explicit_away/2`.
+  CR/LF/NUL, so the emptiness check is added here (early, before the
+  `whereis` lookup) AND mirrored at the `Client.send_away` byte boundary,
+  like `send_pong`. A whitespace-only reason is a valid (if blank-looking)
+  set and is NOT rejected — only the empty string is the un-away line.
+  Clearing away is `unset_explicit_away/2`.
 
   S3.2 (channel-client-polish). Symmetric with `unset_explicit_away/2`.
   """
