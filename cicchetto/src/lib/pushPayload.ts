@@ -28,6 +28,10 @@ export type PushPayload = {
   body: string;
   tag: string;
   url: string;
+  // PWA icon-badge count (door #1, 2026-06-21). Optional: an older
+  // server omits it, in which case the SW leaves the home-screen icon
+  // badge untouched. `0` is meaningful — it CLEARS the badge.
+  badge?: number;
 };
 
 /**
@@ -46,7 +50,14 @@ export function narrowPushPayload(raw: unknown): PushPayload | null {
   if (typeof obj.body !== "string") return null;
   if (typeof obj.tag !== "string") return null;
   if (typeof obj.url !== "string") return null;
-  return { title: obj.title, body: obj.body, tag: obj.tag, url: obj.url };
+  const payload: PushPayload = { title: obj.title, body: obj.body, tag: obj.tag, url: obj.url };
+  // `badge` is optional + additive — a missing / malformed value simply
+  // leaves the field unset (SW skips the icon update) rather than
+  // rejecting the whole notification.
+  if (typeof obj.badge === "number" && Number.isFinite(obj.badge) && obj.badge >= 0) {
+    payload.badge = Math.floor(obj.badge);
+  }
+  return payload;
 }
 
 /**

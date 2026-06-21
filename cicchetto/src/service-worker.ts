@@ -135,6 +135,13 @@ async function handlePush(payload: PushPayload): Promise<void> {
   // follow-up (server-side WSPresence + visibility-heartbeat
   // fast-path skip with SW defensive re-check) parked until quota
   // bites.
+  // PWA icon badge (door #1 receive side, 2026-06-21): stamp the
+  // server-computed count onto the home-screen icon. Done BEFORE the
+  // suppress-return below — a badge update is non-intrusive, so it must
+  // apply even when the foreground gate skips the toast. A payload
+  // without `badge` (older server) leaves the icon untouched.
+  applyIconBadge(payload.badge);
+
   const clients = await self.clients.matchAll({
     type: "window",
     includeUncontrolled: true,
@@ -151,6 +158,25 @@ async function handlePush(payload: PushPayload): Promise<void> {
     badge: "/icons/icon-192.png",
     data: { url: payload.url },
   });
+}
+
+// Home-screen icon badge via the Badging API on the WorkerNavigator.
+// NOTE: distinct from the `badge:` field of `showNotification` above —
+// that is the monochrome status-bar glyph; this is the numeric count on
+// the app icon. Feature-detected (absent on browsers without the
+// Badging API and on iOS < 16.4); `.catch` swallows the SecurityError
+// thrown when the page isn't an installed PWA.
+function applyIconBadge(badge: number | undefined): void {
+  if (badge === undefined) return;
+  const nav = self.navigator as WorkerNavigator & {
+    setAppBadge?: (count?: number) => Promise<void>;
+    clearAppBadge?: () => Promise<void>;
+  };
+  if (badge > 0) {
+    void nav.setAppBadge?.(badge)?.catch(() => {});
+  } else {
+    void nav.clearAppBadge?.()?.catch(() => {});
+  }
 }
 
 self.addEventListener("notificationclick", (event: NotificationEvent) => {

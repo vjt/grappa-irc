@@ -121,7 +121,8 @@ defmodule Grappa.Push.Sender do
           required(:title) => String.t(),
           required(:body) => String.t(),
           required(:tag) => String.t(),
-          required(:url) => String.t()
+          required(:url) => String.t(),
+          optional(:badge) => non_neg_integer()
         }
 
   @typedoc """

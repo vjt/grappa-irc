@@ -60,6 +60,11 @@ defmodule Grappa.Scrollback do
 
   @max_limit 500
 
+  # Content-bearing kinds: the ones that carry a notification meaning.
+  # Mirrors `count_after_split/5`'s `:messages` bucket + `Grappa.Mentions`'
+  # `@content_kinds`. Presence/control kinds never notify.
+  @content_kinds [:privmsg, :notice, :action]
+
   @doc """
   Maximum rows returned by a single `fetch/5` call.
 
@@ -416,6 +421,56 @@ defmodule Grappa.Scrollback do
       {1, n}, acc -> %{acc | messages: n}
       {0, n}, acc -> %{acc | events: n}
     end)
+  end
+
+  @doc """
+  Returns up to `limit` unread CONTENT rows (`id > after_id`) for the
+  `(subject, network_id, channel)` window, oldest-first.
+
+  "Content" = `:privmsg | :notice | :action` — the same kind set
+  `count_after_split/5` buckets as `:messages` and the push-trigger
+  predicate (`Grappa.Push.Triggers.should_notify?/4`) can act on.
+  Presence/control kinds (`:join`, `:mode`, …) never carry a
+  notification meaning, so they are excluded at the SQL layer rather
+  than fetched and discarded.
+
+  Sole consumer: `Grappa.Push.BadgeCount` — it maps the REAL
+  `should_notify?/4` predicate over this bounded tail to count
+  notify-worthy unread per window. The `limit` is the per-channel cap
+  that keeps the badge fold off an unbounded scan: a channel a user
+  hasn't read in months has a huge unread range, but the badge tops out
+  at 99, so fetching past the cap is wasted work. Oldest-first ordering
+  is deterministic; the caller only counts matches, so direction is not
+  load-bearing for correctness — `asc` keeps it stable for tests.
+
+  Window semantics (DM vs channel) are delegated to
+  `channel_or_dm_where/3`: a nick-shaped `channel` returns both inbound
+  (`channel == own_nick, dm_with == peer`) and outbound (`channel ==
+  peer`) DM rows. The caller's predicate excludes the outbound ones
+  (own messages never notify), so no inbound/outbound split is needed
+  here.
+  """
+  @spec unread_content_tail(
+          subject(),
+          integer(),
+          String.t(),
+          integer(),
+          String.t() | nil,
+          pos_integer()
+        ) :: [Message.t()]
+  def unread_content_tail(subject, network_id, channel, after_id, own_nick, limit)
+      when is_integer(network_id) and is_integer(after_id) and
+             (is_binary(own_nick) or is_nil(own_nick)) and
+             is_integer(limit) and limit > 0 do
+    Message
+    |> subject_where(subject)
+    |> where([m], m.network_id == ^network_id)
+    |> channel_or_dm_where(channel, own_nick)
+    |> where([m], m.id > ^after_id)
+    |> where([m], m.kind in ^@content_kinds)
+    |> order_by([m], asc: m.id)
+    |> limit(^min(limit, @max_limit))
+    |> Repo.all()
   end
 
   @doc """

@@ -17,6 +17,14 @@ config :grappa,
 config :grappa, :visitor_network, "azzurra"
 config :grappa, :max_visitors_per_ip, 5
 
+# PWA icon-badge count source (door #1 dependency-inversion seam, 2026-06-21).
+# `Grappa.Push.Triggers` resolves this at runtime via
+# `Grappa.Push.BadgeSource.impl/0` instead of referencing the
+# implementation statically — a static `Push → BadgeCount` edge would close
+# the boundary cycle `Push → BadgeCount → Networks → Session → Push`. Tests
+# may override with a stub implementing the `count/1` callback.
+config :grappa, :badge_source, Grappa.Push.BadgeCount
+
 # Cluster visitor-auth hotfix: pre-crash throttle for `Grappa.IRC.Client`'s
 # `handle_continue({:connect, _})` failure path. Read at compile-time via
 # `Application.compile_env/3`; production default is 30_000 ms (~2 restart

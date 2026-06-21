@@ -311,6 +311,39 @@ defmodule Grappa.Networks do
   end
 
   @doc """
+  Returns `%{slug => {network_id, configured_nick}}` for every network
+  `user_id` holds a credential on.
+
+  This is the CONFIGURED (`network_credentials.nick`) nick, NOT the live
+  Session nick — deliberately off-`Session.Server`. Sole consumer is
+  `Grappa.Push.BadgeCount`, whose count runs on the read-cursor settle
+  hot path (door #3); a `Session.current_nick/2` GenServer round-trip
+  per network there is unacceptable, and the badge's mention match only
+  needs an approximation of own_nick. Accepted staleness: after a
+  `/nick` rename the badge's mention match uses the configured nick
+  until the next reconnect rewrites the credential. Documented in
+  `BadgeCount`'s moduledoc + DESIGN_NOTES 2026-06-21.
+
+  Single joined query (credentials ⋈ networks); bounded by the user's
+  credential count (~tens). Mirrors `resolve_network_nick/2`'s
+  fallback branch (`cred.nick`) without the live lookup.
+  """
+  @spec configured_nick_index(Ecto.UUID.t()) :: %{String.t() => {integer(), String.t()}}
+  def configured_nick_index(user_id) when is_binary(user_id) do
+    query =
+      from(c in Credential,
+        join: n in Network,
+        on: n.id == c.network_id,
+        where: c.user_id == ^user_id,
+        select: {n.slug, c.network_id, c.nick}
+      )
+
+    query
+    |> Repo.all()
+    |> Map.new(fn {slug, network_id, nick} -> {slug, {network_id, nick}} end)
+  end
+
+  @doc """
   Every network row, ordered by `slug` ascending. Operator-facing —
   the M-5 admin console (`GET /admin/networks`) materializes the
   full table. Networks are operator-curated infra (low cardinality),

@@ -427,6 +427,7 @@ export type QueryWindowsWireWindowsListPayload = {
 export type ReadCursorWireReadCursorSet = {
   kind: string;
   last_read_message_id: number;
+  badge_count: number;
 };
 
 // === Grappa.Scrollback.Wire ===

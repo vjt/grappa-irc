@@ -10,6 +10,7 @@ import {
   tagNetwork,
 } from "./api";
 import { token } from "./auth";
+import { setBadge } from "./badge";
 import { applyMeEnvelope } from "./readCursor";
 
 // Network/channel tree resources. Module-singleton — every consumer
@@ -55,6 +56,13 @@ const exports = createRoot(() => {
     // the field (older test mocks predating the field landing in
     // `MeResponse`) — production /me always emits it.
     applyMeEnvelope(m.read_cursors ?? {});
+    // PWA icon badge door #2 (2026-06-21): seed the badge signal from the
+    // `/me` notify-worthy unread total so the home-screen icon /
+    // document.title reflect the count before any push or read_cursor_set
+    // arrives. `badge.ts` has no networks/selection imports, so seeding
+    // here (unlike `unread_counts`) closes no import cycle. Default 0 for
+    // older test mocks / pre-field servers.
+    setBadge(m.badge_count ?? 0);
     // Bucket C (2026-06-01) — the parallel `unread_counts` cold-load
     // primer for `selection.ts`'s `serverSeedCounts` lives inside
     // selection.ts itself (an `on(user)` effect there reads

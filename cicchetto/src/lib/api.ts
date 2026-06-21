@@ -169,6 +169,10 @@ export type MeResponse =
       // `UnreadCountsEnvelope` typedoc above. Optional for the same
       // reason `read_cursors` is.
       unread_counts?: UnreadCountsEnvelope;
+      // PWA icon badge door #2 (2026-06-21) — notify-worthy unread total
+      // (`Grappa.Push.BadgeCount.count/1`), 0..99. Seeds the badge signal
+      // at login. Optional for the same test-mock reason as the envelopes.
+      badge_count?: number;
       // UX-4 bucket B — required for user subjects (server's
       // `MeJSON.show/1` user clause sets it unconditionally). Optional
       // on the type so test mocks predating the field landing don't
@@ -185,6 +189,9 @@ export type MeResponse =
       // Bucket C (2026-06-01) — visitors get the same envelope shape;
       // empty `{}` for a fresh visitor (no cursors yet).
       unread_counts?: UnreadCountsEnvelope;
+      // PWA icon badge door #2 (2026-06-21) — visitors get the same
+      // scalar; seeds the badge signal at login.
+      badge_count?: number;
       // UX-4 bucket B — visitor home is cic-only help text by design.
       // Server's `MeJSON.show/1` visitor clause sets `home_data: nil`
       // unconditionally. Optional + literal-null narrows the
@@ -543,6 +550,10 @@ export type WireChannelEvent =
   | {
       kind: "read_cursor_set";
       last_read_message_id: number;
+      // PWA icon badge door #3 (2026-06-21) — notify-worthy unread total
+      // AFTER this cursor advance. Reading anywhere refreshes every live
+      // client's icon badge / document.title without a `/me` round-trip.
+      badge_count: number;
     };
 // P-0e + P-0f — invite_ack moved from per-channel topic to user-topic
 // (operators usually invite peers to channels they are NOT in;

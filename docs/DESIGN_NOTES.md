@@ -12654,3 +12654,84 @@ verb isn't mis-bucketed by pattern-copying. Tests mirror the C3 WHOIS trio:
 live-session → INVITE upstream, no-session → `no_session`, malformed-nick →
 `invalid_nick` (the inbound `Identifier` gate fires before the facade, so
 that one passed pre-fix — belt-and-braces).
+
+## 2026-06-21 — PWA home-screen icon badge (one predicate, three doors)
+
+Design approved 2026-06-12 (`docs/plans/2026-06-12-pwa-icon-badge.md`),
+implemented 2026-06-21 (`docs/plans/2026-06-21-pwa-icon-badge-impl.md`).
+The badge shows "how many unread messages did the operator choose to be
+notified about" — capped at 99, fully derived from read cursors + the
+notify predicate, **no new persisted state**.
+
+**One predicate, never reimplemented.** The count is the EXACT set Web
+Push fires on: rows passing `Grappa.Push.Triggers.should_notify?/4`. So
+the badge and the OS notification can never disagree by construction.
+`Grappa.Push.BadgeCount.count/1` fetches the bounded unread tail per
+cursor (`Scrollback.unread_content_tail/6`, capped, early-bail at 99) and
+maps the REAL predicate over it — NOT a second SQL-shaped copy of the
+notify logic, which is the predicate-divergence bug class CLAUDE.md
+forbids. The design sketched a SQL-COUNT fast path for the all/whitelist
+branches; we chose uniform predicate-reuse instead because the cap keeps
+it cheap and a single source of truth beats a micro-optimisation. The cic
+foreground mirror (`pushTriggers.ts` `shouldNotify`) and the Elixir
+original are pinned together by a SHARED truth-table JSON fixture both
+ExUnit and vitest consume — add a branch, add a row, both suites catch a
+drift.
+
+**Boundary inversion (the load-bearing structural call).** BadgeCount
+deps `Networks`/`ReadCursor`/`Visitors`, all of which transitively reach
+`Session`, and `Session` deps `Push`. Folding the counter into the `Push`
+context would close `Push → Networks → Session → Push`. So BadgeCount is
+its OWN `top_level?: true` boundary that sits ABOVE Push and deps DOWN
+onto it for `should_notify?` (same pattern as `Visitors.Reaper`). Doors #2
+and #3 call it from the web layer (already at the top). Door #1 — the
+push-payload badge, dispatched deep in `Session → Push.Triggers` — would
+re-open the cycle with a static `Push → BadgeCount` edge, so it resolves
+the counter at RUNTIME through a `Grappa.Push.BadgeSource` behaviour wired
+in `config/config.exs` (never a module literal in Push source). Dependency
+inversion, not a hack: Push owns the seam, config owns the wiring. Deploy
+corollary: a HOT module reload swaps the new code in but does NOT re-run
+`config.exs`, so `:badge_source` is briefly absent on the live node.
+`BadgeSource.count/1` returns `nil` (not a crash, not a wrong `0`) in that
+window and door #1 omits the badge field — the push still fires, the SW
+just leaves the icon untouched; badges resume the moment the config is
+live (cold restart / rpc `put_env`).
+
+**own_nick is the configured nick, off-Session.** The mention branch
+needs the operator's IRC nick. BadgeCount resolves it from the credential
+nick (users) / `visitor.nick` (visitors) via
+`Networks.configured_nick_index/1`, NEVER the live `Session.current_nick`.
+Door #3 runs on every read-cursor settle (focus-leave) — a GenServer
+round-trip per network on that hot path is unacceptable, and `/me`
+already takes the same off-Session stance. Accepted staleness: after a
+`/nick` rename the mention match uses the configured nick until the next
+reconnect rewrites the credential. Documented, bounded, self-correcting.
+
+**Three doors, one signal.** (1) push payload gains `badge` (computed at
+dispatch, after the triggering message is persisted so the count includes
+it); (2) `/me` gains `badge_count` (boot seed); (3) `read_cursor_set`
+gains `badge_count` (reading anywhere refreshes every live client). cic's
+`badge.ts` is a single signal → effect driving `navigator.setAppBadge`
+(feature-detected) + the `document.title` mirror `(n) <base>`. The SW
+stamps the icon on push receipt EVEN when the foreground toast is
+suppressed (a badge is non-intrusive).
+
+**Increment scope (honest limitation).** The foreground optimistic bump —
+so the desktop title moves the instant a notify-worthy message lands on an
+unfocused tab — reuses the existing mention path (`subscribe.ts`,
+focus-gated + own-echo-gated). It covers the channel-MENTION case (the
+default-prefs notify trigger). Non-mention triggers (channel-all / DM-all
+/ whitelist) are NOT bumped optimistically because cic has no global
+notification-prefs signal to feed the full `shouldNotify` predicate at
+message-arrival; they surface on the next server sync (`read_cursor_set` /
+`/me`). The count is server-authoritative throughout, so any transient
+under-count self-heals. `shouldNotify` stands as the parity-locked
+contract for a fuller increment once prefs get globalised.
+
+**Verification surfaces.** The `document.title` mirror is the only
+badge surface a headless browser can see (Playwright e2e:
+`pwa-badge-title-mirror.spec.ts` asserts the title prefix increments on an
+unfocused mention). The home-screen ICON badge (`setAppBadge`) lives on
+the OS launcher, needs granted notification permission on an installed
+PWA, and is invisible to Playwright — so the icon itself is **device
+dogfood** only.

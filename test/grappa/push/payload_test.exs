@@ -88,4 +88,24 @@ defmodule Grappa.Push.PayloadTest do
       assert Enum.sort(Map.keys(payload)) == [:body, :tag, :title, :url]
     end
   end
+
+  describe "put_badge/2 — door #1 icon-badge stamp" do
+    test "adds the :badge key, preserving the base payload" do
+      base = Payload.build(msg(channel: "#sniffo", sender: "alice", body: "hi"), "libera", "vjt")
+      stamped = Payload.put_badge(base, 7)
+
+      assert stamped.badge == 7
+      # base fields untouched
+      assert stamped.title == base.title
+      assert stamped.body == base.body
+      assert stamped.tag == base.tag
+      assert stamped.url == base.url
+      assert Enum.sort(Map.keys(stamped)) == [:badge, :body, :tag, :title, :url]
+    end
+
+    test "a zero badge is still stamped explicitly (cleared state)" do
+      base = Payload.build(msg(channel: "#sniffo"), "libera", "vjt")
+      assert Payload.put_badge(base, 0).badge == 0
+    end
+  end
 end

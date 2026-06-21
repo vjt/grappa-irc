@@ -1,6 +1,6 @@
 import { registerSW } from "virtual:pwa-register";
 import { Route, Router, useNavigate } from "@solidjs/router";
-import { type Component, createEffect, createSignal, type JSX, Show } from "solid-js";
+import { type Component, createEffect, createRoot, createSignal, type JSX, Show } from "solid-js";
 import { render } from "solid-js/web";
 import InstallSplash, { INSTALL_CHOICE_KEY, shouldShowInstallSplash } from "./InstallSplash";
 import Login from "./Login";
@@ -15,6 +15,7 @@ import "./lib/subscribe";
 import "./lib/userTopic";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
+import { mountBadgeSync } from "./lib/badge";
 import { applyIosClass, isStandalonePwa } from "./lib/platform";
 import { applyPushTargetFromUrl, installPushTargetListener } from "./lib/pushTarget";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
@@ -46,6 +47,13 @@ applySidebarWidthsFromStorage();
 // the pre-paint, iOS shell briefly renders in non-fixed layout
 // then reflows.
 applyIosClass();
+
+// PWA icon badge (2026-06-21) — wire the `badge` signal to the OS icon
+// badge (`navigator.setAppBadge`) + the `document.title` mirror. Own
+// root so the createEffect has an app-lifetime owner; the signal is fed
+// from the `/me` seed, `read_cursor_set` broadcasts, the SW push, and
+// the optimistic foreground mention bump.
+createRoot(() => mountBadgeSync());
 
 // UX-3 PENT — VisualViewport-driven height tracking. Writes
 // `--viewport-height: <px>` on <html> and re-writes on every

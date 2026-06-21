@@ -27,6 +27,7 @@ defmodule GrappaWeb do
         Grappa.Operator,
         Grappa.PubSub,
         Grappa.Push,
+        Grappa.Push.BadgeCount,
         Grappa.QueryWindows,
         Grappa.ReadCursor,
         Grappa.Scrollback,

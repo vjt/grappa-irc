@@ -105,7 +105,7 @@ defmodule Grappa.Push.Triggers do
         patterns = UserSettings.get_highlight_patterns(subject)
 
         if should_notify?(message, own_nick, prefs, patterns) do
-          payload = Payload.build(message, network_slug, own_nick)
+          payload = build_payload(message, network_slug, own_nick, subject)
           Push.Sender.send_to_subject(subject, payload)
         end
       end)
@@ -152,6 +152,23 @@ defmodule Grappa.Push.Triggers do
   # ---------------------------------------------------------------------------
   # Private
   # ---------------------------------------------------------------------------
+
+  # Door #1: build the push payload, stamping the current badge count when
+  # the `BadgeSource` seam is configured. The triggering message is already
+  # persisted (this runs inside the post-`persist_event` Task), so the
+  # count includes it. `nil` — the transient hot-deploy window before the
+  # `:badge_source` config is live — OMITS the badge field rather than
+  # crashing the Task or stamping a wrong `0` that would clear the icon;
+  # the push still fires, the SW just leaves the badge untouched.
+  @spec build_payload(Message.t(), String.t(), String.t(), Subject.t()) :: Payload.t()
+  defp build_payload(message, network_slug, own_nick, subject) do
+    payload = Payload.build(message, network_slug, own_nick)
+
+    case Push.BadgeSource.count(subject) do
+      count when is_integer(count) -> Payload.put_badge(payload, count)
+      nil -> payload
+    end
+  end
 
   # Canonical DM rule across the codebase: inbound row's `channel`
   # field equals own_nick. Mirrors `Grappa.Scrollback.dm_peer/4`'s

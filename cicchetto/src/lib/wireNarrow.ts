@@ -286,6 +286,10 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
       return {
         kind: "read_cursor_set",
         last_read_message_id: r.last_read_message_id,
+        // PWA icon badge door #3. Defensive default 0 if a stale server
+        // (mid hot-reload) emits the event without it — the cursor sync,
+        // the load-bearing part, must never drop for a badge reason.
+        badge_count: typeof r.badge_count === "number" ? r.badge_count : 0,
       };
     // P-0e + P-0f: invite_ack moved from per-channel topic to
     // user-topic; narrowed in `narrowUserEvent` instead. Channel-

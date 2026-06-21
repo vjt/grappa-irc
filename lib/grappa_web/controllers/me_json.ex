@@ -39,6 +39,16 @@ defmodule GrappaWeb.MeJSON do
   back to the per-channel join reply seed (bucket B1) for those. Cic
   consumes via `selection.ts`'s `applySeedEnvelope`.
 
+  ## badge_count (PWA icon badge, 2026-06-21)
+
+  Top-level `badge_count: non_neg_integer()` (0..99) — door #2 of the
+  PWA icon-badge feature. The notify-worthy unread total
+  (`Grappa.Push.BadgeCount.count/1`): the same predicate Web Push fires
+  on, capped at 99. cic seeds its badge signal from this at login so the
+  home-screen icon / `document.title` reflect the count before any push
+  or `read_cursor_set` arrives. Unlike `unread_counts` it is a single
+  scalar, not a per-channel envelope.
+
   ## home_data envelope (UX-4 bucket B)
 
   Either `%{networks: [home_network_row, ...]}` (user) or `nil`
@@ -77,6 +87,7 @@ defmodule GrappaWeb.MeJSON do
             inserted_at: DateTime.t(),
             read_cursors: read_cursors(),
             unread_counts: unread_counts(),
+            badge_count: non_neg_integer(),
             home_data: NetworksWire.home_data()
           }
           | %{
@@ -87,6 +98,7 @@ defmodule GrappaWeb.MeJSON do
               expires_at: DateTime.t() | nil,
               read_cursors: read_cursors(),
               unread_counts: unread_counts(),
+              badge_count: non_neg_integer(),
               home_data: nil
             }
 
@@ -96,12 +108,14 @@ defmodule GrappaWeb.MeJSON do
             user: User.t(),
             read_cursors: read_cursors(),
             unread_counts: unread_counts(),
+            badge_count: non_neg_integer(),
             home_data: NetworksWire.home_data()
           }
           | %{
               visitor: Visitor.t(),
               read_cursors: read_cursors(),
               unread_counts: unread_counts(),
+              badge_count: non_neg_integer(),
               home_data: nil
             }
         ) :: me_json()
@@ -109,6 +123,7 @@ defmodule GrappaWeb.MeJSON do
         user: %User{} = user,
         read_cursors: cursors,
         unread_counts: unread_counts,
+        badge_count: badge_count,
         home_data: home_data
       })
       when is_map(home_data) do
@@ -117,6 +132,7 @@ defmodule GrappaWeb.MeJSON do
     |> Map.put(:kind, "user")
     |> Map.put(:read_cursors, cursors)
     |> Map.put(:unread_counts, unread_counts)
+    |> Map.put(:badge_count, badge_count)
     |> Map.put(:home_data, home_data)
   end
 
@@ -124,6 +140,7 @@ defmodule GrappaWeb.MeJSON do
         visitor: %Visitor{} = visitor,
         read_cursors: cursors,
         unread_counts: unread_counts,
+        badge_count: badge_count,
         home_data: nil
       }) do
     visitor
@@ -131,6 +148,7 @@ defmodule GrappaWeb.MeJSON do
     |> Map.put(:kind, "visitor")
     |> Map.put(:read_cursors, cursors)
     |> Map.put(:unread_counts, unread_counts)
+    |> Map.put(:badge_count, badge_count)
     |> Map.put(:home_data, nil)
   end
 end

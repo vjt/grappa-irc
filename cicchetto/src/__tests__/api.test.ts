@@ -202,7 +202,7 @@ describe("WireChannelEvent canonical union (H3)", () => {
       expectedKind: "kicked",
     },
     {
-      event: { kind: "read_cursor_set", last_read_message_id: 42 },
+      event: { kind: "read_cursor_set", last_read_message_id: 42, badge_count: 0 },
       expectedKind: "read_cursor_set",
     },
     // P-0e + P-0f — invite_ack moved from WireChannelEvent to

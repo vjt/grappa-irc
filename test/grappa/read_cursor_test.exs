@@ -14,7 +14,8 @@ defmodule Grappa.ReadCursorTest do
       channel, wrong subject, or absent row.
     * `set/4` honors subject XOR via the changeset.
     * `bulk_for_subject/1` returns the nested envelope shape.
-    * `broadcast_set/4` emits a typed `read_cursor_set` payload on the
+    * `broadcast_set/5` emits a typed `read_cursor_set` payload (with
+      the door-#3 `badge_count`) on the
       per-channel topic.
 
   `async: true` — every test creates fresh user/network/visitor rows;
@@ -388,22 +389,27 @@ defmodule Grappa.ReadCursorTest do
   # broadcast_set/4
   # ---------------------------------------------------------------------------
 
-  describe "broadcast_set/4" do
-    test "emits a typed read_cursor_set payload on the per-channel topic" do
+  describe "broadcast_set/5" do
+    test "emits a typed read_cursor_set payload (with badge_count) on the per-channel topic" do
       user_name = "rc-broadcast-user-#{uniq()}"
       slug = "rc-broadcast-net-#{uniq()}"
       channel = "#sniffo"
       message_id = 42
+      badge_count = 7
       topic = Topic.channel(user_name, slug, channel)
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
-      :ok = ReadCursor.broadcast_set(user_name, slug, channel, message_id)
+      :ok = ReadCursor.broadcast_set(user_name, slug, channel, message_id, badge_count)
 
       assert_receive %Phoenix.Socket.Broadcast{
         topic: ^topic,
         event: "event",
-        payload: %{kind: "read_cursor_set", last_read_message_id: ^message_id}
+        payload: %{
+          kind: "read_cursor_set",
+          last_read_message_id: ^message_id,
+          badge_count: ^badge_count
+        }
       }
     end
   end
