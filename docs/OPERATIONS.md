@@ -324,10 +324,14 @@ sparingly and document why in the commit message.
 
 ### Running operator actions against the live jail (prod)
 
-Prod is a **bastille jail** (JID 6, `/usr/local/bastille/jails/grappa/root`,
+Prod is a **bastille jail** (name `grappa`, `/usr/local/bastille/jails/grappa/root`,
 release at `/home/grappa/grappa`, DB `runtime/grappa_prod.db`, env
 `/usr/local/etc/grappa/grappa.env`). Reach it with
-`ssh root@m42` → `jexec 6 …`.
+`ssh root@m42` → `jexec grappa …`. **Reference the jail by NAME, not a
+numeric JID** — JIDs are assigned at start and DRIFT across restarts
+(2026-06-21: a doc'd `jexec 6` failed `jail 6 not found`; `ssh root@m42 jls`
+lists the current map). `bastille cmd grappa` / `pkg -j grappa` take the
+name too.
 
 - **`bin/grappa` (the dispatcher) is docker-only — it FAILS in the
   jail** (`docker: not found`). It's a dev/RPi tool.
@@ -337,7 +341,7 @@ release at `/home/grappa/grappa`, DB `runtime/grappa_prod.db`, env
   env first (or `rpc` returns `:noconnection` — needs `RELEASE_COOKIE`):
 
   ```sh
-  jexec 6 su -l grappa -c 'set -a; . /usr/local/etc/grappa/grappa.env; set +a;
+  jexec grappa su -l grappa -c 'set -a; . /usr/local/etc/grappa/grappa.env; set +a;
     /home/grappa/grappa/_build/prod/rel/grappa/bin/grappa rpc "<elixir>"'
   ```
 
@@ -369,7 +373,7 @@ ffmpeg` — dev/CI/e2e get them for free); the jail needs the FreeBSD
 packages installed ONCE, **before** deploying the strip release:
 
 ```sh
-ssh root@m42 'pkg -j 6 install -y p5-Image-ExifTool ffmpeg'
+ssh root@m42 'pkg -j grappa install -y p5-Image-ExifTool ffmpeg'
 ```
 
 The strip is fail-CLOSED: with the binaries missing, every image and
@@ -389,8 +393,8 @@ step. To apply an rc.d change without waiting for a deploy (or after
 a `--force-hot` that skipped it):
 
 ```sh
-ssh root@m42 'jexec 6 cp /home/grappa/grappa/infra/freebsd/rc.d/grappa \
-  /usr/local/etc/rc.d/grappa && jexec 6 service grappa restart'
+ssh root@m42 'jexec grappa cp /home/grappa/grappa/infra/freebsd/rc.d/grappa \
+  /usr/local/etc/rc.d/grappa && jexec grappa service grappa restart'
 ```
 
 **Jail outbound source IPs.** The jail is shared-IP
