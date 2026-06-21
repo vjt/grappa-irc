@@ -15,6 +15,14 @@ Priority tiers: **Immediate** (this session), **High** (this week),
   media-viewer round 2, long-press text selection, #39 EXIF/ICC-profile
   check, portrait-orientation upload. (The PWA badge ICON dogfood is
   CLOSED — confirmed working on device 2026-06-21.)
+- **iOS device dogfood: PWA badge CLEARS on resume** (badge-orphan fix,
+  bundle `BrpmuHuj`, 2026-06-21). Background the PWA → receive a push
+  (badge → 1) → foreground + read everything → badge must CLEAR. The fix
+  (`mountBadgeReconcile`, `cicchetto/src/lib/badge.ts`) reconciles the OS
+  badge to the `/me` count on `visibilitychange→visible`. If it does NOT
+  clear, the assumption to check is whether iOS standalone-PWA fires
+  `visibilitychange` on resume — if not, add a `pageshow` fallback.
+  Not Playwright-reproducible (webkit visibility model ≠ iOS).
 - **Codebase review gate: DUE, deferred by vjt** (token cost) — now
   ~30 days / ~36 sessions past the last review (2026-05-22), well over
   both thresholds. Re-flag each `/start`; vjt decides when it runs.

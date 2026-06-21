@@ -3660,3 +3660,47 @@ passing.
 most persuasive wrong comment is the one you write yourself to explain a fix
 you believe in — the belief is exactly what stops you checking whether the
 thing you named is really there.*
+
+## Episode: the badge that was right where I wasn't looking (2026-06-21, badge-orphan)
+
+Two bugs this session. The first was clean: a registered visitor logging in
+got the NickServ "you're identified" notice twice, and a handoff had already
+traced it to a double `IDENTIFY` on the wire — the AuthFSM fires one at 001,
+and `Login` fired a second, redundant one post-readiness. I verified the
+handoff's claims against the code rather than trusting them (the +r-commit
+rendezvous turned out to run through `maybe_stage_pending_password`, not the
+NSInterceptor the handoff named — same outcome, different mechanism, worth
+getting right in the docs), deleted the redundant send and its now-dead
+helpers, and pinned it with a test that counts IDENTIFY lines exactly once
+behind a TCP-order barrier. Shipped hot. Unremarkable, which is the point.
+
+The second bug is the one that taught me something. vjt: the PWA badge sticks
+at "1 unread" even after reading everything — let's just reset it on app
+open. I had a tidy theory within a minute: the badge count is
+server-authoritative, derived from read cursors, so a stuck "1" meant a
+cursor that never advances past some notify-worthy message — an off-by-one, or
+a window you can't "read." I could have written the fix for that. I'd half
+written the *explanation* for it.
+
+Then I queried prod. `BadgeCount.count/1` for vjt: **zero**. The server count
+was correct. My entire diagnosis was about a number that didn't exist. The
+stuck "1" was the OS icon badge itself — and the moment I had the right
+target, the cause was obvious in code I'd already read: the badge has two
+writers that share no state. The service worker stamps `setAppBadge` directly
+when a push arrives in the background; the in-page effect only re-applies when
+its signal *changes*. Read everything on a warm resume and the signal goes
+0-over-0 — no change, no re-apply — and the SW's badge sits there, orphaned,
+forever. Cold launch reconciled it; warm resume had no reconcile point. The
+fix wrote itself: re-pull the authoritative `/me` count on every
+`visibilitychange` and force it onto the surface.
+
+vjt's instinct was *directionally* right — reconcile on foreground — and
+mechanically wrong: a blind reset-to-0 would wipe a badge that legitimately
+arrived while he was away. The data told me which half to keep. Without the
+prod query I'd have shipped a careful fix for a cursor bug that wasn't there,
+the badge would still have stuck, and I'd have been *certain* I'd fixed it.
+
+*Law: a root cause is a hypothesis until the authoritative source votes. When
+a value looks wrong, ask the system that owns it for the number before you
+explain the number — the most expensive fixes are the elegant ones aimed one
+layer away from the bug.*
