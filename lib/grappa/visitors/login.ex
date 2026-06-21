@@ -127,6 +127,7 @@ defmodule Grappa.Visitors.Login do
           | :captcha_failed
           | :captcha_provider_unavailable
           | :upstream_unreachable
+          | :nick_in_use
           | :connect_timeout
           | :welcome_timeout
           | :probe_timeout
@@ -391,8 +392,8 @@ defmodule Grappa.Visitors.Login do
       {:session_phase, ^ref, :connected} ->
         :ok
 
-      {:DOWN, ^monitor_ref, :process, ^pid, _} ->
-        {:error, {:down, :upstream_unreachable}}
+      {:DOWN, ^monitor_ref, :process, ^pid, reason} ->
+        {:error, {:down, classify_down(reason)}}
     after
       timeout ->
         {:error, :connect_timeout}
@@ -405,21 +406,35 @@ defmodule Grappa.Visitors.Login do
         Process.demonitor(monitor_ref, [:flush])
         {:ok, pid}
 
-      {:DOWN, ^monitor_ref, :process, ^pid, _} ->
+      {:DOWN, ^monitor_ref, :process, ^pid, reason} ->
         Session.stop_session({:visitor, visitor_id}, network_id)
-        {:error, :upstream_unreachable}
+        {:error, classify_down(reason)}
     after
       timeout ->
         tear_down(visitor_id, network_id, monitor_ref, :welcome_timeout)
     end
   end
 
+  # #40: a fresh-login / anon visitor who picks a nick already taken on the
+  # upstream gets a 433 ERR_NICKNAMEINUSE during registration. AuthFSM has
+  # no recovery path for a passwordless session, so it stops the Client with
+  # `{:nick_rejected, 433, _}`; Session.Server wraps the linked-exit as
+  # `{:client_exit, _}` before propagating, which is the monitored DOWN
+  # reason seen here. Surface it as `:nick_in_use` so the user gets the
+  # actionable "pick another nick" copy instead of the generic
+  # `:upstream_unreachable` / `:welcome_timeout`. 432 ERR_ERRONEUSNICKNAME is
+  # deliberately NOT mapped — `validate_nick/1` already gates nick shape, so
+  # a 432 means upstream-specific rules differ and the generic surface is
+  # honest about "we couldn't tell you what's wrong with it."
+  defp classify_down({:client_exit, {:nick_rejected, 433, _}}), do: :nick_in_use
+  defp classify_down(_), do: :upstream_unreachable
+
   defp tear_down(visitor_id, network_id, monitor_ref, reason) do
     Process.demonitor(monitor_ref, [:flush])
     Session.stop_session({:visitor, visitor_id}, network_id)
 
     case reason do
-      {:down, :upstream_unreachable} -> {:error, :upstream_unreachable}
+      {:down, inner} when is_atom(inner) -> {:error, inner}
       atom when is_atom(atom) -> {:error, atom}
     end
   end

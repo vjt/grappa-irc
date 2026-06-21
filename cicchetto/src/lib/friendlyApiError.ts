@@ -43,6 +43,7 @@ export type KnownApiErrorCode =
   | "captcha_required"
   | "not_connected"
   | "upstream_unreachable"
+  | "nick_in_use"
   | "forbidden"
   | "not_found"
   | "bad_request"
@@ -64,6 +65,7 @@ const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "captcha_required",
   "not_connected",
   "upstream_unreachable",
+  "nick_in_use",
   "forbidden",
   "not_found",
   "bad_request",
@@ -144,6 +146,12 @@ function friendlyKnown(err: ApiError, code: KnownApiErrorCode): string {
       // (server-side circuit-breaker) — this is a per-request connect
       // failure, not a cooldown.
       return "Couldn't reach the upstream IRC server. Check the network is up.";
+    case "nick_in_use":
+      // #40 — 433 ERR_NICKNAMEINUSE during login registration (the chosen
+      // nick is already on the upstream) OR a visitor `/nick` rename
+      // colliding with another visitor row. Both surface the same 409
+      // envelope; the copy is actionable: pick another nick.
+      return "That nickname is already in use on this network. Pick another one.";
     case "forbidden":
       return "Your account isn't allowed to perform that action.";
     case "not_found":

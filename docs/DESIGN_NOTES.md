@@ -12775,3 +12775,34 @@ buggy `set`/`""` shape; re-pointed to `unset`. Also fixed a pre-existing
 (CI-invisible — cic vitest is local-only) red in `compose.test.ts`: the
 `vi.mock("../lib/api")` block omitted `ChannelPushError`, so #62's
 `e instanceof ChannelPushError` threw for every non-ApiError rejection.
+
+## 2026-06-21 — login 433 surfaces as `:nick_in_use` (#40)
+
+Picking a nick already on the upstream at the landing page returned
+"handshake didn't complete" (cic's `connect_timeout` copy) — the visitor
+waited out the welcome budget and got a generic timeout instead of the
+actual reason. Root cause: `Visitors.Login` blocks on the
+`{:session_ready, ref}` (001 RPL_WELCOME) signal; a 433
+ERR_NICKNAMEINUSE never reaches 001. For a passwordless/anon session
+AuthFSM has no ghost-recovery path, so it stops the Client with
+`{:nick_rejected, 433, _}`; `Session.Server` traps the linked exit and
+re-raises it as its own stop reason `{:client_exit, {:nick_rejected,
+433, _}}`. That term already rode the monitored DOWN to the login
+waiter — Login just *discarded* it (`{:DOWN, …, _}`) and flattened every
+crash to `:upstream_unreachable`.
+
+Fix is pure classification, no new state: capture the DOWN reason and
+`classify_down/1` maps `{:client_exit, {:nick_rejected, 433, _}}` →
+`:nick_in_use`, everything else → `:upstream_unreachable` (unchanged).
+The 409 `nick_in_use` envelope already existed (visitor `/nick` rename
+collision, V9) so the controller + FallbackController + cic only needed
+the login surface wired to it: an explicit `visitor_error_response`
+allowlist arm (the catch-all would 500 it) and a `friendlyApiError`
+case. 432 ERR_ERRONEUSNICKNAME is deliberately NOT mapped — `validate_nick/1`
+already gates nick shape, so a 432 reflects upstream-specific rules and
+the generic surface stays honest.
+
+Registered visitors (cached NickServ password) are unaffected: their
+433 drives `GhostRecovery` (underscore-NICK + GHOST + IDENTIFY), whose
+FSM stays `:cont`, so the exit reason is never `:nick_rejected` and
+won't be misclassified.
