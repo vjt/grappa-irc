@@ -15,14 +15,18 @@ Priority tiers: **Immediate** (this session), **High** (this week),
   media-viewer round 2, long-press text selection, #39 EXIF/ICC-profile
   check, portrait-orientation upload. (The PWA badge ICON dogfood is
   CLOSED — confirmed working on device 2026-06-21.)
-- **iOS device dogfood: PWA badge CLEARS on resume** (badge-orphan fix,
-  bundle `BrpmuHuj`, 2026-06-21). Background the PWA → receive a push
-  (badge → 1) → foreground + read everything → badge must CLEAR. The fix
-  (`mountBadgeReconcile`, `cicchetto/src/lib/badge.ts`) reconciles the OS
-  badge to the `/me` count on `visibilitychange→visible`. If it does NOT
-  clear, the assumption to check is whether iOS standalone-PWA fires
-  `visibilitychange` on resume — if not, add a `pageshow` fallback.
-  Not Playwright-reproducible (webkit visibility model ≠ iOS).
+- **NEXT: crank open review-exempt bugs** (issue-closing sweep,
+  continued — #27/#40/#37/#61/#25 + the badge-orphan fix already
+  shipped this cluster). Tractable, no on-device blocker:
+  - **#38** cic: +k channel tab persists after reconnect when access is
+    lost, cannot be dismissed (window-state lifecycle on reconnect).
+  - **#16** cic: MembersPane stuck on 'loading…' after JOIN to +k
+    channel — LIKELY the same +k cluster as #38; investigate together,
+    possible two-fer.
+  - **#12** cicchetto: /msg to non-joined channel creates unclose-able
+    window; session restore archives it but sent messages don't render.
+  Device-blocked (parked until dogfood): #63 (iOS keyboard drops letters
+  on fast typing), #46 (Android unread marker lost after long background).
 - **Codebase review gate: DUE, deferred by vjt** (token cost) — now
   ~30 days / ~36 sessions past the last review (2026-05-22), well over
   both thresholds. Re-flag each `/start`; vjt decides when it runs.
