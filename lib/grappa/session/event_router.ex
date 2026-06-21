@@ -618,6 +618,29 @@ defmodule Grappa.Session.EventRouter do
         eff
       end
 
+    # #61: the per-channel fan-out above is EMPTY when the operator shares
+    # no channel with their old nick — a self-rename then produced zero
+    # visible feedback. Always surface the operator's OWN rename on the
+    # synthetic "$server" window (which always exists, independent of
+    # channel membership) so confirmation appears even with zero channels
+    # joined, and in the always-reachable server tab when channels exist.
+    # cic renders it via the existing `:nick_change` line in the server
+    # tab. Like the per-channel self-rename rows it counts as an "event"
+    # (not a message) in cic's cursor-derived unread until the operator
+    # views the server tab — and the OS/notify badge ignores it (presence
+    # kinds fail `should_notify?`). Consistent with how a self-rename
+    # already surfaces in channel windows; the goal here is exactly that
+    # always-visible confirmation, zero channels or not.
+    self_server_effects =
+      if old_nick == state.nick do
+        {_, eff} =
+          build_persist(new_state, :nick_change, "$server", old_nick, nil, %{new_nick: new_nick})
+
+        [eff]
+      else
+        []
+      end
+
     # V9 (visitor-parity cluster, 2026-05-15): on a self-NICK echo
     # for a visitor subject, emit the persist-side effect so
     # `Session.Server.apply_effects/2` rotates `visitors.nick` via the
@@ -633,7 +656,7 @@ defmodule Grappa.Session.EventRouter do
         _ -> []
       end
 
-    {:cont, new_state, persist_effects ++ visitor_persist_effects}
+    {:cont, new_state, persist_effects ++ self_server_effects ++ visitor_persist_effects}
   end
 
   # Unsolicited TOPIC: a channel operator changed the topic mid-session.

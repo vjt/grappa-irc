@@ -12902,3 +12902,39 @@ intentionally dropped — production PWA updates full-reload, so listeners
 never accumulate; the disposer exists for unit-test cleanup). No
 `createRoot` wrapper: it's a raw `addEventListener`, not a Solid
 reactive primitive, so there is no computation owner to scope.
+
+## 2026-06-21 — own nick change surfaces on $server (#61)
+
+Changing your own nick produced no visible confirmation in cic when you
+shared no channel with your old nick, and even with channels the rename
+only appeared in those channel views — never the always-reachable server
+tab. `EventRouter`'s `:nick` clause fans out a `:nick_change` scrollback
+row per channel the renamer is a member of; for a self-rename with zero
+shared channels that fan-out is empty → zero effects → no feedback. The
+separate `own_nick_changed` STATE event (broadcast by `Session.Server`,
+consumed by cic's `userTopic.ts` to patch the displayed nick) applied
+the change silently — the nick rotated, the operator saw nothing.
+
+Fix: in the `:nick` clause, when `old_nick == state.nick`, emit one
+additional `:nick_change` persist on the synthetic `"$server"` window,
+independent of channel membership. `$server` always exists, so the
+confirmation is guaranteed even with zero channels. Reuses the existing
+typed `:nick_change` event + the `$server` convention — scrollback stays
+server-owned, cic renders it via the existing `:nick_change` line, no cic
+change. The row is gated on the self check (NICK-other never reaches
+`$server`); visitors get it too (subject-agnostic check) alongside the
+unchanged `{:visitor_nick_changed, _}` persist.
+
+Behaviour note (reviewer-surfaced, kept on purpose): the `$server`
+nick_change row counts as a cic "event" (not a message) in the
+cursor-derived unread until the server tab is viewed — the same way the
+per-channel self-rename rows already do (cic appends the row to
+scrollback BEFORE the `isOwnPresenceEvent` gate, and the gate only skips
+the mention/title bump path, not the cursor count). The `$server` window
+handler is installed with `ownNick = null` (`subscribe.ts`), so
+`isOwnPresenceEvent` can't suppress there anyway — but passing the live
+nick wouldn't help either, since the row's sender is the OLD nick while
+the live own-nick is already the NEW one post-`own_nick_changed`. The
+events indicator IS the always-visible confirmation #61 asked for, so it
+stays; the OS/notify badge ignores it (presence kinds fail
+`should_notify?`).

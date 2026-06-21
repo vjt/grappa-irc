@@ -1078,7 +1078,7 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.nick == "vjt"
     end
 
-    test "NICK-self updates state.nick + fan-out persist" do
+    test "NICK-self updates state.nick + fans out per channel PLUS a $server row (#61)" do
       state =
         base_state(%{
           members: %{
@@ -1088,20 +1088,42 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
 
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      assert new_state.nick == "vjt_"
+      assert new_state.members["#italia"] == %{"vjt_" => ["@"], "alice" => []}
+
+      # #61: the per-channel rename line PLUS an always-visible $server
+      # confirmation so the operator sees their own rename even from a
+      # channel they're not currently looking at.
+      channels =
+        effects
+        |> Enum.map(fn {:persist, :nick_change, a} -> a.channel end)
+        |> Enum.sort()
+
+      assert channels == Enum.sort(["#italia", "$server"])
+
+      Enum.each(effects, fn {:persist, :nick_change, attrs} ->
+        assert attrs.sender == "vjt"
+        assert attrs.meta == %{new_nick: "vjt_"}
+      end)
+    end
+
+    test "NICK-self with ZERO channels still emits a $server feedback row (#61)" do
+      state = base_state()
+      m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
+
+      # The bug: a self-rename with no shared channels produced no effects
+      # at all — no visible confirmation anywhere. It must surface on the
+      # synthetic "$server" window, which always exists.
       assert {:cont, new_state, [{:persist, :nick_change, attrs}]} =
                EventRouter.route(m, state)
 
       assert new_state.nick == "vjt_"
-      assert new_state.members["#italia"] == %{"vjt_" => ["@"], "alice" => []}
+      assert attrs.channel == "$server"
+      assert attrs.sender == "vjt"
+      assert attrs.body == nil
       assert attrs.meta == %{new_nick: "vjt_"}
-    end
-
-    test "NICK for nick not in any channel still updates state.nick if self" do
-      state = base_state()
-      m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
-
-      assert {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.nick == "vjt_"
     end
 
     test "NICK-other for stranger emits no effects + no mutation" do
