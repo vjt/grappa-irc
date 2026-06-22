@@ -43,6 +43,16 @@
   --font-size: 14px;
   --line-height: 1.4;
   --breakpoint-mobile: 768px;
+  /* grappa-irc#69: theme the scrollbars. `scrollbar-color` and
+     `scrollbar-width` inherit, so declaring them on :root themes every
+     scrollable descendant (.scrollback, members pane, admin tables…)
+     in both irssi-dark and mirc-light — the vars resolve per active
+     theme via the cascade. Without this the UA paints a stark white
+     bar over the dark theme (alk, #sniffo 2026-06-22). Thumb = muted,
+     track = bg-alt. WebKit/Blink ignore these and need the
+     ::-webkit-scrollbar block at the end of this file. */
+  scrollbar-color: var(--muted) var(--bg-alt);
+  scrollbar-width: thin;
 }
 
 :root[data-theme="irssi-dark"] {
@@ -3578,6 +3588,37 @@ html.resize-dragging * {
 
 .home-pane-network-nick {
   color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ *
+ * grappa-irc#69 — WebKit/Blink scrollbar theming.
+ *
+ * `::-webkit-scrollbar*` pseudo-elements do NOT inherit, so the
+ * `scrollbar-color`/`scrollbar-width` on :root has no effect in
+ * Chrome/Safari. A global rule themes every scroll container at once;
+ * colors resolve to the active theme via the cascaded vars, so dark
+ * and light both follow automatically (fixes the stark white bar over
+ * irssi-dark — alk, #sniffo 2026-06-22). The 2px track-colored border
+ * insets the thumb so it reads as a slim pill, matching the
+ * `scrollbar-width: thin` Firefox rendering.
+ * ------------------------------------------------------------------ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-alt);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 5px;
+  border: 2px solid var(--bg-alt);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+::-webkit-scrollbar-corner {
+  background: var(--bg-alt);
 }
 
 .home-pane-network-state {
