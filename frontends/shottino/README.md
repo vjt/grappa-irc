@@ -20,6 +20,15 @@ Dependencies checked by `./configure`:
 - OpenSSL (`libssl`, `libcrypto`)
 - pthread support
 
+Optional runtime dependencies (only for media link previews — see below):
+
+- `chafa` — renders the preview, auto-detecting the terminal graphics protocol
+  (Kitty, iTerm2, Sixel, or Unicode symbols).
+- `ffmpeg` — fetches and decodes the linked image/video into a single frame.
+
+If either is missing, clicking a media link falls back to opening it with
+`xdg-open` and logs a one-line hint.
+
 ## Install
 
 ```sh
@@ -65,3 +74,14 @@ Key bindings:
 - `PageUp` / `PageDown` scroll the active chat buffer.
 - `Ctrl-N` / `Ctrl-P` cycle windows.
 - `/help` lists supported commands.
+
+Media link previews:
+
+- Moving the mouse over an image or video link shows a `click to preview:`
+  hint on the chrome line.
+- Left-clicking the link opens a full-screen preview (a still frame for video);
+  press any key to return to the chat.
+- Requires `chafa` + `ffmpeg` on `PATH` and a graphics-capable terminal; without
+  them the link opens via `xdg-open` instead.
+- While shottino runs, mouse reporting is enabled, which suppresses the
+  terminal's native text selection (Shift-drag still works in most terminals).
