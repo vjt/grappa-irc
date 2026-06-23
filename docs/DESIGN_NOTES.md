@@ -12987,3 +12987,62 @@ before the next PRIVMSG is routed, so the grade read at persist reflects
 the grade in force when the line arrived. e2e `ux-5-bc2-nick-render`
 unaffected — it asserts nick colour, plain-sender-no-glyph, and bracket
 shape, never a live opped glyph.
+
+## 2026-06-23 — +k autojoin: dismissable stuck tab (#38) + members-seed guard (#16)
+
+Two related +k-channel bugs, both run to ground with a deterministic e2e
+against the real testnet bahamut (the static investigation in CP67 could
+not reproduce either from prod state).
+
+**#16 — members pane stuck "loading…" after a keyed JOIN — already fixed
+in the tree.** Prod rpc confirmed bahamut sends the 353/366 burst on a
+keyed JOIN, and the cold-subscribe race is covered by CP15 B3's after_join
+`push_members_if_seeded`. The new e2e
+(`issue16-keyed-join-members-seed.spec.ts`) proves it and guards the
+class: a peer founds a +k channel, cic `/join`s with the key, and the
+member list is present BOTH on the live JOIN and after a page reload — the
+deterministic cold WS resubscribe that exercises the after_join push
+rather than the one-shot live `members_seeded` broadcast. Closed as
+already-fixed; no production change.
+
+**#38 — a +k autojoin channel can't be dismissed with ×.** grappa
+deliberately does NOT persist +k keys: `state.autojoin` is channel names
+only and the 001 RPL_WELCOME autojoin loop sends
+`Client.send_join(client, channel, nil)` (server.ex:1633, "UX-4 bucket F:
+explicit nil"). So every (re)connect re-JOINs a +k autojoin channel with
+no key → bahamut 475 → not joined. That lights up BOTH cic sidebar sources
+for the same channel: GET /channels' autojoin merge returns it
+`{joined:false, source:autojoin}` (→ `channelsBySlug`) AND the 475 emits a
+`join_failed` typed event (→ `windowStateByChannel = :failed`). The render
+dedup (`pseudoChannelsForNetwork` skips names already in `channelsBySlug`)
+makes it render via the LIVE branch, so its × routed through
+`closeChannelWindow`, which only `postPart`'d.
+
+Root cause: that DELETE drops the channel from `channelsBySlug` (server
+de-autojoins + broadcasts `channels_changed` → refetch), but for a
+never-joined channel the upstream PART is a 442 no-op, so NO self-PART
+scrollback echo arrives — and that echo (`subscribe.ts` own-PART arm) is
+the ONLY caller of `setParted`, the verb that clears `windowState`. The
+orphaned `:failed` entry then re-emerges as an un-dismissable greyed
+pseudo-row the instant `channelsBySlug` drops the name. (The sibling
+pseudo-row × `handleClosePseudo` does call `setParted`, but the dedup
+means the LIVE-branch × is the one shown for a both-sources channel.)
+
+Fix: `closeChannelWindow` now also clears the local windowState
+(`setParted`) alongside `postPart`. The close action's local effect must
+not depend on a server PART echo that only fires for actually-joined
+channels. Idempotent with the echo for joined channels; clearing (vs.
+adding) a windowState key can only emit FEWER pseudo-rows — the OPPOSITE
+direction from the reverted PHASE-1.1 ghost-row regression (which added a
+joined arm to the render projection). Shared helper → the mobile BottomBar
+× is fixed too. General class, not just +k: any channel present in both
+`channelsBySlug` and a non-`:joined` windowState.
+
+Escape hatches after this fix: × dismisses the stuck tab, and
+`/join #chan KEY` re-joins with the current key (cic forwards it,
+`compose.ts` → POST /channels `{name,key}`). Making autojoin rejoin +k
+channels *automatically* (persisting the key, Cloak-encrypted like
+NickServ/SASL, captured on a successful keyed `/join`, with a stale-key
+path) is a deliberate follow-up feature — deferred (vjt 2026-06-23), not
+folded into this bugfix, because storing channel passwords warrants its
+own design pass.
