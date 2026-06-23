@@ -1,7 +1,9 @@
 import { patchNetwork, postPart } from "./api";
 import { getSubject, token } from "./auth";
+import { channelKey } from "./channelKey";
 import { closeQueryWindowState } from "./queryWindows";
 import { quitAll } from "./quit";
+import { setParted } from "./windowState";
 
 // Shared close-window helpers. Two call sites today: Sidebar × on
 // desktop, BottomBar × on mobile (iOS-3). Mirror the
@@ -12,6 +14,20 @@ export function closeChannelWindow(networkSlug: string, channelName: string): vo
   const t = token();
   if (!t) return;
   void postPart(t, networkSlug, channelName);
+  // #38 — also clear the local windowState pseudo-projection. The DELETE
+  // removes the channel from `channelsBySlug` (server de-autojoins +
+  // broadcasts `channels_changed` → refetch), but for a channel the user
+  // never actually joined — e.g. a +k autojoin entry that 475'd on
+  // (re)connect — the upstream PART is a 442 no-op, so NO self-PART
+  // scrollback echo arrives. That echo (subscribe.ts) is the ONLY thing
+  // that calls `setParted`, so without clearing it here the non-`:joined`
+  // windowState entry is orphaned and re-emerges as an un-dismissable
+  // greyed pseudo-row (`Sidebar.pseudoChannelsForNetwork`) the instant
+  // `channelsBySlug` drops the name. `setParted` is idempotent with the
+  // echo for actually-joined channels, and clearing (vs. adding) a
+  // windowState key can only emit FEWER pseudo-rows — the opposite
+  // direction from the reverted PHASE-1.1 ghost-row regression.
+  setParted(channelKey(networkSlug, channelName));
 }
 
 export function closeQueryWindow(networkId: number, targetNick: string): void {
