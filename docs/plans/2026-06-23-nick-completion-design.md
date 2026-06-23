@@ -29,9 +29,26 @@ Members are bare nicks (`{nick, modes}`) — no `@`/`+` sigil to strip.
 2. Cycle **wraps forever** (`% matches.length`, line 768). Spec wants the
    cycle to pass back through the **originally typed text** after the last
    match.
-3. State (`tabCycle`) only clears on submit. Spec wants it discarded on any
-   keystroke other than Tab.
-4. No touch trigger — Tab key is the only way in on a stock keyboard.
+3. No touch trigger — Tab key is the only way in on a stock keyboard.
+
+### Latent bug found while scoping (fix folded in)
+
+**The in-app cycle never worked.** `setDraft` nulls `tabCycle`
+(compose.ts:146 — correct: a real edit must break the cycle), and BOTH real
+callers (`Shell.tsx:363`, `KeyboardHost.tsx:237`) call
+`setDraft(result.newInput)` immediately after `tabComplete`. So the second
+Tab always re-enters fresh: the prefix becomes the full last-completed nick,
+matches collapse to that single nick, output never changes. The 3 unit tests
+"pass" only because they call `tabComplete` directly and bypass `setDraft` —
+mirror tests exercising the wrong path.
+
+Consequence for this design:
+- `tabComplete` must write the draft itself via the internal `writeState`
+  (which does NOT null `tabCycle`); the callers **drop** their `setDraft`
+  call and only place the caret.
+- Spec item "discard cycle on any non-Tab keystroke" needs **no new code** —
+  `setDraft` already nulls `tabCycle`, and every real keystroke flows
+  `onInput → setDraft`. No `resetTabCycle` export. (YAGNI.)
 
 ## Decisions (forks resolved with vjt)
 
@@ -48,9 +65,10 @@ Members are bare nicks (`{nick, modes}`) — no `@`/`+` sigil to strip.
 
 ## Design
 
-No new modules. Extend `compose.ts`, touch `ComposeBox.tsx` and
-`KeyboardHost.tsx`. `tabComplete`'s **signature is unchanged** — all three
-callers keep working untouched.
+No new modules. Extend `compose.ts`, touch `ComposeBox.tsx`, `Shell.tsx`,
+`KeyboardHost.tsx`. `tabComplete`'s **signature and return shape are
+unchanged** (`{newInput, newCursor} | null`) — but it now also writes the
+draft internally, so the three callers drop their post-call `setDraft`.
 
 ### 1. `tabComplete` rewrite (compose.ts)
 
@@ -91,23 +109,28 @@ sorted `localeCompare`. `null` if no matches.
 
 Single-match case still gives a revert slot: `nick: ` → `<typed>` → `nick: `.
 
+**Draft write moves inside.** After computing `newInput`, `tabComplete` calls
+`writeState(key, s => ({...s, draft: newInput}))` itself (NOT `setDraft`,
+which would null the cycle it just set). Callers stop calling `setDraft`. This
+is the latent-bug fix above.
+
 ### 2. Double-tap trigger (ComposeBox.tsx)
 
 Track tap timestamps on the textarea (`Date.now()` is fine in browser code).
 Two taps within ~300ms (and within a few px) ⇒
-`tabComplete(key, draft, ta.selectionEnd, true)`, then `setDraft`, then
-`setSelectionRange(newCursor, newCursor)` on the next microtask (mirrors the
-`Shell.tsx` caret-after-store-write pattern; collapses the OS word-selection).
-`selectionEnd` is the cursor so the OS-selected word is the completion target.
+`tabComplete(key, draft, ta.selectionEnd, true)` (which now writes the draft
+itself), then `setSelectionRange(newCursor, newCursor)` on the next microtask
+(mirrors the `Shell.tsx` caret-after-store-write pattern; collapses the OS
+word-selection). `selectionEnd` is the cursor so the OS-selected word is the
+completion target. No `setDraft` call — `tabComplete` already wrote it.
 
-### 3. State discard
+### 3. State discard — no new code
 
-Export `resetTabCycle()`. Call it from:
-- `ComposeBox.onInput` (the real-keystroke path — the whole point for stock
-  keyboards)
-- `KeyboardHost` insertText branch (custom-keyboard printable keys)
-
-Belt-and-suspenders with the strict range check; explicit per spec.
+`setDraft` already nulls `tabCycle` (compose.ts:146), and every real keystroke
+flows `ComposeBox.onInput → setDraft` (and `KeyboardHost.applyEdit →
+setDraft`). The spec's discard-on-keystroke is therefore already satisfied
+once the completion path stops abusing `setDraft` (§1). The strict range check
+in continuation is the belt; this is the suspenders.
 
 ## Testing
 
@@ -117,7 +140,10 @@ Belt-and-suspenders with the strict range check; explicit per spec.
 - **Add:** positional suffix (line-start `": "` vs mid-sentence `" "`),
   revert-on-exhaust, range-continuation after a suffix is present,
   Shift+Tab backward through the revert slot, single-match revert,
-  `resetTabCycle` clears continuation.
+  **cycle survives the internal draft write** (regression guard for the
+  latent bug — read the draft back from `getDraft` between cycles instead of
+  threading `newInput` by hand, so the test exercises the real path),
+  typing (`setDraft`) discards the cycle.
 - **Double-tap gesture:** unit-test the tap-timing reducer in isolation; do
   NOT e2e the gesture (Playwright webkit ≠ iOS scroll/gesture physics).
   Dogfood on device.
