@@ -234,7 +234,7 @@ const KeyboardHost: Component = () => {
           const current = getDraft(key);
           const result = tabComplete(key, current, caretStart, true);
           if (!result) return;
-          setDraft(key, result.newInput);
+          // tabComplete wrote the draft itself; only move the host caret.
           setCaret(result.newCursor, result.newCursor, ta);
         }
         break;

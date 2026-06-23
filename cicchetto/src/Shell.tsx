@@ -360,9 +360,9 @@ const Shell: Component = () => {
       const current = getDraft(key);
       const result = tabComplete(key, current, ta.selectionStart, forward);
       if (!result) return;
-      setDraft(key, result.newInput);
-      // Solid signal write doesn't immediately reflect in the textarea
-      // — schedule the cursor placement on the next microtask.
+      // tabComplete wrote the draft via writeState (calling setDraft here
+      // would null the cycle). We only place the caret. Solid signal write
+      // doesn't reflect immediately — schedule on the next microtask.
       queueMicrotask(() => {
         ta.setSelectionRange(result.newCursor, result.newCursor);
       });
