@@ -25,7 +25,9 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <sys/types.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -47,6 +49,7 @@
 #define SEEN_MESSAGES 12000
 #define INPUT_HISTORY 200
 #define PANEL_LINES 256
+#define MAX_LINK_REGIONS 256
 
 enum color_pair {
     CP_MAIN = 1,
@@ -179,6 +182,18 @@ enum panel_kind {
     PANEL_ADMIN
 };
 
+/* A clickable media link rendered in the chat area. Recorded each draw()
+ * frame (cleared at frame start) so mouse coordinates can be mapped back to
+ * the URL under the cursor without re-deriving the wrapped layout. */
+struct link_region {
+    int y0;
+    int y1;
+    int x0;
+    int x1;
+    bool is_video;
+    char url[MAX_LINE];
+};
+
 struct app {
     struct url url;
     char token[MAX_TOKEN];
@@ -208,6 +223,9 @@ struct app {
     char input[MAX_LINE];
     size_t input_len;
     char last_url[MAX_LINE];
+    char hover_url[MAX_LINE];
+    struct link_region link_regions[MAX_LINK_REGIONS];
+    size_t link_region_count;
     char history[INPUT_HISTORY][MAX_LINE];
     size_t history_count;
     size_t history_pos;
@@ -1153,19 +1171,51 @@ static const char *find_url(const char *s) {
     return http < https ? http : https;
 }
 
-static bool looks_like_image_url(const char *url) {
-    char lower[MAX_LINE];
+/* Copy the leading non-whitespace token of `url` into `out` (case preserved).
+ * Returns the token length. Shared by URL remembering, link-region recording,
+ * and the lowercasing classifier so the token-boundary rule stays in one place. */
+static size_t copy_url_token(const char *url, char *out, size_t out_size) {
     size_t n = 0;
-    while (url[n] && !isspace((unsigned char)url[n]) && n + 1 < sizeof(lower)) {
-        lower[n] = (char)tolower((unsigned char)url[n]);
+    while (url[n] && !isspace((unsigned char)url[n]) && n + 1 < out_size) {
+        out[n] = url[n];
         n++;
     }
-    lower[n] = 0;
-    char *q = strchr(lower, '?');
+    out[n] = 0;
+    return n;
+}
+
+/* Lowercased copy of the leading URL token with any `?query` stripped, so
+ * extension matching ignores case and `?sig=...` suffixes. */
+static void url_token_lower(const char *url, char *out, size_t out_size) {
+    copy_url_token(url, out, out_size);
+    for (char *p = out; *p; p++) *p = (char)tolower((unsigned char)*p);
+    char *q = strchr(out, '?');
     if (q) *q = 0;
-    return strstr(lower, ".jpg") || strstr(lower, ".jpeg") || strstr(lower, ".png") ||
-           strstr(lower, ".gif") || strstr(lower, ".webp") || strstr(lower, ".bmp") ||
-           strstr(lower, "/uploads/");
+}
+
+static bool token_has_suffix(const char *token, const char *const *exts) {
+    for (size_t i = 0; exts[i]; i++) {
+        if (strstr(token, exts[i])) return true;
+    }
+    return false;
+}
+
+enum media_kind { MEDIA_NONE = 0, MEDIA_IMAGE, MEDIA_VIDEO };
+
+/* Classify a URL by extension (and grappa's /uploads/ image convention) in a
+ * single lowercasing pass. Video is checked first so an extension wins over the
+ * /uploads/ heuristic. */
+static enum media_kind media_kind_of(const char *url) {
+    static const char *const img[] = {".jpg", ".jpeg", ".png", ".gif",
+                                      ".webp", ".bmp", NULL};
+    static const char *const vid[] = {".mp4", ".m4v", ".webm", ".mkv", ".mov",
+                                      ".avi", ".ogv", ".flv", ".wmv", ".mpg",
+                                      ".mpeg", NULL};
+    char lower[MAX_LINE];
+    url_token_lower(url, lower, sizeof(lower));
+    if (token_has_suffix(lower, vid)) return MEDIA_VIDEO;
+    if (token_has_suffix(lower, img) || strstr(lower, "/uploads/")) return MEDIA_IMAGE;
+    return MEDIA_NONE;
 }
 
 static bool contains_ci(const char *haystack, const char *needle) {
@@ -1199,11 +1249,8 @@ static bool message_mentions_me(struct app *app, const char *network, const char
 static void remember_url(struct app *app, const char *body) {
     const char *url = find_url(body);
     if (!url) return;
-    size_t n = 0;
-    while (url[n] && !isspace((unsigned char)url[n]) && n + 1 < sizeof(app->last_url)) n++;
     pthread_mutex_lock(&app->lock);
-    memcpy(app->last_url, url, n);
-    app->last_url[n] = 0;
+    copy_url_token(url, app->last_url, sizeof(app->last_url));
     pthread_mutex_unlock(&app->lock);
 }
 
@@ -1330,7 +1377,7 @@ static void draw_message_line(int y, int x, int width, int max_lines, const char
         draw_wrapped_text(y, body_x, body_w, max_lines, body_pair, body_attr, body);
         if (pending_row && width > 11) draw_text(y + max_lines - 1, x + width - 11, 11, CP_MUTED, A_DIM, "[sending]");
     } else if (find_url(line)) {
-        draw_wrapped_text(y, x, width, max_lines, looks_like_image_url(find_url(line)) ? CP_ACCENT : CP_MUTED, A_UNDERLINE, line);
+        draw_wrapped_text(y, x, width, max_lines, media_kind_of(find_url(line)) != MEDIA_NONE ? CP_ACCENT : CP_MUTED, A_UNDERLINE, line);
     } else if (strstr(line, "failed") || strstr(line, "error")) {
         draw_wrapped_text(y, x, width, max_lines, CP_ERROR, 0, line);
     } else {
@@ -1434,6 +1481,7 @@ static void open_panel(struct app *app, enum panel_kind panel) {
         panel_line(app, "  PgUp/PgDn scroll chat buffer");
         panel_line(app, "  Ctrl-N/Ctrl-P cycle windows");
         panel_line(app, "  Tab complete, Up/Down input history");
+        panel_line(app, "  Click image/video links to preview (needs chafa+ffmpeg)");
         panel_line(app, "  Esc or /chat returns to chat");
         break;
     case PANEL_ADMIN:
@@ -1903,9 +1951,24 @@ static void ws_pump(struct app *app) {
     }
 }
 
+/* Record the screen rectangle of a media link so a later mouse event can map
+ * back to its URL. Caller holds app->lock (draw path). */
+static void add_link_region(struct app *app, int y0, int y1, int x0, int x1,
+                            const char *url, bool is_video) {
+    if (app->link_region_count >= MAX_LINK_REGIONS) return;
+    struct link_region *r = &app->link_regions[app->link_region_count++];
+    r->y0 = y0;
+    r->y1 = y1;
+    r->x0 = x0;
+    r->x1 = x1;
+    r->is_video = is_video;
+    snprintf(r->url, sizeof(r->url), "%s", url);
+}
+
 static void draw(struct app *app) {
     pthread_mutex_lock(&app->lock);
     erase();
+    app->link_region_count = 0;
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
     int side = cols > 118 ? 22 : (cols > 90 ? 18 : 14);
@@ -1977,8 +2040,12 @@ static void draw(struct app *app) {
         y++;
     }
 
-    draw_text(chrome_y, main_x + 1, main_w - 2, CP_MUTED, 0,
-              "/archive  /settings  /admin  /chat  ws:%s", app->ws_connected ? "connected" : "offline");
+    if (app->hover_url[0])
+        draw_text(chrome_y, main_x + 1, main_w - 2, CP_ACCENT, A_BOLD,
+                  "click to preview: %s", app->hover_url);
+    else
+        draw_text(chrome_y, main_x + 1, main_w - 2, CP_MUTED, 0,
+                  "/archive  /settings  /admin  /chat  ws:%s", app->ws_connected ? "connected" : "offline");
     for (int ty = 0; ty < topic_h; ty++) draw_fill(topic_y + ty, main_x, main_w, CP_ALT);
     draw_text(topic_y, main_x + 1, topic_label_w, CP_ACCENT, A_BOLD, "%s/%s", w->network, w->channel);
     if (topic_prefix_w) draw_text(topic_y, topic_text_x, topic_text_w, CP_ALT, A_BOLD, "topic: ");
@@ -2034,7 +2101,16 @@ static void draw(struct app *app) {
         int draw_lines = heights[vi];
         if (draw_lines > available) draw_lines = available;
         if (draw_lines <= 0) break;
-        draw_message_line(scroll_y + used_lines, main_x + 1, main_w - 2, draw_lines, app->log[i], app->log_mentions[i], app->log_pending[i]);
+        int msg_y = scroll_y + used_lines;
+        draw_message_line(msg_y, main_x + 1, main_w - 2, draw_lines, app->log[i], app->log_mentions[i], app->log_pending[i]);
+        const char *msg_url = find_url(app->log[i]);
+        enum media_kind mk = msg_url ? media_kind_of(msg_url) : MEDIA_NONE;
+        if (mk != MEDIA_NONE) {
+            char url_tok[MAX_LINE];
+            copy_url_token(msg_url, url_tok, sizeof(url_tok));
+            add_link_region(app, msg_y, msg_y + draw_lines - 1, main_x + 1,
+                            main_x + main_w - 2, url_tok, mk == MEDIA_VIDEO);
+        }
         used_lines += draw_lines;
         skip_lines = 0;
     }
@@ -2580,13 +2656,198 @@ static void open_external_url(struct app *app, const char *url) {
         log_line(app, "no URL captured yet");
         return;
     }
+    /* Double-fork: the grandchild runs xdg-open and is reparented to init,
+     * so it is auto-reaped — we must not block the UI thread waiting on a
+     * browser launcher, and a single fork would leak a zombie per call.
+     * xdg-open's own diagnostics are sent to /dev/null so they can't scribble
+     * over the ncurses screen. */
     pid_t pid = fork();
     if (pid == 0) {
-        execlp("xdg-open", "xdg-open", url, (char *)NULL);
+        if (fork() == 0) {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) {
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                if (devnull > STDERR_FILENO) close(devnull);
+            }
+            execlp("xdg-open", "xdg-open", url, (char *)NULL);
+            _exit(127);
+        }
+        _exit(0);
+    }
+    if (pid < 0) {
+        log_line(app, "failed to launch xdg-open");
+        return;
+    }
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    log_line(app, "opened %s", url);
+}
+
+/* Search PATH for an executable named `name` (no shell, no PATH injection). */
+static bool tool_on_path(const char *name) {
+    const char *path = getenv("PATH");
+    if (!path || !path[0]) path = "/usr/bin:/bin";
+    char buf[PATH_MAX];
+    const char *p = path;
+    while (*p) {
+        const char *colon = strchr(p, ':');
+        size_t dir_len = colon ? (size_t)(colon - p) : strlen(p);
+        if (dir_len > 0 && dir_len + 1 + strlen(name) + 1 < sizeof(buf)) {
+            memcpy(buf, p, dir_len);
+            buf[dir_len] = '/';
+            snprintf(buf + dir_len + 1, sizeof(buf) - dir_len - 1, "%s", name);
+            if (access(buf, X_OK) == 0) return true;
+        }
+        if (!colon) break;
+        p = colon + 1;
+    }
+    return false;
+}
+
+/* Run argv[0] with execvp (no shell). stderr always discarded; stdout goes to
+ * the controlling terminal when `inherit_stdout` (so chafa can paint), else to
+ * /dev/null (ffmpeg writes its frame to a file, not stdout). Returns the
+ * process exit code, or -1 on spawn/abnormal exit. */
+static int run_cmd(char *const argv[], bool inherit_stdout) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            if (!inherit_stdout) dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) close(devnull);
+        }
+        execvp(argv[0], argv);
         _exit(127);
     }
-    if (pid < 0) log_line(app, "failed to launch xdg-open");
-    else log_line(app, "opened %s", url);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return -1;
+}
+
+/* Block for a single raw keypress on stdin, used to dismiss the preview while
+ * ncurses is suspended. Restores the prior terminal mode before returning. */
+static void wait_for_dismiss_key(void) {
+    struct termios old_tio, raw;
+    if (tcgetattr(STDIN_FILENO, &old_tio) != 0) {
+        getchar();
+        return;
+    }
+    raw = old_tio;
+    cfmakeraw(&raw);
+    unsigned char c;
+    /* First drain whatever the terminal sent in reply to chafa's graphics
+     * capability probes (DA / cursor-position / Kitty responses). If left in
+     * the buffer, the blocking read below would consume one of those bytes as
+     * the dismiss key and flash the preview shut. VMIN=0/VTIME=1 polls with a
+     * 100ms idle window: read until a quiet gap, then there is nothing stray
+     * left. */
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 1;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+    while (read(STDIN_FILENO, &c, 1) > 0) {}
+    /* Then block for a genuine keypress. */
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+    while (read(STDIN_FILENO, &c, 1) < 0 && errno == EINTR) {}
+    tcsetattr(STDIN_FILENO, TCSANOW, &old_tio);
+}
+
+/* Mouse motion/button reporting escapes. Enabled while shottino owns the
+ * screen; disabled around the preview (so frame bytes aren't read as a
+ * dismiss key) and at shutdown. */
+static void mouse_reporting(bool on) {
+    fputs(on ? "\033[?1000h\033[?1003h\033[?1006h"
+             : "\033[?1006l\033[?1003l\033[?1000l",
+          stdout);
+    fflush(stdout);
+}
+
+/* Full-screen modal media preview. Both images and videos are normalized to a
+ * single PNG frame by ffmpeg (which also does the network fetch + decode),
+ * then rendered by chafa, which auto-detects the terminal graphics protocol
+ * (Kitty > iTerm2 > Sixel > symbols). Falls back to xdg-open when either tool
+ * is absent or the frame extraction fails. Blocks until a key is pressed; the
+ * caller's next draw() repaints the chat, clearing the preview. */
+static void preview_media(struct app *app, const char *url, bool is_video) {
+    if (!url || !url[0]) return;
+    if (!tool_on_path("chafa") || !tool_on_path("ffmpeg")) {
+        log_line(app, "preview needs 'chafa' + 'ffmpeg' on PATH — opening externally");
+        open_external_url(app, url);
+        return;
+    }
+
+    char dir[] = "/tmp/shottino-preview-XXXXXX";
+    if (!mkdtemp(dir)) {
+        log_line(app, "preview: failed to create temp dir — opening externally");
+        open_external_url(app, url);
+        return;
+    }
+    char png[PATH_MAX];
+    snprintf(png, sizeof(png), "%s/frame.png", dir);
+
+    /* ffmpeg fetches + decodes the URL and writes one representative frame.
+     * The thumbnail filter picks a non-leader frame for video and is a no-op
+     * pass-through for a still image, so one pipeline covers both (and avoids a
+     * black first frame for an extensionless video URL). rw_timeout bounds a
+     * stalled network fetch (microseconds). */
+    char *ff_argv[] = {"ffmpeg", "-y", "-loglevel", "error",
+                       "-rw_timeout", "15000000", "-i", (char *)url,
+                       "-vf", "thumbnail", "-frames:v", "1", png, NULL};
+    int rc = run_cmd(ff_argv, false);
+    if (rc != 0 || access(png, R_OK) != 0) {
+        log_line(app, "preview: could not fetch/decode media (ffmpeg rc=%d) — opening externally", rc);
+        open_external_url(app, url);
+        unlink(png);
+        rmdir(dir);
+        return;
+    }
+
+    struct winsize ws = {0};
+    int term_rows = 24, term_cols = 80;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 2 && ws.ws_col > 0) {
+        term_rows = ws.ws_row;
+        term_cols = ws.ws_col;
+    }
+    char size_arg[32];
+    snprintf(size_arg, sizeof(size_arg), "%dx%d", term_cols, term_rows - 2);
+
+    /* Leave ncurses entirely so chafa's protocol detection sees a real tty and
+     * its escapes don't fight the ncurses screen buffer. */
+    def_prog_mode();
+    endwin();
+    mouse_reporting(false);
+    fputs("\033[2J\033[H", stdout);
+    int url_w = term_cols - 10;
+    if (url_w < 0) url_w = 0;
+    printf("preview: %.*s\r\n", url_w, url);
+    fflush(stdout);
+
+    char *chafa_argv[] = {"chafa", "--clear", "--size", size_arg, png, NULL};
+    run_cmd(chafa_argv, true);
+
+    printf("\033[%d;1H[ %s — press any key to return ]", term_rows,
+           is_video ? "video frame" : "image");
+    fflush(stdout);
+    wait_for_dismiss_key();
+
+    /* Kitty placements persist above the cell grid; ask the terminal to drop
+     * all images so the chat repaint underneath is clean (no-op elsewhere). */
+    fputs("\033_Ga=d\033\\", stdout);
+    fflush(stdout);
+
+    unlink(png);
+    rmdir(dir);
+
+    /* Restore ncurses first, then re-assert mouse reporting so our escapes
+     * aren't clobbered by terminfo strings reset_prog_mode may re-emit. */
+    reset_prog_mode();
+    clearok(stdscr, TRUE);
+    refresh();
+    mouse_reporting(true);
 }
 
 static void show_help(struct app *app) {
@@ -2934,6 +3195,45 @@ static void handle_enter(struct app *app) {
     }
 }
 
+/* Topmost recorded media region containing screen cell (x, y), or NULL.
+ * Caller holds app->lock. */
+static const struct link_region *region_at(struct app *app, int x, int y) {
+    for (size_t i = 0; i < app->link_region_count; i++) {
+        const struct link_region *r = &app->link_regions[i];
+        if (y >= r->y0 && y <= r->y1 && x >= r->x0 && x <= r->x1) return r;
+    }
+    return NULL;
+}
+
+/* Map a mouse event to a media region: motion updates the hover hint, a left
+ * button press over a region opens its preview. */
+static void handle_mouse(struct app *app) {
+    MEVENT ev;
+    if (getmouse(&ev) != OK) return;
+    bool click = ev.bstate & (BUTTON1_PRESSED | BUTTON1_CLICKED);
+
+    pthread_mutex_lock(&app->lock);
+    const struct link_region *r = region_at(app, ev.x, ev.y);
+    char url[MAX_LINE];
+    bool is_video = false;
+    bool hit = r != NULL;
+    if (r) {
+        snprintf(url, sizeof(url), "%s", r->url);
+        is_video = r->is_video;
+        snprintf(app->hover_url, sizeof(app->hover_url), "%s", r->url);
+    } else {
+        app->hover_url[0] = 0;
+    }
+    pthread_mutex_unlock(&app->lock);
+
+    if (click && hit) {
+        preview_media(app, url, is_video);
+        pthread_mutex_lock(&app->lock);
+        app->hover_url[0] = 0;
+        pthread_mutex_unlock(&app->lock);
+    }
+}
+
 static void event_loop(struct app *app) {
     setlocale(LC_ALL, "");
     initscr();
@@ -2942,6 +3242,9 @@ static void event_loop(struct app *app) {
     noecho();
     keypad(stdscr, TRUE);
     timeout(50);
+    mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
+    mouseinterval(0);
+    mouse_reporting(true);
     app->running = true;
     while (app->running) {
         ws_pump(app);
@@ -2954,6 +3257,8 @@ static void event_loop(struct app *app) {
             pthread_mutex_lock(&app->lock);
             app->panel = PANEL_CHAT;
             pthread_mutex_unlock(&app->lock);
+        } else if (ch == KEY_MOUSE) {
+            handle_mouse(app);
         } else if (ch == 14) {
             cycle_window(app, 1);
         } else if (ch == 16) {
@@ -2983,6 +3288,7 @@ static void event_loop(struct app *app) {
             app->input[app->input_len] = 0;
         }
     }
+    mouse_reporting(false);
     endwin();
 }
 
