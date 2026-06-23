@@ -105,23 +105,22 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     {},
   );
 
-  // Tab-complete cycle state (NOT per-channel — there's one focused
-  // textarea at a time). Tracks the prefix + index across consecutive
-  // tab presses; reset by setDraft on a non-tab edit.
-  // Cycle anchor:
-  //   - prefix: the original text (lowercased) the user typed BEFORE
-  //     the first tab — held constant across repeated tabs.
-  //   - idx: which match we last returned, so the next tab advances.
-  //   - lastChosen: what we wrote into the input last time. On the
-  //     subsequent tab the input contains lastChosen at start..cursor;
-  //     matching it tells us we're continuing the cycle (prefix stays
-  //     "al" even though the input now reads "alex"). If the user
-  //     typed something else, the slice won't match and we restart.
+  // Tab-complete cycle anchor. Continuation is detected by RANGE, not by
+  // word equality, so it survives the ": "/" " suffix that sits after the
+  // caret and a re-tap that lands the caret anywhere inside the inserted
+  // nick. `suffix` is the persistent positional suffix for the whole cycle;
+  // `lastInsertion` is the exact text written last (nick+suffix, OR the
+  // typed word in the revert slot) — the continuation guard compares the
+  // anchored span against it.
   let tabCycle: {
     key: ChannelKey;
-    prefix: string;
-    idx: number;
-    lastChosen: string;
+    typedWord: string; // original-case word the user typed; restored in revert slot
+    prefix: string; // lowercased typedWord; the match filter
+    idx: number; // 0..matches.length; === matches.length is the revert slot
+    anchorStart: number;
+    anchorEnd: number;
+    lastInsertion: string;
+    suffix: string; // ": " (line start) or " " (mid-sentence)
   } | null = null;
 
   onIdentityChange(() => setComposeByChannel({}));
@@ -723,18 +722,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     return result;
   };
 
-  // Tab-complete: members-only (Q6 of P4-1 cluster). Pure-ish — reads
-  // members snapshot, returns new {input, cursor} or null.
-  //
-  // Algorithm:
-  //   1. Find the word at `cursor` (walk back to whitespace OR start).
-  //   2. If word.length === 0, return null.
-  //   3. Filter members.nick by case-insensitive prefix match.
-  //   4. Sort matches alphabetically (stable order across cycles).
-  //   5. If first call (no cycle, OR prefix changed), pick first match.
-  //   6. If cycling (same prefix, repeated tab), advance idx (forward
-  //      true) or backward; wrap mod matches.length.
-  //   7. Replace the word with the chosen nick, update cursor.
+  // Tab-complete: members-only. Cycles nick matches for the word at the
+  // cursor, irssi-style. Cycle space is [match0 … matchN-1, <typed>]: after
+  // the last match the next forward step restores the originally-typed text,
+  // then wraps to match0. Writes the completed draft itself via writeState
+  // (NOT setDraft, which nulls tabCycle and would kill the cycle) — callers
+  // only place the caret. Returns the new input + caret, or null when
+  // there's nothing to complete.
   const tabComplete = (
     key: ChannelKey,
     input: string,
@@ -744,39 +738,67 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const all = membersByChannel()[key] ?? [];
     if (all.length === 0) return null;
 
-    // Find word boundaries.
-    let start = cursor;
-    while (start > 0 && !/\s/.test(input[start - 1] ?? "")) start -= 1;
-    const wordAtCursor = input.slice(start, cursor);
-    if (wordAtCursor.length === 0) return null;
-
-    // Continuation? If the slice equals the previously-written nick, the
-    // cycle anchor's prefix stays — we're advancing through matches for
-    // the original prefix, not starting a fresh cycle on the full nick.
     const continuing =
-      tabCycle !== null && tabCycle.key === key && wordAtCursor === tabCycle.lastChosen;
-    const effectivePrefix = continuing ? (tabCycle?.prefix ?? "") : wordAtCursor.toLowerCase();
+      tabCycle !== null &&
+      tabCycle.key === key &&
+      cursor >= tabCycle.anchorStart &&
+      cursor <= tabCycle.anchorEnd &&
+      input.slice(tabCycle.anchorStart, tabCycle.anchorEnd) === tabCycle.lastInsertion;
+
+    let anchorStart: number;
+    let typedWord: string;
+    let prefix: string;
+    let suffix: string;
+    let oldEnd: number;
+
+    if (continuing && tabCycle !== null) {
+      anchorStart = tabCycle.anchorStart;
+      typedWord = tabCycle.typedWord;
+      prefix = tabCycle.prefix;
+      suffix = tabCycle.suffix;
+      oldEnd = tabCycle.anchorEnd;
+    } else {
+      // Fresh cycle: find the word ending at the cursor.
+      let start = cursor;
+      while (start > 0 && !/\s/.test(input[start - 1] ?? "")) start -= 1;
+      typedWord = input.slice(start, cursor);
+      if (typedWord.length === 0) return null;
+      anchorStart = start;
+      prefix = typedWord.toLowerCase();
+      // ": " only when the word is the first token on the line.
+      suffix = input.slice(0, anchorStart).trim() === "" ? ": " : " ";
+      oldEnd = cursor;
+    }
 
     const matches = all
-      .filter((m) => m.nick.toLowerCase().startsWith(effectivePrefix))
+      .filter((m) => m.nick.toLowerCase().startsWith(prefix))
       .map((m) => m.nick)
       .sort((a, b) => a.localeCompare(b));
     if (matches.length === 0) return null;
 
-    let idx: number;
-    if (continuing && tabCycle !== null) {
-      idx = (tabCycle.idx + (forward ? 1 : -1) + matches.length) % matches.length;
-    } else {
-      idx = 0;
-    }
+    const span = matches.length + 1; // matches + the revert slot
+    const idx =
+      continuing && tabCycle !== null
+        ? (((tabCycle.idx + (forward ? 1 : -1)) % span) + span) % span
+        : 0;
 
-    const chosen = matches[idx] ?? matches[0];
-    if (chosen === undefined) return null;
-    tabCycle = { key, prefix: effectivePrefix, idx, lastChosen: chosen };
+    // idx === matches.length is the revert slot: restore the typed text.
+    const insertion = idx === matches.length ? typedWord : matches[idx] + suffix;
+    const newInput = input.slice(0, anchorStart) + insertion + input.slice(oldEnd);
+    const anchorEnd = anchorStart + insertion.length;
 
-    const newInput = input.slice(0, start) + chosen + input.slice(cursor);
-    const newCursor = start + chosen.length;
-    return { newInput, newCursor };
+    tabCycle = {
+      key,
+      typedWord,
+      prefix,
+      idx,
+      anchorStart,
+      anchorEnd,
+      lastInsertion: insertion,
+      suffix,
+    };
+    writeState(key, (s) => ({ ...s, draft: newInput }));
+    return { newInput, newCursor: anchorEnd };
   };
 
   return {
