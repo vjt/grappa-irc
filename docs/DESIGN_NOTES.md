@@ -13046,3 +13046,64 @@ NickServ/SASL, captured on a successful keyed `/join`, with a stale-key
 path) is a deliberate follow-up feature — deferred (vjt 2026-06-23), not
 folded into this bugfix, because storing channel passwords warrants its
 own design pass.
+
+## 2026-06-23 — Nick completion: irssi-exact + keyboard-free (double-tap)
+
+Goal: make nick completion usable on a STOCK mobile keyboard (no Tab
+key), so the custom IRC keyboard becomes optional rather than the only
+way to complete a nick. Plan: `docs/plans/2026-06-23-nick-completion-{design,plan}.md`.
+
+**Scope decision.** Rejected an `@`-mention tooltip popup: `@` is the op
+sigil in NAMES, not a mention trigger in IRC — importing Slack/Discord
+muscle memory. Picked the minimal path: a touch trigger on the existing
+`compose.ts` `tabComplete` cycle, plus a semantics fix.
+
+**`tabComplete` rewritten to irssi-exact semantics** (`compose.ts`):
+- Positional suffix: `": "` when the completed word is the first token on
+  the line, `" "` mid-sentence (`input.slice(0, anchorStart).trim() === ""`).
+- Cycle space is `[match0 … matchN-1, <typed>]`: forward past the last
+  match restores the originally-typed text (original case, no suffix),
+  THEN wraps to match0. The old code wrapped forever with no revert.
+- Continuation is detected by an anchor RANGE (`cursor ∈
+  [anchorStart, anchorEnd]` AND the anchored span equals the last
+  insertion), not by word equality. Word equality broke the instant a
+  suffix landed after the caret (the "word at cursor" became empty); the
+  range also lets a re-tap landing the caret INSIDE the inserted nick
+  count as the same cycle — load-bearing for the double-tap path.
+
+**Latent bug fixed in the same pass: in-app cycling never worked.**
+`setDraft` nulls the cycle anchor `tabCycle` (correct — a real edit must
+break the cycle), but BOTH callers (`Shell.tsx` `cycleNickComplete`,
+`KeyboardHost.tsx` Tab branch) called `setDraft(result.newInput)` right
+after `tabComplete`, nulling the anchor every time. So the 2nd Tab always
+re-entered fresh: the prefix became the full last nick, matches collapsed
+to that one nick, output never changed. The old unit tests "passed" only
+because they called `tabComplete` directly and bypassed `setDraft` —
+mirror tests on the wrong path. Fix: `tabComplete` now writes the draft
+itself via `writeState` (which does NOT null `tabCycle`); the callers drop
+their `setDraft` and only place the caret. The IRC-keyboard note's
+"tab-complete is a byte-for-byte mirror of `Shell.tsx`'s
+`cycleNickComplete`" still holds — both shed `setDraft` identically.
+Discard-on-keystroke needs no new code: every real keystroke already
+flows `onInput → setDraft`, which nulls the cycle.
+
+**Double-tap trigger** (`ComposeBox.tsx` + pure `lib/doubleTap.ts`). Two
+taps within 300ms / 24px on the textarea fire `tabComplete(…, selectionEnd,
+forward=true)`. We do NOT fight the OS native word-select `preventDefault`
+(unreliable on iOS) — we let the OS select, then override value + caret
+(`selectionEnd` is the cursor, so the OS-selected word is the completion
+target). `e.isPrimary` guard drops secondary multi-touch pointers. The
+pure tap reducer is unit-tested; the gesture itself is dogfood-only —
+Playwright webkit ≠ iOS gesture physics (prior burn).
+
+**Dogfood checklist (device-only, cannot be automated).** iOS, stock
+keyboard, IRC keyboard OFF, channel with ≥2 prefix-sharing nicks:
+1. Prefix at line start, double-tap → `nick: ` (colon+space).
+2. Double-tap again → next match; again → reverts to the typed text.
+3. Prefix mid-sentence → `nick ` (space, no colon).
+4. Prefix mid-sentence WITH trailing text after the caret (`al world`,
+   caret after `al`) → confirm the cycle continues on a 2nd double-tap
+   (code-review flagged a theoretical caret-vs-microtask ordering edge
+   here that could not be reproduced in jsdom; the real-browser flush
+   order should make it harmless — verify on metal).
+5. Type any character → next double-tap starts a fresh cycle.
