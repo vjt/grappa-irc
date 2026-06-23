@@ -16,17 +16,25 @@ Priority tiers: **Immediate** (this session), **High** (this week),
   check, portrait-orientation upload. (The PWA badge ICON dogfood is
   CLOSED — confirmed working on device 2026-06-21.)
 - **NEXT: crank open review-exempt bugs** (issue-closing sweep,
-  continued — #27/#40/#37/#61/#25 + the badge-orphan fix already
-  shipped this cluster). Tractable, no on-device blocker:
-  - **#38** cic: +k channel tab persists after reconnect when access is
-    lost, cannot be dismissed (window-state lifecycle on reconnect).
-  - **#16** cic: MembersPane stuck on 'loading…' after JOIN to +k
-    channel — LIKELY the same +k cluster as #38; investigate together,
-    possible two-fer.
+  continued — #27/#40/#37/#61/#25 + the badge-orphan fix + **#38/#16**
+  already shipped this cluster). Tractable, no on-device blocker:
   - **#12** cicchetto: /msg to non-joined channel creates unclose-able
     window; session restore archives it but sent messages don't render.
+    LIKELY the SAME window-lifecycle class as #38 — close relies on a
+    server echo (own-PART → setParted) that never fires for a
+    never-joined window. Re-check against the #38 `closeChannelWindow`
+    fix (it clears windowState locally now) before reworking; the query
+    path (`closeQueryWindow`) may need the analogous local clear.
   Device-blocked (parked until dogfood): #63 (iOS keyboard drops letters
   on fast typing), #46 (Android unread marker lost after long background).
+- **Deferred feature — +k key persistence (auto-rejoin) (vjt 2026-06-23).**
+  grappa never persists +k keys, so a +k autojoin channel 475s on every
+  reconnect (root of #38). The #38 fix makes that stuck tab dismissable +
+  manually re-joinable (`/join #chan KEY`). Making autojoin rejoin +k
+  channels *automatically* — persist the key Cloak-encrypted (like
+  NickServ/SASL), capture it on a successful keyed `/join`, handle the
+  stale-key case — is a separate design pass (storing channel passwords),
+  intentionally NOT folded into the bugfix.
 - **Codebase review gate: DUE, deferred by vjt** (token cost) — now
   ~30 days / ~36 sessions past the last review (2026-05-22), well over
   both thresholds. Re-flag each `/start`; vjt decides when it runs.
