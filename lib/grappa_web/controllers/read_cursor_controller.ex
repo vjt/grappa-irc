@@ -14,9 +14,10 @@ defmodule GrappaWeb.ReadCursorController do
   ## Cross-device broadcast — V4 visitor-parity (2026-05-15)
 
   After every successful set on EITHER subject kind, the cursor is
-  broadcast on the per-channel topic via `ReadCursor.broadcast_set/4`
+  broadcast on the per-channel topic via `ReadCursor.broadcast_set/5`
+  (carrying the post-set `badge_count` for the PWA icon badge, door #3)
   so other live cic instances (different tabs / devices) update their
-  cursor signal map. No batching, no throttle. Visitor topics use
+  cursor signal map + icon badge. No batching, no throttle. Visitor topics use
   `"visitor:" <> visitor.id` as the user-name segment — same shape as
   `UserSocket`'s `:user_name` assignment so the broadcast routes to
   the visitor's own user-rooted topic tree.
@@ -42,6 +43,7 @@ defmodule GrappaWeb.ReadCursorController do
 
   import GrappaWeb.Validation, only: [validate_target_name: 1]
 
+  alias Grappa.Push.BadgeCount
   alias Grappa.ReadCursor
   alias GrappaWeb.Subject
 
@@ -59,12 +61,18 @@ defmodule GrappaWeb.ReadCursorController do
 
     with :ok <- validate_target_name(channel),
          {:ok, cursor} <- ReadCursor.set(subject, network.id, channel, message_id) do
+      # Door #3: the badge AFTER this advance — reading drops it. Computed
+      # here (controller holds the subject) so `ReadCursor` stays free of
+      # a `Push.BadgeCount` dependency.
+      badge_count = BadgeCount.count(subject)
+
       _ =
         maybe_broadcast(
           conn.assigns.current_subject,
           network.slug,
           channel,
-          cursor.last_read_message_id
+          cursor.last_read_message_id,
+          badge_count
         )
 
       json(conn, %{last_read_message_id: cursor.last_read_message_id})
@@ -83,18 +91,20 @@ defmodule GrappaWeb.ReadCursorController do
           {:user, Grappa.Accounts.User.t()} | {:visitor, Grappa.Visitors.Visitor.t()},
           String.t(),
           String.t(),
-          integer()
+          integer(),
+          non_neg_integer()
         ) :: :ok | {:error, term()}
-  defp maybe_broadcast({:user, user}, network_slug, channel, last_read_message_id) do
-    ReadCursor.broadcast_set(user.name, network_slug, channel, last_read_message_id)
+  defp maybe_broadcast({:user, user}, network_slug, channel, last_read_message_id, badge_count) do
+    ReadCursor.broadcast_set(user.name, network_slug, channel, last_read_message_id, badge_count)
   end
 
-  defp maybe_broadcast({:visitor, visitor}, network_slug, channel, last_read_message_id) do
+  defp maybe_broadcast({:visitor, visitor}, network_slug, channel, last_read_message_id, badge_count) do
     ReadCursor.broadcast_set(
       "visitor:" <> visitor.id,
       network_slug,
       channel,
-      last_read_message_id
+      last_read_message_id,
+      badge_count
     )
   end
 end

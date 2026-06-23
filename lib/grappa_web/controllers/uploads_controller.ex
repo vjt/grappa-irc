@@ -1,12 +1,13 @@
 defmodule GrappaWeb.UploadsController do
   @moduledoc """
-  Embedded image upload — UX-6 bucket B1 (2026-05-20).
+  Embedded media upload (image / video / document) — UX-6 bucket B1
+  (2026-05-20), extended to per-category MIMEs (2026-06-09).
 
   ## POST /api/uploads (authenticated)
 
   Multipart body:
 
-    * `file` — binary, required. The image bytes.
+    * `file` — binary, required. The file bytes.
     * `expire` — integer string in seconds, optional. Translates to
       `expires_at = now + expire`. Allowed values: matches the
       `1h/12h/24h/72h` ladder (3600 / 43200 / 86400 / 259200) per
@@ -17,10 +18,14 @@ defmodule GrappaWeb.UploadsController do
   Boundary checks (in order — fail fast on the cheapest):
 
     1. Multipart shape — missing `file` → 400 bad_request.
-    2. MIME — must be one of the allowed image types → 415 unsupported.
-    3. Per-file cap — `byte_size(content) <= per_file_cap_bytes` from
-       `Grappa.ServerSettings.get_upload_per_file_cap_bytes/0`. Else
-       413 file_too_large.
+    2. MIME — must be a key of `@mime_categories` (image / video /
+       document allowlists) → 415 unsupported. The category is
+       DERIVED from the MIME at request time, never stored — no
+       schema change.
+    3. Per-file cap — `byte_size(content) <= cap` where cap comes
+       from `Grappa.ServerSettings.get_upload_per_file_cap_bytes/1`
+       for the derived category (image 10MiB / video 50MiB /
+       document 10MiB defaults). Else 413 file_too_large.
     4. Global cap — `live_bytes_sum + byte_size <= global_cap_bytes`.
        Else 507 insufficient_storage.
     5. Slug minted, file written, row inserted via
@@ -31,15 +36,21 @@ defmodule GrappaWeb.UploadsController do
 
   ## GET /uploads/:slug (public, NO auth)
 
-  Streams the file via `Plug.Conn.send_file/3`. Validates slug shape
+  Streams the file via `Plug.Conn.send_file/5`. Validates slug shape
   + row + on-disk file. Any failure → 404 with no oracle.
   Cache-Control short to allow CDN/browser reuse of the immediate
   fetch without staleness on TTL expiry.
+
+  Honors single-range `Range:` requests (206 + `content-range`,
+  416 when unsatisfiable, full 200 when ignorable) via
+  `GrappaWeb.ByteRange` — iOS/macOS Safari refuse to play video
+  without byte-range support (2026-06-10 prod incident).
   """
 
   use GrappaWeb, :controller
 
   alias Grappa.{ServerSettings, Subject, Uploads}
+  alias GrappaWeb.ByteRange
 
   # `@sobelow_skip` is consumed by the Sobelow analyzer, not by the
   # Elixir compiler. Without this `register_attribute` it would emit
@@ -48,10 +59,39 @@ defmodule GrappaWeb.UploadsController do
   # multiple functions in the module each carry their own skip-list.
   Module.register_attribute(__MODULE__, :sobelow_skip, accumulate: true, persist: true)
 
-  @allowed_mimes ~w(image/png image/jpeg image/gif image/webp image/apng)
+  # MIME → cap-category map. Closed allowlist: unknown MIME → 415.
+  # The category picks WHICH per-file cap applies (a 50MiB video
+  # ceiling must not gift 50MiB to raw images); it is derived here
+  # per request and never persisted.
+  @mime_categories %{
+    "image/png" => :image,
+    "image/jpeg" => :image,
+    "image/gif" => :image,
+    "image/webp" => :image,
+    "image/apng" => :image,
+    "video/mp4" => :video,
+    "video/quicktime" => :video,
+    "video/webm" => :video,
+    "application/pdf" => :document,
+    "text/plain" => :document,
+    "application/vnd.oasis.opendocument.text" => :document,
+    "application/vnd.oasis.opendocument.spreadsheet" => :document,
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => :document,
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => :document
+  }
 
   @allowed_ttl_seconds [3600, 43_200, 86_400, 259_200]
   @default_ttl_seconds 86_400
+
+  @doc """
+  The closed MIME → cap-category allowlist. Public so the
+  `Grappa.Uploads.MetadataStrip` lockstep test can assert every
+  image/video entry has a strip mapping — an allowlist addition
+  without one fails CLOSED at upload time (422); the test turns that
+  prod surprise into a red suite.
+  """
+  @spec mime_categories() :: %{String.t() => :image | :video | :document}
+  def mime_categories, do: @mime_categories
 
   # ------------------------------------------------------------------
   # POST /api/uploads
@@ -69,9 +109,9 @@ defmodule GrappaWeb.UploadsController do
 
     with {:ok, upload} <- extract_upload_field(params),
          {:ok, ttl_seconds} <- parse_ttl(params),
-         {:ok, mime} <- validate_mime(upload),
+         {:ok, mime, category} <- validate_mime(upload),
          {:ok, bytes} <- read_file(upload),
-         :ok <- check_per_file_cap(bytes),
+         :ok <- check_per_file_cap(bytes, category),
          :ok <-
            Uploads.check_global_cap(byte_size(bytes), ServerSettings.get_upload_global_cap_bytes()),
          {:ok, row} <-
@@ -90,21 +130,18 @@ defmodule GrappaWeb.UploadsController do
   # GET /uploads/:slug
   # ------------------------------------------------------------------
 
-  # `path` comes from `Uploads.storage_path/2` which validates the
-  # slug against `^[a-z2-7]{26}$` — no `..` traversal reachable.
-  # Sobelow can't follow the validator across the call boundary.
-  @sobelow_skip ["Traversal.SendFile"]
   @doc false
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def show(conn, %{"slug" => slug}) when is_binary(slug) do
     with {:ok, row} <- Uploads.get_by_slug(slug, DateTime.utc_now()),
          path = Uploads.storage_path(storage_root(), row.slug),
-         true <- File.exists?(path) do
+         {:ok, %File.Stat{size: size}} <- File.stat(path) do
       conn
       |> put_resp_header("content-type", row.mime)
       |> put_resp_header("content-disposition", disposition_header(row))
       |> put_resp_header("cache-control", "public, max-age=3600")
-      |> send_file(200, path)
+      |> put_resp_header("accept-ranges", "bytes")
+      |> send_ranged(path, size, get_req_header(conn, "range"))
     else
       _ ->
         # No oracle — slug shape, row missing, deleted, expired, file
@@ -118,6 +155,52 @@ defmodule GrappaWeb.UploadsController do
 
   def show(conn, _) do
     conn |> put_status(:not_found) |> json(%{error: "not_found"})
+  end
+
+  # ------------------------------------------------------------------
+  # Internal — Range serving
+  # ------------------------------------------------------------------
+
+  # Single Range header → 206 slice / 416 / full 200 per
+  # GrappaWeb.ByteRange's verdict. Zero or multiple Range headers →
+  # full 200 (a server MAY ignore Range; multi-header is malformed
+  # anyway), as is a zero-size on-disk file (DB validates bytes > 0,
+  # but disk truncation can diverge — ByteRange contracts total > 0,
+  # and an empty 200 preserves the no-oracle failure surface).
+  # iOS Safari requires the 206 path to play video at all.
+  #
+  # `path` comes from `Uploads.storage_path/2` which validates the
+  # slug against `^[a-z2-7]{26}$` — no `..` traversal reachable.
+  # Sobelow can't follow the validator across the call boundary.
+  @sobelow_skip ["Traversal.SendFile"]
+  defp send_ranged(conn, path, size, range_headers) do
+    verdict =
+      case range_headers do
+        [header] when size > 0 -> ByteRange.parse(header, size)
+        _ -> :ignore
+      end
+
+    case verdict do
+      {:ok, {offset, length}} ->
+        conn
+        |> put_resp_header(
+          "content-range",
+          "bytes #{offset}-#{offset + length - 1}/#{size}"
+        )
+        |> send_file(206, path, offset, length)
+
+      :unsatisfiable ->
+        # Strip the freshness grant: a shared cache may store any
+        # explicitly-fresh final response, and a cached 416 would pin
+        # the bare URL dead for an hour.
+        conn
+        |> delete_resp_header("cache-control")
+        |> put_resp_header("content-range", "bytes */#{size}")
+        |> send_resp(416, "")
+
+      :ignore ->
+        send_file(conn, 200, path)
+    end
   end
 
   # ------------------------------------------------------------------
@@ -138,7 +221,13 @@ defmodule GrappaWeb.UploadsController do
   defp parse_ttl(%{"expire" => _}), do: {:error, :bad_request}
   defp parse_ttl(_), do: {:ok, @default_ttl_seconds}
 
-  defp validate_mime(%Plug.Upload{content_type: ct}) when ct in @allowed_mimes, do: {:ok, ct}
+  defp validate_mime(%Plug.Upload{content_type: ct}) when is_binary(ct) do
+    case Map.fetch(@mime_categories, ct) do
+      {:ok, category} -> {:ok, ct, category}
+      :error -> {:error, :unsupported_media_type}
+    end
+  end
+
   defp validate_mime(_), do: {:error, :unsupported_media_type}
 
   # `path` is `Plug.Upload.path`, a tmp file synthesized by
@@ -151,8 +240,8 @@ defmodule GrappaWeb.UploadsController do
     end
   end
 
-  defp check_per_file_cap(bytes) do
-    cap = ServerSettings.get_upload_per_file_cap_bytes()
+  defp check_per_file_cap(bytes, category) do
+    cap = ServerSettings.get_upload_per_file_cap_bytes(category)
 
     if byte_size(bytes) <= cap do
       :ok

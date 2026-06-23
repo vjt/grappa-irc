@@ -1,14 +1,14 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../lib/imageUploadOrchestrator", () => ({
+vi.mock("../lib/uploadOrchestrator", () => ({
   privacyModalState: vi.fn(),
   acknowledgePrivacy: vi.fn(),
   dismissUpload: vi.fn(),
 }));
 
 import { channelKey } from "../lib/channelKey";
-import * as orch from "../lib/imageUploadOrchestrator";
+import * as orch from "../lib/uploadOrchestrator";
 import PrivacyModal from "../PrivacyModal";
 
 const TEST_KEY = channelKey("freenode", "#a");
@@ -42,8 +42,8 @@ describe("PrivacyModal", () => {
           "a public temporary host. Anyone with the URL can view files there for the next 24 hours.",
         ttlOptions: [],
         defaultTtl: null,
-        acceptedMimeTypes: [],
-        maxFileSizeBytes: null,
+        acceptedMimeTypes: { image: [], video: [], document: [] },
+        maxFileSizeBytes: () => null,
         supportsProgress: false,
         upload: () => Promise.resolve(""),
       },
@@ -63,8 +63,8 @@ describe("PrivacyModal", () => {
           "a public temporary host. Anyone with the URL can view files there for the next 24 hours.",
         ttlOptions: [],
         defaultTtl: null,
-        acceptedMimeTypes: [],
-        maxFileSizeBytes: null,
+        acceptedMimeTypes: { image: [], video: [], document: [] },
+        maxFileSizeBytes: () => null,
         supportsProgress: false,
         upload: () => Promise.resolve(""),
       },
@@ -85,8 +85,8 @@ describe("PrivacyModal", () => {
         retentionStatement: "...",
         ttlOptions: [],
         defaultTtl: null,
-        acceptedMimeTypes: [],
-        maxFileSizeBytes: null,
+        acceptedMimeTypes: { image: [], video: [], document: [] },
+        maxFileSizeBytes: () => null,
         supportsProgress: false,
         upload: () => Promise.resolve(""),
       },
@@ -106,8 +106,8 @@ describe("PrivacyModal", () => {
         retentionStatement: "...",
         ttlOptions: [],
         defaultTtl: null,
-        acceptedMimeTypes: [],
-        maxFileSizeBytes: null,
+        acceptedMimeTypes: { image: [], video: [], document: [] },
+        maxFileSizeBytes: () => null,
         supportsProgress: false,
         upload: () => Promise.resolve(""),
       },
@@ -129,8 +129,8 @@ describe("PrivacyModal", () => {
         retentionStatement: "...",
         ttlOptions: [],
         defaultTtl: null,
-        acceptedMimeTypes: [],
-        maxFileSizeBytes: null,
+        acceptedMimeTypes: { image: [], video: [], document: [] },
+        maxFileSizeBytes: () => null,
         supportsProgress: false,
         upload: () => Promise.resolve(""),
       },
@@ -150,8 +150,8 @@ describe("PrivacyModal", () => {
         retentionStatement: "...",
         ttlOptions: [],
         defaultTtl: null,
-        acceptedMimeTypes: [],
-        maxFileSizeBytes: null,
+        acceptedMimeTypes: { image: [], video: [], document: [] },
+        maxFileSizeBytes: () => null,
         supportsProgress: false,
         upload: () => Promise.resolve(""),
       },

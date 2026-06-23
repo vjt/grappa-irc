@@ -427,6 +427,7 @@ export type QueryWindowsWireWindowsListPayload = {
 export type ReadCursorWireReadCursorSet = {
   kind: string;
   last_read_message_id: number;
+  badge_count: number;
 };
 
 // === Grappa.Scrollback.Wire ===
@@ -473,7 +474,9 @@ export type ScrollbackWireArchivePurgedPayload = {
 
 export type ServerSettingsWireUploadView = {
   active_host: string;
-  per_file_cap_bytes: number;
+  image_per_file_cap_bytes: number;
+  video_per_file_cap_bytes: number;
+  document_per_file_cap_bytes: number;
   global_cap_bytes: number;
 };
 

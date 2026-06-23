@@ -11,9 +11,35 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-_(empty — bastille deploy SHIPPED 2026-05-27; m42 prod live on
-irc.sniffo.org / irc.sindro.me. Pick the next cluster from the
-roadmap below.)_
+- **Dogfood answers from vjt** (checklist delivered, pending):
+  media-viewer round 2, long-press text selection, #39 EXIF/ICC-profile
+  check, portrait-orientation upload. (The PWA badge ICON dogfood is
+  CLOSED — confirmed working on device 2026-06-21.)
+- **NEXT: crank open review-exempt bugs** (issue-closing sweep,
+  continued — #27/#40/#37/#61/#25 + the badge-orphan fix + **#38/#16**
+  already shipped this cluster). Tractable, no on-device blocker:
+  - **#12** cicchetto: /msg to non-joined channel creates unclose-able
+    window; session restore archives it but sent messages don't render.
+    LIKELY the SAME window-lifecycle class as #38 — close relies on a
+    server echo (own-PART → setParted) that never fires for a
+    never-joined window. Re-check against the #38 `closeChannelWindow`
+    fix (it clears windowState locally now) before reworking; the query
+    path (`closeQueryWindow`) may need the analogous local clear.
+  Device-blocked (parked until dogfood): #63 (iOS keyboard drops letters
+  on fast typing), #46 (Android unread marker lost after long background).
+- **Deferred feature — +k key persistence (auto-rejoin) (vjt 2026-06-23).**
+  grappa never persists +k keys, so a +k autojoin channel 475s on every
+  reconnect (root of #38). The #38 fix makes that stuck tab dismissable +
+  manually re-joinable (`/join #chan KEY`). Making autojoin rejoin +k
+  channels *automatically* — persist the key Cloak-encrypted (like
+  NickServ/SASL), capture it on a successful keyed `/join`, handle the
+  stale-key case — is a separate design pass (storing channel passwords),
+  intentionally NOT folded into the bugfix.
+- **Codebase review gate: DUE, deferred by vjt** (token cost) — now
+  ~30 days / ~36 sessions past the last review (2026-05-22), well over
+  both thresholds. Re-flag each `/start`; vjt decides when it runs.
+  Bug/deploy fixes exempt; further FEATURE work formally sits on a red
+  gate.
 
 ---
 
@@ -44,22 +70,22 @@ to this section.
   if bandwidth permits, else future infra-polish cluster.
 - **REV-K LOW-3 cosmetic** — `info` field duplicates `error` key
   in ChannelPushError extractor. Trivial dedup; not blocking.
-- **compose.ts:601 ChannelPushError branching consumer** — wire to
-  handle the typed class symmetrically with `ApiError`.
-  Bucket-sized polish.
 - **27-item LOW set** — opportunistic. Notable themes per
   2026-05-22 review § "LOW findings": dead-code clauses in
-  `Identifier.services_sender?`, empty-reason `send_away/2` accepting
-  `AWAY :\r\n`, `Push.subscription.id` as `string` vs branded UUID,
-  `linkify` regex `\S+` unbounded, `image-upload.ts` localStorage vs
-  `token()` signal, `bin/start.sh` env-fiddling, `register-dns.sh`
-  placement.
-- **`feedback_deploy_preflight_empty_diff_after_merge` recurrence
-  (REV-I)** — script-level fix candidate: detect same-SHA + recent
-  merge-commit + demand explicit flag. Wider than any single REV
-  bucket; future-bucket target. (Note: `infra/freebsd/deploy.sh`
-  added the `prev_sha == new_sha → nothing to do` guard in cp51 S3;
-  port the same guard back to `scripts/deploy.sh`.)
+  `Identifier.services_sender?`, `Push.subscription.id` as `string`
+  vs branded UUID, `linkify` regex `\S+` unbounded, `uploadHost.ts` (ex
+  `image-upload.ts`) localStorage vs `token()` signal,
+  `bin/start.sh` env-fiddling, `register-dns.sh` placement.
+- **Deploy decision-lib extraction + docker parity → issue #51**
+  (subsumes the REV-I
+  `feedback_deploy_preflight_empty_diff_after_merge` same-SHA-guard
+  port): extract the bats-pinned jail decision logic (mode/verdict
+  dispatch, marker lifecycle, re-exec guard, reload honesty check)
+  into a shared POSIX-sh lib sourced by both orchestrators; docker's
+  three gaps (no marker, unchecked reload, no re-exec guard) close as
+  a side effect. Restart/build verbs stay substrate-specific. Full
+  spec + sequencing in the issue — AFTER the codebase review and a
+  jail-deploy soak period. Local dev stack only, nothing production.
 - **`apply/3` test pattern for Elixir 1.19 set-theoretic type checker
   (REV-H)** — earns a feedback memory if it bites a 3rd time.
 - **SolidJS function-ref gotcha (REV-G)** — `feedback_solidjs_for_ref_leak`
@@ -122,10 +148,14 @@ Phase 5 cluster opens):
   storage. Cloak.Vault supports yubico-hsm, TPM, AWS KMS — configurable
   swap, no code change in Grappa. Document operator hardening path
   in README.
-- **Service worker requires secure context (HTTPS or localhost).**
-  `http://grappa.bad.ass` is neither — iOS Safari silently fails SW
-  registration; catch in `cicchetto/src/main.tsx:44` logs to console.
-  Offline shell cache won't function until Phase 5 TLS rollout.
+- **Verify iOS Safari SW registration on prod (TLS blocker resolved).**
+  Service workers need a secure context; prod has been HTTPS-live since
+  the 2026-05-27 bastille deploy (irc.sniffo.org / irc.sindro.me), so the
+  old "won't function until Phase 5 TLS rollout" blocker is GONE. Remaining
+  work is just confirming iOS Safari actually registers the SW on prod
+  (the `cicchetto/src/main.tsx:44` console catch fires only on bare-http
+  dev hosts, not a deliverable). Downgraded from blocker to a one-time
+  prod check.
 - **Move bearer token off WS query string.** Currently rides
   `?token=…` on the upgrade URL. Phase 3 redacts via
   `:filter_parameters` + nginx `access_log off`, but bearer still
@@ -151,9 +181,9 @@ Phase 5 cluster opens):
   specs needed (`CAP LS 302`, `CHATHISTORY`, `server-time`, `batch`,
   `labeled-response`, SASL mechanisms). Reuse parser from Phase 1.
 - **Supply-chain hardening** — `oven/bun:1` and `nginx:alpine`
-  (used by `scripts/bun.sh` and `compose.prod.yaml`) are moving major
-  tags. Pin to digests (`oven/bun:1@sha256:…`) for reproducible
-  builds.
+  (used by `scripts/bun.sh` and `compose.yaml`'s `--profile prod`
+  nginx service) are moving major tags. Pin to digests
+  (`oven/bun:1@sha256:…`) for reproducible builds.
 - **Visitor nick collision pre-check** — a visitor login with a nick
   already held by a logged-in user on the same network creates a
   Session.Server that fails forever on upstream 433. The
@@ -170,12 +200,6 @@ Phase 5 cluster opens):
   compile time — changing the visitor network currently needs a cold
   rebuild. **Tracking: issue #42.** Surfaced while moving vjt to a
   dedicated-source network (CP54 2026-06-04, DESIGN_NOTES).
-- **cic: split "log out" into Quit IRC vs Disconnect cic** (vjt
-  2026-06-04) — **issue #43.** One button quits IRC (park all networks
-  via `PATCH /networks/:id {connection_state:"parked"}` + logout),
-  another just detaches cic leaving the bouncer connected (current
-  `auth.logout()`). Touch: `SettingsDrawer.tsx`, `lib/auth.ts`,
-  `lib/windowClose.ts`. Wiring, not new infra.
 - **`unbind` can't detach the last user from a visitor-only network**
   (2026-06-04) — `Credentials.unbind_credential/2` hits the
   cascade-on-empty path and rolls back `:scrollback_present` when the
@@ -186,12 +210,58 @@ Phase 5 cluster opens):
 
 ## Low / Observation
 
-- Investigate `mix release` size on Debian-slim runtime image. If
-  obnoxiously big, evaluate Alpine + musl rebuild of `ecto_sqlite3`
-  NIFs.
-- `Grappa.version/0` (`lib/grappa.ex:28`) has zero callers. Either
-  wire into `/healthz` JSON response (one-line change in
-  `HealthController`) or drop the function.
+- **ICC_Profile strip-whitelist candidate** (#39 round 2 residual,
+  2026-06-11) — iPhones shoot Display P3; `-all=` strips the ICC
+  profile so wide-gamut photos render slightly washed. Same
+  presentation-critical class as Orientation (now whitelisted), but
+  the entry stays OUT of `@kept_tags` until a P3-profiled committed
+  fixture pins both directions — an untested whitelist entry is a
+  privacy hole nobody pinned. Needs a source .icc to build the
+  fixture (generate.sh can't fabricate one from nothing).
+- **Mint upload URLs with a type extension** (`/uploads/<slug>.<ext>`,
+  media-viewer residual 2026-06-11) — the in-app viewer's image/video
+  signal currently lives in message TEXT (the 📸/🎬 prefix read from
+  the linkify segment preceding the URL within one mIRC run); a body
+  interleaving control codes between emoji and URL (colorizing relay
+  bridge) splits runs and the link falls back to the plain anchor.
+  cic's own mints are always plain, so today's surface is zero. The
+  durable fix is server-side: encode the type in the URL itself, and
+  the emoji sniff becomes the historical fallback. DESIGN_NOTES
+  2026-06-11.
+- **Modal chrome CSS dedup** — `.media-viewer-backdrop` is the FOURTH
+  fixed/inset:0 dim backdrop block in default.css (after
+  image-upload, archive, context-menu) and `.media-viewer-close`
+  property-duplicates `.archive-modal-close`. A shared
+  `.modal-backdrop`/`.modal-close` base class would name the pattern;
+  theme-wide refactor, ride a UI-polish bucket.
+- **iOS device dogfood: media-link viewer ROUND 2** (2026-06-11,
+  post-dogfood fixes) — round 1 found "open in browser" navigating the
+  PWA + no spinner; both fixed (escape = x-safari-https handoff on
+  plain click, iOS 17+). Re-verify on device: (a) tap 📸/🎬 link →
+  viewer opens in-app, spinner while loading, media renders; (b) "open
+  in browser" → REAL Safari opens (not in-place navigation, not the
+  in-app browser sheet); (c) long-press "open in browser" → Copy Link
+  yields the live https URL (not x-safari-); (d) tap a 📄 doc upload
+  link → also hands off to Safari instead of navigating the PWA. None
+  of this is emulatable; device dogfood is final verification.
+- **iOS device dogfood: text selection** (Dispatch-1 follow-up,
+  shipped 2026-06-11, bundle `BhVMIcil`) — long-press select in
+  scrollback incl. a SHORT channel (non-overflowing `.scrollback`
+  carries `touch-action: none`; emulation can't answer whether WebKit
+  starts long-press selection inside it) + selection inside the
+  compose box. DESIGN_NOTES 2026-06-11.
+- **Android keyboard-preserve observation** — keepKeyboard gate is
+  iOS-only since 2026-06-11 (Android behavior was never validated).
+  If Android PWA dogfood shows the on-screen keyboard dropping on
+  chrome taps while composing, widen the `isIos()` gate by one clause.
+- **Remove m42 fail2ban `/read-cursor` 400-exemption** (post-#44) — the
+  cic positive-int guard landed + deployed (cp58, bundle `BF6Dside`).
+  Once prod access logs show `/read-cursor` 400s at zero (clients on the
+  new bundle), drop the CP55 `http-400` jail exemption for
+  `/read-cursor\b` on the m42 host. Checked 2026-06-09 (deploy day):
+  log is `irc.openssl.it-access.log`, 400s from 6 distinct client IPs,
+  last 07/Jun — too early to drop (a stale-bundle PWA bursts ~31×400
+  vs maxretry 8 → bans a legit user). Recheck ≥2026-06-16.
 - Sqlite "Database busy" intermittent test flake — `Repo` /
   `Scrollback` / `Wire` occasionally fail inserts with
   `Exqlite.Error: Database busy`. Contention between `async: true`
@@ -206,6 +276,12 @@ Phase 5 cluster opens):
   the Connection header on upstream side, nginx forwards client's
   `Connection: close` and keepalive pool never warms. Pure perf,
   measurable only under sustained load.
+- **Captcha-enabled-on-prod discrepancy** (2026-06-08, CP55) — prod
+  `grappa.env` has NO `GRAPPA_CAPTCHA_*` → provider should be
+  `disabled` → no widget. Yet vjt saw the captcha widget (and its CSP
+  inline-script block) on prod. Confirm where the provider is actually
+  switched on, or whether it was a stale client state. The CSP fix
+  (sha256 in script-src, CP55) is correct regardless.
 
 ---
 
@@ -216,9 +292,5 @@ Phase 5 cluster opens):
   prominently — not just "unread count." Needs last-seen marker
   per channel + server-computed "things addressed to you while away"
   list that cicchetto renders as top section before scrollback proper.
-  Phase 4/5 cicchetto UX.
-- **Auto-away management.** Client emits idle/active hints (focus,
-  tab visibility, lock screen if available); server flips presence
-  and AWAY status without user intervention. No `/away` typing.
-  Combine with addressed-on-return above. Phase 4 cicchetto + small
-  server hook.
+  Phase 4/5 cicchetto UX. (Its sibling wishlist item, auto-away, is
+  long shipped — `WSPresence` + cic visibility hints.)

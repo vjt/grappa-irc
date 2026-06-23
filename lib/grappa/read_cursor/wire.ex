@@ -26,11 +26,17 @@ defmodule Grappa.ReadCursor.Wire do
 
   ## Wire shape
 
-      %{kind: "read_cursor_set", last_read_message_id: <integer>}
+      %{kind: "read_cursor_set", last_read_message_id: <integer>,
+        badge_count: <integer>}
 
-  Both fields are required. `kind` is a string literal so the cic
+  All three fields are required. `kind` is a string literal so the cic
   dispatcher's `narrowReadCursorSet` lookup is a single `===`
-  comparison.
+  comparison. `badge_count` (PWA icon badge door #3, 2026-06-21) is the
+  notify-worthy unread total AFTER this cursor advance — reading anywhere
+  refreshes every listening client's icon badge / `document.title`
+  without a `/me` round-trip. Computed by the caller (the read-cursor
+  POST controller, which holds the subject) so `ReadCursor` carries no
+  dependency on `Grappa.Push.BadgeCount`.
   """
 
   @typedoc """
@@ -41,21 +47,25 @@ defmodule Grappa.ReadCursor.Wire do
   """
   @type read_cursor_set :: %{
           kind: String.t(),
-          last_read_message_id: integer()
+          last_read_message_id: integer(),
+          badge_count: integer()
         }
 
   @doc """
-  Builds the `read_cursor_set` payload for a given `last_read_message_id`.
+  Builds the `read_cursor_set` payload for a given `last_read_message_id`
+  and the post-set `badge_count`.
 
   Always returns a plain map (not a struct) per CLAUDE.md "PubSub
   broadcast + Channel push payloads MUST be JSON-encodable" and the
   no-silent-drops B6.2 struct guard at `Grappa.PubSub.broadcast_event/2`.
   """
-  @spec read_cursor_set(integer()) :: read_cursor_set()
-  def read_cursor_set(last_read_message_id) when is_integer(last_read_message_id) do
+  @spec read_cursor_set(integer(), non_neg_integer()) :: read_cursor_set()
+  def read_cursor_set(last_read_message_id, badge_count)
+      when is_integer(last_read_message_id) and is_integer(badge_count) do
     %{
       kind: "read_cursor_set",
-      last_read_message_id: last_read_message_id
+      last_read_message_id: last_read_message_id,
+      badge_count: badge_count
     }
   end
 end

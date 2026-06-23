@@ -8,24 +8,28 @@ import {
   onMount,
   Show,
 } from "solid-js";
+import InlineConfirmButton from "./InlineConfirmButton";
 import { getSubject, logout, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
-import { activeHost } from "./lib/image-upload";
-import {
-  loadUploadTtlSeconds,
-  saveUploadTtlSeconds,
-  uploadTtlSecondsValue,
-} from "./lib/imageUploadOrchestrator";
+import { getKeyboardPref, setKeyboardPref } from "./lib/keyboardPref";
 import { isAdmin } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
+  deletePushSubscription,
   disablePush,
   type EnablePushResult,
   enablePush,
   listPushDevices,
   type PushDeviceSummary,
 } from "./lib/push";
+import { quitAll } from "./lib/quit";
 import { getTheme, setTheme, type ThemePref } from "./lib/theme";
+import { activeHost } from "./lib/uploadHost";
+import {
+  loadUploadTtlSeconds,
+  saveUploadTtlSeconds,
+  uploadTtlSecondsValue,
+} from "./lib/uploadOrchestrator";
 import { deviceClassIcon, parseUserAgent } from "./lib/userAgent";
 import {
   DEFAULT_NOTIFICATION_PREFS,
@@ -61,6 +65,7 @@ const SettingsDrawer: Component<Props> = (props) => {
   const navigate = useNavigate();
   const [pref, setPref] = createSignal<ThemePref>(getTheme());
   const [size, setSize] = createSignal<FontSizeKey>(getFontSize());
+  const [ircKbd, setIrcKbd] = createSignal<boolean>(getKeyboardPref());
 
   const [prefs, setPrefs] = createSignal<NotificationPrefs>(DEFAULT_NOTIFICATION_PREFS);
   const [devices, setDevices] = createSignal<PushDeviceSummary[]>([]);
@@ -77,6 +82,14 @@ const SettingsDrawer: Component<Props> = (props) => {
   // subjects entirely (users have passwords, no need to share).
   const [shareOpen, setShareOpen] = createSignal(false);
   const isVisitor = (): boolean => getSubject()?.kind === "visitor";
+  // Issue #43 — the "detach" vs "quit IRC" split is only meaningful for
+  // registered users (visitors have no persistent bouncer binding; the
+  // not-yet-loaded null subject stays on the safe single button).
+  const isUser = (): boolean => getSubject()?.kind === "user";
+  // "quit IRC" is destructive (parks every network, bouncer offline), so
+  // it arms via the shared two-tap InlineConfirmButton. Parent owns the
+  // armed flag per that component's contract.
+  const [quitArmed, setQuitArmed] = createSignal(false);
   // Comma-separated UI shadows for the two whitelist text inputs — the
   // server stores normalized lists; cic edits are joined with ", " and
   // re-split on PUT so partial typing doesn't drop characters.
@@ -99,6 +112,23 @@ const SettingsDrawer: Component<Props> = (props) => {
     await logout();
     navigate("/login", { replace: true });
   };
+
+  // Issue #43 — "quit IRC": park ALL the user's networks then logout.
+  // quitAll() already ships this composite (lib/quit.ts; also driven by
+  // the /quit compose verb + the visitor sidebar ×). logout() inside it
+  // nulls the token → RequireAuth redirects; the explicit navigate
+  // mirrors onLogout so the post-quit landing is identical.
+  const onQuit = async () => {
+    await quitAll(null);
+    navigate("/login", { replace: true });
+  };
+
+  // The drawer stays mounted across open/close (CSS .open toggle, not a
+  // <Show>), so an armed quit button would survive a close → reopen and
+  // sit one stray tap from killing the bouncer. Disarm on every close.
+  createEffect(() => {
+    if (!props.open) setQuitArmed(false);
+  });
 
   const refreshDevices = async () => {
     const t = token();
@@ -265,7 +295,6 @@ const SettingsDrawer: Component<Props> = (props) => {
   const removeDevice = async (id: string) => {
     const t = token();
     if (t === null) return;
-    const { deletePushSubscription } = await import("./lib/push");
     try {
       await deletePushSubscription(t, id);
       await refreshDevices();
@@ -368,6 +397,23 @@ const SettingsDrawer: Component<Props> = (props) => {
               onChange={onChange}
             />
             irssi dark
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>keyboard</legend>
+          <label>
+            <input
+              type="checkbox"
+              checked={ircKbd()}
+              data-testid="irc-keyboard-toggle"
+              onChange={(e) => {
+                const on = (e.currentTarget as HTMLInputElement).checked;
+                setIrcKbd(on);
+                setKeyboardPref(on);
+              }}
+            />
+            IRC keyboard (replaces the native keyboard on this device)
           </label>
         </fieldset>
 
@@ -614,15 +660,48 @@ const SettingsDrawer: Component<Props> = (props) => {
           </button>
         </Show>
 
-        <button
-          type="button"
-          class="logout"
-          onClick={() => {
-            void onLogout();
-          }}
+        {/* Issue #43 — registered users get two affordances: "detach"
+            (today's logout — leave IRC connected) and a destructive
+            two-tap "quit" (park ALL networks + logout, bouncer offline).
+            Visitors + the not-yet-loaded null subject keep the single
+            "log out" — the split is meaningless without a persistent
+            bouncer binding. */}
+        <Show
+          when={isUser()}
+          fallback={
+            <button
+              type="button"
+              class="logout"
+              onClick={() => {
+                void onLogout();
+              }}
+            >
+              log out
+            </button>
+          }
         >
-          log out
-        </button>
+          <button
+            type="button"
+            class="logout"
+            data-testid="detach-btn"
+            onClick={() => {
+              void onLogout();
+            }}
+          >
+            detach
+          </button>
+          <InlineConfirmButton
+            idleLabel="quit"
+            confirmLabel="really quit IRC?"
+            armed={quitArmed()}
+            onArm={() => setQuitArmed(true)}
+            onConfirm={() => {
+              void onQuit();
+            }}
+            testId="quit-irc-btn"
+            extraClass="settings-quit"
+          />
+        </Show>
 
         {/* UX-6 D12 — viewport diagnostics fieldset moved to AdminPane
             Debug tab. See AdminDebugTab.tsx. */}

@@ -66,8 +66,17 @@ defmodule GrappaWeb.Endpoint do
 
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
+  # Multipart :length default is 8_000_000 bytes — below the 10MB
+  # per-file upload cap, so a 9MB upload 413'd at the parser before
+  # reaching the controller. 128MiB is a static transport ceiling that
+  # must clear the LARGEST admin-tunable per-type cap with margin
+  # (2026-06-10: a 100MiB video cap met the old 64MiB ceiling — the
+  # transport silently outranked policy). Policy stays in the
+  # ServerSettings caps. Scoped to :multipart only — raising the
+  # top-level :length would let 128MiB JSON bodies buffer into the
+  # BEAM. nginx: client_max_body_size 160m (same margin reasoning).
   plug Plug.Parsers,
-    parsers: [:urlencoded, :multipart, :json],
+    parsers: [:urlencoded, {:multipart, length: 128 * 1024 * 1024}, :json],
     pass: ["*/*"],
     json_decoder: Phoenix.json_library()
 

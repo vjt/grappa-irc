@@ -36,6 +36,8 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   // T32 connect/disconnect compose-time errors (U-3 newly mapped)
   { code: "not_connected", matches: /isn't in a state to connect or disconnect/i },
   { code: "upstream_unreachable", matches: /couldn't reach the upstream irc server/i },
+  // #40 — 433 nick-in-use at login, and visitor /nick rename collision
+  { code: "nick_in_use", matches: /already in use on this network/i },
   { code: "forbidden", matches: /isn't allowed to perform that action/i },
   { code: "not_found", matches: /that network or resource doesn't exist/i },
   { code: "bad_request", matches: /the request was malformed/i },

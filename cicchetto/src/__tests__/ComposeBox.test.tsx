@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/compose", () => ({
   getDraft: vi.fn(() => ""),
@@ -18,10 +18,11 @@ let mockUploadStateValue: {
   filename: string;
   loaded: number;
   total: number;
+  phase?: "transcoding" | "uploading";
   error?: string;
 } | null = null;
 
-vi.mock("../lib/imageUploadOrchestrator", () => {
+vi.mock("../lib/uploadOrchestrator", () => {
   const actual = {
     triggerUpload: vi.fn(),
     cancelUpload: vi.fn(),
@@ -32,8 +33,8 @@ vi.mock("../lib/imageUploadOrchestrator", () => {
   return actual;
 });
 
-vi.mock("../lib/image-upload", async () => {
-  const actual = await vi.importActual<typeof import("../lib/image-upload")>("../lib/image-upload");
+vi.mock("../lib/uploadHost", async () => {
+  const actual = await vi.importActual<typeof import("../lib/uploadHost")>("../lib/uploadHost");
   return actual;
 });
 
@@ -65,6 +66,7 @@ vi.mock("../lib/networks", () => ({
 }));
 
 import ComposeBox from "../ComposeBox";
+import { setKeyboardPref } from "../lib/keyboardPref";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -93,6 +95,24 @@ describe("ComposeBox", () => {
     // was "send"; post-bucket it's empty (SVG children carry no text).
     expect(btn.textContent?.trim()).toBe("");
     expect(btn.querySelector("[data-testid='compose-send-glyph']")).not.toBeNull();
+  });
+
+  // #59 — tapping the send button must NOT steal focus from the textarea
+  // (that collapses the on-screen keyboard). The handler preventDefaults
+  // the pointerdown; the click still submits. Needs a non-empty draft —
+  // the button is disabled (un-tappable) while the draft is empty.
+  it("#59 — send button preventDefaults pointerdown (no focus steal)", async () => {
+    const compose = await import("../lib/compose");
+    vi.mocked(compose.getDraft).mockReturnValue("hi");
+    try {
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const btn = screen.getByRole("button", { name: /send message/i });
+      const ev = new Event("pointerdown", { bubbles: true, cancelable: true });
+      btn.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+    } finally {
+      vi.mocked(compose.getDraft).mockReturnValue("");
+    }
   });
 
   it("typing fires compose.setDraft", async () => {
@@ -175,6 +195,39 @@ describe("ComposeBox", () => {
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
     expect(ta.hasAttribute("disabled")).toBe(false);
+  });
+
+  // IRC keyboard (2026-06-14 dogfood) — inputmode="none" suppresses the
+  // native on-screen keyboard so the custom in-page keyboard owns input.
+  // The attr is DECLARATIVE on the textarea (reactive to the per-device
+  // opt-in), NOT poked imperatively by a Shell effect — that imperative
+  // path missed textareas re-created on channel switch and the native
+  // keyboard slipped through.
+  describe("IRC keyboard — inputmode native-suppression", () => {
+    afterEach(() => setKeyboardPref(false));
+
+    it("textarea has NO inputmode attr when the IRC keyboard is off (native default unchanged)", () => {
+      setKeyboardPref(false);
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+      expect(ta.getAttribute("inputmode")).toBeNull();
+    });
+
+    it("textarea gets inputmode='none' when the IRC keyboard is enabled", () => {
+      setKeyboardPref(true);
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+      expect(ta.getAttribute("inputmode")).toBe("none");
+    });
+
+    it("toggling the opt-in flips the attr on the SAME textarea (reactive, not mount-only)", () => {
+      setKeyboardPref(false);
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+      expect(ta.getAttribute("inputmode")).toBeNull();
+      setKeyboardPref(true);
+      expect(ta.getAttribute("inputmode")).toBe("none");
+    });
   });
 
   // CP15 B5: greyed-state visual when window state is failed/kicked/parked.
@@ -298,7 +351,7 @@ describe("ComposeBox", () => {
   // clipboard paste + inline progress + TTL dropdown.
   //
   // The privacy-modal flow + auto-send + per-host localStorage live in
-  // imageUploadOrchestrator (mocked at module level above). ComposeBox
+  // uploadOrchestrator (mocked at module level above). ComposeBox
   // is the trigger surface — its job is to hand File objects to
   // `triggerUpload(...)` and render whatever `uploadState(key)` returns.
   // ----------------------------------------------------------------
@@ -308,7 +361,16 @@ describe("ComposeBox", () => {
         type: "image/png",
       });
 
-    const sampleNonImage = (): File => new File(["hi"], "notes.txt", { type: "text/plain" });
+    // Uploads cluster Task 7 — drop/paste accept ANY categorized MIME
+    // (image/video/document); only category-less MIMEs are filtered.
+    const sampleVideo = (): File =>
+      new File([new Uint8Array(16)], "clip.mp4", { type: "video/mp4" });
+
+    const sampleDocument = (): File =>
+      new File(["%PDF-1.4"], "notes.pdf", { type: "application/pdf" });
+
+    const sampleUnknownType = (): File =>
+      new File([new Uint8Array(4)], "setup.exe", { type: "application/x-msdownload" });
 
     // jsdom 29 ships neither DataTransfer nor a constructible
     // ClipboardEvent that accepts a clipboardData option. Synthesise
@@ -335,29 +397,33 @@ describe("ComposeBox", () => {
       return { files: file !== null ? [file] : [], items, types };
     };
 
-    it("renders an image-picker button (camera icon)", () => {
+    it("renders a file-picker button (camera icon)", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const btn = screen.getByRole("button", { name: /upload image/i });
+      const btn = screen.getByRole("button", { name: /upload file/i });
       expect(btn).toBeInTheDocument();
     });
 
-    it("renders a hidden file input that accepts the host's MIME types", () => {
+    it("renders a hidden file input that accepts ALL the host's MIME categories", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const input = document.querySelector(
-        "input[type='file'][data-image-picker]",
+        "input[type='file'][data-file-picker]",
       ) as HTMLInputElement | null;
       expect(input).not.toBeNull();
-      // accept attr should list at least one image MIME (litterboxHost.acceptedMimeTypes).
-      expect(input?.getAttribute("accept")).toMatch(/image\//);
+      // Task 7: accept spans every category the active host takes —
+      // image + video + document, not image-only.
+      const accept = input?.getAttribute("accept") ?? "";
+      expect(accept).toMatch(/image\/png/);
+      expect(accept).toMatch(/video\/mp4/);
+      expect(accept).toMatch(/application\/pdf/);
     });
 
-    it("clicking the image-picker button triggers the hidden input", () => {
+    it("clicking the file-picker button triggers the hidden input", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const input = document.querySelector(
-        "input[type='file'][data-image-picker]",
+        "input[type='file'][data-file-picker]",
       ) as HTMLInputElement;
       const clickSpy = vi.spyOn(input, "click");
-      const btn = screen.getByRole("button", { name: /upload image/i });
+      const btn = screen.getByRole("button", { name: /upload file/i });
       fireEvent.click(btn);
       expect(clickSpy).toHaveBeenCalled();
     });
@@ -371,10 +437,10 @@ describe("ComposeBox", () => {
     });
 
     it("selecting a file via the picker calls triggerUpload with file + slug + channel", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const input = document.querySelector(
-        "input[type='file'][data-image-picker]",
+        "input[type='file'][data-file-picker]",
       ) as HTMLInputElement;
       const file = sampleImage();
       Object.defineProperty(input, "files", {
@@ -387,7 +453,7 @@ describe("ComposeBox", () => {
     });
 
     it("dropping an image file onto the form calls triggerUpload", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const form = document.querySelector(".compose-box") as HTMLFormElement;
 
@@ -397,12 +463,34 @@ describe("ComposeBox", () => {
       expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
     });
 
-    it("dropping a NON-image file is ignored — triggerUpload NOT called", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
+    it("dropping a video file calls triggerUpload (Task 7 — drop accepts all categories)", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const form = document.querySelector(".compose-box") as HTMLFormElement;
 
-      fireEvent.drop(form, { dataTransfer: makeDataTransfer(sampleNonImage()) });
+      const file = sampleVideo();
+      fireEvent.drop(form, { dataTransfer: makeDataTransfer(file) });
+
+      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+    });
+
+    it("dropping a document file calls triggerUpload (Task 7 — drop accepts all categories)", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const form = document.querySelector(".compose-box") as HTMLFormElement;
+
+      const file = sampleDocument();
+      fireEvent.drop(form, { dataTransfer: makeDataTransfer(file) });
+
+      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+    });
+
+    it("dropping a category-less MIME is ignored — triggerUpload NOT called", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const form = document.querySelector(".compose-box") as HTMLFormElement;
+
+      fireEvent.drop(form, { dataTransfer: makeDataTransfer(sampleUnknownType()) });
 
       expect(orch.triggerUpload).not.toHaveBeenCalled();
     });
@@ -416,7 +504,7 @@ describe("ComposeBox", () => {
     });
 
     it("pasting an image file calls triggerUpload + does NOT modify textarea", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       const compose = await import("../lib/compose");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
@@ -435,7 +523,7 @@ describe("ComposeBox", () => {
     });
 
     it("pasting plain text does NOT trigger upload + leaves textarea paste behavior alone", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
 
@@ -449,20 +537,94 @@ describe("ComposeBox", () => {
       expect(orch.triggerUpload).not.toHaveBeenCalled();
     });
 
+    it("pasting a video file calls triggerUpload (Task 7 — paste accepts all categories)", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+
+      const file = sampleVideo();
+      const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(pasteEvent, "clipboardData", {
+        value: makeDataTransfer(file),
+        configurable: true,
+      });
+      ta.dispatchEvent(pasteEvent);
+
+      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+    });
+
+    it("pasting a document file calls triggerUpload (Task 7 — paste accepts all categories)", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+
+      const file = sampleDocument();
+      const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(pasteEvent, "clipboardData", {
+        value: makeDataTransfer(file),
+        configurable: true,
+      });
+      ta.dispatchEvent(pasteEvent);
+
+      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+    });
+
+    it("pasting a category-less MIME file is ignored — triggerUpload NOT called", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+
+      const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(pasteEvent, "clipboardData", {
+        value: makeDataTransfer(sampleUnknownType()),
+        configurable: true,
+      });
+      ta.dispatchEvent(pasteEvent);
+
+      expect(orch.triggerUpload).not.toHaveBeenCalled();
+    });
+
     it("renders the inline progress row when uploadState is non-null", () => {
       mockUploadStateValue = { filename: "screenshot.png", loaded: 512, total: 2048 };
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       expect(screen.getByText(/screenshot\.png/i)).toBeInTheDocument();
-      // Progress bar present (a meter, progress, or annotated div).
-      const progress =
-        document.querySelector("[role='progressbar']") ??
-        document.querySelector(".compose-box-upload-progress");
-      expect(progress).not.toBeNull();
+      // Wrapper is a polite live region (role="status") — NOT
+      // role="progressbar", whose Children Presentational=true would
+      // flatten the filename/phase/cancel out of the a11y tree. The
+      // native <progress> inside self-announces the bar semantics.
+      const wrapper = document.querySelector(".compose-box-upload-progress");
+      expect(wrapper).not.toBeNull();
+      expect(wrapper?.getAttribute("role")).toBe("status");
+      expect(wrapper?.querySelector("progress")).not.toBeNull();
+    });
+
+    it("transcoding phase renders the 'processing video…' label (Task 7)", () => {
+      mockUploadStateValue = {
+        filename: "clip.mp4",
+        loaded: 0.4,
+        total: 1,
+        phase: "transcoding",
+      };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const label = document.querySelector(".compose-box-upload-phase");
+      expect(label).not.toBeNull();
+      expect(label?.textContent).toMatch(/processing video/i);
+    });
+
+    it("uploading phase does NOT render the transcoding label", () => {
+      mockUploadStateValue = {
+        filename: "clip.mp4",
+        loaded: 512,
+        total: 2048,
+        phase: "uploading",
+      };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      expect(document.querySelector(".compose-box-upload-phase")).toBeNull();
     });
 
     it("clicking cancel on a progress row calls cancelUpload", async () => {
       mockUploadStateValue = { filename: "screenshot.png", loaded: 512, total: 2048 };
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const cancelBtn = screen.getByRole("button", { name: /cancel/i });
       fireEvent.click(cancelBtn);
@@ -476,7 +638,7 @@ describe("ComposeBox", () => {
         total: 0,
         error: "Upload failed — network error.",
       };
-      const orch = await import("../lib/imageUploadOrchestrator");
+      const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       expect(screen.getByText(/network error/i)).toBeInTheDocument();
 

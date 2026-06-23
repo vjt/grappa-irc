@@ -19,6 +19,7 @@ defmodule Grappa.SessionTest do
 
   @user_id "00000000-0000-0000-0000-000000000000"
   @network_id 999_999_999
+  @origin_window %{kind: :channel, target: "#chan"}
 
   describe "send_privmsg/4 CRLF guard" do
     test "rejects \\r\\n in body before whereis lookup" do
@@ -110,6 +111,50 @@ defmodule Grappa.SessionTest do
     test "valid input falls through to :no_session for unknown session" do
       assert {:error, :no_session} =
                Session.send_part({:user, @user_id}, @network_id, "#chan")
+    end
+  end
+
+  # An empty reason builds `AWAY :\r\n` on the wire, which per RFC 2812
+  # §4.6 means "no longer away" — the bare-AWAY un-away semantics. The
+  # explicit-away verb must never emit it: an operator setting away with
+  # an empty reason would silently CLEAR their away instead. The dedicated
+  # verb for clearing is `unset_explicit_away/2`. `safe_line_token?/1`
+  # only rejects CR/LF/NUL, so `""` slips through it — the emptiness check
+  # is the facade's job (mirrors `Client.send_pong`'s empty-token guard).
+  describe "set_explicit_away/3,4 empty-reason guard" do
+    test "rejects empty reason before whereis lookup (/3)" do
+      assert {:error, :invalid_line} =
+               Session.set_explicit_away({:user, @user_id}, @network_id, "")
+    end
+
+    test "rejects empty reason before whereis lookup (/4 origin_window arity)" do
+      assert {:error, :invalid_line} =
+               Session.set_explicit_away({:user, @user_id}, @network_id, "", @origin_window)
+    end
+
+    test "rejects \\r\\n in reason before whereis lookup" do
+      assert {:error, :invalid_line} =
+               Session.set_explicit_away({:user, @user_id}, @network_id, "afk\r\nQUIT :pwn")
+    end
+
+    test "valid reason falls through to :no_session for unknown session (/3)" do
+      assert {:error, :no_session} =
+               Session.set_explicit_away({:user, @user_id}, @network_id, "lunch")
+    end
+
+    test "valid reason falls through to :no_session for unknown session (/4)" do
+      assert {:error, :no_session} =
+               Session.set_explicit_away({:user, @user_id}, @network_id, "lunch", @origin_window)
+    end
+
+    # Only the empty string is the un-away line. A whitespace-only reason
+    # is a valid (if blank-looking) `AWAY :   ` set — the guard is
+    # `reason != ""`, not a trim, matching `Client.send_pong`'s byte-empty
+    # guard. Pinned so a future change doesn't tighten to `String.trim/1`
+    # and silently start rejecting spaces-only reasons.
+    test "whitespace-only reason is accepted (not the empty un-away case)" do
+      assert {:error, :no_session} =
+               Session.set_explicit_away({:user, @user_id}, @network_id, "   ")
     end
   end
 

@@ -39,6 +39,8 @@ defmodule GrappaWeb.MeControllerTest do
       # Bucket C (2026-06-01): unread_counts envelope. Empty for a
       # fresh subject (no cursors → no entries).
       assert body["unread_counts"] == %{}
+      # PWA badge door #2 (2026-06-21): 0 for a fresh subject.
+      assert body["badge_count"] == 0
       # UX-4 bucket B: home_data envelope. Fresh user with zero
       # credentials → empty networks list (NOT nil — nil is the
       # visitor signal).
@@ -107,6 +109,8 @@ defmodule GrappaWeb.MeControllerTest do
       # Bucket C (2026-06-01): unread_counts envelope present for
       # visitors too. Empty for a fresh visitor (no cursors).
       assert body["unread_counts"] == %{}
+      # PWA badge door #2 (2026-06-21): 0 for a fresh visitor.
+      assert body["badge_count"] == 0
       # UX-4 bucket B: visitors get `home_data: nil` — visitor home is
       # cic-only help text (no server roundtrip). The discriminator
       # nil vs %{networks: [...]} is how cic dispatches
@@ -319,6 +323,74 @@ defmodule GrappaWeb.MeControllerTest do
       body = json_response(conn, 200)
       assert is_map(body["unread_counts"])
       refute Map.has_key?(body["unread_counts"], network.slug)
+    end
+  end
+
+  # PWA icon badge door #2 (2026-06-21) — top-level `badge_count` from
+  # `Grappa.Push.BadgeCount.count/1`: notify-worthy unread total (same
+  # predicate as Web Push), capped at 99. End-to-end check that the
+  # controller threads the count and the renderer surfaces the scalar.
+  describe "GET /me — badge_count envelope" do
+    test "counts notify-worthy unread; excludes :notice + presence events",
+         %{conn: conn} do
+      {user, session} = user_and_session()
+
+      {network, _} =
+        network_with_server(port: 7408, slug: "badge-#{System.unique_integer([:positive])}")
+
+      # credential_fixture defaults nick "grappa-test" — own_nick resolves
+      # off-Session via the configured credential nick.
+      _ = credential_fixture(user, network)
+
+      # channel-all prefs so every CONTENT row would count — proving the
+      # :notice + :join exclusions come from the predicate / kind filter,
+      # not from prefs.
+      {:ok, _} =
+        Grappa.UserSettings.put_notification_prefs(
+          {:user, user.id},
+          Map.merge(Grappa.UserSettings.default_notification_prefs(), %{channel_messages_all: true})
+        )
+
+      {:ok, anchor} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#a",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "alice",
+          body: "anchor"
+        })
+
+      {:ok, _} = Grappa.ReadCursor.set({:user, user.id}, network.id, "#a", anchor.id)
+
+      # After the cursor: 2 privmsgs (count), 1 notice (kind-gated out by
+      # should_notify?), 1 join (dropped at the content-kind SQL filter).
+      for {i, kind, body} <- [
+            {2, :privmsg, "m1"},
+            {3, :privmsg, "m2"},
+            {4, :notice, "services blurb"},
+            {5, :join, nil}
+          ] do
+        {:ok, _} =
+          Grappa.ScrollbackHelpers.insert(%{
+            user_id: user.id,
+            network_id: network.id,
+            channel: "#a",
+            server_time: i,
+            kind: kind,
+            sender: "bob",
+            body: body
+          })
+      end
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/me")
+
+      body = json_response(conn, 200)
+      assert body["badge_count"] == 2
     end
   end
 

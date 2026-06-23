@@ -67,7 +67,8 @@ defmodule Grappa.Push.Payload do
           required(:title) => String.t(),
           required(:body) => String.t(),
           required(:tag) => String.t(),
-          required(:url) => String.t()
+          required(:url) => String.t(),
+          optional(:badge) => non_neg_integer()
         }
 
   @doc """
@@ -104,6 +105,24 @@ defmodule Grappa.Push.Payload do
       tag: "#{network_slug}:#{dedup_key}",
       url: build_url(network_slug, deep_link_target)
     }
+  end
+
+  @doc """
+  Stamps the PWA icon-badge count onto a built payload (door #1,
+  2026-06-21).
+
+  Kept OUT of `build/3` because the badge needs a DB-backed count
+  (`Grappa.Push.BadgeCount`), while `build/3` is a pure transcription of
+  the message. `Grappa.Push.Triggers` computes the count on the dispatch
+  path and merges it here so the service worker can
+  `setAppBadge(payload.badge)` while the app is closed. Payloads built
+  without it (or sent by an older server) simply omit the key — the SW's
+  `narrowPushPayload` treats `badge` as optional and skips the badge
+  update.
+  """
+  @spec put_badge(t(), non_neg_integer()) :: t()
+  def put_badge(payload, badge) when is_map(payload) and is_integer(badge) and badge >= 0 do
+    Map.put(payload, :badge, badge)
   end
 
   # `URI.encode_www_form/1` percent-encodes `#` (channel sigil), `&`

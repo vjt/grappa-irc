@@ -17,6 +17,14 @@ config :grappa,
 config :grappa, :visitor_network, "azzurra"
 config :grappa, :max_visitors_per_ip, 5
 
+# PWA icon-badge count source (door #1 dependency-inversion seam, 2026-06-21).
+# `Grappa.Push.Triggers` resolves this at runtime via
+# `Grappa.Push.BadgeSource.impl/0` instead of referencing the
+# implementation statically — a static `Push → BadgeCount` edge would close
+# the boundary cycle `Push → BadgeCount → Networks → Session → Push`. Tests
+# may override with a stub implementing the `count/1` callback.
+config :grappa, :badge_source, Grappa.Push.BadgeCount
+
 # Cluster visitor-auth hotfix: pre-crash throttle for `Grappa.IRC.Client`'s
 # `handle_continue({:connect, _})` failure path. Read at compile-time via
 # `Application.compile_env/3`; production default is 30_000 ms (~2 restart
@@ -162,6 +170,11 @@ config :logger, :console,
     :new_nick,
     :modes,
     :args,
+    # #25: sender's channel-grade glyph (@/%/+) snapshotted onto content
+    # rows at persist time so a later MODE change can't retroactively
+    # re-prefix them. In the allowlist to satisfy the known_keys↔metadata
+    # sync test even though no Logger call carries it today.
+    :sender_prefix,
     # Auth context (Phase 2): bearer-token session lifecycle. `session_id`
     # rides every authn-plug failure and revoke; `affected` rides the
     # revoke audit log so a typo'd-id revoke is greppable. `socket_id`
@@ -230,6 +243,13 @@ config :logger, :console,
     :raw_verb,
     :raw_sender,
     :raw_params,
+    # Presence-event (join/part/quit) sender user@host — rides the
+    # persist meta so cic renders the irssi-style "nick [user@host] has
+    # joined/left/quit" line. Parsed from the IRC prefix; both keys
+    # present or neither (no half-populated mask). Mirrors
+    # Scrollback.Meta.@known_keys (A18 sync; meta_test.exs catches drift).
+    :sender_user,
+    :sender_host,
     # Nick-mutation tracing (C6 / S13): on RPL_WELCOME reconcile and
     # self-NICK rename, log lines pair `from: old-nick, to: new-nick`
     # so the operator can grep the lifecycle of a nick across a

@@ -82,3 +82,16 @@ export const senderPrefix = (
   if (entry.modes.includes("+")) return "+";
   return "";
 };
+
+// #25: glyph for a CONTENT row's own sender, read from the server's
+// send-time snapshot (`meta.sender_prefix`) instead of live member
+// state. The server captures the sender's grade at persist time so a
+// later MODE change can't retroactively re-prefix old lines. Returns ""
+// when the snapshot is absent — a plain sender, or a row persisted
+// before #25 landed — so cic never falls back to a live-derived guess
+// (which is exactly the bug). `meta` is the untyped wire bag, so the
+// value is validated against the three glyphs here.
+export const snapshotSenderPrefix = (meta: Record<string, unknown>): "@" | "%" | "+" | "" => {
+  const p = meta.sender_prefix;
+  return p === "@" || p === "%" || p === "+" ? p : "";
+};

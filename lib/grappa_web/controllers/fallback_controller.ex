@@ -66,6 +66,7 @@ defmodule GrappaWeb.FallbackController do
            | :share_token_consumed
            | {:invalid_setting, String.t()}
            | {:file_too_large, pos_integer()}
+           | {:metadata_strip, String.t()}
            | {:anon_collision, non_neg_integer()}
            | {:credentials_present, non_neg_integer()}
            | Grappa.Admission.error()
@@ -112,8 +113,8 @@ defmodule GrappaWeb.FallbackController do
   end
 
   # UX-6-B1: `POST /api/uploads` size policing — admin-configurable
-  # per-file cap (default 10 MiB) read at request time from
-  # `Grappa.ServerSettings.get_upload_per_file_cap_bytes/0`. Distinct
+  # per-category per-file cap read at request time from
+  # `Grappa.ServerSettings.get_upload_per_file_cap_bytes/1`. Distinct
   # from `:body_too_large` (the JSON-payload cap on text endpoints)
   # because the cap value is dynamic, surfaced inline in the wire
   # body so cic can render the actionable threshold.
@@ -121,6 +122,19 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:request_entity_too_large)
     |> json(%{error: "file_too_large", max_bytes: max_bytes})
+  end
+
+  # Metadata-strip cluster (#39): the server-side EXIF/QuickTime
+  # strip failed, so the upload is rejected — storing the original
+  # would leak GPS + device identity, the boundary fails CLOSED.
+  # 422: request shape valid, type allowed, file unprocessable. The
+  # reason stays server-side (`MetadataStrip` logs it) — tool stderr
+  # can leak tmp paths and tool internals, and cic's copy for this
+  # case doesn't branch on it.
+  def call(conn, {:error, {:metadata_strip, _}}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "metadata_strip_failed"})
   end
 
   # UX-6-B1: global-disk cap on the embedded uploader. Operator

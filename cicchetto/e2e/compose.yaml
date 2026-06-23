@@ -242,6 +242,12 @@ services:
       # Captcha disabled — the test suite drives signup directly via
       # mix tasks; the captcha gate is a separate spec when it lands.
       GRAPPA_CAPTCHA_PROVIDER: disabled
+      # Public-origin fidelity (media-link viewer, 2026-06-11): the
+      # runtime.exs PHX_HOST block roots Endpoint.url() at
+      # https://nginx-test so minted upload URLs match the page origin
+      # the Playwright runner browses — same shape as prod, where
+      # PHX_HOST roots them at the public https host.
+      PHX_HOST: nginx-test
     command: ["mix", "phx.server"]
     networks:
       grappa-e2e:

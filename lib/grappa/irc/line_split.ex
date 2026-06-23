@@ -21,13 +21,14 @@ defmodule Grappa.IRC.LineSplit do
 
   ## CTCP awareness
 
-  A body beginning with `\\x01ACTION ` and ending with `\\x01` is
-  a CTCP ACTION. Fragmenting NAIVELY would emit
-  `\\x01ACTION text-chunk-1` (no trailing `\\x01`) and
+  A body beginning with `\\x01ACTION ` is a CTCP ACTION (classified
+  via the shared `Grappa.IRC.CTCP.action?/1`). Fragmenting NAIVELY
+  would emit `\\x01ACTION text-chunk-1` (no trailing `\\x01`) and
   `text-chunk-2\\x01` (no leading envelope) — both garbage on the
   wire. This module preserves the envelope on every fragment so
-  each one is a self-contained valid CTCP message. Budget
-  accounts for the per-fragment overhead.
+  each one is a self-contained valid CTCP message (the optional
+  trailing `\\x01` is stripped once and re-added per fragment).
+  Budget accounts for the per-fragment overhead.
 
   Other CTCP verbs (`\\x01VERSION\\x01`, DCC, etc.) are single-
   line by convention; this module's CTCP detection only triggers
@@ -51,15 +52,10 @@ defmodule Grappa.IRC.LineSplit do
     cond do
       budget <= 0 -> [body]
       byte_size(body) <= budget -> [body]
-      ctcp_action?(body) -> split_ctcp_action(body, budget)
+      Grappa.IRC.CTCP.action?(body) -> split_ctcp_action(body, budget)
       true -> split_plain(body, budget)
     end
   end
-
-  defp ctcp_action?(<<"\x01ACTION ", _::binary>> = body),
-    do: String.ends_with?(body, "\x01")
-
-  defp ctcp_action?(_), do: false
 
   defp split_plain(body, budget) do
     body

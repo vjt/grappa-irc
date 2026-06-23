@@ -22,6 +22,7 @@
 
 import { expect, test } from "../fixtures/test";
 import { type Page } from "@playwright/test";
+import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import {
   AUTOJOIN_CHANNELS,
@@ -30,6 +31,7 @@ import {
   NETWORK_NICK,
   NETWORK_SLUG,
 } from "../fixtures/seedData";
+import { LITTERBOX_MODAL_HEADING, pickFile } from "../fixtures/uploadJourney";
 
 const FIXTURE_URL = "https://litter.catbox.moe/i2-fixture.png";
 const CHANNEL = AUTOJOIN_CHANNELS[0];
@@ -104,19 +106,15 @@ test.describe("I-2 litterbox path (admin-pinned host)", () => {
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
     await settingsHydrated;
 
-    const picker = page.locator("input[data-image-picker]");
-    await picker.setInputFiles({
-      name: "screenshot.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(
-        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478" +
-          "9c620001000005000d0a2db40000000049454e44ae426082",
-        "hex",
-      ),
-    });
-
-    const modal = page.getByRole("dialog", { name: /Upload to litterbox\.catbox\.moe/i });
-    await expect(modal).toBeVisible({ timeout: 5_000 });
+    const modal = await pickFile(
+      page,
+      {
+        name: "screenshot.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(TINY_PNG_HEX, "hex"),
+      },
+      LITTERBOX_MODAL_HEADING,
+    );
     await expect(modal).toContainText("litterbox.catbox.moe");
 
     await modal.locator("button", { hasText: /continue/i }).click();
@@ -145,19 +143,15 @@ test.describe("I-2 litterbox path (admin-pinned host)", () => {
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
     await settingsHydrated;
 
-    const picker = page.locator("input[data-image-picker]");
-    await picker.setInputFiles({
-      name: "screenshot.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(
-        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478" +
-          "9c620001000005000d0a2db40000000049454e44ae426082",
-        "hex",
-      ),
-    });
-
-    const modal = page.getByRole("dialog", { name: /Upload to litterbox\.catbox\.moe/i });
-    await expect(modal).toBeVisible({ timeout: 5_000 });
+    const modal = await pickFile(
+      page,
+      {
+        name: "screenshot.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(TINY_PNG_HEX, "hex"),
+      },
+      LITTERBOX_MODAL_HEADING,
+    );
     await modal.locator("button", { hasText: /cancel/i }).click();
     await expect(modal).toBeHidden({ timeout: 5_000 });
 

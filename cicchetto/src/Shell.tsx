@@ -17,13 +17,14 @@ import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
 import DiagFloat from "./DiagFloat";
 import HomePane from "./HomePane";
+import KeyboardHost from "./KeyboardHost";
 import { ownNickForNetwork } from "./lib/api";
 import { archiveSlugForSelection } from "./lib/archiveContext";
 import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, setDraft, tabComplete } from "./lib/compose";
-import { loadUploadTtlSeconds } from "./lib/imageUploadOrchestrator";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
+import { loadLastFocused } from "./lib/lastFocusedChannel";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import {
   openAdminPanel,
@@ -33,8 +34,10 @@ import {
 } from "./lib/mobilePanel";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
+import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
+import { loadUploadTtlSeconds } from "./lib/uploadOrchestrator";
 import {
   ADMIN_WINDOW_NAME,
   ADMIN_WINDOW_SLUG,
@@ -42,6 +45,7 @@ import {
   HOME_WINDOW_SLUG,
 } from "./lib/windowKinds";
 import { isActiveChannelJoined } from "./lib/windowState";
+import MediaViewerModal from "./MediaViewerModal";
 import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
 import PrivacyModal from "./PrivacyModal";
@@ -356,9 +360,9 @@ const Shell: Component = () => {
       const current = getDraft(key);
       const result = tabComplete(key, current, ta.selectionStart, forward);
       if (!result) return;
-      setDraft(key, result.newInput);
-      // Solid signal write doesn't immediately reflect in the textarea
-      // — schedule the cursor placement on the next microtask.
+      // tabComplete wrote the draft via writeState (calling setDraft here
+      // would null the cycle). We only place the caret. Solid signal write
+      // doesn't reflect immediately — schedule on the next microtask.
       queueMicrotask(() => {
         ta.setSelectionRange(result.newCursor, result.newCursor);
       });
@@ -413,6 +417,19 @@ const Shell: Component = () => {
   // The home pane IS the new landing window for both visitor and
   // registered identities; the operator navigates to specific
   // channels via the sidebar / BottomBar / keybindings.
+  //
+  // Issue #35 (2026-06-01) — before defaulting to `$home`, try to
+  // restore the last focused channel/query/server window from
+  // localStorage (`lib/lastFocusedChannel.ts`). Validity gate:
+  //   * channel → must appear in `channelsBySlug()[slug]`.
+  //   * query   → must appear in `queryWindowsByNetwork()[net.id]`.
+  //   * server  → its network must be live in `networkBySlug(slug)`.
+  // The arm waits for `channelsBySlug()` to leave the loading state
+  // before deciding — otherwise a fast reload would never see the
+  // persisted channel because the resource is still `undefined`. If
+  // the saved window doesn't validate, fall through to `$home` (the
+  // pre-#35 behaviour) so a closed / parted / kicked window doesn't
+  // strand the operator on a dead pane.
   let coldLoadAutoSelected = false;
   createEffect(() => {
     if (coldLoadAutoSelected) return;
@@ -423,14 +440,80 @@ const Shell: Component = () => {
     // Wait for /me to land before we can pick a default at all.
     const m = user();
     if (!m) return;
-    // Default landing: home window. Both registered + visitor.
-    setSelectedChannel({
-      networkSlug: HOME_WINDOW_SLUG,
-      channelName: HOME_WINDOW_NAME,
-      kind: "home",
-    });
+    // Wait for channels resource to resolve at least once so the
+    // restore validity check can see the operator's joined list.
+    // `createResource` returns `undefined` while loading; a resolved
+    // empty object `{}` is still truthy and means "no networks have
+    // channels yet" — restore will fall through to home, which is
+    // the desired pre-#35 behaviour for that case anyway.
+    const cbs = channelsBySlug();
+    if (cbs === undefined) return;
+
+    // Try restore for `kind: "user"` identities. Visitors get a
+    // fresh single-network session per visit, so persisting their
+    // last window has no useful payoff; skip straight to home.
+    let restored = false;
+    if (m.kind === "user") {
+      const saved = loadLastFocused(m.id);
+      if (saved !== null) {
+        const slug = saved.networkSlug;
+        if (saved.kind === "channel") {
+          const list = cbs[slug] ?? [];
+          if (list.some((c) => c.name === saved.channelName)) {
+            setSelectedChannel({
+              networkSlug: slug,
+              channelName: saved.channelName,
+              kind: "channel",
+            });
+            restored = true;
+          }
+        } else if (saved.kind === "query") {
+          const net = networkBySlug(slug);
+          if (net) {
+            const qs = queryWindowsByNetwork()[net.id] ?? [];
+            const lower = saved.channelName.toLowerCase();
+            const match = qs.find((q) => q.targetNick.toLowerCase() === lower);
+            if (match !== undefined) {
+              setSelectedChannel({
+                networkSlug: slug,
+                channelName: match.targetNick,
+                kind: "query",
+              });
+              restored = true;
+            }
+          }
+        } else if (saved.kind === "server") {
+          if (networkBySlug(slug) !== undefined) {
+            setSelectedChannel({
+              networkSlug: slug,
+              channelName: saved.channelName,
+              kind: "server",
+            });
+            restored = true;
+          }
+        }
+      }
+    }
+
+    if (!restored) {
+      // Default landing: home window. Both registered + visitor.
+      setSelectedChannel({
+        networkSlug: HOME_WINDOW_SLUG,
+        channelName: HOME_WINDOW_NAME,
+        kind: "home",
+      });
+    }
     coldLoadAutoSelected = true;
   });
+
+  // IRC keyboard wiring lives entirely in KeyboardHost now:
+  //   • inputmode="none" is declarative on the ComposeBox <textarea>
+  //     (reactive to the opt-in) — see ComposeBox.tsx.
+  //   • the --irc-kb-height reservation is set by KeyboardHost from the
+  //     keyboard's MEASURED height + actual (focus-driven) visibility.
+  // Neither belongs on a Shell effect: the old imperative inputmode poke
+  // missed re-created textareas, and a flag-driven reservation reserved
+  // space even when the focus-driven keyboard was closed.
 
   return (
     <Show
@@ -441,6 +524,7 @@ const Shell: Component = () => {
           <SocketHealthBanner />
           <BundleRefreshBanner />
           <PrivacyModal />
+          <MediaViewerModal />
           <aside class="shell-sidebar">
             <Sidebar />
             {/* UX-5 bucket BS — drag handle on the inner edge of the
@@ -596,6 +680,7 @@ const Shell: Component = () => {
         <SocketHealthBanner />
         <BundleRefreshBanner />
         <PrivacyModal />
+        <MediaViewerModal />
         <Show when={membersOpen()}>
           <div
             class="shell-drawer-backdrop open"
@@ -791,6 +876,7 @@ const Shell: Component = () => {
             })
           }
         />
+        <KeyboardHost />
       </div>
     </Show>
   );

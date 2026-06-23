@@ -125,6 +125,25 @@ defmodule Grappa.Visitors.LoginTest do
       assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
     end
 
+    test "433 nick-in-use during registration → {:error, :nick_in_use}, anon row purged" do
+      {server, port} = start_server()
+      {_, _} = setup_visitor_network(port)
+
+      task = Task.async(fn -> Login.login(login_input(), []) end)
+
+      # Connect + NICK/USER handshake completes against the fake; instead
+      # of 001 the upstream rejects the nick with 433 ERR_NICKNAMEINUSE.
+      # AuthFSM stops the Client with `{:nick_rejected, 433, _}`, which
+      # propagates as the Session.Server DOWN reason. Login must classify
+      # that as :nick_in_use (issue #40) rather than the generic
+      # :upstream_unreachable / :welcome_timeout it used to surface.
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 433 * vjt :Nickname is already in use\r\n")
+
+      assert {:error, :nick_in_use} = Task.await(task, 10_000)
+      assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
+    end
+
     test "no SessionPlan server row → {:error, :no_server}, anon row purged" do
       # No Server row means SessionPlan.resolve fails with :no_server.
       {:ok, network} = Grappa.Networks.find_or_create_network(%{slug: "azzurra"})
@@ -157,8 +176,8 @@ defmodule Grappa.Visitors.LoginTest do
                Login.login(login_input(%{password: "wrong"}), [])
     end
 
-    test "matching password → preempt prior sessions, fresh token, IDENTIFY sent post-001",
-         %{server: server, visitor: visitor} do
+    test "matching password → preempt prior sessions, fresh token, IDENTIFY sent EXACTLY ONCE (#27)",
+         %{server: server, network: network, visitor: visitor} do
       # Plant a prior session so we can verify it's revoked post-preempt.
       {:ok, prior} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
@@ -167,7 +186,8 @@ defmodule Grappa.Visitors.LoginTest do
       :ok = await_handshake(server)
       feed_001(server, "vjt")
 
-      # Login sends `PRIVMSG NickServ :IDENTIFY s3cret` after readiness.
+      # AuthFSM emits `PRIVMSG NickServ :IDENTIFY s3cret` at 001 for the
+      # `:nickserv_identify` plan — the single source of truth.
       {:ok, identify_line} =
         IRCServer.wait_for_line(
           server,
@@ -181,6 +201,28 @@ defmodule Grappa.Visitors.LoginTest do
                Task.await(task, 10_000)
 
       assert returned_visitor.id == visitor.id
+
+      # #27 regression guard: grappa MUST send IDENTIFY exactly once.
+      # Pre-fix a SECOND copy was sent post-readiness by
+      # `Login.send_post_login_identify/3`, making NickServ reply with the
+      # "identified" NOTICE twice. Count needs a TCP-order barrier: the
+      # post-readiness send is synchronous on grappa's side by the time
+      # `Task.await` returns, but the fake reads the socket asynchronously.
+      # Push one more wire line and wait for it — `packet: :line` +
+      # `active: :once` deliver in order, so once the barrier line is
+      # buffered every earlier line (incl. any duplicate IDENTIFY) is too.
+      {:ok, _} = Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "HELP")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(server, &String.contains?(&1, "PRIVMSG NickServ :HELP"), 1_000)
+
+      identify_count =
+        server
+        |> IRCServer.sent_lines()
+        |> Enum.count(&String.contains?(&1, "PRIVMSG NickServ :IDENTIFY s3cret"))
+
+      assert identify_count == 1,
+             "expected exactly one IDENTIFY on the wire, got #{identify_count}"
 
       # Prior token revoked, new resolves.
       assert {:error, :revoked} = Accounts.authenticate(prior.id)

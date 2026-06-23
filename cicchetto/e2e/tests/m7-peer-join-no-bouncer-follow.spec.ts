@@ -51,10 +51,24 @@ test("M7 — peer JOIN on unbound channel does NOT add sidebar entry", async ({ 
     // JOIN to grappa, which pushes a `join` scrollback row to cicchetto via WS.
     await peer.join(BOUND_CHANNEL);
 
-    // Sync point. The peer JOIN row appearing in #bofh proves grappa
-    // has processed all earlier peer activity in IRC stream order;
-    // anything #m7-outside was going to surface in cicchetto would have by now.
-    await expect(scrollbackLine(page, "join", `${PEER_NICK} has joined`)).toBeVisible({
+    // Sync point AND user@host render assertion. The peer JOIN row
+    // appearing in #bofh proves grappa has processed all earlier peer
+    // activity in IRC stream order; anything #m7-outside was going to
+    // surface in cicchetto would have by now.
+    //
+    // The line renders irssi-style: `nick [user@host] has joined`. We
+    // assert ALL THREE components, not a tolerant `nick ... has joined`
+    // (that would pass even if the user@host regressed). The peer
+    // registers with `username: nick` (ircClient fixture), so the ident
+    // is `${PEER_NICK}` with the leading `~` Bahamut prefixes when no
+    // identd answers; the host is the peer's non-empty resolved address.
+    await expect(
+      scrollbackLine(
+        page,
+        "join",
+        new RegExp(`${PEER_NICK} \\[~?${PEER_NICK}@[^\\]]+\\] has joined`),
+      ),
+    ).toBeVisible({
       timeout: 5_000,
     });
 

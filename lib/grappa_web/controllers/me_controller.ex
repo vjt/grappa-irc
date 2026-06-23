@@ -20,6 +20,7 @@ defmodule GrappaWeb.MeController do
   use GrappaWeb, :controller
 
   alias Grappa.{Networks, ReadCursor, Scrollback}
+  alias Grappa.Push.BadgeCount
 
   @doc """
   `GET /me` — discriminated profile for the bearer's subject + the
@@ -69,6 +70,15 @@ defmodule GrappaWeb.MeController do
   the user joins. Skipping per-network nick resolution keeps the /me
   path off of `Grappa.Session`.
 
+  ## badge_count (PWA icon badge door #2, 2026-06-21)
+
+  Top-level `badge_count` — `Grappa.Push.BadgeCount.count/1` for the
+  subject: the notify-worthy unread total (same predicate as Web Push),
+  capped at 99. Like `unread_counts` it is computed at boot and stays
+  OFF `Grappa.Session` (BadgeCount resolves own_nick from the configured
+  credential nick, not the live session nick), so `/me` remains a
+  Session-free path. cic seeds its icon-badge / `document.title` from it.
+
   ## home_data envelope (UX-4 bucket B)
 
   The response carries `home_data: %{networks: [...]} | nil`. For
@@ -99,6 +109,7 @@ defmodule GrappaWeb.MeController do
           user: user,
           read_cursors: cursors,
           unread_counts: unread_counts,
+          badge_count: BadgeCount.count(subject),
           home_data: home_data
         )
 
@@ -111,6 +122,7 @@ defmodule GrappaWeb.MeController do
           visitor: visitor,
           read_cursors: cursors,
           unread_counts: unread_counts,
+          badge_count: BadgeCount.count(subject),
           home_data: nil
         )
 

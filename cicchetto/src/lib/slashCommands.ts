@@ -30,9 +30,11 @@
 //
 // `/away :reason` AND `/away reason text` → set (action: "set",
 // reason: "..."). The leading `:` is stripped if present (irssi
-// convention). Bare `/away` (no args) → unset (action: "unset").
-// reason is always a plain string — callers do not need to handle the
-// `:` prefix variant after this parser strips it.
+// convention). Bare `/away` (no args) → unset (action: "unset"). A
+// reason that is empty after the colon-strip (`/away :`) ALSO → unset:
+// an empty away reason is the bare-AWAY un-away semantics, not a set.
+// reason is always a non-empty plain string on the set arm — callers do
+// not need to handle the `:` prefix variant after this parser strips it.
 //
 // /topic verb branches (context-aware, issue #23):
 //   - `/topic`                  → topic-show {channel: null}    (current chan)
@@ -289,8 +291,13 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   },
 
   away: (_verb, rest) => {
-    if (rest === "") return { kind: "away", action: "unset" };
     const reason = rest.startsWith(":") ? rest.slice(1).trim() : rest;
+    // Any empty reason → unset. Covers bare `/away` (rest "") AND
+    // `/away :` (colon then nothing/whitespace). An empty reason would
+    // build `AWAY :` on the wire — the bare-AWAY un-away line (RFC 2812
+    // §4.6), which the server rejects as :invalid_line — so emit the
+    // honest unset instead of a set with reason "".
+    if (reason === "") return { kind: "away", action: "unset" };
     return { kind: "away", action: "set", reason };
   },
 

@@ -2,6 +2,25 @@ import { render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
+import { closeMediaViewer, mediaViewerState } from "../lib/mediaViewer";
+
+// Review fix (2026-06-11): same-host NON-media links delegate plain
+// clicks to the shared iOS-standalone escape handler. The handler's
+// escaping branch calls window.location.assign (unforgeable AND
+// unimplemented in jsdom), so the boundary is mocked; decision logic
+// is pinned in platform.test.ts, this file pins the WIRING. Everything
+// else from lib/platform stays real.
+const mockMaybeEscapePwaClick = vi.fn((e: MouseEvent, _href: string): boolean => {
+  e.preventDefault();
+  return true;
+});
+vi.mock("../lib/platform", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/platform")>();
+  return {
+    ...actual,
+    maybeEscapePwaClick: (e: MouseEvent, href: string) => mockMaybeEscapePwaClick(e, href),
+  };
+});
 
 // C5.0 — JOIN-self auto-focus-switch: mock selection so we can assert
 // setSelectedChannel is called when own nick's JOIN event shows up.
@@ -40,6 +59,16 @@ vi.mock("../lib/documentVisibility", () => ({
   isDocumentVisible: () => docVisible(),
 }));
 
+// Send-relatch (2026-06-09): `lastOwnSend` is a signal in the real
+// module set by `sendMessage` to the channel-key of THIS device's own
+// send. ScrollbackPane reads it to hide the frozen marker on a focused
+// send. Signal-backed stand-in mirrors the reactive contract;
+// `pushOwnSend` is the test verb that fires a send.
+// `equals: false` mirrors production — `lastOwnSend` is an EVENT signal,
+// so a repeat send to the SAME channel must still notify (Object.is dedup
+// would otherwise drop it and the marker wouldn't re-hide).
+const [ownSend, setOwnSend] = createSignal<string | null>(null, { equals: false });
+const pushOwnSend = (key: string) => setOwnSend(key);
 vi.mock("../lib/scrollback", () => ({
   scrollbackByChannel: () => scrollback(),
   // BUGHUNT-2 B5: ScrollbackPane's onScroll calls `loadMore` when
@@ -49,6 +78,7 @@ vi.mock("../lib/scrollback", () => ({
   // `loadMore` (production imports it as `loadMore as
   // loadMoreScrollback`).
   loadMore: vi.fn(() => Promise.resolve()),
+  lastOwnSend: () => ownSend(),
 }));
 
 vi.mock("../lib/networks", () => ({
@@ -202,6 +232,7 @@ beforeEach(() => {
   setScrollback({});
   setUserNick(null);
   setDocVisible(true);
+  setOwnSend(null);
   mockMembersByChannel.mockReturnValue({});
   // Reset the C5.0 auto-focus shown-set between tests (test seam, see ScrollbackPane.tsx).
   resetAutoFocusedJoinsForTest();
@@ -710,6 +741,62 @@ describe("ScrollbackPane", () => {
     });
   });
 
+  // Presence-event user@host (irssi-style "nick [user@host] has ...").
+  describe("presence user@host rendering", () => {
+    const cases: { kind: ScrollbackMessage["kind"]; verb: string }[] = [
+      { kind: "join", verb: "has joined" },
+      { kind: "part", verb: "has left" },
+      { kind: "quit", verb: "has quit" },
+    ];
+
+    for (const { kind, verb } of cases) {
+      it(`renders [user@host] from meta on ${kind} events`, () => {
+        setScrollback({
+          "freenode #grappa": [
+            {
+              id: 1,
+              network: "freenode",
+              channel: "#grappa",
+              server_time: 1_700_000_000_000,
+              kind,
+              sender: "alice",
+              body: kind === "join" ? null : "later",
+              meta: { sender_user: "~al", sender_host: "host.example.com" },
+            },
+          ],
+        });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        const line = screen.getByTestId("scrollback-line");
+        expect(line.textContent).toContain("alice [~al@host.example.com]");
+        expect(line.textContent).toContain(verb);
+        setScrollback({});
+      });
+    }
+
+    it("omits the bracket when meta carries no user@host (cloaked prefix)", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "alice",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).not.toContain("@");
+      expect(line.textContent).toContain("alice");
+    });
+  });
+
   // C7.2: Muted-events rendering.
   describe("muted-event rendering (C7.2)", () => {
     it("applies .scrollback-muted class to JOIN events", () => {
@@ -1048,34 +1135,30 @@ describe("ScrollbackPane", () => {
       expect(marker).toHaveTextContent("1 unread");
     });
 
-    // Bug A repro (vjt step 5–8): the marker must DISAPPEAR when the cursor
-    // advances past every visible msg's id — even when the advance happens
-    // after the scrollback append, mid-mount.
+    // FREEZE CONTRACT (2026-06-08, vjt "step-away" request): the unread
+    // marker is FROZEN for the lifetime of a focus session. A bare
+    // mid-view cursor advance — own scroll-settle echo OR cross-device
+    // `read_cursor_set` — does NOT move the divider. The marker re-latches
+    // to the live cursor only on a focus acquisition (channel-switch = key
+    // change, or tab/app visibility-return). Rationale: the divider must
+    // not yank under the operator's eyes while they read; it settles to
+    // the new position when they step away and back.
     //
-    // CP29 R-4 production sequence (selection.ts focus-leave OR
-    // subscribe.ts read_cursor_set arm from cross-device sync):
-    //   1. appendToScrollback(key, msg)              — signal write
-    //   2. applyReadCursorSet(slug, name, msg.id)    — MUST be a signal write
-    // The `rows` createMemo in ScrollbackPane reads BOTH signals. After
-    // step 1 it invalidates and re-evaluates with the OLD cursor, injects
-    // the marker. After step 2 it MUST invalidate again and re-evaluate
-    // with the NEW cursor → marker disappears.
+    // This REVISES the original CP29 R-4 "Bug A" contract (which asserted
+    // the marker disappears immediately on any live-cursor advance). The
+    // signal map stays reactive — sidebar badges + selection.ts unread
+    // counts still update live; only ScrollbackPane's in-pane marker reads
+    // the frozen `markerCursorId` snapshot instead of the live cursor.
     //
-    // Pre-CP29-R4 the cursor was a synchronous localStorage read (not
-    // tracked); the C7.3 mock added reactivity to repro the bug. Post-R4
-    // production is intrinsically reactive (signal map) but the test
-    // still asserts the contract — a regression to non-reactive shape
-    // would re-surface vjt's exact symptom.
-    //
-    // The mid-test cursor advance MUST go through the mocked
-    // `applyReadCursorSet` API (the same wire-event applier prod uses)
-    // so a non-reactive readCursor module would surface the bug here.
-    it("Bug A: marker disappears after live-cursor advance lands post-mount", async () => {
+    // cic cannot distinguish own-echo from cross-device at the
+    // `applyReadCursorSet` boundary (same wire bytes), so the freeze is
+    // uniform: cross-device reads reflect on the next refocus, not
+    // mid-stare. Accepted tradeoff (vjt: "consistency").
+    it("Bug A (revised): bare cursor advance keeps the marker frozen; refocus releases it", async () => {
       const { applyReadCursorSet } = await import("../lib/readCursor");
       const proto = fixture[0];
       if (!proto) throw new Error("fixture[0] missing");
-      // Seed: 4 unread msgs from peer, cursor at 0 → marker shows "4 unread".
-      // sessionTopId latches to 13 (the highest id present at mount).
+      // 4 unread from peer, cursor at 0 → "4 unread". sessionTopId latches 13.
       const fourUnread: ScrollbackMessage[] = [
         { ...proto, id: 10, server_time: 100, sender: "vjt", body: "msg1" },
         { ...proto, id: 11, server_time: 101, sender: "vjt", body: "msg2" },
@@ -1084,19 +1167,223 @@ describe("ScrollbackPane", () => {
       ];
       seedReadCursor("freenode", "#grappa", 0);
       setScrollback({ "freenode #grappa": fourUnread });
+      setDocVisible(true);
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      // Initial render: marker visible with all 4 unread.
       expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
 
-      // Cursor advance to the latest visible id (mirrors selection.ts on
-      // focus-leave: server-side advance + WS broadcast → applyReadCursorSet).
+      // Bare mid-view advance to the latest id. NO focus event.
       applyReadCursorSet("freenode", "#grappa", 13);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      // FROZEN: marker unchanged despite the live cursor reaching sessionTopId.
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
 
+      // Refocus (tab/app visibility-return) re-latches the marker baseline
+      // to the live cursor → cursor caught up to sessionTopId → marker gone.
+      setDocVisible(false);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      setDocVisible(true);
       await waitFor(() => {
-        // RED pre-fix: marker is still in the DOM with "4 unread".
-        // GREEN post-fix: marker is gone — cursor caught up to sessionTopId.
         expect(screen.queryByTestId("unread-marker")).toBeNull();
       });
+    });
+
+    it("marker stays frozen at its mount count while the cursor advances mid-view", async () => {
+      const { applyReadCursorSet } = await import("../lib/readCursor");
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 60, server_time: 100, sender: "alice", body: "u1" },
+        { ...proto, id: 61, server_time: 101, sender: "alice", body: "u2" },
+        { ...proto, id: 62, server_time: 102, sender: "alice", body: "u3" },
+        { ...proto, id: 63, server_time: 103, sender: "alice", body: "u4" },
+      ];
+      // cursor at 59 → marker before id 60, "4 unread". sessionTopId latches 63.
+      seedReadCursor("freenode", "#grappa", 59);
+      setScrollback({ "freenode #grappa": fourUnread });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Operator scroll-settle (or cross-device) advances the cursor partway
+      // through the unread block. NO focus event → divider must not move.
+      applyReadCursorSet("freenode", "#grappa", 62);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+    });
+
+    it("marker re-latches to the advanced cursor on visibility-return (option b)", async () => {
+      const { applyReadCursorSet } = await import("../lib/readCursor");
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 60, server_time: 100, sender: "alice", body: "u1" },
+        { ...proto, id: 61, server_time: 101, sender: "alice", body: "u2" },
+        { ...proto, id: 62, server_time: 102, sender: "alice", body: "u3" },
+        { ...proto, id: 63, server_time: 103, sender: "alice", body: "u4" },
+      ];
+      seedReadCursor("freenode", "#grappa", 59);
+      setScrollback({ "freenode #grappa": fourUnread });
+      setDocVisible(true);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Advance cursor to 62 while frozen — marker holds at 4.
+      applyReadCursorSet("freenode", "#grappa", 62);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Step away + back: divider re-latches to the live cursor (62) → only
+      // id 63 remains in (62, 63] → "1 unread".
+      setDocVisible(false);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      setDocVisible(true);
+      await waitFor(() => {
+        expect(screen.getByTestId("unread-marker")).toHaveTextContent("1 unread");
+      });
+    });
+
+    // Send-relatch (2026-06-09, vjt prod report): a focused OWN send must
+    // collapse the in-pane `── XX unread ──` divider immediately. The
+    // freeze contract (cp56) froze the divider against PASSIVE advances
+    // (scroll-settle echo, cross-device read_cursor_set) so it doesn't
+    // yank while reading — but it also stopped a SEND from clearing it,
+    // and vjt reported "a '1 unread' marker that didn't disappear on send
+    // a new message". A send is an explicit caught-up action (not a
+    // background advance), so it re-latches `markerCursorId` to the now-
+    // advanced live cursor, the way a focus acquisition does. Passive
+    // advances stay frozen — proven by the three tests above which drive
+    // `applyReadCursorSet` (NOT `lastOwnSend`) and still hold their count.
+    it("focused own send re-latches the marker → divider collapses immediately", async () => {
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      // 4 unread from a peer, cursor at 9 → marker before id 10, "4 unread".
+      // sessionTopId latches 13 at mount.
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 10, server_time: 100, sender: "alice", body: "u1" },
+        { ...proto, id: 11, server_time: 101, sender: "alice", body: "u2" },
+        { ...proto, id: 12, server_time: 102, sender: "alice", body: "u3" },
+        { ...proto, id: 13, server_time: 103, sender: "alice", body: "u4" },
+      ];
+      setUserNick("vjt");
+      seedReadCursor("freenode", "#grappa", 9);
+      setScrollback({ "freenode #grappa": fourUnread });
+      setDocVisible(true);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Operator sends in the focused channel. Production: the own row
+      // (id 14) appends via WS and `sendMessage` advances the live cursor
+      // optimistically to 14, then fires `lastOwnSend`. Mirror both: the
+      // cursor advance (seedReadCursor) AND the own-send signal.
+      const ownRow: ScrollbackMessage = {
+        ...proto,
+        id: 14,
+        server_time: 104,
+        sender: "vjt",
+        body: "my reply",
+      };
+      setScrollback({ "freenode #grappa": [...fourUnread, ownRow] });
+      seedReadCursor("freenode", "#grappa", 14);
+      pushOwnSend("freenode #grappa");
+
+      // Divider collapses on the next flush — NO window-switch needed.
+      await waitFor(() => {
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
+    });
+
+    // Send-relatch isolation: a send to a DIFFERENT window (e.g. `/msg`
+    // to a query) must NOT collapse THIS pane's frozen divider. The
+    // re-latch is keyed to the pane's own `(slug, channel)`.
+    it("own send to a DIFFERENT window leaves this pane's marker frozen", async () => {
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 10, server_time: 100, sender: "alice", body: "u1" },
+        { ...proto, id: 11, server_time: 101, sender: "alice", body: "u2" },
+        { ...proto, id: 12, server_time: 102, sender: "alice", body: "u3" },
+        { ...proto, id: 13, server_time: 103, sender: "alice", body: "u4" },
+      ];
+      setUserNick("vjt");
+      seedReadCursor("freenode", "#grappa", 9);
+      setScrollback({ "freenode #grappa": fourUnread });
+      setDocVisible(true);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Send lands on a sibling window's key — wrong (slug, channel).
+      pushOwnSend("freenode bob");
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+    });
+
+    // Send-relatch dedup guard (2026-06-09): a SECOND send to the same
+    // channel must also hide the marker. `lastOwnSend` carries the same
+    // key string both times; without `equals: false` SolidJS Object.is-
+    // dedups the repeat set → the effect never re-runs → the marker
+    // sticks. Repro: send in #foo (hides) → switch away → peer messages
+    // #foo → switch back, marker re-shows → reply in #foo (same key) →
+    // must hide. The switch-away-and-back is modelled by a remount
+    // (fresh sessionTopId), which is what a real channel-switch does.
+    it("a repeat send to the same channel re-hides a re-shown marker", async () => {
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      setUserNick("vjt");
+      const peerRows: ScrollbackMessage[] = [
+        { ...proto, id: 10, server_time: 10, sender: "alice", body: "u1" },
+        { ...proto, id: 11, server_time: 11, sender: "alice", body: "u2" },
+        { ...proto, id: 12, server_time: 12, sender: "alice", body: "u3" },
+        { ...proto, id: 13, server_time: 13, sender: "alice", body: "u4" },
+      ];
+      const ownR1: ScrollbackMessage = {
+        ...proto,
+        id: 14,
+        server_time: 14,
+        sender: "vjt",
+        body: "r1",
+      };
+
+      // First focus: marker showing (cursor 9 < peer ids, sessionTop 13).
+      seedReadCursor("freenode", "#grappa", 9);
+      setScrollback({ "freenode #grappa": peerRows });
+      setDocVisible(true);
+      const first = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Send #1 → marker hides (own row 14, cursor → 14).
+      setScrollback({ "freenode #grappa": [...peerRows, ownR1] });
+      seedReadCursor("freenode", "#grappa", 14);
+      pushOwnSend("freenode #grappa");
+      await waitFor(() => expect(screen.queryByTestId("unread-marker")).toBeNull());
+
+      // Switch away + back (remount = fresh sessionTopId). A peer messaged
+      // #foo while away (id 15) → cursor 14 < new sessionTop 15 → marker
+      // re-shows "1 unread".
+      first.unmount();
+      const peerWhileAway: ScrollbackMessage = {
+        ...proto,
+        id: 15,
+        server_time: 15,
+        sender: "alice",
+        body: "while away",
+      };
+      setScrollback({ "freenode #grappa": [...peerRows, ownR1, peerWhileAway] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("1 unread");
+
+      // Reply AGAIN in #foo — SAME channel-key as send #1. Must re-hide.
+      const ownR2: ScrollbackMessage = {
+        ...proto,
+        id: 16,
+        server_time: 16,
+        sender: "vjt",
+        body: "r2",
+      };
+      setScrollback({ "freenode #grappa": [...peerRows, ownR1, peerWhileAway, ownR2] });
+      seedReadCursor("freenode", "#grappa", 16);
+      pushOwnSend("freenode #grappa");
+      await waitFor(() => expect(screen.queryByTestId("unread-marker")).toBeNull());
     });
 
     // Bug A repro variant (vjt steps 7–8): subsequent post-mount arrivals
@@ -1192,22 +1479,30 @@ describe("ScrollbackPane", () => {
         // POST-visibility-return checkpoint.
         expect(screen.getByTestId("unread-marker")).toBeInTheDocument();
 
-        // Mid-channel cursor advance removes the marker DOM row. The
-        // marker's onCleanup hook fires, setMarkerRef(undefined).
+        // FREEZE CONTRACT (2026-06-08): a bare cursor advance no longer
+        // removes the marker — it's frozen. The marker DOM row now unmounts
+        // when a FOCUS acquisition re-latches the frozen boundary past the
+        // unread block. Advance the live cursor, then drive ONE
+        // visibility-return: that re-latches markerCursorId=53 → marker row
+        // unmounts → onCleanup fires setMarkerRef(undefined). (Yield between
+        // transitions so SolidJS flushes the false state — effect captures
+        // prev=false — before we flip back to true; otherwise both writes
+        // batch and the effect's prev=undefined guard returns early.)
         applyReadCursorSet("freenode", "#grappa", 53);
+        setDocVisible(false);
+        await new Promise((r) => queueMicrotask(() => r(undefined)));
+        setDocVisible(true);
         await waitFor(() => {
           expect(screen.queryByTestId("unread-marker")).toBeNull();
         });
 
-        // Clear the spy: from THIS point on, no scrollIntoView call is
-        // acceptable. Pre-REV-G the stale-ref path would fire
-        // scrollIntoView during the visibility-return effect.
+        // Clear the spy: the marker is now unmounted and its ref nulled.
+        // From THIS point a SECOND visibility-return must NOT scrollIntoView
+        // a stale detached marker node — the regression pin. Pre-REV-G the
+        // stale-ref path would fire scrollIntoView during the activation
+        // effect.
         scrollIntoViewSpy.mockClear();
 
-        // Drive visibility false→true on the SAME channel. Yield between
-        // transitions so SolidJS flushes the false state (effect captures
-        // prev=false) BEFORE we flip back to true — otherwise both writes
-        // batch and the effect's prev=undefined guard returns early.
         setDocVisible(false);
         await new Promise((r) => queueMicrotask(() => r(undefined)));
         setDocVisible(true);
@@ -1957,6 +2252,211 @@ describe("ScrollbackPane", () => {
     });
   });
 
+  // Media-link cluster (2026-06-11): same-origin upload URLs are
+  // in-PWA-scope — iOS standalone navigates them IN PLACE (raw media
+  // doc, no chrome, return reloads cic). classifyMediaLink-accepted
+  // links get a click intercept that opens the in-app viewer instead;
+  // everything else keeps the plain target=_blank anchor untouched.
+  describe("media links open the in-app viewer (media-link cluster)", () => {
+    beforeEach(() => {
+      closeMediaViewer();
+    });
+
+    it("📸-prefixed same-origin upload URL: click is intercepted and opens the viewer", () => {
+      const href = `${window.location.origin}/uploads/abcdefghijklmnopqrstuvwxyz`;
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: `📸 ${href}`,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link).not.toBeNull();
+      expect(link.classList.contains("scrollback-media-link")).toBe(true);
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+      expect(mediaViewerState()).toEqual({ href, kind: "image" });
+    });
+
+    it("🎬-prefixed same-origin upload URL opens the viewer with video kind", () => {
+      const href = `${window.location.origin}/uploads/zyxwvutsrqponmlkjihgfedcba`;
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "bob",
+            body: `🎬 ${href}`,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      expect(mediaViewerState()).toEqual({ href, kind: "video" });
+    });
+
+    it("modifier-click (cmd/ctrl) is NOT intercepted — browser new-tab semantics stand", () => {
+      const href = `${window.location.origin}/uploads/abcdefghijklmnopqrstuvwxyz`;
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: `📸 ${href}`,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
+      // Record whether the component handler preventDefault'd, then
+      // suppress the default ourselves so jsdom doesn't attempt a real
+      // navigation (document bubble listener runs after the anchor's).
+      let preventedByHandler: boolean | null = null;
+      const recorder = (e: Event) => {
+        preventedByHandler = e.defaultPrevented;
+        e.preventDefault();
+      };
+      document.addEventListener("click", recorder);
+      link.dispatchEvent(ev);
+      document.removeEventListener("click", recorder);
+      expect(preventedByHandler).toBe(false);
+      expect(mediaViewerState()).toBeNull();
+    });
+
+    it("plain web link is NOT media-classified — anchor keeps default behavior", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "check https://example.com please",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link.classList.contains("scrollback-media-link")).toBe(false);
+      expect(mediaViewerState()).toBeNull();
+    });
+
+    it("cross-origin 📸 URL (litterbox host) is NOT intercepted", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "📸 https://litter.catbox.moe/abc.png",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link.classList.contains("scrollback-media-link")).toBe(false);
+    });
+  });
+
+  // Review fix (2026-06-11): the in-place-navigation bug class covers
+  // EVERY same-host link, not just modal-viewable media. 📄 document
+  // uploads (classifyMediaLink deliberately rejects them — no PDF
+  // rendering in the modal) and emoji-split-run fallbacks keep the
+  // plain anchor, which iOS standalone navigates IN PLACE. Those
+  // clicks delegate to the shared escape handler instead (no-op on
+  // every other platform — pinned in platform.test.ts).
+  describe("same-host non-media links escape the iOS-standalone PWA", () => {
+    const seed = (body: string) => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      return document.querySelector(".scrollback-link") as HTMLAnchorElement;
+    };
+
+    beforeEach(() => {
+      mockMaybeEscapePwaClick.mockClear();
+    });
+
+    it("📄 same-host doc upload link: plain click delegates to the escape handler, href untouched", () => {
+      const href = `${window.location.origin}/uploads/abcdefghijklmnopqrstuvwxyz`;
+      const link = seed(`📄 ${href}`);
+      expect(link.classList.contains("scrollback-media-link")).toBe(false);
+      expect(link.getAttribute("href")).toBe(href);
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      expect(mockMaybeEscapePwaClick).toHaveBeenCalledTimes(1);
+      expect(mockMaybeEscapePwaClick.mock.calls[0]?.[1]).toBe(href);
+    });
+
+    it("historical http:// same-host link: handler receives the page-origin-rooted href", () => {
+      // Pre-fix prod minted http:// upload URLs (Endpoint url: had no
+      // scheme); the escape must hand Safari the live https URL, not
+      // the mixed-content one. Same re-rooting contract as the viewer.
+      const httpHref = `http://${window.location.host}/uploads/abcdefghijklmnopqrstuvwxyz`;
+      const link = seed(`📄 ${httpHref}`);
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      expect(mockMaybeEscapePwaClick.mock.calls[0]?.[1]).toBe(
+        `${window.location.origin}/uploads/abcdefghijklmnopqrstuvwxyz`,
+      );
+    });
+
+    it("cross-host link: click is NOT delegated — out-of-scope already opens correctly", () => {
+      const link = seed("docs at https://example.com/page");
+      let preventedByHandler: boolean | null = null;
+      const recorder = (e: Event) => {
+        preventedByHandler = e.defaultPrevented;
+        e.preventDefault();
+      };
+      document.addEventListener("click", recorder);
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      document.removeEventListener("click", recorder);
+      expect(mockMaybeEscapePwaClick).not.toHaveBeenCalled();
+      expect(preventedByHandler).toBe(false);
+    });
+  });
+
   // CP13 S10 — mIRC formatting: privmsg/notice/action bodies render
   // through parseMircFormat so bold/color/etc. produce per-Run <span>s.
   describe("mIRC body formatting (CP13 S10)", () => {
@@ -2026,6 +2526,71 @@ describe("ScrollbackPane", () => {
       const colored = bodyEl?.querySelector("span") as HTMLElement | null | undefined;
       // mIRC color 4 = red (#ff0000); jsdom parses inline style.
       expect(colored?.style.color).toBe("rgb(255, 0, 0)");
+    });
+
+    it("renders \\x1e strikethrough with .scrollback-mirc-strikethrough", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "a\x1egone\x1eb",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const spans = document.querySelector(".scrollback-body")?.querySelectorAll("span");
+      expect(spans?.[1]?.classList.contains("scrollback-mirc-strikethrough")).toBe(true);
+      expect(spans?.[1]?.textContent).toBe("gone");
+      expect(spans?.[0]?.classList.contains("scrollback-mirc-strikethrough")).toBe(false);
+    });
+
+    it("renders \\x11 monospace with .scrollback-mirc-monospace", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "\x11code()\x11",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const span = document.querySelector(".scrollback-body span") as HTMLElement | null;
+      expect(span?.classList.contains("scrollback-mirc-monospace")).toBe(true);
+      expect(span?.textContent).toBe("code()");
+    });
+
+    it("renders \\x04 hex fg color via inline style", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "\x04ff8800orange\x04",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const colored = document.querySelector(".scrollback-body span") as HTMLElement | null;
+      // #ff8800 → jsdom rgb.
+      expect(colored?.style.color).toBe("rgb(255, 136, 0)");
+      expect(colored?.textContent).toBe("orange");
     });
   });
 

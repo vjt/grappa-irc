@@ -854,13 +854,17 @@ defmodule GrappaWeb.GrappaChannelTest do
         kind: "server_settings_changed",
         upload: %{
           active_host: active_host,
-          per_file_cap_bytes: per_file_cap_bytes,
+          image_per_file_cap_bytes: image_cap,
+          video_per_file_cap_bytes: video_cap,
+          document_per_file_cap_bytes: document_cap,
           global_cap_bytes: global_cap_bytes
         }
       })
 
       assert active_host in ["embedded", "litterbox"]
-      assert is_integer(per_file_cap_bytes) and per_file_cap_bytes > 0
+      assert is_integer(image_cap) and image_cap > 0
+      assert is_integer(video_cap) and video_cap > 0
+      assert is_integer(document_cap) and document_cap > 0
       assert is_integer(global_cap_bytes) and global_cap_bytes > 0
     end
 
@@ -1577,6 +1581,220 @@ defmodule GrappaWeb.GrappaChannelTest do
       ref =
         push(visitor_socket, "whois", %{
           "network_id" => network.id,
+          "nick" => "bad\r\nQUIT"
+        })
+
+      assert_reply(ref, :error, %{error: "invalid_nick"})
+    end
+  end
+
+  # Issue #62: `/away` returned a bare "Send failed" for visitors because
+  # the channel `handle_in("away", ...)` arms short-circuited every visitor
+  # subject with `visitor_no_away`. The rationale ("the facade only routes
+  # to user sessions") was factually wrong — each visitor owns a private,
+  # isolated `Session.Server` + upstream IRC connection, and
+  # `Session.set_explicit_away/3,4` already accepts `t:Session.subject/0`.
+  # Explicit `/away` is a per-connection user action (distinct from the
+  # WSPresence-driven auto-away that genuinely stays user-only). These tests
+  # mirror the C3 WHOIS carve-out: subject-aware dispatch so visitors hit
+  # the same `Session.set_explicit_away/unset_explicit_away` path users do.
+  describe "S3.4 — /away explicit away dispatch (user + visitor, issue #62)" do
+    test "user socket: away set sends AWAY :reason upstream and returns :ok" do
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+      welcome_session_on_channel(irc_server, "#snap")
+      topic = Topic.user(user.name)
+
+      {:ok, _, socket} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(socket, "away", %{
+          "action" => "set",
+          "network" => network.slug,
+          "reason" => "brb"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "AWAY :brb\r\n"), 1_000)
+    end
+
+    test "visitor socket: away set with live session sends AWAY :reason upstream" do
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "away", %{
+          "action" => "set",
+          "network" => network.slug,
+          "reason" => "gone-fishing"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "AWAY :gone-fishing\r\n"), 1_000)
+    end
+
+    test "visitor socket: away unset after set issues bare AWAY upstream" do
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      set_ref =
+        push(visitor_socket, "away", %{
+          "action" => "set",
+          "network" => network.slug,
+          "reason" => "afk"
+        })
+
+      assert_reply(set_ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "AWAY :afk"), 1_000)
+
+      unset_ref =
+        push(visitor_socket, "away", %{
+          "action" => "unset",
+          "network" => network.slug
+        })
+
+      assert_reply(unset_ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "AWAY\r\n"), 1_000)
+    end
+
+    test "visitor socket: away set without live session returns no_session (NOT visitor_no_away)" do
+      # The gate is gone; a visitor without a live `Session.Server` must now
+      # surface the SAME real reason a user does — `no_session` from the
+      # facade — never the dropped `visitor_no_away` short-circuit.
+      slug = "snap-visitor-away-noses-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "away", %{
+          "action" => "set",
+          "network" => network.slug,
+          "reason" => "brb"
+        })
+
+      assert_reply(ref, :error, %{error: "no_session"})
+    end
+  end
+
+  # Issue #31: visitors could not `/invite` — the channel
+  # `handle_in("invite", ...)` arm routed through `dispatch_ops_verb/2`,
+  # which short-circuits every visitor subject with `visitor_not_allowed`
+  # before the verb dispatches. INVITE is a write verb, but visitors are
+  # entitled to issue it: each visitor owns a private, isolated
+  # `Session.Server` + upstream IRC connection, `Session.send_invite/4`
+  # already accepts `t:Session.subject/0`, and the upstream IRC server is
+  # the real authority on whether the invite is permitted (must be on the
+  # channel; must be an op for +i). Mirrors the #62 `/away` + C3 WHOIS
+  # carve-outs: subject-aware dispatch so visitors hit the same
+  # `Session.send_invite/4` path users do.
+  describe "issue #31 — visitor /invite dispatch carve-out" do
+    test "visitor socket: invite with live session sends INVITE nick #chan upstream" do
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "invite", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nick" => "alice"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "INVITE alice #snap\r\n"), 1_000)
+    end
+
+    test "visitor socket: invite without session returns no_session (NOT visitor_not_allowed)" do
+      # The visitor exists but has no live `Session.Server`. The fix MUST
+      # surface `no_session` from `Session.send_invite/4`, never the
+      # pre-fix `dispatch_ops_verb/2` `visitor_not_allowed` short-circuit.
+      slug = "snap-visitor-inv-noses-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "invite", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nick" => "alice"
+        })
+
+      assert_reply(ref, :error, %{error: "no_session"})
+    end
+
+    test "visitor socket: invite with malformed nick returns invalid_nick" do
+      # Defense in depth — the inbound `Identifier.valid_nick?` gate fires
+      # BEFORE `Session.send_invite/4`, so visitors hit the same rejection
+      # users do (mirror of the C3 WHOIS malformed-nick test).
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "invite", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
           "nick" => "bad\r\nQUIT"
         })
 

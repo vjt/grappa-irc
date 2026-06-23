@@ -49,6 +49,19 @@ load_rc_config "$name"
 # because run_erl always creates its own `log/` subdir under
 # RELEASE_TMP. Operator override via /etc/rc.conf.d/grappa.
 : ${grappa_runtime_tmp:="/home/grappa/grappa/runtime"}
+# Stop/start synchronization (defect #9, 2026-06-11 outage: `service
+# grappa restart` started the new BEAM while the old node was still
+# draining WS connections → "name grappa@grappa seems to be in use" →
+# new BEAM died at boot and rc.d printed "Starting grappa." and walked
+# away). grappa_stop blocks until BEAM exit + epmd name release;
+# grappa_start refuses a doomed boot and verifies the node comes up.
+# The wait logic is shared with deploy.sh's cold path — one
+# implementation, jail_beam_wait.sh.
+: ${grappa_beam_wait:="/home/grappa/grappa/infra/freebsd/jail_beam_wait.sh"}
+: ${grappa_node:="grappa"}
+: ${grappa_stop_timeout:="30"}
+: ${grappa_start_timeout:="30"}
+: ${grappa_name_wait_timeout:="15"}
 
 command="${grappa_release_root}/bin/grappa"
 pidfile="${grappa_runtime_tmp}/pid"
@@ -85,20 +98,81 @@ grappa_runas() {
 	if [ -n "${grappa_env_file}" ] && [ -r "${grappa_env_file}" ]; then
 		envsrc=". ${grappa_env_file} && export \$(grep -Eo '^[A-Z_][A-Z0-9_]*' ${grappa_env_file}) && "
 	fi
-	su -m "${grappa_user}" -c "export RELEASE_TMP='${grappa_runtime_tmp}'; ${envsrc}${command} ${subcmd}"
+	# rc(8) services inherit rc.subr's stock PATH, which has NO
+	# /usr/local — pkg-installed binaries (exiftool, ffmpeg for
+	# Grappa.Uploads.MetadataStrip #39) are invisible to the BEAM's
+	# System.find_executable/1 without this prepend. Found live
+	# 2026-06-10: pkgs installed, yet every media upload 422'd
+	# fail-closed with "exiftool not found on PATH".
+	su -m "${grappa_user}" -c "export RELEASE_TMP='${grappa_runtime_tmp}'; export PATH=\"/usr/local/bin:/usr/local/sbin:\${PATH}\"; ${envsrc}${command} ${subcmd}"
 }
 
 grappa_start() {
 	grappa_env_export
 	mkdir -p "${grappa_runtime_tmp}"
 	chown "${grappa_user}":"${grappa_user}" "${grappa_runtime_tmp}"
+
+	# Refuse to boot into a name collision. A registered name here
+	# means an old node is still draining (e.g. a restart racing an
+	# external stop) — booting now is guaranteed death at distribution
+	# start. NO escalation on this side: the name's owner may be a
+	# live BEAM that must not be shot (see jail_beam_wait.sh header).
+	if [ -x "${grappa_beam_wait}" ]; then
+		if ! "${grappa_beam_wait}" wait-name-free "${grappa_node}" "${grappa_name_wait_timeout}"; then
+			echo "ERROR: refusing to start — epmd name '${grappa_node}' is still registered (old node draining?). Retry once \`epmd -names\` is clean." >&2
+			return 1
+		fi
+	else
+		echo "WARNING: ${grappa_beam_wait} missing — starting without the epmd name-collision guard" >&2
+	fi
+
 	echo "Starting grappa."
 	grappa_runas "daemon"
+
+	# `bin/grappa daemon` returns right after spawning run_erl; the
+	# 2026-06-11 outage signature was "Starting grappa." as the last
+	# line while the BEAM had already died on name-in-use. Verify the
+	# node actually comes up: poll the release's `pid` RPC (the same
+	# probe grappa_status uses), and treat a vanished beam.smp as an
+	# immediate loud failure instead of waiting out the timeout.
+	_seen_beam=0
+	_i=0
+	while :; do
+		if grappa_runas "pid" >/dev/null 2>&1; then
+			echo "grappa is up (node responsive)."
+			return 0
+		fi
+		if pgrep -q beam.smp 2>/dev/null; then
+			_seen_beam=1
+		elif [ "${_seen_beam}" -eq 1 ]; then
+			echo "ERROR: BEAM exited during boot — see ${grappa_runtime_tmp}/log/erlang.log.*" >&2
+			return 1
+		fi
+		if [ "${_i}" -ge "${grappa_start_timeout}" ]; then
+			# "probes", not seconds: each pid RPC spawns a short-lived
+			# hidden node (~1s), so N probes is closer to 2N seconds.
+			echo "ERROR: node not responsive after ${grappa_start_timeout} probes — see ${grappa_runtime_tmp}/log/erlang.log.*" >&2
+			return 1
+		fi
+		_i=$((_i + 1))
+		sleep 1
+	done
 }
 
 grappa_stop() {
 	echo "Stopping grappa."
 	grappa_runas "stop"
+	# `bin/grappa stop` is ASYNCHRONOUS — it signals the node and
+	# returns while the BEAM is still draining WS connections and
+	# running terminate callbacks. A `service grappa restart` that
+	# trusts an async stop boots the new node into the old node's epmd
+	# registration (defect #9 — THE 2026-06-11 outage). Block until
+	# stop means STOPPED: BEAM exited, name released.
+	if [ -x "${grappa_beam_wait}" ]; then
+		"${grappa_beam_wait}" wait-stopped "${grappa_node}" "${grappa_stop_timeout}"
+	else
+		echo "WARNING: ${grappa_beam_wait} missing — stop returns while the BEAM may still be draining (a restart may race the epmd name)" >&2
+	fi
 }
 
 grappa_status() {

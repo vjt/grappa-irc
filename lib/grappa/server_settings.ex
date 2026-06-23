@@ -11,18 +11,20 @@ defmodule Grappa.ServerSettings do
 
   ## Registry of known keys
 
-  | Key                              | Type                       | Default          | Owner |
-  |----------------------------------|----------------------------|------------------|-------|
-  | `"upload.active_host"`           | `:embedded \\| :litterbox` | `:embedded`      | UX-6-B |
-  | `"upload.per_file_cap_bytes"`    | `pos_integer()`            | 10_485_760 (10MB)| UX-6-B |
-  | `"upload.global_cap_bytes"`      | `pos_integer()`            | 10_737_418_240 (10GB) | UX-6-B |
+  | Key                                     | Type                       | Default          | Owner |
+  |-----------------------------------------|----------------------------|------------------|-------|
+  | `"upload.active_host"`                  | `:embedded \\| :litterbox` | `:embedded`      | UX-6-B |
+  | `"upload.image_per_file_cap_bytes"`     | `pos_integer()`            | 10_485_760 (10MB)| UX-6-B |
+  | `"upload.video_per_file_cap_bytes"`     | `pos_integer()`            | 52_428_800 (50MB)| UX-6-B |
+  | `"upload.document_per_file_cap_bytes"`  | `pos_integer()`            | 10_485_760 (10MB)| UX-6-B |
+  | `"upload.global_cap_bytes"`             | `pos_integer()`            | 10_737_418_240 (10GB) | UX-6-B |
 
   ## Public-subset shape (`public_view/0`)
 
   Returns the operator-visible subset for `GET /api/server-settings`
-  — currently the upload block (active_host + per_file_cap_bytes +
-  global_cap_bytes). Admin-only settings (when added) stay out of
-  this view.
+  — currently the upload block (active_host + the three per-category
+  per-file caps + global_cap_bytes). Admin-only settings (when added)
+  stay out of this view.
 
   ## PubSub broadcast on change
 
@@ -58,20 +60,30 @@ defmodule Grappa.ServerSettings do
 
   # Setting keys
   @key_upload_active_host "upload.active_host"
-  @key_upload_per_file_cap_bytes "upload.per_file_cap_bytes"
+  @key_upload_image_per_file_cap_bytes "upload.image_per_file_cap_bytes"
+  @key_upload_video_per_file_cap_bytes "upload.video_per_file_cap_bytes"
+  @key_upload_document_per_file_cap_bytes "upload.document_per_file_cap_bytes"
   @key_upload_global_cap_bytes "upload.global_cap_bytes"
 
   # Defaults
   @default_upload_active_host :embedded
-  @default_upload_per_file_cap_bytes 10 * 1024 * 1024
+  @default_upload_image_per_file_cap_bytes 10 * 1024 * 1024
+  @default_upload_video_per_file_cap_bytes 50 * 1024 * 1024
+  @default_upload_document_per_file_cap_bytes 10 * 1024 * 1024
   @default_upload_global_cap_bytes 10 * 1024 * 1024 * 1024
 
   @type upload_host :: :embedded | :litterbox
 
+  @typedoc "Closed set of upload categories — one per-file cap each."
+  @type upload_category :: :image | :video | :document
+  @upload_categories [:image, :video, :document]
+
   @type public_view :: %{
           upload: %{
             active_host: upload_host(),
-            per_file_cap_bytes: pos_integer(),
+            image_per_file_cap_bytes: pos_integer(),
+            video_per_file_cap_bytes: pos_integer(),
+            document_per_file_cap_bytes: pos_integer(),
             global_cap_bytes: pos_integer()
           }
         }
@@ -100,24 +112,43 @@ defmodule Grappa.ServerSettings do
 
   def put_upload_active_host(_), do: {:error, :invalid_value}
 
-  # ---- upload.per_file_cap_bytes -----------------------------------
+  # ---- upload.{image,video,document}_per_file_cap_bytes ------------
 
-  @doc "Returns the per-file upload byte cap (default 10 MiB)."
-  @spec get_upload_per_file_cap_bytes() :: pos_integer()
-  def get_upload_per_file_cap_bytes do
-    case decode_pos_int(get_raw(@key_upload_per_file_cap_bytes)) do
+  @doc "Returns the per-file upload byte cap for `category`."
+  @spec get_upload_per_file_cap_bytes(upload_category()) :: pos_integer()
+  def get_upload_per_file_cap_bytes(:image),
+    do: read_cap(@key_upload_image_per_file_cap_bytes, @default_upload_image_per_file_cap_bytes)
+
+  def get_upload_per_file_cap_bytes(:video),
+    do: read_cap(@key_upload_video_per_file_cap_bytes, @default_upload_video_per_file_cap_bytes)
+
+  def get_upload_per_file_cap_bytes(:document),
+    do:
+      read_cap(
+        @key_upload_document_per_file_cap_bytes,
+        @default_upload_document_per_file_cap_bytes
+      )
+
+  @doc "Pins the per-file upload byte cap for `category`. Positive integer only."
+  @spec put_upload_per_file_cap_bytes(upload_category(), pos_integer()) ::
+          :ok | {:error, :invalid_value}
+  def put_upload_per_file_cap_bytes(category, n)
+      when category in @upload_categories and is_integer(n) and n > 0 do
+    put_raw(cap_key_for(category), Integer.to_string(n))
+  end
+
+  def put_upload_per_file_cap_bytes(_, _), do: {:error, :invalid_value}
+
+  defp cap_key_for(:image), do: @key_upload_image_per_file_cap_bytes
+  defp cap_key_for(:video), do: @key_upload_video_per_file_cap_bytes
+  defp cap_key_for(:document), do: @key_upload_document_per_file_cap_bytes
+
+  defp read_cap(key, default) do
+    case decode_pos_int(get_raw(key)) do
       {:ok, n} -> n
-      :error -> @default_upload_per_file_cap_bytes
+      :error -> default
     end
   end
-
-  @doc "Pins the per-file upload byte cap. Must be a positive integer."
-  @spec put_upload_per_file_cap_bytes(pos_integer()) :: :ok | {:error, :invalid_value}
-  def put_upload_per_file_cap_bytes(n) when is_integer(n) and n > 0 do
-    put_raw(@key_upload_per_file_cap_bytes, Integer.to_string(n))
-  end
-
-  def put_upload_per_file_cap_bytes(_), do: {:error, :invalid_value}
 
   # ---- upload.global_cap_bytes -------------------------------------
 
@@ -146,7 +177,9 @@ defmodule Grappa.ServerSettings do
     %{
       upload: %{
         active_host: get_upload_active_host(),
-        per_file_cap_bytes: get_upload_per_file_cap_bytes(),
+        image_per_file_cap_bytes: get_upload_per_file_cap_bytes(:image),
+        video_per_file_cap_bytes: get_upload_per_file_cap_bytes(:video),
+        document_per_file_cap_bytes: get_upload_per_file_cap_bytes(:document),
         global_cap_bytes: get_upload_global_cap_bytes()
       }
     }

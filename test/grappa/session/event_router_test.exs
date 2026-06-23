@@ -753,7 +753,9 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.channel == "#italia"
       assert attrs.sender == "alice"
       assert attrs.body == nil
-      assert attrs.meta == %{}
+      # S?: JOIN prefix user@host rides the persist meta so cic can render
+      # "alice [u@h] has joined" irssi-style.
+      assert attrs.meta == %{sender_user: "u", sender_host: "h"}
     end
 
     test "JOIN-self clears stale state.members[channel] then adds self + emits {:joined, channel}" do
@@ -809,6 +811,15 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:cont, _, effects} = EventRouter.route(m, state)
       refute Enum.any?(effects, &match?({:joined, _}, &1))
+    end
+
+    test "JOIN with partial prefix (nil user) emits empty persist meta" do
+      # +x cloaking strips user@host — don't half-populate the render hint.
+      state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
+      m = msg(:join, ["#italia"], {:nick, "alice", nil, "some.host"})
+
+      assert {:cont, _, [{:persist, :join, attrs}]} = EventRouter.route(m, state)
+      assert attrs.meta == %{}
     end
   end
 
@@ -902,7 +913,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert new_state.members["#italia"] == %{"vjt" => []}
       assert attrs.body == "see you"
-      assert attrs.meta == %{}
+      assert attrs.meta == %{sender_user: "u", sender_host: "h"}
     end
 
     test "PART with no reason emits body=nil" do
@@ -999,7 +1010,7 @@ defmodule Grappa.Session.EventRouterTest do
       Enum.each(effects, fn {:persist, :quit, attrs} ->
         assert attrs.sender == "alice"
         assert attrs.body == "Ping timeout"
-        assert attrs.meta == %{}
+        assert attrs.meta == %{sender_user: "u", sender_host: "h"}
       end)
 
       assert new_state.members["#italia"] == %{"vjt" => []}
@@ -1015,11 +1026,72 @@ defmodule Grappa.Session.EventRouterTest do
                EventRouter.route(m, state)
     end
 
+    test "QUIT with partial prefix (nil host) emits empty persist meta" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => []}}})
+      m = msg(:quit, ["bye"], {:nick, "alice", "u", nil})
+
+      assert {:cont, _, [{:persist, :quit, attrs}]} = EventRouter.route(m, state)
+      assert attrs.meta == %{}
+    end
+
     test "QUIT for nick not in any channel emits no effects + no mutation" do
       state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
       m = msg(:quit, ["bye"], {:nick, "stranger", "u", "h"})
 
       assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+  end
+
+  describe "route/2 — #25 sender-prefix snapshot on content rows" do
+    setup do
+      state =
+        base_state(%{
+          members: %{
+            "#italia" => %{"vjt" => ["@"], "alice" => ["+"], "bob" => [], "hop" => ["%"]}
+          }
+        })
+
+      {:ok, state: state}
+    end
+
+    test "channel PRIVMSG from an op snapshots meta.sender_prefix = @", %{state: state} do
+      m = msg(:privmsg, ["#italia", "hi"], {:nick, "vjt", "u", "h"})
+      assert {:cont, _, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+      assert attrs.meta.sender_prefix == "@"
+    end
+
+    test "channel PRIVMSG from a voiced user snapshots +", %{state: state} do
+      m = msg(:privmsg, ["#italia", "hi"], {:nick, "alice", "u", "h"})
+      assert {:cont, _, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+      assert attrs.meta.sender_prefix == "+"
+    end
+
+    test "channel PRIVMSG from a halfop snapshots %", %{state: state} do
+      m = msg(:privmsg, ["#italia", "hi"], {:nick, "hop", "u", "h"})
+      assert {:cont, _, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+      assert attrs.meta.sender_prefix == "%"
+    end
+
+    test "channel PRIVMSG from a plain member carries NO sender_prefix key", %{state: state} do
+      m = msg(:privmsg, ["#italia", "hi"], {:nick, "bob", "u", "h"})
+      assert {:cont, _, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+      refute Map.has_key?(attrs.meta, :sender_prefix)
+    end
+
+    test "ACTION + channel NOTICE snapshot the prefix too", %{state: state} do
+      action = msg(:privmsg, ["#italia", "\x01ACTION waves\x01"], {:nick, "vjt", "u", "h"})
+      assert {:cont, _, [{:persist, :action, a}]} = EventRouter.route(action, state)
+      assert a.meta.sender_prefix == "@"
+
+      notice = msg(:notice, ["#italia", "heads up"], {:nick, "alice", "u", "h"})
+      assert {:cont, _, [{:persist, :notice, n}]} = EventRouter.route(notice, state)
+      assert n.meta.sender_prefix == "+"
+    end
+
+    test "DM PRIVMSG (nick target) carries no sender_prefix", %{state: state} do
+      m = msg(:privmsg, ["vjt", "hi"], {:nick, "alice", "u", "h"})
+      assert {:cont, _, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+      refute Map.has_key?(attrs.meta, :sender_prefix)
     end
   end
 
@@ -1059,7 +1131,7 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.nick == "vjt"
     end
 
-    test "NICK-self updates state.nick + fan-out persist" do
+    test "NICK-self updates state.nick + fans out per channel PLUS a $server row (#61)" do
       state =
         base_state(%{
           members: %{
@@ -1069,20 +1141,42 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
 
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      assert new_state.nick == "vjt_"
+      assert new_state.members["#italia"] == %{"vjt_" => ["@"], "alice" => []}
+
+      # #61: the per-channel rename line PLUS an always-visible $server
+      # confirmation so the operator sees their own rename even from a
+      # channel they're not currently looking at.
+      channels =
+        effects
+        |> Enum.map(fn {:persist, :nick_change, a} -> a.channel end)
+        |> Enum.sort()
+
+      assert channels == Enum.sort(["#italia", "$server"])
+
+      Enum.each(effects, fn {:persist, :nick_change, attrs} ->
+        assert attrs.sender == "vjt"
+        assert attrs.meta == %{new_nick: "vjt_"}
+      end)
+    end
+
+    test "NICK-self with ZERO channels still emits a $server feedback row (#61)" do
+      state = base_state()
+      m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
+
+      # The bug: a self-rename with no shared channels produced no effects
+      # at all — no visible confirmation anywhere. It must surface on the
+      # synthetic "$server" window, which always exists.
       assert {:cont, new_state, [{:persist, :nick_change, attrs}]} =
                EventRouter.route(m, state)
 
       assert new_state.nick == "vjt_"
-      assert new_state.members["#italia"] == %{"vjt_" => ["@"], "alice" => []}
+      assert attrs.channel == "$server"
+      assert attrs.sender == "vjt"
+      assert attrs.body == nil
       assert attrs.meta == %{new_nick: "vjt_"}
-    end
-
-    test "NICK for nick not in any channel still updates state.nick if self" do
-      state = base_state()
-      m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
-
-      assert {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.nick == "vjt_"
     end
 
     test "NICK-other for stranger emits no effects + no mutation" do

@@ -1,10 +1,13 @@
 import { createSignal } from "solid-js";
 import { token } from "./auth";
 import { identityScopedStore } from "./identityScopedStore";
+import type { UploadCategory } from "./uploadCategory";
+import type { ServerSettingsWireUploadView } from "./wireTypes";
 
 // UX-6-B2 (2026-05-21) — operator-visible server-settings reactive
 // signal. Source of truth for the `embeddedHost.maxFileSizeBytes`
-// reactive lookup + the `activeHost()` host pick in `image-upload.ts`.
+// per-category reactive lookup + the `activeHost()` host pick in
+// `uploadHost.ts`.
 //
 // ## Wire shape
 //
@@ -44,8 +47,8 @@ import { identityScopedStore } from "./identityScopedStore";
 // embedded host in that case (the server-side default + the post-
 // deploy default — operators reading the bundle before the snapshot
 // returns get the same answer the server will give them).
-// `maxFileSizeBytes` reads from the host's own `maxFileSizeBytes`
-// literal until the snapshot arrives.
+// `maxFileSizeBytes(category)` reads from the host's own per-category
+// fallback literals until the snapshot arrives.
 //
 // ## Identity-scoped — token rotation flushes the cache
 //
@@ -56,18 +59,18 @@ import { identityScopedStore } from "./identityScopedStore";
 
 export type ServerSettingsView = {
   uploadActiveHost: "embedded" | "litterbox";
-  uploadPerFileCapBytes: number;
+  uploadPerFileCapBytes: Record<UploadCategory, number>;
   uploadGlobalCapBytes: number;
 };
 
 // Public-subset wire shape — mirrors `GET /api/server-settings`
 // response AND the `server_settings_changed` event's `upload` field.
+// `upload` reuses the GENERATED `ServerSettingsWireUploadView`
+// (wireTypes.ts, drift-gated against `Grappa.ServerSettings.Wire`) —
+// the only delta vs the generated changed-payload is that the REST
+// response carries no `kind` field.
 export type ServerSettingsWirePayload = {
-  upload: {
-    active_host: "embedded" | "litterbox";
-    per_file_cap_bytes: number;
-    global_cap_bytes: number;
-  };
+  upload: ServerSettingsWireUploadView;
 };
 
 const exports_ = identityScopedStore((onIdentityChange) => {
@@ -77,8 +80,17 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   const applyServerSettings = (raw: ServerSettingsWirePayload): void => {
     setServerSettings({
-      uploadActiveHost: raw.upload.active_host,
-      uploadPerFileCapBytes: raw.upload.per_file_cap_bytes,
+      // The generated wire type widens `active_host` to `string`; the
+      // WS path narrows strictly in userTopic.ts (unknown host → event
+      // dropped), so an unknown value can only arrive via the REST
+      // blind-cast. Treat it as the server default — same posture as
+      // `activeHost()`'s anything-but-litterbox → embedded pick.
+      uploadActiveHost: raw.upload.active_host === "litterbox" ? "litterbox" : "embedded",
+      uploadPerFileCapBytes: {
+        image: raw.upload.image_per_file_cap_bytes,
+        video: raw.upload.video_per_file_cap_bytes,
+        document: raw.upload.document_per_file_cap_bytes,
+      },
       uploadGlobalCapBytes: raw.upload.global_cap_bytes,
     });
   };

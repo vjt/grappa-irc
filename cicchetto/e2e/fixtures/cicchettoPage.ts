@@ -397,12 +397,15 @@ export function scrollbackLines(page: Page) {
 }
 
 // One scrollback row by IRC kind (`privmsg`, `action`, `join`, ...) +
-// substring of the rendered body. Two-axis match avoids spurious
+// a match against the rendered body. Two-axis match avoids spurious
 // matches across kinds (e.g. a JOIN line carrying the same nick text).
-export function scrollbackLine(page: Page, kind: string, bodyContains: string) {
+// `bodyMatch` is a substring (string) or a RegExp — use the latter when
+// non-contiguous tokens must match, e.g. a presence line that now
+// carries an irssi-style `[user@host]` between the nick and the verb.
+export function scrollbackLine(page: Page, kind: string, bodyMatch: string | RegExp) {
   return page.locator(
     `[data-testid="scrollback-line"][data-kind="${kind}"]`,
-    { hasText: bodyContains },
+    { hasText: bodyMatch },
   );
 }
 

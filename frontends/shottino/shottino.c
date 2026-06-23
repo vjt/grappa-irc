@@ -1172,6 +1172,19 @@ static enum media_kind media_kind_of(const char *url) {
     if (token_has_suffix(lower, vid)) return MEDIA_VIDEO;
     if (token_has_suffix(lower, img) || strstr(lower, "/uploads/")) return MEDIA_IMAGE;
     return MEDIA_NONE;
+static bool looks_like_image_url(const char *url) {
+    char lower[MAX_LINE];
+    size_t n = 0;
+    while (url[n] && !isspace((unsigned char)url[n]) && n + 1 < sizeof(lower)) {
+        lower[n] = (char)tolower((unsigned char)url[n]);
+        n++;
+    }
+    lower[n] = 0;
+    char *q = strchr(lower, '?');
+    if (q) *q = 0;
+    return strstr(lower, ".jpg") || strstr(lower, ".jpeg") || strstr(lower, ".png") ||
+           strstr(lower, ".gif") || strstr(lower, ".webp") || strstr(lower, ".bmp") ||
+           strstr(lower, "/uploads/");
 }
 
 static bool contains_ci(const char *haystack, const char *needle) {
@@ -1207,6 +1220,11 @@ static void remember_url(struct app *app, const char *body) {
     if (!url) return;
     pthread_mutex_lock(&app->lock);
     copy_url_token(url, app->last_url, sizeof(app->last_url));
+    size_t n = 0;
+    while (url[n] && !isspace((unsigned char)url[n]) && n + 1 < sizeof(app->last_url)) n++;
+    pthread_mutex_lock(&app->lock);
+    memcpy(app->last_url, url, n);
+    app->last_url[n] = 0;
     pthread_mutex_unlock(&app->lock);
 }
 
@@ -1334,6 +1352,7 @@ static void draw_message_line(int y, int x, int width, int max_lines, const char
         if (pending_row && width > 11) draw_text(y + max_lines - 1, x + width - 11, 11, CP_MUTED, A_DIM, "[sending]");
     } else if (find_url(line)) {
         draw_wrapped_text(y, x, width, max_lines, media_kind_of(find_url(line)) != MEDIA_NONE ? CP_ACCENT : CP_MUTED, A_UNDERLINE, line);
+        draw_wrapped_text(y, x, width, max_lines, looks_like_image_url(find_url(line)) ? CP_ACCENT : CP_MUTED, A_UNDERLINE, line);
     } else if (strstr(line, "failed") || strstr(line, "error")) {
         draw_wrapped_text(y, x, width, max_lines, CP_ERROR, 0, line);
     } else {
@@ -1884,6 +1903,9 @@ static void draw(struct app *app) {
     pthread_mutex_lock(&app->lock);
     erase();
     app->link_region_count = 0;
+static void draw(struct app *app) {
+    pthread_mutex_lock(&app->lock);
+    erase();
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
     int side = cols > 118 ? 22 : (cols > 90 ? 18 : 14);
@@ -1961,6 +1983,8 @@ static void draw(struct app *app) {
     else
         draw_text(chrome_y, main_x + 1, main_w - 2, CP_MUTED, 0,
                   "/archive  /settings  /admin  /chat  ws:%s", app->ws_connected ? "connected" : "offline");
+    draw_text(chrome_y, main_x + 1, main_w - 2, CP_MUTED, 0,
+              "/archive  /settings  /admin  /chat  ws:%s", app->ws_connected ? "connected" : "offline");
     for (int ty = 0; ty < topic_h; ty++) draw_fill(topic_y + ty, main_x, main_w, CP_ALT);
     draw_text(topic_y, main_x + 1, topic_label_w, CP_ACCENT, A_BOLD, "%s/%s", w->network, w->channel);
     if (topic_prefix_w) draw_text(topic_y, topic_text_x, topic_text_w, CP_ALT, A_BOLD, "topic: ");
@@ -2026,6 +2050,7 @@ static void draw(struct app *app) {
             add_link_region(app, msg_y, msg_y + draw_lines - 1, main_x + 1,
                             main_x + main_w - 2, url_tok, mk == MEDIA_VIDEO);
         }
+        draw_message_line(scroll_y + used_lines, main_x + 1, main_w - 2, draw_lines, app->log[i], app->log_mentions[i], app->log_pending[i]);
         used_lines += draw_lines;
         skip_lines = 0;
     }
@@ -2763,6 +2788,13 @@ static void preview_media(struct app *app, const char *url, bool is_video) {
     clearok(stdscr, TRUE);
     refresh();
     mouse_reporting(true);
+    pid_t pid = fork();
+    if (pid == 0) {
+        execlp("xdg-open", "xdg-open", url, (char *)NULL);
+        _exit(127);
+    }
+    if (pid < 0) log_line(app, "failed to launch xdg-open");
+    else log_line(app, "opened %s", url);
 }
 
 static void show_help(struct app *app) {

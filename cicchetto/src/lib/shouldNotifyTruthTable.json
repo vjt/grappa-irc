@@ -1,0 +1,261 @@
+[
+  {
+    "name": "kind gate: notice never notifies (even with everything on)",
+    "message": { "kind": "notice", "channel": "#sniffo", "sender": "alice", "body": "vjt: ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": true,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": true,
+      "private_messages_only": []
+    },
+    "patterns": ["vjt"],
+    "expected": false
+  },
+  {
+    "name": "kind gate: join never notifies",
+    "message": { "kind": "join", "channel": "#sniffo", "sender": "alice", "body": null },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": true,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": true,
+      "private_messages_only": []
+    },
+    "patterns": ["vjt"],
+    "expected": false
+  },
+  {
+    "name": "DM: private_messages_all notifies regardless of sender",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "DM: sender in whitelist notifies when _all is off",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": ["alice"]
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "DM: sender NOT in whitelist does not notify",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": ["bob"]
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "DM: whitelist match is case-insensitive on sender",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "ALICE", "body": "ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": ["alice"]
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "DM does NOT consider channel flags",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": true,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": ["vjt"],
+    "expected": false
+  },
+  {
+    "name": "channel: channel_messages_all notifies regardless of body",
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "alice",
+      "body": "no mention here"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": true,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "channel: channel_messages_only hit notifies when _all is off",
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "alice",
+      "body": "no mention here"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": ["#sniffo"],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "channel: channel_messages_only is case-insensitive on channel",
+    "message": {
+      "kind": "privmsg",
+      "channel": "#SNIFFO",
+      "sender": "alice",
+      "body": "no mention here"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": ["#sniffo"],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "channel: channel_mentions + body mentions own_nick notifies",
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "alice",
+      "body": "vjt: are you there?"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "channel: channel_mentions + body matches a highlight pattern notifies",
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "alice",
+      "body": "oncall page incoming"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": ["oncall"],
+    "expected": true
+  },
+  {
+    "name": "channel: channel_mentions off → mention does not notify",
+    "message": { "kind": "privmsg", "channel": "#sniffo", "sender": "alice", "body": "vjt: ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "channel: all off + no whitelist + no mention → no notify",
+    "message": { "kind": "privmsg", "channel": "#sniffo", "sender": "alice", "body": "no mention" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "channel mention is word-boundary (substring does NOT match)",
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "alice",
+      "body": "vjtbot is paged"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "action (CTCP /me) passes the kind gate + mention notifies",
+    "message": {
+      "kind": "action",
+      "channel": "#sniffo",
+      "sender": "alice",
+      "body": "waves at vjt"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": true
+  }
+]

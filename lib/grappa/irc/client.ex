@@ -352,8 +352,8 @@ defmodule Grappa.IRC.Client do
   @doc """
   Sends `AWAY :<reason>\\r\\n` (set) or bare `AWAY\\r\\n` (unset).
 
-  - `send_away(client, reason)` with a non-nil `reason` sends `AWAY :reason`.
-    Rejects CR/LF/NUL in the reason with `{:error, :invalid_line}`.
+  - `send_away(client, reason)` with a non-empty `reason` sends `AWAY :reason`.
+    Rejects an empty reason or CR/LF/NUL with `{:error, :invalid_line}`.
   - `send_away_unset(client)` sends bare `AWAY\\r\\n` to clear any active away
     status. Callers MUST use the separate arity — `send_away(client, nil)` is
     not a valid public call (no default-arg path per CLAUDE.md).
@@ -361,10 +361,18 @@ defmodule Grappa.IRC.Client do
   IRC semantics: a bare `AWAY` with no trailing param clears away status
   (RFC 2812 §4.6). A populated `AWAY :reason` sets it. The two-function
   shape makes the distinction explicit at the call site.
+
+  The empty-reason rejection mirrors `send_pong`/`send_raw`: an empty
+  `AWAY :\\r\\n` IS the bare-AWAY un-away line, so accepting it here would
+  emit a clear when the caller asked to set. The guard lives at this byte
+  boundary (not only the `Session` facade) so a non-cic caller — the test
+  harness or the Phase 6 listener facade — can't slip the silent-clear
+  frame past this door even if the facade is bypassed. To clear, call
+  `send_away_unset/1`.
   """
   @spec send_away(pid(), String.t()) :: send_result()
   def send_away(client, reason) when is_binary(reason) do
-    if Identifier.safe_line_token?(reason),
+    if reason != "" and Identifier.safe_line_token?(reason),
       do: send_line(client, "AWAY :#{reason}\r\n"),
       else: reject_invalid_line(:away)
   end

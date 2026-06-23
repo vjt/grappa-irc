@@ -34,15 +34,12 @@
 // in the e2e harness (sqlite + local disk + Reaper).
 
 import { expect, test } from "../fixtures/test";
+import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
+import { EMBEDDED_MODAL_HEADING, pickFile, uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-
-// 1×1 transparent PNG — same magic bytes the i2 spec uses.
-const TINY_PNG_HEX =
-  "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478" +
-  "9c620001000005000d0a2db40000000049454e44ae426082";
 
 test("UX-6-B — picker → privacy modal (embedded) → upload → 📸 link → GET serves bytes", async ({
   page,
@@ -51,38 +48,18 @@ test("UX-6-B — picker → privacy modal (embedded) → upload → 📸 link �
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
-  // The picker is the hidden file input — setInputFiles drives it
-  // without an OS dialog.
-  const picker = page.locator("input[data-image-picker]");
-  await picker.setInputFiles({
-    name: "ux-6-b-embedded.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(TINY_PNG_HEX, "hex"),
-  });
-
-  // First upload → privacy modal. ActiveHost is embedded (server-side
-  // default + the post-deploy default), so the modal heading reads
-  // "Upload to this grappa server" (per embeddedHost.displayName).
-  const modal = page.getByRole("dialog", { name: /Upload to .+grappa/i });
-  await expect(modal).toBeVisible({ timeout: 5_000 });
-  await expect(modal).toContainText(/grappa/i);
-
-  // Continue → orchestrator dispatches the upload + auto-sends PRIVMSG.
-  // Race the modal hide against the POST /api/uploads response so we
-  // can verify the POST landed before chasing the IRC echo.
-  const [uploadRes] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().includes("/api/uploads") && r.request().method() === "POST",
-      { timeout: 10_000 },
-    ),
-    modal.locator("button", { hasText: /continue/i }).click(),
-  ]);
-  expect(uploadRes.status()).toBe(201);
-  const respBody = (await uploadRes.json()) as { slug: string; url: string; expires_at: string };
-  expect(respBody.slug).toMatch(/^[a-z2-7]{26}$/);
-  expect(respBody.url).toMatch(/\/uploads\/[a-z2-7]{26}$/);
-
-  await expect(modal).toBeHidden({ timeout: 5_000 });
+  // Picker → privacy modal (embedded host is the server-side default,
+  // heading per embeddedHost.displayName) → Continue → POST 201 —
+  // the shared journey in fixtures/uploadJourney.ts.
+  const respBody = await uploadViaPicker(
+    page,
+    {
+      name: "ux-6-b-embedded.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(TINY_PNG_HEX, "hex"),
+    },
+    { postTimeout: 10_000 },
+  );
 
   // The 📸-prefixed PRIVMSG lands in scrollback after the IRC echo.
   // Match a privmsg row containing "📸" + the actual slug.
@@ -131,15 +108,15 @@ test("UX-6-B — privacy modal Cancel does NOT trigger upload (folded from i2 20
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
-  const picker = page.locator("input[data-image-picker]");
-  await picker.setInputFiles({
-    name: "ux-6-b-cancel.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(TINY_PNG_HEX, "hex"),
-  });
-
-  const modal = page.getByRole("dialog", { name: /Upload to .+grappa/i });
-  await expect(modal).toBeVisible({ timeout: 5_000 });
+  const modal = await pickFile(
+    page,
+    {
+      name: "ux-6-b-cancel.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(TINY_PNG_HEX, "hex"),
+    },
+    EMBEDDED_MODAL_HEADING,
+  );
   await modal.locator("button", { hasText: /cancel/i }).click();
   await expect(modal).toBeHidden({ timeout: 5_000 });
 

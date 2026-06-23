@@ -11,23 +11,26 @@ import {
   Show,
 } from "solid-js";
 import LusersCard from "./LusersCard";
-import { ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
+import { isContentKind, ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
 import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { linkify } from "./lib/linkify";
+import { classifyMediaLink, sameHostHref } from "./lib/mediaLink";
+import { openMediaViewer } from "./lib/mediaViewer";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
-import { MIRC_PALETTE_16, parseMircFormat, type Run } from "./lib/mircFormat";
+import { parseMircFormat, type Run } from "./lib/mircFormat";
 import { networks, user } from "./lib/networks";
-import { senderPrefix } from "./lib/nickColor";
+import { senderPrefix, snapshotSenderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
 import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
+import { maybeEscapePwaClick } from "./lib/platform";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
-import { loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
+import { lastOwnSend, loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
 import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
 import NickText from "./NickText";
@@ -72,14 +75,20 @@ import WhowasCard from "./WhowasCard";
 // dominate visually. PRESENCE_KINDS is the closed set.
 //
 // C7.3: Unread marker — when the user opens a channel with a stored read
-// cursor (via getReadCursor from readCursor.ts), messages after the cursor
-// are "unread". The rows() memo injects an `── XX unread messages ──`
-// marker row between the last read message and the first unread message.
-// On first mount of an unread window, the pane scrolls to the marker
-// (block: "start") so the user sees context-then-unread without manual
-// scroll. Cursor is advanced to the latest message's server_time when the
-// user reaches the bottom (atBottom = true). Client-side only — no server
-// MARKREAD per CLAUDE.md invariant.
+// cursor (server-owned; hydrated via getReadCursor from readCursor.ts),
+// messages after the cursor are "unread". The rows() memo injects an
+// `── XX unread messages ──` marker row between the last read message and
+// the first unread message. On first mount of an unread window, the pane
+// scrolls to the marker (block: "start") so the user sees
+// context-then-unread without manual scroll.
+//
+// FREEZE CONTRACT (2026-06-08): the divider derives from a FROZEN snapshot
+// of the cursor (`markerCursorId`), NOT the live value — it does not move
+// while the operator reads. It re-latches on focus acquisition
+// (channel-switch, visibility-return). The live cursor advances + POSTs to
+// the server on settle events (scroll-settle, focus-leave, blur, send) via
+// setCursorIfAdvances / setReadCursor; see the markerCursorId signal doc
+// below for the full contract.
 //
 // C7.4: Scroll-to-bottom floating button — appears when scrolled more than
 // SCROLL_BOTTOM_THRESHOLD_PX from the tail. Click → smooth-scroll to bottom
@@ -227,6 +236,17 @@ const lastFullyVisibleRowId = (listRef: HTMLDivElement): number | null => {
 // `body`-only lookup is the contract.
 const reasonOf = (msg: ScrollbackMessage): string | null => msg.body || null;
 
+// irssi-style " [user@host]" suffix for presence events (join/part/quit).
+// The server lifts the sender's user@host off the IRC prefix into the
+// persist meta (Grappa.Scrollback.Meta join/part/quit shape). Both keys
+// present or neither — a +x-cloaked prefix yields no mask, so this
+// returns "" and the line reads "* nick has joined" unchanged.
+const userhostSuffix = (msg: ScrollbackMessage): string => {
+  const user = msg.meta.sender_user;
+  const host = msg.meta.sender_host;
+  return typeof user === "string" && typeof host === "string" ? ` [${user}@${host}]` : "";
+};
+
 // CP13 S10: render an IRC body string with mIRC formatting expanded into
 // per-run <span> elements. Plain text (no control chars) collapses into a
 // single Run and renders as one <span>; the no-formatting fast path is
@@ -240,11 +260,14 @@ const renderRun = (run: Run): JSX.Element => {
   // we don't have a "terminal default" — fall back to plain text colors
   // and let the .scrollback-mirc-reverse class style the swap (CSS owns
   // the visual). Inline style still applies the explicit fg/bg if set.
+  // fg/bg are already resolved CSS color strings (the parser owns palette +
+  // \x04 hex resolution — no lookup leaks here). Reverse swaps which slot
+  // each color lands in.
   if (run.fg !== undefined) {
-    style[run.reverse ? "background-color" : "color"] = MIRC_PALETTE_16[run.fg] ?? "";
+    style[run.reverse ? "background-color" : "color"] = run.fg;
   }
   if (run.bg !== undefined) {
-    style[run.reverse ? "color" : "background-color"] = MIRC_PALETTE_16[run.bg] ?? "";
+    style[run.reverse ? "color" : "background-color"] = run.bg;
   }
   // No-silent-drops bucket 4 (2026-05-14): linkify the run text so URLs
   // render as <a href target="_blank" rel="noopener noreferrer">. Done
@@ -260,20 +283,75 @@ const renderRun = (run: Run): JSX.Element => {
         "scrollback-mirc-bold": run.bold,
         "scrollback-mirc-italic": run.italic,
         "scrollback-mirc-underline": run.underline,
+        "scrollback-mirc-strikethrough": run.strikethrough,
+        "scrollback-mirc-monospace": run.monospace,
         "scrollback-mirc-reverse": run.reverse && run.fg === undefined && run.bg === undefined,
       }}
       style={style}
     >
       <For each={segments}>
-        {(seg) =>
-          seg.type === "url" ? (
-            <a href={seg.href} target="_blank" rel="noopener noreferrer" class="scrollback-link">
+        {(seg, i) => {
+          if (seg.type !== "url") return seg.value;
+          // Media-link cluster (2026-06-11): same-origin media URLs get
+          // a click intercept → in-app viewer modal (lib/mediaViewer),
+          // because in-PWA-scope links navigate the iOS standalone
+          // window IN PLACE (raw media doc, no chrome, return reloads
+          // cic). The preceding text segment carries the 📸/🎬 type
+          // signal for own upload URLs (slug has no extension). The
+          // anchor + href stay — copy-link / middle-click / long-press
+          // keep working; only plain click is intercepted.
+          //
+          // Review fix (2026-06-11): the navigate-in-place bug class
+          // covers EVERY same-host link, not just modal-viewable media
+          // — 📄 docs (classifyMediaLink deliberately rejects them; the
+          // modal can't render PDFs) and emoji-split-run fallbacks.
+          // Those plain clicks delegate to the shared
+          // maybeEscapePwaClick handler (x-safari handoff on iOS
+          // standalone, no-op everywhere else). Cross-host links stay
+          // untouched: out-of-scope already opens correctly in the iOS
+          // Safari view.
+          const prev = segments[i() - 1];
+          const media = classifyMediaLink(
+            seg.href,
+            prev?.type === "text" ? prev.value : "",
+            window.location.origin,
+          );
+          const escapeHref = media === null ? sameHostHref(seg.href, window.location.origin) : null;
+          return (
+            <a
+              href={seg.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="scrollback-link"
+              classList={{ "scrollback-media-link": media !== null }}
+              onClick={
+                media !== null
+                  ? (e) => {
+                      // Modifier/aux clicks keep browser-native
+                      // semantics (new tab / new window) — only the
+                      // plain primary click opens the viewer.
+                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+                        return;
+                      }
+                      e.preventDefault();
+                      // media.href is re-rooted on the page origin —
+                      // historical prod bodies carry http:// hrefs
+                      // (mixed content if loaded as-is on https).
+                      openMediaViewer(media.href, media.kind);
+                    }
+                  : escapeHref !== null
+                    ? (e) => {
+                        // escapeHref is origin-rooted for the same
+                        // mixed-content reason as media.href.
+                        maybeEscapePwaClick(e, escapeHref);
+                      }
+                    : undefined
+              }
+            >
               {seg.value}
             </a>
-          ) : (
-            seg.value
-          )
-        }
+          );
+        }}
       </For>
     </span>
   );
@@ -426,14 +504,24 @@ const renderRawEvent = (
 };
 
 const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element => {
-  // UX-5 bucket BC2: per-message sender prefix glyph (@/%/+) derived
-  // from the LIVE members store keyed by (channel, sender). Scrollback
-  // rows are mode-agnostic on the wire — the prefix is a render-time
-  // join against `membersByChannel()` so re-renders track MODE events.
-  // Returns "" (not " ") for plain / unknown senders — see
-  // `senderPrefix` docstring in `lib/nickColor.ts`.
+  // UX-5 bucket BC2 + #25: per-message sender prefix glyph (@/%/+).
+  //
+  // For a CONTENT row (privmsg/action/notice) the SENDER's glyph is the
+  // grade snapshotted at SEND time by the server into `meta.sender_prefix`
+  // — NOT a live join against the members store. A render-time live join
+  // (the pre-#25 behaviour) retroactively re-prefixed a nick's old lines
+  // the instant their grade changed. An absent snapshot (plain sender, or
+  // a row persisted before #25 landed) renders no glyph — never a
+  // live-derived guess, which would reintroduce the bug.
+  //
+  // Everything else — presence-row senders (join/part/quit/mode) and the
+  // kick TARGET — keeps the live members join: those describe a "now"
+  // event, not a frozen send, so the current grade is the correct glyph.
   const prefixFor = (nick: string): "@" | "%" | "+" | "" => {
     if (!msg.channel) return "";
+    if (isContentKind(msg.kind) && nickEquals(nick, msg.sender)) {
+      return snapshotSenderPrefix(msg.meta);
+    }
     const key = channelKey(handlers.networkSlug, msg.channel);
     return senderPrefix(membersByChannel()[key], nick);
   };
@@ -519,14 +607,16 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
     case "join":
       return (
         <span class="scrollback-body">
-          * {bareSenderSpan(msg.sender)} has joined {msg.channel}
+          * {bareSenderSpan(msg.sender)}
+          {userhostSuffix(msg)} has joined {msg.channel}
         </span>
       );
     case "part": {
       const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
-          * {bareSenderSpan(msg.sender)} has left {msg.channel}
+          * {bareSenderSpan(msg.sender)}
+          {userhostSuffix(msg)} has left {msg.channel}
           {reason ? ` (${reason})` : ""}
         </span>
       );
@@ -535,7 +625,8 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
-          * {bareSenderSpan(msg.sender)} has quit{reason ? ` (${reason})` : ""}
+          * {bareSenderSpan(msg.sender)}
+          {userhostSuffix(msg)} has quit{reason ? ` (${reason})` : ""}
         </span>
       );
     }
@@ -710,6 +801,22 @@ const ScrollbackPane: Component<Props> = (props) => {
   // window mount. Reset on channel switch (key change).
   const [markerScrolled, setMarkerScrolled] = createSignal(false);
 
+  // FREEZE CONTRACT (2026-06-08, vjt "step-away" request): the FROZEN
+  // bottom boundary of the unread block — sibling to `sessionTopId` (the
+  // frozen TOP boundary). The `rows` memo derives the divider from THIS
+  // snapshot, NOT the live `getReadCursor`, so a mid-view cursor advance
+  // (own scroll-settle echo OR cross-device `read_cursor_set`) does not
+  // yank the divider under the operator's eyes while they read. Re-latched
+  // to the live cursor on every focus acquisition — channel-switch (key
+  // effect) and tab/app visibility-return (option b) — so the divider
+  // settles to the new position when the operator steps away and back.
+  // `null` = not yet latched / no cursor known (cold-load pre-hydration);
+  // the cold-latch effect below picks up the first non-null cursor,
+  // mirroring the sessionTopId cold-mount latch. The live signal map stays
+  // the single source of truth for sidebar badges + selection.ts unread
+  // counts — only the in-pane divider reads this frozen snapshot.
+  const [markerCursorId, setMarkerCursorId] = createSignal<number | null>(null);
+
   // BUGHUNT-2: timestamp of the most recent real operator input event
   // (pointerdown / wheel / touchmove / qualifying keydown) on the
   // listRef. `null` until the operator interacts; reset to `null` on
@@ -820,19 +927,21 @@ const ScrollbackPane: Component<Props> = (props) => {
   // The first message never gets a day-separator before it.
   //
   // Unread computation (C7.3 / CLAUDE.md "derive, don't duplicate"):
-  //   cursor = getReadCursor(networkSlug, channelName) — server-owned id.
+  //   cursor = markerCursorId() — the FROZEN snapshot of the read cursor,
+  //            NOT the live getReadCursor. See the signal's doc comment:
+  //            it is latched at every focus acquisition and held constant
+  //            between, so the divider does not move while the operator
+  //            reads (the freeze contract).
   //   sessionTopId = max(message.id) captured at window mount (key change).
   //   unread count = messages.filter(m =>
   //                    m.id > cursor AND
   //                    m.id <= sessionTopId  // pre-arrival only
   //                  ).length
-  //   The cursor is a stable value for the lifetime of this channel view:
-  //   it advances on the settle events (focus-leave, browser-blur,
-  //   scroll-settle, send — selection.ts / scrollback.ts), plus a one-shot
-  //   fresh-channel load-baseline (scrollback.ts `loadInitialScrollback`
-  //   marks the backlog read when no cursor exists yet). None of those
-  //   fire mid-view while the operator is reading, so the marker baseline
-  //   stays put. The sessionTopId bound prevents NEW arrivals during the
+  //   Both bounds are frozen for the focus session: markerCursorId pins
+  //   the BOTTOM (last-read) edge, sessionTopId pins the TOP. A mid-view
+  //   live-cursor advance (scroll-settle echo, cross-device read_cursor_set)
+  //   does NOT move the divider — markerCursorId only re-latches on a focus
+  //   acquisition. The sessionTopId bound prevents NEW arrivals during the
   //   focus session from spawning a fresh marker — they're live-read by
   //   definition.
   const rows = createMemo((): Row[] => {
@@ -854,7 +963,8 @@ const ScrollbackPane: Component<Props> = (props) => {
       }
     }
     if (msgs.length === 0 && inviteAckEntries.length === 0) return [];
-    const cursor = getReadCursor(props.networkSlug, props.channelName);
+    // Freeze contract: read the FROZEN snapshot, not live getReadCursor.
+    const cursor = markerCursorId();
     const sessionTop = sessionTopId();
     // How many messages have id strictly after the cursor AND
     // at-or-before the focus-session boundary?
@@ -1269,6 +1379,13 @@ const ScrollbackPane: Component<Props> = (props) => {
         const msgs = messages();
         const top = msgs && msgs.length > 0 ? (msgs[msgs.length - 1]?.id ?? null) : null;
         setSessionTopId(top);
+        // Freeze contract: re-latch the FROZEN bottom boundary to the new
+        // window's live cursor. Channel-switch is a focus acquisition — the
+        // divider settles to wherever the cursor reached. `props` already
+        // point to the arriving window here (same reason the leave-arm above
+        // decodes `prevKey` for the LEAVING window). A `null` cursor (cold,
+        // unhydrated) is picked up by the cold-latch effect below.
+        setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
         scrollToActivation();
       },
       { defer: true },
@@ -1279,25 +1396,56 @@ const ScrollbackPane: Component<Props> = (props) => {
   // PWA backgrounded (visibility-hide, browser-tab-switch, OS app
   // switch) then re-opened. selection.ts owns the cursor settle on
   // false→true (clearBadgesForWindow); this effect owns the scroll
-  // settle. NO per-channel pre-work — visibility-return on the SAME
-  // selectedChannel must preserve markerScrolled / sessionTopId (the
-  // operator hasn't left the window; only the browser tab lost
-  // visibility). The function-ref signal owns markerRef lifecycle
-  // (REV-G H23).
+  // settle AND the freeze-contract bottom-boundary re-latch.
+  //
+  // Top/bottom boundaries diverge on visibility-return (deliberate, see
+  // the markerCursorId / sessionTopId doc comments):
+  //   * sessionTopId (TOP) is PRESERVED — a brief tab-blur is not
+  //     "leaving the window"; messages that arrived while hidden stay
+  //     live-read, no fresh marker. (Re-latching it would mis-classify
+  //     them.)
+  //   * markerCursorId (BOTTOM) is RE-LATCHED to the live cursor —
+  //     option (b): a step-away-and-back settles the divider to wherever
+  //     the cursor reached while frozen. The re-latch runs BEFORE
+  //     scrollToActivation so the activation scroll sees the updated
+  //     marker state.
+  // markerScrolled is likewise preserved (same window, no re-scroll-arm).
+  // The function-ref signal owns markerRef lifecycle (REV-G H23).
   //
   // `prev === undefined` guards the initial-mount run (signal owns
   // the prev sentinel pattern; mirrors selection.ts's identical guard
   // shape at on(isDocumentVisible)). false→true is the only edge this
-  // effect handles (scroll-back-to-activation). true→false cursor
-  // write lives in the BUGHUNT-2 blur-arm effect immediately below;
-  // selection.ts's redundant true→false copy is deleted in A6.
+  // effect handles. true→false cursor write lives in the BUGHUNT-2
+  // blur-arm effect immediately below; selection.ts's redundant
+  // true→false copy is deleted in A6.
   createEffect(
     on(isDocumentVisible, (visible, prev) => {
       if (prev === undefined) return;
       if (prev === false && visible === true) {
+        setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
         scrollToActivation();
       }
     }),
+  );
+
+  // Send-relatch (2026-06-09, vjt: "marker showing + you send → hide
+  // it"). An own send is an explicit caught-up action, so it re-latches
+  // the frozen marker to the now-advanced live cursor — collapsing the
+  // divider immediately instead of waiting for a window-switch. Keyed:
+  // only a send to THIS pane's `(slug, channel)` hides its marker (a
+  // `/msg` elsewhere doesn't). `lastOwnSend` fires ONLY on an own send,
+  // so passive advances (scroll-settle echo, cross-device) stay frozen.
+  // `defer: true` skips the mount run — the key/cold-latch effects own
+  // the mount-time baseline.
+  createEffect(
+    on(
+      lastOwnSend,
+      (sent) => {
+        if (sent !== key()) return;
+        setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
+      },
+      { defer: true },
+    ),
   );
 
   // BUGHUNT-2: browser-blur cursor write. Fires on
@@ -1306,8 +1454,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   // and POSTs via setCursorIfAdvances. Mirror of the leave-arm in
   // A3's key-effect, but for the no-key-change case.
   //
-  // No false→true arm — focus-regain does NOT advance cursor;
-  // marker stays where it is.
+  // No false→true arm here — focus-regain does NOT write the live
+  // cursor. (The DISPLAY snapshot IS re-latched on focus-regain by the
+  // sibling activation effect above — freeze contract option (b) — but
+  // that re-reads the existing cursor, it doesn't advance it.)
   //
   // `prev === undefined` guards the initial-mount run (mirrors the
   // sibling effect's identical guard).
@@ -1340,6 +1490,33 @@ const ScrollbackPane: Component<Props> = (props) => {
     const last = msgs[msgs.length - 1];
     if (last === undefined) return;
     setSessionTopId(last.id);
+  });
+
+  // Freeze contract: cold-latch the FROZEN bottom boundary. Mirror of the
+  // sessionTopId cold-mount latch above, but gated on the cursor signal
+  // instead of messages — the read cursor hydrates from /me + join-reply,
+  // which can land AFTER mount (the same race documented at the
+  // scroll-to-marker length-effect below). The key/visibility re-latch
+  // points set markerCursorId eagerly, but on a cold load they may run
+  // while the cursor is still null; this arm picks up the first non-null
+  // observation. Idempotent + freeze-safe: the `markerCursorId() !== null`
+  // guard is read FIRST, so once latched the effect no longer tracks the
+  // live cursor and a later mid-view advance can NOT re-run it — the
+  // divider stays frozen until a focus acquisition re-latches it.
+  //
+  // Optimistic-cursor note (2026-06-08): setReadCursor now advances the
+  // live cursor optimistically, so the "first non-null observation" this
+  // arm latches CAN be an optimistic value if a cursor write (send /
+  // scroll-settle / blur) fires inside the cold-load-before-hydration
+  // window. Narrow corner (the channel is joined → join-reply has
+  // hydrated the cursor by the time the operator can interact), and the
+  // pre-optimistic code had the symmetric race (it latched whichever
+  // applyReadCursorSet echo landed first). Acceptable; flagged for honesty.
+  createEffect(() => {
+    if (markerCursorId() !== null) return;
+    const c = getReadCursor(props.networkSlug, props.channelName);
+    if (c === null) return;
+    setMarkerCursorId(c);
   });
 
   // After Solid commits new DOM nodes, scroll to the tail iff the user

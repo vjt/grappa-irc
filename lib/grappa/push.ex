@@ -77,7 +77,7 @@ defmodule Grappa.Push do
       Grappa.UserSettings
     ],
     dirty_xrefs: [Grappa.Visitors.Visitor],
-    exports: [Payload, Sender, Subscription, Triggers]
+    exports: [BadgeSource, Payload, Sender, Subscription, Triggers]
 
   import Ecto.Query
 

@@ -3458,3 +3458,249 @@ before you trust the correlation. A hung-looking BEAM that answers
 healthz in 500µs isn't hung — walk outward (token, proxy, firewall,
 the human's last action) before you walk back into your own diff. The
 symptom that points at your change is the most expensive coincidence.*
+
+## 2026-06-08 — Freeze the display, not the transport
+
+vjt: scrolling through unread messages yanks the "── N unread ──"
+divider down under your eyes. Make it sit still while you read; advance
+it when you step away and come back. Simple ask. His first instinct for
+the fix — "can we just not broadcast the cursor update?" — was the
+tempting wrong layer. Kill the server echo and you break two things at
+once: cic stops mirroring the server-owned cursor (it'd have to invent
+the value locally, which the rules ban), and the originating device's
+own signal goes stale, so the divider would freeze *forever*, not until
+refocus. The broadcast is load-bearing. The yank was never the broadcast
+existing — it was the render *reacting* to it mid-read. So: freeze the
+display, not the transport. A snapshot of the cursor, latched at focus,
+held constant while the eyes are on the window; the live signal keeps
+flowing underneath for the badges. One memo line, one sibling latch to
+the boundary that was already frozen above it.
+
+The interesting part was downstream. The codebase already had a test —
+CP29 R-4's "Bug A" — asserting the exact opposite of the new ask: the
+marker MUST vanish the instant the cursor advances. Not a bug — a
+deliberate contract from a month ago. And the uniform freeze rippled
+past the scroll case vjt described: it also stopped send-in-window and
+cross-device reads from collapsing the divider live, because cic can't
+tell its own echo from a peer's at the wire. Three contracts, one new
+requirement overriding all of them. The move wasn't to quietly flip the
+assertions green — that's how you bury the next person. It was to
+surface each conflict, get vjt's "yes, consistency," and rewrite the
+tests to assert the *new correct* behavior, loudly, with the why in the
+diff.
+
+*Law: a green test can be guarding an obsolete contract. When a new
+requirement contradicts one, the test is neither sacred nor a rubber
+stamp — surface the conflict, get the call, then rewrite it to assert
+the new truth. Never flip a red test green to make the bar pass; flip it
+because the bar moved, and say so where the next reader will look.*
+
+## Episode: the deploy that lied twice (2026-06-10, uploads-2)
+
+The video+document uploads cluster was the cleanest run yet — spec
+brainstormed question by question, eight TDD tasks each through
+two-stage review, two latent bugs found and killed before they were
+ever reported (Plug.Parsers' 8MB multipart default sitting under a
+10MB advertised cap; an embedded-host cap check reading a static
+literal behind a comment that *claimed* reactivity). Even the library
+verification step paid out: mediabunny silently copies input metadata
+tags unless you pass `tags: {}` — the privacy guarantee of "transcode
+strips GPS" was one missing option away from fiction, caught by
+reading the installed .d.ts before writing the wrapper.
+
+Then the deploy. Cold path classified correctly, migration ran,
+healthcheck green, exit 0 — and buried mid-output, a dead cic build:
+the jail's npm lock predated the bun-added mediabunny dep, `npm ci`
+refused, tsc died on the missing module, and `| tail` ate every
+nonzero exit because plain sh has no pipefail. Production ran the NEW
+wire with the OLD bundle — the exact mismatch three separate reviews
+had marked forbidden — under a green deploy banner. The fix was
+reading the output instead of the exit code, regenerating the lock
+in-jail, reshipping the bundle, then patching the build script to
+fail loudly.
+
+*Law: an exit code is a claim, not evidence. Any pipeline that decorates
+output (`| tail`, `| grep`) silently vouches for whatever died upstream
+— read the output of anything that touches production, and never let a
+formatting pipe stand between a failure and `set -e`.*
+
+## Episode: the gate that cited a lie (2026-06-19, away-#62)
+
+A visitor typed `/away` and got "Send failed." An authenticated user on
+the same build typed `/away` and it worked. The bug report guessed
+right: something rejected the command for sessions without a registered
+identity. What it didn't know was that the rejection was *deliberate*,
+and that the reason written next to it was false.
+
+The channel handler short-circuited every visitor with `visitor_no_away`,
+and the moduledoc explained why: "the `set_explicit_away` facade only
+routes to user sessions." Read the facade and it says the opposite — it's
+guarded on `is_subject`, takes `{:visitor, id}` exactly like `{:user,
+id}`, and each visitor owns a private, isolated `Session.Server` with its
+own upstream IRC connection and unique nick. A visitor's AWAY is
+per-connection and harmless. The comment had conflated explicit `/away`
+(a user action) with the WSPresence-driven *auto*-away (which genuinely
+is user-only, because visitor sessions don't subscribe to presence). One
+true fact about auto-away got laundered into a false claim about explicit
+away, sat in a doc comment, and gated a normal IRC verb for months —
+because nobody re-derives a justification once it's written down. Deleting
+the gate made the code *shorter*: one subject-aware path replaced the
+`if visitor? … else` fork. Which is why vjt pushed back when the diff
+came back bigger than expected — the extra surface was a *second* defect
+(the client swallowing every channel-push error code into the same bare
+"Send failed"), correctly called out as separable.
+
+The session ended on a different flavour of the same rot. "Close any
+issue that's open but resolved." Five were: EXIF stripping whose module
+header literally read `(#39)`, two MODE-command bugs with passing
+upstream-wire tests, a server-window routing fix with e2e coverage. The
+work had shipped; the tracker never caught up. Same disease as the
+comment — the record drifting from the code — just pointed the other way.
+
+*Law: a guard's comment is a claim, not evidence. A wrong "why" outlives
+the code it described and gets copied forward as gospel — verify the
+rationale against the implementation before you trust it, especially
+before you build on top of it.*
+
+## Episode: the counter that couldn't live next to its predicate (2026-06-21, pwa-badge)
+
+The spec was the cleanest yet. One number — how many unread messages did
+the operator *choose* to be notified about — surfaced on the PWA's
+home-screen icon. One predicate: the exact `should_notify?` Web Push
+already fires on, so the icon and the OS notification can never disagree.
+Three doors to feed it: the login seed, the read-cursor broadcast, the
+push payload. The kind of feature where the design doc does the thinking
+and the code is transcription. Nine TDD phases, each green on the first
+real run.
+
+Then the dependency graph said no. The badge counter's natural home is
+obvious: right next to the predicate it reuses, inside the `Push`
+context. But counting badges means reaching across `Networks`,
+`ReadCursor`, and `Visitors` — and every one of those transitively
+depends on `Session`, and `Session` depends on `Push`. Put the counter in
+`Push` and you close a four-node cycle: `Push → Networks → Session →
+Push`. The namespace said "this belongs in Push." The boundary graph said
+"you may not." Both were right; only one gets a vote.
+
+So you invert. The counter becomes its own boundary sitting *above* Push,
+depending *down* onto the predicate. Doors #2 and #3 call it from the web
+layer, which already lives at the top. Door #1 — the push payload, fired
+from deep inside `Session → Push.Triggers`, *below* the counter — can't
+take a static reference up the graph without re-closing the cycle, so it
+reaches the counter through a config-injected behaviour seam resolved at
+runtime. The same trick the test stubs use, turned load-bearing.
+
+The second beat was the deploy, and it was an irony. grappa's whole
+hot-deploy machinery exists to *preserve IRC sessions* — reload modules
+into the live BEAM, never restart. So I hardened door #1 for the window
+where a hot reload swaps the new code in but `config.exs` hasn't been
+re-read: `BadgeSource.count` returns `nil`, the push still fires, the icon
+just isn't touched. Defensive, correct, tested. Then I shipped it — and
+the deploy went **cold anyway**, because the preflight classifies every
+`config/*.exs` change as cold, and I'd added exactly one config key. The
+cold rebuild compiled the config in at boot, all three doors came up
+whole, and the resilience I'd built never executed. It wasn't wasted —
+it's the right insurance for the *next* badge-touching hot deploy — but
+this time the structural caution and the deploy classifier solved the
+same problem from opposite ends, and the classifier got there first.
+
+*Law: the dependency graph, not the namespace, decides where code may
+live. A function's natural home — beside the code it reuses — can be
+forbidden by the cycle it would close; when the reuse points down and the
+aggregation points up, lift the aggregator to the top and invert the lone
+upward call through a runtime seam.*
+
+## Episode: the docstring that promised a guard it didn't write (2026-06-21, away-empty)
+
+Two days after the away-#62 episode left its law — *a guard's comment is
+a claim, not evidence* — the same trap closed on the person who had just
+written it down.
+
+The job looked janitorial: pick something off the LOW cleanup bucket. The
+first surprise was that half the bucket was already dead. `Grappa.version/0`
+"has zero callers" — except it had been renamed to `Grappa.Version.current/0`
+and *gained* one (the CTCP VERSION reply). A "ChannelPushError consumer to
+wire up" — already wired, by #62, weeks ago. The todo had become a museum
+of fixed bugs nobody had buried. Two ghosts pruned before a line of code
+moved; the lesson the start of every session re-teaches is that a backlog
+entry is a claim about the past, and the past has usually moved on.
+
+The one real item was a quiet footgun. Set your away with an empty reason
+and the bouncer sent `AWAY :` upstream — which, per RFC 2812 §4.6, is
+precisely the line that *clears* away. Ask to go away with no message, get
+pulled back. `safe_line_token?/1` only screened CR/LF/NUL; the empty string
+sailed through every guard. The fix was one boolean at the `Session` facade,
+the single chokepoint above both byte paths. Red, then green. Clean.
+
+Then I wrote the docstring, and the docstring lied. "The emptiness check is
+the facade's job — mirrors `Client.send_pong`'s empty-token guard." It read
+well. At the byte layer it was false: `send_pong` rejects empty *at the
+socket boundary*, and `send_away` — the function the comment named as its
+twin — did not. Five sibling senders (`send_privmsg`, `send_part`,
+`send_oper`, `send_pong`, `send_raw`) all guard empty at that door, on
+purpose, so a future non-cic caller can't smuggle a malformed frame past a
+bypassed facade. `send_away` was the lone holdout. I had cited a symmetry to
+justify the fix, and the symmetry wasn't there.
+
+A review agent caught it — reading the same file I had, noticing that my own
+rationale named a guard the code didn't contain. The follow-up made the
+docstring true: `reason != ""` on `send_away`, mirroring the siblings for
+real. The away-#62 law had predicted this exact failure mode, and I walked
+into it inside the same week, authoring the false comment myself. The review
+also floated tightening to `String.trim` so a spaces-only reason would also
+reject — declined, because that diverges from `send_pong` and a blank-looking
+`AWAY :   ` is a *valid* set, not the un-away line; the distinction got
+pinned by a test so nobody "fixes" it later. On the way out, a vitest red the
+last checkpoint had shrugged off as "triage separately" turned out to be the
+same #62 `ChannelPushError`, landing in a test mock that never declared it —
+`instanceof undefined` throwing on every non-error path. Root-caused in
+passing.
+
+*Law: when your justification cites a safeguard, open the safeguard. The
+most persuasive wrong comment is the one you write yourself to explain a fix
+you believe in — the belief is exactly what stops you checking whether the
+thing you named is really there.*
+
+## Episode: the badge that was right where I wasn't looking (2026-06-21, badge-orphan)
+
+Two bugs this session. The first was clean: a registered visitor logging in
+got the NickServ "you're identified" notice twice, and a handoff had already
+traced it to a double `IDENTIFY` on the wire — the AuthFSM fires one at 001,
+and `Login` fired a second, redundant one post-readiness. I verified the
+handoff's claims against the code rather than trusting them (the +r-commit
+rendezvous turned out to run through `maybe_stage_pending_password`, not the
+NSInterceptor the handoff named — same outcome, different mechanism, worth
+getting right in the docs), deleted the redundant send and its now-dead
+helpers, and pinned it with a test that counts IDENTIFY lines exactly once
+behind a TCP-order barrier. Shipped hot. Unremarkable, which is the point.
+
+The second bug is the one that taught me something. vjt: the PWA badge sticks
+at "1 unread" even after reading everything — let's just reset it on app
+open. I had a tidy theory within a minute: the badge count is
+server-authoritative, derived from read cursors, so a stuck "1" meant a
+cursor that never advances past some notify-worthy message — an off-by-one, or
+a window you can't "read." I could have written the fix for that. I'd half
+written the *explanation* for it.
+
+Then I queried prod. `BadgeCount.count/1` for vjt: **zero**. The server count
+was correct. My entire diagnosis was about a number that didn't exist. The
+stuck "1" was the OS icon badge itself — and the moment I had the right
+target, the cause was obvious in code I'd already read: the badge has two
+writers that share no state. The service worker stamps `setAppBadge` directly
+when a push arrives in the background; the in-page effect only re-applies when
+its signal *changes*. Read everything on a warm resume and the signal goes
+0-over-0 — no change, no re-apply — and the SW's badge sits there, orphaned,
+forever. Cold launch reconciled it; warm resume had no reconcile point. The
+fix wrote itself: re-pull the authoritative `/me` count on every
+`visibilitychange` and force it onto the surface.
+
+vjt's instinct was *directionally* right — reconcile on foreground — and
+mechanically wrong: a blind reset-to-0 would wipe a badge that legitimately
+arrived while he was away. The data told me which half to keep. Without the
+prod query I'd have shipped a careful fix for a cursor bug that wasn't there,
+the badge would still have stuck, and I'd have been *certain* I'd fixed it.
+
+*Law: a root cause is a hypothesis until the authoritative source votes. When
+a value looks wrong, ask the system that owns it for the number before you
+explain the number — the most expensive fixes are the elegant ones aimed one
+layer away from the bug.*

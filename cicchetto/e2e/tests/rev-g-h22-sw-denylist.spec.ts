@@ -28,14 +28,9 @@
 // Sibling test covers /api/server-settings → JSON not SPA shell.
 
 import { expect, test } from "../fixtures/test";
+import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
-
-// 1×1 transparent PNG — same magic bytes the b4-linkify + ux-6-b
-// specs use.
-const TINY_PNG_HEX =
-  "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478" +
-  "9c620001000005000d0a2db40000000049454e44ae426082";
 
 async function waitForServiceWorkerControl(page: import("@playwright/test").Page): Promise<void> {
   // cic's SW uses skipWaiting + clients.claim so the first navigation

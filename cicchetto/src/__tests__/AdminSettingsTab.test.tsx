@@ -19,7 +19,7 @@ import AdminSettingsTab from "../AdminSettingsTab";
 
 // UX-6-B2 (2026-05-21) — AdminSettingsTab unit suite. Covers:
 //   * GET /admin/settings on mount + form pre-population
-//   * unit conversion: per-file cap shown in MB, global in GB
+//   * unit conversion: image per-file cap shown in MB, global in GB
 //   * Save → PUT /admin/settings with full upload subtree
 //   * 422 invalid_setting surfaces the offending field highlight
 //   * generic ApiError surfaces in the top-of-tab error banner
@@ -31,7 +31,9 @@ import AdminSettingsTab from "../AdminSettingsTab";
 const DEFAULTS: AdminSettingsView = {
   upload: {
     active_host: "embedded",
-    per_file_cap_bytes: 10 * 1024 * 1024,
+    image_per_file_cap_bytes: 10 * 1024 * 1024,
+    video_per_file_cap_bytes: 50 * 1024 * 1024,
+    document_per_file_cap_bytes: 10 * 1024 * 1024,
     global_cap_bytes: 10 * 1024 * 1024 * 1024,
   },
 };
@@ -52,12 +54,14 @@ describe("AdminSettingsTab — initial render", () => {
     });
   });
 
-  it("pre-populates the form fields from the GET response", async () => {
+  it("pre-populates the form fields from the GET response — three per-type caps (Task 7)", async () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminGetSettings).mockResolvedValue({
       upload: {
         active_host: "litterbox",
-        per_file_cap_bytes: 5 * 1024 * 1024,
+        image_per_file_cap_bytes: 5 * 1024 * 1024,
+        video_per_file_cap_bytes: 60 * 1024 * 1024,
+        document_per_file_cap_bytes: 15 * 1024 * 1024,
         global_cap_bytes: 20 * 1024 * 1024 * 1024,
       },
     });
@@ -69,8 +73,14 @@ describe("AdminSettingsTab — initial render", () => {
       expect(select.value).toBe("litterbox");
     });
 
-    const perFile = screen.getByTestId("admin-settings-per-file-cap") as HTMLInputElement;
-    expect(perFile.value).toBe("5");
+    const imageCap = screen.getByTestId("admin-settings-image-cap") as HTMLInputElement;
+    expect(imageCap.value).toBe("5");
+
+    const videoCap = screen.getByTestId("admin-settings-video-cap") as HTMLInputElement;
+    expect(videoCap.value).toBe("60");
+
+    const documentCap = screen.getByTestId("admin-settings-document-cap") as HTMLInputElement;
+    expect(documentCap.value).toBe("15");
 
     const global = screen.getByTestId("admin-settings-global-cap") as HTMLInputElement;
     expect(global.value).toBe("20");
@@ -105,8 +115,14 @@ describe("AdminSettingsTab — save", () => {
     const select = screen.getByTestId("admin-settings-active-host") as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "litterbox" } });
 
-    const perFile = screen.getByTestId("admin-settings-per-file-cap") as HTMLInputElement;
-    fireEvent.input(perFile, { target: { value: "25" } });
+    const imageCap = screen.getByTestId("admin-settings-image-cap") as HTMLInputElement;
+    fireEvent.input(imageCap, { target: { value: "25" } });
+
+    const videoCap = screen.getByTestId("admin-settings-video-cap") as HTMLInputElement;
+    fireEvent.input(videoCap, { target: { value: "75" } });
+
+    const documentCap = screen.getByTestId("admin-settings-document-cap") as HTMLInputElement;
+    fireEvent.input(documentCap, { target: { value: "12" } });
 
     const global = screen.getByTestId("admin-settings-global-cap") as HTMLInputElement;
     fireEvent.input(global, { target: { value: "50" } });
@@ -117,7 +133,9 @@ describe("AdminSettingsTab — save", () => {
       expect(api.adminPutSettings).toHaveBeenCalledWith("test-bearer", {
         upload: {
           active_host: "litterbox",
-          per_file_cap_bytes: 25 * 1024 * 1024,
+          image_per_file_cap_bytes: 25 * 1024 * 1024,
+          video_per_file_cap_bytes: 75 * 1024 * 1024,
+          document_per_file_cap_bytes: 12 * 1024 * 1024,
           global_cap_bytes: 50 * 1024 * 1024 * 1024,
         },
       });
@@ -148,7 +166,7 @@ describe("AdminSettingsTab — save", () => {
     vi.mocked(api.adminPutSettings).mockRejectedValue(
       new api.ApiError(422, "invalid_setting", {
         error: "invalid_setting",
-        field: "upload.per_file_cap_bytes",
+        field: "upload.image_per_file_cap_bytes",
       }),
     );
 
@@ -161,9 +179,40 @@ describe("AdminSettingsTab — save", () => {
     fireEvent.click(screen.getByTestId("admin-settings-save"));
 
     await waitFor(() => {
-      const input = screen.getByTestId("admin-settings-per-file-cap");
+      const input = screen.getByTestId("admin-settings-image-cap");
       expect(input).toHaveClass("admin-settings-field-error");
     });
+  });
+
+  it("422 on the video cap highlights the video input ONLY (Task 7)", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminGetSettings).mockResolvedValue(DEFAULTS);
+    vi.mocked(api.adminPutSettings).mockRejectedValue(
+      new api.ApiError(422, "invalid_setting", {
+        error: "invalid_setting",
+        field: "upload.video_per_file_cap_bytes",
+      }),
+    );
+
+    render(() => <AdminSettingsTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("admin-settings-save")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("admin-settings-save"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("admin-settings-video-cap")).toHaveClass(
+        "admin-settings-field-error",
+      );
+    });
+    expect(screen.getByTestId("admin-settings-image-cap")).not.toHaveClass(
+      "admin-settings-field-error",
+    );
+    expect(screen.getByTestId("admin-settings-document-cap")).not.toHaveClass(
+      "admin-settings-field-error",
+    );
   });
 
   it("surfaces generic ApiError on save failure", async () => {

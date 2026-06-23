@@ -1,7 +1,9 @@
-// Pluggable image-host upload — images cluster I-1 (2026-05-15).
+// Pluggable upload-host transport — images cluster I-1 (2026-05-15),
+// generalized to video + document categories (uploads cluster Task 4,
+// 2026-06-09; formerly `image-upload.ts` / `ImageHost`).
 //
-// Defines an `ImageHost` interface that abstracts the multipart upload
-// to a public image-hosting service, and ships the litterbox.catbox.moe
+// Defines an `UploadHost` interface that abstracts the multipart upload
+// to a public file-hosting service, and ships the litterbox.catbox.moe
 // implementation (`litterboxHost`) + the embedded grappa-serves-it
 // implementation (`embeddedHost`, UX-6-B2 2026-05-21).
 //
@@ -10,9 +12,9 @@
 // returns JSON + needs a Client-ID bearer; 0x0.st gates TTL via a
 // header; catbox-permanent uses a userhash). The interface encodes
 // the dimensions on which providers vary — endpoint, request shape,
-// response shape, TTL options, MIME accept list, retention copy — so
-// swapping providers tomorrow is "write a second impl, swap
-// `activeHost()`" with zero changes downstream.
+// response shape, TTL options, per-category MIME accept lists + size
+// caps, retention copy — so swapping providers tomorrow is "write a
+// second impl, swap `activeHost()`" with zero changes downstream.
 //
 // IRC stays text-only. The only thing this module produces is a
 // public URL string; how that URL gets into a PRIVMSG body
@@ -32,12 +34,19 @@
 // (litterbox.catbox.moe — empirically tested 2026-05-16) reject the
 // preflight and the actual POST never fires; cic surfaces "network
 // error" with no useful diagnostic. The `supportsProgress` flag on
-// `ImageHost` documents this per-host posture: when `false`, the
+// `UploadHost` documents this per-host posture: when `false`, the
 // progress listener is NOT attached and uploads use the simple CORS
 // path. UI falls back to indeterminate progress (`<progress>` with
 // no value attribute renders as indeterminate per HTML spec).
 
 import { serverSettings } from "./serverSettings";
+import {
+  DOCUMENT_MIMES_OFFICE,
+  DOCUMENT_MIMES_PORTABLE,
+  IMAGE_MIMES,
+  type UploadCategory,
+  VIDEO_MIMES,
+} from "./uploadCategory";
 
 export type UploadProgress = { loaded: number; total: number };
 
@@ -58,7 +67,7 @@ export type TtlOption = {
    *  The server-side preference is stored as an integer (seconds); cic
    *  translates between the host token and seconds at the SettingsDrawer
    *  boundary so the server stays oblivious to per-host token spellings.
-   *  Used by `imageUploadOrchestrator` to pick a matching `value` from
+   *  Used by `uploadOrchestrator` to pick a matching `value` from
    *  the active host's ladder given a stored-seconds preference. */
   seconds: number;
 };
@@ -70,7 +79,7 @@ export type UploadOptions = {
   ttl?: string;
 };
 
-export interface ImageHost {
+export interface UploadHost {
   /** Stable identifier — used as a localStorage key suffix
    *  (`image-upload-privacy-acknowledged:<id>`) so per-host UI state
    *  doesn't leak across providers. */
@@ -87,12 +96,17 @@ export interface ImageHost {
   /** Default TTL — must match a `ttlOptions.value`, or be null when
    *  `ttlOptions` is empty. */
   readonly defaultTtl: string | null;
-  /** MIME types fed into `<input accept>` and the drag-drop / paste
-   *  gate. Cluster scope is images; do not list non-image types. */
-  readonly acceptedMimeTypes: ReadonlyArray<string>;
-  /** Client-side pre-check ceiling. `null` = unknown / no enforced
-   *  cap (still gated by the host's actual upload limit on rejection). */
-  readonly maxFileSizeBytes: number | null;
+  /** Per-category MIME types fed into `<input accept>` and the
+   *  drag-drop / paste gate. A host that cannot take a category lists
+   *  it empty — `categoryOf()` (uploadCategory.ts) is the global
+   *  MIME→category map; this record is the per-host subset. */
+  readonly acceptedMimeTypes: Readonly<Record<UploadCategory, ReadonlyArray<string>>>;
+  /** Client-side pre-check ceiling per category. `null` = unknown /
+   *  no enforced cap (still gated by the host's actual upload limit
+   *  on rejection). Function, not literal: the embedded host reads
+   *  the reactive serverSettings() signal so admin-tuned caps apply
+   *  live. */
+  maxFileSizeBytes(category: UploadCategory): number | null;
   /** Whether attaching an `xhr.upload` progress listener is safe with
    *  this host's CORS posture. `false` → host does not advertise CORS
    *  preflight headers, so attaching the listener (which promotes the
@@ -133,7 +147,7 @@ export type XhrUploadArgs = {
   onProgress: (p: UploadProgress) => void;
   signal: AbortSignal;
   parseResponse: ResponseParser;
-  /** Mirror of `ImageHost.supportsProgress`. When `false`, the
+  /** Mirror of `UploadHost.supportsProgress`. When `false`, the
    *  `xhr.upload` progress listener is NOT attached so the request
    *  stays a "simple" CORS request and avoids the OPTIONS preflight
    *  that hosts like litterbox cannot answer. */
@@ -203,7 +217,7 @@ function parseLitterboxResponse(status: number, body: string): string | UploadEr
   return trimmed;
 }
 
-export const litterboxHost: ImageHost = {
+export const litterboxHost: UploadHost = {
   id: "litterbox",
   displayName: "litterbox.catbox.moe",
   retentionStatement:
@@ -215,12 +229,20 @@ export const litterboxHost: ImageHost = {
     { value: "72h", label: "72 hours", seconds: 259_200 },
   ],
   defaultTtl: "24h",
-  acceptedMimeTypes: ["image/png", "image/jpeg", "image/gif", "image/webp", "image/apng"],
-  // Litterbox accepts up to ~1GiB but cic's practical ceiling is much
-  // lower — multi-MB phone screenshots are the realistic upper bound;
-  // 100MiB is generous + lets cic warn before initiating an upload
-  // that's almost certainly user error.
-  maxFileSizeBytes: 100 * 1024 * 1024,
+  acceptedMimeTypes: {
+    image: IMAGE_MIMES,
+    video: VIDEO_MIMES,
+    // litterbox blocks .doc* host-side (FAQ, verified 2026-06-09) —
+    // office formats are embedded-only.
+    document: DOCUMENT_MIMES_PORTABLE,
+  },
+  // Litterbox accepts up to ~1GiB but cic's practical ceilings are
+  // much lower — phone screenshots / short transcoded clips are the
+  // realistic upper bound; the per-category caps are generous + let
+  // cic warn before initiating an upload that's almost certainly
+  // user error.
+  maxFileSizeBytes: (category) =>
+    ({ image: 100 * 1024 * 1024, video: 50 * 1024 * 1024, document: 10 * 1024 * 1024 })[category],
   // Litterbox does not advertise CORS preflight headers; attaching a
   // progress listener triggers OPTIONS preflight and breaks every
   // upload. Verified empirically 2026-05-16. Future hosts (catbox-
@@ -257,11 +279,11 @@ export const litterboxHost: ImageHost = {
 // preflight surface; `xhr.upload.addEventListener("progress")` works
 // natively without the OPTIONS gotcha that the catbox path documents.
 //
-// `maxFileSizeBytes` is a dynamic lookup against the reactive
-// `serverSettings()` signal so an admin-tuned per-file cap takes
-// effect in ComposeBox's pre-check without a page reload. Pre-
-// snapshot fallback: the 10MB server-side default (mirrors
-// `Grappa.ServerSettings.@default_upload_per_file_cap_bytes`).
+// `maxFileSizeBytes` is a dynamic per-category lookup against the
+// reactive `serverSettings()` signal so an admin-tuned per-file cap
+// takes effect in ComposeBox's pre-check without a page reload.
+// Pre-snapshot fallback: the server-side defaults (mirror
+// `Grappa.ServerSettings` `@default_upload_*_cap_bytes`).
 //
 // ## Authorization vs the litterbox shape
 //
@@ -307,7 +329,7 @@ function parseEmbeddedResponse(status: number, body: string): string | UploadErr
   return p.url;
 }
 
-export const embeddedHost: ImageHost = {
+export const embeddedHost: UploadHost = {
   id: "embedded",
   displayName: "this grappa server",
   retentionStatement:
@@ -319,13 +341,17 @@ export const embeddedHost: ImageHost = {
     { value: "259200", label: "72 hours", seconds: 259_200 },
   ],
   defaultTtl: "86400",
-  acceptedMimeTypes: ["image/png", "image/jpeg", "image/gif", "image/webp", "image/apng"],
-  // Pre-snapshot fallback mirrors the server-side default
-  // (`Grappa.ServerSettings.@default_upload_per_file_cap_bytes`). The
-  // reactive lookup in ComposeBox / SettingsDrawer reads
-  // `serverSettings()?.uploadPerFileCapBytes` directly when admin has
-  // tuned the cap; this literal is the cold-start fallback only.
-  maxFileSizeBytes: 10 * 1024 * 1024,
+  acceptedMimeTypes: {
+    image: IMAGE_MIMES,
+    video: VIDEO_MIMES,
+    document: [...DOCUMENT_MIMES_PORTABLE, ...DOCUMENT_MIMES_OFFICE],
+  },
+  // Reactive per-category cap — falls back to the server-side defaults
+  // (mirrors Grappa.ServerSettings @default_upload_*_cap_bytes) before
+  // the WS snapshot lands.
+  maxFileSizeBytes: (category) =>
+    serverSettings()?.uploadPerFileCapBytes[category] ??
+    { image: 10 * 1024 * 1024, video: 50 * 1024 * 1024, document: 10 * 1024 * 1024 }[category],
   // Same-origin POST — no CORS preflight. Real progress bar works.
   supportsProgress: true,
   upload: (file, options, onProgress, signal) => {
@@ -350,7 +376,7 @@ export const embeddedHost: ImageHost = {
 // whole `auth.ts` module graph (vitest jsdom + localStorage is the
 // canonical bearer storage; production reads via `token()` accessor
 // from auth.ts). Same shape as `archive.ts`'s `loadArchive` token
-// peek. Test-only override via `__setImageUploadToken` lives below.
+// peek. Test-only override via `__setUploadTokenReader` lives below.
 let _tokenReader: () => string | null = () => {
   if (typeof localStorage === "undefined") return null;
   return localStorage.getItem("grappa-token");
@@ -363,7 +389,7 @@ function readToken(): string | null {
 // Test seam — vitest sets / clears the reader per test. Production
 // never calls this. Mirrors `bundleHash.ts`'s `__resetBundleHashForTests`
 // pattern.
-export function __setImageUploadTokenReader(fn: (() => string | null) | null): void {
+export function __setUploadTokenReader(fn: (() => string | null) | null): void {
   _tokenReader =
     fn ??
     (() => {
@@ -384,9 +410,9 @@ export function __setImageUploadTokenReader(fn: (() => string | null) | null): v
 // re-render with the new host's TTL ladder + retention copy.
 // --------------------------------------------------------------------
 
-export const availableHosts: ReadonlyArray<ImageHost> = [embeddedHost, litterboxHost];
+export const availableHosts: ReadonlyArray<UploadHost> = [embeddedHost, litterboxHost];
 
-export function activeHost(): ImageHost {
+export function activeHost(): UploadHost {
   const view = serverSettings();
   if (view?.uploadActiveHost === "litterbox") return litterboxHost;
   // Default + explicit "embedded" both land on embeddedHost.

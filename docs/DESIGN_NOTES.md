@@ -7456,7 +7456,9 @@ on every change to a module not actually tracked).
 
 The fix is **structural** rather than a tighter regex: the bash
 script becomes a thin wrapper around `mix run --no-start -e
-'Grappa.Deploy.Preflight.cli([from, to])'`. The new module
+'Grappa.Deploy.Preflight.cli([from, to])'` (2026-06-10: the cli now
+requires a third substrate arg, `"docker"` | `"jail"` — see the
+substrate-scoped entry). The new module
 `lib/grappa/deploy/preflight.ex` reads `LongLivedModules.all/0`
 directly — no string parsing, no regex, no awk. The hand-rolled
 brace-matching helper `scripts/_extract_state_block.awk` is
@@ -11037,3 +11039,2123 @@ Implementation (single-file `frontends/shottino/shottino.c`):
 
 If a future cluster wants the same in cic, it does NOT inherit this lift — cic's
 text-only scrollback rule stands until separately specified.
+## 2026-06-08 — Unread-divider freeze contract (cic) + read-cursor cadence relocated here
+
+Relocated from CLAUDE.md (it was over-specified there and had gone
+stale — it claimed settle = "focus-leave, browser-blur" only, omitting
+scroll-settle and this freeze). CLAUDE.md now keeps just the durable
+invariant (read state server-owned, per (subject, network, channel);
+`last_read_message_id` FK; removing server-side cursor is breaking).
+The **mechanics** live here.
+
+### Read-cursor write cadence (cic ↔ server)
+
+The cursor is server-owned. cic HYDRATES it from three sources: the
+`/me` envelope at login (`applyMeEnvelope`), the per-channel Phoenix
+join reply (`applyJoinReply` — refresh on every rejoin/reconnect), and
+live `read_cursor_set` WS events (`applyReadCursorSet` — cross-device
+sync). cic WRITES it forward-only (`setCursorIfAdvances` →
+`setReadCursor` POST → `Grappa.ReadCursor.set/4`, last-write-wins) on
+settle events: scroll-settle (500ms debounce, gated on recent operator
+input), focus-leave (channel switch), browser-blur (tab hidden / app
+switch), and send-in-focused-window. The server's `read_cursor_set`
+broadcast feeds the new id back into the signal map for BOTH the
+originating device and any peers — single applier path. Phase 6 will
+expose the same cursor as `+draft/read-marker` MARKREAD on the listener
+facade.
+
+### The divider FREEZE contract (the actual decision)
+
+Symptom (vjt): scrolling through an unread block yanked the in-pane
+"── N unread ──" divider down under your eyes — the `rows()` memo read
+the LIVE cursor, so a scroll-settle advance (or a cross-device
+`read_cursor_set`) re-ran it mid-read and shrank/removed the marker.
+
+Decision: the divider is FROZEN for the lifetime of a focus session.
+It derives from a snapshot signal `markerCursorId` (the frozen BOTTOM
+boundary), sibling to the pre-existing `sessionTopId` (frozen TOP
+boundary). The snapshot re-latches to the live cursor on a focus
+acquisition — channel-switch and tab/app visibility-return — AND on an
+own send (the 2026-06-09 send-relatch entry below; a send is an explicit
+caught-up action, so it hides the divider the same way a refocus does).
+Chose option (b) "any step-away-and-back advances it" over (a)
+"channel-switch only". The live cursor keeps advancing + POSTing as
+above; only the DISPLAY is frozen, so sidebar badges + `selection.ts`
+unread counts (which read the live signal map) stay current. PASSIVE
+advances — scroll-settle echo, cross-device `read_cursor_set` — never
+re-latch the snapshot; that is the freeze.
+
+Asymmetry, deliberate: on visibility-return `sessionTopId` (top) is
+PRESERVED — a brief blur is not "leaving the window", so messages that
+arrived while hidden stay live-read, no fresh marker — while
+`markerCursorId` (bottom) is RE-LATCHED so the divider settles to where
+the cursor reached.
+
+Why not suppress the broadcast instead (vjt asked): the server echo is
+what keeps cic mirroring server-owned state (CLAUDE.md "cic never
+originates state"). Killing it would break cross-device sync and re-focus
+advance — the originating device's signal would go stale until reload, so
+the divider would freeze *permanently*, not until refocus. The broadcast
+is load-bearing: it is the server-owned source every device mirrors.
+Freeze the display, not the transport. (Note: freezing the display does
+NOT require suppressing the broadcast OR forgoing an optimistic local
+write — the 2026-06-08 optimistic-advance entry below keeps the broadcast
+and advances the originating device early on top of it; the two are
+orthogonal.)
+
+Cross-device tradeoff (accepted, vjt: "consistency"): cic cannot
+distinguish an own scroll-settle echo from a peer's `read_cursor_set`
+at the applier boundary (same wire bytes, no client_id tag), so the
+freeze is uniform. A peer device reading the window no longer yanks
+your divider live — it reflects on your next refocus. Distinguishing
+the two would need client_id tagging on the broadcast (server + wire
+change); rejected as heavier than the problem.
+
+This REVISES the CP29 R-4 "Bug A" contract (which made the divider
+disappear immediately on any live advance). Implementation +
+freeze-safety reasoning: `cicchetto/src/ScrollbackPane.tsx` (the
+`markerCursorId` signal doc + the cold-latch effect's read-guard-first
+note); contract tests in `ScrollbackPane.test.tsx` (Bug A revised + the
+three freeze tests; REV-G H23 updated to drive marker removal via a
+focus-acquisition re-latch).
+
+## 2026-06-08 — Optimistic forward-only read-cursor advance
+
+Two unread bugs, one root cause. (1) Leaving a channel with nothing
+unread flashed a sidebar badge for a frame. (2) An own-sent message
+sometimes rendered above the `── N unread ──` divider after stepping to
+another window and back.
+
+Root cause: the local read-cursor signal (`readCursor.ts`) was
+round-trip-only — `setReadCursor` POSTed, and the local map advanced only
+when the server's `read_cursor_set` echo landed (`applyReadCursorSet`).
+The interval between POST and echo is a stale-cursor window, and two
+reactive readers fire inside it: the focused-window badge suppression in
+`perChannelUnread` (drops synchronously when `selectedChannel` flips,
+before the leave-arm's advance round-trips → briefly recomputes a
+non-zero count) and the `markerCursorId` re-latch on focus acquisition
+(reads the stale pre-send cursor when a return beats the echo → own
+message counts as unread).
+
+Fix: `setReadCursor` advances the local signal optimistically,
+forward-only, before the POST — one place, every write path inherits it.
+The advance lands in the same synchronous Solid flush as the
+suppression-drop and the re-latch, so both read the fresh cursor and the
+window closes.
+
+This composes with the freeze-contract entry above; it does not reverse
+it. The broadcast stays — it is the server-owned source every device
+mirrors, the carrier for peer sets, and the only path that moves the
+cursor backward (last-write-wins). The optimistic advance only lets the
+ORIGINATING device skip its own round-trip latency, and the echo then
+re-affirms the same id; cic is reflecting its own server-bound write
+early, not originating a value the server never got. The display freeze
+is untouched: the divider reads the frozen `markerCursorId`, never the
+live signal.
+
+One tradeoff: a failed POST leaves the local cursor ahead of the server.
+It is not reverted — a revert would clobber a concurrent forward advance
+(the race forward-only exists to avoid). Because cic only ever writes ids
+it has already read, the drift is bounded to already-read rows (new
+arrivals still satisfy `id > cursor`) and re-aligns on the next forward
+write or on `/me` / join-reply hydration.
+
+Implementation: `readCursor.ts` (`setReadCursor` optimistic block).
+Tests: `readCursor.test.ts` pins the forward-only advance at the
+primitive (the deterministic guard); `unread-cursor-cluster.spec.ts`
+sentinel 3 covers own-message + fast away-and-back. The badge flicker is
+a sub-frame paint event Playwright can't observe — the unit test guards
+its root cause.
+
+## 2026-06-08 — Multiline compose → one PRIVMSG per line
+
+ComposeBox submits on Enter and inserts a newline on Shift+Enter, so a
+draft (or a pasted block) can hold embedded line breaks. Pre-fix the
+whole body went as one PRIVMSG and the server rejected it as
+`:invalid_line` — CR/LF are the IRC frame delimiters, forbidden inside a
+frame (`Identifier.safe_line_token?` = `not String.contains?(s, ["\r",
+"\n", "\x00"])`). The operator saw an "invalid" error and nothing sent.
+
+A multiline body is the operator asking for one message per line. cic
+splits client-side: `messageLines.ts` `splitMessageLines` splits on every
+line-ending form (CRLF, lone CR, LF — all forbidden on the wire, so all
+must split, not just LF) and drops blank lines (an empty PRIVMSG is
+itself invalid). A shared `sendBodyLines` in compose.ts applies it to the
+three free-text send sites: privmsg, /me (one ACTION per line), /msg.
+
+Division of labor, deliberate: the CLIENT owns newline splitting because
+only it knows the operator meant separate messages; the SERVER keeps
+owning 512-byte length splitting for a single long line
+(`lib/grappa/irc/line_split.ex`) because only it knows per-target frame
+overhead. The server's `:invalid_line` guard stays — it is the backstop
+that guarantees cic can never smuggle a raw CR/LF onto the wire.
+
+Accepted edges: (1) sends are sequential and non-transactional — a
+mid-fan-out POST failure leaves earlier lines sent and surfaces the error
+with the full draft preserved, so a retry re-sends the delivered lines.
+IRC has no atomic multi-send; partial delivery is the honest outcome.
+(2) An empty `/me` (no text) now sends nothing instead of a degenerate
+empty ACTION — a content-free action is not worth a frame.
+
+Tests: `messageLines.test.ts` (pure splitter — LF/CRLF/CR/embedded-CR,
+blank-drop, single-line identity), `compose.test.ts` (privmsg/me
+fan-out + CRLF/blank handling), `multiline-compose-fanout` e2e (the real
+server accepts the per-line sends end-to-end — jsdom can't prove that).
+
+## 2026-06-09 — Send-relatch: hide the in-pane unread marker on a focused send
+
+vjt prod report: a "── 1 unread ──" divider that didn't disappear when
+he sent a new message in the focused channel. NOT a regression — it is
+the freeze contract (the entry above) doing exactly what it says. The
+in-pane divider derives from the FROZEN `markerCursorId` snapshot, which
+re-latched only on a focus acquisition (channel-switch / visibility-
+return). A send is neither, so the divider held until the next window-
+switch. The 2026-06-08 optimistic-cursor advance did not cause this; it
+made the refocus re-latch more reliable.
+
+The tension is real, and both halves are vjt's: "don't move the divider
+while I read" (freeze, cp56) vs "hide it when I send" (now). They can't
+both be served by watching the cursor, because a send and a passive
+scroll-settle BOTH advance the live cursor through the same
+`setReadCursor` — indistinguishable at the cursor. The send has to mark
+itself.
+
+Decision: a focused own send re-latches the marker, the same way a
+focus acquisition does. `sendMessage` (scrollback.ts) publishes its
+channel-key on a new `lastOwnSend` signal — the one fact not otherwise
+represented ("this advance was a send"). `ScrollbackPane` watches it and
+runs the identical `setMarkerCursorId(getReadCursor(...))` re-latch when
+the key matches THIS pane. Keyed, so a `/msg` to another window can't
+collapse this pane's divider. Fired ONLY from the own-send path, so
+passive advances (scroll-settle echo, cross-device `read_cursor_set`)
+never trigger it — the freeze holds for everything except the operator's
+own send.
+
+`lastOwnSend` is an EVENT signal (`equals: false`), not a state cell.
+Two sends to the same channel write the same key string; the default
+`Object.is` dedup would drop the second, and the marker wouldn't re-hide
+after the real sequence: send in #foo (hides) → switch away → peer
+messages #foo → switch back (marker re-shows) → reply in #foo (same key).
+Every send must notify. Bare channel-key string (no `{key,id}` object):
+the effect re-latches to the LIVE `getReadCursor`, never the send id, so
+the id would be dead weight — one signal, one writer, one reader.
+
+Why a signal and not a derivation (vjt pushed on this): the only
+this-device cursor advances are leave-arm, blur, scroll-settle, and
+send; the first three are the PASSIVE ones the freeze deliberately keeps
+frozen, so "did the cursor just move" can't tell a send apart. Deriving
+from an own-nick row at the tail would ALSO fire on a cross-device own
+send (own content from another device), which the freeze keeps frozen by
+choice — and needs prev-tail diffing to spot a fresh row. The signal is
+the lean, faithful mark.
+
+This REFINES the freeze entry above (which is amended to list the own
+send as a third re-latch trigger); it does not reverse it. Passive
+advances stay frozen; only the explicit send un-freezes.
+
+Implementation: `scrollback.ts` (`lastOwnSend` signal + `sendMessage`
+publish), `ScrollbackPane.tsx` (the keyed re-latch effect). Tests:
+`ScrollbackPane.test.tsx` (focused send collapses the marker; keyed
+isolation — a different-window send leaves it frozen; dedup repro — a
+repeat same-channel send re-hides a re-shown marker), `scrollback.test.ts`
+(publishes on send incl. the cursor-skip branch; null with no token;
+notifies on EVERY send incl. same-channel repeats). The sentinel-2 e2e
+in `unread-cursor-cluster.spec.ts` — which the 2026-06-08 freeze work
+had flipped to assert "send keeps it frozen" — is flipped back to the
+new contract: a focused send collapses the marker immediately, no
+window-switch.
+
+## 2026-06-09 — Own /me classified :action (issue #14) + full mIRC render
+
+Two CTCP/formatting display fixes. Issue #14 ("CTCP frames incl. /me
+ACTION surface as raw PRIVMSG text") was triaged as a cic display-layer
+gap; it was not. The screenshot symptom — `<nick> ACTION prova` — is
+cic's PRIVMSG render branch (the `<…>` brackets), which only fires for a
+`kind: :privmsg` row. The `:action` branch renders `* nick body` and was
+already correct (M10, peer ACTION, is green). So the offending row was
+PERSISTED as :privmsg.
+
+Root cause was server-side and outbound-only.
+`Session.Server.persist_and_send_fragments/4` — the self-echo persist
+path for the operator's OWN sends — hardcoded `kind: :privmsg` and never
+looked at the CTCP envelope. cic transmits a `/me` as
+`\x01ACTION text\x01` in a PRIVMSG body, so the operator's own action
+round-tripped as :privmsg and rendered raw. The INBOUND path
+(`EventRouter.privmsg_default`) had classified ACTIONs correctly all
+along — the two halves of every ACTION had simply drifted. M10's green
+status masked it because M10 exercises the inbound function, a different
+code path; the bug lives only on the outbound one, which is
+target-agnostic (so it broke own `/me` in both channels AND queries,
+exactly as the issue reported).
+
+The "is this a CTCP ACTION frame?" predicate existed as TWO private
+copies — `EventRouter.ctcp_action?/1` (lenient, prefix-only) and
+`LineSplit.ctcp_action?/1` (additionally required a trailing `\x01`).
+They were already inconsistent: LineSplit's stricter check meant a
+leading-only ACTION over the fragmentation budget took the NAIVE split
+path — the "garbage on the wire" case its own moduledoc warns against.
+Collapsed both onto one source, `Grappa.IRC.CTCP.action?/1` (the lenient
+prefix-only form; CTCP's closing delimiter is optional), now called from
+three sites: inbound classify, outbound classify (the fix), and
+envelope-preserving split. Single source for a wire-format question that
+the Phase 6 IRCv3 listener facade will also ask. `Scrollback.dm_peer/4`
+gets the real `kind` too — `:action` is already a dm-eligible kind, so
+own action-DMs thread their peer correctly.
+
+Division of labor stays: the SERVER classifies the kind (it owns the
+wire), cic renders by kind (it owns the display). The raw `\x01` stays
+in the stored body (round-trip fidelity); cic's `:action` branch strips
+the envelope at render, unchanged.
+
+### Full mIRC inline formatting render (Part B)
+
+`mircFormat.ts` already did the toggles bold/italic/underline/reverse +
+the 16-color `\x03` palette (clamped to 15). Extended to the full
+de-facto control set: `\x04` hex color (`\x04RRGGBB[,RRGGBB]`, bare or
+partial-hex = reset), `\x1e` strikethrough, `\x11` monospace, `\x03`
+extended palette 16-98 (the modern ircdocs table, no longer clamped),
+and `\x03` code 99 = the explicit "default" (reset).
+
+One design move: COLOR RESOLUTION MOVED INTO THE PARSER. Pre-fix a Run
+carried `fg: number` (a palette index) and ScrollbackPane's `renderRun`
+did `MIRC_PALETTE_16[fg]`. Adding `\x04` hex would have forced a second
+color representation (index vs literal) and pushed the palette table into
+the render layer. Instead a Run now carries an already-resolved CSS color
+string in `fg`/`bg` regardless of source, so `renderRun` is a dumb
+applier and the palette lives entirely in the parser (CLAUDE.md "no
+leaky abstractions"). The 99-entry palette and `\x04` hex both resolve to
+`#rrggbb` before they ever reach the DOM. Cost: the existing color
+vitest assertions moved from `fg: 4` to `fg: MIRC_PALETTE[4]` — clearer
+intent, and they read the production constant rather than a magic hex.
+
+Underline + strikethrough both want `text-decoration`, which a single
+property can't merge across two separate class rules (last wins), so a
+higher-specificity `.scrollback-mirc-underline.scrollback-mirc-strikethrough`
+selector composes them. Formatting composes with the existing linkify +
+ACTION-strip render paths — all three are render-time-only transforms on
+a body whose raw bytes stay in scrollback.
+
+Implementation: `lib/grappa/irc/ctcp.ex` (new shared classifier),
+`server.ex` + `event_router.ex` + `line_split.ex` (migrate/fix),
+`cicchetto/src/lib/mircFormat.ts` + `ScrollbackPane.tsx` + `default.css`.
+Tests: `ctcp_test.exs` (the predicate), `server_test.exs` (own ACTION
+persists :action — the regression), `mircFormat.test.ts` +
+`ScrollbackPane.test.tsx` (the parser + render), and two e2e —
+`issue14-own-action-render` (own `/me` renders `* nick`, never a privmsg
+row) and `mirc-full-format-render` (strike/mono/hex spans in a real
+browser, since jsdom is blind to CSS).
+
+## 2026-06-09 — cic build to zero warnings (vite 8 / rolldown)
+
+`scripts/bun.sh run build` (tsc + `vite build`) emitted three warnings.
+The Elixir suite, cic vitest, and every static gate (credo/dialyzer/
+sobelow-Medium/format/audits/doctor/wireTypes/bats) were already green;
+this was the only non-clean surface. Two were fixed at the source; the
+third was deliberately left alone — see the toolchain note below.
+
+1. **`INEFFECTIVE_DYNAMIC_IMPORT`** — `SettingsDrawer.tsx` statically
+   imported `./lib/push` *and* did a second `await import("./lib/push")`
+   in `removeDevice/2` for `deletePushSubscription`. A module already in
+   the main chunk can't be code-split out, so the dynamic form bought
+   nothing. Folded into the static import. Real defect in our code.
+
+2. **`[PLUGIN_TIMINGS]`** — vite 8 bundles with rolldown, whose
+   `pluginTimings` check prints "plugin `solid` spent significant time"
+   only when the host is under load. A non-deterministic perf advisory
+   about a third-party plugin's wall-clock — poison for a zero-warnings
+   gate (it randomly flips red). Disabled the dev-only check via
+   `build.rollupOptions.checks.pluginTimings = false`. It's one of ~18
+   independent boolean toggles; every correctness check stays on.
+
+3. **`inlineDynamicImports option is deprecated`** — left as-is, on
+   purpose. `vite-plugin-pwa` (≤1.3.0, latest) hard-codes the
+   service-worker rollup output as `inlineDynamicImports: true`. Under
+   rolldown that option was renamed `codeSplitting: false`. The warning
+   is emitted by rolldown's **module-level consola logger** during
+   output-option binding — it bypasses the rollup `onwarn`/`onLog`
+   pipeline entirely (an `onwarn` filter was tried and confirmed dead),
+   and the plugin's `output` is a hardcoded literal we cannot override
+   through `injectManifest.rollupOptions` (typed `Omit<…,'output'>`). No
+   config path silences it; only patching the dependency does.
+
+   A native `bun patch` (SW output → `codeSplitting: false`, the
+   byte-identical successor — a SW must be a single file) WAS tried and
+   verified to zero the warning. It was then **dropped**, because it only
+   covers the bun build paths (local + e2e `cicchetto-build-test`). The
+   **bun ≠ npm toolchain split** is the reason: prod is the m42 FreeBSD
+   bastille jail, which has **no bun** (`pkg` has no port) and builds the
+   bundle with **npm** via `infra/freebsd/jail_cic_build.sh`. npm ignores
+   bun's `patchedDependencies`, and with no committed `package-lock.json`
+   it resolves `^1.2.0` fresh → 1.3.0 — so prod neither applies the patch
+   nor pins the version. Making prod clean too would mean a SECOND patch
+   mechanism (patch-package + a `postinstall` hook + an exact version
+   pin), heavier than a cosmetic deprecation in the deploy log warrants.
+   CI doesn't build cic at all (ci.yml is pure Elixir; the cic build +
+   vitest are local-only — see `feedback_cic_check_gate_masks_tsc`), so
+   nothing gates on this. The deprecation is upstream, harmless (the SW
+   builds identically), and will lift when vite-plugin-pwa migrates to
+   `codeSplitting`. Accepted on all paths rather than carry a patch that
+   can't reach the one place (prod) you'd most want it.
+
+Sobelow's 8 Low-confidence Traversal findings (uploads.ex ×5, reaper.ex
+×2, version.ex ×1 — all server-managed paths) were left as-is: they sit
+below the project's configured `exit: "Medium"` gate (CI green by
+policy), consistent with annotating only where churn warrants it.
+
+### e2e full-suite reds: cp15-b6 + m6 `/msg` own-render (NOT a cascade)
+
+The full-suite e2e run surfaced reds in `cp15-b6-archive-query-revival`
+and `m6-cicchetto-to-priv-opens-query`. Both passed **3/3 in isolation**,
+so the first read was "cascade" (docs/TESTING.md maps 3/3-iso-pass →
+state-order pollution). A proper bisect disproved cascade, and a second
+full run separated the two specs into **two different root causes**:
+
+- cp15-b6 alone: 3/3 pass.
+- chromium prefix #1–12 / #13–24 / full #1–24 + cp15-b6: all pass.
+- full ~190-spec suite, run 1: cp15-b6 fails 7.5s, m6 fails 7.5s.
+- full suite, run 2 (after a 5s→15s timeout bump): **m6 passes**;
+  cp15-b6 **still fails at 15s** with the query window open but empty
+  ("no messages yet") — the row is *absent*, not late.
+
+Projects do not interleave (chromium runs fully before webkit), so no
+cross-project poisoning either. Two distinct causes:
+
+**m6 — first read "genuine timing", SUPERSEDED.** The initial diagnosis
+was that m6's round-trip (cic `/msg` → bouncer persist → WS push → own row
+renders) merely overran Playwright's 5s default under full-suite load on
+the Raspberry Pi (7.5s observed), so the 15s bump "fixed" it. That was
+wrong: the failure is the row being *absent*, not late — a genuine cic
+production bug in scrollback recovery (own-send read-cursor poison). See
+the 2026-06-09 entry "cic `/msg` to a new nick — own-send cursor poison"
+below for the real root cause + fix (issue #50). The 15s bump is kept as
+harmless slow-Pi headroom but was never the fix.
+
+**cp15-b6 — the DM-listener race, and a bigger timeout never fixes it.**
+`selectChannel` awaits the *channel* topic join, not the *own-nick* topic
+join (sibling effects gated on `networks()` loading). Firing `/msg`
+before the own-nick subscribe completes broadcasts the outbound PRIVMSG
+to **zero subscribers** → query window never opens → row never renders.
+This is the exact race `waitForDmListenerReady` exists to close (its
+docstring cites ~20% suite flake), and 7 sibling DM specs already call it
+(m4/m5/m6/cp14-b3/ux-6-k/ux-6-l/p0b) — cp15-b6 was the lone omission. A
+bigger timeout is futile because the row is absent, not slow. The real
+fix: `await waitForDmListenerReady(page, NETWORK_SLUG)` after
+`selectChannel`, before the first `/msg`.
+
+Fixes landed: (1) add the `waitForDmListenerReady` barrier to cp15-b6
+(root cause); (2) bump the WS/REST round-trip assertion timeouts 5s → 15s
+in both specs (cp15-b6 ×6, m6 ×2) for slow-host headroom — the assertion
+still fails if a row never arrives, it just stops racing a 5s clock on a
+loaded Pi. cp15-b6 is a *test* bug (the missing barrier; the bouncer
+persists + pushes correctly once a subscriber exists). **m6 is NOT** — it
+is a real cic production bug (the own-send cursor poison), fixed in the
+next entry. The earlier "no production bug in either case" read applied
+only to cp15-b6.
+
+## 2026-06-09 — cic `/msg` to a new nick — own-send cursor poison (issue #50)
+
+The m6 flake above turned out to mask a real cic bug: `/msg <new-nick>
+<body>` to a nick with **no existing query window** could leave the
+freshly-opened window stuck on "no messages yet" — the operator's own
+outbound row never rendered — until a page reload. Intermittent, surfaces
+under load (the Pi loses the race the CI ubuntu box usually wins).
+
+**Root cause — own-send poisons the recovery cursor.** Three delivery
+paths for the own row, all defeated for a brand-new window:
+
+1. `loadInitialScrollback` fires from `setSelectedChannel` in the `/msg`
+   handler (`compose.ts` `:msg` case) *before* the POST, gets an empty
+   page, seeds an empty pane, marks the channel load-once.
+2. The live WS append needs the `(slug, peer)` channel-topic
+   subscription, which the query-windows loop in `subscribe.ts` joins
+   *reactively* after the window appears in `queryWindowsByNetwork`. If
+   the server broadcasts the row before that join completes, Phoenix
+   drops it (no replay to late subscribers).
+3. `refreshScrollback` (the CP29 R-5 join-ok recovery) is *supposed* to
+   backfill — but `sendMessage` had already advanced the server read
+   cursor to the **just-sent row's own id** (optimistic forward-only
+   advance, `readCursor.setReadCursor` writes the local signal
+   synchronously). `refreshScrollback` resolves its resume cursor via
+   `getResumeCursor`, which falls back to the read cursor when
+   `lastSeenIdByKey` is empty (nothing was ever `recordSeen`'d, because
+   nothing rendered). So it fetches `?after=<own-id>` → empty → the row
+   is never recovered.
+
+The read cursor lied: it claimed "read up to row N" before row N was ever
+rendered. Every *other* writer only advances the cursor to a row that IS
+in the pane (`loadInitialScrollback` → backlog tail; scroll-settle →
+visible row). `sendMessage` was the lone path that advanced **past** the
+rendered tail.
+
+**Fix — gate the advance at its source, not at the recovery.** In
+`sendMessage`, only advance the read cursor when the local pane already
+holds a rendered row (`scrollbackByChannel()[key]?.length > 0`). Empty
+pane → leave the cursor put → `getResumeCursor` returns null →
+`refreshScrollback` resumes from id 0 and recovers the send. Established
+channels are unaffected: once any row has rendered, `lastSeenIdByKey`
+shadows the read cursor in `getResumeCursor`, so the advance there is
+already honest and never consulted as a poisoned resume point. Bucket D's
+focused-send badge drop is preserved (a focused window with unread rows
+has a non-empty pane); it is moot on an empty pane (no `── XX unread ──`
+divider exists to collapse).
+
+**Rejected the issue's own proposed fix** (clamp `cursor = 0` inside
+`refreshScrollback` when the pane is empty). The channels loop
+(`subscribe.ts`) joins *every* channel eagerly while
+`loadInitialScrollback` is focus-only (`selection.ts`), so an unfocused
+channel with a `/me`-hydrated read cursor R has an empty pane when its
+join-ok `refreshScrollback` fires. The clamp would fetch `?after=0`
+(oldest 200, ASC) instead of `?after=R` — pulling ancient history and
+leaving an unreachable gap in the middle of the pane on later focus. The
+source-gate touches only the own-send path, so it has no such blast
+radius. (Spec inherited a bug; CLAUDE.md "challenge the spec".)
+
+**Known narrow corner (accepted):** if device A `/msg`-opens a query
+window that device B already has focused with content, A's own-send no
+longer writes the cursor (A's pane is empty), so B's badge for that window
+drops a beat later — on A's own join-ok `refreshScrollback` + the next
+settle — rather than instantly. The pre-fix code "helped" B here only by
+poisoning A's own recovery; prioritising A's row render is the correct
+trade.
+
+The m6 spec's 15s round-trip timeout bump is now redundant (the fix
+renders the row) but kept as harmless slow-Pi headroom — reverting it
+risks re-flaking on the genuine 7.5s round-trip observed under full-suite
+load.
+
+## 2026-06-09 — cic: split "log out" into "detach" vs "quit" (issue #43)
+
+**Problem.** The single SettingsDrawer "log out" button was ambiguous
+about the bouncer. `auth.logout()` revokes the bearer + redirects to
+`/login` but never touches the upstream IRC session — by design, but it
+surprised the operator (2026-06-04): "logged out" of cic, then watched
+the IRC session keep filling scrollback.
+
+**Fix — two affordances for registered users, gated on subject kind.**
+The drawer now renders, for `getSubject()?.kind === "user"`:
+
+- **`detach`** — today's `logout()` flow, relabelled. Revokes the web
+  bearer, leaves the IRC session connected; reconnecting cic later picks
+  it back up.
+- **`quit`** — a destructive two-tap `InlineConfirmButton` (`quit` →
+  `really quit IRC?`) wired to the **pre-existing** `quitAll(null)`
+  composite (`lib/quit.ts`: park every `kind === "user"` network via
+  `PATCH /networks/:id {connection_state:"parked"}`, then `logout()`).
+  Parked persists across restart (Bootstrap skips `:parked` rows) — the
+  correct "stays off until I reconnect" semantic for a Quit affordance.
+
+This was **wiring, not new infra**: `quitAll` already backed the `/quit`
+compose verb and the visitor sidebar ×. Server side unchanged.
+
+**Visitors + the not-yet-loaded null subject keep the single `log out`.**
+Visitors have no persistent bouncer binding (logout tears the session
+down server-side), so the split is a meaningless distinction; gating on
+`kind === "user"` (not `!isVisitor()`) also keeps the loading/`null`
+subject on the safe single button.
+
+**Disarm-on-close.** The drawer stays mounted across open/close (CSS
+`.open` toggle, not `<Show>`), so an armed `quit` would survive a
+close→reopen one stray tap from killing the bouncer. A
+`createEffect(() => { if (!props.open) setQuitArmed(false) })` disarms on
+every close. The armed flag lives in the parent per the
+InlineConfirmButton contract.
+
+**Tests.** vitest pins the wiring with a mocked `quitAll`
+(`SettingsDrawer.test.tsx`: detach→logout-not-quitAll, single-tap arms
+without firing, two-tap→quitAll, disarm-on-close, visitor single
+button). The Playwright spec (`issue43-split-logout.spec.ts`) owns the
+real-browser render + arm-guard + disarm surface and **deliberately does
+NOT fire** the destructive confirm or a real detach — vjt's seeded
+token + IRC session are shared suite-wide, so parking the session or
+revoking the bearer would cascade-fail downstream specs. The quitAll
+park-all+logout composite already has full-stack coverage in
+`u-4-device-identity-change` + `ux-4-z-cluster-journey`; this spec is the
+NEW render/guard, not the pre-covered composite. The `m7-admin-gate`
+spec's registered-user positive twin moved from `log out` → the
+`detach-btn` testid.
+
+## 2026-06-09 — video + document uploads (uploads-2 cluster)
+
+The upload pipeline generalizes from image-only to three categories —
+image / video / document — across server caps, MIME admission, the cic
+host abstraction, and a client-side video transcode. Spec:
+`docs/superpowers/specs/2026-06-09-video-doc-uploads-design.md` (8
+tasks). Emoji prefixes on the wire: 📸 / 🎬 / 📄 — IRC stays text only;
+the emoji is the whole media-type signal.
+
+**Per-type caps + key migration, no read-fallback.** The single
+`upload.per_file_cap_bytes` becomes
+`upload.{image,video,document}_per_file_cap_bytes` (10/50/10 MiB
+defaults) — one 50 MiB ceiling for video must not gift 50 MiB to raw
+images. A DML migration renames the existing row; there is deliberately
+NO read-fallback on the old key, so a missed migration surfaces as the
+compiled-in default instead of a silent legacy read. An admin PUT still
+using the old key lands in the existing unknown-key warning clause:
+logged, rejected, not silent.
+
+**Server MIME→category map.** The flat image allowlist becomes
+`@mime_categories` in `UploadsController`: video (mp4 / quicktime /
+webm) and document (pdf / txt / odt / ods / docx / xlsx — no
+macro-enabled variants) join the five image types. The category is
+derived from the declared MIME per request and picks which cap applies;
+it is never stored — no schema change, nothing to backfill.
+
+**cic: ImageHost → UploadHost.** Per-category `acceptedMimeTypes` plus
+`maxFileSizeBytes(category)`; `categoryOf()` (`uploadCategory.ts`) is a
+1:1 ordered mirror of the server map — adding a MIME touches both files
+in the same commit. One orchestrator with a pre-upload transform hook
+(video → transcode, image/document → identity); no per-type orchestrator
+forks. The spec originally typed `maxFileSizeBytes` as a
+`Record<UploadCategory, number | null>` — amended during implementation
+to a function of category after review caught a latent bug in the
+pre-cluster embedded host: its cap pre-check captured `serverSettings()`
+once at module init while the comment claimed admin-tuned caps applied
+reactively. The comment was a lie. A literal can't be reactive; the
+function shape reads the signal at call time, so an admin cap change now
+reaches the ComposeBox pre-check without a reload.
+
+**mediabunny for the transcode.** One dependency, MPL-2.0, no wasm
+blob: demux + mux + WebCodecs orchestration + audio passthrough.
+Rejected: ffmpeg.wasm (25 MB download, COOP/COEP isolation
+requirements, mobile memory death) and a hand-rolled mp4box.js +
+WebCodecs frame loop + mp4-muxer stack (three deps and we own the frame
+loop + manual audio passthrough — exactly what the library already
+does). Two non-obvious findings are encoded in code + tests:
+`Conversion.init` COPIES input metadata tags unless given an explicit
+empty `tags: {}` — that one line is load-bearing for the
+"transcoded output is metadata-free by construction" guarantee — and
+mediabunny scales to the requested box unconditionally, so the target
+height is clamped to the source's display height to never upscale.
+
+**Transcode-always + adaptive resolution + policy ceiling.** When the
+capability gate passes (WebCodecs present + avc encodable), every video
+is transcoded — uniform mp4 out, GPS/creation-time dead with the
+container. Bitrate budget = (0.95 × video cap × 8) / duration − 128
+kbps audio reserve; budget ≥ 2 Mbps → 720p target, else 480p. The
+2-minute ceiling is POLICY, not capability: duration is read via a
+`<video>` element's `loadedmetadata` (works without WebCodecs), so it
+binds on every path.
+
+**Fallback-to-original decision trail.** vjt initially chose
+strict-reject on unsupported platforms; reverted to fallback-to-original
+for compatibility (an iPhone-shot clip from a WebCodecs-less browser
+should still send). Capability failures (`unsupported` / `failed`) fall
+back to uploading the original under the same policy gates, reason
+`console.warn`'d; `too_long` hard-rejects everywhere. The fallback
+original keeps its metadata — a known, accepted leak, documented in the
+spec; #39 (server-side metadata stripping) will generalize.
+
+**#49 root cause + fix.** The stale-retry bug: `lastAttempt` (the
+retry payload) was written only after the pre-checks passed, so an
+oversize rejection left the PREVIOUS file as the retry buffer and
+"retry" after picking a smaller file re-uploaded the rejected one. Fix:
+record the user's latest selection unconditionally, before any gate —
+retry now always retries what the error box shows.
+
+**Plug.Parsers latent 8 MB bug (Task 1).** The multipart parser's
+`:length` default is 8_000_000 bytes — a 9 MB upload 413'd at the
+parser while the admin-tuned cap said 10 MB was fine. Raised to a 64 MB
+ceiling scoped to `:multipart` only; a top-level `:length` would also
+have raised the JSON body ceiling 8× on memory-constrained prod. Policy
+stays in the per-type caps; the parser ceiling is just headroom above
+every cap.
+
+**Lazy-chunk split.** mediabunny was 60%+ of the cold-start main
+bundle for a feature most sessions never touch. `videoTranscode.ts`
+(the only mediabunny importer) sits behind a dynamic `import()` at the
+orchestrator's video branch; `videoPolicy.ts` (duration ceiling, budget
+math, `<video>` probe) is the static, mediabunny-free policy surface.
+Main chunk 799.59 kB → 304.41 kB (gzip 208.26 → 84.97 kB); the
+494.58 kB transcode chunk loads on first video upload.
+
+**e2e.** `uploads2-video-doc-upload.spec.ts`: document happy path
+(upload.txt → 📄 row + byte round-trip) and a chromium-only video test
+(tiny.mp4 → 🎬 row), deliberately transcode-agnostic — Playwright's
+chromium build may lack an avc encoder, in which case the documented
+capability fallback uploads the original and the same PRIVMSG lands.
+Harness gotcha encoded in the spec: `VideoEncoder` is
+`[SecureContext]`-gated, so the skip-probe must run on the app origin —
+probing `about:blank` false-skips.
+
+## 2026-06-10 — uploads Range/206 + the lost-'self' CSP rule (playback saga, layer 4)
+
+The prod video pipeline saga continued past the host-nginx body cap:
+uploads landed and transcoded correctly (faststart moov, H.264
+High + AAC-LC, coherent container) but the 🎬 link never played on
+the dogfood iPhone. Two independent delivery-layer defects:
+
+**1. No byte-range support.** `GET /uploads/:slug` answered every
+request — including `Range:` — with a 200 full body via
+`send_file(200, path)`. iOS/macOS Safari hard-require 206 from a
+media origin; without it the media document refuses playback
+entirely. Fix: `GrappaWeb.ByteRange` (RFC 9110 §14 single-range
+parser, three-way verdict `{:ok, {offset, length}}` /
+`:unsatisfiable` / `:ignore`) + controller wiring (206 +
+`content-range`, 416 without the freshness grant, `accept-ranges:
+bytes` advertised, full 200 for ignorable headers — RFC-sanctioned).
+
+*Altitude decision*: BEAM-side serving via `send_file/5` over
+nginx-native (X-Accel-Redirect to an internal location). The nginx
+route would get Range + edge caching for free but costs a
+per-substrate uploads-path config (jail vs Docker volume vs e2e vs
+dev-without-nginx, which still needs the Phoenix path as fallback —
+two code paths for one resource). One controller path works on all
+four substrates, and `send_file/5` is still zero-copy: Bandit hands
+offset+length to `:file.sendfile/5` on the plain-TCP upstream hop.
+Multi-range (`multipart/byteranges`) deliberately unimplemented —
+browser media players never send it, full-200 is the spec fallback,
+and the encoder would be mechanism heavier than the problem.
+
+**2. The lost-'self' CSP regression class.** The same-day `media-src
+blob:` fix (duration probe) silently REVOKED self-hosted media:
+declaring a fetch directive replaces the `default-src 'self'`
+fallback rather than extending it, and direct navigation to an
+/uploads mp4 renders in a media document whose synthesized `<video>`
+is governed by the response's own CSP. Fix: `media-src 'self'
+blob:`, plus the general rule hoisted to the top of
+`security-headers.conf`: every new fetch directive must restate
+'self' unless its absence is deliberate and commented (frame-src is
+the documented exception). e2e ships green on this whole mistake
+class until the CSP-parity todo lands — the planned integration run
+should also pin a ranged-fetch 206 through the nginx chain, since
+ConnTest can never see a proxy-layer Range strip.
+
+## 2026-06-10 — server-side metadata strip (#39): privacy is a server guarantee
+
+vjt's architectural call closing the iOS-picker "double processing"
+discussion: **privacy = server guarantee, client transcode decision =
+pure performance.** GPS/metadata presence must never sit in the
+client's transcode-or-not decision path, because the server strips
+metadata ALWAYS. This supersedes the uploads-2 spec's
+"always transcode when supported … metadata-free by construction"
+constraint (amended at the source, see
+`docs/superpowers/specs/2026-06-09-video-doc-uploads-design.md`):
+the transcode was carrying a privacy job it can't actually own — the
+fallback path uploaded originals with GPS intact, and litterbox
+uploads never saw a strip at all. A guarantee that holds only on the
+happy path is not a guarantee.
+
+**Where.** `Grappa.Uploads.MetadataStrip.run/2`, called inside
+`Uploads.create/3` before the file write — context-level so every
+door (REST today, any future facade) inherits it. The row's `bytes`
+is the STORED (stripped) size, keeping `live_bytes_sum/0` cap
+accounting honest against the disk.
+
+**Tooling (verified empirically, not from docs).** `exiftool -all=`
+for images (jpeg/png/gif/webp/apng) and QuickTime video (mp4/mov):
+lossless container rewrite — ffmpeg would RE-ENCODE jpeg (quality
+loss), which is why "one tool for everything" was rejected. Verified
+on GPS-tagged samples: EXIF APP1, PNG `eXIf`, `udta` `loci`/`©xyz`,
+`mdta` Keys (`com.apple.quicktime.location.ISO6709`) all removed;
+moov-before-mdat (faststart) preserved — a reordering would have
+silently broken iOS progressive playback (the layer-4 saga's hard
+lesson). webm is the one allowlisted type exiftool cannot write
+("Writing of WEBM files is not yet supported") → ffmpeg stream-copy
+remux (`-map_metadata -1 -map_chapters -1 -c copy`), encoded streams
+untouched.
+
+**Fail-closed.** Strip failure (garbage bytes, missing binary,
+image/video mime without a tool mapping) rejects the upload —
+`{:error, {:metadata_strip, reason}}` → 422 `metadata_strip_failed`.
+Reason is logged server-side, never echoed (tool stderr leaks tmp
+paths). The unmapped-mime clause is deliberate: a future allowlist
+addition without a strip mapping must break loudly in tests, not
+store-with-leak. Documents pass through byte-identical (vjt scope:
+images + videos; PDF/office metadata is a known accepted class).
+
+**Deps.** Dockerfile `apk add exiftool ffmpeg` (dev/CI/e2e inherit);
+jail needs `pkg -j 6 install p5-Image-ExifTool ffmpeg` BEFORE the
+deploy (OPERATIONS "Jail package dependencies") — fail-closed means
+missing binaries reject every media upload.
+
+**Fixtures.** Committed GPS-tagged binaries
+(`test/support/fixtures/uploads/` + `generate.sh` provenance):
+marker-string assertions (`Exif`, `eXIf`, `com.apple.quicktime`,
+coordinate strings) pin presence in the fixture AND absence in the
+stored artifact, tool-independent. Lifecycle/byte-arithmetic tests
+moved to `text/plain` (passthrough keeps size constants exact);
+media-path coverage moved UP into dedicated strip tests + door-level
+tests with real bytes — the old `"PNG-FAKE-BYTES"`-labeled-png tests
+exercised zero image semantics and cannot survive a fail-closed
+boundary.
+
+## 2026-06-10 — substrate-scoped preflight classes (the Dockerfile-colds-the-jail defect)
+
+**Trigger.** The metadata-strip deploy (2026-06-10) cold-restarted
+prod — ALL IRC sessions dropped — because the diff touched
+`Dockerfile`. The jail never reads the Dockerfile: its substrate is
+`mix release` + rc(8), and the jail-side equivalent of that diff
+(`pkg install`) had already been done by hand. Second needless
+restart in one day ("TOO MANY COLD DEPLOYS PORCO DIO"). On an
+always-on bouncer every cold deploy is incident-grade, so a
+false-COLD is not "30s of downtime", it's every user's IRC session.
+
+**Decision.** `Grappa.Deploy.Preflight` classifies per-substrate.
+`classify_paths/2`, `classify/5` and `cli([from, to, substrate])`
+take an explicit `substrate :: :docker | :jail` — no default
+argument (CLAUDE.md ban): a missing substrate at the CLI is a usage
+error (exit 2) and an unknown atom raises `FunctionClauseError`.
+Guessing a substrate would silently re-introduce the cross-substrate
+restart class this argument exists to kill.
+
+The flat Class-4 COLD list split into substrate-scoped classes:
+
+- **4a `:image_substrate`** (`Dockerfile`, `.dockerignore`,
+  `compose.*` as a PREFIX class, `bin/start.sh`, `bin/grappa`) —
+  COLD only when classifying for `:docker`. The jail sees them as
+  HOT. `compose.*` is a prefix, not an enumeration: H20 already
+  proved the enumeration failure mode twice (compose.override.yaml
+  and compose.oneshot.yaml were both missed by the prior allowlist);
+  diff paths are repo-relative so the prefix anchors at the root.
+- **4b `:rc_d`** (`infra/freebsd/rc.d/grappa`) — COLD only for
+  `:jail`. Docker sees it as HOT. New reason atom because reporting
+  a jail rc script under `:image_substrate` is a lying label. Scoped
+  to the grappa wrapper deliberately: the sibling
+  `rc.d/grappa_ndp_keepalive` is a DIFFERENT rc(8) service —
+  cold-restarting the BEAM (dropping every IRC session) would not
+  refresh it, so it stays HOT and its bytes ride the cold-path
+  installer below.
+
+Everything else (deps, supervision tree, migrations, nginx, config,
+state-shape) stays substrate-independent. Deploy orchestrators stay
+excluded from COLD on both substrates (d8f354c reasoning unchanged).
+
+**Exit-code contract at the shell boundary.** Both orchestrators
+previously collapsed every non-zero preflight exit into COLD
+(`if cli…; then hot; else cold; fi`) — which would have turned the
+new "loud usage error, exit 2" into a silent session-dropping
+restart on every future deploy, the exact class this change kills.
+Both now case on the exit code: 0 → hot, 3 → cold, anything else
+aborts the deploy loudly. COLD moved from 1 to 3 because a crashed
+mix oneshot exits 1 — a crash must never be readable as a verdict.
+
+**The jail preflight had NEVER produced a verdict.** Found by live
+probe right after the hot deploy: `mix run` under `MIX_ENV=prod`
+evaluates `config/runtime.exs`, which raises on missing
+`DATABASE_PATH` — the daemon gets its env from rc.d, but
+`run_as_grappa`'s `su -l` login shell does not, so the jail's
+auto-mode preflight crashed with exit 1 on every invocation since
+the day it shipped, indistinguishable from a COLD verdict. Every
+"classified COLD" jail deploy was actually "preflight crashed".
+(Past cold deploys also contained legitimately-COLD diff classes,
+which is why nobody saw it.) Fixed: the jail deploy sources
+`/usr/local/etc/grappa/grappa.env` for the preflight oneshot (same
+`set -a` flow as `jail_release.sh`, abort-if-unreadable), and the
+1-vs-3 split above makes any future crash class abort instead of
+silently colding. The shipped-today re-exec guard is what lets the
+NEXT deploy pick all of this up before its preflight runs.
+
+**rc.d refresh.** The jail cold path (`infra/freebsd/deploy.sh`)
+now runs `jail_install_rcd.sh` — the existing idempotent installer,
+not a new inline copy — BETWEEN stop and start: the old daemon is
+stopped through the wrapper that started it, the new one boots
+through the new wrapper, and both rc.d wrappers get refreshed on
+every cold deploy. Closes the loop that bit the same day: the rc(8)
+PATH fix shipped in the repo but prod kept 422ing until the wrapper
+was hand-copied. No manual step left (OPERATIONS updated at the
+source).
+
+**Re-exec guard fixed (was dead code).** The 2026-05-31
+self-modifying-script guard compared
+`${REPO_ROOT}/infra/freebsd/deploy.sh` against `$0` — the SAME path
+under the documented bastille invocation, so it could never fire
+while /bin/sh kept executing pre-pull bytes from the renamed-away
+inode. It now re-execs when the pulled diff range contains
+`infra/freebsd/deploy.sh`, threading the original pre-pull SHA via
+`DEPLOY_PREV_SHA` (the re-exec'd run re-pulls a no-op and would
+otherwise see prev==new and exit "nothing to do" — the old guard had
+that second latent bug too).
+
+**Deploy completion marker + reload honesty (same-day follow-up,
+live-repro'd shipping THIS cluster).** The shipping deploy was
+killed mid-flight (operator-side SIGPIPE) between `mix release` and
+the reload POST: fresh beams on disk, stale BEAM live — and every
+re-run exited "no commits since last HEAD — nothing to do", because
+the fast path equated "pull was a no-op" with "deployed". Recovery
+was manual (rpc soft-purge + load). Three fixes:
+
+- The jail deploy writes `runtime/last-deployed-sha` as the FINAL
+  step of both paths; nothing-to-do now requires same-HEAD AND
+  marker==HEAD, else it re-drives (an idle re-run costs one no-op
+  release rebuild).
+- `POST /admin/reload` returning HTTP 200 with `"failed":[...]` no
+  longer prints "✓ hot deploy complete" — the hot path greps for
+  `"failed":[]` and aborts otherwise.
+- The reload endpoint itself couldn't reload a module TWICE between
+  restarts: `:code.load_file/1` fails `:not_purged` when the old
+  slot is full (hit live: the second hot deploy of
+  `Grappa.Deploy.Preflight` in one day). Logic moved to the new
+  `Grappa.HotReload` context (controllers thin):
+  `:code.soft_purge/1` then load. soft, not hard — hard purge KILLS
+  processes still executing old code (= dropped IRC sessions from
+  the endpoint that exists to avoid restarts); the refusal surfaces
+  as `{mod, :old_code_in_use}` in `failed` and the deploy aborts
+  honestly. Pinned by `test/grappa/hot_reload_test.exs` incl. the
+  double-reload repro and a held-old-code refusal test.
+
+**Hot deploys that ADD a module (third live repro, same day).** The
+deploy shipping `Grappa.HotReload` itself proved the next gap:
+`:code.modified_modules/0` only compares LOADED beams against disk,
+so a brand-new module is invisible to the reload walk; releases run
+embedded mode (no lazy loading), so the reloaded `AdminController`'s
+first call into the new module 500'd `:undef`. And the recovery rpc
+showed a second trap: OTP's cached code path (OTP 26+) does not see
+files added to a directory after boot — `:code.load_file/1` reports
+`:nofile` for a beam that is demonstrably in a path member dir.
+`reload_modified/0` now also walks the app ebin for never-loaded
+beams and loads them via `:code.load_abs/1` (bypasses the path
+cache). Recovery one-liner for a node in this state:
+`jail_release.sh rpc ':code.load_abs(~c"<ebin>/Elixir.Mod.Name")'`.
+
+**Acceptance.** The fix's own deploy is the test — with one caveat
+found in review: the deploy that SHIPS this change still runs the
+old deploy.sh bytes (the old guard is the dead one), whose 2-arg
+`cli` call against the new 3-arg module exits 2 → old `if`/`else`
+reads that as COLD. So the shipping deploy goes out `--force-hot`
+(after verifying the range classifies HOT via the new classifier
+locally); the NEXT auto deploy exercises the full pipeline
+end-to-end. The prior Dockerfile-only diff now classifies
+HOT-on-jail / COLD-on-docker, pinned by the substrate-matrix tests
+(`test/grappa/deploy/preflight_test.exs`).
+
+## 2026-06-11 — cic text selection dead (two stacked causes, one per platform)
+
+vjt: text selection doesn't work in cic, neither desktop nor mobile.
+One symptom, two independent root causes that happened to overlap:
+
+**Desktop: keepKeyboard's mousedown preventDefault.** The UX-3
+preserve-keyboard listener (document-level capture, `lib/keepKeyboard.ts`)
+preventDefaults every mousedown that lands outside an input while an
+input has focus. The module header claimed "No-op on desktop browsers" —
+false: the install was unconditional, and mousedown's default action is
+not just the focus shift, it is ALSO the start of a text-selection
+drag. With the compose box autofocused (the normal cic state), every
+attempt to drag-select scrollback text was cancelled at the capture
+phase. Fix: gate the handler on `isIos()` — the on-screen keyboard the
+listener exists to preserve is an iOS concern (the whole UX-3 arc was
+iOS dogfood), so anywhere else the preventDefault is pure loss. The
+gate sits in the handler (not at install) for test isolation: the
+document-level capture listener has no uninstall path, so an
+install-time gate would leak an ungated listener from an iOS-UA test
+into later desktop-UA tests. Pinned by
+`src/__tests__/keepKeyboard.test.ts` (desktop UA: mousedown survives;
+iPhone UA: preserve still fires, focus transfer to other inputs still
+allowed).
+
+Two scoping decisions made consciously, not by omission. Android also
+has an on-screen keyboard, and the old unconditional preventDefault
+plausibly preserved it too — but Android keyboard behavior was never
+validated (no Android dogfood; every UX-3/UX-6 iteration was iOS), so
+the gate scopes to the documented target rather than freezing an
+untested side effect; if Android dogfood shows keyboard drops, the
+gate widens by one clause. And iPad-with-trackpad stays imperfect:
+`isIos()` is deliberately true there (platform.ts iPadOS detection),
+so a hardware-pointer drag still gets preventDefaulted while compose
+is focused — fixing that properly needs on-screen-keyboard-visibility
+detection, which the UX-6 D arc showed is a tar pit. Touch long-press
+selection on iPad works via the CSS half; the trackpad edge waits for
+an actual complaint.
+
+**iOS: the half-copied Telegram pattern.** UX-6 D9 (479b77d) adopted
+Telegram Web K's keyboard pattern wholesale, including
+`html.is-ios { -webkit-user-select: none }`. Telegram pairs that global
+kill with a selective re-enable on message text; the copy took the kill
+and skipped the re-enable, making ALL of cic unselectable on iOS — and
+no DESIGN_NOTES entry ever recorded user-select as a deliberate
+decision, confirming it rode along unexamined. Fix: complete the
+counterweight as a single policy block in default.css (`html.is-ios
+.scrollback, .topic-modal-text, input, textarea { user-select: text }`)
+— new copyable surface = one selector added there, no scattered
+re-enables. Channels, queries and the server window all render through
+`.scrollback`; the topic modal is where users copy topics (the topic
+BAR is clickable chrome and stays dead); editable fields get an
+explicit re-enable because WebKit honors inherited `user-select: none`
+inside inputs in some version ranges. Deliberately excluded: mentions
+rows (navigation buttons — the target message is selectable in its
+channel) and the `[Join]` invite CTA inside `.scrollback` (re-excluded
+explicitly so long-press doesn't pop the magnifier over a control).
+App chrome stays unselectable, which is the global rule's actual point
+(no selection magnifier mid-scroll-gesture).
+`-webkit-touch-callout: none` stays — link long-press callout is a
+separate, deliberate native-app-feel decision, untouched by this bug.
+
+Review caught the fix's own near-miss: the day-separator and
+unread-marker labels declared only UNPREFIXED `user-select: none`,
+which iOS Safari <18.4 doesn't parse — under the new prefixed `text`
+re-enable on the ancestor they'd have become selectable exactly where
+the comment promised they weren't. Both label rules now carry both
+forms. General rule for this theme file: any `user-select` declaration
+ships prefixed + unprefixed, or the iOS cascade splits from the spec
+one.
+
+e2e guard: `e2e/tests/text-selection-restored.spec.ts` — chromium test
+drives the actual drag-select gesture with compose focused (the exact
+dead path); the @webkit test asserts the computed-style cascade on the
+iPhone-15 emulation surface (real long-press selection isn't
+emulatable — same limitation class as
+feedback_playwright_webkit_not_ios_scroll). Device-level dogfood on a
+real iPhone remains the final verification for the iOS half — include
+a SHORT channel (few lines, no overflow): non-overflowing `.scrollback`
+carries `touch-action: none` (UX-3 Z3 R4 default-deny), and whether
+WebKit starts long-press selection inside a `touch-action: none`
+container is exactly the class of thing emulation can't answer.
+
+Lesson (recurring shape): copying a reference pattern partially is
+worse than not copying it — the kill switch arrived without its
+counterweight. Same family as the "read the reference implementation
+COMPLETELY" rule.
+
+## 2026-06-11 — media links: in-app viewer modal (the in-scope navigation trap)
+
+vjt live-tested link behavior in the iOS standalone PWA (2026-06-10):
+plain website links are FINE — out-of-scope, so iOS opens the Safari
+view with full controls. Only MEDIA links misbehaved: a bare window
+with no controls, and returning to cic forced a full reload. Root
+cause, verified in code before fixing: own upload URLs are SAME-ORIGIN
+(`embeddedHost` resolves `Endpoint.url() + /uploads/<slug>`), the PWA
+manifest has no `scope` key and `start_url: "/"`, so the entire origin
+is in-PWA-scope — and iOS standalone navigates in-scope links IN PLACE
+regardless of `target="_blank"`. The PWA window itself became the raw
+media document: no browser chrome by definition (display: standalone),
+no back control, and the "reload on return" is just cic cold-booting
+after its window was navigated away. Out-of-scope links never had the
+bug, which is why only media links (= own uploads) hurt.
+
+Decision (vjt, 2026-06-10): on-CLICK in-app viewer modal for media
+URLs — X-close + "open in browser" — NOT a generic iframe modal for
+all links (X-Frame-Options blocks most of the web, iframe history is
+unreliable, and it would need a `frame-src` CSP loosening). Plain web
+links stay untouched. This does NOT lift the "IRC stays text only"
+invariant: that rule bans on-ARRIVAL rendering (previews, thumbnails,
+lightbox-on-arrival); a click is the user opening the resource — the
+modal is just WHERE it opens.
+
+Mechanics. `lib/mediaLink.ts` (pure, linkify-style) classifies a URL
+given the text segment preceding it: same-HOST `/uploads/<26-char-
+base32>` + trailing 📸/🎬 → image/video (the slug carries no
+extension — the uploadOrchestrator's emoji prefix is the only type
+signal on the wire); same-host media-extension URL → kind by
+extension; cross-host → null, ALWAYS. Two independent reasons for
+the cross-host exclusion: the CSP (`img-src 'self' data:`,
+`media-src 'self' blob:`) would block the modal's media element — the
+viewer ships with ZERO CSP changes — and cross-host links don't
+have the bug in the first place (litterbox URLs open correctly in the
+Safari view today). 📄 document uploads are excluded: rendering a PDF
+in-modal needs `<embed>`/`<iframe>`, which is the rejected design; a
+same-origin 📄 link still navigates in place on iOS standalone —
+known residual, waits for a complaint before earning machinery.
+
+HOST-equality, not full-origin equality — the e2e spec's first run
+caught why. The harness anchor rendered `http://localhost:4000/
+uploads/<slug>` against a `https://nginx-test` page: the e2e server
+minted URLs from its listen socket, not the public origin. Checking
+prod (live rpc, `GrappaWeb.Endpoint.url()`) showed the SAME defect:
+`http://irc.sniffo.org` — runtime.exs declared `url: [host: phx_host,
+port: 80]` with no scheme key, so every upload link ever posted is
+http:// on an https PWA. A strict origin check would have dead-
+lettered the entire upload history. Fix, both ends: (a) runtime.exs
+now roots `url:` at `https://PHX_HOST:443` in an env-agnostic block
+gated on PHX_HOST presence (empty-string-guarded — local dev compose
+passes `PHX_HOST: ${PHX_HOST:-}` and Elixir treats `""` as truthy);
+the e2e harness sets `PHX_HOST: nginx-test` and gains origin
+fidelity, prod mints honest https links from its next (cold —
+preflight class 7, config/*.exs) deploy, batched into a future
+restart window since (b) makes it non-urgent: the classifier matches
+on host (http/https only — linkify also admits ftp) and the click
+handler re-roots the href on the page origin via `normalizeMediaHref`
+before handing it to the viewer, so historical http:// bodies render
+without mixed-content blocks. The `--cic` deploy path doesn't move
+`runtime/last-deployed-sha` (only the server deploy.sh does), so the
+pending runtime.exs change stays inside the next server deploy's
+diff range — the marker machinery from this morning's deploy-honesty
+cluster is what makes "commit now, cold later" safe.
+`lib/mediaViewer.ts` is the two-verb signal store (archive-modal
+pattern; the click originates in module-scope renderRun where no
+component callback can reach); `MediaViewerModal.tsx` mounts at Shell
+root in both branches (PrivacyModal pattern) with the refcounted
+overlay scroll-lock, document-level Escape, button-backdrop close.
+The scrollback anchor KEEPS its href + `target="_blank"` — copy-link,
+middle-click, long-press all behave; only plain click is intercepted
+(`preventDefault` + open viewer). "Open in browser" inside the modal
+is a plain `target="_blank"` anchor: on desktop/Android a real tab;
+on iOS standalone it deliberately leaves the PWA — an explicit user
+choice, unlike the bug where a plain click did so.
+
+e2e (`media-link-modal-viewer.spec.ts`) rides the UX-6-B embedded-
+upload journey end-to-end and asserts the modal `<img>` reaches
+`naturalWidth > 0` — proving the bytes rendered through nginx, but
+NOT through the CSP: e2e nginx-test.conf serves no CSP header (the
+e2e-CSP-parity todo, High, predates this cluster and is what would
+make that assertion CSP-load-bearing). The iOS-standalone navigation
+behavior itself is not emulatable
+(feedback_playwright_webkit_not_ios_scroll class); vjt device dogfood
+is the final verification there.
+
+Review fixes (same session): modifier/aux clicks (cmd/ctrl/shift/
+middle) bypass the intercept — browser-native new-tab semantics keep
+working on media links; the classifier returns `{kind, href}` with
+the page-origin-rooted href (path+query+hash — `#t=` media fragments
+survive) instead of a separate `normalizeMediaHref` step a future
+call site could forget, which would have shipped the exact
+mixed-content block the normalization prevents; `mediaViewer.ts`
+joined `identityScopedStore` (token rotation closes a lingering
+viewer, archive-modal precedent); the document-level Escape listener
+registers only while the viewer is open (the component is permanently
+mounted — an unconditional listener would run on every keystroke
+forever); and the third verbatim copy of the modal overlay-lock
+boilerplate triggered its extraction into
+`createOverlayLock(isOpen, selector)` in overlayScrollLock.ts —
+which also fixed a latent leak ALL the copies shared: a same-task
+open→close popped (clamped at zero) before the microtask-deferred
+push fired, stranding the refcount at 1 with no drain path —
+permanent iOS scroll-lock until reload. ArchiveModal and PrivacyModal
+migrated in the same commit (total consistency or nothing). On the
+server side, PHX_HOST is now mandatory in prod (raise, same contract
+as DATABASE_PATH): the old `|| "grappa.bad.ass"` fallback minted
+equally-dead links, just quietly, and PHX_HOST was previously read
+three times with three different empty-string semantics
+(`PHX_HOST=""` produced a `check_origin: ["//"]` entry) — one read,
+one nil-or-host binding now feeds both roles.
+
+Known residual (recorded, deferred): the 📸/🎬 type signal lives in
+message TEXT, read from the linkify segment preceding the URL within
+one mIRC formatting run — a body that interleaves control codes
+between emoji and URL (colorizing relay bridge) splits them into
+separate runs and the link falls back to the plain anchor (the
+navigate-in-place behavior returns for those rows). cic's own mints
+are always plain `📸 <url>`, so today's real surface is zero; the
+durable fix is server-side minting of `/uploads/<slug>.<ext>` so the
+URL itself carries the type (todo).
+
+## 2026-06-11 — media viewer dogfood: the escape hatch had the bug it escaped
+
+First device dogfood of the media-link viewer came back same-day with
+two defects, and the first one is an indictment of un-dogfooded
+comments: the modal's "open in browser" anchor — the deliberate
+leave-the-PWA affordance — NAVIGATED THE PWA IN PLACE. The shipped
+header comment claimed `target=_blank` "deliberately leaves the PWA"
+on iOS standalone; that claim was never device-verified and is false
+by this cluster's own verified root cause: iOS standalone ignores
+`target` for in-scope (same-origin) links, full stop. No anchor
+attribute escapes in-scope navigation.
+
+The only same-origin escape that exists is the `x-safari-https://`
+scheme handoff (real Safari, iOS 17+, inert on 16; the
+`window.open(url, '_system')` advice floating around is Cordova
+folklore, not WebKit). Mechanism matters as much as the scheme, and
+the v1 fix in this very session got it wrong before review caught it:
+rewriting the anchor's HREF breaks long-press → Copy Link (yields a
+dead x-safari URL) and contradicts the click-intercept-preserve-href
+contract ScrollbackPane's media links established one commit earlier.
+Final shape: href stays the live URL + `target=_blank` (right on every
+non-iOS-standalone platform), plain primary clicks delegate to a
+shared `maybeEscapePwaClick` — modifier guard, gate, preventDefault,
+SAME-WINDOW `location.assign` (a scheme handoff needs no new browsing
+context, and the new-window path is the one WebKit popup policy can
+swallow).
+
+The review panel's altitude finder then made the real catch: the bug
+CLASS is "any same-host link tapped in the standalone PWA", not "the
+modal's anchor". 📄 document uploads (deliberately rejected by
+`classifyMediaLink` — the modal can't render PDFs) and the
+emoji-split-run fallback rows documented one entry above were carrying
+the identical defect, waiting to be re-filed as a fresh dogfood bug.
+ScrollbackPane now routes plain clicks on same-host NON-media links
+through the same escape handler; `sameHostHref` is the extracted
+host-match + origin-re-root half of `classifyMediaLink`, so there is
+exactly one implementation of "is this ours and what URL do we
+actually use". The composed gate lives once in platform.ts as
+`escapePwaHref` — the `isIos()` half is load-bearing (Android/desktop
+installs are standalone too; an x-safari URL is inert there), which is
+exactly the kind of recomposition mistake a second call site would
+have made from the exported halves.
+
+Dogfood defect two — no loading feedback — grew three corrections in
+review: (a) media state transitions only leave `loading` (a transient
+mid-playback MEDIA_ERR_NETWORK must not unmount a playing element; a
+late `suspend` must not resurrect a failed one); (b) `suspend`
+terminates the spinner — iOS Low Power Mode / Data Saver downgrades
+`preload=metadata` and fires neither `loadedmetadata` nor `error`
+before a play gesture, so without it the spinner spun forever on
+exactly the platform the fix targets; (c) `pointer-events: none` on
+the spinner overlay, which otherwise sits precisely on the video's
+centered native play control and swallows the tap that would have
+started the deferred load.
+
+Testing boundary worth recording: jsdom's `window.location` is
+unforgeable AND unimplemented — `location.assign` can be neither
+spied nor allowed to run. The split that works: decision logic pinned
+pure (`escapePwaHref` gate matrix), component wiring pinned via a
+partial module mock of `maybeEscapePwaClick`, and the assign line
+itself owned by device dogfood. The x-safari handoff is likewise not
+e2e-able (the gate is false in every Playwright project, and webkit
+emulation doesn't do standalone navigation) — pending vjt device
+verification, again.
+
+## 2026-06-11 — #39 round 2: the strip ate Orientation (whitelist, not blanket wipe)
+
+Dogfood of the metadata strip found the over-reach: `exiftool -all=`
+removes EVERY tag, and EXIF Orientation is a tag — so every portrait
+phone photo uploaded since the strip shipped renders sideways
+(browsers honor the tag via `image-orientation: from-image`; the
+pixels are stored unrotated). Privacy tags and presentation tags died
+together.
+
+Fix shape per vjt: an explicit ALLOWLIST of presentation-critical
+tags copied back after the wipe — exiftool's own idiom,
+`-all= -tagsfromfile @ -Orientation` (wipe, then copy the named tags
+from the original; no-op when absent). `@kept_tags` starts with
+Orientation only. The bar for an entry: rendering data with no
+provenance payload, AND a committed fixture pinning both directions
+(privacy markers die / kept tag survives) — ICC_Profile (wide-gamut
+color; iPhones shoot Display P3, stripping the profile washes colors)
+is the named next candidate but stays OUT until a profiled fixture
+exists, because an untested whitelist entry is a privacy hole nobody
+pinned (recorded in todo).
+
+Video rotation needed no entry and that asymmetry is worth recording:
+QuickTime rotation lives in the tkhd track display matrix — container
+STRUCTURE, not metadata — so `-all=` never touched it; and webm
+uploads come out of MediaRecorder with pixels already upright. The
+image-only scope of the bug is why vjt saw sideways photos but normal
+videos.
+
+Already-stored sideways uploads are NOT migrated: the strip ran at
+upload time, the Orientation bytes are gone, and reconstructing them
+from pixel content is guesswork. Re-upload is the fix for the handful
+that exist.
+
+Review addenda (same session): the copy-back is gated to image/*
+mimes — mp4/mov go through the same exiftool dispatch, and a bare
+`-Orientation` resolves against ALL groups of the original (XMP,
+EXIF blocks embedded in QuickTime atoms), so on the video path the
+flag was a believed no-op nothing pinned and a latent surprise for
+future @kept_tags entries; video keeps the blanket wipe its
+rationale already argued for. The whitelist test gained an exiftool
+GPS read-back on the stripped output — byte markers cannot see EXIF
+GPS (binary rationals), so without the probe a copy-back widened
+beyond the allowlist would pass the suite green. Rejected
+alternative, recorded so it isn't re-proposed: physically
+auto-rotating pixels (jpegtran) then stripping everything. It's
+jpeg-only (PNG/WebP Orientation would still need the tag path, so
+the whitelist survives anyway), "lossless" rotation requires
+MCU-aligned dimensions (else edge trim or failure), and it adds a
+fourth binary dependency for zero privacy gain over a 1-8 integer.
+Also recorded: a stripped JPEG that kept Orientation carries
+exiftool's mandatory IFD0 companion defaults (YCbCrPositioning=1 —
+fixed default, NOT copied from the source); a privacy audit grepping
+stripped output should expect that minimal APP1 shape.
+
+## 2026-06-11 — prod outage (~15 min): three stacked deploy defects, found live
+
+Applying the parked runtime.exs PHX_HOST cold change surfaced defects
+#7–#9 of the deploy-honesty saga, each one forcing the workaround
+that tripped the next:
+
+**#7 — preflight diffs the wrong range.** `infra/freebsd/deploy.sh`
+classifies `prev_sha..new_sha` where `prev_sha` is the PRE-PULL jail
+HEAD — not `runtime/last-deployed-sha`. But `jail_deploy_cic.sh` ALSO
+`git pull`s: every `--cic` deploy advances the jail HEAD without
+applying server changes, so any server-side commit that lands between
+two cic deploys vanishes from every future server deploy's preflight
+range. The runtime.exs commit (8244df3) entered the jail via a cic
+pull and the next server deploy honestly classified a range that no
+longer contained it → HOT verdict, cold change silently skipped. The
+cp63 assumption "the cold change rides the next server deploy's diff
+range automatically" was false — the marker exists precisely to be
+that base and isn't used for it (only for the nothing-to-do check).
+Fix shape: preflight base = marker when present, pre-pull HEAD as
+fallback. The deploy.sh self-modification re-exec guard correctly
+keeps pre-pull HEAD (running-bytes semantics, different question).
+
+**#8 — `--force-cold` can be silently swallowed.** The nothing-to-do
+fast path (same HEAD + marker match → exit 0) runs before the force
+flag is consulted. An operator explicitly demanding a restart got
+"nothing to do". Fix shape: fast path applies in auto mode only.
+
+**#9 — rc.d restart races the drain.** With #8 broken, the manual
+fallback was `service grappa restart`: stop returned while the old
+node was still DRAINING WebSocket connections, the new BEAM hit
+`the name grappa@grappa seems to be in use by another Erlang node`
+and died at boot — and rc.d printed "Starting grappa." and walked
+away. That unsupervised boot failure WAS the outage; recovery was a
+plain `service grappa start` once the old node was gone. Fix shape:
+stop must wait for BEAM exit + epmd name release before returning
+(or start must retry on name-in-use), and a boot that dies within
+seconds must be loud.
+
+Net state after recovery: PHX_HOST applied (Endpoint.url() now
+https://irc.sniffo.org — prod mints live upload links), 8/8 sessions
+respawned, marker honest at HEAD. Fixes handed off as the next
+dispatch.
+
+## 2026-06-11 — deploy defects #7–#9 fixed: marker range, force wins, stop means stopped
+
+The fix dispatch for the outage above. All three shapes follow the
+incident entry's spec.
+
+**#7 — preflight base = `runtime/last-deployed-sha`.** When the
+marker exists and is a real commit (`git cat-file -e`), it is the
+range base; the pre-pull HEAD remains the fallback ONLY when no
+marker exists (fresh install). A garbage marker (truncated write,
+rewritten history) aborts the deploy loudly with a fix-it hint —
+deliberately NOT a silent fallback to the pre-pull HEAD, which would
+re-open the exact range hole the marker closes. The re-exec guard
+keeps the pre-pull range: it answers "did THIS run's pull change the
+bytes I'm executing?", and a deploy.sh change that entered via an
+earlier cic pull is already the file the operator invoked. The
+Docker substrate (`scripts/deploy.sh`) is explicitly NOT ported in
+this pass — it has no marker infrastructure at all (no
+`last-deployed-sha` write anywhere), so the port is the whole marker
+mechanism, not one line; folded into the existing REV-I todo entry
+(same-SHA guard port) as one coherent future bucket. Docker drives
+the LOCAL dev stack only — nothing production rides that gap.
+
+**#8 — the nothing-to-do fast path applies in auto mode only.** An
+explicit `--force-hot`/`--force-cold` is an operator order; the skip
+log states what was observed (same HEAD + marker match) and, when
+forced past, which flag overrode it. The "re-driving" message now
+also names the common benign cause (cic deploys advancing HEAD)
+instead of implying every marker gap is a died-mid-flight deploy.
+
+**#9 — `infra/freebsd/jail_beam_wait.sh`, one implementation of the
+stop/start race lore.** Two verbs: `wait-stopped <node> <timeout>`
+(blocks until beam.smp exits AND epmd drops the name; escalates —
+SIGKILL after timeout, epmd restart only AFTER the BEAM is confirmed
+dead, preserving the 2026-05-31 lesson that pkill'ing epmd under a
+live BEAM re-races the registration) and `wait-name-free <node>
+<timeout>` (pre-start guard, NO escalation — the name's owner may be
+a live draining node that must not be shot). Call sites: rc.d
+`grappa_stop` (stop now means STOPPED), rc.d `grappa_start` (refuses
+a registered name, then polls the release `pid` RPC and treats a
+vanished beam.smp as an immediate loud boot failure — the outage's
+"Starting grappa."-and-walk-away is dead), and deploy.sh's cold path
+(replacing its inline pgrep loop + unconditional `pkill epmd`). The
+deploy.sh call site is load-bearing forever, not just for the
+transition: rc.d wrappers are refreshed BETWEEN stop and start, so
+any deploy shipping an rc.d fix stops through the PREVIOUSLY
+installed wrapper. New rc.conf.d knobs: `grappa_node`,
+`grappa_stop_timeout`, `grappa_start_timeout`,
+`grappa_name_wait_timeout`, `grappa_beam_wait`.
+
+**Testing**: new `test/infra/*.bats` (scripts/bats.sh now scans
+`test/bin/ test/infra/`) pin the decision logic — marker-vs-fallback
+range, garbage-marker abort, force-past-fast-path, re-exec range
+choice, cold-path stop/wait/refresh/start ordering, and the helper's
+escalation/no-escalation split — against a throwaway upstream+clone
+with PATH-stubbed `su`/`mix`/`curl`/`service`. The rc.d wrapper
+itself needs rc.subr (FreeBSD-only): its verification is the next
+real cold window on m42. The shipping deploy goes `--force-hot` +
+manual `jail_install_rcd.sh` — the wrapper install touches nothing
+live, and the BEAM already cold-booted once today (minimize
+restarts).
+
+## 2026-06-14 — user@host on join/part/quit (irssi-style presence lines)
+
+Real IRC clients show `nick [user@host] has joined` — Grappa rendered
+only the bare nick. The fix carries the sender's user@host (already
+fully parsed by `IRC.Parser` into the `{:nick, nick, user, host}`
+prefix tuple) through to the scrollback row and into cic's render.
+
+**Where the data was dropped, and where it's now caught.** The parser
+decomposes the prefix; `EventRouter`'s JOIN clause already lifted
+user@host into the in-memory `userhost_cache` (S2.4, for ban-mask
+derivation) but `build_persist/6` was called with `meta: %{}` for all
+three presence verbs, so the components never reached the DB or the
+wire. New `prefix_userhost/1` helper reads `msg.prefix` directly (NOT
+the cache — the cache exists for a different lifecycle, and PART/QUIT
+prefixes carry user@host on the wire regardless) and returns
+`%{sender_user: u, sender_host: h}` when BOTH are present, `%{}`
+otherwise. The both-or-neither guard mirrors the existing
+`userhost_cache` half-populate rule: a `+x`-cloaked prefix that strips
+either half yields no mask rather than a misleading partial one.
+
+**Storage = meta, deliberately not a column.** `:sender_user` /
+`:sender_host` join the `Scrollback.Meta` `@known_keys` allowlist
+(+ `@type t`, `@spec`, per-kind doc). This is the lightweight path: no
+migration (meta is a serialized column), so the server half is
+hot-deployable on an always-on bouncer. `Meta.dump/1` REJECTS
+non-allowlisted keys, so the keys MUST be in `@known_keys` for the
+insert to succeed — and the A18 sync test (`meta_test.exs`) forces the
+mirror addition to the Logger `:metadata` allowlist in
+`config/config.exs`. That config touch is what makes
+`Grappa.Deploy.Preflight` classify the diff COLD (Class 7: all
+`config/*.exs` → cold, conservative SECRET_SIGNING_SALT-class bias).
+The classification is correct-by-rule but over-conservative for THIS
+diff: the Logger allowlist governs only which keys a log line may
+print, and the feature never emits these as Logger metadata — it reads
+them off the scrollback `meta` map. So the change is functionally
+hot-safe and shipped `--force-hot` (server code reload) + `--cic`
+(bundle), both session-preserving.
+
+**cic.** `ScrollbackPane.tsx` gains `userhostSuffix/1` rendering the
+irssi-style ` [user@host]` between the nick and the verb for join/part/
+quit; empty string when meta lacks it, so a cloaked or pre-feature row
+renders the plain line unchanged. Forward/backward compatible across
+the two-deploy window in either order.
+
+**Tooling self-heal (same branch, separate commit).** Two fresh-worktree
+landmines hit during this work, fixed at the root: `scripts/bun.sh`
+auto-runs `bun install` when `cicchetto/node_modules` is absent (it's
+per-worktree, not shared like the bun cache — first `run test` died
+`vitest: command not found`), and `scripts/bats.sh` auto-inits the
+`vendor/bats-core` submodule when missing (was a hard `die` with a
+manual incantation). Mirrors the testnet.sh submodule auto-init pattern
+so `check.sh` + vitest work first-try from any new worktree.
+
+## 2026-06-14 — IRC-centric custom keyboard (opt-in, in-page, replaces the native iOS keyboard)
+
+Full design + TDD plan: `docs/plans/2026-06-14-irc-keyboard-design.md` +
+`docs/plans/2026-06-14-irc-keyboard-plan.md`. Shipped as 17 commits
+(subagent-driven TDD, two-stage review per task). Phone-portrait MVP;
+landscape/iPad, channel-switch keys, emoji search, skin tones deferred.
+
+**Why a custom keyboard at all.** An on-screen, IRC-first keyboard:
+arrows wired to input history (Up/Down → `recallPrev`/`recallNext`) +
+caret (Left/Right), a Termius-style accelerator pill (`Tab` / `/` / `#`
++ arrows + close), and an emoji layer — affordances the native keyboard
+can't give. Opt-in per device (`localStorage`, `lib/keyboardPref.ts`,
+mirrors `theme.ts`); NOT server-backed `userSettings` (that's
+cross-device IRC prefs — keyboard is a per-device display choice).
+
+**`inputmode="none"` is the load-bearing decision.** While enabled,
+Shell sets `inputmode="none"` on the compose `<textarea>`, so tapping it
+focuses without summoning the native keyboard; our in-page keyboard div
+renders separately. An in-page keyboard NEVER shrinks the visual
+viewport, which is why it SIDESTEPS the `--vh`/visualViewport/
+`position:fixed`/smart-scroll-pin machinery (UX-6 D9, 8 failed
+iterations) — that machinery exists for the NATIVE keyboard and stays
+dormant in IRC-kb mode. The `--vh` height calc was NOT touched.
+
+**The reservation caveat the spec missed.** The naive plan was
+`.shell-mobile { padding-bottom: var(--irc-kb-height) }`. But the
+in-page keyboard is ALWAYS docked when enabled AND the textarea stays
+focused under `inputmode=none` — so the existing
+`.shell-mobile:has(textarea:focus) { padding-bottom: 0 }` rule (which
+collapses the home-indicator inset when the NATIVE keyboard is up) would
+zero the reservation exactly when we need it. Fix: fold `--irc-kb-height`
+into BOTH bottom-inset declarations —
+`padding-bottom: max(env(safe-area-inset-bottom), var(--irc-kb-height,0px))`
+on the base rule and `padding-bottom: var(--irc-kb-height,0px)` on the
+`:has(...)` rule. `--irc-kb-height` is `0px` unless the keyboard is
+enabled (set in Shell), so with it off both resolve byte-for-byte to the
+prior values — native layout is unchanged. This is the only edit to
+`default.css`'s mobile machinery; the keyboard's own slide/animation CSS
+lives in `keyboard.css`.
+
+**Extraction boundary (a hard invariant, guarded).** Everything under
+`cicchetto/src/keyboard/` is a standalone component tree that imports
+ONLY from within `src/keyboard/` — no cic imports. The boundary type is
+`KeyboardIntent` (renamed from the spec's `KeyboardEvent` sketch to
+avoid the DOM global). The SOLE cic-coupled file is
+`cicchetto/src/KeyboardHost.tsx`: it resolves the live compose textarea
+(`.compose-box textarea`, same selector Shell uses), applies intents via
+the EXISTING `compose.ts` paths (`setDraft`/`recallPrev`/`recallNext`/
+`tabComplete`, submit via `form.requestSubmit()`), and gates mounting on
+opt-in + mobile + coarse-pointer. Tab-complete is a byte-for-byte mirror
+of `Shell.tsx`'s `cycleNickComplete`. `keyboard.css` uses only `.kbd-*`
+selectors; the `--irc-kb-height` reservation rule lives in cic
+(`default.css`), not in `keyboard.css`, to keep the module pure. A grep
+guard (plan Task 18 step 1) enforces this: `from "../…"` in
+`src/keyboard` production files must return nothing.
+
+**Locked gesture semantics (iOS-exact).** Long-press opens the variation
+strip; the highlight tracks the finger's X at the key Y-band OR over the
+strip, FREEZES when the finger rises above the strip top, and
+sticky-CANCELS when it drops below the pressed key. Release commits the
+highlighted variant (or the base on a tap). The engine (`gesture.ts`) is
+pure/DOM-free; the long-press TIMER lives in `KeyCap`. Strip-cell
+highlight is passed Keyboard → `VariationStrip` as `s().highlight()`,
+which Solid compiles to a reactive getter so the active cell tracks the
+drag — pinned by a regression test.
+
+**Plan deviations made during execution (and why).** (1) Plan Tasks 4
+(gesture core) + 5 (variation `move`) were MERGED into one commit: under
+this repo's `noUnusedLocals` (`tsc` TS6133) a core-only commit can't
+pass the type gate — the `cfg`/`strip`/`cancelled` fields exist solely
+to serve `move()`, so "declare fields" and "use fields" can't be
+separate clean commits. (2) `KeyboardHost.applyIntent`'s `moveCaret`
+collapses an active selection to its near edge (`start`/`end`) instead
+of stepping ±1 past it (native iOS text-selection persists under
+`inputmode=none`). (3) Every task finished with `scripts/bun.sh run
+build`, not just `vitest` — the plan's test snippets repeatedly tripped
+`noUncheckedIndexedAccess`; the fix is optional chaining on indexed
+array access, the repo convention. (4) The EmojiPicker test mocks the
+emoji dataset down to a few entries: rendering all ~1900 buttons took
+~9s in jsdom and timed out under full-suite parallel load on the Pi (it
+passed in isolation at 4.99s). The full dataset is covered by
+`emoji-data.test.ts`.
+
+**On-device dogfood — OUTSTANDING (Playwright webkit ≠ real iOS; must
+test on device).** Two items need real-iPhone verification before this
+is trustworthy: (1) **Caret under `inputmode=none`.** `applyIntent`
+sets the caret synchronously then calls `setDraft`; the compose textarea
+is Solid-controlled by `draft()`, so the re-render MAY clobber the
+caret. It might survive because `applyIntent` imperatively pre-sets
+`ta.value` (Solid's value binding may no-op when unchanged) — but this
+is browser-dependent and unverified. If the caret jumps, mirror Shell's
+`cycleNickComplete`: capture the intended caret and restore it in a
+`queueMicrotask` in the production `onIntent` handler (NOT in the pure,
+unit-tested `applyIntent`). (2) **Height reservation + layout:** confirm
+the composer clears the docked keyboard and tune `KB_HEIGHT_PX` (≈290)
+against the rendered keyboard; pixel-tune the `--kbd-*` greys/radii/
+shadow against the reference PNGs in `assets/`. Note
+`.kbd-key--active` reuses `--kbd-magnify-bg`, so in mirc-light a pressed
+key shows no rest/active distinction (the magnify balloon is the primary
+feedback) — revisit during grey-tuning.
+
+**Known follow-up (not blocking).** `CELL_WIDTH = 44` is duplicated in
+`KeyCap.tsx` (drives strip geometry) and `VariationStrip.tsx` (renders
+cells) with a "keep in sync" comment; if they drift the highlight
+misaligns. Consolidate into one `src/keyboard` metric during the
+on-device tuning pass (the natural moment the dims change).
+
+## 2026-06-14 — IRC keyboard: on-device dogfood fix round (real iPhone)
+
+vjt dogfooded the shipped keyboard on a real iPhone (Playwright webkit ≠
+iOS, as predicted) and it was a shit show. Six fixes across two
+deploys (cic-only, hot). Supersedes the "OUTSTANDING" caveats above where
+they conflict (notably: the reservation is now MEASURED, not a tuned
+`KB_HEIGHT_PX` constant).
+
+**The critical one — native keyboard appeared on focus.** `inputmode=
+"none"` was poked imperatively by a Shell `createEffect` keyed on
+`ircKeyboardEnabled()`. It only ran when the opt-in CHANGED, so a textarea
+re-created on channel switch / ComposeBox re-render carried no attr → iOS
+summoned the native keyboard AND woke the dormant `--vh`/visualViewport
+push-up machinery. Fix: bind it DECLARATIVELY + reactively on the
+ComposeBox `<textarea>` (`inputmode={ircKeyboardEnabled() ? "none" :
+undefined}`), so every render carries it. General rule: a one-shot
+imperative attr-set on a reactively re-created element is always a latent
+bug — make the attr part of the render.
+
+**Magnify + variation strip were invisible (but the gesture worked).**
+`.kbd-root` carries `transform` (the slide animation); a transformed
+element is the containing block for its `position:fixed` descendants, so
+the magnify (KeyCap) and strip (Keyboard) — positioned in VIEWPORT coords
+from `getBoundingClientRect` — anchored to `.kbd-root` and rendered
+off-screen. The gesture math (viewport coords) still committed variants,
+hence "swiping inserts but nothing shows." Fix: render both via Solid
+`<Portal>` to `document.body`, escaping the transform. The `--kbd-*`
+palette still cascades (vars on `:root`); `VariationStrip` stays a pure
+component (the Portal wraps its USE in Keyboard) so its isolation test is
+untouched.
+
+**fn-key white borders / minuscule spacebar.** The fn keys + space are
+`<button>`s, the letters are `<div>`s; the buttons inherited the UA
+border + appearance + system font. Added a button reset to `.kbd-key`
+(`appearance:none; border:0; margin/padding:0; font-family:inherit` —
+not the `font` shorthand, which would clobber the explicit font-size).
+Spacebar had no rule → inherited the one-unit basis; now fills the bottom
+row's slack.
+
+**Key-sizing model was wrong.** Rows used `flex:1`, so fewer-key rows got
+WIDER keys (row2's 9 letters wider than row1's 10). Stock iOS keeps the
+LETTER width constant and centers short rows. Replaced with a key-unit
+model: `--kbd-key-w = (row − 9 gaps) / 10`, letters span 1u, fn keys
+span `1.5u + ½gap` (makes row3 = shift+7+⌫ line up exactly with the
+10-unit rows), spacebar `flex:1 1 auto`. `justify-content:center` then
+insets short rows. Exact spans/greys still get pixel-tuned on-device.
+
+**Arrow order** ◀ ▲ ▼ ▶ (was ◀ ▶ ▲ ▼) — vjt preference; intents
+unchanged (◀▶ caret, ▲▼ history).
+
+**Emoji layer overflowed the channel bar.** It was a fixed `260px`,
+taller than the letter body. Bound to `--kbd-body-h` (4 rows + 3 gaps) so
+it occupies the SAME bounded area; grid scrolls, category bar pins.
+
+**Focus-driven show/hide replaces always-docked (vjt's design call).**
+The old `show()` had no focus dependency, so ✕ (which only blurred) left
+the keyboard docked. New model in `KeyboardHost`: a `wantKeyboard`
+open-intent set on compose-textarea `focusin`, cleared on ✕ (which also
+blurs) or when a different text field gains focus. `visible = mountable &&
+wantKeyboard`; the Keyboard stays mounted so the slide animates both ways.
+Per vjt: tapping the compose box re-opens; a channel switch keeps it open
+by re-focusing the re-created textarea (so the caret returns).
+`keepKeyboard.ts` already pins compose focus across taps on non-input
+chrome, so normal use never drops it — only ✕ / focusing elsewhere does.
+
+**Reservation is now MEASURED, not guessed.** `--irc-kb-height` moved
+from Shell to `KeyboardHost` and is set to the keyboard's live
+`offsetHeight` when visible (0 when hidden). The BottomBar + composer lift
+by exactly the rendered height on any device — the `KB_HEIGHT_PX ≈ 290`
+constant (which undershot and let the keyboard overlap the channel bar) is
+gone. `.shell-mobile`'s existing `max(env, var)` base rule +
+`:has(textarea:focus) { var }` rule consume it unchanged; keyboard-off
+layout is still byte-for-byte the prior values (var resolves 0).
+
+**Still to verify on the next dogfood pass:** the iOS lollipop magnify
+SHAPE (now visible but a plain rounded rect — the neck is unbuilt); exact
+key spans / greys / radii vs the reference PNGs; caret stability under
+`inputmode=none` while typing (untouched this round — `applyIntent`
+pre-sets `ta.value`, may survive; the `queueMicrotask` caret-restore
+escape hatch is still the fallback if it jumps). `CELL_WIDTH=44`
+duplication (above) also still pending.
+
+### Round 2 (same day) — four more dogfood fixes
+
+The reactivity gamble above lost: typing fast DID drop characters. Fixed
+along with three other defects.
+
+- **Dropped keys → edit through the draft store, not `ta.value`.** The
+  editing path read the current text from the live textarea, but it's
+  Solid-controlled by `draft()` and a fast keystroke burst leaves it
+  mid-re-render, so `ta.value`/caret were stale and inserts landed at the
+  wrong offset. Split the math into a pure `editText(intent, text, sel) →
+  {text, caret}` and a host `applyEdit` that reads `getDraft` (synchronous,
+  authoritative), writes `setDraft`, and restores the caret on the next
+  microtask after Solid flushes — the same shape tab-complete already used.
+  `applyIntent`/`HostCallbacks` are gone; the unit test now exercises the
+  pure `editText`. **General rule: never read a controlled input's `.value`
+  as the source of truth — read the store that drives it.**
+
+- **Variation strip never closed.** A cancelled long-press never calls
+  `onCommit`, and strip teardown was glued to the commit path
+  (`Keyboard.commit → setStrip(null)`), so dragging below the key and
+  releasing left the strip stuck on screen. Gave `KeyCap` an
+  `onCloseVariants` callback, called both mid-drag the instant the gesture
+  cancels (highlight → null, closes immediately like iOS) and
+  unconditionally in `finish()`. Teardown now has ONE owner; the gesture
+  engine is untouched.
+
+- **Emoji layer still overflowed → `min-height:0` on the grid.** Bounding
+  `.kbd-emoji` to `--kbd-body-h` wasn't enough: `.kbd-emoji-grid` is a flex
+  item, and `min-height:auto` (the default) refuses to shrink below its
+  content, so the ~1900-cell grid grew to full height, pushed the ABC bar
+  off, and spilled over the channel bar. `min-height:0` lets it shrink to
+  its flex basis and scroll. The classic flexbox-overflow trap.
+
+- **Send button collapsed the keyboard (#59).** Tapping the `type=submit`
+  send button moved focus off the textarea (Android native kb collapse;
+  also dropped the IRC-kb focus model). `onPointerDown` preventDefault on
+  the button stops the focus steal — the click still submits. Same trick as
+  the keyboard keys + image-picker. Enter-to-send never had the bug.
+
+Still deferred to a visual pass: the lollipop magnify SHAPE, and exact key
+spans / greys / radii vs the reference PNGs. `CELL_WIDTH=44` dedup still
+pending.
+
+## 2026-06-19 — #62: visitor `/away` un-gated + channel-push errors get human copy
+
+Two defects, one report. Visitor `/away` returned a bare `Send failed`;
+authenticated users worked.
+
+**Defect A — the gate had a bogus rationale.** The channel
+`handle_in("away", ...)` arms short-circuited every visitor subject with
+`{:error, %{error: "visitor_no_away"}}`. The moduledoc justified it as "the
+`set_explicit_away/3` facade only routes to user sessions" — factually
+wrong. `Session.set_explicit_away/3,4` is guarded on `is_subject/1` and
+routes via `call_session(subject, …)`; it accepts `{:visitor, id}` exactly
+like `{:user, id}`. And each visitor owns a PRIVATE, isolated
+`Session.Server` + upstream IRC connection with a unique nick (Bootstrap
+`spawn_visitor` → unique `{:visitor, id}` registry key), so a visitor's
+`away_state` is per-connection — AWAY can't clobber anyone else. The gate
+conflated explicit `/away` (a per-connection user action) with the
+WSPresence-driven AUTO-away, which genuinely stays user-only because
+visitor sessions don't subscribe to `WSPresence`. Fix: delete the gate,
+make the away dispatch subject-aware via the existing `resolve_subject/1`
+(the same C3 WHOIS carve-out pattern). Net simplification — one code path
+replacing the `if visitor? … else` fork; `safe_get_user` →
+`resolve_subject`; the `dispatch_set_away`/`dispatch_unset_away` helpers
+now take `Session.subject()` instead of `Accounts.User.t()`.
+
+**Defect B — `compose.ts` swallowed every channel-push code into "send
+failed".** The submit catch only ran `friendlyApiError` for `ApiError`
+(REST); a `ChannelPushError` (the `/away` push reject shape) fell through
+to the generic `"send failed"` string, hiding the real reason. Violates
+the CLAUDE.md "no silent-swallow at boundaries" rule. Fix: a sibling
+`friendlyChannelError.ts` — same closed-union-token → human-copy
+discipline as `friendlyApiError` (loud `err.message` fallback for unmapped
+arms, exhaustive vitest matrix). Wired into the catch:
+`ApiError → friendlyApiError`, `ChannelPushError → friendlyChannelError`,
+else `"send failed"`. The now-dead `visitor_no_away` token is deliberately
+NOT mapped — a dead arm is silent UX rot (cf. the
+`captcha_provider_unavailable` history). Channel coverage note: there were
+ZERO channel-level `/away` tests before; the handler boundary AND the gate
+were untested, which is why this shipped.
+
+## 2026-06-20 — #31: visitor `/invite` un-gated (third carve-out, C3 lineage)
+
+Same shape as #62, third instance of the same root. The channel
+`handle_in("invite", ...)` arm routed through `dispatch_ops_verb/3`, which
+short-circuits every visitor subject with `visitor_not_allowed` before the
+verb dispatches. INVITE is a write verb — it was filed under the
+"state-mutating ops" bucket alongside op/kick/ban — but it does not mutate
+channel/server state the way those do: it sends an *invitation* the target
+may ignore, and the upstream IRC server is the real authority on whether
+the issuer may send it (must be on the channel; op for `+i`). A visitor is
+on the channels their own session joined, so inviting a friend to a channel
+they're in is exactly as legitimate as the WHO/NAMES they can already
+issue. `Session.send_invite/4` already accepts `t:Session.subject/0`
+(`is_subject/1` guard + `call_session/3`), so the fix is the mechanical C3
+migration: `dispatch_ops_verb/3` → `dispatch_subject_verb/3`, thunk takes
+`subject` instead of `user`. A visitor without a live `Session.Server` now
+gets `no_session` (the real reason) instead of the gate's
+`visitor_not_allowed`.
+
+The recurring lesson (C3 WHOIS → #62 `/away` → #31 `/invite`): the
+"ops verb = visitor-rejected" bucket conflated *transport entitlement*
+(does this subject own a session that can emit the line?) with
+*IRC-protocol authority* (will the server accept it?). The second is
+upstream's job, not the channel boundary's. The moduledoc blanket
+"all ops verbs reject visitor sockets" was the source of the drift — now
+rewritten to enumerate the state-mutating set explicitly and name the
+read-only + `/away` + `/invite` carve-outs, so the next visitor-eligible
+verb isn't mis-bucketed by pattern-copying. Tests mirror the C3 WHOIS trio:
+live-session → INVITE upstream, no-session → `no_session`, malformed-nick →
+`invalid_nick` (the inbound `Identifier` gate fires before the facade, so
+that one passed pre-fix — belt-and-braces).
+
+## 2026-06-21 — PWA home-screen icon badge (one predicate, three doors)
+
+Design approved 2026-06-12 (`docs/plans/2026-06-12-pwa-icon-badge.md`),
+implemented 2026-06-21 (`docs/plans/2026-06-21-pwa-icon-badge-impl.md`).
+The badge shows "how many unread messages did the operator choose to be
+notified about" — capped at 99, fully derived from read cursors + the
+notify predicate, **no new persisted state**.
+
+**One predicate, never reimplemented.** The count is the EXACT set Web
+Push fires on: rows passing `Grappa.Push.Triggers.should_notify?/4`. So
+the badge and the OS notification can never disagree by construction.
+`Grappa.Push.BadgeCount.count/1` fetches the bounded unread tail per
+cursor (`Scrollback.unread_content_tail/6`, capped, early-bail at 99) and
+maps the REAL predicate over it — NOT a second SQL-shaped copy of the
+notify logic, which is the predicate-divergence bug class CLAUDE.md
+forbids. The design sketched a SQL-COUNT fast path for the all/whitelist
+branches; we chose uniform predicate-reuse instead because the cap keeps
+it cheap and a single source of truth beats a micro-optimisation. The cic
+foreground mirror (`pushTriggers.ts` `shouldNotify`) and the Elixir
+original are pinned together by a SHARED truth-table JSON fixture both
+ExUnit and vitest consume — add a branch, add a row, both suites catch a
+drift.
+
+**Boundary inversion (the load-bearing structural call).** BadgeCount
+deps `Networks`/`ReadCursor`/`Visitors`, all of which transitively reach
+`Session`, and `Session` deps `Push`. Folding the counter into the `Push`
+context would close `Push → Networks → Session → Push`. So BadgeCount is
+its OWN `top_level?: true` boundary that sits ABOVE Push and deps DOWN
+onto it for `should_notify?` (same pattern as `Visitors.Reaper`). Doors #2
+and #3 call it from the web layer (already at the top). Door #1 — the
+push-payload badge, dispatched deep in `Session → Push.Triggers` — would
+re-open the cycle with a static `Push → BadgeCount` edge, so it resolves
+the counter at RUNTIME through a `Grappa.Push.BadgeSource` behaviour wired
+in `config/config.exs` (never a module literal in Push source). Dependency
+inversion, not a hack: Push owns the seam, config owns the wiring. Deploy
+corollary: a HOT module reload swaps the new code in but does NOT re-run
+`config.exs`, so `:badge_source` is briefly absent on the live node.
+`BadgeSource.count/1` returns `nil` (not a crash, not a wrong `0`) in that
+window and door #1 omits the badge field — the push still fires, the SW
+just leaves the icon untouched; badges resume the moment the config is
+live (cold restart / rpc `put_env`).
+
+**own_nick is the configured nick, off-Session.** The mention branch
+needs the operator's IRC nick. BadgeCount resolves it from the credential
+nick (users) / `visitor.nick` (visitors) via
+`Networks.configured_nick_index/1`, NEVER the live `Session.current_nick`.
+Door #3 runs on every read-cursor settle (focus-leave) — a GenServer
+round-trip per network on that hot path is unacceptable, and `/me`
+already takes the same off-Session stance. Accepted staleness: after a
+`/nick` rename the mention match uses the configured nick until the next
+reconnect rewrites the credential. Documented, bounded, self-correcting.
+
+**Three doors, one signal.** (1) push payload gains `badge` (computed at
+dispatch, after the triggering message is persisted so the count includes
+it); (2) `/me` gains `badge_count` (boot seed); (3) `read_cursor_set`
+gains `badge_count` (reading anywhere refreshes every live client). cic's
+`badge.ts` is a single signal → effect driving `navigator.setAppBadge`
+(feature-detected) + the `document.title` mirror `(n) <base>`. The SW
+stamps the icon on push receipt EVEN when the foreground toast is
+suppressed (a badge is non-intrusive).
+
+**Increment scope (honest limitation).** The foreground optimistic bump —
+so the desktop title moves the instant a notify-worthy message lands on an
+unfocused tab — reuses the existing mention path (`subscribe.ts`,
+focus-gated + own-echo-gated). It covers the channel-MENTION case (the
+default-prefs notify trigger). Non-mention triggers (channel-all / DM-all
+/ whitelist) are NOT bumped optimistically because cic has no global
+notification-prefs signal to feed the full `shouldNotify` predicate at
+message-arrival; they surface on the next server sync (`read_cursor_set` /
+`/me`). The count is server-authoritative throughout, so any transient
+under-count self-heals. `shouldNotify` stands as the parity-locked
+contract for a fuller increment once prefs get globalised.
+
+**Verification surfaces.** The `document.title` mirror is the only
+badge surface a headless browser can see (Playwright e2e:
+`pwa-badge-title-mirror.spec.ts` asserts the title prefix increments on an
+unfocused mention). The home-screen ICON badge (`setAppBadge`) lives on
+the OS launcher, needs granted notification permission on an installed
+PWA, and is invisible to Playwright — so the icon itself is **device
+dogfood** only.
+
+## 2026-06-21 — empty `/away` reason rejected (un-away footgun closed)
+
+An explicit-away reason of `""` built `AWAY :\r\n` upstream, which RFC
+2812 §4.6 defines as the bare-AWAY *un-away* line: setting away with an
+empty reason silently CLEARED away instead. `safe_line_token?/1` only
+screens CR/LF/NUL, so `""` slipped every guard. The channel boundary's
+`with_body_check` only screens `body_too_large`, so a crafted WS push
+`{action:"set", reason:""}` reached the wire.
+
+Fixed at two layers, deliberately:
+
+- **`Session.set_explicit_away/3,4`** (primary boundary) now guards
+  `reason != "" and safe_line_token?(reason)` → `{:error, :invalid_line}`.
+  This is the single chokepoint covering BOTH internal byte paths (the
+  labeled `@label= AWAY :` send_line and the plain `Client.send_away`),
+  and it rejects early — before the `whereis` lookup, ordered like the
+  other facade injection guards.
+- **`Client.send_away/2`** (byte boundary, defense-in-depth) now also
+  guards `reason != ""`, completing the symmetry its siblings already
+  had: `send_privmsg`/`send_part`/`send_oper`/`send_pong`/`send_raw` all
+  reject empty at this door precisely so a non-cic caller (test harness,
+  Phase 6 listener facade) can't slip a malformed frame past even if the
+  facade is bypassed. `send_away` was the lone exception — and the facade
+  docstring already *claimed* it mirrored `send_pong`. Now it does.
+
+The guard is `!= ""`, NOT `String.trim/1`: a whitespace-only reason is a
+valid (if blank-looking) `AWAY :   ` set, not the un-away line, and the
+`!= ""` shape matches `send_pong`. Pinned with a facade test so a future
+change can't tighten to trim-semantics and start rejecting spaces.
+
+cic side (`slashCommands.ts`): the `/away` parser mapped `/away :` (colon
+then nothing) to `{action:"set", reason:""}` — pre-fix a silent un-away,
+post-fix a "Send failed" alert. Collapsed both empty-reason cases (bare
+`/away`, `/away :`) into one `reason === "" → unset`, removing the now-
+redundant `rest === ""` early-return. The existing test asserted the
+buggy `set`/`""` shape; re-pointed to `unset`. Also fixed a pre-existing
+(CI-invisible — cic vitest is local-only) red in `compose.test.ts`: the
+`vi.mock("../lib/api")` block omitted `ChannelPushError`, so #62's
+`e instanceof ChannelPushError` threw for every non-ApiError rejection.
+
+## 2026-06-21 — login 433 surfaces as `:nick_in_use` (#40)
+
+Picking a nick already on the upstream at the landing page returned
+"handshake didn't complete" (cic's `connect_timeout` copy) — the visitor
+waited out the welcome budget and got a generic timeout instead of the
+actual reason. Root cause: `Visitors.Login` blocks on the
+`{:session_ready, ref}` (001 RPL_WELCOME) signal; a 433
+ERR_NICKNAMEINUSE never reaches 001. For a passwordless/anon session
+AuthFSM has no ghost-recovery path, so it stops the Client with
+`{:nick_rejected, 433, _}`; `Session.Server` traps the linked exit and
+re-raises it as its own stop reason `{:client_exit, {:nick_rejected,
+433, _}}`. That term already rode the monitored DOWN to the login
+waiter — Login just *discarded* it (`{:DOWN, …, _}`) and flattened every
+crash to `:upstream_unreachable`.
+
+Fix is pure classification, no new state: capture the DOWN reason and
+`classify_down/1` maps `{:client_exit, {:nick_rejected, 433, _}}` →
+`:nick_in_use`, everything else → `:upstream_unreachable` (unchanged).
+The 409 `nick_in_use` envelope already existed (visitor `/nick` rename
+collision, V9) so the controller + FallbackController + cic only needed
+the login surface wired to it: an explicit `visitor_error_response`
+allowlist arm (the catch-all would 500 it) and a `friendlyApiError`
+case. 432 ERR_ERRONEUSNICKNAME is deliberately NOT mapped — `validate_nick/1`
+already gates nick shape, so a 432 reflects upstream-specific rules and
+the generic surface stays honest.
+
+Registered visitors (cached NickServ password) are unaffected: their
+433 drives `GhostRecovery` (underscore-NICK + GHOST + IDENTIFY), whose
+FSM stays `:cont`, so the exit reason is never `:nick_rejected` and
+won't be misclassified.
+
+## 2026-06-21 — single NickServ IDENTIFY site on login (#27)
+
+A registered visitor logging in saw NickServ's "Password accettata …
+risulti identificato" NOTICE **twice**. Not a cic render bug — grappa
+put `PRIVMSG NickServ :IDENTIFY <pw>` on the wire twice:
+
+1. `IRC.AuthFSM.maybe_nickserv_identify/1` emits it at 001 RPL_WELCOME
+   for any `:nickserv_identify` plan. This is the canonical site: it
+   fires for **every** such spawn, including `Bootstrap` crash-respawn
+   where `Visitors.Login` never runs. The emission happens inside
+   `IRC.Client`, so it bypasses `Session.Server`'s `{:send_privmsg, …}`
+   call path (and therefore `NSInterceptor`); the password is instead
+   staged for the +r MODE observer via
+   `Session.Server.maybe_stage_pending_password/1`, fed from
+   `pending_password` (set at init from the `:nickserv_identify` plan).
+2. `Visitors.Login.preempt_and_respawn/4` then sent a **second**
+   IDENTIFY post-readiness through `send_post_login_identify/3`.
+
+The second send was pure redundancy. A case-2 visitor (row with
+`password_encrypted`) is *always* `:nickserv_identify` — visitor
+`auth_method` is only ever `:none | :nickserv_identify`
+(`Visitors.SessionPlan`, no SASL path) — so path (1) had already
+produced the same NOTICE and the same +r MODE before Login's send ran.
+The login.ex docstring's stated rationale ("so NickServ + the +r MODE
+observer can reconfirm registration") was satisfied entirely by path
+(1).
+
+Fix: delete the post-readiness send and its now-dead helpers
+(`send_post_login_identify/3`, `error_tag/1`, the `require Logger` they
+needed). No new state, no behavioural change beyond removing the
+duplicate. Side benefit: the deleted path was the one place login
+threaded the cleartext password through `Session.send_privmsg`, so
+dropping it removes a cleartext-handling site.
+
+Regression guard: `login_test.exs` now asserts IDENTIFY appears on the
+wire **exactly once**. Counting needs a TCP-order barrier — the
+post-readiness send was synchronous on grappa's side by the time
+`Login.login/2` returned, but the `IRCServer` fake reads the socket
+asynchronously, so a naive count races. The test pushes one more wire
+line (`PRIVMSG NickServ :HELP`) and waits for it; `packet: :line` +
+`active: :once` deliver in order, so once the barrier line is buffered
+every earlier line is too. The assertion fails against the old code
+(`got 2`) and passes after.
+
+## 2026-06-21 — orphaned PWA icon badge reconciled on foreground
+
+The home-screen icon badge could stick at a stale non-zero count after
+the operator had read everything. Prod rpc against the live node
+(`Grappa.Push.BadgeCount.count/1` for the operator subject) returned
+`0` — the server count was correct; the drift was purely the OS
+icon-badge SURFACE.
+
+Root cause: the OS badge has TWO writers that share no state. The
+service worker's push handler (`cicchetto/src/service-worker.ts`
+`applyIconBadge`, push door #1) calls `navigator.setAppBadge` directly
+from the SW context while the app is backgrounded — it never touches the
+in-page `badgeCount` signal. The in-page `mountBadgeSync` effect
+(`cicchetto/src/lib/badge.ts`) only re-applies the surface when the
+signal *changes value* (Solid `===` equality). So on a warm foreground
+where the server count already equals the signal (typically 0-over-0
+once everything's read), `setBadge` is a no-op, the effect never
+re-fires, and the SW-set badge is orphaned. Cold launch was always fine
+— the `/me` seed + the `mountBadgeSync` mount reconcile — but a warm
+resume (the common iOS PWA case) had no reconcile point.
+
+Fix: `mountBadgeReconcile` registers a `visibilitychange` listener that,
+on every visible event, re-pulls the authoritative `/me` `badge_count`
+and `reconcileBadge` force-applies it to both surfaces, bypassing the
+signal-equality short-circuit. Reconciling to the SERVER count (not a
+blind clear-to-0, which was the first instinct floated) is load-bearing:
+a mention that genuinely arrived while backgrounded must KEEP its badge,
+so a clear-to-0 would wipe a real signal. The `badgeCount` signal stays
+the single source of truth — the reconcile just refreshes it from the
+server and forces the surface, closing the SW-writes-around-the-signal
+gap the badge.ts moduledoc now documents.
+
+Accepted tradeoffs (the fix is strictly better than a permanently-stuck
+badge, so these stay):
+
+  * A `/me` round-trip in flight when a fresher `read_cursor_set` lands
+    can resolve stale and briefly clobber the newer count. Transient —
+    it self-heals on the next `read_cursor_set` / visible event, same
+    eventually-correct tolerance the optimistic `incrementBadge` path
+    already documents. A request-sequencing guard would be heavier than
+    a one-round-trip flicker on an icon badge.
+  * Relies on `visibilitychange` firing on iOS standalone-PWA
+    background→foreground. True on iOS 16.4+ (the floor for the Badging
+    API anyway). Not reproducible in Playwright webkit (its visibility
+    model ≠ real iOS) — verified by on-device dogfood after deploy.
+
+The listener is app-lifetime (registered bare in `main.tsx`, disposer
+intentionally dropped — production PWA updates full-reload, so listeners
+never accumulate; the disposer exists for unit-test cleanup). No
+`createRoot` wrapper: it's a raw `addEventListener`, not a Solid
+reactive primitive, so there is no computation owner to scope.
+
+## 2026-06-21 — own nick change surfaces on $server (#61)
+
+Changing your own nick produced no visible confirmation in cic when you
+shared no channel with your old nick, and even with channels the rename
+only appeared in those channel views — never the always-reachable server
+tab. `EventRouter`'s `:nick` clause fans out a `:nick_change` scrollback
+row per channel the renamer is a member of; for a self-rename with zero
+shared channels that fan-out is empty → zero effects → no feedback. The
+separate `own_nick_changed` STATE event (broadcast by `Session.Server`,
+consumed by cic's `userTopic.ts` to patch the displayed nick) applied
+the change silently — the nick rotated, the operator saw nothing.
+
+Fix: in the `:nick` clause, when `old_nick == state.nick`, emit one
+additional `:nick_change` persist on the synthetic `"$server"` window,
+independent of channel membership. `$server` always exists, so the
+confirmation is guaranteed even with zero channels. Reuses the existing
+typed `:nick_change` event + the `$server` convention — scrollback stays
+server-owned, cic renders it via the existing `:nick_change` line, no cic
+change. The row is gated on the self check (NICK-other never reaches
+`$server`); visitors get it too (subject-agnostic check) alongside the
+unchanged `{:visitor_nick_changed, _}` persist.
+
+Behaviour note (reviewer-surfaced, kept on purpose): the `$server`
+nick_change row counts as a cic "event" (not a message) in the
+cursor-derived unread until the server tab is viewed — the same way the
+per-channel self-rename rows already do (cic appends the row to
+scrollback BEFORE the `isOwnPresenceEvent` gate, and the gate only skips
+the mention/title bump path, not the cursor count). The `$server` window
+handler is installed with `ownNick = null` (`subscribe.ts`), so
+`isOwnPresenceEvent` can't suppress there anyway — but passing the live
+nick wouldn't help either, since the row's sender is the OLD nick while
+the live own-nick is already the NEW one post-`own_nick_changed`. The
+events indicator IS the always-visible confirmation #61 asked for, so it
+stays; the OS/notify badge ignores it (presence kinds fail
+`should_notify?`).
+
+## 2026-06-21 — sender grade glyph snapshotted at send time (#25)
+
+A user's `@`/`%`/`+` channel-grade glyph was applied RETROACTIVELY to
+their past scrollback lines the instant their grade changed: cic's
+`prefixFor` derived the glyph at RENDER time by joining the row's sender
+against the LIVE members store, so an op/deop re-prefixed every old line
+of that nick. The glyph must reflect the sender's grade AT SEND time.
+
+Fix (snapshot — the issue's fix-direction a, not a flag-history
+timeline): the server captures the sender's grade into
+`meta.sender_prefix` at PERSIST time; cic renders content-row senders
+from that frozen value instead of live members.
+
+Server — one capture rule, both doors:
+  * `EventRouter.build_persist/6` merges `sender_prefix` into meta for
+    content kinds (`:privmsg`/`:action`/`:notice`) on a sigil-shaped
+    channel where the sender is a tracked member with a non-plain grade.
+    Centralising it in `build_persist` covers every inbound content row
+    (privmsg/action/notice, services-`$server` reroute and DM targets
+    correctly excluded by the channel-shape + member-lookup guards).
+  * `Session.Server.persist_and_send_fragments` mirrors it for the
+    operator's OWN outbound messages (`own_sender_prefix_meta/2`).
+  * `Grappa.IRC.Identifier.member_prefix/1` is the shared sigil-precedence
+    reducer (`@` > `%` > `+`), matching cic's `memberSigil` so server
+    snapshot and client render agree.
+  * `Scrollback.Meta` allowlists `:sender_prefix`. Per the
+    `known_keys ↔ Logger :metadata` sync test (architecture review A18),
+    `config/config.exs` must list it too — and because that's a
+    `config/*.exs` edit, the deploy preflight forces a **COLD** deploy
+    (sessions drop + respawn). Accepted with vjt; batched as the one
+    cold change of the session.
+
+cic: `ScrollbackPane.prefixFor` returns `nickColor.snapshotSenderPrefix(meta)`
+for the content row's OWN sender (`isContentKind && nick == msg.sender`);
+presence-row senders (join/part/quit/mode) and the kick TARGET keep the
+live members join — those describe a "now" event, not a frozen send. An
+absent snapshot (plain sender, or a row persisted before this landed)
+renders NO glyph, never a live-derived guess — so old rows lose their
+(wrong) glyph rather than show a stale one. The `meta` value is the
+untyped wire bag, validated against the three glyphs in
+`snapshotSenderPrefix`.
+
+Snapshot timing is genuinely "send time": `state.members` is updated by
+the MODE / 353-NAMES handlers that the session's FIFO mailbox processes
+before the next PRIVMSG is routed, so the grade read at persist reflects
+the grade in force when the line arrived. e2e `ux-5-bc2-nick-render`
+unaffected — it asserts nick colour, plain-sender-no-glyph, and bracket
+shape, never a live opped glyph.
+
+## 2026-06-23 — +k autojoin: dismissable stuck tab (#38) + members-seed guard (#16)
+
+Two related +k-channel bugs, both run to ground with a deterministic e2e
+against the real testnet bahamut (the static investigation in CP67 could
+not reproduce either from prod state).
+
+**#16 — members pane stuck "loading…" after a keyed JOIN — already fixed
+in the tree.** Prod rpc confirmed bahamut sends the 353/366 burst on a
+keyed JOIN, and the cold-subscribe race is covered by CP15 B3's after_join
+`push_members_if_seeded`. The new e2e
+(`issue16-keyed-join-members-seed.spec.ts`) proves it and guards the
+class: a peer founds a +k channel, cic `/join`s with the key, and the
+member list is present BOTH on the live JOIN and after a page reload — the
+deterministic cold WS resubscribe that exercises the after_join push
+rather than the one-shot live `members_seeded` broadcast. Closed as
+already-fixed; no production change.
+
+**#38 — a +k autojoin channel can't be dismissed with ×.** grappa
+deliberately does NOT persist +k keys: `state.autojoin` is channel names
+only and the 001 RPL_WELCOME autojoin loop sends
+`Client.send_join(client, channel, nil)` (server.ex:1633, "UX-4 bucket F:
+explicit nil"). So every (re)connect re-JOINs a +k autojoin channel with
+no key → bahamut 475 → not joined. That lights up BOTH cic sidebar sources
+for the same channel: GET /channels' autojoin merge returns it
+`{joined:false, source:autojoin}` (→ `channelsBySlug`) AND the 475 emits a
+`join_failed` typed event (→ `windowStateByChannel = :failed`). The render
+dedup (`pseudoChannelsForNetwork` skips names already in `channelsBySlug`)
+makes it render via the LIVE branch, so its × routed through
+`closeChannelWindow`, which only `postPart`'d.
+
+Root cause: that DELETE drops the channel from `channelsBySlug` (server
+de-autojoins + broadcasts `channels_changed` → refetch), but for a
+never-joined channel the upstream PART is a 442 no-op, so NO self-PART
+scrollback echo arrives — and that echo (`subscribe.ts` own-PART arm) is
+the ONLY caller of `setParted`, the verb that clears `windowState`. The
+orphaned `:failed` entry then re-emerges as an un-dismissable greyed
+pseudo-row the instant `channelsBySlug` drops the name. (The sibling
+pseudo-row × `handleClosePseudo` does call `setParted`, but the dedup
+means the LIVE-branch × is the one shown for a both-sources channel.)
+
+Fix: `closeChannelWindow` now also clears the local windowState
+(`setParted`) alongside `postPart`. The close action's local effect must
+not depend on a server PART echo that only fires for actually-joined
+channels. Idempotent with the echo for joined channels; clearing (vs.
+adding) a windowState key can only emit FEWER pseudo-rows — the OPPOSITE
+direction from the reverted PHASE-1.1 ghost-row regression (which added a
+joined arm to the render projection). Shared helper → the mobile BottomBar
+× is fixed too. General class, not just +k: any channel present in both
+`channelsBySlug` and a non-`:joined` windowState.
+
+Escape hatches after this fix: × dismisses the stuck tab, and
+`/join #chan KEY` re-joins with the current key (cic forwards it,
+`compose.ts` → POST /channels `{name,key}`). Making autojoin rejoin +k
+channels *automatically* (persisting the key, Cloak-encrypted like
+NickServ/SASL, captured on a successful keyed `/join`, with a stale-key
+path) is a deliberate follow-up feature — deferred (vjt 2026-06-23), not
+folded into this bugfix, because storing channel passwords warrants its
+own design pass.
+
+## 2026-06-23 — Nick completion: irssi-exact + keyboard-free (double-tap)
+
+Goal: make nick completion usable on a STOCK mobile keyboard (no Tab
+key), so the custom IRC keyboard becomes optional rather than the only
+way to complete a nick. Plan: `docs/plans/2026-06-23-nick-completion-{design,plan}.md`.
+
+**Scope decision.** Rejected an `@`-mention tooltip popup: `@` is the op
+sigil in NAMES, not a mention trigger in IRC — importing Slack/Discord
+muscle memory. Picked the minimal path: a touch trigger on the existing
+`compose.ts` `tabComplete` cycle, plus a semantics fix.
+
+**`tabComplete` rewritten to irssi-exact semantics** (`compose.ts`):
+- Positional suffix: `": "` when the completed word is the first token on
+  the line, `" "` mid-sentence (`input.slice(0, anchorStart).trim() === ""`).
+- Cycle space is `[match0 … matchN-1, <typed>]`: forward past the last
+  match restores the originally-typed text (original case, no suffix),
+  THEN wraps to match0. The old code wrapped forever with no revert.
+- Continuation is detected by an anchor RANGE (`cursor ∈
+  [anchorStart, anchorEnd]` AND the anchored span equals the last
+  insertion), not by word equality. Word equality broke the instant a
+  suffix landed after the caret (the "word at cursor" became empty); the
+  range also lets a re-tap landing the caret INSIDE the inserted nick
+  count as the same cycle — load-bearing for the double-tap path.
+
+**Latent bug fixed in the same pass: in-app cycling never worked.**
+`setDraft` nulls the cycle anchor `tabCycle` (correct — a real edit must
+break the cycle), but BOTH callers (`Shell.tsx` `cycleNickComplete`,
+`KeyboardHost.tsx` Tab branch) called `setDraft(result.newInput)` right
+after `tabComplete`, nulling the anchor every time. So the 2nd Tab always
+re-entered fresh: the prefix became the full last nick, matches collapsed
+to that one nick, output never changed. The old unit tests "passed" only
+because they called `tabComplete` directly and bypassed `setDraft` —
+mirror tests on the wrong path. Fix: `tabComplete` now writes the draft
+itself via `writeState` (which does NOT null `tabCycle`); the callers drop
+their `setDraft` and only place the caret. The IRC-keyboard note's
+"tab-complete is a byte-for-byte mirror of `Shell.tsx`'s
+`cycleNickComplete`" still holds — both shed `setDraft` identically.
+Discard-on-keystroke needs no new code: every real keystroke already
+flows `onInput → setDraft`, which nulls the cycle.
+
+**Double-tap trigger** (`ComposeBox.tsx` + pure `lib/doubleTap.ts`). Two
+taps within 300ms / 24px on the textarea fire `tabComplete(…, selectionEnd,
+forward=true)`. We do NOT fight the OS native word-select `preventDefault`
+(unreliable on iOS) — we let the OS select, then override value + caret
+(`selectionEnd` is the cursor, so the OS-selected word is the completion
+target). `e.isPrimary` guard drops secondary multi-touch pointers. The
+pure tap reducer is unit-tested; the gesture itself is dogfood-only —
+Playwright webkit ≠ iOS gesture physics (prior burn).
+
+**Dogfood checklist (device-only, cannot be automated).** iOS, stock
+keyboard, IRC keyboard OFF, channel with ≥2 prefix-sharing nicks:
+1. Prefix at line start, double-tap → `nick: ` (colon+space).
+2. Double-tap again → next match; again → reverts to the typed text.
+3. Prefix mid-sentence → `nick ` (space, no colon).
+4. Prefix mid-sentence WITH trailing text after the caret
+   (`hey al world`, caret after `al`) → confirm the cycle continues on a
+   2nd double-tap
+   (code-review flagged a theoretical caret-vs-microtask ordering edge
+   here that could not be reproduced in jsdom; the real-browser flush
+   order should make it harmless — verify on metal).
+5. Type any character → next double-tap starts a fresh cycle.

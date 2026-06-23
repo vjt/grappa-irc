@@ -236,7 +236,7 @@ describe("pushAwaySet / pushAwayUnset (S3.4 — /away channel push)", () => {
     const errCb = h.mockPush.receive.mock.calls.find(([ev]) => ev === "error")?.[1] as (
       e: unknown,
     ) => void;
-    errCb({ error: "visitor_no_away" });
+    errCb({ error: "no_session" });
     await expect(promise).rejects.toThrow();
   });
 

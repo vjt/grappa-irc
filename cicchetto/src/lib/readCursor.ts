@@ -17,9 +17,14 @@
 // which POSTs to `/networks/:slug/channels/:chan/read-cursor`. The
 // server is last-write-wins; cic sends eagerly without debounce on
 // every settle event (selection.ts focus-leave, browser-blur, future
-// scroll-settle). The POST's `read_cursor_set` WS broadcast feeds the
-// new id back into this signal map via the arm in subscribe.ts —
-// single source for both the originating device and any peers.
+// scroll-settle). `setReadCursor` advances THIS device's signal map
+// optimistically (forward-only) before the POST, so the originating
+// device reflects its own write in the same synchronous flush rather
+// than waiting a server round-trip — the fix for the leave-flicker and
+// own-msg-unread bugs (see its inline comment). The POST's
+// `read_cursor_set` WS broadcast then re-affirms the id for this device
+// and is the ONLY path that lands a peer's set (or a backward move),
+// via the arm in subscribe.ts.
 //
 // Identity-scoped reset: `clearReadCursors()` empties the signal map
 // on logout / token rotation, mirroring scrollback.ts / selection.ts /
@@ -118,14 +123,18 @@ export const applyReadCursorSet = (
 
 /**
  * POST `/networks/:slug/channels/:chan/read-cursor` to set the
- * server-side cursor. Fire-and-forget: the server's `read_cursor_set`
- * WS broadcast lands the new id in the signal map (same arm whether
- * the set came from this device or another). Eager send — no debounce
- * — because cross-device latency matters and the server absorbs
- * duplicates.
+ * server-side cursor. Eager send — no debounce — because cross-device
+ * latency matters and the server absorbs duplicates.
+ *
+ * Optimistic locally: advances THIS device's signal map forward-only
+ * before the POST (see the inline comment), so the originating device
+ * reflects its own write synchronously. The server's `read_cursor_set`
+ * WS broadcast re-affirms the same id (and is the ONLY path that lands a
+ * peer's set, or a backward move) via the arm in subscribe.ts.
  *
  * Returns `void`: the response payload is read only when needed for
- * tests; production code learns the result via the typed WS event.
+ * tests; production code learns its OWN write optimistically and peer
+ * writes via the typed WS event.
  *
  * `bearer` is injected at the call site rather than read from `auth`
  * here so this module stays free of the auth ↔ readCursor cycle and
@@ -137,6 +146,64 @@ export const setReadCursor = async (
   channel: string,
   messageId: number,
 ): Promise<void> => {
+  // Positive-int boundary guard (issue #44). Service-nick query windows
+  // (NickServ/ChanServ/OperServ) settle/blur before a real persisted id
+  // exists, so the settle handler can hand us a 0 / NaN / non-integer id.
+  // The server's ReadCursorController guards `is_integer(message_id) and
+  // message_id > 0` and 400s everything else (31× on prod). There is
+  // nothing to mark read without a positive id — skip BOTH the optimistic
+  // local advance and the POST. Mirroring the server contract here (the
+  // module that owns the POST) means every caller inherits the guard.
+  if (!Number.isInteger(messageId) || messageId <= 0) return;
+  // Optimistic local advance — forward-only. The signal map is otherwise
+  // round-trip-only (applyReadCursorSet lands the id on the server's
+  // `read_cursor_set` WS echo), which opens a stale-cursor window between
+  // this POST and its broadcast. Reactivity firing in that gap read the
+  // OLD cursor and produced two visible bugs:
+  //   * sidebar badge flicker when leaving a channel — the focused-window
+  //     badge suppression (selection.ts perChannelUnread) drops
+  //     synchronously on focus-leave, before the leave-arm's cursor
+  //     advance round-tripped, so the badge briefly recomputed non-zero.
+  //   * own-sent message rendered above the unread divider after a
+  //     switch-away-and-back — the marker re-latch (ScrollbackPane) read
+  //     the stale pre-send cursor.
+  // Advancing here collapses the write into the same synchronous Solid
+  // flush, so the suppression-drop / marker-relatch see the fresh cursor.
+  // Forward-only so an in-flight stale POST can't clobber a peer's more-
+  // recent advance already landed via the (unconditional, last-write-wins)
+  // applyReadCursorSet echo — only that authoritative WS path moves the
+  // cursor backward. On SUCCESS the echo for this write re-affirms the
+  // same id (no-op set) and the server (last-write-wins) adopts exactly
+  // the optimistic value.
+  //
+  // On a FAILED POST the local cursor is left optimistically ahead of the
+  // server — a deliberate trade of the old round-trip-only invariant
+  // (local could never diverge) for the no-flicker behavior. It is NOT
+  // reverted: a naive revert to the pre-write value would clobber any
+  // concurrent forward advance (the very cross-device race the forward-
+  // only rule prevents), and a correct compare-and-swap revert is
+  // heavyweight machinery for a path that is benign here. cic only ever
+  // writes ids it has actually read (visible tail / own send), so the
+  // divergence is bounded to already-read rows — a new arrival still has
+  // id > cursor and shows unread correctly; nothing NEW is missed. It
+  // re-aligns on the next successful forward write, or on /me / join-reply
+  // hydration; worst case a relogin right after a failed write re-surfaces
+  // already-read rows as unread once. (A 422 from the server's
+  // message_belongs? guard is unreachable from here — every posted id is
+  // a row cic rendered or sent in this channel.)
+  //
+  // The in-pane divider reads the FROZEN markerCursorId, never this live
+  // signal, so the freeze contract is untouched. The lone exception is
+  // the cold-latch effect (ScrollbackPane), which picks up the FIRST
+  // non-null cursor while markerCursorId is null — that first value can
+  // now be an optimistic one during the narrow cold-load-before-hydration
+  // window; pre-existing race shape, see that effect's comment.
+  const optimisticKey = cacheKey(networkSlug, channel);
+  setCursors((prev) => {
+    const cur = prev[optimisticKey];
+    if (cur !== undefined && messageId <= cur) return prev;
+    return { ...prev, [optimisticKey]: messageId };
+  });
   const url = `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channel)}/read-cursor`;
   const res = await fetch(url, {
     method: "POST",

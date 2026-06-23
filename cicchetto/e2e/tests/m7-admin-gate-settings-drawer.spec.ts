@@ -89,10 +89,11 @@ for (const c of cases) {
     } else {
       // Non-admin: entry MUST be absent from the DOM (Show gate
       // unmounts the button when is_admin !== true). Pair the
-      // negative-polarity assertion with a positive twin (logout
-      // button visibility) so a testid typo can't silently green
-      // BOTH assertion paths.
-      await expect(page.getByText(/log out/i)).toBeVisible();
+      // negative-polarity assertion with a positive twin (the
+      // registered-user "detach" button, issue #43 — replaced the old
+      // single "log out" for `kind === "user"` subjects) so a testid
+      // typo can't silently green BOTH assertion paths.
+      await expect(page.getByTestId("detach-btn")).toBeVisible();
       await expect(page.getByTestId("admin-console-entry")).toHaveCount(0);
 
       // Even forcibly opening the SPA against an admin-only URL

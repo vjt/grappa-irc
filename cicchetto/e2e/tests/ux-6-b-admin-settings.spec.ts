@@ -91,9 +91,9 @@ test.describe("UX-6-B admin Settings tab", () => {
     await adminFriendlyLogin(page, getSeededAdmin());
     await openAdminPaneAndSettingsTab(page);
 
-    // Negative per-file cap → server returns 422 invalid_setting
-    // with field: "upload.per_file_cap_bytes".
-    const perFile = page.getByTestId("admin-settings-per-file-cap");
+    // Zero image per-file cap → server returns 422 invalid_setting
+    // with field: "upload.image_per_file_cap_bytes".
+    const perFile = page.getByTestId("admin-settings-image-cap");
     await perFile.fill("0");
     await page.getByTestId("admin-settings-save").click();
 

@@ -82,7 +82,7 @@ defmodule Grappa.Session.EventRouter do
   in `Session.Server.handle_info` — out of this router's scope.
   """
 
-  alias Grappa.IRC.{Identifier, Message}
+  alias Grappa.IRC.{CTCP, Identifier, Message}
   alias Grappa.{Scrollback, Session}
 
   @typedoc """
@@ -377,7 +377,7 @@ defmodule Grappa.Session.EventRouter do
         channel,
         sender,
         nil,
-        %{}
+        prefix_userhost(msg)
       )
 
     # CP15 B1: self-JOIN echo promotes the per-channel window to :joined.
@@ -480,7 +480,7 @@ defmodule Grappa.Session.EventRouter do
         channel,
         sender,
         reason,
-        %{}
+        prefix_userhost(msg)
       )
 
     # CP15 B3: self-PART emits a :parted effect so Session.Server's
@@ -523,7 +523,7 @@ defmodule Grappa.Session.EventRouter do
 
         effects =
           for ch <- channels do
-            {_, eff} = build_persist(new_state, :quit, ch, sender, reason, %{})
+            {_, eff} = build_persist(new_state, :quit, ch, sender, reason, prefix_userhost(msg))
             eff
           end
 
@@ -618,6 +618,29 @@ defmodule Grappa.Session.EventRouter do
         eff
       end
 
+    # #61: the per-channel fan-out above is EMPTY when the operator shares
+    # no channel with their old nick — a self-rename then produced zero
+    # visible feedback. Always surface the operator's OWN rename on the
+    # synthetic "$server" window (which always exists, independent of
+    # channel membership) so confirmation appears even with zero channels
+    # joined, and in the always-reachable server tab when channels exist.
+    # cic renders it via the existing `:nick_change` line in the server
+    # tab. Like the per-channel self-rename rows it counts as an "event"
+    # (not a message) in cic's cursor-derived unread until the operator
+    # views the server tab — and the OS/notify badge ignores it (presence
+    # kinds fail `should_notify?`). Consistent with how a self-rename
+    # already surfaces in channel windows; the goal here is exactly that
+    # always-visible confirmation, zero channels or not.
+    self_server_effects =
+      if old_nick == state.nick do
+        {_, eff} =
+          build_persist(new_state, :nick_change, "$server", old_nick, nil, %{new_nick: new_nick})
+
+        [eff]
+      else
+        []
+      end
+
     # V9 (visitor-parity cluster, 2026-05-15): on a self-NICK echo
     # for a visitor subject, emit the persist-side effect so
     # `Session.Server.apply_effects/2` rotates `visitors.nick` via the
@@ -633,7 +656,7 @@ defmodule Grappa.Session.EventRouter do
         _ -> []
       end
 
-    {:cont, new_state, persist_effects ++ visitor_persist_effects}
+    {:cont, new_state, persist_effects ++ self_server_effects ++ visitor_persist_effects}
   end
 
   # Unsolicited TOPIC: a channel operator changed the topic mid-session.
@@ -1822,12 +1845,10 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # CTCP framing: \x01<verb> ...\x01 — CLAUDE.md preserves verbatim in
-  # scrollback body. ACTION (CTCP /me) is the only verb that earns its
-  # own scrollback kind today; other CTCP verbs (VERSION, PING, etc.)
-  # produce :reply effects in Phase 5+.
-  defp ctcp_action?(<<0x01, "ACTION ", _::binary>>), do: true
-  defp ctcp_action?(_), do: false
+  # CTCP ACTION classification lives in `Grappa.IRC.CTCP.action?/1` — the
+  # single source shared with the outbound persist path (Session.Server)
+  # and the wire-frame splitter (LineSplit). See issue #14: the two paths
+  # had drifted (inbound :action, outbound :privmsg).
 
   # Extracts the CTCP verb from a `\x01VERB ...\x01` (or `\x01VERB\x01`)
   # body. Returns nil if the body doesn't start with \x01 or has no
@@ -1849,7 +1870,7 @@ defmodule Grappa.Session.EventRouter do
   # arms don't drift on body handling.
   @spec privmsg_default(Message.t(), state(), binary()) :: {:cont, state(), [effect()]}
   defp privmsg_default(%Message{params: [channel, _]} = msg, state, body) do
-    kind = if ctcp_action?(body), do: :action, else: :privmsg
+    kind = if CTCP.action?(body), do: :action, else: :privmsg
     sender = Message.sender_nick(msg)
     # UX-4 bucket G: PRIVMSG (or ACTION) from a well-known *serv sender
     # persists on the synthetic `$server` channel so it lands in the
@@ -2024,7 +2045,28 @@ defmodule Grappa.Session.EventRouter do
           map()
         ) ::
           {state(), effect()}
+  # Presence-event render hint: the sender's user@host lifted off the IRC
+  # prefix into the persist meta so cic can render the irssi-style
+  # "nick [user@host] has joined/left/quit" line without re-parsing.
+  # Both keys present or neither — a +x-cloaked prefix that strips either
+  # half yields `%{}` rather than a partial mask (mirrors the
+  # userhost_cache half-populate guard in the JOIN clause).
+  @spec prefix_userhost(Message.t()) ::
+          %{optional(:sender_user | :sender_host) => String.t()}
+  defp prefix_userhost(%Message{prefix: {:nick, _, user, host}})
+       when is_binary(user) and is_binary(host),
+       do: %{sender_user: user, sender_host: host}
+
+  defp prefix_userhost(%Message{}), do: %{}
+
+  # #25: content kinds whose sender shows an irssi-style @/%/+ glyph. The
+  # glyph must reflect the sender's grade AT SEND TIME, not their current
+  # grade — so it's snapshotted into meta here, not derived live by cic.
+  @content_kinds [:privmsg, :action, :notice]
+
   defp build_persist(state, kind, channel, sender, body, meta) do
+    meta = put_sender_prefix(meta, state, kind, channel, sender)
+
     attrs =
       Session.put_subject_id(
         %{
@@ -2048,6 +2090,30 @@ defmodule Grappa.Session.EventRouter do
 
     {state, {:persist, kind, attrs}}
   end
+
+  # #25: snapshot the sender's channel grade (@/%/+) onto a content row
+  # so a later MODE change can't retroactively re-prefix it. Only for
+  # content kinds on a real (sigil-prefixed) channel where the sender is
+  # a tracked member with a non-plain grade. Plain members, DM (nick)
+  # windows, and the synthetic "$server" window get no key — cic renders
+  # no glyph for an absent `meta.sender_prefix` (also the back-compat
+  # path for rows persisted before this landed).
+  @spec put_sender_prefix(map(), map(), atom(), String.t(), String.t()) :: map()
+  defp put_sender_prefix(meta, state, kind, channel, sender) when kind in @content_kinds do
+    with true <- channel_shaped?(channel),
+         sigils when is_list(sigils) <- get_in(state.members, [channel, sender]),
+         prefix when is_binary(prefix) <- Identifier.member_prefix(sigils) do
+      Map.put(meta, :sender_prefix, prefix)
+    else
+      _ -> meta
+    end
+  end
+
+  defp put_sender_prefix(meta, _, _, _, _), do: meta
+
+  @spec channel_shaped?(String.t()) :: boolean()
+  defp channel_shaped?(<<sigil, _::binary>>) when sigil in [?#, ?&, ?!, ?+], do: true
+  defp channel_shaped?(_), do: false
 
   # ---------------------------------------------------------------------------
   # S2.3 helpers — topic + channel-mode cache

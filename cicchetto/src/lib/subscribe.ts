@@ -2,6 +2,7 @@ import type { Channel } from "phoenix";
 import { createEffect, createRoot, on, untrack } from "solid-js";
 import { assertNever, type ChannelEvent, displayNick, ownNickForNetwork } from "./api";
 import { socketUserName, token } from "./auth";
+import { incrementBadge, setBadge } from "./badge";
 import { playBeep } from "./beep";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { seedModes, seedTopic } from "./channelTopic";
@@ -247,6 +248,20 @@ createRoot(() => {
       if (u && mentionsUser(message.body, displayNick(u))) {
         bumpMention(key);
         playBeep();
+        // PWA icon badge: optimistic foreground bump so the desktop
+        // `document.title` moves the instant a notify-worthy MENTION
+        // lands on an unfocused window — before any read-cursor settle
+        // round-trips to the server. This reuses the same focus +
+        // own-echo gating as the mention badge above. Scope note: this
+        // covers the channel-mention case (the default-prefs notify
+        // trigger); non-mention triggers (channel-all / DM-all /
+        // whitelist) are NOT bumped optimistically — they surface on the
+        // next server sync (`read_cursor_set` / `/me`). cic has no global
+        // notification-prefs signal, so the full `shouldNotify` predicate
+        // (`pushTriggers.ts`, the parity-locked mirror) can't run here
+        // yet; the count is server-authoritative regardless, so any
+        // transient under-count self-heals on the next sync.
+        incrementBadge();
       }
     }
   };
@@ -365,6 +380,9 @@ createRoot(() => {
         // `Grappa.ReadCursor.set/4`; route into the signal-map applier.
         case "read_cursor_set":
           applyReadCursorSet(slug, name, payload.last_read_message_id);
+          // PWA icon badge door #3: reading anywhere refreshes the
+          // server-authoritative count on this client too.
+          setBadge(payload.badge_count);
           return;
         // P-0e + P-0f: invite_ack moved to user-topic; the per-channel
         // arm is gone (and `narrowChannelEvent` no longer narrows the
@@ -452,6 +470,8 @@ createRoot(() => {
         // into the signal map keyed on (slug, ownNick).
         case "read_cursor_set":
           applyReadCursorSet(slug, ownNick, payload.last_read_message_id);
+          // PWA icon badge door #3 (own-nick query window path).
+          setBadge(payload.badge_count);
           return;
         case "message": {
           const message = payload.message;

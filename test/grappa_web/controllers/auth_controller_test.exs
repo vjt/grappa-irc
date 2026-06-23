@@ -330,6 +330,29 @@ defmodule GrappaWeb.AuthControllerTest do
       assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
     end
 
+    test "nick already in use → 409 nick_in_use (#40)", %{conn: conn} do
+      # Upstream completes the TCP/registration handshake then rejects the
+      # chosen nick with 433 ERR_NICKNAMEINUSE instead of 001. The handler
+      # replies the moment it sees the USER line, so the path resolves
+      # immediately — no probe-budget timeout. Pre-#40 this surfaced as the
+      # generic 502 upstream_unreachable ("handshake didn't complete" in cic).
+      nick_in_use_handler = fn state, line ->
+        if String.starts_with?(line, "USER") do
+          {:reply, ":irc.test.org 433 * vjt :Nickname is already in use\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {_, port} = start_server(nick_in_use_handler)
+      setup_visitor_network(port)
+
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt"})
+
+      assert json_response(conn, 409)["error"] == "nick_in_use"
+      assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
+    end
+
     test "anon collision (no bearer) → 409 anon_collision + Retry-After",
          %{conn: conn} do
       {_, port} = start_server()

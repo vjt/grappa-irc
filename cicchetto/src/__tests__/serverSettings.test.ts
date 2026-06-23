@@ -1,9 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setToken } from "../lib/auth";
 import { applyServerSettings, loadServerSettings, serverSettings } from "../lib/serverSettings";
 
 // UX-6-B2 (2026-05-21) tests for the operator-visible server-settings
-// reactive signal + REST initial-fetch helper.
+// reactive signal + REST initial-fetch helper. Wire shape carries the
+// three per-type cap fields since uploads cluster Task 2 (385129f).
+
+const wireUpload = (active_host: string) => ({
+  active_host,
+  image_per_file_cap_bytes: 1,
+  video_per_file_cap_bytes: 2,
+  document_per_file_cap_bytes: 3,
+  global_cap_bytes: 4,
+});
 
 describe("serverSettings() — initial state", () => {
   it("is null before any apply / load", () => {
@@ -15,18 +24,24 @@ describe("serverSettings() — initial state", () => {
 });
 
 describe("applyServerSettings/1 — wire → store shape", () => {
-  it("maps the wire payload's upload subtree to the camelCase view", () => {
+  it("maps the three flat per-type cap fields to the nested uploadPerFileCapBytes record", () => {
     applyServerSettings({
       upload: {
         active_host: "embedded",
-        per_file_cap_bytes: 10_485_760,
+        image_per_file_cap_bytes: 10_485_760,
+        video_per_file_cap_bytes: 52_428_800,
+        document_per_file_cap_bytes: 10_485_760,
         global_cap_bytes: 10_737_418_240,
       },
     });
 
     expect(serverSettings()).toEqual({
       uploadActiveHost: "embedded",
-      uploadPerFileCapBytes: 10_485_760,
+      uploadPerFileCapBytes: {
+        image: 10_485_760,
+        video: 52_428_800,
+        document: 10_485_760,
+      },
       uploadGlobalCapBytes: 10_737_418_240,
     });
   });
@@ -35,37 +50,63 @@ describe("applyServerSettings/1 — wire → store shape", () => {
     applyServerSettings({
       upload: {
         active_host: "litterbox",
-        per_file_cap_bytes: 5_000_000,
+        image_per_file_cap_bytes: 5_000_000,
+        video_per_file_cap_bytes: 6_000_000,
+        document_per_file_cap_bytes: 7_000_000,
         global_cap_bytes: 999_999,
       },
     });
 
     const view = serverSettings();
     expect(view?.uploadActiveHost).toBe("litterbox");
-    expect(view?.uploadPerFileCapBytes).toBe(5_000_000);
+    expect(view?.uploadPerFileCapBytes).toEqual({
+      image: 5_000_000,
+      video: 6_000_000,
+      document: 7_000_000,
+    });
     expect(view?.uploadGlobalCapBytes).toBe(999_999);
   });
 
   it("last-write-wins on subsequent applies", () => {
     applyServerSettings({
-      upload: { active_host: "embedded", per_file_cap_bytes: 1, global_cap_bytes: 2 },
+      upload: {
+        active_host: "embedded",
+        image_per_file_cap_bytes: 1,
+        video_per_file_cap_bytes: 1,
+        document_per_file_cap_bytes: 1,
+        global_cap_bytes: 2,
+      },
     });
     applyServerSettings({
-      upload: { active_host: "litterbox", per_file_cap_bytes: 3, global_cap_bytes: 4 },
+      upload: {
+        active_host: "litterbox",
+        image_per_file_cap_bytes: 3,
+        video_per_file_cap_bytes: 4,
+        document_per_file_cap_bytes: 5,
+        global_cap_bytes: 6,
+      },
     });
 
     expect(serverSettings()).toEqual({
       uploadActiveHost: "litterbox",
-      uploadPerFileCapBytes: 3,
-      uploadGlobalCapBytes: 4,
+      uploadPerFileCapBytes: { image: 3, video: 4, document: 5 },
+      uploadGlobalCapBytes: 6,
     });
   });
 });
 
 describe("loadServerSettings/0 — REST initial fetch", () => {
   beforeEach(() => {
-    vi.unstubAllGlobals();
     setToken("test-token");
+  });
+
+  // Unstub in afterEach, NOT beforeEach: a describe-level beforeEach runs
+  // after setupTests' beforeEach and would strip the inert-WebSocket +
+  // localStorage stubs for every test in this block (resurrecting jsdom's
+  // real TCP-connecting WebSocket). afterEach gives the same clean fetch
+  // slate, and setupTests re-installs its stubs before the next test.
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("populates the signal from a successful GET /api/server-settings", async () => {
@@ -75,7 +116,9 @@ describe("loadServerSettings/0 — REST initial fetch", () => {
         Promise.resolve({
           upload: {
             active_host: "litterbox",
-            per_file_cap_bytes: 7_777_777,
+            image_per_file_cap_bytes: 7_777_777,
+            video_per_file_cap_bytes: 8_888_888,
+            document_per_file_cap_bytes: 9_999_999,
             global_cap_bytes: 88_888_888,
           },
         }),
@@ -88,7 +131,11 @@ describe("loadServerSettings/0 — REST initial fetch", () => {
       headers: { authorization: "Bearer test-token" },
     });
     expect(serverSettings()?.uploadActiveHost).toBe("litterbox");
-    expect(serverSettings()?.uploadPerFileCapBytes).toBe(7_777_777);
+    expect(serverSettings()?.uploadPerFileCapBytes).toEqual({
+      image: 7_777_777,
+      video: 8_888_888,
+      document: 9_999_999,
+    });
   });
 
   it("no-op when token is missing", async () => {
@@ -97,9 +144,7 @@ describe("loadServerSettings/0 — REST initial fetch", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     // Clear signal so we can assert it wasn't mutated.
-    applyServerSettings({
-      upload: { active_host: "embedded", per_file_cap_bytes: 1, global_cap_bytes: 2 },
-    });
+    applyServerSettings({ upload: wireUpload("embedded") });
     const before = serverSettings();
 
     await loadServerSettings();
@@ -109,9 +154,7 @@ describe("loadServerSettings/0 — REST initial fetch", () => {
   });
 
   it("leaves the signal untouched on non-ok response", async () => {
-    applyServerSettings({
-      upload: { active_host: "embedded", per_file_cap_bytes: 1, global_cap_bytes: 2 },
-    });
+    applyServerSettings({ upload: wireUpload("embedded") });
     const before = serverSettings();
 
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false } as unknown as Response));
@@ -122,9 +165,7 @@ describe("loadServerSettings/0 — REST initial fetch", () => {
   });
 
   it("swallows transient network errors (does not throw)", async () => {
-    applyServerSettings({
-      upload: { active_host: "embedded", per_file_cap_bytes: 1, global_cap_bytes: 2 },
-    });
+    applyServerSettings({ upload: wireUpload("embedded") });
     const before = serverSettings();
 
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("network")));

@@ -1,0 +1,5 @@
+Grappa e2e document-upload fixture (uploads-2 cluster, 2026-06-09).
+This file is uploaded through the cic file picker by the
+uploads2-video-doc-upload spec; the bytes themselves are irrelevant —
+the assertion is the 📄-prefixed PRIVMSG landing in scrollback.
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.

@@ -369,12 +369,13 @@ describe("parseSlash — /away", () => {
     });
   });
 
-  it("/away : (bare colon, no text) → set with empty string reason", () => {
-    expect(parseSlash("/away :")).toEqual({
-      kind: "away",
-      action: "set",
-      reason: "",
-    });
+  it("/away : (bare colon, no text) → unset (empty reason is not a set)", () => {
+    // An empty away reason builds `AWAY :` on the wire — the bare-AWAY
+    // un-away line (RFC 2812 §4.6). The server (Session.set_explicit_away)
+    // rejects it as :invalid_line, and semantically it means the same as
+    // bare /away. So an empty reason after the colon-strip → unset, not a
+    // set with reason "". (Pre-fix this asserted the buggy set/"" shape.)
+    expect(parseSlash("/away :")).toEqual({ kind: "away", action: "unset" });
   });
 
   it("/away    (only whitespace after verb) → unset (empty rest)", () => {

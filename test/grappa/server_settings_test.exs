@@ -2,14 +2,11 @@ defmodule Grappa.ServerSettingsTest do
   use Grappa.DataCase, async: true
 
   alias Grappa.ServerSettings
+  alias Grappa.ServerSettings.Setting
 
   describe "defaults — sane out-of-the-box" do
     test "get_upload_active_host/0 defaults to :embedded" do
       assert ServerSettings.get_upload_active_host() == :embedded
-    end
-
-    test "get_upload_per_file_cap_bytes/0 defaults to 10 MiB" do
-      assert ServerSettings.get_upload_per_file_cap_bytes() == 10 * 1024 * 1024
     end
 
     test "get_upload_global_cap_bytes/0 defaults to 10 GiB" do
@@ -19,7 +16,9 @@ defmodule Grappa.ServerSettingsTest do
     test "public_view/0 returns defaults under :upload" do
       view = ServerSettings.public_view()
       assert view.upload.active_host == :embedded
-      assert view.upload.per_file_cap_bytes == 10 * 1024 * 1024
+      assert view.upload.image_per_file_cap_bytes == 10 * 1024 * 1024
+      assert view.upload.video_per_file_cap_bytes == 50 * 1024 * 1024
+      assert view.upload.document_per_file_cap_bytes == 10 * 1024 * 1024
       assert view.upload.global_cap_bytes == 10 * 1024 * 1024 * 1024
     end
   end
@@ -50,23 +49,43 @@ defmodule Grappa.ServerSettingsTest do
     end
   end
 
-  describe "put_upload_per_file_cap_bytes/1" do
-    test "accepts positive integer" do
-      assert :ok = ServerSettings.put_upload_per_file_cap_bytes(5_000_000)
-      assert ServerSettings.get_upload_per_file_cap_bytes() == 5_000_000
+  describe "per-type per-file caps" do
+    test "defaults: image 10MiB, video 50MiB, document 10MiB" do
+      assert ServerSettings.get_upload_per_file_cap_bytes(:image) == 10 * 1024 * 1024
+      assert ServerSettings.get_upload_per_file_cap_bytes(:video) == 50 * 1024 * 1024
+      assert ServerSettings.get_upload_per_file_cap_bytes(:document) == 10 * 1024 * 1024
     end
 
-    test "rejects zero" do
-      assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(0)
+    test "put/get roundtrip per category, others untouched" do
+      assert :ok = ServerSettings.put_upload_per_file_cap_bytes(:video, 25 * 1024 * 1024)
+      assert ServerSettings.get_upload_per_file_cap_bytes(:video) == 25 * 1024 * 1024
+      assert ServerSettings.get_upload_per_file_cap_bytes(:image) == 10 * 1024 * 1024
     end
 
-    test "rejects negative" do
-      assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(-1)
+    test "rejects invalid category and non-positive values" do
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(:image, 0)
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(:image, -1)
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(:audio, 1)
+
+      assert {:error, :invalid_value} =
+               ServerSettings.put_upload_per_file_cap_bytes(:image, "5000000")
     end
 
-    test "rejects non-integer" do
-      assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes("5000000")
-      assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(nil)
+    test "public_view carries the three cap fields" do
+      assert %{
+               upload: %{
+                 image_per_file_cap_bytes: _,
+                 video_per_file_cap_bytes: _,
+                 document_per_file_cap_bytes: _,
+                 active_host: _,
+                 global_cap_bytes: _
+               }
+             } = ServerSettings.public_view()
+    end
+
+    test "old single key is NOT read (no fallback — total migration)" do
+      Repo.insert!(%Setting{key: "upload.per_file_cap_bytes", value: "999"})
+      assert ServerSettings.get_upload_per_file_cap_bytes(:image) == 10 * 1024 * 1024
     end
   end
 
@@ -101,11 +120,14 @@ defmodule Grappa.ServerSettingsTest do
     end
 
     test "broadcasts server_settings_changed on put_upload_per_file_cap_bytes" do
-      :ok = ServerSettings.put_upload_per_file_cap_bytes(7_777_777)
+      :ok = ServerSettings.put_upload_per_file_cap_bytes(:video, 7_777_777)
 
       assert_receive %Phoenix.Socket.Broadcast{
         event: "event",
-        payload: %{kind: "server_settings_changed", upload: %{per_file_cap_bytes: 7_777_777}}
+        payload: %{
+          kind: "server_settings_changed",
+          upload: %{video_per_file_cap_bytes: 7_777_777}
+        }
       }
     end
 

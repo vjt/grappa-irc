@@ -122,6 +122,119 @@ describe("readCursor", () => {
     await expect(setReadCursor("t", "n", "c", 1)).resolves.toBeUndefined();
   });
 
+  // Issue #44 — positive-int guard. Service-nick query windows
+  // (NickServ/ChanServ/OperServ) opened during auth flows settle/blur
+  // before a real persisted message id exists, so the settle handler
+  // hands setReadCursor a 0 / NaN / non-integer id. The server's
+  // ReadCursorController guards `is_integer(message_id) and message_id > 0`
+  // and 400s everything else (31× on prod). cic must not POST a cursor it
+  // has no positive id for — there is nothing to mark read. Mirror the
+  // server contract at the client boundary so EVERY caller inherits it.
+  describe("positive-int guard (issue #44)", () => {
+    it.each([
+      ["zero", 0],
+      ["negative", -1],
+      ["NaN", Number.NaN],
+      ["non-integer", 1.5],
+    ])("does NOT POST when messageId is %s", async (_label, badId) => {
+      const { setReadCursor } = await import("../lib/readCursor");
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await setReadCursor("tok", "azzurra", "NickServ", badId);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("does NOT advance the local cursor for an invalid messageId", async () => {
+      const { setReadCursor, getReadCursor, applyJoinReply, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
+      applyJoinReply("azzurra", "NickServ", 3);
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      // Use NaN, not 0: `NaN <= 3` is false, so a bad id SLIPS PAST the
+      // pre-existing forward-only optimistic gate — without the new guard
+      // setReadCursor would write NaN into the local signal. This pins the
+      // guard's advance-skip independently of the forward-only gate.
+      await setReadCursor("tok", "azzurra", "NickServ", Number.NaN);
+      expect(getReadCursor("azzurra", "NickServ")).toBe(3);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("still POSTs for a valid positive integer id", async () => {
+      const { setReadCursor } = await import("../lib/readCursor");
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ last_read_message_id: 5 }), { status: 200 }),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      await setReadCursor("tok", "azzurra", "NickServ", 5);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("optimistic local advance (flicker + own-msg-unread fix)", () => {
+    // Root cause of two bugs: the local cursor signal was round-trip-only
+    // (advanced ONLY when the server's read_cursor_set WS event echoed
+    // back via applyReadCursorSet). Reactivity firing in the POST→echo
+    // gap read the STALE cursor:
+    //   * sidebar badge flicker when leaving a channel — the focused-
+    //     window badge suppression drops synchronously on focus-leave,
+    //     but the leave-arm's cursor advance had not round-tripped, so
+    //     perChannelUnread briefly recomputed a non-zero count.
+    //   * own-sent message rendered above the unread divider after
+    //     switching away and back — the marker re-latch read the stale
+    //     pre-send cursor.
+    // Fix: setReadCursor advances the local signal optimistically,
+    // forward-only, BEFORE the POST. The WS echo re-affirms the same id.
+
+    it("optimistically advances the local cursor before the WS echo lands", async () => {
+      const { setReadCursor, getReadCursor, applyJoinReply, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
+      applyJoinReply("freenode", "#grappa", 100);
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      // Do NOT await — the local cursor must reflect the advance
+      // synchronously, with no dependence on the server round-trip
+      // (applyReadCursorSet) that would otherwise land the value.
+      const p = setReadCursor("tok", "freenode", "#grappa", 150);
+      expect(getReadCursor("freenode", "#grappa")).toBe(150);
+      await p;
+    });
+
+    it("optimistic advance is forward-only — never moves the local cursor backward", async () => {
+      const { setReadCursor, getReadCursor, applyJoinReply, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
+      applyJoinReply("freenode", "#grappa", 100);
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      // A backward candidate must not move the local cursor — only the
+      // authoritative applyReadCursorSet WS echo may move it backward
+      // (cross-device last-write-wins). Guards against an in-flight
+      // stale POST clobbering a peer's more-recent advance.
+      await setReadCursor("tok", "freenode", "#grappa", 50);
+      expect(getReadCursor("freenode", "#grappa")).toBe(100);
+    });
+
+    it("optimistically sets the cursor on cold start (no prior value)", async () => {
+      const { setReadCursor, getReadCursor, clearReadCursors } = await import("../lib/readCursor");
+      clearReadCursors();
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const p = setReadCursor("tok", "freenode", "#grappa", 42);
+      expect(getReadCursor("freenode", "#grappa")).toBe(42);
+      await p;
+    });
+  });
+
   it("clearReadCursors removes every entry from the signal map", async () => {
     const { clearReadCursors, applyMeEnvelope, getReadCursor } = await import("../lib/readCursor");
     applyMeEnvelope({ freenode: { "#grappa": 100, "#cicchetto": 200 } });

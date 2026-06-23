@@ -178,6 +178,44 @@ defmodule GrappaWeb.ReadCursorControllerTest do
       }
     end
 
+    test "broadcast carries the post-set badge_count (door #3)",
+         %{conn: conn, user: user, network: network} do
+      # channel-all so every unread content row after the cursor is
+      # notify-worthy. own_nick resolves off the setup's credential nick.
+      {:ok, _} =
+        Grappa.UserSettings.put_notification_prefs(
+          {:user, user.id},
+          Map.merge(Grappa.UserSettings.default_notification_prefs(), %{
+            channel_messages_all: true
+          })
+        )
+
+      anchor = insert_message(user, network, "#sniffo", 1)
+      _ = insert_message(user, network, "#sniffo", 2)
+      _ = insert_message(user, network, "#sniffo", 3)
+
+      topic = Topic.channel(user.name, network.slug, "#sniffo")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      _ =
+        post(conn, "/networks/#{network.slug}/channels/%23sniffo/read-cursor", %{
+          "message_id" => anchor.id
+        })
+
+      anchor_id = anchor.id
+
+      # Cursor at the anchor → the 2 later rows are unread + notify-worthy.
+      assert_receive %Phoenix.Socket.Broadcast{
+        topic: ^topic,
+        event: "event",
+        payload: %{
+          kind: "read_cursor_set",
+          last_read_message_id: ^anchor_id,
+          badge_count: 2
+        }
+      }
+    end
+
     test "broadcast still fires on no-op (forward-only)",
          %{conn: conn, user: user, network: network} do
       msg = insert_message(user, network, "#sniffo")

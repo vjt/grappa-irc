@@ -110,7 +110,7 @@ stack (`cicchetto/e2e/compose.yaml`):
 * **grappa-e2e-seeder** (oneshot): runs `mix ecto.migrate` + seeds 3 users (`vjt`, `admin-vjt`, `m9b-test`, `m9b-victim`) + binds them to bahamut-test + seeds 200 scrollback lines on `#bofh`. Idempotent at clean-volume time only — re-seeding a non-fresh volume fails on duplicate user rows.
 * **grappa-test**: the bouncer, dev image, source bind-mounted, points at `bahamut-test:6667`.
 * **cicchetto-build-test** (oneshot): `bun install --frozen-lockfile && bun run build` into bind-mounted `runtime/e2e/cicchetto-dist/`.
-* **nginx-test**: same image + nginx.conf as prod; serves SPA dist + reverse-proxies grappa-test:4000.
+* **nginx-test**: same nginx image + config shape as the Docker full-stack profile (`infra/nginx.conf` — prod proper is the m42 jail's nginx, `infra/freebsd/nginx.conf`); serves SPA dist + reverse-proxies grappa-test:4000.
 * **playwright-runner**: official Playwright base, runs `npx playwright test` against `https://nginx-test` from inside the docker network.
 
 Cold bring-up: ~30s. Suite (~190 specs across chromium + webkit-iphone-15
@@ -221,7 +221,8 @@ These bite during cluster work; check the memory before re-investigating.
 ## When the test stack itself is broken
 
 * **`vendor/bats-core` not found** → `git submodule update --init vendor/bats-core`.
-* **`cicchetto/e2e/infra` empty** → `git submodule update --init`.
+* **`cicchetto/e2e/infra` empty (fresh git worktree — worktrees don't inherit submodules)** → now AUTO-initialised by `scripts/testnet.sh` on first `up`. Manual fallback if the auto-init fails: `git -C <worktree> submodule update --init cicchetto/e2e/infra`.
+* **`runtime/e2e/{cicchetto-dist,grappa-runtime}` left ROOT-OWNED → next `testnet up` aborts** (symptoms: cicchetto-dist `AccessDenied`, sqlite `database_open_failed`, `"Pool overlaps with other one on this address space"`). A prior run can write these as uid 0 despite the `--user` drop; a plain `rm` can't clear them. Now AUTO-cleaned: `testnet.sh up`/`down` use `e2e_force_rm` (plain rm → non-interactive `sudo` for root-owned survivors; see `scripts/_lib.sh`). No passwordless sudo → it warns and you run `sudo rm -rf runtime/e2e/* cicchetto/e2e/test-results/*` by hand. **`git worktree remove` blocked** by root-owned `cicchetto/e2e/test-results/*` (Playwright writes failure artifacts as root, intentionally kept) → `sudo rm -rf <worktree-dir>` then `git worktree prune`.
 * **`services.hub conflicts with imported resource`** (compose config parse) → docker compose is too old for the `include:` + per-service override pattern. Install **v5.0.2** (the CI pin in `.github/workflows/integration.yml`) into `~/.docker/cli-plugins/docker-compose` — user-local, no sudo. Stock distro plugins (e.g. Debian's 2.26.1) reject it.
 * **`checking context: no permission to read .../nginx-certs/nginx.key`** (image build) → running e2e as a NON-root user: `nginx-cert-init` writes the key root-owned 0600, and the classic (non-buildx) builder tars the context as the invoking user. Fixed in-repo via `.dockerignore` exclusions (root + `cicchetto/e2e/`); if it recurs, a new build context is pulling in the cert dir — add it to that context's `.dockerignore`. CI builds as root so never hits this.
 * **`Exqlite.Connection ... database is locked`** during `scripts/test.sh` → benign log noise from concurrent test teardown; the test still passes. If it ESCALATES to a failure, check `config/test.exs` pool size + `max_cases`.

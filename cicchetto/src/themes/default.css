@@ -1,3 +1,5 @@
+@import "../keyboard/keyboard.css";
+
 /*
  * P4-1 theme system — single CSS file with mIRC-light + irssi-dark
  * presets via :root[data-theme="..."] blocks.
@@ -41,6 +43,16 @@
   --font-size: 14px;
   --line-height: 1.4;
   --breakpoint-mobile: 768px;
+  /* grappa-irc#69: theme the scrollbars. `scrollbar-color` and
+     `scrollbar-width` inherit, so declaring them on :root themes every
+     scrollable descendant (.scrollback, members pane, admin tables…)
+     in both irssi-dark and mirc-light — the vars resolve per active
+     theme via the cascade. Without this the UA paints a stark white
+     bar over the dark theme (alk, #sniffo 2026-06-22). Thumb = muted,
+     track = bg-alt. WebKit/Blink ignore these and need the
+     ::-webkit-scrollbar block at the end of this file. */
+  scrollbar-color: var(--muted) var(--bg-alt);
+  scrollbar-width: thin;
 }
 
 :root[data-theme="irssi-dark"] {
@@ -169,6 +181,33 @@ html.is-ios {
   inset: 0;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+}
+
+/* Dispatch-1 (2026-06-11) — selective re-enable of text selection.
+   THE selectable-text policy point: the blanket kill above is
+   Telegram Web K's pattern, and Telegram pairs it with re-enables on
+   every surface users copy from. New copyable surface → add its
+   selector HERE, nowhere else. Currently: scrollback message text
+   (channels, queries, server window all render through .scrollback),
+   the topic modal's full-topic text, and editable fields (WebKit
+   honors inherited user-select:none inside inputs in some version
+   ranges). Deliberately NOT selectable: mentions rows (navigation
+   buttons — the target message is selectable in its channel),
+   topic-bar text (clickable, opens the modal), all other chrome.
+   Full arc: docs/DESIGN_NOTES.md 2026-06-11. */
+html.is-ios .scrollback,
+html.is-ios .topic-modal-text,
+html.is-ios input,
+html.is-ios textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* The [Join] invite CTA is a button inside .scrollback — re-exclude
+   it so long-press doesn't pop the selection magnifier over a control. */
+html.is-ios .scrollback-invite-join {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 html.is-ios body {
@@ -1062,6 +1101,18 @@ html.resize-dragging * {
 .scrollback-mirc-underline {
   text-decoration: underline;
 }
+.scrollback-mirc-strikethrough {
+  text-decoration: line-through;
+}
+/* Underline + strikethrough on the same run: a single `text-decoration`
+   can't compose across two separate class rules (last wins), so this
+   higher-specificity selector merges them. */
+.scrollback-mirc-underline.scrollback-mirc-strikethrough {
+  text-decoration: underline line-through;
+}
+.scrollback-mirc-monospace {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+}
 /* Reverse without explicit fg/bg: invert via filter so plain text
    stays readable on whatever the surrounding background is. With
    explicit fg/bg the renderRun helper swaps them on the inline style
@@ -1096,6 +1147,10 @@ html.resize-dragging * {
 
 .scrollback-day-separator-label {
   white-space: nowrap;
+  /* Both forms: iOS Safari <18.4 parses only the -webkit- prefix, and
+     the is-ios .scrollback re-enable sets the prefixed form on the
+     ancestor — unprefixed alone would lose the cascade there. */
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -1124,6 +1179,8 @@ html.resize-dragging * {
 
 .scrollback-unread-marker-label {
   white-space: nowrap;
+  /* Both forms — same reason as .scrollback-day-separator-label. */
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -1247,10 +1304,39 @@ html.resize-dragging * {
 
 .compose-box-upload-filename {
   font-family: var(--font-mono);
+  /* iPhone dogfood (2026-06-10): flex items default to min-width:auto,
+   * so a long filename refuses to shrink and shoves the progress bar +
+   * cancel/retry buttons off-screen on narrow viewports. min-width: 0
+   * lets it yield; ellipsis keeps it legible. The 25% hard cap (second
+   * dogfood round) keeps the progress bar dominant even when space
+   * would technically fit more name — the bar is the information on
+   * this row, the name is just a reminder of what's uploading. */
+  min-width: 0;
+  max-width: 25%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Task 7 — transcode-phase label ("processing video…") shown while the
+ * client-side video transcode runs, before the host POST starts. */
+.compose-box-upload-phase {
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .compose-box-upload-progress progress {
   flex: 1;
+  /* Keep a usable bar even when the filename is at its ellipsis floor. */
+  min-width: 3rem;
+}
+
+/* Error copy is the payload — let it take the leftover space and wrap;
+ * the truncating element in the row is the filename, not the message. */
+.compose-box-upload-error-msg {
+  flex: 1;
+  min-width: 0;
 }
 
 .compose-box-upload-progress button,
@@ -1261,6 +1347,9 @@ html.resize-dragging * {
   padding: 0 0.5rem;
   cursor: pointer;
   font-size: 0.8rem;
+  /* Never let the action buttons compress or vanish — they are the
+   * only recovery affordance on the row. */
+  flex-shrink: 0;
 }
 
 /* Privacy modal — full-viewport backdrop + centred dialog. */
@@ -1899,6 +1988,19 @@ html.resize-dragging * {
   border-color: #c00;
 }
 
+/* Issue #43 — "quit IRC" reuses the shared InlineConfirmButton but sits
+   in the settings drawer's full-width button stack (next to `.logout` /
+   `.admin-console-entry`), not a dense admin row. Override the compact
+   base sizing to match its neighbours; the base `.confirming` rule still
+   supplies the red armed treatment. `.logout`'s `margin-top: auto` keeps
+   the detach button (and this quit button right below it) anchored to
+   the drawer bottom. */
+.settings-drawer button.inline-confirm-btn.settings-quit {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  font-size: inherit;
+}
+
 /* UX-1 (2026-05-17) — Sidebar archive delete affordance. Borderless +
    muted to keep the dense per-row Archive list calm; the InlineConfirmButton
    base provides the .confirming red treatment when armed. The full-width
@@ -2344,7 +2446,13 @@ html.resize-dragging * {
        (global, line 67) means the inset is consumed FROM the height,
        not added to it. */
     padding-top: env(safe-area-inset-top);
-    padding-bottom: env(safe-area-inset-bottom);
+    /* IRC-keyboard height reservation folded into the bottom inset: the
+       always-docked in-page keyboard (KeyboardHost) never shrinks the
+       visual viewport, so we reserve its height here instead. --irc-kb-height
+       is 0px unless the IRC keyboard is enabled (set in Shell), so when off
+       this resolves to env(safe-area-inset-bottom) — byte-for-byte the
+       previous value. When on, it dominates the home-indicator inset. */
+    padding-bottom: max(env(safe-area-inset-bottom), var(--irc-kb-height, 0px));
   }
 
   /* UX-6 bucket D11 (2026-05-21) — D1 restored after D9 removal
@@ -2360,7 +2468,13 @@ html.resize-dragging * {
      Collapsing the padding when a text input is focused
      (`:has(textarea:focus, input:focus)`) closes the gap. */
   .shell-mobile:has(textarea:focus, input:focus) {
-    padding-bottom: 0;
+    /* Native keyboard up → collapse the home-indicator inset (it would
+       double-count against the shrunken visual viewport). But in IRC-keyboard
+       mode the textarea is ALSO focused (inputmode=none keeps it focusable)
+       while the viewport does NOT shrink and the in-page keyboard is docked —
+       so reserve its height instead of collapsing to 0. --irc-kb-height is 0px
+       when the IRC keyboard is off, preserving the original collapse exactly. */
+    padding-bottom: var(--irc-kb-height, 0px);
   }
 
   /* Legacy fallback for browsers that don't grok `dvh` (Safari < 15.4).
@@ -3476,6 +3590,37 @@ html.resize-dragging * {
   color: var(--muted);
 }
 
+/* ------------------------------------------------------------------ *
+ * grappa-irc#69 — WebKit/Blink scrollbar theming.
+ *
+ * `::-webkit-scrollbar*` pseudo-elements do NOT inherit, so the
+ * `scrollbar-color`/`scrollbar-width` on :root has no effect in
+ * Chrome/Safari. A global rule themes every scroll container at once;
+ * colors resolve to the active theme via the cascaded vars, so dark
+ * and light both follow automatically (fixes the stark white bar over
+ * irssi-dark — alk, #sniffo 2026-06-22). The 2px track-colored border
+ * insets the thumb so it reads as a slim pill, matching the
+ * `scrollbar-width: thin` Firefox rendering.
+ * ------------------------------------------------------------------ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-alt);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 5px;
+  border: 2px solid var(--bg-alt);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+::-webkit-scrollbar-corner {
+  background: var(--bg-alt);
+}
+
 .home-pane-network-state {
   text-transform: uppercase;
   font-size: 0.8em;
@@ -3568,4 +3713,133 @@ html.resize-dragging * {
 .home-pane-network-error {
   color: #d04040;
   font-size: 0.9em;
+}
+
+/* Media viewer modal — media-link cluster (2026-06-11). On-click
+   viewer for same-origin media URLs (own 📸/🎬 uploads): in-PWA-scope
+   links navigate the iOS standalone window in place, so the viewer
+   keeps the operator inside cic. z-index 1100/1101 — above the 1000
+   overlay tier (archive / privacy modals) because the viewer is opened
+   from scrollback and must win regardless of what else is open. */
+
+.media-viewer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  border: none;
+  padding: 0;
+  margin: 0;
+  appearance: none;
+  cursor: default;
+  z-index: 1100;
+}
+
+.media-viewer-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: max-content;
+  max-width: min(92vw, 72rem);
+  /* Keyboard-react viewport cap — same contract as .archive-modal. */
+  max-height: calc(var(--viewport-height, 100dvh) - 2rem);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 1101;
+}
+
+.media-viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.media-viewer-open-external {
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
+.media-viewer-close {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 0 0.25rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.media-viewer-close:hover {
+  color: var(--fg);
+}
+
+.media-viewer-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  /* Floor so the spinner/failure states don't render a postage-stamp
+     modal that jumps to full size when the media arrives; relative so
+     the spinner can overlay-center on top of a still-loading media
+     element (a pre-metadata <video> is a 300×150 black box). */
+  position: relative;
+  min-width: 12rem;
+  min-height: 6rem;
+  overflow: auto;
+}
+
+/* Load spinner — shown until the media element reports readiness
+   (img load / video+audio loadedmetadata). Dogfood fix 2026-06-11:
+   the body rendered bare until bytes arrived. Centered via
+   inset+margin, NOT translate — the rotate keyframe owns the
+   transform property and would clobber a translate-based centering. */
+.media-viewer-spinner {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 2rem;
+  height: 2rem;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: media-viewer-spin 0.8s linear infinite;
+  /* Overlay must never eat input: it sits exactly over the video's
+     centered native play control, and on iOS the tap it would swallow
+     is the very gesture that starts deferred loading (review fix). */
+  pointer-events: none;
+}
+
+@keyframes media-viewer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Color comes from the shared .muted utility (the component renders
+   class="muted media-viewer-error") — only layout lives here. */
+.media-viewer-error {
+  font-size: 0.9rem;
+  margin: 0;
+  padding: 0 1rem;
+}
+
+.media-viewer-media {
+  display: block;
+  max-width: 100%;
+  /* Header row (~2.5rem) + body padding + viewport margin. */
+  max-height: calc(var(--viewport-height, 100dvh) - 8rem);
+  object-fit: contain;
+}
+
+/* <audio> has no intrinsic size — give the bare controls strip a
+   usable width. */
+audio.media-viewer-media {
+  width: min(80vw, 24rem);
 }

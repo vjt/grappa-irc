@@ -126,6 +126,7 @@ vi.mock("../lib/scrollback", () => ({
   loadInitialScrollback: vi.fn(),
   loadMore: vi.fn(),
   sendMessage: vi.fn(),
+  lastOwnSend: () => null,
 }));
 
 vi.mock("../lib/members", () => ({
@@ -184,8 +185,8 @@ vi.mock("../lib/auth", () => ({
 // mock to verify the bootstrap fired exactly once. Use importOriginal
 // so PrivacyModal (transitively imported by Shell) still finds its
 // `privacyModalState` etc. exports.
-vi.mock("../lib/imageUploadOrchestrator", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/imageUploadOrchestrator")>();
+vi.mock("../lib/uploadOrchestrator", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/uploadOrchestrator")>();
   return {
     ...actual,
     loadUploadTtlSeconds: vi.fn(async () => {}),
@@ -306,7 +307,7 @@ beforeEach(async () => {
   // UX-4 bucket M (2026-05-19) — vi.fn inside vi.mock factory isn't
   // always reset by clearAllMocks; clear explicitly so test-3's
   // "not called" assertion isn't poisoned by test-1's call.
-  const orch = await import("../lib/imageUploadOrchestrator");
+  const orch = await import("../lib/uploadOrchestrator");
   vi.mocked(orch.loadUploadTtlSeconds).mockClear();
   selectionState.setSelSig(null);
   mobileState.value = false;
@@ -966,7 +967,7 @@ describe("Shell — M-7/N admin pane lifecycle", () => {
 // met" + "exact call shape" rather than count-strict.
 describe("Shell — upload-TTL bootstrap (UX-4 bucket M)", () => {
   it("loads the server preference when token + user are both present", async () => {
-    const orch = await import("../lib/imageUploadOrchestrator");
+    const orch = await import("../lib/uploadOrchestrator");
     tokenHolder.value = "test-bearer";
     userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" };
 
@@ -978,7 +979,7 @@ describe("Shell — upload-TTL bootstrap (UX-4 bucket M)", () => {
   });
 
   it("does NOT load via the Shell-level bootstrap when token is absent", async () => {
-    const orch = await import("../lib/imageUploadOrchestrator");
+    const orch = await import("../lib/uploadOrchestrator");
     tokenHolder.value = null;
     userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" };
 

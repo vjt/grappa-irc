@@ -1180,6 +1180,21 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_raw(client, "")
     end
 
+    # An empty reason frames `AWAY :\r\n` — the bare-AWAY un-away line
+    # (RFC 2812 §4.6). Accepting it would emit a CLEAR when the caller
+    # asked to SET. Mirrors send_pong/send_raw's empty guard at the byte
+    # boundary so a non-cic caller (Phase 6 listener facade) can't slip
+    # the silent-clear frame past this door even if the Session facade
+    # is bypassed. To clear, callers use send_away_unset/1.
+    test "send_away/2 rejects empty reason", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_away(client, "")
+    end
+
+    test "send_away/2 rejects CR/LF/NUL in reason", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_away(client, "afk\r\nQUIT :pwn")
+      assert {:error, :invalid_line} = Client.send_away(client, "afk\x00")
+    end
+
     # send_pong/2 PING token is parser-supplied; `Grappa.IRC.Parser`
     # strips all `\r`/`\n`/`\x00` from inbound bytes, so the token
     # cannot carry control chars by the time it reaches send_pong.

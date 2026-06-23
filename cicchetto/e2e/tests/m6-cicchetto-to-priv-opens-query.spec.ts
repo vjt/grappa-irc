@@ -55,12 +55,19 @@ test("M6 — cicchetto /msg opens query window, focuses, renders own-msg", async
   try {
     // /msg auto-opens the query window AND switches focus AND sends
     // the body. One compose interaction = three DOM consequences.
+    //
+    // The two round-trip assertions below use a 15s budget, not the 5s
+    // default: the /msg → bouncer-persist → WS-push → scrollback-render
+    // round-trip can exceed 5s under full-suite load on a slow host
+    // (observed 7.5s on the Raspberry Pi dev box — same timing flake as
+    // cp15-b6-archive-query-revival; bisected to load, not state). See
+    // DESIGN_NOTES 2026-06-09 "cp15-b6 / m6 e2e timing flake".
     await composeSend(page, `/msg ${PEER_NICK} ${MESSAGE_BODY}`);
 
     // Sidebar gains an entry for the peer-nick (the DM target).
     // sidebarWindow scopes by network section, so a hypothetical
     // PEER_NICK string elsewhere doesn't false-match.
-    await expect(sidebarWindow(page, NETWORK_SLUG, PEER_NICK)).toHaveCount(1, { timeout: 5_000 });
+    await expect(sidebarWindow(page, NETWORK_SLUG, PEER_NICK)).toHaveCount(1, { timeout: 15_000 });
 
     // Server-side: DM row persisted at channel = PEER_NICK with
     // sender = NETWORK_NICK. The wire shape mirrors a regular
@@ -75,7 +82,7 @@ test("M6 — cicchetto /msg opens query window, focuses, renders own-msg", async
     });
 
     // DOM: own DM row in the now-focused query window scrollback.
-    await expect(scrollbackLine(page, "privmsg", MESSAGE_BODY)).toBeVisible({ timeout: 5_000 });
+    await expect(scrollbackLine(page, "privmsg", MESSAGE_BODY)).toBeVisible({ timeout: 15_000 });
 
     // Focused query window: no unread bump on own send.
     await expect(sidebarMessageBadge(page, NETWORK_SLUG, PEER_NICK)).toHaveCount(0);

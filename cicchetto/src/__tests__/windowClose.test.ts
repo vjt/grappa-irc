@@ -57,11 +57,55 @@ vi.mock("../lib/queryWindows", () => ({
   closeQueryWindowState: vi.fn(),
 }));
 
+// windowClose imports setParted to clear the local windowState pseudo-
+// projection on channel close (#38). Mock it as a boundary spy — the
+// real windowState pulls in selection.ts (a heavy reactive chain this
+// unit doesn't need). setParted's own map-clearing outcome is covered
+// by its module; the e2e proves the full row-vanishes outcome.
+vi.mock("../lib/windowState", () => ({
+  setParted: vi.fn(),
+}));
+
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
   localStorage.clear();
   mockNetworks.length = 0;
+});
+
+// #38 — × on a +k autojoin channel that 475'd on reconnect. Such a
+// channel sits in BOTH channelsBySlug (autojoin, joined:false) AND
+// windowStateByChannel ("failed"), so the Sidebar dedup renders it via
+// the LIVE branch → the × routes through closeChannelWindow. The DELETE
+// drops it from channelsBySlug, but the upstream PART is a 442 no-op
+// (never joined) so NO self-PART echo arrives — and that echo is the
+// only thing that calls setParted (subscribe.ts). Without a local clear
+// here, the orphaned windowState entry re-renders as an un-dismissable
+// greyed pseudo-row. closeChannelWindow must clear it itself.
+describe("closeChannelWindow — channel close clears local windowState", () => {
+  it("PARTs the channel AND clears its windowState entry (dismisses a 475-failed +k autojoin row)", async () => {
+    const api = await import("../lib/api");
+    const auth = await import("../lib/auth");
+    const windowState = await import("../lib/windowState");
+    const { channelKey } = await import("../lib/channelKey");
+
+    auth.setToken("utok");
+    const { closeChannelWindow } = await import("../lib/windowClose");
+    closeChannelWindow("bahamut-test", "#k38");
+
+    // Server side: PART (no-op upstream for a never-joined channel) +
+    // de-autojoin via the DELETE.
+    expect(api.postPart).toHaveBeenCalledWith("utok", "bahamut-test", "#k38");
+    // Local side: clear the windowState pseudo-projection so the row
+    // can't re-emerge as an orphaned greyed pseudo-row once
+    // channelsBySlug drops the name.
+    expect(windowState.setParted).toHaveBeenCalledWith(channelKey("bahamut-test", "#k38"));
+  });
+  // closeChannelWindow shares the `if (!t) return` no-token idiom with
+  // disconnectNetwork (whose dedicated test below exercises that guard).
+  // Not re-tested here: the partial auth mock leaks the prior test's
+  // token across same-file tests, so a no-token assertion is flaky in
+  // this position; the shared idiom is already proven below.
 });
 
 describe("disconnectNetwork — visitor branch", () => {

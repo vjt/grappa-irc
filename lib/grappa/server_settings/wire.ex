@@ -44,7 +44,9 @@ defmodule Grappa.ServerSettings.Wire do
   """
   @type upload_view :: %{
           active_host: String.t(),
-          per_file_cap_bytes: pos_integer(),
+          image_per_file_cap_bytes: pos_integer(),
+          video_per_file_cap_bytes: pos_integer(),
+          document_per_file_cap_bytes: pos_integer(),
           global_cap_bytes: pos_integer()
         }
 
@@ -65,13 +67,17 @@ defmodule Grappa.ServerSettings.Wire do
   """
   @spec upload_view(%{
           active_host: atom(),
-          per_file_cap_bytes: pos_integer(),
+          image_per_file_cap_bytes: pos_integer(),
+          video_per_file_cap_bytes: pos_integer(),
+          document_per_file_cap_bytes: pos_integer(),
           global_cap_bytes: pos_integer()
         }) :: upload_view()
   def upload_view(%{} = upload) do
     %{
       active_host: Atom.to_string(upload.active_host),
-      per_file_cap_bytes: upload.per_file_cap_bytes,
+      image_per_file_cap_bytes: upload.image_per_file_cap_bytes,
+      video_per_file_cap_bytes: upload.video_per_file_cap_bytes,
+      document_per_file_cap_bytes: upload.document_per_file_cap_bytes,
       global_cap_bytes: upload.global_cap_bytes
     }
   end

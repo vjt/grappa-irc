@@ -39,8 +39,14 @@ const HomePaneVisitor: Component = () => {
       <h2 class="home-pane-title">Welcome to Grappa</h2>
       <p>You are connected as a visitor.</p>
       <p class="muted">
-        IRC channels appear in the sidebar. Pick one to start chatting. Your visitor session is
-        ephemeral — when it expires, scrollback for this nick stays archived on the bouncer.
+        IRC channels appear in the sidebar. Pick one to start chatting. While your session is open
+        the bouncer keeps you connected — close cicchetto and reopen, and you're still on, right
+        where you left off. But a visitor session is ephemeral: when it expires its scrollback goes
+        with it. Nothing is kept for a visitor nick.
+      </p>
+      <p class="muted">
+        This is IRC: to join a channel, tap the server tab below and <code>/join</code> it. To get
+        started, <code>/join #grappa</code>.
       </p>
     </div>
   );

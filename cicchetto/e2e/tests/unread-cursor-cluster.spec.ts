@@ -13,11 +13,11 @@
 //      `count_after(cursor)`, drops the just-sent row.
 //
 //   2. Send in a focused window with the in-pane `── XX unread ──`
-//      marker visible → marker collapses on the next render.
-//      Pre-cluster the marker stayed stale until focus-leave wrote
-//      the cursor on window-switch; post-D the cursor advances
-//      synchronously on send → derived `messagesUnread` recomputes
-//      to whatever later peer arrivals contributed (often 0).
+//      marker visible → the marker stays FROZEN (freeze contract,
+//      2026-06-08). The send advances the LIVE cursor, but the in-pane
+//      divider derives from the frozen `markerCursorId` snapshot and
+//      only re-latches on a focus acquisition — so the marker collapses
+//      on the next window-refocus, not on the send itself.
 //
 // One file, two cases, shared `describe` + `afterAll` restore — same
 // shape as `cursor-forward-only.spec.ts`. Per BUGHUNT-3 cascade rule,
@@ -175,8 +175,12 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
   //
   // Single browser context. Seed `── XX unread ──` marker on #bofh by
   // having a peer PRIVMSG while focus is on $server, switch focus to
-  // #bofh to render the marker, then send a message. Assert that the
-  // marker collapses on the next render.
+  // #bofh to render the marker, then send a message. SEND-RELATCH
+  // (2026-06-09, vjt: "marker showing + you send → hide it"): a focused
+  // send is an explicit caught-up action and collapses the divider
+  // immediately — NO window-switch needed. The freeze contract still
+  // holds for PASSIVE advances (scroll-settle echo, cross-device); only
+  // an own send fires the `lastOwnSend` re-latch.
   //
   // Mechanism (NOT asserted directly — only the behavior is):
   //   - peer privmsg lands on #bofh while focus is on $server →
@@ -184,12 +188,14 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
   //     fanout to #bofh topic stores the row but DOESN'T touch
   //     cursor (focus on $server, leave-arm on $server doesn't fire
   //     for #bofh).
-  //   - switch focus to #bofh → ScrollbackPane's rows memo injects
-  //     `unread-marker` BEFORE the first row with id > cursor.
-  //   - send a PRIVMSG → bucket D advances cursor to the new row id
-  //     → derived rows memo sees cursor >= peer-row id → unread-
-  //     marker drops out.
-  test("focused send collapses the in-pane unread marker on the next render", async ({
+  //   - switch focus to #bofh → key-effect latches `markerCursorId` at
+  //     the pre-peer cursor → rows memo injects `unread-marker` BEFORE
+  //     the first row with id > snapshot.
+  //   - send a PRIVMSG → `sendMessage` advances the live cursor AND
+  //     publishes `lastOwnSend` → the pane's send-relatch effect
+  //     re-latches `markerCursorId` to the advanced cursor → marker
+  //     collapses on the next render.
+  test("focused send collapses the in-pane unread marker immediately", async ({
     page,
   }) => {
     if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
@@ -212,11 +218,11 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
       await peer.join(CHANNEL);
       peer.privmsg(CHANNEL, peerBody);
 
-      // Switch to #bofh — rows memo evaluates with cursor < peer-row
-      // id, injects the unread-marker. Wait for the peer row + marker
-      // to render before the focused send so the pre-condition is
-      // visible (otherwise a marker-already-gone state would silently
-      // pass the post-send assertion).
+      // Switch to #bofh — key-effect latches the snapshot at cursor <
+      // peer-row id, rows memo injects the unread-marker. Wait for the
+      // peer row + marker to render before the focused send so the
+      // pre-condition is visible (otherwise a marker-already-gone state
+      // would silently pass the post-send assertion).
       await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
       await expect(
         page.locator('[data-testid="scrollback-line"][data-kind="privmsg"]', {
@@ -227,24 +233,86 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
         timeout: 5_000,
       });
 
-      // Send an own-PRIVMSG in the focused #bofh. Bucket D advances
-      // the cursor to the new row id post-success.
+      // Send an own-PRIVMSG in the focused #bofh. `sendMessage` advances
+      // the live cursor AND fires `lastOwnSend` → the send-relatch effect
+      // hides the marker. No window-switch.
       const ownBody = `unread-cursor Z sentinel2 own ${crypto.randomUUID().slice(0, 8)}`;
       await composeSend(page, ownBody);
       await expect(ownNickRows(page, ownBody).first()).toBeVisible({
         timeout: 5_000,
       });
 
-      // Marker collapses on the next render. Polled (not a snapshot)
-      // because the cursor-advance round-trip (POST + WS broadcast +
-      // apply + memo recompute + DOM commit) is async — same shape as
-      // the `bofhBadgeB` wait above, but here we have a positive
-      // event (`unread-marker` count → 0) to assert against.
+      // Marker collapses on the next render — polled, since the own row
+      // append + cursor advance + memo recompute + DOM commit is async.
       await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0, {
         timeout: 5_000,
       });
     } finally {
       await peer.disconnect("unread-cursor Z sentinel2 done");
     }
+  });
+
+  // ── Sentinel 3: own-msg-not-unread on a fast away-and-back ───────────
+  //
+  // Regression pin for the optimistic-cursor fix (2026-06-08). The local
+  // read cursor was round-trip-only — it advanced ONLY when the server's
+  // `read_cursor_set` WS event echoed back. Sending in a fully-read
+  // channel then switching AWAY and BACK before that echo landed made the
+  // marker re-latch (key-effect) read the STALE pre-send cursor, so the
+  // operator's OWN just-sent message rendered above a `── 1 unread ──`
+  // divider. vjt prod-reported as "a message I sent appears as unread
+  // after I go on a different window and then go back".
+  //
+  // Fix: `setReadCursor` advances the local signal optimistically
+  // (forward-only) before the POST, so the send (bucket D) + the leave-
+  // arm both land the cursor synchronously and the switch-back re-latch
+  // reads the fresh value. Deterministic with the fix; without it the
+  // race depends on whether the <100ms testnet round-trip beats the
+  // switch-back — so this is a forward-contract pin + real-browser
+  // exercise, and the deterministic root-cause guard is the
+  // optimistic-advance unit test in src/__tests__/readCursor.test.ts.
+  //
+  // (The sibling symptom — sidebar badge flicker on focus-leave — is a
+  // sub-frame paint event Playwright cannot reliably observe; the same
+  // unit test guards its root cause.)
+  test("own message sent then a fast away-and-back is NOT shown unread", async ({
+    page,
+  }) => {
+    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+    const vjt = getSeededVjt();
+
+    // Clean baseline: channel fully-read at first focus so NO marker is
+    // present before the send — any marker after the send/switch is the
+    // bug, not a leftover.
+    await restoreReadCursorToTail(vjt.token, NETWORK_SLUG, CHANNEL);
+
+    await loginAs(page, vjt);
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+    await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0, {
+      timeout: 5_000,
+    });
+
+    // Send own PRIVMSG in the fully-read, focused channel.
+    const ownBody = `unread-cursor Z sentinel3 own ${crypto.randomUUID().slice(0, 8)}`;
+    await composeSend(page, ownBody);
+    await expect(ownNickRows(page, ownBody).first()).toBeVisible({ timeout: 5_000 });
+
+    // FAST away-and-back — deliberately NO settle wait between, to
+    // exercise the re-latch BEFORE the cursor round-trip would otherwise
+    // land. With the optimistic advance the cursor is already at the
+    // own-row id, so the re-latch sees a fully-read channel.
+    await selectChannel(page, NETWORK_SLUG, NETWORK_SLUG, { awaitWsReady: false });
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+    // The own message must NOT be marked unread: no divider injected.
+    await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0, {
+      timeout: 5_000,
+    });
+    await expect(ownNickRows(page, ownBody).first()).toBeVisible();
+
+    // Stability: settle the full round-trip and re-assert — a wrongly
+    // reactive path would have injected the marker by now.
+    await page.waitForTimeout(POST_SEND_SETTLE_MS);
+    await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0);
   });
 });

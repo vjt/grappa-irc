@@ -45,7 +45,7 @@ defmodule Grappa.Uploads.ReaperTest do
           "img",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: past
           },
           storage_root: root
@@ -71,7 +71,7 @@ defmodule Grappa.Uploads.ReaperTest do
           "img",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: DateTime.add(now, 3600, :second)
           },
           storage_root: root
@@ -94,7 +94,7 @@ defmodule Grappa.Uploads.ReaperTest do
           "img",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: past
           },
           storage_root: root
@@ -113,7 +113,7 @@ defmodule Grappa.Uploads.ReaperTest do
           "img",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: nil
           },
           storage_root: root
@@ -134,7 +134,7 @@ defmodule Grappa.Uploads.ReaperTest do
           "img",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: past
           },
           storage_root: root
@@ -163,7 +163,7 @@ defmodule Grappa.Uploads.ReaperTest do
           "a",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: past
           },
           storage_root: root
@@ -174,7 +174,7 @@ defmodule Grappa.Uploads.ReaperTest do
           "b",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: past
           },
           storage_root: root
@@ -227,7 +227,7 @@ defmodule Grappa.Uploads.ReaperTest do
           "img",
           %{
             subject: {:user, user.id},
-            mime: "image/png",
+            mime: "text/plain",
             expires_at: past
           },
           storage_root: root

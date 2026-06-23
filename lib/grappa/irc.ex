@@ -5,8 +5,9 @@ defmodule Grappa.IRC do
   Owns the line parser (`Grappa.IRC.Parser`), the parsed message struct
   (`Grappa.IRC.Message`), the GenServer-owned upstream client
   (`Grappa.IRC.Client`), the pure auth state machine
-  (`Grappa.IRC.AuthFSM`), and identifier validators
-  (`Grappa.IRC.Identifier`). Phase 6's IRCv3 listener facade reuses the
+  (`Grappa.IRC.AuthFSM`), identifier validators
+  (`Grappa.IRC.Identifier`), and CTCP framing classification
+  (`Grappa.IRC.CTCP`). Phase 6's IRCv3 listener facade reuses the
   parser + message struct directly and reuses the AuthFSM SHAPE (pure
   FSM with `(state, [iodata])` step contract) for a peer
   server-side registration FSM. The module set is intentionally
@@ -20,5 +21,5 @@ defmodule Grappa.IRC do
   use Boundary,
     top_level?: true,
     deps: [Grappa.OutboundV6Pool],
-    exports: [AuthFSM, Client, Identifier, LineSplit, Message]
+    exports: [AuthFSM, Client, CTCP, Identifier, LineSplit, Message]
 end

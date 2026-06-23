@@ -1,0 +1,259 @@
+/* IRC custom keyboard — themed, CSS-only. All classes are .kbd-*
+   prefixed (extraction-safe; no collision with cic globals). Palette is
+   driven by the host's <html data-theme="…">. Concrete values are
+   stock-iOS-derived; verify against reference PNGs on-device. */
+
+:root[data-theme="irssi-dark"] {
+  --kbd-bg: #0d0d0f;
+  --kbd-key-bg: #3a3a3c;
+  --kbd-key-fn-bg: #2c2c2e;
+  --kbd-key-text: #ffffff;
+  --kbd-key-shadow: rgba(0, 0, 0, 0.5);
+  --kbd-magnify-bg: #4a4a4c;
+  --kbd-strip-bg: #2c2c2e;
+  --kbd-accent: #0a84ff;
+  --kbd-pill-bg: #1c1c1e;
+  --kbd-pill-border: rgba(255, 255, 255, 0.12);
+}
+
+:root[data-theme="mirc-light"] {
+  --kbd-bg: #d1d3d9;
+  --kbd-key-bg: #ffffff;
+  --kbd-key-fn-bg: #abb0ba;
+  --kbd-key-text: #000000;
+  --kbd-key-shadow: rgba(0, 0, 0, 0.3);
+  --kbd-magnify-bg: #ffffff;
+  --kbd-strip-bg: #f2f2f5;
+  --kbd-accent: #0a84ff;
+  --kbd-pill-bg: #ececed;
+  --kbd-pill-border: rgba(0, 0, 0, 0.12);
+}
+
+.kbd-root {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  background: var(--kbd-bg);
+  padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none; /* keys own the gesture; no scroll/zoom interference */
+  font-family: -apple-system, system-ui, sans-serif;
+  /* Key-unit sizing model (stock iOS). The LETTER key width is constant
+     across every row; rows with fewer keys are centered (justify-content)
+     rather than stretched. --kbd-key-w is one unit = (row − 9 gaps) / 10.
+     fn keys (shift/⌫/123/ABC/return) span ~1.5u; the spacebar fills the
+     bottom row's slack. --kbd-body-h is the layer area (4 rows + 3 gaps) so
+     the emoji layer occupies the SAME height as the letters (no overflow). */
+  --kbd-key-gap: 6px;
+  --kbd-row-gap: 11px;
+  --kbd-key-h: 44px;
+  --kbd-key-w: calc((100% - 9 * var(--kbd-key-gap)) / 10);
+  --kbd-body-h: calc(4 * var(--kbd-key-h) + 3 * var(--kbd-row-gap));
+}
+
+.kbd-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kbd-row-gap);
+}
+
+.kbd-row {
+  display: flex;
+  justify-content: center;
+  gap: var(--kbd-key-gap);
+}
+
+.kbd-key {
+  /* Fixed one-unit basis (no grow): keeps letter width constant across rows
+     instead of stretching short rows wider than long ones (dogfood bug). */
+  flex: 0 0 var(--kbd-key-w);
+  min-width: 0;
+  height: var(--kbd-key-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Button reset: the fn keys (shift/backspace/123/ABC/☺/return) and the
+     spacebar are <button>s; the letter keys are <div>s (KeyCap). Without
+     this reset the <button>s inherit the UA border + native appearance +
+     system font and render with a white outline that the <div>s don't
+     (dogfood bug, 2026-06-14). font-family (not the `font` shorthand) so
+     the explicit font-size below survives. */
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  font-family: inherit;
+  background: var(--kbd-key-bg);
+  color: var(--kbd-key-text);
+  border-radius: 5px;
+  box-shadow: 0 1px 0 var(--kbd-key-shadow);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.kbd-key--fn {
+  /* shift / ⌫ / 123 / ABC / return span ~1.5u so row3 (shift + 7 + ⌫) and
+     the bottom row line up with the 10-unit letter rows. */
+  flex: 0 0 calc(1.5 * var(--kbd-key-w) + 0.5 * var(--kbd-key-gap));
+  background: var(--kbd-key-fn-bg);
+  font-size: 16px;
+}
+
+/* Spacebar fills the bottom row's remaining width (stock iOS): the fn keys
+   around it are fixed, space takes the slack. Without a rule it inherited
+   .kbd-key's one-unit basis and rendered minuscule (dogfood bug). */
+.kbd-space {
+  flex: 1 1 auto;
+}
+
+.kbd-key--active {
+  background: var(--kbd-magnify-bg);
+}
+
+.kbd-magnify {
+  position: fixed;
+  z-index: 60;
+  background: var(--kbd-magnify-bg);
+  color: var(--kbd-key-text);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  box-shadow: 0 2px 8px var(--kbd-key-shadow);
+  pointer-events: none;
+}
+
+.kbd-strip {
+  position: fixed;
+  z-index: 61;
+  display: flex;
+  align-items: center;
+  background: var(--kbd-strip-bg);
+  border-radius: 10px;
+  box-shadow: 0 4px 14px var(--kbd-key-shadow);
+  padding: 0 4px;
+  pointer-events: none;
+}
+
+.kbd-strip-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  border-radius: 7px;
+  color: var(--kbd-key-text);
+  font-size: 24px;
+}
+
+.kbd-strip-cell--active {
+  background: var(--kbd-accent);
+  color: #fff;
+}
+
+.kbd-acc-pill {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 2px 6px;
+  padding: 4px 8px;
+  background: var(--kbd-pill-bg);
+  border: 1px solid var(--kbd-pill-border);
+  border-radius: 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.kbd-acc-pill::-webkit-scrollbar {
+  display: none;
+}
+
+.kbd-acc-btn {
+  flex: 0 0 auto;
+  min-width: 36px;
+  height: 32px;
+  padding: 0 8px;
+  background: transparent;
+  border: 0;
+  color: var(--kbd-key-text);
+  font-size: 15px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.kbd-acc-sep {
+  flex: 0 0 8px;
+}
+.kbd-acc-spacer {
+  flex: 1 1 auto;
+}
+
+.kbd-emoji {
+  display: flex;
+  flex-direction: column;
+  /* Match the letter layer's body height so the emoji picker occupies the
+     SAME bounded area — it was a fixed 260px (taller than the letters), so
+     it overflowed the keyboard and covered the channel bar (dogfood bug).
+     The grid scrolls inside; the category bar pins at the bottom. */
+  height: var(--kbd-body-h);
+  overflow: hidden; /* belt-and-suspenders: never spill past the bounded box */
+}
+.kbd-emoji-grid {
+  flex: 1 1 auto;
+  /* min-height:0 is load-bearing: a flex item defaults to min-height:auto,
+     which refuses to shrink below its CONTENT — so the ~1900-emoji grid grew
+     to full content height, pushed the ABC/category bar off the bottom, and
+     the whole layer overflowed the channel bar (dogfood round 2). With
+     min-height:0 the grid shrinks to its flex basis and scrolls internally. */
+  min-height: 0;
+  overflow-y: auto;
+}
+.kbd-emoji-cat {
+  display: flex;
+  flex-wrap: wrap;
+}
+.kbd-emoji-cell {
+  width: 12.5%;
+  height: 44px;
+  background: transparent;
+  border: 0;
+  font-size: 28px;
+  line-height: 1;
+}
+.kbd-emoji-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-top: 1px solid var(--kbd-pill-border);
+  overflow-x: auto;
+}
+.kbd-emoji-abc {
+  background: transparent;
+  border: 0;
+  color: var(--kbd-key-text);
+  font-size: 15px;
+}
+.kbd-emoji-tab {
+  font-size: 18px;
+  text-decoration: none;
+}
+
+/* Slide in/out. visible=false adds .kbd-hidden (drops it below the fold).
+   Reduced-motion users get an instant toggle. The host reserves matching
+   layout height via --irc-kb-height (set in cic, NOT here — keyboard.css
+   stays extraction-pure: only .kbd-* selectors). */
+.kbd-root {
+  transform: translateY(0);
+  transition: transform 0.22s cubic-bezier(0.33, 0, 0.2, 1);
+}
+.kbd-root.kbd-hidden {
+  transform: translateY(100%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .kbd-root {
+    transition: none;
+  }
+}

@@ -598,7 +598,16 @@ defmodule Grappa.Session do
   `:away_explicit`. Explicit always wins — calling this while in
   `:away_auto` overwrites the auto-away without a no-op check. Returns
   `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}` if the
-  reason string contains CR/LF/NUL.
+  reason is empty or contains CR/LF/NUL.
+
+  An **empty** reason is rejected because `AWAY :\r\n` is the bare-AWAY
+  un-away line (RFC 2812 §4.6) — accepting it here would silently CLEAR
+  the away instead of setting it. `safe_line_token?/1` only screens
+  CR/LF/NUL, so the emptiness check is added here (early, before the
+  `whereis` lookup) AND mirrored at the `Client.send_away` byte boundary,
+  like `send_pong`. A whitespace-only reason is a valid (if blank-looking)
+  set and is NOT rejected — only the empty string is the un-away line.
+  Clearing away is `unset_explicit_away/2`.
 
   S3.2 (channel-client-polish). Symmetric with `unset_explicit_away/2`.
   """
@@ -606,7 +615,7 @@ defmodule Grappa.Session do
           :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def set_explicit_away(subject, network_id, reason)
       when is_subject(subject) and is_integer(network_id) and is_binary(reason) do
-    if Identifier.safe_line_token?(reason) do
+    if reason != "" and Identifier.safe_line_token?(reason) do
       call_session(subject, network_id, {:set_explicit_away, reason})
     else
       {:error, :invalid_line}
@@ -627,7 +636,7 @@ defmodule Grappa.Session do
   def set_explicit_away(subject, network_id, reason, origin_window)
       when is_subject(subject) and is_integer(network_id) and is_binary(reason) and
              is_map(origin_window) do
-    if Identifier.safe_line_token?(reason) do
+    if reason != "" and Identifier.safe_line_token?(reason) do
       call_session(subject, network_id, {:set_explicit_away, reason, origin_window})
     else
       {:error, :invalid_line}

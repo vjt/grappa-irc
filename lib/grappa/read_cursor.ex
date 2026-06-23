@@ -188,11 +188,19 @@ defmodule Grappa.ReadCursor do
 
   Payload shape:
 
-      %{kind: "read_cursor_set", last_read_message_id: <integer>}
+      %{kind: "read_cursor_set", last_read_message_id: <integer>,
+        badge_count: <integer>}
 
   Cross-device sync: every live cic instance subscribed to the
   per-channel topic receives the event and updates its cursor signal
   map. Emit on every `set/4`, no batching, no throttle.
+
+  `badge_count` (PWA icon badge door #3, 2026-06-21) is the
+  notify-worthy unread total AFTER this advance — the caller computes it
+  (it holds the subject; `ReadCursor` deliberately does NOT depend on
+  `Grappa.Push.BadgeCount`, which sits a layer above) and passes it in so
+  every listening client refreshes its icon badge / `document.title`
+  without a `/me` round-trip.
 
   The caller is responsible for resolving `user_name` + `network_slug`
   from the subject — the broadcast topic is user-rooted (per CLAUDE.md
@@ -203,13 +211,17 @@ defmodule Grappa.ReadCursor do
   `UserSocket` uses for the visitor's user-rooted topic tree (V4
   visitor-parity, 2026-05-15).
   """
-  @spec broadcast_set(String.t(), String.t(), String.t(), integer()) ::
+  @spec broadcast_set(String.t(), String.t(), String.t(), integer(), non_neg_integer()) ::
           :ok | {:error, term()}
-  def broadcast_set(user_name, network_slug, channel, last_read_message_id)
+  def broadcast_set(user_name, network_slug, channel, last_read_message_id, badge_count)
       when is_binary(user_name) and is_binary(network_slug) and is_binary(channel) and
-             is_integer(last_read_message_id) do
+             is_integer(last_read_message_id) and is_integer(badge_count) do
     topic = Topic.channel(user_name, network_slug, channel)
-    Grappa.PubSub.broadcast_event(topic, Wire.read_cursor_set(last_read_message_id))
+
+    Grappa.PubSub.broadcast_event(
+      topic,
+      Wire.read_cursor_set(last_read_message_id, badge_count)
+    )
   end
 
   @doc """

@@ -1,10 +1,6 @@
-import { type Component, createEffect, createSignal, onCleanup, Show } from "solid-js";
-import {
-  acknowledgePrivacy,
-  dismissUpload,
-  privacyModalState,
-} from "./lib/imageUploadOrchestrator";
-import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
+import { type Component, createSignal, Show } from "solid-js";
+import { createOverlayLock } from "./lib/overlayScrollLock";
+import { acknowledgePrivacy, dismissUpload, privacyModalState } from "./lib/uploadOrchestrator";
 
 // First-upload privacy modal — images cluster I-2 (2026-05-15).
 //
@@ -20,33 +16,12 @@ const PrivacyModal: Component = () => {
   const [remember, setRemember] = createSignal(false);
 
   // UX-6 bucket A — refcounted overlay scroll-lock.
-  // `privacyModalState().open` is the open signal; edge-triggered
-  // push/pop via wasOpen closure. v4: scroll-lock targets the
-  // .image-upload-modal element (rendered inside `<Show keyed>`),
-  // looked up via queueMicrotask after Solid commits the render.
-  let wasOpen = false;
-  let lockedEl: HTMLElement | null = null;
-  createEffect(() => {
-    const open = privacyModalState().open;
-    if (open && !wasOpen) {
-      wasOpen = true;
-      queueMicrotask(() => {
-        lockedEl = document.querySelector<HTMLElement>(".image-upload-modal");
-        pushOverlay(lockedEl);
-      });
-    } else if (!open && wasOpen) {
-      wasOpen = false;
-      popOverlay(lockedEl);
-      lockedEl = null;
-    }
-  });
-  onCleanup(() => {
-    if (wasOpen) {
-      wasOpen = false;
-      popOverlay(lockedEl);
-      lockedEl = null;
-    }
-  });
+  // `privacyModalState().open` is the open signal. Shared
+  // createOverlayLock wiring — extracted 2026-06-11 when
+  // MediaViewerModal would have been the third verbatim copy; see
+  // overlayScrollLock.ts for the edge-trigger + deferred-push
+  // semantics, including the same-task-close leak fix.
+  createOverlayLock(() => privacyModalState().open, ".image-upload-modal");
 
   const onContinue = () => {
     acknowledgePrivacy(remember());

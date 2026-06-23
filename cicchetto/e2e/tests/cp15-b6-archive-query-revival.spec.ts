@@ -32,7 +32,12 @@
 // inherit the window. Peer disconnect cleans the upstream nick.
 
 import { test, expect } from "../fixtures/test";
-import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import {
+  composeSend,
+  loginAs,
+  selectChannel,
+  waitForDmListenerReady,
+} from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
@@ -60,6 +65,16 @@ test("CP15 B6 — /msg peer + close → archive entry; revive via /msg drops the
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, SEED_CHANNEL, { ownNick: NETWORK_NICK });
+  // Barrier against the documented DM-listener race (see
+  // waitForDmListenerReady): `selectChannel` awaits the channel topic
+  // join, NOT the own-nick topic join. Firing `/msg` before the own-nick
+  // subscribe completes means the outbound PRIVMSG broadcast fans out to
+  // zero subscribers → the query window never opens and the row never
+  // renders ("no messages yet"). This is what actually flaked cp15-b6 in
+  // the full suite (row absent even at 15s), not slow timing — the 7
+  // sibling DM specs (m4/m5/m6/cp14-b3/ux-6-k/ux-6-l/p0b) already guard
+  // this; cp15-b6 was the lone omission.
+  await waitForDmListenerReady(page, NETWORK_SLUG);
 
   // /msg opens the query window, focuses it, and sends the PRIVMSG
   // in one compose interaction. The PRIVMSG persists with dm_with =
@@ -69,11 +84,19 @@ test("CP15 B6 — /msg peer + close → archive entry; revive via /msg drops the
   // `.sidebar-network-section`; legacy `<h3>` per-network header
   // dropped in UX-4 bucket C — `.sidebar-network-header` is the
   // post-C row. Use the post-BH selectors.
+  // Round-trip assertions below use a 15s budget, not Playwright's 5s
+  // default. The /msg → bouncer-persist → WS-push → scrollback-render
+  // (and the archive REST queries) round-trip can exceed 5s under
+  // full-suite load on a slow host — observed 7.5s on the Raspberry Pi
+  // dev box, where this spec flaked while passing 3/3 in isolation and
+  // with the entire chromium prefix (bisected: timing, not state). 15s
+  // removes the flake without masking a genuine hang. See DESIGN_NOTES
+  // 2026-06-09 "cp15-b6 / m6 e2e timing flake".
   await composeSend(page, `/msg ${PEER_NICK} hello-archive`);
   const queryRow = page.locator(".sidebar-network-section", {
     has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
   }).locator("li", { hasText: PEER_NICK });
-  await expect(queryRow).toHaveCount(1, { timeout: 5_000 });
+  await expect(queryRow).toHaveCount(1, { timeout: 15_000 });
 
   // Confirm the row landed server-side via REST before closing — the
   // close fire-and-forgets a WS push and the archive REST race that
@@ -84,14 +107,14 @@ test("CP15 B6 — /msg peer + close → archive entry; revive via /msg drops the
     page.locator('[data-testid="scrollback-line"][data-kind="privmsg"]').filter({
       hasText: "hello-archive",
     }),
-  ).toBeVisible({ timeout: 5_000 });
+  ).toBeVisible({ timeout: 15_000 });
 
   // Close × — closeQueryWindowState drops the window from
   // queryWindowsByNetwork. The cic-side row vanishes immediately;
   // server-side close_query_window event is fired so a reload would
   // see the same state.
   await queryRow.locator(".sidebar-close").click();
-  await expect(queryRow).toHaveCount(0, { timeout: 5_000 });
+  await expect(queryRow).toHaveCount(0, { timeout: 15_000 });
 
   // Expand Archive — loadArchive fires on toggle; the per-network
   // archive REST query returns the peer entry (has scrollback row,
@@ -108,7 +131,7 @@ test("CP15 B6 — /msg peer + close → archive entry; revive via /msg drops the
   const archivedEntry = archiveSection.locator("button.sidebar-window-btn", {
     hasText: PEER_NICK,
   });
-  await expect(archivedEntry).toHaveCount(1, { timeout: 5_000 });
+  await expect(archivedEntry).toHaveCount(1, { timeout: 15_000 });
 
   // Click the archive entry — focus moves to the query window for
   // history viewing. NB: this does NOT call openQueryWindowState
@@ -124,7 +147,7 @@ test("CP15 B6 — /msg peer + close → archive entry; revive via /msg drops the
   await composeSend(page, `/msg ${PEER_NICK} hi-again`);
 
   // Active query row reappears.
-  await expect(queryRow).toHaveCount(1, { timeout: 5_000 });
+  await expect(queryRow).toHaveCount(1, { timeout: 15_000 });
 
   // Archive entry dedup: must vanish on the same tick the query
   // re-enters queryWindowsByNetwork. This is the live-state filter
@@ -132,5 +155,5 @@ test("CP15 B6 — /msg peer + close → archive entry; revive via /msg drops the
   // Archive) until next archive REST refetch.
   await expect(
     archiveSection.locator("button.sidebar-window-btn", { hasText: PEER_NICK }),
-  ).toHaveCount(0, { timeout: 5_000 });
+  ).toHaveCount(0, { timeout: 15_000 });
 });

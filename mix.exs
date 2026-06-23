@@ -25,13 +25,6 @@ defmodule Grappa.MixProject do
       deps: deps(),
       aliases: aliases(),
       test_coverage: [tool: ExCoveralls],
-      preferred_cli_env: [
-        coveralls: :test,
-        "coveralls.detail": :test,
-        "coveralls.html": :test,
-        "coveralls.json": :test,
-        "coveralls.lcov": :test
-      ],
       dialyzer: [
         plt_add_apps: [:ex_unit, :mix],
         plt_local_path: "priv/plts",
@@ -89,6 +82,20 @@ defmodule Grappa.MixProject do
           # boot script.
           validate_compile_env: false
         ]
+      ]
+    ]
+  end
+
+  # Elixir 1.19 deprecated `:preferred_cli_env` in `project/0` in favor
+  # of a dedicated `cli/0` callback (key renamed to `:preferred_envs`).
+  def cli do
+    [
+      preferred_envs: [
+        coveralls: :test,
+        "coveralls.detail": :test,
+        "coveralls.html": :test,
+        "coveralls.json": :test,
+        "coveralls.lcov": :test
       ]
     ]
   end

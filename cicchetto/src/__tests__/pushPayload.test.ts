@@ -45,6 +45,29 @@ describe("narrowPushPayload", () => {
     const malformed = { ...valid, [key]: 42 };
     expect(narrowPushPayload(malformed)).toBeNull();
   });
+
+  // PWA icon badge (door #1, 2026-06-21) — optional `badge` field.
+  it("carries a valid non-negative badge", () => {
+    expect(narrowPushPayload({ ...valid, badge: 5 })?.badge).toBe(5);
+  });
+
+  it("keeps badge 0 (the clear sentinel)", () => {
+    expect(narrowPushPayload({ ...valid, badge: 0 })?.badge).toBe(0);
+  });
+
+  it("floors a fractional badge", () => {
+    expect(narrowPushPayload({ ...valid, badge: 3.9 })?.badge).toBe(3);
+  });
+
+  it("omits badge when absent (older server)", () => {
+    expect(narrowPushPayload(valid)).not.toHaveProperty("badge");
+  });
+
+  it("drops a malformed badge but keeps the rest of the payload", () => {
+    expect(narrowPushPayload({ ...valid, badge: "nope" })).toEqual(valid);
+    expect(narrowPushPayload({ ...valid, badge: -2 })).toEqual(valid);
+    expect(narrowPushPayload({ ...valid, badge: Number.NaN })).toEqual(valid);
+  });
 });
 
 describe("parsePushTargetUrl", () => {

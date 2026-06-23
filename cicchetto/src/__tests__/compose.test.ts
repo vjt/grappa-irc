@@ -12,8 +12,23 @@ vi.mock("../lib/api", () => {
       this.code = code;
     }
   }
+  // compose.ts's catch does `e instanceof ChannelPushError` (#62) — the
+  // mock MUST export the class or that reference is `undefined` and the
+  // instanceof throws for EVERY non-ApiError rejection. Mirror the real
+  // shape (code + info) like the ApiError stub above.
+  class ChannelPushError extends Error {
+    readonly code: string;
+    readonly info: Record<string, unknown>;
+    constructor(code: string, info: Record<string, unknown> = {}) {
+      super(`channel push error: ${code}`);
+      this.name = "ChannelPushError";
+      this.code = code;
+      this.info = info;
+    }
+  }
   return {
     ApiError,
+    ChannelPushError,
     postTopic: vi.fn(),
     postNick: vi.fn(),
     postJoin: vi.fn(),
@@ -230,6 +245,61 @@ describe("compose submit — slash command dispatch", () => {
 
     // CTCP ACTION wraps body as \x01ACTION <text>\x01
     expect(sb.sendMessage).toHaveBeenCalledWith("freenode", "#a", "\x01ACTION waves\x01");
+    expect(result).toEqual({ ok: true });
+  });
+
+  // Multiline fan-out: an embedded LF can't ride a single PRIVMSG (the
+  // server rejects it as :invalid_line — IRC frames are newline-
+  // delimited). A multiline compose (Shift+Enter / pasted block) must
+  // become one PRIVMSG per line. Pre-fix the whole body went as one send
+  // and bounced with an "invalid" error.
+  it("multiline :privmsg sends one PRIVMSG per line, in order", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "line one\nline two\nline three");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(sb.sendMessage).toHaveBeenCalledTimes(3);
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(1, "freenode", "#a", "line one");
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(2, "freenode", "#a", "line two");
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(3, "freenode", "#a", "line three");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("multiline :privmsg drops blank lines and strips CR (CRLF paste)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "a\r\n\r\nb\r\nc");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(sb.sendMessage).toHaveBeenCalledTimes(3);
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(1, "freenode", "#a", "a");
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(2, "freenode", "#a", "b");
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(3, "freenode", "#a", "c");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("multiline /me sends one ACTION per line", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/me waves\nthen bows");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(sb.sendMessage).toHaveBeenCalledTimes(2);
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(1, "freenode", "#a", "\x01ACTION waves\x01");
+    expect(sb.sendMessage).toHaveBeenNthCalledWith(2, "freenode", "#a", "\x01ACTION then bows\x01");
     expect(result).toEqual({ ok: true });
   });
 
@@ -474,50 +544,102 @@ describe("compose submit — slash command dispatch", () => {
   });
 });
 
-describe("compose tabComplete (members-only, P4-1 Q6)", () => {
+describe("compose tabComplete (members-only, irssi-exact)", () => {
+  const k = channelKey("freenode", "#a");
+
+  const setMembers = async (nicks: string[]) => {
+    const members = await import("../lib/members");
+    vi.mocked(members.membersByChannel).mockReturnValue({
+      [k]: nicks.map((nick) => ({ nick, modes: [] })),
+    });
+  };
+
   it("returns null when no members", async () => {
     const compose = await import("../lib/compose");
-    const k = channelKey("freenode", "#a");
     expect(compose.tabComplete(k, "hello al", 8, true)).toBeNull();
   });
 
-  it("completes the leading nick prefix at the cursor", async () => {
-    const members = await import("../lib/members");
-    vi.mocked(members.membersByChannel).mockReturnValue({
-      [channelKey("freenode", "#a")]: [
-        { nick: "alice", modes: [] },
-        { nick: "alex", modes: [] },
-        { nick: "bob", modes: [] },
-      ],
-    });
-
+  it("returns null when the word has no prefix match", async () => {
+    await setMembers(["bob"]);
     const compose = await import("../lib/compose");
-    const k = channelKey("freenode", "#a");
-    const r = compose.tabComplete(k, "hi al", 5, true);
-    expect(r).not.toBeNull();
-    // First match alphabetically: alex
-    expect(r?.newInput).toBe("hi alex");
-    expect(r?.newCursor).toBe(7);
+    expect(compose.tabComplete(k, "al", 2, true)).toBeNull();
   });
 
-  it("cycles through matches on repeated tab", async () => {
-    const members = await import("../lib/members");
-    vi.mocked(members.membersByChannel).mockReturnValue({
-      [channelKey("freenode", "#a")]: [
-        { nick: "alice", modes: [] },
-        { nick: "alex", modes: [] },
-      ],
-    });
-
+  it("appends ': ' at line start", async () => {
+    await setMembers(["alice", "alex", "bob"]);
     const compose = await import("../lib/compose");
-    const k = channelKey("freenode", "#a");
-    const r1 = compose.tabComplete(k, "al", 2, true);
-    expect(r1?.newInput).toBe("alex");
-    const r2 = compose.tabComplete(k, r1?.newInput ?? "", r1?.newCursor ?? 0, true);
-    expect(r2?.newInput).toBe("alice");
-    const r3 = compose.tabComplete(k, r2?.newInput ?? "", r2?.newCursor ?? 0, true);
-    // Wraps back to alex
-    expect(r3?.newInput).toBe("alex");
+    const r = compose.tabComplete(k, "al", 2, true);
+    expect(r?.newInput).toBe("alex: "); // first alphabetically
+    expect(r?.newCursor).toBe(6);
+  });
+
+  it("appends ' ' (no colon) mid-sentence", async () => {
+    await setMembers(["alice", "alex"]);
+    const compose = await import("../lib/compose");
+    const r = compose.tabComplete(k, "hi al", 5, true);
+    expect(r?.newInput).toBe("hi alex ");
+    expect(r?.newCursor).toBe(8);
+  });
+
+  it("cycles forward through matches then reverts to typed text, then wraps", async () => {
+    await setMembers(["alice", "alex"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "al", 2, true)?.newInput).toBe("alex: ");
+    let draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("alice: ");
+    draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("al");
+    draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("alex: ");
+  });
+
+  it("Shift+Tab from the first match steps back into the revert slot", async () => {
+    await setMembers(["alice", "alex"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "al", 2, true)?.newInput).toBe("alex: ");
+    const draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, false)?.newInput).toBe("al");
+  });
+
+  it("single match still offers a revert slot", async () => {
+    await setMembers(["alex"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "al", 2, true)?.newInput).toBe("alex: ");
+    let draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("al");
+    draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("alex: ");
+  });
+
+  it("continues the cycle when the caret lands inside the inserted nick (re-tap)", async () => {
+    await setMembers(["alice", "alex"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "al", 2, true)?.newInput).toBe("alex: ");
+    const draft = compose.getDraft(k); // "alex: "
+    expect(compose.tabComplete(k, draft, 2, true)?.newInput).toBe("alice: ");
+  });
+
+  it("preserves the originally typed case on revert", async () => {
+    await setMembers(["alex"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "AL", 2, true)?.newInput).toBe("alex: ");
+    const draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("AL");
+  });
+
+  it("writes the completed draft into the store", async () => {
+    await setMembers(["alex"]);
+    const compose = await import("../lib/compose");
+    compose.tabComplete(k, "al", 2, true);
+    expect(compose.getDraft(k)).toBe("alex: ");
+  });
+
+  it("a real keystroke (setDraft) discards the cycle", async () => {
+    await setMembers(["alice", "alex"]);
+    const compose = await import("../lib/compose");
+    compose.tabComplete(k, "al", 2, true); // draft now "alex: "
+    compose.setDraft(k, "alex: x"); // user typed → cycle must reset
+    expect(compose.tabComplete(k, "alex: x", 7, true)).toBeNull();
   });
 });
 

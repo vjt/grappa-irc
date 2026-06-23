@@ -213,8 +213,9 @@ export function notifyClientClosing(): void {
 // handle_in reply shape from GrappaChannel). Callers (compose.ts)
 // await the promise inside the submit try/catch so errors surface
 // as inline compose-box alerts, same as REST failures. Rejects with
-// a typed `ChannelPushError` carrying the wire `code` ("visitor_no_away",
-// "not_explicit", etc.) so callers can branch on the token.
+// a typed `ChannelPushError` carrying the wire `code` ("no_session",
+// "not_explicit", etc.) which compose.ts maps to human copy via
+// `friendlyChannelError`.
 export function pushAwaySet(network: string, reason: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (_userChannel === null) {

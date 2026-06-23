@@ -1,15 +1,18 @@
 import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
-import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compose";
-import { activeHost } from "./lib/image-upload";
+import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from "./lib/compose";
+import { isDoubleTap, type Tap } from "./lib/doubleTap";
+import { ircKeyboardEnabled } from "./lib/keyboardPref";
+import { networkBySlug } from "./lib/networks";
+import { categoryOf } from "./lib/uploadCategory";
+import { activeHost } from "./lib/uploadHost";
 import {
   cancelUpload,
   dismissUpload,
   retryUpload,
   triggerUpload,
   uploadState,
-} from "./lib/imageUploadOrchestrator";
-import { networkBySlug } from "./lib/networks";
+} from "./lib/uploadOrchestrator";
 import { windowStateByChannel } from "./lib/windowState";
 
 // Sticky-bottom compose surface. Reads + writes compose.ts state;
@@ -41,10 +44,18 @@ import { windowStateByChannel } from "./lib/windowState";
 // already exposes "Take Photo" so a separate camera-capture button
 // would be redundant), drag-drop (whole-form), clipboard paste
 // (textarea). All converge on `triggerUpload()` from
-// imageUploadOrchestrator; the orchestrator handles privacy modal
+// uploadOrchestrator; the orchestrator handles privacy modal
 // gating, MIME pre-check, TTL dropdown wiring, progress state,
 // auto-send. ComposeBox is the trigger surface only — no upload
 // logic lives here.
+//
+// Uploads cluster Task 7 (2026-06-09): the trigger surfaces widened
+// from image-only to every categorized MIME — `categoryOf()` is the
+// drop/paste filter, the picker's accept attr spans all the active
+// host's categories. The host accept-list + per-category cap checks
+// stay in the orchestrator (one gate, one error surface); the
+// category filter here only stops obviously-uninteresting payloads
+// (text selections, random binaries) from opening the upload UI.
 
 export type Props = {
   networkSlug: string;
@@ -59,6 +70,39 @@ const ComposeBox: Component<Props> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   let pickerInput: HTMLInputElement | undefined;
+  let lastTap: Tap | null = null;
+
+  // Double-tap the textarea = press Tab (nick completion) without a Tab
+  // key on a stock mobile keyboard. We let the OS do its native
+  // word-select, then override value + caret — fighting the gesture's
+  // preventDefault is unreliable on iOS. tabComplete writes the draft
+  // itself; we only place the caret (next microtask, after the controlled
+  // textarea re-renders). selectionEnd is the cursor so the OS-selected
+  // word is the completion target.
+  const onPointerUp = (e: PointerEvent) => {
+    // Double-tap completion is the STOCK-keyboard path. When the IRC
+    // keyboard is on, KeyboardHost owns the caret (the textarea is
+    // inputmode=none) and provides its own Tab key — reading DOM
+    // selectionEnd here could complete at a stale caret. Defer to that path.
+    if (ircKeyboardEnabled()) return;
+    // Drop secondary pointers: a two-finger tap fires one pointerup per
+    // finger with near-identical t/x/y, which would otherwise satisfy
+    // isDoubleTap and spuriously complete.
+    if (!e.isPrimary) return;
+    const ta = e.currentTarget as HTMLTextAreaElement;
+    const tap: Tap = { t: Date.now(), x: e.clientX, y: e.clientY };
+    if (isDoubleTap(lastTap, tap)) {
+      lastTap = null;
+      const result = tabComplete(key(), getDraft(key()), ta.selectionEnd, true);
+      if (!result) return;
+      queueMicrotask(() => {
+        ta.setSelectionRange(result.newCursor, result.newCursor);
+      });
+      return;
+    }
+    lastTap = tap;
+  };
+
   const greyed = (): boolean => {
     // Bucket F H4: only UserNetwork carries connection_state. Narrow on
     // network.kind before reading the field; visitor networks are
@@ -76,7 +120,7 @@ const ComposeBox: Component<Props> = (props) => {
     setError(null);
   };
 
-  // ---- Image upload trigger surfaces -------------------------------
+  // ---- Upload trigger surfaces (all categories) --------------------
 
   const handleFile = (file: File): void => {
     triggerUpload(key(), props.networkSlug, props.channelName, file);
@@ -102,7 +146,7 @@ const ComposeBox: Component<Props> = (props) => {
     e.preventDefault();
     const file = e.dataTransfer?.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith("image/")) return;
+    if (categoryOf(file.type) === null) return;
     handleFile(file);
   };
 
@@ -112,7 +156,7 @@ const ComposeBox: Component<Props> = (props) => {
     for (const item of items) {
       if (item.kind !== "file") continue;
       const file = item.getAsFile();
-      if (file?.type.startsWith("image/")) {
+      if (file !== null && categoryOf(file.type) !== null) {
         e.preventDefault();
         handleFile(file);
         return;
@@ -190,17 +234,17 @@ const ComposeBox: Component<Props> = (props) => {
         <input
           ref={pickerInput}
           type="file"
-          accept={activeHost().acceptedMimeTypes.join(",")}
-          data-image-picker
+          accept={Object.values(activeHost().acceptedMimeTypes).flat().join(",")}
+          data-file-picker
           hidden
           onChange={onPickerChange}
         />
         <button
           type="button"
           class="compose-box-image-picker"
-          aria-label="upload image"
+          aria-label="upload file"
           onClick={onPickerClick}
-          title="upload image"
+          title="upload file"
         >
           {/* Camera icon — inline SVG, theme-agnostic. iOS Safari's
            * native picker on this single button already exposes
@@ -226,9 +270,16 @@ const ComposeBox: Component<Props> = (props) => {
           onInput={onInput}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
+          onPointerUp={onPointerUp}
           placeholder={`message ${props.channelName}`}
           rows={1}
           aria-label="compose message"
+          // IRC keyboard: suppress the native on-screen keyboard while the
+          // opt-in is on. DECLARATIVE + reactive so every render of this
+          // textarea — including re-creation on channel switch — carries the
+          // attr; an imperative Shell effect missed freshly-rendered textareas
+          // and the native keyboard slipped through (dogfood bug, 2026-06-14).
+          inputmode={ircKeyboardEnabled() ? "none" : undefined}
         />
         {/* UX-6 bucket F (2026-05-21) — arrow glyph + aria-label
             preserve a11y + byRole queries. SVG (not Unicode ➤) so the
@@ -240,6 +291,13 @@ const ComposeBox: Component<Props> = (props) => {
           type="submit"
           aria-label="send message"
           disabled={sending() || getDraft(key()).trim() === ""}
+          // #59: keep the textarea focused when sending via the button.
+          // Tapping a <button> moves focus off the textarea, which collapses
+          // the on-screen keyboard (native on Android; also drops the
+          // IRC-keyboard focus model). preventDefault on pointerdown stops
+          // the focus steal — the click still fires + submits. Same trick as
+          // the keyboard keys + the image-picker button.
+          onPointerDown={(e) => e.preventDefault()}
         >
           <svg
             width="16"
@@ -263,8 +321,17 @@ const ComposeBox: Component<Props> = (props) => {
           <Show
             when={st().error}
             fallback={
-              <div class="compose-box-upload-progress" role="progressbar">
+              // role="status" (polite live region), NOT role="progressbar":
+              // the native <progress> below self-announces, and ARIA
+              // progressbar has Children Presentational=true — it would
+              // flatten the filename / phase label / cancel button out of
+              // the a11y tree. status also announces the "processing
+              // video…" phase transition (Task 8 a11y review, 2026-06-09).
+              <div class="compose-box-upload-progress" role="status">
                 <span class="compose-box-upload-filename">{st().filename}</span>
+                <Show when={st().phase === "transcoding"}>
+                  <span class="compose-box-upload-phase">processing video…</span>
+                </Show>
                 <progress value={st().loaded} max={st().total} />
                 <button type="button" onClick={onCancelUpload}>
                   cancel

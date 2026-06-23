@@ -5,6 +5,14 @@ verbose catalogs (verbs, scripts, deploy machinery, per-host overrides,
 runtime data, monitoring). Keep this file in sync when adding a verb,
 script, deploy class, or runtime knob.
 
+**Substrates — read this first.** Dev/test = Docker on the pi
+(`scripts/*.sh`; the container is the runtime). **Prod = the m42
+FreeBSD bastille jail** (`scripts/deploy-m42.sh`; operator section
+below). The Docker `--profile prod` stack is the full-stack compose
+profile (nginx + cic bundle — the name predates the jail move) used
+for dev, e2e, and self-hosters; it is NOT this project's production.
+Nothing production runs on the pi.
+
 ## Operator dispatcher — `bin/grappa`
 
 `bin/grappa` is the host-side operator interface. One verb per task,
@@ -133,12 +141,12 @@ scripts/db.sh                # sqlite3 RO against runtime/grappa_dev.db
 scripts/healthcheck.sh       # curl /healthz
 scripts/monitor.sh           # docker compose logs -f
 scripts/observer.sh          # observer_cli runtime introspection
-scripts/deploy.sh            # unified deploy: auto-detects hot-vs-cold via git-diff preflight
-scripts/deploy.sh --force-hot   # bypass preflight, hot-deploy unconditionally
-scripts/deploy.sh --force-cold  # skip preflight, cold-deploy (rebuild + recreate)
-scripts/deploy-cic.sh        # cic bundle deploy (Docker): vite build + broadcast bundle_hash for refresh banner
-scripts/deploy-m42.sh        # host-side wrapper: ssh m42 + sudo bastille cmd → infra/freebsd/deploy.sh (server)
-scripts/deploy-m42.sh --cic  # host-side wrapper: → jail_deploy_cic.sh (cic bundle, hot, no BEAM restart)
+scripts/deploy.sh            # DEV (local Docker stack): auto-detects hot-vs-cold via git-diff preflight
+scripts/deploy.sh --force-hot   # dev, bypass preflight, hot-deploy unconditionally
+scripts/deploy.sh --force-cold  # dev, skip preflight, cold-deploy (rebuild + recreate)
+scripts/deploy-cic.sh        # DEV cic bundle (Docker): vite build + broadcast bundle_hash for refresh banner
+scripts/deploy-m42.sh        # PROD: ssh m42 + sudo bastille cmd → infra/freebsd/deploy.sh (server, auto hot/cold)
+scripts/deploy-m42.sh --cic  # PROD cic bundle: jail_deploy_cic.sh (hot, no BEAM restart)
 scripts/register-dns.sh      # operator: register host in local DNS
 scripts/shell.sh             # bash inside container (debug only — bin/grappa shell preferred)
 ```
@@ -161,20 +169,59 @@ on macOS, system bash 4+ on Linux. `brew install bash` if missing.
 ## Hot vs cold deploy — when each path triggers
 
 Both substrates share one preflight: `lib/grappa/deploy/preflight.ex`
-classifies a `(prev_sha, new_sha)` diff as HOT or COLD. The substrate
-scripts (`scripts/deploy.sh` for Docker, `infra/freebsd/deploy.sh`
-for the m42 bastille jail) shell out to `mix run --no-start -e
-'Grappa.Deploy.Preflight.cli([from, to])'`, dispatch on exit code.
+classifies a `(prev_sha, new_sha)` diff as HOT or COLD **for the
+calling substrate**. The substrate scripts (`scripts/deploy.sh` for
+Docker, `infra/freebsd/deploy.sh` for the m42 bastille jail) shell
+out to `mix run --no-start -e 'Grappa.Deploy.Preflight.cli([from, to,
+substrate])'` with substrate `"docker"` / `"jail"`, dispatch on exit
+code: 0 → HOT, 3 → COLD, anything else (1 = mix crash, 2 = usage
+error) **aborts the deploy** — a crash or miswired call must never
+degrade into a silent always-COLD guess. COLD is deliberately not
+exit 1: a crashed mix oneshot exits 1, and on the jail the env-less
+preflight did exactly that on every run (found live 2026-06-10 —
+`runtime.exs` raises on missing `DATABASE_PATH` under
+`MIX_ENV=prod`; the jail deploy now sources
+`/usr/local/etc/grappa/grappa.env` for the preflight oneshot, same
+`set -a` flow as `jail_release.sh`). The substrate argument is
+required — a missing or unknown value is a usage error (exit 2).
+Most diff classes
+are substrate-independent; the boot-substrate files are scoped (see
+the COLD list below) so a Dockerfile diff no longer cold-restarts the
+jail (2026-06-10 incident: prod restarted, all IRC sessions dropped,
+for bytes the jail never reads).
 
-**Module reload uses `:code.modified_modules/0` + `:code.load_file/1`
-directly — NOT `Phoenix.CodeReloader`.** The Phoenix reloader is a
+**Module reload uses `:code.modified_modules/0` + soft-purge +
+`:code.load_file/1` (`Grappa.HotReload`) — NOT `Phoenix.CodeReloader`.**
+A module can be hot-reloaded repeatedly between restarts: the context
+soft-purges the old version first (a bare `load_file` fails
+`:not_purged` on the second reload — live-repro 2026-06-10). If a
+process still runs old code the reload refuses with
+`:old_code_in_use` instead of killing it, the response's `failed`
+list is non-empty, and the jail deploy aborts rather than declaring
+success. Hot deploys that ADD modules are covered too: never-loaded
+beams in the app ebin are loaded via `:code.load_abs/1`
+(`:code.modified_modules/0` can't see them, embedded mode never
+lazy-loads, and the OTP 26+ cached code path makes plain `load_file`
+return `:nofile` for post-boot files — all three bit live
+2026-06-10). The jail deploy also writes `runtime/last-deployed-sha` on
+completion; a re-run with unchanged HEAD but a stale/missing marker
+re-drives the whole deploy (a prior run died mid-flight) instead of
+exiting "nothing to do". The Phoenix reloader is a
 dev-only facility: it depends on Mix (absent in `mix release`
 artifacts → no-op on the FreeBSD jail) and is gated behind a config
 check that silently no-ops in `MIX_ENV=prod` even when Mix is
-present (was wrongly trusted on Docker prod — see the 2026-05-16
-M-4 incident). `POST /admin/reload` walks `:code.modified_modules/0`
+present (wrongly trusted back when prod still ran on Docker — the
+2026-05-16 M-4 incident; prod moved to the m42 jail 2026-05-27).
+The marker is also the PREFLIGHT RANGE BASE: the jail classifies
+`marker..HEAD`, not pre-pull-HEAD..HEAD, because cic deploys
+(`jail_deploy_cic.sh`) advance the jail HEAD without applying server
+changes — a pre-pull base silently dropped server commits that landed
+between two cic deploys (defect #7, the 2026-06-11 outage). A
+garbage marker aborts the deploy loudly with a fix-it hint; only an
+ABSENT marker falls back to the pre-pull HEAD.
+`POST /admin/reload` walks `:code.modified_modules/0`
 and `:code.load_file/1`s each — release-friendly, Mix-free, works
-identically in dev, Docker prod, and the jail release.
+identically in the dev Docker stack and the jail release.
 
 The .beam-on-disk must be fresh BEFORE the reload POST. That's the
 substrate's job:
@@ -205,11 +252,22 @@ downtime):
   (`@modules` + `@state_helpers`). The preflight reads the SoT
   directly via `LongLivedModules.all/0` + extracts the state block
   via the Elixir tokenizer (no regex, no awk).
-- `Dockerfile`, `compose.yaml`, `bin/start.sh`, `bin/grappa` —
-  Docker image substrate
-- `infra/freebsd/rc.d/grappa`, `infra/freebsd/deploy.sh` — jail
-  substrate. Operator-on-demand verbs
-  (`infra/freebsd/jail_*.sh`) and `grappa.env.example` are HOT.
+- `Dockerfile`, `.dockerignore`, `compose*.yaml`, `bin/start.sh`,
+  `bin/grappa` — **Docker substrate only**; the jail never reads
+  these, so they classify HOT there.
+- `infra/freebsd/rc.d/grappa` — **jail substrate only** (rc wrapper
+  read at service start); Docker classifies it HOT. The jail cold
+  path runs `jail_install_rcd.sh` between stop and start, so the
+  restart boots through the new wrapper. The sibling
+  `rc.d/grappa_ndp_keepalive` is HOT on both substrates — it's a
+  different rc(8) service, and restarting the BEAM wouldn't refresh
+  it; the installer refreshes its bytes on every cold deploy, or run
+  `jail_install_rcd.sh` + `service grappa_ndp_keepalive restart` by
+  hand for an immediate pickup. Deploy orchestrators
+  (`scripts/deploy.sh`, `infra/freebsd/deploy.sh`),
+  operator-on-demand verbs (`infra/freebsd/jail_*.sh`) and
+  `grappa.env.example` are HOT on both substrates — nothing about
+  them lands in the running BEAM (d8f354c).
 - `priv/repo/migrations/*` — hot path skips `mix ecto.migrate`;
   new tables/columns 500 on first query post-reload, Bootstrap
   crash-loops if it reads them.
@@ -266,10 +324,14 @@ sparingly and document why in the commit message.
 
 ### Running operator actions against the live jail (prod)
 
-Prod is a **bastille jail** (JID 6, `/usr/local/bastille/jails/grappa/root`,
+Prod is a **bastille jail** (name `grappa`, `/usr/local/bastille/jails/grappa/root`,
 release at `/home/grappa/grappa`, DB `runtime/grappa_prod.db`, env
 `/usr/local/etc/grappa/grappa.env`). Reach it with
-`ssh root@m42` → `jexec 6 …`.
+`ssh root@m42` → `jexec grappa …`. **Reference the jail by NAME, not a
+numeric JID** — JIDs are assigned at start and DRIFT across restarts
+(2026-06-21: a doc'd `jexec 6` failed `jail 6 not found`; `ssh root@m42 jls`
+lists the current map). `bastille cmd grappa` / `pkg -j grappa` take the
+name too.
 
 - **`bin/grappa` (the dispatcher) is docker-only — it FAILS in the
   jail** (`docker: not found`). It's a dev/RPi tool.
@@ -279,7 +341,7 @@ release at `/home/grappa/grappa`, DB `runtime/grappa_prod.db`, env
   env first (or `rpc` returns `:noconnection` — needs `RELEASE_COOKIE`):
 
   ```sh
-  jexec 6 su -l grappa -c 'set -a; . /usr/local/etc/grappa/grappa.env; set +a;
+  jexec grappa su -l grappa -c 'set -a; . /usr/local/etc/grappa/grappa.env; set +a;
     /home/grappa/grappa/_build/prod/rel/grappa/bin/grappa rpc "<elixir>"'
   ```
 
@@ -287,15 +349,53 @@ release at `/home/grappa/grappa`, DB `runtime/grappa_prod.db`, env
   `Code.eval_file(~s(/path))` (the `~s()` sigil dodges quote-mangling
   through ssh→jexec→su). Context fns are all on the live node
   (`Grappa.Networks.*`, `…Credentials.*`, `Grappa.Session.stop_session/3`).
-- **`service grappa restart` has a stop/start node-name race** —
-  cold boot can abort with `name grappa@grappa … in use by another
-  Erlang node`. If so: confirm no `beam.smp`, check `epmd -names` is
-  clean, then a plain `service grappa start` (cold boot ~20s).
+- **`service grappa restart` node-name race — fixed 2026-06-11**
+  (defect #9): `grappa_stop` now blocks until the BEAM exits and epmd
+  releases the name, and `grappa_start` refuses a registered name +
+  verifies the node comes up (an early boot death is a loud ERROR,
+  not a silent "Starting grappa."). Both sides delegate to
+  `infra/freebsd/jail_beam_wait.sh` — shared with deploy.sh's cold
+  path. If a restart still aborts with `name grappa@grappa … in use`
+  (e.g. a stale pre-fix wrapper): confirm no `beam.smp`, check
+  `epmd -names` is clean, then a plain `service grappa start`
+  (cold boot ~20s); re-run `jail_install_rcd.sh` to refresh the
+  wrapper.
 - **`unbind_credential/2` refuses to drop the LAST user-credential
   from a network that still has scrollback** (cascade-on-empty →
   `:scrollback_present` rollback). To remove a binding while keeping
   the network alive for visitors, delete the credential row directly +
   `Session.stop_session`.
+
+**Jail package dependencies.** `Grappa.Uploads.MetadataStrip` (#39)
+shells out to `exiftool` (images + mp4/mov) and `ffmpeg` (webm remux).
+The Docker image installs both via the Dockerfile (`apk add exiftool
+ffmpeg` — dev/CI/e2e get them for free); the jail needs the FreeBSD
+packages installed ONCE, **before** deploying the strip release:
+
+```sh
+ssh root@m42 'pkg -j grappa install -y p5-Image-ExifTool ffmpeg'
+```
+
+The strip is fail-CLOSED: with the binaries missing, every image and
+video upload is rejected 422 `metadata_strip_failed` (documents
+unaffected). The error log names the missing binary
+(`exiftool not found on PATH — …`), so a post-deploy upload failing
+with that line means this step was skipped.
+
+The daemon must also SEE them: rc(8) services get rc.subr's stock
+PATH without `/usr/local`, so `infra/freebsd/rc.d/grappa` prepends
+`/usr/local/bin:/usr/local/sbin` (found live 2026-06-10 — pkgs
+installed, every media upload still 422). An rc.d diff classifies
+COLD on the jail substrate, and the cold path in
+`infra/freebsd/deploy.sh` runs `jail_install_rcd.sh` (idempotent,
+refreshes both rc.d wrappers) between stop and start — no manual
+step. To apply an rc.d change without waiting for a deploy (or after
+a `--force-hot` that skipped it):
+
+```sh
+ssh root@m42 'jexec grappa cp /home/grappa/grappa/infra/freebsd/rc.d/grappa \
+  /usr/local/etc/rc.d/grappa && jexec grappa service grappa restart'
+```
 
 **Jail outbound source IPs.** The jail is shared-IP
 (`jail.conf ip6=new`, `interface=vtnet0`); pool + per-server
@@ -316,7 +416,65 @@ CONNECTION` / 404s and gets the source IP banned — which then blocks
 that IP's user **and** visitor sessions, looking like a "hung BEAM."
 Unban: `fail2ban-client unban <ip>` (global) on m42; fix the client
 (clear cic's `localStorage["grappa-token"]` → re-login) before it
-re-bans.
+re-bans. The **`http-400`** jail (`/usr/local/etc/fail2ban/jail.d/defaults.local`)
+carries an `ignoreregex` exempting `/read-cursor\b` 400s: cic POSTs the
+read-cursor with an invalid `message_id` on service-nick query windows
+(NickServ/ChanServ/OperServ) and would self-ban the operator otherwise
+(issue #44 tracks the cic fix). `\b` keeps a forged `/read-cursorEVIL`
+still bannable. Validate edits with
+`fail2ban-regex <line> <filter.conf> '<ignoreregex>'`.
+
+## CSP / security headers (nginx-added, NOT Phoenix)
+
+The Content-Security-Policy + sibling security headers
+(`X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`,
+…) are added by **nginx**, sourced from
+**`infra/snippets/security-headers.conf`** (this repo — single source).
+That one file is BOTH Docker-mounted under `--profile prod` AND
+installed into the jail at
+`/usr/local/etc/nginx/snippets/security-headers.conf` by
+`jail_install_nginx.sh`. **Phoenix emits no CSP** — confirm with
+`curl -sD - http://127.0.0.1:4000/ -o /dev/null` inside the jail (no
+`content-security-policy` line). The jail nginx serves the cic bundle
+statically (`root /usr/local/www/cic`); the host m42 nginx
+(`/usr/local/etc/nginx/sites/irc.openssl.it`) only proxies and does
+NOT add the CSP. Prod hosts: **`irc.sniffo.org` / `irc.sindro.me`**
+(`irc.openssl.it` is the host vhost name + redirect).
+
+**Captcha inline-script gotcha (2026-06-06).** The Turnstile/hCaptcha
+loader `api.js` (allowed via its host in `script-src`) does not just
+run from its origin — once executed it **injects a small inline
+`<script>`** into the document to bootstrap the challenge. With no
+`'unsafe-inline'` and no hash in `script-src`, the browser blocks that
+inline script (`script-src-elem`) and the captcha silently never
+initialises (Firefox: "blocked the execution of an inline script").
+Fix = pin the inline script by its CSP3 **sha256 hash** in `script-src`
+(currently `'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM='`),
+NEVER relax to `'unsafe-inline'` (that would also re-enable first-party
+inline XSS). **CAVEAT:** the hash IS the provider's inline-bootstrap
+bytes, so a provider-side widget update changes them → captcha breaks
+under CSP again; the browser console prints the replacement `sha256-…`
+to add. (Aside: prod ships with captcha **disabled** —
+`grappa.env` has no `GRAPPA_CAPTCHA_*` → provider `disabled`; the
+widget only renders where a provider is enabled.)
+
+**Deploying a CSP/snippet change to the jail** — no BEAM or cic rebuild
+needed; push to origin first, then pull + install the one snippet +
+`nginx -t` + reload (reload only fires if the test passes):
+
+```sh
+ssh m42 "sudo bastille cmd grappa su -l grappa -c 'cd /home/grappa/grappa && git pull --ff-only origin main'"
+ssh m42 "sudo bastille cmd grappa sh -c 'install -o root -g wheel -m 0644 \
+  /home/grappa/grappa/infra/snippets/security-headers.conf \
+  /usr/local/etc/nginx/snippets/security-headers.conf && nginx -t && service nginx reload'"
+```
+
+(or `jail_install_nginx.sh` for the full nginx config + all snippets +
+`nginx -t` + reload). Verify the live header:
+
+```sh
+ssh m42 "curl -fsSL -D - -o /dev/null https://irc.sniffo.org/ 2>&1 | grep -i script-src"
+```
 
 ## Per-host compose overrides
 
@@ -341,25 +499,30 @@ don't hardcode hostnames there.
 
 ## Runtime Data
 
-- **Database**: sqlite via `ecto_sqlite3`. WAL journal mode in prod
-  (set in `config/runtime.exs`). Files at `runtime/grappa_dev.db`
-  (dev) / `runtime/grappa_prod.db` (prod). Bind-mounted from the host
-  via `compose.yaml` so the volume survives container rebuilds.
+- **Database**: sqlite via `ecto_sqlite3`. WAL journal mode under
+  `MIX_ENV=prod` (set in `config/runtime.exs`). Files at
+  `runtime/grappa_dev.db` (dev) / `runtime/grappa_prod.db`
+  (`MIX_ENV=prod` — the m42 jail, or a Docker stack run with
+  `--env=prod`). Docker bind-mounts them from the host via
+  `compose.yaml`; the jail keeps them as plain files under
+  `/home/grappa/grappa/runtime/`.
 - **Migrations**: standard Ecto.
   - Write migration in `priv/repo/migrations/<timestamp>_<name>.exs`.
-  - Run: `scripts/mix.sh ecto.migrate`.
-  - Migration files travel with the bind-mounted source — `scripts/deploy.sh`
-    runs `mix ecto.migrate` as part of the cold path. New migrations are
-    NOT auto-detected as cold-required (they're idempotent at boot via the
-    existing migration runner) but adding a column that Bootstrap reads
-    races the supervision tree boot — when in doubt, `--force-cold`.
+  - Dev: `scripts/mix.sh ecto.migrate`.
+  - Deploys: the preflight classifies ANY new migration file as COLD
+    (Class 5 — there is no in-reload migrate until #41 lands). The
+    cold paths run it: Docker via `mix ecto.migrate`, the jail via
+    `Grappa.Release.migrate()` before `service grappa restart`.
+    Never `--force-hot` past a new migration — the DML is skipped
+    and the code reads defaults (the uploads-2 key-rename would have
+    silently reverted tuned caps this way).
   - Never apply DDL manually via raw SQL. Always Ecto.Migration so
     `schema_migrations` stays in sync.
   - Use `:text` for free-text columns. Don't bake length limits into
     sqlite — adjust at the schema layer if needed.
 - **Log file**: container's stdout, captured by Docker JSON logger
-  (max 5MB × 3 files in dev, 10MB × 5 in prod). Tail via
-  `scripts/monitor.sh`. On the FreeBSD jail, `bin/grappa daemon`'s
+  (5MB × 3 files; 10MB × 5 under `--profile prod`). Tail via
+  `scripts/monitor.sh`. On the FreeBSD jail (prod), `bin/grappa daemon`'s
   `run_erl` tees the BEAM's stdout to `runtime/log/erlang.log.*`
   (plus `runtime/pipe/` for `bin/grappa remote` + `runtime/pid` for
   the daemon), driven by `RELEASE_TMP=runtime` exported by
@@ -377,8 +540,10 @@ don't hardcode hostnames there.
 
 ## Monitoring
 
-- **Health**: `scripts/healthcheck.sh` (curl `/healthz`).
-- **Logs**: `scripts/monitor.sh` (docker compose logs -f).
+- **Health**: `scripts/healthcheck.sh` (curl `/healthz`) — dev. Prod:
+  `ssh m42 "sudo bastille cmd grappa curl -fsS http://127.0.0.1:4000/healthz"`.
+- **Logs**: `scripts/monitor.sh` (docker compose logs -f) — dev. Prod:
+  tail `runtime/log/erlang.log.*` inside the jail (see Runtime Data).
 - **Runtime introspection**: `scripts/observer.sh` (observer_cli — see
   every supervised process, mailbox depth, memory).
 - **Phoenix.LiveDashboard** mounted at `/admin` (dev only by default;

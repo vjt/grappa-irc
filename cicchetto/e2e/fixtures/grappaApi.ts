@@ -408,3 +408,43 @@ export async function resetSubject(
     throw new Error(`resetSubject(${userName}) failed: ${res.status} ${text}`);
   }
 }
+
+// Overwrite a user's `credential.autojoin_channels` via the admin
+// PATCH. Mirrors `PATCH /admin/credentials/:user_id/:network_id`
+// (`GrappaWeb.Admin.CredentialsController.update/2`).
+//
+// Why this and not `resetSubject(baselineAutojoin)`: an autojoin-only
+// edit is classified `:left_alone` server-side
+// (`Credentials.classify_session_action/3`) — a DB write with NO
+// session restart, so it does NOT trigger the autojoin JOIN loop.
+// That's exactly what the issue #38 repro needs: stage a +k channel
+// into operator-config autojoin, THEN spawn (via /disconnect +
+// Reconnect) so the JOIN fires at the next session boot and 475s.
+// `resetSubject` can't stage a perpetually-failing +k channel — its
+// `await_autojoin` polls every entry to `:joined` and would 504.
+//
+// Caller MUST pass the seeded ADMIN token. `userId` is the User UUID
+// (the login subject `id`); `networkId` is the integer FK (always 1
+// in the e2e seeder).
+export async function setCredentialAutojoin(
+  adminToken: string,
+  userId: string,
+  networkId: number,
+  autojoinChannels: string[],
+): Promise<void> {
+  const url = `${GRAPPA_BASE_URL}/admin/credentials/${encodeURIComponent(userId)}/${networkId}`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      authorization: `Bearer ${adminToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ autojoin_channels: autojoinChannels }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "<no body>");
+    throw new Error(
+      `setCredentialAutojoin(${userId}/${networkId}) → ${res.status} ${text}`,
+    );
+  }
+}

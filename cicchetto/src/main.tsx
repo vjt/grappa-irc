@@ -1,10 +1,11 @@
 import { registerSW } from "virtual:pwa-register";
 import { Route, Router, useNavigate } from "@solidjs/router";
-import { type Component, createEffect, createSignal, type JSX, Show } from "solid-js";
+import { type Component, createEffect, createRoot, createSignal, type JSX, Show } from "solid-js";
 import { render } from "solid-js/web";
 import InstallSplash, { INSTALL_CHOICE_KEY, shouldShowInstallSplash } from "./InstallSplash";
 import Login from "./Login";
-import { bootstrapAuth, isAuthenticated } from "./lib/auth";
+import { me } from "./lib/api";
+import { bootstrapAuth, isAuthenticated, token } from "./lib/auth";
 import ShareConsume from "./ShareConsume";
 // Side-effect-only: registers the WS subscribe createRoot so per-
 // channel join effects fire once `user()` + `channelsBySlug()` resolve.
@@ -13,9 +14,10 @@ import ShareConsume from "./ShareConsume";
 // app entry has to wire the side-effect module explicitly.
 import "./lib/subscribe";
 import "./lib/userTopic";
+import { mountBadgeReconcile, mountBadgeSync } from "./lib/badge";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
-import { applyIosClass } from "./lib/platform";
+import { applyIosClass, isStandalonePwa } from "./lib/platform";
 import { applyPushTargetFromUrl, installPushTargetListener } from "./lib/pushTarget";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing } from "./lib/socket";
@@ -46,6 +48,35 @@ applySidebarWidthsFromStorage();
 // the pre-paint, iOS shell briefly renders in non-fixed layout
 // then reflows.
 applyIosClass();
+
+// PWA icon badge (2026-06-21) — wire the `badge` signal to the OS icon
+// badge (`navigator.setAppBadge`) + the `document.title` mirror. Own
+// root so the createEffect has an app-lifetime owner; the signal is fed
+// from the `/me` seed, `read_cursor_set` broadcasts, the SW push, and
+// the optimistic foreground mention bump.
+createRoot(() => mountBadgeSync());
+
+// PWA icon badge foreground reconcile (#badge-orphan, 2026-06-21) — the
+// SW push path (door #1) writes `setAppBadge` directly off-signal while
+// the app is backgrounded; `mountBadgeSync` only re-fires on a signal
+// *change*, so a warm resume that reads everything (server count 0, signal
+// already 0) would orphan the SW-set OS badge. On every visible event,
+// re-pull the authoritative `/me` count (same number the cold-load seed
+// uses) and force-apply it. `null` (no token / fetch failed) leaves the
+// badge as-is and retries on the next visible event.
+//
+// App-lifetime listener — the returned disposer is intentionally not
+// retained (same as the bare `pagehide` / `beforeunload` /
+// `beforeinstallprompt` listeners below). A production PWA update does a
+// full page reload, so listeners never accumulate; the disposer exists
+// for unit-test cleanup. No `createRoot` wrapper: this registers a raw
+// `addEventListener`, not a Solid reactive primitive, so there is no
+// computation owner to scope.
+mountBadgeReconcile(async () => {
+  const t = token();
+  if (!t) return null;
+  return (await me(t)).badge_count ?? 0;
+});
 
 // UX-3 PENT — VisualViewport-driven height tracking. Writes
 // `--viewport-height: <px>` on <html> and re-writes on every
@@ -149,13 +180,7 @@ const RequireAuth: Component<{ children: JSX.Element }> = (props) => {
 // reload — Chrome flips display-mode on the install transition,
 // which navigates away from the tab anyway; and the localStorage
 // choice only changes via the splash's own dismiss path.
-const isStandalone =
-  window.matchMedia("(display-mode: standalone)").matches ||
-  // iOS Safari pre-17 exposes standalone mode via this proprietary
-  // navigator property instead of the `display-mode` media query.
-  // The cast is intentional — the typedef doesn't include it because
-  // it's Safari-specific.
-  (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+const isStandalone = isStandalonePwa();
 const storedChoice = localStorage.getItem(INSTALL_CHOICE_KEY);
 const [showSplash, setShowSplash] = createSignal(
   shouldShowInstallSplash({ isStandalone, storedChoice }),
