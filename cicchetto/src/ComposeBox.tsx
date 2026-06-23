@@ -1,6 +1,7 @@
 import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
-import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compose";
+import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from "./lib/compose";
+import { isDoubleTap, type Tap } from "./lib/doubleTap";
 import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { networkBySlug } from "./lib/networks";
 import { categoryOf } from "./lib/uploadCategory";
@@ -69,6 +70,34 @@ const ComposeBox: Component<Props> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   let pickerInput: HTMLInputElement | undefined;
+  let lastTap: Tap | null = null;
+
+  // Double-tap the textarea = press Tab (nick completion) without a Tab
+  // key on a stock mobile keyboard. We let the OS do its native
+  // word-select, then override value + caret — fighting the gesture's
+  // preventDefault is unreliable on iOS. tabComplete writes the draft
+  // itself; we only place the caret (next microtask, after the controlled
+  // textarea re-renders). selectionEnd is the cursor so the OS-selected
+  // word is the completion target.
+  const onPointerUp = (e: PointerEvent) => {
+    // Drop secondary pointers: a two-finger tap fires one pointerup per
+    // finger with near-identical t/x/y, which would otherwise satisfy
+    // isDoubleTap and spuriously complete.
+    if (!e.isPrimary) return;
+    const ta = e.currentTarget as HTMLTextAreaElement;
+    const tap: Tap = { t: Date.now(), x: e.clientX, y: e.clientY };
+    if (isDoubleTap(lastTap, tap)) {
+      lastTap = null;
+      const result = tabComplete(key(), getDraft(key()), ta.selectionEnd, true);
+      if (!result) return;
+      queueMicrotask(() => {
+        ta.setSelectionRange(result.newCursor, result.newCursor);
+      });
+      return;
+    }
+    lastTap = tap;
+  };
+
   const greyed = (): boolean => {
     // Bucket F H4: only UserNetwork carries connection_state. Narrow on
     // network.kind before reading the field; visitor networks are
@@ -236,6 +265,7 @@ const ComposeBox: Component<Props> = (props) => {
           onInput={onInput}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
+          onPointerUp={onPointerUp}
           placeholder={`message ${props.channelName}`}
           rows={1}
           aria-label="compose message"
