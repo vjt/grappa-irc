@@ -13101,8 +13101,9 @@ keyboard, IRC keyboard OFF, channel with ≥2 prefix-sharing nicks:
 1. Prefix at line start, double-tap → `nick: ` (colon+space).
 2. Double-tap again → next match; again → reverts to the typed text.
 3. Prefix mid-sentence → `nick ` (space, no colon).
-4. Prefix mid-sentence WITH trailing text after the caret (`al world`,
-   caret after `al`) → confirm the cycle continues on a 2nd double-tap
+4. Prefix mid-sentence WITH trailing text after the caret
+   (`hey al world`, caret after `al`) → confirm the cycle continues on a
+   2nd double-tap
    (code-review flagged a theoretical caret-vs-microtask ordering edge
    here that could not be reproduced in jsdom; the real-browser flush
    order should make it harmless — verify on metal).

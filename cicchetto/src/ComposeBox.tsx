@@ -80,6 +80,11 @@ const ComposeBox: Component<Props> = (props) => {
   // textarea re-renders). selectionEnd is the cursor so the OS-selected
   // word is the completion target.
   const onPointerUp = (e: PointerEvent) => {
+    // Double-tap completion is the STOCK-keyboard path. When the IRC
+    // keyboard is on, KeyboardHost owns the caret (the textarea is
+    // inputmode=none) and provides its own Tab key — reading DOM
+    // selectionEnd here could complete at a stale caret. Defer to that path.
+    if (ircKeyboardEnabled()) return;
     // Drop secondary pointers: a two-finger tap fires one pointerup per
     // finger with near-identical t/x/y, which would otherwise satisfy
     // isDoubleTap and spuriously complete.
