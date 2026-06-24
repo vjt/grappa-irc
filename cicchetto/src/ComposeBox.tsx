@@ -1,9 +1,9 @@
-import { type Component, createSignal, Show } from "solid-js";
+import { type Component, createSignal, onCleanup, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from "./lib/compose";
-import { isDoubleTap, type Tap } from "./lib/doubleTap";
 import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { networkBySlug } from "./lib/networks";
+import { isHorizontalDrag, isSwipeRight, type Point } from "./lib/swipe";
 import { categoryOf } from "./lib/uploadCategory";
 import { activeHost } from "./lib/uploadHost";
 import {
@@ -70,37 +70,70 @@ const ComposeBox: Component<Props> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   let pickerInput: HTMLInputElement | undefined;
-  let lastTap: Tap | null = null;
+  let swipeStart: Point | null = null;
+  let swipeClaimed = false;
 
-  // Double-tap the textarea = press Tab (nick completion) without a Tab
-  // key on a stock mobile keyboard. We let the OS do its native
-  // word-select, then override value + caret — fighting the gesture's
-  // preventDefault is unreliable on iOS. tabComplete writes the draft
-  // itself; we only place the caret (next microtask, after the controlled
-  // textarea re-renders). selectionEnd is the cursor so the OS-selected
-  // word is the completion target.
-  const onPointerUp = (e: PointerEvent) => {
-    // Double-tap completion is the STOCK-keyboard path. When the IRC
-    // keyboard is on, KeyboardHost owns the caret (the textarea is
-    // inputmode=none) and provides its own Tab key — reading DOM
-    // selectionEnd here could complete at a stale caret. Defer to that path.
+  // Swipe-right across the textarea = press Tab (nick completion) without a
+  // Tab key on a stock mobile keyboard. A swipe — not double-tap — because
+  // double-tap collides with the OS word-select. TOUCH (not pointer) events:
+  // only touchmove.preventDefault reliably suppresses iOS's native scroll +
+  // drag-to-select, so once the drag commits to the horizontal axis we claim
+  // it. On touchend a rightward swipe fires tabComplete forward; tabComplete
+  // writes the draft itself, we only place the caret (next microtask, after
+  // the controlled textarea re-renders). The caret sits where the swipe
+  // began, so selectionEnd is the completion target.
+  //
+  // These are bound via a ref + addEventListener (see bindSwipe), NOT JSX
+  // onTouch* — Solid delegates touch events to a single PASSIVE listener on
+  // `document`, where preventDefault silently no-ops. We need an
+  // element-level, explicitly non-passive touchmove listener.
+  const onTouchStart = (e: TouchEvent) => {
+    // Stock-keyboard path only: with the IRC keyboard on, KeyboardHost owns
+    // the caret (textarea is inputmode=none) and has its own Tab key.
     if (ircKeyboardEnabled()) return;
-    // Drop secondary pointers: a two-finger tap fires one pointerup per
-    // finger with near-identical t/x/y, which would otherwise satisfy
-    // isDoubleTap and spuriously complete.
-    if (!e.isPrimary) return;
-    const ta = e.currentTarget as HTMLTextAreaElement;
-    const tap: Tap = { t: Date.now(), x: e.clientX, y: e.clientY };
-    if (isDoubleTap(lastTap, tap)) {
-      lastTap = null;
-      const result = tabComplete(key(), getDraft(key()), ta.selectionEnd, true);
-      if (!result) return;
-      queueMicrotask(() => {
-        ta.setSelectionRange(result.newCursor, result.newCursor);
-      });
-      return;
+    const t = e.touches.length === 1 ? e.touches[0] : undefined;
+    swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
+    swipeClaimed = false;
+  };
+
+  const onTouchMove = (e: TouchEvent) => {
+    if (swipeStart === null || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (t === undefined) return;
+    if (!swipeClaimed && isHorizontalDrag(swipeStart, { x: t.clientX, y: t.clientY })) {
+      swipeClaimed = true;
     }
-    lastTap = tap;
+    // Suppress native scroll + drag-to-select once we own the gesture.
+    if (swipeClaimed) e.preventDefault();
+  };
+
+  const onTouchEnd = (e: TouchEvent) => {
+    const start = swipeStart;
+    swipeStart = null;
+    if (start === null || !swipeClaimed) return;
+    const t = e.changedTouches[0];
+    if (t === undefined || !isSwipeRight(start, { x: t.clientX, y: t.clientY })) return;
+    const ta = e.currentTarget as HTMLTextAreaElement;
+    const result = tabComplete(key(), getDraft(key()), ta.selectionEnd, true);
+    if (!result) return;
+    queueMicrotask(() => {
+      ta.setSelectionRange(result.newCursor, result.newCursor);
+    });
+  };
+
+  // Bind the swipe listeners on the textarea element itself, bypassing
+  // Solid's passive document-level event delegation (touchmove MUST be
+  // non-passive for preventDefault to take). onCleanup removes them when the
+  // ComposeBox is disposed (e.g. channel switch re-creates the textarea).
+  const bindSwipe = (el: HTMLTextAreaElement): void => {
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    onCleanup(() => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+    });
   };
 
   const greyed = (): boolean => {
@@ -266,11 +299,11 @@ const ComposeBox: Component<Props> = (props) => {
           </svg>
         </button>
         <textarea
+          ref={bindSwipe}
           value={getDraft(key())}
           onInput={onInput}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          onPointerUp={onPointerUp}
           placeholder={`message ${props.channelName}`}
           rows={1}
           aria-label="compose message"

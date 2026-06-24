@@ -13087,14 +13087,19 @@ their `setDraft` and only place the caret. The IRC-keyboard note's
 Discard-on-keystroke needs no new code: every real keystroke already
 flows `onInput → setDraft`, which nulls the cycle.
 
-**Double-tap trigger** (`ComposeBox.tsx` + pure `lib/doubleTap.ts`). Two
-taps within 300ms / 24px on the textarea fire `tabComplete(…, selectionEnd,
-forward=true)`. We do NOT fight the OS native word-select `preventDefault`
-(unreliable on iOS) — we let the OS select, then override value + caret
-(`selectionEnd` is the cursor, so the OS-selected word is the completion
-target). `e.isPrimary` guard drops secondary multi-touch pointers. The
-pure tap reducer is unit-tested; the gesture itself is dogfood-only —
-Playwright webkit ≠ iOS gesture physics (prior burn).
+**Double-tap trigger** (`ComposeBox.tsx` + pure `lib/doubleTap.ts`).
+**[SUPERSEDED 2026-06-24 by swipe-right — see the next entry. Kept for the
+record: this shipped to prod 2026-06-23, then dogfood confirmed the
+word-select collision below was a real problem in practice, not just a
+theoretical one, so the trigger was swapped. The completion semantics
+above are unchanged.]** Two taps within 300ms / 24px on the textarea fire
+`tabComplete(…, selectionEnd, forward=true)`. We do NOT fight the OS native
+word-select `preventDefault` (unreliable on iOS) — we let the OS select,
+then override value + caret (`selectionEnd` is the cursor, so the
+OS-selected word is the completion target). `e.isPrimary` guard drops
+secondary multi-touch pointers. The pure tap reducer is unit-tested; the
+gesture itself is dogfood-only — Playwright webkit ≠ iOS gesture physics
+(prior burn).
 
 **Dogfood checklist (device-only, cannot be automated).** iOS, stock
 keyboard, IRC keyboard OFF, channel with ≥2 prefix-sharing nicks:
@@ -13108,3 +13113,51 @@ keyboard, IRC keyboard OFF, channel with ≥2 prefix-sharing nicks:
    here that could not be reproduced in jsdom; the real-browser flush
    order should make it harmless — verify on metal).
 5. Type any character → next double-tap starts a fresh cycle.
+
+## 2026-06-24 — Nick completion trigger: double-tap → swipe-right
+
+Same-day dogfood of the double-tap trigger (prev entry) confirmed the
+collision we'd flagged as theoretical: on a focused textarea, the OS
+recognizes the double-tap as word-select before our handler runs, so the
+completion fought the selection — exactly the failure mode the original
+brainstorm warned about. We considered (a) preventing the selection, but
+on iOS double-tap-select is a system gesture recognizer that can't be
+reliably `preventDefault`'d (the documented reason the double-tap path
+*overrode* selection instead of preventing it), and (b) broadening to the
+scrollback — rejected, that's `user-select: text` for copy by the
+Dispatch-1 decision and completion targets the compose draft, not
+messages. vjt's call: **swipe-right instead** — a gesture the OS does not
+overload with selection.
+
+**Implementation** (`ComposeBox.tsx` + pure `lib/swipe.ts`; `doubleTap.ts`
+deleted). Swipe-right across the textarea fires `tabComplete(…,
+selectionEnd, forward=true)`. Two pure, unit-tested reducers:
+`isSwipeRight(start, end)` (rightward, horizontal-dominant, ≥40px on
+touchend) and `isHorizontalDrag(start, cur)` (cleared 8px slop + horizontal
+axis, direction-agnostic). **TOUCH events, not pointer:** only
+`touchmove.preventDefault` reliably suppresses iOS's native scroll AND
+drag-to-select. **Crucial Solid gotcha (caught in code review):** Solid
+*delegates* `touchstart/touchmove/touchend` to a single listener on
+`document` (they're in its `DelegatedEvents` set, web.cjs:120), and a
+document-level touch listener is `passive: true` by the WHATWG
+intervention — so a JSX `onTouchMove` handler's `preventDefault()` silently
+no-ops and nothing is suppressed. We therefore bind the three listeners on
+the textarea element directly via a `ref` + `addEventListener`, with
+`touchmove` explicitly `{ passive: false }` (and `onCleanup` to remove
+them). Element-level touch listeners are non-passive by default, so
+`preventDefault` takes. Once the in-progress drag commits to the horizontal
+axis (`isHorizontalDrag`) we claim it and `preventDefault` every subsequent
+`touchmove`; on `touchend` a qualifying swipe completes. The caret was
+placed at `touchstart` (we never preventDefault that), so it sits where the
+swipe began → `selectionEnd` is the completion target. Stays gated to
+`!ircKeyboardEnabled()` (custom keyboard owns the caret + has a Tab key).
+Forward-only: the revert slot already lets you cycle all the way round;
+swipe-left-for-back is a trivial later add. NB: vitest/jsdom does NOT
+enforce passive-listener semantics, so the delegation bug passed the unit
+suite green — it's only catchable by reading the framework or dogfooding.
+
+The completion semantics (irssi-exact suffix, revert slot, range
+continuation, internal draft write) are untouched — only the trigger
+changed. The double-tap dogfood checklist above still applies with "swipe
+right across the input" substituted for "double-tap"; the gesture remains
+dogfood-only (no Playwright iOS gesture physics).
