@@ -3,7 +3,7 @@ import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from "./lib/compose";
 import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { networkBySlug } from "./lib/networks";
-import { isHorizontalDrag, isSwipeRight, type Point } from "./lib/swipe";
+import { type DragAxis, dragAxis, type Point, swipeDirection } from "./lib/swipe";
 import { categoryOf } from "./lib/uploadCategory";
 import { activeHost } from "./lib/uploadHost";
 import {
@@ -71,17 +71,17 @@ const ComposeBox: Component<Props> = (props) => {
   const [sending, setSending] = createSignal(false);
   let pickerInput: HTMLInputElement | undefined;
   let swipeStart: Point | null = null;
-  let swipeClaimed = false;
+  let claimedAxis: DragAxis | null = null;
 
-  // Swipe-right across the textarea = press Tab (nick completion) without a
-  // Tab key on a stock mobile keyboard. A swipe — not double-tap — because
-  // double-tap collides with the OS word-select. TOUCH (not pointer) events:
-  // only touchmove.preventDefault reliably suppresses iOS's native scroll +
-  // drag-to-select, so once the drag commits to the horizontal axis we claim
-  // it. On touchend a rightward swipe fires tabComplete forward; tabComplete
-  // writes the draft itself, we only place the caret (next microtask, after
-  // the controlled textarea re-renders). The caret sits where the swipe
-  // began, so selectionEnd is the completion target.
+  // Swipe gestures on the textarea give a stock mobile keyboard (no Tab, no
+  // arrows) the same affordances as keys: swipe RIGHT = Tab (nick complete),
+  // swipe UP = ArrowUp (older history), swipe DOWN = ArrowDown (newer
+  // history). A swipe — not double-tap — because double-tap collides with the
+  // OS word-select. TOUCH (not pointer) events: only touchmove.preventDefault
+  // reliably suppresses iOS's native scroll + drag-to-select, so once the
+  // drag commits to an axis (dragAxis) we claim it and preventDefault the
+  // rest. On touchend swipeDirection classifies the dominant axis and we
+  // dispatch the matching key action.
   //
   // These are bound via a ref + addEventListener (see bindSwipe), NOT JSX
   // onTouch* — Solid delegates touch events to a single PASSIVE listener on
@@ -93,32 +93,40 @@ const ComposeBox: Component<Props> = (props) => {
     if (ircKeyboardEnabled()) return;
     const t = e.touches.length === 1 ? e.touches[0] : undefined;
     swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
-    swipeClaimed = false;
+    claimedAxis = null;
   };
 
   const onTouchMove = (e: TouchEvent) => {
     if (swipeStart === null || e.touches.length !== 1) return;
     const t = e.touches[0];
     if (t === undefined) return;
-    if (!swipeClaimed && isHorizontalDrag(swipeStart, { x: t.clientX, y: t.clientY })) {
-      swipeClaimed = true;
+    if (claimedAxis === null) {
+      claimedAxis = dragAxis(swipeStart, { x: t.clientX, y: t.clientY });
     }
     // Suppress native scroll + drag-to-select once we own the gesture.
-    if (swipeClaimed) e.preventDefault();
+    if (claimedAxis !== null) e.preventDefault();
   };
 
   const onTouchEnd = (e: TouchEvent) => {
     const start = swipeStart;
     swipeStart = null;
-    if (start === null || !swipeClaimed) return;
+    if (start === null || claimedAxis === null) return;
     const t = e.changedTouches[0];
-    if (t === undefined || !isSwipeRight(start, { x: t.clientX, y: t.clientY })) return;
-    const ta = e.currentTarget as HTMLTextAreaElement;
-    const result = tabComplete(key(), getDraft(key()), ta.selectionEnd, true);
-    if (!result) return;
-    queueMicrotask(() => {
-      ta.setSelectionRange(result.newCursor, result.newCursor);
-    });
+    if (t === undefined) return;
+    const dir = swipeDirection(start, { x: t.clientX, y: t.clientY });
+    if (dir === "up") {
+      recallPrev(key());
+    } else if (dir === "down") {
+      recallNext(key());
+    } else if (dir === "right") {
+      const ta = e.currentTarget as HTMLTextAreaElement;
+      const result = tabComplete(key(), getDraft(key()), ta.selectionEnd, true);
+      if (!result) return;
+      queueMicrotask(() => {
+        ta.setSelectionRange(result.newCursor, result.newCursor);
+      });
+    }
+    // "left" / null → no mapped action.
   };
 
   // Bind the swipe listeners on the textarea element itself, bypassing

@@ -13178,3 +13178,21 @@ swipe's non-passive `touchmove` routed the gesture main-thread and the
 pointer events, unaffected; the JS swipe still reads touch events).
 Lesson: any new touchable surface in the mobile shell MUST declare its
 `touch-action` — `auto` is a chrome-drag hole.
+
+**Vertical swipes added (2026-06-24).** Extended the gesture from right-only
+to all three keyless affordances a stock mobile keyboard lacks: swipe RIGHT
+= Tab (nick complete), swipe UP = ArrowUp (older history, `recallPrev`),
+swipe DOWN = ArrowDown (newer history, `recallNext`). The pure reducers were
+unified to a direction classifier — `swipeDirection(start, end)` →
+`right|left|up|down|null` (dominant axis; perfect diagonal → null) and
+`dragAxis(start, cur)` → `horizontal|vertical|null` (mid-drag claim) —
+replacing the right-only `isSwipeRight`/`isHorizontalDrag` booleans (one
+classifier beats a pile of per-direction predicates). The touch handler
+locks to ONE axis on the first move past the slop, so a gesture is either a
+horizontal complete or a vertical recall, never both. `left` is classified
+but unmapped (reserved — swipe-left-for-back-cycle is the obvious future
+use). The vertical swipes are free of browser conflict precisely because of
+the `touch-action: none` fix above (no native vertical pan to fight).
+Completion + recall semantics are the existing key paths (`tabComplete`,
+`recallPrev`/`recallNext`); the swipe is just a third dispatch surface for
+them. Still dogfood-only.
