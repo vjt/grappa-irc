@@ -1231,6 +1231,17 @@ html.resize-dragging * {
   font-size: var(--font-size);
   line-height: var(--line-height);
   resize: none;
+  /* UX-3 UNDEC R3 follow-up (2026-06-24): this was the one touchable
+     control left WITHOUT an explicit touch-action, so it defaulted to
+     `auto` — and once ComposeBox added a non-passive touchmove listener
+     for the swipe-right nick-complete, a drag from the input drove iOS's
+     chrome/overscroll gesture and the whole shell dragged. The textarea
+     is chrome, not a scroll container, so it follows the shell's policy:
+     `none` (no pan / zoom / chrome gesture). Tap + focus + caret are
+     pointer events, unaffected. The swipe handler reads touch events
+     directly (touch-action doesn't stop event dispatch), so it still
+     fires. */
+  touch-action: none;
 }
 
 .compose-box textarea:focus {

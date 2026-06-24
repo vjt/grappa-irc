@@ -13161,3 +13161,20 @@ continuation, internal draft write) are untouched — only the trigger
 changed. The double-tap dogfood checklist above still applies with "swipe
 right across the input" substituted for "double-tap"; the gesture remains
 dogfood-only (no Playwright iOS gesture physics).
+
+**Same-day regression + fix (touch-action).** First dogfood of the swipe
+build: dragging from the input dragged the WHOLE shell. Root cause was a
+latent hole the swipe exposed — `.compose-box textarea` was the one
+touchable control with NO explicit `touch-action`, so it defaulted to
+`auto`. The shell's chrome-gesture block (`.shell-mobile { touch-action:
+none }`, UX-3 UNDEC R3) is the documented defense against "drag from a
+non-scroll area → iOS chrome/overscroll reveal," and inner scroll
+containers re-assert their axis (`.scrollback`/`.bottom-bar` → `pan-y`/
+`pan-x`). The textarea, being chrome (not a scroll container), should have
+been `none` all along; with no listener it never mattered, but the
+swipe's non-passive `touchmove` routed the gesture main-thread and the
+`auto` default let iOS drag the chrome. Fix: `touch-action: none` on
+`.compose-box textarea` (matches the shell policy; tap/focus/caret are
+pointer events, unaffected; the JS swipe still reads touch events).
+Lesson: any new touchable surface in the mobile shell MUST declare its
+`touch-action` — `auto` is a chrome-drag hole.
