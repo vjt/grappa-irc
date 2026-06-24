@@ -20,6 +20,15 @@ Dependencies checked by `./configure`:
 - OpenSSL (`libssl`, `libcrypto`)
 - pthread support
 
+Optional runtime dependencies (only for media link previews — see below):
+
+- `chafa` — renders the preview, auto-detecting the terminal graphics protocol
+  (Kitty, iTerm2, Sixel, or Unicode symbols).
+- `ffmpeg` — fetches and decodes the linked image/video into a single frame.
+
+If either is missing, clicking a media link falls back to opening it with
+`xdg-open` and logs a one-line hint.
+
 ## Install
 
 ```sh

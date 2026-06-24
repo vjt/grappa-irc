@@ -10988,6 +10988,57 @@ vjt's cic token; the looping client tripped host fail2ban `http-404`,
 which looked like a hung BEAM but was an IP ban — see OPERATIONS
 fail2ban note.)
 
+## 2026-06-23 — shottino: click-to-preview media (text-only rule lifted, scoped)
+
+vjt asked for image (and video) link previews in `shottino`, the C/ncurses
+terminal client. This intersects the **"IRC stays text only"** engineering
+rule in `CLAUDE.md` (no in-scrollback thumbnails / preview cards / lightbox).
+That rule is written for `cicchetto`'s scrollback and the broadcast-on-the-wire
+model; per its own escape hatch ("without an explicit cluster spec lifting this
+rule"), vjt explicitly authorized lifting it **for shottino only**. Scope of the
+lift, and why it does not erode the invariant elsewhere:
+
+- **Scrollback stays text.** Messages still render as text; image/video URLs
+  remain clickable links exactly as before. Nothing is rendered inline, on
+  arrival, or automatically. The preview is an **explicit, user-initiated
+  modal** — you click a link, a full-screen frame is shown, any key dismisses
+  it and the chat repaints. No autoplay, no on-arrival cards, no lightbox.
+- **Nothing crosses the wire.** This is a pure client-side affordance over the
+  same typed JSON shottino already consumes; no new server surface, no payload
+  shape change, no PubSub event. The cic-side invariant is untouched.
+- **No new client IRC parsing.** URL detection reuses the existing
+  `find_url` / `looks_like_image_url` heuristics already used to colorize links.
+
+Implementation (single-file `frontends/shottino/shottino.c`):
+
+- **Render via external tools, not vendored decoders.** `ffmpeg` does the
+  network fetch + decode + frame extraction to a temp PNG (one path for both
+  images and video — video uses the `thumbnail` filter to skip leader frames);
+  `chafa` renders the PNG and auto-detects the terminal graphics protocol
+  (Kitty > iTerm2 > Sixel > symbols). Both are **optional runtime deps**,
+  probed on PATH; if either is missing the click falls back to the existing
+  `xdg-open` path with a one-line hint. This avoids linking libpng/jpeg/webp +
+  three protocol encoders into the client, and avoids reimplementing an HTTP
+  client for arbitrary hosts (a security surface). Subprocesses are spawned
+  with `fork`+`execvp` (argv array, no shell) so the URL can't be injected.
+- **Click, not passive hover.** shottino repaints the whole screen every 50 ms;
+  passive xterm-1003 hover-to-render fights that repaint and smears real
+  graphics, so the trigger is a left-click on a media link. Mouse motion still
+  drives a lightweight "click to preview: <url>" hint on the chrome line as
+  mouse-over feedback. Mouse reporting (1000/1003/1006) is enabled while
+  shottino owns the screen and disabled around the modal and at shutdown.
+  Trade-off accepted: 1003 motion reporting suppresses the terminal's native
+  text selection while shottino runs (Shift-drag still works in most terminals).
+- **Click→URL mapping without re-deriving layout.** `draw()` records the screen
+  rectangle of each media link into `app->link_regions` (reset per frame); a
+  mouse event maps `(x,y)` back to the URL. Coarse by design — clicking
+  anywhere on a media message previews its first media URL.
+- **Modal isolation.** The preview leaves ncurses (`def_prog_mode`+`endwin`) so
+  chafa sees a real tty, reads one raw dismiss key, deletes any Kitty image
+  placements, then restores ncurses with a forced full repaint.
+
+If a future cluster wants the same in cic, it does NOT inherit this lift — cic's
+text-only scrollback rule stands until separately specified.
 ## 2026-06-08 — Unread-divider freeze contract (cic) + read-cursor cadence relocated here
 
 Relocated from CLAUDE.md (it was over-specified there and had gone
