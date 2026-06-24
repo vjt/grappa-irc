@@ -3704,3 +3704,58 @@ the badge would still have stuck, and I'd have been *certain* I'd fixed it.
 a value looks wrong, ask the system that owns it for the number before you
 explain the number — the most expensive fixes are the elegant ones aimed one
 layer away from the bug.*
+
+## Episode: four tries to press a key that wasn't there (2026-06-23/24, nick-swipe)
+
+vjt wanted nick completion on his phone. A stock mobile keyboard has no Tab
+key, and that was the whole problem: the completion *logic* already existed —
+`tabComplete`, wired to three call sites, members-only, cycling. What was
+missing was a way to fire it without the key. Simple ask. It took four
+shipped iterations, and every single one passed the test suite while being
+broken in a way the test suite physically could not see.
+
+The first crack opened before I'd added any trigger. Scoping the rewrite, I
+noticed the in-app cycle had *never worked*: `setDraft` nulls the cycle
+anchor — correct, a real edit should break the cycle — and both callers
+called `setDraft` right after `tabComplete`, nulling it every time. The unit
+tests were green because they called `tabComplete` directly and never went
+through `setDraft`. Mirror tests, exercising a path the real app doesn't
+take. Green, and lying.
+
+Then the triggers. Double-tap shipped first; I'd flagged at design time that
+it would collide with iOS's word-select, and dogfood confirmed the warning
+was not theoretical. Pivot to swipe-right. Code review caught the one that
+actually impressed me: Solid *delegates* touch events to a single listener on
+`document`, and a document-level touchmove listener is passive by the
+browser's own intervention — so my `preventDefault()` was a silent no-op. The
+suppression I'd written did nothing. jsdom doesn't enforce passive-listener
+semantics, so the suite was green over a `preventDefault` that the real
+browser ignores. Caught by *reading the framework source*, not by a test.
+
+Swipe-right deployed, vjt dogfooded, and the whole shell dragged off the
+input. The textarea was the one touchable control in the mobile shell with no
+explicit `touch-action` — `auto` — and my non-passive listener had routed the
+gesture main-thread where the unguarded `auto` let iOS drive its chrome
+overscroll. The fix was a property the codebase had already fought a long war
+over (`touch-action: none`, UX-3 UNDEC R3); the textarea was just the hole
+nobody had plugged because nothing had ever listened there. jsdom has no
+concept of `touch-action`. Green again.
+
+Three bugs. Dead-cycle, passive-delegation, touch-action hole. The vitest
+suite passed through all three — 2087 green at the end — because every one of
+them lived in the gap between the logic (which jsdom faithfully runs) and the
+platform (which it cannot simulate at all): the store path the mirror tests
+skipped, the passive flag jsdom ignores, the gesture arbitration it doesn't
+model. The pure reducers — `swipeDirection`, `isDoubleTap` — were never wrong.
+They were tested, and the tests meant exactly what they said and nothing more.
+Then swipe up/down for history went in clean on the first try, precisely
+because by then the platform layer was understood and the only new code was
+another pure reducer plus a dispatch arm.
+
+*Law: a green unit suite proves your logic agrees with your tests, not that
+your feature works — on a browser the untestable layer (event delegation,
+passive listeners, touch-action, native gesture recognizers) is part of your
+API, and the only instruments that read it are the framework source and a real
+device. Write the reducer pure and test it to death; then go look at the layer
+the test harness is blind to, because that is where the feature actually
+lives.*

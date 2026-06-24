@@ -210,6 +210,11 @@ Phase 5 cluster opens):
 
 ## Low / Observation
 
+- **Swipe-left → back-cycle nick completion** (2026-06-24) — the compose
+  swipe gestures classify `left` (`swipeDirection` in
+  `cicchetto/src/lib/swipe.ts`) but `ComposeBox` leaves it unmapped. Wiring
+  it to `tabComplete(…, forward=false)` is a one-line dispatch arm if a
+  reverse cycle is ever wanted. Reserved, not requested.
 - **ICC_Profile strip-whitelist candidate** (#39 round 2 residual,
   2026-06-11) — iPhones shoot Display P3; `-all=` strips the ICC
   profile so wide-gamut photos render slightly washed. Same
