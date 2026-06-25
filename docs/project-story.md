@@ -3759,3 +3759,60 @@ API, and the only instruments that read it are the framework source and a real
 device. Write the reducer pure and test it to death; then go look at the layer
 the test harness is blind to, because that is where the feature actually
 lives.*
+
+---
+
+## The 404 that banned a user from his own house
+
+cic never parses IRC. cic never talks to the network. cic speaks pure REST
+to the bouncer and renders typed JSON. By construction it cannot do anything
+to an IRC connection. And yet one afternoon `emme\k` found himself banned —
+not from a channel, from the *network*, at the packet-filter layer, by the
+production host, while the same account stayed connected fine from a
+different IP.
+
+The culprit was a single mis-routed GET. The selection effect backfilled
+scrollback for whatever window you focused: `loadInitialScrollback(slug,
+name)`. For real channels that's `GET /networks/libera/channels/#grappa/
+messages` — correct. But `$home`, the irssi-style status buffer, is not a
+real `(network, channel)`; it's an identity-scoped pseudo-window whose slug
+and name are both the sentinel literal `$home`. So focusing it fired `GET
+/networks/$home/channels/$home/messages`, and the server — correctly — said
+404. The window worked anyway; the status buffer reads from a local store,
+not from REST. Nobody noticed the failed request for months.
+
+Production noticed. The m42 jail runs the usual edge stack: fail2ban watches
+nginx, and the `http-404` jail counts 404s per IP. Twenty of them and it
+installs a pf block. The blocked packets then get logged, the `pf` jail
+re-bans on *those*, and a few rounds of that escalates the IP into
+`recidive` — the long-ban jail. A PWA that re-selects `$home` on every cold
+load, on a phone that reconnects all day, is a 404 metronome. The client had
+found a way to DoS its own user at a layer it has no business touching.
+
+The reported symptom was `$home`. The instinct was to special-case `$home`.
+But the moment you write down *why* `$home` 404s — no real channel behind it
+— you see it isn't alone: `$admin` 404s the same way, and `mentions` carries
+an empty channel name so it fires `GET .../channels//messages`, also 404.
+Three windows, one bug. And the issue's own suggested fix — "skip any
+`$`-prefixed window" — was a trap: `$server` is *also* `$`-prefixed, but it
+is genuinely scrollback-backed (the NumericRouter writes its rows), so that
+heuristic would have silently broken real server-pane history. The right
+discriminator wasn't the sentinel spelling, it was the property: is there a
+real server scrollback channel behind this window? That set is exactly
+`channel / query / server`, and it's the same set that's restorable across
+reload, because both reduce to "has a real `(network, channel)` identity."
+
+So the fix is one predicate, `kindHasScrollback`, an exhaustive
+`Record<WindowKind, boolean>` that won't compile if someone adds a kind
+without classifying it — and it absorbed three hand-rolled copies of the
+`channel || query || server` literal that had been drifting apart across
+`selection.ts` and `Shell.tsx`. The server-side `ignoreregex` stopgap stays
+as defence-in-depth, but the root cause is gone: cic no longer asks the
+proxy a question it knows the answer to.
+
+*Law: a 404 is a contract violation, and on a hardened host a repeated
+contract violation is an attack signature — the edge stack cannot tell your
+buggy client from a scanner. "Harmless failed request" is a category error
+when fail2ban is listening. The IRC-ignorant web client is still part of the
+IRC user's blast radius; the only safe bogus request is the one you never
+send.*

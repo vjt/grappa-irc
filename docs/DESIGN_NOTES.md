@@ -13196,3 +13196,43 @@ the `touch-action: none` fix above (no native vertical pan to fight).
 Completion + recall semantics are the existing key paths (`tabComplete`,
 `recallPrev`/`recallNext`); the swipe is just a third dispatch surface for
 them. Still dogfood-only.
+
+**Synthetic windows must not fetch `/messages` (2026-06-25, grappa-irc#81).**
+The selection effect fired `loadInitialScrollback(slug, name)` for *every*
+focused window. For the identity-scoped `$home` status buffer that became
+`GET /networks/$home/channels/$home/messages` — a 404, because `$home` is
+not a real `(network, channel)`. Harmless on its own; lethal in production.
+The m42 jail's fail2ban `http-404` filter counts each one, installs a pf
+block on the client IP, then the `pf` jail re-bans on the blocked packets
+and escalates the IP into `recidive` (long ban). Net: a real operator got
+locked out at the network layer from one IP while the same account still
+worked from another. A server-side `ignoreregex` stopgap was deployed to
+protect users during rollout; this is the client root-cause fix.
+
+The reported symptom was `$home`, but the bug is a *class*: the same
+unconditional fetch 404s for `$admin` (sentinel slug+name) and for
+`mentions` (empty `channelName` → `/networks/<n>/channels//messages`).
+The fix gates on the **positive** set, not a sentinel blacklist:
+`kindHasScrollback(kind)` (in `lib/windowKinds.ts`) is true only for
+`channel` / `query` / `server`. Note `$server` IS scrollback-backed (the
+`NumericRouter` writes its rows), so the issue's suggested "skip any
+`$`-prefixed window" heuristic was wrong — it would have suppressed real
+server-pane history. The discriminator is "backed by a real server
+scrollback channel," which reduces to "has a real `(network, channel)`
+identity" — the same property that makes a window restorable across reload.
+
+The predicate is an exhaustive `Record<WindowKind, boolean>` so a new
+`WindowKind` fails to compile until it is explicitly classified — no silent
+default. It is the single source of truth for three call sites that
+previously each carried the literal `channel || query || server` triple:
+the scrollback-fetch gate and the `saveLastFocused` restore gate (both in
+`selection.ts`, same effect body) and the two `ScrollbackPane` mount guards
+in `Shell.tsx`. If a future kind ever needs scrollback-backed-but-not-
+restorable (or vice versa), split the restore gate back to its own
+predicate rather than letting the two literals silently diverge.
+
+*Lesson: a client-side 404 is not a client-side problem. On a host with an
+edge security stack (fail2ban/pf/recidive), a bogus repeated request is an
+amplification primitive that turns one mis-routed GET into a network-layer
+self-DoS against the real user. The web client never parses IRC, but it can
+still DoS an IRC user by lying to the proxy.*
