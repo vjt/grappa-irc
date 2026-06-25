@@ -14,6 +14,7 @@ import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
 import {
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
+  kindHasScrollback,
   SERVER_WINDOW_NAME,
   type WindowKind,
 } from "./windowKinds";
@@ -359,9 +360,15 @@ const exports = identityScopedStore((onIdentityChange) => {
       // Only restorable kinds (channel / query / server) are saved;
       // `home` is the existing fallback target, `admin` is gated on
       // is_admin (and would redirect home on demote anyway),
-      // `mentions` / `list` are ephemeral surfaces.
+      // `mentions` / `list` are ephemeral surfaces. The restorable set
+      // is exactly the scrollback-backed set — both reduce to "has a
+      // real (network, channel) identity" — so it shares the
+      // `kindHasScrollback` predicate. If a future kind ever needs to
+      // be scrollback-backed but NOT restorable (or vice versa), split
+      // this back into its own predicate rather than letting the two
+      // silently diverge.
       const me = untrack(user);
-      if (me && (sel.kind === "channel" || sel.kind === "query" || sel.kind === "server")) {
+      if (me && kindHasScrollback(sel.kind)) {
         saveLastFocused(me.id, {
           networkSlug: sel.networkSlug,
           channelName: sel.channelName,
@@ -369,8 +376,15 @@ const exports = identityScopedStore((onIdentityChange) => {
         });
       }
       // Fire-and-forget: the verb guards itself via scrollback's
-      // loadedChannels Set.
-      void loadInitialScrollback(sel.networkSlug, sel.channelName);
+      // loadedChannels Set. Gated on `kindHasScrollback` (grappa-irc#81):
+      // synthetic windows — `$home` (status buffer), `$admin` (console),
+      // and the empty-channelName `mentions` aggregate — have no
+      // server-backed scrollback channel, so a `/messages` GET for them
+      // 404s and trips the production fail2ban http-404 ban cascade.
+      // Only channel / query / server map to a real scrollback channel.
+      if (kindHasScrollback(sel.kind)) {
+        void loadInitialScrollback(sel.networkSlug, sel.channelName);
+      }
     }),
   );
 

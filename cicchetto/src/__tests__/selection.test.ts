@@ -136,6 +136,36 @@ describe("selection store", () => {
     expect(api.listMessages).toHaveBeenCalledTimes(2);
   });
 
+  it("does NOT fetch /messages for synthetic windows (home/admin/mentions) — grappa-irc#81", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+    const selection = await import("../lib/selection");
+
+    // None of these map to a server-backed scrollback channel: $home is
+    // the status buffer, $admin the console, and `mentions` carries an
+    // empty channelName. Fetching `/messages` for any of them 404s on
+    // the server, which trips the production fail2ban http-404 ban
+    // cascade and locks real users out at the network layer.
+    selection.setSelectedChannel({ networkSlug: "$home", channelName: "$home", kind: "home" });
+    selection.setSelectedChannel({ networkSlug: "$admin", channelName: "$admin", kind: "admin" });
+    selection.setSelectedChannel({ networkSlug: "freenode", channelName: "", kind: "mentions" });
+
+    // Select a real channel last. Once ITS fetch lands the selection
+    // effect has fully drained for every prior set, so any synthetic
+    // fetch would already have fired. The call count pins that only the
+    // backed window hit REST.
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+    await vi.waitFor(() => {
+      expect(api.listMessages).toHaveBeenCalledWith("tok", "freenode", "#grappa");
+    });
+    expect(api.listMessages).toHaveBeenCalledTimes(1);
+  });
+
   it("token rotation clears selectedChannel + serverSeedCounts", async () => {
     localStorage.setItem("grappa-token", "tokA");
     const auth = await import("../lib/auth");

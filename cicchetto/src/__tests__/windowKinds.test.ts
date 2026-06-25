@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { type GroupedWindows, orderWindows, type Window } from "../lib/windowKinds";
+import {
+  type GroupedWindows,
+  kindHasScrollback,
+  orderWindows,
+  type Window,
+  type WindowKind,
+} from "../lib/windowKinds";
 
 // TDD: C1.1 — window-kind type + ordering selector.
 //
@@ -134,5 +140,35 @@ describe("orderWindows", () => {
     expect(group.windows[0]?.kind).toBe("admin");
     expect(group.windows[1]?.kind).toBe("server");
     expect(group.windows[2]?.kind).toBe("channel");
+  });
+});
+
+// grappa-irc#81 — only windows backed by a real server scrollback
+// channel may fetch the `/messages` REST endpoint. `channel` / `query`
+// map to real IRC targets; `server` ($server) is backed by the
+// NumericRouter's scrollback rows. The identity-scoped / ephemeral
+// kinds (`home`, `admin`, `mentions`, `list`) have NO server-backed
+// channel — fetching `/messages` for them 404s, which trips the
+// production fail2ban http-404 ban cascade. This predicate is the
+// single source of truth gating the fetch (selection.ts) AND the
+// ScrollbackPane mount (Shell.tsx).
+describe("kindHasScrollback", () => {
+  it("is true for the server-backed kinds (channel, query, server)", () => {
+    expect(kindHasScrollback("channel")).toBe(true);
+    expect(kindHasScrollback("query")).toBe(true);
+    expect(kindHasScrollback("server")).toBe(true);
+  });
+
+  it("is false for synthetic / ephemeral kinds (home, admin, mentions, list)", () => {
+    expect(kindHasScrollback("home")).toBe(false);
+    expect(kindHasScrollback("admin")).toBe(false);
+    expect(kindHasScrollback("mentions")).toBe(false);
+    expect(kindHasScrollback("list")).toBe(false);
+  });
+
+  it("partitions every WindowKind (exhaustive, no kind left unclassified)", () => {
+    const all: WindowKind[] = ["channel", "query", "server", "list", "mentions", "home", "admin"];
+    const backed = all.filter(kindHasScrollback);
+    expect(backed.sort()).toEqual(["channel", "query", "server"].sort());
   });
 });

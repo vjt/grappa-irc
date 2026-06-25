@@ -43,6 +43,7 @@ import {
   ADMIN_WINDOW_SLUG,
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
+  kindHasScrollback,
 } from "./lib/windowKinds";
 import { isActiveChannelJoined } from "./lib/windowState";
 import MediaViewerModal from "./MediaViewerModal";
@@ -572,9 +573,7 @@ const Shell: Component = () => {
                   }
                 />
               </Match>
-              <Match
-                when={selKind() === "channel" || selKind() === "query" || selKind() === "server"}
-              >
+              <Match when={kindHasScrollback(selKind())}>
                 {/* BUGHUNT-3 D — channel + query + server share ONE Match
                     so ScrollbackPane stays mounted across kind transitions
                     (channel↔query↔server). The pane's `on(key, prevKey)`
@@ -713,9 +712,7 @@ const Shell: Component = () => {
                 }
               />
             </Match>
-            <Match
-              when={selKind() === "channel" || selKind() === "query" || selKind() === "server"}
-            >
+            <Match when={kindHasScrollback(selKind())}>
               {/* BUGHUNT-3 D — channel + query + server share ONE Match
                   so ScrollbackPane stays mounted across kind transitions.
                   See desktop branch comment for details. */}

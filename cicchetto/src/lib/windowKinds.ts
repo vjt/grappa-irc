@@ -30,6 +30,40 @@
 
 export type WindowKind = "channel" | "query" | "server" | "list" | "mentions" | "home" | "admin";
 
+// grappa-irc#81 — which window kinds are backed by a real server
+// scrollback channel and may therefore fetch the `/messages` REST
+// endpoint. `channel` / `query` map to real IRC targets; `server`
+// ($server) is backed by the `NumericRouter`'s scrollback rows. The
+// identity-scoped / ephemeral kinds (home, admin, mentions, list) have
+// NO server-backed channel: `$home` / `$admin` route both slug and
+// channel to a sentinel literal and `mentions` carries an empty
+// channelName, so a `GET /networks/<n>/channels/<c>/messages` for any
+// of them 404s. In production a repeated 404 trips the fail2ban
+// http-404 jail → packet-filter block → `recidive` escalation, locking
+// a real user out at the network layer from one IP while their account
+// still works from another.
+//
+// `Record<WindowKind, boolean>` keeps the partition exhaustive: a new
+// WindowKind fails to compile until it is explicitly placed on one side
+// of the fence (no silent default). Single source of truth — consumed
+// by `selection.ts` (gate the scrollback fetch) and `Shell.tsx` (gate
+// the ScrollbackPane mount, which is the pane that renders it).
+const KIND_HAS_SCROLLBACK: Record<WindowKind, boolean> = {
+  channel: true,
+  query: true,
+  server: true,
+  list: false,
+  mentions: false,
+  home: false,
+  admin: false,
+};
+
+// `null` (no selected window) is not backed — lets callers pass a
+// nullable `selectedChannel()?.kind` selector without a separate guard.
+export function kindHasScrollback(kind: WindowKind | null): boolean {
+  return kind !== null && KIND_HAS_SCROLLBACK[kind];
+}
+
 // The synthetic channel name used for the per-network server-messages
 // window (kind = "server"). Server-side `Grappa.Session.NumericRouter`
 // routes uncategorized server output (MOTD, untargeted NOTICEs, lifecycle
