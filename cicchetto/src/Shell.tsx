@@ -16,6 +16,7 @@ import BottomBar from "./BottomBar";
 import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
 import DiagFloat from "./DiagFloat";
+import DirectoryPane from "./DirectoryPane";
 import HomePane from "./HomePane";
 import KeyboardHost from "./KeyboardHost";
 import { ownNickForNetwork } from "./lib/api";
@@ -625,6 +626,12 @@ const Shell: Component = () => {
                     already self-gates on isActiveChannelJoined). */}
                 <HomePane />
               </Match>
+              <Match when={selKind() === "list"}>
+                {/* #84 E3 — channel directory pane. No TopicBar, no
+                    ComposeBox, no MembersPane. The $list window is a
+                    view+action pane (browse + join), not a chat pane. */}
+                <DirectoryPane networkSlug={selectedChannel()?.networkSlug ?? ""} />
+              </Match>
             </Switch>
           </section>
 
@@ -772,6 +779,11 @@ const Shell: Component = () => {
                   component as desktop; layout is the only branch
                   difference. */}
               <HomePane />
+            </Match>
+            <Match when={selKind() === "list"}>
+              {/* #84 E3 — channel directory pane on mobile. Same
+                  DirectoryPane component as desktop. */}
+              <DirectoryPane networkSlug={selectedChannel()?.networkSlug ?? ""} />
             </Match>
           </Switch>
         </section>
