@@ -16,7 +16,7 @@ Priority tiers: **Immediate** (this session), **High** (this week),
   check, portrait-orientation upload. (The PWA badge ICON dogfood is
   CLOSED — confirmed working on device 2026-06-21.)
 - **NEXT: crank open review-exempt bugs** (issue-closing sweep,
-  continued — #27/#40/#37/#61/#25 + the badge-orphan fix + **#38/#16**
+  continued — #27/#40/#37/#61/#25 + the badge-orphan fix + **#38/#16/#87**
   already shipped this cluster). Tractable, no on-device blocker:
   - **#12** cicchetto: /msg to non-joined channel creates unclose-able
     window; session restore archives it but sent messages don't render.
@@ -220,6 +220,14 @@ Phase 5 cluster opens):
   so ordering is stable. Durable fix: an `AbortController` keyed by slug
   in `fetchInto`, cancelling the prior in-flight request before issuing
   the next. v1 ships without it deliberately.
+- **`$list` pane doesn't close after joining from the directory** (#87
+  report, second symptom — 2026-06-26, NOT part of the #87 server fix) —
+  reporter: tapping a channel entry in `DirectoryPane` joins it but the
+  `$list` window stays. `DirectoryPane.onJoin` only `postJoin`s and leans
+  on `subscribe.ts`'s self-JOIN auto-focus to switch selection; if that's
+  the intended close path it isn't landing for directory joins.
+  cic-side, needs investigation (and likely its own GH issue) — distinct
+  from the visitor PART tab bug (#87, server-side, shipped).
 - **Swipe-left → back-cycle nick completion** (2026-06-24) — the compose
   swipe gestures classify `left` (`swipeDirection` in
   `cicchetto/src/lib/swipe.ts`) but `ComposeBox` leaves it unmapped. Wiring
