@@ -35,7 +35,11 @@ defmodule Grappa.ChannelDirectory do
   @ttl_ms Keyword.get(@cfg, :ttl_ms, 48 * 60 * 60 * 1000)
 
   @doc "Snapshot freshness window in ms — the REST resource labels a snapshot :fresh while age <= this, else :stale."
-  @spec ttl_ms() :: pos_integer()
+  # `unquote(@ttl_ms)` pins the spec to the folded compile-time singleton
+  # (the configured TTL), mirroring `Session.Backoff.base_ms/0` +
+  # `Admission.NetworkCircuit.threshold/0`. A bare `pos_integer()` spec is a
+  # `:underspecs` supertype of the success typing and fails the Dialyzer gate.
+  @spec ttl_ms() :: unquote(@ttl_ms)
   def ttl_ms, do: @ttl_ms
 
   @type ingest_row :: %{name: String.t(), topic: String.t() | nil, user_count: integer()}
@@ -59,10 +63,11 @@ defmodule Grappa.ChannelDirectory do
   """
   @spec replace_start(Subject.t(), integer()) :: :ok
   def replace_start({_, _} = subject, network_id) when is_integer(network_id) do
-    Entry
-    |> Subject.subject_where(subject)
-    |> where([e], e.network_id == ^network_id)
-    |> Repo.delete_all()
+    {_count, _} =
+      Entry
+      |> Subject.subject_where(subject)
+      |> where([e], e.network_id == ^network_id)
+      |> Repo.delete_all()
 
     :ok
   end
@@ -94,7 +99,7 @@ defmodule Grappa.ChannelDirectory do
         )
       end)
 
-    Repo.insert_all(Entry, entries)
+    {_count, _} = Repo.insert_all(Entry, entries)
     :ok
   end
 
@@ -109,10 +114,11 @@ defmodule Grappa.ChannelDirectory do
   def finalize({_, _} = subject, network_id) when is_integer(network_id) do
     now = DateTime.truncate(DateTime.utc_now(), :second)
 
-    Entry
-    |> Subject.subject_where(subject)
-    |> where([e], e.network_id == ^network_id)
-    |> Repo.update_all(set: [captured_at: now])
+    {_count, _} =
+      Entry
+      |> Subject.subject_where(subject)
+      |> where([e], e.network_id == ^network_id)
+      |> Repo.update_all(set: [captured_at: now])
 
     :ok
   end
