@@ -210,6 +210,16 @@ Phase 5 cluster opens):
 
 ## Low / Observation
 
+- **Channel directory search: abort-and-replace in-flight GETs** (#84
+  E3 review, 2026-06-26) — `channelDirectory.ts` `setQuery` fires a GET
+  per `input` event and `fetchInto` does `setPages` on arrival
+  (last-arrival-wins, NOT last-request-wins). Rapid typing + out-of-order
+  responses can leave the pane showing a stale query's results. Bug lives
+  in the D3 store, not the E3 pane (the pane calls `setQuery` correctly).
+  Low risk in practice — directory GETs hit a cached server-side snapshot,
+  so ordering is stable. Durable fix: an `AbortController` keyed by slug
+  in `fetchInto`, cancelling the prior in-flight request before issuing
+  the next. v1 ships without it deliberately.
 - **Swipe-left → back-cycle nick completion** (2026-06-24) — the compose
   swipe gestures classify `left` (`swipeDirection` in
   `cicchetto/src/lib/swipe.ts`) but `ComposeBox` leaves it unmapped. Wiring
