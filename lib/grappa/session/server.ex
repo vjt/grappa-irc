@@ -1945,6 +1945,27 @@ defmodule Grappa.Session.Server do
     {:noreply, %{state | modes_per_chunk: modes_per_chunk, linelen: linelen}}
   end
 
+  # Channel directory (#84) C3 — capture the streamed LIST reply while a
+  # refresh is in-flight. 321 RPL_LISTSTART (header, ignored), 322 RPL_LIST
+  # (one channel row → batched ingest + throttled progress ping), 323
+  # RPL_LISTEND (finalise the snapshot, cancel the watchdog, emit
+  # `directory_complete`). The `%{directory_refresh: %{}}` head is
+  # load-bearing: it matches ONLY when a refresh is in flight (the tracker
+  # is a map). A `nil` tracker fails the map pattern, so the numerics fall
+  # through to the generic handler below and route to `$server` scrollback
+  # as before (manual /LIST) — same shape-match discrimination the C4
+  # watchdog uses (`%{directory_refresh: nil}` vs catch-all), sidestepping
+  # a `not is_nil/1` guard. While in-flight the dedicated handler CONSUMES
+  # them — they are NOT persisted (the snapshot is the durable record, the
+  # pings are the live signal).
+  def handle_info(
+        {:irc, %Message{command: {:numeric, code}} = msg},
+        %{directory_refresh: %{}} = state
+      )
+      when code in [321, 322, 323] do
+    {:noreply, handle_directory_numeric(code, msg, state)}
+  end
+
   # CP13 server-window cluster: numeric routing produces a persisted
   # `:notice` row carrying the human-readable trailing text + meta
   # `%{numeric: code, severity: :ok | :error}`. Pre-CP13 this path
@@ -3160,6 +3181,115 @@ defmodule Grappa.Session.Server do
         Topic.user(state.subject_label),
         payload
       )
+  end
+
+  # Channel directory (#84) C3 — per-numeric handling of an in-flight LIST
+  # stream. Each clause returns the (possibly updated) session state.
+  #
+  #   321 RPL_LISTSTART — header only, no data. No-op.
+  #   322 RPL_LIST      — one channel row. Parse, accumulate into the
+  #                       in-flight buffer, flush on batch boundary, emit a
+  #                       throttled progress ping.
+  #   323 RPL_LISTEND   — flush the tail buffer, stamp `captured_at`, cancel
+  #                       the watchdog, emit `directory_complete`, clear the
+  #                       in-flight tracker.
+  @spec handle_directory_numeric(321 | 322 | 323, Message.t(), t()) :: t()
+  defp handle_directory_numeric(321, _, state), do: state
+
+  defp handle_directory_numeric(322, %Message{params: params}, state) do
+    case parse_list_entry(params) do
+      {:ok, row} -> accumulate_directory_row(state, row)
+      :error -> state
+    end
+  end
+
+  defp handle_directory_numeric(323, _, state) do
+    flushed = flush_directory_buffer(state, :final)
+    :ok = ChannelDirectory.finalize(flushed.subject, flushed.network_id)
+    :ok = cancel_and_drain(flushed.directory_refresh.timer, :directory_refresh_timeout)
+
+    broadcast_window_state(
+      flushed,
+      SessionWire.directory_complete(flushed.network_slug, total_directory_rows(flushed))
+    )
+
+    %{flushed | directory_refresh: nil}
+  end
+
+  # RPL_LIST params carry the client-nick echo as params[0]:
+  #   `:server 322 <nick> <#channel> <#users> :<topic>` → 4-element list.
+  # The 3-element clause covers a stripped upstream that omits the trailing
+  # topic. A non-binary count is coerced to 0 (defensive — never crash the
+  # ingest on a malformed numeric); a shape we don't recognise is dropped.
+  @spec parse_list_entry([String.t()]) :: {:ok, ChannelDirectory.ingest_row()} | :error
+  defp parse_list_entry([_, channel, count_str, topic]) when is_binary(channel) do
+    {:ok, %{name: channel, topic: topic, user_count: parse_user_count(count_str)}}
+  end
+
+  defp parse_list_entry([_, channel, count_str]) when is_binary(channel) do
+    {:ok, %{name: channel, topic: nil, user_count: parse_user_count(count_str)}}
+  end
+
+  defp parse_list_entry(_), do: :error
+
+  @spec parse_user_count(term()) :: non_neg_integer()
+  defp parse_user_count(count_str) when is_binary(count_str) do
+    case Integer.parse(count_str) do
+      {n, _} -> n
+      :error -> 0
+    end
+  end
+
+  defp parse_user_count(_), do: 0
+
+  # Push one parsed row onto the in-flight buffer (newest-first; reversed at
+  # flush time so ingest preserves wire order). Flush on the batch boundary
+  # so the DB write cadence is bounded regardless of LIST size.
+  @spec accumulate_directory_row(t(), ChannelDirectory.ingest_row()) :: t()
+  defp accumulate_directory_row(%{directory_refresh: ref} = state, row) do
+    appended = %{ref | buffer: [row | ref.buffer], count: ref.count + 1}
+    buffered = %{state | directory_refresh: appended}
+
+    flushed =
+      if length(appended.buffer) >= state.directory_ingest_batch do
+        flush_directory_buffer(buffered, :batch)
+      else
+        buffered
+      end
+
+    maybe_emit_progress(flushed)
+  end
+
+  # Bulk-ingest the buffered rows (wire order) and clear the buffer. Empty
+  # buffer is a no-op — never round-trip an empty insert.
+  @spec flush_directory_buffer(t(), :batch | :final) :: t()
+  defp flush_directory_buffer(%{directory_refresh: %{buffer: []}} = state, _), do: state
+
+  defp flush_directory_buffer(%{directory_refresh: ref} = state, _) do
+    :ok = ChannelDirectory.ingest(state.subject, state.network_id, Enum.reverse(ref.buffer))
+    %{state | directory_refresh: %{ref | buffer: []}}
+  end
+
+  # Emit a `directory_progress` ping at most once per
+  # `directory_progress_throttle_ms` (monotonic clock, same source as the
+  # `last_emit_ms` seed in `handle_call(:refresh_directory, ...)`).
+  @spec maybe_emit_progress(t()) :: t()
+  defp maybe_emit_progress(%{directory_refresh: ref} = state) do
+    now = System.monotonic_time(:millisecond)
+
+    if now - ref.last_emit_ms >= state.directory_progress_throttle_ms do
+      broadcast_window_state(state, SessionWire.directory_progress(state.network_slug, ref.count))
+      %{state | directory_refresh: %{ref | last_emit_ms: now}}
+    else
+      state
+    end
+  end
+
+  # Authoritative finalised row count — read back from the snapshot the
+  # ingest just wrote (TTL irrelevant; we only want `.total`).
+  @spec total_directory_rows(t()) :: non_neg_integer()
+  defp total_directory_rows(state) do
+    ChannelDirectory.list(state.subject, state.network_id, ttl_ms: 0).total
   end
 
   # mIRC sort: ops (@) → voiced (+) → plain (no prefix). Within tier,

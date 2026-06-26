@@ -6,8 +6,8 @@ defmodule Grappa.Session.DirectoryTest do
   against the `Grappa.IRCServer` in-process TCP fake (CLAUDE.md "Mock at
   boundaries, real dependencies inside"): the LIST send, the in-flight
   guard, and the watchdog-timeout → `directory_failed` broadcast (the
-  merged C4 leg). The streamed 321/322/323 capture is a later task — these
-  tests stop at "LIST is on the wire" and "the timer has a handler."
+  merged C4 leg), and the streamed 321/322/323 capture → batched ingest +
+  `directory_progress` / `directory_complete` pings (C3).
 
   `async: false` for the same reason as `Grappa.Session.ServerTest`:
   `SessionRegistry` / `SessionSupervisor` / `PubSub` are singletons.
@@ -16,7 +16,7 @@ defmodule Grappa.Session.DirectoryTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, PubSub.Topic, Session}
+  alias Grappa.{ChannelDirectory, IRCServer, PubSub.Topic, Session}
   alias Grappa.Networks.{Credentials, SessionPlan}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
@@ -103,5 +103,85 @@ defmodule Grappa.Session.DirectoryTest do
     # `:sys.get_state` serializes AFTER the timeout handler returns, so the
     # in-flight tracker is guaranteed cleared by the time we read it.
     assert :sys.get_state(pid).directory_refresh == nil
+  end
+
+  test "a 322/323 burst fills and finalizes the snapshot" do
+    {server, port} = start_server()
+    {user, network, _cred} = setup_user_and_network(port)
+
+    _pid = start_session_for(user, network)
+    :ok = await_handshake(server)
+
+    # Subscribe before triggering so the `directory_complete` ping can't race
+    # the subscribe. The broadcast (323 processed) is the sync point — once it
+    # lands, every preceding 321/322 has been folded into the snapshot.
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+    assert :ok = Session.refresh_directory({:user, user.id}, network.id)
+
+    # Numerics carry the client-nick echo as params[0] (parser convention).
+    IRCServer.feed(server, ":irc.test 321 nick Channel :Users Name\r\n")
+    IRCServer.feed(server, ":irc.test 322 nick #elixir 1200 :The Elixir channel\r\n")
+    IRCServer.feed(server, ":irc.test 322 nick #ruby 800 :Ruby\r\n")
+    IRCServer.feed(server, ":irc.test 323 nick :End of /LIST\r\n")
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     event: "event",
+                     payload: %{kind: :directory_complete, network: network_slug, total: 2}
+                   },
+                   1_000
+
+    assert network_slug == network.slug
+
+    # The broadcast proves 323 was processed; NOW the snapshot is durable.
+    page = ChannelDirectory.list({:user, user.id}, network.id, ttl_ms: 1_000)
+    assert page.status == :fresh
+    assert page.total == 2
+    # Default sort is user_count DESC (1200 > 800) — wire order preserved
+    # through the reversed-buffer flush.
+    assert Enum.map(page.entries, & &1.name) == ["#elixir", "#ruby"]
+  end
+
+  test "emits at least one directory_progress before completing" do
+    {server, port} = start_server()
+    {user, network, _cred} = setup_user_and_network(port)
+
+    # Inject a 0ms progress throttle so EVERY 322 emits a ping (the default
+    # 1s throttle would swallow both rows of a tiny burst). Same custom-plan
+    # injection idiom as the watchdog-timeout test above.
+    credential = Credentials.get_credential!(user, network)
+    {:ok, base_plan} = SessionPlan.resolve(credential)
+    plan = Map.put(base_plan, :directory_progress_throttle_ms, 0)
+    {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+    on_exit(fn ->
+      _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+    end)
+
+    :ok = await_handshake(server)
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+    assert :ok = Session.refresh_directory({:user, user.id}, network.id)
+
+    IRCServer.feed(server, ":irc.test 322 nick #elixir 1200 :The Elixir channel\r\n")
+    IRCServer.feed(server, ":irc.test 322 nick #ruby 800 :Ruby\r\n")
+    IRCServer.feed(server, ":irc.test 323 nick :End of /LIST\r\n")
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     event: "event",
+                     payload: %{kind: :directory_progress, network: network_slug, count: count}
+                   },
+                   1_000
+
+    assert network_slug == network.slug
+    assert is_integer(count) and count > 0
+
+    # Completion still lands after the progress ping(s) — selective receive
+    # skips the second `directory_progress` left in the mailbox.
+    assert_receive %Phoenix.Socket.Broadcast{
+                     event: "event",
+                     payload: %{kind: :directory_complete, total: 2}
+                   },
+                   1_000
   end
 end
