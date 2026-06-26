@@ -416,6 +416,22 @@ export type ChannelEntry = {
   source: "autojoin" | "joined";
 };
 
+// Mirror of `GrappaWeb.DirectoryController.index/2` wire shape.
+// `status` indicates the staleness of the captured list; `captured_at` is
+// null when no list has been captured yet (status "empty"). `next_cursor`
+// is null on the final page.
+export type DirectoryEntry = { name: string; topic: string | null; user_count: number };
+
+export type DirectoryStatus = "fresh" | "stale" | "refreshing" | "empty";
+
+export type DirectoryPage = {
+  entries: DirectoryEntry[];
+  next_cursor: string | null;
+  total: number;
+  captured_at: string | null;
+  status: DirectoryStatus;
+};
+
 // Mirror of `Grappa.Scrollback.Wire.t/0` + the `:event` push wrapper
 // emitted by `GrappaWeb.GrappaChannel`. The push event name on the wire
 // is literally `"event"`; the `kind` field discriminates the inner
@@ -1548,6 +1564,37 @@ export async function listChannels(token: string, networkSlug: string): Promise<
   });
   if (!res.ok) throw await readError(res);
   return (await res.json()) as ChannelEntry[];
+}
+
+// Mirror of `GrappaWeb.DirectoryController.index/2`. The response IS the
+// page object directly (no unwrap) — unlike `listChannels` the server
+// returns `DirectoryPage` at the root, not a named key.
+export async function listDirectory(
+  token: string,
+  networkSlug: string,
+  opts: { sort?: "users" | "name"; q?: string; cursor?: string } = {},
+): Promise<DirectoryPage> {
+  const p = new URLSearchParams();
+  if (opts.sort) p.set("sort", opts.sort);
+  if (opts.q) p.set("q", opts.q);
+  if (opts.cursor) p.set("cursor", opts.cursor);
+  const qs = p.toString();
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/directory${qs ? `?${qs}` : ""}`,
+    { headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as DirectoryPage;
+}
+
+// Mirror of `GrappaWeb.DirectoryController.refresh/2`. POSTs to kick off
+// a background LIST refresh; server responds 202 Accepted.
+export async function refreshDirectory(token: string, networkSlug: string): Promise<void> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/directory/refresh`, {
+    method: "POST",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
 }
 
 // Mirror of `GrappaWeb.MessagesController.index/2`. Returns rows DESC by

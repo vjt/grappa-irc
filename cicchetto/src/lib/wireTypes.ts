@@ -335,10 +335,10 @@ export type AdminEventsWireEvent =
 
 export type ChannelDirectoryWireIndexPayload = {
   entries: {
-  name: string;
-  topic: string | null;
-  user_count: number;
-}[];
+    name: string;
+    topic: string | null;
+    user_count: number;
+  }[];
   next_cursor: string | null;
   total: number;
   captured_at: string | null;
