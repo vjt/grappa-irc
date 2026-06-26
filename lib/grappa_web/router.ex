@@ -253,6 +253,9 @@ defmodule GrappaWeb.Router do
     delete "/channels/:channel_id", ChannelsController, :delete
     post "/channels/:channel_id/topic", ChannelsController, :topic
 
+    get "/directory", DirectoryController, :index
+    post "/directory/refresh", DirectoryController, :refresh
+
     get "/channels/:channel_id/messages", MessagesController, :index
     post "/channels/:channel_id/messages", MessagesController, :create
 

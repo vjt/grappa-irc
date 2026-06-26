@@ -16,6 +16,7 @@ defmodule GrappaWeb do
         Grappa.Admission,
         Grappa.AdminEvents,
         Grappa.Auth.IdentifierClassifier,
+        Grappa.ChannelDirectory,
         Grappa.Cic.Bundle,
         Grappa.Cic.Wire,
         Grappa.ClientId,
