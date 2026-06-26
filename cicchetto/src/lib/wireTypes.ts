@@ -333,12 +333,14 @@ export type AdminEventsWireEvent =
 
 // === Grappa.ChannelDirectory.Wire ===
 
+export type ChannelDirectoryWireEntry = {
+  name: string;
+  topic: string | null;
+  user_count: number;
+};
+
 export type ChannelDirectoryWireIndexPayload = {
-  entries: {
-    name: string;
-    topic: string | null;
-    user_count: number;
-  }[];
+  entries: ChannelDirectoryWireEntry[];
   next_cursor: string | null;
   total: number;
   captured_at: string | null;

@@ -7,8 +7,10 @@ defmodule Grappa.ChannelDirectory.Wire do
   """
   alias Grappa.ChannelDirectory
 
+  @type entry :: %{name: String.t(), topic: String.t() | nil, user_count: integer()}
+
   @type index_payload :: %{
-          entries: [%{name: String.t(), topic: String.t() | nil, user_count: integer()}],
+          entries: [entry()],
           next_cursor: String.t() | nil,
           total: non_neg_integer(),
           captured_at: String.t() | nil,
