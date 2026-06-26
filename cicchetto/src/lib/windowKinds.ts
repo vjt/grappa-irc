@@ -76,6 +76,11 @@ export function kindHasScrollback(kind: WindowKind | null): boolean {
 // `{:server, nil}` fanout would silently break the window.
 export const SERVER_WINDOW_NAME = "$server";
 
+// #84 — synthetic channel name for the per-network channel-directory
+// pseudo-window (kind = "list"). Used as `channelName` in `selectedChannel`;
+// has no server-backed scrollback channel (KIND_HAS_SCROLLBACK.list = false).
+export const LIST_WINDOW_NAME = "$list";
+
 // UX-4 bucket B: sentinels for the identity-scoped `home` window. Used
 // as both `networkSlug` and `channelName` in `selectedChannel` — home
 // is NOT bound to any network so both fields are sentinel literals

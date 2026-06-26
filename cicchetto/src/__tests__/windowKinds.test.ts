@@ -171,4 +171,10 @@ describe("kindHasScrollback", () => {
     const backed = all.filter(kindHasScrollback);
     expect(backed.sort()).toEqual(["channel", "query", "server"].sort());
   });
+
+  // #84 — list window is ephemeral (no server-backed scrollback channel);
+  // fetching /messages for it 404s → fail2ban ban cascade in production.
+  test("the list window has no scrollback (no /messages fetch)", () => {
+    expect(kindHasScrollback("list")).toBe(false);
+  });
 });
