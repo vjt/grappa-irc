@@ -13236,3 +13236,60 @@ edge security stack (fail2ban/pf/recidive), a bogus repeated request is an
 amplification primitive that turns one mis-routed GET into a network-layer
 self-DoS against the real user. The web client never parses IRC, but it can
 still DoS an IRC user by lying to the proxy.*
+
+**Channel directory `/list` — server-side populating snapshot (2026-06-26, #84).**
+Upstream IRC `LIST` discovery is a *server-owned* per-`(subject, network)`
+snapshot, not a client concern — same posture as scrollback. A new
+`channel_directory` table (subject-XOR FK like `query_windows`, keyed
+`(subject, network, channel)`) holds the rows; `captured_at` is NULL until
+`RPL_LISTEND (323)` finalises, so "has a snapshot" reduces to "any row has
+a non-nil `captured_at`." `Grappa.ChannelDirectory` owns the lifecycle
+(`replace_start` → `ingest` → `finalize`) and a server-side
+sort/search/keyset-paginated `list/3`; `DirectoryController` serves it.
+cic stays a lean shell — it never sorts, filters, or paginates.
+
+**LIST is intercepted only while a refresh is in flight.** `Session.Server`
+gains a `directory_refresh` in-flight tracker; `refresh_directory/2` issues
+`LIST`, nukes the old snapshot, and arms a watchdog. A dedicated
+`handle_info` for numerics 321/322/323 sits ABOVE the generic numeric
+handler, guarded by `%{directory_refresh: %{}}` (a map ⇒ in-flight). When no
+refresh is in flight the guard fails and 321/322/323 fall through to the
+generic handler → `$server` scrollback, so a manual `/LIST` is undisturbed.
+322 rows batch into the snapshot (`ingest_batch`); 323 flushes the tail,
+finalises, cancels the watchdog (via the shared `cancel_and_drain/2` that
+also drains a late timer message), and clears the tracker. The buffer is
+reversed before ingest to keep DB insertion order matching wire order, but
+`list/3` always re-sorts, so insertion order is not user-observable.
+
+**Populating-window model.** Progress is three tiny pings on the user topic
+— `directory_progress` / `directory_complete` / `directory_failed` (atom
+`kind`, the `Session.Wire` convention; Jason serialises to the JSON-wire
+strings the cic narrower matches). cic re-GETs its current page on each
+ping with scroll preserved, reusing the existing `"list"` `WindowKind`. No
+new streaming surface — the directory rides the same `Topic.user` fan-out
+as `channels_changed`.
+
+**Why the watchdog timer and its handler ship together.** `Session.Server`
+has no catch-all `handle_info`, so arming `:directory_refresh_timeout`
+without its handler would crash the session on the first timeout. The timer
+(arm) and the timeout `handle_info` (clear + emit `directory_failed`)
+therefore land in one commit, not split across the plan's C2/C4 boundary.
+
+**Config + Boundary.** TTL (48h, the sliding-scrollback horizon), refresh
+timeout, progress throttle, and ingest batch are
+`config :grappa, Grappa.ChannelDirectory` keys; `ttl_ms/0` reads them via
+`Application.compile_env` and is spec'd `:: unquote(@ttl_ms)` to satisfy
+`:underspecs` (the `Session.Backoff.base_ms/0` precedent). A `config/*.exs`
+change ⇒ forced COLD deploy. `Session.Server` calling `ChannelDirectory`
+would close a `Networks → Session → ChannelDirectory → Networks` Boundary
+cycle, so `ChannelDirectory` declares `Grappa.Networks.Network` as a
+`dirty_xref` (schema-only; no `Networks.*` calls), mirroring `Scrollback`.
+New `Session.Wire` payloads required regenerating
+`cicchetto/src/lib/wireTypes.ts` (the `gen_wire_types --check` drift gate).
+
+*Lesson: a "discovery" feature is a snapshot-plus-stream, not a request/
+response. Modelling `LIST` as a server-owned snapshot that a fast
+`GenServer.call` arms and the 322/323 burst fills asynchronously — with the
+window populating live over the existing user-topic fan-out — keeps the GET
+non-blocking, the client dumb, and the whole thing a mechanical reuse of the
+scrollback/query-window patterns rather than a new subsystem.*

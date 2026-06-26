@@ -7,6 +7,8 @@ defmodule Grappa.ChannelDirectory do
   322 rows) -> `finalize/2` (stamp `captured_at` on 323). Reads via
   `list/3` (server-side sort/search/keyset-page + `status` + `total`).
   TTL is injected (`opts[:ttl_ms]`) — never read from app env at runtime.
+  `ttl_ms/0` is the canonical source callers (e.g. the REST controller)
+  pass as that `:ttl_ms` opt.
   """
   use Boundary,
     top_level?: true,

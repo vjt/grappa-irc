@@ -137,8 +137,8 @@ defmodule Grappa.Session.DirectoryTest do
     page = ChannelDirectory.list({:user, user.id}, network.id, ttl_ms: 1_000)
     assert page.status == :fresh
     assert page.total == 2
-    # Default sort is user_count DESC (1200 > 800) — wire order preserved
-    # through the reversed-buffer flush.
+    # Default sort is user_count DESC (1200 > 800), so #elixir precedes #ruby.
+    # NB: list/3 always re-sorts — this asserts the sort, not insertion order.
     assert Enum.map(page.entries, & &1.name) == ["#elixir", "#ruby"]
   end
 
