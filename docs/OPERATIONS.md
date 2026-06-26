@@ -550,3 +550,33 @@ don't hardcode hostnames there.
   Phase 5 hardening adds prod with auth).
 - **Telemetry**: events emitted via `:telemetry`; metrics aggregated
   via `Telemetry.Metrics`. Phase 5 adds Prometheus exporter.
+
+## Pending operator follow-ups
+
+Dated, operator-actioned items (not engineering work — migrated here from
+the retired `docs/todo.md`). Check the condition, then act or drop.
+
+- **Drop m42 fail2ban `/read-cursor` 400-exemption** (post-#44). The cic
+  positive-int guard landed + deployed (cp58, bundle `BF6Dside`). Once
+  prod access logs show `/read-cursor` 400s at zero (all clients on the
+  new bundle), drop the CP55 `http-400` jail exemption for `/read-cursor\b`
+  on m42. Log: `irc.openssl.it-access.log`. Recheck ≥2026-06-16 (a
+  stale-bundle PWA bursts ~31×400 vs maxretry 8 → would ban a legit user).
+- **Revisit m42 fail2ban `$home/messages` 404-exemption** (post-#81). The
+  client fix (`kindHasScrollback` gate) landed + deployed hot 2026-06-26
+  (bundle `Cra1LwMd`). The `ignoreregex` for
+  `networks/<n>/channels/%24<x>/messages` is retained as defence-in-depth.
+  Once prod logs show `%24home`/`%24admin`/`//messages` 404s at zero,
+  DECIDE: keep (defence-in-depth) or drop (a permanent exemption masks the
+  next synthetic-window regression). Recheck ≥2026-07-03.
+- **Captcha-enabled-on-prod discrepancy** (2026-06-08, CP55). Prod
+  `grappa.env` has NO `GRAPPA_CAPTCHA_*` → provider should be `disabled` →
+  no widget. Yet vjt saw the captcha widget (+ its CSP inline-script block)
+  on prod. Confirm where the provider is actually switched on, or whether
+  it was stale client state. The CSP fix (sha256 in script-src, CP55) is
+  correct regardless.
+- **Sqlite "Database busy" intermittent test flake.** `Repo` / `Scrollback`
+  / `Wire` occasionally fail inserts with `Exqlite.Error: Database busy` —
+  contention between `async: true` Repo writes and the live dev container
+  also writing `runtime/grappa_dev.db`. Benign noise during `ci.check`; not
+  flaky on CI (fresh DB). No action unless it worsens.
