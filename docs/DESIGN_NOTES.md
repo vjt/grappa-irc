@@ -13350,3 +13350,39 @@ the persist) silently drifts the half nobody is looking at. The #38 fix
 treated the symptom on the user surface; the bug lived one layer down in
 the persister the leave path skipped. "We fixed it" is only true for the
 subject whose source you happened to prune.*
+
+## 2026-06-26 — `/msg` to a channel-shaped target rejected (#12)
+
+`/msg #x hello` opened an unclose-able phantom window whose sent message
+never rendered. Root cause: `compose.ts` `case "msg"` routed a
+channel-shaped target through the QUERY path — `openQueryWindowState`
+keyed by a CHANNEL name + `setSelectedChannel(kind:"query")`. cic's
+own-send render is WS-driven on the per-channel topic (no optimistic
+append) and cic only subscribes to channel topics for JOINED channels, so
+a `"#x"` query window heard nothing — the message never rendered, live or
+post-restore. `/msg` is for nicks (queries); grappa does not relay a
+PRIVMSG to a channel addressed by name.
+
+**Fix — cic-only parser reject.** The `msg:` parser in `slashCommands.ts`
+now rejects any IRC channel sigil (`# & ! +`, per `channelKey.ts`) up
+front with `err(verb, "/msg to a channel is not supported")`. `err()`
+yields `kind:"error"`, and compose.ts's switch hits `case "error"` (which
+returns `{error: message}`) before `case "msg"` — so no phantom window
+opens and the user gets an inline error. The reject covers the whole
+channel-sigil class, not just `#`. Services shortcuts (`/ns` `/cs` …) are
+unaffected: they rewrite to `{kind:"msg", target:<ServiceNick>}` via a
+separate code path with non-sigil targets.
+
+**Why cic-only (vjt).** Heavier options were floated — a one-shot send +
+`$server` echo store, or a server-side reject ("può anche esser grappa a
+rifiutare"). Both rejected as too much code for a dead corner case on a
+single-client system: a cic parser guard is the same user-visible result
+with ~4× less code. Server `send_privmsg` is left as-is (it still happily
+sends + persists to scrollback for a non-joined channel); the cic reject
+means cic never originates the channel-shaped `/msg` in the first place.
+
+*Lesson: a window keyed by the wrong kind of name is a silent dead end —
+the query render path keys off channel-topic subscriptions that a
+channel-named query window never has. Reject the malformed intent at the
+parser boundary rather than letting it open a window the render path can
+never feed.*

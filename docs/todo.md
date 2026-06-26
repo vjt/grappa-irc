@@ -16,15 +16,8 @@ Priority tiers: **Immediate** (this session), **High** (this week),
   check, portrait-orientation upload. (The PWA badge ICON dogfood is
   CLOSED — confirmed working on device 2026-06-21.)
 - **NEXT: crank open review-exempt bugs** (issue-closing sweep,
-  continued — #27/#40/#37/#61/#25 + the badge-orphan fix + **#38/#16/#87**
+  continued — #27/#40/#37/#61/#25 + the badge-orphan fix + **#38/#16/#87/#12**
   already shipped this cluster). Tractable, no on-device blocker:
-  - **#12** cicchetto: /msg to non-joined channel creates unclose-able
-    window; session restore archives it but sent messages don't render.
-    LIKELY the SAME window-lifecycle class as #38 — close relies on a
-    server echo (own-PART → setParted) that never fires for a
-    never-joined window. Re-check against the #38 `closeChannelWindow`
-    fix (it clears windowState locally now) before reworking; the query
-    path (`closeQueryWindow`) may need the analogous local clear.
   Device-blocked (parked until dogfood): #63 (iOS keyboard drops letters
   on fast typing), #46 (Android unread marker lost after long background).
 - **Deferred feature — +k key persistence (auto-rejoin) (vjt 2026-06-23).**
