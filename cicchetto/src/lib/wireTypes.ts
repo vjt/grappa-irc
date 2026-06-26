@@ -331,6 +331,20 @@ export type AdminEventsWireEvent =
   | AdminEventsWireCredentialUpdatedEvent
   | AdminEventsWireCredentialUnboundEvent;
 
+// === Grappa.ChannelDirectory.Wire ===
+
+export type ChannelDirectoryWireIndexPayload = {
+  entries: {
+  name: string;
+  topic: string | null;
+  user_count: number;
+}[];
+  next_cursor: string | null;
+  total: number;
+  captured_at: string | null;
+  status: string;
+};
+
 // === Grappa.Cic.Wire ===
 
 export type CicWireBundleHashPayload = {
@@ -504,7 +518,10 @@ export type SessionWireWireEventKind =
   | "peer_away"
   | "invite_ack"
   | "lusers_bundle"
-  | "whowas_bundle";
+  | "whowas_bundle"
+  | "directory_progress"
+  | "directory_complete"
+  | "directory_failed";
 
 export type SessionWireChannelsChangedPayload = {
   kind: "channels_changed";
@@ -689,6 +706,24 @@ export type SessionWireWhowasBundlePayload = {
   not_found: boolean;
 };
 
+export type SessionWireDirectoryProgressPayload = {
+  kind: "directory_progress";
+  network: string;
+  count: number;
+};
+
+export type SessionWireDirectoryCompletePayload = {
+  kind: "directory_complete";
+  network: string;
+  total: number;
+};
+
+export type SessionWireDirectoryFailedPayload = {
+  kind: "directory_failed";
+  network: string;
+  reason: string;
+};
+
 export type WireSessionEvent =
   | SessionWireChannelsChangedPayload
   | SessionWireOwnNickChangedPayload
@@ -706,7 +741,10 @@ export type WireSessionEvent =
   | SessionWirePeerAwayPayload
   | SessionWireInviteAckPayload
   | SessionWireLusersBundlePayload
-  | SessionWireWhowasBundlePayload;
+  | SessionWireWhowasBundlePayload
+  | SessionWireDirectoryProgressPayload
+  | SessionWireDirectoryCompletePayload
+  | SessionWireDirectoryFailedPayload;
 
 // === Grappa.Visitors.Wire ===
 
