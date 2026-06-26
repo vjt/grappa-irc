@@ -267,6 +267,15 @@ Phase 5 cluster opens):
   log is `irc.openssl.it-access.log`, 400s from 6 distinct client IPs,
   last 07/Jun — too early to drop (a stale-bundle PWA bursts ~31×400
   vs maxretry 8 → bans a legit user). Recheck ≥2026-06-16.
+- **Revisit m42 fail2ban `$home/messages` 404-exemption** (post-#81) — the
+  client fix (`kindHasScrollback` gate) landed + deployed hot 2026-06-26
+  (bundle `Cra1LwMd`). The `ignoreregex` for
+  `networks/<n>/channels/%24<x>/messages` is retained as defence-in-depth.
+  Once prod access logs show `%24home`/`%24admin`/`//messages` 404s at
+  zero (all clients on the new bundle), DECIDE: keep (defence-in-depth vs
+  a future synthetic-window regression) or drop (a permanent exemption
+  masks the next regression — same trade-off as the `/read-cursor` item
+  above). Same stale-bundle-burst caveat applies. Recheck ≥2026-07-03.
 - Sqlite "Database busy" intermittent test flake — `Repo` /
   `Scrollback` / `Wire` occasionally fail inserts with
   `Exqlite.Error: Database busy`. Contention between `async: true`
