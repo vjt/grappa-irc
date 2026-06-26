@@ -10,8 +10,19 @@ defmodule Grappa.ChannelDirectory do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Grappa.Subject],
-    dirty_xrefs: [Grappa.Visitors.Visitor],
+    deps: [Grappa.Accounts, Grappa.Repo, Grappa.Subject],
+    # `Networks.Network` is referenced ONLY by `Entry`'s
+    # `belongs_to :network` (struct/schema access — no `Grappa.Networks`
+    # function call anywhere in this boundary). A full `Grappa.Networks`
+    # dep would close the Cluster-2 cycle
+    # `ChannelDirectory → Networks → Session → ChannelDirectory` the moment
+    # `Session.Server` drives the refresh lifecycle (#84 —
+    # `replace_start/2` / `ingest/3` / `finalize/2`). Mirror of the
+    # `Networks.Network` dirty_xref in `Grappa.Scrollback` (and the
+    # `Visitors.Visitor` one beside it): schema-only access whose Boundary
+    # checks we lose on a use case Boundary couldn't gate anyway (struct
+    # field access goes through no function we'd want to police). Intentional.
+    dirty_xrefs: [Grappa.Networks.Network, Grappa.Visitors.Visitor],
     exports: [Entry, Wire]
 
   import Ecto.Query

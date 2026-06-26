@@ -83,6 +83,9 @@ defmodule Grappa.Session.Wire do
           | :invite_ack
           | :lusers_bundle
           | :whowas_bundle
+          | :directory_progress
+          | :directory_complete
+          | :directory_failed
 
   @type channels_changed_payload :: %{kind: :channels_changed}
 
@@ -350,6 +353,47 @@ defmodule Grappa.Session.Wire do
           server: String.t() | nil,
           logoff_time: String.t() | nil,
           not_found: boolean()
+        }
+
+  @typedoc """
+  Channel directory (#84) refresh progress ping. Broadcast on
+  `Topic.user/1` while an upstream `LIST` snapshot is streaming in:
+  `count` is the running tally of 322 RPL_LIST rows ingested so far,
+  emitted at most once per `directory_progress_throttle_ms`. cic's
+  directory store updates a "loading N channels…" affordance. Ephemeral
+  — the authoritative snapshot is served via the REST `directory` resource.
+  """
+  @type directory_progress_payload :: %{
+          kind: :directory_progress,
+          network: String.t(),
+          count: non_neg_integer()
+        }
+
+  @typedoc """
+  Channel directory (#84) refresh-complete ping. Broadcast on
+  `Topic.user/1` when 323 RPL_LISTEND finalises the snapshot; `total`
+  is the final ingested row count. cic refetches the REST `directory`
+  page (the broadcast carries no rows — it's a "snapshot is fresh now"
+  signal, not the data).
+  """
+  @type directory_complete_payload :: %{
+          kind: :directory_complete,
+          network: String.t(),
+          total: non_neg_integer()
+        }
+
+  @typedoc """
+  Channel directory (#84) refresh-failed ping. Broadcast on
+  `Topic.user/1` when a refresh aborts before 323 — currently the
+  watchdog timeout (`reason: "timeout"`). cic clears its in-flight
+  "loading…" affordance and surfaces the failure. The prior snapshot
+  (if any) is left intact in the DB; only the in-flight refresh state
+  is cleared server-side.
+  """
+  @type directory_failed_payload :: %{
+          kind: :directory_failed,
+          network: String.t(),
+          reason: String.t()
         }
 
   @doc """
@@ -761,5 +805,40 @@ defmodule Grappa.Session.Wire do
       logoff_time: Map.get(last_entry, :logoff_time),
       not_found: not_found
     }
+  end
+
+  @doc """
+  Channel directory (#84) progress ping — `count` 322 rows ingested so
+  far during an in-flight `LIST` refresh. Broadcast on `Topic.user/1`,
+  throttled by `directory_progress_throttle_ms`. cic owns the
+  human-readable "loading N channels…" rendering.
+  """
+  @spec directory_progress(String.t(), non_neg_integer()) :: directory_progress_payload()
+  def directory_progress(network_slug, count)
+      when is_binary(network_slug) and is_integer(count) and count >= 0 do
+    %{kind: :directory_progress, network: network_slug, count: count}
+  end
+
+  @doc """
+  Channel directory (#84) complete ping — `total` rows in the finalised
+  snapshot. Broadcast on `Topic.user/1` on 323 RPL_LISTEND. Carries no
+  rows; cic refetches the REST `directory` resource on receipt.
+  """
+  @spec directory_complete(String.t(), non_neg_integer()) :: directory_complete_payload()
+  def directory_complete(network_slug, total)
+      when is_binary(network_slug) and is_integer(total) and total >= 0 do
+    %{kind: :directory_complete, network: network_slug, total: total}
+  end
+
+  @doc """
+  Channel directory (#84) failed ping — `reason` is the abort cause
+  (`"timeout"` for the watchdog). Broadcast on `Topic.user/1`; cic
+  clears the in-flight loading affordance. The prior DB snapshot is
+  left intact.
+  """
+  @spec directory_failed(String.t(), String.t()) :: directory_failed_payload()
+  def directory_failed(network_slug, reason)
+      when is_binary(network_slug) and is_binary(reason) do
+    %{kind: :directory_failed, network: network_slug, reason: reason}
   end
 end

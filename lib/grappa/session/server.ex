@@ -79,8 +79,8 @@ defmodule Grappa.Session.Server do
   """
   use GenServer, restart: :transient
 
+  alias Grappa.{ChannelDirectory, Log, Mentions, Scrollback, Session, UserSettings}
   alias Grappa.IRC.{AuthFSM, Client, CTCP, Identifier, Message}
-  alias Grappa.{Log, Mentions, Scrollback, Session, UserSettings}
   alias Grappa.PubSub.Topic
   alias Grappa.Push.Triggers, as: PushTriggers
   alias Grappa.Scrollback.Wire
@@ -471,7 +471,25 @@ defmodule Grappa.Session.Server do
           # limit). Static for the GenServer lifetime; not persisted.
           directory_refresh_timeout_ms: pos_integer(),
           directory_progress_throttle_ms: non_neg_integer(),
-          directory_ingest_batch: pos_integer()
+          directory_ingest_batch: pos_integer(),
+          # Channel directory (#84) in-flight refresh tracker. `nil` when no
+          # `LIST` is streaming. Set by `handle_call(:refresh_directory, ...)`
+          # the instant the upstream `LIST` is on the wire; cleared on 323
+          # RPL_LISTEND (C3) or the `:directory_refresh_timeout` watchdog (C4).
+          # The presence of this map IS the in-flight guard — a second
+          # `:refresh_directory` while non-nil replies `{:error,
+          # :already_refreshing}`. `buffer` accumulates parsed 322 rows pending
+          # a batch flush (`directory_ingest_batch`); `count` is the running
+          # ingested tally; `last_emit_ms` gates `directory_progress` throttling
+          # (`directory_progress_throttle_ms`); `timer` is the watchdog ref.
+          directory_refresh:
+            nil
+            | %{
+                buffer: [map()],
+                count: non_neg_integer(),
+                last_emit_ms: integer(),
+                timer: reference() | nil
+              }
         }
 
   ## API
@@ -649,7 +667,10 @@ defmodule Grappa.Session.Server do
       # opts-overridable so tests can pin a short timeout / small batch.
       directory_refresh_timeout_ms: Map.get(opts, :directory_refresh_timeout_ms, @directory_refresh_timeout_ms),
       directory_progress_throttle_ms: Map.get(opts, :directory_progress_throttle_ms, @directory_progress_throttle_ms),
-      directory_ingest_batch: Map.get(opts, :directory_ingest_batch, @directory_ingest_batch)
+      directory_ingest_batch: Map.get(opts, :directory_ingest_batch, @directory_ingest_batch),
+      # Channel directory (#84) — no refresh in flight at boot. Set when the
+      # operator triggers a `LIST` refresh; cleared on 323 / timeout.
+      directory_refresh: nil
     }
 
     # S3.1 / S3.2: subscribe to the WSPresence PubSub topic for this user so
@@ -1045,6 +1066,42 @@ defmodule Grappa.Session.Server do
   # accumulator on arrival.
   def handle_call(:send_lusers, _, state) do
     {:reply, Client.send_lusers(state.client), state}
+  end
+
+  # Channel directory (#84) refresh trigger. Three clauses, ordered:
+  #
+  #   1. `client: nil` (and no refresh in flight) — the upstream socket
+  #      isn't connected yet (pre-001, parked, or mid-reconnect). Reject
+  #      with `{:error, :not_connected}` BEFORE touching the DB or arming a
+  #      timer; there's nothing to send `LIST` to.
+  #   2. `directory_refresh: nil` (client present) — the happy path. Put
+  #      `LIST` on the wire FIRST (so a transport error short-circuits with
+  #      no DB churn), then nuke the prior snapshot, arm the watchdog, and
+  #      record the in-flight tracker. The streamed 321/322/323 capture is
+  #      Task C3; the watchdog handler is `:directory_refresh_timeout` below.
+  #   3. catch-all (`directory_refresh` non-nil) — a refresh is already
+  #      streaming. The tracker's presence IS the guard; reply
+  #      `{:error, :already_refreshing}` and leave the in-flight run untouched.
+  def handle_call(:refresh_directory, _, %{directory_refresh: nil, client: nil} = state) do
+    {:reply, {:error, :not_connected}, state}
+  end
+
+  def handle_call(:refresh_directory, _, %{directory_refresh: nil} = state) do
+    case Client.send_line(state.client, "LIST\r\n") do
+      :ok ->
+        ChannelDirectory.replace_start(state.subject, state.network_id)
+        timer = Process.send_after(self(), :directory_refresh_timeout, state.directory_refresh_timeout_ms)
+        now = System.monotonic_time(:millisecond)
+
+        {:reply, :ok, %{state | directory_refresh: %{buffer: [], count: 0, last_emit_ms: now, timer: timer}}}
+
+      {:error, _} = err ->
+        {:reply, err, state}
+    end
+  end
+
+  def handle_call(:refresh_directory, _, state) do
+    {:reply, {:error, :already_refreshing}, state}
   end
 
   # Banlist query form — no sign, just the mode letter.
@@ -1764,6 +1821,28 @@ defmodule Grappa.Session.Server do
   end
 
   def handle_info(:ghost_timeout, state), do: {:noreply, state}
+
+  # Channel directory (#84) refresh watchdog (merged C4). Armed by
+  # `handle_call(:refresh_directory, ...)`; fires if 323 RPL_LISTEND never
+  # arrives within `directory_refresh_timeout_ms`. Two clauses:
+  #
+  #   * `directory_refresh: nil` — the refresh already finalised (323
+  #     cleared the tracker in C3) and `cancel_and_drain/2` either didn't
+  #     run or this is a stale duplicate. No-op; never crash on a benign
+  #     late timer. Mirrors the `:ghost_timeout` fallback above.
+  #   * in-flight — the refresh genuinely stalled. Clear the tracker and
+  #     broadcast a `directory_failed` ping so cic drops its loading
+  #     affordance. The prior DB snapshot (if any) stays intact — only the
+  #     in-flight state is wiped. `network` is on the Logger allowlist and
+  #     already threaded by `Log.set_session_context/2`.
+  def handle_info(:directory_refresh_timeout, %{directory_refresh: nil} = state),
+    do: {:noreply, state}
+
+  def handle_info(:directory_refresh_timeout, state) do
+    Logger.warning("directory refresh timed out before RPL_LISTEND", network: state.network_slug)
+    broadcast_window_state(state, SessionWire.directory_failed(state.network_slug, "timeout"))
+    {:noreply, %{state | directory_refresh: nil}}
+  end
 
   # 465 ERR_YOUREBANNEDCREEP — k-line / g-line. Hard, terminal,
   # non-recoverable: the upstream network operator has explicitly banned

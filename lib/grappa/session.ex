@@ -51,6 +51,7 @@ defmodule Grappa.Session do
   use Boundary,
     top_level?: true,
     deps: [
+      Grappa.ChannelDirectory,
       Grappa.IRC,
       Grappa.Log,
       Grappa.Mentions,
@@ -191,6 +192,33 @@ defmodule Grappa.Session do
     case Registry.lookup(Grappa.SessionRegistry, Server.registry_key(subject, network_id)) do
       [{pid, _}] -> pid
       [] -> nil
+    end
+  end
+
+  @doc """
+  Triggers an upstream `LIST` channel-directory refresh on the live
+  session for `(subject, network_id)` (#84).
+
+  The Session.Server puts `LIST` on the wire, nukes the prior
+  `Grappa.ChannelDirectory` snapshot, and arms a watchdog timer; the
+  streamed 321/322/323 numerics repopulate the snapshot (captured by a
+  later task). Returns `:ok` once the refresh is in flight.
+
+  Distinct from the `call_session/*` facades: a missing session pid maps
+  to `{:error, :not_connected}` (not `:no_session`) — the directory
+  surface only cares whether there's a live upstream to `LIST`, and the
+  Server returns the SAME `:not_connected` when the pid exists but the
+  IRC socket isn't up yet (`client: nil`). `{:error, :already_refreshing}`
+  guards against a concurrent refresh: the in-flight tracker is single-slot
+  per session.
+  """
+  @spec refresh_directory(subject(), integer()) ::
+          :ok | {:error, :not_connected | :already_refreshing}
+  def refresh_directory(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    case whereis(subject, network_id) do
+      nil -> {:error, :not_connected}
+      pid -> GenServer.call(pid, :refresh_directory)
     end
   end
 
