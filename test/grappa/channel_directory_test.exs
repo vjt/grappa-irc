@@ -29,6 +29,10 @@ defmodule Grappa.ChannelDirectoryTest do
 
   defp rows(n), do: for(i <- 1..n, do: %{name: "#c#{i}", topic: "t#{i}", user_count: i})
 
+  test "ttl_ms/0 returns the configured 48h" do
+    assert Grappa.ChannelDirectory.ttl_ms() == 48 * 60 * 60 * 1000
+  end
+
   test "replace_start nukes, ingest inserts, finalize stamps captured_at", %{subject: s, network_id: nid} do
     :ok = Dir.replace_start(s, nid)
     :ok = Dir.ingest(s, nid, rows(3))

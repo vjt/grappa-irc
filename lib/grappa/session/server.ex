@@ -131,6 +131,19 @@ defmodule Grappa.Session.Server do
   # services outage holding the FSM open indefinitely.
   @ghost_recovery_timeout_ms 8_000
 
+  # Channel directory (#84) refresh tunables — compile-time defaults
+  # sourced from `config :grappa, Grappa.ChannelDirectory`. Injected into
+  # state in `do_init/1` so later tasks (refresh trigger, streamed-322
+  # capture, timeout watchdog) read them from state and tests can override
+  # via start opts. `refresh_timeout_ms` bounds a single LIST refresh
+  # before it's declared failed; `progress_throttle_ms` rate-limits the
+  # `directory_progress` pings; `ingest_batch` is the streamed-322 flush
+  # size.
+  @directory_cfg Application.compile_env(:grappa, Grappa.ChannelDirectory, [])
+  @directory_refresh_timeout_ms Keyword.get(@directory_cfg, :refresh_timeout_ms, 60_000)
+  @directory_progress_throttle_ms Keyword.get(@directory_cfg, :progress_throttle_ms, 1_000)
+  @directory_ingest_batch Keyword.get(@directory_cfg, :ingest_batch, 200)
+
   @typedoc """
   Optional opaque callback the visitor-side `SessionPlan` injects into
   every visitor plan. Invoked by `apply_effects/2` when EventRouter
@@ -448,7 +461,17 @@ defmodule Grappa.Session.Server do
           # target, accum}` and 406 ERR_WASNOSUCHNICK emits a bundle with
           # `not_found: true`. Bounded by in-flight /whowas commands
           # (typically 0-1 at a time). NOT persisted across crashes.
-          whowas_pending: %{String.t() => map()}
+          whowas_pending: %{String.t() => map()},
+          # Channel directory (#84) refresh tunables — config-derived at
+          # boot (`config :grappa, Grappa.ChannelDirectory`), opts-overridable
+          # in `do_init/1` so tests can pin them. Read by later tasks: the
+          # refresh trigger / send_list guard (`refresh_timeout_ms` watchdog),
+          # the streamed-322 ingest (`ingest_batch` flush size), and the
+          # `directory_progress` ping emitter (`progress_throttle_ms` rate
+          # limit). Static for the GenServer lifetime; not persisted.
+          directory_refresh_timeout_ms: pos_integer(),
+          directory_progress_throttle_ms: non_neg_integer(),
+          directory_ingest_batch: pos_integer()
         }
 
   ## API
@@ -620,7 +643,13 @@ defmodule Grappa.Session.Server do
       # logoff_time into the last entry; 369 emits :whowas_bundle and 406
       # emits a not_found bundle. Bounded by in-flight /whowas commands
       # (typically 0-1 at a time). NOT persisted across crashes.
-      whowas_pending: %{}
+      whowas_pending: %{},
+      # Channel directory (#84) refresh tunables — config default
+      # (`@directory_*` from `config :grappa, Grappa.ChannelDirectory`),
+      # opts-overridable so tests can pin a short timeout / small batch.
+      directory_refresh_timeout_ms: Map.get(opts, :directory_refresh_timeout_ms, @directory_refresh_timeout_ms),
+      directory_progress_throttle_ms: Map.get(opts, :directory_progress_throttle_ms, @directory_progress_throttle_ms),
+      directory_ingest_batch: Map.get(opts, :directory_ingest_batch, @directory_ingest_batch)
     }
 
     # S3.1 / S3.2: subscribe to the WSPresence PubSub topic for this user so

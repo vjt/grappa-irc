@@ -84,6 +84,18 @@ config :grappa, :admission,
   network_circuit_window_ms: 60_000,
   network_circuit_cooldown_ms: 5 * 60_000
 
+# Channel directory (#84) — per-(subject, network) snapshot of an
+# upstream IRC LIST. ttl_ms is the freshness window the REST resource
+# uses to label a snapshot :fresh vs :stale (48h, matching the sliding
+# scrollback horizon). refresh_timeout_ms bounds a single LIST refresh
+# before it's declared failed; progress_throttle_ms rate-limits the
+# directory_progress pings; ingest_batch is the streamed-322 flush size.
+config :grappa, Grappa.ChannelDirectory,
+  ttl_ms: 48 * 60 * 60 * 1000,
+  refresh_timeout_ms: 60_000,
+  progress_throttle_ms: 1_000,
+  ingest_batch: 200
+
 config :grappa, Grappa.Repo,
   adapter: Ecto.Adapters.SQLite3,
   database: "runtime/grappa_dev.db"

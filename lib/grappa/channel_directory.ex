@@ -20,6 +20,13 @@ defmodule Grappa.ChannelDirectory do
   alias Grappa.Repo
   alias Grappa.Subject
 
+  @cfg Application.compile_env(:grappa, __MODULE__, [])
+  @ttl_ms Keyword.get(@cfg, :ttl_ms, 48 * 60 * 60 * 1000)
+
+  @doc "Snapshot freshness window in ms — the REST resource labels a snapshot :fresh while age <= this, else :stale."
+  @spec ttl_ms() :: pos_integer()
+  def ttl_ms, do: @ttl_ms
+
   @type ingest_row :: %{name: String.t(), topic: String.t() | nil, user_count: integer()}
   @type status :: :fresh | :stale | :empty | :refreshing
   @type sort :: :users | :name
