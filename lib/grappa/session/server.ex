@@ -1485,8 +1485,20 @@ defmodule Grappa.Session.Server do
     # would see a "ghost" channel resurface. Plan accepts this trade —
     # the race is theoretical (PART is wire-fast, ms-scale) and the
     # alternative is the persistent-ghost bug this bucket closes.
+    prev = state
     state = PartCleanup.cleanup_local(state, channel)
     broadcast_channels_changed(state)
+
+    # #87 — persist the post-PART rejoin snapshot too. `broadcast_channels_changed/1`
+    # above is UNCONDITIONAL (it forces cic's `GET /channels` refetch even on a
+    # no-op eager wipe), but the `last_joined_channels` snapshot must only follow
+    # a real keyset change — `maybe_persist_last_joined/2` gates on that. Pre-fix
+    # this cast bypassed the persister entirely (the only call site was
+    # `maybe_broadcast_channels_changed/2`, which this path does not use), so the
+    # snapshot went stale: a visitor's parted channel kept surfacing in
+    # `GET /channels` (its autojoin source IS this snapshot) and both subjects
+    # rejoined the parted channel on the next reconnect.
+    maybe_persist_last_joined(prev, state)
 
     case Client.send_part(state.client, channel) do
       :ok ->
@@ -2461,25 +2473,39 @@ defmodule Grappa.Session.Server do
 
   @spec maybe_broadcast_channels_changed(t(), t()) :: :ok
   defp maybe_broadcast_channels_changed(prev, next) do
-    prev_keys = prev.members |> Map.keys() |> Enum.sort()
-    next_keys = next.members |> Map.keys() |> Enum.sort()
-
-    if prev_keys != next_keys do
+    if channels_keyset(prev) != channels_keyset(next) do
       broadcast_channels_changed(next)
+    end
 
-      # CP22 cluster B (channel-client-polish #14, B-restart) — persist
-      # the snapshot so a graceful or crash restart can rehydrate. Same
-      # change-detection (sorted keyset diff) as the broadcast above —
-      # the keyset is the only field that affects rejoin. Single Repo
-      # write per channels-list mutation (a typical session sees a
-      # handful of these per hour). Failure logged but NOT fatal: the
-      # next mutation overwrites, and a missing snapshot only forces
-      # the next restart to fall back to operator autojoin.
+    maybe_persist_last_joined(prev, next)
+  end
+
+  # CP22 cluster B (channel-client-polish #14, B-restart) — persist the
+  # post-mutation channel keyset to the subject's `last_joined_channels`
+  # rejoin snapshot whenever membership changed, so a graceful or crash
+  # restart rehydrates the right window list. The keyset is the only field
+  # that affects rejoin; one Repo write per channels-list mutation (a typical
+  # session sees a handful per hour). Failure logged but NOT fatal
+  # (`persist_last_joined/4`): the next mutation overwrites, and a missing
+  # snapshot only forces the next restart to fall back to operator autojoin.
+  #
+  # #87 (2026-06-26) — SINGLE persister call site, shared with the explicit
+  # `handle_cast({:send_part, _})` leave path. Both the organic
+  # membership-change path and the eager-PART path converge here, so the
+  # snapshot stays consistent regardless of which one fired.
+  @spec maybe_persist_last_joined(t(), t()) :: :ok
+  defp maybe_persist_last_joined(prev, next) do
+    next_keys = channels_keyset(next)
+
+    if channels_keyset(prev) != next_keys do
       :ok = persist_last_joined(prev.subject, prev.network_id, next_keys, prev.last_joined_persister)
     end
 
     :ok
   end
+
+  @spec channels_keyset(t()) :: [String.t()]
+  defp channels_keyset(state), do: state.members |> Map.keys() |> Enum.sort()
 
   # UX-4 bucket H — `handle_cast({:send_part, _})` calls this directly
   # to force a `channels_changed` broadcast regardless of whether the

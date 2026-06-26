@@ -18,6 +18,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
   import Grappa.AuthFixtures
 
   alias Grappa.IRCServer
+  alias Grappa.Networks.Credentials
   alias Grappa.PubSub.Topic
   alias Grappa.Session.WindowState
 
@@ -358,7 +359,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 202) == %{"ok" => true}
 
       # Reload credential from DB and assert #grappa is gone from autojoin.
-      reloaded = Grappa.Networks.Credentials.get_credential!(vjt, network)
+      reloaded = Credentials.get_credential!(vjt, network)
       assert reloaded.autojoin_channels == ["#other"]
       refute "#grappa" in reloaded.autojoin_channels
 
@@ -378,7 +379,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       conn = delete(conn, "/networks/#{network.slug}/channels/%23grappa")
       assert json_response(conn, 202) == %{"ok" => true}
 
-      reloaded = Grappa.Networks.Credentials.get_credential!(vjt, network)
+      reloaded = Credentials.get_credential!(vjt, network)
       assert reloaded.autojoin_channels == ["#other"]
 
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -509,6 +510,42 @@ defmodule GrappaWeb.ChannelsControllerTest do
       refute Map.has_key?(state.members, "#joined")
       refute Map.has_key?(state.topics, "#joined")
       assert WindowState.state_of(state.window_state, "#joined") == nil
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #87 root cause (2026-06-26): the `send_part` cast dropped the channel
+    # from live `state.members` + broadcast `channels_changed`, but NEVER
+    # persisted the post-PART snapshot to `last_joined_channels` — it called
+    # `broadcast_channels_changed/1` directly, bypassing the only persister
+    # call site (`maybe_broadcast_channels_changed/2`). On reconnect,
+    # `merge_autojoin(autojoin_channels, last_joined_channels)` re-derived the
+    # stale membership and rejoined a channel the operator explicitly left.
+    # The fix routes the snapshot persist through the same per-subject
+    # persister the organic membership-change path uses.
+    test "PART persists last_joined_channels snapshot minus the parted channel (reconnect-rejoin fix)",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      {network, _} = network_with_server(port: port, slug: "az-lastjoined-#{u()}")
+      _ = credential_fixture(vjt, network, %{autojoin_channels: []})
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      # Seed two live-joined channels synchronously; last_joined starts empty.
+      :sys.replace_state(pid, fn s ->
+        %{s | members: s.members |> Map.put("#a", %{"vjt" => []}) |> Map.put("#b", %{"vjt" => []})}
+      end)
+
+      conn = delete(conn, "/networks/#{network.slug}/channels/%23a")
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      # PART line is emitted by the cast AFTER cleanup + snapshot persist, so
+      # observing it proves the DB write already happened.
+      assert {:ok, "PART #a\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "PART #a\r\n"), 1_000)
+
+      reloaded = Credentials.get_credential!(vjt, network)
+      assert reloaded.last_joined_channels == ["#b"]
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -789,6 +826,88 @@ defmodule GrappaWeb.ChannelsControllerTest do
         |> post("/networks/#{other_network.slug}/channels", %{"name" => "#sniffo"})
 
       assert json_response(conn, 404)["error"] == "not_found"
+    end
+
+    # #87 regression (alk on #italia, 2026-06-26) — case (a): a visitor
+    # live-joined to a channel parts it via the cic × (DELETE). The visitor's
+    # autojoin source is `visitors.last_joined_channels` (NOT a credential
+    # autojoin list), so unless the PART path rewrites that snapshot, the
+    # `GET /channels` union keeps returning the channel as `source: autojoin,
+    # joined: false` and the cic tab never dismisses (re-× → 442). The
+    # session-level snapshot persist (subject-agnostic) closes this for
+    # visitors exactly as it does for users.
+    test "DELETE PART of a live-joined channel drops it from GET /channels + last_joined (case a)",
+         %{conn: _conn} do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      _ = visitor_channel_fixture(visitor, "#italia")
+      session = visitor_session_fixture(visitor)
+      pid = start_visitor_session_for(visitor, network)
+      :ok = await_handshake(server)
+
+      # Seed live membership synchronously (dodges the self-JOIN echo race).
+      :sys.replace_state(pid, fn s ->
+        %{s | members: Map.put(s.members, "#italia", %{visitor.nick => []})}
+      end)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> delete("/networks/#{network.slug}/channels/%23italia")
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      assert {:ok, "PART #italia\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "PART #italia\r\n"), 1_000)
+
+      assert Grappa.Visitors.get!(visitor.id).last_joined_channels == []
+
+      get_conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> get("/networks/#{network.slug}/channels")
+
+      assert json_response(get_conn, 200) == []
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #87 parity — case (b): a stale autojoin entry that is NOT live-joined
+    # (e.g. it 475'd on reconnect) — the cic greyed pseudo-row the visitor
+    # dismisses with ×. There is no live membership change to snapshot away,
+    # so the leave intent must remove the channel from the visitor's
+    # `last_joined_channels` at the controller — the exact mirror of the user
+    # branch's `Credentials.remove_autojoin_channel/3`. Pre-fix the visitor
+    # branch of `remove_from_autojoin` was a no-op and the row never went away.
+    test "DELETE PART of a stale not-live autojoin entry drops it from GET /channels + last_joined (case b)",
+         %{conn: _conn} do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      _ = visitor_channel_fixture(visitor, "#italia")
+      session = visitor_session_fixture(visitor)
+      pid = start_visitor_session_for(visitor, network)
+      :ok = await_handshake(server)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> delete("/networks/#{network.slug}/channels/%23italia")
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      assert {:ok, "PART #italia\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "PART #italia\r\n"), 1_000)
+
+      assert Grappa.Visitors.get!(visitor.id).last_joined_channels == []
+
+      get_conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> get("/networks/#{network.slug}/channels")
+
+      assert json_response(get_conn, 200) == []
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
 

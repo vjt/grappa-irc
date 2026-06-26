@@ -13293,3 +13293,60 @@ response. Modelling `LIST` as a server-owned snapshot that a fast
 window populating live over the existing user-topic fan-out — keeps the GET
 non-blocking, the client dumb, and the whole thing a mechanical reuse of the
 scrollback/query-window patterns rather than a new subsystem.*
+
+## 2026-06-26 — visitor PART tab never dismisses (#87): the snapshot the leave path forgot
+
+Reported again as #87 (alk parted `#italia` on the `azzurra` visitor pool;
+prod confirmed: `last_joined_channels = ["#italia", "#sniffo"]` while live
+members were only `["#sniffo"]`). The cic × sent the PART, the server echoed
+it, yet the `#italia` tab stuck — re-× re-PARTed an already-left channel and
+drew a 442. The #38 fix (dismissable stuck +k tab) made this go away for
+**users** and we assumed it was closed; it never was for **visitors**.
+
+**Root cause — the leave path bypassed the only snapshot persister.**
+`GET /channels` is `union(autojoin-source, live members)`. The autojoin
+source diverges by subject: user → `Credential.autojoin_channels`, visitor →
+`Visitor.last_joined_channels` (the snapshot is also the visitor's only
+rejoin list — see the channel-surface notes). The snapshot is written in
+exactly one place, `Session.Server.maybe_broadcast_channels_changed/2`, on
+every organic membership change. But the explicit leave path —
+`handle_cast({:send_part, _})` (the cic × / `DELETE /channels`) — cleaned
+local members and called `broadcast_channels_changed/1` **directly**,
+skipping that function and therefore the persist. So after a PART the
+snapshot stayed stale. For users it was masked: their `GET /channels` source
+is `autojoin_channels`, which the controller prunes on DELETE. For visitors
+the source IS the stale snapshot → the parted channel kept rendering as
+`source: autojoin, joined: false` and the tab never left. Same staleness
+also made **both** subjects rejoin the parted channel on the next reconnect
+(`state.autojoin` is seeded from the snapshot at boot via `merge_autojoin/2`).
+
+**Fix — one root, two doors, no second-class visitor.**
+1. *Session (subject-agnostic).* Extracted `maybe_persist_last_joined/2`
+   (+`channels_keyset/1`) as the single persister call site and routed BOTH
+   the organic path and the `send_part` cast through it. The cast keeps its
+   UNCONDITIONAL `broadcast_channels_changed/1` (forces cic's refetch even on
+   a no-op eager wipe, per #38/UX-4-H) but now also persists when the keyset
+   actually changed. This closes case (a) — leaving a channel you are
+   live-joined to — for users and visitors identically, and kills the
+   reconnect-rejoin.
+2. *Controller (symmetric leave).* `remove_from_autojoin/3`'s visitor branch
+   was a no-op ("visitors have no persistent credential"). It now removes the
+   channel from `Visitor.last_joined_channels` via a new
+   `Visitors.remove_autojoin_channel/2` — the exact mirror of the user-side
+   `Credentials.remove_autojoin_channel/3`. This closes case (b) — dismissing
+   a stale autojoin entry the visitor is NOT live-joined to (e.g. all
+   autojoin channels 475'd on connect, so there is no live membership for the
+   session to snapshot away). The leave intent now removes from the same kind
+   of source for both subjects.
+
+`maybe_persist_last_joined/2` gates on a real keyset change, so case (a) for
+one channel never clobbers a sibling channel still in the snapshot.
+
+*Lesson: when one struct field doubles as two concepts (visitor
+`last_joined_channels` is BOTH the live snapshot AND the autojoin/rejoin
+source), every write path to it must be funnelled through one function —
+a second, hand-rolled mutation path (`broadcast_channels_changed` without
+the persist) silently drifts the half nobody is looking at. The #38 fix
+treated the symptom on the user surface; the bug lived one layer down in
+the persister the leave path skipped. "We fixed it" is only true for the
+subject whose source you happened to prune.*

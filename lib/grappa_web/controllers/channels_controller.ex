@@ -207,8 +207,18 @@ defmodule GrappaWeb.ChannelsController do
     end
   end
 
-  # Removes `channel` from the user's credential autojoin list. Visitors
-  # have no persistent credential, so this is a no-op for them.
+  # Removes `channel` from the subject's persistent autojoin source so a
+  # leave actually sticks. The source differs per subject but the "leave
+  # intent" is identical (#87, 2026-06-26):
+  #   * user    → `Credential.autojoin_channels`
+  #   * visitor → `Visitor.last_joined_channels` (its snapshot IS the
+  #               autojoin source — `Visitors.list_autojoin_channels/1`).
+  # Pre-#87 the visitor branch was a no-op ("visitors have no persistent
+  # credential"), which was wrong: a PART of a stale autojoin entry the
+  # visitor was not live-joined to (so the session had no membership to
+  # snapshot away) left the channel in `GET /channels` forever — the
+  # un-dismissable tab the bug report hit. Visitors are NOT second-class:
+  # the same door removes from the same kind of source.
   #
   # M16 (REV-D 2026-05-22): pre-fix this was a silent-swallow at the
   # boundary — failure was logged + the controller still returned 202.
@@ -218,7 +228,7 @@ defmodule GrappaWeb.ChannelsController do
   # The IRC-side PART already went through; this only gates the
   # persistence side of the "leave the channel" intent.
   @spec remove_from_autojoin(
-          {:user, User.t()} | {:visitor, term()},
+          {:user, User.t()} | {:visitor, Visitors.Visitor.t()},
           Network.t(),
           String.t()
         ) :: :ok | {:error, term()}
@@ -232,7 +242,15 @@ defmodule GrappaWeb.ChannelsController do
     end
   end
 
-  defp remove_from_autojoin({:visitor, _}, _, _), do: :ok
+  defp remove_from_autojoin({:visitor, %Visitors.Visitor{} = visitor}, _, channel) do
+    case Visitors.remove_autojoin_channel(visitor, channel) do
+      {:ok, _} ->
+        :ok
+
+      {:error, _} = err ->
+        err
+    end
+  end
 
   # UX-3 Z2 — mirror of `ArchiveController.broadcast_archive_changed/2`.
   # Same subject-label derivation: users → `user.name`; visitors →

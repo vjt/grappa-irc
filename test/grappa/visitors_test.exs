@@ -351,6 +351,46 @@ defmodule Grappa.VisitorsTest do
     end
   end
 
+  # #87 — visitor-side mirror of `Credentials.remove_autojoin_channel/3`.
+  # The visitor's `last_joined_channels` IS its autojoin source, so leaving
+  # a channel must drop it here or the row keeps surfacing in GET /channels.
+  describe "remove_autojoin_channel/2" do
+    test "drops the channel from the visitor autojoin source, keeps the rest" do
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
+      with_one = Grappa.AuthFixtures.visitor_channel_fixture(visitor, "#one")
+      _ = Grappa.AuthFixtures.visitor_channel_fixture(with_one, "#two")
+
+      assert {:ok, %Visitor{last_joined_channels: kept}} =
+               Visitors.remove_autojoin_channel(visitor, "#one")
+
+      assert "#one" not in kept
+      assert "#two" in kept
+    end
+
+    test "matches case-insensitively (RFC 2812 channel casemapping)" do
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
+      _ = Grappa.AuthFixtures.visitor_channel_fixture(visitor, "#italia")
+
+      assert {:ok, %Visitor{last_joined_channels: []}} =
+               Visitors.remove_autojoin_channel(visitor, "#ITALIA")
+    end
+
+    test "absent channel is a no-op (idempotent leave)" do
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
+      _ = Grappa.AuthFixtures.visitor_channel_fixture(visitor, "#one")
+
+      assert {:ok, %Visitor{last_joined_channels: ["#one"]}} =
+               Visitors.remove_autojoin_channel(visitor, "#two")
+    end
+
+    test "{:error, :not_found} when the visitor was reaped mid-request" do
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
+      Repo.delete!(visitor)
+
+      assert {:error, :not_found} = Visitors.remove_autojoin_channel(visitor, "#one")
+    end
+  end
+
   describe "purge_if_anon/1 (W11 co-terminus delete)" do
     test "anon visitor → row deleted + CASCADE wipes accounts_sessions" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")

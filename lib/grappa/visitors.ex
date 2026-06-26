@@ -496,6 +496,39 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
+  Removes `channel_name` from the visitor's `last_joined_channels` rejoin
+  snapshot — the visitor-side mirror of
+  `Grappa.Networks.Credentials.remove_autojoin_channel/3`.
+
+  For a visitor the snapshot IS the autojoin source
+  (`list_autojoin_channels/1`), so a PART of a channel the visitor is NOT
+  currently live-joined to (a stale autojoin entry that 475'd on reconnect,
+  with no live membership for `Session.Server` to snapshot away) must drop
+  it here — otherwise the `GET /channels` union keeps surfacing it as
+  `source: autojoin, joined: false` and the cic tab never dismisses (#87).
+
+  Canonicalises the incoming channel (RFC 2812 casemapping); stored entries
+  are already canonical (`Visitor.last_joined_channels_changeset/2` writes
+  them so), so the exact-match reject mirrors the user-side helper. Reloads
+  the row by id rather than trusting the (possibly stale) caller-held
+  struct. `{:error, :not_found}` when the visitor was reaped mid-request.
+  """
+  @spec remove_autojoin_channel(Visitor.t(), String.t()) ::
+          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def remove_autojoin_channel(%Visitor{id: id}, channel_name) when is_binary(channel_name) do
+    canonical = Grappa.IRC.Identifier.canonical_channel(channel_name)
+
+    case Repo.get(Visitor, id) do
+      nil ->
+        {:error, :not_found}
+
+      %Visitor{} = visitor ->
+        kept = Enum.reject(visitor.last_joined_channels, &(&1 == canonical))
+        visitor |> Visitor.last_joined_channels_changeset(kept) |> Repo.update()
+    end
+  end
+
+  @doc """
   Lookup a visitor by `(nick, network_slug)`. Returns the row or `nil`.
   Used by `GrappaWeb.AuthController` to compute the `Retry-After` hint
   on `:anon_collision` responses without exposing `Repo` to the web
