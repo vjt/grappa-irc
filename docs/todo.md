@@ -17,8 +17,9 @@ gh issue list --label bug          # bugs
   HSM-keyed Vault was dropped (we're never doing it).
 - **Medium engineering** → Phase 6 IRCv3 listener #102, supply-chain
   digest pinning #103, visitor nick-collision pre-check #104,
-  unbind-last-user #105. (Already filed: visitor_network env #42,
-  hot-deployable migrations #41, deploy decision-lib #51.)
+  unbind-last-user #105, +k key persistence / auto-rejoin #113. (Already
+  filed: visitor_network env #42, hot-deployable migrations #41, deploy
+  decision-lib #51.)
 - **Post-bastille roadmap epics** → Voice TTS/STT #106, UI-polish cluster
   #107, PUBLIC OPEN #108. Wishlist (addressed-msgs-on-return) #109.
   Memory pointer: `project_post_rev_roadmap.md`.
