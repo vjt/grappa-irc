@@ -43,22 +43,22 @@ defmodule Grappa.Session.DirectoryTest do
 
   test "refresh issues LIST upstream" do
     {server, port} = start_server()
-    {user, network, _cred} = setup_user_and_network(port)
+    {user, network, _} = setup_user_and_network(port)
 
-    _pid = start_session_for(user, network)
+    _ = start_session_for(user, network)
     :ok = await_handshake(server)
 
     assert :ok = Session.refresh_directory({:user, user.id}, network.id)
 
-    assert {:ok, _line} =
+    assert {:ok, _} =
              IRCServer.wait_for_line(server, &String.starts_with?(&1, "LIST"), 1_000)
   end
 
   test "a second refresh while one is in-flight returns {:error, :already_refreshing}" do
     {server, port} = start_server()
-    {user, network, _cred} = setup_user_and_network(port)
+    {user, network, _} = setup_user_and_network(port)
 
-    _pid = start_session_for(user, network)
+    _ = start_session_for(user, network)
     :ok = await_handshake(server)
 
     assert :ok = Session.refresh_directory({:user, user.id}, network.id)
@@ -69,7 +69,7 @@ defmodule Grappa.Session.DirectoryTest do
 
   test "a refresh that never sees 323 times out, clears state, emits directory_failed" do
     {server, port} = start_server()
-    {user, network, _cred} = setup_user_and_network(port)
+    {user, network, _} = setup_user_and_network(port)
 
     # `start_session_for/2` resolves the plan and spawns with the boot-time
     # 60s timeout — too long for a test. Replicate it with an injected short
@@ -77,8 +77,8 @@ defmodule Grappa.Session.DirectoryTest do
     # accessor (`Credentials.get_credential!/2`) + producer (`SessionPlan`)
     # the fixture uses.
     credential = Credentials.get_credential!(user, network)
-    {:ok, plan} = SessionPlan.resolve(credential)
-    plan = Map.put(plan, :directory_refresh_timeout_ms, 50)
+    {:ok, base_plan} = SessionPlan.resolve(credential)
+    plan = Map.put(base_plan, :directory_refresh_timeout_ms, 50)
     {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
 
     on_exit(fn ->
@@ -107,9 +107,9 @@ defmodule Grappa.Session.DirectoryTest do
 
   test "a 322/323 burst fills and finalizes the snapshot" do
     {server, port} = start_server()
-    {user, network, _cred} = setup_user_and_network(port)
+    {user, network, _} = setup_user_and_network(port)
 
-    _pid = start_session_for(user, network)
+    _ = start_session_for(user, network)
     :ok = await_handshake(server)
 
     # Subscribe before triggering so the `directory_complete` ping can't race
@@ -144,7 +144,7 @@ defmodule Grappa.Session.DirectoryTest do
 
   test "emits at least one directory_progress before completing" do
     {server, port} = start_server()
-    {user, network, _cred} = setup_user_and_network(port)
+    {user, network, _} = setup_user_and_network(port)
 
     # Inject a 0ms progress throttle so EVERY 322 emits a ping (the default
     # 1s throttle would swallow both rows of a tiny burst). Same custom-plan

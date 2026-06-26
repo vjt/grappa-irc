@@ -28,8 +28,7 @@ defmodule Grappa.ChannelDirectory do
   import Ecto.Query
 
   alias Grappa.ChannelDirectory.Entry
-  alias Grappa.Repo
-  alias Grappa.Subject
+  alias Grappa.{Repo, Subject}
 
   @cfg Application.compile_env(:grappa, __MODULE__, [])
   @ttl_ms Keyword.get(@cfg, :ttl_ms, 48 * 60 * 60 * 1000)
@@ -63,7 +62,7 @@ defmodule Grappa.ChannelDirectory do
   """
   @spec replace_start(Subject.t(), integer()) :: :ok
   def replace_start({_, _} = subject, network_id) when is_integer(network_id) do
-    {_count, _} =
+    {_, _} =
       Entry
       |> Subject.subject_where(subject)
       |> where([e], e.network_id == ^network_id)
@@ -99,7 +98,7 @@ defmodule Grappa.ChannelDirectory do
         )
       end)
 
-    {_count, _} = Repo.insert_all(Entry, entries)
+    {_, _} = Repo.insert_all(Entry, entries)
     :ok
   end
 
@@ -114,7 +113,7 @@ defmodule Grappa.ChannelDirectory do
   def finalize({_, _} = subject, network_id) when is_integer(network_id) do
     now = DateTime.truncate(DateTime.utc_now(), :second)
 
-    {_count, _} =
+    {_, _} =
       Entry
       |> Subject.subject_where(subject)
       |> where([e], e.network_id == ^network_id)
