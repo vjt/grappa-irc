@@ -12,7 +12,7 @@ defmodule Grappa.ChannelDirectory do
     top_level?: true,
     deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Grappa.Subject],
     dirty_xrefs: [Grappa.Visitors.Visitor],
-    exports: [Entry]
+    exports: [Entry, Wire]
 
   import Ecto.Query
 
