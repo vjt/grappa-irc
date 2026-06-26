@@ -16,6 +16,7 @@ import {
   ADMIN_WINDOW_SLUG,
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
+  LIST_WINDOW_NAME,
   SERVER_WINDOW_NAME,
 } from "./lib/windowKinds";
 import { setParted, windowStateByChannel } from "./lib/windowState";
@@ -366,6 +367,26 @@ const Sidebar: Component<Props> = () => {
                     onClick={() => handleCloseNetwork(network.slug)}
                   >
                     ×
+                  </button>
+                </li>
+
+                {/* #84 — per-network channel directory (/list). Selects the `$list`
+                  pseudo-window (kind "list"); no scrollback fetch (KIND_HAS_SCROLLBACK
+                  .list = false). Browse + one-click join via DirectoryPane. */}
+                <li
+                  class="sidebar-list-row"
+                  classList={{ selected: isSelected(network.slug, LIST_WINDOW_NAME) }}
+                  data-window-name={LIST_WINDOW_NAME}
+                >
+                  <button
+                    type="button"
+                    onClick={() => handleClick(network.slug, LIST_WINDOW_NAME, "list")}
+                    class="sidebar-window-btn"
+                  >
+                    <span class="sidebar-network-emoji" aria-hidden="true">
+                      📇
+                    </span>
+                    <span class="sidebar-channel-name">channels</span>
                   </button>
                 </li>
 

@@ -163,6 +163,8 @@ import * as archiveMod from "../lib/archive";
 // Capture mocked module references at import time, before any resetModules
 import * as qwMod from "../lib/queryWindows";
 import * as selMod from "../lib/selection";
+// windowKinds is NOT mocked — import constants from the real module.
+import { LIST_WINDOW_NAME } from "../lib/windowKinds";
 import Sidebar from "../Sidebar";
 
 beforeEach(() => {
@@ -839,6 +841,34 @@ describe("Sidebar", () => {
       const { container } = render(() => <Sidebar />);
       const emoji = container.querySelector(".sidebar-home-section .sidebar-home-emoji");
       expect(emoji?.textContent?.trim()).toBe("🏠");
+    });
+  });
+
+  // #84 — per-network channel directory row. Renders unconditionally
+  // between the ⚙️ server row and the channel list. Click selects the
+  // `$list` pseudo-window (kind "list"); no scrollback fetch because
+  // kindHasScrollback("list") = false.
+  describe("#84 — channel directory 📇 row", () => {
+    it("renders a 📇 channels row for each network", () => {
+      const { container } = render(() => <Sidebar />);
+      const listLi = container.querySelector(`[data-window-name="${LIST_WINDOW_NAME}"]`);
+      expect(listLi).not.toBeNull();
+      expect(listLi?.textContent).toContain("channels");
+      const emoji = listLi?.querySelector(".sidebar-network-emoji");
+      expect(emoji?.textContent?.trim()).toBe("📇");
+    });
+
+    it("clicking the 📇 channels row selects the $list window (kind list)", () => {
+      const { container } = render(() => <Sidebar />);
+      const listLi = container.querySelector(`[data-window-name="${LIST_WINDOW_NAME}"]`);
+      const btn = listLi?.querySelector("button") as HTMLElement | null;
+      expect(btn).not.toBeNull();
+      fireEvent.click(btn as HTMLElement);
+      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: LIST_WINDOW_NAME,
+        kind: "list",
+      });
     });
   });
 });
