@@ -266,9 +266,9 @@ describe("parseSlash — /msg", () => {
   });
 
   it("/msg with body containing spaces preserved", () => {
-    expect(parseSlash("/msg #italia ciao a tutti")).toEqual({
+    expect(parseSlash("/msg bob ciao a tutti")).toEqual({
       kind: "msg",
-      target: "#italia",
+      target: "bob",
       body: "ciao a tutti",
     });
   });
@@ -280,6 +280,19 @@ describe("parseSlash — /msg", () => {
   it("/msg missing body → error", () => {
     expect(parseSlash("/msg alice")).toMatchObject({ kind: "error", verb: "msg" });
   });
+
+  // #12 — /msg is for nicks (queries). grappa does not relay a PRIVMSG to a
+  // channel addressed by name, so a channel-shaped target opened a phantom
+  // query window keyed by a channel name whose own-send never rendered.
+  // Reject every IRC channel sigil (# & ! +) up front, not just '#'.
+  it.each(["#foo", "&local", "!12345chan", "+modeless"])(
+    "/msg to a channel (%s) is rejected (#12)",
+    (chan) => {
+      const r = parseSlash(`/msg ${chan} hello`);
+      expect(r).toMatchObject({ kind: "error", verb: "msg" });
+      expect((r as { message: string }).message).toMatch(/channel/i);
+    },
+  );
 });
 
 describe("parseSlash — /query and /q (DM aliases)", () => {

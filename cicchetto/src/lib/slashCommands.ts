@@ -257,6 +257,14 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     const target = rest.slice(0, sp);
     const body = rest.slice(sp + 1).trim();
     if (body === "") return err(verb, "/msg requires message text after nick");
+    // #12 — /msg is for nicks (queries); grappa does not relay a PRIVMSG to a
+    // channel addressed by name (even one that accepts external messages).
+    // Reject every IRC channel sigil (# & ! +) up front, otherwise compose.ts
+    // opens a phantom query window keyed by the channel name whose WS-driven
+    // own-send never renders (cic only subscribes to JOINED channel topics).
+    if (["#", "&", "!", "+"].includes(target[0] ?? "")) {
+      return err(verb, "/msg to a channel is not supported");
+    }
     return { kind: "msg", target, body };
   },
 
