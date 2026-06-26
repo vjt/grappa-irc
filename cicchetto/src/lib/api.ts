@@ -824,7 +824,15 @@ export type WireUserEvent =
   // event ALSO invalidates the in-memory `scrollbackByChannel[key]` for
   // the target so cic doesn't ghost the pre-delete rows on re-JOIN. See
   // `Wire.archive_purged_payload/2` moduledoc for the bug history.
-  | { kind: "archive_purged"; network_slug: string; target: string };
+  | { kind: "archive_purged"; network_slug: string; target: string }
+  // Channel-directory `/list` refresh progress pings (Topic.user). The
+  // store (channelDirectory.ts) re-GETs the current directory view on
+  // each; payload shapes mirror Grappa.Session.Wire.directory_{progress,
+  // complete,failed}/2 (generated SessionWireDirectory*Payload in
+  // wireTypes.ts).
+  | { kind: "directory_progress"; network: string; count: number }
+  | { kind: "directory_complete"; network: string; total: number }
+  | { kind: "directory_failed"; network: string; reason: string };
 
 // M-11 — Admin events stream. Discriminated union mirrors
 // `Grappa.AdminEvents.Wire`'s closed `event_kind` enum. Server emits

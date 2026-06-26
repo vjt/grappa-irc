@@ -99,6 +99,12 @@ vi.mock("../lib/reconnectBackfill", () => ({
   clearSeen: vi.fn(),
 }));
 
+vi.mock("../lib/channelDirectory", () => ({
+  onDirectoryProgress: vi.fn(),
+  onDirectoryComplete: vi.fn(),
+  onDirectoryFailed: vi.fn(),
+}));
+
 describe("userTopic", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -866,5 +872,89 @@ describe("userTopic", () => {
       expect(sb.purgeScrollback).not.toHaveBeenCalled();
       expect(archive.loadArchive).toHaveBeenCalledWith("bahamut-test");
     });
+  });
+
+  // #84 — channel directory `/list` refresh progress pings. Server emits
+  // three tiny payloads on the user-topic during a refresh run. Each arm
+  // calls the matching channelDirectory store hook which re-GETs the
+  // current directory view for that network.
+  describe("directory progress pings (#84)", () => {
+    it("dispatches directory_progress to onDirectoryProgress(network)", async () => {
+      const cd = await import("../lib/channelDirectory");
+      channelMock.fireEvent({ kind: "directory_progress", network: "libera", count: 42 });
+      expect(cd.onDirectoryProgress).toHaveBeenCalledWith("libera");
+    });
+
+    it("dispatches directory_complete to onDirectoryComplete(network)", async () => {
+      const cd = await import("../lib/channelDirectory");
+      channelMock.fireEvent({ kind: "directory_complete", network: "libera", total: 100 });
+      expect(cd.onDirectoryComplete).toHaveBeenCalledWith("libera");
+    });
+
+    it("dispatches directory_failed to onDirectoryFailed(network)", async () => {
+      const cd = await import("../lib/channelDirectory");
+      channelMock.fireEvent({ kind: "directory_failed", network: "libera", reason: "timeout" });
+      expect(cd.onDirectoryFailed).toHaveBeenCalledWith("libera");
+    });
+
+    it("drops directory_progress with non-number count (narrowing rejects)", async () => {
+      const cd = await import("../lib/channelDirectory");
+      channelMock.fireEvent({ kind: "directory_progress", network: "libera", count: "x" });
+      expect(cd.onDirectoryProgress).not.toHaveBeenCalled();
+    });
+
+    it("drops directory_complete missing network (narrowing rejects)", async () => {
+      const cd = await import("../lib/channelDirectory");
+      channelMock.fireEvent({ kind: "directory_complete", total: 1 });
+      expect(cd.onDirectoryComplete).not.toHaveBeenCalled();
+    });
+
+    it("drops directory_failed with non-string reason (narrowing rejects)", async () => {
+      const cd = await import("../lib/channelDirectory");
+      channelMock.fireEvent({ kind: "directory_failed", network: "libera", reason: 99 });
+      expect(cd.onDirectoryFailed).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// Pure narrowUserEvent tests — no mock setup needed; narrowUserEvent is a
+// stateless predicate exported for unit-testing (matches wireNarrow.ts
+// siblings: narrowChannelEvent et al.).
+describe("narrowUserEvent — directory pings", () => {
+  it("narrows directory_progress", async () => {
+    const { narrowUserEvent } = await import("../lib/userTopic");
+    expect(narrowUserEvent({ kind: "directory_progress", network: "libera", count: 42 })).toEqual({
+      kind: "directory_progress",
+      network: "libera",
+      count: 42,
+    });
+  });
+
+  it("narrows directory_complete", async () => {
+    const { narrowUserEvent } = await import("../lib/userTopic");
+    expect(narrowUserEvent({ kind: "directory_complete", network: "libera", total: 100 })).toEqual({
+      kind: "directory_complete",
+      network: "libera",
+      total: 100,
+    });
+  });
+
+  it("narrows directory_failed", async () => {
+    const { narrowUserEvent } = await import("../lib/userTopic");
+    expect(
+      narrowUserEvent({ kind: "directory_failed", network: "libera", reason: "timeout" }),
+    ).toEqual({ kind: "directory_failed", network: "libera", reason: "timeout" });
+  });
+
+  it("rejects directory_progress with non-number count", async () => {
+    const { narrowUserEvent } = await import("../lib/userTopic");
+    expect(
+      narrowUserEvent({ kind: "directory_progress", network: "libera", count: "x" }),
+    ).toBeNull();
+  });
+
+  it("rejects directory_complete missing network", async () => {
+    const { narrowUserEvent } = await import("../lib/userTopic");
+    expect(narrowUserEvent({ kind: "directory_complete", total: 1 })).toBeNull();
   });
 });

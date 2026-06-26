@@ -10,6 +10,7 @@ import { loadArchive } from "./archive";
 import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
 import { setServerBundleHash } from "./bundleHash";
+import { onDirectoryComplete, onDirectoryFailed, onDirectoryProgress } from "./channelDirectory";
 import { channelKey } from "./channelKey";
 import { patchHomeNetwork } from "./home";
 import { appendInviteAck } from "./inviteAck";
@@ -136,7 +137,7 @@ function narrowArray<T>(raw: unknown, narrow: (el: unknown) => T | null): T[] | 
 // per-arm validator gates the cast: if the shape doesn't match,
 // return null and the dispatcher early-returns + logs. Same boundary
 // hardening as `Login.tsx`'s `isCaptchaInfo`.
-function narrowUserEvent(raw: unknown): WireUserEvent | null {
+export function narrowUserEvent(raw: unknown): WireUserEvent | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.kind !== "string") return null;
@@ -448,6 +449,15 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // is past every deleted row, masking the gap without the purge).
       if (typeof r.network_slug !== "string" || typeof r.target !== "string") return null;
       return { kind: "archive_purged", network_slug: r.network_slug, target: r.target };
+    case "directory_progress":
+      if (typeof r.network !== "string" || typeof r.count !== "number") return null;
+      return { kind: "directory_progress", network: r.network, count: r.count };
+    case "directory_complete":
+      if (typeof r.network !== "string" || typeof r.total !== "number") return null;
+      return { kind: "directory_complete", network: r.network, total: r.total };
+    case "directory_failed":
+      if (typeof r.network !== "string" || typeof r.reason !== "string") return null;
+      return { kind: "directory_failed", network: r.network, reason: r.reason };
     default:
       return null;
   }
@@ -737,6 +747,16 @@ createRoot(() => {
             clearSeen(key);
             void loadArchive(payload.network_slug);
           }
+          return;
+
+        case "directory_progress":
+          void onDirectoryProgress(payload.network);
+          return;
+        case "directory_complete":
+          void onDirectoryComplete(payload.network);
+          return;
+        case "directory_failed":
+          void onDirectoryFailed(payload.network);
           return;
 
         default:
