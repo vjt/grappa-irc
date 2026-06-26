@@ -4,7 +4,7 @@ import { token } from "./lib/auth";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { homeData } from "./lib/home";
 import { setSelectedChannel } from "./lib/selection";
-import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
+import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import NickText from "./NickText";
 
 // UX-4 bucket B — first-class `:home` window pinned ABOVE all
@@ -71,12 +71,22 @@ const ConnectedRow: Component<{ row: HomeRow }> = (props) => {
       kind: "server",
     });
   };
+  const onBrowse = () => {
+    setSelectedChannel({
+      networkSlug: props.row.slug,
+      channelName: LIST_WINDOW_NAME,
+      kind: "list",
+    });
+  };
   return (
     <li class="home-pane-network-row home-pane-network-row-connected">
       <button type="button" class="home-pane-network-btn" onClick={onJump}>
         <span class="home-pane-network-slug">{props.row.slug}</span>
         <NickText nick={props.row.nick} extraClass="home-pane-network-nick" />
         <span class="home-pane-network-state">{props.row.connection_state}</span>
+      </button>
+      <button type="button" class="home-pane-network-browse" onClick={onBrowse}>
+        📇 Browse channels
       </button>
     </li>
   );

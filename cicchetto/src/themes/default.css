@@ -3592,6 +3592,23 @@ html.resize-dragging * {
   border-color: var(--accent);
 }
 
+/* #84 — Browse channels secondary affordance on :connected rows. */
+.home-pane-network-browse {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted, var(--fg));
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm, 0.85em);
+  padding: 0.2rem 0.4rem;
+  opacity: 0.7;
+}
+
+.home-pane-network-browse:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
 .home-pane-network-slug {
   font-weight: bold;
   color: var(--accent);

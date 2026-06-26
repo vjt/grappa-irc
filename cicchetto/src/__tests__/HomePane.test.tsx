@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import HomePane from "../HomePane";
+import { LIST_WINDOW_NAME } from "../lib/windowKinds";
 
 // UX-4 bucket B (2026-05-18). HomePane renders one of two sub-panes
 // based on `homeData()`:
@@ -261,6 +262,28 @@ describe("HomePane", () => {
         kind: "server",
       });
       // NOT a REST call — :connected click is a UI shortcut.
+      expect(patchNetworkMock).not.toHaveBeenCalled();
+    });
+
+    // #84 — E4: Browse channels affordance on connected rows.
+    // Each :connected row renders a "Browse channels" button that opens the
+    // per-network $list pseudo-window (DirectoryPane). Clicking it calls
+    // setSelectedChannel with kind: "list" — no REST call involved.
+    it(":connected row 'Browse channels' button opens $list window (#84 E4)", () => {
+      homeDataMock.mockReturnValue(TWO_NETWORKS);
+      render(() => <HomePane />);
+
+      // Find the browse button scoped to the connected "azzurra" row.
+      const browseBtn = screen.getByRole("button", { name: /browse channels/i });
+      expect(browseBtn).not.toBeNull();
+      fireEvent.click(browseBtn);
+
+      expect(setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "azzurra",
+        channelName: LIST_WINDOW_NAME,
+        kind: "list",
+      });
+      // Browse is a UI shortcut — no REST call.
       expect(patchNetworkMock).not.toHaveBeenCalled();
     });
 

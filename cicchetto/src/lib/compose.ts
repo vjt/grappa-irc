@@ -9,6 +9,7 @@ import {
   postTopic,
 } from "./api";
 import { token } from "./auth";
+import { setQuery } from "./channelDirectory";
 import type { ChannelKey } from "./channelKey";
 import { friendlyApiError } from "./friendlyApiError";
 import { friendlyChannelError } from "./friendlyChannelError";
@@ -49,7 +50,7 @@ import {
   pushWhowas,
 } from "./socket";
 import { closeQueryWindow } from "./windowClose";
-import { SERVER_WINDOW_NAME } from "./windowKinds";
+import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "./windowKinds";
 
 // Per-channel compose state. Owns:
 //   * `composeByChannel` — { draft, history, historyCursor } per key.
@@ -583,8 +584,19 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           result = { ok: true };
           break;
         }
-        case "list":
-          return { error: "/list: server-side handler not yet implemented (future bucket)" };
+        case "list": {
+          // Channel directory browser (#84). Open the per-network $list
+          // pseudo-window (DirectoryPane); the pane loads the snapshot on
+          // mount (server auto-refreshes on empty). A pattern pre-seeds the
+          // directory search (setQuery re-GETs filtered). No raw LIST is
+          // sent here — the directory's own refresh path owns that.
+          setSelectedChannel({ networkSlug, channelName: LIST_WINDOW_NAME, kind: "list" });
+          if (cmd.pattern !== null && cmd.pattern !== "") {
+            void setQuery(networkSlug, cmd.pattern);
+          }
+          result = { ok: true };
+          break;
+        }
         case "links":
           return { error: "/links: server-side handler not yet implemented (future bucket)" };
         // P-0d — /lusers. Bare verb, no args. Pushes on user-level channel;

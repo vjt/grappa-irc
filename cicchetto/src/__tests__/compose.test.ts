@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { channelKey } from "../lib/channelKey";
+import { LIST_WINDOW_NAME } from "../lib/windowKinds";
 
 vi.mock("../lib/api", () => {
   class ApiError extends Error {
@@ -143,6 +144,19 @@ vi.mock("../lib/windowState", () => ({
   windowStateByChannel: vi.fn(() => ({})),
   windowFailureByChannel: vi.fn(() => ({})),
   windowKickedMetaByChannel: vi.fn(() => ({})),
+}));
+
+// #84 — channelDirectory store mock. compose.ts calls setQuery when the
+// user types `/list <pattern>` to seed the directory search on open.
+vi.mock("../lib/channelDirectory", () => ({
+  directoryPage: vi.fn(() => undefined),
+  loadDirectory: vi.fn().mockResolvedValue(undefined),
+  setSort: vi.fn().mockResolvedValue(undefined),
+  setQuery: vi.fn().mockResolvedValue(undefined),
+  triggerRefresh: vi.fn().mockResolvedValue(undefined),
+  onDirectoryProgress: vi.fn().mockResolvedValue(undefined),
+  onDirectoryComplete: vi.fn().mockResolvedValue(undefined),
+  onDirectoryFailed: vi.fn().mockResolvedValue(undefined),
 }));
 
 beforeEach(() => {
@@ -1308,14 +1322,45 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     expect(result).toMatchObject({ error: expect.stringContaining("requires a #channel") });
   });
 
-  it("/list returns inline error (server-side not yet implemented)", async () => {
+  // #84 — /list executor. Opens the $list directory pseudo-window for the
+  // current network; a pattern arg seeds setQuery so the pane opens pre-
+  // filtered. No raw LIST is sent — the directory's own refresh path owns
+  // that. The old "not yet implemented" placeholder is REPLACED here.
+  it("/list opens $list window and returns {ok: true}", async () => {
     localStorage.setItem("grappa-token", "tok");
+    const sel = await import("../lib/selection");
+    const cd = await import("../lib/channelDirectory");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/list");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(sel.setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      channelName: LIST_WINDOW_NAME,
+      kind: "list",
+    });
+    // No pattern → setQuery must NOT be called.
+    expect(cd.setQuery).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/list <pattern> opens $list window AND seeds setQuery with pattern", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sel = await import("../lib/selection");
+    const cd = await import("../lib/channelDirectory");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/list *grappa*");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
+    expect(sel.setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      channelName: LIST_WINDOW_NAME,
+      kind: "list",
+    });
+    expect(cd.setQuery).toHaveBeenCalledWith("freenode", "*grappa*");
+    expect(result).toEqual({ ok: true });
   });
 
   it("/links returns inline error (server-side not yet implemented)", async () => {
