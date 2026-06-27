@@ -3159,6 +3159,46 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "a /quote raw NickServ identify line stages pending_auth and commits on +r" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+
+      # Drive the identify through the RAW `/quote` path, NOT send_privmsg.
+      # `:id` lowercase exercises the Task-1 broadened grammar; the raw
+      # path exercises the Task-2 capture routing — both must hold for the
+      # +r rendezvous to commit the password.
+      assert :ok =
+               Session.send_raw(
+                 {:visitor, visitor.id},
+                 network.id,
+                 "PRIVMSG NickServ :id s3cret"
+               )
+
+      assert match?({"s3cret", _}, :sys.get_state(pid).pending_auth)
+
+      mode_msg = %Message{
+        command: :mode,
+        params: [visitor.nick, "+r"],
+        prefix: {:server, "irc.example.test"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, mode_msg})
+
+      state = :sys.get_state(pid)
+      assert is_nil(state.pending_auth)
+      assert is_nil(state.pending_auth_timer)
+
+      reloaded = Repo.reload!(visitor)
+      assert reloaded.password_encrypted != nil
+      assert is_nil(reloaded.expires_at)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "visitor session: :pending_auth_timeout → no commit, password_encrypted stays nil" do
       {server, port} = start_server()
       {visitor, network} = visitor_with_network(port)

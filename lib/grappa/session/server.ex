@@ -906,12 +906,7 @@ defmodule Grappa.Session.Server do
   def handle_call({:send_privmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
     line = "PRIVMSG #{target} :#{body}"
-
-    state =
-      case NSInterceptor.intercept(line) do
-        {:capture, password} -> stage_pending_auth(state, password)
-        :passthrough -> state
-      end
+    state = stage_if_ns_identify(state, line)
 
     if service_target?(target) do
       handle_service_target_send(target, body, state)
@@ -990,6 +985,8 @@ defmodule Grappa.Session.Server do
     Logger.debug("raw IRC line submitted via /quote (#{byte_size(line)} bytes)",
       verb: :raw
     )
+
+    state = stage_if_ns_identify(state, line)
 
     case Client.send_raw(state.client, line) do
       :ok -> {:reply, :ok, state}
@@ -2306,6 +2303,26 @@ defmodule Grappa.Session.Server do
     %{state | pending_auth: {password, deadline}, pending_auth_timer: timer}
   end
 
+  # Single choke point for outbound-line NickServ-identify capture. Every
+  # path that puts a line on the wire (send_privmsg, send_raw/`/quote`,
+  # ghost-recovery flush) runs this so no identify form can bypass capture.
+  # The AuthFSM-emitted registration IDENTIFY/PASS at 001 stays on
+  # `maybe_stage_pending_password/1` — grappa already knows that secret.
+  @spec stage_if_ns_identify(t(), String.t()) :: t()
+  defp stage_if_ns_identify(state, line) do
+    case NSInterceptor.intercept(line) do
+      {:capture, password} ->
+        Logger.debug("staged pending NickServ password from outbound identify",
+          verb: :ns_capture
+        )
+
+        stage_pending_auth(state, password)
+
+      :passthrough ->
+        state
+    end
+  end
+
   # Drive the GhostRecovery FSM forward by one input. Terminal phases
   # (`:succeeded`, `:failed`) cancel the 8s timer and wipe both ghost
   # fields; non-terminal transitions just update the FSM struct.
@@ -2333,11 +2350,7 @@ defmodule Grappa.Session.Server do
   # `maybe_stage_pending_password/1`).
   defp flush_lines(state, lines) do
     Enum.reduce(lines, state, fn line, acc ->
-      acc =
-        case NSInterceptor.intercept(line) do
-          :passthrough -> acc
-          {:capture, password} -> stage_pending_auth(acc, password)
-        end
+      acc = stage_if_ns_identify(acc, line)
 
       # REV-E (H11): pre-fix this strict-bound `:ok =` and MatchError'd
       # on a dead socket mid-recovery (e.g., NickServ ghost dance racing
