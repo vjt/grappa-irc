@@ -313,6 +313,84 @@ defmodule GrappaWeb.UploadsControllerTest do
 
       assert json_response(conn, 415) == %{"error" => "unsupported_media_type"}
     end
+
+    test "201 for audio/mpeg (mp3) — passthrough, no metadata strip", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("clip.mp3", "audio/mpeg", "ID3-FAKE-MP3-BYTES")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert %{"slug" => slug} = json_response(conn, 201)
+      assert Uploads.valid_slug?(slug)
+    end
+
+    test "201 for audio/mp4 (m4a)", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("clip.m4a", "audio/mp4", "M4A-FAKE-BYTES")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert %{"slug" => slug} = json_response(conn, 201)
+      assert Uploads.valid_slug?(slug)
+    end
+
+    test "octet-stream .m4a is normalized to audio/mp4 — 201 + served as audio/mp4",
+         %{conn: conn} do
+      # iOS/macOS mislabels .m4a as application/octet-stream. The audio
+      # extension-sniff rescue normalizes to the canonical audio MIME so
+      # the STORED (and therefore SERVED) Content-Type is one the browser
+      # plays, not octet-stream (vjt: "ensure grappa emits the right mime").
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("voice.m4a", "application/octet-stream", "M4A-FAKE-BYTES")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert %{"slug" => slug} = json_response(conn, 201)
+
+      get_conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
+      assert response(get_conn, 200)
+      assert [ct] = get_resp_header(get_conn, "content-type")
+      assert ct =~ "audio/mp4"
+    end
+
+    test "415 for unknown audio MIME audio/ogg (opus/ogg deferred OUT)", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("voice.ogg", "audio/ogg", "OGG-FAKE-BYTES")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert json_response(conn, 415) == %{"error" => "unsupported_media_type"}
+    end
+
+    test "octet-stream .ogg stays 415 — extension-sniff is scoped to the audio set",
+         %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("voice.ogg", "application/octet-stream", "OGG-FAKE-BYTES")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert json_response(conn, 415) == %{"error" => "unsupported_media_type"}
+    end
   end
 
   describe "GET /uploads/:slug — happy path" do

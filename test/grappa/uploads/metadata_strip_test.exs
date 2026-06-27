@@ -147,4 +147,23 @@ defmodule Grappa.Uploads.MetadataStripTest do
     assert {:ok, ^pdf} = MetadataStrip.run(pdf, "application/pdf")
     assert {:ok, "plain text"} = MetadataStrip.run("plain text", "text/plain")
   end
+
+  test "audio mimes pass through byte-identical (GH #115, accepted ID3/iTunes-tag leak)" do
+    # Audio (GH #115) is NOT stripped in v1: it rides the generic
+    # run_unmapped pass-through, same as documents. This pins that
+    # deliberate decision — audio carries ID3/iTunes tags (artist/album,
+    # sometimes device/recording metadata); accepting that leak is the
+    # documented v1 scope (exiftool can strip m4a/mp3/flac later). A
+    # future "strip audio too" change must consciously update this test,
+    # not silently inherit pass-through.
+    mp3 = "ID3 fake mp3 body"
+    assert {:ok, ^mp3} = MetadataStrip.run(mp3, "audio/mpeg")
+    assert {:ok, "fake m4a"} = MetadataStrip.run("fake m4a", "audio/mp4")
+    assert {:ok, "fake flac"} = MetadataStrip.run("fake flac", "audio/flac")
+
+    # strippable?/1 returns false for audio — pass-through, not a mapped
+    # tool — yet the lockstep stays green because it only pins
+    # category in [:image, :video].
+    refute MetadataStrip.strippable?("audio/mpeg")
+  end
 end

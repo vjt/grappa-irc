@@ -19,13 +19,17 @@ defmodule GrappaWeb.UploadsController do
 
     1. Multipart shape — missing `file` → 400 bad_request.
     2. MIME — must be a key of `@mime_categories` (image / video /
-       document allowlists) → 415 unsupported. The category is
+       document / audio allowlists) → 415 unsupported. The category is
        DERIVED from the MIME at request time, never stored — no
-       schema change.
+       schema change. Audio uploads the OS labels
+       `application/octet-stream` (common for .m4a/.flac) are rescued
+       by extension to their canonical audio MIME (see
+       `@audio_ext_canonical_mime`); every other octet-stream stays
+       415.
     3. Per-file cap — `byte_size(content) <= cap` where cap comes
        from `Grappa.ServerSettings.get_upload_per_file_cap_bytes/1`
        for the derived category (image 10MiB / video 50MiB /
-       document 10MiB defaults). Else 413 file_too_large.
+       document 10MiB / audio 25MiB defaults). Else 413 file_too_large.
     4. Global cap — `live_bytes_sum + byte_size <= global_cap_bytes`.
        Else 507 insufficient_storage.
     5. Slug minted, file written, row inserted via
@@ -77,8 +81,42 @@ defmodule GrappaWeb.UploadsController do
     "application/vnd.oasis.opendocument.text" => :document,
     "application/vnd.oasis.opendocument.spreadsheet" => :document,
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => :document,
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => :document
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => :document,
+    # Audio (GH #115) — "anything modern browsers reliably play": mp3,
+    # m4a/m4r (AAC + ALAC both ride audio/mp4), wav, flac. opus/ogg are
+    # deferred OUT (Safari support patchy). Mirror order with cic's
+    # AUDIO_MIMES in cicchetto/src/lib/uploadCategory.ts.
+    "audio/mpeg" => :audio,
+    "audio/mp4" => :audio,
+    "audio/x-m4a" => :audio,
+    "audio/aac" => :audio,
+    "audio/wav" => :audio,
+    "audio/x-wav" => :audio,
+    "audio/wave" => :audio,
+    "audio/flac" => :audio,
+    "audio/x-flac" => :audio
   }
+
+  # Audio extension → canonical MIME for the octet-stream rescue below.
+  # iOS/macOS commonly send `application/octet-stream` for .m4a/.flac;
+  # the MIME-only allowlist would 415 those. We normalize by extension
+  # to the canonical audio MIME so the STORED (and therefore SERVED)
+  # Content-Type is one the browser will play — not octet-stream
+  # (vjt 2026-06-27: "ensure grappa emits the right mime"). Scoped to
+  # the audio set ONLY; every other octet-stream stays 415, so the
+  # closed-allowlist model holds for non-audio.
+  @audio_ext_canonical_mime %{
+    "mp3" => "audio/mpeg",
+    "m4a" => "audio/mp4",
+    "m4r" => "audio/mp4",
+    "wav" => "audio/wav",
+    "flac" => "audio/flac"
+  }
+
+  # Generic MIMEs the OS sends when it can't identify an audio file.
+  # Only these trigger the extension sniff; a correct non-audio MIME
+  # is never reinterpreted.
+  @sniffable_generic_mimes ["application/octet-stream"]
 
   @allowed_ttl_seconds [3600, 43_200, 86_400, 259_200]
   @default_ttl_seconds 86_400
@@ -88,9 +126,11 @@ defmodule GrappaWeb.UploadsController do
   `Grappa.Uploads.MetadataStrip` lockstep test can assert every
   image/video entry has a strip mapping — an allowlist addition
   without one fails CLOSED at upload time (422); the test turns that
-  prod surprise into a red suite.
+  prod surprise into a red suite. Audio entries are exempt: audio
+  passes through MetadataStrip untouched (documents do the same), so
+  the lockstep only pins `category in [:image, :video]`.
   """
-  @spec mime_categories() :: %{String.t() => :image | :video | :document}
+  @spec mime_categories() :: %{String.t() => :image | :video | :document | :audio}
   def mime_categories, do: @mime_categories
 
   # ------------------------------------------------------------------
@@ -221,14 +261,31 @@ defmodule GrappaWeb.UploadsController do
   defp parse_ttl(%{"expire" => _}), do: {:error, :bad_request}
   defp parse_ttl(_), do: {:ok, @default_ttl_seconds}
 
-  defp validate_mime(%Plug.Upload{content_type: ct}) when is_binary(ct) do
+  defp validate_mime(%Plug.Upload{content_type: ct, filename: filename}) when is_binary(ct) do
     case Map.fetch(@mime_categories, ct) do
       {:ok, category} -> {:ok, ct, category}
-      :error -> {:error, :unsupported_media_type}
+      :error -> sniff_audio(ct, filename)
     end
   end
 
   defp validate_mime(_), do: {:error, :unsupported_media_type}
+
+  # octet-stream rescue: normalize a generically-typed audio upload to
+  # its canonical audio MIME by file extension (see
+  # @audio_ext_canonical_mime). Anything outside the audio extension
+  # set — or a non-generic MIME — stays 415, preserving the closed
+  # allowlist for every other type.
+  defp sniff_audio(ct, filename)
+       when ct in @sniffable_generic_mimes and is_binary(filename) do
+    ext = filename |> Path.extname() |> String.downcase() |> String.trim_leading(".")
+
+    case Map.fetch(@audio_ext_canonical_mime, ext) do
+      {:ok, mime} -> {:ok, mime, :audio}
+      :error -> {:error, :unsupported_media_type}
+    end
+  end
+
+  defp sniff_audio(_, _), do: {:error, :unsupported_media_type}
 
   # `path` is `Plug.Upload.path`, a tmp file synthesized by
   # `Plug.Parsers :multipart` — never user-controlled string input.
