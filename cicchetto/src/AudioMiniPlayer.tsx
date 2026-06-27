@@ -98,6 +98,19 @@ const AudioMiniPlayer: Component = () => {
           <span class="audio-mini-player-time" data-testid="audio-mini-player-time">
             {formatTime(current())} / {formatTime(duration())}
           </span>
+          {/* Same-origin download: the `download` attribute forces a save
+              (overriding the server's `inline` Content-Disposition) and
+              inherits the server-sent filename — cic has no filename on
+              the wire (slug only), so no `download` value is set. */}
+          <a
+            class="audio-mini-player-download"
+            data-testid="audio-mini-player-download"
+            href={activeAudio()?.href}
+            download=""
+            aria-label="download"
+          >
+            ⬇
+          </a>
           <button
             type="button"
             class="audio-mini-player-close"

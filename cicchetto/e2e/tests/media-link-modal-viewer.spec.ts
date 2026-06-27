@@ -140,6 +140,13 @@ test("🎵 upload link click opens the docked mini-player, NOT the modal (GH #11
   // the src wire-up; the _cspGuard proves the fetch was CSP-admitted.
   await expect(page.getByTestId("audio-mini-player-el")).toHaveAttribute("src", url);
 
+  // Download affordance: a same-origin `download` anchor at the served
+  // URL. Actually triggering the OS save dialog is out of e2e scope;
+  // the wired href + attribute is the contract.
+  const download = page.getByTestId("audio-mini-player-download");
+  await expect(download).toHaveAttribute("href", url);
+  await expect(download).toHaveAttribute("download", "");
+
   // Close dismisses the bar; cic stays on the channel, scrollback intact.
   await player.getByTestId("audio-mini-player-close").click();
   await expect(player).toBeHidden({ timeout: 5_000 });

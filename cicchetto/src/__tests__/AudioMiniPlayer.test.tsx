@@ -60,4 +60,16 @@ describe("AudioMiniPlayer", () => {
     expect(screen.getByTestId("audio-mini-player-seek")).toBeInTheDocument();
     expect(screen.getByTestId("audio-mini-player-time")).toBeInTheDocument();
   });
+
+  it("download link points at the active href with the download attribute", () => {
+    // Same-origin `download` anchor: forces a save (overriding the
+    // server's `inline` disposition) and inherits the server's
+    // Content-Disposition filename — no value needed.
+    render(() => <AudioMiniPlayer />);
+    playAudio("https://grappa.example/uploads/abc");
+
+    const dl = screen.getByTestId("audio-mini-player-download");
+    expect(dl).toHaveAttribute("href", "https://grappa.example/uploads/abc");
+    expect(dl).toHaveAttribute("download");
+  });
 });

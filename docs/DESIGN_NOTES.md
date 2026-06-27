@@ -13476,7 +13476,13 @@ singleton; a new audio click swaps the source. Mounted inside the
 switches; leaving chat for home/list/mentions stops it (acceptable v1 —
 a Shell-root mount + fixed-dock is the upgrade for full cross-pane
 persistence). image/video keep `openMediaViewer`. Placement + controls
-(play/pause + scrubber + elapsed/duration + close) are vjt-approved.
+(play/pause + scrubber + elapsed/duration + close) are vjt-approved. A
+`⬇` download affordance was added after: a same-origin `<a download>`
+forces a save (overriding the server's `inline` Content-Disposition)
+AND inherits the server-sent filename — so the file lands as "voice.mp3"
+not the extensionless slug, with no server change. cic has no filename
+on the wire (slug only), so the `download` attribute carries no value;
+the browser falls back to the response's Content-Disposition filename.
 
 **The mirror is type-enforced.** Adding `"audio"` to cic's
 `UploadCategory` turned every exhaustive `Record<UploadCategory, …>`

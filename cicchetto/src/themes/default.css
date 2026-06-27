@@ -1229,7 +1229,8 @@ html.resize-dragging * {
 }
 
 .audio-mini-player-toggle,
-.audio-mini-player-close {
+.audio-mini-player-close,
+.audio-mini-player-download {
   flex: none;
   min-width: 2.5rem;
   min-height: 2.5rem;
@@ -1237,6 +1238,15 @@ html.resize-dragging * {
   color: var(--fg);
   border: 1px solid var(--border);
   cursor: pointer;
+}
+
+/* The download affordance is an anchor, not a button — restore the
+   button-like centering + drop the underline. */
+.audio-mini-player-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
 }
 
 .audio-mini-player-seek {
