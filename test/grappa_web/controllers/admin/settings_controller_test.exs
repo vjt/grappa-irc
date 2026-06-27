@@ -48,6 +48,7 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
       assert upload["image_per_file_cap_bytes"] == 10 * 1024 * 1024
       assert upload["video_per_file_cap_bytes"] == 50 * 1024 * 1024
       assert upload["document_per_file_cap_bytes"] == 10 * 1024 * 1024
+      assert upload["audio_per_file_cap_bytes"] == 25 * 1024 * 1024
       assert upload["global_cap_bytes"] == 10 * 1024 * 1024 * 1024
     end
   end
@@ -104,6 +105,18 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
                json_response(conn, 200)
 
       assert ServerSettings.get_upload_per_file_cap_bytes(:document) == 7_000_000
+    end
+
+    test "updates audio_per_file_cap_bytes", %{conn: conn, session: session} do
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{"audio_per_file_cap_bytes" => 30_000_000}})
+
+      assert %{"settings" => %{"upload" => %{"audio_per_file_cap_bytes" => 30_000_000}}} =
+               json_response(conn, 200)
+
+      assert ServerSettings.get_upload_per_file_cap_bytes(:audio) == 30_000_000
     end
 
     test "updates global_cap_bytes", %{conn: conn, session: session} do
@@ -191,6 +204,21 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
       assert json_response(conn, 422) == %{
                "error" => "invalid_setting",
                "field" => "upload.document_per_file_cap_bytes"
+             }
+    end
+
+    test "422 invalid_setting for zero audio_per_file_cap_bytes", %{
+      conn: conn,
+      session: session
+    } do
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{"audio_per_file_cap_bytes" => 0}})
+
+      assert json_response(conn, 422) == %{
+               "error" => "invalid_setting",
+               "field" => "upload.audio_per_file_cap_bytes"
              }
     end
   end

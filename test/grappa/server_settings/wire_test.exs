@@ -11,6 +11,7 @@ defmodule Grappa.ServerSettings.WireTest do
           image_per_file_cap_bytes: 10_485_760,
           video_per_file_cap_bytes: 52_428_800,
           document_per_file_cap_bytes: 10_485_760,
+          audio_per_file_cap_bytes: 26_214_400,
           global_cap_bytes: 10_737_418_240
         }
       }
@@ -22,6 +23,7 @@ defmodule Grappa.ServerSettings.WireTest do
       assert payload.upload.image_per_file_cap_bytes == 10_485_760
       assert payload.upload.video_per_file_cap_bytes == 52_428_800
       assert payload.upload.document_per_file_cap_bytes == 10_485_760
+      assert payload.upload.audio_per_file_cap_bytes == 26_214_400
       assert payload.upload.global_cap_bytes == 10_737_418_240
     end
 
@@ -32,6 +34,7 @@ defmodule Grappa.ServerSettings.WireTest do
           image_per_file_cap_bytes: 5_000_000,
           video_per_file_cap_bytes: 6_000_000,
           document_per_file_cap_bytes: 7_000_000,
+          audio_per_file_cap_bytes: 8_000_000,
           global_cap_bytes: 999_999
         }
       }
@@ -42,6 +45,7 @@ defmodule Grappa.ServerSettings.WireTest do
       assert payload.upload.image_per_file_cap_bytes == 5_000_000
       assert payload.upload.video_per_file_cap_bytes == 6_000_000
       assert payload.upload.document_per_file_cap_bytes == 7_000_000
+      assert payload.upload.audio_per_file_cap_bytes == 8_000_000
       assert payload.upload.global_cap_bytes == 999_999
     end
 
@@ -52,6 +56,7 @@ defmodule Grappa.ServerSettings.WireTest do
           image_per_file_cap_bytes: 1,
           video_per_file_cap_bytes: 2,
           document_per_file_cap_bytes: 3,
+          audio_per_file_cap_bytes: 5,
           global_cap_bytes: 4
         }
       }
@@ -65,6 +70,7 @@ defmodule Grappa.ServerSettings.WireTest do
       assert decoded["upload"]["image_per_file_cap_bytes"] == 1
       assert decoded["upload"]["video_per_file_cap_bytes"] == 2
       assert decoded["upload"]["document_per_file_cap_bytes"] == 3
+      assert decoded["upload"]["audio_per_file_cap_bytes"] == 5
       assert decoded["upload"]["global_cap_bytes"] == 4
     end
 
@@ -75,6 +81,7 @@ defmodule Grappa.ServerSettings.WireTest do
           image_per_file_cap_bytes: 1,
           video_per_file_cap_bytes: 2,
           document_per_file_cap_bytes: 3,
+          audio_per_file_cap_bytes: 5,
           global_cap_bytes: 4
         }
       }
@@ -90,6 +97,7 @@ defmodule Grappa.ServerSettings.WireTest do
                image_per_file_cap_bytes: 10_485_760,
                video_per_file_cap_bytes: 52_428_800,
                document_per_file_cap_bytes: 10_485_760,
+               audio_per_file_cap_bytes: 26_214_400,
                global_cap_bytes: 10_737_418_240
              } =
                Wire.upload_view(%{
@@ -97,6 +105,7 @@ defmodule Grappa.ServerSettings.WireTest do
                  image_per_file_cap_bytes: 10_485_760,
                  video_per_file_cap_bytes: 52_428_800,
                  document_per_file_cap_bytes: 10_485_760,
+                 audio_per_file_cap_bytes: 26_214_400,
                  global_cap_bytes: 10_737_418_240
                })
     end
@@ -108,6 +117,7 @@ defmodule Grappa.ServerSettings.WireTest do
                  image_per_file_cap_bytes: 1,
                  video_per_file_cap_bytes: 2,
                  document_per_file_cap_bytes: 3,
+                 audio_per_file_cap_bytes: 5,
                  global_cap_bytes: 4
                })
     end
@@ -119,6 +129,7 @@ defmodule Grappa.ServerSettings.WireTest do
           image_per_file_cap_bytes: 7,
           video_per_file_cap_bytes: 8,
           document_per_file_cap_bytes: 9,
+          audio_per_file_cap_bytes: 11,
           global_cap_bytes: 10
         }
       }

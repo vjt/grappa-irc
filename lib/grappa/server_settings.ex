@@ -17,6 +17,7 @@ defmodule Grappa.ServerSettings do
   | `"upload.image_per_file_cap_bytes"`     | `pos_integer()`            | 10_485_760 (10MB)| UX-6-B |
   | `"upload.video_per_file_cap_bytes"`     | `pos_integer()`            | 52_428_800 (50MB)| UX-6-B |
   | `"upload.document_per_file_cap_bytes"`  | `pos_integer()`            | 10_485_760 (10MB)| UX-6-B |
+  | `"upload.audio_per_file_cap_bytes"`     | `pos_integer()`            | 26_214_400 (25MB)| audio-uploads |
   | `"upload.global_cap_bytes"`             | `pos_integer()`            | 10_737_418_240 (10GB) | UX-6-B |
 
   ## Public-subset shape (`public_view/0`)
@@ -63,6 +64,7 @@ defmodule Grappa.ServerSettings do
   @key_upload_image_per_file_cap_bytes "upload.image_per_file_cap_bytes"
   @key_upload_video_per_file_cap_bytes "upload.video_per_file_cap_bytes"
   @key_upload_document_per_file_cap_bytes "upload.document_per_file_cap_bytes"
+  @key_upload_audio_per_file_cap_bytes "upload.audio_per_file_cap_bytes"
   @key_upload_global_cap_bytes "upload.global_cap_bytes"
 
   # Defaults
@@ -70,13 +72,18 @@ defmodule Grappa.ServerSettings do
   @default_upload_image_per_file_cap_bytes 10 * 1024 * 1024
   @default_upload_video_per_file_cap_bytes 50 * 1024 * 1024
   @default_upload_document_per_file_cap_bytes 10 * 1024 * 1024
+  # Audio sits between image (10MiB) and video (50MiB): lossless flac/wav
+  # are large, but a single shared clip is not a movie. Born from this
+  # code default — like video + document, NO seed-row migration (see
+  # 20260609204800_rename_per_file_cap_setting_to_image.exs).
+  @default_upload_audio_per_file_cap_bytes 25 * 1024 * 1024
   @default_upload_global_cap_bytes 10 * 1024 * 1024 * 1024
 
   @type upload_host :: :embedded | :litterbox
 
   @typedoc "Closed set of upload categories — one per-file cap each."
-  @type upload_category :: :image | :video | :document
-  @upload_categories [:image, :video, :document]
+  @type upload_category :: :image | :video | :document | :audio
+  @upload_categories [:image, :video, :document, :audio]
 
   @type public_view :: %{
           upload: %{
@@ -84,6 +91,7 @@ defmodule Grappa.ServerSettings do
             image_per_file_cap_bytes: pos_integer(),
             video_per_file_cap_bytes: pos_integer(),
             document_per_file_cap_bytes: pos_integer(),
+            audio_per_file_cap_bytes: pos_integer(),
             global_cap_bytes: pos_integer()
           }
         }
@@ -129,6 +137,9 @@ defmodule Grappa.ServerSettings do
         @default_upload_document_per_file_cap_bytes
       )
 
+  def get_upload_per_file_cap_bytes(:audio),
+    do: read_cap(@key_upload_audio_per_file_cap_bytes, @default_upload_audio_per_file_cap_bytes)
+
   @doc "Pins the per-file upload byte cap for `category`. Positive integer only."
   @spec put_upload_per_file_cap_bytes(upload_category(), pos_integer()) ::
           :ok | {:error, :invalid_value}
@@ -142,6 +153,7 @@ defmodule Grappa.ServerSettings do
   defp cap_key_for(:image), do: @key_upload_image_per_file_cap_bytes
   defp cap_key_for(:video), do: @key_upload_video_per_file_cap_bytes
   defp cap_key_for(:document), do: @key_upload_document_per_file_cap_bytes
+  defp cap_key_for(:audio), do: @key_upload_audio_per_file_cap_bytes
 
   defp read_cap(key, default) do
     case decode_pos_int(get_raw(key)) do
@@ -180,6 +192,7 @@ defmodule Grappa.ServerSettings do
         image_per_file_cap_bytes: get_upload_per_file_cap_bytes(:image),
         video_per_file_cap_bytes: get_upload_per_file_cap_bytes(:video),
         document_per_file_cap_bytes: get_upload_per_file_cap_bytes(:document),
+        audio_per_file_cap_bytes: get_upload_per_file_cap_bytes(:audio),
         global_cap_bytes: get_upload_global_cap_bytes()
       }
     }

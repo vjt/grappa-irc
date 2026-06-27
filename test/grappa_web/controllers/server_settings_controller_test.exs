@@ -21,6 +21,7 @@ defmodule GrappaWeb.ServerSettingsControllerTest do
       assert upload["image_per_file_cap_bytes"] == 10 * 1024 * 1024
       assert upload["video_per_file_cap_bytes"] == 50 * 1024 * 1024
       assert upload["document_per_file_cap_bytes"] == 10 * 1024 * 1024
+      assert upload["audio_per_file_cap_bytes"] == 25 * 1024 * 1024
       assert upload["global_cap_bytes"] == 10 * 1024 * 1024 * 1024
     end
 

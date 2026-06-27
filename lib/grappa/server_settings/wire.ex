@@ -47,6 +47,7 @@ defmodule Grappa.ServerSettings.Wire do
           image_per_file_cap_bytes: pos_integer(),
           video_per_file_cap_bytes: pos_integer(),
           document_per_file_cap_bytes: pos_integer(),
+          audio_per_file_cap_bytes: pos_integer(),
           global_cap_bytes: pos_integer()
         }
 
@@ -70,6 +71,7 @@ defmodule Grappa.ServerSettings.Wire do
           image_per_file_cap_bytes: pos_integer(),
           video_per_file_cap_bytes: pos_integer(),
           document_per_file_cap_bytes: pos_integer(),
+          audio_per_file_cap_bytes: pos_integer(),
           global_cap_bytes: pos_integer()
         }) :: upload_view()
   def upload_view(%{} = upload) do
@@ -78,6 +80,7 @@ defmodule Grappa.ServerSettings.Wire do
       image_per_file_cap_bytes: upload.image_per_file_cap_bytes,
       video_per_file_cap_bytes: upload.video_per_file_cap_bytes,
       document_per_file_cap_bytes: upload.document_per_file_cap_bytes,
+      audio_per_file_cap_bytes: upload.audio_per_file_cap_bytes,
       global_cap_bytes: upload.global_cap_bytes
     }
   end

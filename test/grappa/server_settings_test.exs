@@ -50,10 +50,11 @@ defmodule Grappa.ServerSettingsTest do
   end
 
   describe "per-type per-file caps" do
-    test "defaults: image 10MiB, video 50MiB, document 10MiB" do
+    test "defaults: image 10MiB, video 50MiB, document 10MiB, audio 25MiB" do
       assert ServerSettings.get_upload_per_file_cap_bytes(:image) == 10 * 1024 * 1024
       assert ServerSettings.get_upload_per_file_cap_bytes(:video) == 50 * 1024 * 1024
       assert ServerSettings.get_upload_per_file_cap_bytes(:document) == 10 * 1024 * 1024
+      assert ServerSettings.get_upload_per_file_cap_bytes(:audio) == 25 * 1024 * 1024
     end
 
     test "put/get roundtrip per category, others untouched" do
@@ -62,21 +63,30 @@ defmodule Grappa.ServerSettingsTest do
       assert ServerSettings.get_upload_per_file_cap_bytes(:image) == 10 * 1024 * 1024
     end
 
+    test "audio put/get roundtrip, others untouched" do
+      assert :ok = ServerSettings.put_upload_per_file_cap_bytes(:audio, 30 * 1024 * 1024)
+      assert ServerSettings.get_upload_per_file_cap_bytes(:audio) == 30 * 1024 * 1024
+      assert ServerSettings.get_upload_per_file_cap_bytes(:image) == 10 * 1024 * 1024
+    end
+
     test "rejects invalid category and non-positive values" do
       assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(:image, 0)
       assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(:image, -1)
-      assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(:audio, 1)
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(:audio, 0)
+      # A genuinely-unknown category stays rejected at the closed-set boundary.
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_file_cap_bytes(:sticker, 1)
 
       assert {:error, :invalid_value} =
                ServerSettings.put_upload_per_file_cap_bytes(:image, "5000000")
     end
 
-    test "public_view carries the three cap fields" do
+    test "public_view carries the four cap fields" do
       assert %{
                upload: %{
                  image_per_file_cap_bytes: _,
                  video_per_file_cap_bytes: _,
                  document_per_file_cap_bytes: _,
+                 audio_per_file_cap_bytes: _,
                  active_host: _,
                  global_cap_bytes: _
                }
@@ -137,6 +147,18 @@ defmodule Grappa.ServerSettingsTest do
       assert_receive %Phoenix.Socket.Broadcast{
         event: "event",
         payload: %{kind: "server_settings_changed", upload: %{global_cap_bytes: 99_999}}
+      }
+    end
+
+    test "broadcasts server_settings_changed on put_upload_per_file_cap_bytes(:audio)" do
+      :ok = ServerSettings.put_upload_per_file_cap_bytes(:audio, 7_654_321)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{
+          kind: "server_settings_changed",
+          upload: %{audio_per_file_cap_bytes: 7_654_321}
+        }
       }
     end
 

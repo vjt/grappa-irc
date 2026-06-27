@@ -857,6 +857,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           image_per_file_cap_bytes: image_cap,
           video_per_file_cap_bytes: video_cap,
           document_per_file_cap_bytes: document_cap,
+          audio_per_file_cap_bytes: audio_cap,
           global_cap_bytes: global_cap_bytes
         }
       })
@@ -865,6 +866,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert is_integer(image_cap) and image_cap > 0
       assert is_integer(video_cap) and video_cap > 0
       assert is_integer(document_cap) and document_cap > 0
+      assert is_integer(audio_cap) and audio_cap > 0
       assert is_integer(global_cap_bytes) and global_cap_bytes > 0
     end
 

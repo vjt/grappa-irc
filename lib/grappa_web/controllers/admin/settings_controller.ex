@@ -139,6 +139,12 @@ defmodule GrappaWeb.Admin.SettingsController do
   defp apply_upload_key("document_per_file_cap_bytes", _),
     do: {:error, {:invalid_setting, "upload.document_per_file_cap_bytes"}}
 
+  defp apply_upload_key("audio_per_file_cap_bytes", n) when is_integer(n) and n > 0,
+    do: ServerSettings.put_upload_per_file_cap_bytes(:audio, n)
+
+  defp apply_upload_key("audio_per_file_cap_bytes", _),
+    do: {:error, {:invalid_setting, "upload.audio_per_file_cap_bytes"}}
+
   defp apply_upload_key("global_cap_bytes", n) when is_integer(n) and n > 0,
     do: ServerSettings.put_upload_global_cap_bytes(n)
 
