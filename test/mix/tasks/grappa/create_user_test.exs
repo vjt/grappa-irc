@@ -30,6 +30,31 @@ defmodule Mix.Tasks.Grappa.CreateUserTest do
     assert {:ok, _} = Accounts.get_user_by_credentials("vjt", "correct horse battery staple")
   end
 
+  test "creates an admin user when --admin is passed" do
+    output =
+      capture_io(fn ->
+        CreateUser.run([
+          "--name",
+          "boss",
+          "--password",
+          "correct horse battery staple",
+          "--admin"
+        ])
+      end)
+
+    assert output =~ "created user boss"
+    assert output =~ "admin"
+    assert Accounts.get_user_by_name!("boss").is_admin == true
+  end
+
+  test "creates a non-admin user by default" do
+    capture_io(fn ->
+      CreateUser.run(["--name", "pleb", "--password", "correct horse battery staple"])
+    end)
+
+    assert Accounts.get_user_by_name!("pleb").is_admin == false
+  end
+
   test "raises when --name is missing" do
     assert_raise KeyError, fn ->
       CreateUser.run(["--password", "correct horse battery staple"])

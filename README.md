@@ -161,14 +161,13 @@ Operators get a 4-tab admin pane in cicchetto, gated on `User.is_admin` (REST `/
 - **Networks** — per-network cap editor + live counters, plus reset-circuit and force-reap.
 - **Events** — real-time admin-event tail over the `grappa:admin:events` topic.
 
-There is no `--admin` flag yet; bootstrap the first admin via `remote-shell`:
+The admin UI's Promote button needs an existing admin, so bootstrap the **first** admin with `--admin` on `create-user`:
 
 ```sh
-bin/grappa remote-shell --batch -e '
-  user = Grappa.Accounts.get_user_by_name!("vjt")
-  {:ok, _} = Grappa.Accounts.update_admin_flags(user, %{is_admin: true})
-'
+bin/grappa create-user --name vjt --password '…' --admin
 ```
+
+After that, promote/demote everyone else from the **Admin → Users** tab. (To promote an already-existing user from the shell: `bin/grappa remote-shell --batch -e 'Grappa.Accounts.get_user_by_name!("vjt") |> Grappa.Accounts.update_admin_flags(%{is_admin: true})'`.)
 
 ## REST + events surface
 

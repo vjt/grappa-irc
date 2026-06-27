@@ -220,10 +220,9 @@ defmodule Grappa.Accounts do
 
   @doc """
   Toggle the operator-authorization `is_admin` bit on `user`. The M
-  cluster's `PATCH /admin/users/:id` endpoint calls into this; the first
-  admin is bootstrapped out-of-band by calling this directly via
-  `bin/grappa remote-shell` (Q-FIRST-ADMIN). There is no `--admin` create
-  flag — `grappa.create_user` takes only `--name` + `--password`.
+  cluster's `PATCH /admin/users/:id` endpoint calls into this, and
+  `grappa.create_user --admin` calls it right after creating the user —
+  the one-command first-admin bootstrap (Q-FIRST-ADMIN).
 
   Narrow surface: accepts only `%{is_admin: boolean()}` (User's
   `admin_changeset/2` ignores any other key) so a controller body
