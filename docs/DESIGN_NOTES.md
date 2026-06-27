@@ -13509,3 +13509,72 @@ have silently dropped `audio_per_file_cap_bytes` off the reactive cap.
 it at exactly one named, extension-scoped door and say why in the
 moduledoc — a blanket "sniff everything" would have dissolved the model
 the upload boundary depends on.*
+
+## 2026-06-27 — Visitor NickServ identify capture: full grammar + single choke point
+
+A prod visitor (anon, `expires_at` still set, `password_encrypted` NULL)
+had successfully identified to NickServ yet never upgraded to the
+infinite-TTL identified tier (the CP32 two-tier model above). Root cause
+was two independent gaps in the `+r`-observed commit rendezvous:
+
+1. **`NSInterceptor` matched only three verbs.** The outbound-line matcher
+   was `^PRIVMSG NickServ :(IDENTIFY|GHOST|REGISTER)`. The visitor
+   identified with **`ns id <pass>`** — cic routes `/ns id` → a `NickServ`
+   PRIVMSG of `id pass`. `ID` wasn't in the alternation → `:passthrough` →
+   no `pending_auth` staged → the `+r` MODE arrived with nothing to commit
+   (`commit_password/2`, the only writer that both persists the password
+   AND nulls `expires_at`, never fired).
+2. **The `{:send_raw}` / cic `/quote` path bypassed capture entirely.**
+   Capture ran only inside `{:send_privmsg}`; `/quote PASS …`,
+   `/quote identify …`, `/quote PRIVMSG NickServ :id …` went straight to
+   `Client.send_raw` with no interception.
+
+**Fix.** `NSInterceptor` now covers the full, source-verified azzurra
+identify-channel set, anchored at line start (`^`) so a channel PRIVMSG
+body merely *containing* "identify"/"pass" can't false-capture; and all
+three outbound-line paths (`{:send_privmsg}`, `{:send_raw}`,
+`flush_lines/2`) funnel through one `stage_if_ns_identify/2` choke point in
+`Session.Server` — `NSInterceptor.intercept/1` is now called from exactly
+one site, so no identify form can bypass capture again.
+
+**Source-verified identify inventory** (azzurra `bahamut-azzurra` ircd +
+`services`):
+
+| Wire form | Path |
+|-----------|------|
+| `PRIVMSG NickServ[@host] :IDENTIFY\|ID\|SIDENTIFY\|GHOST\|REGISTER …` | direct to services |
+| `NS\|NICKSERV IDENTIFY\|ID\|SIDENTIFY\|GHOST\|REGISTER …` | services command alias |
+| bare `IDENTIFY\|ID\|SIDENTIFY …` | ircd `m_identify` (`m_services.c`) builds `IDENTIFY <pass>` → `m_ns` |
+| `PASS <pass>` / `PASS <nick> <pass>` (post-connect) | ircd `m_pass` (`s_user.c`) → `m_identify` |
+
+services `nickserv.c` command table: `IDENTIFY` (201), `ID` (203),
+`SIDENTIFY` (247) all → `do_identify`. Password is the **last** whitespace
+token for IDENTIFY/ID/SIDENTIFY/GHOST/PASS; the **first** token for
+REGISTER (`REGISTER <pass> <email>`). The args group requires a leading
+non-space (`(\S.*?)`) so a verb-only line with no password is
+`:passthrough`, never an empty/`nil` capture.
+
+**`+r` MODE stays the commit trigger — NOT the "Password accettata"
+NOTICE.** `do_identify` emits the `+r` SVSMODE **only when `sameNick`** —
+you must be wearing the registered nick you identify for. Identifying for a
+protected nick while services have force-renamed you to `Guest…` fires the
+acceptance NOTICE *but no `+r`*; the `+r` lands only once you wear the nick
+and identify. Keying on `+r` is therefore correct: the NOTICE
+false-positives on a foreign-nick identify, the `+r` does not.
+
+**RECOVER/RELEASE are deliberately NOT captured; GHOST is in the grammar
+but does not itself commit.** RECOVER/RELEASE/GHOST take a password but do
+**not** set `+r` (they aren't identifies) — the user re-`IDENTIFY`s on the
+reclaimed nick afterward, and *that* IDENTIFY's `+r` is what commits. GHOST
+is matched (it carries a password) but its staged capture simply times out
+unless the follow-up IDENTIFY restages — latest-wins via the FIFO mailbox.
+
+**The 10s `@pending_auth_timeout_ms` is unchanged.** The `+r` SVSMODE is
+emitted synchronously inside `do_identify`, sub-second after the identify
+on the worn nick. The timer was never the blocker — the missing `id` alias
+and the `/quote` bypass were.
+
+*Lesson: a capture that lives on one of several equivalent code paths is a
+capture that doesn't exist — the wire has more than one door to the same
+service, so the interception has to sit at the single choke point every
+door funnels through, not on the door the happy-path test happened to use.*
