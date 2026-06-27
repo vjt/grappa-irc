@@ -37,6 +37,15 @@ defmodule Grappa.Session.NSInterceptor do
   # PASS post-connect identify (m_pass -> m_identify).
   @pass_re ~r/^PASS\s+(\S.*?)\s*$/i
 
+  @doc """
+  Inspects one outbound IRC wire line and returns either `:passthrough`
+  (no NickServ identify verb detected) or `{:capture, password}` with the
+  cleartext password lifted out for the host to stage in `pending_auth`.
+
+  Pure: no side effects. The host (`Grappa.Session.Server`) decides whether
+  to commit (on `+r` MODE), discard on the pending-auth timeout, or
+  overwrite on a subsequent capture.
+  """
   @spec intercept(String.t()) :: result()
   def intercept(line) when is_binary(line) do
     case Regex.run(@verb_re, line, capture: :all_but_first) do
@@ -59,8 +68,10 @@ defmodule Grappa.Session.NSInterceptor do
     end
   end
 
+  # Catch-all: IDENTIFY / ID / SIDENTIFY / GHOST all take the password as
+  # the last token. Only REGISTER (password first) needs its own clause.
   defp dispatch("REGISTER", rest), do: {:capture, first_token(rest)}
-  defp dispatch(_verb, rest), do: {:capture, last_token(rest)}
+  defp dispatch(_, rest), do: {:capture, last_token(rest)}
 
   defp last_token(rest), do: rest |> String.split() |> List.last()
   defp first_token(rest), do: rest |> String.split() |> List.first()
