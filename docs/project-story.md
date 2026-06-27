@@ -3925,3 +3925,90 @@ stricter side's "no," and the happy path will hide it from you. And a
 property like "this deploys hot" is rarely a property of your diff; it is
 a property of the whole gap between what's deployed and what you're
 deploying. Check the side you didn't write.*
+
+## The identify that went in the wrong door (2026-06-27, nsident)
+
+A visitor named Takatalvi had done everything right. He typed his
+NickServ password, the services accepted it, the network set `+r` on his
+nick — the umode that means *this person is who they say they are*. Grappa
+watched all of it go by. And his row stayed anonymous: a 48-hour expiry
+ticking, the password column empty, his session destined to be reaped
+like a stranger's. He had identified, grappa had *seen* him identify, and
+none of it stuck.
+
+The commit that would have made him permanent fires on one condition: a
+`+r` arrives *and* there's a staged password waiting to be written. The
+`+r` arrived. The staged password was never there. Grappa captured
+outbound NickServ passwords by matching the line on the wire — and it
+matched only `IDENTIFY`, `GHOST`, `REGISTER`. Takatalvi had typed `ns id`,
+the `ID` alias. Three letters the matcher didn't know. The password sailed
+out to the wire uncaptured, the `+r` came back to an empty hand, and the
+whole rendezvous dissolved into nothing. No error. No log. Just a
+permanent visitor quietly treated as a tourist.
+
+So I went to read the C. Not grappa's — azzurra's: the ircd and the
+services, the actual machinery on the other end of the socket. I wanted
+the *whole* list of doors a password could walk through, not the three I
+already knew. `m_pass` calls `m_identify`. `m_identify` builds `IDENTIFY`
+and hands it to NickServ. The services command table aliases `IDENTIFY`,
+`ID`, and `SIDENTIFY` all to one `do_identify`. A bare `PASS` after
+connect is an identify. `NS id` is an identify. There were six doors, and
+grappa had been standing guard at one and a half of them. Worse: even the
+half it guarded had a side entrance — the `/quote` raw path, where a user
+types the wire line themselves, walked straight past the capture and
+called the socket directly. I had been guarding *a* door. The user could
+use any of them.
+
+The fix that mattered wasn't the longer list of verbs. It was deciding
+that there is exactly one place every outbound line must pass through on
+its way to the wire, and putting the capture *there* — one choke point,
+every door funnelling into it — so that "did we check this line?" stops
+being a question you can get wrong per-path. The grammar was the
+symptom. The architecture was the cure.
+
+Then I tried to make the bug impossible to *re-create*: have grappa
+identify on the user's behalf at login, so the common case never depends
+on what he types or which door he picks. I set the plan's auth method to
+`:nickserv_identify`, handed it the password, started the session — and
+grappa threw it away. Not lost: *taken back*. The session's `init`
+re-reads the plan from the database before it does anything, because a
+frozen child-spec can hold stale credentials, and so the rule is the
+fresh row wins. The fresh row was a brand-new anonymous visitor. Its
+`auth_method` was `:none`. The runtime overwrote my override with the
+truth as the database knew it — a truth I was *in the middle of trying to
+change* — and did it in the half-second between my write and the only
+read that mattered. My test caught it: the IDENTIFY never reached the
+wire. I had set a value at the one moment the system had decided not to
+trust values.
+
+The shape underneath both halves is the same one. The moment you write a
+value is not the moment it is read, and the gap between them is full of
+code you didn't write — a second send path, a re-resolution that exists
+precisely to distrust you — that can route around your write or quietly
+replace it. Guarding the write is not enough. You have to own the whole
+path to the read: every door into the choke point, every overwrite
+between the assignment and the use. The cure for "I set it and it didn't
+take" is never a louder set. It's finding the thing that un-set it and
+making your intent survive *that*.
+
+There was a last temptation, and vjt was the one who first reached for it
+and then pulled his hand back. If `+r` is proof of identity, why not just
+mark the session permanent on `+r` — password or no password? Because
+permanence and recoverability were never two facts; they were one. A row
+made indefinite with no stored password is a house with no key: it
+outlives the reaper but can never be re-entered from another device, and
+every part of the system that asks "is this visitor identified?" by
+looking at the expiry would cheerfully lie about it. The coupling we were
+tempted to split was the invariant. The honest fix was the boring one —
+capture the password on *every* door — which is exactly what the rest of
+the day had been.
+
+*Law: a value you set is only as good as its survival to the read, and
+between the two sits code you didn't write — alternate paths into the
+same effect, and re-resolutions that exist to overrule you. Don't guard
+the assignment; own the whole path. Put the check at the one point every
+door converges on, and make your override outlive the merge that re-reads
+the world. And when a shortcut offers to split an invariant in two —
+permanence here, recoverability there — count the states it can now
+reach. The coherent-looking one with no key is the one that will haunt
+you.*
