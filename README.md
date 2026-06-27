@@ -117,6 +117,8 @@ Boot-time verbs run as mix tasks in the container; live-state verbs attach to th
 
 ### First deploy
 
+**Self-hosting?** [`INSTALL.md`](INSTALL.md) is the one-command Docker install — `scripts/quickstart.sh` generates every secret, builds, brings up the full stack (bouncer + PWA + nginx), and waits until `/healthz` is green. It also covers exposing it with TLS (Caddy / nginx / mkcert). The workflow below is the **operator / hot-deploy path** used for the production host.
+
 ```sh
 git clone https://github.com/vjt/grappa-irc /srv/grappa && cd /srv/grappa
 cp .env.example .env
