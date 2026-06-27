@@ -103,6 +103,86 @@ defmodule Grappa.Visitors.LoginTest do
       stop_visitor_session(v.id, network.id)
     end
 
+    test "fresh-nick login with a password identifies via :nickserv_identify at 001" do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      task = Task.async(fn -> Login.login(login_input(%{password: "freshpass"}), []) end)
+
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+
+      # Case 1 provisions an anon visitor, but a non-nil login password
+      # threads `auth_method: :nickserv_identify` + `password: <login pw>`
+      # into the spawn plan, so AuthFSM emits the canonical IDENTIFY at
+      # 001 on the connect-nick — before any services enforce timer. Same
+      # single IDENTIFY site as the registered (case 2) path; the wire
+      # line is the observable proof the plan threading reached the FSM.
+      {:ok, identify_line} =
+        IRCServer.wait_for_line(
+          server,
+          &String.contains?(&1, "PRIVMSG NickServ :IDENTIFY freshpass"),
+          1_000
+        )
+
+      assert String.starts_with?(identify_line, "PRIVMSG NickServ :IDENTIFY ")
+
+      assert {:ok, %{visitor: %Visitor{} = v, token: token}} = Task.await(task, 10_000)
+      assert v.nick == "vjt"
+      assert is_binary(token)
+
+      # No +r MODE arrives from the fake, so `commit_password` never fires:
+      # the row stays anon (password_encrypted nil, TTL still set) until
+      # services confirm the nick is protected. The login password is used
+      # to IDENTIFY but is NOT persisted speculatively.
+      row = Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra")
+      assert is_nil(row.password_encrypted)
+      refute is_nil(row.expires_at)
+
+      stop_visitor_session(v.id, network.id)
+    end
+
+    test "fresh-nick login with an EMPTY password stays anon — NO IDENTIFY on the wire" do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      task = Task.async(fn -> Login.login(login_input(%{password: ""}), []) end)
+
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+
+      assert {:ok, %{visitor: %Visitor{} = v, token: token}} = Task.await(task, 10_000)
+      assert v.nick == "vjt"
+      assert is_binary(token)
+
+      # Boundary mirror of the non-empty wire test: an EMPTY login password
+      # must NOT force `:nickserv_identify` — `with_login_identify/2`
+      # no-ops on "", so the plan stays anon (`auth_method: :none`) and
+      # AuthFSM emits NO IDENTIFY at 001. Assert via the #27 TCP-order
+      # barrier: push a HELP line and wait for it; `packet: :line` +
+      # `active: :once` deliver in order, so once HELP is buffered any
+      # IDENTIFY that 001 would have triggered is too. Zero IDENTIFY lines
+      # is the proof.
+      {:ok, _} = Session.send_privmsg({:visitor, v.id}, network.id, "NickServ", "HELP")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(server, &String.contains?(&1, "PRIVMSG NickServ :HELP"), 1_000)
+
+      identify_count =
+        server
+        |> IRCServer.sent_lines()
+        |> Enum.count(&String.contains?(&1, "PRIVMSG NickServ :IDENTIFY"))
+
+      assert identify_count == 0,
+             "expected no IDENTIFY on the wire for an empty password, got #{identify_count}"
+
+      # The row stays anon (empty password is never committed).
+      row = Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra")
+      assert is_nil(row.password_encrypted)
+
+      stop_visitor_session(v.id, network.id)
+    end
+
     test "connect refused → {:error, :upstream_unreachable}, anon row purged" do
       port = pick_unused_port()
       {_, _} = setup_visitor_network(port)

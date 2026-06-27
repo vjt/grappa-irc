@@ -255,7 +255,7 @@ defmodule Grappa.Visitors.Login do
   end
 
   defp continue_case_1(visitor, network, input, timeouts) do
-    with {:ok, _} <- spawn_and_await(visitor, network, timeouts) do
+    with {:ok, _} <- spawn_and_await(visitor, network, input.password, timeouts) do
       issue_token(visitor, input)
     end
   end
@@ -286,7 +286,11 @@ defmodule Grappa.Visitors.Login do
     :ok = Session.stop_session({:visitor, visitor.id}, network.id, "session replaced")
     :ok = Backoff.reset({:visitor, visitor.id}, network.id)
 
-    with {:ok, _} <- spawn_and_await(visitor, network, timeouts) do
+    # Registered visitors keep their row-resolved `:nickserv_identify`
+    # plan (password from the EncryptedBinary roundtrip) — pass `nil` for
+    # the login-form password so `SessionPlan.with_login_identify/2`
+    # no-ops and the resolved plan stays intact.
+    with {:ok, _} <- spawn_and_await(visitor, network, nil, timeouts) do
       :ok = NetworkCircuit.record_success(network.id)
       issue_token(visitor, input)
     end
@@ -297,9 +301,30 @@ defmodule Grappa.Visitors.Login do
     issue_token(visitor, input)
   end
 
-  defp spawn_and_await(visitor, network, timeouts) do
+  defp spawn_and_await(visitor, network, login_password, timeouts) do
     case SessionPlan.resolve(visitor) do
       {:ok, plan} ->
+        # Fresh-visitor first-login IDENTIFY policy (case 1 only — case 2
+        # passes `login_password: nil`, case 3 doesn't respawn). A fresh
+        # visitor resolves to an anon plan (`auth_method: :none`), so a
+        # first-time NickServ registration would otherwise hang on the
+        # fragile manual-identify → +r rendezvous and lose the race when
+        # services enforce-rename a protected nick to `Guest…` before the
+        # user identifies. When the login form carries a password we force
+        # the plan to identify at 001 (ahead of the enforce timer) via
+        # `SessionPlan.with_login_identify/2`, which owns the
+        # refresh-shape mechanics that keep the override alive across
+        # `Session.Server.init/1`'s DB-wins re-resolve. `+r` then commits
+        # the password to the DB (`commit_password/2`) and later
+        # re-resolves carry `:nickserv_identify` naturally.
+        #
+        # A WRONG password never commits (no `+r`): the row stays anon and
+        # the wrong IDENTIFY is re-sent on every crash-`:transient`
+        # restart — the fresh path has no stored password to compare
+        # against, unlike case 2's `secure_compare` — until the user
+        # re-logs-in with the correct password, which re-enters this same
+        # path because the row is still anon.
+        plan = SessionPlan.with_login_identify(plan, login_password)
         ref = make_ref()
         plan_with_notify = Map.merge(plan, %{notify_pid: self(), notify_ref: ref})
 

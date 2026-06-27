@@ -56,6 +56,40 @@ defmodule Grappa.Visitors.SessionPlan do
     end
   end
 
+  @doc """
+  Rewrite a resolved fresh-visitor `plan` so the session identifies to
+  NickServ at 001 using the login-form `password`, and so that override
+  survives `Grappa.Session.Server.init/1`'s DB-wins `refresh_plan`
+  re-resolve while the visitor row is still anon.
+
+  `init/1` re-resolves the plan from the DB on every spawn AND
+  `:transient` restart, merging the fresh DB plan OVER the cached spawn
+  opts (`Map.merge(opts, fresh_plan)` — the 2026-05-27 Azzurra
+  zombie-respawn fix). For a fresh anon visitor that re-resolved row
+  carries `auth_method: :none`, which would clobber a plain field
+  override on the very first init and defeat the IDENTIFY-at-001. So we
+  both set the fields directly AND wrap the injected `refresh_plan`
+  closure: while the row is anon the wrapper re-applies the override;
+  once `+r` commits the password to the DB (`commit_password/2`) the
+  re-resolved plan carries `:nickserv_identify` naturally and we defer
+  to it (DB wins again, the login-form secret drops out).
+
+  The top-level field merge is load-bearing only on the no-`refresh_plan`
+  path (test fixtures / `Grappa.Bootstrap`); Login-spawned sessions
+  always carry the closure, so the wrapper is what actually threads the
+  override through `init/1`.
+
+  A non-binary / empty `password` returns `plan` unchanged.
+  """
+  @spec with_login_identify(Session.start_opts(), String.t() | nil) :: Session.start_opts()
+  def with_login_identify(plan, password) when is_binary(password) and password != "" do
+    plan
+    |> Map.merge(%{auth_method: :nickserv_identify, password: password})
+    |> rewrap_refresh_for_login_identify(password)
+  end
+
+  def with_login_identify(plan, _), do: plan
+
   defp fetch_network(slug) do
     case Networks.get_network_by_slug(slug) do
       {:ok, network} -> {:ok, network}
@@ -159,4 +193,29 @@ defmodule Grappa.Visitors.SessionPlan do
 
   defp auth_method(%Visitor{password_encrypted: nil}), do: :none
   defp auth_method(%Visitor{password_encrypted: _}), do: :nickserv_identify
+
+  # Wrap the injected `refresh_plan` closure so the login IDENTIFY
+  # survives `init/1`'s DB-wins re-resolve WHILE the visitor row is
+  # anon; defer to the DB once a `+r` commit upgrades the row to
+  # `:nickserv_identify`. The fallback clause keeps the no-`refresh_plan`
+  # test/Bootstrap path intact.
+  defp rewrap_refresh_for_login_identify(%{refresh_plan: refresh} = plan, password)
+       when is_function(refresh, 0) do
+    wrapped = fn ->
+      case refresh.() do
+        {:ok, %{auth_method: :none} = fresh} ->
+          {:ok, Map.merge(fresh, %{auth_method: :nickserv_identify, password: password})}
+
+        {:ok, _} = ok ->
+          ok
+
+        {:error, _} = err ->
+          err
+      end
+    end
+
+    %{plan | refresh_plan: wrapped}
+  end
+
+  defp rewrap_refresh_for_login_identify(plan, _), do: plan
 end
