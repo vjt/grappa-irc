@@ -39,7 +39,7 @@
 //
 // ## Known limitation — emoji split across mIRC runs
 //
-// The 📸/🎬 signal is read from the text segment immediately preceding
+// The 📸/🎬/🎵 signal is read from the text segment immediately preceding
 // the URL within ONE mIRC formatting run. A body that interleaves
 // control codes between emoji and URL (`\x0304📸\x03 https://…`, e.g.
 // a colorizing relay bridge) splits them into separate runs and the
@@ -50,9 +50,9 @@
 // so the URL itself carries the type — recorded in todo, not worth a
 // control-char-tolerant scan here.
 // 2. Own upload URL (`/uploads/<26-char-base32-slug>` — mirrors
-//    Grappa.Uploads @slug_regex) + trailing 📸/🎬 in the text
-//    immediately preceding the URL → image/video. The slug carries no
-//    extension, so the uploadOrchestrator's emoji prefix is the only
+//    Grappa.Uploads @slug_regex) + trailing 📸/🎬/🎵 in the text
+//    immediately preceding the URL → image/video/audio. The slug carries
+//    no extension, so the uploadOrchestrator's emoji prefix is the only
 //    type signal on the wire. 📄 documents are deliberately excluded:
 //    rendering a PDF needs <embed>/<iframe>, which the design rejects
 //    (X-Frame-Options / frame-src). No emoji → null (type unknowable;
@@ -74,11 +74,12 @@ const UPLOADS_PATH_RE = /^\/uploads\/[a-z2-7]{26}$/;
 // Emoji at the END of the preceding text segment — uploadOrchestrator
 // emits `📸 <url>`, so after linkify the URL segment's preceding text
 // ends with the emoji (possibly with relay prefixes before it).
-const TRAILING_EMOJI_RE = /(📸|🎬)\s*$/u;
+const TRAILING_EMOJI_RE = /(📸|🎬|🎵)\s*$/u;
 
 const EMOJI_KIND: Record<string, MediaKind> = {
   "📸": "image",
   "🎬": "video",
+  "🎵": "audio",
 };
 
 const EXTENSION_KIND: Record<string, MediaKind> = {

@@ -38,6 +38,13 @@ describe("classifyMediaLink", () => {
       });
     });
 
+    it("🎵-prefixed own upload URL classifies as audio (GH #115 — slug has no extension)", () => {
+      expect(classifyMediaLink(UPLOAD_URL, "🎵 ", ORIGIN)).toEqual({
+        kind: "audio",
+        href: UPLOAD_URL,
+      });
+    });
+
     it("emoji at end of longer preceding text still classifies", () => {
       expect(classifyMediaLink(UPLOAD_URL, "relayed by bot: 📸 ", ORIGIN)).toEqual({
         kind: "image",
