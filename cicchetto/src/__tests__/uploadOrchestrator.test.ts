@@ -537,6 +537,31 @@ describe("category dispatch", () => {
     expect(uploadState(key)).toBeNull();
   });
 
+  it("relabels an octet-stream .m4r to audio/mp4 so it uploads (iOS ringtone ext)", async () => {
+    // iOS gives the rare .m4r extension an empty/octet-stream file.type,
+    // not audio/mp4 — so categoryOf would reject it client-side before it
+    // ever reaches the server's octet-stream rescue. cic relabels by
+    // extension (mirror of the server @audio_ext_canonical_mime) so both
+    // the category gate AND the uploaded Content-Type are audio/mp4.
+    vi.mocked(activeHost).mockReturnValue(
+      makeTestHost({
+        acceptedMimeTypes: { image: [], video: [], document: [], audio: ["audio/mp4"] },
+      }),
+    );
+    const m4r = new File([new Uint8Array([0, 0, 0, 0])], "ring.m4r", {
+      type: "application/octet-stream",
+    });
+    triggerUpload(key, slug, channel, m4r);
+
+    expect(pendingResolvers.length).toBe(1);
+    expect(pendingResolvers[0]?.file.type).toBe("audio/mp4");
+    pendingResolvers[0]?.resolve("https://litter.catbox.moe/ring.m4r");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "🎵 https://litter.catbox.moe/ring.m4r");
+  });
+
   it("video upload → routed through the transcode → 🎬-prefixed PRIVMSG", async () => {
     const clip = new File([new Uint8Array(16)], "clip.mp4", { type: "video/mp4" });
     triggerUpload(key, slug, channel, clip);

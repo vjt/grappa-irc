@@ -63,6 +63,38 @@ export function categoryOf(mime: string): UploadCategory | null {
   return MIME_CATEGORIES[mime] ?? null;
 }
 
+// Audio extension → canonical MIME — 1:1 mirror of the server's
+// @audio_ext_canonical_mime (uploads_controller.ex). Browsers give
+// uncommon audio extensions an unreliable file.type: iOS labels .m4r
+// (ringtones) empty/octet-stream, and .m4a/.flac are sometimes
+// octet-stream too. The server has an octet-stream→canonical rescue,
+// but cic's categoryOf would reject these BEFORE upload — so cic must
+// relabel by extension to the canonical audio MIME first.
+const AUDIO_EXT_CANONICAL_MIME: Record<string, string> = {
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  m4r: "audio/mp4",
+  wav: "audio/wav",
+  flac: "audio/flac",
+};
+
+/**
+ * Relabel a File whose browser-assigned `type` is not a recognized
+ * upload MIME but whose extension is a known audio type — returns a new
+ * File with the canonical audio MIME (same bytes, same name). Returns
+ * the original File when the type is already recognized or the
+ * extension is unknown. Idempotent. Keeps cic and the server's
+ * extension-rescue consistent so the gate AND the uploaded
+ * Content-Type agree.
+ */
+export function normalizeUploadFile(file: File): File {
+  if (categoryOf(file.type) !== null) return file;
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  const canonical = AUDIO_EXT_CANONICAL_MIME[ext];
+  if (canonical === undefined) return file;
+  return new File([file], file.name, { type: canonical, lastModified: file.lastModified });
+}
+
 /** MIME → extension label for the unsupported-type error copy. Typed
  *  exhaustively over the MIME unions above so a 15th MIME added to a
  *  list without a label here is a compile error (Task 5 review

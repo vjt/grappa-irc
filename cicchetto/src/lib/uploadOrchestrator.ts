@@ -1,7 +1,12 @@
 import { createSignal } from "solid-js";
 import type { ChannelKey } from "./channelKey";
 import { sendMessage } from "./scrollback";
-import { categoryOf, mimeExtLabel, type UploadCategory } from "./uploadCategory";
+import {
+  categoryOf,
+  mimeExtLabel,
+  normalizeUploadFile,
+  type UploadCategory,
+} from "./uploadCategory";
 import { activeHost, type UploadError, type UploadHost, type UploadProgress } from "./uploadHost";
 import { getUploadTtlSeconds, putUploadTtlSeconds } from "./userSettings";
 // Policy only — videoTranscode.ts (the sole mediabunny importer) is
@@ -460,8 +465,13 @@ export function triggerUpload(
   key: ChannelKey,
   networkSlug: string,
   channelName: string,
-  file: File,
+  rawFile: File,
 ): void {
+  // Relabel uncommon audio extensions the browser couldn't MIME-type
+  // (iOS .m4r ringtones → empty/octet-stream) to their canonical audio
+  // MIME, at the single entry point — so both the privacy-gated and the
+  // direct dispatch paths carry the corrected File.
+  const file = normalizeUploadFile(rawFile);
   const host = activeHost();
   const ackd = localStorage.getItem(privacyKey(host));
   if (ackd === null || ackd === "") {

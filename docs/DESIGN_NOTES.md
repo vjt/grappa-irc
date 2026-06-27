@@ -13448,6 +13448,19 @@ one the browser actually plays — "ensure grappa emits the right mime"
 (vjt). This is the one place the allowlist consults extension, and it is
 deliberately narrow.
 
+*Follow-up (vjt iPhone dogfood): the server rescue alone was not enough.*
+cic gates uploads on `categoryOf(file.type)` BEFORE the request ever
+reaches the server — so a file the browser couldn't MIME-type (iOS gives
+the rare `.m4r` ringtone extension empty/`octet-stream`, not `audio/mp4`)
+was rejected client-side and never hit the server rescue. The mirror has
+to extend to cic: `normalizeUploadFile` (uploadCategory.ts, mirroring
+`@audio_ext_canonical_mime`) re-labels such a File to its canonical audio
+MIME at `triggerUpload`, so the category gate AND the uploaded
+Content-Type are `audio/mp4`. The server rescue stays as belt-and-braces
+for non-cic clients (curl, the API). *Lesson: a leniency added on one
+side of a mirrored boundary is dead code if the other side rejects first
+— extension-rescue had to live on BOTH the cic gate and the server.*
+
 **Audio is NOT metadata-stripped in v1 (accepted ID3/iTunes leak).**
 Audio rides `MetadataStrip`'s generic pass-through, same as documents —
 the image/video strip lockstep only pins `category in [:image, :video]`.
