@@ -13,6 +13,14 @@ Two components in one monorepo:
 
 *Modern IRC — always-on, usable from a phone — without making it not-IRC.* For anyone who's been on IRC for a decade: it's irssi-in-tmux, reachable from a browser.
 
+<p align="center">
+  <img src="assets/cicchetto-login.png" alt="cicchetto login — nick or email, password optional for visitors" width="32%">
+  <img src="assets/cicchetto-iphone-itopers.png" alt="cicchetto on an iPhone — #it-opers, irssi-shape, channel tab-bar" width="32%">
+  <img src="assets/cicchetto-grappa-live.png" alt="cicchetto live in #grappa" width="32%">
+</p>
+
+<p align="center"><em>cicchetto on a phone — login (visitors need no password), then irssi-shape channels. <a href="https://sindro.me/posts/2026-06-19-grappa-irc-on-my-phone/">grappa-irc on my phone →</a></em></p>
+
 ### Two facades, one store
 
 grappa exposes one scrollback store through two facades:
