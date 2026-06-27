@@ -93,7 +93,7 @@ Supervision-tree ordering and the load-bearing invariants live in `CLAUDE.md`; t
 4. **Auth is NickServ**, bridged via SASL; registration proxied through a dedicated endpoint.
 5. **Self-hostable on any VPS**, with an operator-configurable allowlist for upstream networks.
 6. **Irssi-shape on desktop and mobile.** Same visual grammar everywhere; mobile adds touch-ergonomic helpers, not a chat-app metaphor.
-7. **Text only on the wire.** No file sharing, no inline media beyond a URL-as-text. *Client-side* voice I/O (read-aloud + dictate) is a separate, in-scope accessibility feature — see below.
+7. **Text only on the wire.** Media (images, video, files) is uploaded to and hosted by grappa and shared on IRC as a plain link — the wire stays text, never inline media. cicchetto opens that link in an in-app image/video viewer (video is transcoded client-side before upload); scrollback never auto-renders media. *Client-side* voice I/O (read-aloud + dictate) is a separate, in-scope accessibility feature — see below.
 8. **No push infrastructure.** Use the browser PWA push API if present; otherwise no notifications. We don't run notification servers.
 9. **Accessibility is a client concern.** The server stays protocol-clean; screen-reader support, TTS, STT, and touch helpers live in cicchetto.
 
@@ -216,9 +216,9 @@ Per-window UI behavior — channel header, query/DM focus rule, archive section,
 
 ## Scope
 
-**In scope:** text chat on IRC (channels, queries, notices, CTCP ACTION); multi-network per user; persistent paginated scrollback; NickServ auth bridging; a PWA that works on phones without an app-store detour; self-hosting for individuals and small groups.
+**In scope:** text chat on IRC (channels, queries, notices, CTCP ACTION); multi-network per user; persistent paginated scrollback; NickServ auth bridging; media sharing — images, video, and files uploaded to and hosted by grappa, surfaced on IRC as a plain link (📸/🎬/📄), opened in cicchetto's in-app image/video viewer, with client-side video transcode before upload; a PWA that works on phones without an app-store detour; self-hosting for individuals and small groups.
 
-**Out of scope:** file sharing (DCC, HTTP uploads, anything); voice / video / audio messages; inline media unfurling beyond a URL-as-text; hosted multi-tenant SaaS (self-hosted only); push notification servers (PWA push only if the browser provides it).
+**Out of scope:** IRC-native file transfer (DCC — sharing is HTTP upload to grappa, not peer-to-peer); real-time voice / video calls and audio messages; inline auto-rendering of media in scrollback (media is a click-to-view link, never an autoplay/preview card); hosted multi-tenant SaaS (self-hosted only); push notification servers (PWA push only if the browser provides it).
 
 ## Status & roadmap
 
