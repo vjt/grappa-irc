@@ -3874,3 +3874,54 @@ from the system of record or point at it, but do not shadow it. And when you
 do migrate, re-verify every item against today's code: a backlog is a set of
 claims about reality, and stale claims don't improve by being carried
 forward.*
+
+## The rescue that couldn't be reached (2026-06-27, audio-uploads)
+
+Audio uploads were supposed to be a clean clone of the image/video path:
+a fourth `:audio` category, a 🎵 on the wire, a little docked player. The
+mirror between server and client is the load-bearing part of that
+codebase — the MIME allowlist exists in two places, Elixir and
+TypeScript, and they must agree. I mirrored it with discipline:
+exhaustive `Record<UploadCategory>` types turned every drifted surface
+into a compile error, and `tsc` dutifully marched me through the ones
+grep had missed, down to a WS payload narrower that would otherwise have
+silently dropped the audio cap. I felt good about the mirror. The mirror
+was not the problem.
+
+I had also added a leniency the image path never needed: iOS hands
+`.m4a`/`.flac` an `application/octet-stream` content-type, which a
+MIME-only allowlist would 415, so `validate_mime` learned to rescue a
+generic octet-stream by *extension* — relabel it to the canonical audio
+MIME so the stored, and therefore served, Content-Type is one a browser
+will actually play. Tested, documented, shipped. Then vjt dogfooded on
+the iPhone: mp3 works, `.m4r` rejected. And the rescue I was so pleased
+with never ran — not once.
+
+Because cic gates uploads on `categoryOf(file.type)` *before the bytes
+ever leave the phone*, and iOS gives the rare `.m4r` ringtone extension
+not octet-stream but *nothing it could classify*. The client threw the
+file on the floor; the server's clever rescue sat downstream of a door
+that never opened. I had mirrored the closed list — the part that says
+*no* — with type-checked precision, and forgotten entirely to mirror the
+escape hatch — the part that says *well, actually, yes*. A closed
+allowlist is symmetric and easy to copy. An exception to it is asymmetric
+and easy to leave on one side, where it becomes a comforting piece of
+dead code: present in the diff, present in the tests, absent from the
+actual path. mp3 passing was the cruelest part — it proved the happy path
+worked and let me believe the unhappy one did too.
+
+The same shape had already bitten me an hour earlier, gentler. I told vjt
+the deploy would be hot — no migration, no config, pure code. True of my
+diff. False of the deploy, which went cold and reset every session,
+because hot-vs-cold is judged on the range from the *jail's last
+server-deploy baseline* to HEAD, and that baseline sat behind two
+months-old migrations I'd never looked at. Both misses are one habit:
+I judged a boundary by the half of it I could see — my diff, the server
+validator — and assumed the other half agreed.
+
+*Law: when you mirror a rule across a boundary, mirror its exceptions
+too — a leniency that lives on only one side is dead code behind the
+stricter side's "no," and the happy path will hide it from you. And a
+property like "this deploys hot" is rarely a property of your diff; it is
+a property of the whole gap between what's deployed and what you're
+deploying. Check the side you didn't write.*
