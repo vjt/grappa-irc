@@ -165,8 +165,8 @@ There is no `--admin` flag yet; bootstrap the first admin via `remote-shell`:
 
 ```sh
 bin/grappa remote-shell --batch -e '
-  user = Grappa.Repo.get_by!(Grappa.Accounts.User, name: "vjt")
-  {:ok, _} = Grappa.Accounts.update_user(user, %{is_admin: true})
+  user = Grappa.Accounts.get_user_by_name!("vjt")
+  {:ok, _} = Grappa.Accounts.update_admin_flags(user, %{is_admin: true})
 '
 ```
 

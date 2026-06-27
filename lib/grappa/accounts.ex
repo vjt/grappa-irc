@@ -219,10 +219,11 @@ defmodule Grappa.Accounts do
   def get_user_by_name!(name) when is_binary(name), do: Repo.get_by!(User, name: name)
 
   @doc """
-  Toggle the operator-authorization `is_admin` bit on `user`. M
-  cluster's `PATCH /admin/users/:id` endpoint and the
-  `bin/grappa create-user --admin` Q-FIRST-ADMIN bootstrap path
-  both call into this.
+  Toggle the operator-authorization `is_admin` bit on `user`. The M
+  cluster's `PATCH /admin/users/:id` endpoint calls into this; the first
+  admin is bootstrapped out-of-band by calling this directly via
+  `bin/grappa remote-shell` (Q-FIRST-ADMIN). There is no `--admin` create
+  flag — `grappa.create_user` takes only `--name` + `--password`.
 
   Narrow surface: accepts only `%{is_admin: boolean()}` (User's
   `admin_changeset/2` ignores any other key) so a controller body
