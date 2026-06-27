@@ -3816,3 +3816,61 @@ buggy client from a scanner. "Harmless failed request" is a category error
 when fail2ban is listening. The IRC-ignorant web client is still part of the
 IRC user's blast radius; the only safe bogus request is the one you never
 send.*
+
+## The backlog that lied about what was left (2026-06-26, todo-retirement)
+
+The session opened in the most ordinary way possible: `/start`, look at the
+todo, pick the next thing. The todo was confident. Under **Immediate** it
+said *crank open review-exempt bugs — #27/#40/#37/#61/#25* — a tidy roster
+of tractable work with no on-device blocker. I shipped #12 (a `/msg` to a
+channel now gets refused at the cic parser instead of opening a phantom
+query window the render path could never feed), closed it, and offered the
+roster as what's next.
+
+vjt asked four words: "what's 27?" I pulled the issue. It was **closed**. So
+was #40. So was #37, #61, #25 — every single number on the "what's next"
+list had already been fixed and closed on GitHub, some of them by me, in
+earlier sessions. The todo had been pointing at a graveyard and calling it
+a to-do list. The file that existed precisely to answer "what should I work
+on" was answering with work that was already done.
+
+This is not a typo-class bug; it is a structural one, and CLAUDE.md names it
+in the abstract under *Design discipline*: **don't duplicate state that
+already exists — derive it; every parallel structure needs housekeeping that
+will drift.** GitHub issues were the source of truth for open work. `todo.md`
+was a hand-maintained second copy of that same state. Two copies of one fact
+have only one steady state — disagreement — and the only question is how long
+until someone trusts the wrong one. The answer turned out to be "an entire
+session-start report."
+
+So the fix wasn't to scrub the stale lines. It was to kill the parallel
+structure. vjt's call: use gh issues; what's still valuable becomes an issue;
+todo becomes a pointer, nothing more. The migration was not a dump —
+"valuable" is a judgment, and a judgment made against a two-week-old note is
+worth as much as the note. The 12-line Phase 5 cluster became twelve issues,
+minus HSM-keyed Vault, which earned a one-word disposition ("never doing it")
+instead of a permanent residence in a list nobody reads. The twenty-one
+carry-forward nits got re-checked against the *current* tree before any of
+them was allowed to become an issue: two were already fixed (the
+`Identifier.services_sender?` clauses were all reachable; nginx's keepalive
+already had its `Connection ""`), one was a live bug big enough for its own
+ticket. You do not migrate a backlog by copying it; you migrate it by
+re-earning every line.
+
+And the disease had a second carrier. `/start` finds the active checkpoint by
+grepping `status: active`, and three old checkpoints still answered to that
+name — one a real stale frontmatter marker on cp68, two only mentioning the
+string in prose. Same illness, smaller organ: a status field is just another
+hand-maintained index of "which one is current," and a hand-maintained index
+drifts the instant someone forgets to flip it. cp68 had been superseded five
+checkpoints ago and never told. One edit, `active` → `complete`, and the grep
+returns a single answer again.
+
+*Law: any list you maintain by hand alongside a system of record is a second
+source of truth, and a second source of truth is a future lie with a
+timestamp. The drift is not a maintenance lapse — it is the default behavior
+of duplicated state; the lapse is believing it won't happen to you. Derive
+from the system of record or point at it, but do not shadow it. And when you
+do migrate, re-verify every item against today's code: a backlog is a set of
+claims about reality, and stale claims don't improve by being carried
+forward.*
