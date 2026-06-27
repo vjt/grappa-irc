@@ -14,6 +14,7 @@ import AdminPane from "./AdminPane";
 import ArchiveModal from "./ArchiveModal";
 import BottomBar from "./BottomBar";
 import BundleRefreshBanner from "./BundleRefreshBanner";
+import AudioMiniPlayer from "./AudioMiniPlayer";
 import ComposeBox from "./ComposeBox";
 import DiagFloat from "./DiagFloat";
 import DirectoryPane from "./DirectoryPane";
@@ -598,6 +599,11 @@ const Shell: Component = () => {
                   channelName={selectedChannel()?.channelName ?? ""}
                   kind={(selKind() as "channel" | "query" | "server") ?? "channel"}
                 />
+                {/* GH #115 — docked audio mini-player, above compose.
+                    Inside this Match so it survives channel↔query↔server
+                    switches (the kindHasScrollback Match stays mounted);
+                    leaving chat for home/list/mentions stops playback. */}
+                <AudioMiniPlayer />
                 <ComposeBox
                   networkSlug={selectedChannel()?.networkSlug ?? ""}
                   channelName={selectedChannel()?.channelName ?? ""}
@@ -754,6 +760,8 @@ const Shell: Component = () => {
                 channelName={selectedChannel()?.channelName ?? ""}
                 kind={(selKind() as "channel" | "query" | "server") ?? "channel"}
               />
+              {/* GH #115 — docked audio mini-player, above compose (mobile). */}
+              <AudioMiniPlayer />
               <ComposeBox
                 networkSlug={selectedChannel()?.networkSlug ?? ""}
                 channelName={selectedChannel()?.channelName ?? ""}

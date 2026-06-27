@@ -17,6 +17,7 @@ import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { linkify } from "./lib/linkify";
+import { playAudio } from "./lib/audioPlayer";
 import { classifyMediaLink, sameHostHref } from "./lib/mediaLink";
 import { openMediaViewer } from "./lib/mediaViewer";
 import { membersByChannel } from "./lib/members";
@@ -337,7 +338,15 @@ const renderRun = (run: Run): JSX.Element => {
                       // media.href is re-rooted on the page origin —
                       // historical prod bodies carry http:// hrefs
                       // (mixed content if loaded as-is on https).
-                      openMediaViewer(media.href, media.kind);
+                      //
+                      // Audio routes to the docked, non-modal mini-player
+                      // (GH #115) so scrollback stays readable while it
+                      // plays; image/video keep the full-screen viewer.
+                      if (media.kind === "audio") {
+                        playAudio(media.href);
+                      } else {
+                        openMediaViewer(media.href, media.kind);
+                      }
                     }
                   : escapeHref !== null
                     ? (e) => {

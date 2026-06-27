@@ -1213,6 +1213,45 @@ html.resize-dragging * {
 
 /* ComposeBox */
 
+/* GH #115 — docked audio mini-player. In-flow slim transport bar
+   between scrollback and the compose box; non-modal so scrollback stays
+   scrollable + readable while audio plays. Sits above compose (and above
+   compose's own safe-area handling), so it needs no bottom inset. */
+.audio-mini-player {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-alt);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+}
+
+.audio-mini-player-toggle,
+.audio-mini-player-close {
+  flex: none;
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.audio-mini-player-seek {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent, var(--fg));
+}
+
+.audio-mini-player-time {
+  flex: none;
+  color: var(--fg-dim, var(--fg));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .compose-box {
   display: flex;
   border-top: 1px solid var(--border);

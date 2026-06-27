@@ -99,6 +99,54 @@ test("📸 upload link click opens the in-app viewer instead of navigating", asy
   expect(page.url()).toBe(cicUrl);
 });
 
+test("🎵 upload link click opens the docked mini-player, NOT the modal (GH #115)", async ({
+  page,
+}) => {
+  // Audio routes to the non-modal docked mini-player, not the
+  // image/video viewer. Real playback is device-only (Playwright webkit
+  // ≠ iOS, feedback_playwright_webkit_not_ios_scroll); this pins the
+  // routing + that the <audio> element mounts under the prod CSP
+  // (media-src 'self') without a securitypolicyviolation — the
+  // _cspGuard fixture fails the spec otherwise. Audio is pass-through
+  // server-side (no metadata strip), so a tiny labelled buffer uploads.
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+  const { slug, url } = await uploadViaPicker(
+    page,
+    {
+      name: "voice.mp3",
+      mimeType: "audio/mpeg",
+      buffer: Buffer.from("ID3 fake mp3 body for the e2e upload", "utf8"),
+    },
+    { postTimeout: 10_000 },
+  );
+
+  const { row, link } = await mediaScrollbackRow(page, "🎵", slug);
+  await expect(link).toHaveClass(/scrollback-media-link/);
+
+  const cicUrl = page.url();
+  await link.click();
+
+  // The docked bar appears; the media viewer modal stays closed.
+  const player = page.getByTestId("audio-mini-player");
+  await expect(player).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole("dialog", { name: "Media viewer" })).toBeHidden();
+  expect(page.url()).toBe(cicUrl);
+
+  // The single <audio> element points at the served bytes (same-origin,
+  // under prod CSP). naturalWidth has no audio analogue, so we assert
+  // the src wire-up; the _cspGuard proves the fetch was CSP-admitted.
+  await expect(page.getByTestId("audio-mini-player-el")).toHaveAttribute("src", url);
+
+  // Close dismisses the bar; cic stays on the channel, scrollback intact.
+  await player.getByTestId("audio-mini-player-close").click();
+  await expect(player).toBeHidden({ timeout: 5_000 });
+  await expect(row.first()).toBeVisible();
+  expect(page.url()).toBe(cicUrl);
+});
+
 test("viewer load states: failure text on unfetchable media, spinner until bytes arrive (dogfood fix 2026-06-11)", async ({
   page,
 }) => {

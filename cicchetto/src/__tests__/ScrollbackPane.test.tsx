@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
+import { activeAudio, closeAudio } from "../lib/audioPlayer";
 import { closeMediaViewer, mediaViewerState } from "../lib/mediaViewer";
 
 // Review fix (2026-06-11): same-host NON-media links delegate plain
@@ -2260,6 +2261,7 @@ describe("ScrollbackPane", () => {
   describe("media links open the in-app viewer (media-link cluster)", () => {
     beforeEach(() => {
       closeMediaViewer();
+      closeAudio();
     });
 
     it("📸-prefixed same-origin upload URL: click is intercepted and opens the viewer", () => {
@@ -2309,6 +2311,32 @@ describe("ScrollbackPane", () => {
       const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
       link.dispatchEvent(ev);
       expect(mediaViewerState()).toEqual({ href, kind: "video" });
+    });
+
+    it("🎵-prefixed same-origin upload URL opens the docked mini-player, NOT the modal", () => {
+      const href = `${window.location.origin}/uploads/mmmmmmmmmmmmmmmmmmmmmmmmmm`;
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "bob",
+            body: `🎵 ${href}`,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      // Audio routes to the non-modal docked player; the image/video
+      // viewer modal stays closed.
+      expect(activeAudio()).toEqual({ href });
+      expect(mediaViewerState()).toBeNull();
     });
 
     it("modifier-click (cmd/ctrl) is NOT intercepted — browser new-tab semantics stand", () => {
