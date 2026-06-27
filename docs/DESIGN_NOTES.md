@@ -13418,3 +13418,75 @@ the query render path keys off channel-topic subscriptions that a
 channel-named query window never has. Reject the malformed intent at the
 parser boundary rather than letting it open a window the render path can
 never feed.*
+
+## 2026-06-27 — audio uploads + non-modal mini-player (GH #115)
+
+Audio joins image/video/document as a fourth upload category: grappa
+hosts the bytes, IRC carries only a `🎵 <slug-url>` link (text on the
+wire, clickable in cic), cicchetto plays it. Four decisions are durable.
+
+**A fourth `:audio` category, not "map audio → document" (vjt).** Own
+per-file cap (25 MiB — above image's 10, below video's 50; lossless
+flac/wav are large but a shared clip is not a movie), own `🎵` wire
+emoji, own player. MIME set is "what modern browsers reliably play":
+mp3 (`audio/mpeg`), m4a/m4r (`audio/mp4` + `audio/x-m4a` + `audio/aac`;
+AAC and Apple-Lossless both ride `audio/mp4`), wav (+ `x-wav`/`wave`),
+flac (+ `x-flac`). **opus/ogg are deferred OUT** — Safari support is
+patchy and vjt dogfoods on iPhone. Exact playable set is finalised by
+device dogfood, not this entry.
+
+**octet-stream → canonical-MIME extension sniff (scoped breach of the
+closed MIME-only allowlist).** iOS/macOS routinely upload `.m4a`/`.flac`
+as `application/octet-stream`, which a MIME-only allowlist 415s.
+`validate_mime` now normalises a generic octet-stream upload to its
+canonical audio MIME *by file extension* (the audio set ONLY — every
+other octet-stream still 415s, so the closed model holds for non-audio).
+The motivation is serve-side, not just accept-side: the controller stores
+the derived MIME and `GET /uploads/:slug` serves `row.mime` as
+Content-Type, so normalising at the door makes the *served* Content-Type
+one the browser actually plays — "ensure grappa emits the right mime"
+(vjt). This is the one place the allowlist consults extension, and it is
+deliberately narrow.
+
+**Audio is NOT metadata-stripped in v1 (accepted ID3/iTunes leak).**
+Audio rides `MetadataStrip`'s generic pass-through, same as documents —
+the image/video strip lockstep only pins `category in [:image, :video]`.
+Audio carries ID3/iTunes tags (artist/album, sometimes device/recording
+metadata); accepting that leak is the documented v1 scope, pinned by a
+`metadata_strip_test` so a future "strip audio too" (exiftool handles
+m4a/mp3/flac) is a conscious edit, not silent inheritance.
+
+**No seed-row migration — born from the code default.** The plan asked to
+"follow the video-doc cap migration pattern"; that pattern does not exist
+(`20260609204800_rename_per_file_cap_setting_to_image.exs` states video +
+document caps are born from code defaults, no rows needed). Audio follows
+suit: `read_cap` returns `@default_upload_audio_per_file_cap_bytes` when
+no row exists. A migration would only force a needless COLD deploy
+(Deploy.Preflight Class 5) to write a row the default already returns.
+
+**Docked non-modal mini-player reconciles "mini-player" with "IRC stays
+text only".** The invariant bans inline render / preview cards in
+scrollback, and the image/video modal is wrong for audio (you want to
+keep reading while it plays). Resolution: clicking a `🎵` link routes
+`kind:"audio"` to a single docked transport bar (`AudioMiniPlayer.tsx` +
+the `audioPlayer.ts` identity-scoped store, mirror of `mediaViewer.ts`)
+pinned above the compose box — NOT inline, NOT modal. One `<audio>`
+singleton; a new audio click swaps the source. Mounted inside the
+`kindHasScrollback` Match so playback survives channel↔query↔server
+switches; leaving chat for home/list/mentions stops it (acceptable v1 —
+a Shell-root mount + fixed-dock is the upgrade for full cross-pane
+persistence). image/video keep `openMediaViewer`. Placement + controls
+(play/pause + scrubber + elapsed/duration + close) are vjt-approved.
+
+**The mirror is type-enforced.** Adding `"audio"` to cic's
+`UploadCategory` turned every exhaustive `Record<UploadCategory, …>`
+(host accept lists, per-category caps, the emoji map, the settings
+signal) into a compile error until each grew an audio arm — `bun run
+build` (tsc, the real cic type gate) flagged the surfaces grep missed,
+including the WS-payload narrower in `userTopic.ts` that would otherwise
+have silently dropped `audio_per_file_cap_bytes` off the reactive cap.
+
+*Lesson: when a closed allowlist must bend (octet-stream → audio), bend
+it at exactly one named, extension-scoped door and say why in the
+moduledoc — a blanket "sniff everything" would have dissolved the model
+the upload boundary depends on.*
