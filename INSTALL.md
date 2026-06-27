@@ -103,6 +103,58 @@ git pull
 docker compose -f compose.yaml --profile prod up -d --build
 ```
 
+## Exposing it beyond localhost (TLS)
+
+The default install binds to `127.0.0.1`, which is the safe, fully-working
+mode: `http://localhost` is a secure context, so the PWA (service worker,
+push, install-to-homescreen) works without TLS.
+
+To reach grappa from other devices you need **HTTPS** — browsers refuse to
+register a service worker over plain HTTP off-localhost (and over an
+untrusted cert), so the PWA breaks without it. Put a TLS reverse proxy in
+front; the Docker stack stays HTTP-only behind it. In `.env`, set
+`PHX_HOST` so Phoenix accepts the `wss://` origin and mints correct links,
+then restart:
+
+```sh
+# .env
+PHX_HOST=grappa.example.org
+# docker compose -f compose.yaml --profile prod up -d
+```
+
+### Option A — Caddy (simplest; public domain)
+
+[Caddy](https://caddyserver.com) provisions and auto-renews a Let's Encrypt
+certificate for you. With a domain pointed at the host and ports 80+443
+reachable from the internet, the whole config is:
+
+```caddyfile
+grappa.example.org {
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+`reverse_proxy` forwards the WebSocket upgrade and sets
+`X-Forwarded-Proto`/`-For` automatically. Run `caddy run` (or the service)
+— no cert files, no renewal cron, nothing else.
+
+### Option B — nginx (reference config)
+
+If you already run nginx, use
+[`infra/nginx-tls-frontend.example.conf`](infra/nginx-tls-frontend.example.conf):
+a self-contained TLS vhost (modern ciphers, HSTS, the `/socket` WebSocket
+block, `/sw.js` no-cache) adapted from the production front. Replace the
+`<placeholders>`, point `ssl_certificate*` at your cert, reload.
+
+### LAN only (no public domain)
+
+ACME can't issue a public cert for a private address, so use a
+locally-trusted CA — then the service worker still registers:
+[`mkcert`](https://github.com/FiloSottile/mkcert) (`mkcert -install` once,
+then `mkcert grappa.lan`) feeding the nginx reference, or Caddy's `tls
+internal`. A plain self-signed cert will **not** do — the browser rejects
+the service worker.
+
 ## Manual install (without the script)
 
 The script just automates these steps. To do it by hand:
