@@ -425,7 +425,7 @@ Free-text would force escaping at every layer (controllers re-encoding, channel-
 
 ### 2026-04-26 — Phase 2 close: G2 wipe-and-rebuild over migration
 
-Pre-Phase-2 the `messages.user_id` was a free-text `:string` (Phase 1 hardcoded `"vjt"`). Phase 2 made it an `Ecto.UUID` FK to `users.id`. Decision G2 in `docs/plans/2026-04-25-phase2-auth.md` accepted **wipe + recreate the dev/prod DB** rather than write a backfill migration.
+Pre-Phase-2 the `messages.user_id` was a free-text `:string` (Phase 1 hardcoded `"vjt"`). Phase 2 made it an `Ecto.UUID` FK to `users.id`. Decision G2 accepted **wipe + recreate the dev/prod DB** rather than write a backfill migration.
 
 **Why wipe:**
 
@@ -1525,8 +1525,7 @@ always for a new visitor, by definition).
 
 ### Plan 2 micro-followups carried forward (not blocking next cluster)
 
-Filed in `docs/plans/2026-05-03-t31-admission-integration.md`
-"Post-T31 state":
+Filed as "Post-T31 state" follow-ups:
 
   * Partial index `where: "client_id IS NOT NULL"` on
     `accounts_sessions.client_id`.
@@ -1817,8 +1816,7 @@ Works on the wildcard default AND the IP-bound override.
 
 ## 2026-05-06 — BUG7 doesn't reproduce in Playwright iPhone 15 emulation
 
-S5 of the integration-testing plan
-(`docs/plans/2026-05-06-integration-testing.md`) called BUG7
+S5 of the integration-testing plan called BUG7
 "a regression-pin RED on prod head" and budgeted a fix. The S4 RED
 landed at HEAD `aa4ad17`; S5 trace investigation revealed the failure
 was at the page-object's `selectChannel` step — BEFORE the test ever
@@ -2385,8 +2383,7 @@ sidebar rows for channels under that network stay visually normal —
 the GenServer died). Net: today /disconnect leaves the cic UI looking
 fully connected across every channel under the parked network.
 
-**Two design options weighed in
-`docs/plans/2026-05-09-t32-parked-window.md`:**
+**Two design options weighed:**
 
 - **Q1.A — emit per-window `:parked` from Session.Server `terminate/2`.**
   Pro: cic's existing `windowStateByChannel` model handles it; symmetric
@@ -4682,8 +4679,7 @@ Original CLAUDE.md invariant from Phase 1: *"No server-side `MARKREAD`
 / read cursors. Read position is client-side only. Adding it later is
 forward-compatible; removing it later would break clients that came to
 depend on it."* That invariant is being deliberately flipped in the
-`server-side-read-state` cluster (plan:
-`docs/plans/2026-05-13-server-side-read-state.md`). Three forces drove
+`server-side-read-state` cluster. Three forces drove
 the flip at once:
 
 1. **The cp13-S5 race.** `tests/cp13-server-window.spec.ts:171` fails
@@ -4805,8 +4801,7 @@ same cursor as `+draft/read-marker` MARKREAD lines.
 
 Next-up: parked `cluster/numeric-delegation-p0` worktree unblocks
 (rebase onto main; verify cp13-S5 + m3/m4/replay green; cold deploy
-for the U-line submodule bump; continue P-0b → P-0e per
-`docs/plans/2026-05-13-numeric-delegation-p0.md`, order:
+for the U-line submodule bump; continue P-0b → P-0e, order:
 P-0b AWAY → P-0e INVITING → P-0d LUSERS → P-0c WHOWAS).
 
 
@@ -4819,8 +4814,7 @@ Bahamut numerics: `whois_bundle` (extended with 11 flags), `peer_away`
 (standalone 301), `invite_ack` (341), `lusers_bundle` (251–266
 sequence), `whowas_bundle` (314/369/406 with 312 conflict-gate).
 Branch `cluster/numeric-delegation-p0` merged ff-only to main as
-`8a38660`. Plan + per-bucket detail at
-`docs/plans/2026-05-13-numeric-delegation-p0.md`. Cluster close
+`8a38660`. Cluster close
 detail at `docs/checkpoints/2026-05-14-cp30.md`.
 
 Three slash commands wired through cic: `/lusers`, `/whowas <nick>`,
@@ -5010,9 +5004,7 @@ limits, W-16 signing_salt rotation, M-cic-2 production strip of
 
 10 commits across 9 production buckets shipped same-day on
 `cluster/visitor-parity-and-nickserv`, ff-merged to main as
-`f51618a..2668fba`. V8 DROPPED at brainstorm. Plan +
-per-bucket retrospective at
-`docs/plans/2026-05-14-visitor-parity-and-nickserv.md`. Cluster
+`f51618a..2668fba`. V8 DROPPED at brainstorm. Cluster
 checkpoint at `docs/checkpoints/2026-05-15-cp32.md`.
 
 ### The subject parity invariant
@@ -5143,8 +5135,7 @@ defensively.
 ## 2026-05-15 — I cluster (image upload) CLOSED
 
 4 commits across 4 buckets shipped same-day on `cluster/images`,
-ff-merged to main. Plan + per-bucket retrospective at
-`docs/plans/2026-05-15-images-cluster.md`. Cluster checkpoint at
+ff-merged to main. Cluster checkpoint at
 `docs/checkpoints/2026-05-15-cp33.md`.
 
 ### Bucket summary
@@ -5267,7 +5258,7 @@ debug globals, P-2 TLS verify-CA, cards UX renegotiation
 
 ## 2026-05-16 — T cluster (task harness) CLOSED
 
-Three-cluster arc per `docs/plans/2026-05-16-tmu-cluster-arc.md`:
+Three-cluster arc:
 T (task harness) → M (admin console) → U (cap honesty). T-cluster
 closed first.
 
@@ -6093,9 +6084,7 @@ typed cic banner instead of a silent 200-OK with the row at
   blew the budget. Post-U-2: three typed timeouts +
   three typed errors (`:connect_timeout` / `:welcome_timeout` /
   `:probe_timeout`), FallbackController maps each to its own
-  503 + Retry-After header. See plan
-  `docs/plans/2026-05-16-tmu-cluster-arc.md` §UD7 for the
-  per-phase rationale and the chosen budgets.
+  503 + Retry-After header.
 - **UD8** — Migration deploy class is **COLD** per
   `feedback_cluster_with_migration_must_cold`.
 - **UD9** — Tests: 6 admission split cases + controller
@@ -6415,6 +6404,23 @@ Per `project_post_tmu_full_review_scheduled`: full codebase review
 important MED) — **vjt-driven start. Do NOT auto-start review after
 UX-Z without vjt confirm.** After review: bastille deploy issue #8
 per `project_bastille_deploy_workstream`.
+
+---
+
+## 2026-05-18 — Channel names are case-folded (UX-4)
+
+IRC channel names are case-insensitive, but the scrollback/window tables
+were keying them case-sensitively, so `JOIN #Chan` vs `#chan` vs `#CHAN`
+forked into separate windows. Fix: channel names are **lowercased on read
+AND write** across every channel-keyed table (`messages`, `query_windows`,
+`read_cursors`, `last_joined_channels`, archive, and later
+`channel_directory`), with a one-time backfill migration
+(`20260518120000_backfill_lowercase_channels`). They now all resolve to a
+single window.
+
+*Invariant (also in CLAUDE.md): any new channel-keyed table or query MUST
+downcase the channel key, or it silently forks windows. Nicks are likewise
+compared case-insensitively (`nickEquals` on the cic side).*
 
 ---
 
@@ -9450,9 +9456,7 @@ occasion to regress. and further they do test actual features and
 not stupid internals."* 4 parallel review agents covered 104 specs
 + 5 fixtures and surfaced ~50 findings spanning HIGH/MED/LOW
 classes. Tier 1 (highest-leverage, fix-once-cure-all) was pulled
-into this cluster; Tier 2/3 captured in the plan appendix
-(`docs/plans/2026-05-23-green-ci-3-e2e-hardening.md`) for a future
-cluster.
+into this cluster; Tier 2/3 deferred to a future cluster.
 
 ### Tier 1 buckets
 
@@ -9757,8 +9761,7 @@ Two user-visible regressions vjt flagged during UX-8 dogfooding,
 closed BEFORE bastille deploy so the new prod runtime doesn't
 inherit them. Cluster shape: 2 buckets, brainstorm → spec → plan
 → autopilot exec (post-CP46 codegen precedent). Spec at
-`docs/superpowers/specs/2026-05-24-bughunt-1-design.md`, plan at
-`docs/superpowers/plans/2026-05-24-bughunt-1.md`.
+`docs/superpowers/specs/2026-05-24-bughunt-1-design.md`.
 
 ### Bucket A — server-side PRIVMSG auto-split
 
@@ -10600,12 +10603,29 @@ operator scripting; REST endpoints share the same context functions.
 
 ### Design decisions captured at plan time
 
-See `docs/plans/admin-panel.md` for A-1 through A-9 (PubSub
-broadcast strategy; running-session lifecycle on credential update;
-split user-password endpoint; last-admin invariant; refuse-not-
-cascade on network delete; leave-session-alone on server delete;
-wire modules per resource; auth method enum reuse; composite vs
-surrogate credential id).
+A-1..A-9. The ones with durable WHY:
+
+- **A-2 (credential update lifecycle):** a password / auth_method change
+  kills + respawns the session; a `nick` change leaves the live
+  `Session.Server` alone and returns `session_restart_required: true`
+  (server-side rename is `/nick`-routed, not credential-routed); cosmetic
+  edits leave it silently.
+- **A-4 (last-admin invariant):** `Accounts.update_admin_flags/2` +
+  `delete_user/1` refuse to demote/delete the SOLE admin (`{:error,
+  :last_admin}` → 422) — else the deployment locks itself out of its own
+  admin panel. Self-demotion is fine when another admin exists ("last
+  admin", not "self"). The guard counts other admins BEFORE the update;
+  SQLite's single-writer model serializes the demote-the-last-two race
+  naturally — a future Postgres migration would need an advisory lock
+  (caveat lives in the `update_admin_flags/2` moduledoc).
+- **A-5 (network delete):** 409 when credentials are bound; no
+  `?force=true` cascade (a footgun — same rationale as the bind-time
+  wrapper note above).
+- Rest — A-1 (PubSub admin-event broadcast), A-3 (split password
+  endpoint), A-6 (leave the live session alone on server delete), A-7
+  (per-resource `*.Wire` modules), A-8 (auth_method enum reuse), A-9
+  (composite vs surrogate credential id) — are mechanical; they live in
+  the controllers, schema, and `*.Wire` modules.
 
 ### Why two batched deploys instead of six
 
@@ -12354,8 +12374,7 @@ so `check.sh` + vitest work first-try from any new worktree.
 
 ## 2026-06-14 — IRC-centric custom keyboard (opt-in, in-page, replaces the native iOS keyboard)
 
-Full design + TDD plan: `docs/plans/2026-06-14-irc-keyboard-design.md` +
-`docs/plans/2026-06-14-irc-keyboard-plan.md`. Shipped as 17 commits
+Shipped as 17 commits
 (subagent-driven TDD, two-stage review per task). Phone-portrait MVP;
 landscape/iPad, channel-switch keys, emoji search, skin tones deferred.
 
@@ -12657,8 +12676,7 @@ that one passed pre-fix — belt-and-braces).
 
 ## 2026-06-21 — PWA home-screen icon badge (one predicate, three doors)
 
-Design approved 2026-06-12 (`docs/plans/2026-06-12-pwa-icon-badge.md`),
-implemented 2026-06-21 (`docs/plans/2026-06-21-pwa-icon-badge-impl.md`).
+Design approved 2026-06-12, implemented 2026-06-21.
 The badge shows "how many unread messages did the operator choose to be
 notified about" — capped at 99, fully derived from read cursors + the
 notify predicate, **no new persisted state**.
@@ -13051,7 +13069,7 @@ own design pass.
 
 Goal: make nick completion usable on a STOCK mobile keyboard (no Tab
 key), so the custom IRC keyboard becomes optional rather than the only
-way to complete a nick. Plan: `docs/plans/2026-06-23-nick-completion-{design,plan}.md`.
+way to complete a nick.
 
 **Scope decision.** Rejected an `@`-mention tooltip popup: `@` is the op
 sigil in NAMES, not a mention trigger in IRC — importing Slack/Discord
@@ -13247,6 +13265,20 @@ a non-nil `captured_at`." `Grappa.ChannelDirectory` owns the lifecycle
 (`replace_start` → `ingest` → `finalize`) and a server-side
 sort/search/keyset-paginated `list/3`; `DirectoryController` serves it.
 cic stays a lean shell — it never sorts, filters, or paginates.
+
+**Why per-`(subject, network)`, not a shared network-global snapshot.** A
+shared snapshot would force a secret-channel-leak apparatus: an opered
+session sees `+s`/`+p` channels it isn't in, and `RPL_LIST` carries no
+modes, so they can't be filtered out of a shared cache (plus a just-joined
+race and stripping the issuer's own memberships). Per-subject isolation
+deletes that whole class by construction. Accepted cost: LIST no longer
+dedups across users (~1 LIST / 48h / user — fine at small scale).
+
+**Why no background / periodic refresh.** Upstream `LIST` is widely
+throttled / abuse-flagged, and a periodic refresh would need an elected
+issuer per network. So: lazy 48h TTL — auto-refresh fires ONLY on an empty
+snapshot; a `>48h` snapshot serves stale rows with an indicator but does
+NOT auto-refresh; the manual refresh button always nukes + restreams.
 
 **LIST is intercepted only while a refresh is in flight.** `Session.Server`
 gains a `directory_refresh` in-flight tracker; `refresh_directory/2` issues

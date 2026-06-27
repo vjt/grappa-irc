@@ -14,8 +14,7 @@
  * Wire shape for a Web Push payload (server → cic SW).
  *
  * The values are user-facing strings — the documented exception to
- * the wire-shape rule per
- * docs/plans/2026-05-14-push-notifications.md § Standing rules.
+ * the wire-shape rule per the push-payload standing rules.
  * The OS surface (lockscreen, notification centre) renders these
  * BEFORE cic JS gets a chance to format, so cic-side localization
  * is impossible for push.

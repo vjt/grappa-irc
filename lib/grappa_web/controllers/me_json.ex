@@ -26,12 +26,12 @@ defmodule GrappaWeb.MeJSON do
   Nested map: `%{network_slug => %{channel => last_read_message_id}}`.
   Loaded once at login by cic so it can render correct unread badges
   without a per-window REST round-trip. Empty `%{}` for a fresh
-  subject. Per plan O1.
+  subject.
 
   ## unread_counts envelope (bucket C, 2026-06-01)
 
   Nested map: `%{network_slug => %{channel => %{messages: int, events:
-  int}}}`. Same nesting as `read_cursors`; same plan-O1 grouping.
+  int}}}`. Same nesting as `read_cursors`; same nested-by-network grouping.
   Built inline by `MeController.show/2` from
   `Grappa.Scrollback.count_after_split/5` per cursor (slug→id index
   resolved controller-side to keep `Scrollback` free of a `Networks`
@@ -63,13 +63,13 @@ defmodule GrappaWeb.MeJSON do
   alias Grappa.Visitors.Wire, as: VisitorsWire
 
   @typedoc """
-  Read-cursor envelope: nested `%{slug => %{channel => id}}` per plan O1.
+  Read-cursor envelope: nested `%{slug => %{channel => id}}`.
   """
   @type read_cursors :: %{String.t() => %{String.t() => integer()}}
 
   @typedoc """
   Unread-count envelope: nested `%{slug => %{channel => %{messages,
-  events}}}` per plan O1. The pair shape mirrors cic
+  events}}}`. The pair shape mirrors cic
   `selection.ts`'s `ServerSeedCount` type byte-for-byte.
   """
   @type unread_counts :: %{

@@ -3,9 +3,9 @@ import { logout, token } from "./auth";
 import { networks } from "./networks";
 
 // UX-4 bucket D — extracted from compose.ts /quit handler so the sidebar
-// server-window × can call the same nuclear path for visitors (plan
-// `docs/plans/2026-05-18-ux-4-cluster.md` §"Bucket D — visitor:
-// equivalent to /quit"). Park every bound user-network, then logout.
+// server-window × can call the same nuclear path for visitors (Bucket D
+// — visitor: equivalent to /quit). Park every bound user-network, then
+// logout.
 // The logout drives RequireAuth → /login.
 //
 // `Promise.allSettled` — partial PATCH failures do NOT block the logout.

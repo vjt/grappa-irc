@@ -6,9 +6,8 @@ import { isMobile } from "./lib/theme";
 // UX-4 bucket L (2026-05-19) — sticky chrome bar at the top of
 // `.shell-main`. Always rendered, regardless of selected window kind
 // (channel / query / server / home / mentions / admin / empty). This is
-// the cluster-wide rule from the b2f9815 plan-doc extension: the
-// settings cog MUST be reachable from every window kind, INCLUDING
-// the server window.
+// a cluster-wide rule: the settings cog MUST be reachable from every
+// window kind, INCLUDING the server window.
 //
 // Slots (left → right):
 //   * Spacer — pushes the right group to the far right.

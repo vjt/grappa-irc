@@ -8,9 +8,10 @@ irssi. One supervised OTP process per `(user, network)`; sqlite-backed
 scrollback; Phase 6 adds a downstream IRCv3 listener facade.
 
 See `README.md` for the spec and `docs/DESIGN_NOTES.md` for the
-chronological decision log. Active implementation plans live under
-`docs/plans/`. Operator + developer runbook (verbs, scripts, deploy
-machinery, per-host overrides, runtime data, monitoring) lives in
+chronological decision log. Backlog and roadmap live in GitHub issues
+(`gh issue list`); implementation plans are ephemeral scratch, never
+committed (see Docs map). Operator + developer runbook (verbs, scripts,
+deploy machinery, per-host overrides, runtime data, monitoring) lives in
 **`docs/OPERATIONS.md`**.
 
 ## Architecture
@@ -50,6 +51,13 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   `(network_id, channel, server_time DESC)`-indexed; a future
   `CHATHISTORY` listener facade (Phase 6) is a mechanical query
   translation, not a redesign.
+- **Channel names are case-folded.** Every channel-keyed table
+  (`messages`, `query_windows`, `read_cursors`, `last_joined_channels`,
+  archive, `channel_directory`) stores the channel **lowercased**, and
+  every lookup downcases the key — so `#Chan`, `#chan`, `#CHAN` resolve
+  to one window. A new channel-keyed table or query MUST downcase or it
+  silently forks windows. (Nicks are likewise compared
+  case-insensitively — cic's `nickEquals`.)
 - **Read state is server-owned, per (subject, network, channel).**
   Cursor = `last_read_message_id` (FK to `messages.id`). Removing
   server-side cursor is a breaking change. The write cadence (settle
@@ -117,8 +125,8 @@ not the surrounding code.**
 - **Challenge the spec.** If domain knowledge contradicts the
   requirements, say so before building. A 30-second question costs
   nothing. Building the wrong thing costs hundreds of commits.
-- **Directions over code.** This file + `docs/DESIGN_NOTES.md` +
-  `docs/plans/*.md` are the authority. If existing code contradicts
+- **Directions over code.** This file + `docs/DESIGN_NOTES.md` are
+  the authority. If existing code contradicts
   them, the code is wrong — flag it to vjt, don't copy the divergent
   pattern. Every session starts with zero memory; the codebase will
   tempt you to copy whatever pattern is closest. Resist. **This applies
@@ -517,7 +525,14 @@ is due. Don't just look at todo.md.
 - **`docs/TESTING.md`**: how-to-run-tests runbook (every gate, e2e
   triage, gotchas).
 - **`docs/DESIGN_NOTES.md`**: chronological decision log.
-- **`docs/plans/*.md`**: implementation plans, TDD steps, exit criteria.
+- **`docs/plans/*.md`, `docs/superpowers/plans/*.md`** — EPHEMERAL
+  scratch plans. **Gitignored; never commit them.** A plan is working
+  memory for ONE feature: write it, execute it, then DELETE it as part
+  of feature completion. Any durable rationale (a design decision,
+  invariant, constraint, gotcha) MUST be lifted into
+  `docs/DESIGN_NOTES.md` (or the relevant living doc) BEFORE the plan is
+  deleted — the decision log is the permanent record; the plan is not.
+  Backlog and roadmap live in GitHub issues, not files.
 
 If a rule belongs in the codebase as code, write the code. If a rule
 belongs in conversation, write a memory. CLAUDE.md is for the rules

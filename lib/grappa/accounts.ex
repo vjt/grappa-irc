@@ -36,8 +36,7 @@ defmodule Grappa.Accounts do
   hash column. Rationale: the operator-personal deployment posture
   means a DB compromise already exposes scrollback + encrypted creds,
   so a token-hash adds little marginal protection. See
-  `Grappa.Accounts.Session` moduledoc + `docs/plans/2026-04-25-phase2-auth.md`
-  Decision A for the trade-off.
+  `Grappa.Accounts.Session` moduledoc for the trade-off.
 
   Sliding 7-day idle expiry: a session lives forever as long as the
   client keeps using it; 8 days of silence and the next `authenticate/1`
@@ -236,7 +235,7 @@ defmodule Grappa.Accounts do
   counts other admins (excluding `user.id`) BEFORE the update; SQLite's
   single-writer model serializes concurrent demotes naturally (the
   second tx observes the first's commit). A future Postgres migration
-  would need an advisory lock here; documented in plan R-2.
+  would need an advisory lock here.
   """
   @spec update_admin_flags(User.t(), %{required(:is_admin) => boolean()}) ::
           {:ok, User.t()} | {:error, :last_admin | Ecto.Changeset.t()}

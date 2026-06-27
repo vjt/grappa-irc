@@ -35,8 +35,8 @@ export function closeQueryWindow(networkId: number, targetNick: string): void {
 }
 
 // UX-4 bucket D — close the server window for a network. Visitor
-// branches to quitAll (nuclear: park-all + logout, per the plan-doc
-// 2026-05-18 §"Bucket D — visitor: equivalent to /quit"). Registered
+// branches to quitAll (nuclear: park-all + logout; Bucket D — visitor:
+// equivalent to /quit). Registered
 // user PATCHes the one network to :parked; the user-topic
 // `connection_state_changed` event then drives the cic side:
 // networkBySlug refetches → the parked-cascade in Sidebar dims the

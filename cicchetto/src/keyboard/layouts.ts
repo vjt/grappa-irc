@@ -1,5 +1,5 @@
 // Static key grids for the three primary layers. Mirrors the stock-iOS
-// reference screenshots in docs/plans/2026-06-14-irc-keyboard-design.md.
+// keyboard layout.
 // Bottom row (123/ABC · emoji · space · return) is rendered by
 // Keyboard.tsx, not encoded here, because its keys are layer-control +
 // global, not per-layer character data.

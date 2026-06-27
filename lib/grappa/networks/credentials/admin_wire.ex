@@ -94,8 +94,8 @@ defmodule Grappa.Networks.Credentials.AdminWire do
       case: there's nothing to stop, so the wire is honest and uniform.
     * `:stopped` — change set included `:password` / `:auth_method`, AND
       a live session existed. `Session.stop_session/2` killed it; operator
-      must `/connect` to bring it back under the new creds. Per plan A-2,
-      we don't auto-respawn — the `POST /networks/:slug/connect` verb is
+      must `/connect` to bring it back under the new creds. We don't
+      auto-respawn — the `POST /networks/:slug/connect` verb is
       the operator-facing path that re-runs admission + spawn.
   """
   @type session_action :: :left_alone | :stopped

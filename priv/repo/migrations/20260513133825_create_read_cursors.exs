@@ -7,8 +7,7 @@ defmodule Grappa.Repo.Migrations.CreateReadCursors do
 
   Phase 1 invariant *"No server-side `MARKREAD` / read cursors. Read
   position is client-side only."* is being deliberately flipped — see
-  `docs/DESIGN_NOTES.md` "2026-05-13 — invariant flip" and
-  `docs/plans/2026-05-13-server-side-read-state.md`. Three forces:
+  `docs/DESIGN_NOTES.md` "2026-05-13 — invariant flip". Three forces:
 
     1. The cp13-S5 race (cic GET-empty → POST → broadcast → JOIN-too-late
        loses the just-broadcast row).
@@ -24,8 +23,7 @@ defmodule Grappa.Repo.Migrations.CreateReadCursors do
     * `network_id` references `networks.id` (integer FK), NOT NULL.
     * `channel` is `TEXT` — same shape as `messages.channel`. Stores
       IRC channels (`#chan`), DM peer nicks (`alice`), or grappa-internal
-      synthetic windows (`$server`, `*`). All cursor-able uniformly per
-      plan O3 / O4.
+      synthetic windows (`$server`, `*`). All cursor-able uniformly.
     * `last_read_message_id` references `messages.id` (integer FK).
       `ON DELETE SET NULL` (NOT `CASCADE`): message deletion is rare
       (visitor reaping CASCADEs the whole subject chain anyway), and

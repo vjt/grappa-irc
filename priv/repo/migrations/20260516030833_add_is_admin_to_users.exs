@@ -3,7 +3,7 @@ defmodule Grappa.Repo.Migrations.AddIsAdminToUsers do
   M-1 (admin-console cluster) — single-bit operator authorization flag
   on `users`. `false` by default; the first admin user is bootstrapped
   via `bin/grappa create-user --admin --name grappa --password <prompt>`
-  (Q-FIRST-ADMIN per docs/plans/2026-05-16-tmu-cluster-arc.md), which
+  (Q-FIRST-ADMIN), which
   ships in a later M bucket as a flag on the existing create-user verb.
 
   Subsequent M buckets layer `:admin` Phoenix pipeline +

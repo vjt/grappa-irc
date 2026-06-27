@@ -28,8 +28,7 @@ defmodule Grappa.Visitors.AdminWire do
 
   ## Shape note vs MD2 plan example
 
-  MD2 (`docs/plans/2026-05-16-tmu-cluster-arc.md` lines 632-661)
-  shows visitors wrapped under a `db_state: {...}` key alongside
+  MD2 shows visitors wrapped under a `db_state: {...}` key alongside
   `live_state: {...}`. The actual wire flattens visitor fields to
   the top level — the visitor schema IS the DB intent, so a
   separate `db_state` wrapper would be empty ceremony. The

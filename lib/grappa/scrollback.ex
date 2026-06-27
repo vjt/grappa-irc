@@ -485,8 +485,7 @@ defmodule Grappa.Scrollback do
   Sole consumer: cic's "open window centered on cursor" flow landing in
   R-4 — when a user opens a channel with an existing read cursor, cic
   asks for ~50 rows before + ~100 rows after the cursor so the unread
-  marker has visual context on both sides. Per plan vjt 2026-05-13
-  ("50 before, 100 next").
+  marker has visual context on both sides (50 before, 100 next).
 
   If `around_id` doesn't exist (deleted, never existed, or belongs to a
   different subject/network/channel), the query still returns whatever

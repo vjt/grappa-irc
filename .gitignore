@@ -62,6 +62,12 @@ priv/plts/*.plt.hash
 # ── Local cluster worktrees (self-contained, machine-specific)
 /.worktrees/
 
+# ── Ephemeral implementation plans (scratch, per-feature; deleted at
+# feature completion — durable rationale goes to docs/DESIGN_NOTES.md
+# first). See CLAUDE.md "Docs map". docs/superpowers/specs/ stays tracked.
+/docs/plans/
+/docs/superpowers/plans/
+
 # ── Claude Code session state (locks, scratch, output)
 # Skills + settings.json are repo-shared content; everything else
 # (locks, scratch, settings.local.json) stays local.

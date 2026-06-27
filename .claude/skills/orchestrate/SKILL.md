@@ -99,7 +99,7 @@ If `STALE` or `FRESH`, fall through to Step 2.
    ```
    The OTHER pane (not the one this session runs in) is the target. Note its `%id`.
 
-2. Read the active plan: invoke `/start` to get the workflow context, then read the relevant `docs/plans/*.md` so you know the sub-task order. Read `docs/checkpoints/*.md` with `status: active` for current state.
+2. Read the active plan: invoke `/start` to get the workflow context, then read the relevant GitHub issue(s) for the task (`gh issue view <n>`) — plus the feature's ephemeral plan file under `docs/plans/` if one exists this session — so you know the sub-task order. Read `docs/checkpoints/*.md` with `status: active` for current state.
 
 3. If `STALE`, wipe stale files: `rm -f /tmp/orchestrate-state-<id>.json /tmp/orchestrate-cursor-<id> /tmp/orchestrate-events-<id>.log /tmp/orchestrate-daemon-<id>.pid`. (The leading `%` from the pane id is stripped in the filenames.)
 

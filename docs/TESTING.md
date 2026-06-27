@@ -121,6 +121,16 @@ artifacts: screenshot, video, trace.zip) and
 `cicchetto/e2e/playwright-report/`. Open a trace with
 `npx playwright show-trace <path>/trace.zip`.
 
+**Per-spec state reset.** Every spec auto-resets `vjt`'s grappa-side
+state (DB rows + live `Session.Server` + ETS) after the test via the
+`_vjtReset` `auto: true` fixture (`cicchetto/e2e/fixtures/test.ts`),
+which calls `POST /admin/test/reset-subject` — an endpoint compile-gated
+to `:dev`/`:test` (the module + route literally do not exist in the prod
+release). So each spec starts from the seeded baseline rather than the
+previous spec's mutations of `vjt`. Cascades that survive this come from
+state outside the reset's scope (other seed users, testnet-side IRC
+state).
+
 ## Triaging a failing e2e: cascade vs flake vs real bug
 
 **Iron rule:** when one or more e2e specs fail in CI or in a full local
@@ -180,6 +190,10 @@ The decision tree:
   (waits for the typed `kind: "joined"` broadcast — separate event).
   If asserting on member-list-mounted state, wait on
   `.shell-members .members-pane` visibility, not the JOIN line.
+* Sidebar / bottom-bar locators matched by `hasText` substring instead
+  of exact text resolve to the WRONG row when window names collide
+  (`#bofh` ⊂ `#bofh-test`, `peer` ⊂ `peer2`). Match exact text — a
+  regex anchor like `/^#bofh$/`, not a substring.
 
 **Never** `gh run rerun --failed`. First run IS the truth — see
 `feedback_no_ci_retries_on_first_failure`. Reproduce locally with
@@ -217,6 +231,7 @@ These bite during cluster work; check the memory before re-investigating.
 * **Bahamut U-line is per-ircd local conf** (`feedback_bahamut_uline_per_ircd`) — `FLAGS_ULINE` requires per-leaf `U:services` line; SVSMODE silently drops at IsULine otherwise. Bites when adding new testnet leaves.
 * **Visitor mint e2e 504 from cold-start** (`feedback_visitor_mint_e2e_cold_start`) — `POST /auth/login {identifier: nick}` exceeds `login_probe_timeout_ms` on first IRC connection. Pre-seed at compose time, NOT mint at test time.
 * **`docker compose up --wait` fails on oneshot exit** (`feedback_compose_wait_oneshot_exit`) — `--wait` treats oneshot's normal exit as healthcheck fail. Use `compose run --rm` for oneshots.
+* **Static peer NICKs must be per-run-unique** — Bahamut holds a ghosted nick for a linger window after disconnect, so a hard-coded peer nick hits `433 nick in use` on rapid e2e reruns. Generate a fresh nick per run (or per spec) for any peer that connects to the testnet; don't reuse a literal.
 
 ## When the test stack itself is broken
 

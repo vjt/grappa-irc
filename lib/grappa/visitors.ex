@@ -288,8 +288,7 @@ defmodule Grappa.Visitors do
   ## Wire shape note
 
   Returns a flat `{visitor, live_state}` tuple — the visitor row's
-  fields are NOT wrapped under a `db_state` key (cf. MD2 example
-  in `docs/plans/2026-05-16-tmu-cluster-arc.md`). The flatter
+  fields are NOT wrapped under a `db_state` key (cf. MD2 example). The flatter
   shape was chosen for simpler cic rendering; the visitor schema
   IS the DB intent, no additional wrapper needed.
   """

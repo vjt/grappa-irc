@@ -876,8 +876,8 @@ html.resize-dragging * {
 /* UX-4 bucket L (2026-05-19) — ShellChrome bar: always-visible
    top-of-`.shell-main` toolbar. Hosts hamburger (mobile) + archive
    button + settings cog. The buttons share `.shell-chrome-btn` base
-   class for size parity with `.topic-bar-hamburger` per plan-doc
-   "Hamburger + cog button size parity: cog grows to hamburger size". */
+   class for size parity with `.topic-bar-hamburger` — the cog grows to
+   hamburger size. */
 
 .shell-chrome {
   display: flex;

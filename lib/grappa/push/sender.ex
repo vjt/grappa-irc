@@ -112,7 +112,7 @@ defmodule Grappa.Push.Sender do
   Push payload shape. The wire shape is typed (atom keys, String.t()
   values), but the values themselves are user-facing strings — the
   documented EXCEPTION to the wire-shape rule per
-  `docs/plans/2026-05-14-push-notifications.md` § Standing rules.
+  the push-payload standing rules.
   Reason: the OS notification surface (lockscreen, notification
   centre) renders the payload BEFORE cic JS gets a chance to format,
   so cic-side localization is impossible for push.

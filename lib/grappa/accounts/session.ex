@@ -15,8 +15,7 @@ defmodule Grappa.Accounts.Session do
       a DB leak in this app would already disclose the encrypted
       NickServ creds, scrollback, and channel topology — the marginal
       value of token-hashing on top is low for the operator-personal
-      deployment posture (see `docs/plans/2026-04-25-phase2-auth.md`,
-      Decision A).
+      deployment posture (see Decision A).
 
   ## Lifecycle
 

@@ -563,8 +563,8 @@ describe("Sidebar", () => {
 
   // CP15 B6 — synthetic sidebar rows for state ∈ {pending, failed,
   // kicked, parked} when the channel is NOT in channelsBySlug. The
-  // intent doc (docs/plans/2026-05-07-event-driven-windows.md, Window
-  // state machine §) calls for "Sidebar entry greyed/dim" on every
+  // intent doc (Window state machine §) calls for "Sidebar entry
+  // greyed/dim" on every
   // failed/kicked/parked window — same projection as pending. Without
   // synthetic rendering for the failed family, a /join attempt against
   // an invite-only / banned / keyed channel would leave the operator

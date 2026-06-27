@@ -36,7 +36,7 @@ defmodule GrappaWeb.MeController do
   ## Read cursor envelope
 
   The response carries `read_cursors: %{network_slug => %{channel =>
-  id}}` (per plan O1: nested by network) so cic doesn't need a
+  id}}` (nested by network) so cic doesn't need a
   per-window REST round-trip on login. Built from
   `Grappa.ReadCursor.bulk_for_subject/1` — single query bounded by
   ~600 rows in the worst case.

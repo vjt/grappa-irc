@@ -80,7 +80,7 @@ defmodule Grappa.ReadCursor do
   @typedoc """
   Bulk envelope shape: nested `%{network_slug => %{channel => message_id}}`.
 
-  Per plan O1: nested matches the Phoenix per-channel topic shape
+  Nested matches the Phoenix per-channel topic shape
   (network grouping is the natural axis of the wire) and the size is
   bounded by network count. Loaded once at subject login by `MeController`
   / equivalent envelope assembler.
@@ -159,11 +159,11 @@ defmodule Grappa.ReadCursor do
   channel.
 
   Shape: `%{network_slug => %{channel => last_read_message_id}}` —
-  per plan O1 (nested envelope).
+  nested envelope.
 
   Used at `/me` envelope assembly time. Single LEFT JOIN to `networks`
   for slug resolution; one row per cursor; bounded by ~600 rows in the
-  worst case (~20 networks * ~30 channels) per plan O5.
+  worst case (~20 networks * ~30 channels).
   """
   @spec bulk_for_subject(subject()) :: bulk_envelope()
   def bulk_for_subject(subject) do
