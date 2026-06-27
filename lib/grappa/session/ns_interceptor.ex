@@ -1,70 +1,67 @@
 defmodule Grappa.Session.NSInterceptor do
   @moduledoc """
-  Pure module: matches outbound IRC lines for NickServ identity verbs
-  that carry a password, captures the password into a staging buffer.
+  Pure module: matches an outbound IRC wire line for any NickServ-account
+  identify verb that carries a password, and lifts the password out for the
+  host (`Grappa.Session.Server`) to stage in `pending_auth`. Captures are
+  committed to the visitor row ONLY on +r MODE observation (or discarded on
+  the `@pending_auth_timeout_ms` timeout). Wrong passwords never touch the DB.
 
-  Used by `Grappa.Session.Server`'s outbound send path. Captures land
-  in `state.pending_auth = {password, deadline}` and are committed to
-  the visitor row ONLY on +r MODE observation (or discarded on 10s
-  timeout). Wrong passwords never touch the DB.
+  Covers the full azzurra identify-channel set (source-verified against
+  `bahamut-azzurra` ircd + azzurra `services`):
 
-  Per W8: same Session.Server mailbox is FIFO, so two concurrent
-  IDENTIFY commands serialize and the second overwrites pending_auth —
-  latest-wins for free.
+    * `PRIVMSG NickServ[@host] :IDENTIFY|ID|SIDENTIFY|GHOST|REGISTER <args>`
+    * `NS|NICKSERV IDENTIFY|ID|SIDENTIFY|GHOST|REGISTER <args>`   (services command alias)
+    * `IDENTIFY|ID|SIDENTIFY <args>`                    (ircd `m_identify`)
+    * `PASS <args>`                                     (ircd `m_pass` -> `m_identify`, post-connect)
 
-  Verbs handled (case-insensitive):
-  - `PRIVMSG NickServ :IDENTIFY <pwd>`
-  - `PRIVMSG NickServ :IDENTIFY <account> <pwd>`
-  - `PRIVMSG NickServ :GHOST <nick> <pwd>`
-  - `PRIVMSG NickServ :REGISTER <pwd> <email>`
+  Every pattern is ANCHORED at line start (`^`) so a channel PRIVMSG body that
+  merely CONTAINS "identify"/"pass" is never captured — raw IRC frames start
+  with the command verb, PRIVMSGs start with `PRIVMSG`.
 
-  Mirrors `Grappa.IRC.AuthFSM` shape: pure step function, no side
-  effects, host GenServer applies the capture.
+  Password extraction: last whitespace token for IDENTIFY/ID/SIDENTIFY/GHOST/
+  PASS (`IDENTIFY [account] <pass>`, `GHOST <nick> <pass>`, `PASS [nick] <pass>`);
+  FIRST token for REGISTER (`REGISTER <pass> <email>`).
 
-  Boundary: inherits the parent `Grappa.Session` boundary — same pattern
-  as sibling submodules (`Server`, `EventRouter`). No `use Boundary`
-  here; consumed by `Session.Server` (same boundary), so no `exports:`
-  entry needed in `Grappa.Session` either.
+  Boundary: inherits the parent `Grappa.Session` boundary (no `use Boundary`).
   """
 
   @type result :: :passthrough | {:capture, String.t()}
 
-  @ns_re ~r/^PRIVMSG\s+NickServ\s+:(IDENTIFY|GHOST|REGISTER)\s+(.+?)\s*$/i
+  # PRIVMSG-to-NickServ / NS-NICKSERV command form. `(?:...)` groups are
+  # non-capturing; capture groups are (verb, rest).
+  @verb_re ~r/^(?:PRIVMSG\s+NickServ(?:@\S+)?\s+:|(?:NS|NICKSERV)\s+)(IDENTIFY|ID|SIDENTIFY|GHOST|REGISTER)\s+(\S.*?)\s*$/i
 
-  @doc """
-  Inspects one outbound IRC wire line and returns either `:passthrough`
-  (no NickServ identity verb detected) or `{:capture, password}` with
-  the cleartext password lifted out for the host to stage in
-  `pending_auth`.
+  # Bare ircd command form (m_identify).
+  @bare_re ~r/^(IDENTIFY|ID|SIDENTIFY)\s+(\S.*?)\s*$/i
 
-  Pure: no side effects. The host (`Grappa.Session.Server`) decides
-  whether to commit, discard on +r-MODE-not-observed timeout, or
-  overwrite on a subsequent capture.
-  """
+  # PASS post-connect identify (m_pass -> m_identify).
+  @pass_re ~r/^PASS\s+(\S.*?)\s*$/i
+
   @spec intercept(String.t()) :: result()
   def intercept(line) when is_binary(line) do
-    case Regex.run(@ns_re, line, capture: :all_but_first) do
-      nil -> :passthrough
+    case Regex.run(@verb_re, line, capture: :all_but_first) do
       [verb, rest] -> dispatch(String.upcase(verb), rest)
+      nil -> intercept_bare(line)
     end
   end
 
-  defp dispatch("IDENTIFY", rest), do: {:capture, identify_password(rest)}
-  defp dispatch("GHOST", rest), do: {:capture, ghost_password(rest)}
-  defp dispatch("REGISTER", rest), do: {:capture, register_password(rest)}
-
-  defp identify_password(rest) do
-    rest |> String.split() |> List.last()
-  end
-
-  defp ghost_password(rest) do
-    case String.split(rest, " ", parts: 2) do
-      [_, pwd] -> pwd
-      [pwd] -> pwd
+  defp intercept_bare(line) do
+    case Regex.run(@bare_re, line, capture: :all_but_first) do
+      [verb, rest] -> dispatch(String.upcase(verb), rest)
+      nil -> intercept_pass(line)
     end
   end
 
-  defp register_password(rest) do
-    rest |> String.split() |> List.first()
+  defp intercept_pass(line) do
+    case Regex.run(@pass_re, line, capture: :all_but_first) do
+      [rest] -> {:capture, last_token(rest)}
+      nil -> :passthrough
+    end
   end
+
+  defp dispatch("REGISTER", rest), do: {:capture, first_token(rest)}
+  defp dispatch(_verb, rest), do: {:capture, last_token(rest)}
+
+  defp last_token(rest), do: rest |> String.split() |> List.last()
+  defp first_token(rest), do: rest |> String.split() |> List.first()
 end
