@@ -11,7 +11,7 @@
 // in the SAME ORDER so a side-by-side diff stays trivial. Adding a
 // MIME means touching both files in the same commit.
 
-export type UploadCategory = "image" | "video" | "document";
+export type UploadCategory = "image" | "video" | "document" | "audio";
 
 export const IMAGE_MIMES = [
   "image/png",
@@ -35,11 +35,27 @@ export const DOCUMENT_MIMES_OFFICE = [
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ] as const;
 
+// Audio (GH #115) — 1:1 mirror of the server's audio block in
+// uploads_controller.ex @mime_categories, SAME ORDER. mp3, m4a/m4r
+// (AAC + ALAC both ride audio/mp4), wav, flac. opus/ogg deferred OUT.
+export const AUDIO_MIMES = [
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/aac",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/wave",
+  "audio/flac",
+  "audio/x-flac",
+] as const;
+
 const MIME_CATEGORIES: Record<string, UploadCategory> = Object.fromEntries([
   ...IMAGE_MIMES.map((m) => [m, "image"] as const),
   ...VIDEO_MIMES.map((m) => [m, "video"] as const),
   ...DOCUMENT_MIMES_PORTABLE.map((m) => [m, "document"] as const),
   ...DOCUMENT_MIMES_OFFICE.map((m) => [m, "document"] as const),
+  ...AUDIO_MIMES.map((m) => [m, "audio"] as const),
 ]);
 
 /** Single MIME→category map. null = not uploadable, reject at boundary. */
@@ -56,7 +72,8 @@ export const MIME_EXT_LABEL: Record<
   | (typeof IMAGE_MIMES)[number]
   | (typeof VIDEO_MIMES)[number]
   | (typeof DOCUMENT_MIMES_PORTABLE)[number]
-  | (typeof DOCUMENT_MIMES_OFFICE)[number],
+  | (typeof DOCUMENT_MIMES_OFFICE)[number]
+  | (typeof AUDIO_MIMES)[number],
   string
 > = {
   "image/png": "png",
@@ -73,6 +90,15 @@ export const MIME_EXT_LABEL: Record<
   "application/vnd.oasis.opendocument.spreadsheet": "ods",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/aac": "aac",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/wave": "wav",
+  "audio/flac": "flac",
+  "audio/x-flac": "flac",
 };
 
 /** Widened lookup for host MIME lists (typed `ReadonlyArray<string>`).

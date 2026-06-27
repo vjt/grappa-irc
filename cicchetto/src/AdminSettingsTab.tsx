@@ -10,10 +10,10 @@ import { token } from "./lib/auth";
 //   * `upload.active_host` — `"embedded"` | `"litterbox"` pick. Drives
 //     cic's `activeHost()` selector (the embedded grappa-served path
 //     vs the catbox litterbox path).
-//   * `upload.{image,video,document}_per_file_cap_bytes` — per-file
-//     size limits per upload category (uploads cluster Task 7,
-//     2026-06-09), enforced at the `POST /api/uploads` boundary
-//     (413 file_too_large on overrun).
+//   * `upload.{image,video,document,audio}_per_file_cap_bytes` —
+//     per-file size limits per upload category (uploads cluster Task 7,
+//     2026-06-09; audio added GH #115), enforced at the
+//     `POST /api/uploads` boundary (413 file_too_large on overrun).
 //   * `upload.global_cap_bytes` — global disk-budget ceiling; uploads
 //     reject with 507 insufficient_storage when total live bytes +
 //     incoming would exceed the cap.
@@ -58,6 +58,7 @@ const AdminSettingsTab: Component = () => {
   const [imageCapMB, setImageCapMB] = createSignal<number>(10);
   const [videoCapMB, setVideoCapMB] = createSignal<number>(50);
   const [documentCapMB, setDocumentCapMB] = createSignal<number>(10);
+  const [audioCapMB, setAudioCapMB] = createSignal<number>(25);
   const [globalCapGB, setGlobalCapGB] = createSignal<number>(10);
 
   const applyView = (view: AdminSettingsView): void => {
@@ -66,6 +67,7 @@ const AdminSettingsTab: Component = () => {
     setImageCapMB(view.upload.image_per_file_cap_bytes / MIB);
     setVideoCapMB(view.upload.video_per_file_cap_bytes / MIB);
     setDocumentCapMB(view.upload.document_per_file_cap_bytes / MIB);
+    setAudioCapMB(view.upload.audio_per_file_cap_bytes / MIB);
     setGlobalCapGB(view.upload.global_cap_bytes / GIB);
   };
 
@@ -93,6 +95,13 @@ const AdminSettingsTab: Component = () => {
       field: "upload.document_per_file_cap_bytes",
       value: documentCapMB,
       set: setDocumentCapMB,
+    },
+    {
+      testid: "admin-settings-audio-cap",
+      label: "Audio per-file cap (MB)",
+      field: "upload.audio_per_file_cap_bytes",
+      value: audioCapMB,
+      set: setAudioCapMB,
     },
   ] as const;
 
@@ -127,6 +136,7 @@ const AdminSettingsTab: Component = () => {
           image_per_file_cap_bytes: Math.round(imageCapMB() * MIB),
           video_per_file_cap_bytes: Math.round(videoCapMB() * MIB),
           document_per_file_cap_bytes: Math.round(documentCapMB() * MIB),
+          audio_per_file_cap_bytes: Math.round(audioCapMB() * MIB),
           global_cap_bytes: Math.round(globalCapGB() * GIB),
         },
       });

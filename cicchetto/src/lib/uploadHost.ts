@@ -41,6 +41,7 @@
 
 import { serverSettings } from "./serverSettings";
 import {
+  AUDIO_MIMES,
   DOCUMENT_MIMES_OFFICE,
   DOCUMENT_MIMES_PORTABLE,
   IMAGE_MIMES,
@@ -235,6 +236,7 @@ export const litterboxHost: UploadHost = {
     // litterbox blocks .doc* host-side (FAQ, verified 2026-06-09) —
     // office formats are embedded-only.
     document: DOCUMENT_MIMES_PORTABLE,
+    audio: AUDIO_MIMES,
   },
   // Litterbox accepts up to ~1GiB but cic's practical ceilings are
   // much lower — phone screenshots / short transcoded clips are the
@@ -242,7 +244,12 @@ export const litterboxHost: UploadHost = {
   // cic warn before initiating an upload that's almost certainly
   // user error.
   maxFileSizeBytes: (category) =>
-    ({ image: 100 * 1024 * 1024, video: 50 * 1024 * 1024, document: 10 * 1024 * 1024 })[category],
+    ({
+      image: 100 * 1024 * 1024,
+      video: 50 * 1024 * 1024,
+      document: 10 * 1024 * 1024,
+      audio: 25 * 1024 * 1024,
+    })[category],
   // Litterbox does not advertise CORS preflight headers; attaching a
   // progress listener triggers OPTIONS preflight and breaks every
   // upload. Verified empirically 2026-05-16. Future hosts (catbox-
@@ -345,13 +352,19 @@ export const embeddedHost: UploadHost = {
     image: IMAGE_MIMES,
     video: VIDEO_MIMES,
     document: [...DOCUMENT_MIMES_PORTABLE, ...DOCUMENT_MIMES_OFFICE],
+    audio: AUDIO_MIMES,
   },
   // Reactive per-category cap — falls back to the server-side defaults
   // (mirrors Grappa.ServerSettings @default_upload_*_cap_bytes) before
   // the WS snapshot lands.
   maxFileSizeBytes: (category) =>
     serverSettings()?.uploadPerFileCapBytes[category] ??
-    { image: 10 * 1024 * 1024, video: 50 * 1024 * 1024, document: 10 * 1024 * 1024 }[category],
+    {
+      image: 10 * 1024 * 1024,
+      video: 50 * 1024 * 1024,
+      document: 10 * 1024 * 1024,
+      audio: 25 * 1024 * 1024,
+    }[category],
   // Same-origin POST — no CORS preflight. Real progress bar works.
   supportsProgress: true,
   upload: (file, options, onProgress, signal) => {

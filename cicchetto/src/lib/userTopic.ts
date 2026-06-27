@@ -340,6 +340,7 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         !posInt(u.image_per_file_cap_bytes) ||
         !posInt(u.video_per_file_cap_bytes) ||
         !posInt(u.document_per_file_cap_bytes) ||
+        !posInt(u.audio_per_file_cap_bytes) ||
         !posInt(u.global_cap_bytes)
       )
         return null;
@@ -350,6 +351,7 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
           image_per_file_cap_bytes: u.image_per_file_cap_bytes,
           video_per_file_cap_bytes: u.video_per_file_cap_bytes,
           document_per_file_cap_bytes: u.document_per_file_cap_bytes,
+          audio_per_file_cap_bytes: u.audio_per_file_cap_bytes,
           global_cap_bytes: u.global_cap_bytes,
         },
       };

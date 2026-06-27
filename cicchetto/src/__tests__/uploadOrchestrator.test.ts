@@ -125,7 +125,7 @@ const makeTestHost = (overrides: Partial<UploadHost> = {}): UploadHost => ({
     { value: "24h", label: "24 hours", seconds: 86_400 },
   ],
   defaultTtl: "24h",
-  acceptedMimeTypes: { image: ["image/png", "image/jpeg"], video: [], document: [] },
+  acceptedMimeTypes: { image: ["image/png", "image/jpeg"], video: [], document: [], audio: [] },
   maxFileSizeBytes: () => 1024 * 1024,
   supportsProgress: true,
   upload: (file, _options, onProgress, signal) =>
@@ -150,9 +150,15 @@ const categoryHost = (): UploadHost =>
       image: ["image/png", "image/jpeg"],
       video: ["video/mp4"],
       document: ["application/pdf", "text/plain"],
+      audio: ["audio/mpeg"],
     },
     maxFileSizeBytes: (category) =>
-      ({ image: 1024 * 1024, video: 5 * 1024 * 1024, document: 512 * 1024 })[category],
+      ({
+        image: 1024 * 1024,
+        video: 5 * 1024 * 1024,
+        document: 512 * 1024,
+        audio: 2 * 1024 * 1024,
+      })[category],
   });
 
 beforeEach(() => {
@@ -516,6 +522,19 @@ describe("category dispatch", () => {
     await Promise.resolve();
 
     expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://litter.catbox.moe/abc.png");
+  });
+
+  it("audio upload → host.upload called + 🎵-prefixed PRIVMSG", async () => {
+    const mp3 = new File([new Uint8Array([0x49, 0x44, 0x33])], "voice.mp3", { type: "audio/mpeg" });
+    triggerUpload(key, slug, channel, mp3);
+
+    expect(pendingResolvers.length).toBe(1);
+    pendingResolvers[0]?.resolve("https://litter.catbox.moe/abc.mp3");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "🎵 https://litter.catbox.moe/abc.mp3");
+    expect(uploadState(key)).toBeNull();
   });
 
   it("video upload → routed through the transcode → 🎬-prefixed PRIVMSG", async () => {

@@ -34,6 +34,7 @@ const DEFAULTS: AdminSettingsView = {
     image_per_file_cap_bytes: 10 * 1024 * 1024,
     video_per_file_cap_bytes: 50 * 1024 * 1024,
     document_per_file_cap_bytes: 10 * 1024 * 1024,
+    audio_per_file_cap_bytes: 25 * 1024 * 1024,
     global_cap_bytes: 10 * 1024 * 1024 * 1024,
   },
 };
@@ -54,7 +55,7 @@ describe("AdminSettingsTab — initial render", () => {
     });
   });
 
-  it("pre-populates the form fields from the GET response — three per-type caps (Task 7)", async () => {
+  it("pre-populates the form fields from the GET response — four per-type caps (Task 7 + audio)", async () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminGetSettings).mockResolvedValue({
       upload: {
@@ -62,6 +63,7 @@ describe("AdminSettingsTab — initial render", () => {
         image_per_file_cap_bytes: 5 * 1024 * 1024,
         video_per_file_cap_bytes: 60 * 1024 * 1024,
         document_per_file_cap_bytes: 15 * 1024 * 1024,
+        audio_per_file_cap_bytes: 30 * 1024 * 1024,
         global_cap_bytes: 20 * 1024 * 1024 * 1024,
       },
     });
@@ -81,6 +83,9 @@ describe("AdminSettingsTab — initial render", () => {
 
     const documentCap = screen.getByTestId("admin-settings-document-cap") as HTMLInputElement;
     expect(documentCap.value).toBe("15");
+
+    const audioCap = screen.getByTestId("admin-settings-audio-cap") as HTMLInputElement;
+    expect(audioCap.value).toBe("30");
 
     const global = screen.getByTestId("admin-settings-global-cap") as HTMLInputElement;
     expect(global.value).toBe("20");
@@ -124,6 +129,9 @@ describe("AdminSettingsTab — save", () => {
     const documentCap = screen.getByTestId("admin-settings-document-cap") as HTMLInputElement;
     fireEvent.input(documentCap, { target: { value: "12" } });
 
+    const audioCap = screen.getByTestId("admin-settings-audio-cap") as HTMLInputElement;
+    fireEvent.input(audioCap, { target: { value: "20" } });
+
     const global = screen.getByTestId("admin-settings-global-cap") as HTMLInputElement;
     fireEvent.input(global, { target: { value: "50" } });
 
@@ -136,6 +144,7 @@ describe("AdminSettingsTab — save", () => {
           image_per_file_cap_bytes: 25 * 1024 * 1024,
           video_per_file_cap_bytes: 75 * 1024 * 1024,
           document_per_file_cap_bytes: 12 * 1024 * 1024,
+          audio_per_file_cap_bytes: 20 * 1024 * 1024,
           global_cap_bytes: 50 * 1024 * 1024 * 1024,
         },
       });

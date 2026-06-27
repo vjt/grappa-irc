@@ -11,6 +11,7 @@ const wireUpload = (active_host: string) => ({
   image_per_file_cap_bytes: 1,
   video_per_file_cap_bytes: 2,
   document_per_file_cap_bytes: 3,
+  audio_per_file_cap_bytes: 5,
   global_cap_bytes: 4,
 });
 
@@ -31,6 +32,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         image_per_file_cap_bytes: 10_485_760,
         video_per_file_cap_bytes: 52_428_800,
         document_per_file_cap_bytes: 10_485_760,
+        audio_per_file_cap_bytes: 26_214_400,
         global_cap_bytes: 10_737_418_240,
       },
     });
@@ -41,6 +43,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         image: 10_485_760,
         video: 52_428_800,
         document: 10_485_760,
+        audio: 26_214_400,
       },
       uploadGlobalCapBytes: 10_737_418_240,
     });
@@ -53,6 +56,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         image_per_file_cap_bytes: 5_000_000,
         video_per_file_cap_bytes: 6_000_000,
         document_per_file_cap_bytes: 7_000_000,
+        audio_per_file_cap_bytes: 8_000_000,
         global_cap_bytes: 999_999,
       },
     });
@@ -63,6 +67,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
       image: 5_000_000,
       video: 6_000_000,
       document: 7_000_000,
+      audio: 8_000_000,
     });
     expect(view?.uploadGlobalCapBytes).toBe(999_999);
   });
@@ -74,6 +79,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         image_per_file_cap_bytes: 1,
         video_per_file_cap_bytes: 1,
         document_per_file_cap_bytes: 1,
+        audio_per_file_cap_bytes: 1,
         global_cap_bytes: 2,
       },
     });
@@ -83,13 +89,14 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         image_per_file_cap_bytes: 3,
         video_per_file_cap_bytes: 4,
         document_per_file_cap_bytes: 5,
+        audio_per_file_cap_bytes: 7,
         global_cap_bytes: 6,
       },
     });
 
     expect(serverSettings()).toEqual({
       uploadActiveHost: "litterbox",
-      uploadPerFileCapBytes: { image: 3, video: 4, document: 5 },
+      uploadPerFileCapBytes: { image: 3, video: 4, document: 5, audio: 7 },
       uploadGlobalCapBytes: 6,
     });
   });
@@ -119,6 +126,7 @@ describe("loadServerSettings/0 — REST initial fetch", () => {
             image_per_file_cap_bytes: 7_777_777,
             video_per_file_cap_bytes: 8_888_888,
             document_per_file_cap_bytes: 9_999_999,
+            audio_per_file_cap_bytes: 5_555_555,
             global_cap_bytes: 88_888_888,
           },
         }),
@@ -135,6 +143,7 @@ describe("loadServerSettings/0 — REST initial fetch", () => {
       image: 7_777_777,
       video: 8_888_888,
       document: 9_999_999,
+      audio: 5_555_555,
     });
   });
 

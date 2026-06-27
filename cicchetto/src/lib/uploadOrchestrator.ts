@@ -60,6 +60,7 @@ const CATEGORY_EMOJI: Record<UploadCategory, string> = {
   image: "📸",
   video: "🎬",
   document: "📄",
+  audio: "🎵",
 };
 
 type ActiveUpload = {
@@ -223,9 +224,13 @@ function friendlyErrorMessage(err: UploadError, lastProgress: UploadProgress | n
 function unsupportedTypeMessage(host: UploadHost): string {
   // Category list derived from the emoji map — one source of truth for
   // "which categories exist" inside this module.
-  const exts = (Object.keys(CATEGORY_EMOJI) as UploadCategory[])
-    .flatMap((category) => host.acceptedMimeTypes[category])
-    .map(mimeExtLabel);
+  const exts = [
+    ...new Set(
+      (Object.keys(CATEGORY_EMOJI) as UploadCategory[])
+        .flatMap((category) => host.acceptedMimeTypes[category])
+        .map(mimeExtLabel),
+    ),
+  ];
   return `Unsupported file type — supported: ${exts.join(", ")}.`;
 }
 

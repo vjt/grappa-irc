@@ -90,6 +90,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         image: raw.upload.image_per_file_cap_bytes,
         video: raw.upload.video_per_file_cap_bytes,
         document: raw.upload.document_per_file_cap_bytes,
+        audio: raw.upload.audio_per_file_cap_bytes,
       },
       uploadGlobalCapBytes: raw.upload.global_cap_bytes,
     });

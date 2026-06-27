@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyServerSettings, setServerSettings } from "../lib/serverSettings";
-import { DOCUMENT_MIMES_OFFICE, DOCUMENT_MIMES_PORTABLE, VIDEO_MIMES } from "../lib/uploadCategory";
+import {
+  AUDIO_MIMES,
+  DOCUMENT_MIMES_OFFICE,
+  DOCUMENT_MIMES_PORTABLE,
+  VIDEO_MIMES,
+} from "../lib/uploadCategory";
 import {
   __setUploadTokenReader,
   activeHost,
@@ -20,6 +25,7 @@ const wireUpload = (
     image_per_file_cap_bytes: number;
     video_per_file_cap_bytes: number;
     document_per_file_cap_bytes: number;
+    audio_per_file_cap_bytes: number;
     global_cap_bytes: number;
   }> = {},
 ) => ({
@@ -27,6 +33,7 @@ const wireUpload = (
   image_per_file_cap_bytes: 10 * 1024 * 1024,
   video_per_file_cap_bytes: 50 * 1024 * 1024,
   document_per_file_cap_bytes: 10 * 1024 * 1024,
+  audio_per_file_cap_bytes: 25 * 1024 * 1024,
   global_cap_bytes: 10 * 1024 * 1024 * 1024,
   ...overrides,
 });
@@ -207,10 +214,15 @@ describe("litterboxHost — metadata", () => {
     }
   });
 
-  it("declares per-category upper file sizes (100/50/10 MiB)", () => {
+  it("acceptedMimeTypes.audio lists the selectable audio MIMEs", () => {
+    expect(litterboxHost.acceptedMimeTypes.audio).toEqual(AUDIO_MIMES);
+  });
+
+  it("declares per-category upper file sizes (100/50/10/25 MiB)", () => {
     expect(litterboxHost.maxFileSizeBytes("image")).toBe(100 * 1024 * 1024);
     expect(litterboxHost.maxFileSizeBytes("video")).toBe(50 * 1024 * 1024);
     expect(litterboxHost.maxFileSizeBytes("document")).toBe(10 * 1024 * 1024);
+    expect(litterboxHost.maxFileSizeBytes("audio")).toBe(25 * 1024 * 1024);
   });
 });
 
@@ -431,7 +443,7 @@ const corsFriendlyMockHost: UploadHost = {
   retentionStatement: "Files are not actually stored anywhere.",
   ttlOptions: [],
   defaultTtl: null,
-  acceptedMimeTypes: { image: ["image/png"], video: [], document: [] },
+  acceptedMimeTypes: { image: ["image/png"], video: [], document: [], audio: [] },
   maxFileSizeBytes: () => null,
   supportsProgress: true,
   upload: (file, _options, onProgress, signal) => {
@@ -511,7 +523,7 @@ const mockHost: UploadHost = {
   retentionStatement: "Files are not actually stored anywhere.",
   ttlOptions: [],
   defaultTtl: null,
-  acceptedMimeTypes: { image: ["image/png"], video: [], document: [] },
+  acceptedMimeTypes: { image: ["image/png"], video: [], document: [], audio: [] },
   maxFileSizeBytes: () => null,
   supportsProgress: false,
   upload: (_file, _options, _onProgress, _signal) =>
@@ -580,17 +592,22 @@ describe("embeddedHost — metadata", () => {
     ]);
   });
 
+  it("acceptedMimeTypes.audio lists the selectable audio MIMEs", () => {
+    expect(embeddedHost.acceptedMimeTypes.audio).toEqual(AUDIO_MIMES);
+  });
+
   it("declares supportsProgress=true (same-origin, no CORS preflight)", () => {
     expect(embeddedHost.supportsProgress).toBe(true);
   });
 });
 
 describe("embeddedHost.maxFileSizeBytes — reactive per-category cap", () => {
-  it("falls back to the server-default literals (10/50/10 MiB) when signal is null", () => {
+  it("falls back to the server-default literals (10/50/10/25 MiB) when signal is null", () => {
     setServerSettings(null);
     expect(embeddedHost.maxFileSizeBytes("image")).toBe(10 * 1024 * 1024);
     expect(embeddedHost.maxFileSizeBytes("video")).toBe(50 * 1024 * 1024);
     expect(embeddedHost.maxFileSizeBytes("document")).toBe(10 * 1024 * 1024);
+    expect(embeddedHost.maxFileSizeBytes("audio")).toBe(25 * 1024 * 1024);
   });
 
   it("reads the admin-tuned per-category caps from the serverSettings signal", () => {
@@ -599,11 +616,13 @@ describe("embeddedHost.maxFileSizeBytes — reactive per-category cap", () => {
         image_per_file_cap_bytes: 1_111,
         video_per_file_cap_bytes: 2_222,
         document_per_file_cap_bytes: 3_333,
+        audio_per_file_cap_bytes: 4_444,
       }),
     });
     expect(embeddedHost.maxFileSizeBytes("image")).toBe(1_111);
     expect(embeddedHost.maxFileSizeBytes("video")).toBe(2_222);
     expect(embeddedHost.maxFileSizeBytes("document")).toBe(3_333);
+    expect(embeddedHost.maxFileSizeBytes("audio")).toBe(4_444);
   });
 });
 
