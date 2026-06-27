@@ -39,10 +39,11 @@ import { windowStateByChannel } from "./lib/windowState";
 // silently look ready-to-send. Operator can still type `/connect` to
 // unpark.
 //
-// Images cluster I-2 (2026-05-15): three trigger surfaces for image
-// upload — file picker (camera-icon button; iOS Safari's native picker
-// already exposes "Take Photo" so a separate camera-capture button
-// would be redundant), drag-drop (whole-form), clipboard paste
+// Images cluster I-2 (2026-05-15): three trigger surfaces for upload
+// — file picker (paperclip-icon button; iOS Safari's native picker
+// still exposes "Take Photo" / "Choose File" so a separate
+// camera-capture button would be redundant), drag-drop (whole-form),
+// clipboard paste
 // (textarea). All converge on `triggerUpload()` from
 // uploadOrchestrator; the orchestrator handles privacy modal
 // gating, MIME pre-check, TTL dropdown wiring, progress state,
@@ -287,10 +288,11 @@ const ComposeBox: Component<Props> = (props) => {
           onClick={onPickerClick}
           title="upload file"
         >
-          {/* Camera icon — inline SVG, theme-agnostic. iOS Safari's
-           * native picker on this single button already exposes
-           * "Take Photo" / "Photo Library" — no separate
-           * capture=environment input needed. */}
+          {/* Paperclip icon (Feather) — inline SVG, theme-agnostic. A
+           * generic "attach" affordance: the picker accepts every
+           * category (image/video/document/audio), and iOS Safari's
+           * native picker still exposes "Take Photo" / "Choose File"
+           * on this single button — no separate capture input needed. */}
           <svg
             width="16"
             height="16"
@@ -302,8 +304,7 @@ const ComposeBox: Component<Props> = (props) => {
             stroke-linejoin="round"
             aria-hidden="true"
           >
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-            <circle cx="12" cy="13" r="4" />
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
           </svg>
         </button>
         <textarea

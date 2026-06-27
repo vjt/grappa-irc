@@ -397,7 +397,7 @@ describe("ComposeBox", () => {
       return { files: file !== null ? [file] : [], items, types };
     };
 
-    it("renders a file-picker button (camera icon)", () => {
+    it("renders a file-picker button (paperclip icon)", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const btn = screen.getByRole("button", { name: /upload file/i });
       expect(btn).toBeInTheDocument();
