@@ -1,11 +1,86 @@
-import { type Component, createSignal, For, Show } from "solid-js";
-import { ApiError, patchNetwork } from "./lib/api";
+import { type Component, createResource, createSignal, For, Show } from "solid-js";
+import { ApiError, getFeaturedChannels, patchNetwork, postJoin } from "./lib/api";
 import { token } from "./lib/auth";
+import { channelKey } from "./lib/channelKey";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { homeData } from "./lib/home";
+import { user } from "./lib/networks";
 import { setSelectedChannel } from "./lib/selection";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "./lib/windowKinds";
+import { windowStateByChannel } from "./lib/windowState";
 import NickText from "./NickText";
+
+// #85 — operator-curated featured channels for a network, fetched on
+// home DISPLAY (component mount / slug change) so an operator config
+// edit lands on the next render without a /me re-fetch or PubSub push.
+// Click: not joined → JOIN then focus (intent follows the tap, mirroring
+// compose.ts /join); already joined → focus only (#125 tap-already-
+// joined). Join errors surface inline — never silently swallowed.
+const FeaturedLinks: Component<{ slug: string }> = (props) => {
+  const [error, setError] = createSignal<string | null>(null);
+  const [links] = createResource(
+    () => props.slug,
+    async (slug) => {
+      const t = token();
+      if (!t) return [];
+      try {
+        return await getFeaturedChannels(t, slug);
+      } catch {
+        // A failed featured fetch must not break the home view; the
+        // section just stays empty. (Distinct from a JOIN failure, which
+        // IS surfaced — that's a user-initiated action.)
+        return [];
+      }
+    },
+  );
+
+  const onClick = async (name: string): Promise<void> => {
+    setError(null);
+    const joined = windowStateByChannel()[channelKey(props.slug, name)] === "joined";
+    if (!joined) {
+      const t = token();
+      if (!t) return;
+      try {
+        await postJoin(t, props.slug, name, null);
+      } catch (err) {
+        setError(
+          err instanceof ApiError ? `${name}: ${friendlyApiError(err)}` : `${name}: join failed`,
+        );
+        return;
+      }
+    }
+    setSelectedChannel({ networkSlug: props.slug, channelName: name, kind: "channel" });
+  };
+
+  return (
+    <Show when={(links() ?? []).length > 0}>
+      <ul class="home-pane-featured" data-testid={`home-featured-${props.slug}`}>
+        <For each={links()}>
+          {(link) => (
+            <li class="home-pane-featured-item">
+              <button
+                type="button"
+                class="home-pane-featured-link"
+                onClick={() => void onClick(link.name)}
+                data-testid={`home-featured-link-${props.slug}-${link.name}`}
+              >
+                <span class="home-pane-featured-name">{link.name}</span>
+                <Show when={link.description}>
+                  <span class="home-pane-featured-desc muted">{link.description}</span>
+                </Show>
+              </button>
+            </li>
+          )}
+        </For>
+        <Show when={error()}>
+          <li class="home-pane-featured-error" role="alert">
+            {error()}
+          </li>
+        </Show>
+      </ul>
+    </Show>
+  );
+};
 
 // UX-4 bucket B — first-class `:home` window pinned ABOVE all
 // networks. Two branches off `homeData()`:
@@ -48,9 +123,19 @@ const HomePaneVisitor: Component = () => {
         This is IRC: to join a channel, tap the server tab below and <code>/join</code> it. To get
         started, <code>/join #grappa</code>.
       </p>
+      <Show when={visitorSlug()}>
+        {(slug) => <FeaturedLinks slug={slug()} />}
+      </Show>
     </div>
   );
 };
+
+// Visitors have no `home_data` (it's nil) — their single network's slug
+// lives on the raw /me visitor shape (`user()`), used to fetch featured.
+function visitorSlug(): string | null {
+  const m = user();
+  return m && m.kind === "visitor" ? m.network_slug : null;
+}
 
 // UX-5 BR row sub-component. Per-row local error signal so each
 // chip's failure text scopes to its own row — a single top-level
@@ -88,6 +173,7 @@ const ConnectedRow: Component<{ row: HomeRow }> = (props) => {
       <button type="button" class="home-pane-network-browse" onClick={onBrowse}>
         📇 Browse channels
       </button>
+      <FeaturedLinks slug={props.row.slug} />
     </li>
   );
 };
@@ -154,6 +240,7 @@ const DisconnectedRow: Component<{ row: HomeRow }> = (props) => {
             </span>
           </Show>
         </div>
+        <FeaturedLinks slug={props.row.slug} />
       </div>
     </li>
   );

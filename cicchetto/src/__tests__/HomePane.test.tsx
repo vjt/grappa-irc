@@ -36,6 +36,15 @@ const patchNetworkMock = vi.fn<(t: string, slug: string, body: unknown) => Promi
 );
 const setSelectedChannelMock = vi.fn<(sel: unknown) => void>();
 const tokenMock = vi.fn<() => string | null>(() => "test-token");
+// #85 — featured channels: per-network fetch on home display + join/open.
+const getFeaturedMock = vi.fn<
+  (t: string, slug: string) => Promise<{ name: string; description: string | null }[]>
+>(() => Promise.resolve([]));
+const postJoinMock = vi.fn<
+  (t: string, slug: string, name: string, key: string | null) => Promise<void>
+>(() => Promise.resolve());
+const windowStateMock = vi.fn<() => Record<string, string>>(() => ({}));
+const userMock = vi.fn<() => unknown>(() => null);
 
 vi.mock("../lib/home", () => ({
   homeData: () => homeDataMock(),
@@ -60,9 +69,18 @@ vi.mock("../lib/api", () => {
   }
   return {
     patchNetwork: (t: string, slug: string, body: unknown) => patchNetworkMock(t, slug, body),
+    getFeaturedChannels: (t: string, slug: string) => getFeaturedMock(t, slug),
+    postJoin: (t: string, slug: string, name: string, key: string | null) =>
+      postJoinMock(t, slug, name, key),
     ApiError,
   };
 });
+
+vi.mock("../lib/networks", () => ({ user: () => userMock() }));
+vi.mock("../lib/channelKey", () => ({
+  channelKey: (slug: string, name: string) => `${slug}/${name}`,
+}));
+vi.mock("../lib/windowState", () => ({ windowStateByChannel: () => windowStateMock() }));
 
 vi.mock("../lib/auth", () => ({
   token: () => tokenMock(),
@@ -87,10 +105,79 @@ describe("HomePane", () => {
     patchNetworkMock.mockClear();
     setSelectedChannelMock.mockClear();
     tokenMock.mockReturnValue("test-token");
+    getFeaturedMock.mockReset();
+    getFeaturedMock.mockResolvedValue([]);
+    postJoinMock.mockReset();
+    postJoinMock.mockResolvedValue(undefined);
+    windowStateMock.mockReturnValue({});
+    userMock.mockReturnValue(null);
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  const connectedNetworks = (slug: string): HomeDataLocal => ({
+    networks: [
+      {
+        slug,
+        nick: "vjt",
+        connection_state: "connected",
+        connection_state_reason: null,
+        connection_state_changed_at: null,
+      },
+    ],
+  });
+
+  describe("#85 featured channels", () => {
+    it("fetches + renders featured channels per network; click joins and focuses", async () => {
+      homeDataMock.mockReturnValue(connectedNetworks("azzurra"));
+      getFeaturedMock.mockResolvedValue([{ name: "#sniffo", description: "il canale" }]);
+      render(() => <HomePane />);
+
+      const link = await screen.findByText("#sniffo");
+      expect(screen.getByText("il canale")).toBeInTheDocument();
+      expect(getFeaturedMock).toHaveBeenCalledWith("test-token", "azzurra");
+
+      fireEvent.click(link);
+      await waitFor(() =>
+        expect(postJoinMock).toHaveBeenCalledWith("test-token", "azzurra", "#sniffo", null),
+      );
+      expect(setSelectedChannelMock).toHaveBeenCalledWith(
+        expect.objectContaining({ networkSlug: "azzurra", channelName: "#sniffo", kind: "channel" }),
+      );
+    });
+
+    it("already-joined featured channel focuses without re-joining", async () => {
+      homeDataMock.mockReturnValue(connectedNetworks("azzurra"));
+      getFeaturedMock.mockResolvedValue([{ name: "#sniffo", description: null }]);
+      windowStateMock.mockReturnValue({ "azzurra/#sniffo": "joined" });
+      render(() => <HomePane />);
+
+      const link = await screen.findByText("#sniffo");
+      fireEvent.click(link);
+      await waitFor(() =>
+        expect(setSelectedChannelMock).toHaveBeenCalledWith(
+          expect.objectContaining({ channelName: "#sniffo", kind: "channel" }),
+        ),
+      );
+      expect(postJoinMock).not.toHaveBeenCalled();
+    });
+
+    it("visitor home renders featured for its single network", async () => {
+      homeDataMock.mockReturnValue(null);
+      userMock.mockReturnValue({
+        kind: "visitor",
+        id: "v1",
+        nick: "guest",
+        network_slug: "azzurra",
+      });
+      getFeaturedMock.mockResolvedValue([{ name: "#welcome", description: null }]);
+      render(() => <HomePane />);
+
+      await screen.findByText("#welcome");
+      expect(getFeaturedMock).toHaveBeenCalledWith("test-token", "azzurra");
+    });
   });
 
   describe("visitor branch (homeData() === null)", () => {
