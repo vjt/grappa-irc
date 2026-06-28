@@ -86,6 +86,16 @@ This means: from any worktree, `scripts/test.sh` runs the worktree's
 Elixir source against the shared `_build`/`deps` cache. PLT, hex
 mirror, bun cache survive across worktrees + sessions.
 
+**Invoke scripts from the worktree ROOT, not a subdir.** `_lib.sh` sets
+`SRC_ROOT="$PWD"` only when the cwd is a git-worktree root (detected by
+`lib/` + a `.git` *file*); from anywhere else — including the worktree's
+own `cicchetto/` subdir — it falls back to the **main** repo. So
+`scripts/bun.sh run test ...` run from `<worktree>/cicchetto` silently
+tests **main's** source, passes green, and never touches your worktree
+changes. The tell: the test COUNT doesn't move when your new tests
+should have added to it. Always `cd <worktree-root>` first; verify a run
+hit the worktree by checking the count reflects your additions.
+
 Bash 4+ required (`declare -ag` shebangs to `#!/usr/bin/env bash` so
 PATH picks Homebrew bash 5 on macOS). `brew install bash` if missing.
 
