@@ -10,7 +10,9 @@ defmodule GrappaWeb.DirectoryController do
     * `GET /networks/:network_id/directory` — server-side
       sort/search/keyset-page over the last finalized `LIST` snapshot
       (`Grappa.ChannelDirectory.list/3`), rendered through
-      `ChannelDirectory.Wire.index_payload/1`. When there's no snapshot
+      `ChannelDirectory.Wire.index_payload/2` (each row carries a
+      `featured` flag derived from the network's current
+      `network_featured_channels` set). When there's no snapshot
       yet AND a live session exists, kicks off the first refresh so the
       next poll fills.
     * `POST /networks/:network_id/directory/refresh` — arms a fresh
@@ -24,6 +26,7 @@ defmodule GrappaWeb.DirectoryController do
 
   alias Grappa.{ChannelDirectory, Session}
   alias Grappa.ChannelDirectory.Wire
+  alias Grappa.Networks.FeaturedChannels
   alias GrappaWeb.Subject
 
   @doc """
@@ -50,7 +53,10 @@ defmodule GrappaWeb.DirectoryController do
 
     if page.status == :empty, do: maybe_auto_refresh(subject, network.id)
 
-    json(conn, Wire.index_payload(page))
+    # #85 — re-derive the featured flag from CURRENT config on every
+    # fetch (on-display freshness; operator edits show up next poll).
+    featured_names = FeaturedChannels.featured_name_set(network)
+    json(conn, Wire.index_payload(page, featured_names))
   end
 
   @doc """

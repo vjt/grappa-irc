@@ -7,7 +7,12 @@ defmodule Grappa.ChannelDirectory.Wire do
   """
   alias Grappa.ChannelDirectory
 
-  @type entry :: %{name: String.t(), topic: String.t() | nil, user_count: integer()}
+  @type entry :: %{
+          name: String.t(),
+          topic: String.t() | nil,
+          user_count: integer(),
+          featured: boolean()
+        }
 
   @type index_payload :: %{
           entries: [entry()],
@@ -18,16 +23,27 @@ defmodule Grappa.ChannelDirectory.Wire do
         }
 
   @doc """
-  Render a `ChannelDirectory.page()` to the JSON wire envelope, converting the `status` atom to a string and `captured_at` to ISO-8601.
+  Render a `ChannelDirectory.page()` to the JSON wire envelope,
+  converting the `status` atom to a string and `captured_at` to
+  ISO-8601. Each entry is marked `featured: true` when its (downcased)
+  name is in `featured_names` — the network's enabled
+  `network_featured_channels` set (GH #85). Channel fold ==
+  `String.downcase` for channel-sigil names (`Identifier.canonical_channel/1`),
+  so a bare downcase is the correct channel-keyed compare here; no
+  top-pinning, the sort order is unchanged.
   """
-  @spec index_payload(ChannelDirectory.page()) :: index_payload()
-  def index_payload(%{captured_at: ca} = page) do
+  @spec index_payload(ChannelDirectory.page(), MapSet.t(String.t())) :: index_payload()
+  def index_payload(%{captured_at: ca} = page, featured_names) do
     %{
-      entries: page.entries,
+      entries: Enum.map(page.entries, &mark_featured(&1, featured_names)),
       next_cursor: page.next_cursor,
       total: page.total,
       captured_at: ca && DateTime.to_iso8601(ca),
       status: Atom.to_string(page.status)
     }
+  end
+
+  defp mark_featured(entry, featured_names) do
+    Map.put(entry, :featured, MapSet.member?(featured_names, String.downcase(entry.name)))
   end
 end

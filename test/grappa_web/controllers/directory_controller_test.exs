@@ -43,6 +43,30 @@ defmodule GrappaWeb.DirectoryControllerTest do
     assert Enum.map(resp["entries"], & &1["name"]) == ["#big", "#small"]
   end
 
+  test "#85 — rows carry featured: true for channels in the network's featured set", %{
+    conn: conn,
+    user: user,
+    network: network
+  } do
+    s = {:user, user.id}
+    :ok = Dir.replace_start(s, network.id)
+
+    :ok =
+      Dir.ingest(s, network.id, [
+        %{name: "#feat", topic: "t", user_count: 9},
+        %{name: "#plain", topic: "", user_count: 1}
+      ])
+
+    :ok = Dir.finalize(s, network.id)
+    # Operator curates "#Feat" (mixed case) — must match the "#feat" row.
+    {:ok, _} = Grappa.Networks.FeaturedChannels.add_channel(network, %{name: "#Feat"})
+
+    resp = conn |> get("/networks/#{network.slug}/directory") |> json_response(200)
+    by_name = Map.new(resp["entries"], &{&1["name"], &1["featured"]})
+    assert by_name["#feat"] == true
+    assert by_name["#plain"] == false
+  end
+
   test "POST refresh without a live session returns a clean error (not 404-silent)", %{
     conn: conn,
     network: network
