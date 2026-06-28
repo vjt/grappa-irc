@@ -29,24 +29,37 @@ defmodule Grappa.Visitors.Login do
          `{:ok, %{visitor, token}}`.
 
        * **Case 2 — registered (`password_encrypted` set).**
-         Check capacity, then require password. Constant-time compare
-         via `Plug.Crypto.secure_compare/2` to avoid timing oracles.
-         On match: revoke prior `accounts_sessions` rows
-         (`Accounts.revoke_sessions_for_visitor/1`),
-         `Visitors.purge_if_anon/1` per W11 (no-op for registered
-         but mirror-symmetric with other deletion sites),
-         `Session.stop_session/2` (idempotent),
-         `Session.Backoff.reset/2` (clear crash-backoff from prior
-         session so an explicit user re-login isn't penalised),
-         respawn fresh Session.Server, `NetworkCircuit.record_success/1`
-         on welcome, then mint a fresh Accounts.Session. The NickServ
-         `IDENTIFY` is emitted by the AuthFSM at 001 for the
-         `:nickserv_identify` plan — the single IDENTIFY site (see
-         `Grappa.IRC.AuthFSM.maybe_nickserv_identify/1`, staged for the
-         +r MODE observer via `Session.Server.maybe_stage_pending_password/1`).
-         Login does NOT send a second one post-readiness (#27): a
-         duplicate IDENTIFY made NickServ reply with the "identified"
-         NOTICE twice.
+         Require password FIRST (constant-time compare via
+         `Plug.Crypto.secure_compare/2` to avoid timing oracles), then
+         branch on whether a live `Session.Server` already serves this
+         identity (`Session.whereis/2`):
+
+           - **Live session → ATTACH (#117).** Mint a fresh
+             `accounts_sessions` row and return — the new client rides
+             the running session via the visitor's user-rooted PubSub
+             topics (true bouncer: one session, N clients). NO preempt,
+             NO respawn (so #116 autojoin is not re-run), NO token
+             revocation (other attached clients stay alive), NO capacity
+             gate (nothing is spawned). Same mechanic as share-token
+             consume and the mode1 user-login path.
+
+           - **No live session → preempt + respawn (unchanged).** Check
+             capacity (the SPAWN gate), then revoke prior
+             `accounts_sessions` rows (`Accounts.revoke_sessions_for_visitor/1`,
+             they pointed at a now-dead session), `Visitors.purge_if_anon/1`
+             per W11 (no-op for registered but mirror-symmetric),
+             `Session.stop_session/2` (idempotent), `Session.Backoff.reset/2`
+             (clear crash-backoff so an explicit re-login isn't penalised),
+             respawn fresh Session.Server, `NetworkCircuit.record_success/1`
+             on welcome, mint a fresh Accounts.Session.
+
+         On the respawn path the NickServ `IDENTIFY` is emitted by the
+         AuthFSM at 001 for the `:nickserv_identify` plan — the single
+         IDENTIFY site (see `Grappa.IRC.AuthFSM.maybe_nickserv_identify/1`,
+         staged for the +r MODE observer via
+         `Session.Server.maybe_stage_pending_password/1`). Login does NOT
+         send a second one post-readiness (#27): a duplicate IDENTIFY
+         made NickServ reply with the "identified" NOTICE twice.
 
        * **Case 3 — anon (`password_encrypted` nil).** Check
          capacity, then require a valid bearer token that resolves
@@ -73,6 +86,8 @@ defmodule Grappa.Visitors.Login do
   alias Grappa.Auth.IdentifierClassifier
   alias Grappa.Session.Backoff
   alias Grappa.Visitors.{SessionPlan, Visitor}
+
+  require Logger
 
   # B6.6 X3 (no-silent-drops 2026-05-14): bang form so a missing
   # `:visitor_network` config value crashes at compile time, not at
@@ -221,21 +236,27 @@ defmodule Grappa.Visitors.Login do
   end
 
   # Case 2 — registered, password gate
-  defp dispatch(%Visitor{password_encrypted: pwd, id: visitor_id} = visitor, input, network, timeouts)
+  defp dispatch(%Visitor{password_encrypted: pwd} = visitor, input, network, timeouts)
        when is_binary(pwd) do
-    capacity_input = %{
-      network_id: network.id,
-      client_id: input.client_id,
-      flow: :login_existing,
-      # UX-5 bucket BC: the visitor IS the requesting subject; the cap
-      # must not count their own pre-existing accounts_session against
-      # them on respawn from the same device.
-      requesting_subject: {:visitor, visitor_id}
-    }
+    # Password is the auth gate — prove identity BEFORE deciding attach vs
+    # respawn (and before any capacity/spawn work, so a wrong-password attempt
+    # leaks no cap/circuit state).
+    with :ok <- check_password(input.password, pwd) do
+      # #117 — a registered visitor IS a stable identity (`visitor.id` is per
+      # `(nick, network_slug)`), so the same NickServ account re-resolves to the
+      # one session key. If that session is already live, ATTACH the new login
+      # to it (true bouncer: one session, N clients) instead of preempt+respawn.
+      # `Session.whereis/2` is the derived live-pid truth — no parallel state.
+      case Session.whereis({:visitor, visitor.id}, network.id) do
+        pid when is_pid(pid) ->
+          attach_to_existing(visitor, input, pid)
 
-    with :ok <- Grappa.Admission.check_capacity(capacity_input),
-         :ok <- check_password(input.password, pwd) do
-      preempt_and_respawn(visitor, network, input, timeouts)
+        nil ->
+          # No live session for the identity → fall through to the fresh
+          # new-session path (unchanged). Extracted to keep this clause at a
+          # sane nesting depth.
+          respawn_path(visitor, network, input, timeouts)
+      end
     end
   end
 
@@ -252,6 +273,37 @@ defmodule Grappa.Visitors.Login do
          :ok <- check_anon_token(input.token, visitor.id) do
       rotate_token(visitor, input)
     end
+  end
+
+  # Case 2 fresh-spawn path (no live session for the identity). Capacity gates
+  # the SPAWN here; the attach path is deliberately ungated — it spawns nothing,
+  # so the network-total / circuit caps (which gate dialing a new upstream) must
+  # not block a returning identity whose session already exists. UX-5 bucket BC:
+  # `requesting_subject` excludes the visitor's own pre-existing accounts_session
+  # from the cap on respawn from the same device.
+  defp respawn_path(%Visitor{id: visitor_id} = visitor, network, input, timeouts) do
+    capacity_input = %{
+      network_id: network.id,
+      client_id: input.client_id,
+      flow: :login_existing,
+      requesting_subject: {:visitor, visitor_id}
+    }
+
+    with :ok <- Grappa.Admission.check_capacity(capacity_input) do
+      preempt_and_respawn(visitor, network, input, timeouts)
+    end
+  end
+
+  # #117 attach: an existing live `Session.Server` already serves this identity.
+  # Mint a fresh `accounts_sessions` row for the new client and return — the
+  # client subscribes to the visitor's user-rooted PubSub topics and rides the
+  # running session (same mechanic as share-token consume and the mode1 user
+  # login). NO preempt, NO respawn (so #116 autojoin is not re-run), NO token
+  # revocation (other attached clients stay alive), NO capacity gate (no spawn).
+  defp attach_to_existing(%Visitor{} = visitor, input, pid) do
+    Logger.info("login: attached to existing live session (visitor=#{visitor.id} pid=#{inspect(pid)})")
+
+    issue_token(visitor, input)
   end
 
   defp continue_case_1(visitor, network, input, timeouts) do

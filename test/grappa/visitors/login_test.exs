@@ -308,6 +308,34 @@ defmodule Grappa.Visitors.LoginTest do
       assert {:error, :revoked} = Accounts.authenticate(prior.id)
       assert {:ok, _} = Accounts.authenticate(new_token)
     end
+
+    test "matching password WITH a live session → attach: same pid, prior tokens kept, no respawn (#117)",
+         %{server: server, network: network, visitor: visitor} do
+      # First login spawns the live session for this identity.
+      task1 = Task.async(fn -> Login.login(login_input(%{password: "s3cret"}), []) end)
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+      assert {:ok, %{token: first_token}} = Task.await(task1, 10_000)
+
+      pid_before = Session.whereis({:visitor, visitor.id}, network.id)
+      assert is_pid(pid_before)
+
+      # Second login — same identity, correct password, ANOTHER client. No IRC
+      # handshake needed: attach mints a token only, it does not spawn/dial.
+      assert {:ok, %{visitor: returned, token: second_token}} =
+               Login.login(login_input(%{password: "s3cret"}), [])
+
+      assert returned.id == visitor.id
+      refute second_token == first_token
+
+      # ATTACH: the existing session is reused — same pid still serving, no
+      # respawn (#116 autojoin therefore not re-run, since init/1 never fires).
+      assert Session.whereis({:visitor, visitor.id}, network.id) == pid_before
+
+      # Multi-client bouncer semantics: the first client's token is NOT revoked.
+      assert {:ok, _} = Accounts.authenticate(first_token)
+      assert {:ok, _} = Accounts.authenticate(second_token)
+    end
   end
 
   describe "case 3 — anon collision (token gate)" do

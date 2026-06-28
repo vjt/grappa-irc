@@ -13640,3 +13640,64 @@ multiple lock types (invited-list beats both +i and +k in `can_join`), resist
 the temptation to handle 473 and 475 differently — collapse them to one code
 path at the point that knowledge is encoded, and document the source reference
 so future maintainers don't re-derive it.*
+
+## 2026-06-28 — Login attaches to an existing live session for the same identity (GH #117)
+
+When a **registered** (NickServ-identified) visitor logs in via the grappa
+login screen and a live `Session.Server` already serves their identity,
+`Grappa.Visitors.Login` now **attaches** the new login to that session instead
+of stopping it and respawning a fresh one. This is the natural bouncer model —
+one persistent session, N attached clients — and makes the manual share-session
+flow unnecessary for identified users (share-session stays for unidentified
+guests, who have no password and so use the link as their auth mechanism).
+
+**The attach verb already existed; #117 just routes to it.** Attaching a client
+to a running session is exactly what the share-token consume endpoint and
+`Login.issue_token/2` do: mint a fresh `accounts_sessions` row for the *same*
+visitor and return. The new client subscribes to the visitor's user-rooted
+PubSub topics (`grappa:user:visitor:<id>/…`) and rides the live session; the
+`Session.Server` is untouched. No new mechanism, no new noun — `Login`'s Case 2
+(registered visitor) gained a `Session.whereis/2` branch ahead of the existing
+`preempt_and_respawn`.
+
+**Session key = identity = `{:visitor, visitor.id}`.** `visitor.id` is per
+`(nick, network_slug)`, so the same NickServ account (same nick) re-resolves to
+the same registry key from any client/host. The identity key is *derived* from
+the visitor row that already represents the identity — no account/identity
+table was added.
+
+**Attach is routed BEFORE the capacity gate (whereis-first), and password-first
+before both.** The capacity verbs (`Admission.check_capacity`) gate *new session
+spawns* — `check_network_total` counts live `Session.Server`s, `check_circuit`
+gates dialing a fresh upstream. An attach spawns nothing, so gating it on those
+is wrong: a returning identity whose session is ALREADY counted would be blocked
+when the network is at its visitor cap, and a circuit-open would block an attach
+even though the live session proves the upstream is reachable — both contradict
+#117. So Case 2 now (1) checks the password (auth gate — prove identity first,
+leaking no cap/circuit state to a wrong-password attempt), then (2) branches on
+`whereis`: live pid → attach (ungated, like share-consume); `nil` → capacity
+gate + `preempt_and_respawn` (the fresh-spawn path, unchanged). All pre-existing
+capacity tests are Case 1 (fresh nicks), so the reorder changes no covered
+behavior.
+
+**Attach does NOT revoke prior tokens; the respawn path still does.** Multi-client
+semantics require the other attached clients' tokens to stay valid, so attach
+only *adds* a token. The no-live-session respawn path keeps revoking stale tokens
+that pointed at a now-dead session (`revoke_sessions_for_visitor` inside
+`preempt_and_respawn`).
+
+**#116 autojoin is not re-run on attach — automatically.** Attach spawns no
+`Session.Server`, so `init/1` (and the boot autojoin set it builds) never fires.
+The "don't re-autojoin on attach" requirement is satisfied by the absence of a
+spawn, not by a flag — derived state, no parallel structure.
+
+**Users already attached.** `GrappaWeb.AuthController.mode1_login` only mints a
+token (no respawn); user sessions are Bootstrap-managed. #117's scope was
+therefore purely the visitor `Login` Case 2 path that had been doing
+preempt+respawn.
+
+*Lesson: when a second use case ("attach a client to a session") already has a
+verb in the codebase (share-token consume, the user-login path), the feature is
+a routing decision, not a new mechanism — find the branch point (`whereis`) and
+make sure the gates that belong to the *old* path (capacity = spawn-gate) don't
+leak onto the new one.*
