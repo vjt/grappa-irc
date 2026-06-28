@@ -20,6 +20,7 @@ defmodule Grappa.Networks.FeaturedChannels do
   alias Grappa.Networks.{FeaturedChannel, Network}
   alias Grappa.Repo
 
+  @doc "Adds a featured channel to `network`; duplicate name → `{:error, :already_exists}`."
   @spec add_channel(Network.t(), map()) ::
           {:ok, FeaturedChannel.t()} | {:error, :already_exists | Ecto.Changeset.t()}
   def add_channel(%Network{id: network_id}, attrs) when is_map(attrs) do
@@ -31,11 +32,13 @@ defmodule Grappa.Networks.FeaturedChannels do
     |> classify()
   end
 
+  @doc "All featured rows for `network` (admin listing), position-then-id asc."
   @spec list_channels(Network.t()) :: [FeaturedChannel.t()]
   def list_channels(%Network{id: network_id}) do
     Repo.all(ordered_query(network_id))
   end
 
+  @doc "Enabled rows as `[%{name, description}]` for the public delivery wire."
   @spec list_links(Network.t()) :: [%{name: String.t(), description: String.t() | nil}]
   def list_links(%Network{id: network_id}) do
     network_id
@@ -45,6 +48,7 @@ defmodule Grappa.Networks.FeaturedChannels do
     |> Repo.all()
   end
 
+  @doc "Enabled channel names as a downcased `MapSet` for the /list directory label."
   @spec featured_name_set(Network.t()) :: MapSet.t(String.t())
   def featured_name_set(%Network{id: network_id}) do
     names =
@@ -57,6 +61,7 @@ defmodule Grappa.Networks.FeaturedChannels do
     MapSet.new(names)
   end
 
+  @doc "Fetches a featured row by id, scoped to `network` (cross-network id → `:not_found`)."
   @spec get_channel(Network.t(), integer()) ::
           {:ok, FeaturedChannel.t()} | {:error, :not_found}
   def get_channel(%Network{id: network_id}, id) when is_integer(id) do
@@ -66,6 +71,7 @@ defmodule Grappa.Networks.FeaturedChannels do
     end
   end
 
+  @doc "Updates a featured row; duplicate name → `{:error, :already_exists}`."
   @spec update_channel(FeaturedChannel.t(), map()) ::
           {:ok, FeaturedChannel.t()} | {:error, :already_exists | Ecto.Changeset.t()}
   def update_channel(%FeaturedChannel{} = fc, attrs) when is_map(attrs) do
@@ -75,6 +81,7 @@ defmodule Grappa.Networks.FeaturedChannels do
     |> classify()
   end
 
+  @doc "Deletes a featured row. Idempotent — a stale (already-gone) row is `:ok`."
   @spec delete_channel(FeaturedChannel.t()) :: :ok
   def delete_channel(%FeaturedChannel{} = fc) do
     case Repo.delete(fc, stale_error_field: :id) do

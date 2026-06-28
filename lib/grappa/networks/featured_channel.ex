@@ -45,6 +45,11 @@ defmodule Grappa.Networks.FeaturedChannel do
     timestamps(type: :utc_datetime_usec)
   end
 
+  @doc """
+  Create/update changeset. `name` is required, canonicalized to its
+  lowercased channel form, and validated as a syntactic IRC channel;
+  `(network_id, name)` uniqueness is enforced at the DB layer.
+  """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(featured, attrs) do
     featured

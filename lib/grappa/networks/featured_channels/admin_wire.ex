@@ -19,6 +19,7 @@ defmodule Grappa.Networks.FeaturedChannels.AdminWire do
           updated_at: DateTime.t()
         }
 
+  @doc "Renders a featured-channel row to the admin JSON shape."
   @spec featured_channel_to_admin_json(FeaturedChannel.t()) :: t()
   def featured_channel_to_admin_json(%FeaturedChannel{} = fc) do
     %{

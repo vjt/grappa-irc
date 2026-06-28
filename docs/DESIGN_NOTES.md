@@ -13886,3 +13886,61 @@ unbind transaction wrapper, and the `:scrollback_present` branch of
 **Kept:** `Scrollback.has_messages_for_network?/1` and the
 FallbackController `:scrollback_present → 409` clause — both are still
 the live machinery behind `delete_network/1`, not dead code.
+
+## 2026-06-28 — Featured channels: on-display read, not a /me snapshot (#85)
+
+Operator-curated **featured channels** per network (`network_featured_channels`,
+mirroring `network_servers`) surfaced read-only to users (HomePane
+one-click-join) and visitors, plus a `featured` label on `/list`
+directory rows. Admin CRUD under `/admin/networks/:id/featured_channels`.
+
+**Delivery decision (vjt, brainstormed).** The original #85 wording said
+"deliver in `/me` for both shapes — users get `home_data.networks[].featured`."
+Rejected at design time. Two reasons compounded:
+
+1. **`home_network_row/2` is shared by the cold `/me` AND the live
+   `connection_state_changed` broadcast** (one builder, by design —
+   `networks/wire.ex`). Putting featured in that row means the broadcast
+   must preload + re-send it on every connect/park/fail, or cic's
+   full-row overlay (`home.ts`: `live[slug] ?? row`) **wipes** featured
+   on reconnect. Static operator curation would ride a dynamic
+   connection-state heartbeat.
+
+2. **Config has its own lifecycle.** A `/me` snapshot is taken at login;
+   an operator editing the featured list afterwards would not reach a
+   connected user until their next login. The fix is not a PubSub push
+   (overkill for rarely-changing config) — it is **re-reading current
+   config when the surface displays.**
+
+**What shipped instead.** Featured is delivered by **on-display read**,
+never baked into `/me`, never on the connection-state event:
+
+- **HomePane** fetches `GET /networks/:network_id/featured` on home
+  display (per network row for users; the single `network_slug` for
+  visitors). Component mount = re-read, so operator edits land on the
+  next render.
+- **`/list`** directory response (`GET /networks/:id/directory`, already
+  re-fetched on display) gains `featured: boolean`, re-derived
+  server-side from the network's **current** enabled set on every fetch.
+  `ChannelDirectory.Wire.index_payload/2` takes a downcased name
+  `MapSet`; match is `String.downcase` (channel fold == downcase, the
+  `ChannelDirectory` boundary has no `IRC` dep). No top-pinning — sort
+  order (user-count desc) is unchanged.
+
+`home_network_row` and the `connection_state_changed` broadcast were
+left **untouched**. The public read endpoint rides `:resolve_network`
+(cross-user iso) + the existing `networks` nginx allowlist alts (public
+`^/(…|networks|…)(/|$)` and admin `…|networks|…`) — **no nginx change**
+on either surface.
+
+**No admin PubSub events** for featured CRUD (unlike `ServersController`,
+which emits `:server_added/updated/removed` to the admin console).
+Featured config never touches a live `Session.Server` — there is no
+session-count to surface on delete and no live-state another admin must
+see mid-edit; the admin panel refetches on its own action. Deliberate
+divergence from the servers pattern, not an omission.
+
+**Case-fold.** `network_featured_channels.name` is stored lowercased
+(`Identifier.canonical_channel/1`) per the channel case-fold invariant;
+`(network_id, name)` is unique on the stored fold, so `#Chan`/`#chan`
+collapse to one row and match one directory entry.

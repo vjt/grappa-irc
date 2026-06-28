@@ -144,7 +144,7 @@ defmodule GrappaWeb.Admin.FeaturedChannelsControllerTest do
   describe "authz" do
     test "non-admin user 403s", %{conn: conn} do
       net = fresh_network()
-      {_user, session} = user_and_session()
+      {_, session} = user_and_session()
 
       conn =
         conn

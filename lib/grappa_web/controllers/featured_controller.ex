@@ -19,8 +19,9 @@ defmodule GrappaWeb.FeaturedController do
   alias Grappa.Networks.FeaturedChannels
   alias Grappa.Networks.FeaturedChannels.Wire
 
+  @doc "Renders the network's enabled featured channels (on-display read)."
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def index(conn, _params) do
+  def index(conn, _) do
     network = conn.assigns.network
     json(conn, Wire.index_payload(FeaturedChannels.list_links(network)))
   end

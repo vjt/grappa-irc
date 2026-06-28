@@ -27,6 +27,7 @@ defmodule GrappaWeb.Admin.FeaturedChannelsController do
 
   @attrs ["name", "description", "position", "enabled"]
 
+  @doc "Lists a network's featured channels (admin), position-then-id asc."
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found}
   def index(conn, %{"network_id" => nid}) do
     with {:ok, parsed_nid} <- parse_id(nid),
@@ -40,6 +41,7 @@ defmodule GrappaWeb.Admin.FeaturedChannelsController do
     end
   end
 
+  @doc "Creates a featured channel under `network_id`. Returns `201` + the row."
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
           | {:error, :not_found | :already_exists | :bad_request | Ecto.Changeset.t()}
@@ -54,6 +56,7 @@ defmodule GrappaWeb.Admin.FeaturedChannelsController do
     end
   end
 
+  @doc "Updates a featured channel scoped by `(network_id, id)`."
   @spec update(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
           | {:error, :not_found | :already_exists | :bad_request | Ecto.Changeset.t()}
@@ -68,6 +71,7 @@ defmodule GrappaWeb.Admin.FeaturedChannelsController do
     end
   end
 
+  @doc "Deletes a featured channel scoped by `(network_id, id)`. Returns `200 {}`."
   @spec delete(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found}
   def delete(conn, %{"network_id" => nid, "id" => fid}) do
     with {:ok, parsed_nid} <- parse_id(nid),
