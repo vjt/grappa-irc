@@ -26,7 +26,7 @@ defmodule Grappa.Networks.Network do
   import Ecto.Changeset
 
   alias Grappa.IRC.Identifier
-  alias Grappa.Networks.{Credential, Server}
+  alias Grappa.Networks.{Credential, FeaturedChannel, Server}
 
   @type t :: %__MODULE__{
           id: integer() | nil,
@@ -36,6 +36,7 @@ defmodule Grappa.Networks.Network do
           max_per_client: non_neg_integer() | nil,
           servers: [Server.t()] | Ecto.Association.NotLoaded.t(),
           credentials: [Credential.t()] | Ecto.Association.NotLoaded.t(),
+          featured_channels: [FeaturedChannel.t()] | Ecto.Association.NotLoaded.t(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -55,6 +56,7 @@ defmodule Grappa.Networks.Network do
 
     has_many :servers, Server
     has_many :credentials, Credential
+    has_many :featured_channels, FeaturedChannel
 
     timestamps(type: :utc_datetime_usec)
   end
