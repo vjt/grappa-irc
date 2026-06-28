@@ -25,7 +25,7 @@ CMD="${1:-start}"
 TITLE="${2:-grappa-orch}"
 THRESHOLD="${AUTOCLEAR_THRESHOLD:-40}"
 TICK="${AUTOCLEAR_TICK:-15}"                       # seconds between checks
-IDLE_TICKS_REQUIRED="${AUTOCLEAR_IDLE_TICKS:-4}"   # consecutive qualifying ticks (4*15=60s)
+IDLE_TICKS_REQUIRED="${AUTOCLEAR_IDLE_TICKS:-2}"   # consecutive qualifying ticks (2*15=30s; is_busy already guards mid-turn)
 COOLDOWN="${AUTOCLEAR_COOLDOWN:-90}"               # pause after a clear
 
 SLUG="$(printf '%s' "$TITLE" | tr -c 'a-zA-Z0-9' '-')"
