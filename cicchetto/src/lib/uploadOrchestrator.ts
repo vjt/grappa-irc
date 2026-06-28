@@ -101,6 +101,34 @@ const pendingPrivacyGated = new Map<
   { file: File; networkSlug: string; channelName: string }
 >();
 
+// #118 — sequential per-channel upload queue. Files pasted/dropped/picked
+// in one batch wait here behind the active upload; each settle pumps the
+// next. Plain Map — not reactive; the queue itself drives no UI. Keeps the
+// single-slot dispatchUpload pipeline (one inflight per channel) untouched.
+type QueuedUpload = { file: File; networkSlug: string; channelName: string };
+const queue = new Map<ChannelKey, QueuedUpload[]>();
+
+// Reactive (index,total) for the "(i/N)" batch counter — the only reactive
+// slice of the queue. ComposeBox reads uploadBatch(key) for the label.
+const [batchByChannel, setBatchByChannel] = createSignal<
+  Record<ChannelKey, { index: number; total: number }>
+>({});
+
+function setBatch(key: ChannelKey, info: { index: number; total: number } | null): void {
+  setBatchByChannel((prev) => {
+    if (info === null) {
+      const { [key]: _, ...rest } = prev;
+      void _;
+      return rest;
+    }
+    return { ...prev, [key]: info };
+  });
+}
+
+export function uploadBatch(key: ChannelKey): { index: number; total: number } | null {
+  return batchByChannel()[key] ?? null;
+}
+
 const PRIVACY_KEY_PREFIX = "image-upload-privacy-acknowledged";
 
 const privacyKey = (host: UploadHost): string => `${PRIVACY_KEY_PREFIX}:${host.id}`;
@@ -151,6 +179,20 @@ export async function saveUploadTtlSeconds(token: string, seconds: number | null
  *  `loadUploadTtlSeconds`. */
 export function resetUploadTtlSecondsForTests(): void {
   setUploadTtlSecondsSignal(null);
+}
+
+/** Test-only: clear ALL per-channel upload state (queue, inflight, retry
+ *  buffer, privacy stage, visible entries, batch counters, modal).
+ *  Production never calls this — the module state is process-lived. */
+export function resetUploadsForTests(): void {
+  for (const { controller } of inflight.values()) controller.abort();
+  inflight.clear();
+  queue.clear();
+  lastAttempt.clear();
+  pendingPrivacyGated.clear();
+  setUploadStates({});
+  setBatchByChannel({});
+  setModalState({ open: false, host: null, key: null });
 }
 
 /** Translate a stored-seconds preference into a host-specific token
@@ -345,6 +387,7 @@ async function dispatchUpload(
       setEntry(key, null);
       // Auto-send PRIVMSG with the per-category emoji prefix — A7.
       void sendMessage(networkSlug, channelName, `${CATEGORY_EMOJI[category]} ${url}`);
+      pumpQueue(key); // #118: start the next queued file
     })
     .catch((err: UploadError) => {
       if (inflight.get(key)?.controller !== controller) return;
@@ -461,25 +504,86 @@ async function prepareVideo(
   return file;
 }
 
+// #118 plural entry — every trigger surface (paste/drop/picker) collapses
+// to this. Normalizes (iOS .m4r → audio/mp4) + enqueues ALL files, bumps
+// the batch total, then pumps if nothing is active for this channel.
+// Sequential: one file uploads at a time; each settle pumps the next.
+export function triggerUploads(
+  key: ChannelKey,
+  networkSlug: string,
+  channelName: string,
+  rawFiles: File[],
+): void {
+  if (rawFiles.length === 0) return;
+  const items: QueuedUpload[] = rawFiles.map((raw) => ({
+    file: normalizeUploadFile(raw),
+    networkSlug,
+    channelName,
+  }));
+  const q = queue.get(key) ?? [];
+  // A batch is "ongoing" only while something is genuinely processing — an
+  // inflight upload, an open privacy modal, or files already queued. An
+  // error entry on its own does NOT count: a fresh selection after a failed
+  // upload starts a new batch and supersedes the error (the #49 contract).
+  const ongoing = isActive(key) || q.length > 0;
+  q.push(...items);
+  queue.set(key, q);
+  if (ongoing) {
+    const prev = batchByChannel()[key];
+    setBatch(key, { index: prev?.index ?? 0, total: (prev?.total ?? 0) + items.length });
+  } else {
+    setBatch(key, { index: 0, total: items.length });
+  }
+  // Already busy? The in-flight settle / dismiss / ack drains the queue.
+  if (isActive(key)) return;
+  pumpQueue(key);
+}
+
+// Back-compat single-file entry — retained so the existing call sites +
+// tests keep their signature. Funnels into the queue like everything else.
 export function triggerUpload(
   key: ChannelKey,
   networkSlug: string,
   channelName: string,
   rawFile: File,
 ): void {
-  // Relabel uncommon audio extensions the browser couldn't MIME-type
-  // (iOS .m4r ringtones → empty/octet-stream) to their canonical audio
-  // MIME, at the single entry point — so both the privacy-gated and the
-  // direct dispatch paths carry the corrected File.
-  const file = normalizeUploadFile(rawFile);
+  triggerUploads(key, networkSlug, channelName, [rawFile]);
+}
+
+// "Busy" = an upload is in flight, the privacy modal is open for this
+// channel, or an error entry is awaiting the user's dismiss/retry. In any
+// of these the queue must wait — the resolving path will pump it.
+function isActive(key: ChannelKey): boolean {
+  const modal = modalState();
+  return inflight.has(key) || (modal.open && modal.key === key);
+}
+
+// Dequeue + start the next file. Empty → clear the batch counter.
+function pumpQueue(key: ChannelKey): void {
+  const q = queue.get(key);
+  if (q === undefined || q.length === 0) {
+    queue.delete(key);
+    setBatch(key, null);
+    return;
+  }
+  const next = q.shift() as QueuedUpload;
+  queue.set(key, q);
+  const total = batchByChannel()[key]?.total ?? q.length + 1;
+  setBatch(key, { index: total - q.length, total });
+  startUpload(key, next);
+}
+
+// Privacy gate (per file — honors a not-"remembered" user's ask-every-time
+// choice; the common acked case never re-prompts) then dispatch.
+function startUpload(key: ChannelKey, item: QueuedUpload): void {
   const host = activeHost();
   const ackd = localStorage.getItem(privacyKey(host));
   if (ackd === null || ackd === "") {
-    pendingPrivacyGated.set(key, { file, networkSlug, channelName });
+    pendingPrivacyGated.set(key, item);
     setModalState({ open: true, host, key });
     return;
   }
-  void dispatchUpload(key, networkSlug, channelName, file);
+  void dispatchUpload(key, item.networkSlug, item.channelName, item.file);
 }
 
 export function acknowledgePrivacy(rememberChoice: boolean): void {
@@ -503,16 +607,20 @@ export function cancelUpload(key: ChannelKey): void {
     entry.controller.abort();
     inflight.delete(key);
   }
+  // #118: cancelling the in-flight upload stops the WHOLE batch.
+  queue.delete(key);
+  setBatch(key, null);
   setEntry(key, null);
 }
 
 export function dismissUpload(key: ChannelKey): void {
-  // Symmetrical handler for: error UI dismiss, cancel-from-modal,
-  // retry preface. Closes any open privacy modal targeting this key
-  // AND clears any in-flight controller AND clears the visible state
-  // entry. Safe to call from any state.
+  // Two dismiss flavours (#118):
+  //  - from the privacy modal → the user declined; cancel the whole batch
+  //    (clear the queue) — never silently re-dispatch the queued files.
+  //  - from an upload error → skip the failed file, continue the rest.
   const modal = modalState();
-  if (modal.open && modal.key === key) {
+  const wasModal = modal.open && modal.key === key;
+  if (wasModal) {
     setModalState({ open: false, host: null, key: null });
     pendingPrivacyGated.delete(key);
   }
@@ -522,11 +630,21 @@ export function dismissUpload(key: ChannelKey): void {
     inflight.delete(key);
   }
   setEntry(key, null);
+  if (wasModal) {
+    queue.delete(key);
+    setBatch(key, null);
+  } else {
+    pumpQueue(key);
+  }
 }
 
 export function retryUpload(key: ChannelKey): void {
   const ctx = lastAttempt.get(key);
   if (ctx === undefined) return;
   setEntry(key, null);
-  triggerUpload(key, ctx.networkSlug, ctx.channelName, ctx.file);
+  // #118: re-run the failed file FIRST, then continue any queued files.
+  const q = queue.get(key) ?? [];
+  q.unshift({ file: ctx.file, networkSlug: ctx.networkSlug, channelName: ctx.channelName });
+  queue.set(key, q);
+  pumpQueue(key);
 }

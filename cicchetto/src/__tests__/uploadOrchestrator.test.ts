@@ -78,10 +78,13 @@ import {
   dismissUpload,
   loadUploadTtlSeconds,
   privacyModalState,
+  resetUploadsForTests,
   resetUploadTtlSecondsForTests,
   retryUpload,
   saveUploadTtlSeconds,
   triggerUpload,
+  triggerUploads,
+  uploadBatch,
   uploadState,
   uploadTtlSecondsValue,
 } from "../lib/uploadOrchestrator";
@@ -168,8 +171,8 @@ beforeEach(() => {
   vi.mocked(sendMessage).mockClear();
   // Wipe localStorage between tests so privacy state doesn't leak.
   localStorage.clear();
-  // Reset modal state explicitly — singleton survives across tests.
-  dismissUpload(key);
+  // Reset ALL per-channel upload state (queue, inflight, modal, entries).
+  resetUploadsForTests();
   // Reset to default (litterbox).
   vi.mocked(activeHost).mockReturnValue(makeTestHost());
   // UX-4 bucket M — reset the server-pref cache so each test starts
@@ -767,25 +770,28 @@ describe("video transcode branch", () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it("re-trigger during an in-flight transcode aborts the previous controller (no orphaned encode)", async () => {
+  it("re-trigger during an in-flight transcode queues behind it (#118 — no abort, no orphaned encode)", async () => {
     triggerUpload(key, slug, channel, videoClip());
     await awaitTranscodeStart(1);
     expect(vt.transcodes[0]?.signal.aborted).toBe(false);
 
-    // Second selection on the same channel while the first transcode
-    // is still burning CPU — the orchestrator must kill the first.
+    // Second selection on the same channel while the first transcode is
+    // still running: #118 queues it behind the first instead of aborting —
+    // the first upload is never lost, and only ONE transcode runs at a time.
     triggerUpload(key, slug, channel, videoClip());
-    await awaitTranscodeStart(2);
-    expect(vt.transcodes[0]?.signal.aborted).toBe(true);
-    expect(vt.transcodes[1]?.signal.aborted).toBe(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(vt.transcodes.length).toBe(1);
+    expect(vt.transcodes[0]?.signal.aborted).toBe(false);
 
-    // The aborted first transcode settling late must not clobber the
-    // second upload's state (stale-controller guard).
-    vt.transcodes[0]?.resolve({ error: { kind: "failed", message: "conversion canceled" } });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(uploadState(key)?.phase).toBe("transcoding");
+    // First transcode completes → its upload runs → on success the queue
+    // pumps and the SECOND transcode finally starts.
+    const out = new File([new Uint8Array(8)], "clip.mp4", { type: "video/mp4" });
+    vt.transcodes[0]?.resolve({ ok: out });
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(1));
+    pendingResolvers[0]?.resolve("https://litter.catbox.moe/clip1.mp4");
+    await awaitTranscodeStart(2);
+    expect(vt.transcodes[1]?.signal.aborted).toBe(false);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });
@@ -937,5 +943,104 @@ describe("TTL persistence", () => {
     vi.mocked(userSettings.getUploadTtlSeconds).mockRejectedValueOnce(new Error("network"));
     await loadUploadTtlSeconds("tok");
     expect(uploadTtlSecondsValue()).toBeNull();
+  });
+});
+
+// --------------------------------------------------------------------
+// Sequential multi-file queue (#118)
+// --------------------------------------------------------------------
+
+describe("sequential multi-file queue (#118)", () => {
+  const ackPrivacy = () =>
+    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+  const img = (name: string): File =>
+    new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
+
+  it("uploads queued files one at a time, auto-sending each in order", async () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png"), img("b.png"), img("c.png")]);
+
+    // Only the first file is in flight.
+    expect(pendingResolvers.length).toBe(1);
+    expect(pendingResolvers[0].file.name).toBe("a.png");
+
+    pendingResolvers[0].resolve("https://h/a");
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(2));
+    expect(pendingResolvers[1].file.name).toBe("b.png");
+
+    pendingResolvers[1].resolve("https://h/b");
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(3));
+    expect(pendingResolvers[2].file.name).toBe("c.png");
+
+    pendingResolvers[2].resolve("https://h/c");
+    await vi.waitFor(() => expect(vi.mocked(sendMessage).mock.calls.length).toBe(3));
+    expect(vi.mocked(sendMessage).mock.calls.map((c) => c[2])).toEqual([
+      "📸 https://h/a",
+      "📸 https://h/b",
+      "📸 https://h/c",
+    ]);
+  });
+
+  it("reports (index/total) and clears the counter when drained", async () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    expect(uploadBatch(key)).toEqual({ index: 1, total: 2 });
+
+    pendingResolvers[0].resolve("https://h/a");
+    await vi.waitFor(() => expect(uploadBatch(key)).toEqual({ index: 2, total: 2 }));
+
+    pendingResolvers[1].resolve("https://h/b");
+    await vi.waitFor(() => expect(uploadBatch(key)).toBeNull());
+  });
+
+  it("a failed file pauses the batch; dismiss continues with the rest", async () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    expect(pendingResolvers.length).toBe(1);
+
+    pendingResolvers[0].reject({ kind: "network" });
+    await vi.waitFor(() => expect(uploadState(key)?.error).toBeTruthy());
+    expect(pendingResolvers.length).toBe(1); // paused — b not started
+
+    dismissUpload(key);
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(2));
+    expect(pendingResolvers[1].file.name).toBe("b.png");
+
+    pendingResolvers[1].resolve("https://h/b");
+    await vi.waitFor(() => expect(vi.mocked(sendMessage).mock.calls.length).toBe(1));
+    expect(vi.mocked(sendMessage).mock.calls[0][2]).toBe("📸 https://h/b");
+  });
+
+  it("cancel stops the whole batch — no further dispatch", async () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png"), img("b.png"), img("c.png")]);
+    expect(pendingResolvers.length).toBe(1);
+    const sig = pendingResolvers[0].signal;
+
+    cancelUpload(key);
+    expect(sig.aborted).toBe(true);
+    expect(uploadBatch(key)).toBeNull();
+
+    // Settle nothing further; assert the queue did not advance.
+    await Promise.resolve();
+    expect(pendingResolvers.length).toBe(1);
+  });
+
+  it("retry re-runs the failed file, then continues the queue", async () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    pendingResolvers[0].reject({ kind: "network" });
+    await vi.waitFor(() => expect(uploadState(key)?.error).toBeTruthy());
+
+    retryUpload(key);
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(2));
+    expect(pendingResolvers[1].file.name).toBe("a.png"); // retried first
+
+    pendingResolvers[1].resolve("https://h/a2");
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(3));
+    expect(pendingResolvers[2].file.name).toBe("b.png"); // queue continues
+
+    pendingResolvers[2].resolve("https://h/b");
+    await vi.waitFor(() => expect(vi.mocked(sendMessage).mock.calls.length).toBe(2));
   });
 });
