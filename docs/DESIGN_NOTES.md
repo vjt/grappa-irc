@@ -13760,3 +13760,72 @@ to housekeep.
 issue post-dated the code. The actual work was the 20% the brief got right
 (multi-file) wrapped around an 80% that already existed. Reuse the verbs
 (`dispatchUpload`, the privacy gate, the auto-send), add only the queue.*
+
+## 2026-06-28 — One rfc1459 nick casemapper everywhere (GH #121)
+
+**Bug:** a visitor reconnecting with a different-case nick (`Mezmerize` →
+`mezmerize`) was NOT recognised as the same identity. The visitor lookup was a
+case-SENSITIVE `Repo.get_by(Visitor, nick: ...)`, so it missed, provisioned a
+SECOND visitor/session, and the orphan kept holding the nick — a later
+`/nick Mezmerize` then bounced with 433 "nickname already in use". P0,
+requested on channel.
+
+**Root class, not the instance.** The codebase folded nicks THREE
+inconsistent ways: (a) the visitor table didn't fold at all; (b)
+`query_windows` + the WHOIS/userhost/whowas caches + `dm_peer` + numeric_router
+folded ASCII-only via `String.downcase`; (c) event_router's self-detection used
+exact `==`. None handled azzurra's actual casemapping. Azzurra runs **bahamut =
+rfc1459**: besides `A-Z` it folds the four national chars `[ ] \ ~` →
+`{ } | ^`. The fix unifies **every** server-side nick comparison on one
+casemapper — "total consistency or nothing".
+
+**`Grappa.IRC.Identifier.canonical_nick/1`** — the single source of truth.
+**ASCII-only** byte-level fold (A-Z + the four brackets), deliberately NOT
+Unicode `String.downcase/1`, for two reasons: rfc1459 is defined over ASCII and
+bahamut compares byte-wise; and the migration backfill computes the same fold in
+pure SQL via `replace(...lower(x)...)` where SQLite `lower()` is ASCII-only — a
+Unicode Elixir fold would diverge from the stored index for non-ASCII nicks.
+UTF-8 multibyte passes through untouched (continuation/lead bytes never collide
+with `0x41..0x7e`).
+
+**Storage: derive, don't denormalise.** First cut added a `nick_folded` column;
+vjt (correctly) rejected the parallel state — every nick-write path would have to
+keep it in sync (the drift CLAUDE.md warns against). Final shape mirrors how
+`query_windows` already indexed `lower(target_nick)`: a UNIQUE **expression
+index** on the rfc1459 fold of the existing column. SQLite can't express the
+bracket fold in `lower()`, but it CAN in an expression index via the same nested
+`replace()`s. Both `visitors` and `query_windows` got the expression-index
+treatment; lookups fold at query time through `Identifier.nick_fold/1` — an Ecto
+fragment macro that is the query-side twin of `canonical_nick/1`, kept
+**character-identical** to the migration SQL so SQLite keeps the query
+index-eligible. The two migrations dedup any pre-existing case-variant rows
+before swapping the index (visitors: keep identified > permanent > newest;
+query_windows: keep MAX(id)). Two new migrations → COLD deploy.
+
+**In-memory sweep.** `EventRouter.normalize_nick/1` (userhost/whois/whowas cache
+keys), the paired `Session.Server` key sites
+(send_whois/send_whowas/lookup_userhost/derive_ban_mask), `PartCleanup`'s
+userhost eviction, `numeric_router.nick_eq?/2`, `Scrollback.dm_peer/4` +
+self-DM + `delete_for_dm`, and the ghost_recovery/chanserv service-nick checks
+all route through `canonical_nick`. event_router self-detection vs `state.nick`
+moved from exact `==` to a nil-safe `nick_eq?/2`; the self-nick MODE clause
+stopped using an exact-match dispatch **guard** (you can't fold in a guard) and
+branches in the body instead.
+
+**Scope boundary (deliberate, documented).** The in-memory **members map** keys
+(`state.members[ch][nick]`) and `state.nick`-as-identity are NOT folded. They are
+identity preserved from the authoritative upstream stream — which is
+self-consistent about a given user's nick case within a session — not
+case-insensitive MATCH sites where different-source variants meet. Folding them
+is a separate members-map restructure (a `{folded => {display, modes}}` shape),
+filed as follow-up, not smuggled into a P0.
+
+**Reattach (#117).** Once `lookup_visitor` folds, a different-case reconnect
+resolves to the same `visitor.id`, so the existing #117 attach-to-existing-session
+path reattaches instead of provisioning a duplicate — no new code, the fold is
+the whole fix.
+
+*Lesson: the cleanest "store the key" instinct was the wrong one — when the key
+is a pure function of a column you already have, an expression index derives it
+with zero drift. The existing `lower(target_nick)` index was the pattern to
+copy; I just had to read it before reaching for a column.*

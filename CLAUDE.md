@@ -56,8 +56,24 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   archive, `channel_directory`) stores the channel **lowercased**, and
   every lookup downcases the key — so `#Chan`, `#chan`, `#CHAN` resolve
   to one window. A new channel-keyed table or query MUST downcase or it
-  silently forks windows. (Nicks are likewise compared
-  case-insensitively — cic's `nickEquals`.)
+  silently forks windows.
+- **Nicks are case-folded under rfc1459 (GH #121).** Azzurra runs
+  bahamut (`CASEMAPPING=rfc1459`): besides `A-Z` it folds `[ ] \ ~` →
+  `{ } | ^`. The single source of truth is
+  `Grappa.IRC.Identifier.canonical_nick/1` (in-memory, ASCII-byte-level)
+  and its query-side twin `Identifier.nick_fold/1` (Ecto fragment). EVERY
+  server-side nick compare routes through one of them — visitor +
+  query_windows lookups (UNIQUE **expression** indexes on the fold, NOT a
+  denormalised column), the WHOIS/userhost/whowas caches, dm_peer,
+  numeric_router, and event_router self-detection. A new nick lookup,
+  equality, or nick-keyed cache MUST fold via these, never a bare
+  `String.downcase` or `==`, or it silently forks identities. The SQL
+  fold in a migration index, the `nick_fold/1` fragment, and any
+  `:unsafe_fragment` conflict target MUST stay character-identical or
+  SQLite drops the index. **Out of scope / known gap:** the in-memory
+  members map keys + `state.nick` as an identity key stay raw-cased
+  (server-consistent identity, not a fold-MATCH site). cic mirrors with
+  `nickEquals`.
 - **Read state is server-owned, per (subject, network, channel).**
   Cursor = `last_read_message_id` (FK to `messages.id`). Removing
   server-side cursor is a breaking change. The write cadence (settle
