@@ -273,14 +273,10 @@ defmodule Grappa.QueryWindows do
   @nick_fold_sql "replace(replace(replace(replace(lower(target_nick), '[', '{'), ']', '}'), '\\', '|'), '~', '^')"
 
   defp conflict_target({:user, _}),
-    do:
-      {:unsafe_fragment,
-       "(user_id, network_id, #{@nick_fold_sql}) WHERE user_id IS NOT NULL"}
+    do: {:unsafe_fragment, "(user_id, network_id, #{@nick_fold_sql}) WHERE user_id IS NOT NULL"}
 
   defp conflict_target({:visitor, _}),
-    do:
-      {:unsafe_fragment,
-       "(visitor_id, network_id, #{@nick_fold_sql}) WHERE visitor_id IS NOT NULL"}
+    do: {:unsafe_fragment, "(visitor_id, network_id, #{@nick_fold_sql}) WHERE visitor_id IS NOT NULL"}
 
   # Pre-flight FK existence check — converts a missing user / visitor /
   # network into a clean changeset error before `Repo.insert` raises

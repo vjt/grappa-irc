@@ -2274,12 +2274,14 @@ defmodule Grappa.Session.EventRouter do
 
   # rfc1459 nick equality (#121) — the in-memory twin of the folded DB
   # lookups, for self-detection against `state.nick` and service-nick
-  # checks. nil/non-binary-safe (state.nick is nil before RPL_WELCOME).
-  @spec nick_eq?(term(), term()) :: boolean()
+  # checks. The second arg is nil-safe (state.nick is nil before
+  # RPL_WELCOME); callers always pass a binary first arg (parsed wire
+  # nick), mirroring `Grappa.Session.NumericRouter.nick_eq?/2`.
+  @spec nick_eq?(String.t(), String.t() | nil) :: boolean()
+  defp nick_eq?(_, nil), do: false
+
   defp nick_eq?(a, b) when is_binary(a) and is_binary(b),
     do: Identifier.canonical_nick(a) == Identifier.canonical_nick(b)
-
-  defp nick_eq?(_, _), do: false
 
   # C2 — fold one set of WHOIS-numeric fields into the per-target accumulator
   # at `state.whois_pending[target_lower]`. Skips folding when no entry

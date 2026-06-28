@@ -28,7 +28,7 @@ defmodule Grappa.Repo.Migrations.FoldQueryWindowsTargetNickRfc1459 do
   use Ecto.Migration
 
   # rfc1459 fold of a column expression, pure SQL. Self-contained (no
-  # module dep — see AddNickFoldedToVisitors for the rationale).
+  # module dep — see FoldVisitorsNickUniqueIndex for the rationale).
   defp fold(col) do
     "replace(replace(replace(replace(lower(#{col}), '[', '{'), ']', '}'), '\\', '|'), '~', '^')"
   end

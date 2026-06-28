@@ -1,4 +1,4 @@
-defmodule Grappa.Repo.Migrations.AddNickFoldedToVisitors do
+defmodule Grappa.Repo.Migrations.FoldVisitorsNickUniqueIndex do
   @moduledoc """
   GH #121 — make the `visitors` uniqueness key rfc1459-folded so a
   different-case reconnect (`Mezmerize` -> `mezmerize`) resolves to the
@@ -82,7 +82,7 @@ defmodule Grappa.Repo.Migrations.AddNickFoldedToVisitors do
   end
 
   def down do
-    drop unique_index(:visitors, [:nick, :network_slug],
+    drop unique_index(:visitors, ["#{fold("nick")}", "network_slug"],
            name: :visitors_nick_folded_network_slug_index
          )
 

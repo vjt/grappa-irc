@@ -911,7 +911,7 @@ defmodule Grappa.Session do
   data seen for this nick since the session started), or `{:error,
   :no_session}` if no session is registered for `(subject, network_id)`.
 
-  Nick lookup is case-insensitive (RFC 2812 §2.2) — callers may pass the
+  Nick lookup is case-insensitive (rfc1459, #121) — callers may pass the
   nick in any case. This cache is consumed by S5's `/ban` mask derivation
   and is NOT broadcast over PubSub (the data goes stale and WHOIS remains
   the authoritative fallback when the cache misses).

@@ -1390,8 +1390,8 @@ defmodule Grappa.Session.Server do
   end
 
   # Returns the userhost cache entry for `nick`. Nick lookup is case-insensitive
-  # (RFC 2812 §2.2) — normalise to downcase at read time, mirroring write-time
-  # normalisation in EventRouter. Returns {:ok, entry} or {:error, :not_cached}.
+  # (rfc1459, #121) — fold via Identifier.canonical_nick at read time, mirroring
+  # write-time folding in EventRouter. Returns {:ok, entry} or {:error, :not_cached}.
   # Public via `Grappa.Session.lookup_userhost/3`.
   #
   # This cache is NOT broadcast over PubSub — it is consumed internally by
@@ -2625,16 +2625,23 @@ defmodule Grappa.Session.Server do
   # path. No state mutation — Session.Server's struct shape is
   # untouched, keeping the deploy preflight in HOT mode.
   @spec maybe_dispatch_push(Scrollback.Message.t(), t()) :: :ok
-  defp maybe_dispatch_push(%Scrollback.Message{sender: sender}, %{nick: own_nick})
-       when sender == own_nick,
-       do: :ok
-
-  defp maybe_dispatch_push(message, %{subject: subject} = state) do
-    PushTriggers.evaluate_and_dispatch(message, %{
-      subject: subject,
-      network_slug: state.network_slug,
-      own_nick: state.nick
-    })
+  defp maybe_dispatch_push(%Scrollback.Message{sender: sender} = message, %{subject: subject} = state) do
+    # Skip self-push — never notify the operator about their own message.
+    # rfc1459 fold (#121) instead of an exact-match dispatch guard (can't
+    # fold in a guard): if `echo-message` is ever enabled an upstream-cased
+    # echo of the own nick (`MyNick` vs `mynick`) must still suppress. Today
+    # outbound rows persist `sender = state.nick` verbatim so the exact case
+    # already matches, but the fold keeps this consistent with every other
+    # nick compare regardless of that invariant holding.
+    if Identifier.canonical_nick(sender) == Identifier.canonical_nick(state.nick) do
+      :ok
+    else
+      PushTriggers.evaluate_and_dispatch(message, %{
+        subject: subject,
+        network_slug: state.network_slug,
+        own_nick: state.nick
+      })
+    end
   end
 
   @spec apply_effects([EventRouter.effect()], t()) :: t()
