@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import HomePane from "../HomePane";
+import { channelKey } from "../lib/channelKey";
 import { LIST_WINDOW_NAME } from "../lib/windowKinds";
 
 // UX-4 bucket B (2026-05-18). HomePane renders one of two sub-panes
@@ -77,9 +78,8 @@ vi.mock("../lib/api", () => {
 });
 
 vi.mock("../lib/networks", () => ({ user: () => userMock() }));
-vi.mock("../lib/channelKey", () => ({
-  channelKey: (slug: string, name: string) => `${slug}/${name}`,
-}));
+// channelKey is a pure fn — use the real one (mock at boundaries, not
+// pure helpers) so the joined-state key shape matches production exactly.
 vi.mock("../lib/windowState", () => ({ windowStateByChannel: () => windowStateMock() }));
 
 vi.mock("../lib/auth", () => ({
@@ -151,7 +151,7 @@ describe("HomePane", () => {
     it("already-joined featured channel focuses without re-joining", async () => {
       homeDataMock.mockReturnValue(connectedNetworks("azzurra"));
       getFeaturedMock.mockResolvedValue([{ name: "#sniffo", description: null }]);
-      windowStateMock.mockReturnValue({ "azzurra/#sniffo": "joined" });
+      windowStateMock.mockReturnValue({ [channelKey("azzurra", "#sniffo")]: "joined" });
       render(() => <HomePane />);
 
       const link = await screen.findByText("#sniffo");
