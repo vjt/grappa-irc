@@ -4081,3 +4081,65 @@ mistake your local proof for its verdict. Run its view first: the full gate
 before "it passes," the classifier before "it'll be hot." And when a new
 field must go in, know it costs a cold restart — so batch it with the next
 one that does, and spend the empty building once.*
+
+## The feature that was already three times built (2026-06-28, login-attach)
+
+The issue read like a feature. When a NickServ-identified visitor logs in
+again — second browser, another device — don't spawn them a second bouncer
+session; connect them to the one they already have. Shared scrollback, shared
+channel state, the away flag they set an hour ago still set. The natural
+bouncer shape: one session, many clients riding it. It sounded like a thing to
+build.
+
+It wasn't. It was already built — three times. The share-link flow, where you
+mint a token on your phone and open it on your laptop, ends in one line:
+`Accounts.create_session` for the same visitor, return the token, done. The
+new client subscribes to the visitor's user-rooted topics and the running
+session just *is there*. The admin/user login path does the same — it mints a
+token and never touches the session. Even `Login`'s own `issue_token/2`, the
+helper at the bottom of the file, was the verb. "Attach a client to a live
+session" had a fingerprint all over the codebase. What the registered-visitor
+login did instead was the one discordant thing: it stopped the live session and
+respawned a fresh one. Preempt-and-replace, where every sibling did
+attach-and-share.
+
+So #117 was not a mechanism. It was a routing decision: at the one place that
+chose wrong, choose right. Check the password, ask `Session.whereis` whether a
+session is already alive for this identity, and if it is, route to the verb
+that already existed instead of the bulldozer. Three lines of branch and a
+helper that delegates to `issue_token`. The CLAUDE.md rule names this exact
+trap — *reuse the verbs, not the nouns* — and the reward for obeying it is that
+you delete temptation rather than add surface. No new identity table; the
+visitor row, keyed per nick-and-network, already *was* the identity key. No new
+flag to remember not to autojoin on attach; attach spawns nothing, so the
+boot-time autojoin set is never built, and the thing you must not do becomes a
+thing that cannot happen. The best version of a feature is the one where most
+of your design notes explain what you *didn't* add.
+
+The one real decision hid in the order. The capacity gate — the per-network
+session cap, the upstream circuit breaker — sat in front of the login path like
+a bouncer at the rope. But that bouncer guards *new sessions*: it counts live
+`Session.Server`s, it gates dialing a fresh upstream. An attach dials nothing.
+Leave the gate in front and you get an absurdity — the very session you're
+trying to join is counted against the cap that blocks you from joining it; a
+returning regular turned away from the building because the building is full,
+including their own seat. So the whereis-branch went *ahead* of the gate, and
+capacity now guards only the path that actually spawns. The same shape as
+share-link consume, which mints with no gate at all and was right the whole
+time.
+
+And then, a small coda from the previous episode's law — the enforcer judges on
+what it can see. The clean version split the dispatch clauses apart and the
+compiler named the non-contiguous group; the next clean version nested
+attach-over-respawn one level too deep and credo named the depth. Two more gate
+runs, two extractions, before green. The feature took an hour to understand and
+twenty minutes to write, and the writing was mostly moving two helpers so the
+tools would agree the small thing was small.
+
+*Law: before you build a capability, grep for it — the second use case of a
+thing is usually a routing decision, not a mechanism, and the codebase will
+already contain the verb under a different caller. When you find it, the work
+is to point the wrong path at the right verb and to make sure the guards that
+belong to the old path (capacity is a spawn-gate) don't ride along onto the new
+one that doesn't spawn. Reuse the verb, drop the noun, and let the absence of
+what you didn't add be the proof you understood it.*
