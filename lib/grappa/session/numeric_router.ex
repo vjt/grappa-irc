@@ -456,7 +456,9 @@ defmodule Grappa.Session.NumericRouter do
 
   @spec nick_eq?(String.t(), String.t() | nil) :: boolean()
   defp nick_eq?(_, nil), do: false
-  defp nick_eq?(a, b) when is_binary(a) and is_binary(b), do: String.downcase(a) == String.downcase(b)
+
+  defp nick_eq?(a, b) when is_binary(a) and is_binary(b),
+    do: Identifier.canonical_nick(a) == Identifier.canonical_nick(b)
 
   @spec window_ref_to_decision(window_ref()) ::
           {:channel, String.t()} | {:query, String.t()} | {:server, nil}

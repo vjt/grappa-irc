@@ -1118,14 +1118,14 @@ defmodule Grappa.Session.Server do
   # C2 — /whois <nick>. Two effects: (1) prime the accumulator entry in
   # state.whois_pending so EventRouter folds 311/312/313/317/319 into it;
   # (2) emit `WHOIS nick\r\n`. The entry's `target_display` is the user-
-  # typed nick (case preserved); EventRouter normalises to lowercase for
+  # typed nick (case preserved); EventRouter folds (rfc1459, #121) for
   # the lookup key. Replaces any prior accumulator for the same target
   # (running /whois twice without an 318 in between drops the first).
   # On send_line failure the accumulator stays primed — a transient send
   # error doesn't strand the whois flow because no numerics will arrive
   # to drain it; harmless until the next /whois replaces the entry.
   def handle_call({:send_whois, target}, _, state) when is_binary(target) do
-    nick_key = String.downcase(target)
+    nick_key = Identifier.canonical_nick(target)
     next_pending = Map.put(state.whois_pending, nick_key, %{target_display: target})
     next_state = %{state | whois_pending: next_pending}
     {:reply, Client.send_whois(state.client, target), next_state}
@@ -1135,13 +1135,13 @@ defmodule Grappa.Session.Server do
   # (1) prime the accumulator entry in state.whowas_pending so EventRouter
   # appends 314 RPL_WHOWASUSER entries + folds 312 logoff_time into the
   # last entry; (2) emit `WHOWAS nick\r\n`. The entry's `target_display`
-  # is the user-typed nick (case preserved); EventRouter normalises to
-  # lowercase for the lookup key. Replaces any prior accumulator for the
+  # is the user-typed nick (case preserved); EventRouter folds (rfc1459,
+  # #121) for the lookup key. Replaces any prior accumulator for the
   # same target (running /whowas twice without a 369 in between drops
   # the first). On send_line failure the accumulator stays primed —
   # harmless until the next /whowas replaces the entry.
   def handle_call({:send_whowas, target}, _, state) when is_binary(target) do
-    nick_key = String.downcase(target)
+    nick_key = Identifier.canonical_nick(target)
 
     next_pending =
       Map.put(state.whowas_pending, nick_key, %{target_display: target, entries: []})
@@ -1401,7 +1401,7 @@ defmodule Grappa.Session.Server do
   # optimistic performance hint, not a source of truth. Only the IRC upstream
   # is authoritative; WHOIS is the fallback when the cache misses.
   def handle_call({:lookup_userhost, nick}, _, state) when is_binary(nick) do
-    nick_key = String.downcase(nick)
+    nick_key = Identifier.canonical_nick(nick)
 
     case Map.get(state.userhost_cache, nick_key) do
       nil -> {:reply, {:error, :not_cached}, state}
@@ -3502,7 +3502,7 @@ defmodule Grappa.Session.Server do
       mask_or_nick
     else
       # Bare nick — attempt userhost_cache lookup.
-      nick_key = String.downcase(mask_or_nick)
+      nick_key = Identifier.canonical_nick(mask_or_nick)
 
       case Map.get(state.userhost_cache, nick_key) do
         %{host: host} when is_binary(host) -> "*!*@#{host}"

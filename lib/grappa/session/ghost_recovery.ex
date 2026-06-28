@@ -28,7 +28,7 @@ defmodule Grappa.Session.GhostRecovery do
   `NSInterceptor`. No `use Boundary` here.
   """
 
-  alias Grappa.IRC.Message
+  alias Grappa.IRC.{Identifier, Message}
 
   defstruct phase: :idle, orig_nick: nil, try_nick: nil, password: nil
 
@@ -125,6 +125,6 @@ defmodule Grappa.Session.GhostRecovery do
 
   def step(state, _), do: {:cont, state, []}
 
-  defp nickserv?({:nick, nick, _, _}), do: String.downcase(nick) == "nickserv"
+  defp nickserv?({:nick, nick, _, _}), do: Identifier.canonical_nick(nick) == "nickserv"
   defp nickserv?(_), do: false
 end

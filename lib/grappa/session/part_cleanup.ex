@@ -124,7 +124,9 @@ defmodule Grappa.Session.PartCleanup do
     Enum.reduce(nicks, cache, fn nick, acc ->
       if shares_channel?(new_members, nick),
         do: acc,
-        else: Map.delete(acc, String.downcase(nick))
+        # rfc1459 fold (#121) — MUST match EventRouter.normalize_nick/1,
+        # which writes the userhost_cache keys this evicts.
+        else: Map.delete(acc, Identifier.canonical_nick(nick))
     end)
   end
 

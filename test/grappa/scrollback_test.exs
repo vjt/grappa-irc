@@ -1401,6 +1401,20 @@ defmodule Grappa.ScrollbackTest do
   # lockstep by convention. Promoting it to a public helper closes
   # the convention-not-contract gap and gives external callers
   # (cic-wire, future Phase 6 listener) a canonical predicate.
+  describe "dm_peer/4 — rfc1459 own-nick folding (#121)" do
+    test "matches the own-nick target case-insensitively (ASCII)" do
+      assert Scrollback.dm_peer(:privmsg, "VJT", "alice", "vjt") == "alice"
+    end
+
+    test "folds the rfc1459 national chars [ ] \\ ~ on the own nick" do
+      # An inbound DM addressed to our nick spelled with the mirror-case
+      # national chars must still resolve the peer, not be misread as a
+      # message to someone else. own_nick "a[1]" folds to "a{1}".
+      assert Scrollback.dm_peer(:privmsg, "a{1}", "bob", "a[1]") == "bob"
+      assert Scrollback.dm_peer(:privmsg, "chan", "a{1}", "a[1]") == "chan"
+    end
+  end
+
   describe "target_kind/1 (M7)" do
     test "returns :channel for #-prefixed targets" do
       assert Scrollback.target_kind("#sniffo") == :channel

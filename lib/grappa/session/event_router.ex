@@ -312,7 +312,7 @@ defmodule Grappa.Session.EventRouter do
         # UX-4 A: canonicalise channel-shape targets at the persist
         # boundary; nicks pass through unchanged.
         dm_channel =
-          if target == state.nick,
+          if nick_eq?(target, state.nick),
             do: state.nick,
             else: Identifier.canonical_channel(target)
 
@@ -348,7 +348,7 @@ defmodule Grappa.Session.EventRouter do
     sender = Message.sender_nick(msg)
 
     members =
-      if sender == state.nick do
+      if nick_eq?(sender, state.nick) do
         # Self-JOIN: wipe stale state for this channel (reconnect path);
         # 353 RPL_NAMREPLY immediately following will re-populate. Keep
         # self in the set so an outbound PRIVMSG before NAMES arrives is
@@ -385,7 +385,7 @@ defmodule Grappa.Session.EventRouter do
     # Other-user JOINs land as scrollback rows only — no window-state
     # transition (the operator may already be in this channel observing).
     effects =
-      if sender == state.nick do
+      if nick_eq?(sender, state.nick) do
         [eff, {:joined, channel}]
       else
         [eff]
@@ -420,7 +420,7 @@ defmodule Grappa.Session.EventRouter do
     # other channel in the (post-PART) members map.
     {members, topics, channel_modes, userhost_cache} =
       cond do
-        sender == state.nick ->
+        nick_eq?(sender, state.nick) ->
           # Collect who was in the parted channel before we drop it
           parted_members = Map.keys(Map.get(state.members, channel, %{}))
           new_members = Map.delete(state.members, channel)
@@ -461,7 +461,7 @@ defmodule Grappa.Session.EventRouter do
     # the channel; the entry is still relevant). Done out-of-band from
     # the cond above to keep the existing tuple shape narrow.
     channels_created =
-      if sender == state.nick do
+      if nick_eq?(sender, state.nick) do
         Map.delete(Map.get(state, :channels_created, %{}), normalize_channel(channel))
       else
         Map.get(state, :channels_created, %{})
@@ -490,7 +490,7 @@ defmodule Grappa.Session.EventRouter do
     # `:archived`. Other-user PART is just a scrollback row — the
     # sidebar membership is unchanged.
     effects =
-      if sender == state.nick do
+      if nick_eq?(sender, state.nick) do
         [eff, {:parted, channel}]
       else
         [eff]
@@ -532,65 +532,68 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # User-MODE-on-self short-circuit (Task 15). Distinct from the
-  # channel-MODE clause that follows: user-modes on the session's own
-  # nick are not channel events — no scrollback row, no member-map
-  # mutation. The +r case is special: when NickServ-as-IDP confirms a
-  # visitor's IDENTIFY it sets +r on the nick. If `pending_auth` is
-  # staged (from the outbound IDENTIFY captured by NSInterceptor),
-  # +r is the cryptographic-proof signal that the password was
-  # accepted; emit `:visitor_r_observed` carrying the captured
-  # password so `Session.Server.apply_effects/2` can commit it
-  # atomically into the visitors row.
-  defp do_route(%Message{command: :mode, params: [target, modes | _]}, state)
-       when is_binary(target) and is_binary(modes) and target == state.nick do
-    # `pending_auth` is set on `Session.Server` state but is optional
-    # from the pure router's POV (the typespec admits `optional(any())
-    # => any()`); pure unit tests on user sessions skip it.
-    effects =
-      case {set_r_mode?(modes), Map.get(state, :pending_auth)} do
-        {true, {pwd, _}} -> [{:visitor_r_observed, pwd}]
-        _ -> []
-      end
+  # MODE on a 2+-param target. The leading param is either the session's
+  # OWN nick (user-MODE-on-self, Task 15) or a channel — discriminated by
+  # rfc1459 nick-equality (#121), NOT an exact-match dispatch guard, so a
+  # different-cased echo of the own nick still routes to the self branch.
+  defp do_route(%Message{command: :mode, params: [target, modes | args]} = msg, state)
+       when is_binary(target) and is_binary(modes) do
+    if nick_eq?(target, state.nick) do
+      # User-MODE-on-self. Distinct from a channel MODE: user-modes on the
+      # session's own nick are not channel events — no scrollback row, no
+      # member-map mutation. The +r case is special: when NickServ-as-IDP
+      # confirms a visitor's IDENTIFY it sets +r on the nick. If
+      # `pending_auth` is staged (from the outbound IDENTIFY captured by
+      # NSInterceptor), +r is the cryptographic-proof signal that the
+      # password was accepted; emit `:visitor_r_observed` carrying the
+      # captured password so `Session.Server.apply_effects/2` can commit
+      # it atomically into the visitors row.
+      #
+      # `pending_auth` is set on `Session.Server` state but is optional
+      # from the pure router's POV (the typespec admits `optional(any())
+      # => any()`); pure unit tests on user sessions skip it.
+      effects =
+        case {set_r_mode?(modes), Map.get(state, :pending_auth)} do
+          {true, {pwd, _}} -> [{:visitor_r_observed, pwd}]
+          _ -> []
+        end
 
-    {:cont, state, effects}
-  end
+      {:cont, state, effects}
+    else
+      sender = Message.sender_nick(msg)
+      members = apply_mode_string(state.members, target, modes, args)
 
-  defp do_route(%Message{command: :mode, params: [channel, modes | args]} = msg, state)
-       when is_binary(channel) and is_binary(modes) do
-    sender = Message.sender_nick(msg)
-    members = apply_mode_string(state.members, channel, modes, args)
+      # S2.3: split the mode string — per-user modes (matching
+      # @user_mode_prefixes) update state.members (above); channel-level
+      # modes update channel_modes cache. Walk once, produce two effects:
+      # members delta (done above) + channel_modes delta (done here). One
+      # channel_modes_changed broadcast per MODE event if the cache changed.
+      chan_key = normalize_channel(target)
+      existing_entry = Map.get(Map.get(state, :channel_modes, %{}), chan_key, empty_mode_entry())
+      new_entry = apply_channel_mode_string(existing_entry, modes, args)
 
-    # S2.3: split the mode string — per-user modes (matching @user_mode_prefixes)
-    # update state.members (above); channel-level modes update channel_modes cache.
-    # Walk once, produce two effects: members delta (done above) + channel_modes
-    # delta (done here). One channel_modes_changed broadcast per MODE event if the
-    # cache actually changed.
-    chan_key = normalize_channel(channel)
-    existing_entry = Map.get(Map.get(state, :channel_modes, %{}), chan_key, empty_mode_entry())
-    new_entry = apply_channel_mode_string(existing_entry, modes, args)
+      channel_modes =
+        Map.put(Map.get(state, :channel_modes, %{}), chan_key, new_entry)
 
-    channel_modes =
-      Map.put(Map.get(state, :channel_modes, %{}), chan_key, new_entry)
+      mode_effects =
+        if new_entry != existing_entry do
+          [{:channel_modes_changed, target, new_entry}]
+        else
+          []
+        end
 
-    mode_effects =
-      if new_entry != existing_entry do
-        [{:channel_modes_changed, channel, new_entry}]
-      else
-        []
-      end
+      {state, eff} =
+        build_persist(
+          %{state | members: members, channel_modes: channel_modes},
+          :mode,
+          target,
+          sender,
+          nil,
+          %{modes: modes, args: args}
+        )
 
-    {state, eff} =
-      build_persist(
-        %{state | members: members, channel_modes: channel_modes},
-        :mode,
-        channel,
-        sender,
-        nil,
-        %{modes: modes, args: args}
-      )
-
-    {:cont, state, [eff | mode_effects]}
+      {:cont, state, [eff | mode_effects]}
+    end
   end
 
   defp do_route(%Message{command: :nick, params: [new_nick | _]} = msg, state)
@@ -605,7 +608,7 @@ defmodule Grappa.Session.EventRouter do
     userhost_cache = rename_userhost_entry(Map.get(state, :userhost_cache, %{}), old_nick, new_nick)
 
     new_state =
-      if old_nick == state.nick do
+      if nick_eq?(old_nick, state.nick) do
         %{state | nick: new_nick, members: members, userhost_cache: userhost_cache}
       else
         %{state | members: members, userhost_cache: userhost_cache}
@@ -633,7 +636,7 @@ defmodule Grappa.Session.EventRouter do
     # already surfaces in channel windows; the goal here is exactly that
     # always-visible confirmation, zero channels or not.
     self_server_effects =
-      if old_nick == state.nick do
+      if nick_eq?(old_nick, state.nick) do
         {_, eff} =
           build_persist(new_state, :nick_change, "$server", old_nick, nil, %{new_nick: new_nick})
 
@@ -653,8 +656,15 @@ defmodule Grappa.Session.EventRouter do
     # which is operator-driven.
     visitor_persist_effects =
       case state.subject do
-        {:visitor, _} when old_nick == state.nick -> [{:visitor_nick_changed, new_nick}]
-        _ -> []
+        {:visitor, _} ->
+          # rfc1459 self-rename detection (#121) — can't fold inside a
+          # case-clause guard, so branch in the body.
+          if nick_eq?(old_nick, state.nick),
+            do: [{:visitor_nick_changed, new_nick}],
+            else: []
+
+        _ ->
+          []
       end
 
     {:cont, new_state, persist_effects ++ self_server_effects ++ visitor_persist_effects}
@@ -699,7 +709,7 @@ defmodule Grappa.Session.EventRouter do
     # only. Done out-of-band from kick_state_update to keep the existing
     # tuple shape narrow (mirrors the PART path above).
     channels_created =
-      if target == state.nick do
+      if nick_eq?(target, state.nick) do
         Map.delete(Map.get(state, :channels_created, %{}), normalize_channel(channel))
       else
         Map.get(state, :channels_created, %{})
@@ -728,7 +738,7 @@ defmodule Grappa.Session.EventRouter do
     # topic. Other-target KICK is a scrollback row only — the operator
     # is still in the channel, no window-state transition.
     effects =
-      if target == state.nick do
+      if nick_eq?(target, state.nick) do
         [eff, {:kicked, channel, sender, reason}]
       else
         [eff]
@@ -1781,7 +1791,7 @@ defmodule Grappa.Session.EventRouter do
   @spec kick_classification(state(), String.t(), String.t()) :: :self | :other | :absent
   defp kick_classification(state, channel, target) do
     cond do
-      target == state.nick -> :self
+      nick_eq?(target, state.nick) -> :self
       Map.has_key?(state.members, channel) -> :other
       true -> :absent
     end
@@ -1863,7 +1873,7 @@ defmodule Grappa.Session.EventRouter do
 
   @spec chanserv_bracket_match(String.t(), String.t()) :: {String.t(), String.t()} | nil
   defp chanserv_bracket_match(sender, body) do
-    if String.downcase(sender) == "chanserv" do
+    if nick_eq?(sender, "chanserv") do
       case Regex.run(@chanserv_bracket_regex, body) do
         [_, channel, stripped_body] -> {channel, stripped_body}
         _ -> nil
@@ -2252,12 +2262,24 @@ defmodule Grappa.Session.EventRouter do
   # S2.4 helpers — WHOIS-userhost cache
   # ---------------------------------------------------------------------------
 
-  # IRC nicks are case-insensitive (RFC 2812 §2.2). Normalise to downcase for
-  # userhost_cache keys — mirrors normalize_channel/1 above. Applied at BOTH
-  # write (JOIN/311/352/NICK) and read (lookup_userhost/3) time so lookup is
-  # always case-insensitive regardless of how the upstream sends the nick.
+  # IRC nicks are case-insensitive. Normalise via rfc1459 (#121) for
+  # userhost_cache / whois_pending / whowas_pending keys — mirrors
+  # normalize_channel/1 above. Applied at BOTH write (JOIN/311/352/NICK)
+  # and read (Session.Server's lookup_userhost/whois/whowas/ban keys)
+  # time so a lookup matches regardless of how the upstream cases the
+  # nick. MUST stay folded the SAME way as the server-side key sites or
+  # the numerics won't drain the accumulator they primed.
   @spec normalize_nick(String.t()) :: String.t()
-  defp normalize_nick(nick) when is_binary(nick), do: String.downcase(nick)
+  defp normalize_nick(nick) when is_binary(nick), do: Identifier.canonical_nick(nick)
+
+  # rfc1459 nick equality (#121) — the in-memory twin of the folded DB
+  # lookups, for self-detection against `state.nick` and service-nick
+  # checks. nil/non-binary-safe (state.nick is nil before RPL_WELCOME).
+  @spec nick_eq?(term(), term()) :: boolean()
+  defp nick_eq?(a, b) when is_binary(a) and is_binary(b),
+    do: Identifier.canonical_nick(a) == Identifier.canonical_nick(b)
+
+  defp nick_eq?(_, _), do: false
 
   # C2 — fold one set of WHOIS-numeric fields into the per-target accumulator
   # at `state.whois_pending[target_lower]`. Skips folding when no entry

@@ -58,6 +58,9 @@ defmodule Grappa.Scrollback do
   alias Grappa.Repo
   alias Grappa.Scrollback.{Message, Meta}
 
+  # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment, #121).
+  require Identifier
+
   @max_limit 500
 
   # Content-bearing kinds: the ones that carry a notification meaning.
@@ -162,11 +165,11 @@ defmodule Grappa.Scrollback do
   def dm_peer(kind, target, sender, own_nick)
       when kind in [:privmsg, :action, :notice] and is_binary(target) and is_binary(sender) and
              is_binary(own_nick) do
-    own = String.downcase(own_nick)
+    own = Identifier.canonical_nick(own_nick)
 
     cond do
-      String.downcase(target) == own -> sender
-      String.downcase(sender) == own and nick_shaped?(target) -> target
+      Identifier.canonical_nick(target) == own -> sender
+      Identifier.canonical_nick(sender) == own and nick_shaped?(target) -> target
       true -> nil
     end
   end
@@ -691,7 +694,7 @@ defmodule Grappa.Scrollback do
       # dm_with = peer`. CP14-B3 (47866bc) shipped without this narrowing;
       # vjt observed the bug 2026-05-10 (every CristoBOT reply leaked into
       # the `grappa` window's scrollback).
-      is_binary(own_nick) and String.downcase(channel) == String.downcase(own_nick) ->
+      is_binary(own_nick) and Identifier.canonical_nick(channel) == Identifier.canonical_nick(own_nick) ->
         where(query, [m], m.channel == ^channel and m.dm_with == ^channel)
 
       # Peer DM target (nick-shaped, NOT own-nick): outbound `/msg peer`
@@ -771,15 +774,15 @@ defmodule Grappa.Scrollback do
     # `Identifier.canonical_channel/1` for boundary single-sourcing
     # consistency with `delete_for_channel/3` + the controller. The
     # call is a no-op on nick-shaped input (no sigil → pass-through),
-    # so the `lower()` fragment comparison stays correct: `dm_with`
+    # so the rfc1459 fold comparison (#121) stays correct: `dm_with`
     # is intentionally case-preserved at write time (see
     # `lib/grappa/scrollback/message.ex:252-254`), and `dm_with` is
     # the nick comparator. The orphan-channel arm
     # (`is_nil(m.dm_with) and channel = peer`) compares against the
     # canonical-cased `channel` column — write-time canonical guarantees
-    # the lowercase form, so `lower()` is redundant but harmless.
+    # the lowercase form, so the fold is redundant but harmless.
     canonical_peer = Identifier.canonical_channel(peer)
-    lower_peer = String.downcase(canonical_peer)
+    folded_peer = Identifier.canonical_nick(canonical_peer)
 
     # UX-3 Z (2026-05-18): match the same coalescing rule `list_archive/3`
     # uses on the read side. The read-side groups by
@@ -801,8 +804,8 @@ defmodule Grappa.Scrollback do
       |> where([m], m.network_id == ^network_id)
       |> where(
         [m],
-        fragment("lower(?)", m.dm_with) == ^lower_peer or
-          (is_nil(m.dm_with) and fragment("lower(?)", m.channel) == ^lower_peer)
+        Identifier.nick_fold(m.dm_with) == ^folded_peer or
+          (is_nil(m.dm_with) and Identifier.nick_fold(m.channel) == ^folded_peer)
       )
       |> Repo.delete_all()
 
