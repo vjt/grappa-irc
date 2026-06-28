@@ -103,6 +103,55 @@ defmodule Grappa.IRC.Identifier do
   def canonical_channel(name), do: name
 
   @doc """
+  Returns the canonical rfc1459-folded form of an IRC nickname — the
+  single source of truth for case-insensitive nick matching across the
+  server (GH #121). Use it at EVERY nick comparison/lookup boundary
+  (visitor table lookups, query-window DM keys, self-detection in the
+  event router, WHOIS/userhost/whowas/ban caches).
+
+  ## Why rfc1459 (not plain downcase, not RFC 2812)
+
+  Azzurra runs **bahamut**, whose `CASEMAPPING` is `rfc1459`: besides
+  ASCII `A-Z`, it folds the four "national" chars `[ ] \\ ~` →
+  `{ } | ^`. Two nicks differing only by those are the SAME nick to
+  the ircd, so the bouncer must treat them identically or it forks
+  windows / spawns duplicate visitor sessions.
+
+  Distinct from `canonical_channel/1`, which applies RFC 2812 channel
+  casemapping (Unicode `String.downcase/1`, sigil-gated).
+
+  ## ASCII-only, by design
+
+  Folding is **byte-level ASCII** — `A-Z` only, NOT Unicode
+  `String.downcase/1`. rfc1459 is defined over the ASCII range; bahamut
+  compares nicks byte-wise. Two reasons this matters:
+
+    * UTF-8 multibyte sequences pass through untouched (their lead +
+      continuation bytes are all ≥ `0x80`, never colliding with the
+      `A-Z`/bracket range `0x41..0x7e`), so the fold is UTF-8-safe.
+    * The migration backfill computes the folded key in pure SQL via
+      `replace(...lower(x)...)`; SQLite `lower()` is ASCII-only, so an
+      Elixir Unicode downcase here would diverge from the stored
+      folded column for any non-ASCII nick.
+
+  Non-binary input passes through unchanged (mirrors
+  `canonical_channel/1` — the folded-column changeset boundary may see
+  `nil`).
+  """
+  @spec canonical_nick(term()) :: term()
+  def canonical_nick(nick) when is_binary(nick),
+    do: for(<<c <- nick>>, into: "", do: <<fold_nick_byte(c)>>)
+
+  def canonical_nick(other), do: other
+
+  defp fold_nick_byte(c) when c in ?A..?Z, do: c + 32
+  defp fold_nick_byte(?[), do: ?{
+  defp fold_nick_byte(?]), do: ?}
+  defp fold_nick_byte(?\\), do: ?|
+  defp fold_nick_byte(?~), do: ?^
+  defp fold_nick_byte(c), do: c
+
+  @doc """
   True iff the input is a valid Grappa network slug (lowercase
   alphanumeric + dash + underscore, 1-32 chars). Tighter than IRC
   proper because it doubles as a URL path segment and PubSub topic

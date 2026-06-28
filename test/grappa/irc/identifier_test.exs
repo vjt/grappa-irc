@@ -150,6 +150,67 @@ defmodule Grappa.IRC.IdentifierTest do
     end
   end
 
+  describe "canonical_nick/1 (rfc1459 casemapping — GH #121)" do
+    test "ASCII-downcases A-Z" do
+      assert Identifier.canonical_nick("Mezmerize") == "mezmerize"
+      assert Identifier.canonical_nick("MEZMERIZE") == "mezmerize"
+      assert Identifier.canonical_nick("mezmerize") == "mezmerize"
+    end
+
+    test "folds rfc1459 bracket chars [ ] \\ ~ -> { } | ^" do
+      # bahamut (azzurra) runs rfc1459 casemapping: besides A-Z it folds
+      # the four 'national' chars. Two nicks differing only by these are
+      # the SAME nick to the ircd.
+      assert Identifier.canonical_nick("nick[1]") == "nick{1}"
+      assert Identifier.canonical_nick("a\\b") == "a|b"
+      assert Identifier.canonical_nick("tilde~") == "tilde^"
+      assert Identifier.canonical_nick("Foo[Bar]") == "foo{bar}"
+    end
+
+    test "does NOT touch the fold targets { } | ^ (collision-free)" do
+      assert Identifier.canonical_nick("nick{1}") == "nick{1}"
+      assert Identifier.canonical_nick("a|b") == "a|b"
+      assert Identifier.canonical_nick("caret^") == "caret^"
+    end
+
+    test "is ASCII-only — leaves UTF-8 multibyte untouched (rfc1459 is byte-level)" do
+      # Unlike String.downcase/1, rfc1459 does NOT fold non-ASCII; the
+      # SQLite lower() backfill (ASCII-only) must match this exactly.
+      assert Identifier.canonical_nick("Ä") == "Ä"
+      assert Identifier.canonical_nick("café") == "café"
+      assert Identifier.canonical_nick("Über") == "Über"
+    end
+
+    test "passes non-binary through (mirror canonical_channel/1)" do
+      assert Identifier.canonical_nick(nil) == nil
+      assert Identifier.canonical_nick(:atom) == :atom
+    end
+
+    test "is idempotent" do
+      assert Identifier.canonical_nick(Identifier.canonical_nick("Foo[Bar]")) == "foo{bar}"
+    end
+
+    property "matches ASCII-downcase + bracket-fold for any ASCII nick, and is idempotent" do
+      bytes = StreamData.list_of(StreamData.integer(?!..?~), min_length: 1, max_length: 20)
+
+      check all(cs <- bytes) do
+        input = :binary.list_to_bin(cs)
+        canon = Identifier.canonical_nick(input)
+        assert Identifier.canonical_nick(canon) == canon
+
+        expected =
+          input
+          |> String.downcase()
+          |> String.replace("[", "{")
+          |> String.replace("]", "}")
+          |> String.replace("\\", "|")
+          |> String.replace("~", "^")
+
+        assert canon == expected
+      end
+    end
+  end
+
   describe "valid_network_slug?/1" do
     test "accepts lowercase alphanum + dash + underscore" do
       assert Identifier.valid_network_slug?("azzurra")
