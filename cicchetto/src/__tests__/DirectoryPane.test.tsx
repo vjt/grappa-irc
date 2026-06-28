@@ -6,14 +6,19 @@ import { channelKey } from "../lib/channelKey";
 // E3 — DirectoryPane unit suite. Covers:
 //   * mount with undefined page → calls loadDirectory(slug)
 //   * rows from directoryPage render (name + user_count + topic)
-//   * clicking a row's join control calls postJoin(token, slug, name, null)
-//   * a row whose channelKey maps to "joined" is disabled + badged
+//   * clicking an UNjoined row calls postJoin(token, slug, name, null)
+//     and does NOT open a window (#125)
+//   * a row whose channelKey maps to "joined" is tappable-to-open
+//     (setSelectedChannel, NOT disabled) + badged (#125)
+//   * close button calls closeToPreviousWindow(slug) (#125)
+//   * a color-coded topic renders as styled spans via MircBody (#125)
 //   * refresh button calls triggerRefresh(slug)
 //   * search input calls setQuery(slug, <text>)
 //   * sort toggle calls setSort(slug, next)
 //
 // Mocks: channelDirectory (all exports), api (postJoin + ApiError),
-//        auth (token), windowState (windowStateByChannel), friendlyApiError.
+//        auth (token), windowState (windowStateByChannel), friendlyApiError,
+//        selection (setSelectedChannel + closeToPreviousWindow).
 // channelKey is NOT mocked — uses the real implementation per spec requirement
 // ("Use the production channelKey + constants").
 

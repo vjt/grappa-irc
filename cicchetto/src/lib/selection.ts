@@ -226,6 +226,14 @@ const exports = identityScopedStore((onIdentityChange) => {
       case "mentions":
         return true;
       case "server":
+        // A server window is restorable as long as its network still
+        // exists — INTENTIONALLY not gated on connection_state (unlike
+        // resolveFallbackWindow's server FALLBACK, which only fires for a
+        // connected network). "Close returns to the previous window" is
+        // more faithful than bouncing to home, and this is near-
+        // unreachable anyway: bucket D redirects to home the moment a
+        // network parks while its $list is focused (sel.networkSlug ===
+        // the parking net). Keep the two predicates' divergence as-is.
         return networkBySlug(sel.networkSlug) !== undefined;
       case "channel":
       case "query": {

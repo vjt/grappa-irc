@@ -10,9 +10,10 @@ import { maybeEscapePwaClick } from "./lib/platform";
 // the channel-directory topic reuses the SAME typed-formatting render path
 // as scrollback message bodies — the one-parser invariant (cic never parses
 // IRC framing itself; `parseMircFormat` expands the server-supplied wire
-// bytes into typed runs, this module styles them). Single consumer of
-// `parseMircFormat` for display: ScrollbackPane (message bodies, wallops,
-// globops, server errors, actions) and DirectoryPane (topics).
+// bytes into typed runs, this module styles them). The single module that
+// styles `parseMircFormat` runs for display, consumed by ScrollbackPane
+// (message bodies, wallops, globops, server errors, actions) and
+// DirectoryPane (topics).
 
 // CP13 S10: render an IRC body string with mIRC formatting expanded into
 // per-run <span> elements. Plain text (no control chars) collapses into a
