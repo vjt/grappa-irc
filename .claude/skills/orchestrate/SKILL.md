@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Babysit a sibling Claude Code session in another tmux pane through a long-running plan. On every idle, ask the session if /clear is useful; if yes, sibling Writes its self-contained next-prompt body to /tmp/orchestrate-next.txt, orchestrator runs /clear and tells sibling to Read+execute that file (no paste-buffer). Halt on design questions or unexpected deviations. On every /orchestrate invocation it FIRST reads the handoff doc /tmp/orchestrator-resume.md (the persistent brain) then reconciles against the per-pane daemon state — so /orchestrate alone resumes with zero extra instruction; user can /clear freely to save tokens.
+description: Babysit a sibling Claude Code session in another tmux pane through a long-running plan. On every idle, ask the session if /clear is useful; if yes, sibling Writes its self-contained next-prompt body to /tmp/orchestrate-next.txt, orchestrator runs /clear and tells sibling to Read+execute that file (no paste-buffer). Halt on design questions or unexpected deviations. On every /orchestrate invocation it FIRST reads the handoff doc /home/vjt/.claude/orchestrate/orchestrator-resume.md (the persistent brain) then reconciles against the per-pane daemon state — so /orchestrate alone resumes with zero extra instruction; user can /clear freely to save tokens.
 ---
 
 # Orchestrate
@@ -73,12 +73,45 @@ v2 separates concerns:
 On EVERY `/orchestrate` invocation the FIRST action — before `tmux`, before resume-check, before any tool — is:
 
 ```
-Read /tmp/orchestrator-resume.md
+Read /home/vjt/.claude/orchestrate/orchestrator-resume.md
 ```
 
-This is the orchestrator's persistent brain across `/clear`. It holds: the active plan / issue pack, what's shipped, any pending decision or open halt, the sibling pane id (`%NN`), the daemon pid, the per-run standing rules (autopilot scope, the #it-opers escalation/ping config, clear-cycle policy), and an `## IMMEDIATE NEXT STEP` line. Reading it top-to-bottom means **`/orchestrate` alone fully restores context — the user should never have to say "read the handoff and resume."** If the file is absent, this is a first-ever run for this machine — skip to Step 1.
+(DURABLE path — survives host reboot, unlike `/tmp`. The per-pane daemon state files
+stay in `/tmp` — they're regenerable per-run; only the handoff brain must be durable.)
 
-**Keeping it current is the orchestrator's job, not optional.** Update `/tmp/orchestrator-resume.md` at every ship, dispatch, halt, design decision, and standing-rule change — it is the ONLY thing that survives the orchestrator's own `/clear`. A stale handoff is the highest-severity bug: it makes the post-clear orchestrator act on wrong state. The `## IMMEDIATE NEXT STEP` line must always name the very next concrete action (e.g. "re-arm waiter on %58, monitoring #131 build → on ship announce + close pack").
+The handoff is the orchestrator's persistent brain across `/clear`. It holds ONLY
+THIS-RUN STATE: the active issue pack, what's shipped/queued, any pending decision or
+open halt, and an `## IMMEDIATE NEXT STEP` line — plus per-RUN config the user set
+(autopilot scope, clear-cycle relaxation). PERMANENT rules that apply to EVERY run live
+in this SKILL (see "Permanent rules" below), NOT the handoff. Reading the handoff
+top-to-bottom means **`/orchestrate` alone fully restores context — the user should
+never have to say "read the handoff and resume."** If absent, first-ever run — skip to Step 1.
+
+**Keeping it current is the orchestrator's job, not optional.** Update the handoff at
+every ship, dispatch, halt, design decision, and run-config change — it is the ONLY
+thing that survives the orchestrator's own `/clear` (manual OR the auto-clearer). A stale
+handoff is the highest-severity bug. **Resolve panes BY TITLE, never hardcode `%NN`** (ids
+are ephemeral): sibling = "grappa-worker", orchestrator = "grappa-orch", ircbot = "vjt-claude".
+
+### Permanent rules (apply to EVERY run — do NOT re-paste into the handoff)
+
+- **Announce to #grappa** (not #it-opers). Every prod ship AND every `--cic` bundle
+  deploy (even hygiene — users get a BundleRefreshBanner, tell them why) → one line via
+  the ircbot pane ("vjt-claude"), its own voice, no vjt-highlight for routine. The bot may
+  decline "nothing to add" → re-brief explicitly as an unposted ship announce so it posts.
+  See memory [[feedback_announce_ships_to_grappa]].
+- **Every new feature needs a REAL e2e** that asserts the user-visible outcome (not a
+  hollow green spec). **A red `integration`/e2e CI job BLOCKS** — never build/ship on red;
+  `gh run list` to find where it went red, fix/bump-to-front, green it. cic `ci` job is
+  Elixir-only; `integration` is the real e2e gate. See [[feedback_e2e_mandatory_and_ci_blocks]].
+- **Close-out = `gh issue close N`** (+ announce). Ship+announce alone is NOT done.
+- **Auto-clearer**: `lib/auto-clear-watch.sh start|status grappa-orch` runs an external
+  watchdog that /clears + /orchestrates the orchestrator at ctx≥40% (idle+quiet, 60s
+  debounce). ALWAYS flush the handoff (esp. any open decision) before going idle on something
+  unresolved — the watchdog doesn't know about pending questions.
+- **Halt + ESCALATE** on: design picker, plan deviation, real breakage, CI regression (2nd
+  recurrence), ambiguous scope, daemon/pane death, PACK COMPLETE. Don't auto-pick design/
+  product choices; orchestration mechanics MAY be auto-defaulted.
 
 After reading the handoff, proceed to Step 1 (resume-check) to reconcile it against live daemon/pane state.
 
