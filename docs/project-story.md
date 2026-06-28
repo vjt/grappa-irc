@@ -4143,3 +4143,77 @@ is to point the wrong path at the right verb and to make sure the guards that
 belong to the old path (capacity is a spawn-gate) don't ride along onto the new
 one that doesn't spawn. Reuse the verb, drop the noun, and let the absence of
 what you didn't add be the proof you understood it.*
+
+## The issue that arrived after the feature (2026-06-28, multifile-upload)
+
+The queue handed me #118 last: "paste & drag-and-drop image upload in compose."
+A clean, scoped frontend feature — listen for `paste`, listen for `drop`, push
+the file at the upload endpoint, splice the URL into the draft. The brief even
+told me which flow to reuse: "the paperclip flow shipped recently." I fanned out
+three readers across the cic compose box to map it before touching anything.
+
+They came back with the feature already wired. `onPaste` on the textarea.
+`onDrop` and `onDragOver` on the form. Both filtering by category, both calling
+the same `triggerUpload` the paperclip used, both landing in the same orchestrator
+with its progress bar and its inline error row and its auto-sent `📸 <url>`. I
+ran `git log -S onDrop` to be sure I wasn't reading a ghost. One commit:
+`8f1a76b`, the image-upload surface, **2026-05-15**. Then `gh issue view 118
+--json createdAt`: **2026-06-27**. The issue was filed six weeks *after* the
+code that satisfied it. Whoever queued it — and the brief that said "reuse the
+paperclip flow" — hadn't noticed the paperclip commit had already grown the
+paste and drop hands in the same breath.
+
+So the honest first move was not to build but to stop. The CLAUDE.md rule is
+*challenge the spec*, and the thing the spec was wrong about was its own
+existence. I laid the evidence out and asked vjt the only question that mattered:
+the issue says "splice the URL into the draft at the cursor," but the shipped
+model auto-*sends* an emoji-prefixed URL — and auto-send is the documented
+invariant, the one the paperclip and the audio uploader both obey. Splicing
+into the draft for paste/drop alone would fork the behavior of the very buttons
+sitting next to it. vjt's answer was two words that redrew the whole task: *"auto
+send is ok, but does it support multiple files?"*
+
+It did not. Every door took the first file only — `dataTransfer.files[0]`,
+a paste loop that `return`ed after one, an `<input>` with no `multiple`. And the
+orchestrator underneath was single-slot by construction: a per-channel `inflight`
+map of one, where starting a second upload *aborted* the first. So the actual #118
+— the 20% the brief got right wrapped around an 80% that already shipped — was a
+sequential queue. Files wait in a per-channel FIFO; each settle pumps the next;
+each success auto-sends its own URL; N files become N messages, the same one-
+file-one-message shape the model already had. Parallel multi-slot was the wrong
+weight — it wanted a per-channel inflight *list* and a multi-row progress UI for
+a case (dropping a few files at once) that a queue handles with a `(i/N)` counter
+and nothing else.
+
+The queue's edges were where the thinking lived. Success pumps. An upload *error*
+pauses the batch — dismiss skips the dead file and continues, retry re-runs it at
+the front. Cancel stops everything. Declining the privacy modal cancels the whole
+batch, because the one thing a queue must never do is silently re-dispatch the
+files a user just refused. And the trap I set for myself: I first treated an
+error entry as "busy," which quietly broke the pre-existing #49 contract — a
+*new* selection after a failed upload must supersede the error, not wait behind
+it — and leaked a stale batch count into the next selection. The fix was to
+admit that an error is not activity; it is the absence of it, waiting for a hand.
+
+A coda on the harness, not the feature. Twice I ran the test suite and it cheered
+— "45 passed" — and twice it was lying, because I'd invoked the worktree-aware
+script from the `cicchetto/` subdirectory instead of the worktree *root*, and it
+had quietly fallen back to compiling and testing `main`. The green was real; it
+was just green for the wrong tree. The tell was the count that never changed when
+my new tests should have moved it. Read the number, not the color.
+
+And then a second feature rode out on the first's tail. A parked branch,
+`fix/compose-draft-recall-stash` — staged but never committed, fourteen behind
+main — fixed a small cruelty: pressing ArrowUp on a half-typed line ate it. The
+brief had warned me to stay off that branch's territory; #118 lived in
+`uploadOrchestrator.ts` and `ComposeBox.tsx`, the stash lived in `compose.ts`,
+and they never touched. Then vjt said merge it too. So I committed someone else's
+good work, rebased it onto the main that now held #118 — clean, no overlap, the
+proof the territory map had been right — and shipped both in one bundle.
+
+*Law: when a brief hands you a feature, grep for it before you build it — issues
+can post-date their own implementation, and "reuse the flow shipped recently" may
+mean the flow already grew the hands you were asked to add. The real work is
+usually the one sentence the brief got right. And trust the count, not the
+color: a worktree-aware tool run from the wrong directory will pass loudly for
+the wrong tree.*
