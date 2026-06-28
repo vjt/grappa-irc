@@ -63,7 +63,7 @@ defmodule Grappa.Session.WindowState do
   used pre-extraction). Atoms are the on-process representation;
   the on-wire string projection is owned by `Session.Wire`.
   """
-  @type window_state :: :pending | :joined | :failed | :kicked | :parked
+  @type window_state :: :pending | :invited | :joined | :failed | :kicked | :parked
 
   @typedoc """
   The bundled window-state struct. Replaces the 4 sibling fields
@@ -106,6 +106,23 @@ defmodule Grappa.Session.WindowState do
   @spec set_pending(t(), String.t()) :: t()
   def set_pending(%__MODULE__{} = ws, channel) when is_binary(channel) do
     %{ws | states: Map.put(ws.states, channel, :pending)}
+  end
+
+  @doc """
+  Marks `channel` as `:invited` (#78). Called by
+  `Session.Server`'s `{:invited, channel}` effect handler when an inbound
+  INVITE we did NOT request arrives for a channel we are not joined to —
+  the window appears as a not-joined, greyed sidebar tab the operator can
+  `/join` on their own time.
+
+  Like `set_pending/2`, does NOT touch the failure / kicked sibling maps:
+  an invite carries no failure reason or kicker. The inviter is conveyed by
+  the persisted `:server_event` scrollback row, not window metadata, so no
+  sibling map is needed.
+  """
+  @spec set_invited(t(), String.t()) :: t()
+  def set_invited(%__MODULE__{} = ws, channel) when is_binary(channel) do
+    %{ws | states: Map.put(ws.states, channel, :invited)}
   end
 
   @doc """
@@ -260,9 +277,9 @@ defmodule Grappa.Session.WindowState do
 
   Returns `{:ok, payload}` for terminal states (`:joined` /
   `:failed` / `:kicked`) and `{:error, :not_tracked}` for
-  unknown channels, `:pending` (broadcast on user-topic, not
-  per-channel — snapshot path has nothing to do), and `:parked`
-  (T32 placeholder; cic doesn't yet render this state).
+  unknown channels, `:pending` and `:invited` (both broadcast on
+  user-topic, not per-channel — snapshot path has nothing to do), and
+  `:parked` (T32 placeholder; cic doesn't yet render this state).
   """
   @spec to_wire(t(), String.t(), String.t()) ::
           {:ok, Grappa.Session.window_state_snapshot()} | {:error, :not_tracked}

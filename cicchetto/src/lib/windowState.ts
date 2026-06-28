@@ -28,7 +28,7 @@ import { selectedChannel } from "./selection";
 // all three maps are emptied so a new bearer doesn't see the prior
 // tenant's window states.
 
-export type WindowState = "pending" | "joined" | "failed" | "kicked" | "parked";
+export type WindowState = "pending" | "invited" | "joined" | "failed" | "kicked" | "parked";
 
 export type WindowFailure = {
   reason: string | null;
@@ -57,6 +57,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   const setPending = (key: ChannelKey): void => {
     setWindowStateByChannel((prev) => ({ ...prev, [key]: "pending" }));
+  };
+
+  // #78: inbound INVITE to a not-joined channel → a greyed, not-joined
+  // sidebar tab the operator can /join on their own time. Like setPending,
+  // touches only the state map — an invite carries no failure / kicked
+  // metadata; the inviter is conveyed by the persisted scrollback row.
+  const setInvited = (key: ChannelKey): void => {
+    setWindowStateByChannel((prev) => ({ ...prev, [key]: "invited" }));
   };
 
   const setJoined = (key: ChannelKey): void => {
@@ -113,6 +121,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     windowFailureByChannel,
     windowKickedMetaByChannel,
     setPending,
+    setInvited,
     setJoined,
     setFailed,
     setKicked,
@@ -124,6 +133,7 @@ export const windowStateByChannel = exports_.windowStateByChannel;
 export const windowFailureByChannel = exports_.windowFailureByChannel;
 export const windowKickedMetaByChannel = exports_.windowKickedMetaByChannel;
 export const setPending = exports_.setPending;
+export const setInvited = exports_.setInvited;
 export const setJoined = exports_.setJoined;
 export const setFailed = exports_.setFailed;
 export const setKicked = exports_.setKicked;

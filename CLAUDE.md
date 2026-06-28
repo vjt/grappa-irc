@@ -99,12 +99,16 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   schema's wire shape rarely matches the storage shape. Wire
   conversion is per-context responsibility.
 - **Window state model lives on the server.** `Grappa.Session.Server`
-  owns `window_states %{channel => :pending | :joined | :failed |
-  :kicked | :parked}` + sibling `window_failure_{reasons,numerics}`
+  owns `window_states %{channel => :pending | :invited | :joined |
+  :failed | :kicked | :parked}` + sibling `window_failure_{reasons,numerics}`
   + `window_kicked_meta` maps. Transitions emit typed events on the
   per-channel topic (`kind: "joined" | "join_failed" | "kicked" |
-  "members_seeded"`); cic's `lib/windowState.ts` mirrors via
-  `lib/subscribe.ts` dispatch. cic NEVER originates state — no
+  "members_seeded"`) OR the user-topic (`window_pending` /
+  `window_invited` — chicken-and-egg states cic must see BEFORE it
+  subscribes per-channel); cic's `lib/windowState.ts` mirrors via
+  `lib/subscribe.ts` + `lib/userTopic.ts` dispatch. `:invited` (#78) is a
+  not-joined greyed tab opened by an inbound INVITE we didn't request —
+  see DESIGN_NOTES 2026-06-28. cic NEVER originates state — no
   optimistic STATE assumptions, no parallel client-side state
   machine. Adding a new state (e.g. SASL-gated `:locked`) requires
   server changes; cic just mirrors. The cic-side

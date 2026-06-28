@@ -26,7 +26,7 @@ import { applyServerSettings } from "./serverSettings";
 import { joinUser } from "./socket";
 import { setWhoisBundle } from "./whoisCard";
 import { setWhowasBundle } from "./whowasCard";
-import { setFailed, setJoined, setKicked, setPending } from "./windowState";
+import { setFailed, setInvited, setJoined, setKicked, setPending } from "./windowState";
 import { narrowWindowStateEvent } from "./wireNarrow";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
@@ -184,6 +184,15 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         network: r.network,
         channel: r.channel,
         state: "pending",
+      };
+    case "window_invited":
+      if (typeof r.network !== "string" || typeof r.channel !== "string" || r.state !== "invited")
+        return null;
+      return {
+        kind: "window_invited",
+        network: r.network,
+        channel: r.channel,
+        state: "invited",
       };
     case "connection_state_changed": {
       // REV-J M15: pre-fix this arm carried only the wider transition
@@ -603,6 +612,19 @@ createRoot(() => {
           // was a parallel client-side state machine — closed by this
           // arm.
           setPending(channelKey(payload.network, payload.channel));
+          return;
+
+        case "window_invited":
+          // #78 — inbound INVITE to a not-joined channel. Server's
+          // apply_effects([{:invited, ch}]) writes window_states[ch] =
+          // :invited and broadcasts here on Topic.user/1 (NOT per-channel
+          // — chicken-and-egg, same as window_pending above). The
+          // pre-subscribe loop in subscribe.ts re-runs on the
+          // windowStateByChannel signal change and joins the per-channel
+          // topic so the persisted INVITE row lands in the channel buffer
+          // with the existing [Join] affordance. No auto-focus — the
+          // greyed tab + single unread row is the whole surface.
+          setInvited(channelKey(payload.network, payload.channel));
           return;
 
         case "whois_bundle": {

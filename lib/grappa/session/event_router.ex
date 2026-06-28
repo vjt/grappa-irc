@@ -178,6 +178,7 @@ defmodule Grappa.Session.EventRouter do
           | {:peer_away, peer :: String.t(), away_message :: String.t()}
           | {:invite_ack, channel :: String.t(), peer :: String.t()}
           | {:rejoin_invited, channel :: String.t()}
+          | {:invited, channel :: String.t()}
           | {:lusers_bundle, accum :: map()}
           | {:whowas_bundle, target :: String.t(), accum :: map()}
 
@@ -234,9 +235,21 @@ defmodule Grappa.Session.EventRouter do
 
   # Verb channels live at param 0.
   defp do_canonicalize_params(cmd, [ch | rest])
-       when cmd in [:privmsg, :notice, :join, :part, :topic, :kick, :invite] and
+       when cmd in [:privmsg, :notice, :join, :part, :topic, :kick] and
               is_binary(ch) do
     [Identifier.canonical_channel(ch) | rest]
+  end
+
+  # INVITE: params `[target_nick, channel]` — the channel is at param 1
+  # (param 0 is OUR nick, the invitee). `:invite` was previously lumped
+  # into the param-0 group above, which folded the wrong arg and left the
+  # channel raw-cased — a latent fork the #78 `:invited` window made
+  # load-bearing (window-state keyed on the raw channel vs the changeset-
+  # folded persist row + the per-channel topic cic joins). Fold param 1
+  # so every channel-keyed consumer observes one key.
+  defp do_canonicalize_params(:invite, [target_nick, channel | rest])
+       when is_binary(channel) do
+    [target_nick, Identifier.canonical_channel(channel) | rest]
   end
 
   # MODE: channel-or-nick target at param 0. canonical_channel/1 is a
@@ -1675,7 +1688,16 @@ defmodule Grappa.Session.EventRouter do
     if MapSet.member?(awaiting, String.downcase(channel)) do
       {:cont, state, [{:rejoin_invited, channel}]}
     else
-      route_unhandled_command(msg, state)
+      # #78: an inbound INVITE we did NOT request (not a ChanServ relay of
+      # our own /join-on-+ik) surfaces as an :invited window for the named
+      # channel. Persist the INVITE row AT THE CHANNEL (route-by-channel-
+      # reference, NOT $server) so cic renders it in the channel's own
+      # buffer with the existing `[Join]` affordance, and emit
+      # {:invited, channel} so Server flips the window to a not-joined,
+      # greyed :invited tab. No auto-focus — the operator joins on their
+      # own time; the single persisted row is the one unread item.
+      {state, persist_eff} = persist_raw_event(msg, state, channel)
+      {:cont, state, [persist_eff, {:invited, channel}]}
     end
   end
 
@@ -1736,11 +1758,25 @@ defmodule Grappa.Session.EventRouter do
     route_unhandled_command(msg, state)
   end
 
-  # Extracted from the no-silent-drops bucket-1 catch-all so the #116
-  # inbound-INVITE clause can delegate the non-awaiting case here without
-  # duplicating the :server_event persist shape.
+  # The no-silent-drops bucket-1 catch-all: every unhandled verb persists
+  # a `:server_event` row on `$server` so it's never invisible. The persist
+  # shape is in `persist_raw_event/3` (parametrized on target) so the #78
+  # inbound-INVITE clause can route the same row to the invited channel
+  # instead, then append its own `{:invited, channel}` effect.
   @spec route_unhandled_command(Message.t(), state()) :: {:cont, state(), [effect()]}
-  defp route_unhandled_command(%Message{command: command, params: params} = msg, state) do
+  defp route_unhandled_command(%Message{} = msg, state) do
+    {state, eff} = persist_raw_event(msg, state, "$server")
+    {:cont, state, [eff]}
+  end
+
+  # Builds the typed `:server_event` persist effect for an unhandled verb,
+  # parametrized on the target window so callers route by channel
+  # reference. `route_unhandled_command/2` targets `$server`; the #78
+  # inbound-INVITE clause targets the invited channel itself. Returns the
+  # bare `{state, effect}` (not the `{:cont, ...}` envelope) so callers can
+  # append sibling effects — the INVITE clause adds `{:invited, channel}`.
+  @spec persist_raw_event(Message.t(), state(), String.t()) :: {state(), effect()}
+  defp persist_raw_event(%Message{command: command, params: params} = msg, state, channel) do
     sender = Message.sender_nick(msg)
     verb = command_to_verb_string(command)
 
@@ -1756,8 +1792,7 @@ defmodule Grappa.Session.EventRouter do
       raw_params: params
     }
 
-    {state, eff} = build_persist(state, :server_event, "$server", sender, body, meta)
-    {:cont, state, [eff]}
+    build_persist(state, :server_event, channel, sender, body, meta)
   end
 
   # UX-4 bucket A: this helper is only called from the catch-all
@@ -1917,31 +1952,44 @@ defmodule Grappa.Session.EventRouter do
     kind = if CTCP.action?(body), do: :action, else: :privmsg
     sender = Message.sender_nick(msg)
     # UX-4 bucket G: PRIVMSG (or ACTION) from a well-known *serv sender
-    # persists on the synthetic `$server` channel so it lands in the
-    # server-messages window instead of opening / routing into a query
-    # window for the services nick. cic's dm-listener auto-opens a
-    # query window for any inbound PRIVMSG on the own-nick topic
-    # (see subscribe.ts dm-listener handler) — re-keying services
-    # traffic to `$server` both routes the scrollback row to the
-    # correct window AND bypasses the auto-open path without needing
-    # a cic-side carve-out ("no parallel client-side state machine"
-    # per CLAUDE.md). The classifier lives in
-    # `Grappa.IRC.Identifier.services_sender?/1` alongside
+    # whose target is OUR NICK (a DM-shaped arrival) persists on the
+    # synthetic `$server` channel so it lands in the server-messages
+    # window instead of opening / routing into a query window for the
+    # services nick. cic's dm-listener auto-opens a query window for any
+    # inbound PRIVMSG on the own-nick topic (see subscribe.ts dm-listener
+    # handler) — re-keying NICK-targeted services traffic to `$server`
+    # both routes the scrollback row to the correct window AND bypasses
+    # the auto-open path without needing a cic-side carve-out ("no
+    # parallel client-side state machine" per CLAUDE.md). The classifier
+    # lives in `Grappa.IRC.Identifier.services_sender?/1` alongside
     # `Session.Server`'s outbound `service_target?` so both arrival +
     # send doors observe the same allowlist.
     #
-    # Asymmetry with the channel-NOTICE arm above (line ~344) is
-    # INTENTIONAL: channel-PRIVMSG-from-services is exotic (services
-    # rarely send PRIVMSG to a room — they NOTICE), so the override
-    # has near-zero collateral. Channel-NOTICE-from-services IS the
-    # standard services-advertisement pattern (mass /memo broadcasts,
-    # network notices) and belongs in the channel where everyone is
-    # already watching — so the channel-NOTICE arm does NOT apply the
-    # `$server` override.
-    route_channel = if Identifier.services_sender?(sender), do: "$server", else: channel
+    # #78: the `$server` override is gated on a NON-channel target. A
+    # services PRIVMSG addressed to a CHANNEL belongs in that channel's
+    # buffer (route-by-channel-reference) — a channel target never
+    # auto-opens a query window, so the dm-listener concern the override
+    # exists for doesn't apply. This makes channel-PRIVMSG symmetric with
+    # the channel-NOTICE arm above (line ~344), which already routes
+    # services advertisements to the channel everyone is watching.
+    route_channel =
+      if Identifier.services_sender?(sender) and not channel_target?(channel),
+        do: "$server",
+        else: channel
+
     {state, eff} = build_persist(state, kind, route_channel, sender, body, %{})
     {:cont, state, [eff]}
   end
+
+  # Pure channel-prefix predicate — mirrors the inline guard on the
+  # channel-NOTICE arm (`binary_part(channel, 0, 1) in [...]`) so both
+  # "is this a channel target?" decisions agree byte-for-byte. Kept a
+  # prefix check (not `Identifier.valid_channel?/1`) because the NOTICE
+  # site needs it inside a `when` guard where Regex.match? is illegal;
+  # routing must not diverge between the two arms for a pathological name.
+  @spec channel_target?(binary()) :: boolean()
+  defp channel_target?(<<c::binary-size(1), _::binary>>), do: c in ["#", "&", "!", "+"]
+  defp channel_target?(_), do: false
 
   @spec channels_with_member(members(), String.t()) :: [String.t()]
   defp channels_with_member(members, nick) do

@@ -14240,3 +14240,70 @@ inside `.scrollback-overlay`, scroll list outside — the separation is what
 holds `scrollTop` stable) is the unit assertion; the real-geometry claims
 (overlay containment in a live DOM + the 44px tap-target box) are pinned in
 the c2 Playwright spec, which measures `boundingBox()` in chromium.
+
+## 2026-06-28 — route channel-scoped traffic by channel reference; inbound INVITE opens an `:invited` window (#78, folds #128)
+
+**The bug as filed was misdiagnosed.** #78 framed cic as routing
+channel-scoped traffic "by the sender (is the sender in the channel?)"
+and called for a contained `subscribe.ts` fix. cic does no such thing —
+it routes purely by the **subscription topic**, a faithful mirror of the
+server's persisted `message.channel`. The actual "lands in status/network
+instead of the channel" behaviour was two **server-side** routing
+decisions in `EventRouter`, and the channel reference was destroyed
+before cic ever saw it. So the fix is server-side, not cic-only.
+
+**Case (a) — services PRIVMSG to a channel.** `privmsg_default`
+re-keyed *every* services-sender PRIVMSG to `$server`
+(`route_channel = if services_sender?(sender), do: "$server", else:
+channel`). That override exists to suppress cic's dm-listener
+query-auto-open for **NICK-targeted** (DM-shaped) services traffic — a
+channel target can't auto-open a query window, so the override must not
+apply there. Now gated on `not channel_target?(channel)`: services
+PRIVMSG to `#chan` lands in `#chan`, symmetric with the channel-NOTICE
+arm (which already routed to the channel). `channel_target?/1` is a pure
+prefix predicate kept byte-identical to the NOTICE arm's inline `when`
+guard (Regex is illegal in guards, so the two "is-channel" decisions
+can't share `Identifier.valid_channel?/1` — they share the prefix shape
+instead).
+
+**Case (c) — inbound non-awaiting INVITE → a new `:invited` window
+state.** Previously a peer INVITE we did not request fell through to the
+`:server_event` catch-all on `$server` (#128's complaint). The decision
+(vjt) was NOT "stay in $server clickable" (that already shipped) but to
+**open the invited channel's own window**: the server now persists the
+INVITE row AT the channel (`persist_raw_event(msg, state, channel)` — the
+`route_unhandled_command` body extracted + parametrized on the target)
+and emits `{:invited, channel}`. `Server.apply_effects` flips
+`window_states[channel] = :invited` and broadcasts `window_invited` on
+`Topic.user/1` — the SAME chicken-and-egg user-topic origination as
+`window_pending` (cic only joins the per-channel topic AFTER seeing the
+state). The guard skips the flip + broadcast when already `:joined` (a
+stray INVITE to a room we're in must not grey its tab), though the
+persist row still lands as a legitimate in-channel event.
+
+`:invited` is a genuine **new window state**, not a reuse: `:pending`
+implies our own JOIN in flight, `:failed`/`:kicked` carry
+reason/kicker, `:parked` is the T32 idle placeholder — none model "a
+not-joined channel someone invited me to." Per the load-bearing
+"window state lives on the server, cic mirrors" invariant, it's threaded
+server→cic: `WindowState.set_invited/2` (+ the type), `Wire.window_invited/2`,
+`apply_effects`; then cic `windowState.ts` (`setInvited`), `api.ts`
+`WireUserEvent`, `userTopic.ts` dispatch, and the `subscribe.ts`
+pre-subscribe loop (which now joins on `"invited"` as well as
+`"pending"`). The Sidebar greyed pseudo-row + the existing
+`renderRawEvent` INVITE `[Join]` CTA are inherited for free — the row
+just rides the channel topic now instead of `$server`.
+
+**UX shape (vjt):** NO foreground on receipt — the window opens silently
+as a greyed tab, carrying the single persisted INVITE row as its one
+unread item; the operator joins on their own time via `[Join]`.
+`to_wire/3` returns `:not_tracked` for `:invited` (same as `:pending`):
+the state is learned via the user-topic broadcast, not the cold-reconnect
+per-channel snapshot. Durability across a page reload / session restart
+is bounded — the invite row persists in scrollback and surfaces via the
+archive section if the live `:invited` tab is lost; a durable
+invited-set was judged out of scope for v1.
+
+**Deploy note:** the reframe makes this a server change (EventRouter +
+Session.Server + WindowState + Wire), so it ships via a full prod deploy,
+not the cic-bundle-only path #78 assumed.

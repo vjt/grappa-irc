@@ -512,17 +512,16 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.sender == "Conserv"
     end
 
-    test "PRIVMSG from NickServ to a CHANNEL still routes to $server (services-PRIVMSG override is sender-keyed)" do
+    test "PRIVMSG from NickServ to a CHANNEL routes to the channel, not $server (#78)" do
       state = base_state()
 
-      # NickServ-PRIVMSG-to-channel is exotic — services almost always
-      # NOTICE the channel for advertisements, not PRIVMSG. The
-      # privmsg_default override is sender-keyed (services-sender →
-      # $server) regardless of wire target, so this edge case lands in
-      # the server window. Channel-NOTICE from services takes the
-      # complementary arm and stays in the channel — the standard
-      # services-advertisement path. Asymmetry intentional; see
-      # privmsg_default comment.
+      # #78: a services PRIVMSG whose target is a CHANNEL belongs in that
+      # channel's buffer, regardless of sender. The `$server` services
+      # override exists only to suppress cic's dm-listener query auto-open
+      # for NICK-targeted (DM-shaped) services traffic — a channel target
+      # never auto-opens a query window, so the override must not apply.
+      # The complementary channel-NOTICE arm already routes to the channel;
+      # this aligns channel-PRIVMSG with it (route-by-channel-reference).
       m =
         msg(
           :privmsg,
@@ -530,7 +529,7 @@ defmodule Grappa.Session.EventRouterTest do
           {:nick, "NickServ", "s", "h"}
         )
 
-      assert {:cont, ^state, [{:persist, :privmsg, %{channel: "$server"}}]} =
+      assert {:cont, ^state, [{:persist, :privmsg, %{channel: "#italia"}}]} =
                EventRouter.route(m, state)
     end
   end
@@ -3328,26 +3327,47 @@ defmodule Grappa.Session.EventRouterTest do
       assert effects == [{:rejoin_invited, "#secret"}]
     end
 
-    test "inbound INVITE for an awaiting channel matches case-insensitively" do
+    test "inbound INVITE for an awaiting channel matches case-insensitively + folds the channel" do
       state = base_state(%{awaiting_invite: MapSet.new(["#secret"])})
       m = msg(:invite, ["vjt", "#SECRET"], {:nick, "ChanServ", "service", "azzurra"})
       {:cont, _, effects} = EventRouter.route(m, state)
-      assert effects == [{:rejoin_invited, "#SECRET"}]
+      # The INVITE channel (param 1) is canonicalised at the route boundary
+      # like every other channel param, so the rejoin verb carries the
+      # folded form — consistent with how JOIN echoes key window state.
+      assert effects == [{:rejoin_invited, "#secret"}]
     end
 
-    test "inbound INVITE for a NON-awaiting channel falls through to the :server_event catch-all" do
+    test "inbound INVITE for a NON-awaiting channel persists the row AT THE CHANNEL + emits {:invited, ch} (#78)" do
       state = base_state(%{awaiting_invite: MapSet.new()})
       m = msg(:invite, ["vjt", "#random"], {:nick, "someguy", "u", "h"})
       {:cont, _, effects} = EventRouter.route(m, state)
-      assert [{:persist, :server_event, attrs}] = effects
+      # #78: route-by-channel-reference. The INVITE row lands in the
+      # invited channel's own buffer (NOT $server), and {:invited, ch}
+      # flips the window to a not-joined :invited tab the operator can
+      # /join on their own time.
+      assert [{:persist, :server_event, attrs}, {:invited, "#random"}] = effects
+      assert attrs.channel == "#random"
+      assert attrs.sender == "someguy"
       assert attrs.meta.raw_verb == "INVITE"
+      assert attrs.meta.raw_params == ["vjt", "#random"]
     end
 
-    test "inbound INVITE with absent awaiting_invite key (pre-#116 state) falls through, no crash" do
+    test "inbound INVITE with absent awaiting_invite key (pre-#116 state) emits invite row + {:invited}, no crash" do
       state = base_state()
       m = msg(:invite, ["vjt", "#random"], {:nick, "someguy", "u", "h"})
       {:cont, _, effects} = EventRouter.route(m, state)
-      assert [{:persist, :server_event, _}] = effects
+      assert [{:persist, :server_event, %{channel: "#random"}}, {:invited, "#random"}] = effects
+    end
+
+    test "inbound non-awaiting INVITE folds a MIXED-CASE channel for both the row + {:invited} (#78 case-fold)" do
+      # Channel case-fold invariant: INVITE's channel is at param 1, so it
+      # MUST be canonicalised like every other channel param — otherwise the
+      # :invited window (keyed on the raw channel) forks from the persisted
+      # row (folded by the changeset) and the per-channel topic cic joins.
+      state = base_state(%{awaiting_invite: MapSet.new()})
+      m = msg(:invite, ["vjt", "#MixedCase"], {:nick, "someguy", "u", "h"})
+      {:cont, _, effects} = EventRouter.route(m, state)
+      assert [{:persist, :server_event, %{channel: "#mixedcase"}}, {:invited, "#mixedcase"}] = effects
     end
   end
 end

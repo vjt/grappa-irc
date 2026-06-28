@@ -525,6 +525,7 @@ export type SessionWireWireEventKind =
   | "members_seeded"
   | "joined"
   | "window_pending"
+  | "window_invited"
   | "join_failed"
   | "kicked"
   | "away_confirmed"
@@ -605,6 +606,13 @@ export type SessionWireJoinedPayload = {
 
 export type SessionWireWindowPendingPayload = {
   kind: "window_pending";
+  network: string;
+  channel: string;
+  state: string;
+};
+
+export type SessionWireWindowInvitedPayload = {
+  kind: "window_invited";
   network: string;
   channel: string;
   state: string;
@@ -748,6 +756,7 @@ export type WireSessionEvent =
   | SessionWireMembersSeededPayload
   | SessionWireJoinedPayload
   | SessionWireWindowPendingPayload
+  | SessionWireWindowInvitedPayload
   | SessionWireJoinFailedPayload
   | SessionWireKickedPayload
   | SessionWireAwayConfirmedPayload

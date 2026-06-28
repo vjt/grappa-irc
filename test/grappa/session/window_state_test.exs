@@ -54,6 +54,16 @@ defmodule Grappa.Session.WindowStateTest do
     end
   end
 
+  describe "set_invited/2" do
+    test "marks the channel as :invited without touching sibling maps (#78)" do
+      ws = WindowState.set_invited(WindowState.new(), "#grappa")
+
+      assert WindowState.state_of(ws, "#grappa") == :invited
+      assert WindowState.failure_meta(ws, "#grappa") == nil
+      assert WindowState.kicked_meta(ws, "#grappa") == nil
+    end
+  end
+
   describe "set_joined/2" do
     test "marks the channel as :joined and clears any prior failure / kicked metadata" do
       ws =
@@ -216,6 +226,11 @@ defmodule Grappa.Session.WindowStateTest do
 
     test ":pending returns {:error, :not_tracked} (broadcast on user-topic, not channel-topic)" do
       ws = WindowState.set_pending(WindowState.new(), "#grappa")
+      assert WindowState.to_wire(ws, "azzurra", "#grappa") == {:error, :not_tracked}
+    end
+
+    test ":invited returns {:error, :not_tracked} (broadcast on user-topic, like :pending) (#78)" do
+      ws = WindowState.set_invited(WindowState.new(), "#grappa")
       assert WindowState.to_wire(ws, "azzurra", "#grappa") == {:error, :not_tracked}
     end
 

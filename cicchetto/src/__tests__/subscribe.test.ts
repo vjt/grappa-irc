@@ -2626,48 +2626,33 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
 // userTopic.ts (post-CP17). This test asserts that contract — the
 // subscribe behavior is decoupled from the mutation origin.
 //
-// Coverage: assert that adding a pending entry to windowStateByChannel
-// triggers a joinChannel call for the (slug, channel) pair.
-describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
-  it("joins the per-channel topic when windowState transitions to pending", async () => {
+// Coverage: assert that adding a not-joined entry (pending OR invited)
+// to windowStateByChannel triggers a joinChannel call for the
+// (slug, channel) pair.
+//
+// #78: the loop also subscribes on "invited" — an inbound INVITE to a
+// not-joined channel must join the per-channel topic so the persisted
+// INVITE row + any later JOIN echo land. Same chicken-and-egg + same
+// pre-subscribe mechanism as "pending"; parametrized below so a
+// regression in either arm surfaces here.
+describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => {
+  const expectPreSubscribeJoinsOnState = async (stateValue: "pending" | "invited") => {
     localStorage.setItem("grappa-token", "tok");
     localStorage.setItem(
       "grappa-subject",
       JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
     );
-    await seedStubs();
-    const socket = await import("../lib/socket");
-    const ws = await import("../lib/windowState");
-    await loadStores();
 
-    await vi.waitFor(() => {
-      // Initial channels-loop joins: 2 real + 1 dm-listener + 1 $server.
-      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
-    });
-
-    // CP17: server's userTopic.ts dispatcher fires setPending in
-    // response to a `kind: "window_pending"` event from
-    // `record_in_flight_join/2`. The mock for windowState was a
-    // vi.fn() returning {} above so we need to swap its implementation
-    // to return a fresh map with the pending entry.
-    vi.mocked(ws.windowStateByChannel).mockImplementation(() => ({
-      [channelKey("freenode", "#new-room")]: "pending",
-    }));
-    // Force the pending-loop createEffect to re-run by writing into the
-    // signal it tracks. Since we mocked the module, we need a real
-    // re-render trigger - easiest is to dispatch a setPending call,
-    // which the mock records but doesn't actually mutate (mock returns
-    // a static map). Instead, use a different reactive trigger - the
-    // pending-loop tracks token() too, but token() is stable here.
+    // This test asserts STATIC subscribe-on-not-joined-state-presence:
+    // load the module with the not-joined entry already in
+    // windowStateByChannel + verify the per-channel topic is joined. The
+    // pre-subscribe loop tracks the windowStateByChannel signal and joins
+    // any (slug, channel) whose state is a not-joined kind (pending OR
+    // invited, #78) — it does NOT depend on how the entry got there
+    // (compose pre-CP17, or the server-driven userTopic dispatch).
     //
-    // Solid effects re-run when ANY tracked signal changes. The mock
-    // function we override doesn't emit a Solid notification - the
-    // signal is in mock-land, not real solid. So this test asserts
-    // STATIC subscribe-on-pending-state-presence: load the module with
-    // pending state already in place + verify the topic is joined.
-    //
-    // Re-import path: reset modules + re-mock with pending state, then
-    // re-import subscribe.
+    // resetModules + doMock with the not-joined state, then re-import the
+    // store chain so the join effect evaluates against the seeded map.
     vi.resetModules();
     vi.doMock("../lib/api", () => ({
       listNetworks: vi
@@ -2748,7 +2733,7 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
       setKicked: vi.fn(),
       setParted: vi.fn(),
       windowStateByChannel: () => ({
-        [channelKey("freenode", "#new-room")]: "pending",
+        [channelKey("freenode", "#new-room")]: stateValue,
       }),
       windowFailureByChannel: () => ({}),
       windowKickedMetaByChannel: () => ({}),
@@ -2785,6 +2770,14 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
         expect.any(Function),
       );
     });
+  };
+
+  it("joins the per-channel topic when windowState transitions to pending", async () => {
+    await expectPreSubscribeJoinsOnState("pending");
+  });
+
+  it("joins the per-channel topic when windowState transitions to invited (#78)", async () => {
+    await expectPreSubscribeJoinsOnState("invited");
   });
 });
 

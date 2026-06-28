@@ -1782,6 +1782,90 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "inbound non-awaiting INVITE broadcasts window_invited + records :invited + persists row at the channel (#78)" do
+      # #78 / folds #128: an inbound INVITE we did NOT request surfaces the
+      # invited channel as a not-joined :invited window. EventRouter emits
+      # {:invited, ch}; Server.apply_effects flips window_states[ch] to
+      # :invited, broadcasts SessionWire.window_invited/2 on Topic.user/1
+      # (same chicken-and-egg user-topic origination as window_pending),
+      # and the INVITE row persists AT THE CHANNEL (route-by-channel-
+      # reference, NOT $server) so cic renders it in the channel buffer
+      # with the existing [Join] affordance.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(server, ":someguy!u@h INVITE grappa-test :#random\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :window_invited,
+                         network: net_slug,
+                         channel: "#random",
+                         state: "invited"
+                       }
+                     },
+                     1_000
+
+      assert net_slug == network.slug
+
+      # Sync via PING/PONG before sampling state — apply_effects runs in
+      # handle_info.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      state = :sys.get_state(pid)
+      assert WindowState.state_of(state.window_state, "#random") == :invited
+
+      # The INVITE row landed in the CHANNEL buffer, not $server.
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "#random", nil, 10, nil)
+      assert row.kind == :server_event
+      assert row.sender == "someguy"
+      assert row.meta.raw_verb == "INVITE"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "inbound INVITE does NOT downgrade an in-flight :pending window to :invited (#78)" do
+      # #78 L2: a concurrent INVITE to a channel we are mid-JOIN on must not
+      # flip the optimistic :pending tab to a greyed :invited one (nor
+      # re-broadcast). The JOIN echo resolves :pending → :joined / :failed;
+      # the invite is moot while a join is already in flight.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Operator initiates a JOIN → window goes :pending.
+      :ok = Session.send_join({:user, user.id}, network.id, "#pendingchan", nil)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :window_pending, channel: "#pendingchan"}
+                     },
+                     1_000
+
+      # Concurrent INVITE to the SAME channel — must be a no-op on state.
+      IRCServer.feed(server, ":someguy!u@h INVITE grappa-test :#pendingchan\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :window_invited}}, 200
+
+      state = :sys.get_state(pid)
+      assert WindowState.state_of(state.window_state, "#pendingchan") == :pending
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "001 autojoin loop broadcasts window_pending per channel + sets :pending state" do
       # CP17 — symmetric to the :send_join cast: the 001 RPL_WELCOME
       # autojoin path also flows through record_in_flight_join/2, so

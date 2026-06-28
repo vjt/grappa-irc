@@ -2989,6 +2989,43 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # #78 / folds #128: an inbound INVITE we did NOT request (not a ChanServ
+  # relay of our own gated /join) surfaces the invited channel as a
+  # not-joined `:invited` window — a greyed sidebar tab the operator can
+  # `/join` on their own time. Broadcast `window_invited` on `Topic.user/1`
+  # (same chicken-and-egg user-topic origination as `window_pending`: cic
+  # subscribes to the per-channel topic only AFTER seeing the state). The
+  # `:persist :server_event` INVITE row alongside (emitted by EventRouter
+  # at `channel = #chan`) is the single unread item cic renders with the
+  # existing `[Join]` affordance — NO auto-focus.
+  #
+  # Guard against downgrading a window the operator is already engaging
+  # with: `:joined` (already in the room) and `:pending` (a JOIN in
+  # flight) must NOT be flipped to a greyed `:invited` tab. A `:failed` /
+  # `:kicked` / absent window DOES flip — an INVITE there is newly
+  # actionable (the invite bypasses +i/+k upstream, so the prior failure
+  # is moot). The persist row still lands in the skipped cases — an
+  # invite-while-joined / invite-while-joining is a legitimate in-channel
+  # event. A repeat INVITE while already `:invited` re-affirms the state
+  # (idempotent value + broadcast); harmless.
+  defp apply_effects([{:invited, channel} | rest], state) do
+    state =
+      case WindowState.state_of(state.window_state, channel) do
+        joined_or_pending when joined_or_pending in [:joined, :pending] ->
+          state
+
+        _ ->
+          broadcast_window_state(
+            state,
+            SessionWire.window_invited(state.network_slug, channel)
+          )
+
+          %{state | window_state: WindowState.set_invited(state.window_state, channel)}
+      end
+
+    apply_effects(rest, state)
+  end
+
   # CP15 B3 + cluster #6: own-target KICK → window transitions to
   # :kicked. Two concerns, one arm:
   #   1. State — `WindowState.set_kicked/4` records :kicked + by +

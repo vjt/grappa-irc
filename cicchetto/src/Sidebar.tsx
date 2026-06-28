@@ -68,7 +68,7 @@ import NickText from "./NickText";
 //   per-window `:parked` events from `Session.Server.terminate/2`; cic
 //   derives the cascade from the network-level state.
 
-const NOT_JOINED_STATES = new Set(["failed", "kicked", "parked"]);
+const NOT_JOINED_STATES = new Set(["invited", "failed", "kicked", "parked"]);
 const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 
 export type Props = Record<string, never>;
@@ -119,10 +119,10 @@ const Sidebar: Component<Props> = () => {
   // JSX can render the right classList branch (pending styling vs
   // greyed) without a second windowState lookup.
   //
-  // The projection covers ALL four non-joined states — pending,
-  // failed, kicked, parked — under the same rule: cic mirrors a row
-  // whenever the operator is aware of the channel (windowState carries
-  // the key) but channelsBySlug doesn't. Without this, a failed JOIN
+  // The projection covers ALL non-joined states — pending, invited
+  // (#78), failed, kicked, parked — under the same rule: cic mirrors a
+  // row whenever the operator is aware of the channel (windowState
+  // carries the key) but channelsBySlug doesn't. Without this, a failed JOIN
   // (invite-only / banned / +k miss) leaves the operator with no
   // sidebar entry at all: the pending row vanishes when state flips
   // to failed and the channelsBySlug branch never receives the
@@ -150,7 +150,10 @@ const Sidebar: Component<Props> = () => {
   // with DMs), but the dedicated query-windows branch below handles
   // their rendering. Without this filter, the synthetic loop would
   // dup-render every greyed query target as a "ghost" channel row.
-  type PseudoRow = { name: string; state: "pending" | "failed" | "kicked" | "parked" };
+  type PseudoRow = {
+    name: string;
+    state: "pending" | "invited" | "failed" | "kicked" | "parked";
+  };
   const pseudoChannelsForNetwork = (slug: string, networkId: number): PseudoRow[] => {
     const states = windowStateByChannel();
     const live = new Set((channelsBySlug()?.[slug] ?? []).map((c) => c.name));

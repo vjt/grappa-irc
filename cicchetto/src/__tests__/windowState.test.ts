@@ -76,6 +76,27 @@ describe("windowState.setJoined", () => {
   });
 });
 
+describe("windowState.setInvited", () => {
+  it("populates windowStateByChannel[key] = 'invited' (#78)", async () => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#invited-room");
+
+    ws.setInvited(key);
+
+    expect(ws.windowStateByChannel()[key]).toBe("invited");
+  });
+
+  it("does not touch failure / kicked metadata (an invite carries neither)", async () => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#invited-room");
+
+    ws.setInvited(key);
+
+    expect(ws.windowFailureByChannel()[key]).toBeUndefined();
+    expect(ws.windowKickedMetaByChannel()[key]).toBeUndefined();
+  });
+});
+
 describe("windowState.setFailed", () => {
   it("populates windowStateByChannel[key] = 'failed'", async () => {
     const ws = await import("../lib/windowState");

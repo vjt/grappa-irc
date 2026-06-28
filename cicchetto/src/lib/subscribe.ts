@@ -659,7 +659,14 @@ createRoot(() => {
     const u = user();
     if (!name || !nets) return;
     for (const [key, state] of Object.entries(states)) {
-      if (state !== "pending") continue;
+      // Pre-subscribe on any NOT-JOINED state that has no other live
+      // subscription door: "pending" (our own JOIN in flight, CP15 B5)
+      // and "invited" (#78 — inbound INVITE to a channel we're not in).
+      // Both need the per-channel topic joined here so the JOIN echo /
+      // the persisted INVITE row land. ":failed"/":kicked" already had a
+      // subscription (they were joined once); they don't reach this loop
+      // needing a fresh join.
+      if (state !== "pending" && state !== "invited") continue;
       // Codebase audit cic M4 — paired decoder over open-coded
       // `key.indexOf(" ") + key.slice` parsing. The composite-key
       // shape lives in `channelKey.ts`; the decoder is the inverse

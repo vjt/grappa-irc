@@ -233,6 +233,20 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "window_invited/2" do
+    test "carries kind=window_invited + state=invited on the user-topic shape" do
+      # #78 — inbound INVITE to a not-joined channel surfaces an :invited
+      # window. Same user-topic origination shape + naming convention as
+      # window_pending (cic subscribes per-channel after seeing the state).
+      assert Wire.window_invited("azzurra", "#grappa") == %{
+               kind: :window_invited,
+               network: "azzurra",
+               channel: "#grappa",
+               state: "invited"
+             }
+    end
+  end
+
   describe "join_failed/4" do
     test "carries the failure reason + numeric" do
       assert Wire.join_failed("azzurra", "#grappa", "Cannot join (+i)", 473) == %{

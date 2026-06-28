@@ -714,6 +714,20 @@ export type WireUserEvent =
       state: "pending";
     }
   | {
+      // #78 — inbound INVITE to a not-joined channel. Server's
+      // apply_effects([{:invited, ch}]) emits this on `Topic.user/1`
+      // (same chicken-and-egg user-topic origination as window_pending:
+      // cic only joins the per-channel topic AFTER seeing the state in
+      // windowStateByChannel). userTopic.ts dispatches into
+      // `setInvited(channelKey(network, channel))`; subscribe.ts's
+      // pre-subscribe loop then joins the per-channel topic so the
+      // persisted INVITE row lands in the channel buffer with [Join].
+      kind: "window_invited";
+      network: string;
+      channel: string;
+      state: "invited";
+    }
+  | {
       kind: "connection_state_changed";
       user_id: string;
       network_id: number;

@@ -44,6 +44,7 @@ vi.mock("../lib/queryWindows", () => ({
 
 vi.mock("../lib/windowState", () => ({
   setPending: vi.fn(),
+  setInvited: vi.fn(),
   setJoined: vi.fn(),
   setFailed: vi.fn(),
   setKicked: vi.fn(),
@@ -235,6 +236,36 @@ describe("userTopic", () => {
       const ws = await import("../lib/windowState");
       channelMock.fireEvent({ kind: "channels_changed" });
       expect(ws.setPending).not.toHaveBeenCalled();
+    });
+  });
+
+  // #78 — inbound INVITE to a not-joined channel. Server's apply_effects
+  // emits `kind: "window_invited"` on Topic.user/1 (same chicken-and-egg
+  // user-topic origination as window_pending). userTopic.ts dispatcher
+  // mirrors into `setInvited(channelKey(...))`, and subscribe.ts's
+  // pre-subscribe loop joins the per-channel topic so the INVITE row
+  // lands in the channel buffer.
+  describe("window_invited event (#78)", () => {
+    it("calls setInvited with channelKey(network, channel) on window_invited", async () => {
+      const ws = await import("../lib/windowState");
+      const { channelKey } = await import("../lib/channelKey");
+      channelMock.fireEvent({
+        kind: "window_invited",
+        network: "freenode",
+        channel: "#random",
+        state: "invited",
+      });
+      expect(ws.setInvited).toHaveBeenCalledWith(channelKey("freenode", "#random"));
+    });
+
+    it("drops a window_invited payload missing `channel` (no setInvited call)", async () => {
+      const ws = await import("../lib/windowState");
+      channelMock.fireEvent({
+        kind: "window_invited",
+        network: "freenode",
+        state: "invited",
+      });
+      expect(ws.setInvited).not.toHaveBeenCalled();
     });
   });
 

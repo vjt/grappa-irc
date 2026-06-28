@@ -74,6 +74,7 @@ defmodule Grappa.Session.Wire do
           | :members_seeded
           | :joined
           | :window_pending
+          | :window_invited
           | :join_failed
           | :kicked
           | :away_confirmed
@@ -179,6 +180,13 @@ defmodule Grappa.Session.Wire do
 
   @type window_pending_payload :: %{
           kind: :window_pending,
+          network: String.t(),
+          channel: String.t(),
+          state: String.t()
+        }
+
+  @type window_invited_payload :: %{
+          kind: :window_invited,
           network: String.t(),
           channel: String.t(),
           state: String.t()
@@ -568,6 +576,21 @@ defmodule Grappa.Session.Wire do
   def window_pending(network_slug, channel)
       when is_binary(network_slug) and is_binary(channel) do
     %{kind: :window_pending, network: network_slug, channel: channel, state: "pending"}
+  end
+
+  @doc """
+  #78 — inbound INVITE to a channel we are NOT joined to surfaces an
+  `:invited` window (a not-joined, greyed sidebar tab the operator can
+  `/join` on their own time). Broadcast on `Topic.user(...)` for the same
+  chicken-and-egg reason as `window_pending/2`: cic only subscribes to the
+  per-channel topic AFTER seeing the state in `windowStateByChannel`, and
+  the user-topic is joined from boot so delivery is guaranteed. Same
+  `window_`-namespaced naming convention.
+  """
+  @spec window_invited(String.t(), String.t()) :: window_invited_payload()
+  def window_invited(network_slug, channel)
+      when is_binary(network_slug) and is_binary(channel) do
+    %{kind: :window_invited, network: network_slug, channel: channel, state: "invited"}
   end
 
   @doc """
