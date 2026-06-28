@@ -13701,3 +13701,62 @@ verb in the codebase (share-token consume, the user-login path), the feature is
 a routing decision, not a new mechanism — find the branch point (`whereis`) and
 make sure the gates that belong to the *old* path (capacity = spawn-gate) don't
 leak onto the new one.*
+
+## 2026-06-28 — Multi-file paste/drag-drop upload: sequential queue (GH #118)
+
+**The finding first.** #118 ("paste & drag-and-drop image upload in compose")
+was already shipped. Commit `8f1a76b` (2026-05-15, the image-upload I-2 surface)
+wired `onPaste` (textarea) + `onDrop`/`onDragOver` (form) → the shared upload
+pipeline, six weeks *before* #118 was filed. Both surfaces already: multi-
+category (image/video/document/audio), in-flight `<progress>` + cancel,
+inline `role="alert"` retry/dismiss, non-uploadable payloads ignored, and the
+documented auto-send model (`📸/🎬/📄/🎵 <url>` PRIVMSG). The issue text's "splice
+the URL into the draft at the cursor" *contradicts* that shipped invariant — vjt
+confirmed **auto-send stays, no draft splicing** (which also keeps this work
+clear of the in-flight `fix/compose-draft-recall-stash` branch — it only edits
+`compose.ts`; #118 only edits `uploadOrchestrator.ts` + `ComposeBox.tsx`).
+
+**The one real gap:** every entry point uploaded the **first file only**
+(`dataTransfer.files[0]`, `clipboardData` `return`-after-first, `input.files[0]`
+with no `multiple`). The orchestrator is **single-slot per channel**
+(`inflight: Map<ChannelKey, ActiveUpload>`) and a re-trigger *aborted* the
+in-flight one — so multi-file is not "loop the handler".
+
+**Decision (sequential queue, not parallel).** Added a per-channel FIFO `queue`
+to `uploadOrchestrator.ts`. A batch of files uploads one at a time through the
+*unchanged* `dispatchUpload` pipeline; each settle pumps the next; each success
+auto-sends its own emoji-URL (N files → N messages). Parallel multi-slot was
+rejected — it needs a per-channel inflight list + multi-row progress UI +
+per-row cancel/retry addressing, heavier than the problem (paste/drop of a few
+files). New surface: `triggerUploads` (plural entry; `triggerUpload` kept as a
+single-file alias), `pumpQueue`, `startUpload`, `isActive`, a reactive
+`(index,total)` counter (`uploadBatch` → cic shows `(i/N)` only when total > 1),
+`resetUploadsForTests`.
+
+**Settle semantics** (the 20% that needed deciding):
+- success → pump the next;
+- upload **error** → *pause* the batch (dismiss = skip-and-continue, retry =
+  re-run the failed file at the queue front then continue);
+- **cancel** (progress button) → stop the whole batch (clear the queue);
+- **decline the privacy modal** → cancel the whole batch (never silently
+  re-dispatch the queued files — `dismissUpload` branches on modal-open).
+
+**Behavior change, deliberate:** re-triggering during an in-flight
+upload/transcode now **queues** behind it instead of abort-and-replace — the
+first upload is never lost. Two existing orchestrator tests (image new-selection,
+video re-trigger) were updated from the abort-replace assertion to the queue
+one. The #49 contract still holds: a fresh selection *after a failed upload*
+supersedes the error and starts a new batch — so an error entry does NOT count
+as "active" in `isActive` (counting it both broke #49 and leaked a stale batch
+total into the next selection).
+
+**Privacy gating stays per-file** (not per-batch). In production the ack is
+persisted in localStorage on first-ever upload, so a multi-file batch never
+re-prompts; a user who deliberately did NOT "remember" is asked per file — which
+honors their explicit ask-every-time choice. No new "this batch is acked" state
+to housekeep.
+
+*Lesson: "challenge the spec" caught a feature that was already built — the
+issue post-dated the code. The actual work was the 20% the brief got right
+(multi-file) wrapped around an 80% that already existed. Reuse the verbs
+(`dispatchUpload`, the privacy gate, the auto-send), add only the queue.*
