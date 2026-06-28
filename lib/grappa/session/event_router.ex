@@ -542,19 +542,25 @@ defmodule Grappa.Session.EventRouter do
       # User-MODE-on-self. Distinct from a channel MODE: user-modes on the
       # session's own nick are not channel events — no scrollback row, no
       # member-map mutation. The +r case is special: when NickServ-as-IDP
-      # confirms a visitor's IDENTIFY it sets +r on the nick. If
-      # `pending_auth` is staged (from the outbound IDENTIFY captured by
-      # NSInterceptor), +r is the cryptographic-proof signal that the
-      # password was accepted; emit `:visitor_r_observed` carrying the
-      # captured password so `Session.Server.apply_effects/2` can commit
-      # it atomically into the visitors row.
+      # confirms a visitor's IDENTIFY (or register→auth-code) it sets +r on
+      # the nick. +r is the cryptographic-proof signal that the captured
+      # secret was accepted; emit `:visitor_r_observed` carrying it so
+      # `Session.Server.apply_effects/2` can commit it atomically into the
+      # visitors row.
       #
-      # `pending_auth` is set on `Session.Server` state but is optional
-      # from the pure router's POV (the typespec admits `optional(any())
-      # => any()`); pure unit tests on user sessions skip it.
+      # ONE +r-observation primitive serves both capture slots (#90 / #129
+      # — do not build two detectors). Two slots feed it: the timed
+      # `pending_auth` (IDENTIFY-family) and the untimed
+      # `pending_registration_secret` (REGISTER). If BOTH are staged,
+      # REGISTER wins — it is correct-by-construction (a wrong register
+      # never gets +r), whereas a stale wrong identify could still be in its
+      # 10s window. Both are set on `Session.Server` state but are optional
+      # from the pure router's POV; pure unit tests on user sessions skip
+      # them (Map.get → nil).
       effects =
-        case {set_r_mode?(modes), Map.get(state, :pending_auth)} do
-          {true, {pwd, _}} -> [{:visitor_r_observed, pwd}]
+        case {set_r_mode?(modes), Map.get(state, :pending_registration_secret), Map.get(state, :pending_auth)} do
+          {true, reg, _} when is_binary(reg) -> [{:visitor_r_observed, reg}]
+          {true, _, {pwd, _}} -> [{:visitor_r_observed, pwd}]
           _ -> []
         end
 

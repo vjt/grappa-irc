@@ -380,6 +380,7 @@ defmodule Grappa.Session.Server do
           notify_ref: reference() | nil,
           pending_auth: nil | {String.t(), integer()},
           pending_auth_timer: reference() | nil,
+          pending_registration_secret: String.t() | nil,
           pending_password: String.t() | nil,
           visitor_committer: visitor_committer() | nil,
           visitor_nick_persister: visitor_nick_persister() | nil,
@@ -624,6 +625,7 @@ defmodule Grappa.Session.Server do
       notify_ref: Map.get(opts, :notify_ref),
       pending_auth: nil,
       pending_auth_timer: nil,
+      pending_registration_secret: nil,
       pending_password: pending_password_from_opts(opts),
       visitor_committer: Map.get(opts, :visitor_committer),
       visitor_nick_persister: Map.get(opts, :visitor_nick_persister),
@@ -2312,15 +2314,36 @@ defmodule Grappa.Session.Server do
     %{state | pending_auth: {password, deadline}, pending_auth_timer: timer}
   end
 
+  # #129: REGISTER's secret goes in an UNTIMED slot. Services grant +r
+  # minutes-to-hours after REGISTER (the user submits an emailed auth code
+  # via `/ns AUTH` later), so the 10s `pending_auth` timer would discard it
+  # long before +r ever arrives. No timer here: held until the +r transition
+  # commits it (`apply_effects/2`) or the session terminates (GC). A second
+  # REGISTER overwrites (latest-wins, mailbox FIFO). The unconfirmed secret
+  # is never persisted — the DB invariant `password_encrypted set ⟺
+  # permanent` stays pristine.
+  defp stage_pending_registration(state, password) do
+    %{state | pending_registration_secret: password}
+  end
+
   # Single choke point for outbound-line NickServ-identify capture. Every
   # path that puts a line on the wire (send_privmsg, send_raw/`/quote`,
   # ghost-recovery flush) runs this so no identify form can bypass capture.
   # The AuthFSM-emitted registration IDENTIFY/PASS at 001 stays on
   # `maybe_stage_pending_password/1` — grappa already knows that secret.
+  # The verb class from NSInterceptor picks the slot: IDENTIFY-family →
+  # timed `pending_auth`, REGISTER → untimed `pending_registration_secret`.
   @spec stage_if_ns_identify(t(), String.t()) :: t()
   defp stage_if_ns_identify(state, line) do
     case NSInterceptor.intercept(line) do
-      {:capture, password} ->
+      {:capture, :register, password} ->
+        Logger.debug("staged pending NickServ registration secret (untimed, #129)",
+          verb: :ns_capture
+        )
+
+        stage_pending_registration(state, password)
+
+      {:capture, :identify, password} ->
         Logger.debug("staged pending NickServ password from outbound identify",
           verb: :ns_capture
         )
@@ -3076,7 +3099,15 @@ defmodule Grappa.Session.Server do
 
     :ok = cancel_and_drain(state.pending_auth_timer, :pending_auth_timeout)
 
-    apply_effects(rest, %{state | pending_auth: nil, pending_auth_timer: nil})
+    # Clear BOTH capture slots: the +r transition is consumed once. The
+    # register slot (#129) is cleared here too whether it carried the
+    # committed secret or lost the register-wins tie to `pending_auth`.
+    apply_effects(rest, %{
+      state
+      | pending_auth: nil,
+        pending_auth_timer: nil,
+        pending_registration_secret: nil
+    })
   end
 
   # V9 (visitor-parity cluster, 2026-05-15): EventRouter observed our

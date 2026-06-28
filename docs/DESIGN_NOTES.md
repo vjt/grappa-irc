@@ -13998,3 +13998,68 @@ direction: column`. No-h-scroll is structural: `minmax(0, …)` track +
 truncation). Sort stays user-count DESC; featured rows are labelled, not
 pinned. Joined rows are tappable-to-open (consistent with the HomePane
 featured-link from #85), no longer disabled.
+
+## 2026-06-28 — register→auth-code +r promotion: untimed second capture slot (#129)
+
+A NickServ-identified visitor is promoted from ephemeral to permanent
+(`expires_at = NULL`) by correlating the secret captured from the user's
+outbound `IDENTIFY`/`REGISTER` with the inbound self-`MODE +r`
+transition. The capture was held in `pending_auth` for `~10s`
+(`@pending_auth_timeout_ms`) and committed on `+r` only if still staged.
+That window is correct for **identify** (services grant `+r` synchronously,
+sub-second) but wrong for **register**: services email an auth code and
+flip `+r` only minutes-to-hours later when the user submits `/ns AUTH
+<code>`. The 10s timer discarded the register secret long before `+r`
+arrived, so a freshly-registered nick stayed an ephemeral visitor forever.
+(The original issue framing — "register doesn't trigger capture" — was
+wrong: `NSInterceptor` already captured `REGISTER`; the secret *expired*.)
+
+**In-memory hold, no DB / no schema / no migration.** An unconfirmed
+register password is in-flight work, not truth — it becomes truth only on
+`+r`, at which point the **existing** commit path
+(`Visitors.commit_password` → `expires_at = NULL`) persists it. So it is
+held in GenServer state, never written unconfirmed. The DB invariant
+`password_encrypted set ⟺ permanent` stays pristine; there is no
+unconfirmed-secret column to reason about.
+
+**Two slots, one commit verb (reuse the verbs, not the nouns).** The
+shared verb is "commit the captured secret on the `+r` transition." The
+20% that differs is the **retention lifecycle**:
+
+- **identify** → `pending_auth` + 10s timer. **Unchanged.** Still the
+  wrong-password guard — a wrong identify never gets `+r`, times out, never
+  commits.
+- **register** → a new, **untimed** `pending_registration_secret`. Held
+  until the `+r` transition (commit + clear) or `terminate` (GC with the
+  session). No second timer.
+
+That lifecycle difference (10s auto-discard, wrong-password possible vs
+hold-until-`+r`, correct-by-construction) is the domain boundary, so it
+earns separate state. A timed/untimed type-flag on one field would be the
+"shared data model with a type flag" anti-pattern. `NSInterceptor` now
+returns `{:capture, :identify | :register, password}` — it reports the
+verb class; `Session.Server` maps verb → slot.
+
+**One `+r`-observation primitive, register wins.** `EventRouter` emits
+`:visitor_r_observed` from a single `+r` site
+(`event_router.ex` user-MODE-on-self clause) reading **both** slots; if
+both are populated, **register wins** (correct-by-construction: a wrong
+register never gets `+r`, whereas a stale wrong identify could still be
+inside its 10s window). `apply_effects/2` commits the winner and clears
+**both** slots; `:pending_auth_timeout` clears **only** the timed slot.
+This is the same primitive #90 (post-registration `+r` fallback) must
+share — one detector, not two.
+
+**Known limitation (transition, not state).** Promotion fires on the `+r`
+**transition**, not the `+r` **state**. If the connection drops (or grappa
+restarts) between `/ns register` and `/ns auth`, the in-memory register
+secret is lost and `+r` (which arrives later) is not auto-persisted.
+Recovery is **not** in-place: after `/ns auth` the user is already `+r`, so
+an in-place `/ns identify` hits services' `do_identify` guard
+(`sameNick && !UMODE_r && !NI_AUTH`), emits **no new `+r`**, and grappa
+observes nothing. The user must **quit and log back in via the cicchetto
+login form** with their NickServ password → the form-driven
+identify-at-001 makes services set `+r` anew (a real transition) → captured
+in the 10s window → persisted. Accepted: the in-memory cost is one nullable
+field; a DB-backed cross-restart hold would reintroduce the
+unconfirmed-secret-at-rest problem this design deliberately avoids.

@@ -2,9 +2,14 @@ defmodule Grappa.Session.NSInterceptor do
   @moduledoc """
   Pure module: matches an outbound IRC wire line for any NickServ-account
   identify verb that carries a password, and lifts the password out for the
-  host (`Grappa.Session.Server`) to stage in `pending_auth`. Captures are
-  committed to the visitor row ONLY on +r MODE observation (or discarded on
-  the `@pending_auth_timeout_ms` timeout). Wrong passwords never touch the DB.
+  host (`Grappa.Session.Server`) to stage. The result carries a `kind`
+  (`:identify | :register`) so the host can pick the right retention slot:
+  IDENTIFY-family captures stage the TIMED `pending_auth`; REGISTER captures
+  stage the UNTIMED `pending_registration_secret` (#129 — register grants
+  +r minutes-to-hours later, outside the 10s window). Captures are committed
+  to the visitor row ONLY on +r MODE observation (the timed slot is also
+  discarded on the `@pending_auth_timeout_ms` timeout). Wrong passwords never
+  touch the DB.
 
   Covers the full azzurra identify-channel set (source-verified against
   `bahamut-azzurra` ircd + azzurra `services`):
@@ -25,7 +30,18 @@ defmodule Grappa.Session.NSInterceptor do
   Boundary: inherits the parent `Grappa.Session` boundary (no `use Boundary`).
   """
 
-  @type result :: :passthrough | {:capture, String.t()}
+  @typedoc """
+  The captured verb's class. `:identify` covers IDENTIFY/ID/SIDENTIFY/
+  GHOST/PASS — services grant +r synchronously (within the 10s window),
+  so the host stages a TIMED `pending_auth`. `:register` is the
+  register→auth-code flow (#129): services email an auth code and grant
+  +r minutes-to-hours later, far outside that window, so the host stages
+  an UNTIMED `pending_registration_secret`. The host maps verb → slot;
+  the interceptor only reports which verb it saw.
+  """
+  @type kind :: :identify | :register
+
+  @type result :: :passthrough | {:capture, kind(), String.t()}
 
   # PRIVMSG-to-NickServ / NS-NICKSERV command form. `(?:...)` groups are
   # non-capturing; capture groups are (verb, rest).
@@ -39,8 +55,9 @@ defmodule Grappa.Session.NSInterceptor do
 
   @doc """
   Inspects one outbound IRC wire line and returns either `:passthrough`
-  (no NickServ identify verb detected) or `{:capture, password}` with the
-  cleartext password lifted out for the host to stage in `pending_auth`.
+  (no NickServ identify verb detected) or `{:capture, kind, password}` with
+  the cleartext password lifted out and the verb class (`:identify` vs
+  `:register`) for the host to stage in the matching slot.
 
   Pure: no side effects. The host (`Grappa.Session.Server`) decides whether
   to commit (on `+r` MODE), discard on the pending-auth timeout, or
@@ -63,15 +80,17 @@ defmodule Grappa.Session.NSInterceptor do
 
   defp intercept_pass(line) do
     case Regex.run(@pass_re, line, capture: :all_but_first) do
-      [rest] -> {:capture, last_token(rest)}
+      [rest] -> {:capture, :identify, last_token(rest)}
       nil -> :passthrough
     end
   end
 
   # Catch-all: IDENTIFY / ID / SIDENTIFY / GHOST all take the password as
-  # the last token. Only REGISTER (password first) needs its own clause.
-  defp dispatch("REGISTER", rest), do: {:capture, first_token(rest)}
-  defp dispatch(_, rest), do: {:capture, last_token(rest)}
+  # the last token AND grant +r synchronously → `:identify`. Only REGISTER
+  # (password first, +r granted later via the auth-code) needs its own
+  # clause AND its own `:register` kind (#129).
+  defp dispatch("REGISTER", rest), do: {:capture, :register, first_token(rest)}
+  defp dispatch(_, rest), do: {:capture, :identify, last_token(rest)}
 
   defp last_token(rest), do: rest |> String.split() |> List.last()
   defp first_token(rest), do: rest |> String.split() |> List.first()

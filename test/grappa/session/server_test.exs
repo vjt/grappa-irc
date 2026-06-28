@@ -3278,6 +3278,216 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  # #129: the register→auth-code flow grants +r minutes-to-hours after
+  # REGISTER, far outside the 10s `pending_auth` window. A captured
+  # REGISTER secret is staged in a SEPARATE, UNTIMED slot
+  # (`pending_registration_secret`) that survives the `pending_auth`
+  # timeout and is committed on the same +r transition. Register wins if
+  # both slots are populated. The secret is in-memory only — never
+  # persisted unconfirmed, GC'd with the session on terminate.
+  describe "register→auth-code +r promotion (#129)" do
+    test "NickServ REGISTER stages the untimed slot; no timer; pending_auth_timeout leaves it" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+
+      Session.send_privmsg(
+        {:visitor, visitor.id},
+        network.id,
+        "NickServ",
+        "REGISTER regpass me@x.io"
+      )
+
+      state = :sys.get_state(pid)
+      assert state.pending_registration_secret == "regpass"
+      # REGISTER must NOT arm the 10s pending_auth fail-safe timer.
+      assert is_nil(state.pending_auth)
+      assert is_nil(state.pending_auth_timer)
+
+      # The pending_auth timeout fires (the 10s window elapses) — it must
+      # clear ONLY the timed slot, never the untimed registration secret.
+      send(pid, :pending_auth_timeout)
+      Process.sleep(50)
+
+      assert :sys.get_state(pid).pending_registration_secret == "regpass"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "REGISTER → +r (no pending_auth) → password committed + expires_at cleared" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+
+      Session.send_privmsg(
+        {:visitor, visitor.id},
+        network.id,
+        "NickServ",
+        "REGISTER regpass me@x.io"
+      )
+
+      assert :sys.get_state(pid).pending_registration_secret == "regpass"
+
+      mode_msg = %Message{
+        command: :mode,
+        params: [visitor.nick, "+r"],
+        prefix: {:server, "irc.example.test"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, mode_msg})
+
+      state = :sys.get_state(pid)
+      assert is_nil(state.pending_registration_secret)
+
+      reloaded = Repo.reload!(visitor)
+      assert reloaded.password_encrypted == "regpass"
+      # V7: NickServ-identified visitors persist forever (expires_at NULL).
+      assert is_nil(reloaded.expires_at)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "integration: REGISTER → 10s pending_auth window elapses → later +r → promoted" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+
+      Session.send_privmsg(
+        {:visitor, visitor.id},
+        network.id,
+        "NickServ",
+        "REGISTER regpass me@x.io"
+      )
+
+      # The 10s window elapses with no +r yet (register grants it later via
+      # /ns AUTH). Simulate the elapsed window by firing the timeout.
+      send(pid, :pending_auth_timeout)
+      Process.sleep(50)
+      assert :sys.get_state(pid).pending_registration_secret == "regpass"
+
+      # /ns AUTH <code> lands minutes-to-hours later → services set +r.
+      mode_msg = %Message{
+        command: :mode,
+        params: [visitor.nick, "+r"],
+        prefix: {:server, "irc.example.test"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, mode_msg})
+      _ = :sys.get_state(pid)
+
+      reloaded = Repo.reload!(visitor)
+      assert reloaded.password_encrypted == "regpass"
+      assert is_nil(reloaded.expires_at)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "both slots set on +r → register wins, both cleared" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+
+      # Stage the timed identify slot AND the untimed register slot.
+      Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "IDENTIFY identifypass")
+      Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "REGISTER regpass me@x.io")
+
+      staged = :sys.get_state(pid)
+      assert match?({"identifypass", _}, staged.pending_auth)
+      assert staged.pending_registration_secret == "regpass"
+
+      mode_msg = %Message{
+        command: :mode,
+        params: [visitor.nick, "+r"],
+        prefix: {:server, "irc.example.test"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, mode_msg})
+
+      cleared = :sys.get_state(pid)
+      assert is_nil(cleared.pending_auth)
+      assert is_nil(cleared.pending_auth_timer)
+      assert is_nil(cleared.pending_registration_secret)
+
+      reloaded = Repo.reload!(visitor)
+      # Register wins — the committed cleartext is the REGISTER secret.
+      assert reloaded.password_encrypted == "regpass"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "regression: identify fast-path still commits on +r and clears both slots" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+
+      # A plain identify stages the TIMED slot only — the register slot
+      # stays nil (the slots are independent).
+      Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "IDENTIFY s3cret")
+
+      staged = :sys.get_state(pid)
+      assert match?({"s3cret", _}, staged.pending_auth)
+      assert is_nil(staged.pending_registration_secret)
+
+      mode_msg = %Message{
+        command: :mode,
+        params: [visitor.nick, "+r"],
+        prefix: {:server, "irc.example.test"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, mode_msg})
+
+      cleared = :sys.get_state(pid)
+      assert is_nil(cleared.pending_auth)
+      assert is_nil(cleared.pending_registration_secret)
+
+      reloaded = Repo.reload!(visitor)
+      assert reloaded.password_encrypted == "s3cret"
+      assert is_nil(reloaded.expires_at)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "terminate GCs the untimed slot — unconfirmed REGISTER secret never persists" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+
+      Session.send_privmsg(
+        {:visitor, visitor.id},
+        network.id,
+        "NickServ",
+        "REGISTER regpass me@x.io"
+      )
+
+      assert :sys.get_state(pid).pending_registration_secret == "regpass"
+
+      # Session dies before +r ever arrives (the documented #129 limitation:
+      # the in-memory secret is lost, NOT persisted). The visitor row stays
+      # ephemeral — no unconfirmed secret leaks to the DB.
+      :ok = GenServer.stop(pid, :normal, 1_000)
+
+      reloaded = Repo.reload!(visitor)
+      assert is_nil(reloaded.password_encrypted)
+      refute is_nil(reloaded.expires_at)
+    end
+  end
+
   describe "001 RPL_WELCOME stages pending_auth for :nickserv_identify visitors (Task 16)" do
     test "registered visitor: 001 stages pending_auth + clears one-shot field" do
       nick = "v_t16_#{System.unique_integer([:positive])}"

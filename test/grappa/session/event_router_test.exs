@@ -1400,6 +1400,43 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, _, [{:persist, :mode, _}]} =
                EventRouter.route(m, state)
     end
+
+    # #129: the register→auth-code flow grants +r minutes-to-hours after
+    # REGISTER, far outside the 10s pending_auth window. The untimed
+    # `pending_registration_secret` slot holds the captured REGISTER
+    # password until this +r transition. The same +r-observation primitive
+    # commits it — no second detector.
+    test "+r set with only pending_registration_secret emits :visitor_r_observed" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          subject: {:visitor, "00000000-0000-0000-0000-000000000099"},
+          pending_auth: nil,
+          pending_registration_secret: "regpass"
+        })
+
+      m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, [{:visitor_r_observed, "regpass"}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "+r with BOTH slots populated → register wins (commits the register secret)" do
+      deadline = System.monotonic_time(:millisecond) + 10_000
+
+      state =
+        base_state(%{
+          nick: "vjt",
+          subject: {:visitor, "00000000-0000-0000-0000-000000000099"},
+          pending_auth: {"identifypass", deadline},
+          pending_registration_secret: "regpass"
+        })
+
+      m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, [{:visitor_r_observed, "regpass"}]} =
+               EventRouter.route(m, state)
+    end
   end
 
   describe "route/2 — :topic (TOPIC command only)" do
