@@ -22,13 +22,17 @@ let mockUploadStateValue: {
   error?: string;
 } | null = null;
 
+let mockUploadBatchValue: { index: number; total: number } | null = null;
+
 vi.mock("../lib/uploadOrchestrator", () => {
   const actual = {
     triggerUpload: vi.fn(),
+    triggerUploads: vi.fn(),
     cancelUpload: vi.fn(),
     dismissUpload: vi.fn(),
     retryUpload: vi.fn(),
     uploadState: vi.fn(() => mockUploadStateValue),
+    uploadBatch: vi.fn(() => mockUploadBatchValue),
   };
   return actual;
 });
@@ -73,6 +77,7 @@ beforeEach(() => {
   mockWindowState = {};
   mockNetworkConnectionState = {};
   mockUploadStateValue = null;
+  mockUploadBatchValue = null;
 });
 
 describe("ComposeBox", () => {
@@ -397,6 +402,12 @@ describe("ComposeBox", () => {
       return { files: file !== null ? [file] : [], items, types };
     };
 
+    const makeMultiDataTransfer = (files: File[]): DataTransferLike => ({
+      files,
+      items: files.map((f) => ({ kind: "file", type: f.type, getAsFile: () => f })),
+      types: [],
+    });
+
     it("renders a file-picker button (paperclip icon)", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const btn = screen.getByRole("button", { name: /upload file/i });
@@ -449,7 +460,9 @@ describe("ComposeBox", () => {
       });
       fireEvent.change(input);
 
-      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
+        file,
+      ]);
     });
 
     it("dropping an image file onto the form calls triggerUpload", async () => {
@@ -460,7 +473,9 @@ describe("ComposeBox", () => {
       const file = sampleImage();
       fireEvent.drop(form, { dataTransfer: makeDataTransfer(file) });
 
-      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
+        file,
+      ]);
     });
 
     it("dropping a video file calls triggerUpload (Task 7 — drop accepts all categories)", async () => {
@@ -471,7 +486,9 @@ describe("ComposeBox", () => {
       const file = sampleVideo();
       fireEvent.drop(form, { dataTransfer: makeDataTransfer(file) });
 
-      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
+        file,
+      ]);
     });
 
     it("dropping a document file calls triggerUpload (Task 7 — drop accepts all categories)", async () => {
@@ -482,7 +499,9 @@ describe("ComposeBox", () => {
       const file = sampleDocument();
       fireEvent.drop(form, { dataTransfer: makeDataTransfer(file) });
 
-      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
+        file,
+      ]);
     });
 
     it("dropping a category-less MIME is ignored — triggerUpload NOT called", async () => {
@@ -492,7 +511,7 @@ describe("ComposeBox", () => {
 
       fireEvent.drop(form, { dataTransfer: makeDataTransfer(sampleUnknownType()) });
 
-      expect(orch.triggerUpload).not.toHaveBeenCalled();
+      expect(orch.triggerUploads).not.toHaveBeenCalled();
     });
 
     it("ondragover prevents default to allow drop", () => {
@@ -517,7 +536,9 @@ describe("ComposeBox", () => {
       });
       ta.dispatchEvent(pasteEvent);
 
-      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
+        file,
+      ]);
       // Textarea content stays untouched (paste event was prevented).
       expect(compose.setDraft).not.toHaveBeenCalled();
     });
@@ -534,7 +555,7 @@ describe("ComposeBox", () => {
       });
       ta.dispatchEvent(pasteEvent);
 
-      expect(orch.triggerUpload).not.toHaveBeenCalled();
+      expect(orch.triggerUploads).not.toHaveBeenCalled();
     });
 
     it("pasting a video file calls triggerUpload (Task 7 — paste accepts all categories)", async () => {
@@ -550,7 +571,9 @@ describe("ComposeBox", () => {
       });
       ta.dispatchEvent(pasteEvent);
 
-      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
+        file,
+      ]);
     });
 
     it("pasting a document file calls triggerUpload (Task 7 — paste accepts all categories)", async () => {
@@ -566,7 +589,9 @@ describe("ComposeBox", () => {
       });
       ta.dispatchEvent(pasteEvent);
 
-      expect(orch.triggerUpload).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", file);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
+        file,
+      ]);
     });
 
     it("pasting a category-less MIME file is ignored — triggerUpload NOT called", async () => {
@@ -581,7 +606,55 @@ describe("ComposeBox", () => {
       });
       ta.dispatchEvent(pasteEvent);
 
-      expect(orch.triggerUpload).not.toHaveBeenCalled();
+      expect(orch.triggerUploads).not.toHaveBeenCalled();
+    });
+
+    it("dropping multiple files uploads ALL of them (filtered to uploadable) — #118", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const form = document.querySelector(".compose-box") as HTMLFormElement;
+      const a = sampleImage();
+      const b = sampleVideo();
+      const junk = sampleUnknownType();
+      fireEvent.drop(form, { dataTransfer: makeMultiDataTransfer([a, junk, b]) });
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [a, b]);
+    });
+
+    it("pasting multiple files uploads ALL of them (filtered to uploadable) — #118", async () => {
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+      const a = sampleImage();
+      const b = sampleDocument();
+      const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(pasteEvent, "clipboardData", {
+        value: makeMultiDataTransfer([a, b]),
+        configurable: true,
+      });
+      ta.dispatchEvent(pasteEvent);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [a, b]);
+    });
+
+    it("the picker input allows multiple selection — #118", () => {
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const input = document.querySelector(
+        "input[type='file'][data-file-picker]",
+      ) as HTMLInputElement;
+      expect(input.multiple).toBe(true);
+    });
+
+    it("renders an (i/N) counter when a batch of >1 is in flight — #118", () => {
+      mockUploadStateValue = { filename: "a.png", loaded: 0, total: 100 };
+      mockUploadBatchValue = { index: 1, total: 3 };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      expect(screen.getByText("(1/3)")).toBeInTheDocument();
+    });
+
+    it("does NOT render a counter for a single-file upload (total 1) — #118", () => {
+      mockUploadStateValue = { filename: "a.png", loaded: 0, total: 100 };
+      mockUploadBatchValue = { index: 1, total: 1 };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      expect(screen.queryByText("(1/1)")).not.toBeInTheDocument();
     });
 
     it("renders the inline progress row when uploadState is non-null", () => {

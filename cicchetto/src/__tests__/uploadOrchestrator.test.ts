@@ -962,17 +962,17 @@ describe("sequential multi-file queue (#118)", () => {
 
     // Only the first file is in flight.
     expect(pendingResolvers.length).toBe(1);
-    expect(pendingResolvers[0].file.name).toBe("a.png");
+    expect(pendingResolvers[0]?.file.name).toBe("a.png");
 
-    pendingResolvers[0].resolve("https://h/a");
+    pendingResolvers[0]?.resolve("https://h/a");
     await vi.waitFor(() => expect(pendingResolvers.length).toBe(2));
-    expect(pendingResolvers[1].file.name).toBe("b.png");
+    expect(pendingResolvers[1]?.file.name).toBe("b.png");
 
-    pendingResolvers[1].resolve("https://h/b");
+    pendingResolvers[1]?.resolve("https://h/b");
     await vi.waitFor(() => expect(pendingResolvers.length).toBe(3));
-    expect(pendingResolvers[2].file.name).toBe("c.png");
+    expect(pendingResolvers[2]?.file.name).toBe("c.png");
 
-    pendingResolvers[2].resolve("https://h/c");
+    pendingResolvers[2]?.resolve("https://h/c");
     await vi.waitFor(() => expect(vi.mocked(sendMessage).mock.calls.length).toBe(3));
     expect(vi.mocked(sendMessage).mock.calls.map((c) => c[2])).toEqual([
       "📸 https://h/a",
@@ -986,10 +986,10 @@ describe("sequential multi-file queue (#118)", () => {
     triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
     expect(uploadBatch(key)).toEqual({ index: 1, total: 2 });
 
-    pendingResolvers[0].resolve("https://h/a");
+    pendingResolvers[0]?.resolve("https://h/a");
     await vi.waitFor(() => expect(uploadBatch(key)).toEqual({ index: 2, total: 2 }));
 
-    pendingResolvers[1].resolve("https://h/b");
+    pendingResolvers[1]?.resolve("https://h/b");
     await vi.waitFor(() => expect(uploadBatch(key)).toBeNull());
   });
 
@@ -998,27 +998,27 @@ describe("sequential multi-file queue (#118)", () => {
     triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
     expect(pendingResolvers.length).toBe(1);
 
-    pendingResolvers[0].reject({ kind: "network" });
+    pendingResolvers[0]?.reject({ kind: "network" });
     await vi.waitFor(() => expect(uploadState(key)?.error).toBeTruthy());
     expect(pendingResolvers.length).toBe(1); // paused — b not started
 
     dismissUpload(key);
     await vi.waitFor(() => expect(pendingResolvers.length).toBe(2));
-    expect(pendingResolvers[1].file.name).toBe("b.png");
+    expect(pendingResolvers[1]?.file.name).toBe("b.png");
 
-    pendingResolvers[1].resolve("https://h/b");
+    pendingResolvers[1]?.resolve("https://h/b");
     await vi.waitFor(() => expect(vi.mocked(sendMessage).mock.calls.length).toBe(1));
-    expect(vi.mocked(sendMessage).mock.calls[0][2]).toBe("📸 https://h/b");
+    expect(vi.mocked(sendMessage).mock.calls[0]?.[2]).toBe("📸 https://h/b");
   });
 
   it("cancel stops the whole batch — no further dispatch", async () => {
     ackPrivacy();
     triggerUploads(key, slug, channel, [img("a.png"), img("b.png"), img("c.png")]);
     expect(pendingResolvers.length).toBe(1);
-    const sig = pendingResolvers[0].signal;
+    const sig = pendingResolvers[0]?.signal;
 
     cancelUpload(key);
-    expect(sig.aborted).toBe(true);
+    expect(sig?.aborted).toBe(true);
     expect(uploadBatch(key)).toBeNull();
 
     // Settle nothing further; assert the queue did not advance.
@@ -1029,18 +1029,18 @@ describe("sequential multi-file queue (#118)", () => {
   it("retry re-runs the failed file, then continues the queue", async () => {
     ackPrivacy();
     triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
-    pendingResolvers[0].reject({ kind: "network" });
+    pendingResolvers[0]?.reject({ kind: "network" });
     await vi.waitFor(() => expect(uploadState(key)?.error).toBeTruthy());
 
     retryUpload(key);
     await vi.waitFor(() => expect(pendingResolvers.length).toBe(2));
-    expect(pendingResolvers[1].file.name).toBe("a.png"); // retried first
+    expect(pendingResolvers[1]?.file.name).toBe("a.png"); // retried first
 
-    pendingResolvers[1].resolve("https://h/a2");
+    pendingResolvers[1]?.resolve("https://h/a2");
     await vi.waitFor(() => expect(pendingResolvers.length).toBe(3));
-    expect(pendingResolvers[2].file.name).toBe("b.png"); // queue continues
+    expect(pendingResolvers[2]?.file.name).toBe("b.png"); // queue continues
 
-    pendingResolvers[2].resolve("https://h/b");
+    pendingResolvers[2]?.resolve("https://h/b");
     await vi.waitFor(() => expect(vi.mocked(sendMessage).mock.calls.length).toBe(2));
   });
 });

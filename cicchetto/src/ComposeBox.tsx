@@ -10,7 +10,8 @@ import {
   cancelUpload,
   dismissUpload,
   retryUpload,
-  triggerUpload,
+  triggerUploads,
+  uploadBatch,
   uploadState,
 } from "./lib/uploadOrchestrator";
 import { windowStateByChannel } from "./lib/windowState";
@@ -164,14 +165,24 @@ const ComposeBox: Component<Props> = (props) => {
 
   // ---- Upload trigger surfaces (all categories) --------------------
 
-  const handleFile = (file: File): void => {
-    triggerUpload(key(), props.networkSlug, props.channelName, file);
+  // Drop/paste: filter to uploadable categories before handing the batch
+  // to the orchestrator (a mixed drop of files + plain text uploads only
+  // the files). #118 uploads ALL of them, sequentially.
+  const handleFiles = (files: File[]): void => {
+    const uploadable = files.filter((f) => categoryOf(f.type) !== null);
+    if (uploadable.length === 0) return;
+    triggerUploads(key(), props.networkSlug, props.channelName, uploadable);
   };
 
   const onPickerChange = (e: Event) => {
     const input = e.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (file) handleFile(file);
+    // Picker path does NOT pre-filter by category: normalizeUploadFile in
+    // the orchestrator relabels iOS .m4r ringtones (octet-stream → audio)
+    // that categoryOf would otherwise drop.
+    const files = input.files ? Array.from(input.files) : [];
+    if (files.length > 0) {
+      triggerUploads(key(), props.networkSlug, props.channelName, files);
+    }
     // Reset so picking the same file twice still fires `change`.
     input.value = "";
   };
@@ -186,24 +197,29 @@ const ComposeBox: Component<Props> = (props) => {
 
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
-    const file = e.dataTransfer?.files?.[0];
-    if (!file) return;
-    if (categoryOf(file.type) === null) return;
-    handleFile(file);
+    const files = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
+    handleFiles(files);
   };
 
   const onPaste = (e: ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
+    const files: File[] = [];
     for (const item of items) {
       if (item.kind !== "file") continue;
       const file = item.getAsFile();
-      if (file !== null && categoryOf(file.type) !== null) {
-        e.preventDefault();
-        handleFile(file);
-        return;
-      }
+      if (file !== null && categoryOf(file.type) !== null) files.push(file);
     }
+    if (files.length === 0) return;
+    e.preventDefault();
+    handleFiles(files);
+  };
+
+  // #118 — "(i/N)" counter, shown only while a multi-file batch is in
+  // flight. A single upload (total 1) renders no counter.
+  const batchLabel = (): string | null => {
+    const b = uploadBatch(key());
+    return b !== null && b.total > 1 ? `(${b.index}/${b.total})` : null;
   };
 
   const onCancelUpload = () => {
@@ -276,6 +292,7 @@ const ComposeBox: Component<Props> = (props) => {
         <input
           ref={pickerInput}
           type="file"
+          multiple
           accept={Object.values(activeHost().acceptedMimeTypes).flat().join(",")}
           data-file-picker
           hidden
@@ -371,6 +388,9 @@ const ComposeBox: Component<Props> = (props) => {
               // video…" phase transition (Task 8 a11y review, 2026-06-09).
               <div class="compose-box-upload-progress" role="status">
                 <span class="compose-box-upload-filename">{st().filename}</span>
+                <Show when={batchLabel()}>
+                  {(label) => <span class="compose-box-upload-batch">{label()}</span>}
+                </Show>
                 <Show when={st().phase === "transcoding"}>
                   <span class="compose-box-upload-phase">processing video…</span>
                 </Show>
@@ -383,6 +403,9 @@ const ComposeBox: Component<Props> = (props) => {
           >
             <div class="compose-box-upload-error" role="alert">
               <span class="compose-box-upload-filename">{st().filename}</span>
+              <Show when={batchLabel()}>
+                {(label) => <span class="compose-box-upload-batch">{label()}</span>}
+              </Show>
               <span class="compose-box-upload-error-msg">{st().error}</span>
               <button type="button" onClick={onRetryUpload}>
                 retry
