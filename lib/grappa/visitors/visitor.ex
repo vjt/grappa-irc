@@ -77,12 +77,16 @@ defmodule Grappa.Visitors.Visitor do
   against `Identifier.valid_nick?/1` and `:network_slug` against
   `Identifier.valid_network_slug?/1` — both are wire-bound (PubSub
   topics + IRC handshake), so syntactic hygiene is enforced at the
-  boundary. Uniqueness on `(nick, network_slug)` per W2.
+  boundary. Uniqueness on `(rfc1459-fold(nick), network_slug)` per W2 +
+  GH #121 — the unique index is on the rfc1459-folded nick expression
+  (display case preserved on `:nick`), so `Mezmerize` and `mezmerize`
+  are one identity. `unique_constraint/3` is pinned to the named
+  expression index `:visitors_nick_folded_network_slug_index`.
 
   `:expires_at` must be strictly in the future (B5.4 M-pers-3): a row
   born already-expired would be reaped on the next `Reaper` sweep but
-  in the meantime would consume `(nick, network_slug)` uniqueness and
-  shadow a legitimate concurrent registration. The `validate_change`
+  in the meantime would consume `(folded-nick, network_slug)` uniqueness
+  and shadow a legitimate concurrent registration. The `validate_change`
   only fires when `:expires_at` is present (`validate_required` runs
   first), so a missing field surfaces a single "can't be blank" error
   rather than an additional confusing "must be in the future" against
@@ -96,7 +100,7 @@ defmodule Grappa.Visitors.Visitor do
     |> validate_change(:nick, &validate_nick/2)
     |> validate_change(:network_slug, &validate_network_slug/2)
     |> validate_change(:expires_at, &validate_future_expires_at/2)
-    |> unique_constraint([:nick, :network_slug])
+    |> unique_constraint(:nick, name: :visitors_nick_folded_network_slug_index)
   end
 
   @doc """
@@ -170,9 +174,10 @@ defmodule Grappa.Visitors.Visitor do
   (V9, visitor-parity cluster, 2026-05-15). Validated against
   `Identifier.valid_nick?/1` so a malformed value never lands on the
   row even if the controller-boundary pre-check is bypassed in the
-  future. The `(nick, network_slug)` UNIQUE constraint surfaces a
-  concurrent-rename race as a changeset error, which `Visitors.update_nick/2`
-  logs and propagates — DB stays consistent under racing renames.
+  future. The `(rfc1459-fold(nick), network_slug)` UNIQUE expression
+  index (GH #121) surfaces a concurrent-rename race as a changeset
+  error, which `Visitors.update_nick/2` logs and propagates — DB stays
+  consistent under racing renames.
 
   Schema-only changeset (mirror of `touch_changeset/2`). The IRC-side
   rotation of `state.nick` lives in `Grappa.Session.EventRouter`'s
@@ -184,7 +189,7 @@ defmodule Grappa.Visitors.Visitor do
     |> cast(%{nick: new_nick}, [:nick])
     |> validate_required([:nick])
     |> validate_change(:nick, &validate_nick/2)
-    |> unique_constraint([:nick, :network_slug])
+    |> unique_constraint(:nick, name: :visitors_nick_folded_network_slug_index)
   end
 
   @doc """

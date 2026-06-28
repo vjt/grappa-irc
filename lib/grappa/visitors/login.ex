@@ -81,7 +81,7 @@ defmodule Grappa.Visitors.Login do
   / `:login_welcome_timeout_ms` opts.
   """
 
-  alias Grappa.{Accounts, Networks, Repo, Session, Visitors}
+  alias Grappa.{Accounts, Networks, Session, Visitors}
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.Auth.IdentifierClassifier
   alias Grappa.Session.Backoff
@@ -200,8 +200,12 @@ defmodule Grappa.Visitors.Login do
     end
   end
 
+  # Delegates to the context's rfc1459-folded lookup (GH #121) so a
+  # different-case reconnect resolves to the SAME visitor.id — which is
+  # what the #117 attach-to-existing-session path keys on, reattaching
+  # instead of provisioning a duplicate.
   defp lookup_visitor(nick, slug) do
-    Repo.get_by(Visitor, nick: nick, network_slug: slug)
+    Visitors.get_by_nick_and_network(nick, slug)
   end
 
   # Case 1 — provision new anon

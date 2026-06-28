@@ -152,6 +152,36 @@ defmodule Grappa.IRC.Identifier do
   defp fold_nick_byte(c), do: c
 
   @doc """
+  Ecto query fragment applying the rfc1459 nick fold to a column
+  expression — the **query-side twin** of `canonical_nick/1`, for
+  matching a column against a folded unique index (GH #121).
+
+  Derives the folded key in SQL so no denormalised column is stored
+  (mirrors how `query_windows` indexes `lower(target_nick)`). ASCII
+  `lower()` + the four bracket `replace()`s; the SQL text MUST stay
+  character-identical to the folded-index expression in the
+  `visitors` / `query_windows` migrations, or SQLite won't recognise
+  the query as index-eligible.
+
+  The caller must `require Grappa.IRC.Identifier` (macro) and have
+  `Ecto.Query` imported (the expanded `fragment/2` resolves in the
+  caller's context):
+
+      from v in Visitor,
+        where:
+          Identifier.nick_fold(v.nick) == ^Identifier.canonical_nick(input) and
+            v.network_slug == ^slug
+  """
+  defmacro nick_fold(column) do
+    quote do
+      fragment(
+        "replace(replace(replace(replace(lower(?), '[', '{'), ']', '}'), '\\', '|'), '~', '^')",
+        unquote(column)
+      )
+    end
+  end
+
+  @doc """
   True iff the input is a valid Grappa network slug (lowercase
   alphanumeric + dash + underscore, 1-32 chars). Tighter than IRC
   proper because it doubles as a URL path segment and PubSub topic

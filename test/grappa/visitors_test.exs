@@ -34,6 +34,22 @@ defmodule Grappa.VisitorsTest do
       assert v1.id == v2.id
     end
 
+    test "reattaches a different-case reconnect to the SAME row (rfc1459 #121)" do
+      # The bug: a case-sensitive lookup spawned a SECOND visitor on
+      # `Mezmerize` -> `mezmerize`, blocking the nick on the orphan.
+      # rfc1459 folding collapses both to one identity.
+      {:ok, v1} = Visitors.find_or_provision_anon("Mezmerize", @network, "1.2.3.4")
+      {:ok, v2} = Visitors.find_or_provision_anon("mezmerize", @network, "5.6.7.8")
+      assert v2.id == v1.id
+      assert v1.nick == "Mezmerize", "display case of the first-provisioned row is preserved"
+    end
+
+    test "folds the four rfc1459 national chars [ ] \\ ~ (bahamut casemapping)" do
+      {:ok, v1} = Visitors.find_or_provision_anon("nick[1]", @network, "1.2.3.4")
+      {:ok, v2} = Visitors.find_or_provision_anon("nick{1}", @network, "5.6.7.8")
+      assert v2.id == v1.id
+    end
+
     test "refreshes :ip on subsequent login when client address changed" do
       # Pre-fix: ip was set ONLY at row creation; long-lived NickServ-
       # identified visitors surfaced their birth IP indefinitely. Now
@@ -64,6 +80,34 @@ defmodule Grappa.VisitorsTest do
       {:ok, v2} = Visitors.find_or_provision_anon("vjt-ipc", @network, nil)
       assert v2.id == v1.id
       assert v2.ip == "1.2.3.4"
+    end
+  end
+
+  describe "rfc1459 folded unique index (#121, race second-line-of-defense)" do
+    test "a folded-collision insert returns {:error, changeset}, not a raise" do
+      # find_or_provision_anon's get_by is the fast path; the named
+      # `(rfc1459-fold(nick), network_slug)` unique expression index is
+      # the second line of defense for a true insert race. This pins
+      # that `unique_constraint(:nick, name: ...)` is wired to the right
+      # index name — a mismatch would let the second insert RAISE
+      # Ecto.ConstraintError instead of returning a changeset error.
+      future = DateTime.add(DateTime.utc_now(), 3600, :second)
+      base = %{network_slug: @network, expires_at: future, ip: "1.2.3.4"}
+
+      assert {:ok, _} =
+               base
+               |> Map.put(:nick, "Mezmerize")
+               |> Visitor.create_changeset()
+               |> Repo.insert()
+
+      assert {:error, cs} =
+               base
+               |> Map.put(:nick, "mezmerize")
+               |> Visitor.create_changeset()
+               |> Repo.insert()
+
+      refute cs.valid?
+      assert {"has already been taken", _} = cs.errors[:nick]
     end
   end
 

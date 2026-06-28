@@ -63,9 +63,12 @@ defmodule Grappa.Visitors do
 
   import Ecto.Query
 
+  alias Grappa.IRC.Identifier
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
 
+  # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment).
+  require Identifier
   require Logger
 
   @anon_ttl_seconds 48 * 3600
@@ -94,10 +97,24 @@ defmodule Grappa.Visitors do
           {:ok, Visitor.t()} | {:error, Ecto.Changeset.t()}
   def find_or_provision_anon(nick, network_slug, ip)
       when is_binary(nick) and is_binary(network_slug) do
-    case Repo.get_by(Visitor, nick: nick, network_slug: network_slug) do
+    case Repo.one(by_folded_nick(nick, network_slug)) do
       %Visitor{} = existing -> maybe_refresh_ip(existing, ip)
       nil -> create_anon(nick, network_slug, ip)
     end
+  end
+
+  # Case-insensitive (rfc1459) visitor lookup query (GH #121). Folds the
+  # `nick` column and the supplied `nick` through the SAME casemapper so
+  # `Mezmerize`/`mezmerize`/`nick[1]`/`nick{1}` resolve to one row. The
+  # `Identifier.nick_fold/1` fragment matches the folded unique
+  # expression index, so this stays index-eligible.
+  @spec by_folded_nick(String.t(), String.t()) :: Ecto.Query.t()
+  defp by_folded_nick(nick, network_slug) do
+    folded = Identifier.canonical_nick(nick)
+
+    from(v in Visitor,
+      where: Identifier.nick_fold(v.nick) == ^folded and v.network_slug == ^network_slug
+    )
   end
 
   defp maybe_refresh_ip(%Visitor{ip: same} = visitor, same), do: {:ok, visitor}
@@ -536,7 +553,7 @@ defmodule Grappa.Visitors do
   @spec get_by_nick_and_network(String.t(), String.t()) :: Visitor.t() | nil
   def get_by_nick_and_network(nick, network_slug)
       when is_binary(nick) and is_binary(network_slug) do
-    Repo.get_by(Visitor, nick: nick, network_slug: network_slug)
+    Repo.one(by_folded_nick(nick, network_slug))
   end
 
   @doc """
@@ -549,7 +566,7 @@ defmodule Grappa.Visitors do
   @spec nick_in_use?(Ecto.UUID.t(), String.t(), String.t()) :: boolean()
   def nick_in_use?(visitor_id, target_nick, network_slug)
       when is_binary(visitor_id) and is_binary(target_nick) and is_binary(network_slug) do
-    case Repo.get_by(Visitor, nick: target_nick, network_slug: network_slug) do
+    case Repo.one(by_folded_nick(target_nick, network_slug)) do
       nil -> false
       %Visitor{id: ^visitor_id} -> false
       %Visitor{} -> true
