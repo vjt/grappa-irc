@@ -989,3 +989,55 @@ describe("narrowUserEvent — directory pings", () => {
     expect(narrowUserEvent({ kind: "directory_complete", total: 1 })).toBeNull();
   });
 });
+
+// #140 — names_reply narrowing. Reuses the shared narrowMembers helper
+// (same as the channel-topic members_seeded arm); a malformed member
+// element drops the whole payload rather than rendering a half-typed row.
+describe("narrowUserEvent — names_reply (#140)", () => {
+  it("narrows a well-formed roster", async () => {
+    const { narrowUserEvent } = await import("../lib/userTopic");
+    expect(
+      narrowUserEvent({
+        kind: "names_reply",
+        network: "azzurra",
+        channel: "#bofh",
+        members: [
+          { nick: "alice", modes: ["@"] },
+          { nick: "carol", modes: [] },
+        ],
+      }),
+    ).toEqual({
+      kind: "names_reply",
+      network: "azzurra",
+      channel: "#bofh",
+      members: [
+        { nick: "alice", modes: ["@"] },
+        { nick: "carol", modes: [] },
+      ],
+    });
+  });
+
+  it("narrows an empty roster (366 with zero names)", async () => {
+    const { narrowUserEvent } = await import("../lib/userTopic");
+    expect(
+      narrowUserEvent({ kind: "names_reply", network: "azzurra", channel: "#ghost", members: [] }),
+    ).toEqual({ kind: "names_reply", network: "azzurra", channel: "#ghost", members: [] });
+  });
+
+  it("rejects a names_reply missing channel", async () => {
+    const { narrowUserEvent } = await import("../lib/userTopic");
+    expect(narrowUserEvent({ kind: "names_reply", network: "azzurra", members: [] })).toBeNull();
+  });
+
+  it("rejects a names_reply whose members array has a malformed element", async () => {
+    const { narrowUserEvent } = await import("../lib/userTopic");
+    expect(
+      narrowUserEvent({
+        kind: "names_reply",
+        network: "azzurra",
+        channel: "#bofh",
+        members: [{ nick: "alice", modes: ["@"] }, { nick: 42, modes: [] }],
+      }),
+    ).toBeNull();
+  });
+});

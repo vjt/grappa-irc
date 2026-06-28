@@ -170,6 +170,7 @@ defmodule Grappa.Session.EventRouter do
           | {:channel_created, String.t(), DateTime.t()}
           | {:away_confirmed, :present | :away}
           | {:members_seeded, String.t(), %{(nick :: String.t()) => modes :: [String.t()]}}
+          | {:names_reply, channel :: String.t(), roster :: [{String.t(), [String.t()]}]}
           | {:joined, String.t()}
           | {:join_failed, channel :: String.t(), reason :: String.t(), numeric :: pos_integer()}
           | {:parted, String.t()}
@@ -782,7 +783,8 @@ defmodule Grappa.Session.EventRouter do
   # (sidebar, MembersPane, member-set leaks). When state.members has
   # no entry for the channel, skip the merge entirely; the
   # names_fold/3 call below still feeds the per-target accumulator,
-  # and the 366 drain emits the scrollback rows for non-joined targets.
+  # and the 366 drain emits the ephemeral names_reply for any target
+  # the operator explicitly /names'd (joined or not).
   defp do_route(
          %Message{command: {:numeric, 353}, params: [_, _, channel, names_blob]},
          state
@@ -907,13 +909,13 @@ defmodule Grappa.Session.EventRouter do
   # and re-fetches GET /members, which now sees the fully-populated
   # state.members[channel].
   #
-  # CP22 cluster B (channel-client-polish #14) — additionally drain the
-  # /names accumulator if `state.names_pending[channel_lower]` exists.
-  # The drain emits 2 :persist :notice effects (nick list row + EOF
-  # terminator) routed to `$server` ONLY when the operator is NOT in
-  # state.members[target] — joined targets defer to the members_seeded
-  # refresh path above (no scrollback rows). The accumulator is dropped
-  # in both cases.
+  # #140 — additionally drain the /names accumulator if
+  # `state.names_pending[channel_lower]` exists. The drain emits ONE
+  # ephemeral {:names_reply, channel, roster} effect (mirror of the
+  # whois_bundle accumulator) — NOT persisted notices. members_seeded
+  # ALWAYS fires here (the JOIN-time seed path); names_reply fires ONLY
+  # when the operator explicitly issued /names (the gate). One parser,
+  # two consumers: seeding always, names_reply on request.
   defp do_route(
          %Message{command: {:numeric, 366}, params: [_, channel, _ | _]},
          state
@@ -2606,15 +2608,17 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # CP22 cluster B — drain the /names accumulator on 366 RPL_ENDOFNAMES.
+  # #140 — drain the /names accumulator on 366 RPL_ENDOFNAMES.
   # Returns `{state_with_entry_removed, effects}`. Effects shape:
-  #   - no entry: `[]` (route's members_seeded effect still fires).
-  #   - entry exists: `[nick_list_row, eof_row]` ALWAYS emitted (silence
-  #     is the bug — /names UX cluster N-1+N-2). Route channel order:
-  #     `accum.origin_window` (cic focused window when /names was typed)
-  #     → target if joined → `$server`. The nick list row carries the
-  #     full `[prefix]nick` tokens in `meta.names`; the EOF row carries
-  #     `meta.names_target` for cic to scope rendering.
+  #   - no entry: `[]` (route's members_seeded effect still fires — a
+  #     bare JOIN seeds members but never opens a names modal).
+  #   - entry exists: `[{:names_reply, channel, roster}]`. `roster` is
+  #     the arrival-order `[{nick, modes}]` list — each accumulated
+  #     `[prefix]nick` token split via `split_mode_prefix/1`. The
+  #     mIRC-tier sort + wire projection happen in
+  #     `Session.Server.apply_effects/2` (where `member_sort_tier/1`
+  #     lives), exactly as the `members_seeded` arm does. `channel` is
+  #     the canonical `target_display` (single-cased at send_names).
   @spec drain_names_pending(state(), String.t()) ::
           {state(), [effect()]}
   defp drain_names_pending(state, channel) when is_binary(channel) do
@@ -2628,62 +2632,9 @@ defmodule Grappa.Session.EventRouter do
       {:ok, accum} ->
         next_state = %{state | names_pending: Map.delete(pending, chan_key)}
         target_display = Map.get(accum, :target_display, channel)
-        names = Map.get(accum, :names, [])
-        sender = state.network_slug
-        route_channel = pick_names_route(accum, target_display, state.members)
-
-        {state_after_row, row_effect} =
-          build_persist(
-            next_state,
-            :notice,
-            route_channel,
-            sender,
-            format_names_row(target_display, names),
-            %{numeric: 353, names_target: target_display, names: names}
-          )
-
-        {final_state, eof_effect} =
-          build_persist(
-            state_after_row,
-            :notice,
-            route_channel,
-            sender,
-            "*** End of /NAMES list for #{target_display}",
-            %{numeric: 366, names_target: target_display}
-          )
-
-        {final_state, [row_effect, eof_effect]}
+        roster = accum |> Map.get(:names, []) |> Enum.map(&split_mode_prefix/1)
+        {next_state, [{:names_reply, target_display, roster}]}
     end
-  end
-
-  # /names UX cluster N-1+N-2 — pick the route channel for the 2 :notice
-  # rows. Preference order: explicit `origin_window` from the accumulator
-  # (set by `Session.send_names/4` carrying cic's focused window) → the
-  # target itself if the operator is joined → `$server` (legacy fallback
-  # for non-joined targets without an origin_window — preserves shape for
-  # callers that don't carry origin_window yet).
-  @spec pick_names_route(map(), String.t(), members()) :: String.t()
-  defp pick_names_route(accum, target_display, members) do
-    case Map.get(accum, :origin_window) do
-      origin when is_binary(origin) and origin != "" ->
-        origin
-
-      _ ->
-        if Map.has_key?(members, target_display), do: target_display, else: "$server"
-    end
-  end
-
-  # CP22 cluster B — irssi-shape compact body for the /names nick-list
-  # row. Defensive readable payload: cic prefers `meta.names` structured
-  # render, but if scrollback replays without structured handling the
-  # body is still meaningful. Stable single-line format:
-  # `*** [#chan] nick1 nick2 nick3 ...`. Empty list (server returned
-  # nothing — RFC-violating or empty channel) renders as the bare prefix.
-  @spec format_names_row(String.t(), [String.t()]) :: String.t()
-  defp format_names_row(channel, []), do: "*** [#{channel}] (no names)"
-
-  defp format_names_row(channel, names) when is_list(names) do
-    "*** [#{channel}] #{Enum.join(names, " ")}"
   end
 
   # Evict userhost_cache entries for nicks that appear in no channel of

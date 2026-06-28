@@ -439,16 +439,13 @@ export function pushLusers(networkId: number): void {
   _userChannel.push("lusers", { network_id: networkId });
 }
 
-// CP22 cluster B (channel-client-polish #14) — /names <#channel>.
-// CP22 cluster B (channel-client-polish #14) — /names <#channel>.
-// Pushes on the user-level channel; server primes names_pending +
-// emits NAMES upstream. The 353/366 burst lands as 2 :notice scrollback
-// rows ALWAYS (silence is the bug — /names UX cluster N-1+N-2),
-// routed to `originWindow` (cic's focused window when /names was
-// typed) when supplied, else target if joined, else $server.
-export function pushNames(networkId: number, channel: string, originWindow: string | null): void {
+// #140 — /names <#channel>. Pushes on the user-level channel; server
+// primes names_pending + emits NAMES upstream. The 353/366 burst drains
+// into ONE ephemeral `names_reply` event on the user topic (NamesModal
+// renders it) — NOT persisted. Network-scoped modal, so no origin window.
+export function pushNames(networkId: number, channel: string): void {
   if (_userChannel === null) return;
-  _userChannel.push("names", { network_id: networkId, channel, origin_window: originWindow });
+  _userChannel.push("names", { network_id: networkId, channel });
 }
 
 // C8.3 — Watchlist verbs (/watch /highlight). All push on the user-level

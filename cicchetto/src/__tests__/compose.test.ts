@@ -1372,8 +1372,8 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     compose.setDraft(k, "/names");
     const result = await compose.submit(k, "freenode", "#a");
 
-    // pushNames(networkId, target, originatingWindow) — both resolve to #a.
-    expect(socket.pushNames).toHaveBeenCalledWith(1, "#a", "#a");
+    // #140 — pushNames(networkId, target); bare /names resolves to #a.
+    expect(socket.pushNames).toHaveBeenCalledWith(1, "#a");
     expect(result).toEqual({ ok: true });
   });
 

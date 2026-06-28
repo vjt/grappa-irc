@@ -14307,3 +14307,61 @@ invited-set was judged out of scope for v1.
 **Deploy note:** the reframe makes this a server change (EventRouter +
 Session.Server + WindowState + Wire), so it ships via a full prod deploy,
 not the cic-bundle-only path #78 assumed.
+
+---
+
+### 2026-06-28 — #140: /names is a client modal over a buffered names_reply, not a scrollback dump
+
+`/names [#chan]` used to drain the upstream `353`/`366` burst into TWO
+persisted `:notice` scrollback rows (the nick-list + an `End of /NAMES`
+terminator), routed to the originating window. That was the "raw numerics
+as unrendered junk" problem: a stale snapshot persisted as bouncer wire
+history, replaying as noise on reconnect.
+
+**Decision:** `/names` joins whois (#133) and `/list` (#84) as an
+**ephemeral query response** — buffered server-side, emitted as ONE typed
+event, rendered client-side, NEVER persisted. The server already had the
+buffer: `names_pending` mirrors the `whois_pending`/`whois_bundle`
+accumulator. The change is purely the emission tail — the `366` drain now
+emits one `{:names_reply, channel, roster}` effect broadcast on
+`Topic.user/1` (ephemeral, like `whois_bundle`), instead of the two
+`build_persist` notices. `format_names_row` + `pick_names_route` deleted;
+`origin_window` (only the persisted-row routing needed it) removed
+end-to-end from `pushNames` → channel handler → `Session.send_names/3` →
+the accumulator.
+
+**The gate (load-bearing):** grappa consumes `353`/`366` on EVERY JOIN to
+seed the channel member map (`members_seeded`). The names accumulator is
+GATED on a pending explicit `/names` request — `drain_names_pending`
+no-ops unless `names_pending[downcase(chan)]` exists. One parser, two
+consumers: seeding ALWAYS fires on JOIN; `names_reply` fires ONLY when the
+operator asked. `members_seeded` is untouched and authoritative for the
+sidebar; `names_reply` is a parallel VIEW carrying the same `member/1`
+roster shape, tier-sorted via the same `member_sort_tier` as the
+`members_seeded` arm. cic never parses IRC — prefixes are split server-side
+(`split_mode_prefix` → `%{nick, modes}`).
+
+**Render — overlay modal, NOT a message-area row (vjt, against #140's
+literal wording).** #140's text said "render in the message area as a
+client-only row." vjt overruled toward an overlay modal: injecting a row
+into `ScrollbackPane`'s `rows()` memo is exactly the scroll-anchor problem
+the #133 whois card *fled* (a flex sibling before `.scrollback` shrank the
+list and lost the reader's place). So `NamesModal` is a centered,
+backdrop-dimmed, scrollable, dismissable dialog (mounted once per Shell
+branch, mirrors `ArchiveModal`/`ShareSessionModal`), fed by a per-network
+last-write-wins store (`namesModal.ts`, mirrors `whoisCard.ts`). It groups
+the roster into **Operators / Halfops / Voices / Users** sections (empty
+hidden, per-section count like `Operators (4)`), heads with
+`#channel — N people`, foots with `End of /NAMES list: N`, and a nick
+click opens a query + dismisses (the MembersPane left-click verb pair).
+"Consistent with whois #133" means consistent in *ephemerality*, not in
+*placement* — whois is a passive top-pinned card, names is an interactive
+centered modal because the roster is large and clickable.
+
+**Deploy:** server code is hot-deployable (new effect + `apply_effects`
+clause + `Wire.names_reply` + a `handle_call` arity change — pure module
+swap, no migration, no config). Ships HOT + a cic bundle. The dead
+`:names`/`:names_target` Logger-metadata allowlist keys (only the deleted
+persisted path emitted them) are RETAINED for now: removing them touches
+`config/config.exs`, which forces a COLD deploy — batched into the next
+cold window rather than dropping every live IRC session for two dead atoms.

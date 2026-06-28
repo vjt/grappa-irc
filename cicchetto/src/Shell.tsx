@@ -49,6 +49,7 @@ import {
 } from "./lib/windowKinds";
 import { isActiveChannelJoined } from "./lib/windowState";
 import MediaViewerModal from "./MediaViewerModal";
+import NamesModal from "./NamesModal";
 import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
 import PrivacyModal from "./PrivacyModal";
@@ -528,6 +529,7 @@ const Shell: Component = () => {
           <BundleRefreshBanner />
           <PrivacyModal />
           <MediaViewerModal />
+          <NamesModal />
           <aside class="shell-sidebar">
             <Sidebar />
             {/* UX-5 bucket BS — drag handle on the inner edge of the
@@ -693,6 +695,7 @@ const Shell: Component = () => {
         <BundleRefreshBanner />
         <PrivacyModal />
         <MediaViewerModal />
+        <NamesModal />
         <Show when={membersOpen()}>
           <div
             class="shell-drawer-backdrop open"

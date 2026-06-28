@@ -16,6 +16,7 @@ import { patchHomeNetwork } from "./home";
 import { appendInviteAck } from "./inviteAck";
 import { setLusersBundle } from "./lusersBundle";
 import { setMentionsBundle } from "./mentionsWindow";
+import { setNamesReply } from "./namesModal";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
 import { setPeerAway } from "./peerAway";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
@@ -27,7 +28,7 @@ import { joinUser } from "./socket";
 import { setWhoisBundle } from "./whoisCard";
 import { setWhowasBundle } from "./whowasCard";
 import { setFailed, setInvited, setJoined, setKicked, setPending } from "./windowState";
-import { narrowWindowStateEvent } from "./wireNarrow";
+import { narrowMembers, narrowWindowStateEvent } from "./wireNarrow";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
 // imports for effect, exports nothing public. `main.tsx` imports this
@@ -313,6 +314,16 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         actually_host: r.actually_host as string | null,
         actually_ip: r.actually_ip as string | null,
       };
+    }
+    case "names_reply": {
+      // #140 — /names roster bundle. Per-element narrowing on the
+      // members array (shared `narrowMembers` with the channel-topic
+      // members_seeded arm) — a malformed member element drops the whole
+      // payload rather than rendering a half-typed row.
+      if (typeof r.network !== "string" || typeof r.channel !== "string") return null;
+      const members = narrowMembers(r.members);
+      if (members === null) return null;
+      return { kind: "names_reply", network: r.network, channel: r.channel, members };
     }
     case "invite_ack":
       // P-0e + P-0f — 341 RPL_INVITING ack. Server emits structured
@@ -637,6 +648,17 @@ createRoot(() => {
           // already on the issuing window when the reply arrives.
           const { kind: _omit, ...bundle } = payload;
           setWhoisBundle(payload.network, bundle);
+          return;
+        }
+
+        case "names_reply": {
+          // #140 — /names roster complete (server's 366 RPL_ENDOFNAMES,
+          // gated on a pending /names). Replace any prior roster for this
+          // network; NamesModal (mounted in Shell) renders the grouped,
+          // scrollable, dismissable modal for the active network. No focus
+          // change — the operator is already on the issuing window.
+          const { kind: _omit, ...reply } = payload;
+          setNamesReply(payload.network, reply);
           return;
         }
 

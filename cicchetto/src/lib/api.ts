@@ -650,6 +650,19 @@ export type WhoisBundle = {
   actually_ip: string | null;
 };
 
+// #140 — /names roster bundle payload. Mirrors
+// `Grappa.Session.Wire.names_reply/3`. Ephemeral reply to `/names
+// [#chan]`: the server buffers the 353/366 burst and emits ONE typed
+// event with the full roster (same `MemberEntry` shape as
+// `members_seeded`, the authoritative sidebar set — this is a parallel
+// VIEW). cic renders a grouped, scrollable, dismissable modal; clicking
+// a nick opens a query. NOT persisted to scrollback.
+export type NamesReply = {
+  network: string;
+  channel: string;
+  members: MemberEntry[];
+};
+
 // P-0c — WHOWAS bundle payload. Mirrors `Grappa.Session.Wire.whowas_bundle/3`.
 // Aggregated reply to `/whowas <nick>` issued by the operator. The
 // most-recent historical entry is projected into the user/host/realname/
@@ -744,6 +757,7 @@ export type WireUserEvent =
       network: HomeNetworkRow;
     }
   | ({ kind: "whois_bundle" } & WhoisBundle)
+  | ({ kind: "names_reply" } & NamesReply)
   | {
       // P-0b — standalone 301 RPL_AWAY ephemeral. Fires when the
       // operator /msg's an away peer; cic dm-listener arm renders

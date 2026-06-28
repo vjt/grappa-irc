@@ -96,6 +96,21 @@ changes. The tell: the test COUNT doesn't move when your new tests
 should have added to it. Always `cd <worktree-root>` first; verify a run
 hit the worktree by checking the count reflects your additions.
 
+**`scripts/bun.sh run build`/`run check` can FALSE-PASS a type error in a
+`src/__tests__/*` file.** `tsc`'s incremental `*.tsbuildinfo` cache (under
+`node_modules/.tmp/`) lets a stale build skip re-checking a changed test
+file, AND vitest never typechecks (esbuild strips types), so a bad
+type-only import (e.g. importing a non-re-exported type) sails through
+both gates while the **e2e `cicchetto-build-test`** (clean `oven/bun:1`,
+no warm cache) fails the whole suite with `error TS####`. The authoritative
+cic type gate is therefore the e2e build, not a worktree `bun run build`.
+To get the honest answer locally without the full e2e: `find cicchetto
+-name '*.tsbuildinfo' -delete` then re-run `bun run build`, OR replicate
+the e2e build directly —
+`docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/cicchetto:/app"
+-v /tmp/dist:/app/dist -w /app oven/bun:1 sh -c "bun install --frozen-lockfile && bun run build"`
+(mount a throwaway writable `/app/dist` or vite's PWA step hits EACCES).
+
 Bash 4+ required (`declare -ag` shebangs to `#!/usr/bin/env bash` so
 PATH picks Homebrew bash 5 on macOS). `brew install bash` if missing.
 

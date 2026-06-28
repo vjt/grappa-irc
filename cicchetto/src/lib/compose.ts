@@ -617,19 +617,18 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           break;
         }
         case "names": {
-          // CP22 cluster B (channel-client-polish #14) — /names #channel.
-          // /names UX cluster N-1+N-2: server now ALWAYS emits 2 :notice
-          // rows (silence is the bug); they're routed to the originating
-          // window (`channelName` — the operator's focused window) so the
-          // operator gets feedback in the window they typed in, regardless
-          // of joined-vs-non-joined target.
+          // #140 — /names [#channel]. Server buffers the 353/366 burst and
+          // emits ONE ephemeral `names_reply` on the user topic; NamesModal
+          // renders the grouped, scrollable, dismissable roster. The modal
+          // is network-scoped (last-write-wins), so the originating window
+          // is irrelevant — no origin passed.
           // #122 — bare /names (and /n alias) defaults to the current
           // channel (shares the requireChannel resolver with /who).
           const target = cmd.target ?? requireChannel("names");
           if (typeof target !== "string") return target;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/names: network not found" };
-          pushNames(networkId, target, channelName);
+          pushNames(networkId, target);
           result = { ok: true };
           break;
         }

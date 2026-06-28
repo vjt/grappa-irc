@@ -1117,30 +1117,27 @@ defmodule Grappa.Session do
   @doc """
   Sends `NAMES <channel>` upstream and primes the per-target accumulator
   in `state.names_pending` so EventRouter folds 353 RPL_NAMREPLY rows
-  into a bundle. On 366 RPL_ENDOFNAMES the bundle is drained:
-  - if the operator IS joined to the target channel, NO scrollback rows
-    are emitted — the existing JOIN-time `members_seeded` flow refreshes
-    the MembersPane.
-  - if NOT joined, N+1 `:notice` scrollback rows persist into the
-    synthetic `$server` window (one row carrying the nick list +
-    one EOF terminator).
+  into a roster. On 366 RPL_ENDOFNAMES (gated on this pending request)
+  the roster drains into ONE ephemeral `names_reply` event broadcast on
+  the user-level topic — NOT persisted to scrollback (mirror of the
+  `whois_bundle` accumulator). cic renders it as a grouped, dismissable
+  modal; the authoritative member set still flows via `members_seeded`
+  on the channel topic. Joined and non-joined targets behave uniformly
+  (#140) — the roster is whatever upstream returns.
 
-  Per CP22 cluster B (channel-client-polish #14): nicks arrive in the
-  353 trailing param as a space-separated `[prefix]nick` list, where
-  `prefix ∈ {@, +}` denotes channel ops/voice. The accumulator
-  preserves prefixes verbatim — cic renders them irssi-style.
+  Nicks arrive in the 353 trailing param as a space-separated
+  `[prefix]nick` list, `prefix ∈ {@, %, +}` (ops/halfops/voice). The
+  prefixes are split into `{nick, modes}` at the drain so cic never
+  parses IRC; it buckets by mode into modal sections.
 
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
   if the channel syntax is rejected by `Grappa.IRC.Client.send_names/2`.
   """
-  @spec send_names(subject(), integer(), String.t(), String.t() | nil) ::
+  @spec send_names(subject(), integer(), String.t()) ::
           :ok | {:error, :no_session | :invalid_line | send_transport_error()}
-  def send_names(subject, network_id, channel, origin_window)
-      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
-             (is_nil(origin_window) or is_binary(origin_window)) do
-    canonical = Identifier.canonical_channel(channel)
-    canonical_origin = if is_binary(origin_window), do: Identifier.canonical_channel(origin_window), else: origin_window
-    call_session(subject, network_id, {:send_names, canonical, canonical_origin})
+  def send_names(subject, network_id, channel)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
+    call_session(subject, network_id, {:send_names, Identifier.canonical_channel(channel)})
   end
 
   @doc """

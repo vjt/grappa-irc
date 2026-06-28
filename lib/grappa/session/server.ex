@@ -494,15 +494,14 @@ defmodule Grappa.Session.Server do
           # first LUSERS numeric and fills until flush. NOT persisted
           # across crashes — operator types /lusers to refresh.
           lusers_pending: nil | map(),
-          # CP22 cluster B (channel-client-polish #14) — pending NAMES
-          # accumulators keyed by lowercased target channel. Set up on
-          # `:send_names`; 353 RPL_NAMREPLY rows merge their nick lists
-          # into the entry; 366 RPL_ENDOFNAMES emits 2 `{:persist, :notice,
-          # attrs}` effects (one carrying the full nick list + one EOF
-          # terminator). /names UX cluster N-1+N-2: rows are ALWAYS emitted
-          # (silence is the bug); routing channel is `:origin_window` if
-          # set (cic-side focused window when /names was issued), else the
-          # target if joined, else `$server`. NOT persisted across crashes.
+          # #140 — pending NAMES accumulators keyed by lowercased target
+          # channel. Set up on `:send_names`; 353 RPL_NAMREPLY rows append
+          # their `[prefix]nick` tokens into the entry; 366 RPL_ENDOFNAMES
+          # drains it into ONE ephemeral `{:names_reply, channel, roster}`
+          # effect (broadcast on the user topic, NOT persisted — mirror of
+          # the whois_pending accumulator). The drain is gated on a pending
+          # entry, so a bare JOIN seeds members without opening a modal.
+          # NOT persisted across crashes — operator re-types /names.
           names_pending: %{String.t() => map()},
           # P-0c — pending WHOWAS accumulators keyed by lowercased target
           # nick. Set up on `:send_whowas`; 314 RPL_WHOWASUSER appends an
@@ -1218,33 +1217,24 @@ defmodule Grappa.Session.Server do
     {:reply, Client.send_who(state.client, target), next_state}
   end
 
-  # CP22 cluster B (channel-client-polish #14) — /names <#channel>. Two
-  # effects: (1) prime the accumulator entry in state.names_pending so
-  # EventRouter folds 353 RPL_NAMREPLY rows into it; (2) emit
-  # `NAMES #channel\r\n`. `target_display` matches `target` — UX-4 A
-  # canonicalises at `Session.send_names/4` so the scrollback display
-  # is canonical (see /who docstring above for the rationale).
-  # Replaces any prior accumulator for the same target (running /names
-  # twice without a 366 in between drops the first).
+  # #140 — /names <#channel>. Two effects: (1) prime the accumulator
+  # entry in state.names_pending so EventRouter folds 353 RPL_NAMREPLY
+  # rows into it; (2) emit `NAMES #channel\r\n`. `target_display`
+  # matches `target` — `Session.send_names/3` canonicalises at entry so
+  # the names_reply channel is canonical (see /who docstring above for
+  # the rationale). Replaces any prior accumulator for the same target
+  # (running /names twice without a 366 in between drops the first).
   # On send_line failure the accumulator stays primed — a transient
   # send error doesn't strand the NAMES flow because no numerics will
   # arrive to drain it; harmless until the next /names replaces the entry.
-  #
-  # /names UX cluster bucket N-1+N-2: `origin_window` (cic-side focused
-  # window when the operator typed /names) is captured in the accumulator
-  # so the 366 drain routes the 2 :notice rows to the originating window
-  # rather than always landing in $server. nil falls back to legacy
-  # routing (target if joined, $server otherwise).
-  def handle_call({:send_names, target, origin_window}, _, state)
-      when is_binary(target) and (is_nil(origin_window) or is_binary(origin_window)) do
+  # The reply is the network-wide ephemeral names_reply (Topic.user); the
+  # operator's focused window is irrelevant, so no origin_window is
+  # threaded (the modal renders network-scoped, last-write-wins).
+  def handle_call({:send_names, target}, _, state) when is_binary(target) do
     chan_key = String.downcase(target)
 
     next_pending =
-      Map.put(state.names_pending, chan_key, %{
-        target_display: target,
-        names: [],
-        origin_window: origin_window
-      })
+      Map.put(state.names_pending, chan_key, %{target_display: target, names: []})
 
     next_state = %{state | names_pending: next_pending}
     {:reply, Client.send_names(state.client, target), next_state}
@@ -2846,6 +2836,28 @@ defmodule Grappa.Session.Server do
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
         SessionWire.members_seeded(state.network_slug, channel, members)
+      )
+
+    apply_effects(rest, state)
+  end
+
+  # #140 — explicit /names roster complete (366 RPL_ENDOFNAMES, gated on
+  # a pending /names request). Broadcast the tier-sorted roster on the
+  # user-level topic — ephemeral, NOT persisted (mirrors :whois_bundle).
+  # cic's `namesModal` keys by network and renders a grouped, dismissable
+  # modal. Same mIRC-tier sort + per-member projection as :members_seeded
+  # (the authoritative sidebar set) — this is a parallel VIEW, not a
+  # second source of truth.
+  defp apply_effects([{:names_reply, channel, roster} | rest], state) do
+    members =
+      roster
+      |> Enum.map(fn {nick, modes} -> %{nick: nick, modes: modes} end)
+      |> Enum.sort_by(&{member_sort_tier(&1.modes), &1.nick})
+
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.names_reply(state.network_slug, channel, members)
       )
 
     apply_effects(rest, state)

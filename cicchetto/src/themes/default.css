@@ -3133,6 +3133,134 @@ html.resize-dragging * {
   text-align: center;
 }
 
+/* #140 — /names modal. Centered, scrollable, grouped roster overlay.
+   Mirrors the .archive-modal family (backdrop scrim + bordered panel +
+   close button) but pins header + footer and scrolls only the body so
+   the "#channel — N people" heading + "End of /NAMES list" count stay
+   visible on large channels. */
+.names-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.names-modal {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  width: 100%;
+  max-width: 40rem;
+  /* Cap at the live visible viewport (keyboard-aware, same var as
+     .archive-modal) so the panel never grows under the iOS keyboard /
+     Safari chrome; the body scrolls within. */
+  max-height: min(var(--viewport-height, 100dvh), 100%);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  overflow: hidden;
+}
+
+.names-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1rem;
+  flex: 0 0 auto;
+}
+
+.names-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.names-modal-close {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.5rem;
+}
+
+.names-modal-close:hover {
+  color: var(--fg);
+}
+
+.names-modal-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0.25rem 1rem 0.5rem;
+  /* Same inherited-`touch-action: none` trap guard as .archive-modal /
+     .settings-drawer — this is the registered overlay-lock scroller. */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+}
+
+.names-modal-section {
+  margin: 0.25rem 0 0.75rem;
+}
+
+.names-modal-section-title {
+  margin: 0;
+  padding: 0.35rem 0 0.2rem;
+  font-size: var(--font-size);
+  font-weight: bold;
+  color: var(--muted);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.names-modal-section-grid {
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.1rem 0.5rem;
+}
+
+.names-modal-nick {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  text-align: left;
+  padding: 0.25rem 0.3rem;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-height: 32px;
+}
+
+.names-modal-nick:hover {
+  background: var(--border);
+}
+
+.names-modal-footer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: 0.5rem 1rem;
+  color: var(--muted);
+}
+
 /* C2 — WHOIS card. Inline ephemeral surface above scrollback when a
  * /whois bundle exists for the active window's network. Single-card
  * stack — replaces in place on each new /whois. */

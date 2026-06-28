@@ -115,7 +115,7 @@ function narrowModesEntry(raw: unknown): ModesEntry | null {
   };
 }
 
-function narrowMembers(raw: unknown): MemberEntry[] | null {
+export function narrowMembers(raw: unknown): MemberEntry[] | null {
   if (!Array.isArray(raw)) return null;
   const out: MemberEntry[] = [];
   for (const m of raw) {

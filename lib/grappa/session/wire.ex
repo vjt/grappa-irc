@@ -72,6 +72,7 @@ defmodule Grappa.Session.Wire do
           | :channel_modes_changed
           | :channel_created
           | :members_seeded
+          | :names_reply
           | :joined
           | :window_pending
           | :window_invited
@@ -145,6 +146,21 @@ defmodule Grappa.Session.Wire do
 
   @type members_seeded_payload :: %{
           kind: :members_seeded,
+          network: String.t(),
+          channel: String.t(),
+          members: [member()]
+        }
+
+  @typedoc """
+  #140 — ephemeral roster bundle for an EXPLICIT `/names` request.
+  Same per-member shape as `members_seeded` (both funnel through
+  `member/1`), but routed on the user-level topic and NOT persisted —
+  it feeds cic's dismissable, grouped `namesModal`, not the sidebar
+  members store. `members_seeded` (channel topic) keeps owning the
+  authoritative member set; `names_reply` is a view artifact.
+  """
+  @type names_reply_payload :: %{
+          kind: :names_reply,
           network: String.t(),
           channel: String.t(),
           members: [member()]
@@ -513,6 +529,26 @@ defmodule Grappa.Session.Wire do
       when is_binary(network_slug) and is_binary(channel) and is_list(members) do
     %{
       kind: :members_seeded,
+      network: network_slug,
+      channel: channel,
+      members: Enum.map(members, &member/1)
+    }
+  end
+
+  @doc """
+  #140 — projects a completed `/names` roster onto the wire. Same
+  `member/1` per-row contract as `members_seeded/3` (one roster shape
+  across the seed event and the /names modal); the caller
+  (`Session.Server.apply_effects/2`) is responsible for the mIRC-tier
+  sort, `member/1` does NOT re-sort. Broadcast on the user-level topic,
+  ephemeral — see `names_reply_payload/0`.
+  """
+  @spec names_reply(String.t(), String.t(), [Grappa.Session.member()]) ::
+          names_reply_payload()
+  def names_reply(network_slug, channel, members)
+      when is_binary(network_slug) and is_binary(channel) and is_list(members) do
+    %{
+      kind: :names_reply,
       network: network_slug,
       channel: channel,
       members: Enum.map(members, &member/1)

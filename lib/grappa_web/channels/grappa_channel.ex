@@ -630,29 +630,25 @@ defmodule GrappaWeb.GrappaChannel do
     )
   end
 
-  # CP22 cluster B (channel-client-polish #14) — /names <#channel>.
-  # cic pushes after the operator types `/names #chan`; the channel
-  # relays to Session.send_names/4 which primes names_pending + emits
-  # NAMES upstream. The 353/366 burst lands as 2 :notice scrollback
-  # rows ALWAYS (silence is the bug — /names UX cluster N-1+N-2),
-  # routed to the originating window when payload carries
-  # `origin_window` (cic's focused window when /names was typed),
-  # else target if joined, else `$server`.
+  # #140 — /names <#channel>. cic pushes after the operator types
+  # `/names #chan`; the channel relays to Session.send_names/3 which
+  # primes names_pending + emits NAMES upstream. The 353/366 burst
+  # drains into ONE ephemeral `names_reply` event on the user topic
+  # (cic renders a grouped, dismissable modal) — NOT persisted. The
+  # modal is network-scoped (last-write-wins), so no origin_window.
   #
   # CP24 bucket B reviewer add-on: read-only verb — visitors are
   # entitled to issue it. Routes via `dispatch_subject_verb/2`.
   def handle_in(
         "names",
-        %{"network_id" => network_id, "channel" => channel} = payload,
+        %{"network_id" => network_id, "channel" => channel},
         socket
       )
       when is_integer(network_id) and is_binary(channel) do
-    origin_window = Map.get(payload, "origin_window")
-
     dispatch_subject_verb(
       socket,
       fn -> validate_args(channel: channel) end,
-      fn subject -> Session.send_names(subject, network_id, channel, origin_window) end
+      fn subject -> Session.send_names(subject, network_id, channel) end
     )
   end
 

@@ -523,6 +523,7 @@ export type SessionWireWireEventKind =
   | "channel_modes_changed"
   | "channel_created"
   | "members_seeded"
+  | "names_reply"
   | "joined"
   | "window_pending"
   | "window_invited"
@@ -583,6 +584,13 @@ export type SessionWireChannelCreatedPayload = {
 
 export type SessionWireMembersSeededPayload = {
   kind: "members_seeded";
+  network: string;
+  channel: string;
+  members: SessionWireMember[];
+};
+
+export type SessionWireNamesReplyPayload = {
+  kind: "names_reply";
   network: string;
   channel: string;
   members: SessionWireMember[];
@@ -754,6 +762,7 @@ export type WireSessionEvent =
   | SessionWireChannelModesChangedPayload
   | SessionWireChannelCreatedPayload
   | SessionWireMembersSeededPayload
+  | SessionWireNamesReplyPayload
   | SessionWireJoinedPayload
   | SessionWireWindowPendingPayload
   | SessionWireWindowInvitedPayload

@@ -3128,12 +3128,16 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
-  # CP22 cluster B (channel-client-polish #14) — /names bundle aggregation.
-  # 353 RPL_NAMREPLY tokens append to state.names_pending[channel_lower].names;
-  # 366 RPL_ENDOFNAMES drains the entry into 2 :persist :notice effects
-  # (nick list row + EOF) WHEN the operator is NOT joined to the target.
-  # Joined targets defer to the existing JOIN-time members_seeded refresh.
-  describe "CP22 B-names — NAMES fold + 366 RPL_ENDOFNAMES drain" do
+  # #140 — /names roster aggregation. 353 RPL_NAMREPLY tokens append to
+  # state.names_pending[channel_lower].names; 366 RPL_ENDOFNAMES drains
+  # the entry into ONE {:names_reply, channel, [{nick, modes}]} effect
+  # (mirror of the whois_bundle accumulator) — NOT persisted notices.
+  # The effect carries arrival-order, prefix-split tuples; server.ex
+  # apply_effects tier-sorts and broadcasts ephemerally on Topic.user.
+  # The drain is GATED on a pending entry: a bare JOIN (no /names) drains
+  # nothing — only members_seeded fires. Joined and non-joined targets
+  # produce the SAME names_reply (uniform, #140).
+  describe "#140 — NAMES fold + 366 RPL_ENDOFNAMES drain → names_reply" do
     test "353 appends raw [prefix]nick tokens to names_pending[channel].names" do
       state =
         base_state(%{
@@ -3182,7 +3186,7 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.names_pending == %{}
     end
 
-    test "366 with pending entry and NOT joined emits 2 :persist :notice rows to $server" do
+    test "366 with pending entry drains ONE {:names_reply, channel, prefix-split roster} after members_seeded" do
       state =
         base_state(%{
           members: %{},
@@ -3199,62 +3203,32 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, new_state, effects} = EventRouter.route(m, state)
       assert new_state.names_pending == %{}
 
-      # 3 effects: members_seeded (always fired) + row + eof (NOT joined).
-      assert [{:members_seeded, "#bofh", _}, row, eof] = effects
+      # 2 effects: members_seeded (always) + names_reply (gated on the
+      # pending entry). NOT persisted notices — the modal is ephemeral.
+      assert [{:members_seeded, "#bofh", _}, {:names_reply, "#bofh", roster}] = effects
 
-      assert {:persist, :notice, row_attrs} = row
-      assert row_attrs.channel == "$server"
-      assert row_attrs.meta.numeric == 353
-      assert row_attrs.meta.names_target == "#bofh"
-      assert row_attrs.meta.names == ["@alice", "+bob", "carol"]
-      assert row_attrs.body =~ "alice"
-
-      assert {:persist, :notice, eof_attrs} = eof
-      assert eof_attrs.channel == "$server"
-      assert eof_attrs.meta.numeric == 366
-      assert eof_attrs.meta.names_target == "#bofh"
-      assert eof_attrs.body =~ "End of /NAMES"
+      # Arrival-order, prefix-split {nick, modes} tuples. The mIRC-tier
+      # sort happens in server.ex apply_effects, NOT here.
+      assert roster == [{"alice", ["@"]}, {"bob", ["+"]}, {"carol", []}]
     end
 
-    test "366 with pending entry AND joined target emits 2 :persist :notice rows to the target channel" do
-      # N-1 (project_names_ux_silent_bugs): silence is the bug. Emit the
-      # nick-list + EOF rows even when the target is already in
-      # state.members. The MembersPane refresh path (members_seeded effect)
-      # still fires; the rows give the operator visible feedback in the
-      # window the operator was looking at.
-      state =
-        base_state(%{
-          members: %{"#bofh" => %{"vjt" => []}},
-          names_pending: %{
-            "#bofh" => %{
-              target_display: "#bofh",
-              names: ["@alice", "+bob"]
-            }
-          }
-        })
-
+    test "366 produces the SAME names_reply whether or not the target is joined (uniform, #140)" do
+      pending = %{"#bofh" => %{target_display: "#bofh", names: ["@alice", "+bob"]}}
       m = msg({:numeric, 366}, ["vjt", "#bofh", "End of /NAMES list"], {:server, "irc.test.org"})
 
-      {:cont, new_state, effects} = EventRouter.route(m, state)
-      assert new_state.names_pending == %{}
+      not_joined = base_state(%{members: %{}, names_pending: pending})
+      joined = base_state(%{members: %{"#bofh" => %{"vjt" => []}}, names_pending: pending})
 
-      assert [{:members_seeded, "#bofh", _}, row, eof] = effects
+      {:cont, _, effects_nj} = EventRouter.route(m, not_joined)
+      {:cont, _, effects_j} = EventRouter.route(m, joined)
 
-      assert {:persist, :notice, row_attrs} = row
-      assert row_attrs.channel == "#bofh"
-      assert row_attrs.meta.numeric == 353
-      assert row_attrs.meta.names_target == "#bofh"
-      assert row_attrs.meta.names == ["@alice", "+bob"]
-      assert row_attrs.body =~ "alice"
-
-      assert {:persist, :notice, eof_attrs} = eof
-      assert eof_attrs.channel == "#bofh"
-      assert eof_attrs.meta.numeric == 366
-      assert eof_attrs.meta.names_target == "#bofh"
-      assert eof_attrs.body =~ "End of /NAMES"
+      assert [{:members_seeded, "#bofh", _}, {:names_reply, "#bofh", roster_nj}] = effects_nj
+      assert [{:members_seeded, "#bofh", _}, {:names_reply, "#bofh", roster_j}] = effects_j
+      assert roster_nj == [{"alice", ["@"]}, {"bob", ["+"]}]
+      assert roster_j == roster_nj
     end
 
-    test "366 with no pending entry only emits members_seeded (no /names was issued)" do
+    test "366 with no pending entry only emits members_seeded (gate: no /names was issued)" do
       state = base_state(%{names_pending: %{}})
 
       m = msg({:numeric, 366}, ["vjt", "#bofh", "End of /NAMES list"], {:server, "irc.test.org"})
@@ -3263,45 +3237,26 @@ defmodule Grappa.Session.EventRouterTest do
       assert [{:members_seeded, "#bofh", _}] = effects
     end
 
-    test "366 with origin_window routes 2 :persist :notice rows to that window (overrides joined/non-joined fallback)" do
-      # /names UX cluster N-2 — operator typed `/names #bofh` from a
-      # different focused window (`#elsewhere`). With origin_window
-      # threaded through pushNames → channel handler → Session.send_names/4
-      # → names_pending accumulator, the drain routes both rows to
-      # `#elsewhere`, regardless of whether the operator is joined to
-      # `#bofh`. This is the "originating window wins" rule.
+    test "366 with a pending entry but zero names drains an empty roster (+secret/empty channel)" do
       state =
         base_state(%{
-          members: %{"#bofh" => %{"vjt" => []}},
-          names_pending: %{
-            "#bofh" => %{
-              target_display: "#bofh",
-              names: ["@alice"],
-              origin_window: "#elsewhere"
-            }
-          }
+          members: %{},
+          names_pending: %{"#ghost" => %{target_display: "#ghost", names: []}}
         })
 
-      m = msg({:numeric, 366}, ["vjt", "#bofh", "End of /NAMES list"], {:server, "irc.test.org"})
+      m = msg({:numeric, 366}, ["vjt", "#ghost", "End of /NAMES list"], {:server, "irc.test.org"})
 
-      {:cont, _, effects} = EventRouter.route(m, state)
-      assert [{:members_seeded, "#bofh", _}, row, eof] = effects
-      assert {:persist, :notice, row_attrs} = row
-      assert row_attrs.channel == "#elsewhere"
-      assert {:persist, :notice, eof_attrs} = eof
-      assert eof_attrs.channel == "#elsewhere"
+      {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.names_pending == %{}
+      assert [{:members_seeded, "#ghost", _}, {:names_reply, "#ghost", []}] = effects
     end
 
-    test "366 lookup is case-insensitive on target channel (RFC 2812 §2.2)" do
-      # UX-4 bucket A: `EventRouter.route/2`'s wrapper canonicalises
-      # the channel param before clause dispatch. `Session.send_names/4`
-      # also canonicalises at entry — the accumulator `target_display`
-      # is the canonical form, and the EOF body `*** End of /NAMES
-      # list for X` carries the canonical channel. Total-consistency
-      # rule (CLAUDE.md): display + lookup + persist + broadcast all
-      # share one form. Pre-bucket-A the `target_display` was the
-      # operator's typed case; CP22-vintage docstrings still mentioned
-      # this — now stale; the tests pin the new contract.
+    test "366 lookup is case-insensitive on target channel — names_reply carries the canonical channel (RFC 2812 §2.2)" do
+      # `EventRouter.route/2`'s wrapper canonicalises the channel param
+      # before clause dispatch. `Session.send_names/3` also canonicalises
+      # at entry — the accumulator `target_display` is the canonical form,
+      # so the names_reply channel is the canonical `#bofh` even when 366
+      # arrives as `#BOFH`. Total-consistency rule (CLAUDE.md).
       state =
         base_state(%{
           members: %{},
@@ -3312,9 +3267,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, effects} = EventRouter.route(m, state)
       assert new_state.names_pending == %{}
-      assert [{:members_seeded, "#bofh", _}, _, eof] = effects
-      assert {:persist, :notice, eof_attrs} = eof
-      assert eof_attrs.meta.names_target == "#bofh"
+      assert [{:members_seeded, "#bofh", _}, {:names_reply, "#bofh", [{"alice", []}]}] = effects
     end
   end
 

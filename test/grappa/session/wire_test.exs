@@ -155,6 +155,38 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "names_reply/3" do
+    test "projects an explicit-/names roster through member/1 (mirrors members_seeded/3)" do
+      members = [
+        %{nick: "vjt", modes: ["@"]},
+        %{nick: "alice", modes: ["+"]},
+        %{nick: "bob", modes: []}
+      ]
+
+      assert Wire.names_reply("azzurra", "#grappa", members) == %{
+               kind: :names_reply,
+               network: "azzurra",
+               channel: "#grappa",
+               members: members
+             }
+    end
+
+    test "per-member shape ≡ member/1 output — one roster contract with members_seeded" do
+      members = [%{nick: "vjt", modes: ["@"]}, %{nick: "bob", modes: []}]
+      payload = Wire.names_reply("azzurra", "#grappa", members)
+      assert payload.members == Enum.map(members, &Wire.member/1)
+    end
+
+    test "tolerates an empty roster (366 with zero names — +secret/empty channel)" do
+      assert Wire.names_reply("azzurra", "#ghost", []) == %{
+               kind: :names_reply,
+               network: "azzurra",
+               channel: "#ghost",
+               members: []
+             }
+    end
+  end
+
   describe "member/1" do
     test "projects a Session.member() to the per-row wire shape" do
       assert Wire.member(%{nick: "vjt", modes: ["@"]}) == %{nick: "vjt", modes: ["@"]}
