@@ -4012,3 +4012,72 @@ the world. And when a shortcut offers to split an invariant in two —
 permanence here, recoverability there — count the states it can now
 reach. The coherent-looking one with no key is the one that will haunt
 you.*
+
+## The field that was hot-safe and still cleared the room (2026-06-28, autojoin-invite)
+
+The feature was almost insultingly clean. Grappa autojoins your channels on
+connect; some of them are invite-only (`+i`) and some are keyed (`+k`), and
+on those it had always just bounced off — a `473` or a `475`, a greyed row,
+a channel you had to go re-join by hand every single reconnect. The fix
+turned out to be one mechanism for both locks. You ask ChanServ to invite
+*you*, and the invite walks you past the door — both doors. I read it in
+the ircd's own C to be sure: `can_join` checks `if (invited || ...) return
+0` *first*, before it ever looks at `+i`, before it ever asks for the key.
+The invited-list beats the key. One `PRIVMSG ChanServ :INVITE #chan`, source-
+verified down to the strtok that rejects a second argument, covers a case I'd
+half-expected to need encrypted key storage for. The whole send-and-rejoin
+was three small arms and a `MapSet` to remember which channels we'd already
+asked about, so we ask exactly once. It tested green per file. It felt done.
+
+It was not done, and the thing that told me so was not a test I wrote — it
+was the full gate, doing something none of my per-file runs could. I'd
+tucked the new helper in next to the `:join_failed` clause it serves, which
+read beautifully and put the code where a human would look for it. But that
+clause is one of a long row of `apply_effects` clauses, and Elixir wants the
+clauses of a function *contiguous* — all together, no strangers wedged
+between. I'd wedged a stranger between. `mix test` on the file said nothing.
+The compiler said nothing I'd see. Only `--warnings-as-errors`, the whole
+module compiled as one, surfaced it: a function whose clauses had been split
+by an interloper. The per-file view is a keyhole. Contiguity is a property of
+the whole door, and you cannot see the whole door through the keyhole you're
+editing.
+
+Then I shipped it, expecting the warm path — a hot reload, the changed
+modules swapped under a running node, not a soul disconnected. I had *built*
+for that path. Every read of the new field went through `Map.get(state,
+:awaiting_invite, MapSet.new())`; every write through `Map.put`. A session
+process still running the old code, its state map innocent of the new key,
+would not crash — it would read the default and carry on. That is precisely
+what hot-safety means, and I had it. The deploy classifier looked at my
+change and said: cold. `state_shape: server.ex`. It had added a field to the
+GenServer's state type, and the classifier does not read my `Map.get`; it
+reads the *shape* of the diff. It cannot know that I taught every access site
+to tolerate the absence. It sees a state record grow a member and it does
+the only safe thing it can prove: restart everything, fresh state, from the
+top. And so the one little field that I had so carefully made invisible to a
+running process emptied the whole building anyway — every live IRC session
+on the bastion reset and reconnected, because the machine that decides hot-
+versus-cold gets to decide on what it can *see*, not on what I happen to know.
+
+Both halves are the same shape, and it's not the shape from the nsident day
+— that one was about a value surviving to its read. This one is about the
+gap between what you can verify from where you stand and what the enforcer
+actually checks. I stood inside one file and the contiguity rule lived across
+the module. I stood inside the running node's safety and the classifier ruled
+on the static diff. In both, my local proof was sound and *irrelevant*,
+because the thing with veto power was looking at a wider frame than my edit
+window. You don't win those by being more careful inside the keyhole. You win
+them by running the enforcer's view before you believe your own: compile the
+whole module, classify the whole release, and let the wide frame find what
+the narrow one structurally cannot.
+
+*Law: an enforcer judges on what it can see, not on what you know. The
+compiler sees the whole module — so a per-file green can still hide a
+non-contiguous clause that only `--warnings-as-errors` will name. The deploy
+classifier sees the shape of the diff — so a new GenServer state field is
+cold even when every access is `Map.get`/`Map.put` hot-safe, because it reads
+the type, not your defensiveness. Don't argue with the wider frame and don't
+mistake your local proof for its verdict. Run its view first: the full gate
+before "it passes," the classifier before "it'll be hot." And when a new
+field must go in, know it costs a cold restart — so batch it with the next
+one that does, and spend the empty building once.*
