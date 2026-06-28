@@ -29,7 +29,15 @@ const triggerRefreshMock = vi.fn<(slug: string) => Promise<void>>(() => Promise.
 const postJoinMock = vi.fn<
   (t: string, slug: string, name: string, key: string | null) => Promise<void>
 >(() => Promise.resolve());
-const tokenMock = vi.fn<() => string | null>(() => "test-token");
+// vi.hoisted: tokenMock is read at MODULE-IMPORT time (not just during
+// render) — DirectoryPane now imports MircBody, whose transitive
+// audioPlayer/mediaViewer identity-scoped stores call auth.token() in
+// their module-init createRoot. ESM hoists the `import DirectoryPane`
+// above the plain `const` mocks, so a regular const would be in the TDZ
+// when that import-time token() fires. Hoisting initializes it first.
+const { tokenMock } = vi.hoisted(() => ({
+  tokenMock: vi.fn<() => string | null>(() => "test-token"),
+}));
 const windowStateByChannelMock = vi.fn<() => Record<string, string>>(() => ({}));
 
 vi.mock("../lib/channelDirectory", () => ({
@@ -80,6 +88,16 @@ vi.mock("../lib/friendlyApiError", () => ({
   friendlyApiError: (err: { message: string }) => `friendly: ${err.message}`,
 }));
 
+// #125 — tapping a joined row opens its window; the close button returns
+// to the previously active window. Mock the selection verbs at the
+// boundary; their behaviour is covered in selection.test.ts.
+const setSelectedChannelMock = vi.fn();
+const closeToPreviousWindowMock = vi.fn();
+vi.mock("../lib/selection", () => ({
+  setSelectedChannel: (...args: unknown[]) => setSelectedChannelMock(...args),
+  closeToPreviousWindow: (...args: unknown[]) => closeToPreviousWindowMock(...args),
+}));
+
 const FRESH_PAGE: DirectoryPage = {
   entries: [
     { name: "#grappa", topic: "IRC bouncer in Elixir", user_count: 42, featured: true },
@@ -114,6 +132,8 @@ describe("DirectoryPane", () => {
     postJoinMock.mockClear();
     tokenMock.mockReturnValue("test-token");
     windowStateByChannelMock.mockReturnValue({});
+    setSelectedChannelMock.mockClear();
+    closeToPreviousWindowMock.mockClear();
   });
 
   afterEach(() => {
@@ -214,15 +234,36 @@ describe("DirectoryPane", () => {
   });
 
   describe("joined-state detection", () => {
-    it("row is disabled when channelKey maps to 'joined' in windowStateByChannel", () => {
+    it("joined row is NOT disabled — it is tappable to open the window (#125)", () => {
       directoryPageMock.mockReturnValue(FRESH_PAGE);
       windowStateByChannelMock.mockReturnValue({
         [channelKey(SLUG, "#grappa")]: "joined",
       });
       render(() => <DirectoryPane networkSlug={SLUG} />);
 
-      const joinBtn = screen.getByRole("button", { name: /join #grappa/i });
-      expect(joinBtn).toBeDisabled();
+      const openBtn = screen.getByRole("button", { name: /open #grappa/i });
+      expect(openBtn).not.toBeDisabled();
+    });
+
+    it("tapping a joined row opens its window (setSelectedChannel, no postJoin) (#125)", async () => {
+      directoryPageMock.mockReturnValue(FRESH_PAGE);
+      windowStateByChannelMock.mockReturnValue({
+        [channelKey(SLUG, "#grappa")]: "joined",
+      });
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      const openBtn = screen.getByRole("button", { name: /open #grappa/i });
+      fireEvent.click(openBtn);
+
+      await waitFor(() => {
+        expect(setSelectedChannelMock).toHaveBeenCalledWith({
+          networkSlug: SLUG,
+          channelName: "#grappa",
+          kind: "channel",
+        });
+      });
+      // Joined tap must NOT re-join.
+      expect(postJoinMock).not.toHaveBeenCalled();
     });
 
     it("joined row renders the 'joined' badge", () => {
@@ -243,6 +284,57 @@ describe("DirectoryPane", () => {
       const joinBtn = screen.getByRole("button", { name: /join #grappa/i });
       expect(joinBtn).not.toBeDisabled();
       expect(screen.queryByText("joined")).toBeNull();
+    });
+
+    it("tapping an UNjoined row joins it and does NOT open a window (#125)", async () => {
+      directoryPageMock.mockReturnValue(FRESH_PAGE);
+      windowStateByChannelMock.mockReturnValue({});
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      const joinBtn = screen.getByRole("button", { name: /join #grappa/i });
+      fireEvent.click(joinBtn);
+
+      await waitFor(() => {
+        expect(postJoinMock).toHaveBeenCalledWith("test-token", SLUG, "#grappa", null);
+      });
+      expect(setSelectedChannelMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("close button (#125)", () => {
+    it("renders a close button that returns to the previous window", async () => {
+      directoryPageMock.mockReturnValue(FRESH_PAGE);
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      const closeBtn = screen.getByRole("button", { name: /close directory/i });
+      fireEvent.click(closeBtn);
+
+      await waitFor(() => {
+        expect(closeToPreviousWindowMock).toHaveBeenCalledWith(SLUG);
+      });
+    });
+  });
+
+  describe("topic mIRC color rendering (#125)", () => {
+    it("renders a color-coded topic as styled spans, not raw control chars", () => {
+      // \x03 04 = mIRC red. The directory topic must render through the
+      // same typed-formatting path as scrollback (MircBody) — the parser
+      // strips the control bytes and emits a colored run.
+      const COLORED: DirectoryPage = {
+        ...FRESH_PAGE,
+        entries: [{ name: "#c", topic: "04alert", user_count: 1, featured: false }],
+        total: 1,
+      };
+      directoryPageMock.mockReturnValue(COLORED);
+      const { container } = render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      const topic = container.querySelector(".directory-row-topic");
+      expect(topic).not.toBeNull();
+      // Control bytes are consumed by the parser — never present in the DOM.
+      expect(topic?.textContent ?? "").not.toContain("");
+      expect(topic?.textContent).toContain("alert");
+      // The colored run carries an inline color style.
+      expect(topic?.querySelector("span[style*='color']")).not.toBeNull();
     });
   });
 

@@ -3726,6 +3726,25 @@ html.resize-dragging * {
   cursor: default;
 }
 
+/* #125 — close the directory pane, return to the previous window. */
+.directory-close {
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.35rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.directory-close:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
 .directory-pane-meta {
   display: flex;
   align-items: center;
@@ -3772,6 +3791,8 @@ html.resize-dragging * {
 .directory-list {
   flex: 1 1 auto;
   overflow-y: auto;
+  /* #125 — never scroll horizontally; rows reflow within the viewport. */
+  overflow-x: hidden;
   overscroll-behavior: contain;
 }
 
@@ -3787,11 +3808,21 @@ html.resize-dragging * {
   border-bottom: 1px solid var(--border);
 }
 
+/* #125 — responsive row. Mobile-first: a 2-row grid — row 1 is the name
+ * head (name + featured/joined labels beside it) and the user count; row
+ * 2 is the topic, full width. The desktop media query below switches to a
+ * 3-column row (name head | topic | count) with the labels stacked BELOW
+ * the name. minmax(0, …) + min-width: 0 + overflow-wrap let the topic and
+ * name reflow instead of forcing horizontal scroll. */
 .directory-row-join {
   display: grid;
-  grid-template-columns: minmax(8rem, 1fr) 4rem 1fr auto;
-  gap: 0.5rem;
-  align-items: baseline;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "head count"
+    "topic topic";
+  column-gap: 0.5rem;
+  row-gap: 0.25rem;
+  align-items: start;
   width: 100%;
   background: transparent;
   color: var(--fg);
@@ -3803,23 +3834,58 @@ html.resize-dragging * {
   cursor: pointer;
 }
 
-.directory-row-join:hover:not(:disabled) {
+.directory-row-join:hover {
   background: var(--border);
 }
 
-.directory-row-join:disabled {
-  cursor: default;
-  opacity: 0.75;
+/* Name + featured + joined labels. Mobile: a wrapping flex ROW so the
+ * labels sit BESIDE the name. Desktop (media query): a flex COLUMN so the
+ * labels stack BELOW the name. */
+.directory-row-head {
+  grid-area: head;
+  min-width: 0;
+  display: flex;
+  flex-flow: row wrap;
+  align-items: baseline;
+  gap: 0.4rem;
 }
 
 .directory-row-name {
   font-weight: bold;
   color: var(--accent);
+  overflow-wrap: anywhere;
 }
 
 .directory-row-count {
+  grid-area: count;
   color: var(--muted);
   text-align: right;
+  white-space: nowrap;
+}
+
+/* Topic wraps fully — no truncation, no ellipsis. overflow-wrap: anywhere
+ * breaks pathologically long unbroken tokens (URLs) so they never force a
+ * horizontal scrollbar. */
+.directory-row-topic {
+  grid-area: topic;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 40rem) {
+  .directory-row-join {
+    grid-template-columns: minmax(8rem, 18rem) minmax(0, 1fr) auto;
+    grid-template-areas: "head topic count";
+    column-gap: 1rem;
+    align-items: baseline;
+  }
+
+  .directory-row-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+  }
 }
 
 .directory-row-badge {

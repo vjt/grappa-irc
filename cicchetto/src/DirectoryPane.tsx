@@ -10,13 +10,23 @@ import {
 } from "./lib/channelDirectory";
 import { channelKey } from "./lib/channelKey";
 import { friendlyApiError } from "./lib/friendlyApiError";
+import { closeToPreviousWindow, setSelectedChannel } from "./lib/selection";
 import { windowStateByChannel } from "./lib/windowState";
+import { MircBody } from "./MircText";
 
 // E3 (#84) — Per-network channel directory pane ($list window).
 //
-// Shows a search box, refresh button, total count, "last refreshed N ago"
-// with a stale CTA, a sort toggle, and a scrollable list of channels where
-// tapping a row JOINs it. Already-joined rows are badged + disabled.
+// Shows a search box, refresh button, a close button (#125), total count,
+// "last refreshed N ago" with a stale CTA, a sort toggle, and a scrollable
+// list of channels. Tapping an UNjoined row JOINs it (no auto-open);
+// tapping an already-joined row OPENS its window (#125, consistent with
+// the HomePane featured-link behaviour from #85). Joined rows carry a
+// "joined" badge; featured rows a "featured" label (sorted by user count
+// like everything else, not pinned). Topics render through MircBody (the
+// shared mIRC formatter) — color codes show as styled spans, not raw
+// control chars — and wrap fully. The row layout is responsive (see the
+// .directory-row-join grid in default.css): no horizontal scroll. The
+// close button returns to the previously active window.
 //
 // Data layer: channelDirectory.ts (directoryPage / loadDirectory / setSort /
 // setQuery / triggerRefresh). DirectoryPane owns LOCAL signals for the search
@@ -67,27 +77,53 @@ const DirectoryRow: Component<DirectoryRowProps> = (props) => {
     }
   };
 
+  // #125 — a joined row opens its window (consistent with the HomePane
+  // featured-link behaviour from #85); an unjoined row keeps the existing
+  // JOIN-only behaviour (no auto-open — the row just gets badged once the
+  // server broadcasts `joined`).
+  const onActivate = () => {
+    if (isJoined()) {
+      setSelectedChannel({
+        networkSlug: props.networkSlug,
+        channelName: props.entry.name,
+        kind: "channel",
+      });
+      return;
+    }
+    void onJoin();
+  };
+
+  // Layout (#125): the button is a responsive grid. `.directory-row-head`
+  // groups the name with the featured + joined labels — beside the name on
+  // mobile (flex row), below it on desktop (flex column) via CSS. The
+  // topic renders through MircBody (the shared mIRC formatter) so color
+  // codes show as styled spans, not raw control chars, and wraps fully.
   return (
     <li class="directory-row">
       <button
         type="button"
         class="directory-row-join"
-        disabled={isJoined()}
-        aria-label={`Join ${props.entry.name}`}
-        onClick={() => void onJoin()}
+        aria-label={`${isJoined() ? "Open" : "Join"} ${props.entry.name}`}
+        onClick={onActivate}
       >
-        <span class="directory-row-name">{props.entry.name}</span>
+        <span class="directory-row-head">
+          <span class="directory-row-name">{props.entry.name}</span>
+          <Show when={props.entry.featured}>
+            <span class="directory-row-featured" data-testid="directory-row-featured">
+              featured
+            </span>
+          </Show>
+          <Show when={isJoined()}>
+            <span class="directory-row-badge">joined</span>
+          </Show>
+        </span>
         <span class="directory-row-count">{props.entry.user_count}</span>
-        <Show when={props.entry.featured}>
-          <span class="directory-row-featured" data-testid="directory-row-featured">
-            featured
-          </span>
-        </Show>
         <Show when={props.entry.topic}>
-          <span class="directory-row-topic muted">{props.entry.topic}</span>
-        </Show>
-        <Show when={isJoined()}>
-          <span class="directory-row-badge">joined</span>
+          {(topic) => (
+            <span class="directory-row-topic muted">
+              <MircBody body={topic()} />
+            </span>
+          )}
         </Show>
       </button>
       <Show when={error()}>
@@ -178,6 +214,16 @@ const DirectoryPane: Component<{ networkSlug: string }> = (props) => {
           onClick={onRefresh}
         >
           {status() === "refreshing" ? "Refreshing…" : "Refresh"}
+        </button>
+        {/* #125 — close the directory and return to the previously
+            active window (restore the prior selection, not a blank pane). */}
+        <button
+          type="button"
+          class="directory-close"
+          aria-label="Close directory"
+          onClick={() => closeToPreviousWindow(props.networkSlug)}
+        >
+          ✕
         </button>
       </div>
       <Show when={page()}>
