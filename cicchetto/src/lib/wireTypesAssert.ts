@@ -44,8 +44,12 @@
 //     update api.ts to match wireTypes.ts (server is the source of
 //     truth per CLAUDE.md "Implement once, reuse everywhere").
 
-import type { ConnectionState } from "./api";
-import type { NetworksCredentialConnectionState } from "./wireTypes";
+import type { ConnectionState, DirectoryEntry, FeaturedChannelLink } from "./api";
+import type {
+  ChannelDirectoryWireEntry,
+  NetworksCredentialConnectionState,
+  NetworksFeaturedChannelsWireLink,
+} from "./wireTypes";
 
 // Bi-directional subtype assert helper. `Equal<A, B>` is `true` when
 // `A` and `B` are structurally identical, `false` otherwise.
@@ -63,6 +67,14 @@ type Assert<T extends true> = T;
 export type _Assert_ConnectionState = Assert<
   Equal<ConnectionState, NetworksCredentialConnectionState>
 >;
+
+// === #85 — Featured channels ===
+// Public delivery link (HomePane) + the /list directory entry's new
+// `featured` flag, pinned to their codegen counterparts.
+export type _Assert_FeaturedChannelLink = Assert<
+  Equal<FeaturedChannelLink, NetworksFeaturedChannelsWireLink>
+>;
+export type _Assert_DirectoryEntry = Assert<Equal<DirectoryEntry, ChannelDirectoryWireEntry>>;
 
 // TODO future buckets: add asserts as we flip other Wire modules to
 // atom-literal `kind` (M19 needs scrollback/wire.ex flip; C1/H1/H3-H6

@@ -420,7 +420,16 @@ export type ChannelEntry = {
 // `status` indicates the staleness of the captured list; `captured_at` is
 // null when no list has been captured yet (status "empty"). `next_cursor`
 // is null on the final page.
-export type DirectoryEntry = { name: string; topic: string | null; user_count: number };
+// `featured` (#85) is true when the channel is in its network's
+// enabled `network_featured_channels` set — re-derived server-side on
+// every directory fetch (on-display freshness). No top-pinning; the
+// sort order is unchanged.
+export type DirectoryEntry = {
+  name: string;
+  topic: string | null;
+  user_count: number;
+  featured: boolean;
+};
 
 export type DirectoryStatus = "fresh" | "stale" | "refreshing" | "empty";
 
@@ -2054,6 +2063,105 @@ export async function adminDeleteServer(
   );
   if (!res.ok) throw await readError(res);
   return (await res.json()) as AdminServerDeleteResponse;
+}
+
+// #85 — Featured channels: operator config (admin CRUD) exposed
+// read-only to users/visitors via the public on-display read.
+
+// Public delivery shape — mirrors NetworksFeaturedChannelsWireLink.
+export type FeaturedChannelLink = { name: string; description: string | null };
+export type FeaturedChannelsResponse = { channels: FeaturedChannelLink[] };
+
+// Admin shape — mirrors Grappa.Networks.FeaturedChannels.AdminWire.
+export type AdminFeaturedChannel = {
+  id: number;
+  network_id: number;
+  name: string;
+  description: string | null;
+  position: number;
+  enabled: boolean;
+  inserted_at: string;
+  updated_at: string;
+};
+
+export type AdminFeaturedChannelCreate = {
+  name: string;
+  description?: string | null;
+  position?: number;
+  enabled?: boolean;
+};
+
+export type AdminFeaturedChannelUpdate = Partial<AdminFeaturedChannelCreate>;
+
+export type AdminFeaturedChannelsResponse = { featured_channels: AdminFeaturedChannel[] };
+
+// Public on-display read consumed by HomePane. `networkSlug` resolves
+// via the :resolve_network plug (cross-user iso); 404 for a network the
+// subject isn't on.
+export async function getFeaturedChannels(
+  token: string,
+  networkSlug: string,
+): Promise<FeaturedChannelLink[]> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/featured`, {
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+  return ((await res.json()) as FeaturedChannelsResponse).channels;
+}
+
+export async function adminListFeaturedChannels(
+  token: string,
+  networkId: number,
+): Promise<AdminFeaturedChannel[]> {
+  const res = await fetch(
+    `/admin/networks/${encodeURIComponent(String(networkId))}/featured_channels`,
+    { headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
+  return ((await res.json()) as AdminFeaturedChannelsResponse).featured_channels;
+}
+
+export async function adminAddFeaturedChannel(
+  token: string,
+  networkId: number,
+  body: AdminFeaturedChannelCreate,
+): Promise<AdminFeaturedChannel> {
+  const res = await fetch(
+    `/admin/networks/${encodeURIComponent(String(networkId))}/featured_channels`,
+    { method: "POST", headers: buildHeaders(token), body: JSON.stringify(body) },
+  );
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminFeaturedChannel;
+}
+
+export async function adminUpdateFeaturedChannel(
+  token: string,
+  networkId: number,
+  id: number,
+  body: AdminFeaturedChannelUpdate,
+): Promise<AdminFeaturedChannel> {
+  const res = await fetch(
+    `/admin/networks/${encodeURIComponent(String(networkId))}/featured_channels/${encodeURIComponent(
+      String(id),
+    )}`,
+    { method: "PUT", headers: buildHeaders(token), body: JSON.stringify(body) },
+  );
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminFeaturedChannel;
+}
+
+export async function adminDeleteFeaturedChannel(
+  token: string,
+  networkId: number,
+  id: number,
+): Promise<void> {
+  const res = await fetch(
+    `/admin/networks/${encodeURIComponent(String(networkId))}/featured_channels/${encodeURIComponent(
+      String(id),
+    )}`,
+    { method: "DELETE", headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
 }
 
 // Bucket 3 — Credential CRUD. URL composite (`:user_id/:network_id`)

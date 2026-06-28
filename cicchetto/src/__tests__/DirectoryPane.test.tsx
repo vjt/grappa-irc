@@ -82,9 +82,9 @@ vi.mock("../lib/friendlyApiError", () => ({
 
 const FRESH_PAGE: DirectoryPage = {
   entries: [
-    { name: "#grappa", topic: "IRC bouncer in Elixir", user_count: 42 },
-    { name: "#elixir", topic: null, user_count: 123 },
-    { name: "#help", topic: "Get help here", user_count: 7 },
+    { name: "#grappa", topic: "IRC bouncer in Elixir", user_count: 42, featured: true },
+    { name: "#elixir", topic: null, user_count: 123, featured: false },
+    { name: "#help", topic: "Get help here", user_count: 7, featured: false },
   ],
   next_cursor: null,
   total: 3,

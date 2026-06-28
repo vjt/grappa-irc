@@ -337,6 +337,7 @@ export type ChannelDirectoryWireEntry = {
   name: string;
   topic: string | null;
   user_count: number;
+  featured: boolean;
 };
 
 export type ChannelDirectoryWireIndexPayload = {
@@ -352,6 +353,17 @@ export type ChannelDirectoryWireIndexPayload = {
 export type CicWireBundleHashPayload = {
   kind: string;
   hash: string;
+};
+
+// === Grappa.Networks.FeaturedChannels.Wire ===
+
+export type NetworksFeaturedChannelsWireLink = {
+  name: string;
+  description: string | null;
+};
+
+export type NetworksFeaturedChannelsWireIndexPayload = {
+  channels: NetworksFeaturedChannelsWireLink[];
 };
 
 // === Grappa.Networks.Wire ===

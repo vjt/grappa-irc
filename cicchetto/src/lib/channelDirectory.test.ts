@@ -44,7 +44,7 @@ describe("channelDirectory store", () => {
 
   test("loadDirectory populates the page for the network", async () => {
     vi.spyOn(api, "listDirectory").mockResolvedValue({
-      entries: [{ name: "#a", topic: "t", user_count: 3 }],
+      entries: [{ name: "#a", topic: "t", user_count: 3, featured: false }],
       next_cursor: null,
       total: 1,
       captured_at: "2026-06-26T10:00:00Z",
