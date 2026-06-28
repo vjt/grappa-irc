@@ -150,6 +150,15 @@ describe("DirectoryPane", () => {
       expect(screen.getByText("Get help here")).toBeInTheDocument();
     });
 
+    it("renders the featured label only on featured rows (#85)", () => {
+      // FRESH_PAGE: #grappa featured: true; #elixir / #help featured: false.
+      directoryPageMock.mockReturnValue(FRESH_PAGE);
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+      const labels = screen.getAllByTestId("directory-row-featured");
+      expect(labels).toHaveLength(1);
+      expect(labels[0]).toHaveTextContent("featured");
+    });
+
     it("renders total count", () => {
       directoryPageMock.mockReturnValue(FRESH_PAGE);
       render(() => <DirectoryPane networkSlug={SLUG} />);

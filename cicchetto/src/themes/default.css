@@ -3837,6 +3837,56 @@ html.resize-dragging * {
   font-size: 0.9em;
 }
 
+/* #85 — featured label on a /list directory row (no top-pinning,
+ * accent-tinted vs the muted "joined" badge). */
+.directory-row-featured {
+  font-size: 0.8em;
+  color: var(--accent, #61afef);
+  border: 1px solid var(--accent, #61afef);
+  border-radius: 2px;
+  padding: 0.1rem 0.3rem;
+}
+
+/* #85 — featured channels under a HomePane network row: a list of
+ * one-click-join links (name + optional description). */
+.home-pane-featured {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.home-pane-featured-link {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 0.2rem 0.4rem;
+  color: var(--accent, #61afef);
+  cursor: pointer;
+  font: inherit;
+}
+
+.home-pane-featured-link:hover {
+  border-color: var(--accent, #61afef);
+}
+
+.home-pane-featured-desc {
+  font-size: 0.85em;
+}
+
+.home-pane-featured-error {
+  color: var(--error, #e06c75);
+  font-size: 0.85em;
+  padding: 0.1rem 0.4rem;
+}
+
 /* ------------------------------------------------------------------ *
  * grappa-irc#69 — WebKit/Blink scrollbar theming.
  *

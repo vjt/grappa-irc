@@ -78,6 +78,11 @@ const DirectoryRow: Component<DirectoryRowProps> = (props) => {
       >
         <span class="directory-row-name">{props.entry.name}</span>
         <span class="directory-row-count">{props.entry.user_count}</span>
+        <Show when={props.entry.featured}>
+          <span class="directory-row-featured" data-testid="directory-row-featured">
+            featured
+          </span>
+        </Show>
         <Show when={props.entry.topic}>
           <span class="directory-row-topic muted">{props.entry.topic}</span>
         </Show>
