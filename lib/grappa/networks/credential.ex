@@ -347,6 +347,13 @@ defmodule Grappa.Networks.Credential do
     credential
     |> cast(%{password: password}, [:password])
     |> validate_required([:password])
+    # Same wire-hygiene guard the wide `changeset/2` applies to `:password`
+    # (line ~220): the stored value is re-interpolated into PASS /
+    # `PRIVMSG NickServ :IDENTIFY` on the next auto-identify, so a CR/LF/NUL
+    # byte would split or truncate the outbound frame. A SET PASSWD password
+    # is rest-of-line (spaces are legal — `safe_line_token?` only rejects
+    # CR/LF/NUL), so this rejects only genuinely wire-unsafe values.
+    |> validate_change(:password, &validate_safe_line_token/2)
     |> put_encrypted_password()
   end
 

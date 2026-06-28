@@ -268,9 +268,19 @@ defmodule Grappa.Networks.Credentials do
         {:error, :not_found}
 
       %Credential{} = cred ->
-        case cred |> Credential.password_changeset(password) |> Repo.update() do
-          {:ok, updated} -> {:ok, updated}
-          {:error, changeset} -> {:error, changeset}
+        # H14 mirror (visitors.ex `commit_password/2`): a concurrent
+        # `unbind_credential/2` landing between the get_by above and the
+        # update would raise `Ecto.StaleEntryError`. This runs SYNCHRONOUSLY
+        # inside `Session.Server`'s send handler, so the raise would crash
+        # the whole session mid-send and drop the IRC connection. Map it to
+        # the spec'd `{:error, :not_found}` — same outcome as the get_by miss.
+        try do
+          case cred |> Credential.password_changeset(password) |> Repo.update() do
+            {:ok, updated} -> {:ok, updated}
+            {:error, changeset} -> {:error, changeset}
+          end
+        rescue
+          Ecto.StaleEntryError -> {:error, :not_found}
         end
     end
   end

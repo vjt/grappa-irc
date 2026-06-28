@@ -13541,9 +13541,10 @@ was two independent gaps in the `+r`-observed commit rendezvous:
 identify-channel set, anchored at line start (`^`) so a channel PRIVMSG
 body merely *containing* "identify"/"pass" can't false-capture; and all
 three outbound-line paths (`{:send_privmsg}`, `{:send_raw}`,
-`flush_lines/2`) funnel through one `stage_if_ns_identify/2` choke point in
-`Session.Server` — `NSInterceptor.intercept/1` is now called from exactly
-one site, so no identify form can bypass capture again.
+`flush_lines/2`) funnel through one choke point in `Session.Server`
+(`stage_if_ns_identify/2`, renamed `capture_outbound_ns_secret/2` in #131
+once it also committed SET PASSWD) — `NSInterceptor.intercept/1` is now
+called from exactly one site, so no identify form can bypass capture again.
 
 **Source-verified identify inventory** (azzurra `bahamut-azzurra` ircd +
 `services`):
@@ -14155,23 +14156,40 @@ differs from #129's `:identify`/`:register` slots — same capture machinery,
 a different action (commit-now vs. stage-against-`+r`), so `:set_passwd` is
 a distinct kind rather than a flag on an existing slot.
 
-**Reuse the commit verbs, both homes.** "Write the captured NickServ
-secret to the stored credential" is exactly `Visitors.commit_password/2`
-(visitor row, also flips `expires_at = NULL`) and — new, its user-side
-mirror — `Credentials.commit_password/3` (the bound `Networks.Credential`,
-via a narrow `Credential.password_changeset/2` that touches only
-`password_encrypted`). The Session.Server choke point (renamed
-`stage_if_ns_identify` → `capture_outbound_ns_secret` for honesty — it now
-commits as well as stages) dispatches on subject: visitors via the
-existing `visitor_committer`, users via a new injected `credential_committer`
-closure (same Boundary-cycle-avoiding function-reference indirection as
-`credential_failer` — Networks deps Session, so Session can't statically
-alias `Credentials`).
+**Reuse the commit verbs, both homes — but NOT the +r promotion verb for
+visitors.** "Write the captured NickServ secret to the stored credential"
+splits per home. Users: a new `Credentials.commit_password/3` (the bound
+`Networks.Credential`, via a narrow `Credential.password_changeset/2` that
+touches only `password_encrypted` — and keeps the same `safe_line_token`
+wire-hygiene guard the wide changeset applies, since the value is
+re-interpolated into the next IDENTIFY/PASS). Visitors: NOT the +r path's
+`commit_password/2`. That verb also flips `expires_at = NULL` (promotes the
+row to permanent), which is only safe behind the `+r` *proof of identity*.
+A SET PASSWD carries no such proof — services reject it unless the nick is
+already identified — so an optimistic commit reusing `commit_password/2`
+would pin an **unidentified anon visitor permanent and un-reapable** on a
+line services never accepted (an unauthenticated self-promotion / table-
+pollution vector; flagged in review). Visitors therefore get a new
+**identity-gated** `Visitors.rotate_password/2`: it rotates the password
+only for a row already identified (`password_encrypted` set), and no-ops
+(`{:error, :not_identified}`) for an anon row. The Session.Server choke
+point (renamed `stage_if_ns_identify` → `capture_outbound_ns_secret` for
+honesty — it now commits as well as stages) dispatches on subject: visitors
+via a new injected `visitor_password_rotator`, users via a new injected
+`credential_committer` — both the same Boundary-cycle-avoiding
+function-reference indirection as `credential_failer` (the producing
+context deps Session, so Session can't statically alias it). Both id-keyed
+commit verbs carry the H14 `Ecto.StaleEntryError → {:error, :not_found}`
+guard: they run synchronously inside the send handler, so a concurrent
+unbind/delete between lookup and update must NOT crash the session.
 
-**Backstop for the rejected-change window.** An optimistic commit of a
-change Azzurra later *rejects* (insecure / over-`PASSMAX` / same-as-current
-per `do_set_password`) stores a password that didn't take. That is exactly
-the stale-password case #124's re-auth-on-identify-failure prompt already
-recovers — the accepted, bounded cost of having no positive signal. (cic
-length pre-validation was deferred with the UI; Azzurra's `PASSMAX` is the
-authority, not a fabricated client constant.)
+**Backstop for the stale-stored-password window.** An optimistically
+committed change that didn't actually take leaves the stored password
+ahead of what services have. Two ways in: Azzurra *rejects* it (insecure /
+over-`PASSMAX` / same-as-current per `do_set_password`), or grappa's own
+send fails after the commit (the choke point commits before
+`Client.send_*`, the documented "on-send" semantic). Both are the same
+stale-password case #124's re-auth-on-identify-failure prompt already
+recovers — the accepted, bounded cost of having no positive confirmation
+signal. (cic length pre-validation was deferred with the UI; Azzurra's
+`PASSMAX` is the authority, not a fabricated client constant.)

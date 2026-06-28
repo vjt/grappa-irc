@@ -3550,9 +3550,12 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "visitor session: SET PASSWD rotates the visitor password (reuses commit_password/2), no +r" do
+    test "visitor session (already identified): SET PASSWD rotates the visitor password, no +r" do
       {server, port} = start_server()
       {visitor, network} = visitor_with_network(port)
+      # The visitor is ALREADY NickServ-identified (permanent, has a
+      # password) — the only state in which SET PASSWD is meaningful.
+      {:ok, _} = Grappa.Visitors.commit_password(visitor.id, "oldpass")
       pid = start_visitor_session_for(visitor, network)
       :ok = await_handshake(server)
 
@@ -3570,9 +3573,36 @@ defmodule Grappa.Session.ServerTest do
 
       reloaded = Repo.reload!(visitor)
       assert reloaded.password_encrypted == "newpass"
-      # commit_password/2 is the reused verb — it also writes expires_at=NULL
-      # (the visitor is now NickServ-identified, hence permanent).
+      # rotate_password/2 keeps the already-NULL expiry NULL (idempotent).
       assert is_nil(reloaded.expires_at)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "visitor session (anon, NOT identified): SET PASSWD is a no-op — never pins the row permanent" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      # Anon visitor: ephemeral (expires_at set), no committed password.
+      pid = start_visitor_session_for(visitor, network)
+      :ok = await_handshake(server)
+      refute is_nil(Repo.reload!(visitor).expires_at)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:visitor, visitor.id},
+                 network.id,
+                 "NickServ",
+                 "SET PASSWD newpass"
+               )
+
+      _ = :sys.get_state(pid)
+
+      # rotate_password/2 refuses an anon row: the throwaway visitor is NOT
+      # promoted to permanent and stays reapable (services would have
+      # rejected the SET PASSWD anyway — there's no account to change).
+      reloaded = Repo.reload!(visitor)
+      assert is_nil(reloaded.password_encrypted)
+      refute is_nil(reloaded.expires_at)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

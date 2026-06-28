@@ -95,5 +95,14 @@ defmodule Grappa.Networks.CommitPasswordTest do
 
       refute Credential.password_changeset(cred, "").valid?
     end
+
+    test "rejects CR/LF/NUL — the stored value is re-interpolated into the wire" do
+      {_, _, cred} = setup_credential()
+
+      refute Credential.password_changeset(cred, "new\r\npass").valid?
+      refute Credential.password_changeset(cred, "new\x00pass").valid?
+      # A space is legal (SET PASSWD password is rest-of-line).
+      assert Credential.password_changeset(cred, "new pass").valid?
+    end
   end
 end

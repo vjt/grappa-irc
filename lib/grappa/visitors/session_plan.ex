@@ -121,6 +121,13 @@ defmodule Grappa.Visitors.SessionPlan do
       # path can reach commit_password/2 without a module reference
       # in the Session boundary.
       visitor_committer: &Grappa.Visitors.commit_password/2,
+      # #131: visitor-side SET PASSWD committer. NOT `commit_password/2`
+      # (that one promotes anon→permanent, correct only behind the +r
+      # identity proof) — `rotate_password/2` is identity-gated so an
+      # optimistic on-send commit of a SET PASSWD from an unidentified anon
+      # visitor (which services would reject) can't pin the row permanent.
+      # Parallel to the user-side `Networks.SessionPlan.credential_committer`.
+      visitor_password_rotator: &Grappa.Visitors.rotate_password/2,
       # V9 (visitor-parity cluster, 2026-05-15): mirror of
       # `visitor_committer` for the upstream NICK self-echo. Server's
       # `apply_effects/2` invokes this on `{:visitor_nick_changed, new}`

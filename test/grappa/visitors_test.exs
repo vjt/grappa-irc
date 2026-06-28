@@ -182,6 +182,57 @@ defmodule Grappa.VisitorsTest do
     end
   end
 
+  # #131 — in-session SET PASSWD commit verb. Identity-gated, unlike the
+  # +r-promotion `commit_password/2`: it must NEVER promote an unidentified
+  # anon visitor to permanent (services reject SET PASSWD for an
+  # unidentified nick, and an optimistic commit carries no +r proof).
+  describe "rotate_password/2" do
+    test "rotates an already-identified visitor's password; expires_at stays NULL" do
+      {:ok, anon} = Visitors.find_or_provision_anon("vjt-rot", @network, "1.2.3.4")
+      {:ok, identified} = Visitors.commit_password(anon.id, "oldpass")
+      assert is_nil(identified.expires_at)
+
+      assert {:ok, rotated} = Visitors.rotate_password(anon.id, "newpass")
+      assert rotated.password_encrypted == "newpass"
+      # Still permanent — rotation is idempotent on expires_at.
+      assert is_nil(rotated.expires_at)
+    end
+
+    test "rotates a rest-of-line password with spaces verbatim" do
+      {:ok, anon} = Visitors.find_or_provision_anon("vjt-rot-sp", @network, "1.2.3.4")
+      {:ok, _} = Visitors.commit_password(anon.id, "oldpass")
+
+      assert {:ok, rotated} = Visitors.rotate_password(anon.id, "my new pass phrase")
+      assert rotated.password_encrypted == "my new pass phrase"
+    end
+
+    test "{:error, :not_identified} for an anon row — NEVER promotes it to permanent" do
+      {:ok, anon} = Visitors.find_or_provision_anon("vjt-anon", @network, "1.2.3.4")
+      refute is_nil(anon.expires_at)
+      assert is_nil(anon.password_encrypted)
+
+      assert {:error, :not_identified} = Visitors.rotate_password(anon.id, "newpass")
+
+      # The anon row is untouched — still ephemeral, still password-less.
+      # Without the gate this would have pinned it permanent + un-reapable.
+      reloaded = Grappa.Repo.reload!(anon)
+      assert is_nil(reloaded.password_encrypted)
+      refute is_nil(reloaded.expires_at)
+    end
+
+    test "{:error, :not_found} for an unknown visitor_id" do
+      assert {:error, :not_found} = Visitors.rotate_password(Ecto.UUID.generate(), "newpass")
+    end
+
+    test "{:error, :not_found} when an identified row is concurrently deleted (H14)" do
+      {:ok, anon} = Visitors.find_or_provision_anon("vjt-rot-h14", @network, "1.2.3.4")
+      {:ok, _} = Visitors.commit_password(anon.id, "oldpass")
+      {:ok, _} = Grappa.Repo.delete(anon)
+
+      assert {:error, :not_found} = Visitors.rotate_password(anon.id, "newpass")
+    end
+  end
+
   describe "update_nick/2 concurrent-delete race (H14)" do
     test "returns {:error, :not_found} when row is concurrently deleted" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt-h14b", @network, "1.2.3.4")

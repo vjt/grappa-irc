@@ -159,6 +159,24 @@ defmodule Grappa.Session.Server do
              {:ok, struct()} | {:error, :not_found | Ecto.Changeset.t()})
 
   @typedoc """
+  #131 — visitor-side SET PASSWD committer the visitor `SessionPlan`
+  injects. The visitor counterpart of `credential_committer`. Invoked from
+  the outbound NickServ-secret capture choke point (NOT the `+r` path) when
+  a well-formed in-session `SET PASSWD` leaves the wire.
+
+  Deliberately NOT `visitor_committer` (`commit_password/2`): that one
+  promotes anon→permanent, which is only safe behind the `+r` identity
+  proof. This shape maps to `Grappa.Visitors.rotate_password/2`, which is
+  identity-gated (`{:error, :not_identified}` for an anon row) so an
+  optimistic commit can't pin an unidentified visitor permanent. Same
+  Boundary-cycle-avoiding function-reference indirection as
+  `visitor_committer`.
+  """
+  @type visitor_password_rotator ::
+          (Ecto.UUID.t(), String.t() ->
+             {:ok, struct()} | {:error, :not_found | :not_identified | Ecto.Changeset.t()})
+
+  @typedoc """
   V9 (visitor-parity cluster, 2026-05-15) — opaque callback the
   visitor-side `SessionPlan` injects so `apply_effects/2` can rotate
   `visitors.nick` after EventRouter observes the upstream NICK
@@ -340,6 +358,7 @@ defmodule Grappa.Session.Server do
           optional(:notify_pid) => pid(),
           optional(:notify_ref) => reference(),
           optional(:visitor_committer) => visitor_committer(),
+          optional(:visitor_password_rotator) => visitor_password_rotator(),
           optional(:visitor_nick_persister) => visitor_nick_persister(),
           optional(:credential_failer) => credential_failer(),
           optional(:credential_committer) => credential_committer(),
@@ -404,6 +423,7 @@ defmodule Grappa.Session.Server do
           pending_registration_secret: String.t() | nil,
           pending_password: String.t() | nil,
           visitor_committer: visitor_committer() | nil,
+          visitor_password_rotator: visitor_password_rotator() | nil,
           visitor_nick_persister: visitor_nick_persister() | nil,
           credential_failer: credential_failer() | nil,
           credential_committer: credential_committer() | nil,
@@ -650,6 +670,7 @@ defmodule Grappa.Session.Server do
       pending_registration_secret: nil,
       pending_password: pending_password_from_opts(opts),
       visitor_committer: Map.get(opts, :visitor_committer),
+      visitor_password_rotator: Map.get(opts, :visitor_password_rotator),
       visitor_nick_persister: Map.get(opts, :visitor_nick_persister),
       credential_failer: Map.get(opts, :credential_failer),
       credential_committer: Map.get(opts, :credential_committer),
@@ -2394,31 +2415,34 @@ defmodule Grappa.Session.Server do
   # insecure / over-PASSMAX / same-as-current) stores a password that
   # didn't take; #124's re-auth-on-identify-failure prompt is the backstop.
   #
-  # Both credential homes via the same opaque committers the +r path uses:
-  # visitors via `visitor_committer` (`Visitors.commit_password/2`), users
-  # via the #131 sibling `credential_committer`
+  # Both credential homes via the same opaque committers the +r path uses,
+  # picked per subject: visitors via `visitor_password_rotator`
+  # (`Visitors.rotate_password/2` — identity-gated so an optimistic commit
+  # can't promote an unidentified anon row to permanent, unlike the +r-only
+  # `visitor_committer`), users via the #131 sibling `credential_committer`
   # (`Credentials.commit_password/3`). Returns `state` unchanged — the
   # commit is a side-effect (DB write), there's no capture slot to stage.
   @spec commit_set_passwd(t(), String.t()) :: t()
-  defp commit_set_passwd(%{subject: {:visitor, visitor_id}, visitor_committer: committer} = state, new_password)
-       when is_function(committer, 2) do
-    log_set_passwd_commit(committer.(visitor_id, new_password), visitor_id: visitor_id)
+  defp commit_set_passwd(%{subject: {:visitor, visitor_id}, visitor_password_rotator: rotator} = state, new_password)
+       when is_function(rotator, 2) do
+    log_set_passwd_commit(rotator.(visitor_id, new_password), visitor_id: visitor_id)
     state
   end
 
-  defp commit_set_passwd(%{subject: {:user, _}, credential_committer: committer} = state, new_password)
+  defp commit_set_passwd(%{subject: {:user, user_id}, credential_committer: committer} = state, new_password)
        when is_function(committer, 1) do
-    log_set_passwd_commit(committer.(new_password), [])
+    log_set_passwd_commit(committer.(new_password), user: user_id)
     state
   end
 
   # No committer in the plan: a test fixture / Bootstrap path without
-  # injection, or a pre-#131 user session HOT-reloaded before the
-  # `credential_committer` field existed (the struct-key pattern above
-  # fails to match, so we land here rather than crashing). The capture is
-  # observed but not persisted; the operator-visible signal is this log
-  # line, and #124's re-auth recovers the now-stale stored password on the
-  # next identify. A cold restart re-inits with the committer wired.
+  # injection, or a pre-#131 session HOT-reloaded before the
+  # `credential_committer` / `visitor_password_rotator` field existed (the
+  # struct-key pattern above fails to match, so we land here rather than
+  # crashing). The capture is observed but not persisted; the
+  # operator-visible signal is this log line, and #124's re-auth recovers
+  # the now-stale stored password on the next identify. A cold restart
+  # re-inits with the committer wired.
   defp commit_set_passwd(state, _) do
     Logger.error("SET PASSWD captured but no committer in plan — not persisted",
       verb: :ns_set_passwd
@@ -2430,6 +2454,16 @@ defmodule Grappa.Session.Server do
   defp log_set_passwd_commit({:ok, _}, meta) do
     Logger.info(
       "SET PASSWD captured → stored credential updated (optimistic, #131)",
+      Keyword.put(meta, :verb, :ns_set_passwd)
+    )
+  end
+
+  # An anon (never-`+r`-identified) visitor's SET PASSWD — services would
+  # reject it, and `rotate_password/2` refuses to pin the row permanent.
+  # Expected skip, not a failure: log at debug, no operator alarm.
+  defp log_set_passwd_commit({:error, :not_identified}, meta) do
+    Logger.debug(
+      "SET PASSWD from unidentified visitor — not committed (services would reject)",
       Keyword.put(meta, :verb, :ns_set_passwd)
     )
   end

@@ -178,6 +178,50 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
+  #131 — rotate an ALREADY-identified visitor's NickServ password from an
+  in-session `SET PASSWD` (optimistic commit-on-send).
+
+  Distinct from `commit_password/2`, which is the `+r`-gated promotion verb:
+  `+r` PROVES the nick is identified, so it may safely promote an anon row
+  to permanent (`expires_at = NULL`). A `SET PASSWD` carries NO such proof —
+  services reject it unless the nick is already registered/identified — so
+  an optimistic commit MUST NOT promote. This function is therefore
+  IDENTITY-GATED: it rotates the password only for a row that is ALREADY
+  identified (`password_encrypted` set ⟺ permanent), and is a no-op
+  (`{:error, :not_identified}`) for an anon row. Without the gate, an anon
+  visitor typing `/ns set passwd x` (which services would reject) would be
+  silently pinned permanent + un-reapable carrying a junk password — the
+  exact promotion the `+r` gate exists to prevent.
+
+  Reuses `commit_password/2`'s underlying write (`commit_password_changeset`
+  with `expires_at = nil`, idempotent on an already-permanent row) and the
+  same H14 concurrent-delete guard.
+  """
+  @spec rotate_password(Ecto.UUID.t(), String.t()) ::
+          {:ok, Visitor.t()} | {:error, :not_found | :not_identified | Ecto.Changeset.t()}
+  def rotate_password(visitor_id, password)
+      when is_binary(visitor_id) and is_binary(password) and password != "" do
+    case Repo.get(Visitor, visitor_id) do
+      nil ->
+        {:error, :not_found}
+
+      # Anon row (never +r-identified): SET PASSWD can't apply at the
+      # service, and an optimistic commit must not promote → skip.
+      %Visitor{password_encrypted: nil} ->
+        {:error, :not_identified}
+
+      %Visitor{} = visitor ->
+        try do
+          visitor
+          |> Visitor.commit_password_changeset(password, nil)
+          |> Repo.update()
+        rescue
+          Ecto.StaleEntryError -> {:error, :not_found}
+        end
+    end
+  end
+
+  @doc """
   Slide `expires_at` forward on user-initiated REST/WS verbs. Anon
   visitors slide to now + 48h; NickServ-identified visitors
   (`password_encrypted` set + `expires_at IS NULL`) are no-ops —
