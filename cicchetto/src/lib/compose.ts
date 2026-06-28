@@ -74,6 +74,11 @@ type ComposeState = {
   draft: string;
   history: string[];
   historyCursor: number | null; // null = bottom (live draft)
+  // Live, unsent draft parked when the user walks UP into history; restored
+  // verbatim when recallNext returns to the bottom. Without it the first
+  // ArrowUp on a half-typed line silently ate the text (history[next]
+  // overwrote draft) and recallNext handed back "" instead of the draft.
+  stashedDraft: string;
 };
 
 // ok: true = silent success (draft cleared, no feedback to user).
@@ -81,7 +86,12 @@ type ComposeState = {
 // error: string = failure, displayed inline; draft preserved.
 type SubmitResult = { ok: true | string } | { error: string };
 
-const empty = (): ComposeState => ({ draft: "", history: [], historyCursor: null });
+const empty = (): ComposeState => ({
+  draft: "",
+  history: [],
+  historyCursor: null,
+  stashedDraft: "",
+});
 
 // Multiline fan-out: split a free-text body into one PRIVMSG per line
 // (see messageLines.ts for the wire-framing why) and send each.
@@ -150,10 +160,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const recallPrev = (key: ChannelKey): void => {
     writeState(key, (s) => {
       if (s.history.length === 0) return s;
+      // Leaving the bottom: park the live draft so recallNext can restore it.
+      // Mid-walk (cursor non-null) the live draft is already stashed — keep it.
+      const stashedDraft = s.historyCursor === null ? s.draft : s.stashedDraft;
       const cur = s.historyCursor ?? s.history.length;
       const next = Math.max(0, cur - 1);
       const draft = s.history[next] ?? s.draft;
-      return { ...s, draft, historyCursor: next };
+      return { ...s, draft, historyCursor: next, stashedDraft };
     });
   };
 
@@ -162,7 +175,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       if (s.historyCursor === null) return s;
       const next = s.historyCursor + 1;
       if (next >= s.history.length) {
-        return { ...s, draft: "", historyCursor: null };
+        // Back at the bottom — restore the parked live draft, not "".
+        return { ...s, draft: s.stashedDraft, historyCursor: null };
       }
       return { ...s, draft: s.history[next] ?? "", historyCursor: next };
     });

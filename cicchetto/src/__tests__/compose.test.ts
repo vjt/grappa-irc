@@ -230,6 +230,28 @@ describe("compose history (up/down recall)", () => {
     compose.recallNext(k); // past newest — return to empty draft
     expect(compose.getDraft(k)).toBe("");
   });
+
+  it("recallPrev stashes the live unsent draft; recallNext restores it", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+
+    for (const body of ["one", "two"]) {
+      compose.setDraft(k, body);
+      await compose.submit(k, "freenode", "#a");
+    }
+
+    // Half-typed, unsent line at the bottom.
+    compose.setDraft(k, "half-typed");
+
+    compose.recallPrev(k); // up into history — must NOT eat the draft
+    expect(compose.getDraft(k)).toBe("two");
+    compose.recallNext(k); // back to bottom — restores the parked draft
+    expect(compose.getDraft(k)).toBe("half-typed");
+  });
 });
 
 describe("compose submit — slash command dispatch", () => {
