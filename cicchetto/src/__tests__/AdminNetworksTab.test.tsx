@@ -21,6 +21,10 @@ vi.mock("../lib/api", async () => {
     adminAddServer: vi.fn(),
     adminDeleteServer: vi.fn(),
     adminUpdateServer: vi.fn(),
+    adminListFeaturedChannels: vi.fn(),
+    adminAddFeaturedChannel: vi.fn(),
+    adminDeleteFeaturedChannel: vi.fn(),
+    adminUpdateFeaturedChannel: vi.fn(),
   };
 });
 
@@ -653,6 +657,73 @@ describe("AdminNetworksTab", () => {
       fireEvent.click(delBtn);
       await waitFor(() => {
         expect(api.adminDeleteServer).toHaveBeenCalledWith("test-bearer", BAHAMUT.id, 1);
+      });
+    });
+  });
+
+  describe("featured channels disclosure (#85)", () => {
+    const FC = {
+      id: 1,
+      network_id: BAHAMUT.id,
+      name: "#sniffo",
+      description: "il canale",
+      position: 0,
+      enabled: true,
+      inserted_at: "2026-06-28T00:00:00Z",
+      updated_at: "2026-06-28T00:00:00Z",
+    };
+
+    it("expands a network row, lists featured channels, and adds one", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      vi.mocked(api.adminListServers).mockResolvedValue([]);
+      vi.mocked(api.adminListFeaturedChannels).mockResolvedValue([FC]);
+      vi.mocked(api.adminAddFeaturedChannel).mockResolvedValue({ ...FC, id: 2, name: "#new" });
+      render(() => <AdminNetworksTab />);
+      await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
+
+      fireEvent.click(screen.getByTestId(`admin-network-expand-${BAHAMUT.slug}`));
+      await waitFor(() =>
+        expect(screen.queryByTestId(`admin-network-featured-table-${BAHAMUT.slug}`)).not.toBeNull(),
+      );
+      expect(api.adminListFeaturedChannels).toHaveBeenCalledWith("test-bearer", BAHAMUT.id);
+
+      fireEvent.input(screen.getByTestId(`admin-network-add-featured-name-${BAHAMUT.slug}`), {
+        target: { value: "#new" },
+      });
+      fireEvent.input(screen.getByTestId(`admin-network-add-featured-description-${BAHAMUT.slug}`), {
+        target: { value: "blurb" },
+      });
+      fireEvent.click(screen.getByTestId(`admin-network-add-featured-submit-${BAHAMUT.slug}`));
+
+      await waitFor(() => {
+        expect(api.adminAddFeaturedChannel).toHaveBeenCalledWith(
+          "test-bearer",
+          BAHAMUT.id,
+          expect.objectContaining({ name: "#new", description: "blurb", position: 0 }),
+        );
+      });
+    });
+
+    it("delete-featured inline-confirm fires adminDeleteFeaturedChannel", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      vi.mocked(api.adminListServers).mockResolvedValue([]);
+      vi.mocked(api.adminListFeaturedChannels).mockResolvedValue([FC]);
+      vi.mocked(api.adminDeleteFeaturedChannel).mockResolvedValue(undefined);
+      render(() => <AdminNetworksTab />);
+      await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
+
+      fireEvent.click(screen.getByTestId(`admin-network-expand-${BAHAMUT.slug}`));
+      await waitFor(() =>
+        expect(screen.queryByTestId(`admin-network-featured-table-${BAHAMUT.slug}`)).not.toBeNull(),
+      );
+
+      const delBtn = screen.getByTestId(`admin-network-featured-delete-${BAHAMUT.slug}-1`);
+      fireEvent.click(delBtn);
+      fireEvent.click(delBtn);
+      await waitFor(() => {
+        expect(api.adminDeleteFeaturedChannel).toHaveBeenCalledWith("test-bearer", BAHAMUT.id, 1);
       });
     });
   });

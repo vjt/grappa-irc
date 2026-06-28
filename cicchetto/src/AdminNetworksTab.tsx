@@ -3,19 +3,24 @@ import { createStore, produce } from "solid-js/store";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { liveCountsByNetworkId } from "./lib/adminEvents";
 import {
+  type AdminFeaturedChannel,
   type AdminNetwork,
   type AdminNetworkCapsPatch,
   type AdminServer,
   ApiError,
+  adminAddFeaturedChannel,
   adminAddServer,
   adminCreateNetwork,
+  adminDeleteFeaturedChannel,
   adminDeleteNetwork,
   adminDeleteServer,
+  adminListFeaturedChannels,
   adminListNetworks,
   adminListServers,
   adminPatchNetworkCaps,
   adminResetCircuit,
   adminRunReaper,
+  adminUpdateFeaturedChannel,
   adminUpdateServer,
 } from "./lib/api";
 import { token } from "./lib/auth";
@@ -153,6 +158,17 @@ const AdminNetworksTab: Component = () => {
     Record<number, { host: string; port: string; tls: boolean }>
   >({});
   const [serverConfirmKey, setServerConfirmKey] = createSignal<string | null>(null);
+
+  // #85 — Featured-channels disclosure, sibling to servers. Same
+  // per-network cache + add-form-state + delete-confirm pattern.
+  const [featuredByNetworkId, setFeaturedByNetworkId] = createStore<
+    Record<number, AdminFeaturedChannel[]>
+  >({});
+  const [featuredForm, setFeaturedForm] = createStore<
+    Record<number, { name: string; description: string; position: string }>
+  >({});
+  const [featuredConfirmKey, setFeaturedConfirmKey] = createSignal<string | null>(null);
+  const emptyFeaturedForm = () => ({ name: "", description: "", position: "0" });
 
   const seedEditsFromServer = (rows: AdminNetwork[]): void => {
     setEdits(
@@ -314,6 +330,11 @@ const AdminNetworksTab: Component = () => {
         }
       }),
     );
+    setFeaturedForm(
+      produce((draft) => {
+        if (draft[net.id] === undefined) draft[net.id] = emptyFeaturedForm();
+      }),
+    );
     // First-open fetch (cache thereafter).
     if (serversByNetworkId[net.id] === undefined) {
       const t = token();
@@ -329,6 +350,87 @@ const AdminNetworksTab: Component = () => {
         const code = err instanceof ApiError ? err.code : "request_failed";
         setError(`servers (${net.slug}): ${code}`);
       }
+    }
+    if (featuredByNetworkId[net.id] === undefined) await refreshFeatured(net);
+  };
+
+  const refreshFeatured = async (net: AdminNetwork): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    try {
+      const list = await adminListFeaturedChannels(t, net.id);
+      setFeaturedByNetworkId(
+        produce((draft) => {
+          draft[net.id] = list;
+        }),
+      );
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "request_failed";
+      setError(`featured (${net.slug}): ${code}`);
+    }
+  };
+
+  const onAddFeaturedChannel = async (net: AdminNetwork, e: Event): Promise<void> => {
+    e.preventDefault();
+    const t = token();
+    if (t === null) return;
+    const f = featuredForm[net.id];
+    if (f === undefined || f.name.trim() === "") return;
+    const position = Number.parseInt(f.position, 10);
+    if (!Number.isFinite(position) || position < 0) {
+      setError(`add featured: invalid position`);
+      return;
+    }
+    setError(null);
+    try {
+      await adminAddFeaturedChannel(t, net.id, {
+        name: f.name.trim(),
+        description: f.description.trim() === "" ? null : f.description.trim(),
+        position,
+      });
+      setFeaturedForm(
+        produce((draft) => {
+          draft[net.id] = emptyFeaturedForm();
+        }),
+      );
+      await refreshFeatured(net);
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "request_failed";
+      setError(`add featured (${net.slug}): ${code}`);
+    }
+  };
+
+  const onToggleFeaturedEnabled = async (
+    net: AdminNetwork,
+    fc: AdminFeaturedChannel,
+  ): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    setError(null);
+    try {
+      await adminUpdateFeaturedChannel(t, net.id, fc.id, { enabled: !fc.enabled });
+      await refreshFeatured(net);
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "request_failed";
+      setError(`update featured (${fc.name}): ${code}`);
+    }
+  };
+
+  const onDeleteFeaturedChannel = async (
+    net: AdminNetwork,
+    fc: AdminFeaturedChannel,
+  ): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    setError(null);
+    try {
+      await adminDeleteFeaturedChannel(t, net.id, fc.id);
+      await refreshFeatured(net);
+      setFeaturedConfirmKey(null);
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "request_failed";
+      setError(`delete featured (${fc.name}): ${code}`);
+      setFeaturedConfirmKey(null);
     }
   };
 
@@ -624,6 +726,30 @@ const AdminNetworksTab: Component = () => {
                             void onDeleteServer(net, s);
                           }}
                         />
+                        <FeaturedChannelsDisclosure
+                          net={net}
+                          featured={featuredByNetworkId[net.id] ?? []}
+                          form={featuredForm[net.id] ?? emptyFeaturedForm()}
+                          onFormChange={(patch) =>
+                            setFeaturedForm(
+                              produce((draft) => {
+                                const cur = draft[net.id] ?? emptyFeaturedForm();
+                                draft[net.id] = { ...cur, ...patch };
+                              }),
+                            )
+                          }
+                          onAddFeatured={(e) => {
+                            void onAddFeaturedChannel(net, e);
+                          }}
+                          onToggleEnabled={(fc) => {
+                            void onToggleFeaturedEnabled(net, fc);
+                          }}
+                          confirmingFeaturedKey={featuredConfirmKey()}
+                          onArmFeaturedDelete={(key) => setFeaturedConfirmKey(key)}
+                          onDeleteFeatured={(fc) => {
+                            void onDeleteFeaturedChannel(net, fc);
+                          }}
+                        />
                       </td>
                     </tr>
                   </Show>
@@ -849,6 +975,125 @@ const ServersDisclosure: Component<{
                       onArm={() => props.onArmServerDelete(`${props.net.id}:${s.id}`)}
                       onConfirm={() => props.onDeleteServer(s)}
                       testId={`admin-network-server-delete-${props.net.slug}-${s.id}`}
+                      extraClass="delete-btn"
+                    />
+                  </td>
+                </tr>
+              )}
+            </For>
+          </tbody>
+        </table>
+      </Show>
+    </div>
+  );
+};
+
+// #85 — operator-curated featured channels per network. Clone of
+// ServersDisclosure (sibling sub-resource); fields name/description/
+// position, toggle-enabled + delete. Same data-testid scheme.
+const FeaturedChannelsDisclosure: Component<{
+  net: AdminNetwork;
+  featured: AdminFeaturedChannel[];
+  form: { name: string; description: string; position: string };
+  onFormChange: (
+    patch: Partial<{ name: string; description: string; position: string }>,
+  ) => void;
+  onAddFeatured: (e: Event) => void;
+  onToggleEnabled: (fc: AdminFeaturedChannel) => void;
+  confirmingFeaturedKey: string | null;
+  onArmFeaturedDelete: (key: string | null) => void;
+  onDeleteFeatured: (fc: AdminFeaturedChannel) => void;
+}> = (props) => {
+  return (
+    <div class="admin-network-featured-disclosure">
+      <h4 class="admin-network-featured-title">Featured channels</h4>
+      <form
+        class="admin-network-featured-add-form"
+        onSubmit={props.onAddFeatured}
+        data-testid={`admin-network-add-featured-form-${props.net.slug}`}
+      >
+        <input
+          type="text"
+          placeholder="#channel"
+          value={props.form.name}
+          onInput={(e) => props.onFormChange({ name: (e.currentTarget as HTMLInputElement).value })}
+          data-testid={`admin-network-add-featured-name-${props.net.slug}`}
+          aria-label={`new featured channel for ${props.net.slug}`}
+          required
+        />
+        <input
+          type="text"
+          placeholder="description (optional)"
+          value={props.form.description}
+          onInput={(e) =>
+            props.onFormChange({ description: (e.currentTarget as HTMLInputElement).value })
+          }
+          data-testid={`admin-network-add-featured-description-${props.net.slug}`}
+          aria-label={`featured description for ${props.net.slug}`}
+        />
+        <input
+          type="number"
+          placeholder="position"
+          min="0"
+          value={props.form.position}
+          onInput={(e) =>
+            props.onFormChange({ position: (e.currentTarget as HTMLInputElement).value })
+          }
+          data-testid={`admin-network-add-featured-position-${props.net.slug}`}
+          aria-label={`featured position for ${props.net.slug}`}
+        />
+        <button
+          type="submit"
+          disabled={props.form.name.trim() === ""}
+          data-testid={`admin-network-add-featured-submit-${props.net.slug}`}
+        >
+          Add featured
+        </button>
+      </form>
+      <Show when={props.featured.length === 0}>
+        <p class="muted" data-testid={`admin-network-featured-empty-${props.net.slug}`}>
+          no featured channels
+        </p>
+      </Show>
+      <Show when={props.featured.length > 0}>
+        <table
+          class="admin-network-featured-table"
+          data-testid={`admin-network-featured-table-${props.net.slug}`}
+        >
+          <thead>
+            <tr>
+              <th>channel</th>
+              <th>description</th>
+              <th>position</th>
+              <th>enabled</th>
+              <th>
+                <span class="sr-only">actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <For each={props.featured}>
+              {(fc) => (
+                <tr data-testid={`admin-network-featured-row-${props.net.slug}-${fc.id}`}>
+                  <td>{fc.name}</td>
+                  <td>{fc.description}</td>
+                  <td>{fc.position}</td>
+                  <td>{fc.enabled ? "yes" : "no"}</td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => props.onToggleEnabled(fc)}
+                      data-testid={`admin-network-featured-toggle-${props.net.slug}-${fc.id}`}
+                    >
+                      {fc.enabled ? "Disable" : "Enable"}
+                    </button>
+                    <InlineConfirmButton
+                      idleLabel="Delete"
+                      confirmLabel="Confirm delete?"
+                      armed={props.confirmingFeaturedKey === `${props.net.id}:${fc.id}`}
+                      onArm={() => props.onArmFeaturedDelete(`${props.net.id}:${fc.id}`)}
+                      onConfirm={() => props.onDeleteFeatured(fc)}
+                      testId={`admin-network-featured-delete-${props.net.slug}-${fc.id}`}
                       extraClass="delete-btn"
                     />
                   </td>
