@@ -478,11 +478,10 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "credentials_present", credential_count: n})
   end
 
-  # Admin-panel bucket 1 — `DELETE /admin/networks/:id` (and the
-  # pre-existing `unbind_credential/2` cascade-on-empty) refuses when
-  # archival scrollback would be orphaned. Lifted from
-  # `Credentials.unbind_credential/2` into the typed FallbackController
-  # contract so both REST surfaces collapse on the same wire body.
+  # Admin-panel bucket 1 — `DELETE /admin/networks/:id` refuses when
+  # archival scrollback would be orphaned (`Networks.delete_network/1`'s
+  # :restrict-FK gate). Sole producer since GH #105 dropped the
+  # `unbind_credential/2` cascade-on-empty that used to share this body.
   def call(conn, {:error, :scrollback_present}) do
     conn
     |> put_status(:conflict)

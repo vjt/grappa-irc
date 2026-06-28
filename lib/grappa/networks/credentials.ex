@@ -2,33 +2,26 @@ defmodule Grappa.Networks.Credentials do
   @moduledoc """
   Per-(user, network) credential lifecycle.
 
-  CRUD + Cloak-encrypted password handling + the cascade-on-empty
-  unbind path that tears down the parent network row when its last
-  binding is removed (and rolls back the whole transaction if scrollback
-  archives would be orphaned).
+  CRUD + Cloak-encrypted password handling + the `unbind_credential/2`
+  detach path that stops the live session and deletes the user's
+  credential row.
 
   Extracted from `Grappa.Networks` in the D1 god-context split. The
   parent context kept slug CRUD; credential concerns — including the
-  `Session.stop_session/2` ↔ `Scrollback.has_messages_for_network?/1`
-  orchestration that drives `unbind_credential/2` — live here so the
-  Phase 5 credential REST surface and audit-logging hooks land in one
-  cohesive module.
+  `Session.stop_session/2` teardown that drives `unbind_credential/2` —
+  live here so the Phase 5 credential REST surface and audit-logging
+  hooks land in one cohesive module.
 
-  ## Cascade-on-empty
+  ## Unbind never deletes the network (GH #105)
 
   The credential → network FK is `:restrict`. `unbind_credential/2`
-  removes the credential row and, if no other user still references the
-  network, also attempts to delete the network row + cascades to its
-  servers (via the FK `:delete_all` from `network_servers`).
-
-  Scrollback messages are archival: `messages.network_id` FK is
-  `:restrict` (S29 C2 fix), so the cascade is gated by a scrollback-
-  presence check. If the last user has scrollback rows on the network,
-  `unbind_credential/2` returns `{:error, :scrollback_present}` and the
-  transaction rolls back — credential AND network stay. The operator
-  deletes the archival rows explicitly via
-  `mix grappa.delete_scrollback --network <slug>` (Phase 5) and
-  re-runs `unbind_credential/2`.
+  removes ONLY the credential row (and stops the running session); the
+  network persists even when its last binding is removed. Networks are
+  shared per-deployment infra — an empty binding list is not a delete
+  signal. Visitor scrollback follows the visitor lifecycle. Explicit
+  operator-initiated teardown is `Grappa.Networks.delete_network/1`,
+  which refuses while any credential or archival scrollback still
+  references the network.
 
   ## Encrypted password
 
@@ -43,8 +36,7 @@ defmodule Grappa.Networks.Credentials do
 
   alias Grappa.Accounts.User
   alias Grappa.Networks.{Credential, Network}
-  alias Grappa.Repo
-  alias Grappa.{Scrollback, Session}
+  alias Grappa.{Repo, Session}
 
   @doc """
   Binds `user` to `network` with the given attrs. Validation rules
@@ -303,26 +295,24 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
-  Unbinds `user` from `network`. If no other user has a credential
-  on the network after the delete, also deletes the network row +
-  cascades to its servers (via the FK `:delete_all` from
-  `network_servers`). Idempotent: a non-existent binding still returns
-  `:ok`.
+  Detaches `user` from `network`: deletes the user's credential row and
+  stops the running `Session.Server`, if any. Idempotent — a
+  non-existent binding still returns `:ok`.
 
-  Returns `{:error, :scrollback_present}` if the cascade-on-empty path
-  would orphan archival messages — the `messages.network_id` FK is
-  `:restrict` (S29 C2 fix) so the operator must explicitly delete the
-  scrollback before the network can be torn down. Transaction is
-  rolled back on that path: credential AND network stay.
+  The network row is NEVER touched (GH #105). A network whose last
+  binding is removed simply persists as shared per-deployment infra;
+  visitor scrollback continues to follow the visitor lifecycle. Explicit
+  network teardown — gated on credential-presence AND scrollback-presence
+  — is `Grappa.Networks.delete_network/1`'s job, not unbind's.
   """
-  @spec unbind_credential(User.t(), Network.t()) :: :ok | {:error, :scrollback_present}
+  @spec unbind_credential(User.t(), Network.t()) :: :ok
   def unbind_credential(%User{id: user_id}, %Network{id: network_id}) do
-    # S29 H5: tear down the running Session.Server BEFORE the DB
-    # transaction commits. Otherwise the GenServer's cached
-    # `state.network_id` outlives the FK row; the next outbound
-    # PRIVMSG crashes the call handler and the `:transient` restart
-    # loops forever (init re-reads the now-absent credential).
-    # Idempotent — :ok if no session was running for the key.
+    # S29 H5: tear down the running Session.Server BEFORE deleting the
+    # credential row. Otherwise the GenServer's cached `state.network_id`
+    # outlives the binding; the next outbound PRIVMSG crashes the call
+    # handler and the `:transient` restart loops forever (init re-reads
+    # the now-absent credential). Idempotent — :ok if no session was
+    # running for the key.
     #
     # A2 cycle inversion (Cluster 2): pre-inversion this called an
     # inlined `stop_session_for_unbind/2` that replicated the
@@ -333,44 +323,17 @@ defmodule Grappa.Networks.Credentials do
     # canonical facade.
     :ok = Session.stop_session({:user, user_id}, network_id, "credentials unbound")
 
-    # Wrap in a transaction so the credential delete + the
-    # last-binding check + the network delete are atomic. Without it,
-    # a concurrent `bind_credential/3` between the check and the
-    # network delete would either get its just-inserted row blown
-    # away by the cascade OR trip the `:restrict` FK and abort. sqlite
-    # is single-writer so the transaction cost is negligible.
-    result =
-      Repo.transaction(fn ->
-        cred_query =
-          from(c in Credential,
-            where: c.user_id == ^user_id and c.network_id == ^network_id
-          )
+    # A single scoped delete_all is atomic on its own — no transaction
+    # wrapper needed now that unbind only ever touches the credential row
+    # (GH #105 removed the last-binding check + cascade-on-empty network
+    # delete that used to share the transaction).
+    cred_query =
+      from(c in Credential,
+        where: c.user_id == ^user_id and c.network_id == ^network_id
+      )
 
-        {_, _} = Repo.delete_all(cred_query)
-
-        if list_users_for_network(%Network{id: network_id}) == [] do
-          maybe_cascade_network(network_id)
-        end
-      end)
-
-    case result do
-      {:ok, _} -> :ok
-      {:error, :scrollback_present} -> {:error, :scrollback_present}
-    end
-  end
-
-  # Runs inside the unbind transaction. Either deletes the parent
-  # network row or rolls back the whole transaction (credential delete
-  # included). Partial state — credential gone but network kept —
-  # would leave a "ghost network" the operator can't even unbind
-  # cleanly afterwards.
-  defp maybe_cascade_network(network_id) do
-    if Scrollback.has_messages_for_network?(network_id) do
-      Repo.rollback(:scrollback_present)
-    else
-      net_query = from(n in Network, where: n.id == ^network_id)
-      Repo.delete_all(net_query)
-    end
+    {_, _} = Repo.delete_all(cred_query)
+    :ok
   end
 
   @doc """
@@ -471,21 +434,5 @@ defmodule Grappa.Networks.Credentials do
     Map.new(Credential.connection_states(), fn state ->
       {state, Map.get(counts, state, 0)}
     end)
-  end
-
-  # Returns the user_ids that currently have a credential on the network.
-  # Sole consumer is `unbind_credential/2`'s cascade gate (does any
-  # other user still bind this network?). Private — Boundary doesn't
-  # catch dead-API-surface drift, so demoting closes that door
-  # explicitly.
-  @spec list_users_for_network(Network.t()) :: [Ecto.UUID.t()]
-  defp list_users_for_network(%Network{id: network_id}) do
-    query =
-      from(c in Credential,
-        where: c.network_id == ^network_id,
-        select: c.user_id
-      )
-
-    Repo.all(query)
   end
 end

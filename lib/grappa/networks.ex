@@ -15,8 +15,8 @@ defmodule Grappa.Networks do
       policy (`add_server/2`, `list_servers/1`, `pick_server!/1`,
       `remove_server/3`).
     * `Grappa.Networks.Credentials` — per-(user, network) credential
-      lifecycle including the cascade-on-empty `unbind_credential/2`
-      transaction (Session/Scrollback orchestration).
+      lifecycle; `unbind_credential/2` detaches a credential + stops the
+      live session (never deletes the network — GH #105).
     * `Grappa.Networks.SessionPlan` — pure resolver: credential →
       primitive `t:Grappa.Session.start_opts/0` map.
 
@@ -199,8 +199,9 @@ defmodule Grappa.Networks do
   when any user has a credential bound — operator must unbind every
   credential first (per admin-panel A-5: no silent cascade across other
   users' sessions). Refuses with `{:error, :scrollback_present}` when
-  archival messages would be orphaned — same gate as
-  `Credentials.unbind_credential/2`'s cascade-on-empty path. Servers
+  archival messages would be orphaned — the `messages.network_id` FK is
+  `:restrict` (S29 C2). This is the ONLY path that deletes a network;
+  `Credentials.unbind_credential/2` never does (GH #105). Servers
   cascade via the FK `:delete_all` from `network_servers`.
 
   Returns `{:error, :not_found}` for an unknown / stale id —

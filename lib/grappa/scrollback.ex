@@ -861,12 +861,12 @@ defmodule Grappa.Scrollback do
   @doc """
   Returns `true` if at least one row exists for `network_id`.
 
-  Sole consumer is `Grappa.Networks.Credentials.unbind_credential/2`'s
-  cascade-on-empty path: if the last user unbinds and any archival
-  scrollback still references the network, the cascade rolls back
-  with `{:error, :scrollback_present}` so the operator must
-  explicitly delete the messages first (Phase 5
-  `mix grappa.delete_scrollback`).
+  Sole consumer is `Grappa.Networks.delete_network/1`'s teardown gate:
+  the `messages.network_id` FK is `:restrict`, so an explicit network
+  delete refuses with `{:error, :scrollback_present}` while any archival
+  scrollback still references it. The operator must delete the messages
+  first (Phase 5 `mix grappa.delete_scrollback`). Unbind no longer
+  consults this — it never deletes the network (GH #105).
 
   Pre-A22 the same query was inlined in `Networks` as a raw
   `from(m in "messages", ...)` to dodge the Networks↔Scrollback

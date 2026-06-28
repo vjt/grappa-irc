@@ -25,10 +25,13 @@ defmodule Mix.Tasks.Grappa.UnbindNetworkTest do
     %{user: user, network: network}
   end
 
-  test "removes the binding and cascades the network when last", %{user: user, network: network} do
+  test "removes the binding but keeps the network (no auto-delete, GH #105)",
+       %{user: user, network: network} do
     output = capture_io(fn -> UnbindNetwork.run(["--user", "vjt", "--network", "azzurra"]) end)
     assert output =~ "unbound vjt from azzurra"
-    assert Repo.get(Network, network.id) == nil
+    # GH #105: unbind detaches the credential only — the network row
+    # persists even though it now has zero bindings.
+    assert %Network{} = Repo.get(Network, network.id)
     assert_raise Ecto.NoResultsError, fn -> Credentials.get_credential!(user, network) end
   end
 

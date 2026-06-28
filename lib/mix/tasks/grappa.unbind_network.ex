@@ -2,9 +2,9 @@ defmodule Mix.Tasks.Grappa.UnbindNetwork do
   @shortdoc "Unbinds a user from a network: --user --network"
 
   @moduledoc """
-  Removes the per-(user, network) credential. If no other user has a
-  credential on the same network, the network row + servers are also
-  cascade-deleted (see `Grappa.Networks.Credentials.unbind_credential/2`).
+  Removes the per-(user, network) credential and stops the live session.
+  The network row is never deleted, even when its last binding goes away
+  (see `Grappa.Networks.Credentials.unbind_credential/2`, GH #105).
 
   ## Usage
 

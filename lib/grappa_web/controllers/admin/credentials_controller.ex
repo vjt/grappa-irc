@@ -125,12 +125,12 @@ defmodule GrappaWeb.Admin.CredentialsController do
 
   @doc """
   Admin-panel bucket 3 — DELETE /admin/credentials/:user_id/:network_id.
-  Delegates to `Credentials.unbind_credential/2` which carries the
-  cascade-on-empty network drop, scrollback gate, and live-session
-  stop. Returns `204 No Content` on success.
+  Delegates to `Credentials.unbind_credential/2`, which detaches the
+  credential and stops the live session (the network is never deleted —
+  GH #105). Returns `204 No Content` on success.
   """
   @spec delete(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :not_found | :scrollback_present | :bad_request}
+          Plug.Conn.t() | {:error, :not_found | :bad_request}
   def delete(conn, %{"user_id" => raw_user_id, "network_id" => raw_network_id}) do
     with {:ok, user_id} <- parse_uuid(raw_user_id),
          {:ok, network_id} <- parse_int(raw_network_id),

@@ -360,11 +360,15 @@ name too.
   `epmd -names` is clean, then a plain `service grappa start`
   (cold boot ~20s); re-run `jail_install_rcd.sh` to refresh the
   wrapper.
-- **`unbind_credential/2` refuses to drop the LAST user-credential
-  from a network that still has scrollback** (cascade-on-empty →
-  `:scrollback_present` rollback). To remove a binding while keeping
-  the network alive for visitors, delete the credential row directly +
-  `Session.stop_session`.
+- **`unbind-network` always succeeds and never deletes the network
+  (GH #105).** Unbind only detaches the user's credential + stops the
+  live session; the network row persists even when its last binding
+  goes away (it stays available for visitors). The old cascade-on-empty
+  rollback that refused to detach the last user from a visitor-scrollback
+  network — and the manual direct-row-delete workaround it forced — are
+  gone. To actually retire a network, use `Networks.delete_network/1`
+  (refuses while any credential or archival scrollback still references
+  it; delete the scrollback first).
 
 **Jail package dependencies.** `Grappa.Uploads.MetadataStrip` (#39)
 shells out to `exiftool` (images + mp4/mov) and `ffmpeg` (webm remux).

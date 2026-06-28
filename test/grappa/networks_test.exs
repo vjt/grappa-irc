@@ -7,13 +7,15 @@ defmodule Grappa.NetworksTest do
   `Grappa.EncryptedBinaryTest` (dump/load only) defers to (see that file's
   moduledoc).
 
-  The cascade-on-empty test for `unbind_credential/2` is the one
-  domain-specific behavior worth calling out: networks + servers are
-  per-deployment shared infra (one Azzurra row, many users bind it), but if
-  the LAST binding goes away the network + servers are dead weight and we
-  delete them. Until then the FK from credential → network is `:restrict`,
-  so an explicit cascade-on-empty in code is the only path that drops the
-  parent rows.
+  The `unbind_credential/2` no-auto-delete behavior is the one
+  domain-specific thing worth calling out: networks + servers are
+  per-deployment shared infra (one Azzurra row, many users bind it).
+  Unbind ONLY detaches the user's credential (and stops the live
+  session) — it NEVER deletes the network, even when the last binding
+  goes away (GH #105). A network with an empty binding list simply
+  persists; visitor scrollback follows the visitor lifecycle. Explicit
+  network teardown is `Networks.delete_network/1`'s job, gated on both
+  credential-presence and scrollback-presence.
   """
   # async: false — every test inserts network + (often) server +
   # credential, and the credential insert pumps through the
@@ -1010,7 +1012,7 @@ defmodule Grappa.NetworksTest do
       assert_raise Ecto.NoResultsError, fn -> Credentials.get_credential!(user, net) end
     end
 
-    test "cascades the network + servers when no other credentials reference it" do
+    test "keeps the network + servers after the last user unbinds (no auto-delete)" do
       user = user_fixture()
       net = network_fixture("azzurra-solo")
       {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
@@ -1022,10 +1024,14 @@ defmodule Grappa.NetworksTest do
           autojoin_channels: []
         })
 
+      # GH #105: unbind detaches the credential only. The network +
+      # servers persist even though no binding references them anymore —
+      # they are shared per-deployment infra, never auto-deleted.
       assert :ok = Credentials.unbind_credential(user, net)
-      assert Repo.get(Network, net.id) == nil
+      assert_raise Ecto.NoResultsError, fn -> Credentials.get_credential!(user, net) end
+      assert %Network{} = Repo.get(Network, net.id)
       query = from(s in Server, where: s.network_id == ^net.id)
-      assert Repo.all(query) == []
+      assert length(Repo.all(query)) == 1
     end
 
     test "keeps the network + servers when another user still has a credential" do
@@ -1061,13 +1067,14 @@ defmodule Grappa.NetworksTest do
       assert :ok = Credentials.unbind_credential(user, net)
     end
 
-    # S29 C2: messages.network_id FK is :restrict (NOT :delete_all) so
-    # archival messages are NEVER silently nuked when the last user
-    # unbinds a network. The cascade-on-empty path detects scrollback
-    # presence BEFORE the delete attempt and rolls back with a typed
-    # error so the operator can run `mix grappa.delete_scrollback`
-    # (Phase 5) explicitly if they want the messages gone.
-    test "returns {:error, :scrollback_present} when last user has scrollback on the network" do
+    # GH #105 regression: unbinding the LAST user from a visitor-only
+    # network (one that still carries archival scrollback) used to fail
+    # with {:error, :scrollback_present} because the old cascade-on-empty
+    # path tried to delete the network and rolled the whole transaction
+    # back when the :restrict FK blocked it. The user couldn't be
+    # detached. Cascade-on-empty is gone: unbind detaches the credential,
+    # the network + its scrollback persist, and it returns :ok.
+    test "detaches the last user from a visitor-only network with scrollback present" do
       user = user_fixture()
       net = network_fixture("azzurra-archived")
       {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
@@ -1079,8 +1086,7 @@ defmodule Grappa.NetworksTest do
           autojoin_channels: []
         })
 
-      # One scrollback row blocks the cascade.
-      {:ok, _} =
+      {:ok, msg} =
         Grappa.ScrollbackHelpers.insert(%{
           user_id: user.id,
           network_id: net.id,
@@ -1091,11 +1097,12 @@ defmodule Grappa.NetworksTest do
           body: "msg keep me"
         })
 
-      assert {:error, :scrollback_present} = Credentials.unbind_credential(user, net)
+      assert :ok = Credentials.unbind_credential(user, net)
 
-      # Transaction rolled back — credential AND network still present.
+      # Credential gone; network AND its scrollback untouched.
+      assert_raise Ecto.NoResultsError, fn -> Credentials.get_credential!(user, net) end
       assert %Network{} = Repo.get(Network, net.id)
-      assert %Credential{} = Credentials.get_credential!(user, net)
+      assert Repo.get(Grappa.Scrollback.Message, msg.id)
     end
 
     # S29 H5: see Grappa.Session.ServerTest "unbind_credential tears
@@ -1104,23 +1111,6 @@ defmodule Grappa.NetworksTest do
     # before deleting the row. Lives there because that file already
     # carries the IRCServer + sandbox-shared scaffolding for live
     # sessions.
-
-    test "still cascades when last user has NO scrollback (the happy path remains)" do
-      user = user_fixture()
-      net = network_fixture("azzurra-cleancascade")
-      {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
-
-      {:ok, _} =
-        Credentials.bind_credential(user, net, %{
-          nick: "vjt",
-          auth_method: :none,
-          autojoin_channels: []
-        })
-
-      # No messages → cascade proceeds.
-      assert :ok = Credentials.unbind_credential(user, net)
-      assert Repo.get(Network, net.id) == nil
-    end
   end
 
   describe "get_network_by_slug!/1" do

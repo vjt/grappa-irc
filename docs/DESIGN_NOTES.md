@@ -439,6 +439,14 @@ Pre-Phase-2 the `messages.user_id` was a free-text `:string` (Phase 1 hardcoded 
 
 ### 2026-04-26 — Phase 2 close: no `delete_network/1`; cascade-on-empty-unbind only
 
+> **SUPERSEDED (twice).** The "no `delete_network/1`" stance was reversed
+> by the admin-panel B1 cluster, which added an explicit, doubly-gated
+> `Networks.delete_network/1`. The "cascade-on-empty-unbind" half — and
+> the `:scrollback_present` rollback below — was removed by GH #105 (see
+> the 2026-06-28 entry at the end of this log): unbind now ONLY detaches
+> the credential, never deletes the network. The rationale below is kept
+> as the historical record of the original design.
+
 `Grappa.Networks` deliberately does not expose a `delete_network/1` operation. The only path that drops a network row is `unbind_credential/2` when it removes the LAST binding — and even then, it's gated by a scrollback-presence check.
 
 **Why no top-level delete:**
@@ -13829,3 +13837,52 @@ the whole fix.
 is a pure function of a column you already have, an expression index derives it
 with zero drift. The existing `lower(target_nick)` index was the pattern to
 copy; I just had to read it before reaching for a column.*
+
+## 2026-06-28 — GH #105: unbind never deletes the network (cascade-on-empty removed)
+
+`Credentials.unbind_credential/2` now ONLY detaches the user's credential
+row and stops the live `Session.Server`. It no longer computes "is this
+the last binding?", no longer deletes the network on empty, no longer
+consults scrollback, and no longer wraps anything in a transaction — a
+single scoped `delete_all` is the whole write. The return type narrowed
+from `:ok | {:error, :scrollback_present}` to just `:ok`.
+
+This **reverses the cascade-on-empty + scrollback-gate** of the 2026-04-26
+entry (which is annotated as superseded). `Grappa.Networks.delete_network/1`
+— added later by the admin-panel B1 cluster — remains the single, explicit
+operator verb that drops a network row, still refusing on
+`{:credentials_present, n}` and `:scrollback_present`. Unbind and delete
+are now cleanly separated: unbind is per-user detach, delete is
+deployment-wide teardown.
+
+**The bug it fixes.** Visitor scrollback lives under `messages.network_id`
+with a `:restrict` FK (S29 C2). When the LAST *user* credential was
+unbound from a network that still carried *visitor* scrollback, the
+cascade-on-empty path tried to delete the network, the `:restrict` FK
+blocked it, `maybe_cascade_network/1` called `Repo.rollback(:scrollback_present)`,
+and the WHOLE unbind aborted. The user could not be detached — the
+cascade insisted on deleting a network the visitors still used. Worked
+around in prod with a direct credential-row delete; this removes the
+conflation at the source.
+
+**Why drop it rather than fix the gate (vjt).** Simpler. No presence
+computation, no `:scrollback_present` plumbing through the unbind spec +
+controller + FallbackController, and — the real win — no conflation of
+"no user credentials remain" with "delete the network." Those are
+different questions. A network with an empty binding list is a perfectly
+valid state: it's shared per-deployment infra, and visitor scrollback
+follows the visitor lifecycle (purged with the visitor row), not the
+credential lifecycle.
+
+**Invariant dropped on purpose.** The 2026-04-26 "schema honest: `networks`
+rows exist iff ≥1 binding" property is gone. Zero-binding "ghost
+networks" are now an accepted state, not dead weight to garbage-collect.
+The operator who wants one gone runs `delete_network/1` deliberately.
+
+**Removed:** `Credentials.maybe_cascade_network/1`, the private
+`list_users_for_network/1` (its sole consumer was the cascade gate), the
+unbind transaction wrapper, and the `:scrollback_present` branch of
+`AdminCredentialsController.delete/2`'s spec.
+**Kept:** `Scrollback.has_messages_for_network?/1` and the
+FallbackController `:scrollback_present → 409` clause — both are still
+the live machinery behind `delete_network/1`, not dead code.
