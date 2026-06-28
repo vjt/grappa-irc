@@ -234,29 +234,31 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       return ch;
     };
 
-    // #122 + #132 — bare /whois (and /w alias) context-default resolver,
-    // the nick twin of requireChannel:
-    //   * query window   → the query partner's nick (#122).
-    //   * channel window → SELF: the operator's own current nick on this
-    //     network, via ownNickForNetwork(net, me) — the canonical resolver
-    //     (visitor → me.nick; user → per-credential net.nick). NOT a
-    //     re-implementation here (#132).
-    //   * any other window (home/server/list/mentions/admin) → no sensible
-    //     self/partner default → inline error.
+    // #122 + #132 + #137 — bare /whois (and /w alias) context-default
+    // resolver, the nick twin of requireChannel. The rule collapses to:
+    //   * query window → the query partner's nick (#122).
+    //   * every OTHER network-scoped window (channel, server, …) → SELF:
+    //     the operator's own current nick on this network, via
+    //     ownNickForNetwork(net, me) — the canonical resolver (visitor →
+    //     me.nick; user → per-credential net.nick), NOT re-implemented
+    //     here. #132 introduced the self path for channels; #137 widened
+    //     it to every network-scoped window (a server window has a
+    //     perfectly good self target — erroring there was a dead-end).
+    // The network-less home/admin windows resolve no network here, so the
+    // `!own` guard errors — acceptable: they have no nick to self-whois
+    // (and in practice no ComposeBox to reach this path: only channel /
+    // query / server windows mount one — `kindHasScrollback`).
     const resolveBareWhoisNick = (verb: string): string | { error: string } => {
       const sel = selectedChannel();
       if (sel?.kind === "query") return sel.channelName;
-      if (sel?.kind === "channel") {
-        const net = networkBySlug(networkSlug);
-        const own = net ? ownNickForNetwork(net, user()) : null;
-        // `!own` (not `=== null`): an empty string is a server-contract
-        // violation we still must not forward as a malformed bare WHOIS.
-        if (!own) {
-          return { error: `/${verb}: own nick for this network is unknown` };
-        }
-        return own;
+      const net = networkBySlug(networkSlug);
+      const own = net ? ownNickForNetwork(net, user()) : null;
+      // `!own` (not `=== null`): an empty string is a server-contract
+      // violation we still must not forward as a malformed bare WHOIS.
+      if (!own) {
+        return { error: `/${verb}: own nick for this network is unknown` };
       }
-      return { error: `/${verb} requires an active query or channel window, or a nick` };
+      return own;
     };
 
     let result: SubmitResult;
@@ -664,12 +666,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         // (handled by userTopic.ts → setWhoisBundle). WHOIS with an
         // explicit nick works from any window kind; the bundle render
         // targets the active window at arrival time. (Bare /whois resolves
-        // a context default — query partner or self in a channel; see
-        // resolveBareWhoisNick below.)
+        // a context default — query partner, or self on any network-scoped
+        // window; see resolveBareWhoisNick below.)
         // ---------------------------------------------------------------
         case "whois": {
-          // #122 + #132 — bare /whois (and /w alias) context-default:
-          // query window → partner; channel window → self; else error.
+          // #122 + #132 + #137 — bare /whois (and /w alias) context-default:
+          // query window → partner; every other network-scoped window → self.
           const nick = cmd.nick ?? resolveBareWhoisNick("whois");
           if (typeof nick !== "string") return nick;
           const networkId = networkIdBySlug(networkSlug);

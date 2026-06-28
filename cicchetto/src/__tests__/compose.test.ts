@@ -1456,24 +1456,57 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     expect(result).toEqual({ ok: true });
   });
 
-  // #132 — server/home/list/… windows remain out of scope: bare /whois has
-  // no sensible self/partner default there, so it still errors.
-  it("/whois bare in a server window returns inline error (out of scope, #132)", async () => {
+  // #137 — bare /whois on a SERVER window self-whoises the operator's own
+  // current nick on this network (extends #132: the self-whois path now
+  // covers every network-scoped window, not just channels). The resolver
+  // collapses to query → peer; every other network-scoped window → self.
+  it("/whois bare in a server window self-whoises the own nick (#137)", async () => {
     localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const nets = await import("../lib/networks");
     const sel = await import("../lib/selection");
     vi.mocked(sel.selectedChannel).mockReturnValueOnce({
       networkSlug: "freenode",
       channelName: "$server",
       kind: "server",
     });
+    vi.mocked(api.ownNickForNetwork).mockReturnValue("mynick");
     const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "$server");
     compose.setDraft(k, "/whois");
     const result = await compose.submit(k, "freenode", "$server");
 
-    expect(socket.pushWhois).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ error: expect.stringContaining("query or channel") });
+    // Own nick resolved from the ACTIVE network + current me, same wiring
+    // as the channel case (#132) — not re-implemented in compose.
+    expect(api.ownNickForNetwork).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: "freenode" }),
+      nets.user(),
+    );
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick");
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #137 — /w shares the whois resolver, so bare /w on a server window
+  // self-whoises identically.
+  it("/w bare in a server window self-whoises the own nick (#137)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const sel = await import("../lib/selection");
+    vi.mocked(sel.selectedChannel).mockReturnValueOnce({
+      networkSlug: "freenode",
+      channelName: "$server",
+      kind: "server",
+    });
+    vi.mocked(api.ownNickForNetwork).mockReturnValue("mynick");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "$server");
+    compose.setDraft(k, "/w");
+    const result = await compose.submit(k, "freenode", "$server");
+
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick");
+    expect(result).toEqual({ ok: true });
   });
 
   // #122 — /w <nick> alias dispatches via pushWhois with the explicit nick.
