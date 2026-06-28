@@ -14109,3 +14109,69 @@ per-network own-nick resolver, NOT re-implemented); any other window kind
 always lived in the compose consumer, never the parser — `slashCommands.ts`
 still just emits `{nick: null}` for the bare form, so `/w` and `/whois`
 inherit the behaviour through the shared handler with zero parser change.
+
+## 2026-06-28 — in-session NickServ SET PASSWD kept in sync (#131)
+
+When a user changes their NickServ password **through cicchetto** (an
+in-session `SET PASSWD`), grappa must capture the new password and update
+its stored credential, or the next auto-identify on reconnect fails with a
+stale password. This is the **capturable slice** of #124 (split-brain on
+stale password); #124 stays the record for the **uncapturable** cases
+(`RESETPASS` email recovery, a change made entirely outside grappa), which
+grappa never sees on the wire and which the re-auth-on-identify-failure
+prompt recovers. This issue handles only what grappa observes: the
+in-session change.
+
+**Capture — one parser, extended not forked.** `NSInterceptor` already is
+the single source of truth for outbound NickServ-secret framing (#129's
+choke point). It gains a third verb class, `:set_passwd`, matching the
+three wire forms (`PRIVMSG NickServ :SET PASSWD <new>`, `NS|NICKSERV SET
+PASSWD <new>`, bare `SET PASSWD <new>`). Two Azzurra-specific facts are
+load-bearing and source-verified against `services`:
+
+- The verb is `SET PASSWD`, **not** `SET PASSWORD` — `do_set` only routes
+  `PASSWD` (`PASSWORD` errors). The regex matches the literal `PASSWD`, so
+  `SET PASSWORD …` falls through untouched (a unit test pins this).
+- The new password is **rest-of-line**, not a token — Azzurra parses it
+  with `strtok(NULL,"")`, so it may contain spaces. The capture group is
+  the whole trimmed remainder; we never split on the first space.
+
+cic needs **zero changes**: its existing `/ns set passwd …` shortcut
+already emits a `PRIVMSG NickServ` body, which the server captures (the
+one-parser invariant — cic sends the command, the server is the only IRC
+parser). A dedicated pre-validating cic affordance (settings/compose) was
+scoped OUT for v1 (server-only) — the raw-command capture is the must-have
+and the discoverable UI can land later without touching this server path.
+
+**Commit — optimistic on-send, NOT a +r rendezvous (the design crux).**
+`SET PASSWD` from an already-identified session emits **no `+r`
+transition** (the nick is already registered), and NickServ
+success-NOTICE scraping is **banned** (#91 — fragile per-network text
+parsing). So there is no positive confirmation signal to stage against.
+The capture is therefore committed **immediately** when the well-formed
+line leaves the wire: the user is authenticated, it's their own
+deliberate change, success is the common case. This is the 20% that
+differs from #129's `:identify`/`:register` slots — same capture machinery,
+a different action (commit-now vs. stage-against-`+r`), so `:set_passwd` is
+a distinct kind rather than a flag on an existing slot.
+
+**Reuse the commit verbs, both homes.** "Write the captured NickServ
+secret to the stored credential" is exactly `Visitors.commit_password/2`
+(visitor row, also flips `expires_at = NULL`) and — new, its user-side
+mirror — `Credentials.commit_password/3` (the bound `Networks.Credential`,
+via a narrow `Credential.password_changeset/2` that touches only
+`password_encrypted`). The Session.Server choke point (renamed
+`stage_if_ns_identify` → `capture_outbound_ns_secret` for honesty — it now
+commits as well as stages) dispatches on subject: visitors via the
+existing `visitor_committer`, users via a new injected `credential_committer`
+closure (same Boundary-cycle-avoiding function-reference indirection as
+`credential_failer` — Networks deps Session, so Session can't statically
+alias `Credentials`).
+
+**Backstop for the rejected-change window.** An optimistic commit of a
+change Azzurra later *rejects* (insecure / over-`PASSMAX` / same-as-current
+per `do_set_password`) stores a password that didn't take. That is exactly
+the stale-password case #124's re-auth-on-identify-failure prompt already
+recovers — the accepted, bounded cost of having no positive signal. (cic
+length pre-validation was deferred with the UI; Azzurra's `PASSMAX` is the
+authority, not a fabricated client constant.)

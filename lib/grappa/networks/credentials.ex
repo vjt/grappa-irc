@@ -242,6 +242,40 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  Rotates the stored upstream NickServ password for `(user_id, network_id)`.
+
+  #131: the id-keyed write `Session.Server`'s `credential_committer`
+  callback invokes when it observes a well-formed in-session `SET PASSWD`
+  leaving the wire (optimistic commit-on-send — the change emits no `+r`
+  rendezvous, and NOTICE-scraping is banned, so there is no positive
+  confirmation signal; the user is already identified and it is their own
+  deliberate change). A rejected change (Azzurra `do_set_password` refuses
+  insecure / over-`PASSMAX` / same-as-current) stores a password that
+  didn't take — recovered by #124's re-auth-on-identify-failure prompt.
+
+  User-bound mirror of the visitor-side `Grappa.Visitors.commit_password/2`.
+  The `password` is the rest-of-line the interceptor lifted, so it may
+  contain spaces; it is stored verbatim. Goes through the narrow
+  `Credential.password_changeset/2` so only `password_encrypted` is
+  touched — the operator binding is left intact.
+  """
+  @spec commit_password(Ecto.UUID.t(), pos_integer(), String.t()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def commit_password(user_id, network_id, password)
+      when is_binary(user_id) and is_integer(network_id) and is_binary(password) and password != "" do
+    case Repo.get_by(Credential, user_id: user_id, network_id: network_id) do
+      nil ->
+        {:error, :not_found}
+
+      %Credential{} = cred ->
+        case cred |> Credential.password_changeset(password) |> Repo.update() do
+          {:ok, updated} -> {:ok, updated}
+          {:error, changeset} -> {:error, changeset}
+        end
+    end
+  end
+
+  @doc """
   Returns the credential for `(user, network)` with `password_encrypted`
   already decrypted by Cloak. Raises `Ecto.NoResultsError` on miss —
   the operator-side mix tasks expect a missing binding to fail loudly.

@@ -3488,6 +3488,117 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  # #131 — in-session NickServ SET PASSWD. Unlike IDENTIFY/REGISTER, a
+  # SET PASSWD from an already-identified session emits NO `+r` transition,
+  # so there's no rendezvous to stage against — the host commits the new
+  # password OPTIMISTICALLY the moment the well-formed line leaves the wire.
+  # Both credential homes: the user-bound `Networks.Credential` (via the
+  # injected `credential_committer`) and the anon `visitors` row (via the
+  # reused `visitor_committer`).
+  describe "in-session SET PASSWD → optimistic commit-on-send (#131)" do
+    test "user session: SET PASSWD rotates the bound credential password, no +r needed" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "oldpass"})
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:user, user.id},
+                 network.id,
+                 "NickServ",
+                 "SET PASSWD newpass"
+               )
+
+      # Commit is synchronous inside the send handler — no `+r` MODE was fed.
+      state = :sys.get_state(pid)
+      assert Credentials.get_credential!(user, network).password_encrypted == "newpass"
+
+      # SET PASSWD commits; it does NOT stage a +r rendezvous slot.
+      assert is_nil(state.pending_auth)
+      assert is_nil(state.pending_auth_timer)
+      assert is_nil(state.pending_registration_secret)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "user session: a rest-of-line password with spaces is committed verbatim" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "oldpass"})
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:user, user.id},
+                 network.id,
+                 "NickServ",
+                 "SET PASSWD correct horse battery staple"
+               )
+
+      _ = :sys.get_state(pid)
+
+      assert Credentials.get_credential!(user, network).password_encrypted ==
+               "correct horse battery staple"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "visitor session: SET PASSWD rotates the visitor password (reuses commit_password/2), no +r" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      :ok = await_handshake(server)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:visitor, visitor.id},
+                 network.id,
+                 "NickServ",
+                 "SET PASSWD newpass"
+               )
+
+      state = :sys.get_state(pid)
+      assert is_nil(state.pending_auth)
+      assert is_nil(state.pending_registration_secret)
+
+      reloaded = Repo.reload!(visitor)
+      assert reloaded.password_encrypted == "newpass"
+      # commit_password/2 is the reused verb — it also writes expires_at=NULL
+      # (the visitor is now NickServ-identified, hence permanent).
+      assert is_nil(reloaded.expires_at)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "regression: SET EMAIL (non-PASSWD SET) is passthrough — no commit, no staging" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "oldpass"})
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg({:user, user.id}, network.id, "NickServ", "SET EMAIL me@x.io")
+
+      state = :sys.get_state(pid)
+      # Untouched: SET EMAIL is not a captured verb.
+      assert Credentials.get_credential!(user, network).password_encrypted == "oldpass"
+      assert is_nil(state.pending_auth)
+      assert is_nil(state.pending_registration_secret)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "001 RPL_WELCOME stages pending_auth for :nickserv_identify visitors (Task 16)" do
     test "registered visitor: 001 stages pending_auth + clears one-shot field" do
       nick = "v_t16_#{System.unique_integer([:positive])}"

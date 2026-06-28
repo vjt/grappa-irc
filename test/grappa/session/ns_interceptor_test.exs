@@ -109,4 +109,70 @@ defmodule Grappa.Session.NSInterceptorTest do
       assert :passthrough = NSInterceptor.intercept("IDLE foo")
     end
   end
+
+  # #131 — in-session NickServ SET PASSWD capture. Azzurra's `do_set` only
+  # routes the `PASSWD` subcommand (`PASSWORD` errors); the new password is
+  # the rest-of-line (Azzurra parses it with `strtok(NULL,"")`, so it may
+  # carry spaces). The capture is a distinct `:set_passwd` kind because the
+  # host commits it optimistically on-send — NOT on a `+r` rendezvous (a
+  # SET PASSWD from an already-identified session emits no `+r`).
+  describe "intercept/1 — SET PASSWD (#131)" do
+    test "PRIVMSG NickServ :SET PASSWD newpass → {:capture, :set_passwd, newpass}" do
+      assert {:capture, :set_passwd, "newpass"} =
+               NSInterceptor.intercept("PRIVMSG NickServ :SET PASSWD newpass")
+    end
+
+    test "NS / NICKSERV SET PASSWD server-command form" do
+      assert {:capture, :set_passwd, "newpass"} =
+               NSInterceptor.intercept("NS SET PASSWD newpass")
+
+      assert {:capture, :set_passwd, "newpass"} =
+               NSInterceptor.intercept("NICKSERV SET PASSWD newpass")
+    end
+
+    test "bare SET PASSWD form (raw /quote)" do
+      assert {:capture, :set_passwd, "newpass"} =
+               NSInterceptor.intercept("SET PASSWD newpass")
+    end
+
+    test "password is the rest-of-line and may contain spaces (strtok(NULL,\"\"))" do
+      assert {:capture, :set_passwd, "my new pass phrase"} =
+               NSInterceptor.intercept("PRIVMSG NickServ :SET PASSWD my new pass phrase")
+
+      assert {:capture, :set_passwd, "two words"} =
+               NSInterceptor.intercept("NS SET PASSWD two words")
+    end
+
+    test "case-insensitive (cic forwards /ns set passwd verbatim, lower-cased)" do
+      assert {:capture, :set_passwd, "newpass"} =
+               NSInterceptor.intercept("privmsg nickserv :set passwd newpass")
+    end
+
+    test "fully-qualified NickServ@services target" do
+      assert {:capture, :set_passwd, "newpass"} =
+               NSInterceptor.intercept("PRIVMSG NickServ@services.azzurra.chat :SET PASSWD newpass")
+    end
+
+    test "SET PASSWORD is NOT matched — Azzurra verb is PASSWD, PASSWORD errors" do
+      assert :passthrough = NSInterceptor.intercept("PRIVMSG NickServ :SET PASSWORD newpass")
+      assert :passthrough = NSInterceptor.intercept("NS SET PASSWORD newpass")
+      assert :passthrough = NSInterceptor.intercept("SET PASSWORD newpass")
+    end
+
+    test "other SET subcommands (EMAIL etc.) are passthrough — only PASSWD is captured" do
+      assert :passthrough = NSInterceptor.intercept("PRIVMSG NickServ :SET EMAIL me@x.io")
+      assert :passthrough = NSInterceptor.intercept("NS SET HIDE ON")
+    end
+
+    test "verb-only SET PASSWD with no new password is passthrough (no empty capture)" do
+      assert :passthrough = NSInterceptor.intercept("PRIVMSG NickServ :SET PASSWD")
+      assert :passthrough = NSInterceptor.intercept("PRIVMSG NickServ :SET PASSWD   ")
+      assert :passthrough = NSInterceptor.intercept("SET PASSWD")
+    end
+
+    test "ANCHORING: a channel message / HELP that merely contains SET PASSWD is passthrough" do
+      assert :passthrough = NSInterceptor.intercept("PRIVMSG #chan :SET PASSWD lol")
+      assert :passthrough = NSInterceptor.intercept("PRIVMSG NickServ :HELP SET PASSWD")
+    end
+  end
 end

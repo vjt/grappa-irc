@@ -191,6 +191,26 @@ defmodule Grappa.Session.Server do
   @type credential_failer :: (String.t() -> :ok)
 
   @typedoc """
+  #131 — opaque callback injected by `Networks.SessionPlan.resolve/1`
+  into every USER-session plan. Invoked from the outbound NickServ-secret
+  capture choke point when a well-formed in-session `SET PASSWD` leaves
+  the wire, so the new upstream NickServ password is committed to the
+  bound credential OPTIMISTICALLY (no `+r` rendezvous fires for a password
+  change from an already-identified session).
+
+  User-side mirror of `visitor_committer`: the closure captures
+  `(user_id, network_id)` and forwards to
+  `Grappa.Networks.Credentials.commit_password/3`. The function-reference
+  indirection avoids a static `Session → Grappa.Networks` alias (Networks
+  already deps Session for `stop_session`, so the reverse closes a
+  Boundary cycle). Visitor plans don't carry it (nil); the visitor home
+  is reached via `visitor_committer` instead.
+  """
+  @type credential_committer ::
+          (String.t() ->
+             {:ok, struct()} | {:error, :not_found | Ecto.Changeset.t()})
+
+  @typedoc """
   CP22 cluster B (channel-client-polish #14, B-restart) — opaque
   callback that persists the current `Map.keys(state.members)` snapshot
   so a graceful or crash restart can rehydrate the channel list at boot.
@@ -322,6 +342,7 @@ defmodule Grappa.Session.Server do
           optional(:visitor_committer) => visitor_committer(),
           optional(:visitor_nick_persister) => visitor_nick_persister(),
           optional(:credential_failer) => credential_failer(),
+          optional(:credential_committer) => credential_committer(),
           optional(:last_joined_persister) => last_joined_persister(),
           optional(:refresh_plan) => refresh_plan_check()
         }
@@ -385,6 +406,7 @@ defmodule Grappa.Session.Server do
           visitor_committer: visitor_committer() | nil,
           visitor_nick_persister: visitor_nick_persister() | nil,
           credential_failer: credential_failer() | nil,
+          credential_committer: credential_committer() | nil,
           last_joined_persister: last_joined_persister() | nil,
           ghost_recovery: GhostRecovery.t() | nil,
           ghost_timer: reference() | nil,
@@ -630,6 +652,7 @@ defmodule Grappa.Session.Server do
       visitor_committer: Map.get(opts, :visitor_committer),
       visitor_nick_persister: Map.get(opts, :visitor_nick_persister),
       credential_failer: Map.get(opts, :credential_failer),
+      credential_committer: Map.get(opts, :credential_committer),
       last_joined_persister: Map.get(opts, :last_joined_persister),
       ghost_recovery: nil,
       ghost_timer: nil,
@@ -917,7 +940,7 @@ defmodule Grappa.Session.Server do
   def handle_call({:send_privmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
     line = "PRIVMSG #{target} :#{body}"
-    state = stage_if_ns_identify(state, line)
+    state = capture_outbound_ns_secret(state, line)
 
     if service_target?(target) do
       handle_service_target_send(target, body, state)
@@ -997,7 +1020,7 @@ defmodule Grappa.Session.Server do
       verb: :raw
     )
 
-    state = stage_if_ns_identify(state, line)
+    state = capture_outbound_ns_secret(state, line)
 
     case Client.send_raw(state.client, line) do
       :ok -> {:reply, :ok, state}
@@ -2326,15 +2349,18 @@ defmodule Grappa.Session.Server do
     %{state | pending_registration_secret: password}
   end
 
-  # Single choke point for outbound-line NickServ-identify capture. Every
+  # Single choke point for outbound-line NickServ-secret capture. Every
   # path that puts a line on the wire (send_privmsg, send_raw/`/quote`,
-  # ghost-recovery flush) runs this so no identify form can bypass capture.
-  # The AuthFSM-emitted registration IDENTIFY/PASS at 001 stays on
-  # `maybe_stage_pending_password/1` — grappa already knows that secret.
-  # The verb class from NSInterceptor picks the slot: IDENTIFY-family →
-  # timed `pending_auth`, REGISTER → untimed `pending_registration_secret`.
-  @spec stage_if_ns_identify(t(), String.t()) :: t()
-  defp stage_if_ns_identify(state, line) do
+  # ghost-recovery flush) runs this so no NickServ-secret form can bypass
+  # capture. The AuthFSM-emitted registration IDENTIFY/PASS at 001 stays
+  # on `maybe_stage_pending_password/1` — grappa already knows that secret.
+  # The verb class from NSInterceptor picks the action: IDENTIFY-family →
+  # stage timed `pending_auth`; REGISTER → stage untimed
+  # `pending_registration_secret`; SET PASSWD → commit OPTIMISTICALLY
+  # on-send (#131 — no `+r` fires for a password change, so there's no
+  # rendezvous to stage against).
+  @spec capture_outbound_ns_secret(t(), String.t()) :: t()
+  defp capture_outbound_ns_secret(state, line) do
     case NSInterceptor.intercept(line) do
       {:capture, :register, password} ->
         Logger.debug("staged pending NickServ registration secret (untimed, #129)",
@@ -2350,9 +2376,69 @@ defmodule Grappa.Session.Server do
 
         stage_pending_auth(state, password)
 
+      {:capture, :set_passwd, new_password} ->
+        commit_set_passwd(state, new_password)
+
       :passthrough ->
         state
     end
+  end
+
+  # #131 — optimistic commit-on-send for an in-session NickServ SET PASSWD.
+  # No `+r` MODE transition fires for a password change from an
+  # already-identified session, and NOTICE-confirmation scraping is banned
+  # (#91), so there is no positive confirmation signal: commit immediately
+  # when a well-formed SET PASSWD leaves the wire. The user is
+  # authenticated and it's their own deliberate change — success is the
+  # common case. A rejected change (Azzurra `do_set_password` refuses
+  # insecure / over-PASSMAX / same-as-current) stores a password that
+  # didn't take; #124's re-auth-on-identify-failure prompt is the backstop.
+  #
+  # Both credential homes via the same opaque committers the +r path uses:
+  # visitors via `visitor_committer` (`Visitors.commit_password/2`), users
+  # via the #131 sibling `credential_committer`
+  # (`Credentials.commit_password/3`). Returns `state` unchanged — the
+  # commit is a side-effect (DB write), there's no capture slot to stage.
+  @spec commit_set_passwd(t(), String.t()) :: t()
+  defp commit_set_passwd(%{subject: {:visitor, visitor_id}, visitor_committer: committer} = state, new_password)
+       when is_function(committer, 2) do
+    log_set_passwd_commit(committer.(visitor_id, new_password), visitor_id: visitor_id)
+    state
+  end
+
+  defp commit_set_passwd(%{subject: {:user, _}, credential_committer: committer} = state, new_password)
+       when is_function(committer, 1) do
+    log_set_passwd_commit(committer.(new_password), [])
+    state
+  end
+
+  # No committer in the plan: a test fixture / Bootstrap path without
+  # injection, or a pre-#131 user session HOT-reloaded before the
+  # `credential_committer` field existed (the struct-key pattern above
+  # fails to match, so we land here rather than crashing). The capture is
+  # observed but not persisted; the operator-visible signal is this log
+  # line, and #124's re-auth recovers the now-stale stored password on the
+  # next identify. A cold restart re-inits with the committer wired.
+  defp commit_set_passwd(state, _) do
+    Logger.error("SET PASSWD captured but no committer in plan — not persisted",
+      verb: :ns_set_passwd
+    )
+
+    state
+  end
+
+  defp log_set_passwd_commit({:ok, _}, meta) do
+    Logger.info(
+      "SET PASSWD captured → stored credential updated (optimistic, #131)",
+      Keyword.put(meta, :verb, :ns_set_passwd)
+    )
+  end
+
+  defp log_set_passwd_commit({:error, reason}, meta) do
+    Logger.error(
+      "SET PASSWD captured but credential commit failed",
+      meta |> Keyword.put(:reason, inspect(reason)) |> Keyword.put(:verb, :ns_set_passwd)
+    )
   end
 
   # Drive the GhostRecovery FSM forward by one input. Terminal phases
@@ -2382,7 +2468,7 @@ defmodule Grappa.Session.Server do
   # `maybe_stage_pending_password/1`).
   defp flush_lines(state, lines) do
     Enum.reduce(lines, state, fn line, acc ->
-      acc = stage_if_ns_identify(acc, line)
+      acc = capture_outbound_ns_secret(acc, line)
 
       # REV-E (H11): pre-fix this strict-bound `:ok =` and MatchError'd
       # on a dead socket mid-recovery (e.g., NickServ ghost dance racing

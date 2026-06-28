@@ -10,9 +10,11 @@ defmodule Grappa.Visitors do
       already exists; creates a fresh anon row otherwise. Per-IP cap
       enforcement is the caller's responsibility (Task 9 Login orchestrator
       composes `count_active_for_ip/1` before invoking this function).
-    * `commit_password/2` — atomic password write triggered ONLY by +r
-      MODE observation in `Grappa.Session.Server`. Clears `expires_at`
-      to NULL — NickServ-identified visitors persist forever
+    * `commit_password/2` — atomic password write. Two triggers in
+      `Grappa.Session.Server`: the +r MODE observation (IDENTIFY/REGISTER
+      rendezvous), and the #131 optimistic on-send commit of an
+      in-session `SET PASSWD` (no +r fires for a password change). Clears
+      `expires_at` to NULL — NickServ-identified visitors persist forever
       (operator-driven deletion is the only removal path).
     * `touch/1` — sliding-TTL bump on user-initiated REST/WS verbs,
       ≥1h cadence. No-op if <1h since last bump (W9).
@@ -137,8 +139,11 @@ defmodule Grappa.Visitors do
   @doc """
   Atomically write a NickServ password (encrypted at rest by Cloak)
   and clear `expires_at` to NULL. Called from `Grappa.Session.Server`
-  after the +r MODE observation confirmed the visitor's nick is
-  identified.
+  on either trigger: the +r MODE observation that confirmed the
+  visitor's nick is identified (IDENTIFY/REGISTER rendezvous), or the
+  #131 optimistic on-send commit of an in-session `SET PASSWD` (a
+  password change emits no +r, so the host commits when the well-formed
+  line leaves the wire).
 
   V7: identified visitors persist forever — only operator-driven
   `delete/1` removes them. Reaper's IS-NOT-NULL guard in

@@ -104,6 +104,20 @@ defmodule Grappa.Networks.SessionPlan do
       credential_failer: fn reason ->
         Networks.mark_failed_by_ids(user.id, cred.network_id, reason)
       end,
+      # #131 — optimistic SET PASSWD commit. User-side mirror of
+      # `Visitors.SessionPlan`'s `visitor_committer`. Session.Server can't
+      # statically alias `Grappa.Networks.Credentials` (Networks already
+      # deps Session — the reverse closes a Boundary cycle), so the closure
+      # captures (user_id, network_id) and forwards to
+      # `Credentials.commit_password/3`. Invoked synchronously from the
+      # outbound NickServ-secret capture choke point when a well-formed
+      # in-session SET PASSWD leaves the wire (no `+r` fires to stage
+      # against). Returns `{:ok, cred} | {:error, _}`; Session.Server logs
+      # the outcome and never retries — #124 re-auth recovers a failed
+      # commit on the next identify.
+      credential_committer: fn password ->
+        Credentials.commit_password(user.id, cred.network_id, password)
+      end,
       # CP22 cluster B (channel-client-polish #14, B-restart) — opaque
       # closure that forwards `Map.keys(state.members)` snapshots to
       # the per-credential `last_joined_channels` column. Wraps the

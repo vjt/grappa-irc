@@ -327,6 +327,29 @@ defmodule Grappa.Networks.Credential do
     |> validate_change(:connection_state_reason, &validate_safe_line_token/2)
   end
 
+  @doc """
+  Narrow changeset for an in-session NickServ SET PASSWD capture (#131):
+  casts the virtual `:password`, encrypts it into `:password_encrypted`,
+  and touches nothing else.
+
+  Distinct from the wide `changeset/2` on purpose — the operator binding
+  (nick, auth_method, autojoin) is untouched; only the upstream NickServ
+  secret rotated on the wire. Running the wide changeset's
+  `validate_password_for_auth_method` / channel-list canonicalisation
+  here would be irrelevant noise (and could reject a valid password
+  rotation on a `:none` row that legitimately carries no other change).
+  `cast/3`'s default `empty_values` maps a blank `""` to missing, so
+  `validate_required/2` rejects it at the changeset boundary — the same
+  belt-and-braces guard pattern as the H15 `last_joined_channels` cap.
+  """
+  @spec password_changeset(t(), String.t()) :: Ecto.Changeset.t()
+  def password_changeset(credential, password) when is_binary(password) do
+    credential
+    |> cast(%{password: password}, [:password])
+    |> validate_required([:password])
+    |> put_encrypted_password()
+  end
+
   defp validate_safe_line_token(field, value) when is_binary(value) do
     if Identifier.safe_line_token?(value),
       do: [],
