@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Auto-clear watchdog for the ORCHESTRATOR's own Claude pane.
+#
+# A turn-based Claude session can't self-poll (no background clock), so
+# this EXTERNAL loop watches the orchestrator pane and, when its context
+# crosses a threshold while idle + quiet, types `/clear` then
+# `/orchestrate` so the orchestrator reloads from
+# /tmp/orchestrator-resume.md (the persistent brain) + resume-checks the
+# sibling daemon. Automates what vjt does manually.
+#
+# Resolves the target pane BY TITLE every tick (default "grappa-orch")
+# — pane ids are ephemeral, the title is stable. Never hardcode %NN.
+#
+# Safeguards (all must hold to fire):
+#   - ctx >= THRESHOLD (default 40%)
+#   - pane is IDLE (no spinner "… (") — never clear mid-generation
+#   - input line is empty (user not mid-typing) — back off if they are
+#   - the above held for IDLE_TICKS_REQUIRED consecutive ticks (debounce)
+# After firing, COOLDOWN seconds before it can fire again.
+#
+# Usage: auto-clear-watch.sh {start|stop|status} [TITLE]
+set -u
+
+CMD="${1:-start}"
+TITLE="${2:-grappa-orch}"
+THRESHOLD="${AUTOCLEAR_THRESHOLD:-40}"
+TICK="${AUTOCLEAR_TICK:-15}"                       # seconds between checks
+IDLE_TICKS_REQUIRED="${AUTOCLEAR_IDLE_TICKS:-4}"   # consecutive qualifying ticks (4*15=60s)
+COOLDOWN="${AUTOCLEAR_COOLDOWN:-90}"               # pause after a clear
+
+SLUG="$(printf '%s' "$TITLE" | tr -c 'a-zA-Z0-9' '-')"
+PIDFILE="/tmp/orchestrate-autoclear-${SLUG}.pid"
+LOGFILE="/tmp/orchestrate-autoclear-${SLUG}.log"
+
+log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOGFILE"; }
+
+resolve_pane() {
+  # Match the pane whose title CONTAINS the target (the title carries a
+  # varying activity-glyph prefix, so substring-match, not equality).
+  tmux list-panes -a -F '#{pane_id} #{pane_title}' 2>/dev/null \
+    | grep -F "$TITLE" | awk '{print $1}' | head -1
+}
+
+parse_ctx() { printf '%s' "$1" | grep -oE '🧠 [0-9]+%' | grep -oE '[0-9]+' | head -1; }
+is_busy()   { printf '%s' "$1" | tail -15 | grep -qE '… \('; }            # spinner shape
+input_pending() {
+  printf '%s' "$1" | grep -E '^❯ ' | tail -1 | sed -E 's/^❯ +//' | grep -qE '[^[:space:]]'
+}
+
+run() {
+  printf '%s' "$$" > "$PIDFILE"
+  log "START title='$TITLE' threshold=${THRESHOLD}% tick=${TICK}s idle_req=${IDLE_TICKS_REQUIRED} cooldown=${COOLDOWN}s"
+  local qualifying=0
+  while true; do
+    sleep "$TICK"
+    local pane; pane="$(resolve_pane)"
+    if [ -z "$pane" ]; then qualifying=0; continue; fi
+    local cap; cap="$(tmux capture-pane -t "$pane" -p -S -25 2>/dev/null)"
+    [ -z "$cap" ] && { qualifying=0; continue; }
+    local ctx; ctx="$(parse_ctx "$cap")"; [ -z "$ctx" ] && ctx=-1
+
+    if [ "$ctx" -lt "$THRESHOLD" ]; then qualifying=0; continue; fi
+    if is_busy "$cap"; then qualifying=0; continue; fi
+    if input_pending "$cap"; then log "ctx=${ctx}% idle but USER TYPING — back off"; qualifying=0; continue; fi
+
+    qualifying=$((qualifying + 1))
+    log "ctx=${ctx}% idle+quiet (${qualifying}/${IDLE_TICKS_REQUIRED})"
+    if [ "$qualifying" -ge "$IDLE_TICKS_REQUIRED" ]; then
+      log "FIRING auto-clear on ${pane} (ctx=${ctx}%)"
+      tmux send-keys -t "$pane" C-u; sleep 1
+      tmux send-keys -t "$pane" '/clear' Enter; sleep 4
+      tmux send-keys -t "$pane" '/orchestrate' Enter; sleep 1
+      tmux send-keys -t "$pane" Enter
+      log "sent /clear + /orchestrate — cooldown ${COOLDOWN}s"
+      qualifying=0
+      sleep "$COOLDOWN"
+    fi
+  done
+}
+
+case "$CMD" in
+  start)
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+      echo "already running pid=$(cat "$PIDFILE")"; exit 0
+    fi
+    nohup "$0" _run "$TITLE" >/dev/null 2>&1 &
+    disown
+    sleep 1
+    echo "started auto-clear watch on title='$TITLE' pid=$(cat "$PIDFILE" 2>/dev/null) log=$LOGFILE"
+    ;;
+  _run) run ;;
+  stop)
+    if [ -f "$PIDFILE" ]; then kill "$(cat "$PIDFILE")" 2>/dev/null; rm -f "$PIDFILE"; echo "stopped"; else echo "not running"; fi
+    ;;
+  status)
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+      echo "running pid=$(cat "$PIDFILE") log=$LOGFILE"; tail -4 "$LOGFILE" 2>/dev/null
+    else echo "not running"; fi
+    ;;
+  *) echo "usage: $0 {start|stop|status} [TITLE]"; exit 64 ;;
+esac
