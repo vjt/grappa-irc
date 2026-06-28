@@ -262,6 +262,9 @@ defmodule GrappaWeb.Router do
     get "/directory", DirectoryController, :index
     post "/directory/refresh", DirectoryController, :refresh
 
+    # #85 — on-display read of operator-curated featured channels.
+    get "/featured", FeaturedController, :index
+
     get "/channels/:channel_id/messages", MessagesController, :index
     post "/channels/:channel_id/messages", MessagesController, :create
 

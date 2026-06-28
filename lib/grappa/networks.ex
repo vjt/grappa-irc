@@ -59,6 +59,7 @@ defmodule Grappa.Networks do
       FeaturedChannel,
       FeaturedChannels,
       FeaturedChannels.AdminWire,
+      FeaturedChannels.Wire,
       Network,
       NoServerError,
       Server,
