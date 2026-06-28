@@ -34,6 +34,10 @@ vi.mock("../lib/api", () => {
     postNick: vi.fn(),
     postJoin: vi.fn(),
     postPart: vi.fn(),
+    // #132 — bare /whois in a channel window resolves the operator's own
+    // nick via this helper. Boundary stub; the resolver's own logic is
+    // pinned in api.test.ts.
+    ownNickForNetwork: vi.fn(),
     // T32 — required by compose.ts for /quit /disconnect /connect
     patchNetwork: vi.fn(),
     // Required by networks.ts (transitively imported via compose.ts → networks.ts)
@@ -1393,7 +1397,7 @@ describe("compose submit — info verbs (TODO stubs)", () => {
   });
 
   // #122 — /whois context-default. /w is the alias (parser-level), the
-  // null-nick resolution lives in the consumer via requireQueryNick.
+  // null-nick resolution lives in the consumer via resolveBareWhoisNick.
   it("/whois bare in a query window resolves to the current query nick", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sel = await import("../lib/selection");
@@ -1412,18 +1416,64 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     expect(result).toEqual({ ok: true });
   });
 
-  // #122 — bare /whois outside a query window errors (no nick to resolve;
-  // the default mock window is a channel, not a query).
-  it("/whois bare in a non-query window returns inline error", async () => {
+  // #132 — bare /whois (and /w alias) in a CHANNEL window self-whoises the
+  // operator's own current nick on this network, resolved via
+  // ownNickForNetwork(net, me). The default mock window is a channel.
+  it("/whois bare in a channel window self-whoises the own nick (#132)", async () => {
     localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const nets = await import("../lib/networks");
+    vi.mocked(api.ownNickForNetwork).mockReturnValue("mynick");
     const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/whois");
     const result = await compose.submit(k, "freenode", "#a");
 
+    // Resolver wiring: own nick comes from the ACTIVE network + current me
+    // (ownNickForNetwork), not a re-implementation in compose.
+    expect(api.ownNickForNetwork).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: "freenode" }),
+      nets.user(),
+    );
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick");
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #132 — /w shares the whois resolver, so bare /w in a channel window
+  // self-whoises identically.
+  it("/w bare in a channel window self-whoises the own nick (#132)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.ownNickForNetwork).mockReturnValue("mynick");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/w");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick");
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #132 — server/home/list/… windows remain out of scope: bare /whois has
+  // no sensible self/partner default there, so it still errors.
+  it("/whois bare in a server window returns inline error (out of scope, #132)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sel = await import("../lib/selection");
+    vi.mocked(sel.selectedChannel).mockReturnValueOnce({
+      networkSlug: "freenode",
+      channelName: "$server",
+      kind: "server",
+    });
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "$server");
+    compose.setDraft(k, "/whois");
+    const result = await compose.submit(k, "freenode", "$server");
+
     expect(socket.pushWhois).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ error: expect.stringContaining("query window") });
+    expect(result).toMatchObject({ error: expect.stringContaining("query or channel") });
   });
 
   // #122 — /w <nick> alias dispatches via pushWhois with the explicit nick.

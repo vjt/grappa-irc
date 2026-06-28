@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import {
   ApiError,
   ChannelPushError,
+  ownNickForNetwork,
   patchNetwork,
   postJoin,
   postNick,
@@ -16,7 +17,7 @@ import { friendlyChannelError } from "./friendlyChannelError";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
 import { splitMessageLines } from "./messageLines";
-import { networkIdBySlug } from "./networks";
+import { networkBySlug, networkIdBySlug, user } from "./networks";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { quitAll } from "./quit";
 import { sendMessage as sendPrivmsg } from "./scrollback";
@@ -233,16 +234,29 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       return ch;
     };
 
-    // #122 — query-window context helper, the nick twin of requireChannel.
-    // Returns the current query window's nick, or an inline error when the
-    // active window is not a query (home/server/channel). Drives the bare
-    // /whois (and /w alias) context-default.
-    const requireQueryNick = (verb: string): string | { error: string } => {
+    // #122 + #132 — bare /whois (and /w alias) context-default resolver,
+    // the nick twin of requireChannel:
+    //   * query window   → the query partner's nick (#122).
+    //   * channel window → SELF: the operator's own current nick on this
+    //     network, via ownNickForNetwork(net, me) — the canonical resolver
+    //     (visitor → me.nick; user → per-credential net.nick). NOT a
+    //     re-implementation here (#132).
+    //   * any other window (home/server/list/mentions/admin) → no sensible
+    //     self/partner default → inline error.
+    const resolveBareWhoisNick = (verb: string): string | { error: string } => {
       const sel = selectedChannel();
-      if (sel?.kind !== "query") {
-        return { error: `/${verb} requires an active query window or a nick` };
+      if (sel?.kind === "query") return sel.channelName;
+      if (sel?.kind === "channel") {
+        const net = networkBySlug(networkSlug);
+        const own = net ? ownNickForNetwork(net, user()) : null;
+        // `!own` (not `=== null`): an empty string is a server-contract
+        // violation we still must not forward as a malformed bare WHOIS.
+        if (!own) {
+          return { error: `/${verb}: own nick for this network is unknown` };
+        }
+        return own;
       }
-      return sel.channelName;
+      return { error: `/${verb} requires an active query or channel window, or a nick` };
     };
 
     let result: SubmitResult;
@@ -649,14 +663,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         // arrives later as `whois_bundle` on the user topic
         // (handled by userTopic.ts → setWhoisBundle). WHOIS with an
         // explicit nick works from any window kind; the bundle render
-        // targets the active window at arrival time. (Bare /whois is the
-        // exception — it needs a query window to resolve the nick; see
-        // requireQueryNick below.)
+        // targets the active window at arrival time. (Bare /whois resolves
+        // a context default — query partner or self in a channel; see
+        // resolveBareWhoisNick below.)
         // ---------------------------------------------------------------
         case "whois": {
-          // #122 — bare /whois (and /w alias) defaults to the current query
-          // window's nick via requireQueryNick; errors outside a query.
-          const nick = cmd.nick ?? requireQueryNick("whois");
+          // #122 + #132 — bare /whois (and /w alias) context-default:
+          // query window → partner; channel window → self; else error.
+          const nick = cmd.nick ?? resolveBareWhoisNick("whois");
           if (typeof nick !== "string") return nick;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/whois: network not found" };
