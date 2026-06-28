@@ -14193,3 +14193,50 @@ stale-password case #124's re-auth-on-identify-failure prompt already
 recovers — the accepted, bounded cost of having no positive confirmation
 signal. (cic length pre-validation was deferred with the UI; Azzurra's
 `PASSMAX` is the authority, not a fabricated client constant.)
+
+## 2026-06-28 — whois/lusers cards float in an overlay, not the scroll flow (#133)
+
+**The bug.** WHOIS / WHOWAS / LUSERS cards (and the peer-away banner)
+rendered as flex siblings BEFORE `.scrollback` inside `.scrollback-pane`
+(a flex column where `.scrollback` is `flex: 1`). Mounting one shrank the
+scroll list, which moved the reader's `scrollTop` and lost their place in
+the channel buffer. chan-reported.
+
+**The fix — one overlay layer, not the named two.** All four affordances
+move into a single absolutely-positioned `.scrollback-overlay` (`top/left/
+right: 0`, `z-index: 5` — above the scroll list, below the C7.4
+scroll-to-bottom button at 10). The scroll list keeps its full height and
+`scrollTop`; the cards paint on top. The issue named only whois/lusers,
+but the **general class** was "top-pinned ephemeral affordance rendered
+in the scroll flow shifts the reader's anchor" — all four shared it, so
+all four moved. Reuse the verbs, not the nouns.
+
+**Boundary — what stays inline.** Invite-ack rows are NOT chrome: they are
+message-stream content interleaved by wallclock into `rows()`, so they
+stay inline in `.scrollback`. The overlay holds only the four top-pinned
+lookup/context affordances. A new such affordance belongs in the overlay;
+a new stream row does not.
+
+**Click-through + bound.** Container is `pointer-events: none` so taps fall
+through to the uncovered scrollback below; each direct child re-enables
+them for its own box (`> * { pointer-events: auto }`). `max-height: 100%`
+bounds the layer to the pane — the ComposeBox is a sibling OUTSIDE
+`.scrollback-pane` (the pane is compose-free since P4-1) — so a
+pathologically tall card (a WHOIS with dozens of channels on a short
+viewport) can at most cover the whole scroll list, never spill over and
+intercept compose taps; `overflow-y: auto` scrolls such overflow rather
+than clipping the header-anchored close affordance.
+
+**Close (×) tap target.** Enlarged from the original ~14px glyph to the
+project's existing **44px Apple-HIG** touch standard (the same `44px` used
+by `.topic-bar-*`), via one shared rule over all four `*-close` classes.
+Negative block margins pull the tall button's contribution back out of the
+compact card header (margins don't shrink the pointer hit area);
+`margin-left: auto` from each per-card rule survives to keep it
+right-aligned.
+
+**Test shape.** jsdom computes no layout, so the structural contract (card
+inside `.scrollback-overlay`, scroll list outside — the separation is what
+holds `scrollTop` stable) is the unit assertion; the real-geometry claims
+(overlay containment in a live DOM + the 44px tap-target box) are pinned in
+the c2 Playwright spec, which measures `boundingBox()` in chromium.
