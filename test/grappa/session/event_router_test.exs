@@ -3281,4 +3281,36 @@ defmodule Grappa.Session.EventRouterTest do
       assert eof_attrs.meta.names_target == "#bofh"
     end
   end
+
+  describe "route/2 — #116 inbound INVITE → re-join awaiting channels" do
+    test "inbound INVITE for an awaiting_invite channel emits {:rejoin_invited, ch}" do
+      state = base_state(%{awaiting_invite: MapSet.new(["#secret"])})
+      # :ChanServ INVITE ournick #secret  → params [target, channel]
+      m = msg(:invite, ["vjt", "#secret"], {:nick, "ChanServ", "service", "azzurra"})
+      {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert effects == [{:rejoin_invited, "#secret"}]
+    end
+
+    test "inbound INVITE for an awaiting channel matches case-insensitively" do
+      state = base_state(%{awaiting_invite: MapSet.new(["#secret"])})
+      m = msg(:invite, ["vjt", "#SECRET"], {:nick, "ChanServ", "service", "azzurra"})
+      {:cont, _, effects} = EventRouter.route(m, state)
+      assert effects == [{:rejoin_invited, "#SECRET"}]
+    end
+
+    test "inbound INVITE for a NON-awaiting channel falls through to the :server_event catch-all" do
+      state = base_state(%{awaiting_invite: MapSet.new()})
+      m = msg(:invite, ["vjt", "#random"], {:nick, "someguy", "u", "h"})
+      {:cont, _, effects} = EventRouter.route(m, state)
+      assert [{:persist, :server_event, attrs}] = effects
+      assert attrs.meta.raw_verb == "INVITE"
+    end
+
+    test "inbound INVITE with absent awaiting_invite key (pre-#116 state) falls through, no crash" do
+      state = base_state()
+      m = msg(:invite, ["vjt", "#random"], {:nick, "someguy", "u", "h"})
+      {:cont, _, effects} = EventRouter.route(m, state)
+      assert [{:persist, :server_event, _}] = effects
+    end
+  end
 end

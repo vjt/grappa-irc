@@ -2796,42 +2796,15 @@ defmodule Grappa.Session.Server do
       SessionWire.join_failed(state.network_slug, channel, reason, numeric)
     )
 
-    state = %{
-      state
-      | window_state: WindowState.set_failed(state.window_state, channel, reason, numeric)
-    }
+    next =
+      maybe_request_chanserv_invite(
+        %{state | window_state: WindowState.set_failed(state.window_state, channel, reason, numeric)},
+        channel,
+        numeric
+      )
 
-    state = maybe_request_chanserv_invite(state, channel, numeric)
-
-    apply_effects(rest, state)
+    apply_effects(rest, next)
   end
-
-  # #116: on a 473 (+i) / 475 (+k) failure for a channel in the boot
-  # autojoin set that we have NOT already attempted this session, send a
-  # ChanServ self-INVITE (`PRIVMSG ChanServ :INVITE #chan`, one arg —
-  # chanserv.c:6205/6210) and record the channel as awaiting-invite. The
-  # inbound INVITE ChanServ relays on success drives the keyless re-JOIN
-  # (EventRouter `:invite` clause → {:rejoin_invited, _}). No access /
-  # unregistered chan → ChanServ replies a NOTICE, no INVITE arrives,
-  # channel stays :failed (the #113 niche). Manual /join never reaches
-  # here for a non-autojoin channel. Map.get/Map.put keep it HOT-safe.
-  @chanserv_invitable_numerics [473, 475]
-  @spec maybe_request_chanserv_invite(t(), String.t(), pos_integer()) :: t()
-  defp maybe_request_chanserv_invite(state, channel, numeric)
-       when numeric in @chanserv_invitable_numerics do
-    key = String.downcase(channel)
-    awaiting = Map.get(state, :awaiting_invite, MapSet.new())
-    in_autojoin? = key in state.autojoin
-
-    if in_autojoin? and not MapSet.member?(awaiting, key) do
-      _ = Client.send_privmsg(state.client, "ChanServ", "INVITE #{channel}")
-      Map.put(state, :awaiting_invite, MapSet.put(awaiting, key))
-    else
-      state
-    end
-  end
-
-  defp maybe_request_chanserv_invite(state, _, _), do: state
 
   # CP15 B3 + cluster #6: own-PART acked by upstream → window archived.
   # Delegates to `WindowState.set_parted/2` which drops the channel
@@ -2852,6 +2825,17 @@ defmodule Grappa.Session.Server do
   defp apply_effects([{:parted, channel} | rest], state) do
     state = %{state | window_state: WindowState.set_parted(state.window_state, channel)}
 
+    apply_effects(rest, state)
+  end
+
+  # #116: ChanServ relayed the invite we requested → re-JOIN keyless.
+  # The invite bypasses +i AND +k upstream, so no key is needed even for
+  # a +k channel. record_in_flight_join/2 flips the window :failed ->
+  # :pending + tracks the in-flight JOIN; the self-JOIN echo then lands
+  # :joined. awaiting_invite is left populated (monotonic dedupe).
+  defp apply_effects([{:rejoin_invited, channel} | rest], state) do
+    _ = Client.send_join(state.client, channel, nil)
+    state = record_in_flight_join(state, channel)
     apply_effects(rest, state)
   end
 
@@ -3127,6 +3111,33 @@ defmodule Grappa.Session.Server do
 
     apply_effects(rest, state)
   end
+
+  # #116: on a 473 (+i) / 475 (+k) failure for a channel in the boot
+  # autojoin set that we have NOT already attempted this session, send a
+  # ChanServ self-INVITE (`PRIVMSG ChanServ :INVITE #chan`, one arg —
+  # chanserv.c:6205/6210) and record the channel as awaiting-invite. The
+  # inbound INVITE ChanServ relays on success drives the keyless re-JOIN
+  # (EventRouter `:invite` clause → {:rejoin_invited, _}). No access /
+  # unregistered chan → ChanServ replies a NOTICE, no INVITE arrives,
+  # channel stays :failed (the #113 niche). Manual /join never reaches
+  # here for a non-autojoin channel. Map.get/Map.put keep it HOT-safe.
+  @chanserv_invitable_numerics [473, 475]
+  @spec maybe_request_chanserv_invite(t(), String.t(), pos_integer()) :: t()
+  defp maybe_request_chanserv_invite(state, channel, numeric)
+       when numeric in @chanserv_invitable_numerics do
+    key = String.downcase(channel)
+    awaiting = Map.get(state, :awaiting_invite, MapSet.new())
+    in_autojoin? = key in state.autojoin
+
+    if in_autojoin? and not MapSet.member?(awaiting, key) do
+      _ = Client.send_privmsg(state.client, "ChanServ", "INVITE #{channel}")
+      Map.put(state, :awaiting_invite, MapSet.put(awaiting, key))
+    else
+      state
+    end
+  end
+
+  defp maybe_request_chanserv_invite(state, _, _), do: state
 
   # One-shot send + clear of the synchronous-login readiness signal
   # (Task 8). Pattern-matches both fields populated to avoid

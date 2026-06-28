@@ -177,6 +177,7 @@ defmodule Grappa.Session.EventRouter do
           | {:whois_bundle, target :: String.t(), accum :: map()}
           | {:peer_away, peer :: String.t(), away_message :: String.t()}
           | {:invite_ack, channel :: String.t(), peer :: String.t()}
+          | {:rejoin_invited, channel :: String.t()}
           | {:lusers_bundle, accum :: map()}
           | {:whowas_bundle, target :: String.t(), accum :: map()}
 
@@ -1643,6 +1644,25 @@ defmodule Grappa.Session.EventRouter do
   # re-creates the closed W12 NickServ-leak class. Skip persist; let
   # the AuthFSM (or the IRC client's own state machine) own them
   # invisibly.
+  # #116: an inbound INVITE for a channel we marked awaiting-invite (we
+  # sent ChanServ INVITE after a 473/475 autojoin failure) means the
+  # invite landed upstream — re-JOIN keyless (the invite bypasses both
+  # +i and +k: bahamut-azzurra channel.c can_join short-circuits on the
+  # invited list). Channel is at param 1 (`:src INVITE <target> <chan>`).
+  # Any OTHER inbound INVITE delegates to the :server_event catch-all
+  # that drives cic's [Join] CTA (b2-inbound-invite-cta) — unchanged.
+  # Map.get keeps it safe on a pre-#116 state map (no awaiting_invite key).
+  defp do_route(%Message{command: :invite, params: [_, channel | _]} = msg, state)
+       when is_binary(channel) do
+    awaiting = Map.get(state, :awaiting_invite, MapSet.new())
+
+    if MapSet.member?(awaiting, String.downcase(channel)) do
+      {:cont, state, [{:rejoin_invited, channel}]}
+    else
+      route_unhandled_command(msg, state)
+    end
+  end
+
   @no_persist_verbs ~w(authenticate pass oper)a
 
   defp do_route(%Message{command: command} = _, state)
@@ -1696,7 +1716,15 @@ defmodule Grappa.Session.EventRouter do
   # Server's numeric handler at server.ex:1545). Belt-and-braces: a
   # {:numeric, n} that somehow reaches command_to_verb_string/1 still
   # renders as Integer.to_string(n).
-  defp do_route(%Message{command: command, params: params} = msg, state) do
+  defp do_route(%Message{} = msg, state) do
+    route_unhandled_command(msg, state)
+  end
+
+  # Extracted from the no-silent-drops bucket-1 catch-all so the #116
+  # inbound-INVITE clause can delegate the non-awaiting case here without
+  # duplicating the :server_event persist shape.
+  @spec route_unhandled_command(Message.t(), state()) :: {:cont, state(), [effect()]}
+  defp route_unhandled_command(%Message{command: command, params: params} = msg, state) do
     sender = Message.sender_nick(msg)
     verb = command_to_verb_string(command)
 

@@ -6198,5 +6198,28 @@ defmodule Grappa.Session.ServerTest do
       assert length(invites) == 1
       _ = pid
     end
+
+    test "inbound ChanServ INVITE for an awaiting channel re-JOINs keyless" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#secret"]})
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #secret"), 1_000)
+      IRCServer.feed(server, ":irc.test 473 grappa-test #secret :Cannot join channel (+i)\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 =~ ~r/^PRIVMSG ChanServ :INVITE #secret\b/i), 1_000)
+
+      # ChanServ relays the invite. grappa must re-JOIN #secret with NO key.
+      IRCServer.feed(server, ":ChanServ INVITE grappa-test #secret\r\n")
+
+      {:ok, line} =
+        IRCServer.wait_for_line(server, &(&1 =~ ~r/^JOIN #secret\s*$/), 1_000)
+
+      # Keyless: bare `JOIN #secret`, no trailing key token.
+      refute line =~ ~r/^JOIN #secret \S/
+      # Window flips back to :pending while the re-join is in flight.
+      flush_server(server)
+      assert WindowState.state_of(:sys.get_state(pid).window_state, "#secret") == :pending
+    end
   end
 end
