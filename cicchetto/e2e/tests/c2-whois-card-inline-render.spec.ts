@@ -1,7 +1,8 @@
 // C2 — /whois <nick> issues WHOIS upstream and renders the aggregated
-// reply as an inline WhoisCard at the top of the active window's
-// scrollback. Bundle is ephemeral (NOT persisted in scrollback) and
-// keyed per network.
+// reply as a WhoisCard floating in the top-pinned overlay layer of the
+// active window's scrollback (#133 — the card overlays the scroll list
+// instead of pushing it, so the reader's place is preserved). Bundle is
+// ephemeral (NOT persisted in scrollback) and keyed per network.
 //
 // Pre-conditions:
 //   - vjt logged in, focused on #bofh.
@@ -9,9 +10,10 @@
 //     numerics (311 + 312 + 318 minimum from bahamut).
 //
 // Asserts:
-//   - WhoisCard is rendered above scrollback;
+//   - WhoisCard renders inside the `.scrollback-overlay` layer (#133);
 //   - target nick is shown in the header;
 //   - userhost dt/dd renders the peer's actual user@host;
+//   - the close (×) control is a comfortably large tap target (#133);
 //   - Close button dismisses the card (data-testid disappears).
 //
 // P-0a — Cluster `numeric-delegation-p0` 2026-05-13 added 11 additional
@@ -30,7 +32,7 @@ import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../
 const PEER_NICK = "c2-target";
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
-test("C2 — /whois <nick> renders inline WhoisCard with aggregated bundle", async ({ page }) => {
+test("C2 — /whois <nick> renders WhoisCard in the scrollback overlay layer", async ({ page }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
@@ -45,8 +47,10 @@ test("C2 — /whois <nick> renders inline WhoisCard with aggregated bundle", asy
     // Issue /whois from the compose box.
     await composeSend(page, `/whois ${PEER_NICK}`);
 
-    // WhoisCard appears at the top of the scrollback pane.
-    const card = page.getByTestId("whois-card");
+    // #133 — the card floats in the overlay layer, not inline in the
+    // scroll flow. Scope the locator THROUGH `.scrollback-overlay` so a
+    // regression that moves the card back into the scroll list fails here.
+    const card = page.locator(".scrollback-overlay").getByTestId("whois-card");
     await expect(card).toBeVisible({ timeout: 5_000 });
 
     // Header carries the target nick.
@@ -57,8 +61,18 @@ test("C2 — /whois <nick> renders inline WhoisCard with aggregated bundle", asy
     // assigns it dynamically); just assert the dt + dd shape is there.
     await expect(card.locator("dt", { hasText: /userhost/ })).toBeVisible();
 
+    // #133 — the close (×) control must be a comfortable tap target. The
+    // CSS floors it at the project-standard 44px Apple-HIG touch target;
+    // assert real rendered geometry clears a generous threshold so a
+    // shrink back toward the old ~14px glyph regresses here.
+    const closeBtn = card.locator(".whois-card-close");
+    const box = await closeBtn.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width).toBeGreaterThanOrEqual(40);
+    expect(box!.height).toBeGreaterThanOrEqual(40);
+
     // Close button dismisses the card.
-    await card.locator(".whois-card-close").click();
+    await closeBtn.click();
     await expect(card).toBeHidden({ timeout: 2_000 });
   } finally {
     await peer.disconnect("C2 done");

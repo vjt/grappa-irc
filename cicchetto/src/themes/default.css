@@ -922,8 +922,40 @@ html.resize-dragging * {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  /* Needed for the floating scroll-to-bottom button (C7.4). */
+  /* Needed for the floating scroll-to-bottom button (C7.4) and the
+     #133 top-pinned overlay layer. */
   position: relative;
+}
+
+/* #133 — top-pinned overlay layer (WHOIS / WHOWAS / peer-away / LUSERS).
+   Floats above `.scrollback` so a card mounting never resizes the scroll
+   list — resizing it would shift the reader's scrollTop and lose their
+   place in the channel buffer (the bug). `pointer-events: none` lets taps
+   fall through to the scrollback in the uncovered area below; each direct
+   child re-enables pointer events for its own box so the card body and its
+   close affordance stay interactive. z-index sits above the scroll list,
+   below the scroll-to-bottom button (z-index: 10). `max-height: 100%`
+   bounds the layer to `.scrollback-pane` (the ComposeBox is a sibling
+   OUTSIDE the pane), so a pathologically tall card — e.g. a WHOIS with
+   dozens of channels on a short viewport — can at most cover the whole
+   scroll list, never spill over and intercept taps on the compose box;
+   `overflow-y: auto` lets such a card's overflow scroll rather than
+   clip the close affordance (which sits in the header, at the top). */
+.scrollback-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
+  overflow-y: auto;
+  pointer-events: none;
+}
+
+.scrollback-overlay > * {
+  pointer-events: auto;
 }
 
 .scrollback {
@@ -3347,6 +3379,31 @@ html.resize-dragging * {
 
 .whowas-card-close:hover {
   color: var(--fg);
+}
+
+/* #133 — enlarge the close (×) tap target on every top-pinned overlay
+   card. The originals were ~14px glyphs with hairline padding — too small
+   to hit comfortably on touch (per chan request). One rule covers all four
+   affordances so they stay identical, and the hit box matches the project
+   standard `44px` Apple-HIG touch target used elsewhere (`.topic-bar-*`).
+   Negative block margins pull the tall button's contribution back out of
+   the compact card header so it stays close to the title row height
+   (margins don't shrink the pointer hit area). `margin-left: auto` from
+   each per-card rule survives to keep the button right-aligned. */
+.whois-card-close,
+.whowas-card-close,
+.lusers-card-close,
+.peer-away-banner-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin-top: -0.6rem;
+  margin-bottom: -0.6rem;
+  padding: 0;
+  font-size: 1.5rem;
 }
 
 .whowas-card-empty {

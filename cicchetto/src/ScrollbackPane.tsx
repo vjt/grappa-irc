@@ -1662,31 +1662,37 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   return (
     <div class="scrollback-pane">
-      {/* C2 — WHOIS card renders inline above the scrollback when a
-          bundle exists for the selected window's network. The card
-          itself short-circuits to null when no bundle is present, but
-          we gate the mount on networkSlug being a string to avoid
-          subscribing the signal from non-channel renders. */}
-      <WhoisCard networkSlug={props.networkSlug} />
-      {/* P-0c — WHOWAS card. Inline above the active window scrollback,
-          mirrors WhoisCard mount shape (every window kind, not just
-          $server). The card itself short-circuits to null when no
-          bundle exists for the selected window's network. */}
-      <WhowasCard networkSlug={props.networkSlug} />
-      {/* P-0b — peer-away banner. Mount only on DM windows; the
-          banner short-circuits to null when no entry exists for
-          (slug, peer). The "peer" is the channelName itself for
-          query windows. */}
-      <Show when={props.kind === "query"}>
-        <PeerAwayBanner networkSlug={props.networkSlug} peer={props.channelName} />
-      </Show>
-      {/* P-0d — LUSERS card. Mount only on the $server window for the
-          network. Card short-circuits to null when no snapshot exists.
-          Snapshot replaces last-write-wins on every /lusers (manual or
-          welcome-time auto-emit). */}
-      <Show when={props.kind === "server"}>
-        <LusersCard networkSlug={props.networkSlug} />
-      </Show>
+      {/* #133 — top-pinned overlay layer. WHOIS / WHOWAS / peer-away /
+          LUSERS are ephemeral lookup affordances the operator opens from
+          the window they're reading. Rendered as flex siblings BEFORE
+          `.scrollback` they shrank the scroll list on mount, shifting the
+          reader's anchor and losing their place in the channel buffer.
+          They now float in this absolutely-positioned overlay: the scroll
+          list keeps its full height and scrollTop, the cards paint on top.
+          The container is `pointer-events: none` so the uncovered
+          scrollback below stays scrollable; each card re-enables pointer
+          events for its own box. Each child still short-circuits to null
+          when no bundle exists for the selected window's network. */}
+      <div class="scrollback-overlay" data-testid="scrollback-overlay">
+        {/* C2 — WHOIS card. Mounts on every window kind; the card itself
+            short-circuits to null when no bundle is present. */}
+        <WhoisCard networkSlug={props.networkSlug} />
+        {/* P-0c — WHOWAS card. Mirrors WhoisCard mount shape (every window
+            kind, not just $server). */}
+        <WhowasCard networkSlug={props.networkSlug} />
+        {/* P-0b — peer-away banner. Mount only on DM windows; the banner
+            short-circuits to null when no entry exists for (slug, peer).
+            The "peer" is the channelName itself for query windows. */}
+        <Show when={props.kind === "query"}>
+          <PeerAwayBanner networkSlug={props.networkSlug} peer={props.channelName} />
+        </Show>
+        {/* P-0d — LUSERS card. Mount only on the $server window for the
+            network. Snapshot replaces last-write-wins on every /lusers
+            (manual or welcome-time auto-emit). */}
+        <Show when={props.kind === "server"}>
+          <LusersCard networkSlug={props.networkSlug} />
+        </Show>
+      </div>
       <div
         ref={listRef}
         class="scrollback"

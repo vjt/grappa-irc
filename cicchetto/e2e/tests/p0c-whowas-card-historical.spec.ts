@@ -2,7 +2,8 @@
 // recently disconnected; Bahamut emits the WHOWAS reply (314 historical
 // user + 312 logoff_time + 369 terminator); server folds the burst and
 // flushes a typed `:whowas_bundle` wire event on Topic.user/1; cic
-// dispatches and renders the WhowasCard inline above the active window.
+// dispatches and renders the WhowasCard in the top-pinned overlay layer
+// above the active window (#133 — overlays the scroll list, not inline).
 //
 // This e2e drives the full path:
 //   1. peer connects (creates a history entry on the server)

@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ScrollbackMessage } from "../lib/api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ScrollbackMessage, WhoisBundle } from "../lib/api";
 import { activeAudio, closeAudio } from "../lib/audioPlayer";
 import { closeMediaViewer, mediaViewerState } from "../lib/mediaViewer";
 
@@ -193,6 +193,7 @@ vi.mock("../lib/auth", () => ({
   token: () => "test-token",
 }));
 
+import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
 import ScrollbackPane, { resetAutoFocusedJoinsForTest } from "../ScrollbackPane";
 
 const fixture: ScrollbackMessage[] = [
@@ -2862,6 +2863,60 @@ describe("ScrollbackPane", () => {
       await new Promise((r) => setTimeout(r, 700));
 
       expect(mockSetCursorIfAdvances).not.toHaveBeenCalled();
+    });
+  });
+
+  // #133 — WHOIS / WHOWAS / LUSERS / peer-away are top-pinned ephemeral
+  // affordances. Rendered as flex siblings BEFORE `.scrollback` they
+  // shrink the scroll list when they mount, shifting the reader's anchor
+  // and losing their place in the channel buffer. The fix moves the whole
+  // family into a dedicated overlay layer that floats above the scroll
+  // list instead of sharing its flow. This pins the structural contract:
+  // the card lives in the overlay, the scroll list does NOT.
+  describe("#133 top-pinned cards float in an overlay, not the scroll flow", () => {
+    const overlayBundle: WhoisBundle = {
+      network: "overlaynet",
+      target: "carol",
+      user: "carol_u",
+      host: "carol.host",
+      realname: "Carol",
+      server: "irc.overlaynet",
+      server_info: "Overlay Hub",
+      is_operator: false,
+      idle_seconds: null,
+      signon: null,
+      channels: null,
+      using_ssl: false,
+      is_registered: false,
+      is_admin: false,
+      is_services_admin: false,
+      is_helper: false,
+      is_chanop: false,
+      is_agent: false,
+      is_java: false,
+      umodes: null,
+      away_message: null,
+      actually_host: null,
+      actually_ip: null,
+    };
+
+    afterEach(() => {
+      dismissWhoisCard("overlaynet");
+    });
+
+    it("mounts the WHOIS card inside the overlay layer, separate from the scroll list", () => {
+      setWhoisBundle("overlaynet", overlayBundle);
+      render(() => <ScrollbackPane networkSlug="overlaynet" channelName="#x" kind="channel" />);
+
+      const overlay = screen.getByTestId("scrollback-overlay");
+      const card = screen.getByTestId("whois-card");
+      const list = screen.getByTestId("scrollback");
+
+      // The card floats in the overlay layer...
+      expect(overlay).toContainElement(card);
+      // ...and the overlay must NOT wrap the scroll list — that separation
+      // is what keeps the reader's scroll position stable when a card mounts.
+      expect(overlay).not.toContainElement(list);
     });
   });
 });
