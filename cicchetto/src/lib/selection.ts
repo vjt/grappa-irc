@@ -121,6 +121,18 @@ const exports = identityScopedStore((onIdentityChange) => {
   // Exact-tuple equality: any change in slug, name, or kind is a real
   // transition. null vs non-null is also a transition (covers logout +
   // identity reset paths).
+  // #125 — back target for the $list directory overlay. The directory
+  // is a transient pseudo-window with a close button; closing it should
+  // restore whatever window was active when it opened, not blank the
+  // pane. A single back pointer (NOT a history stack), captured only on
+  // the non-list → list transition below so background selection churn
+  // while browsing the directory can't clobber it. Reset on identity
+  // rotation alongside the other identity-scoped state.
+  let backTarget: SelectedChannel = null;
+  onIdentityChange(() => {
+    backTarget = null;
+  });
+
   const setSelectedChannel = (next: SelectedChannel): void => {
     const cur = untrack(selectedChannel);
     if (cur === null && next === null) return;
@@ -133,7 +145,120 @@ const exports = identityScopedStore((onIdentityChange) => {
     ) {
       return;
     }
+    // Entering the $list overlay from a real window — remember it.
+    if (next?.kind === "list" && cur !== null && cur.kind !== "list") {
+      backTarget = cur;
+    }
     setSelectedChannelRaw(next);
+  };
+
+  // Resolve the window to focus when a window closes or a transient
+  // overlay is dismissed: most-recently-used live channel/query (MRU) →
+  // the network's server window if connected → home. Pure: reads current
+  // store values and returns a target; the caller applies it. Shared by
+  // the close-window picker (bucket E) and closeToPreviousWindow (#125)
+  // so the fallback chain lives in one place.
+  const resolveFallbackWindow = (
+    excludeKey: ChannelKey | null,
+    fallbackSlug: string,
+  ): SelectedChannel => {
+    const cbs = channelsBySlug() ?? {};
+    const qwbn = queryWindowsByNetwork();
+    const isLiveKey = (key: ChannelKey): boolean => {
+      const decoded = decodeChannelKey(key);
+      if (decoded === null) return false;
+      const { slug, name } = decoded;
+      const chans = cbs[slug] ?? [];
+      if (chans.some((c) => c.name === name)) return true;
+      const net = networkBySlug(slug);
+      if (net) {
+        const qs = qwbn[net.id] ?? [];
+        const lower = name.toLowerCase();
+        if (qs.some((q) => q.targetNick.toLowerCase() === lower)) return true;
+      }
+      return false;
+    };
+
+    const next = pickLiveMru(excludeKey, isLiveKey);
+    if (next !== null) {
+      const decoded = decodeChannelKey(next);
+      if (decoded !== null) {
+        const { slug, name } = decoded;
+        const chans = cbs[slug] ?? [];
+        if (chans.some((c) => c.name === name)) {
+          return { networkSlug: slug, channelName: name, kind: "channel" };
+        }
+        const net = networkBySlug(slug);
+        if (net) {
+          const qs = qwbn[net.id] ?? [];
+          const lower = name.toLowerCase();
+          const match = qs.find((q) => q.targetNick.toLowerCase() === lower);
+          if (match !== undefined) {
+            return { networkSlug: slug, channelName: match.targetNick, kind: "query" };
+          }
+        }
+      }
+    }
+
+    // No live MRU candidate. Fall back to the fallback network's server
+    // window IF still connected (visitor networks have no connection_state
+    // — always assume connected). Otherwise home.
+    const closedNet = networkBySlug(fallbackSlug);
+    if (closedNet !== undefined) {
+      const isConnected =
+        closedNet.kind === "visitor" || closedNet.connection_state === "connected";
+      if (isConnected) {
+        return { networkSlug: fallbackSlug, channelName: SERVER_WINDOW_NAME, kind: "server" };
+      }
+    }
+    return { networkSlug: HOME_WINDOW_SLUG, channelName: HOME_WINDOW_NAME, kind: "home" };
+  };
+
+  // True if `sel` is still a window we can focus. Pseudo-windows
+  // (home/admin/mentions) and a known server network are always
+  // restorable; channel/query only while present in their live store.
+  // null and the $list overlay itself are never restore targets.
+  const selectionIsRestorable = (sel: SelectedChannel): boolean => {
+    if (sel === null) return false;
+    switch (sel.kind) {
+      case "home":
+      case "admin":
+      case "mentions":
+        return true;
+      case "server":
+        return networkBySlug(sel.networkSlug) !== undefined;
+      case "channel":
+      case "query": {
+        const cbs = channelsBySlug() ?? {};
+        const chans = cbs[sel.networkSlug] ?? [];
+        if (chans.some((c) => c.name === sel.channelName)) return true;
+        if (windowIsPresent(channelKey(sel.networkSlug, sel.channelName))) return true;
+        const net = networkBySlug(sel.networkSlug);
+        if (net) {
+          const qs = queryWindowsByNetwork()[net.id] ?? [];
+          const lower = sel.channelName.toLowerCase();
+          if (qs.some((q) => q.targetNick.toLowerCase() === lower)) return true;
+        }
+        return false;
+      }
+      case "list":
+        return false;
+    }
+  };
+
+  // #125 — close the $list directory overlay: restore the window that
+  // was active when it opened if still focusable, otherwise fall through
+  // the shared MRU → server → home chain.
+  const closeToPreviousWindow = (fallbackSlug: string): void => {
+    untrack(() => {
+      const back = backTarget;
+      backTarget = null;
+      if (selectionIsRestorable(back)) {
+        setSelectedChannel(back);
+        return;
+      }
+      setSelectedChannel(resolveFallbackWindow(null, fallbackSlug));
+    });
   };
 
   /**
@@ -568,78 +693,14 @@ const exports = identityScopedStore((onIdentityChange) => {
     if (!wasLive) return;
 
     // Selection's window WAS live and now is not — transition fired.
-    // Evict from MRU and pick next via fallback chain.
+    // Evict from MRU and pick the next focus through the shared fallback
+    // chain (MRU → the closed network's server window if connected →
+    // home). The visitor-network "always connected" rule + home last
+    // resort live in resolveFallbackWindow.
     untrack(() => {
       evictFromMru(selKey);
       lastSeenLive.delete(selKey);
-
-      const isLiveKey = (key: ChannelKey): boolean => {
-        const decoded = decodeChannelKey(key);
-        if (decoded === null) return false;
-        const { slug, name } = decoded;
-        const chans = cbs[slug] ?? [];
-        if (chans.some((c) => c.name === name)) return true;
-        const net = networkBySlug(slug);
-        if (net) {
-          const qs = qwbn[net.id] ?? [];
-          const lower = name.toLowerCase();
-          if (qs.some((q) => q.targetNick.toLowerCase() === lower)) return true;
-        }
-        return false;
-      };
-
-      const next = pickLiveMru(selKey, isLiveKey);
-      if (next !== null) {
-        const decoded = decodeChannelKey(next);
-        if (decoded !== null) {
-          const { slug, name } = decoded;
-          const chans = cbs[slug] ?? [];
-          if (chans.some((c) => c.name === name)) {
-            setSelectedChannel({ networkSlug: slug, channelName: name, kind: "channel" });
-            return;
-          }
-          const net = networkBySlug(slug);
-          if (net) {
-            const qs = qwbn[net.id] ?? [];
-            const lower = name.toLowerCase();
-            const match = qs.find((q) => q.targetNick.toLowerCase() === lower);
-            if (match !== undefined) {
-              setSelectedChannel({
-                networkSlug: slug,
-                channelName: match.targetNick,
-                kind: "query",
-              });
-              return;
-            }
-          }
-        }
-      }
-
-      // No live MRU candidate. Fall back to the closed window's network
-      // server window IF still connected. Visitor networks have no
-      // connection_state field — always assume connected (visitor close
-      // paths terminate the whole session via quitAll; bucket E never
-      // sees a "visitor server closed" trigger in isolation).
-      const closedNet = networkBySlug(sel.networkSlug);
-      if (closedNet !== undefined) {
-        const isConnected =
-          closedNet.kind === "visitor" || closedNet.connection_state === "connected";
-        if (isConnected) {
-          setSelectedChannel({
-            networkSlug: sel.networkSlug,
-            channelName: SERVER_WINDOW_NAME,
-            kind: "server",
-          });
-          return;
-        }
-      }
-
-      // Last resort: home. Always present per bucket B.
-      setSelectedChannel({
-        networkSlug: HOME_WINDOW_SLUG,
-        channelName: HOME_WINDOW_NAME,
-        kind: "home",
-      });
+      setSelectedChannel(resolveFallbackWindow(selKey, sel.networkSlug));
     });
   });
 
@@ -650,6 +711,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     serverSeedCounts,
     selectedChannel,
     setSelectedChannel,
+    closeToPreviousWindow,
     setServerSeedCount,
     applySeedEnvelope,
     setCursorIfAdvances,
@@ -662,6 +724,7 @@ export const eventsUnread = exports.eventsUnread;
 export const serverSeedCounts = exports.serverSeedCounts;
 export const selectedChannel = exports.selectedChannel;
 export const setSelectedChannel = exports.setSelectedChannel;
+export const closeToPreviousWindow = exports.closeToPreviousWindow;
 export const setServerSeedCount = exports.setServerSeedCount;
 export const applySeedEnvelope = exports.applySeedEnvelope;
 export const setCursorIfAdvances = exports.setCursorIfAdvances;

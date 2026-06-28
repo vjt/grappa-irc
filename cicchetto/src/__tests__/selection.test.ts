@@ -1082,6 +1082,135 @@ describe("selection store", () => {
     });
   });
 
+  // #125 — the $list directory is a transient overlay with a close
+  // button. Closing it restores the window that was active when it
+  // opened (captured as a back target on the non-list → list
+  // transition); when that window is gone, it falls through the same
+  // MRU → server → home chain as the close-window picker.
+  describe("closeToPreviousWindow — $list overlay back (#125)", () => {
+    type Conn = "connected" | "parked" | "failed";
+    const userNet = (slug: string, id: number, conn: Conn) => ({
+      kind: "user" as const,
+      id,
+      slug,
+      nick: "alice",
+      connection_state: conn,
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    });
+
+    it("restores the window active when $list opened (back target live)", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "connected")]);
+      vi.mocked(api.listChannels).mockResolvedValue([
+        { name: "#grappa", joined: true, source: "autojoin" },
+      ]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokClose1");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(1);
+      });
+
+      sel.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa", kind: "channel" });
+      // Open the $list overlay — captures #grappa as the back target.
+      sel.setSelectedChannel({ networkSlug: "freenode", channelName: "$list", kind: "list" });
+      expect(sel.selectedChannel()?.kind).toBe("list");
+
+      sel.closeToPreviousWindow("freenode");
+      expect(sel.selectedChannel()).toEqual({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+    });
+
+    it("falls back to the server window when the back target is gone (net connected)", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "connected")]);
+      vi.mocked(api.listChannels)
+        .mockResolvedValueOnce([{ name: "#grappa", joined: true, source: "autojoin" }])
+        .mockResolvedValue([]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokClose2");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(1);
+      });
+
+      sel.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa", kind: "channel" });
+      sel.setSelectedChannel({ networkSlug: "freenode", channelName: "$list", kind: "list" });
+
+      // #grappa parts while browsing — back target is now dead.
+      networks.refetchChannels();
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length ?? 0).toBe(0);
+      });
+
+      sel.closeToPreviousWindow("freenode");
+      expect(sel.selectedChannel()?.kind).toBe("server");
+      expect(sel.selectedChannel()?.channelName).toBe("$server");
+      expect(sel.selectedChannel()?.networkSlug).toBe("freenode");
+    });
+
+    it("falls back to home when back target is gone and net is parked", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "parked")]);
+      vi.mocked(api.listChannels)
+        .mockResolvedValueOnce([{ name: "#grappa", joined: true, source: "autojoin" }])
+        .mockResolvedValue([]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokClose3");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(1);
+      });
+
+      sel.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa", kind: "channel" });
+      sel.setSelectedChannel({ networkSlug: "freenode", channelName: "$list", kind: "list" });
+      networks.refetchChannels();
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length ?? 0).toBe(0);
+      });
+
+      sel.closeToPreviousWindow("freenode");
+      expect(sel.selectedChannel()?.kind).toBe("home");
+      expect(sel.selectedChannel()?.networkSlug).toBe("$home");
+    });
+
+    it("with no prior window, falls back to the server window", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "connected")]);
+      vi.mocked(api.listChannels).mockResolvedValue([]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokClose4");
+      await vi.waitFor(() => {
+        expect(networks.networks()?.length).toBe(1);
+      });
+
+      // $list opened cold (no prior window) — back target stays null.
+      sel.setSelectedChannel({ networkSlug: "freenode", channelName: "$list", kind: "list" });
+      sel.closeToPreviousWindow("freenode");
+      expect(sel.selectedChannel()?.kind).toBe("server");
+      expect(sel.selectedChannel()?.networkSlug).toBe("freenode");
+    });
+  });
+
   // UX-5 bucket BU — unread state machine: single "is operator reading?"
   // gate drives all three sinks (messagesUnread / eventsUnread /
   // mentionCounts). Before BU, mentionCounts cleared on selection only —
