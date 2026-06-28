@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Babysit a sibling Claude Code session in another tmux pane through a long-running plan. On every idle, ask the session if /clear is useful; if yes, sibling Writes its self-contained next-prompt body to /tmp/orchestrate-next.txt, orchestrator runs /clear and tells sibling to Read+execute that file (no paste-buffer). Halt on design questions or unexpected deviations. On every /orchestrate invocation it FIRST reads the handoff doc /home/vjt/.claude/orchestrate/orchestrator-resume.md (the persistent brain) then reconciles against the per-pane daemon state — so /orchestrate alone resumes with zero extra instruction; user can /clear freely to save tokens.
+description: Babysit a sibling Claude Code session in another tmux pane through a long-running plan. On every idle, ask the session if /clear is useful; if yes, sibling Writes its self-contained next-prompt body to /tmp/orchestrate-next.txt, orchestrator runs /clear and tells sibling to Read+execute that file (no paste-buffer). Halt on design questions or unexpected deviations. On every /orchestrate invocation it FIRST reads the handoff doc /srv/grappa/.orchestrate/orchestrator-resume.md (the persistent brain) then reconciles against the per-pane daemon state — so /orchestrate alone resumes with zero extra instruction; user can /clear freely to save tokens.
 ---
 
 # Orchestrate
@@ -73,7 +73,7 @@ v2 separates concerns:
 On EVERY `/orchestrate` invocation the FIRST action — before `tmux`, before resume-check, before any tool — is:
 
 ```
-Read /home/vjt/.claude/orchestrate/orchestrator-resume.md
+Read /srv/grappa/.orchestrate/orchestrator-resume.md
 ```
 
 (DURABLE path — survives host reboot, unlike `/tmp`. The per-pane daemon state files

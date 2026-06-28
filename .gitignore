@@ -100,3 +100,6 @@ Thumbs.db
 
 # GitHub CLI config
 .gh
+
+# orchestrator handoff brain (ephemeral run state, durable across reboot, never committed)
+.orchestrate/
