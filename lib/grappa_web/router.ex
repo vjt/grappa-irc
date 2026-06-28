@@ -119,6 +119,12 @@ defmodule GrappaWeb.Router do
     post "/networks/:network_id/servers", ServersController, :create
     put "/networks/:network_id/servers/:id", ServersController, :update
     delete "/networks/:network_id/servers/:id", ServersController, :delete
+    # #85 — operator-curated featured channels per network. Rides the
+    # `networks` admin nginx allowlist alt (no nginx change).
+    get "/networks/:network_id/featured_channels", FeaturedChannelsController, :index
+    post "/networks/:network_id/featured_channels", FeaturedChannelsController, :create
+    put "/networks/:network_id/featured_channels/:id", FeaturedChannelsController, :update
+    delete "/networks/:network_id/featured_channels/:id", FeaturedChannelsController, :delete
     post "/reaper/run", ReaperController, :run
     post "/circuit/:network_id/reset", CircuitController, :reset
 
