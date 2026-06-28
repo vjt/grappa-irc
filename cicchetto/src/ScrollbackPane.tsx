@@ -682,6 +682,18 @@ const ScrollbackPane: Component<Props> = (props) => {
   // window mount. Reset on channel switch (key change).
   const [markerScrolled, setMarkerScrolled] = createSignal(false);
 
+  // #130 — window-activation flicker gate. The activation scroll lands
+  // inside `scrollToActivation`'s double-rAF (load-bearing — see its doc
+  // comment), which is necessarily AFTER the browser has painted the
+  // swapped-in content at the OLD preserved scrollTop. That paint-then-
+  // snap is the visible jump. While `true`, the scrollback container is
+  // hidden (visibility, NOT display — layout/scrollHeight stay readable
+  // for the deferred geometry read); set synchronously at activation
+  // (pre-paint) and cleared once the deferred scroll has settled, so the
+  // wrong-scroll frame is never shown. Cold/empty windows skip the hide
+  // (nothing to scroll; the length-effect owns their first snap).
+  const [activating, setActivating] = createSignal(false);
+
   // FREEZE CONTRACT (2026-06-08, vjt "step-away" request): the FROZEN
   // bottom boundary of the unread block — sibling to `sessionTopId` (the
   // frozen TOP boundary). The `rows` memo derives the divider from THIS
@@ -1108,6 +1120,18 @@ const ScrollbackPane: Component<Props> = (props) => {
   // bottom" button doesn't flash visible mid-activation.
   const scrollToActivation = (): void => {
     if (!listRef) return;
+    // #130 — hide the container synchronously NOW (pre-paint) so the
+    // browser never paints the new content at the OLD preserved scrollTop
+    // before the deferred scroll below corrects it. Revealed in every exit
+    // path of the rAF body. Cold/empty windows have nothing to scroll
+    // (the length-effect owns their first snap) — skip the hide and stay
+    // visible so they can't be stranded hidden.
+    const pending = messages();
+    if (!pending || pending.length === 0) {
+      setActivating(false);
+      return;
+    }
+    setActivating(true);
     // Double rAF: queueMicrotask flushes BEFORE the browser's layout
     // pass, so listRef.scrollHeight reads stale geometry when called
     // immediately after a channel switch (Solid commits the new rows,
@@ -1130,9 +1154,19 @@ const ScrollbackPane: Component<Props> = (props) => {
     // preserved if scrollback is empty (no element to scroll into view).
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (!listRef) return;
+        // #130 — reveal in EVERY exit path so the pane is never stranded
+        // hidden. The real strand vector is an emptied store between the
+        // sync-top check and here (next guard); the listRef guard mirrors
+        // the pre-existing top guard for symmetry.
+        if (!listRef) {
+          setActivating(false);
+          return;
+        }
         const msgs = messages();
-        if (!msgs || msgs.length === 0) return;
+        if (!msgs || msgs.length === 0) {
+          setActivating(false);
+          return;
+        }
         const marker = markerRef();
         if (marker) {
           marker.scrollIntoView?.({ block: "center" });
@@ -1148,6 +1182,8 @@ const ScrollbackPane: Component<Props> = (props) => {
           }
           setAtBottom(true);
         }
+        // Scroll has settled at the correct position — reveal.
+        setActivating(false);
       });
     });
   };
@@ -1655,6 +1691,10 @@ const ScrollbackPane: Component<Props> = (props) => {
         ref={listRef}
         class="scrollback"
         classList={{ "scrollback-overflowing": isOverflowing() }}
+        // #130 — hidden (pre-paint) while the activation scroll settles so
+        // the wrong-scroll frame is never shown; visibility (not display)
+        // keeps layout/scrollHeight readable for the deferred geometry read.
+        style={{ visibility: activating() ? "hidden" : "visible" }}
         role="log"
         tabIndex={-1}
         onScroll={onScroll}

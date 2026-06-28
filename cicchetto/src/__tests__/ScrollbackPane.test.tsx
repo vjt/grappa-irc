@@ -2753,6 +2753,73 @@ describe("ScrollbackPane", () => {
 
       expect(scrollIntoViewSpy).not.toHaveBeenCalled();
     });
+
+    // #130 — content flicker on window activation. The activation scroll
+    // lands inside a double-rAF (geometry is only correct after Solid
+    // commits the new <For> rows AND layout settles — see the
+    // scrollToActivation doc comment), which is necessarily AFTER the
+    // browser has already painted the swapped-in content at the OLD
+    // preserved scrollTop. The user sees the content render, then jump.
+    // Fix: hide the scrollback container synchronously at activation
+    // (pre-paint) and reveal it only once the deferred scroll has
+    // settled — the wrong-scroll frame is never shown.
+    it("#130: hides the scrollback until the activation scroll settles, then reveals it", async () => {
+      // Drive rAF manually so we can observe the hidden window between
+      // the synchronous activation and the deferred scroll settle.
+      const rafQueue: FrameRequestCallback[] = [];
+      const rafSpy = vi
+        .spyOn(globalThis, "requestAnimationFrame")
+        .mockImplementation((cb: FrameRequestCallback) => {
+          rafQueue.push(cb);
+          return rafQueue.length;
+        });
+      const flushRaf = (): void => {
+        // Drain nested rAFs (scrollToActivation schedules an inner rAF
+        // from inside the outer one) until quiescent.
+        for (let i = 0; i < 8 && rafQueue.length > 0; i++) {
+          const cbs = rafQueue.splice(0);
+          for (const cb of cbs) cb(0);
+        }
+      };
+      try {
+        setScrollback({
+          "freenode #grappa": [
+            {
+              id: 1,
+              network: "freenode",
+              channel: "#grappa",
+              server_time: 1,
+              kind: "privmsg",
+              sender: "alice",
+              body: "hello",
+              meta: {},
+            },
+          ],
+        });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        const pane = screen.getByTestId("scrollback");
+
+        // Drain the mount-time rAFs (measureOverflow / length-effect) so
+        // the queue only holds the activation rAFs after we trigger it.
+        flushRaf();
+
+        // Activation: visibility false→true converges on scrollToActivation.
+        setDocVisible(false);
+        setDocVisible(true);
+
+        // Synchronously (pre-paint), the pane must be hidden — the
+        // deferred scroll has NOT run yet (its rAFs are still queued).
+        expect(pane.style.visibility).toBe("hidden");
+
+        // Settle the deferred scroll → pane revealed.
+        flushRaf();
+        expect(pane.style.visibility).toBe("visible");
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
   });
 
   // BUGHUNT-2: input-event gate. Programmatic scroll without preceding
