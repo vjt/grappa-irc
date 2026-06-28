@@ -35,13 +35,18 @@ defmodule Grappa.QueryWindows do
   `lib/grappa/read_cursor.ex`, this module and the others speaking
   the same shape.
 
-  ## Case-insensitive uniqueness
+  ## Case-insensitive uniqueness (rfc1459, GH #121)
 
-  IRC nicks are case-insensitive (RFC 2812 §2.2). Two partial unique
-  indexes — one per subject branch — enforce
-  `(<subject_id>, network_id, lower(target_nick))` so "FooBar" and
-  "foobar" are treated as the same DM target. The stored
-  `target_nick` column is case-preserving (original input wins).
+  IRC nicks are case-insensitive. Azzurra runs bahamut (rfc1459
+  casemapping), so besides A-Z it folds `[ ] \\ ~` → `{ } | ^`. Two
+  partial unique **expression** indexes — one per subject branch —
+  enforce `(<subject_id>, network_id, rfc1459-fold(target_nick))` so
+  "FooBar"/"foobar" AND "nick[1]"/"nick{1}" are the same DM target. The
+  fold is `Grappa.IRC.Identifier.nick_fold/1` (query side) /
+  `canonical_nick/1` (in-memory); the stored `target_nick` column is
+  case-preserving (original input wins). The SQL fold expression in the
+  index, the `conflict_target/1` upsert fragment, and `nick_fold/1` MUST
+  stay character-identical or sqlite stops using the index.
 
   ## Idempotent open / close
 
@@ -71,6 +76,7 @@ defmodule Grappa.QueryWindows do
 
   `Grappa.QueryWindows` is a standalone context. Its only deps are:
     * `Grappa.Repo` — persistence.
+    * `Grappa.IRC` — `Identifier.nick_fold/1` (rfc1459 DM-target key).
     * `Grappa.Subject` — XOR FK helper.
     * `Grappa.Accounts` (via `User` association — FK reference only).
     * `Grappa.Networks` (via `Network` association — FK reference only).
@@ -84,7 +90,7 @@ defmodule Grappa.QueryWindows do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Networks, Grappa.PubSub, Grappa.Repo, Grappa.Subject],
+    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Networks, Grappa.PubSub, Grappa.Repo, Grappa.Subject],
     dirty_xrefs: [Grappa.Visitors.Visitor],
     exports: [Window, Wire]
 
@@ -92,6 +98,7 @@ defmodule Grappa.QueryWindows do
 
   alias Grappa.{
     Accounts.User,
+    IRC.Identifier,
     Networks.Network,
     PubSub.Topic,
     QueryWindows.Window,
@@ -100,6 +107,9 @@ defmodule Grappa.QueryWindows do
     Subject,
     Visitors.Visitor
   }
+
+  # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment).
+  require Identifier
 
   # ---------------------------------------------------------------------------
   # Public API
@@ -119,7 +129,7 @@ defmodule Grappa.QueryWindows do
   @doc """
   Idempotently opens a DM window for `target_nick` on `(subject, network_id)`.
 
-  If a row for the same `(subject, network_id, lower(target_nick))`
+  If a row for the same `(subject, network_id, rfc1459-fold(target_nick))`
   already exists, returns `{:ok, existing_row}` WITHOUT modifying the
   existing row (`opened_at` is left unchanged — first-opened
   semantics). If no row exists, inserts one with `opened_at =
@@ -133,7 +143,7 @@ defmodule Grappa.QueryWindows do
 
   The implementation uses `Repo.insert/2` with `on_conflict: :nothing`
   so concurrent callers race on the per-subject unique index — the
-  loser finds the row via a follow-up `get_by` that uses `lower()` to
+  loser finds the row via a follow-up select that folds (rfc1459) to
   match case-insensitively. Race safety: at most two DB round-trips
   per contended open.
   """
@@ -185,12 +195,12 @@ defmodule Grappa.QueryWindows do
   @spec close(Subject.t(), integer(), String.t(), String.t()) :: :ok
   def close({_, _} = subject, network_id, target_nick, subject_label)
       when is_integer(network_id) and is_binary(target_nick) and is_binary(subject_label) do
-    lower_nick = String.downcase(target_nick)
+    folded = Identifier.canonical_nick(target_nick)
 
     Window
     |> Subject.subject_where(subject)
     |> where([w], w.network_id == ^network_id)
-    |> where([w], fragment("lower(?)", w.target_nick) == ^lower_nick)
+    |> where([w], Identifier.nick_fold(w.target_nick) == ^folded)
     |> Repo.delete_all()
 
     broadcast_windows_list(subject, subject_label)
@@ -256,12 +266,21 @@ defmodule Grappa.QueryWindows do
   # The partial unique indexes carry the `WHERE <subject>_id IS NOT
   # NULL` predicate; sqlite requires the conflict_target fragment to
   # mirror it for the upsert to recognize the index. One fragment per
-  # subject branch.
+  # subject branch. The rfc1459 fold expression (#121) MUST stay
+  # character-identical to the folded index in
+  # `FoldQueryWindowsTargetNickRfc1459` and to `Identifier.nick_fold/1`,
+  # or sqlite won't match the conflict target to the index.
+  @nick_fold_sql "replace(replace(replace(replace(lower(target_nick), '[', '{'), ']', '}'), '\\', '|'), '~', '^')"
+
   defp conflict_target({:user, _}),
-    do: {:unsafe_fragment, "(user_id, network_id, lower(target_nick)) WHERE user_id IS NOT NULL"}
+    do:
+      {:unsafe_fragment,
+       "(user_id, network_id, #{@nick_fold_sql}) WHERE user_id IS NOT NULL"}
 
   defp conflict_target({:visitor, _}),
-    do: {:unsafe_fragment, "(visitor_id, network_id, lower(target_nick)) WHERE visitor_id IS NOT NULL"}
+    do:
+      {:unsafe_fragment,
+       "(visitor_id, network_id, #{@nick_fold_sql}) WHERE visitor_id IS NOT NULL"}
 
   # Pre-flight FK existence check — converts a missing user / visitor /
   # network into a clean changeset error before `Repo.insert` raises
@@ -313,13 +332,13 @@ defmodule Grappa.QueryWindows do
   @spec fetch_existing(Subject.t(), integer(), String.t()) ::
           {:ok, Window.t()} | {:error, Ecto.Changeset.t()}
   defp fetch_existing(subject, network_id, target_nick) do
-    lower_nick = String.downcase(target_nick)
+    folded = Identifier.canonical_nick(target_nick)
 
     query =
       Window
       |> Subject.subject_where(subject)
       |> where([w], w.network_id == ^network_id)
-      |> where([w], fragment("lower(?)", w.target_nick) == ^lower_nick)
+      |> where([w], Identifier.nick_fold(w.target_nick) == ^folded)
 
     case Repo.one(query) do
       %Window{} = window ->

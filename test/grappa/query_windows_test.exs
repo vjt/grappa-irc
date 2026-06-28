@@ -87,6 +87,17 @@ defmodule Grappa.QueryWindowsTest do
       assert id1 == id2
     end
 
+    test "rfc1459: 'nick[1]' and 'nick{1}' resolve to the same row (#121)" do
+      # Azzurra (bahamut) folds [ ] \\ ~ -> { } | ^. Plain ASCII lower()
+      # would fork these into two DM windows; rfc1459 collapses them.
+      user = user_fixture()
+      net = network_fixture()
+
+      assert {:ok, %Window{id: id1}} = QueryWindows.open({:user, user.id}, net.id, "nick[1]", user.name)
+      assert {:ok, %Window{id: id2}} = QueryWindows.open({:user, user.id}, net.id, "nick{1}", user.name)
+      assert id1 == id2
+    end
+
     test "different nicks on the same (user, network) produce separate rows" do
       user = user_fixture()
       net = network_fixture()

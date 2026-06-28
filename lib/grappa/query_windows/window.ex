@@ -18,10 +18,11 @@ defmodule Grappa.QueryWindows.Window do
     * Schema-level `validate_subject_xor/1` (errors attach to the
       synthetic `:subject` key for uniform client-side rendering).
     * DB CHECK constraint `query_windows_subject_xor`.
-    * Two partial unique indexes (one per subject branch) on
-      `(<subject_id>, network_id, lower(target_nick))` enforcing
-      per-subject case-insensitive uniqueness without polluting the
-      index with NULL pairs that would otherwise collide spuriously.
+    * Two partial unique expression indexes (one per subject branch) on
+      `(<subject_id>, network_id, rfc1459-fold(target_nick))` (GH #121)
+      enforcing per-subject case-insensitive uniqueness without
+      polluting the index with NULL pairs that would otherwise collide
+      spuriously.
 
   See `Grappa.QueryWindows` for the upsert / delete / list semantics.
   """
