@@ -123,9 +123,7 @@ const HomePaneVisitor: Component = () => {
         This is IRC: to join a channel, tap the server tab below and <code>/join</code> it. To get
         started, <code>/join #grappa</code>.
       </p>
-      <Show when={visitorSlug()}>
-        {(slug) => <FeaturedLinks slug={slug()} />}
-      </Show>
+      <Show when={visitorSlug()}>{(slug) => <FeaturedLinks slug={slug()} />}</Show>
     </div>
   );
 };

@@ -617,7 +617,10 @@ describe("ComposeBox", () => {
       const b = sampleVideo();
       const junk = sampleUnknownType();
       fireEvent.drop(form, { dataTransfer: makeMultiDataTransfer([a, junk, b]) });
-      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [a, b]);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
+        a,
+        b,
+      ]);
     });
 
     it("pasting multiple files uploads ALL of them (filtered to uploadable) — #118", async () => {
@@ -632,7 +635,10 @@ describe("ComposeBox", () => {
         configurable: true,
       });
       ta.dispatchEvent(pasteEvent);
-      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [a, b]);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
+        a,
+        b,
+      ]);
     });
 
     it("the picker input allows multiple selection — #118", () => {

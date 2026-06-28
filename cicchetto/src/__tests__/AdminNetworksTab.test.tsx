@@ -691,9 +691,12 @@ describe("AdminNetworksTab", () => {
       fireEvent.input(screen.getByTestId(`admin-network-add-featured-name-${BAHAMUT.slug}`), {
         target: { value: "#new" },
       });
-      fireEvent.input(screen.getByTestId(`admin-network-add-featured-description-${BAHAMUT.slug}`), {
-        target: { value: "blurb" },
-      });
+      fireEvent.input(
+        screen.getByTestId(`admin-network-add-featured-description-${BAHAMUT.slug}`),
+        {
+          target: { value: "blurb" },
+        },
+      );
       fireEvent.click(screen.getByTestId(`admin-network-add-featured-submit-${BAHAMUT.slug}`));
 
       await waitFor(() => {

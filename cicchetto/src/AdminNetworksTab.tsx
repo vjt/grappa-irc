@@ -995,9 +995,7 @@ const FeaturedChannelsDisclosure: Component<{
   net: AdminNetwork;
   featured: AdminFeaturedChannel[];
   form: { name: string; description: string; position: string };
-  onFormChange: (
-    patch: Partial<{ name: string; description: string; position: string }>,
-  ) => void;
+  onFormChange: (patch: Partial<{ name: string; description: string; position: string }>) => void;
   onAddFeatured: (e: Event) => void;
   onToggleEnabled: (fc: AdminFeaturedChannel) => void;
   confirmingFeaturedKey: string | null;

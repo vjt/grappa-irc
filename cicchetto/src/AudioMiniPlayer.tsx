@@ -63,6 +63,10 @@ const AudioMiniPlayer: Component = () => {
 
   return (
     <>
+      {/* biome-ignore lint/a11y/useMediaCaption: plays arbitrary user-uploaded
+          audio (voice / audio shares, GH #115) — no transcript or caption data
+          exists on the wire (the player gets a slug-only href), so a <track>
+          would be a hollow no-op element. Captions are N/A by construction. */}
       <audio
         ref={audioEl}
         data-testid="audio-mini-player-el"

@@ -12,9 +12,9 @@ import {
 import { Portal } from "solid-js/web";
 import AdminPane from "./AdminPane";
 import ArchiveModal from "./ArchiveModal";
+import AudioMiniPlayer from "./AudioMiniPlayer";
 import BottomBar from "./BottomBar";
 import BundleRefreshBanner from "./BundleRefreshBanner";
-import AudioMiniPlayer from "./AudioMiniPlayer";
 import ComposeBox from "./ComposeBox";
 import DiagFloat from "./DiagFloat";
 import DirectoryPane from "./DirectoryPane";

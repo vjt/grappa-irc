@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { setToken } from "../lib/auth";
 import { activeAudio, closeAudio, playAudio } from "../lib/audioPlayer";
+import { setToken } from "../lib/auth";
 
 // Docked audio mini-player store (GH #115). Module-singleton signal —
 // same identity-scoped pattern as mediaViewer.ts. One player instance:

@@ -562,7 +562,11 @@ describe("category dispatch", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "🎵 https://litter.catbox.moe/ring.m4r");
+    expect(sendMessage).toHaveBeenCalledWith(
+      slug,
+      channel,
+      "🎵 https://litter.catbox.moe/ring.m4r",
+    );
   });
 
   it("video upload → routed through the transcode → 🎬-prefixed PRIVMSG", async () => {
@@ -951,8 +955,7 @@ describe("TTL persistence", () => {
 // --------------------------------------------------------------------
 
 describe("sequential multi-file queue (#118)", () => {
-  const ackPrivacy = () =>
-    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+  const ackPrivacy = () => localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
   const img = (name: string): File =>
     new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
 

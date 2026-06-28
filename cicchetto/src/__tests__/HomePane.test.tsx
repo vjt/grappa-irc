@@ -144,7 +144,11 @@ describe("HomePane", () => {
         expect(postJoinMock).toHaveBeenCalledWith("test-token", "azzurra", "#sniffo", null),
       );
       expect(setSelectedChannelMock).toHaveBeenCalledWith(
-        expect.objectContaining({ networkSlug: "azzurra", channelName: "#sniffo", kind: "channel" }),
+        expect.objectContaining({
+          networkSlug: "azzurra",
+          channelName: "#sniffo",
+          kind: "channel",
+        }),
       );
     });
 
