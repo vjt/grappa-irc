@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Babysit a sibling Claude Code session in another tmux pane through a long-running plan. On every idle, ask the session if /clear is useful; if yes, sibling Writes its self-contained next-prompt body to /tmp/orchestrate-next.txt, orchestrator runs /clear and tells sibling to Read+execute that file (no paste-buffer). Halt on design questions or unexpected deviations. Resumes after /clear by re-reading the per-pane state file — user can /clear freely to save tokens.
+description: Babysit a sibling Claude Code session in another tmux pane through a long-running plan. On every idle, ask the session if /clear is useful; if yes, sibling Writes its self-contained next-prompt body to /tmp/orchestrate-next.txt, orchestrator runs /clear and tells sibling to Read+execute that file (no paste-buffer). Halt on design questions or unexpected deviations. On every /orchestrate invocation it FIRST reads the handoff doc /tmp/orchestrator-resume.md (the persistent brain) then reconciles against the per-pane daemon state — so /orchestrate alone resumes with zero extra instruction; user can /clear freely to save tokens.
 ---
 
 # Orchestrate
@@ -67,6 +67,20 @@ v2 separates concerns:
 - `last_state_change` — unix ts of last state transition (STALL gate)
 
 ## Setup
+
+### Step 0 — read the handoff doc FIRST (always, before anything else)
+
+On EVERY `/orchestrate` invocation the FIRST action — before `tmux`, before resume-check, before any tool — is:
+
+```
+Read /tmp/orchestrator-resume.md
+```
+
+This is the orchestrator's persistent brain across `/clear`. It holds: the active plan / issue pack, what's shipped, any pending decision or open halt, the sibling pane id (`%NN`), the daemon pid, the per-run standing rules (autopilot scope, the #it-opers escalation/ping config, clear-cycle policy), and an `## IMMEDIATE NEXT STEP` line. Reading it top-to-bottom means **`/orchestrate` alone fully restores context — the user should never have to say "read the handoff and resume."** If the file is absent, this is a first-ever run for this machine — skip to Step 1.
+
+**Keeping it current is the orchestrator's job, not optional.** Update `/tmp/orchestrator-resume.md` at every ship, dispatch, halt, design decision, and standing-rule change — it is the ONLY thing that survives the orchestrator's own `/clear`. A stale handoff is the highest-severity bug: it makes the post-clear orchestrator act on wrong state. The `## IMMEDIATE NEXT STEP` line must always name the very next concrete action (e.g. "re-arm waiter on %58, monitoring #131 build → on ship announce + close pack").
+
+After reading the handoff, proceed to Step 1 (resume-check) to reconcile it against live daemon/pane state.
 
 ### Step 1 — check for existing state (resume case)
 
