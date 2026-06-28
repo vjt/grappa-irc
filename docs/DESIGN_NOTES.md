@@ -13578,3 +13578,65 @@ and the `/quote` bypass were.
 capture that doesn't exist — the wire has more than one door to the same
 service, so the interception has to sit at the single choke point every
 door funnels through, not on the door the happy-path test happened to use.*
+
+## 2026-06-28 — Autojoin recovers +i / +k channels via ChanServ self-INVITE (GH #116)
+
+When session bring-up autojoin hits an invite-only (`473 ERR_INVITEONLYCHAN`)
+or keyed (`475 ERR_BADCHANNELKEY`) channel, `Session.Server` now sends
+`PRIVMSG ChanServ :INVITE #chan` and records the channel in a new per-session
+`awaiting_invite` MapSet. If ChanServ relays an inbound `INVITE` — which it
+does only when the bouncer's identified account holds ≥VOP access on the
+registered channel — `EventRouter`'s inbound-`:invite` clause emits
+`{:rejoin_invited, ch}` and `Session.Server` re-JOINs **keyless**. One invite
+attempt per channel per session (`awaiting_invite` is monotonic; never cleared).
+
+**A keyless JOIN works after INVITE (source-verified `bahamut-azzurra/src/channel.c`
+`can_join` ~:1919).** `if (invited || IsULine || IsUmodez) return 0;` is the
+FIRST check and short-circuits BOTH the `+i` test (:1940) AND the `+k` key
+test (:1968). One mechanism — ChanServ INVITE — therefore covers both 473 and
+475; no stored key is needed.
+
+**ChanServ INVITE wire (source-verified `services/src/chanserv.c`).** Send
+form is `PRIVMSG ChanServ :INVITE #chan` — exactly one arg, the channel
+(`:6205` reads it; a second token → `CS_INVITE_ERROR_PARAM_GIVEN`); the caller
+invites *themselves* (no nick arg). Channel must be registered (`:6219` else
+`ERROR_CHAN_NOT_REG`) AND caller must hold ≥VOP (`:6250` else
+`ERROR_ACCESS_DENIED`). On success ChanServ emits `:ChanServ INVITE <ournick>
+#chan` (`:6239/6269/6289`) → params `[ournick, #chan]`, channel at param 1.
+No access / unregistered → a NOTICE (no INVITE) → window stays `:failed`.
+
+**Autojoin-vs-manual is derived, not flagged.** The invite-retry path triggers
+only when the failing channel is a member of `state.autojoin` (set once at
+boot, never mutated). No new origin flag or parallel state structure was added
+— membership in the existing boot set is the condition. A manual `/join` of a
++i/+k channel hits the same 473/475 numerics but is NOT in `state.autojoin`,
+so it follows the existing path: window stays `:failed`, cic shows the
+`[Join]` CTA.
+
+**`awaiting_invite` HOT-reload safety.** The set is read via
+`Map.get(state, :awaiting_invite, MapSet.new())` and written via `Map.put` —
+so a HOT code-reload of a pre-#116 `Session.Server` process (whose state map
+lacks the key) does not crash. Same defensive contract as `in_flight_joins`.
+
+**Inbound `:invite` routing.** `EventRouter`'s inbound-`:invite` clause checks
+the awaiting set: if the channel is present, it emits `{:rejoin_invited, ch}`
+(which calls `Client.send_join/3` keyless and `record_in_flight_join/2`,
+flipping the window `:failed → :pending`; the self-JOIN echo then lands
+`:joined`). Channels not in the awaiting set are delegated to the existing
+`:server_event` persist path — the cic `[Join]` CTA (b2 behavior) is
+preserved for non-autojoin INVITEs, and the now-redundant CTA for an awaiting
+channel is suppressed.
+
+**Scope boundary vs #113 and #38.** The no-access / unregistered-+k case —
+where the bouncer cannot be invited because it lacks ChanServ access and there
+is no stored key — is issue **#113** (key storage / `/cs info` key-fetch),
+deferred as low-priority/niche. This change supersedes issue **#38**'s "stuck
++k autojoin row" problem for the *has-access* case: the channel now
+auto-recovers instead of sitting `:failed` indefinitely. The `×`-dismiss UX
+from #38 remains the answer for the *no-access* case.
+
+*Lesson: when the underlying ircd source shows that one mechanism short-circuits
+multiple lock types (invited-list beats both +i and +k in `can_join`), resist
+the temptation to handle 473 and 475 differently — collapse them to one code
+path at the point that knowledge is encoded, and document the source reference
+so future maintainers don't re-derive it.*
