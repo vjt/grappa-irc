@@ -6091,4 +6091,112 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  describe "autojoin +i/+k recovery via ChanServ INVITE (#116)" do
+    test "473 on an autojoin channel sends PRIVMSG ChanServ :INVITE + marks awaiting_invite" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#secret"]})
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # 001 RPL_WELCOME drives the autojoin loop → JOIN #secret upstream.
+      IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #secret"), 1_000)
+
+      # Upstream rejects with 473 ERR_INVITEONLYCHAN.
+      IRCServer.feed(server, ":irc.test 473 grappa-test #secret :Cannot join channel (+i)\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(
+                 server,
+                 &(&1 =~ ~r/^PRIVMSG ChanServ :INVITE #secret\b/i),
+                 1_000
+               )
+
+      # PING/PONG flush so apply_effects has run before we sample state.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      assert MapSet.member?(:sys.get_state(pid).awaiting_invite, "#secret")
+    end
+
+    test "475 (+k) on an autojoin channel also sends ChanServ INVITE" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#keyed"]})
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #keyed"), 1_000)
+      IRCServer.feed(server, ":irc.test 475 grappa-test #keyed :Cannot join channel (+k)\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(
+                 server,
+                 &(&1 =~ ~r/^PRIVMSG ChanServ :INVITE #keyed\b/i),
+                 1_000
+               )
+
+      _ = pid
+    end
+
+    test "473 on a NON-autojoin (manual-shape) channel does NOT invite" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#bofh"]})
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #bofh"), 1_000)
+      # A 473 for a channel never in autojoin (simulates a manual /join fail).
+      IRCServer.feed(server, ":irc.test 473 grappa-test #manual :Cannot join channel (+i)\r\n")
+      # Deterministic flush: session answers PONG only after all preceding messages
+      # have been processed, so once PONG arrives the refute is safe.
+      flush_server(server)
+      refute Enum.any?(IRCServer.sent_lines(server), &(&1 =~ ~r/PRIVMSG ChanServ/i))
+      _ = pid
+    end
+
+    test "non-invitable numerics (471/474/403/405) do NOT invite even for an autojoin channel" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#full"]})
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #full"), 1_000)
+
+      for numeric <- [471, 474, 403, 405] do
+        IRCServer.feed(server, ":irc.test #{numeric} grappa-test #full :nope\r\n")
+      end
+
+      # Deterministic flush: all four numerics are in the session mailbox ahead of
+      # the PING, so PONG arriving means every numeric has been through apply_effects.
+      flush_server(server)
+      refute Enum.any?(IRCServer.sent_lines(server), &(&1 =~ ~r/PRIVMSG ChanServ/i))
+      _ = pid
+    end
+
+    test "dedupe — a second 473 for the same channel does not re-invite" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#secret"]})
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #secret"), 1_000)
+      IRCServer.feed(server, ":irc.test 473 grappa-test #secret :Cannot join channel (+i)\r\n")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 =~ ~r/^PRIVMSG ChanServ :INVITE #secret\b/i),
+          1_000
+        )
+
+      # Second failure (e.g. a later autojoin retry) must NOT produce a 2nd invite.
+      IRCServer.feed(server, ":irc.test 473 grappa-test #secret :Cannot join channel (+i)\r\n")
+      # Deterministic flush: PONG confirms the second 473 has been processed.
+      flush_server(server)
+      invites = Enum.filter(IRCServer.sent_lines(server), &(&1 =~ ~r/PRIVMSG ChanServ :INVITE #secret/i))
+      assert length(invites) == 1
+      _ = pid
+    end
+  end
 end
