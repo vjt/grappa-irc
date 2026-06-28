@@ -1158,6 +1158,25 @@ html.resize-dragging * {
   font-style: italic;
 }
 
+/* MentionsWindow rows (#139). Each row is a <button>, and form controls
+   do NOT inherit font-family — without `font: inherit` the row renders in
+   the UA proportional font instead of the cic monospace (same fix the
+   other inline-clickable buttons already carry, see .nick-clickable /
+   .scrollback-invite-join). The body span then needs the same whitespace
+   treatment as a scrollback body (.scrollback-line) so aligned/monospace
+   content keeps its consecutive spaces + leading indentation instead of
+   HTML-folding to a single space. pre-wrap preserves space runs AND still
+   wraps long lines; word-break breaks pathologically long unbroken tokens
+   so they never force a horizontal scrollbar. */
+.mentions-row {
+  font: inherit;
+}
+
+.mentions-row-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* C7.1: Day-separator row — renders `── Saturday, May 4 ──` between
    messages that cross a local-TZ day boundary. The separator is a flex
    row with two growing lines flanking the date label. */
