@@ -100,7 +100,7 @@ export type SlashCommand =
   | { kind: "list"; pattern: string | null }
   | { kind: "links"; pattern: string | null }
   | { kind: "lusers" }
-  | { kind: "whois"; nick: string }
+  | { kind: "whois"; nick: string | null }
   | { kind: "whowas"; nick: string }
   | { kind: "watchlist"; action: "add"; pattern: string }
   | { kind: "watchlist"; action: "del"; pattern: string }
@@ -382,10 +382,13 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
 
   lusers: (_verb, _rest) => ({ kind: "lusers" }),
 
-  whois: (verb, rest) => {
+  // #122 — bare /whois (and its /w alias) no longer errors here. A null
+  // nick signals "use the current context": the compose consumer resolves
+  // the active query window's nick (and errors if not in a query window).
+  // Mirrors the bare-target tolerance of /who and /names.
+  whois: (_verb, rest) => {
     const [nick] = tokens(rest);
-    if (!nick) return err(verb, "/whois requires a nick");
-    return { kind: "whois", nick };
+    return { kind: "whois", nick: nick ?? null };
   },
 
   whowas: (verb, rest) => {
@@ -458,7 +461,9 @@ function parseServiceShortcut(verb: string, target: string, rest: string): Slash
 // aliases through the same Handler indirection.
 //   /q → /query (same handler)
 //   /j → /join  (same handler)
-// All five service-msg shortcuts (/cs /ns /ms /os /hs /rs) live as
+//   /w → /whois (same handler)   — #122
+//   /n → /names (same handler)   — #122
+// All six service-msg shortcuts (/cs /ns /ms /os /hs /rs) live as
 // independent DISPATCH entries below; they rewrite to {kind: "msg"}.
 const queryHandler = DISPATCH.query;
 if (queryHandler) {
@@ -467,6 +472,16 @@ if (queryHandler) {
 const joinHandler = DISPATCH.join;
 if (joinHandler) {
   (DISPATCH as Record<string, Handler>).j = joinHandler;
+}
+// #122 — /w → /whois, /n → /names. Context-aware defaults (bare → current
+// query nick / current channel) live in the compose consumers, not here.
+const whoisHandler = DISPATCH.whois;
+if (whoisHandler) {
+  (DISPATCH as Record<string, Handler>).w = whoisHandler;
+}
+const namesHandler = DISPATCH.names;
+if (namesHandler) {
+  (DISPATCH as Record<string, Handler>).n = namesHandler;
 }
 
 export function parseSlash(input: string): SlashCommand {

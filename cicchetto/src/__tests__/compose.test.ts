@@ -1314,14 +1314,38 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     expect(result).toMatchObject({ ok: true });
   });
 
-  it("/who without target returns inline error", async () => {
+  // #122 — bare /who in a channel window defaults to the current channel
+  // (context-default, shared with /names via requireChannel).
+  it("/who bare in a channel window resolves to the current channel", async () => {
     localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/who");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(result).toMatchObject({ error: expect.stringContaining("requires a #channel") });
+    expect(socket.pushWho).toHaveBeenCalledWith(1, "#a");
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #122 — bare /who outside a channel window (query/server/home) still
+  // errors: there is no current channel to resolve.
+  it("/who bare in a non-channel window returns inline error", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sel = await import("../lib/selection");
+    vi.mocked(sel.selectedChannel).mockReturnValueOnce({
+      networkSlug: "freenode",
+      channelName: "bob",
+      kind: "query",
+    });
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "bob");
+    compose.setDraft(k, "/who");
+    const result = await compose.submit(k, "freenode", "bob");
+
+    expect(socket.pushWho).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ error: expect.stringContaining("channel window") });
   });
 
   it("/names with target dispatches via pushNames", async () => {
@@ -1334,14 +1358,85 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     expect(result).toMatchObject({ ok: true });
   });
 
-  it("/names without target returns inline error", async () => {
+  // #122 — bare /names in a channel window defaults to the current
+  // channel (context-default, shared with /who via requireChannel).
+  it("/names bare in a channel window resolves to the current channel", async () => {
     localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/names");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(result).toMatchObject({ error: expect.stringContaining("requires a #channel") });
+    // pushNames(networkId, target, originatingWindow) — both resolve to #a.
+    expect(socket.pushNames).toHaveBeenCalledWith(1, "#a", "#a");
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #122 — bare /names outside a channel window still errors.
+  it("/names bare in a non-channel window returns inline error", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sel = await import("../lib/selection");
+    vi.mocked(sel.selectedChannel).mockReturnValueOnce({
+      networkSlug: "freenode",
+      channelName: "bob",
+      kind: "query",
+    });
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "bob");
+    compose.setDraft(k, "/names");
+    const result = await compose.submit(k, "freenode", "bob");
+
+    expect(socket.pushNames).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ error: expect.stringContaining("channel window") });
+  });
+
+  // #122 — /whois context-default. /w is the alias (parser-level), the
+  // null-nick resolution lives in the consumer via requireQueryNick.
+  it("/whois bare in a query window resolves to the current query nick", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sel = await import("../lib/selection");
+    vi.mocked(sel.selectedChannel).mockReturnValueOnce({
+      networkSlug: "freenode",
+      channelName: "bob",
+      kind: "query",
+    });
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "bob");
+    compose.setDraft(k, "/whois");
+    const result = await compose.submit(k, "freenode", "bob");
+
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "bob");
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #122 — bare /whois outside a query window errors (no nick to resolve;
+  // the default mock window is a channel, not a query).
+  it("/whois bare in a non-query window returns inline error", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/whois");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushWhois).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ error: expect.stringContaining("query window") });
+  });
+
+  // #122 — /w <nick> alias dispatches via pushWhois with the explicit nick.
+  it("/w <nick> dispatches via pushWhois", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/w alice");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "alice");
+    expect(result).toEqual({ ok: true });
   });
 
   // #84 — /list executor. Opens the $list directory pseudo-window for the

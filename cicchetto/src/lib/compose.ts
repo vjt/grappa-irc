@@ -233,6 +233,18 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       return ch;
     };
 
+    // #122 — query-window context helper, the nick twin of requireChannel.
+    // Returns the current query window's nick, or an inline error when the
+    // active window is not a query (home/server/channel). Drives the bare
+    // /whois (and /w alias) context-default.
+    const requireQueryNick = (verb: string): string | { error: string } => {
+      const sel = selectedChannel();
+      if (sel?.kind !== "query") {
+        return { error: `/${verb} requires an active query window or a nick` };
+      }
+      return sel.channelName;
+    };
+
     let result: SubmitResult;
     try {
       switch (cmd.kind) {
@@ -572,15 +584,19 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         // meta.who structured payload are available for future tabular
         // render polish (current notice render is sufficient for v1).
         //
-        // /who without target → reject inline (server requires a
-        // channel target — RFC 2812 §3.6.1 allows mask form, out of
-        // MVP scope).
+        // /who without target → default to the current channel (#122);
+        // reject inline only when the active window is not a channel
+        // (server requires a channel target — RFC 2812 §3.6.1 allows mask
+        // form, out of MVP scope).
         // ---------------------------------------------------------------
         case "who": {
-          if (cmd.target === null) return { error: "/who requires a #channel target" };
+          // #122 — bare /who defaults to the current channel (shares the
+          // requireChannel resolver with /names); errors only outside one.
+          const target = cmd.target ?? requireChannel("who");
+          if (typeof target !== "string") return target;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/who: network not found" };
-          pushWho(networkId, cmd.target);
+          pushWho(networkId, target);
           result = { ok: true };
           break;
         }
@@ -591,10 +607,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // window (`channelName` — the operator's focused window) so the
           // operator gets feedback in the window they typed in, regardless
           // of joined-vs-non-joined target.
-          if (cmd.target === null) return { error: "/names requires a #channel target" };
+          // #122 — bare /names (and /n alias) defaults to the current
+          // channel (shares the requireChannel resolver with /who).
+          const target = cmd.target ?? requireChannel("names");
+          if (typeof target !== "string") return target;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/names: network not found" };
-          pushNames(networkId, cmd.target, channelName);
+          pushNames(networkId, target, channelName);
           result = { ok: true };
           break;
         }
@@ -628,14 +647,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         // C2 — /whois <nick>. Push on the user-level channel; the server
         // primes its accumulator and emits WHOIS upstream. The bundle
         // arrives later as `whois_bundle` on the user topic
-        // (handled by userTopic.ts → setWhoisBundle). Active-window-
-        // independent: WHOIS works from any window kind because the
-        // bundle render targets the active window at arrival time.
+        // (handled by userTopic.ts → setWhoisBundle). WHOIS with an
+        // explicit nick works from any window kind; the bundle render
+        // targets the active window at arrival time. (Bare /whois is the
+        // exception — it needs a query window to resolve the nick; see
+        // requireQueryNick below.)
         // ---------------------------------------------------------------
         case "whois": {
+          // #122 — bare /whois (and /w alias) defaults to the current query
+          // window's nick via requireQueryNick; errors outside a query.
+          const nick = cmd.nick ?? requireQueryNick("whois");
+          if (typeof nick !== "string") return nick;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/whois: network not found" };
-          pushWhois(networkId, cmd.nick);
+          pushWhois(networkId, nick);
           result = { ok: true };
           break;
         }

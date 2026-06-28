@@ -26,8 +26,19 @@ describe("parseSlash — /whois (C2)", () => {
     expect(parseSlash("/whois alice")).toEqual({ kind: "whois", nick: "alice" });
   });
 
-  it("/whois bare → error (nick required)", () => {
-    expect(parseSlash("/whois")).toMatchObject({ kind: "error", verb: "whois" });
+  // #122 — bare /whois no longer errors in the parser; the consumer
+  // resolves the current query window's nick (context-default).
+  it("/whois bare → {kind: 'whois', nick: null} (context-default in compose)", () => {
+    expect(parseSlash("/whois")).toEqual({ kind: "whois", nick: null });
+  });
+
+  // #122 — /w is the post-init alias of /whois.
+  it("/w <nick> → same as /whois", () => {
+    expect(parseSlash("/w alice")).toEqual({ kind: "whois", nick: "alice" });
+  });
+
+  it("/w bare → {kind: 'whois', nick: null}", () => {
+    expect(parseSlash("/w")).toEqual({ kind: "whois", nick: null });
   });
 });
 
@@ -542,6 +553,15 @@ describe("parseSlash — info verbs (TODO — server-side missing)", () => {
 
   it("/names <target>", () => {
     expect(parseSlash("/names #grappa")).toEqual({ kind: "names", target: "#grappa" });
+  });
+
+  // #122 — /n is the post-init alias of /names.
+  it("/n bare → same as /names with no target", () => {
+    expect(parseSlash("/n")).toEqual({ kind: "names", target: null });
+  });
+
+  it("/n <target> → same as /names", () => {
+    expect(parseSlash("/n #grappa")).toEqual({ kind: "names", target: "#grappa" });
   });
 
   it("/list bare → list with no pattern", () => {
