@@ -13944,3 +13944,57 @@ divergence from the servers pattern, not an omission.
 (`Identifier.canonical_channel/1`) per the channel case-fold invariant;
 `(network_id, name)` is unique on the stored fold, so `#Chan`/`#chan`
 collapse to one row and match one directory entry.
+
+## 2026-06-28 — `/list` directory rework: overlay back, shared topic render (#125)
+
+Cic-only rework of the `DirectoryPane` (`$list`) shipped in #84. Four
+decisions worth keeping:
+
+**Topic colors ride the ONE mIRC renderer.** `MircBody` (+ its private
+`renderRun`) moved out of `ScrollbackPane.tsx` into a new
+`cicchetto/src/MircText.tsx`; ScrollbackPane imports it back and
+DirectoryPane now consumes it for the topic. The directory `topic` wire
+field is the raw server string (with `\x03` color bytes) — cic styles it
+through the same `parseMircFormat` → `renderRun` path as message bodies.
+This is the **one-parser invariant** at the display layer: cic never
+parses IRC *framing*; `parseMircFormat` only expands already-received
+wire bytes into typed runs. A second display-time mIRC renderer would
+have been a divergence; there is exactly one module.
+
+**`$list` is a transient overlay with a one-deep back pointer.** The
+directory has a close button (#125) that must restore *the window active
+when it opened*, not blank the pane and not guess via MRU. `selection.ts`
+keeps a single `backTarget: SelectedChannel`, captured **only** on the
+genuine non-list → list transition (inside `setSelectedChannel`, after
+the idempotency guard) so background selection churn while browsing can't
+clobber it. `closeToPreviousWindow(fallbackSlug)` restores it iff
+`selectionIsRestorable` (channel/query must still be live; home/server/
+admin/mentions always; `list`/`null` never), else falls through the
+shared fallback chain. NOT a history stack — one pointer, reset on
+identity rotation. The directory is deliberately excluded from MRU
+(`mru.ts`), so MRU never sees `$list`; the back pointer is the only
+"return here" state.
+
+**One fallback chain, shared.** The close-window picker (UX-4 bucket E)
+already computed MRU → the network's server window (if connected; visitor
+networks always count as connected) → home. That logic was extracted into
+`resolveFallbackWindow(excludeKey, fallbackSlug)` and is now called by
+BOTH bucket E and `closeToPreviousWindow` — DRY, one place owns the
+chain. Bucket E's eviction + transition-detection are unchanged.
+Deliberate divergence: `selectionIsRestorable`'s `server` case is NOT
+`connection_state`-gated (unlike the server *fallback*) — restoring the
+prior window beats bouncing to home, and bucket D pre-empts the parked
+case anyway.
+
+**Responsive layout, zero horizontal scroll.** `.directory-row-join` is a
+CSS grid: mobile a 2-row layout (name-head + count on row 1, full-width
+wrapping topic on row 2) with featured/joined labels BESIDE the name;
+desktop (`min-width: 40rem`) a 3-column row (name-head | topic | count)
+with the labels stacked BELOW the name. The responsive label placement is
+just `.directory-row-head` flipping `flex-flow: row wrap` → `flex-
+direction: column`. No-h-scroll is structural: `minmax(0, …)` track +
+`min-width: 0` on grid children + `overflow-wrap: anywhere` on name/topic
++ `overflow-x: hidden` backstop on the list. Topic wraps fully (no
+truncation). Sort stays user-count DESC; featured rows are labelled, not
+pinned. Joined rows are tappable-to-open (consistent with the HomePane
+featured-link from #85), no longer disabled.
