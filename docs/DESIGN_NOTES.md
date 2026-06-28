@@ -14063,3 +14063,49 @@ identify-at-001 makes services set `+r` anew (a real transition) → captured
 in the 10s window → persisted. Accepted: the in-memory cost is one nullable
 field; a DB-backed cross-restart hold would reintroduce the
 unconfirmed-secret-at-rest problem this design deliberately avoids.
+
+## 2026-06-28 — activation scroll flicker: hide-until-settled, NOT remove the double-rAF (#130)
+
+Cic-only. On window/channel activation the scrollback content briefly
+painted at the wrong scroll offset, then snapped — the user saw a jump.
+The `.scrollback` container is the SAME DOM node across the swap
+(non-keyed `<Match>` in `Shell.tsx`), so its `scrollTop` carries over
+from the leaving pane; the correcting scroll runs inside
+`scrollToActivation`'s **double-rAF**, i.e. after the browser has already
+painted the new rows at the stale offset.
+
+**The double-rAF is load-bearing — do NOT "simplify" it away.** The
+obvious fix (scroll synchronously pre-paint) does not work and has been
+tried: the activation `createEffect` runs BEFORE Solid's `<For>` commits
+the new rows (effect creation order — the For is created later, in the
+JSX return), so a synchronous read sees stale geometry; `queueMicrotask`
+likewise fires before layout settles. Both were observed leaving the pane
+~66px short of true bottom (CI sentinel + vjt prod dogfood, 2026-05-23).
+The rAF×2 is the only reliable "rows committed AND layout settled" point.
+There is no Solid `useLayoutEffect`; that is a React concept.
+
+**So fix the *visibility*, not the *timing*.** A new `activating` signal
+sets `visibility: hidden` (NOT `display: none` — layout/`scrollHeight`
+must stay readable for the deferred geometry read) on the container
+synchronously at activation (pre-paint) and clears it only inside the
+rAF body once the scroll has landed. The wrong-scroll frame is never
+shown; the cost is a ~2-frame hidden window on switch (reads as "loading
+the window," far less jarring than a content jump). Guards: cold/empty
+windows skip the hide entirely (nothing to scroll — the length-effect
+owns their first snap; they can't strand hidden), the reveal runs in
+EVERY rAF-body exit path, and both activation triggers (key-change +
+visibility-return) share `scrollToActivation` so both inherit it.
+
+## 2026-06-28 — bare /whois /w in a channel window self-whoises (#132)
+
+Cic-only follow-up to #122. #122 gave bare `/whois` (and the `/w` alias)
+a context default of the active QUERY window's partner and errored
+elsewhere. A channel window has an equally obvious default — the
+operator's own nick — so the consumer-side resolver (renamed
+`resolveBareWhoisNick` in `compose.ts`) now branches: query → partner;
+channel → **self** via `ownNickForNetwork(net, me)` (the canonical
+per-network own-nick resolver, NOT re-implemented); any other window kind
+→ inline error (out of scope, deliberately). The context default has
+always lived in the compose consumer, never the parser — `slashCommands.ts`
+still just emits `{nick: null}` for the bare form, so `/w` and `/whois`
+inherit the behaviour through the shared handler with zero parser change.
