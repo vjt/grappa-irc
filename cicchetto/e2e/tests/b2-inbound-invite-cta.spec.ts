@@ -61,6 +61,16 @@ test("B2 — inbound INVITE opens a greyed :invited tab; [Join] inside it mounts
     // `.sidebar-window-greyed` class (not-joined state).
     const invitedTab = sidebarWindow(page, NETWORK_SLUG, TARGET_CHANNEL);
     await expect(invitedTab).toBeVisible({ timeout: 5_000 });
+    // Genuine-gate assertion (#78 redo). `.sidebar-window-greyed` is shared
+    // by EVERY not-joined pseudo-row state (pending/invited/failed/kicked/
+    // parked), so asserting only the class would pass even if the
+    // inbound-INVITE path produced the wrong state — or none, with the row
+    // greyed for an unrelated reason. data-window-state pins the row to the
+    // real `:invited` derivation: server do_route(:invite) → {:invited, ch}
+    // → window_invited on the user topic → cic setInvited. If any link in
+    // that chain breaks, this attribute is absent/wrong and the spec goes
+    // RED here instead of riding the generic greyed class to a false green.
+    await expect(invitedTab).toHaveAttribute("data-window-state", "invited");
     await expect(invitedTab.locator(".sidebar-window-greyed")).toBeVisible();
 
     // Operator selects the invited tab on their own time. awaitWsReady is

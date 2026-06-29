@@ -409,6 +409,20 @@ describe("Sidebar", () => {
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
     });
 
+    it("invited pseudo-rows expose data-window-state='invited' (genuine-gate seam, #78)", () => {
+      // The pseudo-row carries its discrete state as a DOM seam so an e2e
+      // can pin the :invited derivation specifically — `.sidebar-window-greyed`
+      // alone is shared by every not-joined state, so asserting only the class
+      // can't tell :invited from pending/failed/kicked/parked. #invited-room is
+      // NOT in the mocked channelsBySlug, so it renders as a synthetic pseudo-row.
+      mockWindowState = { "freenode #invited-room": "invited" };
+      render(() => <Sidebar />);
+      const li = screen.getByText("#invited-room").closest("li");
+      expect(li?.getAttribute("data-window-state")).toBe("invited");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
     it("channel rows do NOT get .sidebar-window-greyed when state=joined", () => {
       mockWindowState = { "freenode #italia": "joined" };
       render(() => <Sidebar />);

@@ -14410,3 +14410,42 @@ region; and the close × measures ≥44×44. Real on-device occlusion still
 needs Mezmerize dogfood before final close.
 
 **Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change.
+
+---
+
+## 2026-06-29 — #78 redo: the `:invited` e2e gate was vacuous; pin it to a `data-window-state` seam
+
+**The reopened complaint was that the inbound-INVITE `:invited` window
+"does not work in practice," with `b2-inbound-invite-cta` suspected a
+false positive.** Investigated empirically before touching the
+derivation: the full chain (server `do_route(:invite)` → `{:invited, ch}`
+→ `window_invited` on `Topic.user/1` → cic `setInvited` → Sidebar greyed
+pseudo-row) is intact and was never gutted — the `:invite` clause dates
+to the original #78 ship (834204b), and #140's EventRouter refactor
+(7b5541d) touched only the PRIVMSG/NOTICE sender-presence routing, not
+the INVITE clause. Run in isolation on a fresh testnet the spec is GREEN
+and genuinely drives the real bahamut INVITE relay → greyed tab → [Join]
+→ joined. **There was no broken derivation to fix.**
+
+**Where b2 actually was weak — the gate, not the feature.** The
+greyed-tab assertion checked only `.sidebar-window-greyed`, a class the
+Sidebar pseudo-row shares across EVERY not-joined state
+(`pending`/`invited`/`failed`/`kicked`/`parked` — see
+`pseudoChannelsForNetwork`). So the spec would have ridden to green on
+any greyed row, including one greyed for an unrelated reason or by the
+wrong state — it could not distinguish `:invited` from the rest. That is
+the genuine "passes while the specific derivation is unverified" hole.
+
+**Fix — expose the discrete state as a DOM test seam.** The pseudo-row
+`<li>` now carries `data-window-state={row.state}` (same stable-seam
+pattern as `data-window-name` / `data-kind`; production rendering
+unchanged). `b2-inbound-invite-cta` asserts
+`toHaveAttribute("data-window-state", "invited")` BEFORE the generic
+greyed check, so the spec now goes RED unless the `:invited` link of the
+chain specifically fired. Unit-covered in `Sidebar.test.tsx`. Mobile
+`BottomBar` renders no pseudo-rows at all (a separate pre-existing gap —
+pending/failed/kicked are equally absent there — out of scope here); the
+seam lives only on the desktop `Sidebar`, which is its sole renderer, so
+nothing is half-migrated.
+
+**Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change.

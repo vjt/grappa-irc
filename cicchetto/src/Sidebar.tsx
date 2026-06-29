@@ -456,6 +456,16 @@ const Sidebar: Component<Props> = () => {
                     <li
                       classList={{ selected: isSelected(network.slug, row.name) }}
                       data-window-name={row.name}
+                      // #78 redo: expose the discrete pseudo-row state as a
+                      // stable test seam (same pattern as data-window-name /
+                      // data-kind). `.sidebar-window-greyed` alone is shared
+                      // by EVERY not-joined state (pending/invited/failed/
+                      // kicked/parked), so an e2e asserting only the greyed
+                      // class can't tell an :invited row from any other greyed
+                      // one — exactly the vacuity that let the old b2 invite
+                      // spec pass while the :invited derivation was suspect.
+                      // Production rendering is unchanged.
+                      data-window-state={row.state}
                     >
                       <button
                         type="button"
