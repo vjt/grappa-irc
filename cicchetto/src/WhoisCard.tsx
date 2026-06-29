@@ -144,19 +144,29 @@ const WhoisCard: Component<Props> = (props) => {
               <Show when={b().actually_host}>
                 <dt>connecting from</dt>
                 <dd>
-                  {b().actually_host}
-                  <Show when={b().actually_ip}> [{b().actually_ip}]</Show>
+                  <MircBody body={b().actually_host ?? ""} />
+                  <Show when={b().actually_ip}>
+                    {" ["}
+                    <MircBody body={b().actually_ip ?? ""} />
+                    {"]"}
+                  </Show>
                 </dd>
               </Show>
               <Show when={b().umodes}>
                 <dt>modes</dt>
-                <dd class="whois-card-umodes">{b().umodes}</dd>
+                <dd class="whois-card-umodes">
+                  <MircBody body={b().umodes ?? ""} />
+                </dd>
               </Show>
               <Show when={b().server}>
                 <dt>server</dt>
                 <dd>
                   {b().server}
-                  <Show when={b().server_info}> ({b().server_info})</Show>
+                  <Show when={b().server_info}>
+                    {" ("}
+                    <MircBody body={b().server_info ?? ""} />
+                    {")"}
+                  </Show>
                 </dd>
               </Show>
               <Show when={b().idle_seconds !== null}>
