@@ -77,6 +77,7 @@ const navigationRoute = new NavigationRoute(navigationHandler, {
     /^\/socket/,
     /^\/push/,
     /^\/api/,
+    /^\/session/,
     /^\/admin/,
     /^\/uploads/,
   ],

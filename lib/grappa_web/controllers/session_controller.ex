@@ -45,7 +45,7 @@ defmodule GrappaWeb.SessionController do
   """
   @spec disconnect(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :forbidden | :not_found}
-  def disconnect(conn, _params) do
+  def disconnect(conn, _) do
     with {:ok, visitor} <- require_registered_visitor(conn),
          {:ok, network_id} <- resolve_network_id(visitor) do
       :ok = Visitors.disconnect_session(visitor, network_id)
@@ -61,10 +61,10 @@ defmodule GrappaWeb.SessionController do
   """
   @spec reconnect(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :forbidden | :not_found | :resolve_failed | term()}
-  def reconnect(conn, _params) do
+  def reconnect(conn, _) do
     with {:ok, visitor} <- require_registered_visitor(conn),
          {:ok, network_id} <- resolve_network_id(visitor),
-         {:ok, _pid} <-
+         {:ok, _} <-
            Visitors.reconnect_session(visitor, network_id, capacity_input(conn, visitor, network_id)) do
       send_resp(conn, :no_content, "")
     end
@@ -74,11 +74,18 @@ defmodule GrappaWeb.SessionController do
   # Private helpers
   # ---------------------------------------------------------------------------
 
+  # Pattern-match the nil (anon) case FIRST → forbidden, so the
+  # registered clause needs no negated `is_nil` guard (a bare
+  # `%Visitor{}` after the nil clause is necessarily NickServ-identified).
   @spec require_registered_visitor(Plug.Conn.t()) :: {:ok, Visitor.t()} | {:error, :forbidden}
   defp require_registered_visitor(%{
-         assigns: %{current_subject: {:visitor, %Visitor{password_encrypted: pwd} = visitor}}
-       })
-       when not is_nil(pwd),
+         assigns: %{current_subject: {:visitor, %Visitor{password_encrypted: nil}}}
+       }),
+       do: {:error, :forbidden}
+
+  defp require_registered_visitor(%{
+         assigns: %{current_subject: {:visitor, %Visitor{} = visitor}}
+       }),
        do: {:ok, visitor}
 
   defp require_registered_visitor(_), do: {:error, :forbidden}

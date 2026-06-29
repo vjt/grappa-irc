@@ -66,11 +66,9 @@ defmodule Grappa.Visitors do
 
   import Ecto.Query
 
+  alias Grappa.{Admission, Repo, Session, SpawnOrchestrator}
   alias Grappa.IRC.Identifier
-  alias Grappa.Repo
-  alias Grappa.{Admission, Session, SpawnOrchestrator}
-  alias Grappa.Visitors.SessionPlan
-  alias Grappa.Visitors.Visitor
+  alias Grappa.Visitors.{SessionPlan, Visitor}
 
   # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment).
   require Identifier

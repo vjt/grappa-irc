@@ -55,7 +55,7 @@ defmodule GrappaWeb.SessionControllerTest do
       {server, port} = start_server()
       {visitor, network} = registered_visitor(port)
 
-      _pid = start_visitor_session_for(visitor, network)
+      _ = start_visitor_session_for(visitor, network)
       :ok = await_handshake(server)
       assert is_pid(Grappa.Session.whereis({:visitor, visitor.id}, network.id))
 
@@ -88,8 +88,7 @@ defmodule GrappaWeb.SessionControllerTest do
 
     test "user subject → 403 (users disconnect per-network via PATCH /networks)",
          %{conn: conn} do
-      {user, session} = user_and_session()
-      _ = user
+      {_, session} = user_and_session()
 
       conn
       |> put_bearer(session.id)
@@ -140,7 +139,7 @@ defmodule GrappaWeb.SessionControllerTest do
     end
 
     test "user subject → 403", %{conn: conn} do
-      {_user, session} = user_and_session()
+      {_, session} = user_and_session()
 
       conn
       |> put_bearer(session.id)
