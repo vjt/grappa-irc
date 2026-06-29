@@ -10,7 +10,7 @@
 #     - mix compile --warnings-as-errors  (Boundary compiler fails on cross-boundary violations)
 #     - mix format --check-formatted
 #     - mix credo --strict
-#     - mix deps.audit --ignore-advisory-ids GHSA-g2wm-735q-3f56  (cowlib cookie LOW, no patch)
+#     - mix deps.audit
 #     - mix hex.audit
 #     - mix sobelow --config --exit Medium
 #     - mix doctor

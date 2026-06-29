@@ -64,12 +64,7 @@ jobs:
         run: mix hex.audit
 
       - name: Mix audit (CVE check)
-        # Mirror the `ci.check` alias in mix.exs which ignores
-        # GHSA-g2wm-735q-3f56 (cowlib cookie-header injection, low
-        # severity, no upstream patch published) — drift between
-        # this step + the alias was the post-UX-6-A v6 main-branch
-        # red-CI baseline. Re-evaluate when cowlib publishes a fix.
-        run: mix deps.audit --ignore-advisory-ids GHSA-g2wm-735q-3f56
+        run: mix deps.audit
 
       - name: Doctor (doc + @spec coverage)
         run: mix doctor
