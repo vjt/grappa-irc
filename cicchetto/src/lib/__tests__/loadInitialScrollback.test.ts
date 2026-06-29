@@ -47,15 +47,19 @@ vi.mock("../auth", () => ({
   }),
 }));
 
-// Stub the one REST verb loadInitialScrollback calls; keep the rest of
-// api live (the module just declares fetch wrappers — nothing runs at
-// import). The spy returns a server-shaped DESC page per test.
+// Stub the two REST verbs loadInitialScrollback can call; keep the rest
+// of api live (the module just declares fetch wrappers — nothing runs at
+// import). `listMessages` returns a server-shaped DESC page;
+// `listMessagesAfter` (the #156 anchored arm, fired when a cursor
+// exists) returns a server-shaped ASC page.
 const listMessagesSpy = vi.fn<(...a: unknown[]) => Promise<ScrollbackMessage[]>>();
+const listMessagesAfterSpy = vi.fn<(...a: unknown[]) => Promise<ScrollbackMessage[]>>();
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
     ...actual,
     listMessages: (...args: unknown[]) => listMessagesSpy(...args),
+    listMessagesAfter: (...args: unknown[]) => listMessagesAfterSpy(...args),
   };
 });
 
@@ -90,6 +94,8 @@ describe("loadInitialScrollback cursor baseline", () => {
     clearReadCursors();
     setReadCursorSpy.mockClear();
     listMessagesSpy.mockReset();
+    listMessagesAfterSpy.mockReset();
+    listMessagesAfterSpy.mockResolvedValue([]);
     mockTokenValue = "test-bearer";
   });
 
@@ -107,11 +113,37 @@ describe("loadInitialScrollback cursor baseline", () => {
     const { loadInitialScrollback } = await import("../scrollback");
     const { applyJoinReply } = await import("../readCursor");
     applyJoinReply("net", "#warm", 100);
-    listMessagesSpy.mockResolvedValue([row(203), row(202), row(201)]);
+    // #156 anchored arm: cursor present → after(cursor,200) + before(cursor+1).
+    listMessagesAfterSpy.mockResolvedValue([row(101), row(102)]);
+    listMessagesSpy.mockResolvedValue([row(100), row(99), row(98)]);
 
     await loadInitialScrollback("net", "#warm");
 
+    // The existing read position is preserved — NO re-baseline (that
+    // would clobber the in-pane unread marker on re-open).
     expect(setReadCursorSpy).not.toHaveBeenCalled();
+  });
+
+  it("does an ANCHORED fetch (after + before) when a read cursor exists (#156)", async () => {
+    // Distinct channel from the case above — the scrollback module's
+    // load-once `loadedChannels` gate persists across tests (no
+    // vi.resetModules here), so reusing a name would short-circuit the
+    // second load. (Same reason the cursor-baseline cases use #cold /
+    // #warm / #empty.)
+    const { loadInitialScrollback } = await import("../scrollback");
+    const { applyJoinReply } = await import("../readCursor");
+    applyJoinReply("net", "#anchored", 100);
+    listMessagesAfterSpy.mockResolvedValue([row(101), row(102)]);
+    listMessagesSpy.mockResolvedValue([row(100), row(99), row(98)]);
+
+    await loadInitialScrollback("net", "#anchored");
+
+    // Unread region after the cursor (capped at the server max 200) +
+    // the before-context page anchored at cursor+1. NOT the tail-only
+    // listMessages(t, slug, name) (3 args) that loses the anchor.
+    expect(listMessagesAfterSpy).toHaveBeenCalledWith("test-bearer", "net", "#anchored", 100, 200);
+    expect(listMessagesSpy).toHaveBeenCalledWith("test-bearer", "net", "#anchored", 101);
+    expect(listMessagesSpy).not.toHaveBeenCalledWith("test-bearer", "net", "#anchored");
   });
 
   it("does NOT write a cursor for an empty backlog page", async () => {

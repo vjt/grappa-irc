@@ -153,33 +153,88 @@ const exports = identityScopedStore((onIdentityChange) => {
     // REST page is in flight; WS events arriving in the meantime
     // append to this seed via `appendToScrollback`.
     setScrollbackByChannel((prev) => (key in prev ? prev : { ...prev, [key]: [] }));
+    // #156 — the read cursor (if any) decides the fetch shape. Read it
+    // ONCE up front: it selects the branch; the cursor-null branch
+    // re-checks at write time to stay robust against a cursor that
+    // hydrates mid-fetch (see its comment).
+    const cursor = getReadCursor(slug, name);
     try {
-      const page = await listMessages(t, slug, name);
-      mergeIntoScrollback(key, page);
-      // RC2 (decouple-unread-badge) — baseline the read cursor to this
-      // backlog's tail when the channel has no cursor yet. Opening a
-      // fresh channel auto-scrolls to the newest row, so "cursor = tail"
-      // is the honest "you've seen the newest." Without it, a channel
-      // visited then defocused BEFORE the backlog hydrated leaves the
-      // cursor nil and the server's nil-cursor `unread_count` counts the
-      // whole backlog (m2-irssi-to-chan-defocused: 200 backlog + 1 → "201"
-      // instead of "1").
-      //
-      // Tail is the page's MAX id, not page[0] — `listMessages` returns
-      // server-DESC, but reduce-max is order-independent so the contract
-      // doesn't depend on page ordering.
-      //
-      // Gated on `getReadCursor === null` (NOT the forward-only gate
-      // sendMessage uses): a channel that already has a read position
-      // keeps it, so the in-pane `── XX unread ──` marker survives a
-      // re-open. The completion-time fire is robust to the leave-race —
-      // the load was triggered by focus; finishing after the operator
-      // navigated away still marks the backlog read. `loadInitialScrollback`
-      // only fires on focus, so unfocused new DMs stay unmarked (m4).
-      const head = page[0];
-      if (head && getReadCursor(slug, name) === null) {
-        const tail = page.reduce((max, m) => (m.id > max ? m.id : max), head.id);
-        void setReadCursor(t, slug, name, tail);
+      if (cursor === null) {
+        // No read position yet — a fresh channel. The tail-only page
+        // (server default ~50 newest rows) is the cheapest correct load:
+        // a brand-new window auto-scrolls to the tail, so the newest
+        // rows are exactly what's wanted and there's no divider to anchor.
+        const page = await listMessages(t, slug, name);
+        mergeIntoScrollback(key, page);
+        // RC2 (decouple-unread-badge) — baseline the read cursor to this
+        // backlog's tail. Opening a fresh channel auto-scrolls to the
+        // newest row, so "cursor = tail" is the honest "you've seen the
+        // newest." Without it, a channel visited then defocused BEFORE
+        // the backlog hydrated leaves the cursor nil and the server's
+        // nil-cursor `unread_count` counts the whole backlog
+        // (m2-irssi-to-chan-defocused: 200 backlog + 1 → "201" not "1").
+        //
+        // Tail is the page's MAX id, not page[0] — `listMessages` returns
+        // server-DESC, but reduce-max is order-independent so the contract
+        // doesn't depend on page ordering.
+        //
+        // Re-check `getReadCursor === null` at write time (NOT the value
+        // read above): a join-reply / `/me` cursor can land DURING the
+        // fetch; the re-check keeps an arrived cursor from being clobbered
+        // (and preserves its in-pane `── XX unread ──` marker). The
+        // completion-time fire is robust to the leave-race — finishing
+        // after the operator navigated away still marks the backlog read.
+        const head = page[0];
+        if (head && getReadCursor(slug, name) === null) {
+          const tail = page.reduce((max, m) => (m.id > max ? m.id : max), head.id);
+          void setReadCursor(t, slug, name, tail);
+        }
+      } else {
+        // A read position exists, so the in-pane divider must land between
+        // the last-read row and the first-unread row WITH read-context
+        // above it. A tail-only page loses that anchor whenever unread
+        // exceeds the window: the cursor is OLDER than every loaded row,
+        // so the divider slams to the pane top with the wrong count (or
+        // fails to inject). Fetch the region AROUND the cursor instead:
+        //   * after(cursor, 200) → the unread region (id > cursor, ASC),
+        //     capped at the server max (@max_http_limit = 200).
+        //   * before(cursor + 1) → the read-context page (id <= cursor;
+        //     integer ids, so the strict `< cursor+1` cursor is exactly
+        //     `<= cursor`), i.e. the last-read row + ~50 rows above the
+        //     divider.
+        // Both merge via `mergeIntoScrollback` (id-dedupe + ASC sort), so
+        // the loaded set is contiguous around the anchor and `loadMore`'s
+        // oldest-id paging keeps working. Never re-baseline the cursor —
+        // the existing read position (and its marker) is preserved.
+        //
+        // UNCONDITIONAL when a cursor exists — NOT gated on a server
+        // unread count. The count lives in selection.ts (the sole caller),
+        // and reaching it from here means either an import cycle
+        // (selection → scrollback already) or threading it through the
+        // signature. Both are heavier than the cost: ONE extra small GET
+        // per cursor-present channel-open, behind the load-once gate, on a
+        // human click. A count-vs-window gate is also FRAGILE — it would
+        // couple cic to the server's ~50 page-size constant, and the seed
+        // count (messages+events) measures different rows than the marker's
+        // filtered count (own-presence / operator-echo excluded). The
+        // unconditional anchored fetch is window-size-agnostic and fixes
+        // the root cause for any window size. For a fully-read channel
+        // after(...) returns 0 rows and the load is just the before page;
+        // for the common few-unread case the two pages still cover the
+        // newest rows.
+        //
+        // >200 cap (KNOWN EDGE): if true unread > 200, after(...) stops at
+        // cursor+200, so the very newest rows aren't in this initial load
+        // — they stream in via the WS join-ok `refreshScrollback`. The
+        // DIVIDER is still correctly anchored; only the in-pane count caps
+        // at the loaded window (sessionTopId = cursor+200) until the rest
+        // arrive.
+        const [afterPage, beforePage] = await Promise.all([
+          listMessagesAfter(t, slug, name, cursor, 200),
+          listMessages(t, slug, name, cursor + 1),
+        ]);
+        mergeIntoScrollback(key, afterPage);
+        mergeIntoScrollback(key, beforePage);
       }
     } catch {
       // First-load failure leaves the empty seed in place; the pane

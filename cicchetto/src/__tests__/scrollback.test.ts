@@ -66,6 +66,19 @@ beforeEach(() => {
 });
 
 describe("scrollback verbs", () => {
+  // Server-shaped row for (freenode, #grappa). server_time decoupled
+  // from id so the merge's (server_time, id) sort is exercised honestly.
+  const mkRow = (id: number, serverTime: number): import("../lib/api").ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: "#grappa",
+    server_time: serverTime,
+    kind: "privmsg",
+    sender: "peer",
+    body: `line ${id}`,
+    meta: {},
+  });
+
   // Seed one rendered row into (freenode, #grappa) so sendMessage's
   // anti-poison gate (#50) treats the window as a focused pane that
   // already has content — the bucket-D cursor advance applies there, not
@@ -131,6 +144,52 @@ describe("scrollback verbs", () => {
     await scrollback.loadInitialScrollback("freenode", "#grappa");
     await scrollback.loadInitialScrollback("freenode", "#grappa");
     expect(api.listMessages).toHaveBeenCalledTimes(1);
+  });
+
+  // #156 — a tail-only page (server default ~50 newest rows) loses the
+  // in-pane unread-divider anchor whenever unread exceeds that window:
+  // the read cursor is OLDER than every loaded row, so the last-read row
+  // and the first-unread row (the divider's anchor) are never fetched.
+  // When a read cursor exists, fetch AROUND it instead:
+  //   * listMessagesAfter(cursor, 200) → the unread region (id > cursor, ASC)
+  //   * listMessages(cursor + 1)       → read-context (id <= cursor, DESC)
+  // and merge both, so the anchor rows are present and the divider lands
+  // between the last-read and first-unread rows with context above it.
+  it("loadInitialScrollback does an ANCHORED fetch when a read cursor exists (#156)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    mockGetReadCursor.mockReturnValue(100);
+    const api = await import("../lib/api");
+    // after(100, 200): server returns the unread region ASC by id.
+    vi.mocked(api.listMessagesAfter).mockResolvedValue([
+      mkRow(101, 1101),
+      mkRow(102, 1102),
+      mkRow(103, 1103),
+    ]);
+    // before(101): server returns the read-context page DESC by id; the
+    // last-read row (100) heads it.
+    vi.mocked(api.listMessages).mockResolvedValue([
+      mkRow(100, 1100),
+      mkRow(99, 1099),
+      mkRow(98, 1098),
+    ]);
+
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.loadInitialScrollback("freenode", "#grappa");
+
+    // Anchored: unread region after the cursor (capped at the server max
+    // 200) + the before-context page anchored at cursor+1. The tail-only
+    // listMessages(t, slug, name) (3 args, no before) MUST NOT be used —
+    // it's the call that loses the anchor.
+    expect(api.listMessagesAfter).toHaveBeenCalledWith("tok", "freenode", "#grappa", 100, 200);
+    expect(api.listMessages).toHaveBeenCalledWith("tok", "freenode", "#grappa", 101);
+    expect(api.listMessages).not.toHaveBeenCalledWith("tok", "freenode", "#grappa");
+
+    const key = channelKey("freenode", "#grappa");
+    const ids = scrollback.scrollbackByChannel()[key]?.map((m) => m.id);
+    // Both divider-anchor rows present: the last-read row (100, from the
+    // before page) AND the first-unread row (101, from the after page).
+    expect(ids).toContain(100);
+    expect(ids).toContain(101);
   });
 
   it("loadMore fetches with before=oldest_id and prepends older entries", async () => {
