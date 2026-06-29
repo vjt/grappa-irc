@@ -136,6 +136,69 @@ export async function restoreReadCursorToTail(
   }
 }
 
+// #156 — set the seeded user's read cursor on `(networkSlug, channel)`
+// to a SPECIFIC message id (vs `restoreReadCursorToTail`, which always
+// targets the newest row). Used by the unread-divider-beyond-window spec
+// to plant an EARLY cursor so the unread count far exceeds the initial
+// scrollback window. The server's `ReadCursor.set/4` is last-write-wins
+// and accepts a backward move, so this can rewind a cursor a prior spec
+// left at the tail. Caller restores via `restoreReadCursorToTail` in
+// afterAll (BUGHUNT-3 cascade rule).
+export async function setReadCursorToId(
+  token: string,
+  networkSlug: string,
+  channel: string,
+  messageId: number,
+): Promise<void> {
+  const url = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(
+    networkSlug,
+  )}/channels/${encodeURIComponent(channel)}/read-cursor`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ message_id: messageId }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `setReadCursorToId: POST /read-cursor → ${res.status} ${await res.text()}`,
+    );
+  }
+}
+
+// #156 — page the FULL scrollback for `(networkSlug, channel)` oldest-
+// first. GET /messages returns the newest ~50 DESC; `?before=<id>` walks
+// older pages until empty. Returns rows ASC by id so the caller can index
+// from the oldest. Used by the unread-divider-beyond-window spec to learn
+// the seeded id range (it must plant a cursor well below the tail window
+// without hardcoding seed ids).
+export async function fetchAllMessagesAsc(
+  token: string,
+  networkSlug: string,
+  channel: string,
+): Promise<WireMessage[]> {
+  const base = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(
+    networkSlug,
+  )}/channels/${encodeURIComponent(channel)}/messages`;
+  const headers = { authorization: `Bearer ${token}` };
+  const byId = new Map<number, WireMessage>();
+  let before: number | undefined;
+  // Bounded loop: the e2e seed is ~200 rows; 50 pages of ~50 is a safe
+  // ceiling that also stops a server bug from spinning forever.
+  for (let page = 0; page < 50; page++) {
+    const url = before === undefined ? base : `${base}?before=${before}`;
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      throw new Error(`fetchAllMessagesAsc: GET → ${res.status} ${await res.text()}`);
+    }
+    const rows = (await res.json()) as WireMessage[];
+    if (rows.length === 0) break;
+    for (const r of rows) byId.set(r.id, r);
+    // Server returns DESC; the oldest id in this page is the next cursor.
+    before = rows.reduce((min, r) => (r.id < min ? r.id : min), rows[0]?.id ?? 0);
+  }
+  return [...byId.values()].sort((a, b) => a.id - b.id);
+}
+
 // M-cluster M-8 — operator-side delete via admin bearer. Mirrors
 // `Grappa.Operator.delete_visitor/1`. Used by e2e tests that mint
 // a visitor and need teardown cleanup on early-assertion-failure
