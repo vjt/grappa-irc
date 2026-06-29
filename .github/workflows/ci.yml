@@ -33,7 +33,7 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Cache deps + build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             deps
@@ -118,7 +118,7 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Cache deps + build + PLTs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             deps
