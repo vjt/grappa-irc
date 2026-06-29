@@ -3159,7 +3159,14 @@ html.resize-dragging * {
   align-items: center;
   justify-content: center;
   z-index: 1000;
-  padding: 1rem;
+  /* #143 — safe-area insets, mirroring `.settings-drawer` (~:1702). The
+     backdrop spans the full visible region, so a full-height modal would
+     otherwise tuck its header under the iOS notch / status bar at the top
+     (and the home indicator at the bottom). `max()` keeps the plain 1rem
+     /1.5rem padding on non-notched devices where the env() insets are 0.
+     With `align-items: center` a short modal stays centred; a full-height
+     one shrinks to the padding box and lands between the safe areas. */
+  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
 }
 
 .names-modal {
