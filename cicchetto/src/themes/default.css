@@ -3140,7 +3140,20 @@ html.resize-dragging * {
    visible on large channels. */
 .names-modal-backdrop {
   position: fixed;
-  inset: 0;
+  left: 0;
+  right: 0;
+  top: 0;
+  /* #143 — span only the VISIBLE region (same keyboard-aware var the
+     modal caps its max-height on) instead of `inset: 0`, so
+     `align-items: center` centers within what the user can see. With
+     `inset: 0` the backdrop filled the full LAYOUT viewport while the
+     visible region (visualViewport.height) is shorter when the iOS
+     keyboard is up — parking the modal's lower half under the keyboard.
+     No offsetTop anchor is needed: UX-6-D's `installSmartScrollPin`
+     clamps `vv.offsetTop`→0 (offsetTop is WebKit-broken, #297779; the
+     `translateY(offsetTop)` cancel failed across D6/D8 — see
+     DESIGN_NOTES 2026-05-21 UX-6-D). */
+  height: var(--viewport-height, 100dvh);
   background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
@@ -3185,14 +3198,24 @@ html.resize-dragging * {
 }
 
 .names-modal-close {
+  /* #143 — 44px Apple-HIG tap target, matching the #133 card-× precedent
+     (`.whois-card-close` et al). Negative block margins pull the tall
+     hit box back out of the header row so the title stays vertically
+     compact (margins don't shrink the pointer target). */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin: -0.6rem -0.5rem -0.6rem 0;
+  padding: 0;
   background: transparent;
   color: var(--muted);
   border: none;
   font-family: var(--font-mono);
-  font-size: 1.4rem;
+  font-size: 1.5rem;
   line-height: 1;
   cursor: pointer;
-  padding: 0 0.5rem;
 }
 
 .names-modal-close:hover {
@@ -3210,7 +3233,9 @@ html.resize-dragging * {
 }
 
 .names-modal-section {
-  margin: 0.25rem 0 0.75rem;
+  /* #143 — tighter block rhythm; the roster should read dense /
+     irssi-columnar, not airy. */
+  margin: 0.15rem 0 0.4rem;
 }
 
 .names-modal-section-title {
@@ -3231,7 +3256,8 @@ html.resize-dragging * {
   padding: 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
-  gap: 0.1rem 0.5rem;
+  /* #143 — no inter-row gap; per-row padding alone sets the rhythm. */
+  gap: 0 0.5rem;
 }
 
 .names-modal-nick {
@@ -3240,14 +3266,17 @@ html.resize-dragging * {
   border: none;
   color: var(--fg);
   text-align: left;
-  padding: 0.25rem 0.3rem;
+  /* #143 — tighter per-row padding + a smaller min-height for denser,
+     irssi-columnar roster rows (vjt: "too much padding between nicks").
+     Still a comfortable tap row. */
+  padding: 0.1rem 0.3rem;
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: var(--font-size);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-height: 32px;
+  min-height: 28px;
 }
 
 .names-modal-nick:hover {

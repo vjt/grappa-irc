@@ -14365,3 +14365,48 @@ swap, no migration, no config). Ships HOT + a cic bundle. The dead
 persisted path emitted them) are RETAINED for now: removing them touches
 `config/config.exs`, which forces a COLD deploy — batched into the next
 cold window rather than dropping every live IRC session for two dead atoms.
+
+## 2026-06-29 — NamesModal mobile fixes: overlays anchor to the visible viewport, not `inset: 0` (#143)
+
+Three mobile defects on the #140 `NamesModal`, all cic-only (no server
+change).
+
+**Keyboard occlusion (the real one).** With the iOS keyboard up the modal
+rendered half-under it. Root cause: `.names-modal-backdrop` was
+`position: fixed; inset: 0`, filling the full LAYOUT viewport, while the
+VISIBLE region (`visualViewport.height`) is shorter when the keyboard is
+up — so `align-items: center` parked the modal's centre at the
+layout-viewport midpoint, dropping its lower half behind the keyboard.
+The `max-height: min(var(--viewport-height), 100%)` cap was already there
+(it bounds the modal's height) but says nothing about where the modal is
+ANCHORED. Fix: the backdrop now spans only the visible region —
+`top: 0; height: var(--viewport-height, 100dvh)` instead of `inset: 0` —
+so centring happens within what the user can see.
+
+**No `offsetTop`, deliberately.** The obvious "re-anchor with
+`visualViewport.offsetTop`" is the exact approach UX-6-D (2026-05-21)
+buried after 11 attempts: `offsetTop` is WebKit-broken (#297779, stuck at
+24px post-dismiss) and the `translateY(offsetTop)` cancel failed
+catastrophically across D6/D8. UX-6-D's `installSmartScrollPin` already
+clamps `vv.offsetTop`→0, so anchoring to `top: 0` + `--viewport-height`
+is both sufficient AND landmine-free. This is the reusable mechanism for
+any keyboard-aware overlay (e.g. the #66 message-list): consume the
+existing `--viewport-height` var; do NOT reintroduce an `offsetTop` track
+or the `vv.scroll` listener D9 dropped.
+
+**Two cosmetic fixes alongside.** Denser roster rows (per-row padding
+0.25→0.1rem, min-height 32→28px, inter-row grid gap 0.1→0rem — irssi
+columnar, vjt: "too much padding between nicks"); and the close × bumped
+to the project-standard 44px Apple-HIG tap target (the #133 card-×
+precedent), up from a ~26px glyph.
+
+**Test honesty.** chromium's layout viewport == its visual viewport (no
+OS keyboard), so it cannot reproduce the real iOS divergence (Playwright
+webkit ≠ iOS). The e2e (`names143-modal-mobile.spec.ts`) asserts the CSS
+CONTRACT instead — with `--viewport-height` pinned to a keyboard-shrunk
+value (what `installViewportHeightTracker` writes from `vv.height`,
+unit-covered in `viewportHeight.test.ts`), the modal stays inside that
+region; and the close × measures ≥44×44. Real on-device occlusion still
+needs Mezmerize dogfood before final close.
+
+**Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change.
