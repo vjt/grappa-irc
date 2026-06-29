@@ -14613,19 +14613,41 @@ server_event fallback. `TopicBar.tsx` — topic strip + modal body (the
 `title` tooltip is a plain-text-only attribute surface, so it gets the
 new `mircPlainText/1` parser projection — de-formatted via the ONE parser,
 NOT a second/lossy stripper, so the "no silent stripping" rule holds).
-`WhoisCard.tsx` — realname + away_message. `WhowasCard.tsx` — realname.
+`WhoisCard.tsx` — realname, away_message, AND (follow-up below) umodes,
+actually_host/actually_ip, server_info. `WhowasCard.tsx` — realname.
 `MentionsWindow.tsx` — mention row body + the operator's own away reason
 (found by the defensive grep, NOT on the original gap list; same
 user-text class as the whois away field).
+
+**Follow-up (same day, vjt prod report) — the "structured" exclusion was
+wrong.** The first pass excluded WhoisCard `umodes` ("modes"),
+`actually_host`/`actually_ip` ("connecting from") and `server_info` as
+"structured server-identity, not user free text". Prod whois showed
+control codes still leaking there: on azzurra a services-set **colored
+vHost / swhois** and a formatted **server description** carry mIRC color
+bytes, and the ircd passes them straight through (`\S+` host capture, the
+`is using modes ` split, the 312 trailing — all byte-preserving). So
+those fields ARE user/services-influenced free text and now route through
+`MircBody` too. The remaining whois fields stay plain because they are
+genuinely structured: `user@host` + `server` (hostnames), `idle`/`signon`
+(formatted numbers), `channels` (channel names), `target` (`NickText`).
+Lesson: do not exclude a whois field as "structured" without real-wire
+evidence — services let users colorize identity fields. Proven at the
+component boundary (`WhoisCard.test.tsx`: a bundle with bold/color/
+underline codes in umodes/actually_host/actually_ip/server_info/realname
+renders mIRC spans with zero raw bytes in `textContent` — RED on the
+unfixed card). A real-wire e2e is the wrong tool: the testnet ircd emits
+clean structured 326/378, so it cannot reproduce a services-set colored
+field.
 
 **Audited + excluded (not user free text):** names list / MembersPane
 (per-nick `NickText`, deterministic palette), LusersCard (integer counts
 via `fmt(n)`), lusers numerics (251–255/265/266 arrive as `$server`
 `:notice` rows → already on the NOTICE `MircBody` path).
 `AdminCredentialsTab` realname (a config-form `<input>`, operator's own
-value, not an IRC render surface). WhoisCard `server_info` / `umodes` /
-`actually_host` and WhowasCard `server` / `logoff_time` (structured
-server-identity / parsed-mode / timestamp fields, not user free text).
+value, not an IRC render surface). WhowasCard `server` / `logoff_time`
+(a hostname and a timestamp — genuinely structured, no free-text field
+left unwrapped).
 
 **Tests — RED→green, E2E on the QUIT surface.**
 `cicchetto/e2e/tests/issue142-quit-mirc-render.spec.ts` drives a peer to
