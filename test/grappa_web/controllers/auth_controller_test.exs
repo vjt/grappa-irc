@@ -20,6 +20,7 @@ defmodule GrappaWeb.AuthControllerTest do
 
   alias Grappa.{Accounts, Accounts.Session, IRCServer, Repo, Visitors}
   alias Grappa.AdmissionStateHelpers
+  alias Grappa.Networks.Credential
   alias Grappa.Session.Server, as: SessionServer
   alias Grappa.Visitors.Visitor
 
@@ -548,8 +549,16 @@ defmodule GrappaWeb.AuthControllerTest do
       assert_received {:DOWN, ^ref, :process, ^pid, _reason}
     end
 
-    test "visitor logout (registered) kills Session.Server but keeps visitor row",
+    test "visitor logout (registered = DETACH) keeps Session.Server up + keeps visitor row (#126)",
          %{conn: conn} do
+      # #126 — a registered (NickServ-identified) visitor is a PERSISTENT
+      # identity. Detach (DELETE /auth/logout) is bouncer-style: revoke
+      # the web session but leave the server-side Session.Server +
+      # upstream IRC connection UP. Pre-#126 logout tore the session down
+      # for EVERY visitor (W11's stop_session ran for registered too);
+      # the fix scopes the stop+purge teardown to ANON visitors only, so
+      # a registered visitor's detach keeps the bouncer online. Quit
+      # (tear down) is a separate verb (POST /session/disconnect + logout).
       {server, port} = start_server()
       {network, _} = setup_visitor_network(port)
 
@@ -575,22 +584,39 @@ defmodule GrappaWeb.AuthControllerTest do
       {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
       {:ok, _} = Visitors.commit_password(visitor.id, "s3cret")
 
+      pid = Grappa.Session.whereis({:visitor, visitor.id}, network.id)
+      assert is_pid(pid)
+      ref = Process.monitor(pid)
+      # The session is no longer torn down by logout — clean it up at
+      # end-of-test so the wedged-socket respawn loop can't poison the
+      # next singleton-lane test (see auth_fixtures cleanup rationale).
+      on_exit(fn -> Grappa.Session.stop_session({:visitor, visitor.id}, network.id) end)
+
       conn
       |> put_bearer(token)
       |> delete("/auth/logout")
       |> response(204)
 
-      assert is_nil(Grappa.Session.whereis({:visitor, visitor.id}, network.id))
+      # Detach must NOT tear the upstream down — no :DOWN, pid still live.
+      refute_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
+      assert Grappa.Session.whereis({:visitor, visitor.id}, network.id) == pid
 
-      # Registered visitor's row stays — purge_if_anon/1 short-circuits
-      # on password_encrypted set. Privacy promise: registered visitor's
-      # data persists past logout, gated on next-login password match.
+      # Registered visitor's row stays — privacy promise: data persists
+      # past detach, gated on next-login password match.
       assert %Visitor{password_encrypted: pwd} = Repo.get(Visitor, visitor.id)
       assert is_binary(pwd)
     end
 
-    test "user logout terminates all running Session.Server processes for that user",
+    test "user logout (DETACH) keeps the Session.Server up + connection_state stays :connected (#126 bug #1+#2)",
          %{conn: conn} do
+      # #126 bug #1 — detach used to call stop_all_user_sessions, tearing
+      # the upstream down. bug #2 — that teardown never transitioned
+      # connection_state nor broadcast, so the credential stayed
+      # :connected while the live pid was gone (a textbook "DB state and
+      # live state are separate sources of truth" violation). Detach as
+      # the ABSENCE of teardown fixes both: the session stays up, so
+      # DB == live (connection_state :connected AND whereis returns the
+      # live pid).
       {server, port} = start_server()
 
       user = user_fixture()
@@ -603,22 +629,27 @@ defmodule GrappaWeb.AuthControllerTest do
 
       {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil, [])
 
-      conn =
-        conn
-        |> put_bearer(session.id)
-        |> delete("/auth/logout")
+      conn
+      |> put_bearer(session.id)
+      |> delete("/auth/logout")
+      |> response(204)
 
-      assert response(conn, 204) == ""
-
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
+      # No teardown: no :DOWN, the registry entry + live pid survive.
+      refute_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
+      assert Grappa.Session.whereis({:user, user.id}, network.id) == pid
 
       assert Registry.lookup(
                Grappa.SessionRegistry,
                SessionServer.registry_key({:user, user.id}, network.id)
-             ) == []
+             ) == [{pid, nil}]
+
+      # DB == live: the desync is gone — the credential is genuinely
+      # :connected and backed by a live pid.
+      cred = Repo.get_by(Credential, user_id: user.id, network_id: network.id)
+      assert cred.connection_state == :connected
     end
 
-    test "user logout with multiple bindings stops all of them", %{conn: conn} do
+    test "user logout (DETACH) keeps ALL the user's bindings up (#126)", %{conn: conn} do
       {server1, port1} = start_server()
       {server2, port2} = start_server()
 
@@ -642,18 +673,11 @@ defmodule GrappaWeb.AuthControllerTest do
       |> delete("/auth/logout")
       |> response(204)
 
-      assert_receive {:DOWN, ^ref1, :process, ^pid1, _reason}, 5_000
-      assert_receive {:DOWN, ^ref2, :process, ^pid2, _reason}, 5_000
+      refute_receive {:DOWN, ^ref1, :process, ^pid1, _reason}, 300
+      refute_receive {:DOWN, ^ref2, :process, ^pid2, _reason}, 300
 
-      assert Registry.lookup(
-               Grappa.SessionRegistry,
-               SessionServer.registry_key({:user, user.id}, network1.id)
-             ) == []
-
-      assert Registry.lookup(
-               Grappa.SessionRegistry,
-               SessionServer.registry_key({:user, user.id}, network2.id)
-             ) == []
+      assert Grappa.Session.whereis({:user, user.id}, network1.id) == pid1
+      assert Grappa.Session.whereis({:user, user.id}, network2.id) == pid2
     end
 
     test "user logout broadcasts \"disconnect\" to user_socket id-topic",

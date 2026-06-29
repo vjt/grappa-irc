@@ -126,27 +126,33 @@ defmodule GrappaWeb.AuthController do
   defp validate_captcha_token(_), do: :bad_token
 
   @doc """
-  `DELETE /auth/logout` — revokes the session whose token was just
-  validated by `GrappaWeb.Plugs.Authn`. For visitor sessions, also
-  tears down the live `Session.Server` and purges the anon visitor
-  row per W11 ("anon visitor lifecycle co-terminus with
-  accounts_sessions row"). Registered visitors stay automatically —
-  `Visitors.purge_if_anon/1` short-circuits when `password_encrypted`
-  is set.
+  `DELETE /auth/logout` — **detach** (#126). Revokes the session whose
+  token was just validated by `GrappaWeb.Plugs.Authn` and closes the
+  live WebSocket, but leaves the server-side `Session.Server` + upstream
+  IRC connection UP for a PERSISTENT identity (registered user OR
+  NickServ-identified visitor). Detach is bouncer-style: the web client
+  logs out, the bouncer stays online.
 
-  For user sessions, scans `Grappa.SessionRegistry` for every
-  `{:session, {:user, user_id}, network_id}` entry and stops each
-  `Session.Server` so the live IRC connection terminates symmetric
-  with visitor logout (T31 Plan 2 Task 7). User identity is
-  persistent (no analog to W11 anon-purge); re-login or the next
-  `Bootstrap` restart respawns from the user's `Networks.Credential`
-  rows. Returns 204 + empty body.
+  The lone exception is the ANON visitor (`password_encrypted == nil`):
+  it keeps the W11 co-terminus teardown — `Session.stop_session/3` +
+  `Visitors.purge_if_anon/1` — because an anon row has no persistent
+  identity to come back to, so its session + scrollback die with its
+  last `accounts_sessions` row. (An ephemeral visitor's user-facing
+  "quit" IS this path.) See `maybe_terminate_sessions/1`.
 
-  Order matters: stop the Session.Server BEFORE revoking the
-  `accounts_sessions` row so the GenServer's mailbox drains via
-  `terminate/2` cleanly (and, on the visitor branch, BEFORE purging
-  the visitor row so an in-flight scrollback persist doesn't trip
-  the `messages.visitor_id` FK).
+  Pre-#126 logout tore the `Session.Server` down for EVERY subject,
+  which (a) broke detach by killing the upstream and (b) left the
+  user's `connection_state` at `:connected` while the pid was gone — a
+  DB-vs-live desync. Scoping the teardown to anon visitors fixes both.
+  Tear-down-and-leave ("quit") for a persistent identity is composed by
+  the client from separate verbs (park-all / `POST /session/disconnect`)
+  followed by this detach. Returns 204 + empty body.
+
+  Order matters on the anon branch: stop the Session.Server BEFORE
+  revoking the `accounts_sessions` row so the GenServer's mailbox
+  drains via `terminate/2` cleanly, and BEFORE purging the visitor row
+  so an in-flight scrollback persist doesn't trip the
+  `messages.visitor_id` FK.
 
   H2: After session revocation, broadcasts a `"disconnect"` event to
   the per-subject UserSocket id-topic
@@ -174,14 +180,24 @@ defmodule GrappaWeb.AuthController do
     send_resp(conn, :no_content, "")
   end
 
+  # #126 — detach is the ABSENCE of teardown. `DELETE /auth/logout` for a
+  # PERSISTENT identity (a registered user OR a NickServ-identified
+  # visitor, `password_encrypted` non-nil) revokes the web session +
+  # closes the socket but leaves the server-side `Session.Server` +
+  # upstream IRC connection UP (bouncer-style). Only the ANON visitor
+  # keeps the W11 co-terminus teardown (stop + purge): an anon row has no
+  # persistent identity to come back to, so its session dies with its
+  # last `accounts_sessions` row. This single scoping fixes BOTH #126
+  # bugs — detach no longer tears the user's upstream down (bug #1), and
+  # with no teardown there is no DB-vs-live `connection_state` desync
+  # (bug #2). Tear-down-and-leave ("quit") is a SEPARATE verb composed by
+  # the client: user = park-all networks + detach; registered visitor =
+  # `POST /session/disconnect` + detach; ephemeral visitor = this very
+  # anon branch (an ephemeral's "quit" IS detach — it stops + purges).
   @spec maybe_terminate_sessions(GrappaWeb.Subject.t() | nil) :: :ok
-  defp maybe_terminate_sessions({:visitor, %Visitor{} = visitor}) do
+  defp maybe_terminate_sessions({:visitor, %Visitor{password_encrypted: nil} = visitor}) do
     :ok = stop_visitor_session(visitor)
     :ok = Visitors.purge_if_anon(visitor.id)
-  end
-
-  defp maybe_terminate_sessions({:user, %Accounts.User{id: user_id}}) do
-    :ok = stop_all_user_sessions(user_id)
   end
 
   defp maybe_terminate_sessions(_), do: :ok
@@ -228,24 +244,6 @@ defmodule GrappaWeb.AuthController do
 
         :ok
     end
-  end
-
-  @spec stop_all_user_sessions(Ecto.UUID.t()) :: :ok
-  defp stop_all_user_sessions(user_id) when is_binary(user_id) do
-    # Match spec literally interpolates `{:user, user_id}` at construction
-    # time so only THIS user's rows match; `:"$1"` captures the
-    # `network_id`. Key shape `{:session, subject, network_id}` is per
-    # `Grappa.Session.Server.registry_key/2` (the canonical shape that
-    # `Admission.count_live_sessions/1` also matches against).
-    pattern = {{:session, {:user, user_id}, :"$1"}, :_, :_}
-
-    Grappa.SessionRegistry
-    |> Registry.select([{pattern, [], [:"$1"]}])
-    |> Enum.each(fn network_id ->
-      :ok = Session.stop_session({:user, user_id}, network_id, "logged out")
-    end)
-
-    :ok
   end
 
   defp mode1_login(_, _, nil), do: {:error, :invalid_credentials}
