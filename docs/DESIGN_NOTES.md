@@ -14664,3 +14664,68 @@ or `white-space:pre`, so the inline spans inherit the parent's
 
 **Deploy:** cic-only — `deploy-m42.sh --cic` (vite rebuild + bundle-changed
 broadcast, HOT, no BEAM restart, no session drop). Zero `.ex` changed.
+
+---
+
+## 2026-06-29 — the visitor landing experience: CRT loading splash + reworked home pane (#134 + #135)
+
+Bundled because both are the same surface — what a visitor sees on open —
+and ship together. Both are **cic-only** (zero `.ex` touched); the welcome
+text is a static cic string (operator-editable per-network welcome is
+split to #136, out of scope here).
+
+**#134 — retro CRT loading splash (LOADING-ONLY).** Replaced the bare
+`<Switch fallback>` placeholder (`"select a channel…"`) in `Shell.tsx`
+(desktop + mobile) with `CrtSplash.tsx` — a self-contained CSS/SVG CRT
+boot screen (overscan rounded-corner vignette, scanlines, phosphor-green
+glow, flicker, fake POST/boot lines, blinking block cursor). Pattern
+mirror of `InstallSplash.tsx` (component + `.crt-splash*` CSS in
+`themes/default.css`), theme-aware via `--crt-phosphor`,
+`prefers-reduced-motion`-aware (animations off, static aesthetic kept).
+
+The load-bearing constraint: this is **loading-only**, not a persistent
+empty state. The Shell main-pane `<Switch fallback>` only renders when
+`selectedChannel()` is null, which in practice is the cold-load window
+*before* the auto-select effect (`Shell.tsx` ~L438-511) lands on `$home`.
+So the fallback IS the loading state. `CrtSplash` self-gates on the
+**same predicate the auto-select effect waits on** — `!user() ||
+channelsBySlug() === undefined` (createResource is `undefined` while
+loading; a resolved `{}` is truthy = loaded, no channels yet) — so it
+clears on the same reactive tick the handoff to `$home` fires. No parallel
+"still loading" notion to drift, no infinite spinner, no blocked handoff.
+
+*Why a component test, not an e2e:* a transient loading screen is
+e2e-hostile — it's gone the instant the page finishes loading, so an e2e
+that waits for load never catches it (flaky/hollow, the exact failure mode
+of the #78 vacuous gate). The honest proof is `CrtSplash.test.tsx`: drive
+the loading predicate directly → assert the splash + boot/LOADING text
+render; flip to loaded (`channelsBySlug()` resolved `{}`) → assert the
+splash renders nothing (the handoff). Existing `Shell.test.tsx` cold-load
+tests (no `select a channel` fallback, lands on home) stay green — the
+fallback only mounts when selection is null, and `CrtSplash` returns null
+once loaded.
+
+**#135 — visitor home pane = welcome + featured + directory link.**
+`HomePaneVisitor` reworked into three stacked sections: (1) refreshed
+static welcome/orientation copy, (2) the #85 `FeaturedLinks` (now takes an
+optional `heading` prop, gated on the same has-links condition so an empty
+list shows no dangling title), (3) the **new** "📇 Browse channels"
+affordance the visitor pane lacked. The directory link reuses
+`ConnectedRow.onBrowse` EXACTLY — a `kind:"list"` selection deep-link into
+the #84 `DirectoryPane` (`$list`), keyed on the visitor's single network
+slug (`visitorSlug()`), NOT a new navigation path. Sections 2+3 gate on
+`visitorSlug()` so a null slug can't dispatch a network-less `$list`.
+
+*Tests — RED→green.* Unit (`HomePane.test.tsx`): the directory-link case
+was RED (no `home-visitor-browse` control) before the rework, green after,
+asserting the click dispatches the `kind:"list"` selection and fires no
+REST. E2E (`issue135-visitor-home-landing.spec.ts`): boots as a visitor
+(auto-lands on home), operator-seeds a featured channel via the admin REST
+path (network id resolved by slug from `GET /admin/networks`, removed in
+`finally`), asserts the welcome phrase + the `home-featured-{slug}` list +
+the seeded channel name, then **clicks Browse → asserts `.directory-search`
+renders** (the DirectoryPane mount). Genuinely RED without the link (the
+testid wouldn't exist) — not a hollow gate.
+
+**Deploy:** cic-only — `deploy-m42.sh --cic` (vite rebuild + bundle-changed
+broadcast, HOT, no BEAM restart, no session drop). Zero `.ex` changed.

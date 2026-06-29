@@ -16,6 +16,7 @@ import AudioMiniPlayer from "./AudioMiniPlayer";
 import BottomBar from "./BottomBar";
 import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
+import CrtSplash from "./CrtSplash";
 import DiagFloat from "./DiagFloat";
 import DirectoryPane from "./DirectoryPane";
 import HomePane from "./HomePane";
@@ -49,9 +50,9 @@ import {
 } from "./lib/windowKinds";
 import { isActiveChannelJoined } from "./lib/windowState";
 import MediaViewerModal from "./MediaViewerModal";
-import NamesModal from "./NamesModal";
 import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
+import NamesModal from "./NamesModal";
 import PrivacyModal from "./PrivacyModal";
 import ResizeHandle from "./ResizeHandle";
 import ScrollbackPane from "./ScrollbackPane";
@@ -561,7 +562,13 @@ const Shell: Component = () => {
                 mobile members drawer is opened by TopicBar's own
                 hamburger (channel-window-only). */}
             <ShellChrome onOpenSettings={() => setSettingsOpen(true)} />
-            <Switch fallback={<p class="muted">select a channel to view scrollback</p>}>
+            {/* #134 — the Switch fallback only renders when
+                selectedChannel() is null, i.e. the cold-load window
+                before the auto-select effect lands on $home. That IS the
+                loading state, so the fallback is the retro CRT splash;
+                CrtSplash self-gates on the same loading predicate and
+                hands off (renders null) once load completes. */}
+            <Switch fallback={<CrtSplash />}>
               <Match when={isAdminPaneVisible()}>
                 {/* UX-4 bucket N — AdminPane mount driven by selection +
                     isAdmin guard. onClose navigates back to home, mirroring
@@ -716,7 +723,9 @@ const Shell: Component = () => {
           <Show when={selectedChannel()?.kind !== "channel"}>
             <ShellChrome onOpenSettings={() => setSettingsOpen(true)} />
           </Show>
-          <Switch fallback={<p class="muted">select a channel below</p>}>
+          {/* #134 — CRT loading splash (mobile). Same loading-only
+              contract as desktop: the fallback is the cold-load state. */}
+          <Switch fallback={<CrtSplash />}>
             <Match when={isAdminPaneVisible()}>
               <AdminPane
                 onClose={() =>

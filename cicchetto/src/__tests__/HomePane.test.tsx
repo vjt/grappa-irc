@@ -185,12 +185,51 @@ describe("HomePane", () => {
   });
 
   describe("visitor branch (homeData() === null)", () => {
-    it("renders HomePaneVisitor with help text", () => {
+    it("renders HomePaneVisitor with the welcome + orientation copy (#135)", () => {
       homeDataMock.mockReturnValue(null);
       render(() => <HomePane />);
 
+      // Stable phrases the #135 visitor-home e2e also pins — keep them in
+      // sync if the copy is refreshed (grep e2e for the old string).
       expect(screen.getByText(/Welcome to Grappa/i)).toBeInTheDocument();
-      expect(screen.getByText(/You are connected as a visitor/i)).toBeInTheDocument();
+      expect(screen.getByText(/always-on IRC bouncer/i)).toBeInTheDocument();
+    });
+
+    it("shows a 'Browse channels' directory link that opens the $list window (#135)", () => {
+      // The visitor pane gains the directory affordance it lacked: it
+      // mirrors ConnectedRow.onBrowse — a kind:"list" selection deep-link
+      // into the #84 DirectoryPane, using the visitor's single network
+      // slug. No REST call; pure selection dispatch.
+      homeDataMock.mockReturnValue(null);
+      userMock.mockReturnValue({
+        kind: "visitor",
+        id: "v1",
+        nick: "guest",
+        network_slug: "azzurra",
+      });
+      render(() => <HomePane />);
+
+      const browseBtn = screen.getByRole("button", { name: /browse channels/i });
+      fireEvent.click(browseBtn);
+
+      expect(setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "azzurra",
+        channelName: LIST_WINDOW_NAME,
+        kind: "list",
+      });
+      // Browse is a UI shortcut — no REST call.
+      expect(patchNetworkMock).not.toHaveBeenCalled();
+    });
+
+    it("does NOT show the directory link when the visitor has no network slug", () => {
+      // visitorSlug() is null (user() unresolved / not a visitor) → the
+      // featured + directory sections are gated off; only the welcome copy
+      // shows. Guards against a null-slug $list selection.
+      homeDataMock.mockReturnValue(null);
+      userMock.mockReturnValue(null);
+      render(() => <HomePane />);
+
+      expect(screen.queryByRole("button", { name: /browse channels/i })).toBeNull();
     });
 
     it("does NOT render any compose / input affordance (KISS, no-input outright)", () => {

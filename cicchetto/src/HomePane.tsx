@@ -16,7 +16,12 @@ import NickText from "./NickText";
 // Click: not joined → JOIN then focus (intent follows the tap, mirroring
 // compose.ts /join); already joined → focus only (#125 tap-already-
 // joined). Join errors surface inline — never silently swallowed.
-const FeaturedLinks: Component<{ slug: string }> = (props) => {
+// `heading` (optional) renders a section title ABOVE the list, gated on
+// the same has-links condition so an empty featured list shows no
+// dangling heading. Registered rows (ConnectedRow / DisconnectedRow) omit
+// it — the network card already labels the context; #135's visitor
+// landing passes it to title the featured section.
+const FeaturedLinks: Component<{ slug: string; heading?: string }> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [links] = createResource(
     () => props.slug,
@@ -54,6 +59,7 @@ const FeaturedLinks: Component<{ slug: string }> = (props) => {
 
   return (
     <Show when={(links() ?? []).length > 0}>
+      <Show when={props.heading}>{(h) => <h3 class="home-pane-section-title">{h()}</h3>}</Show>
       <ul class="home-pane-featured" data-testid={`home-featured-${props.slug}`}>
         <For each={links()}>
           {(link) => (
@@ -88,8 +94,8 @@ const FeaturedLinks: Component<{ slug: string }> = (props) => {
 //   * registered user (homeData() !== null) → networks list with
 //     click-to-connect on parked rows + click-to-jump on connected
 //     rows. NO compose box (home is a view, not a chat).
-//   * visitor / logged-out (homeData() === null) → cic-only help
-//     text (placeholder, expanded in a follow-up UX-4 copy bucket).
+//   * visitor / logged-out (homeData() === null) → HomePaneVisitor:
+//     welcome + featured + directory link (#135 landing page).
 //
 // Help-text + button labels live entirely in this file per the
 // no-localized-strings-server-side rule. The server-side envelope
@@ -108,22 +114,59 @@ const FeaturedLinks: Component<{ slug: string }> = (props) => {
 //     failure. Server-side admission (UX-5 BC) ensures the chip
 //     doesn't 503 on T32 park → reconnect under default cap.
 
+// #135 — visitor landing page: three stacked sections, top→bottom:
+//   1. static welcome + orientation copy (operator-editable per-network
+//      welcome is #136, out of scope — this stays a cic-side string);
+//   2. featured channels (#85's FeaturedLinks, titled for this layout);
+//   3. a "Browse channels" link into the full #84 directory ($list pane).
+//
+// The directory link mirrors ConnectedRow.onBrowse EXACTLY (a kind:"list"
+// selection deep-link), using the visitor's single network slug — not a
+// new navigation path. Sections 2+3 are gated on `visitorSlug()`: a
+// visitor always has one network, but the guard keeps a null slug from
+// dispatching a `$list` selection with no network.
 const HomePaneVisitor: Component = () => {
+  const onBrowse = (): void => {
+    const slug = visitorSlug();
+    if (!slug) return;
+    setSelectedChannel({ networkSlug: slug, channelName: LIST_WINDOW_NAME, kind: "list" });
+  };
+
   return (
     <div class="home-pane home-pane-visitor">
-      <h2 class="home-pane-title">Welcome to Grappa</h2>
-      <p>You are connected as a visitor.</p>
-      <p class="muted">
-        IRC channels appear in the sidebar. Pick one to start chatting. While your session is open
-        the bouncer keeps you connected — close cicchetto and reopen, and you're still on, right
-        where you left off. But a visitor session is ephemeral: when it expires its scrollback goes
-        with it. Nothing is kept for a visitor nick.
-      </p>
-      <p class="muted">
-        This is IRC: to join a channel, tap the server tab below and <code>/join</code> it. To get
-        started, <code>/join #grappa</code>.
-      </p>
-      <Show when={visitorSlug()}>{(slug) => <FeaturedLinks slug={slug()} />}</Show>
+      <section class="home-pane-section home-pane-welcome" data-testid="home-visitor-welcome">
+        <h2 class="home-pane-title">Welcome to Grappa</h2>
+        <p>
+          Grappa is an always-on IRC bouncer. Pick a channel and start talking — while your session
+          stays open the bouncer keeps you connected, so you can close this tab and reopen it right
+          where you left off.
+        </p>
+        <p class="muted">
+          You're here as a guest. A visitor session is ephemeral: when it expires, its scrollback
+          goes with it — nothing is kept for a guest nick. New here? Start with a featured channel
+          below, or browse the full directory.
+        </p>
+      </section>
+
+      <Show when={visitorSlug()}>
+        {(slug) => (
+          <>
+            <section class="home-pane-section home-pane-featured-section">
+              <FeaturedLinks slug={slug()} heading="Featured channels" />
+            </section>
+            <section class="home-pane-section home-pane-directory-section">
+              <button
+                type="button"
+                class="home-pane-network-browse home-pane-directory-link"
+                onClick={onBrowse}
+                data-testid="home-visitor-browse"
+              >
+                📇 Browse channels
+              </button>
+            </section>
+          </>
+        )}
+      </Show>
     </div>
   );
 };
