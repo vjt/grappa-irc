@@ -24,9 +24,57 @@
 // selection doesn't fire on a still-loading store.
 
 import { createEffect, createRoot, on } from "solid-js";
-import { networks } from "./networks";
+import { networkBySlug, networks } from "./networks";
 import { type PushTarget, parsePushTargetUrl } from "./pushPayload";
+import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { setSelectedChannel } from "./selection";
+
+/**
+ * Routes a parsed push target into the selection store.
+ *
+ * #146 — a DM (query) target MUST be OPENED before it can be focused.
+ * `setSelectedChannel` alone selects a window that may not exist yet: the
+ * server never auto-creates a `query_windows` row for an inbound DM (only
+ * cic's `open_query_window` push does), so a DM notification tapped when
+ * no query window exists — cold load after a DM-while-closed, or a warm
+ * client that never opened that DM — produced a dead selection with no
+ * sidebar row. Reuse the same open-then-select verb every other DM-open
+ * site uses (compose `/msg` `/query`, NamesModal, UserContextMenu,
+ * subscribe.ts inbound-DM): resolve the network, canonicalise the nick,
+ * `openQueryWindowState` (server upserts the row + broadcasts
+ * `query_windows_list`, which renders it), then select.
+ *
+ * Channels need no open step — a highlight implies the operator is already
+ * joined, so the channel is already in `channelsBySlug`.
+ *
+ * Shared by both push-target call sites (warm `applyPushTarget`, cold
+ * `deferUntilNetworksSeed`) so the open-then-select contract can't drift
+ * between them.
+ */
+function routePushTarget(target: PushTarget): void {
+  if (target.kind === "query") {
+    const net = networkBySlug(target.networkSlug);
+    if (net !== undefined) {
+      const canonical = canonicalQueryNick(net.id, target.channelName);
+      openQueryWindowState(net.id, canonical, new Date().toISOString());
+      setSelectedChannel({
+        networkSlug: target.networkSlug,
+        channelName: canonical,
+        kind: "query",
+      });
+      return;
+    }
+    // Network not resolvable (stale deep-link to an unbound network):
+    // fall through to a best-effort plain select. The selection store's
+    // bucket-E picker only fires on a was-live→not-live transition, so a
+    // fresh not-live selection is not clobbered.
+  }
+  setSelectedChannel({
+    networkSlug: target.networkSlug,
+    channelName: target.channelName,
+    kind: target.kind,
+  });
+}
 
 /**
  * Resolves a push-target URL and routes selection. Returns true if a
@@ -46,11 +94,7 @@ export function applyPushTarget(rawUrl: string): boolean {
     console.warn("pushTarget: URL parse failed", rawUrl);
     return false;
   }
-  setSelectedChannel({
-    networkSlug: target.networkSlug,
-    channelName: target.channelName,
-    kind: target.kind,
-  });
+  routePushTarget(target);
   return true;
 }
 
@@ -130,11 +174,7 @@ function deferUntilNetworksSeed(target: PushTarget): void {
         if (applied) return;
         if (!nets || nets.length === 0) return;
         applied = true;
-        setSelectedChannel({
-          networkSlug: target.networkSlug,
-          channelName: target.channelName,
-          kind: target.kind,
-        });
+        routePushTarget(target);
         if (typeof window !== "undefined") {
           window.__cicPushTargetApplied = true;
           if (window.history && window.location) {

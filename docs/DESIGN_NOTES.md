@@ -14449,3 +14449,62 @@ seam lives only on the desktop `Sidebar`, which is its sole renderer, so
 nothing is half-migrated.
 
 **Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change.
+
+---
+
+## 2026-06-29 — #146: a tapped DM notification must OPEN the query window, not just select it
+
+**P0 regression report: tapping an OS push notification stopped landing
+the operator on the conversation that fired it — for a channel highlight
+OR a nick/query PM.** Investigated empirically with a real chromium e2e
+before touching code (the prior push-tap gate, `ux-6-j`, was a suspected
+false positive — it only ever drove a CHANNEL deep-link).
+
+**Channels were fine; the DM/query branch was broken.** The push deep-link
+routes through `pushTarget.ts` — warm path `applyPushTarget` (SW→page
+`{type:"navigate",url}`) and cold path `applyPushTargetFromUrl`
+(`openWindow` boot reader). Both did the same thing: `setSelectedChannel`
+on the parsed `{networkSlug, channelName, kind}`. For a channel that is
+correct — a highlight implies the operator is already joined, so the
+channel is in `channelsBySlug` and the sidebar renders + selects it. For
+a DM it is NOT: the server never auto-creates a `query_windows` row for
+an inbound DM (only cic's `open_query_window` push does, from
+subscribe.ts on receive). So a DM notification tapped when no query
+window exists yet — the canonical case, a DM that arrived while cic was
+closed, then a cold load — selected a window that was never opened: dead
+selection, no sidebar row, "tap did nothing."
+
+**Root cause = a skipped verb, not a broken one.** Every OTHER DM-open
+site (compose `/msg` + `/query`, NamesModal, UserContextMenu,
+subscribe.ts inbound-DM) opens the window via `openQueryWindowState`
+(server upserts the row + broadcasts `query_windows_list`, which renders
+it) BEFORE `setSelectedChannel`. The push-target path was the one site
+that selected without opening. **Fix: reuse the verb.** A shared
+`routePushTarget/1` now handles both call sites — for `kind:"query"` it
+resolves the network, canonicalises the nick, `openQueryWindowState`,
+then selects; `kind:"channel"` is unchanged. DRY across warm + cold so
+the open-then-select contract can't drift. (The cold-path open push is
+safe pre-WS-join: `joinUser` sets `_userChannel` synchronously from
+token+subject — earlier than the REST-sourced `networks()` seed that
+gates the cold reader — and Phoenix buffers the push until the join ack.)
+
+**The e2e gate — and the harness ceiling.** New
+`cicchetto/e2e/tests/notif-tap-focus.spec.ts` covers BOTH a channel and a
+DM on BOTH drives, asserting the user-visible outcome
+(`li[data-window-name].selected`). The DM cold-path case reproduced the
+regression RED before the fix. The IDEAL drive — dispatching the real SW
+`notificationclick` handler — is **not achievable under headless
+Playwright** (proven, not assumed): `registration.showNotification`
+rejects with "No notification permission has been granted for this
+origin" even after `grantPermissions(["notifications"])`, so a real
+`NotificationEvent` can't be constructed; and `WindowClient.focus()` /
+`clients.openWindow()` inside `focusOrOpen` require transient activation a
+synthetic dispatch doesn't grant. So the faithful drives the harness
+allows are: COLD = `page.goto(deepLink)` (exactly the SW's
+`openWindow(url)` branch → real `applyPushTargetFromUrl`, no MessageEvent
+shortcut), and WARM = replaying the SW→page navigate message onto the real
+`installPushTargetListener`. Both go RED if the routing breaks. Unit
+coverage: `pushTarget.test.ts` asserts the query branch now fires
+`openQueryWindowState` before selecting.
+
+**Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change.

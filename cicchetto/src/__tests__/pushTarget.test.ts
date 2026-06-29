@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPushTarget, installPushTargetListener } from "../lib/pushTarget";
+import { openQueryWindowState } from "../lib/queryWindows";
 import { setSelectedChannel } from "../lib/selection";
 
 // UX-6-J: SW posts {type: "navigate", url} to focused client; cic
@@ -27,25 +28,54 @@ vi.mock("../lib/networks", () => ({
   ),
 }));
 
+// #146 — the query branch now reuses the open-then-select verb. Mock the
+// query-window surface so we can assert the open push fires without
+// dragging in the phoenix socket. `canonicalQueryNick` echoes the nick
+// (no open window to resolve casing against in unit context).
+vi.mock("../lib/queryWindows", () => ({
+  openQueryWindowState: vi.fn(),
+  canonicalQueryNick: vi.fn((_networkId: number, nick: string) => nick),
+}));
+
 describe("applyPushTarget", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("routes a channel deep-link to setSelectedChannel with kind=channel", () => {
+  it("routes a channel deep-link to setSelectedChannel with kind=channel (no query open)", () => {
     applyPushTarget("/?network=libera&channel=%23sniffo");
     expect(setSelectedChannel).toHaveBeenCalledWith({
       networkSlug: "libera",
       channelName: "#sniffo",
       kind: "channel",
     });
+    // A channel highlight implies the operator is already joined — no
+    // query-window open step.
+    expect(openQueryWindowState).not.toHaveBeenCalled();
   });
 
-  it("routes a query deep-link to setSelectedChannel with kind=query", () => {
+  it("opens AND selects the query window for a DM deep-link (#146)", () => {
     applyPushTarget("/?network=libera&channel=nextime");
+    // #146 root-cause fix: the DM window is OPENED (server upserts the
+    // query_windows row) before selection, mirroring every other DM-open
+    // site — not just selected (which would point at a non-existent
+    // window with no sidebar row).
+    expect(openQueryWindowState).toHaveBeenCalledWith(1, "nextime", expect.any(String));
     expect(setSelectedChannel).toHaveBeenCalledWith({
       networkSlug: "libera",
       channelName: "nextime",
+      kind: "query",
+    });
+  });
+
+  it("DM deep-link to an unbound network falls back to a plain select (no open)", () => {
+    applyPushTarget("/?network=unknown&channel=someone");
+    // Network not resolvable → can't open a query window; best-effort
+    // select keeps the helper total without crashing on a stale link.
+    expect(openQueryWindowState).not.toHaveBeenCalled();
+    expect(setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "unknown",
+      channelName: "someone",
       kind: "query",
     });
   });
