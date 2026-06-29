@@ -112,6 +112,14 @@ are ephemeral): sibling = "grappa-worker", orchestrator = "grappa-orch", ircbot 
 - **Halt + ESCALATE** on: design picker, plan deviation, real breakage, CI regression (2nd
   recurrence), ambiguous scope, daemon/pane death, PACK COMPLETE. Don't auto-pick design/
   product choices; orchestration mechanics MAY be auto-defaulted.
+- **WHEN YOU NEED VJT'S INPUT, PING HIM VIA THE IRCBOT — ALWAYS.** vjt lives on IRC, NOT in the
+  orchestrator conversation; a reply typed only into this session can sit unseen for hours. Any
+  time you need his decision/answer (escalation, design picker, scope question, ambiguous call,
+  PACK COMPLETE, "what next?"), brief the ircbot pane ("vjt-claude") to post a **#grappa message
+  HIGHLIGHTING his nick `vjt`** (push) with the concise question — THEN hold. Posting the question
+  in the conversation alone does NOT count as pinging him. (Routine ship announces still go without
+  the highlight; the highlight is specifically for "I need your input".) This is non-negotiable —
+  vjt set it as a standing order 2026-06-29. See [[feedback_orchestrator_ping_vjt_via_ircbot]].
 
 After reading the handoff, proceed to Step 1 (resume-check) to reconcile it against live daemon/pane state.
 
@@ -284,7 +292,10 @@ If you ever fall back to the legacy paste-buffer path (sibling printed the body 
 ## Halt protocol
 
 When you halt:
-- One-line summary to user: what landed, what's pending, what the Q is.
+- **PING VJT VIA THE IRCBOT** (vjt-claude pane): brief it to post a #grappa message HIGHLIGHTING `vjt`
+  with the concise question — what landed, what's pending, what the Q is. This is the REAL escalation;
+  a reply only in the orchestrator conversation does NOT reach him (he's on IRC, not watching this session).
+- Also drop the one-line summary in the conversation (for the record), but the ircbot ping is what gets his attention.
 - Do not send anything to the sibling pane.
 - Do not run /clear.
 - Do not reschedule the next tick — wait for user direction. (Decide explicitly: if you want passive monitoring to continue while you halt, schedule the next tick and just don't act on its events until the user replies.)
