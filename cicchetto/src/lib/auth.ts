@@ -163,6 +163,17 @@ function isValidSubject(v: unknown): v is api.Subject {
   return false;
 }
 
+// Drop the local bearer + persisted subject and return the UI to the
+// login screen (token signal → null → RequireAuth bounces, socket.ts
+// disconnects the WS). The LOCAL half of logout, factored out so #157's
+// `deleteAccount` reuses it AFTER the server confirms the wipe — at that
+// point the session row is already cascade-gone, so there is nothing to
+// revoke server-side.
+export function clearLocalAuth(): void {
+  localStorage.removeItem(SUBJECT_KEY);
+  setToken(null);
+}
+
 export async function logout(): Promise<void> {
   const t = tokenSignal();
   if (t !== null) {
@@ -177,6 +188,5 @@ export async function logout(): Promise<void> {
       // intentional: see comment above.
     }
   }
-  localStorage.removeItem(SUBJECT_KEY);
-  setToken(null);
+  clearLocalAuth();
 }

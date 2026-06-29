@@ -14944,3 +14944,82 @@ visitor in the e2e testnet would need the full NickServ REGISTER dance
 (no pre-seeded identified nick), more flake surface than the gate is
 worth — the user-analog disconnect/reconnect already has a full-stack
 e2e in `cp15-b6-parked-disconnect-reconnect.spec.ts`.
+
+## delete account — the irreversible nuke (#157, 2026-06-29)
+
+#126 deliberately kept the total wipe OUT and flagged it as #157. `quit`
+PRESERVES a persistent identity (a registered visitor's row + scrollback
+survive; a user's account survives a park-all). **`delete account` is the
+ONLY self-service door that destroys it** — distinct verb, distinct
+affordance, distinct confirm; the server NEVER wipes on quit.
+
+**Subject routing + gating (`Grappa.AccountDeletion.delete_account/1`).**
+One subject-routed verb, forbidden cases pattern-matched FIRST so the wipe
+clauses carry no negated guards:
+  * **admin user → `{:error, :forbidden}`** (issue #157: not for admins).
+    An operator removing an admin uses `DELETE /admin/users/:id`, which
+    keeps the last-admin lockout guard. The self-delete door never reaches
+    `Accounts.delete_user/1`'s `:last_admin` branch (admins 403 earlier).
+  * **non-admin user →** stop ALL the user's live `Session.Server`s (one
+    per bound network, via `Credentials.list_credentials_for_user/1`) THEN
+    `Accounts.delete_user/1`.
+  * **anon visitor → `{:error, :forbidden}`** — no persistent identity to
+    delete; its only teardown is quit. Mirrors
+    `SessionController.require_registered_visitor/1` (server-side
+    defense-in-depth, NOT a reliance on the cic gate).
+  * **registered visitor →** `Session.stop_session/3` THEN
+    `Visitors.delete/1`.
+
+**Teardown → wipe ordering** mirrors `Operator.delete_visitor/2`: stop the
+live session BEFORE the `Repo.delete` so an in-flight scrollback persist
+can't trip a `*_id` FK and the GenServer drains via `terminate/2`. The
+DB-level `ON DELETE CASCADE` on every subject-keyed FK (verified at the
+migrations: sessions, messages, query_windows, read_cursors,
+network_credentials, user_settings, push_subscriptions, …) wipes the
+dependents in the same transaction — no orphans, no nilify/restrict.
+
+**Reuse the verbs, not the nouns.** The wipe PRIMITIVES already existed
+(`Session.stop_session` + `Visitors.delete` / `Accounts.delete_user`).
+`Operator.delete_visitor/2` (the admin door) wraps them with admin-event
+emission + actor attribution; `AccountDeletion` (the self-service door)
+wraps the SAME primitives with self-only gating — and emits NO admin event
+(no admin actor). Two doors, one core. The new top-level boundary module
+owns the cross-context orchestration (deps Accounts/Networks/Session/
+Visitors) so no single existing context grows the others' deps.
+
+**The door: `DELETE /me`** (subject-routed in `MeController.delete/2`,
+thin: route → context → 204). Chosen over a new `/account` prefix because
+`/me` already rides the nginx allowlist + the SW navigation denylist — no
+proxy/SW change. After the cascade the auth-session row is already gone, so
+the only remaining controller teardown is the socket close — the SAME
+mid-flight WS enforcement as logout's H2, now shared via the extracted
+`UserSocket.disconnect_subject/1` (auth_controller refactored to delegate;
+one socket-teardown code path).
+
+**The irreversibility gate is cic-side.** A two-tap `InlineConfirmButton`
+(quit's gate) is too weak for an irreversible nuke. `DeleteAccountModal`
+keeps the destructive button DISABLED until the operator types their exact
+account name / nick (`displayNick(me)`, no trim/casefold) — "the user
+cannot do this by accident." The server stays simple: the modal is the
+gate, the endpoint is the deliberate action; `lib/lifecycle.deleteAccount`
+PROPAGATES errors (unlike quit/logout's best-effort swallow) so a failed
+wipe (403, server error) does NOT clear the local bearer on a
+still-existing account. The drawer affordance is gated to a registered
+non-admin user or a registered visitor — admins + anon visitors never see
+it (the reactive `/me` `is_admin` / `registered` flags drive it, so a
+mid-session demote flips it).
+
+**Tests.** Server: `Grappa.AccountDeletionTest` (live-session teardown +
+cascade + the gating + the **#126 boundary asserted explicitly**: a
+registered visitor's row SURVIVES detach/`purge_if_anon` but is WIPED by
+`delete_account`); `me_controller_test` for the `DELETE /me` HTTP contract
+(204 / 403-admin / 403-anon / 401-no-bearer + the socket "disconnect"
+broadcast + re-auth-fails). cic: `lifecycle.test.ts` (wipe→clear, distinct
+from quit, no-clear-on-failure), `DeleteAccountModal.test.tsx` (the
+type-the-name gate), SettingsDrawer vitest (per-subject affordance gating).
+Real chromium e2e (`issue157-delete-account.spec.ts`): the USER wipe is the
+RED-provable visible flow (throwaway user via `POST /admin/users` →
+confirm-delete → fresh login + old bearer both rejected); the anon-visitor
+no-button is a guard. A registered-visitor visible wipe needs the NickServ
+REGISTER dance (out of scope, same wall #126 hit) — covered by
+server-unit + vitest.

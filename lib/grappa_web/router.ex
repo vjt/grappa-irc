@@ -203,6 +203,13 @@ defmodule GrappaWeb.Router do
 
     get "/me", MeController, :show
 
+    # #157 — self-service account deletion: an explicit, IRREVERSIBLE
+    # total wipe of the caller's OWN account + all state. Subject-routed
+    # (user / visitor) in `Grappa.AccountDeletion`; admins + anon visitors
+    # 403 (not offered self-delete). `/me` already rides the nginx
+    # allowlist + the SW navigation denylist, so no proxy/SW change.
+    delete "/me", MeController, :delete
+
     # Per-user settings — push notifications cluster B3 (2026-05-14).
     # Visitor-parity V4 (2026-05-15) lifted the user-only gate; both
     # registered users + visitors hit these endpoints. Persists into

@@ -12,6 +12,7 @@ defmodule GrappaWeb do
     top_level?: true,
     deps:
       [
+        Grappa.AccountDeletion,
         Grappa.Accounts,
         Grappa.Admission,
         Grappa.AdminEvents,

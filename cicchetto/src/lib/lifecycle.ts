@@ -1,5 +1,5 @@
-import { disconnectSession, reconnectSession } from "./api";
-import { getSubject, logout, token } from "./auth";
+import { deleteAccount as apiDeleteAccount, disconnectSession, reconnectSession } from "./api";
+import { clearLocalAuth, getSubject, logout, token } from "./auth";
 import { refetchUser } from "./networks";
 import { quitAll } from "./quit";
 
@@ -93,4 +93,27 @@ export async function reconnect(): Promise<void> {
   if (t === null) return;
   await reconnectSession(t);
   refetchUser();
+}
+
+/**
+ * deleteAccount — #157 IRREVERSIBLE total wipe. DISTINCT from quit, NOT
+ * routed through it: quit PRESERVES a persistent identity (a registered
+ * visitor's row + scrollback survive; a user's account survives a
+ * park-all), whereas deleteAccount DESTROYS the account + all associated
+ * state server-side, then clears the local bearer. Offered ONLY to a
+ * registered non-admin user or a registered visitor — the server 403s
+ * everyone else (admin / anon). The cic confirm modal is the
+ * irreversibility gate; this verb is the deliberate action it triggers.
+ *
+ * Errors PROPAGATE (unlike quit/logout, which swallow "user wants out"):
+ * a failed wipe (403, server error) must surface so the local token is
+ * NOT cleared on a still-existing account. `clearLocalAuth` runs ONLY
+ * after the server's 204 — the session row is cascade-gone by then, so
+ * there is nothing left to revoke.
+ */
+export async function deleteAccount(): Promise<void> {
+  const t = token();
+  if (t === null) return;
+  await apiDeleteAccount(t);
+  clearLocalAuth();
 }

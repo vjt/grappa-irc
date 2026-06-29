@@ -1612,6 +1612,22 @@ export async function logout(token: string): Promise<void> {
   if (!res.ok) throw await readError(res);
 }
 
+// #157 — IRREVERSIBLE total account wipe. `DELETE /me`: the server tears
+// down the caller's live session(s), deletes the account + ALL associated
+// state (DB cascade), and closes the live WS. 204 on success; the server
+// 403s an admin user / anon visitor (registered-only — defense-in-depth
+// mirroring the cic gate). DISTINCT from `logout` (#126 detach), which
+// PRESERVES a persistent identity. Throws on any non-2xx so the caller
+// (lib/lifecycle.deleteAccount) does NOT clear the local bearer on a
+// still-existing account.
+export async function deleteAccount(token: string): Promise<void> {
+  const res = await fetch("/me", {
+    method: "DELETE",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
 // #126 — visitor `disconnect`: drop the upstream IRC connection but KEEP
 // the cic/web session open. Registered-visitor-only server-side (403
 // otherwise). 204 on success.

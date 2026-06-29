@@ -1873,6 +1873,121 @@ html.resize-dragging * {
   cursor: pointer;
 }
 
+/* #157 — delete-account entry button. Visually DISTINCT from logout /
+   quit: red border + red text (a danger affordance) so the operator
+   perceives it as the nuclear option, never a sibling of quit. Sits just
+   above the "done" button at the bottom of the stack. */
+.settings-drawer button.delete-account-entry {
+  margin-top: 0.5rem;
+  background: transparent;
+  color: #c00;
+  border: 1px solid #c00;
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+/* #157 — delete-account confirm modal (type-your-name irreversibility
+   gate). Mirrors the archive-modal scaffold; red-bordered to signal the
+   destructive context. */
+.delete-account-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.delete-account-modal {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid #c00;
+  width: 100%;
+  max-width: 32rem;
+  max-height: var(--viewport-height, 100dvh);
+  padding: max(0.75rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom));
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  overflow-y: auto;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+}
+
+.delete-account-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+}
+
+.delete-account-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: normal;
+  color: #c00;
+}
+
+.delete-account-close {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.5rem;
+}
+
+.delete-account-warning {
+  margin: 0;
+  color: #c00;
+  font-size: 0.85rem;
+}
+
+.delete-account-confirm-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.delete-account-confirm-input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  padding: 0.4rem 0.5rem;
+}
+
+.delete-account-error {
+  margin: 0;
+  color: #c00;
+  font-size: 0.85rem;
+}
+
+.delete-account-confirm {
+  background: #c00;
+  color: #fff;
+  border: 1px solid #c00;
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+.delete-account-confirm:disabled {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+
 /* M-cluster M-7 — admin pane. Replaces channel content in the main
    pane (Shell.tsx) when adminOpen() === true. Full-height,
    full-width within `.shell-main`. M-8/M-9/M-10/M-11 will add tabs

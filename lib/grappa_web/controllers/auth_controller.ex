@@ -202,33 +202,18 @@ defmodule GrappaWeb.AuthController do
 
   defp maybe_terminate_sessions(_), do: :ok
 
+  # H2: close the live WS via the shared `UserSocket.disconnect_subject/1`
+  # (broadcast + logged-swallow, reused by #157's account-delete path so
+  # there is ONE socket-teardown code path). nil / unexpected subject
+  # shapes no-op.
   @spec maybe_disconnect_socket(GrappaWeb.Subject.t() | nil) :: :ok
   defp maybe_disconnect_socket({:visitor, %Visitor{}} = subject),
-    do: broadcast_disconnect(GrappaWeb.UserSocket.id_for_subject(subject))
+    do: GrappaWeb.UserSocket.disconnect_subject(subject)
 
   defp maybe_disconnect_socket({:user, %Accounts.User{}} = subject),
-    do: broadcast_disconnect(GrappaWeb.UserSocket.id_for_subject(subject))
+    do: GrappaWeb.UserSocket.disconnect_subject(subject)
 
   defp maybe_disconnect_socket(_), do: :ok
-
-  @spec broadcast_disconnect(String.t()) :: :ok
-  defp broadcast_disconnect(socket_id) do
-    case GrappaWeb.Endpoint.broadcast(socket_id, "disconnect", %{}) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        # PubSub server unreachable — session row already revoked, so
-        # the live WS will be rejected on its next message anyway.
-        # Log + swallow rather than crash the logout response.
-        Logger.warning("logout disconnect broadcast failed",
-          socket_id: socket_id,
-          reason: inspect(reason)
-        )
-
-        :ok
-    end
-  end
 
   @spec stop_visitor_session(Visitor.t()) :: :ok
   defp stop_visitor_session(%Visitor{} = visitor) do

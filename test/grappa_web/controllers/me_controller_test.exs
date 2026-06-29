@@ -14,7 +14,9 @@ defmodule GrappaWeb.MeControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.Accounts
+  alias Grappa.{Accounts, Repo, Visitors}
+  alias Grappa.Accounts.User
+  alias Grappa.Visitors.Visitor
   alias GrappaWeb.MeController
 
   describe "GET /me — user subject" do
@@ -486,6 +488,92 @@ defmodule GrappaWeb.MeControllerTest do
 
       # Both producers must yield the same map structure once Jason-encoded.
       assert row == event.network |> Jason.encode!() |> Jason.decode!()
+    end
+  end
+
+  # #157 — self-service account deletion. The HTTP contract + subject
+  # routing + socket teardown. The teardown-ordering WITH live
+  # Session.Servers (stop-before-wipe) is owned by the async:false
+  # `Grappa.AccountDeletionTest`; here we assert the door, the gating, and
+  # the cascade outcome without spawning a session (so this file stays
+  # async:true).
+  describe "DELETE /me — account deletion" do
+    test "non-admin user → 204, account gone, auth session unusable, socket closed",
+         %{conn: conn} do
+      {user, session} = user_and_session()
+      :ok = GrappaWeb.Endpoint.subscribe("user_socket:#{user.name}")
+
+      conn
+      |> put_bearer(session.id)
+      |> delete("/me")
+      |> response(204)
+
+      assert Repo.get(User, user.id) == nil
+      assert {:error, :not_found} = Accounts.authenticate(session.id)
+
+      # Mid-flight WS enforcement: the transport's id-topic gets the
+      # canonical "disconnect" so a deleted browser stops receiving fan-out.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: topic,
+                       event: "disconnect",
+                       payload: %{}
+                     },
+                     500
+
+      assert topic == "user_socket:#{user.name}"
+    end
+
+    test "admin user → 403, the account is PRESERVED", %{conn: conn} do
+      user = user_fixture(is_admin: true)
+      session = session_fixture(user)
+
+      conn
+      |> put_bearer(session.id)
+      |> delete("/me")
+      |> json_response(403)
+
+      assert %User{} = Repo.get(User, user.id)
+      # Auth session still valid — nothing was torn down.
+      assert {:ok, _} = Accounts.authenticate(session.id)
+    end
+
+    test "registered visitor → 204, the row is WIPED (delete ≠ quit, which preserves it)",
+         %{conn: conn} do
+      # The #126 boundary: `DELETE /auth/logout` (detach) PRESERVES a
+      # registered visitor's row (asserted in auth_controller_test); the
+      # self-delete door is the ONLY one that wipes it. Port 6667 has no
+      # listener — no session is spawned (controller-contract test).
+      {base, _} = visitor_with_network(6667)
+      {:ok, _} = Visitors.commit_password(base.id, "s3cret")
+      visitor = Repo.get!(Visitor, base.id)
+      session = visitor_session_fixture(visitor)
+
+      conn
+      |> put_bearer(session.id)
+      |> delete("/me")
+      |> response(204)
+
+      assert Repo.get(Visitor, visitor.id) == nil
+      assert {:error, :not_found} = Accounts.authenticate(session.id)
+    end
+
+    test "anon visitor → 403 (quit-only; no persistent identity to delete)", %{conn: conn} do
+      {visitor, session} = visitor_and_session()
+      assert is_nil(Repo.get!(Visitor, visitor.id).password_encrypted)
+
+      conn
+      |> put_bearer(session.id)
+      |> delete("/me")
+      |> json_response(403)
+
+      assert %Visitor{} = Repo.get(Visitor, visitor.id)
+      assert {:ok, _} = Accounts.authenticate(session.id)
+    end
+
+    test "without Bearer → 401", %{conn: conn} do
+      conn
+      |> delete("/me")
+      |> json_response(401)
     end
   end
 end

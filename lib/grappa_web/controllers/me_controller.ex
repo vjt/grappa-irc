@@ -21,9 +21,10 @@ defmodule GrappaWeb.MeController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Networks, ReadCursor, Scrollback, Session}
+  alias Grappa.{AccountDeletion, Networks, ReadCursor, Scrollback, Session}
   alias Grappa.Push.BadgeCount
   alias Grappa.Visitors.Visitor
+  alias GrappaWeb.UserSocket
 
   @doc """
   `GET /me` — discriminated profile for the bearer's subject + the
@@ -132,6 +133,44 @@ defmodule GrappaWeb.MeController do
 
       _ ->
         {:error, :unauthorized}
+    end
+  end
+
+  @doc """
+  `DELETE /me` — #157 self-service account deletion. Tears down the
+  caller's live session(s), wipes the account + ALL state (DB cascade),
+  and closes the live WebSocket. Returns 204 on a completed wipe.
+
+  Subject-routed in `Grappa.AccountDeletion`: an admin user or an anon
+  visitor is NOT offered self-delete (`{:error, :forbidden}` → 403 via
+  FallbackController). There is no cross-subject delete — the SELF is
+  `conn.assigns.current_subject`, with no `:id` param to spoof.
+
+  Distinct from `DELETE /auth/logout` (#126 detach, which PRESERVES a
+  persistent identity): this is the ONLY door that destroys it. After the
+  cascade the auth-session row is already gone; the remaining teardown is
+  the socket close (mid-flight WS enforcement, same rationale as logout's
+  H2 — reused via `UserSocket.disconnect_subject/1`).
+
+  The fall-through clause guards a regressed pipeline (`/me` mounted
+  outside `:authn`) with a uniform 401, mirroring `show/2`'s W8 clause.
+  """
+  @spec delete(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :forbidden | :not_found | :unauthorized}
+  def delete(conn, _) do
+    case conn.assigns[:current_subject] do
+      {:user, _} = subject -> wipe(conn, subject)
+      {:visitor, _} = subject -> wipe(conn, subject)
+      _ -> {:error, :unauthorized}
+    end
+  end
+
+  @spec wipe(Plug.Conn.t(), GrappaWeb.Subject.t()) ::
+          Plug.Conn.t() | {:error, :forbidden | :not_found}
+  defp wipe(conn, subject) do
+    with :ok <- AccountDeletion.delete_account(subject) do
+      :ok = UserSocket.disconnect_subject(subject)
+      send_resp(conn, :no_content, "")
     end
   end
 

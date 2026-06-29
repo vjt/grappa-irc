@@ -52,6 +52,8 @@ defmodule GrappaWeb.UserSocket do
   alias Grappa.Accounts.Session
   alias Grappa.Visitors.Visitor
 
+  require Logger
+
   channel "grappa:user:*", GrappaWeb.GrappaChannel
   channel "grappa:admin:events", GrappaWeb.AdminChannel
 
@@ -114,6 +116,41 @@ defmodule GrappaWeb.UserSocket do
 
   def id_for_subject({:visitor, %Visitor{id: id}}) when is_binary(id),
     do: id_for_user_name("visitor:" <> id)
+
+  @doc """
+  Close the live WebSocket for `subject` by broadcasting `"disconnect"`
+  to its id-topic (the topic the transport process subscribes to at
+  connect time). Phoenix's socket `__info__` catch-all maps the event to
+  `{:stop, {:shutdown, :disconnected}, _}`, terminating the transport.
+
+  Shared by `AuthController.logout/2` (#126 detach) and
+  `MeController.delete/2` (#157 account wipe) — bearer revocation /
+  account deletion is mid-flight enforcement, not just connect-time:
+  without this push a logged-out / deleted browser keeps receiving PubSub
+  fan-out until its next message is rejected.
+
+  Fire-and-forget: a PubSub-server-unreachable `{:error, _}` is logged and
+  swallowed (the caller has already revoked / deleted the session row, so
+  the WS is rejected on its next message anyway) — never blocks the
+  teardown response.
+  """
+  @spec disconnect_subject(GrappaWeb.Subject.t()) :: :ok
+  def disconnect_subject(subject) do
+    socket_id = id_for_subject(subject)
+
+    case GrappaWeb.Endpoint.broadcast(socket_id, "disconnect", %{}) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("socket disconnect broadcast failed",
+          socket_id: socket_id,
+          reason: inspect(reason)
+        )
+
+        :ok
+    end
+  end
 
   @spec id_for_user_name(String.t()) :: String.t()
   defp id_for_user_name(user_name) when is_binary(user_name),

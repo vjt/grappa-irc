@@ -43,6 +43,10 @@ vi.mock("../lib/auth", () => ({
 vi.mock("../lib/api", () => ({
   disconnectSession: vi.fn().mockResolvedValue(undefined),
   reconnectSession: vi.fn().mockResolvedValue(undefined),
+  // #157 — the drawer derives the delete-account confirm text from
+  // displayNick(me). Mirror the production discriminant.
+  displayNick: (me: { kind: "user"; name: string } | { kind: "visitor"; nick: string }) =>
+    me.kind === "user" ? me.name : me.nick,
 }));
 
 // Issue #43 — "quit IRC" composite (park all user-networks + logout)
@@ -138,6 +142,20 @@ vi.mock("../ShareSessionModal", async () => {
             stub close
           </button>
         </div>
+      </Show>
+    ),
+  };
+});
+
+// #157 — the drawer mounts DeleteAccountModal as a sibling. Stub it (its
+// own confirm-gate behaviour is covered in DeleteAccountModal.test.tsx);
+// here we assert the drawer's gating + that clicking the entry OPENS it.
+vi.mock("../DeleteAccountModal", async () => {
+  const { Show } = await import("solid-js");
+  return {
+    default: (props: { open: boolean; onClose: () => void; confirmationText: string }) => (
+      <Show when={props.open}>
+        <div data-testid="delete-account-modal-stub">{props.confirmationText}</div>
       </Show>
     ),
   };
@@ -706,6 +724,80 @@ describe("SettingsDrawer (#126 — registered-visitor lifecycle verbs)", () => {
     await waitFor(() => {
       expect(api.reconnectSession).toHaveBeenCalledWith("test-bearer");
     });
+  });
+});
+
+describe("SettingsDrawer delete-account gating (#157)", () => {
+  it("registered NON-admin user → shows the delete-account entry", () => {
+    meHolder.current = {
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      is_admin: false,
+      inserted_at: "2026-06-29T00:00:00Z",
+    };
+    wrap(true);
+    expect(screen.getByTestId("delete-account-btn")).toBeInTheDocument();
+  });
+
+  it("admin user → WITHHOLDS the delete-account entry (issue #157: not for admins)", () => {
+    meHolder.current = {
+      kind: "user",
+      id: "u1",
+      name: "admin",
+      is_admin: true,
+      inserted_at: "2026-06-29T00:00:00Z",
+    };
+    wrap(true);
+    expect(screen.queryByTestId("delete-account-btn")).toBeNull();
+  });
+
+  it("registered visitor → shows the delete-account entry", () => {
+    meHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "vjt",
+      network_slug: "azzurra",
+      expires_at: "2026-06-30T00:00:00Z",
+      registered: true,
+    };
+    wrap(true);
+    expect(screen.getByTestId("delete-account-btn")).toBeInTheDocument();
+  });
+
+  it("anon visitor → WITHHOLDS the delete-account entry (quit-only)", () => {
+    meHolder.current = {
+      kind: "visitor",
+      id: "v2",
+      nick: "guest",
+      network_slug: "azzurra",
+      expires_at: "2026-06-30T00:00:00Z",
+      registered: false,
+    };
+    wrap(true);
+    expect(screen.queryByTestId("delete-account-btn")).toBeNull();
+  });
+
+  it("null subject (loading) → WITHHOLDS the delete-account entry", () => {
+    meHolder.current = null;
+    wrap(true);
+    expect(screen.queryByTestId("delete-account-btn")).toBeNull();
+  });
+
+  it("clicking the entry opens the confirm modal seeded with the account name", () => {
+    meHolder.current = {
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      is_admin: false,
+      inserted_at: "2026-06-29T00:00:00Z",
+    };
+    wrap(true);
+    expect(screen.queryByTestId("delete-account-modal-stub")).toBeNull();
+    fireEvent.click(screen.getByTestId("delete-account-btn"));
+    const stub = screen.getByTestId("delete-account-modal-stub");
+    expect(stub).toBeInTheDocument();
+    expect(stub).toHaveTextContent("alice");
   });
 });
 

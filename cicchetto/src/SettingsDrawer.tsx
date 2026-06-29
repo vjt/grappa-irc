@@ -8,7 +8,9 @@ import {
   onMount,
   Show,
 } from "solid-js";
+import DeleteAccountModal from "./DeleteAccountModal";
 import InlineConfirmButton from "./InlineConfirmButton";
+import { displayNick } from "./lib/api";
 import { getSubject, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { getKeyboardPref, setKeyboardPref } from "./lib/keyboardPref";
@@ -107,6 +109,27 @@ const SettingsDrawer: Component<Props> = (props) => {
   // it arms via the shared two-tap InlineConfirmButton. Parent owns the
   // armed flag per that component's contract.
   const [quitArmed, setQuitArmed] = createSignal(false);
+  // #157 — "delete account" is an IRREVERSIBLE total wipe, surfaced as a
+  // SEPARATE affordance from quit (quit PRESERVES a persistent identity;
+  // delete nukes it). It opens a confirm MODAL (type-your-name gate) —
+  // stronger than quit's two-tap arm. Offered ONLY to a registered
+  // NON-admin user or a registered visitor; admins (issue #157) + anon
+  // visitors are excluded. Reads the reactive `/me` resource (authoritative
+  // for is_admin / registered) so a mid-session demote/refetch flips it.
+  const [deleteOpen, setDeleteOpen] = createSignal(false);
+  const showDeleteAccount = (): boolean => {
+    const u = user();
+    if (!u) return false;
+    if (u.kind === "user") return u.is_admin === false;
+    return u.registered === true;
+  };
+  // The exact string the operator must type to arm deletion — account
+  // name (user) or nick (visitor). Empty when /me hasn't loaded (the
+  // button is withheld in that state anyway).
+  const deleteConfirmationText = (): string => {
+    const u = user();
+    return u ? displayNick(u) : "";
+  };
   // Comma-separated UI shadows for the two whitelist text inputs — the
   // server stores normalized lists; cic edits are joined with ", " and
   // re-split on PUT so partial typing doesn't drop characters.
@@ -160,8 +183,13 @@ const SettingsDrawer: Component<Props> = (props) => {
   // The drawer stays mounted across open/close (CSS .open toggle, not a
   // <Show>), so an armed quit button would survive a close → reopen and
   // sit one stray tap from killing the bouncer. Disarm on every close.
+  // #157: also close the delete-account modal so a reopened drawer never
+  // strands the irreversible confirm dialog open.
   createEffect(() => {
-    if (!props.open) setQuitArmed(false);
+    if (!props.open) {
+      setQuitArmed(false);
+      setDeleteOpen(false);
+    }
   });
 
   const refreshDevices = async () => {
@@ -758,6 +786,22 @@ const SettingsDrawer: Component<Props> = (props) => {
           extraClass="settings-quit"
         />
 
+        {/* #157 — delete account: IRREVERSIBLE total wipe, DISTINCT from
+            quit. Separate label + separate confirm (a type-your-name modal,
+            stronger than quit's two-tap). Offered ONLY to a registered
+            non-admin user or a registered visitor; admins + anon visitors
+            never see it. */}
+        <Show when={showDeleteAccount()}>
+          <button
+            type="button"
+            class="delete-account-entry"
+            data-testid="delete-account-btn"
+            onClick={() => setDeleteOpen(true)}
+          >
+            delete account
+          </button>
+        </Show>
+
         {/* UX-6 D12 — viewport diagnostics fieldset moved to AdminPane
             Debug tab. See AdminDebugTab.tsx. */}
 
@@ -775,6 +819,11 @@ const SettingsDrawer: Component<Props> = (props) => {
         </button>
       </aside>
       <ShareSessionModal open={shareOpen()} onClose={() => setShareOpen(false)} />
+      <DeleteAccountModal
+        open={deleteOpen()}
+        onClose={() => setDeleteOpen(false)}
+        confirmationText={deleteConfirmationText()}
+      />
     </>
   );
 };

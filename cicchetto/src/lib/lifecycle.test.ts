@@ -14,6 +14,7 @@ const subjectHolder = vi.hoisted(() => ({
 
 vi.mock("./auth", () => ({
   logout: vi.fn().mockResolvedValue(undefined),
+  clearLocalAuth: vi.fn(),
   token: () => "test-bearer",
   getSubject: () => subjectHolder.current,
 }));
@@ -21,6 +22,7 @@ vi.mock("./auth", () => ({
 vi.mock("./api", () => ({
   disconnectSession: vi.fn().mockResolvedValue(undefined),
   reconnectSession: vi.fn().mockResolvedValue(undefined),
+  deleteAccount: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./quit", () => ({
@@ -31,7 +33,7 @@ vi.mock("./networks", () => ({
   refetchUser: vi.fn(),
 }));
 
-import { detach, disconnect, quit, reconnect } from "./lifecycle";
+import { deleteAccount, detach, disconnect, quit, reconnect } from "./lifecycle";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -120,5 +122,47 @@ describe("disconnect / reconnect (registered visitor)", () => {
 
     expect(api.reconnectSession).toHaveBeenCalledWith("test-bearer");
     expect(networks.refetchUser).toHaveBeenCalled();
+  });
+});
+
+describe("deleteAccount (#157)", () => {
+  it("wipes server-side then clears the local bearer", async () => {
+    const api = await import("./api");
+    const auth = await import("./auth");
+    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
+
+    await deleteAccount();
+
+    expect(api.deleteAccount).toHaveBeenCalledWith("test-bearer");
+    expect(auth.clearLocalAuth).toHaveBeenCalled();
+  });
+
+  it("is DISTINCT from quit — never parks / disconnects / logs out", async () => {
+    const api = await import("./api");
+    const auth = await import("./auth");
+    const quitMod = await import("./quit");
+    subjectHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "vjt",
+      network_slug: "azzurra",
+      registered: true,
+    };
+
+    await deleteAccount();
+
+    expect(quitMod.quitAll).not.toHaveBeenCalled();
+    expect(api.disconnectSession).not.toHaveBeenCalled();
+    expect(auth.logout).not.toHaveBeenCalled();
+  });
+
+  it("does NOT clear the local bearer when the server wipe fails (account still exists)", async () => {
+    const api = await import("./api");
+    const auth = await import("./auth");
+    (api.deleteAccount as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("forbidden"));
+    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
+
+    await expect(deleteAccount()).rejects.toThrow("forbidden");
+    expect(auth.clearLocalAuth).not.toHaveBeenCalled();
   });
 });
