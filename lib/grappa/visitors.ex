@@ -59,7 +59,8 @@ defmodule Grappa.Visitors do
       Grappa.LiveIntrospection,
       Grappa.Networks,
       Grappa.Repo,
-      Grappa.Session
+      Grappa.Session,
+      Grappa.SpawnOrchestrator
     ],
     exports: [AdminWire, Login, SessionPlan, Visitor, Wire]
 
@@ -67,6 +68,8 @@ defmodule Grappa.Visitors do
 
   alias Grappa.IRC.Identifier
   alias Grappa.Repo
+  alias Grappa.{Admission, Session, SpawnOrchestrator}
+  alias Grappa.Visitors.SessionPlan
   alias Grappa.Visitors.Visitor
 
   # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment).
@@ -658,6 +661,77 @@ defmodule Grappa.Visitors do
         rescue
           Ecto.StaleEntryError -> {:error, :not_found}
         end
+    end
+  end
+
+  @doc """
+  #126 — visitor `disconnect`: drop the upstream IRC connection but KEEP
+  the visitor row + scrollback + the web/auth session (the teardown half
+  of the disconnect ⇄ reconnect verb pair). Delegates to the SAME shared
+  teardown core (`Session.stop_session/3`) that `Networks.disconnect/2`
+  uses for users and that #152's reconnect-with-new-ident will reuse for
+  its teardown step. Idempotent — returns `:ok` whether or not a live
+  session was registered.
+
+  Persistent-identity surface: the caller (`GrappaWeb.SessionController`)
+  gates this to registered (NickServ-identified) visitors; an anon
+  visitor's only teardown verb is `quit` (= logout, which stops + purges).
+  """
+  @spec disconnect_session(Visitor.t(), integer()) :: :ok
+  def disconnect_session(%Visitor{id: id}, network_id) when is_integer(network_id) do
+    Session.stop_session({:visitor, id}, network_id, "disconnected")
+  end
+
+  @doc """
+  #126 — visitor `reconnect`: respawn the upstream IRC session for a
+  visitor whose connection was previously dropped (the `reconnect` half
+  of disconnect ⇄ reconnect). Resolves the visitor's `SessionPlan` and
+  runs the shared admission → `Backoff.reset` → spawn dance via
+  `Grappa.SpawnOrchestrator.spawn/4` — the SAME respawn core
+  `NetworksController` drives for a user `:connected` transition, and the
+  seam #152's reconnect-with-new-ident reuses (resolve a CHANGED plan,
+  then this same spawn).
+
+  `capacity_input` is built by the caller (the `flow: :visitor_reconnect`
+  discriminant + `client_id` + `requesting_subject`), mirroring
+  `NetworksController.orchestrate_spawn/4`.
+
+  Returns `{:ok, pid}` on a fresh spawn OR an idempotent
+  `:already_started` (a concurrent reconnect, or a session that never
+  actually dropped). `{:error, :resolve_failed}` when the plan can't be
+  built (orphaned network/servers). `{:error, _}` for an admission
+  rejection (`:visitor_cap_exceeded` / `{:network_circuit_open, _}`) or a
+  `{:start_failed, _}` (upstream connect refused at `init/1`, or
+  `:ignore` because the row vanished mid-flight).
+  """
+  @spec reconnect_session(Visitor.t(), integer(), Admission.capacity_input()) ::
+          {:ok, pid()} | {:error, :resolve_failed | term()}
+  def reconnect_session(%Visitor{id: id} = visitor, network_id, capacity_input)
+      when is_integer(network_id) and is_map(capacity_input) do
+    with {:ok, plan} <- resolve_visitor_plan(visitor) do
+      case SpawnOrchestrator.spawn({:visitor, id}, network_id, plan, capacity_input) do
+        {:ok, :spawned, pid} -> {:ok, pid}
+        {:ok, :already_started, pid} -> {:ok, pid}
+        {:ok, :ignored} -> {:error, {:start_failed, :ignore}}
+        {:error, _} = err -> err
+      end
+    end
+  end
+
+  @spec resolve_visitor_plan(Visitor.t()) ::
+          {:ok, Session.start_opts()} | {:error, :resolve_failed}
+  defp resolve_visitor_plan(%Visitor{} = visitor) do
+    case SessionPlan.resolve(visitor) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} ->
+        Logger.warning("visitor reconnect: session plan resolve failed",
+          visitor_id: visitor.id,
+          error: inspect(reason)
+        )
+
+        {:error, :resolve_failed}
     end
   end
 

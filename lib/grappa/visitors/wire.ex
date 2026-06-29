@@ -51,37 +51,42 @@ defmodule Grappa.Visitors.Wire do
   @type credential_json :: %{
           id: Ecto.UUID.t(),
           nick: String.t(),
-          network_slug: String.t()
+          network_slug: String.t(),
+          registered: boolean()
         }
 
   @type t :: %{
           id: Ecto.UUID.t(),
           nick: String.t(),
           network_slug: String.t(),
-          expires_at: DateTime.t() | nil
+          expires_at: DateTime.t() | nil,
+          registered: boolean()
         }
 
   @doc """
   Renders a `Visitors.Visitor` row to its credential-exchange JSON
-  shape — `{id, nick, network_slug}`. Used by `AuthJSON.login/1`.
+  shape — `{id, nick, network_slug, registered}`. Used by
+  `AuthJSON.login/1`.
 
   Excludes `:password_encrypted` (the post-Cloak-load plaintext
   upstream secret) explicitly. If you're tempted to add that field,
-  stop and re-read the moduledoc.
+  stop and re-read the moduledoc. `:registered` exposes only the
+  PRESENCE of the secret (see `registered?/1`), never the secret.
   """
   @spec visitor_to_credential_json(Visitor.t()) :: credential_json()
   def visitor_to_credential_json(%Visitor{} = v) do
     %{
       id: v.id,
       nick: v.nick,
-      network_slug: v.network_slug
+      network_slug: v.network_slug,
+      registered: registered?(v)
     }
   end
 
   @doc """
   Renders a `Visitors.Visitor` row to its full profile JSON shape —
-  `{id, nick, network_slug, expires_at}`. Used by `MeJSON.show/1`
-  for the SPA's session-end countdown.
+  `{id, nick, network_slug, expires_at, registered}`. Used by
+  `MeJSON.show/1` for the SPA's session-end countdown.
 
   Excludes `:password_encrypted` explicitly (same rationale as
   `visitor_to_credential_json/1`). Excludes `:ip` (operator-audit
@@ -94,7 +99,19 @@ defmodule Grappa.Visitors.Wire do
       id: v.id,
       nick: v.nick,
       network_slug: v.network_slug,
-      expires_at: v.expires_at
+      expires_at: v.expires_at,
+      registered: registered?(v)
     }
   end
+
+  # #126 — a "registered" visitor is a NickServ-IDENTIFIED visitor: one
+  # that committed a NickServ password (`password_encrypted` non-nil ⟺
+  # permanent, `expires_at == nil`). This derived boolean is the cic gate
+  # for the persistent-identity verbs (detach + disconnect/reconnect);
+  # ephemeral/anon visitors (`password_encrypted == nil`) get only quit.
+  # Exposes the PRESENCE of the secret, never the secret — the moduledoc
+  # leak-defense invariant is unchanged.
+  @spec registered?(Visitor.t()) :: boolean()
+  defp registered?(%Visitor{password_encrypted: nil}), do: false
+  defp registered?(%Visitor{password_encrypted: _}), do: true
 end

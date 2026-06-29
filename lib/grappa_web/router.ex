@@ -192,6 +192,15 @@ defmodule GrappaWeb.Router do
     pipe_through [:api, :authn]
 
     delete "/auth/logout", AuthController, :logout
+
+    # #126 — visitor session-disposition: the disconnect ⇄ reconnect verb
+    # pair (drop the upstream IRC connection but KEEP the cic/web session
+    # open). Registered-visitor-only (gated in the controller; users
+    # disconnect per-network via PATCH /networks/:network_id). The nginx
+    # allowlist carries `/session/` on both the :80 and :443 blocks.
+    post "/session/disconnect", SessionController, :disconnect
+    post "/session/reconnect", SessionController, :reconnect
+
     get "/me", MeController, :show
 
     # Per-user settings — push notifications cluster B3 (2026-05-14).

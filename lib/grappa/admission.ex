@@ -56,6 +56,7 @@ defmodule Grappa.Admission do
           | :bootstrap_user
           | :bootstrap_visitor
           | :patch_network_connect
+          | :visitor_reconnect
 
   @type capacity_input :: %{
           network_id: integer(),
@@ -181,6 +182,7 @@ defmodule Grappa.Admission do
   defp subject_kind_for_flow(:login_fresh), do: :visitor
   defp subject_kind_for_flow(:login_existing), do: :visitor
   defp subject_kind_for_flow(:bootstrap_visitor), do: :visitor
+  defp subject_kind_for_flow(:visitor_reconnect), do: :visitor
   defp subject_kind_for_flow(:bootstrap_user), do: :user
   defp subject_kind_for_flow(:patch_network_connect), do: :user
 

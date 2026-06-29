@@ -5,7 +5,9 @@ defmodule GrappaWeb.MeController do
 
     * user    → `{kind: "user", id, name, inserted_at, home_data}`
     * visitor → `{kind: "visitor", id, nick, network_slug, expires_at,
-      home_data: nil}`
+      registered, connected, home_data: nil}` (#126 — `registered` =
+      NickServ identity present, `connected` = whereis-derived live
+      upstream)
 
   Lives behind `:authn`; missing / invalid / revoked / expired Bearer
   all collapse to a uniform 401 via `GrappaWeb.Plugs.Authn`.
@@ -19,8 +21,9 @@ defmodule GrappaWeb.MeController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Networks, ReadCursor, Scrollback}
+  alias Grappa.{Networks, ReadCursor, Scrollback, Session}
   alias Grappa.Push.BadgeCount
+  alias Grappa.Visitors.Visitor
 
   @doc """
   `GET /me` — discriminated profile for the bearer's subject + the
@@ -123,11 +126,31 @@ defmodule GrappaWeb.MeController do
           read_cursors: cursors,
           unread_counts: unread_counts,
           badge_count: BadgeCount.count(subject),
+          connected: visitor_connected?(visitor),
           home_data: nil
         )
 
       _ ->
         {:error, :unauthorized}
+    end
+  end
+
+  # #126 — a visitor's live upstream status is whereis-derived: visitors
+  # have NO `connection_state` column (that's a user-only credential
+  # field), so the registry IS the source of truth. `Session.whereis/2`
+  # is a cheap `Registry.lookup` (NOT a `GenServer.call`), so it preserves
+  # this controller's no-blocking-Session-call intent (see moduledoc)
+  # while giving cic the flag that drives the SettingsDrawer disconnect ⇄
+  # reconnect toggle. An orphaned visitor whose network row was deleted
+  # resolves to `false` — there is no live pid either way.
+  @spec visitor_connected?(Visitor.t()) :: boolean()
+  defp visitor_connected?(%Visitor{network_slug: slug, id: id}) do
+    case Networks.get_network_by_slug(slug) do
+      {:ok, %Networks.Network{id: network_id}} ->
+        Session.whereis({:visitor, id}, network_id) != nil
+
+      {:error, :not_found} ->
+        false
     end
   end
 

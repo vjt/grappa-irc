@@ -33,15 +33,24 @@ defmodule Grappa.Visitors.WireTest do
   end
 
   describe "visitor_to_credential_json/1" do
-    test "renders the credential-exchange shape (id, nick, network_slug)" do
+    test "renders the credential-exchange shape (id, nick, network_slug, registered)" do
       v = build_visitor()
       json = Wire.visitor_to_credential_json(v)
 
       assert json == %{
                id: v.id,
                nick: "vjt",
-               network_slug: "azzurra"
+               network_slug: "azzurra",
+               registered: false
              }
+    end
+
+    test "registered mirrors password_encrypted presence (#126 cic detach/disconnect gate)" do
+      assert Wire.visitor_to_credential_json(build_visitor(password_encrypted: nil)).registered ==
+               false
+
+      assert Wire.visitor_to_credential_json(build_visitor(password_encrypted: <<1, 2, 3>>)).registered ==
+               true
     end
 
     test "EXCLUDES :password_encrypted even when set" do
@@ -64,7 +73,7 @@ defmodule Grappa.Visitors.WireTest do
   end
 
   describe "visitor_to_json/1" do
-    test "renders the full profile shape (id, nick, network_slug, expires_at)" do
+    test "renders the full profile shape (id, nick, network_slug, expires_at, registered)" do
       v = build_visitor()
       json = Wire.visitor_to_json(v)
 
@@ -72,8 +81,15 @@ defmodule Grappa.Visitors.WireTest do
                id: v.id,
                nick: "vjt",
                network_slug: "azzurra",
-               expires_at: v.expires_at
+               expires_at: v.expires_at,
+               registered: false
              }
+    end
+
+    test "registered mirrors password_encrypted presence (#126 cic detach/disconnect gate)" do
+      assert Wire.visitor_to_json(build_visitor(password_encrypted: nil)).registered == false
+
+      assert Wire.visitor_to_json(build_visitor(password_encrypted: <<9, 9>>)).registered == true
     end
 
     test "EXCLUDES :password_encrypted even when set" do

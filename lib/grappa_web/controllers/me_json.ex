@@ -13,13 +13,17 @@ defmodule GrappaWeb.MeJSON do
       `GET /admin/me`. `home_data` (UX-4 bucket B) carries the
       networks list cic's HomePane renders.
     * visitor → `{kind: "visitor", id, nick, network_slug, expires_at,
-      read_cursors, unread_counts, home_data: nil}` — delegates to
-      `Grappa.Visitors.Wire.visitor_to_json/1` so the
-      `:password_encrypted` allowlist lives in one place. See
+      registered, connected, read_cursors, unread_counts, home_data:
+      nil}` — delegates to `Grappa.Visitors.Wire.visitor_to_json/1` so
+      the `:password_encrypted` allowlist lives in one place (and the
+      derived `:registered` = password present rides in from there). See
       `Grappa.Visitors.Wire` moduledoc for the full leak-defense
-      rationale. `home_data` is `nil` for visitors by design —
-      visitor home is cic-only help text (per the
-      no-localized-strings-server-side rule).
+      rationale. `:connected` (#126) is the whereis-derived live-upstream
+      flag the controller computes (visitors have no `connection_state`
+      column); it drives cic's SettingsDrawer disconnect ⇄ reconnect
+      toggle. `home_data` is `nil` for visitors by design — visitor home
+      is cic-only help text (per the no-localized-strings-server-side
+      rule).
 
   ## read_cursors envelope (CP29 R-3)
 
@@ -96,6 +100,8 @@ defmodule GrappaWeb.MeJSON do
               nick: String.t(),
               network_slug: String.t(),
               expires_at: DateTime.t() | nil,
+              registered: boolean(),
+              connected: boolean(),
               read_cursors: read_cursors(),
               unread_counts: unread_counts(),
               badge_count: non_neg_integer(),
@@ -116,6 +122,7 @@ defmodule GrappaWeb.MeJSON do
               read_cursors: read_cursors(),
               unread_counts: unread_counts(),
               badge_count: non_neg_integer(),
+              connected: boolean(),
               home_data: nil
             }
         ) :: me_json()
@@ -141,14 +148,20 @@ defmodule GrappaWeb.MeJSON do
         read_cursors: cursors,
         unread_counts: unread_counts,
         badge_count: badge_count,
+        connected: connected,
         home_data: nil
-      }) do
+      })
+      when is_boolean(connected) do
     visitor
     |> VisitorsWire.visitor_to_json()
     |> Map.put(:kind, "visitor")
     |> Map.put(:read_cursors, cursors)
     |> Map.put(:unread_counts, unread_counts)
     |> Map.put(:badge_count, badge_count)
+    # #126 — whereis-derived live-upstream flag (visitors have no
+    # connection_state column). `:registered` rides in from
+    # `VisitorsWire.visitor_to_json/1` (= password_encrypted present).
+    |> Map.put(:connected, connected)
     |> Map.put(:home_data, nil)
   end
 end
