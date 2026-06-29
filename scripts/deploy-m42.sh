@@ -20,11 +20,22 @@
 #   scripts/deploy-m42.sh --cic           cic-only bundle deploy, NO BEAM
 #                                         restart → jail_deploy_cic.sh
 #                                         (vite rebuild + refresh banner)
+#   scripts/deploy-m42.sh --full-restart  cold deploy that binds NEW jail
+#                                         vhosts in ONE bounce: the jail
+#                                         stages the release + rc.d wrappers
+#                                         and STOPS the BEAM (deploy.sh
+#                                         --force-cold --defer-restart), then
+#                                         the host does a single
+#                                         `bastille restart` to boot it. Use
+#                                         when a new vhost / jail-layer
+#                                         network change must take effect.
 #
 # Overridable via env:
 #   M42_HOST   ssh host alias            (default: m42)
 #   JAIL       bastille jail name        (default: grappa)
 #   JAIL_REPO  repo path inside the jail (default: /home/grappa/grappa)
+#   FULL_RESTART_HC_URL/RETRIES/SLEEP    --full-restart post-bounce
+#                                        healthcheck (defaults below)
 #
 # Exit codes: 0 ok, 64 usage, non-zero on ssh / remote failure.
 set -euo pipefail
@@ -33,9 +44,17 @@ M42_HOST="${M42_HOST:-m42}"
 JAIL="${JAIL:-grappa}"
 JAIL_REPO="${JAIL_REPO:-/home/grappa/grappa}"
 
+# --full-restart post-bounce healthcheck. Mirrors deploy.sh's
+# HEALTHCHECK_* feel (30×2s); the jail-internal curl runs over ssh so each
+# attempt also carries an ssh round-trip. Overridable for tests / slow jails.
+FULL_RESTART_HC_URL="${FULL_RESTART_HC_URL:-http://127.0.0.1:4000/healthz}"
+FULL_RESTART_HC_RETRIES="${FULL_RESTART_HC_RETRIES:-30}"
+FULL_RESTART_HC_SLEEP="${FULL_RESTART_HC_SLEEP:-2}"
+
 die() { echo "deploy-m42: $*" >&2; exit 1; }
 
 # Pick the jail script + a human label from the mode flag.
+full_restart=0
 case "${1:-}" in
   --cic)
     jail_script="$JAIL_REPO/infra/freebsd/jail_deploy_cic.sh"
@@ -47,13 +66,19 @@ case "${1:-}" in
     label="server (${1#--force-})"
     remote_args="$1"
     ;;
+  --full-restart)
+    jail_script="$JAIL_REPO/infra/freebsd/deploy.sh"
+    label="server (full cold + host bastille-restart — binds new vhosts)"
+    remote_args="--force-cold --defer-restart"
+    full_restart=1
+    ;;
   "")
     jail_script="$JAIL_REPO/infra/freebsd/deploy.sh"
     label="server (auto hot/cold)"
     remote_args=""
     ;;
   *)
-    echo "usage: $0 [--cic|--force-hot|--force-cold]" >&2
+    echo "usage: $0 [--cic|--force-hot|--force-cold|--full-restart]" >&2
     exit 64
     ;;
 esac
@@ -74,6 +99,48 @@ fi
 
 echo "==> deploy-m42: ${label}"
 echo "    host=${M42_HOST} jail=${JAIL} script=${jail_script}"
+
+if [ "$full_restart" -eq 1 ]; then
+  # One-bounce vhost bind. The jail stages the release + rc.d wrappers and
+  # STOPS the BEAM (deploy.sh --force-cold --defer-restart exits 0 without
+  # starting it); then a single host `bastille restart` boots the staged
+  # release through the new wrapper and binds any new jail vhosts. The
+  # completed-deploy marker is written here, by the host, only AFTER the
+  # post-bounce healthcheck passes — deploy.sh deliberately did not write it.
+  echo "==> deploy-m42: staging release + rc.d wrappers (BEAM stops, NOT restarted)"
+  # shellcheck disable=SC2029  # intentional client-side expansion of vars
+  ssh "$M42_HOST" "sudo bastille cmd ${JAIL} ${jail_script} ${remote_args}"
+
+  echo "==> deploy-m42: bastille restart ${JAIL} (single host bounce — boots staged release, binds new vhosts)"
+  # shellcheck disable=SC2029  # intentional client-side expansion of vars
+  ssh "$M42_HOST" "sudo bastille restart ${JAIL}"
+
+  echo "==> deploy-m42: healthcheck (${FULL_RESTART_HC_URL}, ${FULL_RESTART_HC_RETRIES}×${FULL_RESTART_HC_SLEEP}s)"
+  hc_ok=0
+  i=0
+  while [ "$i" -lt "$FULL_RESTART_HC_RETRIES" ]; do
+    # shellcheck disable=SC2029  # intentional client-side expansion of vars
+    if ssh "$M42_HOST" "sudo bastille cmd ${JAIL} curl -fsS -o /dev/null ${FULL_RESTART_HC_URL}"; then
+      hc_ok=1
+      break
+    fi
+    i=$((i + 1))
+    sleep "$FULL_RESTART_HC_SLEEP"
+  done
+  if [ "$hc_ok" -ne 1 ]; then
+    die "healthcheck never returned 200 after $((FULL_RESTART_HC_RETRIES * FULL_RESTART_HC_SLEEP))s — jail may be unhealthy; marker NOT written, fix and rerun"
+  fi
+
+  # Write the marker INSIDE the jail (deploy.sh reads it as the
+  # completed-deploy signal). Read the jail's own HEAD rather than passing a
+  # sha from the host — a sibling push could have raced the host's view.
+  echo "==> deploy-m42: healthcheck ok — recording runtime/last-deployed-sha (jail HEAD)"
+  # shellcheck disable=SC2029  # intentional client-side expansion of vars
+  ssh "$M42_HOST" "sudo bastille cmd ${JAIL} su -l grappa -c 'cd ${JAIL_REPO} && git rev-parse HEAD > runtime/last-deployed-sha'"
+
+  echo "==> deploy-m42: done (${label})"
+  exit 0
+fi
 
 # bastille cmd runs the jail script as root inside the jail. Quote the
 # remote command so the flag (if any) reaches the jail script intact.

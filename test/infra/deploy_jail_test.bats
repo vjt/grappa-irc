@@ -240,3 +240,58 @@ run_deploy() {
     [ "$wait_line" -lt "$rcd_line" ]
     [ "$rcd_line" -lt "$start_line" ]
 }
+
+# --- --defer-restart: build-only cold path (one-bounce vhost bind) -----------
+#
+# The host wrapper (deploy-m42.sh --full-restart) calls
+# `deploy.sh --force-cold --defer-restart`: it must run the cold path
+# THROUGH the rc.d-wrapper refresh (so the new release + wrappers are
+# staged and the BEAM is stopped) but then exit 0 WITHOUT starting the
+# daemon, healthchecking, or writing the completed-deploy marker — the
+# host `bastille restart` boots the staged release and completes it.
+
+@test "--force-cold --defer-restart stages + stops but does NOT start, healthcheck, or write marker" {
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy --force-cold --defer-restart
+    [ "$status" -eq 0 ]
+    grep -q "service grappa stop" "$ARGV_LOG"
+    grep -q "jail_beam_wait.sh wait-stopped grappa" "$ARGV_LOG"
+    grep -q "jail_install_rcd.sh" "$ARGV_LOG"
+    ! grep -q "service grappa start" "$ARGV_LOG"
+    ! grep -q "curl" "$ARGV_LOG"                                   # no healthcheck
+    [ ! -f "$REPO_ROOT/runtime/last-deployed-sha" ]               # marker NOT written
+    [[ "$output" == *"--defer-restart"* ]]
+    [[ "$output" == *"bastille-restart"* ]]
+}
+
+@test "--defer-restart --force-cold (reversed flag order) behaves identically" {
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy --defer-restart --force-cold
+    [ "$status" -eq 0 ]
+    grep -q "jail_install_rcd.sh" "$ARGV_LOG"
+    ! grep -q "service grappa start" "$ARGV_LOG"
+    [ ! -f "$REPO_ROOT/runtime/last-deployed-sha" ]
+    [[ "$output" == *"--defer-restart"* ]]
+}
+
+@test "--force-hot --defer-restart is a usage error (defer needs a stop)" {
+    run_deploy --force-hot --defer-restart
+    [ "$status" -eq 64 ]
+    ! grep -q "service grappa stop" "$ARGV_LOG"
+}
+
+@test "auto preflight HOT + --defer-restart is a usage error" {
+    export PREFLIGHT_RC=0                                          # hot verdict
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy --defer-restart
+    [ "$status" -eq 64 ]
+    ! grep -q "service grappa stop" "$ARGV_LOG"
+}
+
+@test "unknown flag alongside a valid one is still a usage error (64)" {
+    run_deploy --force-cold --bogus
+    [ "$status" -eq 64 ]
+}

@@ -40,15 +40,32 @@ HEALTHCHECK_SLEEP="${HEALTHCHECK_SLEEP:-2}"
 RELOAD_URL="${RELOAD_URL:-http://127.0.0.1:4000/admin/reload}"
 
 mode=auto
-case "${1:-}" in
-	--force-hot)  mode=hot ;;
-	--force-cold) mode=cold ;;
-	"")           mode=auto ;;
-	*)
-		echo "usage: $0 [--force-hot|--force-cold]" >&2
-		exit 64
-		;;
-esac
+defer=0
+# Flags accepted in any order (the host wrapper invokes
+# `deploy.sh --force-cold --defer-restart`). POSIX sh: loop, no arrays.
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--force-hot)     mode=hot ;;
+		--force-cold)    mode=cold ;;
+		--defer-restart) defer=1 ;;
+		*)
+			echo "usage: $0 [--force-hot|--force-cold] [--defer-restart]" >&2
+			exit 64
+			;;
+	esac
+	shift
+done
+
+# --defer-restart only makes sense on the COLD path: it stages the new
+# release + rc.d wrappers, stops the BEAM, and exits WITHOUT restarting —
+# the host `bastille restart` boots the staged release. The hot path has
+# no stop, so deferring it is meaningless. Catch the statically-known
+# case (--force-hot) here, before any side effects; auto→hot is caught
+# again after preflight resolves the mode (below).
+if [ "${defer}" -eq 1 ] && [ "${mode}" = "hot" ]; then
+	echo "usage: --defer-restart is only valid on the cold path (not with --force-hot)" >&2
+	exit 64
+fi
 
 # All build steps run as the grappa user. `su -l grappa -c` strips
 # the environment (login shell), so MIX_OS_CONCURRENCY_LOCK and PATH
@@ -218,6 +235,14 @@ elif [ "${mode}" = "cold" ]; then
 	echo "[deploy] --force-cold: skipping preflight"
 fi
 
+# auto→hot + --defer-restart: same invariant as the --force-hot guard at
+# the top, now that preflight has resolved the mode. Defer needs a stop;
+# a HOT verdict has none.
+if [ "${defer}" -eq 1 ] && [ "${mode}" = "hot" ]; then
+	echo "usage: --defer-restart is only valid on the cold path (preflight classified this deploy HOT)" >&2
+	exit 64
+fi
+
 echo
 echo "[deploy] ==> mode: ${mode}"
 echo
@@ -330,6 +355,19 @@ service grappa stop || true
 # root:wheel 0555, the build user can't write there.
 echo "[deploy] refresh rc.d wrappers (jail_install_rcd.sh)"
 "${REPO_ROOT}/infra/freebsd/jail_install_rcd.sh"
+
+# --defer-restart: stop here. The BEAM is stopped (through the OLD
+# wrapper) and the new release + rc.d wrappers are staged on disk, but we
+# deliberately do NOT `service grappa start`, healthcheck, or write the
+# completed-deploy marker — the host's single `bastille restart grappa`
+# boots the staged release through the NEW wrapper and binds any new jail
+# vhosts in one window. The marker is the host wrapper's job after the
+# bounce healthcheck (deploy-m42.sh --full-restart); writing it here would
+# let the next auto deploy's nothing-to-do guard think this completed.
+if [ "${defer}" -eq 1 ]; then
+	echo "[deploy] --defer-restart: BEAM stopped, new release+rc.d wrappers staged; host must bastille-restart grappa to boot it (marker NOT written)"
+	exit 0
+fi
 
 service grappa start
 
