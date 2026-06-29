@@ -45,7 +45,10 @@ import { applyMeEnvelope } from "./readCursor";
 // see the updated nick immediately.
 
 const exports = createRoot(() => {
-  const [user] = createResource<MeResponse | null, string | null>(token, async (t) => {
+  const [user, { refetch: refetchUserResource }] = createResource<
+    MeResponse | null,
+    string | null
+  >(token, async (t) => {
     if (!t) return null;
     const m = await me(t);
     // CP29 R-4: hydrate the readCursor signal map from the bulk envelope
@@ -135,6 +138,16 @@ const exports = createRoot(() => {
     void refetchNetworksResource();
   };
 
+  // #126 — re-fetch GET /me after a visitor disconnect/reconnect so the
+  // whereis-derived `connected` flag updates → the SettingsDrawer flips
+  // its disconnect ⇄ reconnect toggle. Visitors have no
+  // `connection_state_changed` broadcast (that's a user-topic event),
+  // so the verb handler refetches explicitly rather than waiting on a
+  // push.
+  const refetchUser = (): void => {
+    void refetchUserResource();
+  };
+
   // Patch the nick for one network in the in-memory networks list.
   // Called by userTopic.ts when `own_nick_changed` arrives so the
   // DM-listener and query-window loops see the correct own-nick
@@ -185,6 +198,7 @@ const exports = createRoot(() => {
     channelsBySlug,
     refetchChannels,
     refetchNetworks,
+    refetchUser,
     mutateNetworkNick,
     networkBySlug,
     networkIdBySlug,
@@ -197,6 +211,7 @@ export const user = exports.user;
 export const channelsBySlug = exports.channelsBySlug;
 export const refetchChannels = exports.refetchChannels;
 export const refetchNetworks = exports.refetchNetworks;
+export const refetchUser = exports.refetchUser;
 export const mutateNetworkNick = exports.mutateNetworkNick;
 export const networkBySlug = exports.networkBySlug;
 export const networkIdBySlug = exports.networkIdBySlug;

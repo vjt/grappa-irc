@@ -19,13 +19,30 @@ vi.mock("../lib/fontSize", () => ({
 const subjectHolder = vi.hoisted(() => ({
   current: null as
     | { kind: "user"; id: string; name: string }
-    | { kind: "visitor"; id: string; nick: string; network_slug: string }
+    | {
+        kind: "visitor";
+        id: string;
+        nick: string;
+        network_slug: string;
+        registered?: boolean;
+      }
     | null,
 }));
 vi.mock("../lib/auth", () => ({
   logout: vi.fn().mockResolvedValue(undefined),
   token: () => "test-bearer",
   getSubject: () => subjectHolder.current,
+}));
+
+// #126 — the drawer routes detach/disconnect/reconnect/quit through
+// lib/lifecycle. The lifecycle module is NOT mocked here (so the
+// existing detach→logout / quit→quitAll wiring assertions still hold via
+// the underlying auth/quit mocks); lifecycle's own per-subject routing
+// has dedicated coverage in lib/lifecycle.test.ts. We DO mock the api
+// session verbs so a disconnect/reconnect click doesn't hit the network.
+vi.mock("../lib/api", () => ({
+  disconnectSession: vi.fn().mockResolvedValue(undefined),
+  reconnectSession: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Issue #43 — "quit IRC" composite (park all user-networks + logout)
@@ -45,11 +62,22 @@ vi.mock("../lib/quit", () => ({
 const meHolder = vi.hoisted(() => ({
   current: null as
     | { kind: "user"; id: string; name: string; is_admin: boolean; inserted_at: string }
-    | { kind: "visitor"; id: string; nick: string; network_slug: string; expires_at: string }
+    | {
+        kind: "visitor";
+        id: string;
+        nick: string;
+        network_slug: string;
+        expires_at: string;
+        registered?: boolean;
+        connected?: boolean;
+      }
     | null,
 }));
 vi.mock("../lib/networks", () => ({
   user: () => meHolder.current,
+  // #126 — disconnect/reconnect refetch /me; the drawer imports this via
+  // lib/lifecycle. Stub so the import resolves + the verb is observable.
+  refetchUser: vi.fn(),
   isAdmin: () => {
     const u = meHolder.current;
     return u?.kind === "user" && u.is_admin === true;
@@ -145,11 +173,19 @@ describe("SettingsDrawer", () => {
     expect(theme.setTheme).toHaveBeenCalledWith("mirc-light");
   });
 
-  it("logout button calls auth.logout", async () => {
+  it("null subject (loading) shows quit alone (no 'log out', no detach); two-tap detaches", async () => {
+    // #126 — "log out" is retired. The not-yet-loaded null subject gets
+    // only the universal quit verb; clicking through the two-tap routes
+    // to quit() → (null subject) logout().
     const auth = await import("../lib/auth");
     wrap(true);
-    fireEvent.click(screen.getByText(/log out/i));
-    expect(auth.logout).toHaveBeenCalled();
+    expect(screen.queryByText(/^log out$/i)).toBeNull();
+    expect(screen.queryByTestId("detach-btn")).toBeNull();
+    fireEvent.click(screen.getByTestId("quit-irc-btn")); // arm
+    fireEvent.click(screen.getByTestId("quit-irc-btn")); // confirm
+    await waitFor(() => {
+      expect(auth.logout).toHaveBeenCalled();
+    });
   });
 
   it("backdrop click fires onClose", () => {
@@ -291,12 +327,13 @@ describe("SettingsDrawer (visitor subject)", () => {
     });
   });
 
-  it("renders theme + single 'log out' for visitor (notif/theme chrome same as user)", () => {
+  it("renders theme + the universal quit verb for the loading null subject", () => {
     wrap(true);
     expect(screen.getByLabelText(/auto/i)).toBeInTheDocument();
-    // Theme chrome is shared; the logout affordance is NOT — visitors get
-    // the single "log out" (the detach/quit split is user-only, issue #43).
-    expect(screen.getByText(/log out/i)).toBeInTheDocument();
+    // #126 — theme chrome is shared; the lifecycle affordance is quit
+    // alone for the not-yet-loaded subject ("log out" retired).
+    expect(screen.getByTestId("quit-irc-btn")).toBeInTheDocument();
+    expect(screen.queryByText(/^log out$/i)).toBeNull();
   });
 });
 
@@ -514,13 +551,12 @@ describe("SettingsDrawer (share session — visitor only)", () => {
   });
 });
 
-// Issue #43 — split the single "log out" into two affordances for
-// registered users: "detach" (today's logout — leave IRC connected) and
-// "quit" (park ALL networks + logout — bouncer offline). Visitors keep
-// the single "log out" (no persistent bouncer binding; the split is
-// meaningless). The split is gated on subject.kind === "user", so the
-// not-yet-loaded (null subject) state stays on the safe single button.
-describe("SettingsDrawer (issue #43 — split logout)", () => {
+// Issue #43 / #126 — a registered user gets "detach" (leave cic, KEEP
+// the bouncer) + a destructive two-tap "quit" (park ALL networks +
+// detach). Under #126 "log out" is retired and the same persistent
+// -identity verbs extend to the NickServ visitor (separate describe
+// below); ephemeral visitors + the loading null subject get quit alone.
+describe("SettingsDrawer (issue #43 — detach + quit for a user)", () => {
   beforeEach(() => {
     subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
   });
@@ -571,12 +607,105 @@ describe("SettingsDrawer (issue #43 — split logout)", () => {
     expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/^quit$/i);
   });
 
-  it("visitor keeps a single 'log out' (no detach/quit split)", () => {
+  it("ephemeral visitor gets quit alone — no detach, no disconnect/reconnect, no 'log out'", () => {
+    // #126 — an ephemeral (non-registered) visitor has no persistent
+    // identity, so the persistent-identity verbs are withheld; quit is
+    // the only (universal) verb. registered omitted = not registered.
     subjectHolder.current = { kind: "visitor", id: "v1", nick: "guest", network_slug: "libera" };
     wrap(true);
-    expect(screen.getByText(/log out/i)).toBeInTheDocument();
+    expect(screen.getByTestId("quit-irc-btn")).toBeInTheDocument();
     expect(screen.queryByTestId("detach-btn")).toBeNull();
-    expect(screen.queryByTestId("quit-irc-btn")).toBeNull();
+    expect(screen.queryByTestId("disconnect-btn")).toBeNull();
+    expect(screen.queryByTestId("reconnect-btn")).toBeNull();
+    expect(screen.queryByText(/^log out$/i)).toBeNull();
+  });
+});
+
+// #126 — a registered (NickServ-identified) visitor is a persistent
+// identity, so it gets the SAME persistent-identity verbs as a user
+// (detach + disconnect ⇄ reconnect) PLUS the universal quit. The
+// disconnect/reconnect button face follows the whereis-derived
+// `connected` flag from /me.
+describe("SettingsDrawer (#126 — registered-visitor lifecycle verbs)", () => {
+  beforeEach(() => {
+    subjectHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "vjt",
+      network_slug: "azzurra",
+      registered: true,
+    };
+  });
+
+  it("connected → detach + disconnect + quit (no reconnect, no 'log out')", () => {
+    meHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "vjt",
+      network_slug: "azzurra",
+      expires_at: "2099-01-01T00:00:00Z",
+      registered: true,
+      connected: true,
+    };
+    wrap(true);
+    expect(screen.getByTestId("detach-btn")).toHaveTextContent(/^detach$/i);
+    expect(screen.getByTestId("disconnect-btn")).toHaveTextContent(/^disconnect$/i);
+    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/^quit$/i);
+    expect(screen.queryByTestId("reconnect-btn")).toBeNull();
+    expect(screen.queryByText(/^log out$/i)).toBeNull();
+  });
+
+  it("disconnected → detach + reconnect + quit (no disconnect)", () => {
+    meHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "vjt",
+      network_slug: "azzurra",
+      expires_at: "2099-01-01T00:00:00Z",
+      registered: true,
+      connected: false,
+    };
+    wrap(true);
+    expect(screen.getByTestId("detach-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("reconnect-btn")).toHaveTextContent(/^reconnect$/i);
+    expect(screen.getByTestId("quit-irc-btn")).toBeInTheDocument();
+    expect(screen.queryByTestId("disconnect-btn")).toBeNull();
+  });
+
+  it("clicking disconnect calls api.disconnectSession", async () => {
+    const api = await import("../lib/api");
+    meHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "vjt",
+      network_slug: "azzurra",
+      expires_at: "2099-01-01T00:00:00Z",
+      registered: true,
+      connected: true,
+    };
+    wrap(true);
+    fireEvent.click(screen.getByTestId("disconnect-btn"));
+    await waitFor(() => {
+      expect(api.disconnectSession).toHaveBeenCalledWith("test-bearer");
+    });
+  });
+
+  it("clicking reconnect calls api.reconnectSession", async () => {
+    const api = await import("../lib/api");
+    meHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "vjt",
+      network_slug: "azzurra",
+      expires_at: "2099-01-01T00:00:00Z",
+      registered: true,
+      connected: false,
+    };
+    wrap(true);
+    fireEvent.click(screen.getByTestId("reconnect-btn"));
+    await waitFor(() => {
+      expect(api.reconnectSession).toHaveBeenCalledWith("test-bearer");
+    });
   });
 });
 

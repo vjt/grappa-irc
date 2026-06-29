@@ -9,10 +9,11 @@ import {
   Show,
 } from "solid-js";
 import InlineConfirmButton from "./InlineConfirmButton";
-import { getSubject, logout, token } from "./lib/auth";
+import { getSubject, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { getKeyboardPref, setKeyboardPref } from "./lib/keyboardPref";
-import { isAdmin } from "./lib/networks";
+import { detach, disconnect, quit, reconnect } from "./lib/lifecycle";
+import { isAdmin, user } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
   deletePushSubscription,
@@ -22,7 +23,6 @@ import {
   listPushDevices,
   type PushDeviceSummary,
 } from "./lib/push";
-import { quitAll } from "./lib/quit";
 import { getTheme, setTheme, type ThemePref } from "./lib/theme";
 import { activeHost } from "./lib/uploadHost";
 import {
@@ -82,10 +82,27 @@ const SettingsDrawer: Component<Props> = (props) => {
   // subjects entirely (users have passwords, no need to share).
   const [shareOpen, setShareOpen] = createSignal(false);
   const isVisitor = (): boolean => getSubject()?.kind === "visitor";
-  // Issue #43 — the "detach" vs "quit IRC" split is only meaningful for
-  // registered users (visitors have no persistent bouncer binding; the
-  // not-yet-loaded null subject stays on the safe single button).
   const isUser = (): boolean => getSubject()?.kind === "user";
+  // #126 — a registered (NickServ-identified) visitor is a PERSISTENT
+  // identity (`registered === true`, derived server-side from
+  // password_encrypted). It gets the persistent-identity verbs (detach +
+  // disconnect/reconnect), like a user; an ephemeral visitor gets only
+  // quit. The not-yet-loaded null subject falls through to quit-only too.
+  const isRegisteredVisitor = (): boolean => {
+    const s = getSubject();
+    return s?.kind === "visitor" && s.registered === true;
+  };
+  // detach is offered to every persistent identity (user + NickServ
+  // visitor); ephemeral visitors + the loading null-subject get only quit.
+  const showDetach = (): boolean => isUser() || isRegisteredVisitor();
+  // Live-upstream state for the disconnect ⇄ reconnect toggle. Read from
+  // the reactive `/me` resource (whereis-derived `connected`), NOT the
+  // static localStorage subject — `disconnect`/`reconnect` flip it and
+  // refetch /me so the button face follows. Visitor-only field.
+  const visitorConnected = (): boolean => {
+    const u = user();
+    return u?.kind === "visitor" && u.connected === true;
+  };
   // "quit IRC" is destructive (parks every network, bouncer offline), so
   // it arms via the shared two-tap InlineConfirmButton. Parent owns the
   // armed flag per that component's contract.
@@ -108,19 +125,36 @@ const SettingsDrawer: Component<Props> = (props) => {
     setFontSize(value);
   };
 
-  const onLogout = async () => {
-    await logout();
+  // #126 — detach: leave cic, KEEP the bouncer up. Persistent identities
+  // only (gated by `showDetach()`). `detach()` revokes the web session;
+  // the explicit navigate mirrors onQuit's post-logout landing.
+  const onDetach = async () => {
+    await detach();
     navigate("/login", { replace: true });
   };
 
-  // Issue #43 — "quit IRC": park ALL the user's networks then logout.
-  // quitAll() already ships this composite (lib/quit.ts; also driven by
-  // the /quit compose verb + the visitor sidebar ×). logout() inside it
-  // nulls the token → RequireAuth redirects; the explicit navigate
-  // mirrors onLogout so the post-quit landing is identical.
+  // #126 — quit: close cic AND tear down the live session. Universal;
+  // `quit()` (lib/lifecycle.ts) routes per subject — user parks all
+  // networks (the former quitAll, also driven by the /quit compose verb +
+  // the sidebar ×), registered visitor drops the upstream then detaches
+  // (row kept), ephemeral visitor detaches (server purges the anon row).
+  // logout() inside nulls the token → RequireAuth redirects; the explicit
+  // navigate makes the landing deterministic.
   const onQuit = async () => {
-    await quitAll(null);
+    await quit();
     navigate("/login", { replace: true });
+  };
+
+  // #126 — disconnect ⇄ reconnect: drop / restore the upstream IRC
+  // connection while STAYING in cic (no navigate). Registered visitor
+  // only. The verb refetches /me so `visitorConnected()` flips the
+  // button face.
+  const onDisconnect = async () => {
+    await disconnect();
+  };
+
+  const onReconnect = async () => {
+    await reconnect();
   };
 
   // The drawer stays mounted across open/close (CSS .open toggle, not a
@@ -660,48 +694,69 @@ const SettingsDrawer: Component<Props> = (props) => {
           </button>
         </Show>
 
-        {/* Issue #43 — registered users get two affordances: "detach"
-            (today's logout — leave IRC connected) and a destructive
-            two-tap "quit" (park ALL networks + logout, bouncer offline).
-            Visitors + the not-yet-loaded null subject keep the single
-            "log out" — the split is meaningless without a persistent
-            bouncer binding. */}
-        <Show
-          when={isUser()}
-          fallback={
-            <button
-              type="button"
-              class="logout"
-              onClick={() => {
-                void onLogout();
-              }}
-            >
-              log out
-            </button>
-          }
-        >
+        {/* #126 — canonical session-lifecycle verbs ("log out" retired).
+            detach (leave cic, KEEP the bouncer) + disconnect ⇄ reconnect
+            (drop / restore the upstream, STAY in cic) are
+            persistent-identity-only (user + NickServ visitor); quit
+            (close cic AND tear down) is universal. An ephemeral visitor +
+            the not-yet-loaded null subject get quit alone. */}
+        <Show when={showDetach()}>
           <button
             type="button"
             class="logout"
             data-testid="detach-btn"
             onClick={() => {
-              void onLogout();
+              void onDetach();
             }}
           >
             detach
           </button>
-          <InlineConfirmButton
-            idleLabel="quit"
-            confirmLabel="really quit IRC?"
-            armed={quitArmed()}
-            onArm={() => setQuitArmed(true)}
-            onConfirm={() => {
-              void onQuit();
-            }}
-            testId="quit-irc-btn"
-            extraClass="settings-quit"
-          />
         </Show>
+
+        {/* disconnect ⇄ reconnect — registered (NickServ) visitor only.
+            The button face follows the whereis-derived `connected` flag
+            from /me; the verb refetches /me so it flips. */}
+        <Show when={isRegisteredVisitor()}>
+          <Show
+            when={visitorConnected()}
+            fallback={
+              <button
+                type="button"
+                class="logout"
+                data-testid="reconnect-btn"
+                onClick={() => {
+                  void onReconnect();
+                }}
+              >
+                reconnect
+              </button>
+            }
+          >
+            <button
+              type="button"
+              class="logout"
+              data-testid="disconnect-btn"
+              onClick={() => {
+                void onDisconnect();
+              }}
+            >
+              disconnect
+            </button>
+          </Show>
+        </Show>
+
+        {/* quit — universal destructive teardown, two-tap armed. */}
+        <InlineConfirmButton
+          idleLabel="quit"
+          confirmLabel="really quit IRC?"
+          armed={quitArmed()}
+          onArm={() => setQuitArmed(true)}
+          onConfirm={() => {
+            void onQuit();
+          }}
+          testId="quit-irc-btn"
+          extraClass="settings-quit"
+        />
 
         {/* UX-6 D12 — viewport diagnostics fieldset moved to AdminPane
             Debug tab. See AdminDebugTab.tsx. */}

@@ -60,7 +60,14 @@ export type ValidationError = {
 
 export type Subject =
   | { kind: "user"; id: string; name: string }
-  | { kind: "visitor"; id: string; nick: string; network_slug: string };
+  // #126 — `registered` = NickServ identity present (server-derived from
+  // password_encrypted). The cic gate for the persistent-identity verbs:
+  // a registered visitor gets detach + disconnect/reconnect + quit, an
+  // ephemeral (`registered !== true`) visitor gets only quit. Optional so
+  // a localStorage subject persisted BEFORE this field landed still
+  // validates (treated as not-registered until the next login refreshes
+  // it); fresh logins always carry it.
+  | { kind: "visitor"; id: string; nick: string; network_slug: string; registered?: boolean };
 
 export type LoginResponse = {
   token: string;
@@ -185,6 +192,13 @@ export type MeResponse =
       nick: string;
       network_slug: string;
       expires_at: string;
+      // #126 — `registered` = NickServ identity present (the detach /
+      // disconnect gate); `connected` = whereis-derived live upstream
+      // (drives the SettingsDrawer disconnect ⇄ reconnect toggle). Both
+      // optional so test mocks predating the fields don't need touching;
+      // production /me always emits them.
+      registered?: boolean;
+      connected?: boolean;
       read_cursors?: ReadCursorsEnvelope;
       // Bucket C (2026-06-01) — visitors get the same envelope shape;
       // empty `{}` for a fresh visitor (no cursors yet).
@@ -1593,6 +1607,28 @@ export async function adminPutSettings(
 export async function logout(token: string): Promise<void> {
   const res = await fetch("/auth/logout", {
     method: "DELETE",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// #126 — visitor `disconnect`: drop the upstream IRC connection but KEEP
+// the cic/web session open. Registered-visitor-only server-side (403
+// otherwise). 204 on success.
+export async function disconnectSession(token: string): Promise<void> {
+  const res = await fetch("/session/disconnect", {
+    method: "POST",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// #126 — visitor `reconnect`: respawn the upstream IRC session dropped by
+// `disconnectSession`. Registered-visitor-only server-side. 204 on
+// success; admission/spawn failures surface as the usual error envelopes.
+export async function reconnectSession(token: string): Promise<void> {
+  const res = await fetch("/session/reconnect", {
+    method: "POST",
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);

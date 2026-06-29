@@ -151,7 +151,13 @@ function isValidSubject(v: unknown): v is api.Subject {
   }
   if (r.kind === "visitor") {
     return (
-      typeof r.id === "string" && typeof r.nick === "string" && typeof r.network_slug === "string"
+      typeof r.id === "string" &&
+      typeof r.nick === "string" &&
+      typeof r.network_slug === "string" &&
+      // #126 — `registered` is optional for backward compat: a subject
+      // persisted before the field landed still validates (read as
+      // not-registered). When present it MUST be a boolean.
+      (r.registered === undefined || typeof r.registered === "boolean")
     );
   }
   return false;
