@@ -1,6 +1,7 @@
 import { type Component, createSignal, onCleanup, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from "./lib/compose";
+import { composePlaceholder } from "./lib/composePlaceholder";
 import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { networkBySlug } from "./lib/networks";
 import { type DragAxis, dragAxis, type Point, swipeDirection } from "./lib/swipe";
@@ -330,7 +331,7 @@ const ComposeBox: Component<Props> = (props) => {
           onInput={onInput}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          placeholder={`message ${props.channelName}`}
+          placeholder={composePlaceholder(props.networkSlug, props.channelName)}
           rows={1}
           aria-label="compose message"
           // IRC keyboard: suppress the native on-screen keyboard while the
