@@ -317,6 +317,7 @@ scripts/deploy-m42.sh                # server deploy, auto hot/cold (infra/freeb
 scripts/deploy-m42.sh --force-hot    # server, force hot (passthrough)
 scripts/deploy-m42.sh --force-cold   # server, force cold (passthrough)
 scripts/deploy-m42.sh --cic          # cic-only bundle, hot, no BEAM restart (jail_deploy_cic.sh)
+scripts/deploy-m42.sh --full-restart # cold deploy + single host bastille-restart (binds NEW vhosts in one bounce)
 ```
 
 **Push first.** The jail scripts `git pull --ff-only` from origin/main,
@@ -329,6 +330,24 @@ Docker split: `deploy.sh` ↔ `deploy-m42.sh`, `deploy-cic.sh` ↔
 When the auto-detect gets it wrong (rare), `--force-hot` and
 `--force-cold` override the preflight on both substrates. Use
 sparingly and document why in the commit message.
+
+**`--full-restart` — bind a NEW jail vhost in ONE session-drop window.**
+A new vhost (or any jail-layer network change) needs both a cold deploy
+AND a host `bastille restart` to bind it — two bounces, two drop windows.
+`--full-restart` collapses them: the jail runs `deploy.sh --force-cold
+--defer-restart` (stages the new release + rc.d wrappers, STOPS the BEAM,
+exits without restarting it — marker deliberately NOT written), then the
+host does a single `bastille restart grappa` that boots the staged
+release through the new wrapper and binds the vhost. The host wrapper
+then healthchecks (`FULL_RESTART_HC_URL`/`_RETRIES`/`_SLEEP`, defaults
+`http://127.0.0.1:4000/healthz` 30×2s) and, only on success, writes
+`runtime/last-deployed-sha` inside the jail (reading the jail's own HEAD).
+Use it ONLY when a vhost/jail-network change must take effect; a plain
+`--force-cold` is enough for ordinary cold deploys. **The host-side
+`jail.conf` / `grappa.env` vhost edit is a separate manual operator step
+at restart time — `--full-restart` does NOT touch it.** Never rehearsed
+against prod (it bounces the live jail + drops every session); bats-proven
+only — first real run is operator-driven.
 
 ### Running operator actions against the live jail (prod)
 

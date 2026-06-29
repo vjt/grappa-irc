@@ -14729,3 +14729,52 @@ testid wouldn't exist) — not a hollow gate.
 
 **Deploy:** cic-only — `deploy-m42.sh --cic` (vite rebuild + bundle-changed
 broadcast, HOT, no BEAM restart, no session drop). Zero `.ex` changed.
+
+## 2026-06-29 — `--full-restart`: bind a new jail vhost in ONE bounce
+
+**Problem.** Binding a NEW jail vhost (or any jail-layer network change)
+needed TWO session-drop windows: a normal cold deploy (`service grappa
+start` inside the jail) AND then a host `bastille restart grappa` to bind
+the new vhost at the jail layer. Two bounces, twice the downtime, twice
+the chance of a half-applied state between them.
+
+**Shape.** A `deploy.sh --defer-restart` flag (cold-path only) splits the
+cold path at the rc.d-wrapper refresh: it runs the cold path through
+`vite build → migrate → service grappa stop → jail_beam_wait wait-stopped
+→ jail_install_rcd` exactly as before, then — instead of `service grappa
+start` + healthcheck + marker — prints a staged-message and `exit 0`. The
+BEAM is stopped and the new release + rc.d wrappers are on disk, but the
+daemon is NOT running. The host wrapper `deploy-m42.sh --full-restart`
+then does a SINGLE `bastille restart grappa`, which boots the staged
+release through the NEW wrapper and binds the vhost in one go. One window.
+
+**Why the order is load-bearing (unchanged).** The cold path's
+stop→wait-stopped→rc.d-refresh→start order exists so the OLD daemon is
+stopped through the wrapper that started it and the NEW wrapper boots the
+next daemon (see the 2026-06-11 defect #9 note). `--defer-restart` cuts
+the path AFTER the rc.d refresh, so that invariant holds: the host bounce
+is just the deferred "start" through the already-installed new wrapper.
+
+**Why the marker moves to the host.** `runtime/last-deployed-sha` is the
+completed-deploy signal the next auto deploy's nothing-to-do guard reads.
+On the defer path the deploy is intentionally INCOMPLETE — the daemon
+isn't up — so deploy.sh must NOT write it; writing it would let the next
+auto deploy think the work finished and skip it. The host wrapper writes
+the marker only AFTER its post-bounce healthcheck passes, and reads the
+jail's OWN HEAD (`git rev-parse HEAD` inside the jail) rather than passing
+a sha from the host — a sibling push could have raced the host's view.
+
+**Why defer is cold-only.** `--defer-restart` defers a *stop*; the hot
+path has no stop (it POSTs `/admin/reload` and keeps the daemon pid). So
+`--force-hot --defer-restart` and an auto-classified-HOT deploy with
+`--defer-restart` both abort with a usage error (exit 64) — the first
+caught at arg-parse before any side effect, the second right after
+preflight resolves the mode.
+
+**Scope / non-goals.** The host-side `jail.conf` / `grappa.env` vhost edit
+stays a manual operator step at restart time — `--full-restart` does NOT
+touch host vhost config. Never rehearsed against prod (it bounces the live
+jail + drops every session); proven by bats only
+(`test/infra/deploy_jail_test.bats` for the defer split,
+`test/infra/deploy_m42_test.bats` for the host stage→bounce→verify→marker
+sequence). First real run is the next genuine operator-driven cold deploy.
