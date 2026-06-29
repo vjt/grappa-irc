@@ -244,7 +244,15 @@ daemon pid unchanged): `lib/*.ex` edits, `cicchetto/src/` edits
 jail: `mix release --overwrite` + `service grappa restart`, ~10-30s
 downtime):
 
-- `mix.lock` / `mix.exs` (deps + version + apps callback)
+- `mix.lock` / `mix.exs` (deps + version + apps callback).
+  ⚠️ **A deps-version bump (`mix.lock`) crashes the AUTO preflight
+  classifier**: it runs `mix` in the prod env against deps the bump
+  ADDs but hasn't fetched yet → `lock mismatch … Can't continue due
+  to errors on dependencies`, preflight exits 1, deploy aborts
+  CLEANLY (prod untouched, sessions intact). Deploy a deps bump with
+  **`scripts/deploy-m42.sh --force-cold`** — it skips the classifier
+  and the cold rebuild runs `mix deps.get`. Seen 2026-06-29 on the
+  EEF-CVE dep bump (cowlib/mint/plug/req).
 - `lib/grappa/application.ex` (supervision tree read at boot only)
 - state-shape change in a long-lived `GenServer` — `defstruct`,
   `@type t :: %{...}`, or `init/1` map literal modified.
