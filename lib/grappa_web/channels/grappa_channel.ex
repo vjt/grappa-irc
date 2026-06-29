@@ -725,23 +725,33 @@ defmodule GrappaWeb.GrappaChannel do
   end
 
   # Bundle C (#20 follow-up) — /oper <name> <password> upstream.
-  # Visitor-blocked: visitors cannot OPER. The password travels over
-  # the WS frame and is REDACTED in any server-side log line (see
-  # `Session.Server.handle_call({:send_oper, ...})`). Field validation
-  # uses the stricter `:oper_token` predicate so a hand-crafted push
-  # with name/password containing spaces or empty strings fails at
-  # this boundary — `OPER  \\r\\n` (empty) and `OPER name extra pw\\r\\n`
-  # (space-leak) are both rejected here.
+  #
+  # Issue #148: visitor-ELIGIBLE (routes via `dispatch_subject_verb/3`,
+  # NOT `dispatch_ops_verb/3`). A visitor opering is safe: the session
+  # registry key includes the full `{:visitor, id}` subject tag
+  # (`Session.Server.registry_key/2`), so a visitor has its OWN
+  # `Session.Server` and opers ONLY its own upstream IRC link — no
+  # shared/pooled session to leak across. The ircd O:line is the real
+  # authority (the visitor becomes oper only if the upstream accepts the
+  # creds); the bouncer gate was belt-and-suspenders. The gate STAYS for
+  # every other write verb — only `oper` is relaxed.
+  #
+  # The password travels over the WS frame and is REDACTED in any
+  # server-side log line (see `Session.Server.handle_call({:send_oper,
+  # ...})`). Field validation uses the stricter `:oper_token` predicate
+  # so a hand-crafted push with name/password containing spaces or empty
+  # strings fails at this boundary — `OPER  \\r\\n` (empty) and
+  # `OPER name extra pw\\r\\n` (space-leak) are both rejected here.
   def handle_in(
         "oper",
         %{"network_id" => network_id, "name" => name, "password" => password},
         socket
       )
       when is_integer(network_id) and is_binary(name) and is_binary(password) do
-    dispatch_ops_verb(
+    dispatch_subject_verb(
       socket,
       fn -> validate_args(oper_token: name, oper_token: password) end,
-      fn user -> Session.send_oper({:user, user.id}, network_id, name, password) end
+      fn subject -> Session.send_oper(subject, network_id, name, password) end
     )
   end
 

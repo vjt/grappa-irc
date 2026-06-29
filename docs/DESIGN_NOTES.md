@@ -14508,3 +14508,65 @@ coverage: `pushTarget.test.ts` asserts the query branch now fires
 `openQueryWindowState` before selecting.
 
 **Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change.
+
+---
+
+## 2026-06-29 — #148: `/oper` is visitor-eligible (the gate relaxes for oper ONLY)
+
+**P0 ask: let a VISITOR socket issue `/oper`.** Pre-#148 the verb
+short-circuited with `{:error, :visitor_not_allowed}` before it ever
+dispatched — `GrappaChannel`'s `oper` clause routed through the shared
+`dispatch_ops_verb/3`, whose `with` chain runs `check_not_visitor/1`
+(`visitor?/1` = `String.starts_with?(user_name, "visitor:")`). Live
+repro: Mez was `+r` (NS-identified) but still got `visitor_not_allowed`
+because IRC-side identify does NOT swap the cic WS token visitor→user
+(that promotion gap is grappa-irc#129). This issue sidesteps #129 by
+relaxing the gate at the visitor socket directly — no token promotion
+needed.
+
+**Why a visitor opering is safe — the per-visitor-session isolation
+argument.** Sessions register in `Grappa.SessionRegistry` under
+`Session.Server.registry_key(subject, network_id)` = `{:session, subject,
+network_id}` — the key carries the FULL subject tuple, so `{:visitor,
+uuid}` gets its OWN `Session.Server` (the "visitor pool" in ops notes is
+an IP/connection pool, NOT a shared IRC session). A visitor opering
+therefore authenticates ONLY its own upstream IRC link; there is no
+cross-visitor or shared-session leak. And the upstream ircd's O:line is
+authoritative — a visitor becomes oper only if it presents creds the
+server accepts. The bouncer gate was belt-and-suspenders; relaxing it for
+`oper` just lets the upstream be the authority, exactly as the read-only
+verbs (whois/who/names/banlist) already trust `resolve_subject/1`.
+
+**Fix = reuse the verb, don't widen the gate.** The `oper` clause now
+routes through the visitor-eligible sibling `dispatch_subject_verb/3`
+(resolves the socket identity via `resolve_subject/1` into a
+`Session.subject()` and hands the thunk the SUBJECT, not an
+`Accounts.User`), with the executor `fn subject -> Session.send_oper(
+subject, network_id, name, password) end`. `Session.send_oper/4` already
+accepted a `subject()` under `is_subject/1` and routed via
+`call_session/3` — NO change needed there or in
+`Session.Server.handle_call({:send_oper, ...})` (subject-agnostic,
+password-redacting). The `:oper_token` field validator (rejects
+empty/space/CRLF) is unchanged. **The gate STAYS for every other
+state-changing verb** (raw/op/deop/voice/devoice/kick/ban/unban/invite/
+umode/mode/topic_set/topic_clear) — `dispatch_ops_verb/3` and its
+`check_not_visitor/1` are untouched. Only `oper` moved.
+
+**Tests — RED→green, security boundary pinned.** Server ExUnit
+(`grappa_channel_test.exs`): a NEW test drives a VISITOR socket bound to a
+live `{:visitor, _}` session pushing `"oper"` and asserts it ships
+`OPER testoper testoperpass` upstream (reply `:ok`) — RED pre-fix
+(`visitor_not_allowed`, no OPER on the wire). The existing
+`"visitor socket: op returns visitor_not_allowed"` stays GREEN as the
+boundary regression (only oper relaxed), and the existing user-oper test
+survives the switch (both helpers resolve a user by name). E2E
+(`cicchetto/e2e/tests/issue148-visitor-oper.spec.ts`): boots cic as a
+visitor, opers from the `$server` window, and asserts the upstream 381
+RPL_YOUREOPER (`:You are now an IRC Operator`, azzurra/bahamut
+`src/s_err.c` — grappa's numeric router :scan-routes 381 → `$server` and
+persists the trailing verbatim) renders as a `:notice` row, with the
+`visitor_not_allowed` inline error absent. Reproduced RED on the unfixed
+server (the success assertion has no 381 to match).
+
+**Deploy:** server change (`grappa_channel.ex`) — NOT a hot cic-only
+bundle; `deploy-m42.sh` auto-classifies hot/cold.

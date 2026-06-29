@@ -1331,6 +1331,40 @@ defmodule GrappaWeb.GrappaChannelTest do
       {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "OPER vjt s3cret\r\n"), 1_000)
     end
 
+    # Issue #148 (P0): /oper is visitor-eligible. A VISITOR socket pushing
+    # "oper" must NOT short-circuit with `visitor_not_allowed` — it reaches
+    # `Session.send_oper` and ships OPER upstream on the visitor's OWN
+    # session. Safe because the registry key includes the `{:visitor, id}`
+    # subject tag (`Session.Server.registry_key/2`), so the visitor opers
+    # only its own upstream IRC link (no shared/pooled session), and the
+    # ircd O:line is authoritative on whether the creds are accepted. The
+    # bouncer gate stays for every OTHER write verb (see "visitor socket:
+    # op returns visitor_not_allowed" — only oper relaxed).
+    test "oper: visitor socket ships OPER upstream (issue #148 — not visitor_not_allowed)" do
+      {server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "oper", %{
+          "network_id" => network.id,
+          "name" => "testoper",
+          "password" => "testoperpass"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "OPER testoper testoperpass\r\n"), 1_000)
+    end
+
     test "oper: rejects CRLF in either field at the channel boundary", %{
       socket: socket,
       network: network
