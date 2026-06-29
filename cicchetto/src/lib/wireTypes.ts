@@ -785,6 +785,7 @@ export type VisitorsWireCredentialJson = {
   id: string;
   nick: string;
   network_slug: string;
+  registered: boolean;
 };
 
 export type VisitorsWireT = {
@@ -792,4 +793,5 @@ export type VisitorsWireT = {
   nick: string;
   network_slug: string;
   expires_at: string | null;
+  registered: boolean;
 };
