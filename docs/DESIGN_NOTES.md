@@ -14848,3 +14848,99 @@ via REST, and asserts the early last-read row IS in the DOM with the
 `unread-marker` immediately after it and the count equal to the true
 unread. Proven RED against the unmodified tail-only load (the early row is
 absent → `toBeVisible` fails) before the fix landed.
+
+---
+
+## Lifecycle verbs — detach / disconnect ⇄ reconnect / quit (#126, 2026-06-29)
+
+Two distinct lifecycle actions were conflated, and **detach was broken**.
+vjt standardized the surface into the full **(web client × upstream IRC)**
+state matrix — each transition is a named verb:
+
+|              | upstream UP                          | upstream DOWN                              |
+|--------------|--------------------------------------|--------------------------------------------|
+| **web UP**   | normal                               | `disconnect` (drop upstream, stay in cic) ⇄ `reconnect` |
+| **web DOWN** | `detach` (leave cic, keep upstream)  | `quit` (close cic + tear down upstream)    |
+
+**Subject classes split by NickServ identity** (the load-bearing
+asymmetry): a registered **user** (`Networks.Credential.connection_state`
+column), a registered **visitor** (a visitor with a NickServ identity —
+`visitors.password_encrypted` non-nil ⟺ permanent), and an **ephemeral**
+visitor (no identity, Reaper-swept). `detach` + `disconnect`/`reconnect`
+are persistent-identity-only; `quit` is universal.
+
+**The two bugs (one root).** Pre-#126 `DELETE /auth/logout` called a
+teardown (`stop_all_user_sessions` / visitor `stop_session`) for EVERY
+subject. That (1) tore the upstream down on every detach, and (2) never
+transitioned `connection_state` nor broadcast, so the credential stayed
+`:connected` while the live pid was gone — a textbook violation of the
+"DB state and live state are separate sources of truth" invariant. The
+fix is one scoping change: **detach is the ABSENCE of teardown.** Logout
+now only revokes the web session + closes the socket; the lone exception
+is the ANON visitor, which keeps the W11 co-terminus teardown (stop +
+`purge_if_anon`) because it has no persistent identity to come back to.
+With no teardown for a persistent identity, DB == live and the desync
+vanishes. (An ephemeral visitor's user-facing "quit" simply IS this anon
+logout — the wipe didn't move, it was renamed.)
+
+**One disposition core, every door (reuse the verbs, not the nouns).**
+There is NO second teardown. The verbs compose the EXISTING cores:
+  * teardown = `Session.stop_session/3` (already subject-polymorphic; the
+    same core `Networks.disconnect/2` uses for users);
+  * respawn = `SpawnOrchestrator.spawn/4` (the same core
+    `NetworksController` drives for a user `:connected` transition).
+Per-subject routing:
+  * **user** — detach = logout; disconnect/reconnect = the existing
+    per-network `PATCH /networks/:slug {parked|connected}` (a user has
+    many networks, so the whole-session verb is ambiguous for them —
+    "≈ existing"); quit = `quitAll` (park all) + detach.
+  * **registered visitor** — detach = logout (keeps the session); a NEW
+    `POST /session/{disconnect,reconnect}` (registered-visitor-gated)
+    drives stop/respawn; quit = disconnect + detach (row + scrollback
+    KEPT — `purge_if_anon` no-ops a registered visitor).
+  * **ephemeral visitor** — quit only = logout (anon branch stops +
+    purges). detach/disconnect/reconnect are withheld (403 server-side +
+    cic-gated).
+
+**#152 seam.** #152 (ident live-apply) needs an internal reconnect =
+"tear down the upstream, then respawn preserving row + scrollback." That
+is exactly `Visitors.reconnect_session/3`'s shape — `SessionPlan.resolve`
+→ `SpawnOrchestrator.spawn` — with a CHANGED plan substituted at the
+resolve step. The seam is left open; #152 is a follow-on, not a third
+copy. New `Admission` flow `:visitor_reconnect` (subject_kind `:visitor`).
+
+**Visitor connection surface (the one new display, lightweight).**
+Visitors have NO `connection_state` column and NO
+`connection_state_changed` broadcast — live status is whereis-derived. To
+make disconnect/reconnect visible, `GET /me` (visitor) gained a
+`connected: boolean` computed from `Session.whereis/2` (a cheap
+`Registry.lookup`, NOT a `GenServer.call`, so `/me` stays off blocking
+Session calls), plus a derived `registered: boolean` (= `password_encrypted`
+present) on the visitor wire as the cic gate. NO schema change, NO new
+PubSub event: the verb handler refetches `/me` and the SettingsDrawer
+toggles its disconnect ⇄ reconnect face off `connected`. Sibling-tab
+consistency is best-effort (no live push) — acceptable for a deliberate
+single-tab action.
+
+**Terminology.** Canonical vocabulary everywhere (cic labels, endpoints,
+events, atoms): `detach` / `disconnect` / `reconnect` / `quit`. The
+user-facing "logout" term is RETIRED — what an ephemeral visitor called
+"logout" IS quit; `DELETE /auth/logout` stays as shared plumbing (it IS
+detach). `delete account` (#157) is the separate, explicit, irreversible
+wipe of a persistent identity — `quit` NEVER wipes one.
+
+**Tests.** Server: `auth_controller_test` rewritten to assert
+detach-keeps-the-session (no `:DOWN`, pid + `connection_state` survive)
+for user + registered visitor, anon stop+purge unchanged;
+`session_controller_test` for the new endpoints + the whereis-derived
+`/me` `connected` round-trip; `wire_test` / `me_controller_test` for the
+flags. cic: `lib/lifecycle.test.ts` (per-subject verb routing) +
+SettingsDrawer vitest (per-subject rendering). Real chromium e2e
+(`issue126-detach-lifecycle.spec.ts`): the ephemeral-visitor gate (quit
+alone, "log out" gone) + user detach keeps the upstream (autojoin channel
+stays `joined` server-side). The registered-visitor disconnect/reconnect
+round-trip is server- + vitest-covered rather than e2e: a *registered*
+visitor in the e2e testnet would need the full NickServ REGISTER dance
+(no pre-seeded identified nick), more flake surface than the gate is
+worth — the user-analog disconnect/reconnect already has a full-stack
+e2e in `cp15-b6-parked-disconnect-reconnect.spec.ts`.
