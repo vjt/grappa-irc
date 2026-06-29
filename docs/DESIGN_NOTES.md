@@ -14778,3 +14778,73 @@ jail + drops every session); proven by bats only
 (`test/infra/deploy_jail_test.bats` for the defer split,
 `test/infra/deploy_m42_test.bats` for the host stage→bounce→verify→marker
 sequence). First real run is the next genuine operator-driven cold deploy.
+
+---
+
+## 2026-06-29 — #156: the in-pane unread divider needs an ANCHORED fetch when unread exceeds the window
+
+**Symptom.** Open a channel whose unread count is larger than the initial
+scrollback page (~50): the `── XX unread messages ──` divider slams to the
+TOP of the pane with a window-sized count (~50, not the true ~190) and no
+read-context above it — or fails to inject at all depending on hydration
+timing.
+
+**Root cause.** `loadInitialScrollback` (cicchetto, `lib/scrollback.ts`)
+fetched a TAIL-ONLY page — `listMessages(t, slug, name)`, the server's
+newest ~50 rows, no `before`/`after`. The in-pane divider derives from the
+FROZEN `markerCursorId` snapshot of the server read cursor (the freeze
+contract, see 2026-06-08) and `sessionTopId` (max id at mount). When the
+cursor is OLDER than the oldest row in the tail page (unread > window), the
+divider's anchor — the last-read row and the first-unread row — is simply
+not in the loaded set: every loaded row has `id > cursor`, so `unreadCount`
+counts the whole window (~50) and the marker injects before index 0. The
+freeze contract was never the problem; the loaded ROWS were.
+
+**Fix (cic-only — the REST verbs already existed).** When a read cursor
+exists, fetch the region AROUND it instead of the tail:
+  * `listMessagesAfter(cursor, 200)` → the unread region (`id > cursor`,
+    ASC), capped at the server `@max_http_limit` (200).
+  * `listMessages(cursor + 1)` → the before-context page (`id <= cursor`;
+    integer ids, so the strict `< cursor+1` cursor is exactly `<= cursor`)
+    — the last-read row + ~50 rows of read-context above the divider.
+Both merge via the existing `mergeIntoScrollback` (id-dedupe + ASC sort),
+so the loaded set is contiguous around the anchor and `loadMore`'s
+oldest-id paging still works. The no-cursor arm keeps the tail-only load
+(and its RC2 cursor-to-tail baseline) unchanged — a fresh channel has no
+divider to anchor and auto-scrolls to the newest row.
+
+**Gate signal chosen: cursor presence, NOT a server unread count
+(unconditional anchored fetch when a cursor exists).** A per-channel server
+unread count IS available — but only in `selection.ts` (the sole caller of
+`loadInitialScrollback`), via `serverSeedCounts` hydrated from the `/me`
+envelope. Reaching it from `scrollback.ts` means either an import cycle
+(`selection → scrollback` already exists) or threading it through the
+signature. Both are heavier than the cost they'd save: ONE extra small GET
+per cursor-present channel-open, behind the load-once gate, on a human
+click. Worse, a count-vs-window gate is FRAGILE — it couples cic to the
+server's ~50 page-size constant, and the seed count (`messages + events`)
+measures a different set of rows than the marker's filtered count
+(own-presence / operator-echo excluded). The unconditional anchored fetch
+is window-size-agnostic and fixes the root cause for any page size; for a
+fully-read channel `after(...)` returns 0 rows and the load is just the
+before-context page.
+
+**>200 cap (known edge, documented not papered over).** If true unread >
+200, `after(cursor, 200)` stops at `cursor + 200`, so the very newest rows
+aren't in the initial load — they stream in via the WS join-ok
+`refreshScrollback`. The DIVIDER stays correctly anchored; only the in-pane
+count caps at the loaded window (`sessionTopId = cursor + 200`) until the
+rest arrive. The marker count was left reading the loaded rows (not the
+server unread_count) — honest about what's loaded, and pulling the server
+count into the frozen-marker derivation would have meant the same cycle the
+gate decision rejected.
+
+**Tests.** Unit RED→GREEN in `src/__tests__/scrollback.test.ts` (the clean
+witness — `listMessagesAfter` is called 0× by the old tail-only code) +
+`src/lib/__tests__/loadInitialScrollback.test.ts`. Real chromium e2e
+`cicchetto/e2e/tests/unread-divider-beyond-window.spec.ts` reuses the
+seeded 200-line `#bofh`, plants the read cursor ~120 rows below the tail
+via REST, and asserts the early last-read row IS in the DOM with the
+`unread-marker` immediately after it and the count equal to the true
+unread. Proven RED against the unmodified tail-only load (the early row is
+absent → `toBeVisible` fails) before the fix landed.
