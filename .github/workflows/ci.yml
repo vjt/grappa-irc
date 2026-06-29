@@ -61,6 +61,14 @@ jobs:
         run: mix sobelow --config --exit Medium
 
       - name: Hex audit (CVE check)
+        # Advisory-only (non-blocking): cowlib has two UNFIXABLE cow_cookie
+        # advisories (CVE-2026-43969 LOW + CVE-2026-43966 MED, fixed=None,
+        # no patched release) that are N/A to grappa (we only consume Cookie
+        # headers via Plug, never compose request cookies via cow_cookie).
+        # hex.audit has no per-advisory ignore, so it can't express that.
+        # `mix deps.audit` below remains the HARD, blocking CVE gate.
+        # Restore this to blocking when cowlib ships a patch — see #149.
+        continue-on-error: true
         run: mix hex.audit
 
       - name: Mix audit (CVE check)
