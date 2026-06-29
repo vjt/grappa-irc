@@ -232,6 +232,21 @@ const lastFullyVisibleRowId = (listRef: HTMLDivElement): number | null => {
 // `body`-only lookup is the contract.
 const reasonOf = (msg: ScrollbackMessage): string | null => msg.body || null;
 
+// #142: render a reason / trailing as a parenthesized mIRC-formatted suffix
+// (" (reason)"), or nothing when absent. The paren chrome stays plain text;
+// only the user-originated reason routes through the shared `MircBody`
+// renderer so its control bytes render as formatting instead of leaking raw
+// to the DOM. Shared by the PART / QUIT / KICK reason sites and the KILL
+// trailing — same chrome, one implementation.
+const reasonSuffix = (reason: string | null): JSX.Element =>
+  reason ? (
+    <>
+      {" ("}
+      <MircBody body={reason} />
+      {")"}
+    </>
+  ) : null;
+
 // irssi-style " [user@host]" suffix for presence events (join/part/quit).
 // The server lifts the sender's user@host off the IRC prefix into the
 // persist meta (Grappa.Scrollback.Meta join/part/quit shape). Both keys
@@ -318,7 +333,7 @@ const renderRawEvent = (
       return (
         <span class="scrollback-body">
           *** {senderSpan(sender)} killed {target}
-          {trailing && trailing !== target ? ` (${trailing})` : ""}
+          {reasonSuffix(trailing && trailing !== target ? trailing : null)}
         </span>
       );
     }
@@ -368,7 +383,7 @@ const renderRawEvent = (
       // Fall through to default arm if the channel param looks malformed.
       return (
         <span class="scrollback-body">
-          *** {senderSpan(sender)} {verb} {params.join(" ")}
+          *** {senderSpan(sender)} {verb} <MircBody body={params.join(" ")} />
         </span>
       );
     }
@@ -378,7 +393,7 @@ const renderRawEvent = (
       // above; the default keeps the principle of "no silent drops".
       return (
         <span class="scrollback-body">
-          *** {senderSpan(sender)} {verb} {params.join(" ")}
+          *** {senderSpan(sender)} {verb} <MircBody body={params.join(" ")} />
         </span>
       );
   }
@@ -498,7 +513,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
         <span class="scrollback-body">
           * {bareSenderSpan(msg.sender)}
           {userhostSuffix(msg)} has left {msg.channel}
-          {reason ? ` (${reason})` : ""}
+          {reasonSuffix(reason)}
         </span>
       );
     }
@@ -507,7 +522,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       return (
         <span class="scrollback-body">
           * {bareSenderSpan(msg.sender)}
-          {userhostSuffix(msg)} has quit{reason ? ` (${reason})` : ""}
+          {userhostSuffix(msg)} has quit{reasonSuffix(reason)}
         </span>
       );
     }
@@ -532,7 +547,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
     case "topic":
       return (
         <span class="scrollback-body">
-          * {bareSenderSpan(msg.sender)} changed topic: {msg.body}
+          * {bareSenderSpan(msg.sender)} changed topic: <MircBody body={msg.body ?? ""} />
         </span>
       );
     case "kick": {
@@ -542,7 +557,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
         <span class="scrollback-body">
           * {bareSenderSpan(msg.sender)} kicked{" "}
           <NickText nick={target} prefix={prefixFor(target)} /> from {msg.channel}
-          {reason ? ` (${reason})` : ""}
+          {reasonSuffix(reason)}
         </span>
       );
     }
@@ -560,7 +575,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       // bug, but render the body so it isn't invisible.
       return (
         <span class="scrollback-body">
-          *** {bareSenderSpan(msg.sender)} {msg.body ?? ""}
+          *** {bareSenderSpan(msg.sender)} <MircBody body={msg.body ?? ""} />
         </span>
       );
     }

@@ -1,5 +1,6 @@
 import { type Component, Show } from "solid-js";
 import { dismissWhowasCard, whowasCardBySlug } from "./lib/whowasCard";
+import { MircBody } from "./MircText";
 import NickText from "./NickText";
 
 // P-0c — WHOWAS card. Renders the historical-user reply inline at the
@@ -60,7 +61,9 @@ const WhowasCard: Component<Props> = (props) => {
               </Show>
               <Show when={b().realname}>
                 <dt>realname</dt>
-                <dd>{b().realname}</dd>
+                <dd>
+                  <MircBody body={b().realname ?? ""} />
+                </dd>
               </Show>
               <Show when={b().server}>
                 <dt>last seen on</dt>

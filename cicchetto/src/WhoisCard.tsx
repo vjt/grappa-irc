@@ -1,6 +1,7 @@
 import { type Component, For, Show } from "solid-js";
 import type { WhoisBundle } from "./lib/api";
 import { dismissWhoisCard, whoisCardBySlug } from "./lib/whoisCard";
+import { MircBody } from "./MircText";
 import NickText from "./NickText";
 
 // C2 — WHOIS card. Renders the aggregated WHOIS bundle inline at the top
@@ -130,11 +131,15 @@ const WhoisCard: Component<Props> = (props) => {
               </Show>
               <Show when={b().realname}>
                 <dt>realname</dt>
-                <dd>{b().realname}</dd>
+                <dd>
+                  <MircBody body={b().realname ?? ""} />
+                </dd>
               </Show>
               <Show when={b().away_message}>
                 <dt>away</dt>
-                <dd class="whois-card-away">{b().away_message}</dd>
+                <dd class="whois-card-away">
+                  <MircBody body={b().away_message ?? ""} />
+                </dd>
               </Show>
               <Show when={b().actually_host}>
                 <dt>connecting from</dt>

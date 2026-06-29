@@ -1,7 +1,9 @@
 import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { compactModeString, modesByChannel, topicByChannel } from "./lib/channelTopic";
+import { mircPlainText } from "./lib/mircFormat";
 import { windowIsJoined } from "./lib/windowState";
+import { MircBody } from "./MircText";
 
 // Top bar of the middle pane. Hosts:
 //  * channel name (bold accent)
@@ -55,6 +57,15 @@ const TopicBar: Component<Props> = (props) => {
 
   const topicEntry = () => topicByChannel()[key()] ?? null;
   const topicText = () => topicEntry()?.text ?? null;
+  // #142: the `title` tooltip + the rendered strip both come from the same
+  // topic. The strip routes the raw text through `MircBody` (formatting
+  // renders); the tooltip is a plain-text-only attribute surface, so it
+  // gets the parser-derived de-formatted text — control bytes stripped by
+  // the ONE parser, never leaked raw into the attribute.
+  const topicTitle = () => {
+    const t = topicText();
+    return t !== null ? mircPlainText(t) : "(no topic set)";
+  };
   const modesEntry = () => modesByChannel()[key()] ?? null;
   const modeStr = () => {
     const entry = modesEntry();
@@ -95,9 +106,11 @@ const TopicBar: Component<Props> = (props) => {
         class="topic-bar-topic"
         onClick={openModal}
         aria-label="expand topic"
-        title={topicText() ?? "(no topic set)"}
+        title={topicTitle()}
       >
-        {topicText() ?? "(no topic set)"}
+        <Show when={topicText() !== null} fallback={"(no topic set)"}>
+          <MircBody body={topicText() ?? ""} />
+        </Show>
       </button>
       {/* Compact mode string — only rendered when modes are non-empty */}
       <Show when={modeStr().length > 0}>
@@ -136,7 +149,11 @@ const TopicBar: Component<Props> = (props) => {
             </button>
           </div>
           <div class="topic-modal-body">
-            <p class="topic-modal-text">{topicText() ?? "(no topic set)"}</p>
+            <p class="topic-modal-text">
+              <Show when={topicText() !== null} fallback={"(no topic set)"}>
+                <MircBody body={topicText() ?? ""} />
+              </Show>
+            </p>
             <Show when={topicEntry() !== null}>
               <p class="topic-modal-meta">
                 Set by: {topicEntry()?.set_by ?? "(unknown)"}

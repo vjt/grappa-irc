@@ -326,6 +326,21 @@ export function parseMircFormat(body: string): Run[] {
   return runs;
 }
 
+// #142: the de-formatted text of an IRC body — every control byte removed,
+// only the visible characters left. Derived from the SAME parser as the
+// styled render (`parseMircFormat`), so there is no second / lossy stripper:
+// the runs already carry exactly the printable text with the control bytes
+// consumed. Used for plain-text-only DOM surfaces that cannot render
+// formatting — e.g. an element's `title` tooltip attribute, where leaking
+// the raw `\x02`/`\x03` bytes would show as garbage. This is NOT a render
+// strip (the visible body always routes through `MircBody`); it is the
+// canonical projection for attribute surfaces that are plain text by nature.
+export function mircPlainText(body: string): string {
+  let out = "";
+  for (const run of parseMircFormat(body)) out += run.text;
+  return out;
+}
+
 function isDigit(charCode: number): boolean {
   return charCode >= 0x30 && charCode <= 0x39;
 }

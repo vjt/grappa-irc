@@ -1,5 +1,6 @@
-import { type Component, For } from "solid-js";
+import { type Component, For, Show } from "solid-js";
 import { matchesWatchlist } from "./lib/mentionMatch";
+import { MircBody } from "./MircText";
 import NickText from "./NickText";
 
 // Mentions-while-away window (C8.1 / spec #19).
@@ -77,7 +78,14 @@ const MentionsWindow: Component<Props> = (props) => {
       <div class="mentions-header scrollback-muted" data-testid="mentions-header">
         <span class="mentions-header-text">
           {count()} mention{count() !== 1 ? "s" : ""} while away ({startTime()} – {endTime()}
-          {props.bundle.away_reason ? ` · ${props.bundle.away_reason}` : ""})
+          {/* #142: the operator's own away reason is user-set free text —
+              route it through the shared renderer (same class as the whois
+              away_message field) so control bytes render, not leak raw. */}
+          <Show when={props.bundle.away_reason}>
+            {" · "}
+            <MircBody body={props.bundle.away_reason ?? ""} />
+          </Show>
+          )
         </span>
       </div>
 
@@ -107,7 +115,9 @@ const MentionsWindow: Component<Props> = (props) => {
                   <NickText nick={row.sender} />
                   &gt;
                 </span>
-                <span class="mentions-row-body">{row.body}</span>
+                <span class="mentions-row-body">
+                  <MircBody body={row.body ?? ""} />
+                </span>
               </button>
             );
           }}

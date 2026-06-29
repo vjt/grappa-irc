@@ -14570,3 +14570,75 @@ server (the success assertion has no 381 to match).
 
 **Deploy:** server change (`grappa_channel.ex`) — NOT a hot cic-only
 bundle; `deploy-m42.sh` auto-classifies hot/cold.
+
+---
+
+### 2026-06-29 — #142: every user-text surface routes through the one mIRC renderer
+
+mIRC formatting control bytes (`\x02` bold, `\x03`/`\x04` color, `\x0f`
+reset, `\x1d` italic, `\x1f` underline, `\x1e` strike, `\x11` monospace,
+`\x16` reverse) were leaking RAW into the DOM on several cic render paths
+— a colored QUIT reason or a bold whois `realname` showed as unprintable
+garbage. The channel buffer (PRIVMSG/NOTICE/ACTION) already routed text
+through the shared renderer; the presence/system lines and the inline
+cards did not.
+
+**Invariant established — one renderer, no raw `{body}`.** Every
+user-originated text surface in cic MUST render through `MircBody`
+(`cicchetto/src/MircText.tsx`), which expands `parseMircFormat`
+(`cicchetto/src/lib/mircFormat.ts`) runs into styled `<span>`s. A new
+text-emitting surface MUST use `<MircBody body={…} />`, never a bare
+`{body}` / `{reason}` / `{trailing}` interpolation — a raw drop silently
+re-opens this bug. Chrome around the text (parens, "changed topic:"
+prefix, the `· ` away separator) stays plain text; only the
+user-originated part is wrapped. The four paren-wrapped reason/trailing
+sites (PART/QUIT/KICK reason, KILL trailing) share one `reasonSuffix`
+helper in `ScrollbackPane.tsx` — same chrome, one implementation.
+
+**This was purely a cic render-layer sweep — VERIFIED, not assumed.** The
+server preserves IRC bytes verbatim end-to-end: `IRC.Parser`'s
+`parse_params(":" <> trailing)` takes the trailing param raw, and
+`strip_unsafe_bytes/1` removes ONLY `\x00 \r \n` (the RFC-2812-illegal
+framing bytes) — every mIRC formatting byte survives. The whois/whowas
+risk surface (#133) was the open question: do `realname` / `away_message`
+arrive raw, or does the server normalise them? Traced the wire path —
+`event_router.ex` `whois_trailing/1` is `List.last/1` (no transform), the
+bundle wire (`session/wire.ex`) is a plain `Map.get`, so the trailing
+control bytes ride the identical byte-preserving path as a PRIVMSG body.
+**They arrive raw; cic was the only gap.** No server change.
+
+**Surfaces wrapped:** `ScrollbackPane.tsx` — KILL trailing, INVITE/default
+raw-event fallbacks, PART/QUIT/KICK reasons, TOPIC change body,
+server_event fallback. `TopicBar.tsx` — topic strip + modal body (the
+`title` tooltip is a plain-text-only attribute surface, so it gets the
+new `mircPlainText/1` parser projection — de-formatted via the ONE parser,
+NOT a second/lossy stripper, so the "no silent stripping" rule holds).
+`WhoisCard.tsx` — realname + away_message. `WhowasCard.tsx` — realname.
+`MentionsWindow.tsx` — mention row body + the operator's own away reason
+(found by the defensive grep, NOT on the original gap list; same
+user-text class as the whois away field).
+
+**Audited + excluded (not user free text):** names list / MembersPane
+(per-nick `NickText`, deterministic palette), LusersCard (integer counts
+via `fmt(n)`), lusers numerics (251–255/265/266 arrive as `$server`
+`:notice` rows → already on the NOTICE `MircBody` path).
+`AdminCredentialsTab` realname (a config-form `<input>`, operator's own
+value, not an IRC render surface). WhoisCard `server_info` / `umodes` /
+`actually_host` and WhowasCard `server` / `logoff_time` (structured
+server-identity / parsed-mode / timestamp fields, not user free text).
+
+**Tests — RED→green, E2E on the QUIT surface.**
+`cicchetto/e2e/tests/issue142-quit-mirc-render.spec.ts` drives a peer to
+QUIT with reason `\x02\x0304bye-142\x0f tail` (bold+red, then reset+plain
+tail), asserts the `.scrollback-mirc-bold` span carrying `bye-142` exists,
+its computed color is `rgb(255, 0, 0)` (= `MIRC_PALETTE[4]` `#ff0000`),
+and the post-`\x0f` tail is NOT bold (reset honored). Reproduced RED on
+the unfixed cic (the bold-span locator resolved to 0 elements — the reason
+sat raw in the text node); GREEN after the wrap. The truncation-sensitive
+topic strip stays ellipsised — the mIRC classes only touch
+font-weight/style/decoration/family/filter, none set `display:inline-block`
+or `white-space:pre`, so the inline spans inherit the parent's
+`nowrap`/`overflow:hidden`/`text-overflow:ellipsis`.
+
+**Deploy:** cic-only — `deploy-m42.sh --cic` (vite rebuild + bundle-changed
+broadcast, HOT, no BEAM restart, no session drop). Zero `.ex` changed.
