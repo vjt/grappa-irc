@@ -14829,15 +14829,21 @@ is window-size-agnostic and fixes the root cause for any page size; for a
 fully-read channel `after(...)` returns 0 rows and the load is just the
 before-context page.
 
-**>200 cap (known edge, documented not papered over).** If true unread >
-200, `after(cursor, 200)` stops at `cursor + 200`, so the very newest rows
-aren't in the initial load — they stream in via the WS join-ok
-`refreshScrollback`. The DIVIDER stays correctly anchored; only the in-pane
-count caps at the loaded window (`sessionTopId = cursor + 200`) until the
-rest arrive. The marker count was left reading the loaded rows (not the
-server unread_count) — honest about what's loaded, and pulling the server
-count into the frozen-marker derivation would have meant the same cycle the
-gate decision rejected.
+**>200 cap (known edge).** If true unread > 200, `after(cursor, 200)` stops
+at `cursor + 200`, so the very newest rows aren't in the initial load. The
+DIVIDER stays correctly anchored; only the in-pane count caps at the loaded
+window (`sessionTopId = cursor + 200`). The marker count was left reading
+the loaded rows (not the server unread_count) — honest about what's loaded,
+and pulling the server count into the frozen-marker derivation would have
+meant the same cycle the gate decision rejected. **CORRECTION (#161, see
+2026-07-01 entry below):** the original claim here — that the rows past
+`cursor + 200` "stream in via the WS join-ok `refreshScrollback`" — was
+WRONG. `refreshScrollback` fetches `after(resume_cursor, REFRESH_LIMIT=200)`
+from the SAME resume cursor and hits the SAME 200 cap, so it never reached
+the tail either; and there was no scroll-to-bottom forward-paging handler.
+The newest rows were UNREACHABLE, not deferred. #161 adds the forward-paging
+verb (`loadNewer`) that makes `[cursor+200 .. tail]` reachable on
+scroll-to-bottom. The divider-anchoring reasoning above stands unchanged.
 
 **Tests.** Unit RED→GREEN in `src/__tests__/scrollback.test.ts` (the clean
 witness — `listMessagesAfter` is called 0× by the old tail-only code) +
@@ -15386,6 +15392,91 @@ because the deferred leave-arm never wrote the cursor (badge stays 1 /
 marker re-injects); GREEN once the non-deferred split makes it run. jsdom
 has zero layout so the vitest suite is unaffected. Full chromium
 `integration.sh` (NO `--grep`) is the merge gate.
+
+**Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change,
+no BEAM restart, no session drop.
+
+---
+
+## 2026-07-01 — #161: the newest messages were unreachable after the #156 anchored fetch — no scroll-to-bottom forward-paging
+
+**Symptom.** Open a channel whose unread count exceeds 200 (the server
+`@max_http_limit`). The `── XX unread ──` divider anchors correctly (#156
+works), but scrolling to the BOTTOM never reveals the newest messages — the
+latest traffic is simply inaccessible. The pane bottoms out at
+`cursor + 200` and stops.
+
+**Root cause.** #156's `loadInitialScrollback` cursor-present arm fetches
+the region AROUND the read cursor: `listMessagesAfter(cursor, 200)` (the
+unread region, ASC, capped at the server's `@max_http_limit = 200`) +
+`listMessages(cursor + 1)` (before-context). When true unread > 200 the
+after-page stops at `cursor + 200`. #156's decision log claimed the rows
+past that "stream in via the WS join-ok `refreshScrollback`" — but that was
+WRONG (corrected at the source in the #156 entry above):
+`refreshScrollback` calls `listMessagesAfter(resume_cursor, 200)` from the
+SAME resume cursor and hits the SAME 200 cap, so it never reaches the tail
+either. And there was NO forward-paging handler: `loadMore` pages OLDER
+rows on scroll-to-TOP (oldest-id paging); nothing paged NEWER rows on
+scroll-to-BOTTOM. The gap `[cursor+200 .. true newest]` was unreachable —
+you couldn't scroll into it and no background fetch backfilled it.
+
+**Fix (cic-only — the REST verb already existed).** A forward-paging verb
+`loadNewer` (cicchetto, `lib/scrollback.ts`), the mirror image of
+`loadMore`: on scroll-to-bottom, if the pane isn't at the live tail, pull
+`listMessagesAfter(highestLoadedId, 200)` and merge via the existing
+`mergeIntoScrollback` (id-dedupe + ASC — the SAME merge as loadMore /
+refresh). `ScrollbackPane.onScroll` fires it when the pane nears the bottom
+of the loaded content (`distance ≤ LOAD_MORE_THRESHOLD_PX = 200`, the same
+threshold as the scroll-to-top loadMore, mirrored). NO scroll-position
+restore is needed — forward rows APPEND below the viewport (loadMore
+prepends above it, which is why loadMore needs the height-delta correction
+and this does not).
+
+**The growing-tail latch (the 20% that is NOT symmetric to loadMore).**
+`loadMore`'s `loadMoreExhausted` latch is permanent because the OLDER end
+never grows. The NEWER end GROWS via live WS `appendToScrollback`, so a
+permanent forward latch would strand rows that arrive after latching. But
+the naive alternative — "invalidate the latch on every append that advances
+the max" — is worse: at a busy live tail every WS row would clear the
+latch, the auto-follow scroll-to-bottom would re-fire `loadNewer`, and
+`after(newMax)` would return empty → one REST GET per message (a
+fetch-per-message storm). The resolution turns on an invariant: ordinary
+live appends are CONTIGUOUS — each appended row IS the server's newest — so
+`after(max)` stays empty and `loadNewerExhausted` stays CORRECT even as
+`max` advances (we're still at the live tail; no fetch needed, the row is
+already rendered). The ONLY way a forward gap RE-opens after latching is a
+`refreshScrollback` batch that hit its 200-row cap (a >200-message
+reconnect): it appended a full page but the tail may be further ahead. So
+the latch is invalidated at exactly ONE site — a capped `refreshScrollback`
+page (`page.length === REFRESH_LIMIT`) — and NOWHERE else. After
+invalidation the auto-follow scroll drains the remaining gap page-by-page
+(200 at a time) until an empty page re-latches: a bounded cascade, not a
+per-message storm.
+
+**Why it can't fight #156 or #163.** `loadNewer` only changes which ROWS
+are loaded; it never touches the read cursor or the frozen `markerCursorId`
+/ `sessionTopId` snapshots. Forward-paged rows have `id > sessionTopId`, so
+the divider's `(cursor, sessionTopId]` count filter excludes them — the
+in-pane count still caps at the loaded window and the divider does not thaw
+(the #156 freeze contract holds). The #163 leave-arm cursor write
+(`snapshotted ?? storeTail`) and forward-only `setCursorIfAdvances` are
+untouched. Per the #163 lesson, the gap is derived from loaded-id vs the
+fetched page, NOT from the `atBottom` signal (unreliable across a key-change
+batch).
+
+**Tests.** Unit RED→GREEN in `src/__tests__/scrollback.test.ts`
+(`loadNewer` describe): fetch shape `after(newestId, 200)`, concurrency
+guard, growing-tail latch, in-flight release on resolve + on error, and the
+asymmetric latch (a CAPPED `refreshScrollback` invalidates; a SHORT page
+does not). Real chromium e2e
+(`cicchetto/e2e/tests/issue161-forward-paging.spec.ts`): re-seeds #bofh with
+260 rows via the admin `resetSubject(baselineSeed)` surface, plants an early
+read cursor so unread > 200, opens the channel (anchored fetch loads only
+`[cursor .. cursor+200]`), then scroll-to-bottom must page forward until the
+TRUE newest privmsg (`id > cursor + 200`) renders. RED against the
+unmodified anchored-fetch code (the newest row never attaches); GREEN once
+forward-paging lands. Full chromium `integration.sh` (NO `--grep`) is the
+merge gate.
 
 **Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change,
 no BEAM restart, no session drop.

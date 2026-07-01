@@ -28,6 +28,7 @@ import { getReadCursor } from "./lib/readCursor";
 import {
   lastOwnSend,
   loadMore as loadMoreScrollback,
+  loadNewer as loadNewerScrollback,
   refreshScrollback,
   scrollbackByChannel,
 } from "./lib/scrollback";
@@ -1687,6 +1688,23 @@ const ScrollbackPane: Component<Props> = (props) => {
         if (newScrollHeight === oldScrollHeight) return;
         listRef.scrollTop = newScrollHeight - oldScrollHeight + oldScrollTop;
       });
+    }
+
+    // #161: scroll-to-bottom triggers forward-paging — the mirror image of
+    // the scroll-to-top loadMore above. After #156's anchored fetch a
+    // channel with > 200 unread loads only [cursor .. cursor+200]; the
+    // newest rows stay unreachable until the operator scrolls down into
+    // them. Fire `loadNewer` when the pane nears the bottom of the LOADED
+    // content (`distance` = px from the tail, computed above; same 200px
+    // threshold as loadMore, mirrored). The verb gates burst + the
+    // growing-tail latch, so fire-and-forget: at the genuine live tail one
+    // empty forward page latches and further scrolls are no-ops (no fetch
+    // storm). NO scroll-position restore — forward rows APPEND below the
+    // viewport, so the operator's view doesn't shift (loadMore prepends
+    // above the viewport, which is why it needs the height-delta correction
+    // and this does not).
+    if (distance <= LOAD_MORE_THRESHOLD_PX) {
+      void loadNewerScrollback(props.networkSlug, props.channelName);
     }
 
     // BUGHUNT-2: scroll-settle gated on recent operator input.

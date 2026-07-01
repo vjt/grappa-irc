@@ -79,6 +79,11 @@ vi.mock("../lib/scrollback", () => ({
   // `loadMore` (production imports it as `loadMore as
   // loadMoreScrollback`).
   loadMore: vi.fn(() => Promise.resolve()),
+  // #161: onScroll also calls `loadNewer` when the pane nears the BOTTOM
+  // (forward-paging, production imports it as `loadNewer as
+  // loadNewerScrollback`). Same no-op resolved-promise stub so synthetic
+  // scroll events don't throw on the missing export.
+  loadNewer: vi.fn(() => Promise.resolve()),
   // #159 item 2: the visibility-return effect now fires refreshScrollback
   // for activation freshness. Stubbed no-op resolved promise (these specs
   // assert scroll/marker behavior, not the REST catch-up).

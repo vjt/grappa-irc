@@ -73,6 +73,28 @@ const exports = identityScopedStore((onIdentityChange) => {
   // our current oldest. Subsequent calls are no-ops. Latch is forward-
   // only; cleared on identity transition alongside `loadedChannels`.
   const loadMoreExhausted = new Set<ChannelKey>();
+  // #161: forward-paging in-flight guard, symmetric to `loadMoreInFlight`.
+  // Scroll-to-bottom bursts converge onto a single `?after=` REST request;
+  // while a key is in-flight a second `loadNewer` for it is a no-op.
+  // Released in `finally` so a transient error doesn't lock out retries.
+  const loadNewerInFlight = new Set<ChannelKey>();
+  // #161: forward end-of-history latch — "this key reached the LIVE server
+  // tail." Set when `loadNewer` gets an empty forward page.
+  //
+  // The 20% that does NOT mirror `loadMoreExhausted` (CLAUDE.md "reuse the
+  // verbs, not the nouns"): the OLDER end never grows, so its latch is
+  // permanent. The NEWER end GROWS via live WS `appendToScrollback`. But
+  // ordinary live appends are CONTIGUOUS — each appended row IS the
+  // server's newest, so `after(max)` stays empty and this latch stays
+  // CORRECT even as `max` advances (we're still at the live tail). The
+  // ONLY way a forward gap re-opens after latching is a `refreshScrollback`
+  // batch that hit its 200-row cap on a >200-message reconnect: it appended
+  // a full page but the tail may be further ahead. So the latch is
+  // invalidated THERE (see `refreshScrollback`) and NOWHERE else —
+  // invalidating on every append would re-fire an empty forward probe on
+  // every auto-follow scroll at a busy live tail (a fetch-per-message
+  // storm). Cleared on identity transition alongside `loadedChannels`.
+  const loadNewerExhausted = new Set<ChannelKey>();
   const [scrollbackByChannel, setScrollbackByChannel] = createSignal<
     Record<ChannelKey, ScrollbackMessage[]>
   >({});
@@ -94,12 +116,15 @@ const exports = identityScopedStore((onIdentityChange) => {
     equals: false,
   });
 
-  // Identity-transition cleanup. Five registered resets fired by the
-  // factory's createEffect(on(token, ...)) — three Set.clear() + two
-  // signal flushes. Order matches the pre-A3 inline shape.
+  // Identity-transition cleanup. Seven registered resets fired by the
+  // factory's createEffect(on(token, ...)) — five Set.clear() (loadedChannels
+  // + loadMore{InFlight,Exhausted} + loadNewer{InFlight,Exhausted}, #161) +
+  // two signal flushes. Order matches the pre-A3 inline shape.
   onIdentityChange(() => loadedChannels.clear());
   onIdentityChange(() => loadMoreInFlight.clear());
   onIdentityChange(() => loadMoreExhausted.clear());
+  onIdentityChange(() => loadNewerInFlight.clear());
+  onIdentityChange(() => loadNewerExhausted.clear());
   onIdentityChange(() => setScrollbackByChannel({}));
   onIdentityChange(() => setLastOwnSend(null));
 
@@ -284,6 +309,66 @@ const exports = identityScopedStore((onIdentityChange) => {
     }
   };
 
+  // #161: forward-page size. The server caps at `@max_http_limit` (200);
+  // fetch the full page so a large unread gap ([cursor+200 .. tail] — the
+  // #156 regression) drains in as few round-trips as possible. Mirrors
+  // `REFRESH_LIMIT` (same server max, same "recover a bounded-but-large
+  // backlog" job). `loadMore` (older end) uses the server default (~50)
+  // because a human scrolling UP rarely needs 200 at once; the forward end
+  // is recovering unread that can run to the hundreds, so 200 is right.
+  const FORWARD_PAGE_LIMIT = 200;
+
+  // #161: forward-paging verb — symmetric to `loadMore` but pages NEWER
+  // rows on scroll-to-bottom. After #156's anchored fetch, a channel with
+  // > 200 unread loads only the region [cursor .. cursor+200]; the rows
+  // past that (up to the true server tail) were UNREACHABLE — `loadMore`
+  // pages older on scroll-to-top and nothing paged newer, and the WS
+  // join-ok `refreshScrollback` hits the SAME 200 cap from the same resume
+  // cursor. This verb pulls `listMessagesAfter(highestLoadedId, 200)` and
+  // merges via `mergeIntoScrollback` (id-dedupe + ASC — the SAME merge as
+  // loadMore/refresh), so the loaded set stays contiguous and grows toward
+  // the tail one page per scroll-to-bottom.
+  //
+  // Guards mirror `loadMore`'s, with ONE domain difference — the growing-
+  // tail latch (see `loadNewerExhausted`):
+  //   1. Exhausted latch: once an empty forward page proves we reached the
+  //      live tail, scroll-to-bottom is a no-op — no fetch-per-scroll storm
+  //      while the operator sits at the tail auto-following live traffic.
+  //   2. In-flight guard: a scroll-to-bottom burst converges to one REST.
+  // `highestLoadedId` is the local tail id — NOT the read cursor, NOT any
+  // scroll signal (ScrollbackPane's `atBottom` is unreliable across a
+  // key-change batch, #163): the gap is derived from loaded-id vs the
+  // fetched page, so a genuinely-at-tail pane fetches one empty page then
+  // latches instead of guessing from geometry.
+  const loadNewer = async (slug: string, name: string): Promise<void> => {
+    const t = token();
+    if (!t) return;
+    const key = channelKey(slug, name);
+    if (loadNewerExhausted.has(key)) return;
+    if (loadNewerInFlight.has(key)) return;
+    const current = scrollbackByChannel()[key];
+    if (!current || current.length === 0) return;
+    const newest = current[current.length - 1];
+    if (!newest) return;
+    loadNewerInFlight.add(key);
+    try {
+      const page = await listMessagesAfter(t, slug, name, newest.id, FORWARD_PAGE_LIMIT);
+      // Empty forward page = the local tail IS the live server tail. Latch
+      // so subsequent scroll-to-bottom events (including the auto-follow
+      // scroll that fires when a live row appends at the tail) are no-ops.
+      if (page.length === 0) {
+        loadNewerExhausted.add(key);
+      } else {
+        mergeIntoScrollback(key, page);
+      }
+    } catch {
+      // Transient error — do NOT latch. The user can retry by scrolling;
+      // the in-flight guard releases via the `finally` below.
+    } finally {
+      loadNewerInFlight.delete(key);
+    }
+  };
+
   const sendMessage = async (slug: string, name: string, body: string): Promise<void> => {
     const t = token();
     if (!t) return;
@@ -413,6 +498,17 @@ const exports = identityScopedStore((onIdentityChange) => {
         // rather than the original cursor.
         recordSeen(key, msg);
       }
+      // #161: a FULL-cap refresh page means the server tail may be further
+      // ahead than what we just appended (a >200-message reconnect re-opens
+      // the forward gap). Invalidate the forward-tail latch so the next
+      // scroll-to-bottom pages forward again. A short page drained
+      // everything after the resume cursor → no gap → the latch (if set)
+      // stays valid. This is the ONLY latch-invalidation site: ordinary
+      // live `appendToScrollback` rows are contiguous with the tail and
+      // must NOT thrash the latch (see `loadNewerExhausted`).
+      if (page.length === REFRESH_LIMIT) {
+        loadNewerExhausted.delete(key);
+      }
     } catch (err) {
       // Transient error — leave the cursor alone so the next reconnect
       // retries. Log to console for operator diagnosis; Phase 5
@@ -460,6 +556,8 @@ const exports = identityScopedStore((onIdentityChange) => {
     loadedChannels.delete(key);
     loadMoreExhausted.delete(key);
     loadMoreInFlight.delete(key);
+    loadNewerExhausted.delete(key);
+    loadNewerInFlight.delete(key);
     if (hasSignal) {
       setScrollbackByChannel((prev) => {
         const { [key]: _drop, ...rest } = prev;
@@ -486,6 +584,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     appendToScrollback,
     loadInitialScrollback,
     loadMore,
+    loadNewer,
     purgeScrollback,
     refreshScrollback,
     sendMessage,
@@ -498,6 +597,7 @@ export const scrollbackByChannel = exports.scrollbackByChannel;
 export const appendToScrollback = exports.appendToScrollback;
 export const loadInitialScrollback = exports.loadInitialScrollback;
 export const loadMore = exports.loadMore;
+export const loadNewer = exports.loadNewer;
 export const purgeScrollback = exports.purgeScrollback;
 export const refreshScrollback = exports.refreshScrollback;
 export const sendMessage = exports.sendMessage;

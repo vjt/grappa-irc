@@ -713,6 +713,178 @@ describe("loadMore — B2 concurrency guard + end-of-history latch", () => {
   });
 });
 
+// #161 — loadNewer forward-paging guard + growing-tail latch.
+//
+// `loadNewer` is the mirror of `loadMore`: it pages NEWER rows on scroll-
+// to-bottom, closing the #156 regression where a channel with > 200 unread
+// loaded only [cursor .. cursor+200] and the newest rows were unreachable
+// (no forward handler, and the WS join-ok refreshScrollback hit the same
+// 200 cap). It shares loadMore's in-flight + exhausted guards, with ONE
+// domain difference: the tail GROWS via live appends, so its latch is
+// invalidated by a CAPPED refreshScrollback (a >200-message reconnect
+// re-opens the gap) but NOT by ordinary contiguous appends — invalidating
+// per-append would storm one empty forward probe per live message at a
+// busy tail. These tests pin the fetch shape, both guards, and the
+// asymmetric latch (capped-refresh invalidates, short-refresh does not).
+describe("loadNewer — #161 forward-paging guard + growing-tail latch", () => {
+  const key = channelKey("freenode", "#grappa");
+  const mkRow = (id: number): ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: "#grappa",
+    server_time: id * 1000,
+    kind: "privmsg",
+    sender: "peer",
+    body: `line ${id}`,
+    meta: {},
+  });
+  // Seed one tail row so loadNewer has a `newest` cursor (it early-returns
+  // on an empty pane).
+  const seedTail = (scrollback: typeof import("../lib/scrollback"), id = 100): void =>
+    scrollback.appendToScrollback(key, mkRow(id));
+
+  it("fetches listMessagesAfter(newestId, 200) and merges the forward page onto the tail", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessagesAfter).mockResolvedValue([mkRow(101), mkRow(102)]);
+    const scrollback = await import("../lib/scrollback");
+    seedTail(scrollback, 100);
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledWith("tok", "freenode", "#grappa", 100, 200);
+    const list = scrollback.scrollbackByChannel()[key] ?? [];
+    expect(list.map((m) => m.id)).toEqual([100, 101, 102]);
+  });
+
+  it("is a no-op without a token", async () => {
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    seedTail(scrollback, 100);
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op on an empty pane (no `newest` cursor to page from)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    // No seedTail → the (freenode, #grappa) pane is absent.
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).not.toHaveBeenCalled();
+  });
+
+  it("concurrency guard — two parallel loadNewer calls fire only one REST request", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    // Slow the fetch so both calls overlap; the second must short-circuit
+    // on the in-flight guard before the first resolves.
+    let resolveFetch: ((v: ScrollbackMessage[]) => void) | null = null;
+    vi.mocked(api.listMessagesAfter).mockImplementation(
+      () =>
+        new Promise<ScrollbackMessage[]>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    const scrollback = await import("../lib/scrollback");
+    seedTail(scrollback, 100);
+    const p1 = scrollback.loadNewer("freenode", "#grappa");
+    const p2 = scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(1);
+    if (!resolveFetch) throw new Error("resolveFetch never bound");
+    (resolveFetch as (v: ScrollbackMessage[]) => void)([mkRow(101)]);
+    await Promise.all([p1, p2]);
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(1);
+  });
+
+  it("growing-tail latch — a loadNewer after an empty forward page is a no-op (no storm)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessagesAfter).mockResolvedValue([]);
+    const scrollback = await import("../lib/scrollback");
+    seedTail(scrollback, 100);
+    // Empty forward page = the local tail IS the live server tail → latch.
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(1);
+    // Latched: subsequent scroll-to-bottom events must NOT re-fetch — this
+    // is the anti-storm guarantee at a busy live tail.
+    await scrollback.loadNewer("freenode", "#grappa");
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(1);
+  });
+
+  it("in-flight guard releases on resolve — a non-empty page lets the next call page the next chunk", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessagesAfter).mockResolvedValueOnce([mkRow(101)]);
+    const scrollback = await import("../lib/scrollback");
+    seedTail(scrollback, 100);
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(1);
+    // Non-empty page → not latched → next scroll-to-bottom fires again,
+    // paging from the NEW tail (101), not the stale seed (100).
+    vi.mocked(api.listMessagesAfter).mockResolvedValueOnce([mkRow(102)]);
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.listMessagesAfter).mock.calls[1]).toEqual([
+      "tok",
+      "freenode",
+      "#grappa",
+      101,
+      200,
+    ]);
+  });
+
+  it("in-flight guard releases on REST error — a transient failure does not latch", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessagesAfter).mockRejectedValueOnce(new Error("boom"));
+    const scrollback = await import("../lib/scrollback");
+    seedTail(scrollback, 100);
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(1);
+    // Error must NOT latch as exhausted — the user scrolls again, REST retries.
+    vi.mocked(api.listMessagesAfter).mockResolvedValueOnce([]);
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(2);
+  });
+
+  it("a CAPPED refreshScrollback invalidates the tail latch; a SHORT page does not", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    seedTail(scrollback, 100);
+
+    // Reach the tail: an empty forward page latches loadNewer.
+    vi.mocked(api.listMessagesAfter).mockResolvedValueOnce([]);
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(1);
+    // Latched — no fetch.
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(1);
+
+    // A SHORT refresh page (< REFRESH_LIMIT) drained everything after the
+    // resume cursor → no forward gap → the latch stays valid.
+    mockGetResumeCursor.mockReturnValue(100);
+    vi.mocked(api.listMessagesAfter).mockResolvedValueOnce([mkRow(101), mkRow(102)]);
+    await scrollback.refreshScrollback("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(2);
+    // Still latched → the next scroll-to-bottom is a no-op.
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(2);
+
+    // A FULL-cap refresh page (=== REFRESH_LIMIT = 200) means the tail may
+    // be further ahead (a >200-message reconnect) → invalidate the latch.
+    const bigPage = Array.from({ length: 200 }, (_, i) => mkRow(200 + i));
+    mockGetResumeCursor.mockReturnValue(102);
+    vi.mocked(api.listMessagesAfter).mockResolvedValueOnce(bigPage);
+    await scrollback.refreshScrollback("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(3);
+    // Latch invalidated → the next scroll-to-bottom pages forward again.
+    vi.mocked(api.listMessagesAfter).mockResolvedValueOnce([]);
+    await scrollback.loadNewer("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(4);
+  });
+});
+
 // CP29 R-5: refreshScrollback — refresh-on-WS-join-ok verb.
 //
 // Called from subscribe.ts's 5 join callbacks on EVERY successful

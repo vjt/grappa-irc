@@ -125,6 +125,7 @@ vi.mock("../lib/scrollback", () => ({
   appendToScrollback: vi.fn(),
   loadInitialScrollback: vi.fn(),
   loadMore: vi.fn(),
+  loadNewer: vi.fn(),
   sendMessage: vi.fn(),
   lastOwnSend: () => null,
 }));
