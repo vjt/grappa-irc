@@ -101,6 +101,35 @@ export const HOME_WINDOW_NAME = "$home";
 export const ADMIN_WINDOW_SLUG = "$admin";
 export const ADMIN_WINDOW_NAME = "$admin";
 
+// grappa-irc#160 — the name-side twin of `kindHasScrollback`, for the
+// boundary that has only the channel NAME (setReadCursor), not the kind.
+// A read-cursor / `/messages` request for one of these synthetic
+// pseudo-window names has no server-side channel row: `$home` / `$admin`
+// resolve to an unknown network slug (→ 404) and `$list` / mentions("")
+// are not valid target names (→ 400). In production nginx feeds those 4xx
+// to fail2ban's http-4xx jail → repeated hits escalate an idling user into
+// the `recidive` pf block, cutting them off web AND IRC from one IP.
+// Mirrors the server's `validate_target_name` contract at the write edge.
+//
+// `$server` (SERVER_WINDOW_NAME) is deliberately ABSENT: it IS a real
+// scrollback-backed target the server accepts (mirror of
+// KIND_HAS_SCROLLBACK.server = true), so cic legitimately writes a cursor
+// for it. IRC nicks/channels can never collide with these `$`-sentinels
+// (nicks start with a letter, channels with #/&/+/!), so a name match is
+// unambiguous.
+const VIRTUAL_WINDOW_NAMES: ReadonlySet<string> = new Set([
+  HOME_WINDOW_NAME,
+  ADMIN_WINDOW_NAME,
+  LIST_WINDOW_NAME,
+]);
+
+// True when `channelName` is a synthetic pseudo-window with no server-side
+// channel row (see VIRTUAL_WINDOW_NAMES). Empty string is the `mentions`
+// pseudo-window's channelName — also virtual.
+export function isVirtualWindowName(channelName: string): boolean {
+  return channelName === "" || VIRTUAL_WINDOW_NAMES.has(channelName);
+}
+
 export type Window = {
   /** Stable string id for keying in UI lists. */
   id: string;

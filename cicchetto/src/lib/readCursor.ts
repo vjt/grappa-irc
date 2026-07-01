@@ -32,6 +32,7 @@
 
 import { createEffect, createRoot, createSignal, on } from "solid-js";
 import { token } from "./auth";
+import { isVirtualWindowName } from "./windowKinds";
 
 const LEGACY_KEY_PREFIX = "rc:";
 
@@ -146,6 +147,19 @@ export const setReadCursor = async (
   channel: string,
   messageId: number,
 ): Promise<void> => {
+  // Virtual/synthetic pseudo-window guard (#160). $home / $admin / $list /
+  // mentions("") have NO server-side channel row: this POST 404s ($home/
+  // $admin resolve to an unknown network slug) or 400s ($list is not a
+  // valid target name). In production nginx feeds those 4xx to fail2ban's
+  // http-4xx jail → an idling user is escalated into the `recidive` pf
+  // block, cut off web AND IRC. The leak site is ScrollbackPane.onCleanup
+  // reading reactive props already advanced to the virtual selection;
+  // guarding at THIS boundary — the module that owns the POST, like the
+  // messageId contract below — makes every settle/blur/leave/unmount caller
+  // inherit it. Skip BOTH the optimistic local advance and the POST: a
+  // synthetic window has no cursor to advance. ($server is a REAL
+  // scrollback-backed target and is NOT virtual — see isVirtualWindowName.)
+  if (isVirtualWindowName(channel)) return;
   // Positive-int boundary guard (issue #44). Service-nick query windows
   // (NickServ/ChanServ/OperServ) settle/blur before a real persisted id
   // exists, so the settle handler can hand us a 0 / NaN / non-integer id.

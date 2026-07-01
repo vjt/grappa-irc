@@ -15085,3 +15085,74 @@ guards the SW-controlled precache serving of the deep-link (the real
 claiming — never covered).
 
 **Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change.
+
+---
+
+## #160 — virtual-tab read-cursor POST bans legit users via fail2ban (2026-07-01)
+
+**Prod incident (P0).** Selecting the **Home** / directory tab made
+cicchetto `POST /networks/$home/channels/$home/read-cursor` (and
+`$admin` / `$list`). Those pseudo-windows have no server-side channel
+row, so the POST 404s (`$home`/`$admin` — unknown network slug) or 400s
+(`$list` — invalid target name). nginx feeds those 4xx to the m42 host's
+fail2ban `http-404` / `http-400` jails (`maxretry 20`); a user idling on
+Home accumulates 404s, gets banned, and after repeats is escalated into
+the `recidive` jail — a long-bantime **pf** block that cuts the IP off
+the whole host, **web AND IRC**. Already hard-banned at least one legit
+beta user.
+
+**Root cause.** `ScrollbackPane` is a single, non-keyed instance whose
+`networkSlug`/`channelName` props are reactive getters bound to
+`selectedChannel()` (the three scrollback-backed kinds share one
+`<Match when={kindHasScrollback(selKind())}>` so the pane persists across
+`channel↔query↔server`). Selecting a non-backed tab flips that `<Match>`
+false and **disposes** the pane; its `onCleanup` cursor-flush reads
+`props.channelName` — which by then already points at the **virtual**
+selection — and POSTs a read-cursor there. The `onCleanup` comment
+asserting props "won't change before unmount" was false for this shared
+mount shape. The read side (`/messages`) was already gated by
+`kindHasScrollback` (grappa-irc#81); the write side (read-cursor) had no
+twin guard.
+
+**Fix.** Guard at `setReadCursor` — the single chokepoint every one of
+the six settle/blur/leave/unmount call sites funnels through — mirroring
+its existing `messageId > 0` boundary contract. New name-side predicate
+`isVirtualWindowName/1` in `windowKinds.ts` (the write-edge twin of
+`kindHasScrollback`): true for `$home` / `$admin` / `$list` /
+`mentions("")`, i.e. the names with no server-side row. `$server` is
+deliberately excluded — it is a real `NumericRouter`-backed target the
+server accepts (200), so cic must still write its cursor. IRC nicks
+(start with a letter) and channels (`#/&/+/!`) can never collide with the
+`$`-sentinels, so the name match is unambiguous. Guarding at the POST
+boundary (not per-call-site) makes the invariant robust against future
+new writers — "never emit a channel-scoped request for a window with no
+server-side row," now enforced on BOTH read and write edges.
+
+**Not fixed (flagged, latent, pre-existing — NOT a regression).** The
+same `onCleanup` reactive-props leak means leaving a real channel FOR a
+virtual tab no longer flushes the *real* channel's cursor on that
+transition (it read the wrong, now-virtual name before this fix too). In
+practice the scroll-settle timer already advanced the cursor while the
+channel was focused, so impact is a lost last-scroll within the 500 ms
+settle window — benign. A proper fix would snapshot the displayed
+`(slug, channel)` for `onCleanup` instead of reading live props; left as
+follow-up, out of scope for this hotfix.
+
+**Server-side defence-in-depth (already in place).** A fail2ban
+`ignoreregex` for `/read-cursor` responses `40[04]` was added to both the
+`http-400` and `http-404` jails on the m42 host as a safety net. The cic
+suppression is the real fix; the ignoreregex stops a legit client's own
+404 from ever counting as abuse. The server route is NOT changed to
+accept virtual channels — virtual tabs correctly have no cursor.
+
+**Test.** Unit (`setReadCursorVirtualGuard.test.ts`): real `setReadCursor`
++ `fetch` spy — no POST (and no optimistic local advance) for the four
+virtual names, POST for `#chan` and `$server`. Real e2e
+(`issue160-virtual-tab-no-cursor.spec.ts`): watches `page.on("response")`,
+selects a real channel then Home, asserts no read-cursor POST targeted a
+virtual name and none returned 4xx. RED against the disabled guard (it
+captured the real `POST …/channels/%24home/read-cursor → 404`), GREEN
+after — not hollow-green.
+
+**Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change,
+no BEAM restart, no session drop.
