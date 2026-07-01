@@ -200,19 +200,51 @@ const isDifferentDay = (aMs: number, bMs: number): boolean => {
   );
 };
 
-// UX-8 (b): scroll-settle visible-row math. Walks `.scrollback-line`
-// children of the listRef container, returns the highest `data-msg-id`
-// whose bottom edge is at-or-above the viewport bottom — i.e. the
-// last fully-visible message. Returns null when no row qualifies
-// (empty scrollback, or scrollTop above the first row's bottom).
+// UX-8 (b): scroll-settle visible-row math. Returns the id of the last
+// fully-visible message. When the pane is pinned to the bottom (#163)
+// this is the DOM true tail; otherwise it walks `.scrollback-line`
+// children of the listRef container and returns the highest `data-msg-id`
+// whose bottom edge is at-or-above the viewport bottom. Returns null when
+// no row qualifies (empty scrollback, or scrollTop above the first row's
+// bottom).
 //
 // O(n) where n = rows in scrollback. Called from the 500ms-debounced
 // scroll-settle path so the cost is bounded; for a 200-row #bofh
 // scrollback this is sub-millisecond.
 const lastFullyVisibleRowId = (listRef: HTMLDivElement): number | null => {
+  const rows = listRef.querySelectorAll<HTMLElement>(".scrollback-line");
+
+  // #163 — at-bottom short-circuit. When the pane is pinned to the
+  // bottom, the geometric walk below silently drops the TRUE TAIL: the
+  // last row's `offsetTop + offsetHeight` and `viewportBottom` are
+  // nominally equal, but sub-pixel/fractional geometry (fractional
+  // scrollHeight, last-card margin/padding, integer scrollTop rounding)
+  // makes the strict `>` test fire on the last row → the loop `break`s
+  // BEFORE assigning it → the cursor lands one message short and the
+  // channel keeps a phantom "1 unread" that re-appears on every leave.
+  // Derive the SAME pane-level distance-to-bottom the authoritative
+  // `atBottom` signal uses (onScroll, below) — robust by construction
+  // against the rounding a per-row epsilon can't fix — and return the
+  // DOM true-tail id directly. The true tail is always >= the geometric-
+  // walk id, so the forward-only `setCursorIfAdvances` gate is preserved
+  // (this only ever advances the cursor, never rewinds). Kept inside this
+  // pure fn so all four settle feed paths (onCleanup unmount, onScroll
+  // snapshot, 500ms scroll-settle, visibility-hide) inherit the fix with
+  // no per-caller duplication.
+  const distanceToBottom = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
+  if (distanceToBottom <= SCROLL_BOTTOM_THRESHOLD_PX) {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const id = rows[i]?.dataset.msgId;
+      if (id) return Number.parseInt(id, 10);
+    }
+    return null;
+  }
+
+  // Not pinned to the bottom: the last fully-visible row is the highest
+  // whose bottom edge is at-or-above the viewport bottom.
   const viewportBottom = listRef.scrollTop + listRef.clientHeight;
   let candidate: number | null = null;
-  for (const row of listRef.querySelectorAll<HTMLElement>(".scrollback-line")) {
+  for (const row of rows) {
     if (row.offsetTop + row.offsetHeight > viewportBottom) break;
     const id = row.dataset.msgId;
     if (id) candidate = Number.parseInt(id, 10);
@@ -1208,6 +1240,64 @@ const ScrollbackPane: Component<Props> = (props) => {
     });
   };
 
+  // #163 — leave-arm cursor write, in its OWN effect WITHOUT `defer`.
+  // On leaving a window (channel↔query↔server key change; the pane stays
+  // MOUNTED per Shell's shared `kindHasScrollback` Match, so `onCleanup`
+  // does NOT fire) mark the LEAVING window read up to what the operator saw.
+  //
+  // The `defer` split is the actual #163 fix and is load-bearing. This
+  // arm used to live inside the activation effect below, which carries
+  // `{defer:true}`. Solid's `on(key, fn, {defer:true})` skips the mount
+  // call and `return`s BEFORE assigning its internal `prevInput` (see
+  // solid-js `on`), so the FIRST real key change after mount invokes the
+  // callback with `prevKey === undefined`. The arm's guard
+  // `prevKey !== undefined` — meant to skip the mount — therefore skipped
+  // the first genuine leave after every mount/remount: no cursor was
+  // written and the just-read channel kept a phantom "1 unread" (proven by
+  // runtime instrumentation — the arm never fired, zero cursor POSTs). The
+  // activation effect still NEEDS `defer` (its mount run would pre-emptively
+  // clear the auto-focus scroll), so the arm moves to its own plain
+  // (non-deferred) effect: fn runs at mount (the guard skips it) AND Solid
+  // assigns `prevInput`, so the first real change carries a DEFINED
+  // `prevKey` and the arm runs.
+  //
+  // Which id: NOT `atBottom()`. That signal is unreliable HERE — the
+  // sibling activation effect runs in the SAME key-change batch and
+  // `setAtBottom(true)`s before this arm reads it (instrumentation caught
+  // `atBottom() === true` while the leaving pane sat 407px off the bottom).
+  // Use the leaving pane's OWN captured onScroll `visibleTailSnapshot`
+  // instead (a post-hoc `lastFullyVisibleRowId(listRef)` can't be used —
+  // Solid's `<For>` has already swapped rows to the new key). At the bottom
+  // the snapshot equals the store true-tail (the `lastFullyVisibleRowId`
+  // at-bottom short-circuit guarantees onScroll captured the true tail);
+  // scrolled up it is the last row the operator actually saw. Fall back to
+  // the store-tail only when no snapshot exists (pure auto-follow, never
+  // scrolled — still at the bottom, so the tail is correct).
+  // `setCursorIfAdvances` is forward-only, so a scrolled-up snapshot below
+  // the cursor is dropped, never rewinding. Channel→home/mentions switches
+  // unmount the pane and are covered by `onCleanup`.
+  createEffect(
+    on(key, (newKey, prevKey) => {
+      // `prevKey === undefined` only on the mount run (no `defer` here);
+      // `prevKey === newKey` shouldn't happen. Skip both.
+      if (prevKey === undefined || prevKey === newKey) return;
+      const snapshotted = visibleTailSnapshot.get(prevKey);
+      const prevMsgs = scrollbackByChannel()[prevKey];
+      const storeTail =
+        prevMsgs && prevMsgs.length > 0 ? (prevMsgs[prevMsgs.length - 1]?.id ?? null) : null;
+      const id = snapshotted ?? storeTail;
+      if (id !== null) {
+        const decoded = decodeChannelKey(prevKey);
+        if (decoded !== null) {
+          setCursorIfAdvances(decoded.slug, decoded.name, id);
+        }
+      }
+      // Free the snapshot for the leaving key — we won't visit this
+      // `prevKey` as `prev` again until a fresh scroll captures a new one.
+      visibleTailSnapshot.delete(prevKey);
+    }),
+  );
+
   // Activation trigger 1 — `selectedChannel` change. The underlying
   // `[data-testid="scrollback"]` <div> is the SAME DOM node across
   // selectedChannel changes (Solid's <Show> in Shell.tsx is non-keyed),
@@ -1240,47 +1330,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   createEffect(
     on(
       key,
-      (newKey, prevKey) => {
-        // BUGHUNT-2 + B7: leave-arm cursor write. When key transitions
-        // away from a window, Solid's `<For each={messages()}>` has
-        // ALREADY swapped rows to the new key's content — a post-hoc
-        // `lastFullyVisibleRowId(listRef)` reads the WRONG pane.
-        // B7 fix: read the leaving pane's snapshot from
-        // `visibleTailSnapshot` (captured on every onScroll for the
-        // current key, frozen across the Solid commit). Fallback to
-        // the leaving pane's store-tail when no snapshot exists
-        // (e.g. operator never scrolled — auto-follow kept them at
-        // bottom and onScroll never fired against the leaving key).
-        // The forward-only gate in `setCursorIfAdvances` keeps the
-        // contract honest either way.
-        //
-        // Skip on initial mount (prevKey undefined) and on identical-
-        // key re-fires (prevKey === newKey — defensive; shouldn't
-        // happen with `defer: true` + Solid's signal equality).
-        // Skip if visible-tail is null AND store-tail is null (empty
-        // pane, nothing to mark).
-        //
-        // Channel→home/mentions switches DON'T fire this — they
-        // unmount the component entirely. onCleanup covers that
-        // case (added in A5).
-        if (prevKey !== undefined && prevKey !== newKey) {
-          const snapshotted = visibleTailSnapshot.get(prevKey);
-          const prevMsgs = scrollbackByChannel()[prevKey];
-          const storeTail =
-            prevMsgs && prevMsgs.length > 0 ? (prevMsgs[prevMsgs.length - 1]?.id ?? null) : null;
-          const id = snapshotted ?? storeTail;
-          if (id !== null) {
-            const decoded = decodeChannelKey(prevKey);
-            if (decoded !== null) {
-              setCursorIfAdvances(decoded.slug, decoded.name, id);
-            }
-          }
-          // Free the snapshot for the leaving key — we won't visit
-          // this `prevKey` as `prev` again until a fresh scroll
-          // captures a new snapshot.
-          visibleTailSnapshot.delete(prevKey);
-        }
-
+      () => {
         // BUGHUNT-2: reset input-gate so the new pane starts fresh.
         // Programmatic activation `scrollIntoView` in scrollToActivation
         // must not inherit the leaving pane's timestamp.

@@ -15297,3 +15297,95 @@ this regression slipped through a scoped run.
 
 **Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change,
 no BEAM restart, no session drop.
+
+## 2026-07-01 — #163: off-by-one unread — last message never stays read when pinned to bottom
+
+**Symptom (vjt prod-reported, P1).** Open channel A scrolled to the
+bottom → the unread marker clears, A shows read. Select channel B. A's
+sidebar badge returns to **1 unread**. Re-selecting A re-injects the
+`── 1 unread message ──` divider. The last message of a channel never
+stayed marked-read while the pane was pinned to the bottom.
+
+**Root cause — the leave-arm never ran (a Solid `on`+`defer` trap), NOT
+geometry.** The cursor write for the LEAVING window on a
+channel↔query↔server switch (the pane stays MOUNTED across these — one
+shared `kindHasScrollback` Match in `Shell.tsx`, so `onCleanup` does not
+fire) is the pane's `on(key, …)` **leave-arm**. It lived INSIDE the pane's
+*activation* effect `createEffect(on(key, …, {defer:true}))`, guarded by
+`if (prevKey !== undefined && prevKey !== newKey)` — the author's intent
+being "skip the initial mount run." But Solid's `on(deps, fn, {defer:true})`
+skips the mount call and `return`s **before** assigning its internal
+`prevInput` (verified in `solid-js/dist/solid.js`), so the FIRST real key
+change after mount invokes the callback with `prevKey === undefined`. The
+guard therefore skipped the first genuine window-leave after every mount
+(and every remount — leaving to `$home`/`mentions`/`list` unmounts the
+pane, so re-entering chat and switching is a fresh "first leave"). No
+cursor was written for the leaving channel; its last message stayed unread
+→ phantom "1 unread" + re-injected divider. Proven by runtime
+instrumentation on the testnet: on `#bofh → $server` (pane `distance=7` ⇒
+pinned to bottom, true DOM tail present) the leave-arm logged exactly once
+with `prevKey` **undefined**, and **zero** read-cursor POSTs fired for the
+leaving channel. The symptom presents "when pinned to the bottom" only
+because that is the case where a skipped write is *visible* — the operator
+saw everything, yet the channel shows unread.
+
+The earlier WIP hypothesised a different site — a strict-`>` fractional
+off-by-one in `lastFullyVisibleRowId` (the pure fn feeding the
+fresh-measure paths: `onCleanup`, the 500ms scroll-settle, visibility-hide,
+and the `onScroll` snapshot). Instrumentation refuted it as the
+reproduction: the geometric walk already lands on the true tail in the
+runner (`walk === domTail`). That fractional drop is a real but
+browser/zoom-dependent hazard, not what #163 reproduced.
+
+**Fix.**
+1. **Split the leave-arm into its OWN `createEffect(on(key, …))` WITHOUT
+   `defer`** — the actual fix. A non-deferred effect runs fn at the mount
+   run (the `prevKey === undefined` guard skips it) AND Solid assigns
+   `prevInput`, so the first real change carries a DEFINED `prevKey` and
+   the arm runs. The activation effect keeps `defer:true` (its mount run
+   would pre-emptively clear the auto-focus scroll — the reason `defer` was
+   there; the bug was piggy-backing the leave-arm on it).
+2. **Choose the id from the leaving pane's own snapshot —
+   `id = snapshotted ?? storeTail`, NOT `atBottom()`.** `atBottom()` is
+   unreliable at this point: the sibling activation effect runs in the SAME
+   key-change batch and `setAtBottom(true)`s *before* the arm reads it —
+   instrumentation caught `atBottom() === true` while the leaving pane sat
+   407px off the bottom, which mis-selected the store-tail on a scrolled-up
+   leave and regressed `cursor-forward-only.spec.ts`. The leaving pane's
+   captured onScroll `visibleTailSnapshot` is the honest source (a post-hoc
+   `lastFullyVisibleRowId(listRef)` can't be used — Solid's `<For>` has
+   already swapped rows). At the bottom the snapshot equals the store
+   true-tail (guaranteed by point 3's short-circuit — onScroll captured the
+   true tail); scrolled up it is the last row actually seen; absent (pure
+   auto-follow, never scrolled — still at bottom) it falls back to the
+   store-tail. Forward-only drops a scrolled-up snapshot below the cursor,
+   never rewinding.
+3. **Kept the `lastFullyVisibleRowId` at-bottom short-circuit** (return the
+   DOM true tail within `SCROLL_BOTTOM_THRESHOLD_PX` instead of the
+   strict-`>` walk). Correct-by-construction against the fractional drop
+   the walk can hit on other browsers/zoom levels — and load-bearing for
+   point 2: it is what makes the `onScroll` snapshot equal the true tail
+   when at the bottom, so `snapshotted ?? storeTail` lands on the tail
+   without consulting the (unreliable) live `atBottom()` signal.
+
+**Invariants preserved.** `setCursorIfAdvances` stays forward-only (the
+snapshot/tail id only advances the cursor, never rewinds — a scrolled-up
+leave whose snapshot is below the cursor is dropped). Read state stays
+server-owned per (subject, network, channel) —
+this only changes which id cic COMPUTES as "last read" on leave, no
+storage-model / wire-shape / server change; cic originates no new state
+machine. The #156 anchored-fetch / frozen-divider contract and the #159
+activation-freshness re-fetch (same file surface) are untouched.
+
+**Test.** New chromium e2e (`unread-off-by-one-on-leave.spec.ts`): focus
+#bofh pinned to bottom, a peer PRIVMSGs a real tail row (asserted
+VISIBLE), leave to the $server window, then assert the leaving channel's
+sidebar badge has count 0 AND re-selecting injects NO `unread-marker` —
+the rendered outcome, never a cursor/fetch spy, never after a reload. RED
+because the deferred leave-arm never wrote the cursor (badge stays 1 /
+marker re-injects); GREEN once the non-deferred split makes it run. jsdom
+has zero layout so the vitest suite is unaffected. Full chromium
+`integration.sh` (NO `--grep`) is the merge gate.
+
+**Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change,
+no BEAM restart, no session drop.
