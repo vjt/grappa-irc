@@ -113,14 +113,18 @@ defmodule GrappaWeb.GrappaChannel do
     missing) and broadcasts the updated `query_windows_list` on the user topic.
     Subject-scoped per V2.
 
-  Visitor sockets are rejected (`visitor_not_allowed`) for the
-  state-mutating channel ops verbs (op/deop/voice/devoice/kick/ban/unban/
-  umode/mode/topic_set/topic_clear) plus the operator/escape-hatch verbs
-  (oper/raw). The read-only query verbs (whois/whowas/
-  who/names/banlist/lusers), `/away` (#62), and `/invite` (#31) are
-  visitor-eligible carve-outs: each visitor owns a private `Session.Server`
-  + upstream connection, and the upstream IRC server is the authority on
-  whether a given verb is permitted. See the per-clause comments.
+  Visitor sockets may issue EVERY verb — the state-mutating channel ops
+  (op/deop/voice/devoice/kick/ban/unban/umode/mode/topic_set/topic_clear),
+  the read-only queries (whois/whowas/who/names/banlist/lusers), `/away`
+  (#62), `/invite` (#31), `/oper` (#148), and the `/raw` escape hatch
+  (#153). Every verb resolves the socket to a `t:Grappa.Session.subject/0`
+  via `resolve_subject/1` (`{:visitor, id}` or `{:user, id}`) and
+  dispatches through `dispatch_subject_verb/3`: each visitor owns a
+  private `Session.Server` + upstream connection, and the upstream IRC
+  server (O:lines, channel-op status, services) is the authority on
+  whether a given verb is permitted — the bouncer only enforces
+  IRC-shape validation (identifier/CRLF/NUL) + body-size caps, never an
+  identity gate. See the per-clause comments.
 
   ## Outbound event shapes
 
@@ -408,10 +412,10 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
-    dispatch_ops_verb(
+    dispatch_subject_verb(
       socket,
       fn -> validate_args(channel: channel, nicks: nicks) end,
-      fn user -> Session.send_op({:user, user.id}, network_id, channel, nicks) end
+      fn subject -> Session.send_op(subject, network_id, channel, nicks) end
     )
   end
 
@@ -422,10 +426,10 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
-    dispatch_ops_verb(
+    dispatch_subject_verb(
       socket,
       fn -> validate_args(channel: channel, nicks: nicks) end,
-      fn user -> Session.send_deop({:user, user.id}, network_id, channel, nicks) end
+      fn subject -> Session.send_deop(subject, network_id, channel, nicks) end
     )
   end
 
@@ -436,10 +440,10 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
-    dispatch_ops_verb(
+    dispatch_subject_verb(
       socket,
       fn -> validate_args(channel: channel, nicks: nicks) end,
-      fn user -> Session.send_voice({:user, user.id}, network_id, channel, nicks) end
+      fn subject -> Session.send_voice(subject, network_id, channel, nicks) end
     )
   end
 
@@ -450,10 +454,10 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
-    dispatch_ops_verb(
+    dispatch_subject_verb(
       socket,
       fn -> validate_args(channel: channel, nicks: nicks) end,
-      fn user -> Session.send_devoice({:user, user.id}, network_id, channel, nicks) end
+      fn subject -> Session.send_devoice(subject, network_id, channel, nicks) end
     )
   end
 
@@ -466,10 +470,10 @@ defmodule GrappaWeb.GrappaChannel do
       when is_integer(network_id) and is_binary(channel) and is_binary(nick) and
              is_binary(reason) do
     with_body_check(socket, reason, fn ->
-      dispatch_ops_verb(
+      dispatch_subject_verb(
         socket,
         fn -> validate_args(channel: channel, nick: nick, line: reason) end,
-        fn user -> Session.send_kick({:user, user.id}, network_id, channel, nick, reason) end
+        fn subject -> Session.send_kick(subject, network_id, channel, nick, reason) end
       )
     end)
   end
@@ -481,10 +485,10 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_binary(mask) do
-    dispatch_ops_verb(
+    dispatch_subject_verb(
       socket,
       fn -> validate_args(channel: channel, mask: mask) end,
-      fn user -> Session.send_ban({:user, user.id}, network_id, channel, mask) end
+      fn subject -> Session.send_ban(subject, network_id, channel, mask) end
     )
   end
 
@@ -495,24 +499,24 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_binary(mask) do
-    dispatch_ops_verb(
+    dispatch_subject_verb(
       socket,
       fn -> validate_args(channel: channel, mask: mask) end,
-      fn user -> Session.send_unban({:user, user.id}, network_id, channel, mask) end
+      fn subject -> Session.send_unban(subject, network_id, channel, mask) end
     )
   end
 
   # /invite alice  →  INVITE alice #chan (RFC 2812: nick first, channel second)
   #
-  # Issue #31: routes via `dispatch_subject_verb/3`, NOT `dispatch_ops_verb/3`.
-  # INVITE is a write verb, but visitors are entitled to issue it — each
-  # visitor owns a private, isolated `Session.Server` + upstream IRC
-  # connection, `Session.send_invite/4` already accepts `t:Session.subject/0`
-  # (guarded on `is_subject/1` + routed via `call_session/3`), and the
-  # upstream IRC server is the real authority on whether the invite is
-  # permitted (issuer must be on the channel; op for +i). Mirrors the #62
-  # `/away` and C3 WHOIS carve-outs — a visitor without a live session gets
-  # `no_session`, never the `visitor_not_allowed` short-circuit.
+  # Issue #31: routes via `dispatch_subject_verb/3` (as every verb does
+  # post-#153). INVITE is a write verb, but visitors are entitled to issue
+  # it — each visitor owns a private, isolated `Session.Server` + upstream
+  # IRC connection, `Session.send_invite/4` already accepts
+  # `t:Session.subject/0` (guarded on `is_subject/1` + routed via
+  # `call_session/3`), and the upstream IRC server is the real authority on
+  # whether the invite is permitted (issuer must be on the channel; op for
+  # +i). A visitor without a live session gets `no_session`, never an
+  # identity rejection.
   def handle_in(
         "invite",
         %{"network_id" => network_id, "channel" => channel, "nick" => nick},
@@ -551,12 +555,9 @@ defmodule GrappaWeb.GrappaChannel do
   # rejected here (WHOIS is a read-only query and the visitor session
   # is allowed to issue it; the bundle's broadcast topic uses the
   # visitor's `subject_label` so the visitor's own cic surface is the
-  # only consumer). C3 (CRITICAL — 2026-05-12 codebase review): pre-fix
-  # this clause routed through `dispatch_ops_verb/2`, which short-circuits
-  # visitors with `visitor_not_allowed` before the verb dispatches —
-  # contradicting the carve-out the comment described. Fix uses
-  # `dispatch_subject_verb/2`, which accepts BOTH `{:user, _}` and
-  # `{:visitor, _}` subjects and rejects only on `:no_session`.
+  # only consumer). Routes via `dispatch_subject_verb/3`, which accepts
+  # BOTH `{:user, _}` and `{:visitor, _}` subjects and rejects only on
+  # `:no_session`.
   def handle_in(
         "whois",
         %{"network_id" => network_id, "nick" => nick},
@@ -660,10 +661,10 @@ defmodule GrappaWeb.GrappaChannel do
       )
       when is_integer(network_id) and is_binary(modes) do
     with_body_check(socket, modes, fn ->
-      dispatch_ops_verb(
+      dispatch_subject_verb(
         socket,
         fn -> validate_args(line: modes) end,
-        fn user -> Session.send_umode({:user, user.id}, network_id, modes) end
+        fn subject -> Session.send_umode(subject, network_id, modes) end
       )
     end)
   end
@@ -676,10 +677,10 @@ defmodule GrappaWeb.GrappaChannel do
       )
       when is_integer(network_id) and is_binary(target) and is_binary(modes) and is_list(params) do
     with_body_check(socket, modes, fn ->
-      dispatch_ops_verb(
+      dispatch_subject_verb(
         socket,
         fn -> validate_args(line: target, line: modes, params: params) end,
-        fn user -> Session.send_mode({:user, user.id}, network_id, target, modes, params) end
+        fn subject -> Session.send_mode(subject, network_id, target, modes, params) end
       )
     end)
   end
@@ -717,24 +718,24 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) do
-    dispatch_ops_verb(
+    dispatch_subject_verb(
       socket,
       fn -> validate_args(channel: channel) end,
-      fn user -> Session.send_topic_clear({:user, user.id}, network_id, channel) end
+      fn subject -> Session.send_topic_clear(subject, network_id, channel) end
     )
   end
 
   # Bundle C (#20 follow-up) — /oper <name> <password> upstream.
   #
   # Issue #148: visitor-ELIGIBLE (routes via `dispatch_subject_verb/3`,
-  # NOT `dispatch_ops_verb/3`). A visitor opering is safe: the session
+  # like every verb post-#153). A visitor opering is safe: the session
   # registry key includes the full `{:visitor, id}` subject tag
   # (`Session.Server.registry_key/2`), so a visitor has its OWN
   # `Session.Server` and opers ONLY its own upstream IRC link — no
   # shared/pooled session to leak across. The ircd O:line is the real
   # authority (the visitor becomes oper only if the upstream accepts the
-  # creds); the bouncer gate was belt-and-suspenders. The gate STAYS for
-  # every other write verb — only `oper` is relaxed.
+  # creds); the bouncer gate was belt-and-suspenders. #153 dropped that
+  # identity gate for EVERY verb, not just `oper`.
   #
   # The password travels over the WS frame and is REDACTED in any
   # server-side log line (see `Session.Server.handle_call({:send_oper,
@@ -755,19 +756,23 @@ defmodule GrappaWeb.GrappaChannel do
     )
   end
 
-  # Bundle C (#20 follow-up) — /quote <raw IRC line>. Visitor-blocked:
-  # the escape hatch is a registered-user power tool; bouncer enforces
-  # the same CRLF/NUL safety as every other outbound verb.
+  # Bundle C (#20 follow-up) — /quote <raw IRC line>. Visitor-eligible
+  # (#153): routes via `dispatch_subject_verb/3` like every other verb.
+  # /quote is the unrestricted escape hatch — de-gating it means a
+  # visitor (like a user) can send EVERYTHING, including
+  # adminserv/as/stats/rehash. That is INTENDED: the ircd O:line +
+  # services are the real authority, the bouncer only enforces the same
+  # CRLF/NUL line-safety it applies to every other outbound verb.
   def handle_in(
         "raw",
         %{"network_id" => network_id, "line" => line},
         socket
       )
       when is_integer(network_id) and is_binary(line) do
-    dispatch_ops_verb(
+    dispatch_subject_verb(
       socket,
       fn -> validate_args(line: line) end,
-      fn user -> Session.send_raw({:user, user.id}, network_id, line) end
+      fn subject -> Session.send_raw(subject, network_id, line) end
     )
   end
 
@@ -1084,27 +1089,6 @@ defmodule GrappaWeb.GrappaChannel do
   # Private helpers
   # ---------------------------------------------------------------------------
 
-  @spec visitor?(String.t()) :: boolean()
-  defp visitor?(user_name), do: String.starts_with?(user_name, "visitor:")
-
-  # CP24 bucket E web/S6 + S7: tagged-tuple gate helpers used by Channel
-  # `handle_in/3` clauses. Each predicate the `with` chain consults
-  # returns `{:ok, _}` on success or `{:error, :tag}` on failure so the
-  # `else` arms match by tag (single source) rather than by raw boolean
-  # value (ambiguous between two checks). CLAUDE.md "Atoms or `@type t
-  # :: literal | literal` — never untyped strings" applies to control
-  # flow too: an `else true ->` arm is structurally identical to an
-  # `else false ->` arm and the second `with true <- ...` clause silently
-  # remaps the error message of the first.
-
-  @spec check_not_visitor(String.t()) ::
-          {:ok, :user} | {:error, :visitor_not_allowed}
-  defp check_not_visitor(user_name) do
-    if visitor?(user_name),
-      do: {:error, :visitor_not_allowed},
-      else: {:ok, :user}
-  end
-
   # CP24 bucket E web/S7: per-arg IRC-shape validator used by every
   # `handle_in/3` clause that accepts `channel`, `nick`, `nicks`, or
   # `mask` payload fields. Reject the FIRST malformed token with a
@@ -1199,97 +1183,14 @@ defmodule GrappaWeb.GrappaChannel do
     end
   end
 
-  # S5.3: shared dispatch path for visitor-rejecting (write) ops verbs.
-  # CP24 bucket B reviewer add-on: read-only verbs (whois/who/names/banlist)
-  # split off to `dispatch_subject_verb/2` below — visitors are entitled
-  # to issue those.
-  #
-  # 1. Reject visitor sockets — they have no upstream IRC session with operator
-  #    state, AND the verbs that route here mutate channel/server state
-  #    (op/deop/voice/devoice/kick/ban/unban/invite/umode/mode/topic_set/
-  #    topic_clear) which the visitor's `subject_label` topic isn't
-  #    entitled to drive.
-  # 2. Resolve the authenticated user.
-  # 3. Invoke the caller-supplied session thunk. The thunk returns
-  #    `:ok | {:error, :no_session}` — `call_session` inside Session.*
-  #    returns `{:error, :no_session}` when no session is registered for the
-  #    (user, network_id) pair.
-  #
-  # Error mapping is kept flat and minimal — the cicchetto client needs a short
-  # discriminator string, not a nested struct.
-  # CP24 bucket E web/S7: arity-3 dispatch that runs an inbound IRC-shape
-  # validator BEFORE visitor + user resolution + session dispatch. The
-  # `validate_thunk` returns `{:ok, _} | {:error, :invalid_*}`. Defense in
-  # depth at the outer untrusted boundary — the REST surface gates via
-  # `GrappaWeb.Validation.validate_*` (`{:error, :bad_request}` → 400);
-  # the Channel surface uses tagged-tuple atoms (`:invalid_channel` /
-  # `:invalid_nick` / `:invalid_mask` / `:invalid_line`) that the
-  # `else` arms map to a stable cicchetto-facing reason string. A
-  # hostile cic instance (or compromised user) cannot inject
-  # malformed/CRLF/NUL bytes via WS even if the upstream Identifier
-  # gate ever loosens.
-  @spec dispatch_ops_verb(
-          Phoenix.Socket.t(),
-          (-> {:ok, term()} | {:error, atom()}),
-          (Accounts.User.t() -> :ok | {:error, atom()})
-        ) :: {:reply, :ok | {:error, map()}, Phoenix.Socket.t()}
-  defp dispatch_ops_verb(socket, validate_thunk, thunk) do
-    user_name = socket.assigns.user_name
-
-    with {:ok, _} <- validate_thunk.(),
-         {:ok, _} <- check_not_visitor(user_name),
-         {:ok, user} <- safe_get_user(user_name),
-         :ok <- thunk.(user) do
-      {:reply, :ok, socket}
-    else
-      {:error, :invalid_channel} ->
-        {:reply, {:error, %{error: "invalid_channel"}}, socket}
-
-      {:error, :invalid_nick} ->
-        {:reply, {:error, %{error: "invalid_nick"}}, socket}
-
-      {:error, :invalid_mask} ->
-        {:reply, {:error, %{error: "invalid_mask"}}, socket}
-
-      {:error, :invalid_line} ->
-        {:reply, {:error, %{error: "invalid_line"}}, socket}
-
-      {:error, :visitor_not_allowed} ->
-        {:reply, {:error, %{error: "visitor_not_allowed"}}, socket}
-
-      :error ->
-        {:reply, {:error, %{error: "user_not_found"}}, socket}
-
-      {:error, :no_session} ->
-        {:reply, {:error, %{error: "no_session"}}, socket}
-
-      # REV-E (H11) — reviewer HIGH-1: Session.send_* CAN return
-      # `{:error, :no_socket | :closed | :inet.posix()}` post-U-cluster
-      # boundary fix once a dead-socket SEND fires. Pre-REV-E those
-      # crashed Session.Server with MatchError; REV-E fixed Session.Server
-      # to propagate cleanly, but those error shapes had no `else` arm
-      # here — would have raised WithClauseError in the Channel process
-      # (same crash class, different victim). Catch-all maps any
-      # uncategorised upstream-write failure to a single typed cic
-      # surface so the operator's /op (etc.) gets a structured reply
-      # instead of the Channel dying.
-      {:error, reason} ->
-        Logger.warning("ops verb: upstream send failed",
-          reason: inspect(reason)
-        )
-
-        {:reply, {:error, %{error: "upstream_unavailable"}}, socket}
-    end
-  end
-
   # HIGH-19 (no-silent-drops B6.9a 2026-05-14): inline body cap wrapper
   # for ops verbs that thread free-form text upstream (kick reason,
   # umode/mode modes string). Pre-checks `BodyLimit.check/1` before
-  # `dispatch_ops_verb/3`; oversize input replies `body_too_large`
+  # `dispatch_subject_verb/3`; oversize input replies `body_too_large`
   # without ever entering the with chain. Dialyzer's success-typing
   # narrows the with-chain `else` arms based on actual reachable
   # validator outputs, so adding a `:body_too_large` arm to
-  # `dispatch_ops_verb`'s `else` triggers `pattern_match never matches`
+  # `dispatch_subject_verb`'s `else` triggers `pattern_match never matches`
   # — the explicit pre-check side-steps that and keeps the with chain
   # focused on identifier-shape validation.
   @spec with_body_check(
@@ -1316,14 +1217,12 @@ defmodule GrappaWeb.GrappaChannel do
         ) :: {:reply, term(), Phoenix.Socket.t()}
   defp topic_set_dispatch(socket, user_name, network_id, channel, text) do
     with {:ok, _} <- validate_args(channel: channel, line: text),
-         {:ok, _} <- check_not_visitor(user_name),
-         {:ok, user} <- safe_get_user(user_name),
-         :ok <- Session.send_topic({:user, user.id}, network_id, channel, text) do
+         {:ok, subject} <- resolve_subject(user_name),
+         :ok <- Session.send_topic(subject, network_id, channel, text) do
       {:reply, :ok, socket}
     else
       {:error, :invalid_channel} -> {:reply, {:error, %{error: "invalid_channel"}}, socket}
       {:error, :invalid_line} -> {:reply, {:error, %{error: "invalid_line"}}, socket}
-      {:error, :visitor_not_allowed} -> {:reply, {:error, %{error: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
       {:error, :no_session} -> {:reply, {:error, %{error: "no_session"}}, socket}
       {:error, _} -> {:reply, {:error, %{error: "persist_failed"}}, socket}
@@ -1352,25 +1251,31 @@ defmodule GrappaWeb.GrappaChannel do
     end
   end
 
-  # C3 (CRITICAL — 2026-05-12 codebase review): subject-aware dispatch for
-  # read-only verbs that visitors are explicitly allowed to issue (WHOIS,
-  # WHO, NAMES, BANLIST as of CP24 bucket B reviewer add-on; future
-  # visitor-eligible read verbs land here too). Mirrors
-  # `dispatch_ops_verb/2` but resolves the socket's identity into a
-  # `t:Grappa.Session.subject/0` tagged tuple — `{:user, id}` for an
+  # The SOLE dispatch path for every `handle_in/3` verb — read queries
+  # (whois/who/names/banlist/lusers/whowas), the state-mutating channel
+  # ops (op/deop/voice/devoice/kick/ban/unban/umode/mode/topic_set/
+  # topic_clear), `/invite`, `/oper`, and the `/raw` escape hatch. It
+  # resolves the socket's identity into a `t:Grappa.Session.subject/0`
+  # tagged tuple via `resolve_subject/1` — `{:user, id}` for an
   # authenticated user (loaded via `safe_get_user/1`), `{:visitor, id}`
   # for a visitor (id extracted from the `"visitor:<uuid>"` `user_name`
   # assigned by `UserSocket.connect/3`). The thunk receives the subject
   # and dispatches to a `Session.send_*` facade that already accepts
-  # `subject()`. Reject-only path is `{:error, :no_session}` — visitors
-  # without a live `Session.Server` get the same surface user-side
-  # callers do, NOT the `visitor_not_allowed` carve-out.
-  # CP24 bucket E web/S7: arity-3 subject-verb dispatch with inbound
-  # IRC-shape validation. Mirror of `dispatch_ops_verb/3` for the
-  # read-only verbs (whois/who/names/banlist) that visitors are allowed
-  # to issue. Same defense-in-depth rationale: hostile cic should not be
-  # able to inject CRLF/NUL or malformed IRC tokens into a channel send,
-  # even if the upstream Identifier gate ever loosens.
+  # `subject()`. There is NO identity gate: visitors and users route
+  # identically (#153) — the upstream IRC server (O:lines, channel-op
+  # status, services) is the real authority. The only reject-on-identity
+  # path is `:error` → `user_not_found` (a deleted-user-row race), and
+  # `{:error, :no_session}` when no live `Session.Server` owns the
+  # subject.
+  #
+  # CP24 bucket E web/S7: the arity-3 shape runs an inbound IRC-shape
+  # validator BEFORE resolution + dispatch. Defense in depth at the
+  # outer untrusted boundary — a hostile cic instance (or compromised
+  # user) cannot inject malformed/CRLF/NUL IRC tokens into a channel
+  # send via WS, even if the upstream `Identifier` gate ever loosens.
+  # The tagged-tuple atoms (`:invalid_channel` / `:invalid_nick` /
+  # `:invalid_mask` / `:invalid_line`) map in the `else` arms to a
+  # stable cicchetto-facing reason string.
   @spec dispatch_subject_verb(
           Phoenix.Socket.t(),
           (-> {:ok, term()} | {:error, atom()}),
@@ -1402,16 +1307,14 @@ defmodule GrappaWeb.GrappaChannel do
       {:error, :no_session} ->
         {:reply, {:error, %{error: "no_session"}}, socket}
 
-      # REV-F (H10): mirror of REV-E HIGH-1 catch-all on dispatch_ops_verb/3.
-      # `Session.send_*` post-U-cluster CAN return `{:error, :no_socket
-      # | :closed | :inet.posix()}` once a dead-socket SEND fires (the
-      # `Session.send_transport_error/0` typedoc'd union). Pre-REV-F
-      # those would raise WithClauseError in the channel pid; this
+      # REV-F (H10, originally REV-E HIGH-1): `Session.send_*` post-U-
+      # cluster CAN return `{:error, :no_socket | :closed |
+      # :inet.posix()}` once a dead-socket SEND fires (the
+      # `Session.send_transport_error/0` typedoc'd union). Without this
+      # arm those would raise WithClauseError in the channel pid; the
       # catch-all maps any uncategorised upstream-write failure to a
       # single typed cic surface (the operator's /whois etc. gets a
-      # structured reply instead of the channel dying). Same crash-
-      # class defense the sister `dispatch_ops_verb/3` already carries;
-      # consistency drift was the root cause of REV-E HIGH-1.
+      # structured reply instead of the channel dying).
       {:error, reason} ->
         Logger.warning("subject verb: upstream send failed",
           reason: inspect(reason)

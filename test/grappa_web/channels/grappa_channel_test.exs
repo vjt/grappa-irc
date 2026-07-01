@@ -1188,8 +1188,22 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert Process.alive?(session_pid), "Session.Server must survive dead-socket /op"
     end
 
-    test "visitor socket: op returns visitor_not_allowed", %{network: network} do
-      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+    # Issue #153 (P0): every state-changing verb is visitor-eligible. A
+    # VISITOR socket pushing "op" must NOT short-circuit — it reaches
+    # `Session.send_op` and ships MODE upstream on the visitor's OWN
+    # session (mirror of the #148 /oper carve-out, now generalized to
+    # every verb). Safe because the registry key includes the
+    # `{:visitor, id}` subject tag, so the visitor mode-sets only its own
+    # upstream IRC link; the ircd is authoritative on channel-op status.
+    # Pre-#153 this replied `visitor_not_allowed` via the removed
+    # `dispatch_ops_verb`/`check_not_visitor` gate.
+    test "op: visitor socket ships MODE upstream (issue #153 — no visitor gate)" do
+      {server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+
+      visitor_name = "visitor:#{visitor.id}"
       topic = Topic.user(visitor_name)
 
       {:ok, _, visitor_socket} =
@@ -1204,7 +1218,8 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nicks" => ["alice"]
         })
 
-      assert_reply(ref, :error, %{error: "visitor_not_allowed"})
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "MODE #snap +o alice"), 1_000)
     end
 
     test "topic_set: sends TOPIC #chan :text upstream", %{
@@ -1280,8 +1295,19 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_reply(ref, :error, %{error: "invalid_channel"})
     end
 
-    test "topic_set: visitor with safe line returns visitor_not_allowed" do
-      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+    # Issue #153: topic_set is visitor-eligible. A VISITOR with a live
+    # session ships TOPIC upstream (pre-#153 this replied
+    # `visitor_not_allowed` via the removed topic_set_dispatch gate). The
+    # "earlier source wins" test above still pins that validate_args
+    # runs BEFORE identity resolution — a malformed channel from a
+    # visitor is still rejected with `invalid_channel`, not dispatched.
+    test "topic_set: visitor socket ships TOPIC upstream (issue #153)" do
+      {server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+
+      visitor_name = "visitor:#{visitor.id}"
       topic = Topic.user(visitor_name)
 
       {:ok, _, visitor_socket} =
@@ -1291,12 +1317,13 @@ defmodule GrappaWeb.GrappaChannelTest do
 
       ref =
         push(visitor_socket, "topic_set", %{
-          "network_id" => 1,
+          "network_id" => network.id,
           "channel" => "#snap",
-          "text" => "ok"
+          "text" => "visitor topic"
         })
 
-      assert_reply(ref, :error, %{error: "visitor_not_allowed"})
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "TOPIC #snap :visitor topic\r\n"), 1_000)
     end
 
     test "topic_clear: sends TOPIC #chan : (empty trailing) upstream", %{
@@ -1337,9 +1364,9 @@ defmodule GrappaWeb.GrappaChannelTest do
     # session. Safe because the registry key includes the `{:visitor, id}`
     # subject tag (`Session.Server.registry_key/2`), so the visitor opers
     # only its own upstream IRC link (no shared/pooled session), and the
-    # ircd O:line is authoritative on whether the creds are accepted. The
-    # bouncer gate stays for every OTHER write verb (see "visitor socket:
-    # op returns visitor_not_allowed" — only oper relaxed).
+    # ircd O:line is authoritative on whether the creds are accepted. #153
+    # generalized this to EVERY verb — see the sibling "op:/topic_set:/raw:
+    # visitor socket ships … upstream" tests.
     test "oper: visitor socket ships OPER upstream (issue #148 — not visitor_not_allowed)" do
       {server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
@@ -1457,6 +1484,36 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :error, %{error: "invalid_line"})
+    end
+
+    # Issue #153: /quote (the raw escape hatch) is visitor-eligible. A
+    # VISITOR ships the raw line verbatim upstream — the ircd/services are
+    # the authority on what the line is allowed to do; the bouncer keeps
+    # only the CRLF/NUL frame-safety gate (asserted by the sibling
+    # "raw: rejects embedded CRLF" test, which still holds for visitors
+    # since validate_args runs before identity resolution).
+    test "raw: visitor socket ships the line verbatim upstream (issue #153)" do
+      {server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "raw", %{
+          "network_id" => network.id,
+          "line" => "PING :visitor-raw-153"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PING :visitor-raw-153\r\n"), 1_000)
     end
 
     # CP22 cluster B (channel-client-polish #14) — /who bridge: cic pushes

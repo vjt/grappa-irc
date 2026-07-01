@@ -14571,6 +14571,14 @@ server (the success assertion has no 381 to match).
 **Deploy:** server change (`grappa_channel.ex`) — NOT a hot cic-only
 bundle; `deploy-m42.sh` auto-classifies hot/cold.
 
+**→ Superseded 2026-07-01 by #153 (below).** The "gate STAYS for every
+other verb / only oper moved" scope above no longer holds: #153 removed
+the identity gate for ALL verbs and DELETED `dispatch_ops_verb/3` +
+`check_not_visitor/1` entirely (every verb now routes through
+`dispatch_subject_verb/3`). The `"visitor socket: op returns
+visitor_not_allowed"` boundary test cited here was flipped to assert the
+verb ships upstream.
+
 ---
 
 ### 2026-06-29 — #142: every user-text surface routes through the one mIRC renderer
@@ -15480,3 +15488,82 @@ merge gate.
 
 **Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change,
 no BEAM restart, no session drop.
+
+---
+
+### 2026-07-01 — #153: every state-changing verb is visitor-eligible (the identity gate is gone)
+
+**P0 ask (vjt): visitors and users alike must be able to send every
+command.** #148 relaxed the visitor gate for `/oper` only; #153
+generalizes that to EVERY verb — `/op /deop /voice /devoice /kick /ban
+/unban /umode /mode /topic_set /topic_clear` and the `/quote` (raw)
+escape hatch. Pre-#153 those routed through `dispatch_ops_verb/3`, whose
+`with` chain ran `check_not_visitor/1` → a visitor-backed socket got
+`{:error, :visitor_not_allowed}` and the verb never reached upstream.
+
+**The issue's own mechanism was wrong — challenge-the-spec.** The #153
+body said "drop `check_not_visitor`, KEEP `safe_get_user`." Verified
+against the code, that mechanism is broken: `safe_get_user/1` =
+`Accounts.get_user_by_name!/1` rescuing `NoResultsError`, and a visitor's
+`user_name` is `"visitor:<uuid>"` — no `users` row → `:error` →
+`user_not_found`. And every `dispatch_ops_verb` thunk hard-built
+`{:user, user.id}`, which targets a `{:user, _}`-keyed session that a
+visitor doesn't own. So de-gating `dispatch_ops_verb` while keeping
+`safe_get_user` just moves the visitor's rejection one line down; the
+verbs still never reach upstream.
+
+**Correct fix = consolidate onto the ONE visitor-eligible helper (reuse
+the verbs, not the nouns).** Every ops verb now routes through the
+existing `dispatch_subject_verb/3` — the same helper #148 (`/oper`) and
+#31 (`/invite`) already used. It resolves the socket identity via
+`resolve_subject/1` (`"visitor:"<>id → {:visitor, id}`, else delegates to
+`safe_get_user` → `{:user, id}`) and hands the thunk the SUBJECT. This
+PRESERVES every validation the old path carried — `validate_args`
+(identifier/CRLF/NUL shape), `with_body_check` BodyLimit on
+kick/umode/mode/topic, and the REV-E/REV-F `upstream_unavailable`
+catch-all — and KEEPS `safe_get_user` (resolve_subject calls it on the
+user branch; "keep safe_get_user" in the spec meant keep that
+VALIDATION, which the re-route does). All `Session.send_*` facades
+already accept `subject()`, so no facade/Server change was needed.
+`topic_set_dispatch/5` (its own `with` chain, not a `dispatch_ops_verb`
+call) was de-gated the same way (`resolve_subject` + `send_topic(subject,
+…)`). This is not a behavior change for USERS — they already resolved to
+`{:user, id}` via the user branch → byte-identical send.
+
+**Dead code removed (mandatory for green, not tidy-up).**
+`dispatch_ops_verb/3`, `check_not_visitor/1`, and `visitor?/1` (its sole
+caller was `check_not_visitor`) are deleted, along with the two
+now-unreachable `{:error, :visitor_not_allowed}` `else` arms — Dialyzer
+flags unreachable arms as `pattern_match never matches` and
+`--warnings-as-errors` fails on the orphaned `visitor?/1`.
+`dispatch_subject_verb/3` is now the SOLE dispatch path for every
+`handle_in/3` verb.
+
+**`/quote` now passes EVERYTHING — intended.** De-gating the raw escape
+hatch means a visitor (like a user) can send adminserv/as/stats/rehash
+and any other raw line. That is deliberate (vjt: visitors + users send
+every command): the ircd O:line + services are the real authority; the
+bouncer keeps only the CRLF/NUL frame-safety gate (`validate_args`),
+which runs BEFORE identity resolution and still rejects malformed lines
+for visitors and users alike.
+
+**Tests — RED→GREEN, anti-hollow.** Server ExUnit
+(`grappa_channel_test.exs`): the `"visitor socket: op returns
+visitor_not_allowed"` and `"topic_set: visitor … visitor_not_allowed"`
+tests were FLIPPED to assert the verb ships MODE/TOPIC upstream (never
+assert removed behavior), and a new visitor `/raw` test asserts the raw
+line ships verbatim; the `"topic_set: visitor + invalid_channel"` test
+stays GREEN and pins that `validate_args` still runs before identity
+resolution. E2E (`cicchetto/e2e/tests/issue153-visitor-state-verbs.spec.ts`):
+a visitor boots cic, `/oper`s (so it can mode regardless of the leaf's
+split-mode first-joiner-op behavior), `/join`s a fresh channel, and an
+independent peer IRC client sharing the channel WITNESSES both a
+`/quote PRIVMSG` line and a `/mode +m` MODE line arriving from upstream —
+the visible upstream effect, not a client-side spy. RED pre-fix (both
+`peer.waitForLine` promises time out; the verbs are short-circuited);
+GREEN post-fix. Full chromium `integration.sh` (NO `--grep`) is the merge
+gate — de-gating the shared channel-dispatch path touches every ops verb.
+
+**Deploy:** server change (`grappa_channel.ex`) — COLD (BEAM restart,
+drops live IRC sessions), night-batched per the no-daytime-cold-deploy
+standing order; `deploy-m42.sh` auto-classifies hot/cold.

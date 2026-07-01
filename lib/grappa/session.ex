@@ -97,7 +97,7 @@ defmodule Grappa.Session do
   Client.send_*` strict-binds that MatchError-crashed Session.Server;
   post-REV-E it propagates cleanly through the wrappers to whichever
   caller surfaces upstream send failures (controllers map to 5xx;
-  GrappaChannel's `dispatch_ops_verb` maps to a typed
+  GrappaChannel's `dispatch_subject_verb` maps to a typed
   `upstream_unavailable` reply).
   """
   @type send_transport_error :: :no_socket | :closed | :inet.posix()

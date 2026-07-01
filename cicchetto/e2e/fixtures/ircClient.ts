@@ -284,6 +284,31 @@ export class IrcPeer {
     this.nick = newNick;
   }
 
+  // Witness an inbound server line matching `pattern`. Unlike `mode` /
+  // `kick` / `oper` above — which await the peer's OWN action echo —
+  // this awaits a line the peer receives because a THIRD PARTY acted in
+  // a channel it shares (e.g. a MODE or PRIVMSG issued by another member).
+  // The `raw` event fires for every wire-line; `from_server` filters out
+  // the peer's own outbound frames. Used by the #153 visitor-verbs spec
+  // to prove a visitor's /mode and /quote reached upstream AND took
+  // effect — the peer only sees the line if bahamut applied and relayed
+  // it.
+  waitForLine(pattern: RegExp, label: string, timeoutMs = 8_000): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`IrcPeer: timeout waiting for ${label} (${timeoutMs}ms)`)),
+        timeoutMs,
+      );
+      const handler = (event: { line: string; from_server: boolean }) => {
+        if (!event.from_server || !pattern.test(event.line)) return;
+        clearTimeout(timer);
+        this.client.removeListener("raw", handler);
+        resolve(event.line);
+      };
+      this.client.on("raw", handler);
+    });
+  }
+
   async disconnect(reason: string): Promise<void> {
     return new Promise((resolve) => {
       this.client.on("close", () => resolve());
