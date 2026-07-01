@@ -25,7 +25,12 @@ import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
-import { lastOwnSend, loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
+import {
+  lastOwnSend,
+  loadMore as loadMoreScrollback,
+  refreshScrollback,
+  scrollbackByChannel,
+} from "./lib/scrollback";
 import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
 import { MircBody } from "./MircText";
@@ -1354,6 +1359,21 @@ const ScrollbackPane: Component<Props> = (props) => {
     on(isDocumentVisible, (visible, prev) => {
       if (prev === undefined) return;
       if (prev === false && visible === true) {
+        // #159 item 2 — VISIBILITY freshness. The re-foreground of a
+        // backgrounded PWA is an activation trigger just like a tab
+        // select, but only `scrollToActivation` (scroll position) fired
+        // here — no scrollback catch-up. If this channel stopped
+        // receiving live while hidden (socket stayed open; this one topic
+        // went quiet), the missed rows never arrive until a full reload.
+        // Fire the same catch-up verb the selection arm uses (#159 item 1
+        // in selection.ts). It is deliberately NOT folded into
+        // `scrollToActivation`: that routine early-returns on an empty
+        // pane (`messages().length === 0`), which is exactly the gap case
+        // we must heal — the fetch has to run independent of pane
+        // geometry. This pane only mounts for `kindHasScrollback` windows
+        // (Shell.tsx `<Match>`), so `props` is always a real /messages
+        // channel — no synthetic-window 404.
+        void refreshScrollback(props.networkSlug, props.channelName);
         setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
         scrollToActivation();
       }

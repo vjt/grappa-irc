@@ -15156,3 +15156,73 @@ after — not hollow-green.
 
 **Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change,
 no BEAM restart, no session drop.
+
+---
+
+## 2026-07-01 — #159: activation/visibility/reconnect freshness re-fetch (silent one-channel message loss)
+
+**The bug (P0, prod).** On one channel, cic silently STOPPED rendering
+new messages. The rows were on the server (peers + REST scrollback had
+them); cic gave no error, no signal — the pane just looked quiet. Only
+recovery the user found: force-close the PWA and reopen (a full reload).
+Silent message loss is worse than a visible error: the operator trusts an
+empty pane to mean "nothing new."
+
+**Root cause (H1).** cic had exactly one catch-up verb, `refreshScrollback`
+(`scrollback.ts` — resolves a resume cursor, `GET …/messages?after=<id>`
+capped 200, id-deduped through `appendToScrollback`, does NOT touch the
+frozen unread divider), and it was called from **only** the five
+per-channel `joinChannel(…).receive("ok")` callbacks in `subscribe.ts`
+— i.e. the initial join and phoenix.js auto-rejoin, and nothing else. The
+activation path ran `loadInitialScrollback`, which is **load-once gated**
+(`loadedChannels` Set), so re-selecting an already-loaded tab fetched
+nothing. Visibility/focus handlers refreshed the badge COUNT
+(`badge.ts`), mentions (`selection.ts`), and scroll position
+(`ScrollbackPane.tsx scrollToActivation`) but never message CONTENT. The
+socket-open resync (`subscribe.ts`) only `refetchNetworks/refetchChannels`,
+and the channels-loop skips `joined.has(key)` — so it never drove a
+re-fetch for an already-joined channel; it relied entirely on phoenix.js
+re-firing each channel's join `"ok"`. **Net:** any delivery gap that did
+NOT coincide with a Phoenix (re)join — socket stays `"open"`, that one
+channel's fan-out severed / rejoin never reaches `"ok"` — had no recovery
+path except a full reload (which wipes `loadedChannels` + fresh-joins
+everything). That is exactly the user's force-close-and-reopen.
+
+**The fix — one verb, three new call sites (reuse, not duplicate).** No
+parallel fetch path, no second high-water tracker — route all three
+through the existing `refreshScrollback` (idempotent: a no-op when nothing
+is newer than the resume cursor; per-key in-flight-guarded):
+1. **Activation** (`selection.ts` selection-change effect) — alongside the
+   load-once `loadInitialScrollback`, call `refreshScrollback`
+   UNCONDITIONALLY for `kindHasScrollback` windows. Re-selecting a tab now
+   catches up.
+2. **Visibility** (`ScrollbackPane.tsx` `isDocumentVisible` false→true
+   effect) — the same call on re-foreground. Deliberately NOT folded into
+   `scrollToActivation`: that routine early-returns on an empty pane
+   (`messages().length === 0`), which is precisely the gap case we must
+   heal — the fetch has to run independent of pane geometry.
+3. **Reconnect** (`subscribe.ts` socket-open resync) — drive
+   `refreshScrollback` for EVERY key in the `joined` Map, so reconnect
+   recovery is cic-driven and no longer depends on each per-channel rejoin
+   completing its `"ok"`.
+
+**Untouched by design.** `loadInitialScrollback`'s load-once gate and the
+#156 anchored-fetch / frozen-divider contract stay as-is — the divider
+logic is correct; the gap was the ABSENCE of a re-fetch, not the initial
+fetch shape. The freshness fetch never re-baselines the read cursor.
+
+**Test.** New chromium e2e (`freshness-on-activation.spec.ts`) covers the
+socket-STAYS-open gap that the two existing socket-drop specs
+(`message-replay-on-reconnect`, `refresh-on-join-ws-gap-recovery`) do NOT:
+a per-channel delivery gap opened with a new test-only seam
+(`__cic_suppressChannelDeliveryForTests`, sibling to
+`__cic_dropSocketForTests`) that silences `phx.on("event")` for ONE topic
+while the socket + every other channel stay live. Two tests assert the
+missed row becomes VISIBLE after re-select (item 1) and after
+hidden→visible (item 2) — the rendered row, never a fetch spy, never after
+a reload. RED against the disabled call sites (row never appears), GREEN
+after — not hollow-green. Both existing socket-drop specs stay green
+(item 3 overlaps the join-ok refresh; the in-flight guard dedupes).
+
+**Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change,
+no BEAM restart, no session drop.

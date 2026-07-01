@@ -10,7 +10,7 @@ import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
 import { channelsBySlug, networkBySlug, networks, user } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { getReadCursor, readCursors, setReadCursor } from "./readCursor";
-import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
+import { loadInitialScrollback, refreshScrollback, scrollbackByChannel } from "./scrollback";
 import {
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
@@ -517,6 +517,20 @@ const exports = identityScopedStore((onIdentityChange) => {
       // Only channel / query / server map to a real scrollback channel.
       if (kindHasScrollback(sel.kind)) {
         void loadInitialScrollback(sel.networkSlug, sel.channelName);
+        // #159 item 1 — ACTIVATION freshness. `loadInitialScrollback` is
+        // load-once gated (`loadedChannels`), so RE-selecting an already-
+        // loaded tab fetches nothing — a live-delivery gap that opened
+        // while the tab was in the background (socket stayed open, this
+        // one channel stopped receiving) would stay invisible until a full
+        // reload. `refreshScrollback` is the catch-up verb: it fetches
+        // `?after=<resume-cursor>` (id-deduped, capped 200) and does NOT
+        // touch the frozen unread divider. Fire it UNCONDITIONALLY on every
+        // activation — it is idempotent (a no-op when nothing is newer than
+        // the resume cursor) and per-key in-flight-guarded, so overlapping
+        // the first-open `loadInitialScrollback` is safe. Same
+        // `kindHasScrollback` gate: synthetic windows have no /messages
+        // channel and a GET would 404 into the fail2ban cascade.
+        void refreshScrollback(sel.networkSlug, sel.channelName);
       }
     }),
   );

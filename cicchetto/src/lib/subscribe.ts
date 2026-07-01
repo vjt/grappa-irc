@@ -98,6 +98,11 @@ import { narrowChannelEvent } from "./wireNarrow";
 // only `ChannelEvent`. Future consumers importing from api.ts were
 // type-blind to 5 of 6 arms. Single source removes the drift class.
 
+// #159 E2E gap seam (module-scope so the window hook below can populate
+// it and the in-`createRoot` `phx.on` handler can read it). Populated
+// ONLY by `__cic_suppressChannelDeliveryForTests`; empty in production.
+const suppressedDeliveryKeys = new Set<ChannelKey>();
+
 createRoot(() => {
   // Codebase review 2026-05-08 cic H2 (HIGH): track Channel objects, not
   // just keys. On rotation we MUST `phx.leave()` each prior Channel
@@ -300,6 +305,15 @@ createRoot(() => {
     ownNick: string | null,
   ) => {
     phx.on("event", (raw: unknown) => {
+      // #159 E2E gap seam — a test may silence live delivery for THIS
+      // per-channel topic (keyed on `key`) while the socket and every
+      // OTHER channel stay live, to reproduce the socket-stays-open
+      // per-channel delivery gap that `__cic_dropSocketForTests` cannot
+      // (that drops the WHOLE socket, so every channel auto-rejoins and
+      // heals via join-ok). The activation/visibility/reconnect freshness
+      // re-fetch is the only recovery for this gap class. `suppressedDeliveryKeys`
+      // is empty in production — the branch is a dead no-op there.
+      if (suppressedDeliveryKeys.has(key)) return;
       // Bucket G H4+U3: runtime narrowing at the WS edge — same
       // boundary-validation pattern as `userTopic.ts`'s
       // `narrowUserEvent` (CP16-era cic M1). phoenix.js types the
@@ -882,7 +896,49 @@ createRoot(() => {
         // re-iterates with fresh server-side truth.
         refetchNetworks();
         refetchChannels();
+        // #159 item 3 — cic-driven reconnect catch-up. The refetch above
+        // only re-runs the channels-loop, which SKIPS every key already in
+        // `joined` (`joined.has(key) continue`), so a channel that was
+        // subscribed before the drop is backfilled ONLY if phoenix.js's
+        // auto-rejoin re-fires that channel's join "ok" recHook. A rejoin
+        // that never reaches "ok" (wedged `errored`/`joining`, or a
+        // per-channel fan-out severed without a socket close) leaves the
+        // gap unhealed until a full reload. Drive `refreshScrollback` for
+        // EVERY already-joined key directly so reconnect recovery no
+        // longer depends on the per-channel rejoin completing. The verb's
+        // per-key in-flight guard + id-dedupe make it safe to overlap with
+        // a rejoin's own join-ok refresh.
+        for (const joinedKey of joined.keys()) {
+          const decoded = decodeChannelKey(joinedKey);
+          if (decoded !== null) {
+            void refreshScrollback(decoded.slug, decoded.name);
+          }
+        }
       },
     ),
   );
 });
+
+// #159 E2E hook — silence live `phx.on("event")` delivery for a SINGLE
+// per-channel topic while the socket and every OTHER channel stay live.
+// Sibling to `__cic_dropSocketForTests` (socket.ts), but for the
+// socket-STAYS-open per-channel gap class the socket-drop hook can't
+// reproduce (a drop rejoins every channel and heals via join-ok). Lets
+// a Playwright spec prove that activation/visibility/reconnect freshness
+// re-fetch — NOT a socket rejoin — closes the gap. Production never
+// calls these, so `suppressedDeliveryKeys` stays empty.
+declare global {
+  interface Window {
+    __cic_suppressChannelDeliveryForTests?: (slug: string, name: string) => void;
+    __cic_resumeChannelDeliveryForTests?: (slug: string, name: string) => void;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__cic_suppressChannelDeliveryForTests = (slug, name) => {
+    suppressedDeliveryKeys.add(channelKey(slug, name));
+  };
+  window.__cic_resumeChannelDeliveryForTests = (slug, name) => {
+    suppressedDeliveryKeys.delete(channelKey(slug, name));
+  };
+}

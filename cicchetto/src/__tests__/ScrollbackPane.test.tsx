@@ -79,6 +79,10 @@ vi.mock("../lib/scrollback", () => ({
   // `loadMore` (production imports it as `loadMore as
   // loadMoreScrollback`).
   loadMore: vi.fn(() => Promise.resolve()),
+  // #159 item 2: the visibility-return effect now fires refreshScrollback
+  // for activation freshness. Stubbed no-op resolved promise (these specs
+  // assert scroll/marker behavior, not the REST catch-up).
+  refreshScrollback: vi.fn(() => Promise.resolve()),
   lastOwnSend: () => ownSend(),
 }));
 
