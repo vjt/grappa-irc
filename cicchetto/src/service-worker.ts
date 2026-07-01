@@ -35,6 +35,7 @@ import { createHandlerBoundToURL, precacheAndRoute } from "workbox-precaching";
 import { NavigationRoute, registerRoute } from "workbox-routing";
 import { shouldSuppressPush } from "./lib/pushDedup";
 import { narrowPushPayload, type PushPayload } from "./lib/pushPayload";
+import { deliverNavigate } from "./lib/swNavigate";
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ url: string; revision: string | null }>;
@@ -211,8 +212,16 @@ async function focusOrOpen(url: string): Promise<void> {
 
   const existing = clients[0];
   if (existing) {
-    await existing.focus();
-    existing.postMessage({ type: "navigate", url });
+    // #146 recurrence (2026-07-01): deliver the navigate BEFORE focusing.
+    // `WindowClient.focus()` rejects with `InvalidAccessError: Not
+    // allowed to focus a window` when the notificationclick lacks
+    // transient activation — iOS/WebKit reject it even from a genuine
+    // tap. The old `await existing.focus(); postMessage(...)` ordering
+    // let that rejection throw out of this async fn BEFORE the
+    // postMessage ran, so the deep-link never reached the page and the
+    // tap opened nothing. `deliverNavigate` posts first, then focuses
+    // best-effort (rejection caught). See `lib/swNavigate.ts`.
+    await deliverNavigate(existing, url);
     return;
   }
 

@@ -15023,3 +15023,65 @@ confirm-delete → fresh login + old bearer both rejected); the anon-visitor
 no-button is a guard. A registered-visitor visible wipe needs the NickServ
 REGISTER dance (out of scope, same wall #126 hit) — covered by
 server-unit + vitest.
+
+---
+
+## 2026-07-01 — #146 recurrence: the SW→page navigate swallows on a rejecting `focus()`
+
+**vjt: tapping a push notification again opens no window.** The
+2026-06-29 fix corrected the cic-side ROUTING (open-then-select for a DM
+query window) and is live + byte-correct in prod (verified: `su`
+=routePushTarget in the deployed bundle resolves the network,
+`openQueryWindowState`, THEN selects). Every drivable routing path is
+green. The recurrence is one layer lower: the SW→page DELIVERY.
+
+`service-worker.ts`'s `notificationclick` → `focusOrOpen` did, for the
+warm path (a cic window already running, e.g. backgrounded):
+
+```
+await existing.focus();
+existing.postMessage({ type: "navigate", url });
+```
+
+`WindowClient.focus()` returns a Promise that **rejects** —
+`InvalidAccessError: Not allowed to focus a window` — when the
+`notificationclick` lacks transient activation. iOS/WebKit reject it even
+from a genuine tap. A rejected `focus()` threw out of the async
+`focusOrOpen` **before** `postMessage` ran, so the `{type:"navigate"}`
+deep-link never reached the page's `installPushTargetListener` and the
+tap opened nothing. This is a no-silent-swallow violation: `focus()` is a
+nicety, never a gate on the navigation.
+
+Distinct from the original #146 (cic routing) — different layer, and hit
+on a different trigger: the WARM path (cic backgrounded-but-running,
+which fires `focus()`), NOT the cold path (`openWindow`, no `focus()`, so
+the original DM-while-closed case was unaffected and stayed working after
+the June fix).
+
+**Fix.** Extract the delivery into a SW-safe, vitest-testable
+`lib/swNavigate.ts` `deliverNavigate(client, url)` that posts the
+navigate FIRST, then focuses best-effort inside a `try/catch`. Delivery
+no longer depends on `focus()` resolving. `focusOrOpen` calls it; the
+cold-path `openWindow` branch is unchanged.
+
+**Why the June e2e missed it.** The shipped `notif-tap-focus.spec.ts`
+drives COLD via `page.goto(deepLink)` and WARM via a **synthetic**
+`navigator.serviceWorker.dispatchEvent(MessageEvent)` — both bypass the
+real SW `focusOrOpen`, so the `await focus(); post` ordering was never
+exercised. The June note called the real SW handler "undrivable
+headless" because `showNotification`/`focus()`/`openWindow` reject
+without activation — but that very `focus()` rejection IS the bug's
+trigger, and the handler CAN be driven: dispatch a real
+`notificationclick` into the live SW via
+`context.serviceWorkers()[0].evaluate(...)` with a synthetic notification
+(`{data:{url}, close()}`) + a `waitUntil` collector. The new
+`notif-tap-sw-handler.spec.ts` does exactly this and went RED
+(`focusOrOpen waitUntil → rejected: InvalidAccessError`, window never
+selected) against the old ordering, GREEN after. Companion
+`swNavigate.test.ts` pins the contract deterministically (post fires even
+when `focus()` rejects). `notif-tap-sw-controlled.spec.ts` additionally
+guards the SW-controlled precache serving of the deep-link (the real
+`openWindow` path the June cold test — a fresh-context `goto`, SW not yet
+claiming — never covered).
+
+**Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change.
