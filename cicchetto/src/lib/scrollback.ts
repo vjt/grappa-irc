@@ -468,6 +468,19 @@ const exports = identityScopedStore((onIdentityChange) => {
     }
   };
 
+  // #159 regression guard — synchronous "was this channel already loaded
+  // BEFORE now?" probe for selection.ts's activation-freshness gate.
+  // `loadedChannels` is the single source of truth for "cic has run the
+  // cold-load for this key this session"; expose a read-only view rather
+  // than letting selection.ts keep a parallel tracker (CLAUDE.md: derive
+  // state, don't duplicate it). Callers MUST read this BEFORE calling
+  // `loadInitialScrollback` — that verb adds the key to `loadedChannels`
+  // SYNCHRONOUSLY (see its load-once gate), so a post-call read is always
+  // `true`, even on a first open. Reads a plain Set (not a signal) so it
+  // creates no reactive dependency in the caller's effect.
+  const wasLoaded = (slug: string, name: string): boolean =>
+    loadedChannels.has(channelKey(slug, name));
+
   return {
     scrollbackByChannel,
     appendToScrollback,
@@ -477,6 +490,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     refreshScrollback,
     sendMessage,
     lastOwnSend,
+    wasLoaded,
   };
 });
 
@@ -488,3 +502,4 @@ export const purgeScrollback = exports.purgeScrollback;
 export const refreshScrollback = exports.refreshScrollback;
 export const sendMessage = exports.sendMessage;
 export const lastOwnSend = exports.lastOwnSend;
+export const wasLoaded = exports.wasLoaded;

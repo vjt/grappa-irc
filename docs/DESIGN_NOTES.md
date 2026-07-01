@@ -15193,9 +15193,14 @@ parallel fetch path, no second high-water tracker — route all three
 through the existing `refreshScrollback` (idempotent: a no-op when nothing
 is newer than the resume cursor; per-key in-flight-guarded):
 1. **Activation** (`selection.ts` selection-change effect) — alongside the
-   load-once `loadInitialScrollback`, call `refreshScrollback`
-   UNCONDITIONALLY for `kindHasScrollback` windows. Re-selecting a tab now
-   catches up.
+   load-once `loadInitialScrollback`, call `refreshScrollback` for
+   `kindHasScrollback` windows that were ALREADY LOADED before this
+   activation (a re-select). Re-selecting a tab now catches up. (Shipped
+   the same day as UNCONDITIONAL; narrowed to re-select-only hours later —
+   an unconditional fresh-open fire starved a just-opened query window's
+   join-ok safety-net refetch and dropped its live 401. See the
+   "#159 regression: activation refetch vs a fresh query-window's live
+   delivery" entry below.)
 2. **Visibility** (`ScrollbackPane.tsx` `isDocumentVisible` false→true
    effect) — the same call on re-foreground. Deliberately NOT folded into
    `scrollToActivation`: that routine early-returns on an empty pane
@@ -15223,6 +15228,72 @@ hidden→visible (item 2) — the rendered row, never a fetch spy, never after
 a reload. RED against the disabled call sites (row never appears), GREEN
 after — not hollow-green. Both existing socket-drop specs stay green
 (item 3 overlaps the join-ok refresh; the in-flight guard dedupes).
+
+**Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change,
+no BEAM restart, no session drop.
+
+## 2026-07-01 — #159 regression: activation refetch vs a fresh query-window's live delivery
+
+**The regression (P0, CI).** The #159 ship (720e7b8) turned
+`cp13-s5-msg-ghost-401.spec.ts` FLAKY (~1 run in 3): `/msg <ghost>` to a
+nonexistent nick intermittently dropped the 401 ERR_NOSUCHNICK `:notice` —
+the error row never rendered in the just-opened query window
+(`.scrollback-notice-error` stuck at count 0). Green at #160 (e3a8d5b),
+red at #159 (720e7b8); #159 is cic-only, so the fault is client-side. It
+slipped because the #159 worker ran `integration.sh --grep <own-spec>`
+and never saw cp13-s5 flip (see the full-suite mandate below).
+
+**The mechanism (proven by instrumentation — NOT the naive clobber
+story).** Both scrollback fetch verbs are append-only, id-deduped merges
+(`appendToScrollback` / `mergeIntoScrollback`): neither can DROP or
+replace a row, so the notice was not clobbered — it was NEVER FETCHED OR
+DELIVERED. The 401 has two paths into a fresh ghost query window:
+  1. the live per-`(slug, ghost)` WS push, and
+  2. the query-window join-ok `refreshScrollback` (`subscribe.ts`) — the
+     REST safety net (`GET …/messages?after=<cursor>`) that backfills the
+     401 whenever the live push is missed while the subscription is still
+     settling.
+#159 added a THIRD refetch: an activation `refreshScrollback` fired from
+the `selection.ts` selection-change effect the instant the window is
+focused. On a FRESH `/msg <ghost>` open this activation refetch fires
+FIRST — before the server has round-tripped to bahamut and persisted the
+401 — so it (a) grabs `refreshScrollback`'s per-key in-flight lock and
+(b) returns `[]`. When the join-ok safety-net `refreshScrollback` then
+fires, it finds the in-flight lock HELD and returns early WITHOUT
+fetching. In the race where the live WS push is ALSO missed (the broadcast
+reaches the topic before cic's subscription is wired), BOTH paths are lost
+and the 401 never renders. WS-frame + network traces of a red run
+confirmed it exactly: ONE `?after=0` GET (the activation refetch,
+returning `[]`), NO join-ok GET, and no live `event` push — while the
+ghost join reply reported `unread_count: 2`, proving the 401 was already
+persisted server-side and any later fetch WOULD have found it. Pre-#159
+nothing held the lock, so the join-ok safety net always ran and caught the
+missed-push 401 — which is why cp13-s5 was green before #159.
+
+**The fix (preserve the #159 gap fix; guard ONLY item 1).** The #159 gap
+is specifically "RE-selecting an ALREADY-LOADED background tab fetches
+nothing." A FRESH open is already covered by `loadInitialScrollback` + the
+live WS subscription + the join-ok refetch, and does NOT need — must not
+fire — the activation refetch. So `selection.ts` item 1 now fires
+`refreshScrollback` ONLY for a re-select of an already-loaded window:
+`scrollback.ts` exposes a synchronous `wasLoaded(slug, name)` probe over
+its own `loadedChannels` Set (the single source of truth — no parallel
+tracker in `selection.ts`, per "derive state, don't duplicate"), captured
+BEFORE `loadInitialScrollback` (which adds the key SYNCHRONOUSLY, so a
+post-call read is always `true`, even on a first open — the naive
+`loadedChannels.has` guard does not work). A fresh open no longer fires
+the activation refetch, so the join-ok safety net's in-flight lock is free
+and the 401 is delivered. Items 2 (visibility) and 3 (reconnect) are
+UNCHANGED: both fire only for an already-established / already-joined
+window (the re-foregrounded active pane; every key already in `joined`),
+never a genuinely fresh open, so neither can starve a settling
+subscription.
+
+**Tests.** cp13-s5 goes flaky-red → reliably green (12× repeat-each,
+0 failed); the #159 gap pin `freshness-on-activation.spec.ts` (re-select
++ hidden→visible) stays green, proving the gap fix is preserved. The
+full chromium suite is the merge gate — run with NO `--grep`, because
+this regression slipped through a scoped run.
 
 **Deploy:** cic bundle only (`deploy-m42.sh --cic`) — no server change,
 no BEAM restart, no session drop.

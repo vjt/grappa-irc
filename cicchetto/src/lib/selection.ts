@@ -10,7 +10,12 @@ import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
 import { channelsBySlug, networkBySlug, networks, user } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { getReadCursor, readCursors, setReadCursor } from "./readCursor";
-import { loadInitialScrollback, refreshScrollback, scrollbackByChannel } from "./scrollback";
+import {
+  loadInitialScrollback,
+  refreshScrollback,
+  scrollbackByChannel,
+  wasLoaded,
+} from "./scrollback";
 import {
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
@@ -516,21 +521,39 @@ const exports = identityScopedStore((onIdentityChange) => {
       // 404s and trips the production fail2ban http-404 ban cascade.
       // Only channel / query / server map to a real scrollback channel.
       if (kindHasScrollback(sel.kind)) {
+        // #159 item 1 — ACTIVATION freshness, but ONLY for a RE-SELECT of an
+        // ALREADY-LOADED window. Capture the load-once bit BEFORE calling
+        // `loadInitialScrollback`: that verb adds the key to `loadedChannels`
+        // synchronously, so reading `wasLoaded` after would always be `true`.
+        const wasAlreadyLoaded = wasLoaded(sel.networkSlug, sel.channelName);
         void loadInitialScrollback(sel.networkSlug, sel.channelName);
-        // #159 item 1 — ACTIVATION freshness. `loadInitialScrollback` is
-        // load-once gated (`loadedChannels`), so RE-selecting an already-
-        // loaded tab fetches nothing — a live-delivery gap that opened
-        // while the tab was in the background (socket stayed open, this
-        // one channel stopped receiving) would stay invisible until a full
-        // reload. `refreshScrollback` is the catch-up verb: it fetches
-        // `?after=<resume-cursor>` (id-deduped, capped 200) and does NOT
-        // touch the frozen unread divider. Fire it UNCONDITIONALLY on every
-        // activation — it is idempotent (a no-op when nothing is newer than
-        // the resume cursor) and per-key in-flight-guarded, so overlapping
-        // the first-open `loadInitialScrollback` is safe. Same
-        // `kindHasScrollback` gate: synthetic windows have no /messages
-        // channel and a GET would 404 into the fail2ban cascade.
-        void refreshScrollback(sel.networkSlug, sel.channelName);
+        // Re-selecting an already-loaded tab is the ONLY case the load-once
+        // `loadInitialScrollback` cannot cover: it fetches nothing, so a
+        // live-delivery gap that opened while the tab was backgrounded
+        // (socket stayed open, this one channel stopped receiving) would stay
+        // invisible until a full reload. `refreshScrollback` is the catch-up
+        // verb (`?after=<resume-cursor>`, id-deduped, capped 200,
+        // frozen-divider-safe), idempotent + per-key in-flight-guarded.
+        //
+        // A FRESH OPEN must NOT fire it (#159 regression, cp13-s5). That path
+        // is already covered by `loadInitialScrollback` + the live
+        // per-channel WS subscription + the query-window join-ok
+        // `refreshScrollback`. Firing the activation refetch on a just-opened
+        // window STARVES that join-ok safety net: on `/msg <ghost>`, the
+        // early activation refetch grabs `refreshScrollback`'s per-key
+        // in-flight lock and returns `[]` (it fires before the server
+        // persists the 401 ERR_NOSUCHNICK); the join-ok `refreshScrollback` —
+        // the REST backfill that catches the 401 whenever the live push is
+        // missed during subscription settling — then finds the lock held and
+        // returns early WITHOUT fetching. With both the live push and the
+        // safety-net refetch lost, the 401 notice never renders. Gating on
+        // "already loaded before this activation" removes the fresh-open fire
+        // and frees the lock for the join-ok refetch. Same `kindHasScrollback`
+        // gate: synthetic windows have no /messages channel and a GET would
+        // 404 into the fail2ban cascade.
+        if (wasAlreadyLoaded) {
+          void refreshScrollback(sel.networkSlug, sel.channelName);
+        }
       }
     }),
   );
