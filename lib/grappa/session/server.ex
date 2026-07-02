@@ -494,6 +494,18 @@ defmodule Grappa.Session.Server do
           # first LUSERS numeric and fills until flush. NOT persisted
           # across crashes — operator types /lusers to refresh.
           lusers_pending: nil | map(),
+          # #127 — per-source server-text-reply accumulators, primed by
+          # `:send_info` / `:send_version` / `:send_motd`. `nil` = idle (no
+          # explicit request in flight); `%{lines: [...]}` = collecting the
+          # reply burst. EventRouter folds the INFO/MOTD burst and drains ONE
+          # `{:server_reply, source, lines}` modal effect on the terminator
+          # (374 / 376|422 / 351). The pending flag is what distinguishes an
+          # explicit /motd (→ modal) from the connect-time MOTD (→ $server);
+          # unset for INFO/VERSION means the reply falls back to $server.
+          # NOT persisted across crashes.
+          info_pending: nil | map(),
+          version_pending: nil | map(),
+          motd_pending: nil | map(),
           # #140 — pending NAMES accumulators keyed by lowercased target
           # channel. Set up on `:send_names`; 353 RPL_NAMREPLY rows append
           # their `[prefix]nick` tokens into the entry; 366 RPL_ENDOFNAMES
@@ -702,6 +714,11 @@ defmodule Grappa.Session.Server do
       # end). Bounded by the fixed 7-numeric sequence Bahamut emits;
       # NOT persisted across crashes.
       lusers_pending: nil,
+      # #127 — server-text-reply accumulators (idle until /info /version
+      # /motd primes the matching flag). See the state typedef above.
+      info_pending: nil,
+      version_pending: nil,
+      motd_pending: nil,
       # CP22 cluster B — pending NAMES accumulators keyed by lowercased
       # target channel. Set up on `:send_names`; 353 RPL_NAMREPLY rows
       # merge nick lists into the entry; 366 RPL_ENDOFNAMES drains via
@@ -1117,6 +1134,24 @@ defmodule Grappa.Session.Server do
   # accumulator on arrival.
   def handle_call(:send_lusers, _, state) do
     {:reply, Client.send_lusers(state.client), state}
+  end
+
+  # #127 — /info, /version, /motd. Each primes its accumulator BEFORE putting
+  # the command on the wire, so the reply burst folds into a modal instead of
+  # $server (the pending flag IS the explicit-request signal — for MOTD it is
+  # what separates an on-demand /motd from the connect-time auto-MOTD). Priming
+  # before the send is safe: replies can only arrive after the send returns
+  # (same mailbox-serialized ordering :send_who relies on).
+  def handle_call(:send_info, _, state) do
+    {:reply, Client.send_info(state.client), %{state | info_pending: %{lines: []}}}
+  end
+
+  def handle_call(:send_version, _, state) do
+    {:reply, Client.send_version(state.client), %{state | version_pending: %{lines: []}}}
+  end
+
+  def handle_call(:send_motd, _, state) do
+    {:reply, Client.send_motd(state.client), %{state | motd_pending: %{lines: []}}}
   end
 
   # Channel directory (#84) refresh trigger. Three clauses, ordered:
@@ -2877,6 +2912,21 @@ defmodule Grappa.Session.Server do
       Grappa.PubSub.broadcast_event(
         Topic.user(state.subject_label),
         SessionWire.who_reply(state.network_slug, target, users)
+      )
+
+    apply_effects(rest, state)
+  end
+
+  # #127 — /info, /version, /motd reply drained (374 / 351 / 376|422).
+  # Broadcast the raw reply lines + typed source on the user-level topic —
+  # ephemeral, NOT persisted (mirrors :who_reply). cic's serverReplyModal
+  # keys by network and renders a dismissable retro modal; it maps `source`
+  # to a human title (the server emits no display strings).
+  defp apply_effects([{:server_reply, source, lines} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.server_reply(state.network_slug, source, lines)
       )
 
     apply_effects(rest, state)

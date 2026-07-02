@@ -39,10 +39,13 @@ import {
   pushChannelUmode,
   pushChannelUnban,
   pushChannelVoice,
+  pushInfo,
   pushLusers,
+  pushMotd,
   pushNames,
   pushOper,
   pushRaw,
+  pushVersion,
   pushWatchlistAdd,
   pushWatchlistDel,
   pushWatchlistList,
@@ -662,6 +665,31 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/lusers: network not found" };
           pushLusers(networkId);
+          result = { ok: true };
+          break;
+        }
+        // #127 — /info, /version, /motd. No-arg server-text queries; server
+        // primes the matching accumulator + emits the command, the reply
+        // burst drains a typed `server_reply` event that userTopic.ts routes
+        // into the serverReplyModal store (ServerReplyModal renders it).
+        case "info": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/info: network not found" };
+          pushInfo(networkId);
+          result = { ok: true };
+          break;
+        }
+        case "version": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/version: network not found" };
+          pushVersion(networkId);
+          result = { ok: true };
+          break;
+        }
+        case "motd": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/motd: network not found" };
+          pushMotd(networkId);
           result = { ok: true };
           break;
         }

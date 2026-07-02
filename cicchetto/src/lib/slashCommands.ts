@@ -100,6 +100,9 @@ export type SlashCommand =
   | { kind: "list"; pattern: string | null }
   | { kind: "links"; pattern: string | null }
   | { kind: "lusers" }
+  | { kind: "info" }
+  | { kind: "version" }
+  | { kind: "motd" }
   | { kind: "stats"; query: string | null; target: string | null }
   | { kind: "rehash" }
   | { kind: "whois"; nick: string | null }
@@ -383,6 +386,13 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   },
 
   lusers: (_verb, _rest) => ({ kind: "lusers" }),
+
+  // #127 — /info, /version, /motd. No-arg server-text queries; the reply
+  // renders in a dismissable retro modal (ServerReplyModal). Mirror the
+  // /lusers no-arg shape.
+  info: (_verb, _rest) => ({ kind: "info" }),
+  version: (_verb, _rest) => ({ kind: "version" }),
+  motd: (_verb, _rest) => ({ kind: "motd" }),
 
   // #155 — /stats [query] [server]. Native parser sugar over the raw
   // transport (like the #20 services shortcuts rewrite to {kind:"msg"}):

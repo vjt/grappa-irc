@@ -740,6 +740,103 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  describe "route/2 — #127 server-reply modals (INFO/VERSION/MOTD)" do
+    # Explicit /motd primes state.motd_pending; the 375/372 burst folds and
+    # 376 RPL_ENDOFMOTD drains ONE {:server_reply, :motd, lines} effect in
+    # wire order — NOTHING persisted (mirror of the /who 315 drain).
+    test "primed /motd folds 375/372 and drains {:server_reply, :motd, lines} on 376" do
+      state = base_state(%{motd_pending: %{lines: []}})
+
+      {:cont, s1, []} =
+        EventRouter.route(msg({:numeric, 375}, ["vjt", "- irc.test Message of the Day -"], nil), state)
+
+      {:cont, s2, []} =
+        EventRouter.route(msg({:numeric, 372}, ["vjt", "- line one"], nil), s1)
+
+      {:cont, s3, []} =
+        EventRouter.route(msg({:numeric, 372}, ["vjt", "- line two"], nil), s2)
+
+      assert {:cont, drained, [{:server_reply, :motd, lines}]} =
+               EventRouter.route(msg({:numeric, 376}, ["vjt", "End of /MOTD command"], nil), s3)
+
+      assert lines == ["- irc.test Message of the Day -", "- line one", "- line two"]
+      # accumulator cleared on drain
+      assert drained.motd_pending == nil
+    end
+
+    # 422 ERR_NOMOTD carries the ONLY line (no 375/372 burst), so it folds
+    # its own body before draining — an explicit /motd never dangles.
+    test "primed /motd with no MOTD drains {:server_reply, :motd, [line]} on 422" do
+      state = base_state(%{motd_pending: %{lines: []}})
+
+      assert {:cont, drained, [{:server_reply, :motd, ["MOTD File is missing"]}]} =
+               EventRouter.route(msg({:numeric, 422}, ["vjt", "MOTD File is missing"], nil), state)
+
+      assert drained.motd_pending == nil
+    end
+
+    # Connect-time MOTD (motd_pending == nil) keeps the legacy $server
+    # :notice persist — the modal is ONLY for an explicit /motd.
+    test "unprimed (connect-time) MOTD persists to $server, no server_reply" do
+      state = base_state()
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(msg({:numeric, 372}, ["vjt", "- connect banner"], {:server, "irc.test"}), state)
+
+      assert attrs.channel == "$server"
+    end
+
+    # /info primes state.info_pending; 371 RPL_INFO burst folds, 374
+    # RPL_ENDOFINFO drains {:server_reply, :info, lines}.
+    test "primed /info folds 371 and drains {:server_reply, :info, lines} on 374" do
+      state = base_state(%{info_pending: %{lines: []}})
+
+      {:cont, s1, []} =
+        EventRouter.route(msg({:numeric, 371}, ["vjt", "grappa test server"], nil), state)
+
+      {:cont, s2, []} =
+        EventRouter.route(msg({:numeric, 371}, ["vjt", "Built 2026"], nil), s1)
+
+      assert {:cont, drained, [{:server_reply, :info, ["grappa test server", "Built 2026"]}]} =
+               EventRouter.route(msg({:numeric, 374}, ["vjt", "End of /INFO list"], nil), s2)
+
+      assert drained.info_pending == nil
+    end
+
+    # /version primes state.version_pending; 351 RPL_VERSION is single-shot,
+    # drains one assembled line immediately (no terminator).
+    test "primed /version drains {:server_reply, :version, [line]} on 351" do
+      state = base_state(%{version_pending: %{lines: []}})
+
+      m = msg({:numeric, 351}, ["vjt", "bahamut-2.2.1", "irc.test", "options"], nil)
+
+      assert {:cont, drained, [{:server_reply, :version, [line]}]} =
+               EventRouter.route(m, state)
+
+      assert line == "bahamut-2.2.1 irc.test options"
+      assert drained.version_pending == nil
+    end
+
+    # Unprimed INFO/VERSION (unsolicited — no connect-time source) fall back
+    # to the $server :notice persist, never silently dropped.
+    test "unprimed 371 RPL_INFO persists to $server" do
+      state = base_state()
+
+      assert {:cont, ^state, [{:persist, :notice, %{channel: "$server"}}]} =
+               EventRouter.route(msg({:numeric, 371}, ["vjt", "stray info"], {:server, "irc.test"}), state)
+    end
+
+    test "unprimed 351 RPL_VERSION persists to $server" do
+      state = base_state()
+
+      assert {:cont, ^state, [{:persist, :notice, %{channel: "$server"}}]} =
+               EventRouter.route(
+                 msg({:numeric, 351}, ["vjt", "v", "irc.test", "stray version"], {:server, "irc.test"}),
+                 state
+               )
+    end
+  end
+
   describe "route/2 — :join" do
     test "JOIN-other adds nick to state.members[channel] + emits :persist :join" do
       state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})

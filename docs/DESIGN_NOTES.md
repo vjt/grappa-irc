@@ -15870,3 +15870,61 @@ Build-deferred: rides the #153/#154/#155/#168 night batch. Server COLD
 half (#153 + #154-server + #169-server) folds into ONE cold restart; cic
 half ships `--cic` with #154-cic/#155/#168. build+test+merge+push, then
 the orchestrator ships in the night pass.
+
+---
+
+### 2026-07-02 — #127: /info, /version, /motd render one typed server_reply modal
+
+**Same buffered-drain-to-modal shape as #169/#140.** `/info` (371 RPL_INFO
+burst → 374 RPL_ENDOFINFO), `/version` (351 RPL_VERSION, single-shot) and
+`/motd` (375/372/376, or 422 ERR_NOMOTD) buffer their reply server-side and
+drain ONE ephemeral event on the user topic — cic renders a dismissable,
+scrollable, retro-styled modal (`ServerReplyModal`) and persists NOTHING.
+This is the /who and /names pattern reused, not a new mechanism.
+
+**ONE event, not three (implement-once).** The three commands differ only
+in a title and content, so they share a single wire event
+`{:server_reply, source, lines}` where `source :: :info | :version | :motd`
+is the typed discriminant (`Wire.server_reply/3`; wireTypes emits
+`"info" | "version" | "motd"`). One store (`serverReplyModal.ts`,
+`*BySlug`, last-write-wins per network), one `userTopic` arm, one modal,
+one CSS block. Per `feedback_no_localized_strings_server_side` the server
+ships only `source` + raw lines; cic maps `source` → human title
+("Server Info" / "Version" / "Message of the Day"). Three near-identical
+stores/modals would have been a copy-paste-with-tweaks smell.
+
+**The MOTD gating decision (the one real fork).** MOTD is dual-purpose: the
+server auto-sends it on registration AND replies to an explicit `/motd`,
+using the SAME numerics (375/372/376). Connect-time MOTD has always landed
+as `:notice` rows on the synthetic `$server` window (BUG2), and that is the
+right home for it — a modal popping on every reconnect would be obnoxious,
+and the server-messages window should carry the connect banner. So the
+modal is gated on an explicit request: `Session.Server` primes
+`motd_pending` (a `%{lines: []}` accumulator) when the user issues `/motd`;
+EventRouter's MOTD clause drains the burst into the modal ONLY when the flag
+is set, and falls through to the legacy `$server` persist when it is nil
+(connect-time). Same `whois_pending`/`in_flight_joins` priming idiom. The
+general rule: **a pending flag set by the outbound command is what
+distinguishes an on-demand query from a server-initiated burst** — INFO and
+VERSION get the same `{info,version}_pending` treatment for uniformity (they
+have no connect-time source, so unprimed simply means "unsolicited" and
+falls back to `$server`, never silently dropped). 422 folds its own line
+before draining so a no-MOTD `/motd` resolves the modal instead of
+dangling.
+
+**Delegation.** 371/374/351/422 join 375/372/376 in
+`NumericRouter.@delegated_numerics` so EventRouter owns them end-to-end
+(delegated numerics skip the auto-persist; the clause chooses modal-vs-
+`$server` itself). A property test in `numeric_router_test` that scans
+400–499 for channel-prefix routing had to exclude 422 (the only new
+delegate in that range).
+
+**IRC stays text-only.** The modal renders the reply lines as monospace
+pre-wrapped text (classic MOTD/INFO look) — no media, no unfurl. The retro
+"bells and whistles" (uppercase title, phosphor sigil, blinking footer
+cursor) are pure CSS on existing theme vars; `prefers-reduced-motion`
+disables the blink.
+
+**Deploy coupling.** SERVER (event_router / server / client / channel /
+wire / numeric_router) → COLD; also `--cic` (new store, modal, userTopic
+arm, slash intents, transport). Build-deferred to the night cold batch.

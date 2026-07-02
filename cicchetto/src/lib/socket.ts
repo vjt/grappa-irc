@@ -472,6 +472,26 @@ export function pushLusers(networkId: number): void {
   _userChannel.push("lusers", { network_id: networkId });
 }
 
+// #127 — /info, /version, /motd. Push on the user-level channel; server
+// primes the matching pending accumulator + emits the bare command upstream.
+// The reply burst drains ONE ephemeral `server_reply` event on Topic.user/1
+// which userTopic.ts routes into the serverReplyModal store (ServerReplyModal
+// renders it). Connect-time MOTD is unaffected (no pending flag → $server).
+export function pushInfo(networkId: number): void {
+  if (_userChannel === null) return;
+  _userChannel.push("info", { network_id: networkId });
+}
+
+export function pushVersion(networkId: number): void {
+  if (_userChannel === null) return;
+  _userChannel.push("version", { network_id: networkId });
+}
+
+export function pushMotd(networkId: number): void {
+  if (_userChannel === null) return;
+  _userChannel.push("motd", { network_id: networkId });
+}
+
 // #140 — /names <#channel>. Pushes on the user-level channel; server
 // primes names_pending + emits NAMES upstream. The 353/366 burst drains
 // into ONE ephemeral `names_reply` event on the user topic (NamesModal

@@ -1038,6 +1038,46 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  #127 — sends bare `INFO` upstream (primes `info_pending`). Server replies
+  with 371 RPL_INFO lines + 374 RPL_ENDOFINFO, which `EventRouter` drains as
+  a typed `:server_reply` (source `:info`) wire event on `Topic.user/1` —
+  cic renders a dismissable modal. Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_info(subject(), integer()) ::
+          :ok | {:error, :no_session | send_transport_error()}
+  def send_info(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, :send_info)
+  end
+
+  @doc """
+  #127 — sends bare `VERSION` upstream (primes `version_pending`). Server
+  replies with 351 RPL_VERSION, drained as a typed `:server_reply` (source
+  `:version`) wire event on `Topic.user/1`. Returns `:ok` or
+  `{:error, :no_session}`.
+  """
+  @spec send_version(subject(), integer()) ::
+          :ok | {:error, :no_session | send_transport_error()}
+  def send_version(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, :send_version)
+  end
+
+  @doc """
+  #127 — sends bare `MOTD` upstream (primes `motd_pending`). The 375/372/376
+  (or 422) burst is drained as a typed `:server_reply` (source `:motd`) wire
+  event on `Topic.user/1` — cic renders a dismissable modal. Connect-time
+  MOTD is NOT affected (no pending flag → stays on `$server`). Returns `:ok`
+  or `{:error, :no_session}`.
+  """
+  @spec send_motd(subject(), integer()) ::
+          :ok | {:error, :no_session | send_transport_error()}
+  def send_motd(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, :send_motd)
+  end
+
+  @doc """
   Sends `MODE <channel> b` upstream — the banlist query form (no sign).
   Numerics 367 RPL_BANLIST + 368 RPL_ENDOFBANLIST reply with the ban list.
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`

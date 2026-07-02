@@ -1556,6 +1556,36 @@ defmodule GrappaWeb.GrappaChannelTest do
       {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "NAMES #snap\r\n"), 1_000)
     end
 
+    # #127 — /info, /version, /motd bridges: cic pushes the bare verb with
+    # %{network_id}; the channel relays to Session.send_{info,version,motd}/2
+    # which primes the matching accumulator + emits the command upstream.
+    # Smoke-tests the dispatch plumbing (the drain + broadcast paths are
+    # covered by the EventRouter #127 tests).
+    test "info: sends INFO upstream", %{irc_server: irc_server, socket: socket, network: network} do
+      ref = push(socket, "info", %{"network_id" => network.id})
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "INFO\r\n"), 1_000)
+    end
+
+    test "version: sends VERSION upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref = push(socket, "version", %{"network_id" => network.id})
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "VERSION\r\n"), 1_000)
+    end
+
+    test "motd: sends MOTD upstream", %{irc_server: irc_server, socket: socket, network: network} do
+      ref = push(socket, "motd", %{"network_id" => network.id})
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MOTD\r\n"), 1_000)
+    end
+
     test "whois (REV-F H10): dead Session.Server socket → typed upstream_unavailable reply, Channel survives",
          %{socket: socket, network: network, user: user} do
       # REV-F (H10): `dispatch_subject_verb/3` (sister of `dispatch_ops_verb/3`)

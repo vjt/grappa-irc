@@ -248,6 +248,35 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "server_reply/3 (#127)" do
+    test "builds the typed :info payload with raw lines in wire order" do
+      assert Wire.server_reply("azzurra", :info, ["grappa server", "Built 2026"]) == %{
+               kind: :server_reply,
+               network: "azzurra",
+               source: :info,
+               lines: ["grappa server", "Built 2026"]
+             }
+    end
+
+    test "builds the :version payload (single line)" do
+      assert Wire.server_reply("azzurra", :version, ["bahamut-2.2.1 irc.test"]) == %{
+               kind: :server_reply,
+               network: "azzurra",
+               source: :version,
+               lines: ["bahamut-2.2.1 irc.test"]
+             }
+    end
+
+    test "builds the :motd payload and tolerates an empty line list (422 no-MOTD)" do
+      assert Wire.server_reply("azzurra", :motd, []) == %{
+               kind: :server_reply,
+               network: "azzurra",
+               source: :motd,
+               lines: []
+             }
+    end
+  end
+
   describe "member/1" do
     test "projects a Session.member() to the per-row wire shape" do
       assert Wire.member(%{nick: "vjt", modes: ["@"]}) == %{nick: "vjt", modes: ["@"]}

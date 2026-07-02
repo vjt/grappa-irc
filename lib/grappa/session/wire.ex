@@ -74,6 +74,7 @@ defmodule Grappa.Session.Wire do
           | :members_seeded
           | :names_reply
           | :who_reply
+          | :server_reply
           | :joined
           | :window_pending
           | :window_invited
@@ -197,6 +198,31 @@ defmodule Grappa.Session.Wire do
           network: String.t(),
           target: String.t(),
           users: [who_user()]
+        }
+
+  @typedoc """
+  #127 — the closed set of server-text-query sources that render a
+  `server_reply` modal. `:info` = /INFO (371/374), `:version` =
+  /VERSION (351), `:motd` = /MOTD (375/372/376/422). The atom is the
+  wire discriminant cic maps to a human title + retro styling — the
+  server emits NO display strings (per the no-localized-strings-server
+  rule), only the typed source + the raw reply lines.
+  """
+  @type server_reply_source :: :info | :version | :motd
+
+  @typedoc """
+  #127 — ephemeral server-text reply for an EXPLICIT `/info`, `/version`
+  or `/motd`. Mirror of `who_reply_payload/0`: routed on the user-level
+  topic, NOT persisted — it feeds cic's dismissable `serverReplyModal`,
+  never scrollback. Only fires when the matching command primed the
+  session (connect-time MOTD stays on the `$server` window). `lines`
+  are the raw reply lines in server wire order.
+  """
+  @type server_reply_payload :: %{
+          kind: :server_reply,
+          network: String.t(),
+          source: server_reply_source(),
+          lines: [String.t()]
         }
 
   @typedoc """
@@ -602,6 +628,26 @@ defmodule Grappa.Session.Wire do
       network: network_slug,
       target: target,
       users: Enum.map(users, &who_user/1)
+    }
+  end
+
+  @doc """
+  #127 — build the ephemeral `/info`, `/version` or `/motd` reply payload
+  (drained on the terminator numeric). Mirror of `who_reply/3`: user-level
+  topic, ephemeral — see `server_reply_payload/0`. `source` is the typed
+  discriminant; `lines` are the raw reply lines in server wire order. cic
+  owns the human title + rendering.
+  """
+  @spec server_reply(String.t(), server_reply_source(), [String.t()]) ::
+          server_reply_payload()
+  def server_reply(network_slug, source, lines)
+      when is_binary(network_slug) and source in [:info, :version, :motd] and
+             is_list(lines) do
+    %{
+      kind: :server_reply,
+      network: network_slug,
+      source: source,
+      lines: lines
     }
   end
 

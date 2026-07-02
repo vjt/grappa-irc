@@ -208,10 +208,31 @@ defmodule Grappa.Session.NumericRouter do
                         255,
                         265,
                         266,
-                        # MOTD replies (375, 372, 376)
+                        # MOTD replies (375, 372, 376) + 422 ERR_NOMOTD.
+                        # #127: EventRouter's MOTD clause branches on
+                        # state.motd_pending — an explicit /motd drains the
+                        # burst into a `{:server_reply, :motd, lines}` modal
+                        # effect; connect-time MOTD (no pending flag) keeps the
+                        # legacy `$server` :notice persist. Both live inside
+                        # the delegated clause, so 422 joins the family (a
+                        # /motd against a server with no MOTD still resolves
+                        # the modal instead of dangling).
                         375,
                         372,
                         376,
+                        422,
+                        # #127 — INFO (371 RPL_INFO burst, 374 RPL_ENDOFINFO)
+                        # + VERSION (351 RPL_VERSION). Delegated so the
+                        # EventRouter clauses own them: when the matching
+                        # command primed state.{info,version}_pending the burst
+                        # drains into a `{:server_reply, source, lines}` modal
+                        # effect (NOT persisted); unprimed (never happens at
+                        # connect — these are on-demand only) they fall back to
+                        # the same `$server` :notice persist MOTD uses, so an
+                        # unsolicited reply is still visible, never silent.
+                        371,
+                        374,
+                        351,
                         # CP15 B2 — JOIN failure numerics. EventRouter
                         # correlates against state.in_flight_joins and
                         # emits {:join_failed, ch, reason, code}. The

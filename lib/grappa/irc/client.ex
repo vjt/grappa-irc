@@ -579,6 +579,45 @@ defmodule Grappa.IRC.Client do
     send_line(client, "LUSERS\r\n")
   end
 
+  @doc """
+  #127 — sends bare `INFO\\r\\n` upstream. Server replies with the
+  371 RPL_INFO burst + 374 RPL_ENDOFINFO terminator; `EventRouter` folds
+  them into `state.info_pending` (when primed) and `Server.apply_effects`
+  flushes a `{:server_reply, :info, lines}` modal effect on 374.
+
+  No params, no validation: INFO is universally accepted.
+  """
+  @spec send_info(pid()) :: send_result()
+  def send_info(client) do
+    send_line(client, "INFO\r\n")
+  end
+
+  @doc """
+  #127 — sends bare `VERSION\\r\\n` upstream. Server replies with
+  351 RPL_VERSION (single line); `EventRouter` drains a
+  `{:server_reply, :version, [line]}` modal effect on 351 when primed.
+
+  No params, no validation: VERSION is universally accepted.
+  """
+  @spec send_version(pid()) :: send_result()
+  def send_version(client) do
+    send_line(client, "VERSION\r\n")
+  end
+
+  @doc """
+  #127 — sends bare `MOTD\\r\\n` upstream. Server replies with the
+  375/372/376 sequence (or 422 ERR_NOMOTD); when primed by `:send_motd`,
+  `EventRouter` folds the burst into `state.motd_pending` and
+  `Server.apply_effects` flushes a `{:server_reply, :motd, lines}` modal
+  effect on the terminator. Connect-time MOTD (unprimed) stays on `$server`.
+
+  No params, no validation: MOTD is universally accepted.
+  """
+  @spec send_motd(pid()) :: send_result()
+  def send_motd(client) do
+    send_line(client, "MOTD\r\n")
+  end
+
   # S10 (cluster #10): byte-boundary observability for invalid_line
   # rejections. Every public send_* helper funnels its `else` arm
   # through here so a silently-rejected outbound verb is greppable

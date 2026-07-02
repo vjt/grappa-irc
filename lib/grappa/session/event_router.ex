@@ -172,6 +172,7 @@ defmodule Grappa.Session.EventRouter do
           | {:members_seeded, String.t(), %{(nick :: String.t()) => modes :: [String.t()]}}
           | {:names_reply, channel :: String.t(), roster :: [{String.t(), [String.t()]}]}
           | {:who_reply, target :: String.t(), users :: [map()]}
+          | {:server_reply, source :: :info | :version | :motd, lines :: [String.t()]}
           | {:joined, String.t()}
           | {:join_failed, channel :: String.t(), reason :: String.t(), numeric :: pos_integer()}
           | {:parted, String.t()}
@@ -1565,30 +1566,83 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # BUG2: MOTD numerics (375 RPL_MOTDSTART, 372 RPL_MOTD, 376 RPL_ENDOFMOTD)
-  # persist to the synthetic "$server" channel so the server-messages window
-  # has content. Previously these hit the catch-all and were silently dropped.
-  # NumericRouter marks them as :delegated so no numeric_routed event fires —
-  # this persist path is the canonical surface for MOTD text.
+  # #127 — MOTD family (375 RPL_MOTDSTART, 372 RPL_MOTD, 376 RPL_ENDOFMOTD,
+  # 422 ERR_NOMOTD). Two surfaces, gated on state.motd_pending:
   #
-  # BUG2 fix-up: sender was hardcoded to "" which fails Identifier.valid_sender?
-  # and caused every changeset to be rejected. Use Message.sender_nick/1 instead
-  # — for numerics with a server prefix it returns the server hostname, for
-  # prefix-less lines it returns the anonymous_sender sentinel ("*"). Both are
-  # accepted by valid_sender?.
+  #   * connect-time MOTD (motd_pending == nil) — the server auto-sends the
+  #     MOTD on registration. Keep the legacy BUG2 behaviour: persist each
+  #     line as a `:notice` row on the synthetic "$server" window so the
+  #     server-messages window has content. NumericRouter marks these
+  #     :delegated so no numeric_routed persist fires — this clause is the
+  #     canonical surface.
+  #
+  #   * explicit /motd (motd_pending == %{lines: _}) — the operator asked.
+  #     Fold 375/372 into the accumulator, drain ONE ephemeral
+  #     `{:server_reply, :motd, lines}` effect on the terminator (mirror of
+  #     the /who 315 drain → whoModal). NOTHING is persisted; cic renders a
+  #     dismissable retro modal. 422 carries the only line (no MOTD), so it
+  #     folds its own body before draining — an explicit /motd never dangles.
+  #
+  # BUG2 fix-up (still applies to the $server path in persist_server_notice/2):
+  # sender must be Message.sender_nick/1, never "".
   defp do_route(
-         %Message{command: {:numeric, motd_numeric}, params: [_ | rest]} = msg,
+         %Message{command: {:numeric, motd_numeric}} = msg,
          state
        )
-       when motd_numeric in [375, 372, 376] do
-    body = List.last(rest)
-    sender = Message.sender_nick(msg)
+       when motd_numeric in [375, 372, 376, 422] do
+    case Map.get(state, :motd_pending) do
+      nil ->
+        persist_server_notice(state, msg)
 
-    if is_binary(body) do
-      {state, eff} = build_persist(state, :notice, "$server", sender, body, %{})
-      {:cont, state, [eff]}
-    else
-      {:cont, state, []}
+      accum ->
+        cond do
+          motd_numeric in [375, 372] ->
+            {:cont, %{state | motd_pending: server_reply_fold(accum, msg)}, []}
+
+          motd_numeric == 376 ->
+            {:cont, %{state | motd_pending: nil}, [{:server_reply, :motd, server_reply_drain(accum)}]}
+
+          motd_numeric == 422 ->
+            drained = server_reply_drain(server_reply_fold(accum, msg))
+            {:cont, %{state | motd_pending: nil}, [{:server_reply, :motd, drained}]}
+        end
+    end
+  end
+
+  # #127 — INFO (371 RPL_INFO burst, 374 RPL_ENDOFINFO terminator). Gated on
+  # state.info_pending (primed by :send_info). Primed: fold 371 lines, drain
+  # `{:server_reply, :info, lines}` on 374. Unprimed (no connect-time INFO —
+  # on-demand only): fall back to the same `$server` :notice persist, so an
+  # unsolicited reply is still visible, never silent.
+  defp do_route(%Message{command: {:numeric, 371}} = msg, state) do
+    case Map.get(state, :info_pending) do
+      nil -> persist_server_notice(state, msg)
+      accum -> {:cont, %{state | info_pending: server_reply_fold(accum, msg)}, []}
+    end
+  end
+
+  defp do_route(%Message{command: {:numeric, 374}} = msg, state) do
+    case Map.get(state, :info_pending) do
+      nil ->
+        persist_server_notice(state, msg)
+
+      accum ->
+        {:cont, %{state | info_pending: nil}, [{:server_reply, :info, server_reply_drain(accum)}]}
+    end
+  end
+
+  # #127 — VERSION (351 RPL_VERSION, single-shot, no terminator). Gated on
+  # state.version_pending (primed by :send_version). Primed: assemble one line
+  # from `<version> <server> :<comments>` and drain immediately. Unprimed:
+  # $server persist (legacy on-demand fallback).
+  defp do_route(%Message{command: {:numeric, 351}, params: [_ | rest]} = msg, state) do
+    case Map.get(state, :version_pending) do
+      nil ->
+        persist_server_notice(state, msg)
+
+      _ ->
+        line = rest |> Enum.filter(&is_binary/1) |> Enum.join(" ")
+        {:cont, %{state | version_pending: nil}, [{:server_reply, :version, [line]}]}
     end
   end
 
@@ -2141,6 +2195,41 @@ defmodule Grappa.Session.EventRouter do
   # glyph must reflect the sender's grade AT SEND TIME, not their current
   # grade — so it's snapshotted into meta here, not derived live by cic.
   @content_kinds [:privmsg, :action, :notice]
+
+  # #127 — accumulate one server-reply line (INFO/MOTD burst). LIFO prepend
+  # for O(1) fold; server_reply_drain/1 reverses to restore wire order. The
+  # trailing param is the line body; a bodyless numeric leaves the accum
+  # untouched (defensive, mirrors who_fold).
+  defp server_reply_fold(%{lines: lines} = accum, %Message{params: [_ | rest]}) do
+    case List.last(rest) do
+      body when is_binary(body) -> %{accum | lines: [body | lines]}
+      _ -> accum
+    end
+  end
+
+  defp server_reply_fold(accum, _), do: accum
+
+  # #127 — flush the accumulator to wire-order lines.
+  defp server_reply_drain(%{lines: lines}), do: Enum.reverse(lines)
+
+  # #127 — legacy `$server` :notice persist for an unprimed / connect-time
+  # server-info numeric (connect MOTD, unsolicited INFO/VERSION). Extracted
+  # from the pre-#127 MOTD BUG2 clause; sender via Message.sender_nick/1 (a
+  # server-prefixed numeric returns the server hostname, a prefix-less line
+  # the "*" sentinel — both pass Identifier.valid_sender?).
+  defp persist_server_notice(state, %Message{params: [_ | rest]} = msg) do
+    body = List.last(rest)
+
+    if is_binary(body) do
+      sender = Message.sender_nick(msg)
+      {state, eff} = build_persist(state, :notice, "$server", sender, body, %{})
+      {:cont, state, [eff]}
+    else
+      {:cont, state, []}
+    end
+  end
+
+  defp persist_server_notice(state, _), do: {:cont, state, []}
 
   defp build_persist(state, kind, channel, sender, body, meta) do
     meta = put_sender_prefix(meta, state, kind, channel, sender)

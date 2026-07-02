@@ -606,6 +606,51 @@ defmodule GrappaWeb.GrappaChannel do
     )
   end
 
+  # #127 — /info, /version, /motd. No args, read-only server queries.
+  # Visitors are entitled to issue them (mirror of /lusers). Each primes the
+  # session's pending accumulator and emits the bare command upstream; the
+  # reply burst drains ONE ephemeral `server_reply` event on the subject's
+  # `subject_label` topic — cic renders a dismissable retro modal, nothing is
+  # persisted. Connect-time MOTD is untouched (no pending flag → $server).
+  def handle_in(
+        "info",
+        %{"network_id" => network_id},
+        socket
+      )
+      when is_integer(network_id) do
+    dispatch_subject_verb(
+      socket,
+      fn -> {:ok, :ok} end,
+      fn subject -> Session.send_info(subject, network_id) end
+    )
+  end
+
+  def handle_in(
+        "version",
+        %{"network_id" => network_id},
+        socket
+      )
+      when is_integer(network_id) do
+    dispatch_subject_verb(
+      socket,
+      fn -> {:ok, :ok} end,
+      fn subject -> Session.send_version(subject, network_id) end
+    )
+  end
+
+  def handle_in(
+        "motd",
+        %{"network_id" => network_id},
+        socket
+      )
+      when is_integer(network_id) do
+    dispatch_subject_verb(
+      socket,
+      fn -> {:ok, :ok} end,
+      fn subject -> Session.send_motd(subject, network_id) end
+    )
+  end
+
   # CP22 cluster B (channel-client-polish #14) — /who <#channel>. cic
   # pushes after the operator types `/who #chan`; the channel relays to
   # Session.send_who/3 which primes who_pending + emits WHO upstream.

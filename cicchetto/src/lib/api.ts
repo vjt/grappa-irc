@@ -706,6 +706,22 @@ export type WhoReply = {
   users: WhoUser[];
 };
 
+// #127 — /info, /version, /motd reply bundle. Mirrors
+// `Grappa.Session.Wire.server_reply/3`. Ephemeral reply to an explicit
+// `/info` (371/374), `/version` (351) or `/motd` (375/372/376/422): the
+// server folds the reply burst and drains ONE typed event with the raw
+// lines + a typed `source`. cic maps `source` to a human title (the server
+// emits no display strings) and renders a dismissable scrollable retro
+// modal (ServerReplyModal). NOT persisted; connect-time MOTD is unaffected
+// (it stays on the $server window). `source` mirrors
+// `SessionWireServerReplySource`.
+export type ServerReplySource = "info" | "version" | "motd";
+export type ServerReply = {
+  network: string;
+  source: ServerReplySource;
+  lines: string[];
+};
+
 // P-0c — WHOWAS bundle payload. Mirrors `Grappa.Session.Wire.whowas_bundle/3`.
 // Aggregated reply to `/whowas <nick>` issued by the operator. The
 // most-recent historical entry is projected into the user/host/realname/
@@ -802,6 +818,7 @@ export type WireUserEvent =
   | ({ kind: "whois_bundle" } & WhoisBundle)
   | ({ kind: "names_reply" } & NamesReply)
   | ({ kind: "who_reply" } & WhoReply)
+  | ({ kind: "server_reply" } & ServerReply)
   | {
       // P-0b — standalone 301 RPL_AWAY ephemeral. Fires when the
       // operator /msg's an away peer; cic dm-listener arm renders

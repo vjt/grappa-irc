@@ -56,6 +56,7 @@ import NamesModal from "./NamesModal";
 import PrivacyModal from "./PrivacyModal";
 import ResizeHandle from "./ResizeHandle";
 import ScrollbackPane from "./ScrollbackPane";
+import ServerReplyModal from "./ServerReplyModal";
 import SettingsDrawer from "./SettingsDrawer";
 import ShellChrome from "./ShellChrome";
 import Sidebar from "./Sidebar";
@@ -533,6 +534,7 @@ const Shell: Component = () => {
           <MediaViewerModal />
           <NamesModal />
           <WhoModal />
+          <ServerReplyModal />
           <aside class="shell-sidebar">
             <Sidebar />
             {/* UX-5 bucket BS — drag handle on the inner edge of the
@@ -706,6 +708,7 @@ const Shell: Component = () => {
         <MediaViewerModal />
         <NamesModal />
         <WhoModal />
+        <ServerReplyModal />
         <Show when={membersOpen()}>
           <div
             class="shell-drawer-backdrop open"

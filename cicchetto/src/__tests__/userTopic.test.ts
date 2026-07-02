@@ -76,6 +76,10 @@ vi.mock("../lib/lusersBundle", () => ({
   setLusersBundle: vi.fn(),
 }));
 
+vi.mock("../lib/serverReplyModal", () => ({
+  setServerReply: vi.fn(),
+}));
+
 vi.mock("../lib/whowasCard", () => ({
   setWhowasBundle: vi.fn(),
 }));
@@ -552,6 +556,55 @@ describe("userTopic", () => {
         total_users: 42,
       });
       expect(lb.setLusersBundle).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("server_reply arm (#127)", () => {
+    it("calls setServerReply with (network, reply) — reply keeps source + lines, drops kind", async () => {
+      const srm = await import("../lib/serverReplyModal");
+      channelMock.fireEvent({
+        kind: "server_reply",
+        network: "azzurra",
+        source: "motd",
+        lines: ["- Welcome -", "line two"],
+      });
+      expect(srm.setServerReply).toHaveBeenCalledWith("azzurra", {
+        network: "azzurra",
+        source: "motd",
+        lines: ["- Welcome -", "line two"],
+      });
+    });
+
+    it("accepts an empty line list (422 no-MOTD)", async () => {
+      const srm = await import("../lib/serverReplyModal");
+      channelMock.fireEvent({ kind: "server_reply", network: "azzurra", source: "info", lines: [] });
+      expect(srm.setServerReply).toHaveBeenCalledWith("azzurra", {
+        network: "azzurra",
+        source: "info",
+        lines: [],
+      });
+    });
+
+    it("drops a payload with an unknown source (no setServerReply call)", async () => {
+      const srm = await import("../lib/serverReplyModal");
+      channelMock.fireEvent({
+        kind: "server_reply",
+        network: "azzurra",
+        source: "stats",
+        lines: ["x"],
+      });
+      expect(srm.setServerReply).not.toHaveBeenCalled();
+    });
+
+    it("drops a payload whose lines contain a non-string (no setServerReply call)", async () => {
+      const srm = await import("../lib/serverReplyModal");
+      channelMock.fireEvent({
+        kind: "server_reply",
+        network: "azzurra",
+        source: "motd",
+        lines: ["ok", 42],
+      });
+      expect(srm.setServerReply).not.toHaveBeenCalled();
     });
   });
 

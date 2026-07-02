@@ -23,6 +23,7 @@ import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { clearSeen } from "./reconnectBackfill";
 import { purgeScrollback } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
+import { setServerReply } from "./serverReplyModal";
 import { applyServerSettings } from "./serverSettings";
 import { joinUser } from "./socket";
 import { setWhoisBundle } from "./whoisCard";
@@ -334,6 +335,20 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       const users = narrowWhoUsers(r.users);
       if (users === null) return null;
       return { kind: "who_reply", network: r.network, target: r.target, users };
+    }
+    case "server_reply": {
+      // #127 — /info, /version, /motd reply bundle. Validate the typed
+      // `source` discriminant + the raw line array; a malformed payload
+      // drops rather than rendering a half-typed modal.
+      if (typeof r.network !== "string") return null;
+      if (r.source !== "info" && r.source !== "version" && r.source !== "motd") return null;
+      if (!Array.isArray(r.lines) || !r.lines.every((l) => typeof l === "string")) return null;
+      return {
+        kind: "server_reply",
+        network: r.network,
+        source: r.source,
+        lines: r.lines as string[],
+      };
     }
     case "invite_ack":
       // P-0e + P-0f — 341 RPL_INVITING ack. Server emits structured
@@ -680,6 +695,15 @@ createRoot(() => {
           // issuing window.
           const { kind: _omit, ...reply } = payload;
           setWhoReply(payload.network, reply);
+          return;
+        }
+        case "server_reply": {
+          // #127 — /info|/version|/motd reply complete. Replace any prior
+          // reply for this network; ServerReplyModal (mounted in Shell)
+          // renders the scrollable line list for the active network. No
+          // focus change — the operator stays on the issuing window.
+          const { kind: _omit, ...reply } = payload;
+          setServerReply(payload.network, reply);
           return;
         }
 

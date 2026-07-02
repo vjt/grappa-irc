@@ -77,6 +77,10 @@ vi.mock("../lib/socket", () => ({
   pushWho: vi.fn(),
   // CP22 cluster B (channel-client-polish #14) — /names bridge.
   pushNames: vi.fn(),
+  // #127 — /info, /version, /motd bridges.
+  pushInfo: vi.fn(),
+  pushVersion: vi.fn(),
+  pushMotd: vi.fn(),
 }));
 
 // Mock queryWindows.ts — compose.ts calls openQueryWindowState for /msg /query /q.
@@ -285,6 +289,41 @@ describe("compose submit — slash command dispatch", () => {
 
     // CTCP ACTION wraps body as \x01ACTION <text>\x01
     expect(sb.sendMessage).toHaveBeenCalledWith("freenode", "#a", "\x01ACTION waves\x01");
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #127 — /info, /version, /motd resolve the network id from the slug and
+  // push the bare verb; the reply renders in ServerReplyModal (server side).
+  it("/info pushes INFO via pushInfo(networkId)", async () => {
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/info");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushInfo).toHaveBeenCalledWith(1);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/version pushes VERSION via pushVersion(networkId)", async () => {
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/version");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushVersion).toHaveBeenCalledWith(1);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/motd pushes MOTD via pushMotd(networkId)", async () => {
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/motd");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushMotd).toHaveBeenCalledWith(1);
     expect(result).toEqual({ ok: true });
   });
 

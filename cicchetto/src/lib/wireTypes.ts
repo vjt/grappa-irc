@@ -525,6 +525,7 @@ export type SessionWireWireEventKind =
   | "members_seeded"
   | "names_reply"
   | "who_reply"
+  | "server_reply"
   | "joined"
   | "window_pending"
   | "window_invited"
@@ -613,6 +614,15 @@ export type SessionWireWhoReplyPayload = {
   network: string;
   target: string;
   users: SessionWireWhoUser[];
+};
+
+export type SessionWireServerReplySource = "info" | "version" | "motd";
+
+export type SessionWireServerReplyPayload = {
+  kind: "server_reply";
+  network: string;
+  source: SessionWireServerReplySource;
+  lines: string[];
 };
 
 export type SessionWireMember = {
@@ -783,6 +793,7 @@ export type WireSessionEvent =
   | SessionWireMembersSeededPayload
   | SessionWireNamesReplyPayload
   | SessionWireWhoReplyPayload
+  | SessionWireServerReplyPayload
   | SessionWireJoinedPayload
   | SessionWireWindowPendingPayload
   | SessionWireWindowInvitedPayload
