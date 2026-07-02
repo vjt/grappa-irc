@@ -2863,6 +2863,25 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # #169 — /who reply drained (315 RPL_ENDOFWHO). Broadcast the parsed
+  # per-user roster on the user-level topic — ephemeral, NOT persisted
+  # (mirrors :names_reply). cic's `whoModal` keys by network and renders a
+  # dismissable per-user table (nick, user@host, server, flags, hops,
+  # realname). Wire order is preserved (the server's WHO ordering); the row
+  # is a superset of `member` (adds user/host/server/hops/realname/channel),
+  # so the sigil-tier sort the names arm applies does not fit — the flat
+  # per-user table is shown in arrival order. Projection to the JSON-safe
+  # wire shape lives in `SessionWire.who_reply/3`.
+  defp apply_effects([{:who_reply, target, users} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.who_reply(state.network_slug, target, users)
+      )
+
+    apply_effects(rest, state)
+  end
+
   # CP15 B1 + cluster #6: own-nick JOIN echo received → window
   # transitions to :joined. Delegates state mutation to
   # `WindowState.set_joined/2` (which clears any prior :failed /

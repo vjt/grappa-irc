@@ -187,6 +187,67 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "who_reply/3 (#169)" do
+    test "projects the parsed /who rows through who_user/1" do
+      users = [
+        %{
+          nick: "alice",
+          user: "au",
+          host: "ah",
+          server: "s1",
+          modes: "H@",
+          hops: 0,
+          realname: "Alice",
+          channel: "#grappa"
+        },
+        %{
+          nick: "bob",
+          user: "bu",
+          host: "bh",
+          server: "s2",
+          modes: "G",
+          hops: 2,
+          realname: nil,
+          channel: "#grappa"
+        }
+      ]
+
+      assert Wire.who_reply("azzurra", "#grappa", users) == %{
+               kind: :who_reply,
+               network: "azzurra",
+               target: "#grappa",
+               users: users
+             }
+    end
+
+    test "per-row shape ≡ who_user/1 output — single wire contract" do
+      users = [
+        %{
+          nick: "alice",
+          user: "au",
+          host: "ah",
+          server: "s",
+          modes: "H",
+          hops: 0,
+          realname: "A",
+          channel: "#g"
+        }
+      ]
+
+      payload = Wire.who_reply("azzurra", "#g", users)
+      assert payload.users == Enum.map(users, &Wire.who_user/1)
+    end
+
+    test "tolerates an empty roster (315 with zero matches)" do
+      assert Wire.who_reply("azzurra", "nobody", []) == %{
+               kind: :who_reply,
+               network: "azzurra",
+               target: "nobody",
+               users: []
+             }
+    end
+  end
+
   describe "member/1" do
     test "projects a Session.member() to the per-row wire shape" do
       assert Wire.member(%{nick: "vjt", modes: ["@"]}) == %{nick: "vjt", modes: ["@"]}

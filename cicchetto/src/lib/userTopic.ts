@@ -26,9 +26,10 @@ import { selectedChannel, setSelectedChannel } from "./selection";
 import { applyServerSettings } from "./serverSettings";
 import { joinUser } from "./socket";
 import { setWhoisBundle } from "./whoisCard";
+import { setWhoReply } from "./whoModal";
 import { setWhowasBundle } from "./whowasCard";
 import { setFailed, setInvited, setJoined, setKicked, setPending } from "./windowState";
-import { narrowMembers, narrowWindowStateEvent } from "./wireNarrow";
+import { narrowMembers, narrowWhoUsers, narrowWindowStateEvent } from "./wireNarrow";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
 // imports for effect, exports nothing public. `main.tsx` imports this
@@ -324,6 +325,15 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       const members = narrowMembers(r.members);
       if (members === null) return null;
       return { kind: "names_reply", network: r.network, channel: r.channel, members };
+    }
+    case "who_reply": {
+      // #169 — /who roster bundle. Per-element narrowing on the users array
+      // (`narrowWhoUsers`) — a malformed row drops the whole payload rather
+      // than rendering a half-typed table.
+      if (typeof r.network !== "string" || typeof r.target !== "string") return null;
+      const users = narrowWhoUsers(r.users);
+      if (users === null) return null;
+      return { kind: "who_reply", network: r.network, target: r.target, users };
     }
     case "invite_ack":
       // P-0e + P-0f — 341 RPL_INVITING ack. Server emits structured
@@ -659,6 +669,17 @@ createRoot(() => {
           // change — the operator is already on the issuing window.
           const { kind: _omit, ...reply } = payload;
           setNamesReply(payload.network, reply);
+          return;
+        }
+
+        case "who_reply": {
+          // #169 — /who roster complete (server's 315 RPL_ENDOFWHO, gated on
+          // a pending /who). Replace any prior roster for this network;
+          // WhoModal (mounted in Shell) renders the per-user table for the
+          // active network. No focus change — the operator is already on the
+          // issuing window.
+          const { kind: _omit, ...reply } = payload;
+          setWhoReply(payload.network, reply);
           return;
         }
 

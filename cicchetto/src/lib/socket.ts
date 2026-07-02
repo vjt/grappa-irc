@@ -452,11 +452,11 @@ export function pushWhowas(networkId: number, nick: string): void {
   _userChannel.push("whowas", { network_id: networkId, nick });
 }
 
-// CP22 cluster B (channel-client-polish #14) — /who <#channel>. Pushes
-// on the user-level channel; server primes who_pending + emits WHO
-// upstream. The 352/315 burst lands as N+1 :notice scrollback rows
-// routed to the target channel (if joined) or $server (otherwise) —
-// no client-side accumulator needed.
+// #169 — /who <#channel|nick>. Pushes on the user-level channel; server
+// primes who_pending + emits WHO upstream. The 352 burst folds server-side
+// (each also upserting userhost_cache) and 315 RPL_ENDOFWHO drains into ONE
+// ephemeral `who_reply` event on the user topic (WhoModal renders it) — NOT
+// persisted to scrollback. Mirrors `pushNames`.
 export function pushWho(networkId: number, channel: string): void {
   if (_userChannel === null) return;
   _userChannel.push("who", { network_id: networkId, channel });

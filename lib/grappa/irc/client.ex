@@ -497,8 +497,10 @@ defmodule Grappa.IRC.Client do
   mask + an `o` flag, both out of MVP scope.
 
   Numerics 352 RPL_WHOREPLY (one per matching user) + 315 RPL_ENDOFWHO
-  (terminator) reply with the WHO list. EventRouter folds 352 into
-  `state.who_pending` and emits `{:who_bundle, target, accum}` on 315.
+  (terminator) reply with the WHO list. EventRouter folds each 352 into
+  `state.who_pending` (also upserting `userhost_cache`) and, on 315, drains
+  the accumulator into ONE ephemeral `{:who_reply, target, users}` effect
+  (#169) — broadcast on the user topic for cic's WhoModal, never persisted.
   """
   @spec send_who(pid(), String.t()) :: send_result()
   def send_who(client, channel) do

@@ -3,6 +3,7 @@ import type {
   AdmissionFlow,
   MessageKind,
   ScrollbackMessage,
+  WhoUser,
   WireAdminEvent,
   WireChannelEvent,
 } from "./api";
@@ -126,6 +127,43 @@ export function narrowMembers(raw: unknown): MemberEntry[] | null {
       if (typeof mode !== "string") return null;
     }
     out.push({ nick: e.nick, modes: e.modes as string[] });
+  }
+  return out;
+}
+
+// #169 — narrow the `who_reply` per-user rows. Superset of MemberEntry;
+// `modes` is a raw WHO flags STRING (not a prefix list). `hops`/`realname`
+// are nullable (RFC-violating servers may omit the trailing field). A single
+// malformed element drops the whole payload (mirror of narrowMembers) so the
+// modal never renders a half-typed row.
+export function narrowWhoUsers(raw: unknown): WhoUser[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: WhoUser[] = [];
+  for (const u of raw) {
+    if (typeof u !== "object" || u === null) return null;
+    const e = u as Record<string, unknown>;
+    if (
+      typeof e.nick !== "string" ||
+      typeof e.user !== "string" ||
+      typeof e.host !== "string" ||
+      typeof e.server !== "string" ||
+      typeof e.modes !== "string" ||
+      typeof e.channel !== "string" ||
+      (e.hops !== null && typeof e.hops !== "number") ||
+      (e.realname !== null && typeof e.realname !== "string")
+    ) {
+      return null;
+    }
+    out.push({
+      nick: e.nick,
+      user: e.user,
+      host: e.host,
+      server: e.server,
+      modes: e.modes,
+      hops: e.hops as number | null,
+      realname: e.realname as string | null,
+      channel: e.channel,
+    });
   }
   return out;
 }

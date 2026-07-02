@@ -1304,10 +1304,10 @@ describe("compose submit — /topic branches", () => {
 });
 
 describe("compose submit — info verbs (TODO stubs)", () => {
-  // CP22 cluster B (channel-client-polish #14) — /who is no longer a stub.
-  // Push goes through to the server; success returns {ok: true}. The 352
-  // /315 burst → N+1 :persist :notice rows is verified end-to-end by the
-  // Playwright e2e + Session.Server tests.
+  // #169 — /who is no longer a stub. Push goes through to the server;
+  // success returns {ok: true}. The 352 fold → 315 → typed who_reply event
+  // → WhoModal (nothing to scrollback) is verified end-to-end by the
+  // Playwright e2e + the Session.Server / EventRouter tests.
   it("/who #channel pushes to server", async () => {
     localStorage.setItem("grappa-token", "tok");
     const compose = await import("../lib/compose");

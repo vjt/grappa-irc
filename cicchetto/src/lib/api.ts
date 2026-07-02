@@ -677,6 +677,35 @@ export type NamesReply = {
   members: MemberEntry[];
 };
 
+// #169 — one parsed 352 RPL_WHOREPLY row for the /who modal. Mirrors
+// `Grappa.Session.Wire.who_user/1`. A SUPERSET of `MemberEntry` (adds
+// user/host/server/hops/realname/channel). `modes` is the raw WHO flags
+// STRING (e.g. "H@" = here + op), NOT the MemberEntry prefix-list — the
+// modal renders it verbatim. `hops`/`realname` are null when the server
+// omits the trailing field. WHOX (354) is not handled; the shape leaves
+// room for a future handler to add account etc.
+export type WhoUser = {
+  nick: string;
+  user: string;
+  host: string;
+  server: string;
+  modes: string;
+  hops: number | null;
+  realname: string | null;
+  channel: string;
+};
+
+// #169 — /who roster bundle payload. Mirrors
+// `Grappa.Session.Wire.who_reply/3`. Ephemeral reply to `/who <#chan|nick>`:
+// the server folds the 352 burst and drains on 315 into ONE typed event
+// with the parsed per-user rows. cic renders a dismissable per-user table
+// (WhoModal); clicking a nick opens a query. NOT persisted to scrollback.
+export type WhoReply = {
+  network: string;
+  target: string;
+  users: WhoUser[];
+};
+
 // P-0c — WHOWAS bundle payload. Mirrors `Grappa.Session.Wire.whowas_bundle/3`.
 // Aggregated reply to `/whowas <nick>` issued by the operator. The
 // most-recent historical entry is projected into the user/host/realname/
@@ -772,6 +801,7 @@ export type WireUserEvent =
     }
   | ({ kind: "whois_bundle" } & WhoisBundle)
   | ({ kind: "names_reply" } & NamesReply)
+  | ({ kind: "who_reply" } & WhoReply)
   | {
       // P-0b — standalone 301 RPL_AWAY ephemeral. Fires when the
       // operator /msg's an away peer; cic dm-listener arm renders

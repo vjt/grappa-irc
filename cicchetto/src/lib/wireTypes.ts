@@ -524,6 +524,7 @@ export type SessionWireWireEventKind =
   | "channel_created"
   | "members_seeded"
   | "names_reply"
+  | "who_reply"
   | "joined"
   | "window_pending"
   | "window_invited"
@@ -594,6 +595,24 @@ export type SessionWireNamesReplyPayload = {
   network: string;
   channel: string;
   members: SessionWireMember[];
+};
+
+export type SessionWireWhoUser = {
+  nick: string;
+  user: string;
+  host: string;
+  server: string;
+  modes: string;
+  hops: number | null;
+  realname: string | null;
+  channel: string;
+};
+
+export type SessionWireWhoReplyPayload = {
+  kind: "who_reply";
+  network: string;
+  target: string;
+  users: SessionWireWhoUser[];
 };
 
 export type SessionWireMember = {
@@ -763,6 +782,7 @@ export type WireSessionEvent =
   | SessionWireChannelCreatedPayload
   | SessionWireMembersSeededPayload
   | SessionWireNamesReplyPayload
+  | SessionWireWhoReplyPayload
   | SessionWireJoinedPayload
   | SessionWireWindowPendingPayload
   | SessionWireWindowInvitedPayload

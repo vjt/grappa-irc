@@ -3018,11 +3018,13 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
-  # CP22 cluster B (channel-client-polish #14) — /who bundle aggregation.
-  # 352 RPL_WHOREPLY rows fold into state.who_pending[channel_lower].replies;
-  # 315 RPL_ENDOFWHO drains the entry into a {:who_bundle, target, accum}
-  # effect. Mirror-shape of the WHOIS pipeline (CP21).
-  describe "CP22 B-who — WHO fold + 315 RPL_ENDOFWHO bundle emit" do
+  # #169 — /who returns a typed modal, mirroring /names. 352 RPL_WHOREPLY
+  # rows fold into state.who_pending[channel_lower].replies (each also
+  # upserting userhost_cache); 315 RPL_ENDOFWHO drains the entry into ONE
+  # ephemeral {:who_reply, target, users} effect — server.ex broadcasts it on
+  # the user topic and cic renders a dismissable WhoModal. NOTHING is
+  # persisted to scrollback (the pre-#169 N+1 :notice hack is gone).
+  describe "#169 B-who — WHO fold + 315 RPL_ENDOFWHO who_reply emit" do
     test "352 RPL_WHOREPLY appends a structured row to who_pending[channel].replies" do
       state =
         base_state(%{
@@ -3046,6 +3048,9 @@ defmodule Grappa.Session.EventRouterTest do
       assert reply.modes == "H+"
       assert reply.hops == 0
       assert reply.realname == "Alice Liddell"
+      # #169 — the folded row carries its per-row channel (for the modal +
+      # a future WHOX 354 handler); the 352 parse otherwise unchanged.
+      assert reply.channel == "#bofh"
     end
 
     test "352 with no pending who entry still updates userhost_cache (S2.4 path)" do
@@ -3064,7 +3069,7 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.who_pending == %{}
     end
 
-    test "315 RPL_ENDOFWHO emits N+1 :persist :notice effects + drops entry" do
+    test "315 RPL_ENDOFWHO emits ONE {:who_reply, target, users} effect + drops entry" do
       state =
         base_state(%{
           who_pending: %{
@@ -3072,13 +3077,24 @@ defmodule Grappa.Session.EventRouterTest do
               target_display: "#bofh",
               replies: [
                 %{
+                  nick: "bob",
+                  user: "ub",
+                  host: "hb",
+                  server: "s",
+                  modes: "H",
+                  hops: 1,
+                  realname: "Bob",
+                  channel: "#bofh"
+                },
+                %{
                   nick: "alice",
                   user: "u",
                   host: "h",
                   server: "s",
-                  modes: "H",
+                  modes: "H@",
                   hops: 0,
-                  realname: "Alice"
+                  realname: "Alice",
+                  channel: "#bofh"
                 }
               ]
             }
@@ -3088,21 +3104,22 @@ defmodule Grappa.Session.EventRouterTest do
       m = msg({:numeric, 315}, ["vjt", "#bofh", "End of /WHO list"], {:server, "irc.test.org"})
 
       {:cont, new_state, effects} = EventRouter.route(m, state)
+      # No scrollback persist — one ephemeral who_reply, entry dropped.
       assert new_state.who_pending == %{}
-      assert length(effects) == 2
-
-      [row, eof] = effects
-      assert {:persist, :notice, row_attrs} = row
-      # Not joined → routes to $server
-      assert row_attrs.channel == "$server"
-      assert row_attrs.meta.numeric == 352
-      assert row_attrs.meta.who.nick == "alice"
-      assert row_attrs.body =~ "alice"
-
-      assert {:persist, :notice, eof_attrs} = eof
-      assert eof_attrs.channel == "$server"
-      assert eof_attrs.meta.numeric == 315
-      assert eof_attrs.body =~ "End of /WHO list"
+      assert [{:who_reply, target, users}] = effects
+      assert target == "#bofh"
+      # who_fold prepends each row LIFO, so the stored list is reverse-wire
+      # order; the drain reverses it back. Fixture stores [bob, alice]
+      # (as if the wire sent alice then bob) → emitted in wire order [alice, bob].
+      assert Enum.map(users, & &1.nick) == ["alice", "bob"]
+      [alice | _] = users
+      assert alice.user == "u"
+      assert alice.host == "h"
+      assert alice.modes == "H@"
+      assert alice.realname == "Alice"
+      assert alice.channel == "#bofh"
+      # NOT a :persist effect — nothing lands in scrollback.
+      refute Enum.any?(effects, &match?({:persist, _, _}, &1))
     end
 
     test "315 with no pending entry is silently ignored (unsolicited)" do
@@ -3122,13 +3139,14 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg({:numeric, 315}, ["vjt", "#BOFH", "End of /WHO list"], {:server, "irc.test.org"})
 
-      {:cont, new_state, [eof]} = EventRouter.route(m, state)
+      {:cont, new_state, [{:who_reply, target, users}]} = EventRouter.route(m, state)
       assert new_state.who_pending == %{}
-      assert {:persist, :notice, eof_attrs} = eof
-      assert eof_attrs.meta.who_target == "#BOFH"
+      # Carries the canonical `target_display` (original case), empty roster.
+      assert target == "#BOFH"
+      assert users == []
     end
 
-    test "315 routes to target channel when state.members has it (joined)" do
+    test "315 for a JOINED channel still emits who_reply — nothing to scrollback (#169)" do
       state =
         base_state(%{
           members: %{"#bofh" => %{"alice" => []}},
@@ -3143,7 +3161,8 @@ defmodule Grappa.Session.EventRouterTest do
                   server: "s",
                   modes: "H",
                   hops: 0,
-                  realname: "Alice"
+                  realname: "Alice",
+                  channel: "#bofh"
                 }
               ]
             }
@@ -3152,11 +3171,12 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg({:numeric, 315}, ["vjt", "#bofh", "End of /WHO list"], {:server, "irc.test.org"})
 
-      {:cont, _, [row, eof]} = EventRouter.route(m, state)
-      assert {:persist, :notice, row_attrs} = row
-      assert row_attrs.channel == "#bofh"
-      assert {:persist, :notice, eof_attrs} = eof
-      assert eof_attrs.channel == "#bofh"
+      # Pre-#169 a joined channel routed the notices INTO #bofh's scrollback.
+      # Now it is always a single ephemeral who_reply — no :persist effect,
+      # so the joined channel window stays clean.
+      {:cont, _, [{:who_reply, target, users}]} = EventRouter.route(m, state)
+      assert target == "#bofh"
+      assert Enum.map(users, & &1.nick) == ["alice"]
     end
   end
 

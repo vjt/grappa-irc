@@ -61,6 +61,7 @@ import ShellChrome from "./ShellChrome";
 import Sidebar from "./Sidebar";
 import SocketHealthBanner from "./SocketHealthBanner";
 import TopicBar from "./TopicBar";
+import WhoModal from "./WhoModal";
 
 // Three-pane responsive shell. Composition root for Sidebar / TopicBar /
 // ScrollbackPane / ComposeBox / MembersPane / SettingsDrawer / BottomBar.
@@ -531,6 +532,7 @@ const Shell: Component = () => {
           <PrivacyModal />
           <MediaViewerModal />
           <NamesModal />
+          <WhoModal />
           <aside class="shell-sidebar">
             <Sidebar />
             {/* UX-5 bucket BS — drag handle on the inner edge of the
@@ -703,6 +705,7 @@ const Shell: Component = () => {
         <PrivacyModal />
         <MediaViewerModal />
         <NamesModal />
+        <WhoModal />
         <Show when={membersOpen()}>
           <div
             class="shell-drawer-backdrop open"

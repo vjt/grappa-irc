@@ -73,6 +73,7 @@ defmodule Grappa.Session.Wire do
           | :channel_created
           | :members_seeded
           | :names_reply
+          | :who_reply
           | :joined
           | :window_pending
           | :window_invited
@@ -164,6 +165,38 @@ defmodule Grappa.Session.Wire do
           network: String.t(),
           channel: String.t(),
           members: [member()]
+        }
+
+  @typedoc """
+  #169 — one parsed 352 RPL_WHOREPLY row for the /who modal. A SUPERSET of
+  `member()` (adds user/host/server/hops/realname/channel). `modes` is the
+  raw WHO flags string (e.g. `"H@"` = here + op), NOT the `member()`
+  prefix-list — the modal renders it verbatim. `hops`/`realname` are nil
+  when the RFC-violating server omits the trailing field. WHOX (354) is not
+  handled; this shape leaves room for a future handler to add account etc.
+  """
+  @type who_user :: %{
+          nick: String.t(),
+          user: String.t(),
+          host: String.t(),
+          server: String.t(),
+          modes: String.t(),
+          hops: integer() | nil,
+          realname: String.t() | nil,
+          channel: String.t()
+        }
+
+  @typedoc """
+  #169 — ephemeral WHO roster for an EXPLICIT `/who` request (channel OR
+  nick target). Mirror of `names_reply_payload/0`: routed on the user-level
+  topic, NOT persisted — it feeds cic's dismissable `whoModal`, never
+  scrollback. `target` is the canonical /who target (channel or nick).
+  """
+  @type who_reply_payload :: %{
+          kind: :who_reply,
+          network: String.t(),
+          target: String.t(),
+          users: [who_user()]
         }
 
   @typedoc """
@@ -552,6 +585,54 @@ defmodule Grappa.Session.Wire do
       network: network_slug,
       channel: channel,
       members: Enum.map(members, &member/1)
+    }
+  end
+
+  @doc """
+  #169 — build the ephemeral `/who` roster payload (315 RPL_ENDOFWHO drain).
+  Mirror of `names_reply/3`: user-level topic, ephemeral — see
+  `who_reply_payload/0`. Each row is projected through `who_user/1` so the
+  wire shape stays single-sourced and JSON-safe.
+  """
+  @spec who_reply(String.t(), String.t(), [map()]) :: who_reply_payload()
+  def who_reply(network_slug, target, users)
+      when is_binary(network_slug) and is_binary(target) and is_list(users) do
+    %{
+      kind: :who_reply,
+      network: network_slug,
+      target: target,
+      users: Enum.map(users, &who_user/1)
+    }
+  end
+
+  @doc """
+  #169 — renders one parsed WHO row (`who_pending` reply map) to the
+  per-user wire shape. Explicit field projection (like `member/1`): any
+  drift in the source row requires a change HERE and nowhere else. `modes`
+  is the raw WHO flags string; `hops`/`realname` may be nil.
+  """
+  @spec who_user(map()) :: who_user()
+  def who_user(%{
+        nick: nick,
+        user: user,
+        host: host,
+        server: server,
+        modes: modes,
+        hops: hops,
+        realname: realname,
+        channel: channel
+      })
+      when is_binary(nick) and is_binary(user) and is_binary(host) and
+             is_binary(server) and is_binary(modes) and is_binary(channel) do
+    %{
+      nick: nick,
+      user: user,
+      host: host,
+      server: server,
+      modes: modes,
+      hops: hops,
+      realname: realname,
+      channel: channel
     }
   end
 

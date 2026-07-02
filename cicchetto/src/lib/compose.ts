@@ -600,14 +600,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         // Emit inline errors as TODO stubs (future bucket wiring).
         // ---------------------------------------------------------------
         // ---------------------------------------------------------------
-        // CP22 cluster B (channel-client-polish #14) — /who <#chan>.
-        // Push on the user-level channel; the server primes who_pending
-        // and emits WHO upstream. The 352/315 burst lands as N+1 :notice
-        // scrollback rows routed to the target channel (if joined) or
-        // $server (otherwise) — no client-side accumulator. Body is an
-        // irssi-shape readable string; meta.numeric (352|315) and
-        // meta.who structured payload are available for future tabular
-        // render polish (current notice render is sufficient for v1).
+        // #169 — /who <#chan|nick>. Push on the user-level channel; the
+        // server primes who_pending and emits WHO upstream. The 352 burst
+        // folds server-side (each also upserting userhost_cache) and 315
+        // RPL_ENDOFWHO drains into ONE ephemeral `who_reply` event on the
+        // user topic; WhoModal renders the parsed per-user table. NOTHING
+        // lands in scrollback (mirrors /names).
         //
         // /who without target → default to the current channel (#122);
         // reject inline only when the active window is not a channel

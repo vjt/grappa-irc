@@ -3253,7 +3253,8 @@ html.resize-dragging * {
    close button) but pins header + footer and scrolls only the body so
    the "#channel — N people" heading + "End of /NAMES list" count stay
    visible on large channels. */
-.names-modal-backdrop {
+.names-modal-backdrop,
+.who-modal-backdrop {
   position: fixed;
   left: 0;
   right: 0;
@@ -3284,7 +3285,8 @@ html.resize-dragging * {
   padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
 }
 
-.names-modal {
+.names-modal,
+.who-modal {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -3301,7 +3303,8 @@ html.resize-dragging * {
   overflow: hidden;
 }
 
-.names-modal-header {
+.names-modal-header,
+.who-modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3310,7 +3313,8 @@ html.resize-dragging * {
   flex: 0 0 auto;
 }
 
-.names-modal-header h2 {
+.names-modal-header h2,
+.who-modal-header h2 {
   margin: 0;
   font-size: 1rem;
   font-weight: normal;
@@ -3319,7 +3323,8 @@ html.resize-dragging * {
   white-space: nowrap;
 }
 
-.names-modal-close {
+.names-modal-close,
+.who-modal-close {
   /* #143 — 44px Apple-HIG tap target, matching the #133 card-× precedent
      (`.whois-card-close` et al). Negative block margins pull the tall
      hit box back out of the header row so the title stays vertically
@@ -3340,11 +3345,13 @@ html.resize-dragging * {
   cursor: pointer;
 }
 
-.names-modal-close:hover {
+.names-modal-close:hover,
+.who-modal-close:hover {
   color: var(--fg);
 }
 
-.names-modal-body {
+.names-modal-body,
+.who-modal-body {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: 0.25rem 1rem 0.5rem;
@@ -3405,11 +3412,77 @@ html.resize-dragging * {
   background: var(--border);
 }
 
-.names-modal-footer {
+.names-modal-footer,
+.who-modal-footer {
   flex: 0 0 auto;
   border-top: 1px solid var(--border);
   padding: 0.5rem 1rem;
   color: var(--muted);
+}
+
+/* #169 — /who modal body: a flat per-user table (nick, flags, user@host,
+ * server, hops, realname). Unlike NamesModal's sigil-grouped grid, WHO rows
+ * are a dense irssi-columnar list — one flex row per user, wrapping on
+ * narrow viewports. */
+.who-modal-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.who-modal-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.5rem;
+  padding: 0.15rem 0.3rem;
+  min-height: 28px;
+  border-bottom: 1px solid var(--border);
+}
+
+.who-modal-nick {
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  white-space: nowrap;
+}
+
+.who-modal-nick:hover {
+  text-decoration: underline;
+}
+
+.who-modal-flags {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.who-modal-userhost {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.who-modal-server {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.who-modal-hops {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.who-modal-realname {
+  color: var(--fg);
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* C2 — WHOIS card. Inline ephemeral surface above scrollback when a

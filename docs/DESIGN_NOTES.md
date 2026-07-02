@@ -15810,3 +15810,63 @@ button).
 the #153/#154/#155 night `--cic` batch (shipping cic from `main` daytime
 would push #154/#155 cic to prod before their server halves go live).
 build+test+merge+push, then the orchestrator ships in the night pass.
+
+## 2026-07-02 — #169: /who returns a typed who_reply modal, not a scrollback dump
+
+`/who` mirrored `/whois`-era ergonomics badly: on 315 RPL_ENDOFWHO the
+EventRouter drained the per-target accumulator into **N+1 `:persist
+:notice` rows** — one irssi-shape line per 352 RPL_WHOREPLY plus an
+"End of /WHO list" terminator — routed into the target channel's window
+(if joined) or the synthetic `$server` window otherwise. Transient query
+output polluted permanent scrollback; cic had **no `who_reply` arm at
+all**, so the server's structured `meta.who` payload was dead weight and
+the rows rendered as plain notice text. `/names` already did it right
+(#140): buffer the burst → emit ONE typed event → cic renders a
+dismissable modal, nothing persisted. This makes `/who` mirror `/names`.
+
+**What changed (server, COLD).** The 315 drain (`event_router.ex`) now
+emits a single `{:who_reply, target_display, users}` effect — the N+1
+`build_persist` loop and its `format_who_reply/2` helper are deleted. The
+channel-vs-`$server` routing distinction disappears entirely: a who_reply
+is always a user-topic modal, so even a `/who` on a **joined** channel no
+longer dumps into that channel's buffer. `server.ex` gained an
+`apply_effects([{:who_reply, …}])` arm that broadcasts
+`SessionWire.who_reply/3` on `Topic.user(...)` — ephemeral, direct mirror
+of the `:names_reply` arm. No sort tier is applied: the WHO row is a
+superset of `member` (adds user/host/server/hops/realname/channel), so the
+sigil-tier sort names uses doesn't fit; the flat table shows arrival
+(server WHO) order.
+
+**What stayed untouched (the load-bearing invariant).** The 352 route +
+`who_fold/3` accumulator are reused AS-IS — the ONLY addition is carrying
+the per-row `channel` into the folded map (for the modal column + a future
+354 slot). Critically the 352 route STILL upserts `userhost_cache` (feeds
+`/ban` mask derivation); that is orthogonal to scrollback and was never
+the hack. Only the 315 drain was.
+
+**Wire contract.** `who_reply_payload/0` + `who_user/0` types and
+`who_reply/3` + `who_user/1` builders in `wire.ex`; `:who_reply` added to
+the kind union. Each row is projected through `who_user/1` (explicit field
+projection like `member/1`) so the JSON-safe wire shape is single-sourced
+— raw structs over PubSub crash fastlane at the WS edge. `wireTypes.ts`
+regenerated from `wire.ex` (drift-gated).
+
+**cic (`--cic`).** New `whoModal.ts` store (identity-scoped
+`whoModalBySlug`, one roster per network, last-write-wins — copy of
+`namesModal.ts`); new `WhoModal.tsx` (same overlay / scroll-lock / dismiss
+×-Esc-backdrop / nick-click-opens-query scaffolding as NamesModal, body
+renders a flat per-user table instead of sigil-grouped chips); `userTopic`
+`who_reply` arm → `narrowWhoUsers` (a single malformed row drops the whole
+payload) → `setWhoReply`; mounted beside `<NamesModal/>` in both Shell
+branches; `WhoUser`/`WhoReply` types in `api.ts`.
+
+**WHOX (354) out of scope, shape left extensible.** grappa sends plain
+`WHO`; there is no 354 handler. The row type deliberately has room for a
+future handler to fill account etc. without a reshape — designed for the
+general case, not retrofitted.
+
+**Deploy coupling.** SERVER (event_router) → COLD; also `--cic`.
+Build-deferred: rides the #153/#154/#155/#168 night batch. Server COLD
+half (#153 + #154-server + #169-server) folds into ONE cold restart; cic
+half ships `--cic` with #154-cic/#155/#168. build+test+merge+push, then
+the orchestrator ships in the night pass.
