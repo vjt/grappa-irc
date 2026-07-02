@@ -15692,3 +15692,121 @@ the bug-(1) swallow — not a missing path. No new emit code was needed.
 restart (zero extra session drops — `feedback_minimize_cold_deploys`),
 then #155 + #154-cic ship `--cic`. Build-deferred: build+test+merge+push,
 then the orchestrator ships in the night pass.
+
+---
+
+### 2026-07-02 — #168: one always-bottom scroll authority (P0 regression fix)
+
+**Symptom (P0 regression).** After sending a message the cicchetto
+scrollback pane yanked UP to the unread divider instead of staying pinned
+at the bottom. A side-effect of the unread-anchor cluster (#156 divider /
+#161 forward-paging / #163 leave-cursor): those left cic's `ScrollbackPane`
+with **two** authorities writing the pane's `scrollTop`, and they raced —
+the scroll-to-unread-marker anchor won on activation (parking the viewport
+mid-pane, `atBottom=false`), so a subsequent send did not follow to the
+tail. The just-sent line rendered off-screen at the bottom while the view
+stayed stuck on the divider.
+
+**The two racing authorities (dedup-review).** Every `scrollTop`/
+`scrollIntoView` writer in `ScrollbackPane.tsx`, and what became of each:
+- **`scrollToActivation`** (window activation — channel switch, visibility
+  false→true, resize). Had a *marker branch* (`markerRef.scrollIntoView({
+  block:"center"})` + `setAtBottom(distance…)` → often false) and a
+  *tail branch*. → **collapsed**: always the tail branch (`atBottom=true`).
+- **length-effect `on(rows().length)`** (append / cursor-hydration). Had a
+  *first-render marker branch* (`!markerScrolled && marker →
+  scrollIntoView center`) and an *atBottom tail-follow*. → **collapsed**:
+  only the `atBottom` tail-follow remains.
+- **#130 channel-switch reset** — reuses `scrollToActivation`, inherits the
+  fix. `setMarkerScrolled(false)` reset deleted.
+- **`scrollToBottom`** (floating-button click) — already tail-only, kept.
+- **`onScroll` loadMore/loadNewer scroll-restore** — pagination-prepend
+  bookkeeping, semantically distinct (operator IS scrolling up); untouched.
+
+The `markerRef` + `markerScrolled` signals (and the marker-row `ref`
+callback) existed ONLY to feed the two marker branches — deleted with them
+(the REV-G H23 stale-ref machinery is now structurally impossible: nothing
+reads the marker's DOM node).
+
+**Final scope (vjt + Mez).** ALWAYS scroll-to-bottom; NO event-type
+branching (the earlier "branch by own-send vs inbound" idea is superseded).
+irssi-shape: new content ⇒ bottom, the operator PAGES UP MANUALLY to
+re-read. Exactly one scroll behavior. `atBottom` (a derived scroll-position
+state, not an event-type) still gates the tail-follow — scrolled-up
+preserves position, only the operator's own scroll leaves the tail.
+
+**Reconciliation with the divider-freeze contract (2026-06-08).** The
+freeze contract has two facets that were entangled in the marker branches;
+#168 SPLITS them: (1) *scroll-position* — always the tail, the divider is
+never a scroll anchor; (2) *divider-display* — the `── XX unread ──` row
+still renders at its frozen `markerCursorId` position (`rows()` memo +
+`sessionTopId`/`markerCursorId` freeze all untouched). You land at the
+bottom and page UP to find the frozen boundary. No read-state invariant
+changed: the cursor stays server-owned per `(subject, network, channel)`;
+mark-all-read falls out for free via the EXISTING send-optimistic cursor
+advance (`sendMessage` → `setReadCursor` → send-relatch collapses the
+divider) — no second cursor writer added.
+
+**A read-context PREPEND corrupts `atBottom` (the non-obvious part).**
+Gating the tail-follow on `atBottom()` alone was NOT enough at first; it took
+THREE wrong theories and a round of console instrumentation to find the real
+cause. When a channel opens with a mid-buffer read cursor, the newest rows
+load first (WS join-ok `refreshScrollback`, and/or the #156 anchored
+`after(cursor,200)` page), the length-effect snaps the pane to that tail, and
+then the read-context (`before(cursor+1)`) page merges — PREPENDING ~50 older
+rows ABOVE the viewport. `scrollHeight` jumps (e.g. 622→1670) while `scrollTop`
+stays put (443), so the distance-to-tail balloons to ~1056px even though the
+operator never touched anything. The prepend fires a `scroll` event;
+`onScroll`'s `setAtBottom(distance <= threshold)` reads that huge distance and
+flips `atBottom` FALSE. The next always-bottom length-effect then aborts its
+snap (`if (!atBottom()) return`) and the pane strands mid-buffer. The
+instrumented trace nailed it: `onScroll st=443 dist=1055 ab:true->false
+input=null` immediately followed by `LEsnap ABORT ab=false`.
+
+Three rejected attempts, each disproven by evidence: (1) a `following()`
+predicate (`atBottom() || lastInputEventAtMs() === null`) — correct for real
+users but broke `cp14-b2`, whose loadMore test scrolls to the top
+PROGRAMMATICALLY (no input event), so the predicate wrongly treated it as
+"following"; (2) reversing the `loadInitialScrollback` merge order —
+irrelevant, the newest region is loaded by `refreshScrollback`, not that
+merge; (3) `overflow-anchor: none` — the trace showed `scrollTop` already
+stayed fixed, so anchoring was never the trigger; the flip came purely from
+`onScroll` recomputing `atBottom` off the grown geometry.
+
+Root-cause fix: **`onScroll` flips `atBottom` false only on a real scroll UP
+(`scrollTop` DECREASES vs the last observed value); reaching the tail always
+re-arms it.** A content-grow-above keeps `scrollTop` put (or increases it),
+so it can no longer masquerade as "the operator left the bottom." This
+distinguishes it from `cp14-b2`'s scroll-to-top (scrollTop drops to 0 → a
+genuine leave) and from a real operator wheel/drag up — both DECREASE
+scrollTop — so the loadMore-preserve and paged-up-to-read paths are
+untouched. `lastScrollTop` is a single `let`, updated every `onScroll`; no
+new signal, no coupling to input events.
+
+**Send is unconditional (issue #168 acceptance).** A send re-enters follow
+mode even if the operator had paged up: the `lastOwnSend` effect calls
+`scrollToBottom()` (the same tail authority) so the just-sent line is always
+visible. This is NOT event-type branching — the send resets the follow-STATE
+and the one always-bottom authority does the scrolling.
+
+**Consequence worth noting.** Because activation now lands at the tail and
+`onScroll` fires `loadNewer` near the bottom, opening a channel with >200
+unread auto-forward-pages toward the true live tail (bounded by the
+existing `loadNewerInFlight`/`loadNewerExhausted` latches). That is the
+intended "always live tail" behavior, not a new mechanism.
+
+**Tests.** New e2e `issue168-scroll-authority.spec.ts` (RED→GREEN): seed a
+mid-page cursor so a divider is present, SEND, then assert the pane is
+pinned at the bottom, the sent line is in the viewport (did NOT jump to the
+marker), and the divider clears. Two prior specs that pinned the *removed*
+scroll-to-marker behavior were inverted to the new contract:
+`cp14-b1-scroll-marker-vs-bottom` scenario 2 (divider present but scroll at
+bottom) and `scroll-on-window-switch` test 2 (fresh focus lands at bottom,
+divider frozen above). The vitest REV-G H23 stale-ref pin was replaced by a
+`#168` display-only-divider pin (atBottom stays true → no scroll-to-bottom
+button).
+
+**Deploy coupling.** cic-only viewport fix, but build-deferred: it rides
+the #153/#154/#155 night `--cic` batch (shipping cic from `main` daytime
+would push #154/#155 cic to prod before their server halves go live).
+build+test+merge+push, then the orchestrator ships in the night pass.

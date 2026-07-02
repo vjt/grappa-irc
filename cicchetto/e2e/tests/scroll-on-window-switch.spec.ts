@@ -8,14 +8,16 @@
 // when `messages().length` changes, so re-selecting a previously-loaded
 // channel never re-snaps to the tail.
 //
-// Fix: on every `key()` change in the channel-switch effect, branch on
-// the presence of an unread-marker:
-//   * marker exists → scrollIntoView({ block: "center" }) — same UX as
-//     the length-effect's marker branch (which also moved from "start"
-//     to "center" so a window opened with unreads always centers the
-//     boundary regardless of mount path: fresh selection vs switch-back).
-//   * no marker → snap scrollTop to scrollHeight (tail). Auto-follow
-//     takes over after the first append.
+// Fix: on every `key()` change in the channel-switch effect, snap the
+// pane to the tail (auto-follow takes over after the first append).
+//
+// #168 (2026-07-02): scroll collapsed to ONE always-bottom authority. The
+// former marker-branch (marker present → scrollIntoView({block:"center"}))
+// was a second scrollTop authority that raced the tail-follow and yanked
+// the view up on send — removed. Activation ALWAYS lands at the tail; the
+// unread divider still renders (frozen-display contract, DESIGN_NOTES
+// 2026-06-08) but is never scrolled-to. The scenarios below assert the
+// new contract.
 //
 // ## Two scenarios
 //
@@ -25,14 +27,13 @@
 //     messages yet"). Switch back via sidebar → expect: lands at
 //     bottom again. Pre-fix: pinned at scrollTop=0.
 //
-//   Scenario 2 — channel → another channel-with-unreads (marker centered):
-//     Pre-seed a read cursor for #bofh placing the marker mid-page (25
-//     unreads), open #cicchetto first to flush the focus path, then
-//     switch to #bofh. Marker should land in viewport AND mid-pane,
-//     NOT at the top edge of the viewport (which would be the old
-//     `block: "start"` behavior). Geometry assertion: distance from
-//     marker top to viewport top is between 25% and 75% of viewport
-//     height, the canonical "center" band.
+//   Scenario 2 — fresh focus into channel-with-unreads (#168 always-bottom):
+//     Pre-seed a read cursor for #bofh placing the divider mid-page (25
+//     unreads), then focus #bofh. Post-#168 the pane lands at the TAIL
+//     (distance-to-bottom <= threshold); the divider still renders (frozen
+//     display) but sits ABOVE the fold, out of the viewport — it is no
+//     longer a scroll anchor. The pane must NOT stay pinned to the top
+//     (scrollTop > 0) either — that is the #130 bug this scenario guards.
 //
 // ## Why DB-seeded scrollback (matches cp14-b1)
 //
@@ -45,7 +46,7 @@
 //
 // Same 800×300 viewport cp14-b1 uses so the 50-row REST page reliably
 // overflows the scrollback area; without overflow, "lands at bottom"
-// is vacuously true and "marker centered" is unmeasurable.
+// is vacuously true and "divider above the fold" is unmeasurable.
 
 import { expect, test } from "../fixtures/test";
 import { type Page } from "@playwright/test";
@@ -161,9 +162,9 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
     // passed solo (3/3) yet failed mid-suite: a marker pinned to the top
     // breaks BOTH the "at bottom" and the "marker mid-pane" branches
     // asserted below. Seeding the cursor to HEAD makes the documented
-    // "(no marker)" scenario deterministic. Sibling :226 symmetrically
-    // seeds its OWN mid-page cursor for the marker-centered scenario;
-    // this is the read-to-tail counterpart, not a workaround.
+    // "(no marker)" scenario deterministic. Sibling test 2 seeds its OWN
+    // mid-page cursor for the divider-present-lands-at-bottom scenario
+    // (#168); this is the read-to-tail counterpart, not a workaround.
     const headPage = await fetchScrollbackPage(vjt.token, CHANNEL);
     expect(headPage.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
     const headId = headPage[0]?.id;
@@ -179,16 +180,13 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
 
     const g1 = await scrollbackGeometry(page);
     expect(g1.scrollHeight).toBeGreaterThan(g1.clientHeight);
-    // Either at the bottom OR marker is anchored mid-pane. Both pass
-    // the "didn't stick to scrollTop=0" check.
+    // #168: cursor seeded to HEAD → no divider → lands at the bottom.
     await expect
       .poll(async () => {
         const cur = await scrollbackGeometry(page);
-        const distance = cur.scrollHeight - cur.scrollTop - cur.clientHeight;
-        const hasMarker = (await page.locator('[data-testid="unread-marker"]').count()) > 0;
-        return distance <= SCROLL_BOTTOM_THRESHOLD_PX || (hasMarker && cur.scrollTop > 0);
+        return cur.scrollHeight - cur.scrollTop - cur.clientHeight;
       })
-      .toBe(true);
+      .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
 
     // Step 2 — open an empty query via /query. compose.ts dispatches:
     //   openQueryWindowState(nid, peer, _) + setSelectedChannel(...)
@@ -217,37 +215,36 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
       .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
       .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
 
-    // Contract: scroll position is at bottom OR marker-centered on
-    // re-selection — same shape as step 1. Pre-fix this fails — scrollTop
-    // stays at 0 (or whatever value the query left behind).
+    // Contract (#168): scroll position lands at the bottom on re-selection
+    // — same shape as step 1. Pre-fix this failed — scrollTop stayed at 0
+    // (or whatever value the query left behind).
     await expect
       .poll(
         async () => {
           const cur = await scrollbackGeometry(page);
-          const distance = cur.scrollHeight - cur.scrollTop - cur.clientHeight;
-          const hasMarker = (await page.locator('[data-testid="unread-marker"]').count()) > 0;
-          return distance <= SCROLL_BOTTOM_THRESHOLD_PX || (hasMarker && cur.scrollTop > 0);
+          return cur.scrollHeight - cur.scrollTop - cur.clientHeight;
         },
         { timeout: 5_000 },
       )
-      .toBe(true);
+      .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
   });
 
-  test("fresh focus into channel-with-unreads: marker centered, NOT pinned to top", async ({
+  test("fresh focus into channel-with-unreads: lands at bottom, divider frozen above (#168)", async ({
     page,
   }) => {
     const vjt = getSeededVjt();
     if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
 
-    // Pre-seed a cursor 25 rows from the tail of #bofh so the marker
-    // injection points mid-page. Same shape cp14-b1 scenario 2 uses.
-    // cp14-b1's own assertion is `toBeInViewport()` — agnostic to start
-    // vs center placement. THIS spec pins the stronger contract: the
-    // marker is CENTERED, not pinned to the top edge. Pre-fix the
-    // length-effect called `scrollIntoView({ block: "start" })` which
-    // landed the marker at the very top of the viewport — usable but
-    // showed no context above it. Post-fix uses `block: "center"` so
-    // the user sees both context-above and unread-below at a glance.
+    // Pre-seed a cursor 25 rows from the tail of #bofh so the divider
+    // injects mid-page. Same shape cp14-b1 scenario 2 uses.
+    //
+    // #168 (2026-07-02) collapsed scroll to ONE always-bottom authority.
+    // This test previously pinned "marker CENTERED in the viewport" — that
+    // was the scroll-to-marker anchor that #168 removed. New contract:
+    // fresh focus lands at the TAIL; the divider still renders (frozen-
+    // display contract) but sits ABOVE the fold. The operator pages up
+    // manually to re-read. The pane must NOT stay pinned to the top
+    // (scrollTop=0) either — that is the #130 bug this spec also guards.
     const page0 = await fetchScrollbackPage(vjt.token, CHANNEL);
     expect(page0.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
     const cursorRow = page0[25];
@@ -268,48 +265,25 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
     const g = await scrollbackGeometry(page);
     expect(g.scrollHeight).toBeGreaterThan(g.clientHeight);
 
-    // Contract assertion 1: marker is in the viewport (cp14-b1 pin).
-    await expect(marker).toBeInViewport();
-
-    // Contract assertion 2: marker is CENTERED, not pinned to the top
-    // edge. Bounding-box probe — distance from marker top to scrollback
-    // container top, normalized by container height. Center band
-    // (0.20..0.80) is wide enough to absorb sub-pixel rounding +
-    // browser-specific anchor offsets but excludes both top-pinned
-    // (block: "start") and bottom-pinned (block: "end") behaviors.
-    // Polled because scrollIntoView's effect lands asynchronously
-    // relative to the layout commit (browser quirk; cp14-b1 polls
-    // similarly for its threshold geometry).
+    // Contract assertion 1 (#168): the pane lands at the BOTTOM. The
+    // scroll-to-marker anchor was collapsed into the single always-bottom
+    // authority — activation snaps to the tail.
     await expect
-      .poll(
-        async () => {
-          const probe = await page.evaluate(() => {
-            const list = document.querySelector(
-              '[data-testid="scrollback"]',
-            ) as HTMLDivElement | null;
-            const m = document.querySelector(
-              '[data-testid="unread-marker"]',
-            ) as HTMLElement | null;
-            if (!list || !m) return -1;
-            const lr = list.getBoundingClientRect();
-            const mr = m.getBoundingClientRect();
-            return (mr.top - lr.top) / lr.height;
-          });
-          return probe;
-        },
-        { timeout: 5_000 },
-      )
-      .toBeGreaterThan(0.2);
+      .poll(async () => {
+        const cur = await scrollbackGeometry(page);
+        return cur.scrollHeight - cur.scrollTop - cur.clientHeight;
+      })
+      .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
 
-    const finalRatio = await page.evaluate(() => {
-      const list = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
-      const m = document.querySelector('[data-testid="unread-marker"]') as HTMLElement | null;
-      if (!list || !m) throw new Error("missing list or marker for geometry probe");
-      const lr = list.getBoundingClientRect();
-      const mr = m.getBoundingClientRect();
-      return (mr.top - lr.top) / lr.height;
-    });
-    expect(finalRatio).toBeLessThan(0.8);
+    // Contract assertion 2 (#168): the divider is present in the DOM
+    // (frozen-display contract preserved) but sits ABOVE the fold — it is
+    // no longer a scroll anchor, so it is NOT in the viewport.
+    await expect(marker).not.toBeInViewport();
+
+    // Contract assertion 3 (#130 guard): the pane did NOT stay pinned to
+    // the top — a real bottom-anchored scroll moved scrollTop off zero.
+    const g2 = await scrollbackGeometry(page);
+    expect(g2.scrollTop).toBeGreaterThan(0);
   });
 });
 

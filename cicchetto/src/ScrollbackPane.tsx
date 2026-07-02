@@ -725,31 +725,16 @@ const ScrollbackPane: Component<Props> = (props) => {
   // channel switch doesn't fire a stale settle for the previous
   // window.
   let scrollSettleTimer: number | undefined;
-  // REV-G H23 (2026-05-22): function-ref signal instead of let-bound
-  // ref. Combined with an explicit `onCleanup` wired at the marker
-  // JSX site (`{ ref={(el) => { setMarkerRef(el); onCleanup(...) }} }`),
-  // the signal flips back to undefined when the marker row unmounts —
-  // either on channel switch OR on mid-channel removal (cursor advance
-  // while staying on the same channel). Pre-REV-G the let-bound ref
-  // leaked across <For> diffs; the channel-switch case was compensated
-  // by an explicit reset, mid-channel removal was not — every read
-  // after a cursor-advance saw a stale detached DOM node. Per
-  // `feedback_solidjs_for_ref_leak`.
-  //
-  // SolidJS gotcha: unlike React, Solid function-refs are called
-  // ONCE on mount; they do NOT auto-null on unmount. `onCleanup` is
-  // the explicit hook for that lifecycle. The two together (ref-set +
-  // onCleanup-null) give the React-equivalent behavior.
-  const [markerRef, setMarkerRef] = createSignal<HTMLDivElement | undefined>();
+  // #168 — last observed scrollTop, so onScroll can tell an operator scroll
+  // UP (scrollTop decreased → leave the tail) from a programmatic content-
+  // grow above the viewport (scrollTop unchanged → keep following).
+  let lastScrollTop = 0;
   const [atBottom, setAtBottom] = createSignal(true);
   // UX-3 Z3 R4: actual-overflow gate for the `pan-y → chrome reveal`
   // trap. Recomputed on every layout-affecting signal (messages,
   // window resize, visualViewport resize → keyboard open/close).
   // True when scrollback content actually exceeds the viewport.
   const [isOverflowing, setIsOverflowing] = createSignal(false);
-  // C7.3: track whether we've done the initial scroll-to-marker for this
-  // window mount. Reset on channel switch (key change).
-  const [markerScrolled, setMarkerScrolled] = createSignal(false);
 
   // #130 — window-activation flicker gate. The activation scroll lands
   // inside `scrollToActivation`'s double-rAF (load-bearing — see its doc
@@ -1156,12 +1141,6 @@ const ScrollbackPane: Component<Props> = (props) => {
     }),
   );
 
-  // Channel-switch reset (Solid's <Show> reuses the ScrollbackPane
-  // component instance across selectedChannel changes; per-channel
-  // local state would otherwise leak across).
-  // C7.3: reset markerScrolled so the next channel's unread marker
-  // gets its own scroll-to-marker behavior.
-  //
   // UX-4 bucket K (2026-05-19) — canonical window-activation scroll.
   //
   // Two activation triggers converge on ONE routine
@@ -1173,20 +1152,25 @@ const ScrollbackPane: Component<Props> = (props) => {
   //      transitions false→true).
   //
   // Single source of truth: any future activation trigger plugs into
-  // `scrollToActivation` and inherits the marker-or-bottom routine
-  // for free. No ad-hoc scrollTop preserve/restore lives anywhere
-  // else in this component for the activation path — `onScroll`'s
-  // `loadMore` block has its own preservation but that's pagination-
-  // prepend bookkeeping, semantically distinct (operator IS scrolling
-  // up, we keep their reading position stable while older rows
-  // PREPEND from REST).
+  // `scrollToActivation` and inherits the always-bottom routine for
+  // free. No ad-hoc scrollTop preserve/restore lives anywhere else in
+  // this component for the activation path — `onScroll`'s `loadMore`
+  // block has its own preservation but that's pagination-prepend
+  // bookkeeping, semantically distinct (operator IS scrolling up, we
+  // keep their reading position stable while older rows PREPEND from
+  // REST).
   //
-  // Decision body: marker present → scrollIntoView({block: "center"})
-  // + latch markerScrolled; no marker → scrollTop = scrollHeight
-  // + atBottom = true. queueMicrotask defers the DOM read+write until
-  // Solid commits the row diffs (per the markerRef-staleness fix
-  // below). atBottom is set per branch so the floating "scroll to
-  // bottom" button doesn't flash visible mid-activation.
+  // #168 (2026-07-02) — ALWAYS scroll to the tail. The unread divider is
+  // NO LONGER a scroll anchor: the #163/#161/#156 cluster's
+  // scroll-to-marker branch here (and in the length-effect below) was a
+  // SECOND scrollTop authority that raced the tail-follow and won after a
+  // send, yanking the viewport up to the divider (P0 regression). Collapsed
+  // to one always-bottom authority per vjt+Mez: new content ⇒ bottom,
+  // irssi-shape — the operator pages up manually to re-read. The divider
+  // still RENDERS at its frozen position (freeze-display contract,
+  // DESIGN_NOTES 2026-06-08), it's just never scrolled-to. `atBottom` is
+  // set true so the floating "scroll to bottom" button doesn't flash
+  // visible mid-activation.
   const scrollToActivation = (): void => {
     if (!listRef) return;
     // #130 — hide the container synchronously NOW (pre-paint) so the
@@ -1214,13 +1198,13 @@ const ScrollbackPane: Component<Props> = (props) => {
     // skip — the length-effect below catches the bottom-snap on the
     // first non-empty length transition.
     //
-    // UX-8(a3): for the bottom-snap branch, `lastElementChild?.scrollIntoView`
-    // is more reliable than `scrollTop = scrollHeight` math — the browser
-    // walks the element's box and scrolls its container natively, which
-    // is layout-aware even when scrollHeight bookkeeping is mid-update
-    // (channel-back path: query → #bofh cached, scrollback store reload
-    // races key-effect even after rAF×2). Fallback scrollHeight write is
-    // preserved if scrollback is empty (no element to scroll into view).
+    // UX-8(a3): `lastElementChild?.scrollIntoView` is more reliable than
+    // `scrollTop = scrollHeight` math — the browser walks the element's
+    // box and scrolls its container natively, which is layout-aware even
+    // when scrollHeight bookkeeping is mid-update (channel-back path:
+    // query → #bofh cached, scrollback store reload races key-effect even
+    // after rAF×2). Fallback scrollHeight write is preserved if scrollback
+    // is empty (no element to scroll into view).
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         // #130 — reveal in EVERY exit path so the pane is never stranded
@@ -1236,21 +1220,14 @@ const ScrollbackPane: Component<Props> = (props) => {
           setActivating(false);
           return;
         }
-        const marker = markerRef();
-        if (marker) {
-          marker.scrollIntoView?.({ block: "center" });
-          setMarkerScrolled(true);
-          const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
-          setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
+        // #168 — always land at the tail (see routine doc above).
+        const tail = listRef.lastElementChild as HTMLElement | null;
+        if (tail?.scrollIntoView) {
+          tail.scrollIntoView({ block: "end" });
         } else {
-          const tail = listRef.lastElementChild as HTMLElement | null;
-          if (tail?.scrollIntoView) {
-            tail.scrollIntoView({ block: "end" });
-          } else {
-            listRef.scrollTop = listRef.scrollHeight;
-          }
-          setAtBottom(true);
+          listRef.scrollTop = listRef.scrollHeight;
         }
+        setAtBottom(true);
         // Scroll has settled at the correct position — reveal.
         setActivating(false);
       });
@@ -1328,19 +1305,9 @@ const ScrollbackPane: Component<Props> = (props) => {
   // Per-channel pre-work this trigger owns (does NOT belong in
   // `scrollToActivation` because visibility-return on the SAME channel
   // must NOT reset these):
-  //   * markerScrolled — latch reset so the new channel's marker
-  //     gets its own scroll-to-marker (re-fires for a future window
-  //     where the marker shows up only after a delayed REST page).
   //   * sessionTopId — capture the focus-session boundary (highest
   //     id present right now) so future arrivals during this session
   //     are "live-read" and never spawn a fresh marker.
-  //
-  // REV-G H23 (2026-05-22): the previous `markerRef = undefined` reset
-  // here is removed — the function-ref signal nulls itself on unmount,
-  // so the channel-switch case no longer needs explicit compensation.
-  // The mid-channel-removal case (cursor advance) ALSO benefits — it
-  // had no compensation pre-REV-G and silently held a stale DOM
-  // pointer.
   //
   // `defer: true` skips the initial mount run so the auto-focus
   // effect's first-mount evaluation isn't pre-emptively cleared.
@@ -1375,7 +1342,6 @@ const ScrollbackPane: Component<Props> = (props) => {
         // tail-following, and the operator's own input takes it back.
         setAtBottom(true);
 
-        setMarkerScrolled(false);
         // CP29 R-4: capture the boundary as the highest message id present
         // RIGHT NOW. `messages()` is the same store the rows memo reads;
         // an empty window leaves the boundary null and the latching
@@ -1413,8 +1379,6 @@ const ScrollbackPane: Component<Props> = (props) => {
   //     the cursor reached while frozen. The re-latch runs BEFORE
   //     scrollToActivation so the activation scroll sees the updated
   //     marker state.
-  // markerScrolled is likewise preserved (same window, no re-scroll-arm).
-  // The function-ref signal owns markerRef lifecycle (REV-G H23).
   //
   // `prev === undefined` guards the initial-mount run (signal owns
   // the prev sentinel pattern; mirrors selection.ts's identical guard
@@ -1456,12 +1420,22 @@ const ScrollbackPane: Component<Props> = (props) => {
   // so passive advances (scroll-settle echo, cross-device) stay frozen.
   // `defer: true` skips the mount run — the key/cold-latch effects own
   // the mount-time baseline.
+  //
+  // #168 — a send ALSO re-enters follow mode unconditionally: even if the
+  // operator had paged UP to re-read, sending snaps the pane back to the
+  // tail so the just-sent line is visible (issue #168 acceptance: "send
+  // scrolls to the bottom unconditionally"). `scrollToBottom` is the same
+  // tail authority the length-effect uses (scroll + atBottom=true); a
+  // pending WS-echo row is then followed by the length-effect. This is NOT
+  // event-type branching — the send resets the follow-STATE and the single
+  // always-bottom authority does the scrolling.
   createEffect(
     on(
       lastOwnSend,
       (sent) => {
         if (sent !== key()) return;
         setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
+        scrollToBottom();
       },
       { defer: true },
     ),
@@ -1539,7 +1513,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   });
 
   // After Solid commits new DOM nodes, scroll to the tail iff the user
-  // was at the bottom before the update. The effect tracks
+  // was at the bottom before the update (auto-follow). The effect tracks
   // `rows().length` so it re-runs on every append AND on cursor
   // hydration (which inserts/removes the unread-marker row inside the
   // memo, changing rows().length without changing messages().length).
@@ -1549,36 +1523,30 @@ const ScrollbackPane: Component<Props> = (props) => {
   // initial scrollback REST (the `me` resource and `loadInitialScrollback`
   // race; the loser determines which path runs), `rows()` re-runs and
   // injects the marker, but `messages().length` is unchanged so this
-  // effect didn't fire. The marker DOM appeared with scroll glued to
-  // tail (no-marker branch of `scrollToActivation` had already fired
-  // and snapped down). Tracking `rows().length` catches the marker
-  // insertion as a length delta and re-runs the scroll-to-marker
-  // branch on the same cycle.
+  // effect didn't fire, leaving the pane one snap short. Tracking
+  // `rows().length` catches the marker insertion as a length delta and
+  // re-runs the tail-follow on the same cycle.
   //
-  // C7.3: On the FIRST render of a channel with unread messages, scroll to
-  // the unread-marker (centered in the viewport so the user sees both
-  // context above and unread messages below at a glance — same UX as
-  // the on-switch effect's marker branch above). `markerScrolled` latches
-  // after the first scroll so subsequent appends follow the normal
-  // auto-scroll logic (tail-follow when atBottom, preserve position
-  // otherwise).
+  // #168 (2026-07-02) — this is the SINGLE always-bottom authority. The
+  // former C7.3 scroll-to-marker branch here (and its twin in
+  // `scrollToActivation`) was a second scrollTop authority: it parked the
+  // viewport on the unread divider and set atBottom=false, so a send did
+  // not follow to the tail. Removed. New content ⇒ bottom while following
+  // (atBottom); the operator pages up manually to re-read, and the frozen
+  // divider renders in place but is never scrolled-to (DESIGN_NOTES
+  // 2026-06-08 + 2026-07-02). Scrolled-up (atBottom=false) preserves
+  // position — irssi-shape: only the operator's own scroll leaves the tail.
+  //
+  // The `atBottom` gate stays honest through the #156 anchored initial load
+  // (which prepends the read-context page above the tail while following)
+  // because `onScroll` only flips `atBottom` false on a real scroll UP
+  // (scrollTop decreases) — a content-grow-above keeps scrollTop put, so the
+  // spurious scroll event it fires no longer lies "left the bottom" (#168).
   createEffect(
     on(
       () => rows()?.length ?? 0,
       () => {
         if (!listRef) return;
-        // C7.3: first mount with unread — scroll to marker, not tail.
-        const marker = markerRef();
-        if (!markerScrolled() && marker) {
-          // scrollIntoView is not implemented in jsdom (test environment).
-          // Optional-chain so tests don't throw; real browsers have it.
-          marker.scrollIntoView?.({ block: "center" });
-          setMarkerScrolled(true);
-          // atBottom is false after scroll-to-marker (marker is not at tail).
-          const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
-          setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
-          return;
-        }
         if (atBottom()) {
           // Same scrollHeight-vs-layout race as scrollToActivation /
           // measureOverflow: reading scrollHeight synchronously inside
@@ -1662,8 +1630,28 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   const onScroll = () => {
     if (!listRef) return;
-    const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
-    setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
+    const st = listRef.scrollTop;
+    const distance = listRef.scrollHeight - st - listRef.clientHeight;
+    // #168 — the follow authority (`atBottom`) flips FALSE only on an
+    // operator scroll UP (scrollTop DECREASES). Reaching the tail (distance
+    // within threshold) always re-arms the follow. A programmatic content-
+    // grow ABOVE the viewport — the #156 anchored read-context page, or the
+    // WS join-ok `refreshScrollback` prepend, both landing while the pane is
+    // following — fires a `scroll` event whose geometry shows a huge
+    // distance-to-tail (older rows now sit above) even though scrollTop did
+    // NOT decrease. The old `setAtBottom(distance <= threshold)` treated
+    // that as "the operator left the bottom" and killed the always-bottom
+    // follow, stranding the pane mid-buffer on window open (P0 regression;
+    // ~1056px above the tail). Gating the false-flip on `st < lastScrollTop`
+    // keeps a prepend from lying about intent — only a real upward scroll
+    // (operator OR the programmatic scroll-to-top a loadMore test performs,
+    // both of which DECREASE scrollTop) leaves the tail.
+    if (distance <= SCROLL_BOTTOM_THRESHOLD_PX) {
+      setAtBottom(true);
+    } else if (st < lastScrollTop) {
+      setAtBottom(false);
+    }
+    lastScrollTop = st;
 
     // BUGHUNT-2 B7: snapshot the current visible-tail for the CURRENT
     // (key) so the leave-arm in `on(key, …)` can recover the leaving
@@ -1852,23 +1840,13 @@ const ScrollbackPane: Component<Props> = (props) => {
                 );
               }
               if (row.type === "unread-marker") {
+                // #168 — display-only divider (freeze-display contract,
+                // DESIGN_NOTES 2026-06-08 + 2026-07-02). No ref: the marker
+                // is no longer a scroll anchor, so nothing reads its DOM
+                // node. It renders at its frozen position; the pane always
+                // lands at the tail (see the length-effect / scrollToActivation).
                 return (
                   <div
-                    ref={(el) => {
-                      // REV-G H23: SolidJS function-refs are called
-                      // ONCE on mount; for `<For>`-rendered elements
-                      // they are NOT auto-called with `undefined` on
-                      // unmount the way React refs are. Wire an
-                      // explicit `onCleanup` here so the stale-ref
-                      // bug doesn't re-emerge — when the marker row
-                      // is removed (cursor advance mid-channel OR
-                      // channel switch), the signal flips back to
-                      // undefined and downstream readers
-                      // (`scrollToActivation` + the length-effect)
-                      // take the marker-absent branch.
-                      setMarkerRef(el);
-                      onCleanup(() => setMarkerRef(undefined));
-                    }}
                     class="scrollback-unread-marker"
                     data-testid="unread-marker"
                   >

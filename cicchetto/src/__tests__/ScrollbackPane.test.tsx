@@ -1462,101 +1462,63 @@ describe("ScrollbackPane", () => {
       });
     });
 
-    // REV-G H23 (2026-05-22): regression pin on the markerRef function-
-    // ref signal + onCleanup refactor. Pre-REV-G `markerRef` was a
-    // `let`-bound ref; SolidJS doesn't auto-null let-bound refs on
-    // unmount, so when the marker row was removed mid-channel (cursor
-    // advance — same scenario as Bug A above), subsequent reads of
-    // `markerRef` still pointed at the now-detached DOM node. A
-    // visibility-return after mid-channel removal would call
-    // `scrollIntoView` on the stale node and either throw (real browser
-    // TypeError on detached node) or silently no-op (jsdom optional-
-    // chain swallowed the call).
-    //
-    // Post-REV-G `markerRef` is a `createSignal` function-ref + an
-    // explicit `onCleanup` at the marker JSX (SolidJS function-refs
-    // are mount-only; React-style auto-null on unmount requires the
-    // explicit hook). Signal flips back to undefined on unmount;
-    // downstream readers (`scrollToActivation`, length-effect) take
-    // the marker-absent branch.
-    //
-    // Pin strategy: spy on `Element.prototype.scrollIntoView` (same
-    // polyfill pattern the "scroll-on-activate canonical" describe
-    // block uses) and assert it's NOT called between the cursor-
-    // advance-mid-channel and post-visibility-return checkpoints.
-    // The marker-absent branch sets scrollTop directly; scrollIntoView
-    // belongs ONLY to the marker-present path. A regression to a let-
-    // bound ref OR a missing `onCleanup` would surface as a stray
-    // scrollIntoView call on the detached marker node.
-    it("REV-G H23: visibility-return after mid-channel marker removal does NOT call scrollIntoView (stale-ref pin)", async () => {
+    // #168 (2026-07-02): the unread divider is now DISPLAY-ONLY — it carries
+    // no ref and is never a scroll anchor. The former REV-G `markerRef`
+    // signal + scroll-to-marker branch (the SECOND scrollTop authority that
+    // raced the tail-follow and yanked the view up on send) was removed; the
+    // pane collapses to ONE always-bottom authority. This pins that a
+    // mid-channel divider removal via focus re-acquisition re-activates the
+    // pane cleanly and leaves it FOLLOWING the tail: atBottom stays true, so
+    // the floating scroll-to-bottom button is not rendered (a regression that
+    // reintroduced the marker anchor would set atBottom=false and surface the
+    // button). Supersedes the REV-G H23 stale-ref pin — that bug class is now
+    // structurally impossible (no ref exists).
+    it("#168: divider removal on focus re-acquisition keeps the pane at the tail (display-only marker)", async () => {
       const { applyReadCursorSet } = await import("../lib/readCursor");
       const proto = fixture[0];
       if (!proto) throw new Error("fixture[0] missing");
 
-      const scrollIntoViewSpy = vi.fn();
-      // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
-      const origScrollIntoView = (Element.prototype as any).scrollIntoView;
-      // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
-      (Element.prototype as any).scrollIntoView = scrollIntoViewSpy;
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 50, server_time: 100, sender: "alice", body: "u1" },
+        { ...proto, id: 51, server_time: 101, sender: "alice", body: "u2" },
+        { ...proto, id: 52, server_time: 102, sender: "alice", body: "u3" },
+        { ...proto, id: 53, server_time: 103, sender: "alice", body: "u4" },
+      ];
+      seedReadCursor("freenode", "#grappa", 0);
+      setScrollback({ "freenode #grappa": fourUnread });
+      setDocVisible(true);
+      render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
 
-      try {
-        const fourUnread: ScrollbackMessage[] = [
-          { ...proto, id: 50, server_time: 100, sender: "alice", body: "u1" },
-          { ...proto, id: 51, server_time: 101, sender: "alice", body: "u2" },
-          { ...proto, id: 52, server_time: 102, sender: "alice", body: "u3" },
-          { ...proto, id: 53, server_time: 103, sender: "alice", body: "u4" },
-        ];
-        seedReadCursor("freenode", "#grappa", 0);
-        setScrollback({ "freenode #grappa": fourUnread });
-        setDocVisible(true);
-        render(() => (
-          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
-        ));
+      // Divider present after mount (frozen-display contract).
+      expect(screen.getByTestId("unread-marker")).toBeInTheDocument();
 
-        // Marker present after mount; the length-effect's initial run
-        // may or may not have fired scrollIntoView depending on jsdom
-        // flush order. We don't care — the regression pin is the
-        // POST-visibility-return checkpoint.
-        expect(screen.getByTestId("unread-marker")).toBeInTheDocument();
+      // FREEZE CONTRACT (2026-06-08): a bare cursor advance no longer removes
+      // the divider — it's frozen. The divider row unmounts when a FOCUS
+      // acquisition re-latches the frozen boundary past the unread block.
+      // Advance the live cursor, then drive ONE visibility-return: that
+      // re-latches markerCursorId=53 → divider unmounts. (Yield between
+      // transitions so SolidJS flushes the false state — effect captures
+      // prev=false — before we flip back to true; otherwise both writes
+      // batch and the effect's prev=undefined guard returns early.)
+      applyReadCursorSet("freenode", "#grappa", 53);
+      setDocVisible(false);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      setDocVisible(true);
+      await waitFor(() => {
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
 
-        // FREEZE CONTRACT (2026-06-08): a bare cursor advance no longer
-        // removes the marker — it's frozen. The marker DOM row now unmounts
-        // when a FOCUS acquisition re-latches the frozen boundary past the
-        // unread block. Advance the live cursor, then drive ONE
-        // visibility-return: that re-latches markerCursorId=53 → marker row
-        // unmounts → onCleanup fires setMarkerRef(undefined). (Yield between
-        // transitions so SolidJS flushes the false state — effect captures
-        // prev=false — before we flip back to true; otherwise both writes
-        // batch and the effect's prev=undefined guard returns early.)
-        applyReadCursorSet("freenode", "#grappa", 53);
-        setDocVisible(false);
-        await new Promise((r) => queueMicrotask(() => r(undefined)));
-        setDocVisible(true);
-        await waitFor(() => {
-          expect(screen.queryByTestId("unread-marker")).toBeNull();
-        });
-
-        // Clear the spy: the marker is now unmounted and its ref nulled.
-        // From THIS point a SECOND visibility-return must NOT scrollIntoView
-        // a stale detached marker node — the regression pin. Pre-REV-G the
-        // stale-ref path would fire scrollIntoView during the activation
-        // effect.
-        scrollIntoViewSpy.mockClear();
-
-        setDocVisible(false);
-        await new Promise((r) => queueMicrotask(() => r(undefined)));
-        setDocVisible(true);
-        await new Promise((r) => queueMicrotask(() => r(undefined)));
-
-        // GREEN post-fix: 0 scrollIntoView calls — marker gone, signal
-        // returns undefined, fall-through branch (scrollTop = ...) ran.
-        // RED pre-fix: scrollIntoView called on the detached marker
-        // div still held by the let-bound ref / signal-without-cleanup.
-        expect(scrollIntoViewSpy).not.toHaveBeenCalled();
-      } finally {
-        // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
-        (Element.prototype as any).scrollIntoView = origScrollIntoView;
-      }
+      // A SECOND visibility-return re-activates the pane cleanly: divider
+      // stays gone and the pane follows the tail (atBottom ⇒ the floating
+      // scroll-to-bottom button is NOT rendered).
+      setDocVisible(false);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      setDocVisible(true);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+      expect(screen.queryByTestId("unread-marker")).toBeNull();
+      expect(screen.queryByTestId("scroll-to-bottom")).toBeNull();
     });
 
     // CP29 R-6: vjt's "/part → /join shows 'unread messages' for my own

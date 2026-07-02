@@ -37,15 +37,21 @@
 //     `markerRef` undefined → falls to `atBottom() === true` (default)
 //     branch → tail-follow.
 //
-//   Scenario 2 — unreads exist → marker rendered, scroll lands at marker.
+//   Scenario 2 — unreads exist → marker rendered (frozen DISPLAY), scroll
+//     STILL lands at the bottom (#168, 2026-07-02).
 //     Setup: cursor written to the server_time of row 175 of 200 → cic
 //     loads latest 50 (rows 151..200) → 25 rows have server_time > cursor
-//     → `unreadCount = 25`, marker injected before row 176, length-effect
-//     hits the scrollIntoView branch.
+//     → `unreadCount = 25`, marker injected before row 176.
+//     #168 collapsed scroll to ONE always-bottom authority: the divider is
+//     no longer a scroll ANCHOR. It renders (frozen-display contract,
+//     DESIGN_NOTES 2026-06-08) but the pane lands at the TAIL — the operator
+//     pages up manually to re-read. So the marker is present in the DOM yet
+//     sits ABOVE the fold; the length-effect's atBottom follow snaps to the
+//     tail on the initial page.
 //
 // Both scenarios use a deliberately tiny viewport (800×300) so the
 // 50-row REST page reliably overflows the scrollback area. Without
-// this, the entire content fits on-screen and "is the marker mid-pane"
+// this, the entire content fits on-screen and "is the tail at the bottom"
 // becomes unmeasurable.
 
 import { test, expect } from "../fixtures/test";
@@ -144,7 +150,7 @@ async function seedCursor(page: Page, channel: string, messageId: number): Promi
   void page;
 }
 
-test.describe("CP14 B1 — scroll-to-marker vs scroll-to-bottom on window open", () => {
+test.describe("CP14 B1 — divider present vs absent: scroll always lands at bottom on window open", () => {
   // Force a tiny viewport so the seeded 50-row REST page reliably
   // overflows the scrollback area. Without this, chromium's default
   // 1280×720 leaves the scrollback area large enough that 50 short
@@ -160,8 +166,10 @@ test.describe("CP14 B1 — scroll-to-marker vs scroll-to-bottom on window open",
   // `#bofh` (marker-target-window-regression T2, r6-own-action,
   // cursor-forward-only, ux-5-bk, ux-6-k, p0e-invite-ack) assume a
   // "fully-read" cursor at the tail — the persisted mid-pane cursor
-  // injects an unread-marker into the pane, `scrollIntoView(marker)`
-  // lands mid-pane instead of at the bottom, and the cascade fires.
+  // injects an unread-marker into the pane. Post-#168 the pane still lands
+  // at the tail (the divider is display-only, not a scroll anchor) so the
+  // scroll cascade no longer fires, but the stray divider would still trip
+  // a downstream marker-count assertion — restore to the tail for hygiene.
   // afterAll restores the cursor to the current tail so the channel
   // reads as "fully read" for whoever inherits the seeded user next.
   test.afterAll(async () => {
@@ -212,7 +220,7 @@ test.describe("CP14 B1 — scroll-to-marker vs scroll-to-bottom on window open",
       .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
   });
 
-  test("unreads exist → marker rendered, scroll lands at marker (not at bottom)", async ({
+  test("unreads exist → marker rendered (frozen), scroll STILL lands at bottom (#168)", async ({
     page,
   }) => {
     const vjt = getSeededVjt();
@@ -246,16 +254,20 @@ test.describe("CP14 B1 — scroll-to-marker vs scroll-to-bottom on window open",
     const g = await scrollbackGeometry(page);
     expect(g.scrollHeight).toBeGreaterThan(g.clientHeight);
 
-    // Contract assertion 1: marker is in the viewport (the
-    // scrollIntoView branch of ScrollbackPane.tsx:577-598 put it there).
-    await expect(marker).toBeInViewport();
+    // Contract assertion 1 (#168): the divider is present in the DOM
+    // (frozen-display contract preserved) but is NO LONGER a scroll anchor —
+    // it sits ABOVE the fold, out of the viewport.
+    await expect(marker).not.toBeInViewport();
 
-    // Contract assertion 2: scroll position is NOT at the bottom — we
-    // landed at the marker, which is mid-pane. Mirror of the
-    // SCROLL_BOTTOM_THRESHOLD_PX gate from ScrollbackPane.tsx, negated.
-    const g2 = await scrollbackGeometry(page);
-    expect(g2.scrollHeight - g2.scrollTop - g2.clientHeight).toBeGreaterThan(
-      SCROLL_BOTTOM_THRESHOLD_PX,
-    );
+    // Contract assertion 2 (#168): scroll position lands at the BOTTOM. The
+    // #163/#161/#156 cluster's scroll-to-marker anchor was collapsed into
+    // the single always-bottom authority; activation snaps to the tail.
+    // Mirror of the SCROLL_BOTTOM_THRESHOLD_PX gate from ScrollbackPane.tsx.
+    await expect
+      .poll(async () => {
+        const cur = await scrollbackGeometry(page);
+        return cur.scrollHeight - cur.scrollTop - cur.clientHeight;
+      })
+      .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
   });
 });
