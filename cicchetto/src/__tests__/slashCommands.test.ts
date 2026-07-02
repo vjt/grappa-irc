@@ -651,6 +651,42 @@ describe("parseSlash — /lusers (P-0d)", () => {
   });
 });
 
+describe("parseSlash — /stats (#155)", () => {
+  it("parses bare /stats (no query, no target)", () => {
+    expect(parseSlash("/stats")).toEqual({ kind: "stats", query: null, target: null });
+  });
+
+  it("/stats <query> → query, null target", () => {
+    expect(parseSlash("/stats m")).toEqual({ kind: "stats", query: "m", target: null });
+  });
+
+  it("/stats <query> <server> → query + target", () => {
+    expect(parseSlash("/stats m irc.example.net")).toEqual({
+      kind: "stats",
+      query: "m",
+      target: "irc.example.net",
+    });
+  });
+
+  it("ignores any tokens past the server target (STATS is 2-arg upstream)", () => {
+    expect(parseSlash("/stats u irc.example.net junk")).toEqual({
+      kind: "stats",
+      query: "u",
+      target: "irc.example.net",
+    });
+  });
+});
+
+describe("parseSlash — /rehash (#155)", () => {
+  it("parses bare /rehash", () => {
+    expect(parseSlash("/rehash")).toEqual({ kind: "rehash" });
+  });
+
+  it("ignores any trailing args (REHASH is param-less)", () => {
+    expect(parseSlash("/rehash ignored")).toEqual({ kind: "rehash" });
+  });
+});
+
 describe("parseSlash — services shortcuts (#20)", () => {
   it.each([
     ["cs", "ChanServ"],

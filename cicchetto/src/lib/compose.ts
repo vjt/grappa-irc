@@ -658,6 +658,34 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           result = { ok: true };
           break;
         }
+        // #155 — /stats [query] [server] + /rehash. Native parser sugar over
+        // the #153-de-gated raw transport (mirrors /quote): build the raw
+        // STATS/REHASH frame and ship it via pushRaw. No server change — the
+        // numeric_router scan-then-server fallback already routes the STATS
+        // reply numerics (211-219, 240-250) and REHASH/permission numerics to
+        // the `$server` window as :notice rows. AWAIT the push so a
+        // WS-disconnected / server {:error,_} surfaces as an inline compose
+        // error instead of a silent green ✓ (the #154 no-silent-drop lesson).
+        case "stats": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/stats: network not found" };
+          // STATS [query] [server] — omit trailing nulls. IRC STATS is a
+          // 2-arg frame; the parser guarantees target is only set when query
+          // is, so filtering nulls preserves positional order.
+          const line = ["STATS", cmd.query, cmd.target]
+            .filter((t): t is string => t !== null)
+            .join(" ");
+          await pushRaw(networkId, line);
+          result = { ok: true };
+          break;
+        }
+        case "rehash": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/rehash: network not found" };
+          await pushRaw(networkId, "REHASH");
+          result = { ok: true };
+          break;
+        }
         // ---------------------------------------------------------------
         // C2 — /whois <nick>. Push on the user-level channel; the server
         // primes its accumulator and emits WHOIS upstream. The bundle

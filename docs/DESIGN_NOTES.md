@@ -15567,3 +15567,65 @@ gate — de-gating the shared channel-dispatch path touches every ops verb.
 **Deploy:** server change (`grappa_channel.ex`) — COLD (BEAM restart,
 drops live IRC sessions), night-batched per the no-daytime-cold-deploy
 standing order; `deploy-m42.sh` auto-classifies hot/cold.
+
+## 2026-07-02 — #155: native /stats + /rehash (cic-only sugar over the #153 raw path)
+
+**Scope: CIC-ONLY, no server change.** `/stats [query] [server]` and
+`/rehash` are added as native `cicchetto` parser commands
+(`slashCommands.ts` handlers + Intent union members) whose `compose.ts`
+dispatch builds the raw `STATS …`/`REHASH` frame and ships it via the
+existing `pushRaw` helper — the same `handle_in("raw", …)` #153 de-gated
+for visitors, with its `.receive(ok/error)` no-silent-drop contract
+(the #154 lesson). This is native-parser sugar over an existing
+transport, exactly like the #20 services shortcuts rewrite to
+`{kind:"msg"}`. NO server `handle_in`, NO Session facade, NO
+`IRC.Client` change, NO numeric-routing change.
+
+**Why no server change is needed.** `Grappa.Session.NumericRouter`'s
+scan-then-server fallback already routes any numeric with no
+channel-shaped param to `{:server, nil}` = the `$server` synthetic
+window as a `:notice` row. The STATS reply numerics (211–219, 240–250)
+and the REHASH/permission numerics (382 RPL_REHASHING, 481
+ERR_NOPRIVILEGES) are NOT in `@delegated_numerics` or `@active_numerics`,
+so they already fall through to `$server` — the same mechanism that
+renders #148's 381 RPL_YOUREOPER. Empirically confirmed on the connected
+testnet: a visitor's `/quote STATS u` renders 242 in `$server`.
+
+**Build-defer (rides #153).** The native slashes emit raw frames over
+the `raw` path #153 de-gated for visitors, and #153 is merged-not-yet-
+deployed (ships in a night cold batch). Per the cic↔server coupling
+rule #155 is therefore also build-defer: BUILD + TEST + MERGE + PUSH,
+then STOP — comment "code complete — PENDING NIGHT COLD-DEPLOY BATCH
+(rides #153)" and ship the cic bundle in the same night pass after #153
+goes live. No prod deploy, no close, from this session.
+
+**The e2e is deliberately NON-oper — and that flushed out a real
+bahamut bug.** The first `/rehash` e2e opered first (copying the
+#148/#153 pattern) and reproducibly SIGSEGV'd the testnet leaf. Root
+cause (see GH #164, fix PR azzurra/bahamut#26): bahamut's custom
+`irc_printf` (src/ircsprintf.c) reads `%d/%i/%u` with
+`va_arg(ap, unsigned long)` — a 64-bit read for a 32-bit `int` arg. On
+LP64 the undefined high bits make a small value (e.g. `TOPICLEN=307`)
+into a ~14-digit number, whose backward itoa write underflows the global
+`char num[12]` and clobbers the adjacent global `KList1` (an empty
+`aConfList`); its `conf_list` pointer becomes ASCII garbage. Latent
+until an operator (or adminserv — `as.c:656` calls the same
+`rehash(cptr,sptr,0)`) issues REHASH → `clear_conf_list(&KList1)`
+(dich_conf.c:538) frees the garbage → SIGSEGV. `-O2`-only (KList1
+layout adjacency). Three verdicts, tested against the connected leaf:
+`/rehash` by oper CRASHES; `/rehash` via adminserv CRASHES; **`/stats`
+by anyone does NOT crash** (all 22 STATS letters survive — severity not
+elevated; a hub-less *standalone* leaf self-crashes on any connect,
+which is a split-mode artifact, not a STATS bug). So #155's e2e never
+opers: a visitor's native `/stats u` renders 242 RPL_STATSUPTIME and
+native `/rehash` renders 481 ERR_NOPRIVILEGES (the realistic outcome for
+a non-oper — proves the frame shipped + the reply rendered), both in
+`$server`; RED pre-fix (unknown command → nothing sent → no numeric),
+GREEN post-fix. This keeps the full suite green (no leaf crash).
+
+**Testnet pinned to the fix.** `cicchetto/e2e/infra` (submodule
+azzurra-testnet) pins `BAHAMUT_REF` to `refs/pull/26/head` so the e2e
+builds a patched ircd; revert to `master` once #26 merges (GH #165).
+
+**Deploy:** cic bundle only (`deploy-m42.sh --cic`), HOT — but
+build-deferred to the night batch behind #153 (above).

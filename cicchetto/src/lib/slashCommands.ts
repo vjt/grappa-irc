@@ -100,6 +100,8 @@ export type SlashCommand =
   | { kind: "list"; pattern: string | null }
   | { kind: "links"; pattern: string | null }
   | { kind: "lusers" }
+  | { kind: "stats"; query: string | null; target: string | null }
+  | { kind: "rehash" }
   | { kind: "whois"; nick: string | null }
   | { kind: "whowas"; nick: string }
   | { kind: "watchlist"; action: "add"; pattern: string }
@@ -381,6 +383,23 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   },
 
   lusers: (_verb, _rest) => ({ kind: "lusers" }),
+
+  // #155 — /stats [query] [server]. Native parser sugar over the raw
+  // transport (like the #20 services shortcuts rewrite to {kind:"msg"}):
+  // compose builds the raw `STATS [query] [server]` frame and ships it via
+  // pushRaw. Both args optional — bare `/stats` sends `STATS`. IRC STATS
+  // takes at most a query char + a server target, so any tokens past the
+  // second are ignored (2-token wire frame). Pure parser, no side effects.
+  stats: (_verb, rest) => {
+    const [query, target] = tokens(rest);
+    return { kind: "stats", query: query ?? null, target: target ?? null };
+  },
+
+  // #155 — /rehash. No args (oper-only UPSTREAM — a non-oper gets 481, an
+  // oper's config reload runs server-side; cic never client-gates it, same
+  // as /oper letting the ircd reject). Compose ships the bare `REHASH`
+  // frame via pushRaw.
+  rehash: (_verb, _rest) => ({ kind: "rehash" }),
 
   // #122 — bare /whois (and its /w alias) no longer errors here. A null
   // nick signals "use the current context": the compose consumer resolves
