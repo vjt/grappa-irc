@@ -1292,18 +1292,39 @@ defmodule Grappa.Session.EventRouterTest do
              end)
     end
 
-    test "MODE on user's own nick (not channel) does NOT persist a row" do
+    test "MODE on user's own nick persists a $server confirmation row (#154b)" do
       # IRC user-MODE: `:vjt MODE vjt +i` — first param is the nick,
-      # not a channel name. Pre-Task-15 the channel-MODE clause matched
-      # this and persisted a bogus :mode row in a non-existent channel
-      # named "vjt"; Task 15's user-MODE-on-self clause (matching
+      # not a channel name. The user-MODE-on-self clause (matching
       # `target == state.nick`) short-circuits BEFORE the channel-MODE
-      # clause and emits no effect for plain user-modes. The +r case
-      # is covered in the dedicated describe block below.
+      # clause: it does NOT mutate the member map or channel_modes cache
+      # (user-modes are not channel events). #154(b): it DOES surface the
+      # transition as a `:mode` row on the synthetic "$server" window so
+      # the operator sees confirmation of their own mode change (pre-fix
+      # this branch dropped the echo entirely, so `/umode +i` and the
+      # services-pushed +a produced zero feedback). State is unchanged —
+      # a user-mode is not a channel-state mutation.
       state = base_state(%{nick: "vjt"})
       m = msg(:mode, ["vjt", "+i"], {:nick, "vjt", "u", "h"})
 
-      assert {:cont, ^state, []} = EventRouter.route(m, state)
+      assert {:cont, ^state, [{:persist, :mode, attrs}]} = EventRouter.route(m, state)
+      assert attrs.channel == "$server"
+      assert attrs.sender == "vjt"
+      assert attrs.body == nil
+      assert attrs.meta.modes == "+i"
+      assert attrs.meta.args == []
+    end
+
+    test "own-nick MODE echo is GENERAL — any mode string, any setter (#154b)" do
+      # The confirmation row is not special-cased to a mode letter: it
+      # fires for the CONNECT burst (+iS/+ixS), the services +a, +r at
+      # IDENTIFY, etc. Here a services server pushes +ixS on the own nick.
+      state = base_state(%{nick: "vjt"})
+      m = msg(:mode, ["vjt", "+ixS"], {:server, "services.azzurra.chat"})
+
+      assert {:cont, ^state, [{:persist, :mode, attrs}]} = EventRouter.route(m, state)
+      assert attrs.channel == "$server"
+      assert attrs.sender == "services.azzurra.chat"
+      assert attrs.meta.modes == "+ixS"
     end
   end
 
@@ -1314,6 +1335,13 @@ defmodule Grappa.Session.EventRouterTest do
     # observes +r MODE on the session's own nick it emits
     # :visitor_r_observed carrying the password so the Server can
     # commit it atomically into the visitors row.
+    #
+    # #154(b): every own-nick MODE ALSO emits a `{:persist, :mode,
+    # "$server"}` confirmation row (asserted in the "route/2 — :mode"
+    # block above). That row is orthogonal to the +r observation, so
+    # these tests assert the +r concern via membership (`in effects` /
+    # `refute Enum.any?`) rather than an exact effect-list match — the
+    # confirmation persist is expected but not this block's subject.
 
     test "+r set with pending_auth emits :visitor_r_observed" do
       deadline = System.monotonic_time(:millisecond) + 10_000
@@ -1327,11 +1355,11 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, [{:visitor_r_observed, "s3cret"}]} =
-               EventRouter.route(m, state)
+      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert {:visitor_r_observed, "s3cret"} in effects
     end
 
-    test "+r set without pending_auth → no effect" do
+    test "+r set without pending_auth → no observed effect" do
       state =
         base_state(%{
           nick: "vjt",
@@ -1341,10 +1369,11 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, []} = EventRouter.route(m, state)
+      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:visitor_r_observed, _}, &1))
     end
 
-    test "+i (no +r) with pending_auth → no effect" do
+    test "+i (no +r) with pending_auth → no observed effect" do
       state =
         base_state(%{
           nick: "vjt",
@@ -1354,7 +1383,8 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+i"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, []} = EventRouter.route(m, state)
+      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:visitor_r_observed, _}, &1))
     end
 
     test "+ir mixed mode block detects r set" do
@@ -1367,11 +1397,11 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+ir"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, [{:visitor_r_observed, "s3cret"}]} =
-               EventRouter.route(m, state)
+      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert {:visitor_r_observed, "s3cret"} in effects
     end
 
-    test "+i-r (set i, unset r) does NOT emit" do
+    test "+i-r (set i, unset r) does NOT emit observed effect" do
       state =
         base_state(%{
           nick: "vjt",
@@ -1381,7 +1411,8 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+i-r"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, []} = EventRouter.route(m, state)
+      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:visitor_r_observed, _}, &1))
     end
 
     test "+r MODE on a different nick (channel-MODE path) does NOT emit observed effect" do
@@ -1396,8 +1427,9 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["#italia", "+o", "alice"], {:nick, "ChanServ", "u", "h"})
 
-      assert {:cont, _, [{:persist, :mode, _}]} =
-               EventRouter.route(m, state)
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      assert Enum.any?(effects, &match?({:persist, :mode, _}, &1))
+      refute Enum.any?(effects, &match?({:visitor_r_observed, _}, &1))
     end
 
     # #129: the register→auth-code flow grants +r minutes-to-hours after
@@ -1416,8 +1448,8 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, [{:visitor_r_observed, "regpass"}]} =
-               EventRouter.route(m, state)
+      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert {:visitor_r_observed, "regpass"} in effects
     end
 
     test "+r with BOTH slots populated → register wins (commits the register secret)" do
@@ -1433,8 +1465,8 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, [{:visitor_r_observed, "regpass"}]} =
-               EventRouter.route(m, state)
+      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert {:visitor_r_observed, "regpass"} in effects
     end
   end
 

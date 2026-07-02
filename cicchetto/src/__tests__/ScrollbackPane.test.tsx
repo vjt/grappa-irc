@@ -454,6 +454,35 @@ describe("ScrollbackPane", () => {
     expect(lines[9]).toHaveTextContent("mallory");
   });
 
+  it("renders an own-nick user-MODE row on $server as 'sets user mode' with no channel suffix (#154b)", () => {
+    // EventRouter's user-MODE-on-self branch persists every own-nick mode
+    // transition (+iS/+ixS at connect, +r at IDENTIFY, +a from services) to
+    // the synthetic "$server" window. A user-mode has no channel, so the
+    // mode arm keys off channel === SERVER_WINDOW_NAME to render "sets user
+    // mode +x" and drop the "on <channel>" suffix that channel MODEs carry.
+    const rows: ScrollbackMessage[] = [
+      {
+        id: 1,
+        network: "n",
+        channel: "$server",
+        server_time: 1,
+        kind: "mode",
+        sender: "mez",
+        body: null,
+        meta: { modes: "+a", args: [] },
+      },
+    ];
+    setScrollback({ "n $server": rows });
+    render(() => <ScrollbackPane networkSlug="n" channelName="$server" kind="server" />);
+    const lines = screen.getAllByTestId("scrollback-line");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toHaveTextContent("mez");
+    expect(lines[0]).toHaveTextContent("sets user mode +a");
+    // Must NOT paint the channel-MODE "on <channel>" suffix.
+    expect(lines[0]).not.toHaveTextContent("on $server");
+    expect(lines[0]).not.toHaveTextContent("<mez>");
+  });
+
   it("scopes scrollback to the (slug, channel) pair via channelKey", () => {
     setScrollback({
       "freenode #grappa": fixture,

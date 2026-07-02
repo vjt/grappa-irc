@@ -265,33 +265,70 @@ export function pushCloseQueryWindow(networkId: number, targetNick: string): voi
 // same module. Auth is by user_name from socket.assigns; the server
 // dispatches to Session.send_*/2-5 functions.
 //
-// Fire-and-forget: the server's numeric error replies (482, 401, etc.)
-// route back via the numeric-routing pipeline (S4) to the originating
-// window — we don't await acks here.
+// #154(1) — no-silent-drops. State-changing verbs (op/deop/voice/devoice/
+// kick/ban/unban/mode/umode) push WITH a `.receive` chain and return a
+// Promise, exactly like `pushOper`/`pushRaw`. Pre-fix they were
+// fire-and-forget `: void`, so a server `{:error,_}` (visitor_not_allowed
+// pre-#153, invalid_channel/nick/mask/line, no_session, upstream_unavailable,
+// body_too_large) OR a WS-down was SILENTLY SWALLOWED — compose.ts painted a
+// green ✓ on a dropped state-changing frame. `dispatch_subject_verb/3`
+// already replies `{:reply, :ok | {:error, %{error: code}}}` for every one
+// of these verbs; the compose.ts arms now `await` the Promise so a rejection
+// propagates to the shared catch → `friendlyChannelError` inline alert.
+//
+// `banlist` stays fire-and-forget: it is a read-only query (367/368 numerics
+// route back via the numeric pipeline), not a state-changing verb whose error
+// must surface inline.
 // ---------------------------------------------------------------------------
 
+// Shared promise-shape push for the state-changing channel verbs. Mirrors the
+// `pushOper`/`pushRaw` body: resolve on "ok", reject with a typed
+// `ChannelPushError` (carrying the wire `code`) on "error", reject "not
+// connected" when the socket is down. Single source of the ok/error contract
+// so the nine verb helpers below can't drift from each other.
+function pushUserChannelVerb(event: string, payload: object): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (_userChannel === null) {
+      reject(new Error("not connected"));
+      return;
+    }
+    _userChannel
+      .push(event, payload)
+      .receive("ok", () => resolve())
+      .receive("error", (err: unknown) => reject(channelPushError(err)));
+  });
+}
+
 // /op <nicks...> → MODE #chan +ooo (chunked server-side per ISUPPORT MODES=).
-export function pushChannelOp(networkId: number, channel: string, nicks: string[]): void {
-  if (_userChannel === null) return;
-  _userChannel.push("op", { network_id: networkId, channel, nicks });
+export function pushChannelOp(networkId: number, channel: string, nicks: string[]): Promise<void> {
+  return pushUserChannelVerb("op", { network_id: networkId, channel, nicks });
 }
 
 // /deop <nicks...> → MODE #chan -ooo
-export function pushChannelDeop(networkId: number, channel: string, nicks: string[]): void {
-  if (_userChannel === null) return;
-  _userChannel.push("deop", { network_id: networkId, channel, nicks });
+export function pushChannelDeop(
+  networkId: number,
+  channel: string,
+  nicks: string[],
+): Promise<void> {
+  return pushUserChannelVerb("deop", { network_id: networkId, channel, nicks });
 }
 
 // /voice <nicks...> → MODE #chan +vvv
-export function pushChannelVoice(networkId: number, channel: string, nicks: string[]): void {
-  if (_userChannel === null) return;
-  _userChannel.push("voice", { network_id: networkId, channel, nicks });
+export function pushChannelVoice(
+  networkId: number,
+  channel: string,
+  nicks: string[],
+): Promise<void> {
+  return pushUserChannelVerb("voice", { network_id: networkId, channel, nicks });
 }
 
 // /devoice <nicks...> → MODE #chan -vvv
-export function pushChannelDevoice(networkId: number, channel: string, nicks: string[]): void {
-  if (_userChannel === null) return;
-  _userChannel.push("devoice", { network_id: networkId, channel, nicks });
+export function pushChannelDevoice(
+  networkId: number,
+  channel: string,
+  nicks: string[],
+): Promise<void> {
+  return pushUserChannelVerb("devoice", { network_id: networkId, channel, nicks });
 }
 
 // /kick <nick> [reason] → KICK #chan nick :reason
@@ -300,24 +337,22 @@ export function pushChannelKick(
   channel: string,
   nick: string,
   reason: string,
-): void {
-  if (_userChannel === null) return;
-  _userChannel.push("kick", { network_id: networkId, channel, nick, reason });
+): Promise<void> {
+  return pushUserChannelVerb("kick", { network_id: networkId, channel, nick, reason });
 }
 
 // /ban <mask-or-nick> → MODE #chan +b mask (mask derivation server-side if bare nick).
-export function pushChannelBan(networkId: number, channel: string, mask: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("ban", { network_id: networkId, channel, mask });
+export function pushChannelBan(networkId: number, channel: string, mask: string): Promise<void> {
+  return pushUserChannelVerb("ban", { network_id: networkId, channel, mask });
 }
 
 // /unban <mask> → MODE #chan -b mask
-export function pushChannelUnban(networkId: number, channel: string, mask: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("unban", { network_id: networkId, channel, mask });
+export function pushChannelUnban(networkId: number, channel: string, mask: string): Promise<void> {
+  return pushUserChannelVerb("unban", { network_id: networkId, channel, mask });
 }
 
 // /banlist → MODE #chan b (query form, no sign); server replies 367/368.
+// Read-only query — stays fire-and-forget (no error to surface inline).
 export function pushChannelBanlist(networkId: number, channel: string): void {
   if (_userChannel === null) return;
   _userChannel.push("banlist", { network_id: networkId, channel });
@@ -330,9 +365,8 @@ export function pushChannelInvite(networkId: number, channel: string, nick: stri
 }
 
 // /umode <modes> → MODE own_nick <modes> (no channel context required).
-export function pushChannelUmode(networkId: number, modes: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("umode", { network_id: networkId, modes });
+export function pushChannelUmode(networkId: number, modes: string): Promise<void> {
+  return pushUserChannelVerb("umode", { network_id: networkId, modes });
 }
 
 // /mode <target> <modes> [params...] → MODE target modes params (verbatim, no chunking).
@@ -341,9 +375,8 @@ export function pushChannelMode(
   target: string,
   modes: string,
   params: string[],
-): void {
-  if (_userChannel === null) return;
-  _userChannel.push("mode", { network_id: networkId, target, modes, params });
+): Promise<void> {
+  return pushUserChannelVerb("mode", { network_id: networkId, target, modes, params });
 }
 
 // /topic -delete → TOPIC #chan : (empty trailing — irssi convention).

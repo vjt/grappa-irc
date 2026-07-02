@@ -15629,3 +15629,66 @@ builds a patched ircd; revert to `master` once #26 merges (GH #165).
 
 **Deploy:** cic bundle only (`deploy-m42.sh --cic`), HOT — but
 build-deferred to the night batch behind #153 (above).
+
+---
+
+## 2026-07-02 — #154: MODE-family reliability (no-silent-drops + own-nick MODE render)
+
+Two bugs Mez hit on a visitor socket, one cluster.
+
+**(1) Ops-verb errors swallowed (cic, `--cic`).** The
+`pushChannel{Op,Deop,Voice,Devoice,Kick,Ban,Unban,Mode,Umode}` helpers
+were fire-and-forget `: void` — they `.push(...)` with no `.receive`, and
+`compose.ts` set `result = {ok:true}` SYNCHRONOUSLY, so a server
+`{:error,_}` (or a WS-down) was silently swallowed: a dropped
+state-changing frame painted a green ✓. The server already replies
+`{:reply, :ok | {:error, %{error: code}}}` for every one of these verbs
+via `dispatch_subject_verb/3` (+ `with_body_check` for kick/umode/mode),
+so this was a pure cic gap. Fix: a shared `pushUserChannelVerb/2` gives
+all nine the `pushOper`/`pushRaw` promise shape (resolve on "ok", reject a
+typed `ChannelPushError` on "error"); the compose arms `await` them so a
+rejection hits the shared catch → `friendlyChannelError` inline banner —
+the same contract as `case "oper"`/`case "quote"`. Extended
+`friendlyChannelError`'s known-code union with the ops-verb tokens
+(`invalid_channel`/`invalid_nick`/`invalid_mask`/`invalid_line`,
+`upstream_unavailable`, `body_too_large`). `banlist` stays fire-and-forget
+(read-only query, 367/368 route via the numeric pipeline); `invite` was
+left as-is this pass (candidate for the same treatment — noted follow-up).
+
+**(2) Own-nick MODE produced no visible feedback (server, COLD).**
+EventRouter's user-MODE-on-self branch (`nick_eq?(target, state.nick)`)
+DELIBERATELY dropped the echo ("user-modes on the session's own nick are
+not channel events — no scrollback row"). So `/umode +a`, the +iS/+ixS
+CONNECT burst, +r at NickServ IDENTIFY, and the services-pushed +a ALL
+rendered nothing — the Mez incident. Reversed here **with vjt's sign-off**
+(B): the self-branch now persists EVERY own-nick mode transition as a
+`:mode` row on the synthetic `"$server"` window — GENERAL, not
+special-cased to a mode letter (Mez's explicit ask) — keeping the
+orthogonal `:visitor_r_observed` +r effect. Direct mirror of the NICK
+self-rename `self_server_effects` (#61), which already surfaces a
+zero-channel self-rename on `$server`. cic's `ScrollbackPane` `case "mode"`
+renders the `"$server"`-channel form as "sets user mode +x" (no "on
+<channel>" suffix); no real channel is ever named `"$server"` (reserved
+`SERVER_WINDOW_NAME`), so the routing target is an unambiguous
+discriminator — the same boundary `operatorActionEcho` keys off. `:mode`
+is a presence kind on both sides → no unread badge / OS notify, like the
+self-rename row.
+
+**What the guardrail proved (server-vs-cic split).** Before touching
+anything, a static end-to-end trace established: 221 RPL_UMODEIS
+(numeric_router `:scan` → `{:server, nil}` → `:notice` on `$server`) and
+channel MODE (EventRouter channel branch → `:mode` row) ALREADY reach cic
+and ALREADY render — no cic-render gap there. The ONLY render gap was the
+own-nick echo, which the server dropped. That is what flipped #154 from
+`--cic`-only to **COLD + `--cic`**. "cic can't EMIT own-nick MODE" (bug
+(a) as first reported) was a MISDIAGNOSIS: the `/umode` and `/mode` emit
+paths exist end-to-end (slashCommands → compose → socket → GrappaChannel →
+`Session.send_umode`/`send_mode` → `MODE <nick> …` upstream). The
+user-perceived "can't emit" was the absence of *feedback* — bug (2) plus
+the bug-(1) swallow — not a missing path. No new emit code was needed.
+
+**Deploy coupling.** #154 rides the #153/#155 night window. Ordering:
+#153 (server de-gate, COLD) + #154-server (COLD) fold into ONE cold
+restart (zero extra session drops — `feedback_minimize_cold_deploys`),
+then #155 + #154-cic ship `--cic`. Build-deferred: build+test+merge+push,
+then the orchestrator ships in the night pass.

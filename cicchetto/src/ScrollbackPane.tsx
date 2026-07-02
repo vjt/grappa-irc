@@ -33,7 +33,7 @@ import {
   scrollbackByChannel,
 } from "./lib/scrollback";
 import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
-import type { WindowKind } from "./lib/windowKinds";
+import { SERVER_WINDOW_NAME, type WindowKind } from "./lib/windowKinds";
 import { MircBody } from "./MircText";
 import NickText from "./NickText";
 import PeerAwayBanner from "./PeerAwayBanner";
@@ -575,6 +575,22 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
     case "mode": {
       const modes = typeof msg.meta.modes === "string" ? msg.meta.modes : "";
       const args = Array.isArray(msg.meta.args) ? ` ${msg.meta.args.join(" ")}` : "";
+      // #154(b): own-nick user-MODE transitions (+iS/+ixS at connect, +r at
+      // IDENTIFY, +a from services) are persisted server-side on the
+      // synthetic "$server" window (EventRouter's user-MODE-on-self branch).
+      // A user-mode has no channel, so render "sets user mode +x" without the
+      // "on <channel>" suffix. No real channel is ever named "$server"
+      // (reserved SERVER_WINDOW_NAME), so the routing target is an
+      // unambiguous discriminator — same boundary `operatorActionEcho` keys
+      // off. Channel MODEs (`* op sets mode +o nick on #chan`) are unchanged.
+      if (msg.channel === SERVER_WINDOW_NAME) {
+        return (
+          <span class="scrollback-body">
+            * {bareSenderSpan(msg.sender)} sets user mode {modes}
+            {args}
+          </span>
+        );
+      }
       return (
         <span class="scrollback-body">
           * {bareSenderSpan(msg.sender)} sets mode {modes}

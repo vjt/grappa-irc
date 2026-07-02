@@ -476,12 +476,21 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         // All require a channel window context (except umode and mode which
         // accept their target explicitly).
         // ---------------------------------------------------------------
+        // #154(1) — state-changing ops verbs (op/deop/voice/devoice/kick/
+        // ban/unban/mode/umode) now `await` their push. Pre-fix these were
+        // fire-and-forget: a server `{:error,_}` (invalid_*, no_session,
+        // upstream_unavailable, body_too_large) or a WS-down was swallowed
+        // and the arm painted a synchronous green ✓ on a dropped frame.
+        // AWAIT propagates a rejection to the shared catch below, which maps
+        // the `ChannelPushError` to friendly copy via `friendlyChannelError`
+        // and surfaces it inline in the compose box — the same contract as
+        // `case "oper"` / `case "quote"`.
         case "op": {
           const chanOrErr = requireChannel("op");
           if (typeof chanOrErr !== "string") return chanOrErr;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/op: network not found" };
-          pushChannelOp(networkId, chanOrErr, cmd.nicks);
+          await pushChannelOp(networkId, chanOrErr, cmd.nicks);
           result = { ok: true };
           break;
         }
@@ -490,7 +499,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           if (typeof chanOrErr !== "string") return chanOrErr;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/deop: network not found" };
-          pushChannelDeop(networkId, chanOrErr, cmd.nicks);
+          await pushChannelDeop(networkId, chanOrErr, cmd.nicks);
           result = { ok: true };
           break;
         }
@@ -499,7 +508,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           if (typeof chanOrErr !== "string") return chanOrErr;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/voice: network not found" };
-          pushChannelVoice(networkId, chanOrErr, cmd.nicks);
+          await pushChannelVoice(networkId, chanOrErr, cmd.nicks);
           result = { ok: true };
           break;
         }
@@ -508,7 +517,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           if (typeof chanOrErr !== "string") return chanOrErr;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/devoice: network not found" };
-          pushChannelDevoice(networkId, chanOrErr, cmd.nicks);
+          await pushChannelDevoice(networkId, chanOrErr, cmd.nicks);
           result = { ok: true };
           break;
         }
@@ -517,7 +526,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           if (typeof chanOrErr !== "string") return chanOrErr;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/kick: network not found" };
-          pushChannelKick(networkId, chanOrErr, cmd.nick, cmd.reason);
+          await pushChannelKick(networkId, chanOrErr, cmd.nick, cmd.reason);
           result = { ok: true };
           break;
         }
@@ -526,7 +535,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           if (typeof chanOrErr !== "string") return chanOrErr;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/ban: network not found" };
-          pushChannelBan(networkId, chanOrErr, cmd.mask);
+          await pushChannelBan(networkId, chanOrErr, cmd.mask);
           result = { ok: true };
           break;
         }
@@ -535,7 +544,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           if (typeof chanOrErr !== "string") return chanOrErr;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/unban: network not found" };
-          pushChannelUnban(networkId, chanOrErr, cmd.mask);
+          await pushChannelUnban(networkId, chanOrErr, cmd.mask);
           result = { ok: true };
           break;
         }
@@ -574,7 +583,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // /umode — user-mode on own nick, no channel context required.
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/umode: network not found" };
-          pushChannelUmode(networkId, cmd.modes);
+          await pushChannelUmode(networkId, cmd.modes);
           result = { ok: true };
           break;
         }
@@ -582,7 +591,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // /mode — raw verbatim, target explicit in args. No channel required.
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/mode: network not found" };
-          pushChannelMode(networkId, cmd.target, cmd.modes, cmd.params);
+          await pushChannelMode(networkId, cmd.target, cmd.modes, cmd.params);
           result = { ok: true };
           break;
         }

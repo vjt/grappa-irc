@@ -554,13 +554,28 @@ defmodule Grappa.Session.EventRouter do
        when is_binary(target) and is_binary(modes) do
     if nick_eq?(target, state.nick) do
       # User-MODE-on-self. Distinct from a channel MODE: user-modes on the
-      # session's own nick are not channel events — no scrollback row, no
-      # member-map mutation. The +r case is special: when NickServ-as-IDP
-      # confirms a visitor's IDENTIFY (or register→auth-code) it sets +r on
-      # the nick. +r is the cryptographic-proof signal that the captured
-      # secret was accepted; emit `:visitor_r_observed` carrying it so
-      # `Session.Server.apply_effects/2` can commit it atomically into the
-      # visitors row.
+      # session's own nick are not channel events — no member-map mutation,
+      # no channel_modes cache. But #154(b): the operator MUST see their
+      # own mode change. Pre-fix this branch dropped the echo entirely, so
+      # `/umode +i` and the services-pushed +a/+r at IDENTIFY produced ZERO
+      # visible feedback (Mez's live report). Surface EVERY own-nick mode
+      # transition — +iS/+ixS at CONNECT, +r at NickServ IDENTIFY, +a from
+      # services — as a confirmation row on the always-reachable synthetic
+      # "$server" window. General mirror of the NICK self-rename
+      # `self_server_effects` (#61): unconditional, not special-cased to a
+      # mode letter. cic renders the `:mode`-on-$server row as "sets user
+      # mode +x" (no channel suffix). Presence kind → not a message → no
+      # unread badge / OS notify, exactly like the self-rename row.
+      sender = Message.sender_nick(msg)
+
+      {_, self_server_persist} =
+        build_persist(state, :mode, "$server", sender, nil, %{modes: modes, args: args})
+
+      # The +r case is special: when NickServ-as-IDP confirms a visitor's
+      # IDENTIFY (or register→auth-code) it sets +r on the nick. +r is the
+      # cryptographic-proof signal that the captured secret was accepted;
+      # emit `:visitor_r_observed` carrying it so `Session.Server
+      # .apply_effects/2` can commit it atomically into the visitors row.
       #
       # ONE +r-observation primitive serves both capture slots (#90 / #129
       # — do not build two detectors). Two slots feed it: the timed
@@ -570,15 +585,16 @@ defmodule Grappa.Session.EventRouter do
       # never gets +r), whereas a stale wrong identify could still be in its
       # 10s window. Both are set on `Session.Server` state but are optional
       # from the pure router's POV; pure unit tests on user sessions skip
-      # them (Map.get → nil).
-      effects =
+      # them (Map.get → nil). Orthogonal to the confirmation row above —
+      # both effects coexist.
+      r_effects =
         case {set_r_mode?(modes), Map.get(state, :pending_registration_secret), Map.get(state, :pending_auth)} do
           {true, reg, _} when is_binary(reg) -> [{:visitor_r_observed, reg}]
           {true, _, {pwd, _}} -> [{:visitor_r_observed, pwd}]
           _ -> []
         end
 
-      {:cont, state, effects}
+      {:cont, state, [self_server_persist | r_effects]}
     else
       sender = Message.sender_nick(msg)
       members = apply_mode_string(state.members, target, modes, args)
