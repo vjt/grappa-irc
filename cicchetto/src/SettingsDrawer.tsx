@@ -605,7 +605,7 @@ const SettingsDrawer: Component<Props> = (props) => {
           </Show>
         </fieldset>
 
-        {/* UX-4 bucket M (2026-05-19) — image upload retention preference.
+        {/* UX-4 bucket M (2026-05-19) — upload retention preference.
             Host-gated: only renders when the active image host exposes
             ttlOptions (litterbox does; a hypothetical imgur-style host
             wouldn't). The `<option value="">` "use site default" entry
@@ -614,7 +614,7 @@ const SettingsDrawer: Component<Props> = (props) => {
             cic translates to/from the host token at this boundary. */}
         <Show when={activeHost().ttlOptions.length > 0}>
           <fieldset class="upload-ttl-fieldset">
-            <legend>image upload retention</legend>
+            <legend>upload retention</legend>
             <label>
               upload duration:
               <select

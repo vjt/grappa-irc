@@ -480,6 +480,18 @@ describe("SettingsDrawer (bucket M — upload-TTL fieldset)", () => {
     expect(opts).toContain("86400");
   });
 
+  // #170 — the fieldset is type-agnostic (class upload-ttl-fieldset,
+  // control "upload duration", server stores plain integer seconds), so
+  // the legend must read "upload retention", not "image upload retention"
+  // (multi-type uploads on the roadmap). Locks the rename against regression.
+  it("labels the fieldset 'upload retention' (type-agnostic legend)", () => {
+    wrap(true);
+    const legend = screen.getByText("upload retention");
+    expect(legend).toBeInTheDocument();
+    expect(legend.tagName).toBe("LEGEND");
+    expect(legend.closest("fieldset")).toHaveClass("upload-ttl-fieldset");
+  });
+
   it("loads the server preference on mount", async () => {
     const orch = await import("../lib/uploadOrchestrator");
     wrap(true);
