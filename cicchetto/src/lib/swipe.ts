@@ -8,9 +8,12 @@ export type Point = { x: number; y: number };
 export type SwipeDirection = "right" | "left" | "up" | "down";
 export type DragAxis = "horizontal" | "vertical";
 
-// The textarea's native-scroll boundary state, sampled at touchstart. `atTop`
-// = scrolled to the first line (can't pan up further); `atBottom` = scrolled to
-// the last line. A short, non-overflowing draft is at BOTH boundaries at once.
+// The textarea's native-scroll boundary state, read LIVE on every touchmove
+// (NOT a touchstart snapshot — the textarea can native-scroll to its edge
+// DURING a touch and the gesture must hand off the instant it does; #123).
+// `atTop` = scrolled to the first line (can't pan up further); `atBottom` =
+// scrolled to the last line. A short, non-overflowing draft is at BOTH
+// boundaries at once.
 export type ScrollBoundary = { atTop: boolean; atBottom: boolean };
 
 // The action a completed gesture maps to, or null for no-op.
@@ -91,20 +94,26 @@ export const dragAxis = (
   return ay > slopPx ? "vertical" : null;
 };
 
-// Mid-drag CLAIM decision (#123 rework, 2026-07-03): once a drag clears the
-// slop, do we OWN the gesture (caller preventDefaults, suppressing native
-// scroll + drag-to-select) or leave it to the textarea's native `pan-y`
-// scroll? Claim ONLY a drag native scroll can't consume:
+// Mid-drag CLAIM decision (#123 nested-scroll handoff, 2026-07-03): once a drag
+// clears the slop, do we OWN the gesture (caller preventDefaults, suppressing
+// native scroll + drag-to-select) or leave it to the textarea's native `pan-y`
+// scroll? Claim ONLY a drag native scroll can no longer consume:
 //   * horizontal — `touch-action: pan-y` already blocks native pan-x, so a
 //     horizontal drag would otherwise select text; we own it (→ tab-complete);
-//   * vertical PAST a scroll boundary — up while `atTop`, or down while
-//     `atBottom`. A short, non-overflowing draft is at BOTH boundaries, so any
-//     vertical flick on it claims (the stock-keyboard history affordance).
-// A vertical drag WITH scroll room in its direction returns null → native
-// pan-y scrolls the draft; the caller never preventDefaults it. `boundary` is
-// sampled at touchstart (intent is fixed when the finger lands: scroll to the
-// edge first, THEN a second flick recalls). Velocity plays NO part here — see
-// `isFastSwipe`; the flick test is deferred to touchend over the whole gesture.
+//   * vertical once the textarea has NO scroll room LEFT in the drag direction.
+//     Screen y grows downward, so a finger-UP drag (dy < 0) scrolls the content
+//     up — scrollTop INCREASES — until the BOTTOM edge; a finger-DOWN drag
+//     decreases scrollTop until the TOP edge. So the handoff boundary is the
+//     OPPOSITE edge from the finger's screen direction: up → `atBottom`, down →
+//     `atTop`. A short, non-overflowing draft is at BOTH edges, so any vertical
+//     flick on it claims immediately (the stock-keyboard history affordance).
+// A vertical drag WITH scroll room in its direction returns null → native pan-y
+// scrolls the draft; the caller never preventDefaults it. `boundary` is read
+// LIVE by the caller on every touchmove, so the claim fires the instant the
+// textarea scrolls to its edge WITHIN this touch — no second touch (that
+// touchstart-snapshot design was the "double-swipe" #123 bug). Velocity plays
+// NO part here — see `isFastSwipe`; the flick test is deferred to touchend over
+// the whole gesture.
 export const claimAxis = (
   start: Point,
   current: Point,
@@ -114,10 +123,10 @@ export const claimAxis = (
   const axis = dragAxis(start, current, slopPx);
   if (axis === null) return null; // under the slop — still undecided
   if (axis === "horizontal") return "horizontal";
-  // Vertical: claim only when the textarea can't scroll further this way.
+  // Vertical: claim only when native scroll has hit its wall in this direction.
   const movingUp = current.y - start.y < 0;
-  if (movingUp) return boundary.atTop ? "vertical" : null;
-  return boundary.atBottom ? "vertical" : null;
+  if (movingUp) return boundary.atBottom ? "vertical" : null;
+  return boundary.atTop ? "vertical" : null;
 };
 
 // Terminal dispatch at touchend: given a CLAIMED gesture's full [start → end]

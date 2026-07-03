@@ -16440,3 +16440,74 @@ press ≠ close" half. Real long-press feel = vjt device test post-ship.
 batch as #171 + #123 + #79 — a daytime `--cic` would rebuild cic from main
 HEAD, which still carries #171's undeployed admin-rename expecting the
 not-yet-deployed `max_per_ip` server API.
+
+## 2026-07-03 — #123 (attempt 3): the compose swipe was a nested-scroll boundary handoff, not a velocity/claim heuristic
+
+Two prior fixes shipped and both failed on vjt's device the same way. The
+velocity-gate (659aa06) sampled speed on the acceleration ramp and abandoned
+irrevocably. The boundary-claim rework (4e828a2) keyed the mid-drag claim off
+the textarea's scroll edge instead of speed — the right idea, wrong mechanics.
+On device it presented as: **the swipe gesture fires only when the textarea's
+`scrollTop === 0`; above that, the textarea eats the drag** — and a
+"double-swipe" where the first drag scrolls the textarea to its edge and only a
+second drag fires the gesture.
+
+**Root cause — two bugs, both in the claim path.**
+
+1. **Frozen touchstart snapshot.** The boundary was sampled ONCE in
+   `onTouchStart` (`startBoundary = scrollBoundary(textareaEl)`) and
+   `claimAxis` read that snapshot for the whole touch. So if the finger landed
+   while `scrollTop > 0`, the claim decision never re-read the boundary even
+   after the textarea native-scrolled to its edge DURING the same touch. The
+   gesture could only ever hand off from an already-at-edge start — hence
+   "works only at scrollTop 0" and the "double-swipe" (the 2nd touch starts
+   settled at the edge). The design comment even codified this as intent
+   ("scroll to the edge first, THEN a second flick recalls"). That was the bug,
+   not the contract.
+
+2. **Inverted direction→edge mapping.** `claimAxis` claimed a finger-UP drag at
+   `atTop` and a finger-DOWN drag at `atBottom`. Physically backwards: screen y
+   grows downward, so a finger-UP drag scrolls the content up — `scrollTop`
+   INCREASES — until the **bottom** edge; a finger-DOWN drag decreases
+   `scrollTop` until the **top** edge. "up while atTop" is unreachable by a
+   continuous drag on an overflowing draft (the moment you drag up you leave
+   atTop), so it only ever claimed on a non-overflowing draft (atTop && atBottom
+   both true) — which is exactly the short-draft case that appeared to work.
+
+**Fix — the standard nested-scroll / bottom-sheet handoff.** The textarea is
+the INNER scroll surface; the swipe is the OUTER gesture. The inner scroll owns
+the vertical drag WHILE it has room in the drag direction; the instant it hits
+its wall (finger-up → `atBottom`, finger-down → `atTop`) it cedes the rest of
+THIS touch to the gesture — no second touch. Mechanically: read the boundary
+LIVE on every `touchmove` (not a touchstart snapshot) and pass it to
+`claimAxis`; correct the direction→edge mapping. `claimAxis` still returns null
+(hands-off, native `pan-y` scrolls) while there's room, so a deliberate
+scroll-drag is never hijacked.
+
+**Why no re-baseline of the gesture anchor at handoff.** Tempting to reset
+`swipeStart` to the boundary-crossing point so the flick is measured only past
+the edge. Rejected: the velocity gate already measures over the WHOLE gesture at
+touchend (touchstart→touchend endpoints), which is coalescing-robust — the
+attempt-1 failure was mid-drag velocity sampling, and re-baselining reintroduces
+that fragility (a coalesced touchmove at the boundary would swallow most of the
+flick's displacement). Keeping the whole-gesture measurement means a brisk
+continuous drag hands off and fires; a slow read-drag that merely grazes the
+edge stays below the flick threshold and correctly does nothing.
+
+**iOS unknown + on-device evidence.** Whether iOS honours a `touchmove`
+`preventDefault` mid-touch once `pan-y` has begun compositor-scrolling is not
+provable in webkit-playwright (feedback_playwright_webkit_not_ios_scroll). With
+`overscroll-behavior: contain` there's no rubber-band to fight at the edge, so
+the claim firing (recall) is the win even if the visual suppression is partial.
+To get the real numbers, `ComposeBox` now emits per-touch telemetry
+(`lib/diagLog.ts` ring buffer → `DiagFloat`, `cic_diag` flag-gated): touchstart
+geometry, the claim decision (direction / live boundary / scrollTop), the
+touchend action. Free no-op with the flag off.
+
+**Gate reality.** The e2e (`issue123-compose-swipe-velocity.spec.ts`) asserts
+the handoff LOGIC deterministically via `event.defaultPrevented` on synthetic
+touchmoves — both directions, and a LIVE-read regression guard that changes
+`scrollTop` BETWEEN touchstart and touchmove (a frozen snapshot fails it). The
+prior test asserted the inverted "up-drag at scrollTop 0 claims" — that was
+encoding the bug, so it was rewritten, not preserved. e2e is necessary, NOT
+sufficient: the ship gate is vjt's device dogfood. #123 stays OPEN until then.

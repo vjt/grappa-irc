@@ -1,7 +1,9 @@
 import { type Component, createSignal, onCleanup, Show } from "solid-js";
+import { isDiagEnabled } from "./DiagFloat";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from "./lib/compose";
 import { composePlaceholder } from "./lib/composePlaceholder";
+import { diagPush } from "./lib/diagLog";
 import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { networkBySlug } from "./lib/networks";
 import {
@@ -87,10 +89,11 @@ const ComposeBox: Component<Props> = (props) => {
   // runtime. Reset every touchstart; read once, at touchend.
   let swipeStartTime = 0;
   let claimedAxis: DragAxis | null = null;
-  // The textarea's native-scroll boundary sampled at touchstart. Decides
-  // whether a vertical drag is a history flick (at the edge) or native scroll
-  // (has room). A non-overflowing draft is at both edges → any flick claims.
-  let startBoundary: ScrollBoundary = { atTop: true, atBottom: true };
+  // On-device gesture diagnostics (#123): captured once per touch at
+  // touchstart so the flag is read a single time, not per move. When on,
+  // touchstart / claim / touchend push a line into diagLog for DiagFloat to
+  // render — the evidence webkit playwright can't produce.
+  let diagOn = false;
 
   const scrollBoundary = (el: HTMLTextAreaElement): ScrollBoundary => {
     const maxScroll = el.scrollHeight - el.clientHeight;
@@ -104,24 +107,22 @@ const ComposeBox: Component<Props> = (props) => {
   // OS word-select. TOUCH (not pointer) events: only touchmove.preventDefault
   // reliably suppresses iOS's native scroll + drag-to-select.
   //
-  // #123 rework (2026-07-03) — BOUNDARY claim, not velocity claim. The prior
-  // velocity-gate (659aa06) sampled speed at the first 8px-slop crossing — the
-  // acceleration ramp, where a real flick still reads slow — and abandoned
-  // irrevocably. Dogfood double-failure: genuine flicks died (abandoned early)
-  // AND iOS-coalesced scroll-drags got hijacked (a coalesced first move reads
-  // fast → claimed → preventDefault kills the scroll). Fix: the mid-drag CLAIM
-  // keys off the textarea's scroll BOUNDARY, not speed (`claimAxis`). A
-  // vertical drag with scroll room in its direction is NEVER claimed → native
-  // `touch-action: pan-y` scrolls the draft. A vertical drag PAST an edge (or
-  // any drag on a non-overflowing draft, which is at both edges) claims the
-  // history gesture; horizontal always claims (→ tab-complete). The flick test
-  // moves to touchend over the WHOLE gesture (`gestureAction`), where
-  // displacement + elapsed are both large and reliable.
+  // #123 nested-scroll boundary handoff (2026-07-03) — the textarea is an
+  // INNER scroll surface; the swipe is the OUTER gesture. The inner scroll owns
+  // the vertical drag WHILE it still has room in that direction; the instant it
+  // hits its edge (finger-up → bottom, finger-down → top), it CEDES the rest of
+  // this same touch to the gesture. That is why the boundary is read LIVE on
+  // every touchmove, not snapshotted at touchstart: a frozen snapshot only ever
+  // handed off from an already-at-edge start, so a mid-scrolled draft ate the
+  // drag and the gesture only fired on a SECOND touch (the "double-swipe" bug;
+  // it appeared to work solely at scrollTop === 0). `claimAxis` owns the
+  // direction→edge mapping; the flick test is deferred to touchend over the
+  // WHOLE gesture (`gestureAction`), where displacement + elapsed are reliable.
   //
   // These are bound via a ref + addEventListener (see bindSwipe), NOT JSX
   // onTouch* — Solid delegates touch events to a single PASSIVE listener on
-  // `document`, where preventDefault silently no-ops. We need an
-  // element-level, explicitly non-passive touchmove listener.
+  // `document`, where preventDefault silently no-ops. We need an element-level,
+  // explicitly non-passive touchmove listener to preventDefault at the handoff.
   const onTouchStart = (e: TouchEvent) => {
     // Stock-keyboard path only: with the IRC keyboard on, KeyboardHost owns
     // the caret (textarea is inputmode=none) and has its own Tab key.
@@ -130,8 +131,13 @@ const ComposeBox: Component<Props> = (props) => {
     swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
     swipeStartTime = performance.now();
     claimedAxis = null;
-    // Sample the scroll edges NOW — intent is fixed when the finger lands.
-    startBoundary = textareaEl ? scrollBoundary(textareaEl) : { atTop: true, atBottom: true };
+    diagOn = isDiagEnabled();
+    if (diagOn && textareaEl && t) {
+      const el = textareaEl;
+      diagPush(
+        `TS y=${Math.round(t.clientY)} st=${el.scrollTop} sh=${el.scrollHeight} ch=${el.clientHeight}`,
+      );
+    }
   };
 
   const onTouchMove = (e: TouchEvent) => {
@@ -139,10 +145,19 @@ const ComposeBox: Component<Props> = (props) => {
     const t = e.touches[0];
     if (t === undefined) return;
     if (claimedAxis === null) {
-      // Claim only a drag native scroll can't consume; a vertical drag with
-      // room returns null and we stay hands-off so pan-y scrolls the draft.
-      claimedAxis = claimAxis(swipeStart, { x: t.clientX, y: t.clientY }, startBoundary);
+      // Read the scroll boundary LIVE every move: the textarea may have
+      // native-scrolled to its edge DURING this touch, and the gesture must
+      // hand off the instant it does. A vertical drag WITH room returns null →
+      // we stay hands-off so pan-y scrolls the draft.
+      const boundary = textareaEl ? scrollBoundary(textareaEl) : { atTop: true, atBottom: true };
+      claimedAxis = claimAxis(swipeStart, { x: t.clientX, y: t.clientY }, boundary);
       if (claimedAxis === null) return;
+      if (diagOn) {
+        const st = textareaEl ? textareaEl.scrollTop : -1;
+        diagPush(
+          `CLAIM ${claimedAxis} up=${t.clientY - swipeStart.y < 0} atTop=${boundary.atTop} atBot=${boundary.atBottom} st=${st}`,
+        );
+      }
     }
     // Suppress native scroll + drag-to-select once we own the gesture.
     e.preventDefault();
@@ -150,14 +165,22 @@ const ComposeBox: Component<Props> = (props) => {
 
   const onTouchEnd = (e: TouchEvent) => {
     const start = swipeStart;
+    const claimed = claimedAxis;
     swipeStart = null;
-    if (start === null || claimedAxis === null) return;
     const t = e.changedTouches[0];
-    if (t === undefined) return;
+    if (start === null || t === undefined) return;
     const end = { x: t.clientX, y: t.clientY };
-    // Full-gesture velocity + direction → action (or null: slow release / no
-    // mapped direction). The boundary gate already ran at claim time.
-    switch (gestureAction(start, end, performance.now() - swipeStartTime)) {
+    // Full-gesture velocity + direction → action (null: never claimed / slow
+    // release / no mapped direction). The boundary gate already ran at claim.
+    const action =
+      claimed === null ? null : gestureAction(start, end, performance.now() - swipeStartTime);
+    if (diagOn) {
+      const st = textareaEl ? textareaEl.scrollTop : -1;
+      diagPush(
+        `END claimed=${claimed ?? "no"} act=${action ?? "none"} dy=${Math.round(end.y - start.y)} st=${st}`,
+      );
+    }
+    switch (action) {
       case "recall-prev":
         recallPrev(key());
         break;

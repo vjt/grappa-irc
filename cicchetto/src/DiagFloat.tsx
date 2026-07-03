@@ -1,4 +1,5 @@
 import { type Component, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { diagLog } from "./lib/diagLog";
 
 // UX-6 bucket D6 (2026-05-21) — floating diag overlay for on-device
 // debugging of iOS PWA layout-viewport shift. The pre-existing diag
@@ -180,6 +181,14 @@ const DiagFloat: Component = () => {
         </div>
         <div class="diag-float-line">
           --vh={cssOT()} ev={lastEv()} #{tick()}
+        </div>
+        {/* #123 compose-swipe telemetry — pushed by ComposeBox's touch
+            handlers via lib/diagLog. Newest first: touchstart geometry, the
+            claim decision (direction / boundary / scrollTop), the touchend
+            action. The on-device evidence webkit playwright can't produce. */}
+        <div class="diag-float-line">compose-swipe:</div>
+        <div class="diag-float-log" data-testid="diag-float-swipe">
+          <For each={diagLog()}>{(line) => <div>{line}</div>}</For>
         </div>
         <div class="diag-float-log">
           <For each={log()}>

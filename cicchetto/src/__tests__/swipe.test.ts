@@ -10,7 +10,7 @@ import {
 } from "../lib/swipe";
 
 // Screen y grows DOWNWARD: a smaller y is "up". Boundary fixtures name the
-// textarea's scroll state at touchstart.
+// textarea's LIVE scroll state at the moment of the touchmove.
 const AT_BOTH: ScrollBoundary = { atTop: true, atBottom: true }; // non-overflowing draft
 const AT_TOP: ScrollBoundary = { atTop: true, atBottom: false }; // long draft scrolled to first line
 const AT_BOTTOM: ScrollBoundary = { atTop: false, atBottom: true }; // scrolled to last line
@@ -127,12 +127,13 @@ describe("isFastSwipe (#123 velocity gate)", () => {
   });
 });
 
-describe("claimAxis (#123 rework — boundary claim, NOT velocity)", () => {
+describe("claimAxis (#123 nested-scroll handoff — boundary claim, NOT velocity)", () => {
   // The mid-drag decision: OWN the gesture (caller preventDefaults) vs leave it
-  // to native pan-y scroll. Keyed off the scroll boundary sampled at
-  // touchstart, NEVER velocity — that was the 659aa06 bug (velocity sampled on
-  // the acceleration ramp abandoned real flicks and hijacked coalesced
-  // scrolls). Distances here clear the 8px slop; the boundary fixture varies.
+  // to native pan-y scroll. Keyed off the LIVE scroll boundary, NEVER velocity.
+  // Direction→edge mapping (screen y grows downward): a finger-UP drag scrolls
+  // scrollTop UP toward the BOTTOM edge, so it hands off `atBottom`; a
+  // finger-DOWN drag hands off `atTop`. Distances here clear the 8px slop; the
+  // boundary fixture varies.
 
   it("claims a horizontal drag regardless of boundary (native pan-x is blocked)", () => {
     // Rightward past slop, mid-scroll: still claimed — a horizontal drag can
@@ -141,29 +142,32 @@ describe("claimAxis (#123 rework — boundary claim, NOT velocity)", () => {
     expect(claimAxis({ x: 50, y: 0 }, { x: 30, y: 2 }, AT_TOP)).toBe("horizontal");
   });
 
-  it("claims an up-drag only when the textarea is AT the top edge", () => {
-    // At the top there is nothing to scroll up into → the up-drag is a
-    // history-recall flick, claim it. This is the swipe-up the dogfood
-    // reported as dead: the claim no longer depends on early-ramp velocity.
-    expect(claimAxis({ x: 0, y: 60 }, { x: 0, y: 40 }, AT_TOP)).toBe("vertical");
+  it("claims an up-drag only when the textarea is AT the bottom edge", () => {
+    // Finger-up scrolls the content up (scrollTop → max). At the bottom edge
+    // there is no room left → the up-drag hands off to the history-recall
+    // gesture. AT_TOP has room to scroll (does NOT claim; see below).
+    expect(claimAxis({ x: 0, y: 60 }, { x: 0, y: 40 }, AT_BOTTOM)).toBe("vertical");
     expect(claimAxis({ x: 0, y: 60 }, { x: 0, y: 40 }, AT_BOTH)).toBe("vertical");
   });
 
-  it("does NOT claim an up-drag with scroll room — native scroll owns it", () => {
-    // Scrolled into the middle / at the bottom: an up-drag scrolls the draft
-    // up. Returning null leaves it to native pan-y (the #123 scroll fix).
+  it("does NOT claim an up-drag with scroll room below — native scroll owns it", () => {
+    // Mid-scroll, or at the TOP with the whole draft still below: a finger-up
+    // drag scrolls the draft. Returning null leaves it to native pan-y (the
+    // #123 handoff — the gesture arms only once scrollTop hits the bottom).
     expect(claimAxis({ x: 0, y: 60 }, { x: 0, y: 40 }, MID)).toBeNull();
-    expect(claimAxis({ x: 0, y: 60 }, { x: 0, y: 40 }, AT_BOTTOM)).toBeNull();
+    expect(claimAxis({ x: 0, y: 60 }, { x: 0, y: 40 }, AT_TOP)).toBeNull();
   });
 
-  it("claims a down-drag only when the textarea is AT the bottom edge", () => {
-    expect(claimAxis({ x: 0, y: 0 }, { x: 0, y: 20 }, AT_BOTTOM)).toBe("vertical");
+  it("claims a down-drag only when the textarea is AT the top edge", () => {
+    // Finger-down scrolls the content down (scrollTop → 0). At the top edge
+    // there is no room left → the down-drag hands off to recall-next.
+    expect(claimAxis({ x: 0, y: 0 }, { x: 0, y: 20 }, AT_TOP)).toBe("vertical");
     expect(claimAxis({ x: 0, y: 0 }, { x: 0, y: 20 }, AT_BOTH)).toBe("vertical");
   });
 
-  it("does NOT claim a down-drag with scroll room below", () => {
+  it("does NOT claim a down-drag with scroll room above", () => {
     expect(claimAxis({ x: 0, y: 0 }, { x: 0, y: 20 }, MID)).toBeNull();
-    expect(claimAxis({ x: 0, y: 0 }, { x: 0, y: 20 }, AT_TOP)).toBeNull();
+    expect(claimAxis({ x: 0, y: 0 }, { x: 0, y: 20 }, AT_BOTTOM)).toBeNull();
   });
 
   it("is null before the drag clears the slop (still undecided)", () => {
@@ -171,10 +175,10 @@ describe("claimAxis (#123 rework — boundary claim, NOT velocity)", () => {
     expect(claimAxis({ x: 0, y: 0 }, { x: 5, y: 3 }, AT_BOTH)).toBeNull();
   });
 
-  it("is velocity-BLIND: a slow-starting flick at the top still claims", () => {
+  it("is velocity-BLIND: a slow-starting flick at the bottom still claims", () => {
     // No elapsed/velocity input at all — the signature proves the claim can't
     // abandon a genuine flick just because its first slop-crossing is slow.
-    expect(claimAxis({ x: 0, y: 100 }, { x: 0, y: 50 }, AT_TOP)).toBe("vertical");
+    expect(claimAxis({ x: 0, y: 100 }, { x: 0, y: 50 }, AT_BOTTOM)).toBe("vertical");
   });
 });
 

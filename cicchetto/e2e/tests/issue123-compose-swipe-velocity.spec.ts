@@ -1,14 +1,17 @@
-// #123 — a long compose draft must SCROLL on touch, and the swipe-up
-// history gesture must still fire. The first fix (velocity-gate, 659aa06)
-// regressed BOTH on-device (vjt dogfood): it decided claim-vs-scroll from the
-// velocity sampled at the first 8px-slop crossing — the acceleration ramp,
-// where a genuine flick still reads slow — and abandoned irrevocably. Real
-// flicks died; iOS-coalesced scroll-drags (a fast-reading first move) got
-// hijacked. Rework (2026-07-03): the mid-drag CLAIM keys off the textarea's
-// scroll BOUNDARY, not speed — a vertical drag with scroll room is left to
-// native `pan-y`; a drag past an edge (or on a non-overflowing draft, at both
-// edges) claims the gesture. Velocity only decides, at touchend over the WHOLE
-// gesture, whether a claimed drag was a flick.
+// #123 — a long compose draft must SCROLL on touch, and the swipe history
+// gesture must still fire. Two prior fixes regressed on-device (vjt dogfood):
+// the velocity-gate (659aa06) decided claim-vs-scroll from the velocity at the
+// first 8px-slop crossing and abandoned irrevocably; the boundary-claim rework
+// (4e828a2) sampled the scroll edge ONCE at touchstart, so a mid-scrolled draft
+// ate the drag and the gesture only fired on a SECOND touch (the "double-swipe"
+// — it appeared to work solely at scrollTop === 0) AND the direction→edge
+// mapping was inverted. Nested-scroll handoff (2026-07-03): the textarea is the
+// INNER scroll surface, the swipe the OUTER gesture. The inner scroll owns the
+// drag WHILE it has room in that direction; the boundary is read LIVE on every
+// touchmove, and the instant the textarea hits its edge (finger-up → BOTTOM,
+// finger-down → TOP) the gesture claims the rest of THIS touch. Velocity only
+// decides, at touchend over the WHOLE gesture, whether a claimed drag was a
+// flick.
 //
 // THREE guards, one per what's provable where:
 //
@@ -18,15 +21,16 @@
 //      (real 350ms gap → below 0.3px/ms) leaves the draft untouched. Chromium
 //      supports the TouchEvent constructor; webkit's is unreliable.
 //
-//   2. BOUNDARY CLAIM (chromium, untagged): the core #123 fix — a vertical
-//      drag is CLAIMED (preventDefault, gesture owns it) only at the scroll
-//      edge, and left to native scroll (NOT preventDefault) when the draft has
-//      room. Proven via `event.defaultPrevented` on a dispatched touchmove —
-//      a JS-level signal independent of `touch-action`, so it is deterministic
-//      in chromium even though synthetic events can't drive real pixel-scroll
-//      (feedback_playwright_webkit_not_ios_scroll). Mid-scroll up-drag → NOT
-//      prevented (native scroll, not hijacked) + no recall; at-top up-drag →
-//      prevented (claimed) + a fast flick recalls.
+//   2. BOUNDARY HANDOFF (chromium, untagged): the core #123 fix — a vertical
+//      drag is CLAIMED (preventDefault, gesture owns it) only once native
+//      scroll has hit its wall in the drag direction (finger-up → atBottom,
+//      finger-down → atTop), and left to native scroll (NOT preventDefault)
+//      while the draft has room. Proven via `event.defaultPrevented` on a
+//      dispatched touchmove — a JS-level signal independent of `touch-action`,
+//      so it is deterministic in chromium even though synthetic events can't
+//      drive real pixel-scroll (feedback_playwright_webkit_not_ios_scroll). The
+//      LIVE read is guarded by changing scrollTop BETWEEN touchstart and
+//      touchmove: a frozen touchstart snapshot fails those cases.
 //
 //   3. CSS CONTRACT (@webkit, iPhone 15): the textarea must be
 //      `touch-action: pan-y` (+ overscroll-behavior: contain) for native
@@ -125,6 +129,42 @@ async function probeVerticalClaim(
   }, args);
 }
 
+// The LIVE-boundary regression guard: set scrollTop to `startTop`, fire
+// touchstart, THEN move scrollTop to `edgeTop` (simulating the textarea
+// native-scrolling DURING the touch), then fire the touchmove drag in `dir`.
+// The claim must key off the LIVE scrollTop (edgeTop), NOT a touchstart
+// snapshot (startTop) — that snapshot was the "double-swipe" #123 bug. Returns
+// whether the touchmove was claimed (preventDefault).
+async function probeHandoff(
+  page: import("@playwright/test").Page,
+  args: { startTop: number; edgeTop: number; dir: "up" | "down" },
+): Promise<{ prevented: boolean }> {
+  return await page.evaluate(({ startTop, edgeTop, dir }) => {
+    const ta = document.querySelector(".compose-box textarea");
+    if (!(ta instanceof HTMLTextAreaElement)) throw new Error("compose textarea not found");
+    const startY = 300;
+    const endY = dir === "up" ? startY - 80 : startY + 80;
+    const touch = (y: number) => new Touch({ identifier: 1, target: ta, clientX: 100, clientY: y });
+    const fire = (type: "touchstart" | "touchmove", y: number): boolean => {
+      const t = touch(y);
+      return ta.dispatchEvent(
+        new TouchEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          touches: [t],
+          targetTouches: [t],
+          changedTouches: [t],
+        }),
+      );
+    };
+    ta.scrollTop = startTop; // boundary state at touchstart
+    fire("touchstart", startY);
+    ta.scrollTop = edgeTop; // textarea native-scrolls DURING the touch
+    const notPrevented = fire("touchmove", endY);
+    return { prevented: !notPrevented };
+  }, args);
+}
+
 test("issue123 — fast swipe-up recalls history, slow drag does not (touchend velocity gate)", async ({
   page,
 }) => {
@@ -157,7 +197,7 @@ test("issue123 — fast swipe-up recalls history, slow drag does not (touchend v
   await expect(ta).toHaveValue("");
 });
 
-test("issue123 — a vertical drag with scroll room is left to native scroll; at the edge it claims", async ({
+test("issue123 — nested-scroll handoff: native scroll owns the drag until the edge, then the gesture claims (both directions)", async ({
   page,
 }) => {
   if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
@@ -185,30 +225,60 @@ test("issue123 — a vertical drag with scroll room is left to native scroll; at
     clientHeight: el.clientHeight,
   }));
   expect(geom.scrollHeight).toBeGreaterThan(geom.clientHeight + 80);
+  const maxTop = geom.scrollHeight - geom.clientHeight;
+  const midTop = Math.floor(maxTop / 2);
 
-  // MID-scroll up-drag: the draft can still scroll up → the gesture must NOT be
-  // claimed, so native pan-y owns it (defaultPrevented === false). This is the
-  // #123 fix: a deliberate scroll-drag is no longer hijacked.
-  const midTop = Math.floor((geom.scrollHeight - geom.clientHeight) / 2);
-  const mid = await probeVerticalClaim(page, { scrollTop: midTop, dir: "up" });
-  expect(mid.scrollTop).toBeGreaterThan(0); // the boundary we set took
-  expect(mid.prevented).toBe(false);
+  // --- finger-UP drag (content scrolls up → scrollTop INCREASES → BOTTOM edge)
+  // Mid-scroll: room below → native scroll owns it, NOT claimed (no hijack).
+  const upMid = await probeVerticalClaim(page, { scrollTop: midTop, dir: "up" });
+  expect(upMid.scrollTop).toBeGreaterThan(0); // the boundary we set took
+  expect(upMid.prevented).toBe(false);
+  // At the TOP: an up-drag still has the whole draft below to scroll into → NOT
+  // claimed. This is the assertion the pre-fix INVERTED mapping got wrong (it
+  // claimed an up-drag at the top, which is unreachable by continuous drag).
+  const upTop = await probeVerticalClaim(page, { scrollTop: 0, dir: "up" });
+  expect(upTop.scrollTop).toBe(0);
+  expect(upTop.prevented).toBe(false);
+  // At the BOTTOM: no room left → the up-drag hands off, the gesture claims.
+  const upBottom = await probeVerticalClaim(page, { scrollTop: maxTop, dir: "up" });
+  expect(upBottom.scrollTop).toBeGreaterThan(0);
+  expect(upBottom.prevented).toBe(true);
 
-  // And a full slow drag mid-scroll does NOT recall — the draft is unchanged
-  // (a hijack would have replaced it with the sent line).
+  // --- finger-DOWN drag (content scrolls down → scrollTop DECREASES → TOP edge)
+  const downMid = await probeVerticalClaim(page, { scrollTop: midTop, dir: "down" });
+  expect(downMid.prevented).toBe(false);
+  const downBottom = await probeVerticalClaim(page, { scrollTop: maxTop, dir: "down" });
+  expect(downBottom.prevented).toBe(false);
+  const downTop = await probeVerticalClaim(page, { scrollTop: 0, dir: "down" });
+  expect(downTop.scrollTop).toBe(0);
+  expect(downTop.prevented).toBe(true);
+
+  // --- LIVE-boundary handoff: scrollTop that changes DURING the touch ---
+  // Regression guard vs the frozen touchstart-snapshot ("double-swipe") bug.
+  // touchstart fires while mid-scroll (room below); the textarea then scrolls
+  // to the bottom DURING the touch; the very next touchmove must claim — no
+  // second touch. A snapshot at touchstart would read "has room" and never
+  // hand off.
+  const handoff = await probeHandoff(page, { startTop: midTop, edgeTop: maxTop, dir: "up" });
+  expect(handoff.prevented).toBe(true);
+  // Inverse: start AT the edge, scroll AWAY mid-touch → native scroll reclaims,
+  // the move is NOT prevented (a snapshot taken while at the edge would wrongly
+  // claim it).
+  const reclaim = await probeHandoff(page, { startTop: maxTop, edgeTop: midTop, dir: "up" });
+  expect(reclaim.prevented).toBe(false);
+
+  // A full slow drag mid-scroll does NOT recall — the draft is unchanged (a
+  // hijack would have replaced it with the sent line).
+  await ta.evaluate((el: HTMLTextAreaElement, top) => {
+    el.scrollTop = top;
+  }, midTop);
   await synthSwipe(page, { startX: 100, startY: 300, endX: 100, endY: 220, slowMs: 350 });
   await expect(ta).toHaveValue(longDraft);
 
-  // AT the top edge: an up-drag can't scroll further → the gesture IS claimed
-  // (defaultPrevented === true).
-  const top = await probeVerticalClaim(page, { scrollTop: 0, dir: "up" });
-  expect(top.scrollTop).toBe(0);
-  expect(top.prevented).toBe(true);
-
-  // …and a fast up-flick there fires the recall (draft → the sent line).
-  await ta.evaluate((el: HTMLTextAreaElement) => {
-    el.scrollTop = 0;
-  });
+  // …and a fast up-flick AT the bottom edge fires the recall (draft → sent).
+  await ta.evaluate((el: HTMLTextAreaElement, top) => {
+    el.scrollTop = top;
+  }, maxTop);
   await synthSwipe(page, { startX: 100, startY: 300, endX: 100, endY: 220, slowMs: 0 });
   await expect(ta).toHaveValue(sent, { timeout: 2_000 });
 });
