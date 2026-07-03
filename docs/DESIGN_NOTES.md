@@ -16511,3 +16511,10 @@ touchmoves — both directions, and a LIVE-read regression guard that changes
 prior test asserted the inverted "up-drag at scrollTop 0 claims" — that was
 encoding the bug, so it was rewritten, not preserved. e2e is necessary, NOT
 sufficient: the ship gate is vjt's device dogfood. #123 stays OPEN until then.
+
+**Deploy.** cic-only. BUILD-DEFER-NIGHT: rides the same night COLD+`--cic`
+batch as #171 + #79 + #172 — a daytime `--cic` would rebuild cic from main
+HEAD, which still carries #171's undeployed admin-rename expecting the
+not-yet-deployed `max_per_ip` server API. This attempt-3 supersedes the
+attempt-2 (4e828a2) cic already queued in that batch; no separate hot ship.
+Device dogfood happens once the batch lands.
