@@ -180,14 +180,17 @@ test.describe("issue #168 — send pins to bottom, never jumps to the unread mar
       .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
       .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
 
-    // Activation landed at the bottom (#168 always-bottom).
-    await expect.poll(async () => await distanceToBottom(page)).toBeLessThanOrEqual(
+    // Cold-mount into an unread channel now lands on the MARKER, not the tail
+    // (#168 completion, 2026-07-03b — vjt point-2 reversed the #46
+    // cold-mount-tail wontfix). So activation already sits ABOVE the fold.
+    await expect.poll(async () => await distanceToBottom(page)).toBeGreaterThan(
       SCROLL_BOTTOM_THRESHOLD_PX,
     );
 
-    // Operator PAGES UP with a real wheel gesture (a programmatic scrollTop
-    // set would not arm the operator-input gate, so the pane would re-snap;
-    // the wheel event marks a genuine operator scroll — following() → false).
+    // Operator PAGES UP with a real wheel gesture. This ALSO clears the
+    // marker-activation latch (arms the operator-input gate), so the subsequent
+    // send goes through the normal follow path. A programmatic scrollTop set
+    // would not arm the gate; the wheel event marks a genuine operator scroll.
     await page.locator('[data-testid="scrollback"]').hover();
     await expect
       .poll(async () => {

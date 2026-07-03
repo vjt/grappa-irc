@@ -37,17 +37,18 @@
 //     `markerRef` undefined → falls to `atBottom() === true` (default)
 //     branch → tail-follow.
 //
-//   Scenario 2 — unreads exist → marker rendered (frozen DISPLAY), scroll
-//     STILL lands at the bottom (#168, 2026-07-02).
+//   Scenario 2 — unreads exist → marker rendered (frozen DISPLAY), cold-mount
+//     JUMPS TO THE MARKER (#168 completion, 2026-07-03b).
 //     Setup: cursor written to the server_time of row 175 of 200 → cic
 //     loads latest 50 (rows 151..200) → 25 rows have server_time > cursor
 //     → `unreadCount = 25`, marker injected before row 176.
-//     #168 collapsed scroll to ONE always-bottom authority: the divider is
-//     no longer a scroll ANCHOR. It renders (frozen-display contract,
-//     DESIGN_NOTES 2026-06-08) but the pane lands at the TAIL — the operator
-//     pages up manually to re-read. So the marker is present in the DOM yet
-//     sits ABOVE the fold; the length-effect's atBottom follow snaps to the
-//     tail on the initial page.
+//     #168's 2026-07-02 collapse landed cold-mount at the TAIL (#46 wontfix);
+//     vjt point-2 (2026-07-03b) reversed that — cold-mount / app-startup into
+//     an unread channel now jumps to the frozen divider, SAME as a switch,
+//     re-asserted across rows recreations by the `markerActivationPending`
+//     latch. So the divider is a scroll ANCHOR again: on-screen near the top,
+//     distance-to-bottom ABOVE threshold. (It still renders from the frozen
+//     snapshot — freeze-display contract, DESIGN_NOTES 2026-06-08.)
 //
 // Both scenarios use a deliberately tiny viewport (800×300) so the
 // 50-row REST page reliably overflows the scrollback area. Without
@@ -220,7 +221,7 @@ test.describe("CP14 B1 — divider present vs absent: scroll always lands at bot
       .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
   });
 
-  test("unreads exist → marker rendered (frozen), scroll STILL lands at bottom (#168)", async ({
+  test("unreads exist → marker rendered (frozen), cold-mount jumps to the marker (#168 completion)", async ({
     page,
   }) => {
     const vjt = getSeededVjt();
@@ -254,20 +255,20 @@ test.describe("CP14 B1 — divider present vs absent: scroll always lands at bot
     const g = await scrollbackGeometry(page);
     expect(g.scrollHeight).toBeGreaterThan(g.clientHeight);
 
-    // Contract assertion 1 (#168): the divider is present in the DOM
-    // (frozen-display contract preserved) but is NO LONGER a scroll anchor —
-    // it sits ABOVE the fold, out of the viewport.
-    await expect(marker).not.toBeInViewport();
+    // Contract assertion 1 (#168 completion, 2026-07-03b): cold-mount into an
+    // unread channel JUMPS TO THE MARKER (vjt point-2 reversed the #46
+    // cold-mount-tail wontfix). The divider is a scroll anchor again — on-screen
+    // near the top of the viewport, NOT above the fold.
+    await expect(marker).toBeInViewport();
 
-    // Contract assertion 2 (#168): scroll position lands at the BOTTOM. The
-    // #163/#161/#156 cluster's scroll-to-marker anchor was collapsed into
-    // the single always-bottom authority; activation snaps to the tail.
-    // Mirror of the SCROLL_BOTTOM_THRESHOLD_PX gate from ScrollbackPane.tsx.
+    // Contract assertion 2 (#168 completion): scroll position lands on the
+    // MARKER, not the tail — distance-to-bottom is ABOVE threshold. Mirror of
+    // the SCROLL_BOTTOM_THRESHOLD_PX gate from ScrollbackPane.tsx.
     await expect
       .poll(async () => {
         const cur = await scrollbackGeometry(page);
         return cur.scrollHeight - cur.scrollTop - cur.clientHeight;
       })
-      .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
+      .toBeGreaterThan(SCROLL_BOTTOM_THRESHOLD_PX);
   });
 });

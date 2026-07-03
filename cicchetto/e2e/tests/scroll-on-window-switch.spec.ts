@@ -16,18 +16,27 @@
 // scrollTop authority that raced the tail-follow and yanked the view up on
 // SEND — removed from the post-send / cold-mount / length-effect paths.
 //
-// #168 regression fix (2026-07-03): that collapse OVER-REACHED — it also
-// killed the jump-to-marker on a deliberate channel-SWITCH. The three
-// activation triggers diverge again, but now SCOPED (see DESIGN_NOTES
-// 2026-07-03):
-//   * channel-SWITCH into a channel WITH an unread divider → jump to the
-//     MARKER (scrollIntoView({block:"start"}), atBottom=false);
-//   * cold-mount / visibility-return / resize → TAIL (#46 always-bottom);
-//   * post-send / live-append → BOTTOM (#168).
-// The divider still renders at its frozen position (freeze-display contract,
-// DESIGN_NOTES 2026-06-08) regardless; only the SWITCH trigger scrolls to it.
+// #168 regression fix (2026-07-03a): that collapse OVER-REACHED — it also
+// killed the jump-to-marker on a deliberate channel-SWITCH.
 //
-// ## Three scenarios
+// #168 completion (2026-07-03b, vjt point-2): marker-jump extended to ALL
+// channel activation, and made RESET-PROOF. The `<For each={rows()}>` is
+// ref-keyed and the `rows()` memo rebuilds fresh wrappers each recompute, so
+// every rows change re-creates the list DOM and resets scrollTop to 0; a
+// one-shot marker jump did not survive the post-activation catch-up refresh /
+// late cursor hydration (the deterministic +1048 "307 race"). A
+// `markerActivationPending` latch now re-asserts marker-or-tail on every rows
+// recreation until the operator takes over. The activation triggers:
+//   * channel-SWITCH into a channel WITH an unread divider → jump to the
+//     MARKER (scrollIntoView({block:"start"}), atBottom=false), re-asserted;
+//   * COLD-MOUNT / app-startup into an unread channel → ALSO the MARKER (vjt
+//     point-2, reverses the #46 cold-mount-tail wontfix); no unread → tail;
+//   * visibility-return / resize → TAIL (#46 resume family, one-shot);
+//   * post-send / live-append → BOTTOM (#168; the send clears the latch first).
+// The divider still renders at its frozen position (freeze-display contract,
+// DESIGN_NOTES 2026-06-08) regardless.
+//
+// ## Four scenarios
 //
 //   Scenario 1 — channel → empty query → channel-back (no marker):
 //     Tall channel, focus → lands at bottom. Open empty query via
@@ -35,23 +44,24 @@
 //     messages yet"). Switch back via sidebar → expect: lands at
 //     bottom again (no unread → tail). Pre-fix: pinned at scrollTop=0.
 //
-//   Scenario 2 — COLD-MOUNT into channel-with-unreads (#168 always-bottom):
+//   Scenario 2 — COLD-MOUNT into channel-with-unreads (#168 completion):
 //     Pre-seed a read cursor for #bofh placing the divider mid-page (25
 //     unreads), then FIRST-focus #bofh straight after login (a cold mount —
-//     the key-effect is `defer`-skipped, so the length-effect owns the
-//     snap). Lands at the TAIL (distance-to-bottom <= threshold); the
-//     divider renders (frozen display) but sits ABOVE the fold. The pane
-//     must NOT stay pinned to the top (scrollTop > 0) either — the #130
-//     guard. This is the COLD-MOUNT leg, deliberately still tail.
+//     the key-effect is `defer`-skipped, so onMount owns the first snap).
+//     Jumps to the MARKER (near the top, distance-to-bottom ABOVE threshold),
+//     NOT the tail — the #46 cold-mount-tail wontfix reversed. A follow-on
+//     SEND must still snap to the BOTTOM (the gate). A sibling test repeats
+//     this after a full `page.reload()` (genuine app-startup).
 //
 //   Scenario 3 — SWITCH into channel-with-unreads (#168 regression fix):
 //     Focus the $server window first (mounts ScrollbackPane), let #bofh warm
 //     in the background (eager join-ok refresh loads all 200 rows), THEN
 //     click #bofh in the sidebar — a real key-change SWITCH. The pane must
 //     jump to the MARKER (marker visible near the top, distance-to-bottom
-//     ABOVE threshold — NOT the tail). This is the bug vjt reported: post
-//     #168 the switch leaked the always-tail authority and landed at the
-//     tail. A follow-on SEND must still snap to the BOTTOM (both directions).
+//     ABOVE threshold — NOT the tail). Pre-fix (307 race) this stranded at
+//     scrollTop 0 (marker +1048) once the catch-up refresh recreated the DOM;
+//     the latch's re-assert makes it deterministic. A follow-on SEND must
+//     still snap to the BOTTOM (both directions).
 //
 // ## Why DB-seeded scrollback (matches cp14-b1)
 //
@@ -247,22 +257,22 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
       .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
   });
 
-  test("fresh focus into channel-with-unreads: lands at bottom, divider frozen above (#168)", async ({
+  test("fresh focus / cold-mount into channel-with-unreads: jumps to the marker, then a send snaps to bottom (#168)", async ({
     page,
   }) => {
     const vjt = getSeededVjt();
     if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
 
-    // Pre-seed a cursor 25 rows from the tail of #bofh so the divider
-    // injects mid-page. Same shape cp14-b1 scenario 2 uses.
+    // Pre-seed a cursor 25 rows from the tail of #bofh so the divider injects
+    // mid-page. Same shape cp14-b1 scenario 2 uses.
     //
-    // #168 (2026-07-02) collapsed scroll to ONE always-bottom authority.
-    // This test previously pinned "marker CENTERED in the viewport" — that
-    // was the scroll-to-marker anchor that #168 removed. New contract:
-    // fresh focus lands at the TAIL; the divider still renders (frozen-
-    // display contract) but sits ABOVE the fold. The operator pages up
-    // manually to re-read. The pane must NOT stay pinned to the top
-    // (scrollTop=0) either — that is the #130 bug this spec also guards.
+    // #168 completion (2026-07-03b, vjt point-2): the FIRST focus after login
+    // is a COLD MOUNT (the channel-switch key-effect is `defer`-skipped, so
+    // onMount owns the first snap). It USED to land at the TAIL (#46
+    // cold-mount-tail wontfix — the assertion this test previously encoded).
+    // vjt reversed that: cold-mount now jumps to the frozen divider, SAME as a
+    // deliberate switch. This test therefore now mirrors scenario 3's marker
+    // contract, reached via cold-mount instead of a switch.
     const page0 = await fetchScrollbackPage(vjt.token, CHANNEL);
     expect(page0.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
     const cursorRow = page0[25];
@@ -279,29 +289,111 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
     const marker = page.locator('[data-testid="unread-marker"]');
     await expect(marker).toHaveCount(1);
 
-    // Sanity: scrollback overflows.
+    // Sanity: scrollback overflows (else "not at the tail" is vacuous).
     const g = await scrollbackGeometry(page);
     expect(g.scrollHeight).toBeGreaterThan(g.clientHeight);
 
-    // Contract assertion 1 (#168): the pane lands at the BOTTOM. The
-    // scroll-to-marker anchor was collapsed into the single always-bottom
-    // authority — activation snaps to the tail.
+    // Contract 1 (#168 completion): cold-mount lands on the MARKER, not the
+    // tail — distance-to-bottom is ABOVE threshold. The `markerActivationPending`
+    // latch re-asserts the jump across the post-mount catch-up refresh + late
+    // cursor hydration, so this is deterministic (the 307 race fix).
+    await expect
+      .poll(async () => {
+        const cur = await scrollbackGeometry(page);
+        return cur.scrollHeight - cur.scrollTop - cur.clientHeight;
+      })
+      .toBeGreaterThan(SCROLL_BOTTOM_THRESHOLD_PX);
+
+    // Contract 2: the marker sits near the TOP of the viewport (block:"start")
+    // and is on-screen — the operator sees the unread messages that follow it.
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const el = document.querySelector('[data-testid="scrollback"]') as HTMLElement | null;
+          const m = document.querySelector('[data-testid="unread-marker"]') as HTMLElement | null;
+          if (!el || !m) return Number.NaN;
+          return m.getBoundingClientRect().top - el.getBoundingClientRect().top;
+        }),
+      )
+      .toBeLessThan(g.clientHeight / 2);
+    const markerOffset = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="scrollback"]') as HTMLElement | null;
+      const m = document.querySelector('[data-testid="unread-marker"]') as HTMLElement | null;
+      if (!el || !m) throw new Error("scrollback/marker not found");
+      return m.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    });
+    expect(markerOffset).toBeGreaterThanOrEqual(-5);
+    await expect(marker).toBeInViewport();
+
+    // Contract 3 (gate): a SEND from the cold-mounted marker-parked pane still
+    // snaps to the BOTTOM — the own-send clears the latch first, then
+    // scrollToBottom owns the scroll (#168 post-send authority; do NOT re-open
+    // the send-jump). The divider clears.
+    const sent = `coldmount-then-send ${Date.now()}`;
+    await composeSend(page, sent);
+
+    const sentLine = scrollbackLines(page).filter({ hasText: sent });
+    await expect(sentLine).toHaveCount(1, { timeout: 10_000 });
     await expect
       .poll(async () => {
         const cur = await scrollbackGeometry(page);
         return cur.scrollHeight - cur.scrollTop - cur.clientHeight;
       })
       .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
+    await expect(sentLine).toBeInViewport();
+    await expect(marker).toHaveCount(0, { timeout: 5_000 });
+  });
 
-    // Contract assertion 2 (#168): the divider is present in the DOM
-    // (frozen-display contract preserved) but sits ABOVE the fold — it is
-    // no longer a scroll anchor, so it is NOT in the viewport.
-    await expect(marker).not.toBeInViewport();
+  test("app-startup: cold-mount into a selected unread channel after a full reload jumps to the marker (#168)", async ({
+    page,
+  }) => {
+    const vjt = getSeededVjt();
+    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
 
-    // Contract assertion 3 (#130 guard): the pane did NOT stay pinned to
-    // the top — a real bottom-anchored scroll moved scrollTop off zero.
-    const g2 = await scrollbackGeometry(page);
-    expect(g2.scrollTop).toBeGreaterThan(0);
+    // The genuine app-startup path: a full PWA reload re-boots the SPA, so the
+    // FIRST window focus after the reload cold-mounts the ScrollbackPane fresh
+    // (onMount, key-effect defer-skipped) — the same lifecycle as launching the
+    // installed PWA. #bofh is never focused before the reload, so its seeded
+    // read cursor is never advanced and the unread divider survives the reboot.
+    const page0 = await fetchScrollbackPage(vjt.token, CHANNEL);
+    expect(page0.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+    const cursorRow = page0[25];
+    if (!cursorRow) throw new Error("seeded page too short for cursor placement");
+    await seedCursor(page, CHANNEL, cursorRow.id);
+
+    await loginAs(page, vjt);
+    // Reboot the app BEFORE any window focus, then focus #bofh — a cold mount
+    // on a freshly-booted SPA.
+    await page.reload();
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+    await expect
+      .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
+      .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+
+    const marker = page.locator('[data-testid="unread-marker"]');
+    await expect(marker).toHaveCount(1);
+
+    const g = await scrollbackGeometry(page);
+    expect(g.scrollHeight).toBeGreaterThan(g.clientHeight);
+
+    // Cold-mount after reboot lands on the MARKER (not the tail), near the top
+    // of the viewport, on-screen.
+    await expect
+      .poll(async () => {
+        const cur = await scrollbackGeometry(page);
+        return cur.scrollHeight - cur.scrollTop - cur.clientHeight;
+      })
+      .toBeGreaterThan(SCROLL_BOTTOM_THRESHOLD_PX);
+    const markerOffset = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="scrollback"]') as HTMLElement | null;
+      const m = document.querySelector('[data-testid="unread-marker"]') as HTMLElement | null;
+      if (!el || !m) throw new Error("scrollback/marker not found");
+      return m.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    });
+    expect(markerOffset).toBeGreaterThanOrEqual(-5);
+    expect(markerOffset).toBeLessThan(g.clientHeight / 2);
+    await expect(marker).toBeInViewport();
   });
 
   test("SWITCH into channel-with-unreads: jumps to the marker, then a send snaps to bottom", async ({

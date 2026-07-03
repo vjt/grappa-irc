@@ -16030,7 +16030,7 @@ disjointness); `ux-5-bc` reframed to prove the gated `/connect` self-excludes
 the returning subject (tight-cap self-exclusion is unit-covered by
 `networks_controller_test`).
 
-### 2026-07-03 — #168 regression: switch-with-unread jumps to marker, post-send/cold-mount stay tail
+### 2026-07-03 — #168 regression + completion: marker on switch AND cold-mount/app-startup, post-send stays bottom, 307 race fixed
 
 **Symptom (P0, vjt prod-confirmed).** After #168 shipped, clicking a channel
 that has unread NO LONGER jumped to the unread divider — it landed at the
@@ -16047,8 +16047,14 @@ race; the fix RE-SEPARATES them WITHOUT re-opening that race:
 | trigger | lands at | why |
 |---|---|---|
 | deliberate channel-SWITCH into an unread window | the **MARKER** | the operator chose to open it — show them where they left off |
+| COLD-MOUNT / app-startup into an unread window | the **MARKER** | **updated 2026-07-03b (vjt point-2)** — launching the PWA onto a window you left unread should land you where you left off, same as a switch. Reverses the #46 cold-mount-tail wontfix below. No unread → tail. |
 | post-send / live-append while following | the **BOTTOM** | irssi-shape, the just-sent line must be visible (#168 acceptance) |
-| cold-mount / visibility-return / resize | the **TAIL** | #46 always-bottom; a first-focus / resume is not a switch |
+| visibility-return / resize | the **TAIL** | #46 resume family; a brief tab-blur / keyboard-open is not a window activation |
+
+> **2026-07-03b note — this row's `cold-mount` was originally TAIL** (matching
+> the #46 wontfix). vjt reversed that in the completion below; the table now
+> reads the current behavior. The DESIGN entry keeps the history in prose so the
+> decision is legible, not a caveat wall.
 
 **The scoping mechanism.** `scrollToActivation` takes a `mode:
 "marker-or-tail" | "tail-only"`. The channel-switch `on(key)` effect passes
@@ -16066,17 +16072,87 @@ naturally falls to the tail.
 
 **Why this does NOT re-open the #168 send-race.** The race #168 killed was a
 SECOND authority (`scrollToActivation`'s marker branch AND the length-effect's
-marker branch) fighting the tail-follow after a send. Here: (1) the
-length-effect stays TAIL-ONLY — the marker jump is NOT restored there, only in
-the switch-scoped `scrollToActivation`; (2) post-send goes through
+marker branch) fighting the tail-follow after a send. Here (as of the 03a scoping; superseded in part by the 03b completion below):
+(1) the length-effect stays TAIL-ONLY — the marker jump is NOT restored there,
+only in the switch-scoped `scrollToActivation`; (2) post-send goes through
 `lastOwnSend`→`scrollToBottom`, untouched; (3) the cold-mount path is the
-`defer`-skipped `on(key)` mount run, so a first-focus-after-login is handled by
-the length-effect at the tail, never by the marker branch; (4) when a switch
-DOES park on the divider it sets `atBottom=false` first, so the length-effect's
-`if (!atBottom()) return` guard yields and never races the jump back to the
-tail (the rAF scheduled by `scrollToActivation` runs before the length-effect's
-inner rAF). One trigger, one scroll target, no two authorities on the same
-trigger.
+`defer`-skipped `on(key)` mount run, so a first-focus-after-login was handled by
+the length-effect at the tail; (4) when a switch DOES park on the divider it
+sets `atBottom=false` first, so the length-effect's `if (!atBottom()) return`
+guard yields and never races the jump back to the tail. One trigger, one scroll
+target, no two authorities on the same trigger.
+
+**COMPLETION (2026-07-03b) — vjt's GENERALIZED rule + the 307-race root cause.**
+
+> **vjt's rule (authoritative — supersedes any earlier "fills the viewport"
+> wording).** The scroll-landing criterion is a single question: *did a COMMAND
+> produce scrollback in THIS window?*
+>   - **Yes → SCROLL-TO-BOTTOM.** A send of ANY length is command output → bottom
+>     (the short-send caveat is explicitly WITHDRAWN; there is no length
+>     condition — this cleanly preserves the #168 send-jump).
+>   - **No (pure activation: app-startup / switch / cold-mount, no command
+>     output) → UNREAD MARKER** (if unread exists; else bottom).
+>   - **Neither (loadMore / loadNewer pagination) → PRESERVE** the operator's
+>     scroll position. Never marker, never bottom.
+> NOT how much output fills the viewport, NOT how long it is — just "did a
+> command emit here." This reverses the #46 cold-mount-tail wontfix (point 3
+> above) by vjt's explicit call today.
+
+In the impl this maps cleanly: `lastOwnSend` (an own send to THIS window — the
+"command produced current-window scrollback" case) → clears the latch +
+`scrollToBottom`; a pure activation → the marker latch; loadMore →
+a synchronous latch-clear at the top boundary (below). app-startup / cold-mount
+onto a window you left unread now lands on the divider, same as a switch. Extending the marker branch to cold-mount surfaced the
+REAL bug behind an intermittent switch failure (`scroll-on-window-switch:307`,
+deterministic-red in isolation, `marker +1048`): **the marker jump was a
+one-shot that did not survive the NEXT rows recreation.** `<For each={rows()}>`
+is ref-keyed and the `rows()` memo rebuilds fresh wrapper objects every
+recompute, so EVERY rows change re-creates the list DOM and resets scrollTop to
+0 — this is exactly why the length-effect + `scrollToActivation` exist: to
+re-establish the scroll position pre-paint (rAF×2) after each recreation. After
+a switch parked on the marker (`atBottom=false`), the post-switch catch-up
+`refreshScrollback` (selection.ts fires it on an already-loaded re-select) — or
+a late read-cursor hydration inserting the divider — recreated the DOM again;
+the ONLY re-establish path (the length-effect) was `atBottom`-gated and so
+suppressed, stranding the pane at scrollTop 0.
+
+The fix makes the marker jump re-establish exactly like the tail-follow does:
+a `markerActivationPending` latch (set by the SWITCH key-effect AND cold-mount
+`onMount`, cleared on real operator input or an own send) drives the
+length-effect to RE-ASSERT `scrollToActivation("marker-or-tail")` on every rows
+recreation while active (`withHide=false` — the rAF×2 corrects pre-paint, so the
+intermediate scrollTop=0 is never shown). This does NOT re-open the #168
+send-race: the marker re-assert is latch-gated, and `lastOwnSend` CLEARS the
+latch before `scrollToBottom`, so a send falls straight through to the
+always-bottom authority; a scrolled-up operator clears the latch via the
+input gate, after which the plain `atBottom` tail-follow owns live appends.
+Visibility-return / resize stay `tail-only` one-shot (their `atBottom=true`
+means the tail-follow already re-establishes them — no latch).
+
+**Pagination is excluded from BOTH paths (the cp14-b2 oscillation canary).**
+loadMore (scroll-to-top → prepend older rows) and loadNewer (scroll-to-bottom →
+append newer) are neither a command nor an activation — they must PRESERVE the
+operator's position (loadMore owns a height-delta scrollTop restore). The fix
+is in the RE-ASSERT GATE, not in onScroll: the length-effect re-asserts the
+marker jump only when `markerActivationPending()` AND a rendered unread divider
+EXISTS. With no divider it FALLS THROUGH to the `atBottom` tail-follow, which
+resolves both no-marker cases with one rule — an initial cold-mount
+(`atBottom=true`) tails; a loadMore prepend after the operator scrolled up
+(`atBottom=false`) does nothing, so the height-delta restore preserves position.
+A no-marker re-assert would instead TAIL and yank the prepend to the bottom
+(cp14-b2 RED at distance 7px). Two REJECTED approaches, both documented so the
+oscillation isn't re-explored: (1) a transient `paginating` flag skipping the
+length-effect — Solid fires the effect for the prepend merge AFTER the scroll
+handler + its promise `.finally`, so the flag is already reset when the effect
+runs (RED, tail); (2) synchronously clearing the latch in the loadMore block —
+the ref-keyed `<For>` reset to scrollTop 0 on a SWITCH fires `onScroll` at the
+top boundary during the activation's own transient, clearing the latch before
+the marker jump settles and re-stranding 307 at +1048 (RED). The marker-EXISTS
+gate sidesteps both: a read-channel prepend has no divider (fall through,
+preserve), and a real marker activation keeps re-asserting until the operator
+takes over. `cp14-b2` scenario 2 is the canary. (The oscillation the prior #168
+v2 broke — no blind trading: the marker, send→bottom, and loadMore-preserve
+specs are gated together.)
 
 **Freeze contract unchanged.** The divider still derives from the frozen
 `markerCursorId` snapshot (2026-06-08) and re-latches on focus acquisition; the
@@ -16085,23 +16161,26 @@ switch jump is a DISPLAY-side scroll to that frozen row, not a cursor write
 scroll-settle gate does not advance the cursor — the divider survives the
 jump). Read-state stays server-owned.
 
-**Tests.** New e2e `scroll-on-window-switch.spec.ts` scenario 3 (RED→GREEN):
-seed a mid-page cursor on `#bofh`, focus the `$server` window first (so #bofh
-warms in the background via the eager join-ok `refreshScrollback` — REFRESH_LIMIT
-== the 200-row seed, so all rows load unfocused), then click #bofh — a real
-key-change SWITCH. Asserts the pane lands on the MARKER (marker visible near the
-top, distance-to-bottom ABOVE threshold — NOT the tail), then a follow-on SEND
-snaps to the BOTTOM (both directions in one spec). RED proof: distance-to-bottom
-was 7px (tail) pre-fix. The two pre-existing COLD-MOUNT specs (`cp14-b1`
-scenario 2, `scroll-on-window-switch` scenario 2) stay GREEN unchanged — they
-first-focus straight after login, which is a cold mount, deliberately still
-tail. `issue168-scroll-authority` (post-send→bottom) is untouched and MUST stay
-green.
+**Tests (03a + 03b).** `scroll-on-window-switch.spec.ts` scenario 3 is the
+SWITCH→marker RED→GREEN (seed mid-page cursor on `#bofh`, focus `$server` first
+so #bofh warms via the eager join-ok `refreshScrollback`, then click #bofh — a
+real key-change SWITCH; asserts marker near the top + a follow-on SEND→bottom).
+03b makes it deterministic (was flaky-red in isolation, `+1048`) and FLIPS the
+cold-mount specs to the new behavior: `scroll-on-window-switch` scenario 2 and
+`cp14-b1` scenario 2 now assert cold-mount JUMPS to the marker (+ a send→bottom
+leg for the gate); a new `scroll-on-window-switch` sibling repeats it after a
+full `page.reload()` (genuine app-startup); `issue168-scroll-authority`'s
+"paged-up → send" test flips its cold-mount premise (now lands on the marker)
+but keeps the post-send→bottom assertion. `issue168-scroll-authority` test 1
+(unread present → send→bottom) is post-send-only, untouched. The load-bearing
+non-e2e gate stays the swipe/scroll unit tests for #123; this #168 zone is
+DOM-scroll behavior, e2e-only.
 
-**Deploy.** cic-only viewport fix. Shipped HOT via `deploy-m42.sh --cic` the
-same day (vjt override — accepts that this `--cic` also ships #171's
-not-yet-deployed cic admin-rename, so the admin cap editor breaks until
-#171's server COLD lands that night).
+**Deploy.** 03a shipped HOT via `deploy-m42.sh --cic` the same day (vjt
+override, riding #171's undeployed cic admin-rename). 03b (this completion) is
+BUILD-DEFER-NIGHT: it batches with #123 into the night COLD+`--cic` window
+(deploy was HELD while main carried the device-confirmed regressions — nothing
+ships until main is verified green and the orchestrator re-schedules).
 
 ### 2026-07-03 — #123: boundary-claim the compose swipe so slow drags scroll the textarea
 
