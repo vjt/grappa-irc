@@ -1,10 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  claimAxis,
   dragAxis,
+  gestureAction,
   isFastSwipe,
+  type ScrollBoundary,
   SWIPE_MIN_VELOCITY_PX_PER_MS,
   swipeDirection,
 } from "../lib/swipe";
+
+// Screen y grows DOWNWARD: a smaller y is "up". Boundary fixtures name the
+// textarea's scroll state at touchstart.
+const AT_BOTH: ScrollBoundary = { atTop: true, atBottom: true }; // non-overflowing draft
+const AT_TOP: ScrollBoundary = { atTop: true, atBottom: false }; // long draft scrolled to first line
+const AT_BOTTOM: ScrollBoundary = { atTop: false, atBottom: true }; // scrolled to last line
+const MID: ScrollBoundary = { atTop: false, atBottom: false }; // scrolled into the middle
 
 describe("swipeDirection", () => {
   it("classifies a clear rightward swipe", () => {
@@ -114,5 +124,92 @@ describe("isFastSwipe (#123 velocity gate)", () => {
     // 60px / 100ms = 0.6px/ms: passes the default, fails a 1.0px/ms bar.
     expect(isFastSwipe({ x: 0, y: 0 }, { x: 0, y: 60 }, 100, 1.0)).toBe(false);
     expect(SWIPE_MIN_VELOCITY_PX_PER_MS).toBe(0.3);
+  });
+});
+
+describe("claimAxis (#123 rework — boundary claim, NOT velocity)", () => {
+  // The mid-drag decision: OWN the gesture (caller preventDefaults) vs leave it
+  // to native pan-y scroll. Keyed off the scroll boundary sampled at
+  // touchstart, NEVER velocity — that was the 659aa06 bug (velocity sampled on
+  // the acceleration ramp abandoned real flicks and hijacked coalesced
+  // scrolls). Distances here clear the 8px slop; the boundary fixture varies.
+
+  it("claims a horizontal drag regardless of boundary (native pan-x is blocked)", () => {
+    // Rightward past slop, mid-scroll: still claimed — a horizontal drag can
+    // only select text otherwise, so we own it for tab-complete.
+    expect(claimAxis({ x: 0, y: 0 }, { x: 20, y: 2 }, MID)).toBe("horizontal");
+    expect(claimAxis({ x: 50, y: 0 }, { x: 30, y: 2 }, AT_TOP)).toBe("horizontal");
+  });
+
+  it("claims an up-drag only when the textarea is AT the top edge", () => {
+    // At the top there is nothing to scroll up into → the up-drag is a
+    // history-recall flick, claim it. This is the swipe-up the dogfood
+    // reported as dead: the claim no longer depends on early-ramp velocity.
+    expect(claimAxis({ x: 0, y: 60 }, { x: 0, y: 40 }, AT_TOP)).toBe("vertical");
+    expect(claimAxis({ x: 0, y: 60 }, { x: 0, y: 40 }, AT_BOTH)).toBe("vertical");
+  });
+
+  it("does NOT claim an up-drag with scroll room — native scroll owns it", () => {
+    // Scrolled into the middle / at the bottom: an up-drag scrolls the draft
+    // up. Returning null leaves it to native pan-y (the #123 scroll fix).
+    expect(claimAxis({ x: 0, y: 60 }, { x: 0, y: 40 }, MID)).toBeNull();
+    expect(claimAxis({ x: 0, y: 60 }, { x: 0, y: 40 }, AT_BOTTOM)).toBeNull();
+  });
+
+  it("claims a down-drag only when the textarea is AT the bottom edge", () => {
+    expect(claimAxis({ x: 0, y: 0 }, { x: 0, y: 20 }, AT_BOTTOM)).toBe("vertical");
+    expect(claimAxis({ x: 0, y: 0 }, { x: 0, y: 20 }, AT_BOTH)).toBe("vertical");
+  });
+
+  it("does NOT claim a down-drag with scroll room below", () => {
+    expect(claimAxis({ x: 0, y: 0 }, { x: 0, y: 20 }, MID)).toBeNull();
+    expect(claimAxis({ x: 0, y: 0 }, { x: 0, y: 20 }, AT_TOP)).toBeNull();
+  });
+
+  it("is null before the drag clears the slop (still undecided)", () => {
+    // Under 8px on both axes → no axis committed yet, even at a boundary.
+    expect(claimAxis({ x: 0, y: 0 }, { x: 5, y: 3 }, AT_BOTH)).toBeNull();
+  });
+
+  it("is velocity-BLIND: a slow-starting flick at the top still claims", () => {
+    // No elapsed/velocity input at all — the signature proves the claim can't
+    // abandon a genuine flick just because its first slop-crossing is slow.
+    expect(claimAxis({ x: 0, y: 100 }, { x: 0, y: 50 }, AT_TOP)).toBe("vertical");
+  });
+});
+
+describe("gestureAction (#123 rework — touchend dispatch)", () => {
+  // Terminal mapping over the WHOLE gesture: full-gesture velocity gate, then
+  // 40px-floored direction → action. Boundary already filtered at claim time.
+
+  it("maps a fast up-flick to recall-prev (older history)", () => {
+    expect(gestureAction({ x: 0, y: 60 }, { x: 0, y: 0 }, 100)).toBe("recall-prev");
+  });
+
+  it("maps a fast down-flick to recall-next (newer history)", () => {
+    expect(gestureAction({ x: 0, y: 0 }, { x: 0, y: 60 }, 100)).toBe("recall-next");
+  });
+
+  it("maps a fast rightward flick to tab-complete", () => {
+    expect(gestureAction({ x: 0, y: 0 }, { x: 60, y: 5 }, 100)).toBe("tab-complete");
+  });
+
+  it("is null for a leftward flick (no mapped action)", () => {
+    expect(gestureAction({ x: 60, y: 0 }, { x: 0, y: 5 }, 100)).toBeNull();
+  });
+
+  it("is null for a slow release even at full displacement (decelerated flick)", () => {
+    // 60px up over 400ms = 0.15px/ms < 0.3 → a claimed drag that settled slowly
+    // does NOT recall. The full-gesture measurement is the reliable gate.
+    expect(gestureAction({ x: 0, y: 60 }, { x: 0, y: 0 }, 400)).toBeNull();
+  });
+
+  it("is null when travel is under the 40px direction floor, however fast", () => {
+    // 30px up in 10ms = 3px/ms (fast) but below the SWIPE_MIN_PX floor → null.
+    expect(gestureAction({ x: 0, y: 30 }, { x: 0, y: 0 }, 10)).toBeNull();
+  });
+
+  it("treats an instantaneous (same-tick) up-flick as a recall", () => {
+    expect(gestureAction({ x: 0, y: 60 }, { x: 0, y: 0 }, 0)).toBe("recall-prev");
   });
 });

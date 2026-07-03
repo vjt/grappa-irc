@@ -16103,7 +16103,7 @@ same day (vjt override — accepts that this `--cic` also ships #171's
 not-yet-deployed cic admin-rename, so the admin cap editor breaks until
 #171's server COLD lands that night).
 
-### 2026-07-03 — #123: velocity-gate the compose swipe so slow drags scroll the textarea
+### 2026-07-03 — #123: boundary-claim the compose swipe so slow drags scroll the textarea
 
 **The hijack.** `ComposeBox`'s stock-keyboard swipe affordances (swipe UP =
 older history, DOWN = newer, RIGHT = tab-complete) were gated on DISPLACEMENT
@@ -16122,25 +16122,47 @@ drag from driving iOS's chrome gesture back when the textarea was treated as
 fixed the slow drag could not scroll natively. The fix needs BOTH: JS must stop
 `preventDefault`ing slow drags AND the CSS must permit vertical pan.
 
-**The velocity gate.** New pure predicate `isFastSwipe(start, point,
-elapsedMs)` in `lib/swipe.ts` — dominant-axis speed (px/ms) ≥
-`SWIPE_MIN_VELOCITY_PX_PER_MS`. It is the SINGLE velocity source of truth,
-reused at BOTH decision points so a claim and a dispatch can never drift to two
-thresholds: (1) the mid-drag axis-claim — a drag `preventDefault`s + owns the
-gesture only if it's fast; a slow drag is ABANDONED (`swipeStart` nulled) so
-native `pan-y` scrolls the textarea, and once abandoned we stay hands-off (no
-mid-scroll hijack if the finger later speeds up); (2) touchend — the whole
-gesture is re-checked so a flick that decelerated into a slow release doesn't
-recall. Velocity is the ONLY thing `isFastSwipe` judges; the 8px slop
-(`dragAxis`) and 40px floor (`swipeDirection`) still bound displacement — a real
-flick is fast AND ≥40px. `ComposeBox` threads `performance.now()` timestamps in
-(browser time is fine in cic runtime — the `Date.now` ban is a workflow-script
-rule).
+**First attempt — velocity-claim — and why it was REWORKED the same day.**
+The initial fix made VELOCITY the mid-drag claim discriminator: `onTouchMove`
+claimed + `preventDefault`ed only if `isFastSwipe(start, point, now−startTime)`
+held at the first 8px-slop crossing, else ABANDONED (`swipeStart` nulled) to
+native scroll. On-device (vjt dogfood) it regressed BOTH ways — a double
+failure. (1) A real flick starts from rest and ACCELERATES; at the 8px mark it
+is still on the ramp and reads BELOW 0.3px/ms, so a genuine swipe-up was
+abandoned — irrevocably — and never recalled. (2) iOS COALESCES touchmoves; a
+deliberate scroll-drag's first delivered move can jump ~20px in one frame and
+read ABOVE 0.3px/ms, so it got claimed + `preventDefault`ed and the scroll was
+suppressed. Same root: instantaneous velocity sampled at the ramp, at the wrong
+instant, locked in forever — it tracks iOS event delivery, not human intent.
+(The old e2e stayed green because `slowMs:0` synthetic events fire same-tick →
+`elapsedMs<=0` → `isFastSwipe` true unconditionally; the ramp is never
+exercised. Hollow vs the device — the `feedback_playwright_webkit_not_ios_scroll`
+trap.)
 
-**Threshold.** `SWIPE_MIN_VELOCITY_PX_PER_MS = 0.3` (~300px/s): above an
-empirical deliberate read-drag (<~150px/s), below a natural flick (>~500px/s).
-Velocity FEEL is a device call — a defensible default, not a measured optimum;
-vjt calibrates on-device post-ship.
+**The rework — BOUNDARY claim + touchend-only velocity.** The claim decision
+moves off velocity onto the textarea's native-scroll BOUNDARY, sampled at
+touchstart. `claimAxis(start, current, boundary)` in `lib/swipe.ts` claims only
+a drag native scroll CANNOT consume: any horizontal drag (pan-x is blocked by
+`touch-action`, so it would only select text → tab-complete), or a vertical
+drag PAST an edge — up while `atTop`, down while `atBottom`. A short,
+non-overflowing draft is at BOTH edges, so its vertical flicks always claim (the
+stock-keyboard history affordance). A vertical drag WITH scroll room returns
+null → the caller never `preventDefault`s → native `pan-y` scrolls the draft.
+Model: scroll to the edge first, THEN a second flick recalls. Velocity is now
+judged ONCE, at touchend, over the WHOLE gesture (`gestureAction` →
+`isFastSwipe(start, end, now−startTime)`), where displacement + elapsed are both
+large and reliable — a claimed drag that settled slowly is not a recall. The 8px
+slop (`dragAxis`) and 40px floor (`swipeDirection`) still bound displacement.
+`ComposeBox` reads the boundary via a stored textarea ref at touchstart and
+threads `performance.now()` for the touchend gate (browser time is fine in cic
+runtime — the `Date.now` ban is a workflow-script rule).
+
+**Threshold.** `SWIPE_MIN_VELOCITY_PX_PER_MS = 0.3` (~300px/s), applied at
+touchend: above an empirical deliberate read-drag (<~150px/s), below a natural
+flick (>~500px/s). Velocity FEEL is a device call — a defensible default, not a
+measured optimum; vjt calibrates on-device post-ship. It is no longer the CLAIM
+discriminator (the boundary is), so a mis-judged velocity can at worst drop a
+recall — it can never abandon a scroll or hijack one.
 
 **CSS.** `.compose-box textarea` → `touch-action: pan-y` +
 `overscroll-behavior: contain` (the latter stops a past-the-limit scroll
@@ -16152,19 +16174,23 @@ still fall through to iOS chrome-reveal on a slow vertical drag (the
 `.scrollback` `none`↔`pan-y` overflow-toggle case) — accepted; re-open with a
 JS overflow-toggle only if it bites on-device.
 
-**Why the e2e is webkit-guard-only.** Velocity feel and iOS momentum are NOT
-webkit-reproducible (Playwright webkit ≠ iOS scroll physics), so the
-load-bearing gate is the `isFastSwipe` UNIT test (jsdom, pure fn:
-slow-drag→false, fast-flick→true, exact 0.3px/ms boundary, dominant-axis,
-divide-guard). The e2es guard the WIRING, not the physics:
-`issue123-compose-swipe-velocity.spec.ts` runs a chromium synthetic-touch pair
-(TouchEvent constructor + controlled timing: fast swipe-up recalls the last
-sent line, slow 350ms drag leaves the draft untouched — a mutually-validating
-pair, only jointly green if the gate actually distinguishes) plus a `@webkit`
-CSS-contract assertion (computed `touch-action: pan-y` +
-`overscroll-behavior: contain` on the real iPhone-15 target, the ux-6-a
-regression-guard pattern; reverting to `none` reds it). DEVICE test = vjt
-post-ship.
+**Why the e2e can't be the real gate (and what it guards instead).** Actual
+pixel-scroll and velocity feel are NOT webkit-reproducible (Playwright webkit ≠
+iOS scroll physics) and synthetic `TouchEvent`s don't drive native scroll at
+all, so the load-bearing gates are the `lib/swipe.ts` UNIT tests (jsdom, pure
+fns): `claimAxis` (boundary claim: at-edge vertical + any horizontal claim;
+vertical-with-room → native; velocity-blind) and `gestureAction` (touchend
+dispatch: fast up/down/right → recall/tab; slow release → null; 40px floor).
+The e2es (`issue123-compose-swipe-velocity.spec.ts`) guard the WIRING + CSS:
+(1) a chromium touchend pair (fast swipe-up recalls, slow 350ms drag doesn't —
+only jointly green if the touchend gate distinguishes); (2) a chromium BOUNDARY
+probe that reads `event.defaultPrevented` on a dispatched touchmove (a
+JS-level signal independent of `touch-action`, so deterministic without native
+scroll): a mid-scroll up-drag is NOT prevented (native scroll owns it, no
+hijack, draft unchanged) while an at-top up-drag IS prevented + a fast flick
+recalls; (3) a `@webkit` CSS-contract assertion (computed `touch-action: pan-y`
++ `overscroll-behavior: contain` on the real iPhone-15 target, ux-6-a pattern;
+reverting to `none` reds it). DEVICE test = vjt post-ship.
 
 **Deploy.** cic-only. BUILD-DEFER-NIGHT: rides the same night COLD+`--cic`
 batch as #171 — a daytime `--cic` would rebuild cic from main HEAD, which still

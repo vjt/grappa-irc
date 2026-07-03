@@ -4,7 +4,13 @@ import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from 
 import { composePlaceholder } from "./lib/composePlaceholder";
 import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { networkBySlug } from "./lib/networks";
-import { type DragAxis, dragAxis, isFastSwipe, type Point, swipeDirection } from "./lib/swipe";
+import {
+  claimAxis,
+  type DragAxis,
+  gestureAction,
+  type Point,
+  type ScrollBoundary,
+} from "./lib/swipe";
 import { categoryOf } from "./lib/uploadCategory";
 import { activeHost } from "./lib/uploadHost";
 import {
@@ -73,13 +79,23 @@ const ComposeBox: Component<Props> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   let pickerInput: HTMLInputElement | undefined;
+  let textareaEl: HTMLTextAreaElement | undefined;
   let swipeStart: Point | null = null;
-  // Wall-clock at touchstart (ms). Feeds the velocity gate so a slow drag
-  // is told apart from a fast flick. Browser time is legitimate here — the
-  // Date.now / performance.now ban is a workflow-script rule, not cic
-  // runtime. Reset every touchstart; read at the claim + touchend gates.
+  // Wall-clock at touchstart (ms). Feeds the touchend velocity gate so a slow
+  // release is told apart from a fast flick. Browser time is legitimate here —
+  // the Date.now / performance.now ban is a workflow-script rule, not cic
+  // runtime. Reset every touchstart; read once, at touchend.
   let swipeStartTime = 0;
   let claimedAxis: DragAxis | null = null;
+  // The textarea's native-scroll boundary sampled at touchstart. Decides
+  // whether a vertical drag is a history flick (at the edge) or native scroll
+  // (has room). A non-overflowing draft is at both edges → any flick claims.
+  let startBoundary: ScrollBoundary = { atTop: true, atBottom: true };
+
+  const scrollBoundary = (el: HTMLTextAreaElement): ScrollBoundary => {
+    const maxScroll = el.scrollHeight - el.clientHeight;
+    return { atTop: el.scrollTop <= 0, atBottom: el.scrollTop >= maxScroll - 1 };
+  };
 
   // Swipe gestures on the textarea give a stock mobile keyboard (no Tab, no
   // arrows) the same affordances as keys: swipe RIGHT = Tab (nick complete),
@@ -88,16 +104,19 @@ const ComposeBox: Component<Props> = (props) => {
   // OS word-select. TOUCH (not pointer) events: only touchmove.preventDefault
   // reliably suppresses iOS's native scroll + drag-to-select.
   //
-  // #123 — VELOCITY gate. Displacement alone (an 8px slop) can't tell a
-  // deliberate slow drag meant to SCROLL a long draft from a fast recall
-  // flick, so a slow drag used to be hijacked into history recall (and the
-  // textarea couldn't be scrolled on touch). Fix: the drag claims the
-  // gesture (preventDefault → suppress native scroll) ONLY when its speed
-  // clears isFastSwipe; a slow drag is abandoned (swipeStart nulled) so the
-  // textarea's `touch-action: pan-y` scrolls natively. The SAME predicate
-  // re-checks the whole gesture at touchend so a flick that decelerated into
-  // a slow release doesn't recall. Once abandoned we stay hands-off — no
-  // mid-scroll hijack if the finger later speeds up.
+  // #123 rework (2026-07-03) — BOUNDARY claim, not velocity claim. The prior
+  // velocity-gate (659aa06) sampled speed at the first 8px-slop crossing — the
+  // acceleration ramp, where a real flick still reads slow — and abandoned
+  // irrevocably. Dogfood double-failure: genuine flicks died (abandoned early)
+  // AND iOS-coalesced scroll-drags got hijacked (a coalesced first move reads
+  // fast → claimed → preventDefault kills the scroll). Fix: the mid-drag CLAIM
+  // keys off the textarea's scroll BOUNDARY, not speed (`claimAxis`). A
+  // vertical drag with scroll room in its direction is NEVER claimed → native
+  // `touch-action: pan-y` scrolls the draft. A vertical drag PAST an edge (or
+  // any drag on a non-overflowing draft, which is at both edges) claims the
+  // history gesture; horizontal always claims (→ tab-complete). The flick test
+  // moves to touchend over the WHOLE gesture (`gestureAction`), where
+  // displacement + elapsed are both large and reliable.
   //
   // These are bound via a ref + addEventListener (see bindSwipe), NOT JSX
   // onTouch* — Solid delegates touch events to a single PASSIVE listener on
@@ -111,6 +130,8 @@ const ComposeBox: Component<Props> = (props) => {
     swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
     swipeStartTime = performance.now();
     claimedAxis = null;
+    // Sample the scroll edges NOW — intent is fixed when the finger lands.
+    startBoundary = textareaEl ? scrollBoundary(textareaEl) : { atTop: true, atBottom: true };
   };
 
   const onTouchMove = (e: TouchEvent) => {
@@ -118,20 +139,13 @@ const ComposeBox: Component<Props> = (props) => {
     const t = e.touches[0];
     if (t === undefined) return;
     if (claimedAxis === null) {
-      const cur = { x: t.clientX, y: t.clientY };
-      const axis = dragAxis(swipeStart, cur);
-      if (axis === null) return; // under the slop — still undecided
-      if (isFastSwipe(swipeStart, cur, performance.now() - swipeStartTime)) {
-        claimedAxis = axis; // fast flick — own the gesture, preventDefault below
-      } else {
-        // Slow drag = content scroll. Abandon (hands off) so native pan-y
-        // scrolls the textarea; touchend's start===null guard skips recall.
-        swipeStart = null;
-        return;
-      }
+      // Claim only a drag native scroll can't consume; a vertical drag with
+      // room returns null and we stay hands-off so pan-y scrolls the draft.
+      claimedAxis = claimAxis(swipeStart, { x: t.clientX, y: t.clientY }, startBoundary);
+      if (claimedAxis === null) return;
     }
     // Suppress native scroll + drag-to-select once we own the gesture.
-    if (claimedAxis !== null) e.preventDefault();
+    e.preventDefault();
   };
 
   const onTouchEnd = (e: TouchEvent) => {
@@ -141,24 +155,25 @@ const ComposeBox: Component<Props> = (props) => {
     const t = e.changedTouches[0];
     if (t === undefined) return;
     const end = { x: t.clientX, y: t.clientY };
-    // Velocity gate again over the full gesture (same predicate as the claim
-    // — one threshold): a claimed flick that decelerated into a slow release
-    // is not a recall.
-    if (!isFastSwipe(start, end, performance.now() - swipeStartTime)) return;
-    const dir = swipeDirection(start, end);
-    if (dir === "up") {
-      recallPrev(key());
-    } else if (dir === "down") {
-      recallNext(key());
-    } else if (dir === "right") {
-      const ta = e.currentTarget as HTMLTextAreaElement;
-      const result = tabComplete(key(), getDraft(key()), ta.selectionEnd, true);
-      if (!result) return;
-      queueMicrotask(() => {
-        ta.setSelectionRange(result.newCursor, result.newCursor);
-      });
+    // Full-gesture velocity + direction → action (or null: slow release / no
+    // mapped direction). The boundary gate already ran at claim time.
+    switch (gestureAction(start, end, performance.now() - swipeStartTime)) {
+      case "recall-prev":
+        recallPrev(key());
+        break;
+      case "recall-next":
+        recallNext(key());
+        break;
+      case "tab-complete": {
+        const ta = e.currentTarget as HTMLTextAreaElement;
+        const result = tabComplete(key(), getDraft(key()), ta.selectionEnd, true);
+        if (!result) return;
+        queueMicrotask(() => {
+          ta.setSelectionRange(result.newCursor, result.newCursor);
+        });
+        break;
+      }
     }
-    // "left" / null → no mapped action.
   };
 
   // Bind the swipe listeners on the textarea element itself, bypassing
@@ -166,6 +181,7 @@ const ComposeBox: Component<Props> = (props) => {
   // non-passive for preventDefault to take). onCleanup removes them when the
   // ComposeBox is disposed (e.g. channel switch re-creates the textarea).
   const bindSwipe = (el: HTMLTextAreaElement): void => {
+    textareaEl = el;
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: false });
     el.addEventListener("touchend", onTouchEnd, { passive: true });
@@ -173,6 +189,7 @@ const ComposeBox: Component<Props> = (props) => {
       el.removeEventListener("touchstart", onTouchStart);
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
+      textareaEl = undefined;
     });
   };
 
