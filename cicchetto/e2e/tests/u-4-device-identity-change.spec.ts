@@ -121,13 +121,16 @@ test("U-4 (UD5.A+B) — visitor logout frees client_id slot for cross-kind user 
   const clientId = "a3000000-0000-4000-8000-000000000044";
   const visitorNick = `u4-visitor-${Date.now()}`;
 
-  // Tighten max_per_client to 1 on the visitor network (azzurra) so
-  // the UD5.B subject-aware filter is the load-bearing invariant — if
-  // the cap counted the logged-out visitor's revoked session against
-  // the cross-kind user login, the second login would 503. Restore in
-  // finally so subsequent specs see the seeder baseline.
+  // The load-bearing cap for UD5.B is bahamut-test's max_per_client = 1:
+  // the freed visitor slot must NOT block the cross-kind user login on
+  // vjt's bound network. azzurra stays at seeded headroom (100) — with
+  // #171's per-(source-IP, network) cap ALSO reusing max_per_client, an
+  // azzurra cap of 1 would 503 STEP 1's mint against any leftover
+  // visitor on the serial runner's shared source IP (an unrelated
+  // regression). Restore both in finally so subsequent specs see the
+  // seeder baseline (azzurra 100, bahamut-test null → default).
   const admin = await login(ADMIN_IDENTIFIER, ADMIN_PASSWORD);
-  await adminPatchCaps(admin.token, "azzurra", { max_per_client: 1 });
+  await adminPatchCaps(admin.token, "azzurra", { max_per_client: 100 });
   await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_client: 1 });
 
   let visitorId: string | null = null;
@@ -158,7 +161,7 @@ test("U-4 (UD5.A+B) — visitor logout frees client_id slot for cross-kind user 
     expect(typeof vjtBearer).toBe("string");
     expect(vjtBearer.length).toBeGreaterThan(0);
   } finally {
-    await adminPatchCaps(admin.token, "azzurra", { max_per_client: null }).catch(() => {});
+    await adminPatchCaps(admin.token, "azzurra", { max_per_client: 100 }).catch(() => {});
     await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_client: null }).catch(() => {});
     if (visitorId !== null) {
       await adminDeleteVisitor(admin.token, visitorId).catch(() => {});

@@ -351,6 +351,9 @@ defmodule Grappa.Bootstrap do
         capacity_input = %{
           network_id: network_id,
           client_id: nil,
+          # #171: cold-start has no HTTP conn → no source IP; both
+          # device-scoped caps (client + ip) short-circuit on nil.
+          source_ip: nil,
           flow: :bootstrap_user,
           # Boot-time spawn has no client + no prior subject of record;
           # cap is bypassed via the nil client_id short-circuit.
@@ -391,6 +394,8 @@ defmodule Grappa.Bootstrap do
             capacity_input = %{
               network_id: network_id,
               client_id: nil,
+              # #171: cold-start visitor spawn — no conn, no source IP.
+              source_ip: nil,
               flow: :bootstrap_visitor,
               requesting_subject: nil
             }
@@ -493,7 +498,12 @@ defmodule Grappa.Bootstrap do
   end
 
   def classify_outcome({:error, cap_err}, log_keys, acc)
-      when cap_err in [:visitor_cap_exceeded, :user_cap_exceeded, :client_cap_exceeded] do
+      when cap_err in [
+             :visitor_cap_exceeded,
+             :user_cap_exceeded,
+             :client_cap_exceeded,
+             :ip_cap_exceeded
+           ] do
     # T31 Plan 2 Task 4 + U-2: per-network/per-client cap tripped.
     # Best-effort per the moduledoc's failure-modes contract: skip
     # the row + warn, no queue or retry shape. Operator sizes the

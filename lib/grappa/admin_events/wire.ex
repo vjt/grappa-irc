@@ -1143,8 +1143,9 @@ defmodule Grappa.AdminEvents.Wire do
   end
 
   # `:capacity_reject` error metadata can be an atom
-  # (`:visitor_cap_exceeded`, `:user_cap_exceeded`, `:client_cap_exceeded`),
-  # a tuple (`{:network_circuit_open, 60_000}`), or any term — collapse
+  # (`:visitor_cap_exceeded`, `:user_cap_exceeded`, `:client_cap_exceeded`,
+  # `:ip_cap_exceeded`), a tuple (`{:network_circuit_open, 60_000}`), or
+  # any term — collapse
   # to a stable string for the wire. Atoms stay readable; tuples become
   # an `inspect/1` for operator audit value.
   @spec error_to_string(term()) :: String.t()

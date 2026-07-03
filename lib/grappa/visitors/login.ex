@@ -137,6 +137,7 @@ defmodule Grappa.Visitors.Login do
   @type login_error ::
           :malformed_nick
           | :client_cap_exceeded
+          | :ip_cap_exceeded
           | :visitor_cap_exceeded
           | :user_cap_exceeded
           | {:network_circuit_open, non_neg_integer()}
@@ -213,6 +214,10 @@ defmodule Grappa.Visitors.Login do
     capacity_input = %{
       network_id: network.id,
       client_id: input.client_id,
+      # #171: source IP is the fallback device identity so a nil-client
+      # anon flood is caught by the per-IP cap. Same value login writes
+      # to accounts_sessions.ip below.
+      source_ip: input.ip,
       flow: :login_fresh,
       # No prior subject — fresh anon provision (UX-5 bucket BC).
       requesting_subject: nil
@@ -269,6 +274,7 @@ defmodule Grappa.Visitors.Login do
     capacity_input = %{
       network_id: network.id,
       client_id: input.client_id,
+      source_ip: input.ip,
       flow: :login_existing,
       requesting_subject: {:visitor, visitor_id}
     }
@@ -289,6 +295,7 @@ defmodule Grappa.Visitors.Login do
     capacity_input = %{
       network_id: network.id,
       client_id: input.client_id,
+      source_ip: input.ip,
       flow: :login_existing,
       requesting_subject: {:visitor, visitor_id}
     }

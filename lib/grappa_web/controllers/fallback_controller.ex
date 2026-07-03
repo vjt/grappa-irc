@@ -246,13 +246,24 @@ defmodule GrappaWeb.FallbackController do
   # the operator-knob distinction is internal: visitor cap full does
   # NOT imply user cap full, and vice versa.
   #
-  # U-3 (UD3): all three cap atoms now land on 503. The envelope split
+  # U-3 (UD3): the cap atoms all land on 503. The envelope split
   # (`too_many_sessions` vs `network_busy`) preserves the
   # device-scoped vs network-scoped distinction at the wire, so cic can
   # render different copy ("you're at the limit from THIS device" vs
   # "the network is full for everyone") per
   # `feedback_no_localized_strings_server_side`.
+  #
+  # #171: `:ip_cap_exceeded` is device-scoped too (the source IP is the
+  # fallback client identity for nil-client visitor flows), so it reuses
+  # the SAME `too_many_sessions` envelope as `:client_cap_exceeded` — cic
+  # needs no new copy (it keys on the wire string, not the atom).
   def call(conn, {:error, :client_cap_exceeded}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "too_many_sessions"})
+  end
+
+  def call(conn, {:error, :ip_cap_exceeded}) do
     conn
     |> put_status(:service_unavailable)
     |> json(%{error: "too_many_sessions"})

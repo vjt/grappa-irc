@@ -15928,3 +15928,86 @@ disables the blink.
 **Deploy coupling.** SERVER (event_router / server / client / channel /
 wire / numeric_router) → COLD; also `--cic` (new store, modal, userTopic
 arm, slash intents, transport). Build-deferred to the night cold batch.
+
+### 2026-07-02 — #171: per-source-IP clone cap closes the nil-client bypass
+
+**The bug.** `Admission.check_capacity/1` composed a NetworkCircuit gate, a
+per-network total cap, and a per-(client, network) cap — no per-source-IP
+dimension. Visitor / unauthenticated logins carry `client_id: nil` (no
+`X-Grappa-Client-Id` header), so `check_client_cap/2` short-circuits to
+`:ok` **by construction** and one source IP could open arbitrary concurrent
+visitor sessions. Seven concurrent sessions from a single IP were observed
+live on the testnet — a connection-flood / resource-exhaustion vector.
+
+**The fix reuses the knob, keyed on the IP.** A new
+per-(source-IP, network) cap that MIRRORS the client cap exactly — same
+`effective_max_per_client/1` value (no new operator knob), same two disjoint
+subject-kind clauses (visitor JOINs visitors on `network_slug`, user JOINs
+credentials on `network_id`), same `count(_, :distinct)`, same non-revoked
+filter, same UX-5-BC self-exclusion of the requesting subject. The ONLY
+difference from `count_subjects_for_client_on_network/4` is the predicate
+key: `accounts_sessions.ip` instead of `.client_id`. It runs LAST in the
+`with`-chain (circuit → registry → client → ip; cheapest-first, both DB
+queries at the tail), and applies to **all** flows including the nil-client
+visitors the client cap could not see.
+
+**`accounts_sessions.ip` is the count source — derive, don't duplicate.**
+The `ip` column already exists and is already populated at session creation
+(`Accounts.create_session/4`; login writes `RemoteIP.format(conn)`). So the
+per-IP count is a plain SQL query over persisted rows — NO new column, NO
+ETS tracker, NO parallel state (CLAUDE.md "derive, don't duplicate"). The
+`source_ip` handed to `check_capacity/1` MUST come through the SAME
+`GrappaWeb.RemoteIP.format/1` formatter login stores, or the string won't
+match the stored `ip` and the count silently reads 0. Login flows already
+carry a pre-formatted `input.ip`; the two raw-conn surfaces
+(`NetworksController.orchestrate_spawn/4`, `SessionController`'s
+`:visitor_reconnect`) format the conn; cold-start Bootstrap +
+`subject_reset` carry `nil` (no HTTP conn → both device-scoped caps skip).
+
+**`source_ip` is a required `capacity_input` field, nil-or-binary.** Exactly
+like `client_id`: enforced by `check_ip_cap/2`'s clause patterns
+(`%{source_ip: nil}` skips; `is_binary` counts), so a construction site that
+omits it is a loud `FunctionClauseError`, never a silent nil-skip. All eight
+construction sites (three in `Visitors.Login`, `NetworksController`,
+`SessionController`, two in `Bootstrap`, one in `test_support/SubjectReset`)
+thread it. `:ip_cap_exceeded` joins the `@type capacity_error`,
+`@capacity_error_atoms`, and `capacity_error_atoms/0` spec in lockstep (the
+FC exhaustiveness canary).
+
+**Same 503 `too_many_sessions` envelope — cic unchanged.** `:ip_cap_exceeded`
+is device-scoped like `:client_cap_exceeded` (the source IP is the fallback
+device identity), so FallbackController maps it to the identical
+`too_many_sessions` 503. cic keys on the wire string, not the Elixir atom
+(`friendlyApiError.ts`), so it renders the existing copy with no change —
+this is a SERVER-only fix.
+
+**NAT/CGNAT is a deliberate consequence, not an oversight.** Because the cap
+is per-IP with a default of 1, distinct legitimate users behind one address
+(carrier NAT, university, office) share a single per-network slot and all
+but one get 503'd. That is exactly why the fix REUSES `max_per_client`
+rather than hardcoding 1: operators widen it by raising the per-network
+knob. A per-IP cap that could not be tuned would be the wrong design; the
+tunable knob is the whole point.
+
+**E2E fallout (the shared-IP interaction).** The serial Playwright suite
+(`workers: 1`) drives EVERY browser login through one source IP (the e2e
+nginx, `172.31.0.x`) and every direct API login through another (the
+runner). The per-client cap never bit the suite — each browser context
+sends a distinct `client_id` — but the per-IP cap does: with ~4 seeded
+users all holding live `bahamut-test` sessions from the nginx IP, at the
+production default (1) the 2nd user's `/connect` 503s `too_many_sessions`,
+cascading a dozen unrelated specs into session-never-connects timeouts.
+Fix (dev/test config, NEVER the production default): `config/dev.exs`
+raises `default_max_per_client_per_network` to 10 (e2e boots `MIX_ENV=dev`;
+`config.exs`'s base 1 stays for prod), so the per-IP cap is never tighter
+than the seeded network total in e2e and every `nil`-column network + every
+runtime cap-restore-to-`nil` inherits headroom. `azzurra` additionally
+seeds `max_per_client: 100` (anon-visitor volume). The `#171` e2e drives
+the cap deterministically by admin-patching `azzurra` to 1 for a
+two-visitor probe and restoring 100. One acknowledged consequence: the
+`ux-5-bc` e2e's self-exclusion assertion, which was meaningful only at a
+tight `bahamut-test` cap, is now a flow smoke-test — self-exclusion stays
+fully covered by the `admission_test` UX-5-BC unit tests. This coupling
+(loosening the per-IP cap also loosens the per-client cap) is inherent to
+reusing the one `max_per_client` knob and is the price of not adding a
+second.

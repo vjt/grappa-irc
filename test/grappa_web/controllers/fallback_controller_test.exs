@@ -108,6 +108,7 @@ defmodule GrappaWeb.FallbackControllerTest do
     test "every Admission.capacity_error() atom has an FC clause + asserted shape" do
       cases = [
         {:client_cap_exceeded, 503, %{"error" => "too_many_sessions"}, []},
+        {:ip_cap_exceeded, 503, %{"error" => "too_many_sessions"}, []},
         {:visitor_cap_exceeded, 503, %{"error" => "network_busy"}, []},
         {:user_cap_exceeded, 503, %{"error" => "network_busy"}, []},
         {{:network_circuit_open, 7}, 503, %{"error" => "network_unreachable"}, [{"retry-after", "7"}]}

@@ -108,6 +108,10 @@ defmodule GrappaWeb.SessionController do
     %{
       network_id: network_id,
       client_id: conn.assigns[:current_client_id],
+      # #171: per-IP clone cap — raw conn, so format through the canonical
+      # `RemoteIP.format/1` (the same value login writes to
+      # accounts_sessions.ip), mirroring `orchestrate_spawn/4`.
+      source_ip: GrappaWeb.RemoteIP.format(conn),
       flow: :visitor_reconnect,
       requesting_subject: {:visitor, id}
     }

@@ -213,11 +213,12 @@ defmodule GrappaWeb.NetworksController do
   # Call the orchestrator with the cred's network_id + computed plan
   # + capacity inputs. Returns the orchestrator's typed error atom
   # verbatim (`:user_cap_exceeded` / `:client_cap_exceeded` /
-  # `{:network_circuit_open, _}` / `{:start_failed, _}` / etc.) so
-  # FallbackController's existing T31 clauses pick up the 503
-  # mapping unchanged. U-2: this surface is always a user-flow
-  # (`:patch_network_connect`), so the cap atom is always
-  # `:user_cap_exceeded`, never `:visitor_cap_exceeded`.
+  # `:ip_cap_exceeded` / `{:network_circuit_open, _}` /
+  # `{:start_failed, _}` / etc.) so FallbackController's existing T31
+  # clauses pick up the 503 mapping unchanged. U-2: this surface is
+  # always a user-flow (`:patch_network_connect`), so the NETWORK-TOTAL
+  # cap atom is always `:user_cap_exceeded`, never `:visitor_cap_exceeded`
+  # (the per-client + #171 per-IP caps are subject-kind-agnostic tags).
   @spec orchestrate_spawn(Plug.Conn.t(), User.t(), Credential.t(), Session.start_opts()) ::
           {:ok, pid()} | {:error, term()}
   defp orchestrate_spawn(conn, %User{id: user_id} = user, credential, plan) do
@@ -227,6 +228,11 @@ defmodule GrappaWeb.NetworksController do
     capacity_input = %{
       network_id: network_id,
       client_id: client_id,
+      # #171: raw conn here (no pre-formatted input.ip like login has), so
+      # format through the canonical `RemoteIP.format/1` — the SAME
+      # formatter user login stores in accounts_sessions.ip, or the per-IP
+      # count would silently miss the stored rows.
+      source_ip: GrappaWeb.RemoteIP.format(conn),
       flow: :patch_network_connect,
       # UX-5 bucket BC (2026-05-19): the requesting user IS the subject
       # the spawn is for. Self-exclusion in `check_client_cap` keeps the

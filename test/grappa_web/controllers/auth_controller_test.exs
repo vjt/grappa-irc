@@ -322,6 +322,38 @@ defmodule GrappaWeb.AuthControllerTest do
       assert json_response(conn, 503) == %{"error" => "too_many_sessions"}
     end
 
+    test "ip_cap_exceeded (nil-client bypass) → 503 too_many_sessions", %{conn: conn} do
+      # #171: the visitor-login path carries NO x-grappa-client-id, so the
+      # per-client cap short-circuits to :ok by construction — the bug that
+      # let one source IP open unbounded concurrent visitor sessions. Seed
+      # one existing visitor session at the test conn's source IP
+      # (127.0.0.1), cap max_per_client=1, then a SECOND distinct visitor
+      # login from the SAME IP with NO client-id must 503. Since the client
+      # cap can't fire on a nil client, the rejection can only be the ip
+      # cap — and it reuses the same too_many_sessions envelope (cic
+      # unchanged, keys on the wire string not the atom).
+      {_, _} = setup_visitor_network(pick_unused_port())
+
+      {:ok, net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra"})
+
+      {:ok, capped_net} =
+        net
+        |> Grappa.Networks.Network.changeset(%{max_per_client: 1})
+        |> Repo.update()
+
+      {:ok, existing_visitor} =
+        Visitors.find_or_provision_anon("ipcap_existing", capped_net.slug, "127.0.0.1")
+
+      # Existing session carries NO client_id — the nil-client bypass path.
+      {:ok, _} =
+        Accounts.create_session({:visitor, existing_visitor.id}, "127.0.0.1", nil, [])
+
+      # Second login, distinct nick, NO x-grappa-client-id header.
+      conn = post(conn, "/auth/login", %{"identifier" => "ipcap_new"})
+
+      assert json_response(conn, 503) == %{"error" => "too_many_sessions"}
+    end
+
     test "upstream unreachable → 502 upstream_unreachable", %{conn: conn} do
       port = pick_unused_port()
       setup_visitor_network(port)
