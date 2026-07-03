@@ -1116,7 +1116,9 @@ const ScrollbackPane: Component<Props> = (props) => {
     //
     // window.resize is also wired — desktop window resize, devtools,
     // browser zoom — same canonical behavior.
-    const onResize = () => scrollToActivation();
+    // resize (keyboard open/close, orientation, zoom) = cold-mount/resume
+    // family → TAIL, never the divider (#46).
+    const onResize = () => scrollToActivation("tail-only");
     window.addEventListener("resize", onResize);
     window.visualViewport?.addEventListener("resize", onResize);
     onCleanup(() => {
@@ -1143,35 +1145,45 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   // UX-4 bucket K (2026-05-19) — canonical window-activation scroll.
   //
-  // Two activation triggers converge on ONE routine
-  // (`scrollToActivation`):
-  //   1. `selectedChannel` change — operator switched windows (the
-  //      effect below tracks `key()`).
+  // Two activation triggers share ONE routine (`scrollToActivation`),
+  // passing the `mode` that fits their intent (see the routine doc below):
+  //   1. `selectedChannel` change — operator switched windows (the effect
+  //      below tracks `key()`). Passes "marker-or-tail": a deliberate switch
+  //      into an unread channel jumps to the divider.
   //   2. `document.visibilitychange` → visible — PWA backgrounded then
   //      re-opened (the second effect below tracks `isDocumentVisible`
-  //      transitions false→true).
+  //      transitions false→true). Passes "tail-only": resume ≠ switch (#46).
   //
-  // Single source of truth: any future activation trigger plugs into
-  // `scrollToActivation` and inherits the always-bottom routine for
-  // free. No ad-hoc scrollTop preserve/restore lives anywhere else in
-  // this component for the activation path — `onScroll`'s `loadMore`
-  // block has its own preservation but that's pagination-prepend
-  // bookkeeping, semantically distinct (operator IS scrolling up, we
-  // keep their reading position stable while older rows PREPEND from
-  // REST).
+  // Single source of truth for the DOM read/scroll mechanics: any future
+  // activation trigger plugs into `scrollToActivation` and picks its mode.
+  // No ad-hoc scrollTop preserve/restore lives anywhere else in this
+  // component for the activation path — `onScroll`'s `loadMore` block has its
+  // own preservation but that's pagination-prepend bookkeeping, semantically
+  // distinct (operator IS scrolling up, we keep their reading position stable
+  // while older rows PREPEND from REST).
   //
-  // #168 (2026-07-02) — ALWAYS scroll to the tail. The unread divider is
-  // NO LONGER a scroll anchor: the #163/#161/#156 cluster's
-  // scroll-to-marker branch here (and in the length-effect below) was a
-  // SECOND scrollTop authority that raced the tail-follow and won after a
-  // send, yanking the viewport up to the divider (P0 regression). Collapsed
-  // to one always-bottom authority per vjt+Mez: new content ⇒ bottom,
-  // irssi-shape — the operator pages up manually to re-read. The divider
-  // still RENDERS at its frozen position (freeze-display contract,
-  // DESIGN_NOTES 2026-06-08), it's just never scrolled-to. `atBottom` is
-  // set true so the floating "scroll to bottom" button doesn't flash
-  // visible mid-activation.
-  const scrollToActivation = (): void => {
+  // #168 (2026-07-02) collapsed scroll to one always-bottom authority to
+  // kill a send-time race (the #163/#161/#156 scroll-to-marker branch was a
+  // SECOND scrollTop authority that won after a send, yanking the viewport
+  // up to the divider — P0). #168 regression fix (2026-07-03): that collapse
+  // OVER-REACHED — it also killed the jump-to-marker on a deliberate
+  // channel-SWITCH, so clicking an unread channel landed at the tail instead
+  // of the divider. The `mode` param re-scopes the divergence WITHOUT
+  // reintroducing the race (DESIGN_NOTES 2026-07-03):
+  //   * "marker-or-tail" — the deliberate channel-SWITCH trigger. If the
+  //     RENDERED frozen unread divider exists, scroll to it (`block:"start"`)
+  //     and set `atBottom` from the resulting distance; else the tail. The
+  //     divider is the frozen row the `rows()` memo already injected — we
+  //     read its DOM node, never a recomputed cursor geometry.
+  //   * "tail-only" — cold-mount / visibility-return / resize (#46 always-
+  //     bottom). Never the divider; `atBottom=true`.
+  // Post-send / live-append stay at the BOTTOM via the length-effect +
+  // `lastOwnSend`→`scrollToBottom` (both untouched). The divider still
+  // RENDERS at its frozen position (freeze-display contract, DESIGN_NOTES
+  // 2026-06-08) for every trigger; only the SWITCH scrolls to it. `atBottom`
+  // is set per branch so the floating "scroll to bottom" button doesn't
+  // flash mid-activation.
+  const scrollToActivation = (mode: "marker-or-tail" | "tail-only"): void => {
     if (!listRef) return;
     // #130 — hide the container synchronously NOW (pre-paint) so the
     // browser never paints the new content at the OLD preserved scrollTop
@@ -1220,14 +1232,37 @@ const ScrollbackPane: Component<Props> = (props) => {
           setActivating(false);
           return;
         }
-        // #168 — always land at the tail (see routine doc above).
-        const tail = listRef.lastElementChild as HTMLElement | null;
-        if (tail?.scrollIntoView) {
-          tail.scrollIntoView({ block: "end" });
+        // #168 regression fix — the channel-SWITCH trigger jumps to the
+        // RENDERED frozen unread divider when one exists; every other trigger
+        // (cold-mount, visibility-return, resize) lands at the tail. Read the
+        // marker's DOM node the `rows()` memo already injected (same
+        // data-testid the render emits) — do NOT recompute the cursor
+        // geometry a second way. Its ABSENCE (fully-read channel, or a cold
+        // switch whose rows haven't landed) naturally falls to the tail.
+        const marker =
+          mode === "marker-or-tail"
+            ? (listRef.querySelector('[data-testid="unread-marker"]') as HTMLElement | null)
+            : null;
+        if (marker?.scrollIntoView) {
+          marker.scrollIntoView({ block: "start" });
+          // Set `atBottom` from the settled distance (layout is stable inside
+          // the rAF×2). A far divider ⇒ false: the floating "scroll to
+          // bottom" button shows AND the length-effect's `if (!atBottom())
+          // return` guard yields, so its tail-follow does not race this jump
+          // (same atBottom coordination the pre-#168 marker branch used). A
+          // near-tail divider (tiny unread) ⇒ true: effectively at the
+          // bottom, tail-follow is correct.
+          const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
+          setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
         } else {
-          listRef.scrollTop = listRef.scrollHeight;
+          const tail = listRef.lastElementChild as HTMLElement | null;
+          if (tail?.scrollIntoView) {
+            tail.scrollIntoView({ block: "end" });
+          } else {
+            listRef.scrollTop = listRef.scrollHeight;
+          }
+          setAtBottom(true);
         }
-        setAtBottom(true);
         // Scroll has settled at the correct position — reveal.
         setActivating(false);
       });
@@ -1356,7 +1391,12 @@ const ScrollbackPane: Component<Props> = (props) => {
         // decodes `prevKey` for the LEAVING window). A `null` cursor (cold,
         // unhydrated) is picked up by the cold-latch effect below.
         setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
-        scrollToActivation();
+        // Deliberate channel-SWITCH → jump to the frozen divider if this
+        // window has unread; else the tail. (This effect is `defer`-skipped
+        // on the initial mount, so a first-focus-after-login is a COLD MOUNT
+        // handled by the length-effect at the tail, NOT here — the switch is
+        // a distinct, deliberate trigger. #168 regression fix, 2026-07-03.)
+        scrollToActivation("marker-or-tail");
       },
       { defer: true },
     ),
@@ -1406,7 +1446,10 @@ const ScrollbackPane: Component<Props> = (props) => {
         // channel — no synthetic-window 404.
         void refreshScrollback(props.networkSlug, props.channelName);
         setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
-        scrollToActivation();
+        // visibility-return (PWA re-foreground) = cold-mount/resume family →
+        // TAIL, never the divider (#46). Only a deliberate channel-switch
+        // jumps to the marker (#168 regression fix, 2026-07-03).
+        scrollToActivation("tail-only");
       }
     }),
   );
@@ -1527,15 +1570,19 @@ const ScrollbackPane: Component<Props> = (props) => {
   // `rows().length` catches the marker insertion as a length delta and
   // re-runs the tail-follow on the same cycle.
   //
-  // #168 (2026-07-02) — this is the SINGLE always-bottom authority. The
-  // former C7.3 scroll-to-marker branch here (and its twin in
-  // `scrollToActivation`) was a second scrollTop authority: it parked the
-  // viewport on the unread divider and set atBottom=false, so a send did
-  // not follow to the tail. Removed. New content ⇒ bottom while following
-  // (atBottom); the operator pages up manually to re-read, and the frozen
-  // divider renders in place but is never scrolled-to (DESIGN_NOTES
-  // 2026-06-08 + 2026-07-02). Scrolled-up (atBottom=false) preserves
-  // position — irssi-shape: only the operator's own scroll leaves the tail.
+  // #168 (2026-07-02) — this length-effect (post-append / cursor-hydration)
+  // is TAIL-ONLY and stays so. The former C7.3 scroll-to-marker branch here
+  // was a second scrollTop authority that parked the viewport on the divider
+  // and set atBottom=false, so a send did not follow to the tail — removed.
+  // New content ⇒ bottom while following (atBottom); scrolled-up
+  // (atBottom=false) preserves position — irssi-shape, only the operator's
+  // own scroll leaves the tail. The scroll-to-marker jump was RESCOPED to the
+  // deliberate channel-SWITCH trigger inside `scrollToActivation`
+  // ("marker-or-tail" mode, #168 regression fix 2026-07-03) — NOT here: when
+  // a switch parks on the divider it sets atBottom=false first, so the
+  // `if (!atBottom()) return` guard below yields and never races that jump
+  // back to the tail. The frozen divider renders in place (DESIGN_NOTES
+  // 2026-06-08) for every trigger; this effect just never scrolls to it.
   //
   // The `atBottom` gate stays honest through the #156 anchored initial load
   // (which prepends the read-context page above the tail while following)
@@ -1840,11 +1887,14 @@ const ScrollbackPane: Component<Props> = (props) => {
                 );
               }
               if (row.type === "unread-marker") {
-                // #168 — display-only divider (freeze-display contract,
-                // DESIGN_NOTES 2026-06-08 + 2026-07-02). No ref: the marker
-                // is no longer a scroll anchor, so nothing reads its DOM
-                // node. It renders at its frozen position; the pane always
-                // lands at the tail (see the length-effect / scrollToActivation).
+                // Frozen divider (freeze-display contract, DESIGN_NOTES
+                // 2026-06-08). No PERSISTENT ref — the REV-G H23 stale-ref
+                // machinery stays dead. It renders at its frozen position for
+                // every activation trigger; on a deliberate channel-SWITCH the
+                // activation routine reads this node ONCE by data-testid to
+                // scroll to it (#168 regression fix, 2026-07-03), so the
+                // `scrollToActivation` marker-or-tail branch owns the lookup —
+                // there is no long-lived pointer to go stale.
                 return (
                   <div
                     class="scrollback-unread-marker"

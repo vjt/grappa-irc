@@ -15713,6 +15713,10 @@ stayed stuck on the divider.
   false→true, resize). Had a *marker branch* (`markerRef.scrollIntoView({
   block:"center"})` + `setAtBottom(distance…)` → often false) and a
   *tail branch*. → **collapsed**: always the tail branch (`atBottom=true`).
+  *(Rescoped 2026-07-03 — this collapse over-reached: it also killed the
+  jump-to-marker on a deliberate channel-SWITCH. A `mode` param restores it
+  for the switch trigger ONLY, via a one-shot `querySelector` of the rendered
+  divider, no `markerRef`; see the 2026-07-03 entry below.)*
 - **length-effect `on(rows().length)`** (append / cursor-hydration). Had a
   *first-render marker branch* (`!markerScrolled && marker →
   scrollIntoView center`) and an *atBottom tail-follow*. → **collapsed**:
@@ -15724,9 +15728,12 @@ stayed stuck on the divider.
   bookkeeping, semantically distinct (operator IS scrolling up); untouched.
 
 The `markerRef` + `markerScrolled` signals (and the marker-row `ref`
-callback) existed ONLY to feed the two marker branches — deleted with them
-(the REV-G H23 stale-ref machinery is now structurally impossible: nothing
-reads the marker's DOM node).
+callback) existed ONLY to feed the two marker branches — deleted with them.
+The REV-G H23 stale-ref machinery stays dead even after the 2026-07-03
+rescoping: the restored switch-only marker jump reads the divider with a
+one-shot `listRef.querySelector('[data-testid="unread-marker"]')` inside the
+settled-geometry rAF, so there is no long-lived DOM pointer to go stale — the
+lookup lives and dies inside a single activation.
 
 **Final scope (vjt + Mez).** ALWAYS scroll-to-bottom; NO event-type
 branching (the earlier "branch by own-send vs inbound" idea is superseded).
@@ -15737,8 +15744,9 @@ preserves position, only the operator's own scroll leaves the tail.
 
 **Reconciliation with the divider-freeze contract (2026-06-08).** The
 freeze contract has two facets that were entangled in the marker branches;
-#168 SPLITS them: (1) *scroll-position* — always the tail, the divider is
-never a scroll anchor; (2) *divider-display* — the `── XX unread ──` row
+#168 SPLITS them: (1) *scroll-position* — the tail (rescoped 2026-07-03: the
+divider is a scroll anchor ONLY on the deliberate channel-SWITCH trigger, not
+post-send / cold-mount / resize); (2) *divider-display* — the `── XX unread ──` row
 still renders at its frozen `markerCursorId` position (`rows()` memo +
 `sessionTopId`/`markerCursorId` freeze all untouched). You land at the
 bottom and page UP to find the frozen boundary. No read-state invariant
@@ -16021,3 +16029,76 @@ vacuous — the property stays unit-covered by `admission_test`'s cross-clause
 disjointness); `ux-5-bc` reframed to prove the gated `/connect` self-excludes
 the returning subject (tight-cap self-exclusion is unit-covered by
 `networks_controller_test`).
+
+### 2026-07-03 — #168 regression: switch-with-unread jumps to marker, post-send/cold-mount stay tail
+
+**Symptom (P0, vjt prod-confirmed).** After #168 shipped, clicking a channel
+that has unread NO LONGER jumped to the unread divider — it landed at the
+TAIL. #168's "collapse to one always-bottom authority" (2026-07-02 entry
+above) over-reached: it removed the scroll-to-marker branch from
+`scrollToActivation`, and cic's channel-SWITCH (the `on(key)` activation
+effect, #130) reuses `scrollToActivation` — so a deliberate switch inherited
+the always-tail behavior meant for the post-send / cold-mount paths.
+
+**Three activation triggers, now deliberately divergent (scoped).** #168
+correctly conflated them into one always-bottom routine to kill a send-time
+race; the fix RE-SEPARATES them WITHOUT re-opening that race:
+
+| trigger | lands at | why |
+|---|---|---|
+| deliberate channel-SWITCH into an unread window | the **MARKER** | the operator chose to open it — show them where they left off |
+| post-send / live-append while following | the **BOTTOM** | irssi-shape, the just-sent line must be visible (#168 acceptance) |
+| cold-mount / visibility-return / resize | the **TAIL** | #46 always-bottom; a first-focus / resume is not a switch |
+
+**The scoping mechanism.** `scrollToActivation` takes a `mode:
+"marker-or-tail" | "tail-only"`. The channel-switch `on(key)` effect passes
+`"marker-or-tail"`; visibility-return and the resize handler pass
+`"tail-only"`. In `"marker-or-tail"` mode the routine reads the RENDERED
+frozen divider — a one-shot `listRef.querySelector('[data-testid=
+"unread-marker"]')` inside its existing settled-geometry rAF×2 — and
+`scrollIntoView({block:"start"})`s it, deriving `atBottom` from the resulting
+distance. It reuses the divider node the `rows()` memo already injected (from
+the frozen `markerCursorId`); it does NOT recompute the cursor geometry a
+second way, and it introduces no `markerRef` (the REV-G H23 stale-ref class
+stays structurally dead — the lookup lives and dies in one activation). The
+divider's ABSENCE (a fully-read channel, or a not-yet-warm cold switch)
+naturally falls to the tail.
+
+**Why this does NOT re-open the #168 send-race.** The race #168 killed was a
+SECOND authority (`scrollToActivation`'s marker branch AND the length-effect's
+marker branch) fighting the tail-follow after a send. Here: (1) the
+length-effect stays TAIL-ONLY — the marker jump is NOT restored there, only in
+the switch-scoped `scrollToActivation`; (2) post-send goes through
+`lastOwnSend`→`scrollToBottom`, untouched; (3) the cold-mount path is the
+`defer`-skipped `on(key)` mount run, so a first-focus-after-login is handled by
+the length-effect at the tail, never by the marker branch; (4) when a switch
+DOES park on the divider it sets `atBottom=false` first, so the length-effect's
+`if (!atBottom()) return` guard yields and never races the jump back to the
+tail (the rAF scheduled by `scrollToActivation` runs before the length-effect's
+inner rAF). One trigger, one scroll target, no two authorities on the same
+trigger.
+
+**Freeze contract unchanged.** The divider still derives from the frozen
+`markerCursorId` snapshot (2026-06-08) and re-latches on focus acquisition; the
+switch jump is a DISPLAY-side scroll to that frozen row, not a cursor write
+(the programmatic `scrollIntoView` fires no operator-input event, so the
+scroll-settle gate does not advance the cursor — the divider survives the
+jump). Read-state stays server-owned.
+
+**Tests.** New e2e `scroll-on-window-switch.spec.ts` scenario 3 (RED→GREEN):
+seed a mid-page cursor on `#bofh`, focus the `$server` window first (so #bofh
+warms in the background via the eager join-ok `refreshScrollback` — REFRESH_LIMIT
+== the 200-row seed, so all rows load unfocused), then click #bofh — a real
+key-change SWITCH. Asserts the pane lands on the MARKER (marker visible near the
+top, distance-to-bottom ABOVE threshold — NOT the tail), then a follow-on SEND
+snaps to the BOTTOM (both directions in one spec). RED proof: distance-to-bottom
+was 7px (tail) pre-fix. The two pre-existing COLD-MOUNT specs (`cp14-b1`
+scenario 2, `scroll-on-window-switch` scenario 2) stay GREEN unchanged — they
+first-focus straight after login, which is a cold mount, deliberately still
+tail. `issue168-scroll-authority` (post-send→bottom) is untouched and MUST stay
+green.
+
+**Deploy.** cic-only viewport fix. Shipped HOT via `deploy-m42.sh --cic` the
+same day (vjt override — accepts that this `--cic` also ships #171's
+not-yet-deployed cic admin-rename, so the admin cap editor breaks until
+#171's server COLD lands that night).
