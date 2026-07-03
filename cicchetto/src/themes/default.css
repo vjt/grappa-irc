@@ -1331,17 +1331,25 @@ html.resize-dragging * {
   font-size: var(--font-size);
   line-height: var(--line-height);
   resize: none;
-  /* UX-3 UNDEC R3 follow-up (2026-06-24): this was the one touchable
-     control left WITHOUT an explicit touch-action, so it defaulted to
-     `auto` — and once ComposeBox added a non-passive touchmove listener
-     for the swipe-right nick-complete, a drag from the input drove iOS's
-     chrome/overscroll gesture and the whole shell dragged. The textarea
-     is chrome, not a scroll container, so it follows the shell's policy:
-     `none` (no pan / zoom / chrome gesture). Tap + focus + caret are
-     pointer events, unaffected. The swipe handler reads touch events
-     directly (touch-action doesn't stop event dispatch), so it still
-     fires. */
-  touch-action: none;
+  /* #123 (2026-07-03): a long draft IS a vertical scroll container (rows=1,
+     resize:none → overflow scrolls internally), so the textarea must allow
+     native vertical pan — `pan-y`, NOT `none`. The earlier `none` (UX-3
+     UNDEC R3, 2026-06-24) blocked ALL pan to stop a drag from driving iOS's
+     chrome gesture, but it also made a long draft unscrollable on touch.
+     `pan-y` re-enables vertical scroll while still blocking pan-x / zoom /
+     the double-drag chrome reveal. The swipe recall/tab gesture coexists:
+     ComposeBox's non-passive touchmove listener velocity-gates (isFastSwipe)
+     — a fast flick preventDefaults early (before iOS commits the pan) and
+     claims the gesture; a slow drag is left to this native pan-y scroll.
+     `overscroll-behavior: contain` stops a scroll past the draft's own
+     limit from chaining to the shell / chrome (same guard as .scrollback /
+     the UX-5 BO pan-y surfaces). Tap + focus + caret are pointer events,
+     unaffected. KNOWN device-test item (vjt): a SHORT non-overflowing draft
+     at pan-y may still fall through to iOS chrome-reveal on a slow vertical
+     drag (the .scrollback `none`↔`pan-y` overflow-toggle case) — accepted;
+     re-open with a JS overflow-toggle only if it bites on-device. */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 .compose-box textarea:focus {

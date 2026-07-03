@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { dragAxis, swipeDirection } from "../lib/swipe";
+import {
+  dragAxis,
+  isFastSwipe,
+  SWIPE_MIN_VELOCITY_PX_PER_MS,
+  swipeDirection,
+} from "../lib/swipe";
 
 describe("swipeDirection", () => {
   it("classifies a clear rightward swipe", () => {
@@ -61,5 +66,53 @@ describe("dragAxis", () => {
   it("commits regardless of direction (leftward / upward)", () => {
     expect(dragAxis({ x: 50, y: 0 }, { x: 30, y: 2 })).toBe("horizontal");
     expect(dragAxis({ x: 0, y: 50 }, { x: 2, y: 30 })).toBe("vertical");
+  });
+});
+
+describe("isFastSwipe (#123 velocity gate)", () => {
+  // The load-bearing gate: separates a deliberate slow content-scroll drag
+  // (leave native pan-y scrolling intact) from a fast history-recall flick.
+  // Velocity is dominant-axis px / ms; the 40px displacement floor lives in
+  // swipeDirection, so these cases probe SPEED only. jsdom can't synthesize
+  // touch momentum — a pure (start, point, elapsedMs) fn is the real gate.
+
+  it("treats a fast vertical flick as a swipe (60px up in 100ms = 0.6px/ms)", () => {
+    expect(isFastSwipe({ x: 0, y: 60 }, { x: 0, y: 0 }, 100)).toBe(true);
+  });
+
+  it("treats a slow read-drag as NOT a swipe (60px up in 400ms = 0.15px/ms)", () => {
+    expect(isFastSwipe({ x: 0, y: 60 }, { x: 0, y: 0 }, 400)).toBe(false);
+  });
+
+  it("includes the exact velocity boundary (0.3px/ms → swipe)", () => {
+    // 30px over 100ms = exactly the threshold; the gate is inclusive (>=).
+    expect(isFastSwipe({ x: 0, y: 0 }, { x: 0, y: 30 }, 100)).toBe(true);
+    // A hair slower (30px over 101ms ≈ 0.297px/ms) drops below → not a swipe.
+    expect(isFastSwipe({ x: 0, y: 0 }, { x: 0, y: 30 }, 101)).toBe(false);
+  });
+
+  it("uses the dominant axis for speed (mostly-horizontal flick)", () => {
+    // dominant = max(|dx|, |dy|) = 60px over 100ms = 0.6px/ms → swipe,
+    // even though the vertical component is slow on its own.
+    expect(isFastSwipe({ x: 0, y: 0 }, { x: 60, y: 5 }, 100)).toBe(true);
+  });
+
+  it("treats instantaneous travel (elapsed <= 0) as a swipe", () => {
+    // Same-tick events (elapsed 0) mean effectively-infinite velocity — a
+    // flick, never a slow drag. Guards a divide-by-zero.
+    expect(isFastSwipe({ x: 0, y: 0 }, { x: 50, y: 0 }, 0)).toBe(true);
+    expect(isFastSwipe({ x: 0, y: 0 }, { x: 50, y: 0 }, -5)).toBe(true);
+  });
+
+  it("is velocity-only — a tiny-but-fast move passes (40px floor is elsewhere)", () => {
+    // 10px over 1ms = 10px/ms → fast; the 40px SWIPE_MIN_PX displacement
+    // floor is enforced by swipeDirection at touchend, not here.
+    expect(isFastSwipe({ x: 0, y: 0 }, { x: 0, y: 10 }, 1)).toBe(true);
+  });
+
+  it("honours an explicit minVelocity override", () => {
+    // 60px / 100ms = 0.6px/ms: passes the default, fails a 1.0px/ms bar.
+    expect(isFastSwipe({ x: 0, y: 0 }, { x: 0, y: 60 }, 100, 1.0)).toBe(false);
+    expect(SWIPE_MIN_VELOCITY_PX_PER_MS).toBe(0.3);
   });
 });

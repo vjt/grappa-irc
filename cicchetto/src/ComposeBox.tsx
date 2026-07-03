@@ -4,7 +4,7 @@ import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from 
 import { composePlaceholder } from "./lib/composePlaceholder";
 import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { networkBySlug } from "./lib/networks";
-import { type DragAxis, dragAxis, type Point, swipeDirection } from "./lib/swipe";
+import { type DragAxis, dragAxis, isFastSwipe, type Point, swipeDirection } from "./lib/swipe";
 import { categoryOf } from "./lib/uploadCategory";
 import { activeHost } from "./lib/uploadHost";
 import {
@@ -74,6 +74,11 @@ const ComposeBox: Component<Props> = (props) => {
   const [sending, setSending] = createSignal(false);
   let pickerInput: HTMLInputElement | undefined;
   let swipeStart: Point | null = null;
+  // Wall-clock at touchstart (ms). Feeds the velocity gate so a slow drag
+  // is told apart from a fast flick. Browser time is legitimate here — the
+  // Date.now / performance.now ban is a workflow-script rule, not cic
+  // runtime. Reset every touchstart; read at the claim + touchend gates.
+  let swipeStartTime = 0;
   let claimedAxis: DragAxis | null = null;
 
   // Swipe gestures on the textarea give a stock mobile keyboard (no Tab, no
@@ -81,10 +86,18 @@ const ComposeBox: Component<Props> = (props) => {
   // swipe UP = ArrowUp (older history), swipe DOWN = ArrowDown (newer
   // history). A swipe — not double-tap — because double-tap collides with the
   // OS word-select. TOUCH (not pointer) events: only touchmove.preventDefault
-  // reliably suppresses iOS's native scroll + drag-to-select, so once the
-  // drag commits to an axis (dragAxis) we claim it and preventDefault the
-  // rest. On touchend swipeDirection classifies the dominant axis and we
-  // dispatch the matching key action.
+  // reliably suppresses iOS's native scroll + drag-to-select.
+  //
+  // #123 — VELOCITY gate. Displacement alone (an 8px slop) can't tell a
+  // deliberate slow drag meant to SCROLL a long draft from a fast recall
+  // flick, so a slow drag used to be hijacked into history recall (and the
+  // textarea couldn't be scrolled on touch). Fix: the drag claims the
+  // gesture (preventDefault → suppress native scroll) ONLY when its speed
+  // clears isFastSwipe; a slow drag is abandoned (swipeStart nulled) so the
+  // textarea's `touch-action: pan-y` scrolls natively. The SAME predicate
+  // re-checks the whole gesture at touchend so a flick that decelerated into
+  // a slow release doesn't recall. Once abandoned we stay hands-off — no
+  // mid-scroll hijack if the finger later speeds up.
   //
   // These are bound via a ref + addEventListener (see bindSwipe), NOT JSX
   // onTouch* — Solid delegates touch events to a single PASSIVE listener on
@@ -96,6 +109,7 @@ const ComposeBox: Component<Props> = (props) => {
     if (ircKeyboardEnabled()) return;
     const t = e.touches.length === 1 ? e.touches[0] : undefined;
     swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
+    swipeStartTime = performance.now();
     claimedAxis = null;
   };
 
@@ -104,7 +118,17 @@ const ComposeBox: Component<Props> = (props) => {
     const t = e.touches[0];
     if (t === undefined) return;
     if (claimedAxis === null) {
-      claimedAxis = dragAxis(swipeStart, { x: t.clientX, y: t.clientY });
+      const cur = { x: t.clientX, y: t.clientY };
+      const axis = dragAxis(swipeStart, cur);
+      if (axis === null) return; // under the slop — still undecided
+      if (isFastSwipe(swipeStart, cur, performance.now() - swipeStartTime)) {
+        claimedAxis = axis; // fast flick — own the gesture, preventDefault below
+      } else {
+        // Slow drag = content scroll. Abandon (hands off) so native pan-y
+        // scrolls the textarea; touchend's start===null guard skips recall.
+        swipeStart = null;
+        return;
+      }
     }
     // Suppress native scroll + drag-to-select once we own the gesture.
     if (claimedAxis !== null) e.preventDefault();
@@ -116,7 +140,12 @@ const ComposeBox: Component<Props> = (props) => {
     if (start === null || claimedAxis === null) return;
     const t = e.changedTouches[0];
     if (t === undefined) return;
-    const dir = swipeDirection(start, { x: t.clientX, y: t.clientY });
+    const end = { x: t.clientX, y: t.clientY };
+    // Velocity gate again over the full gesture (same predicate as the claim
+    // — one threshold): a claimed flick that decelerated into a slow release
+    // is not a recall.
+    if (!isFastSwipe(start, end, performance.now() - swipeStartTime)) return;
+    const dir = swipeDirection(start, end);
     if (dir === "up") {
       recallPrev(key());
     } else if (dir === "down") {

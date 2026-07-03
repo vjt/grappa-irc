@@ -16102,3 +16102,71 @@ green.
 same day (vjt override — accepts that this `--cic` also ships #171's
 not-yet-deployed cic admin-rename, so the admin cap editor breaks until
 #171's server COLD lands that night).
+
+### 2026-07-03 — #123: velocity-gate the compose swipe so slow drags scroll the textarea
+
+**The hijack.** `ComposeBox`'s stock-keyboard swipe affordances (swipe UP =
+older history, DOWN = newer, RIGHT = tab-complete) were gated on DISPLACEMENT
+only. `onTouchMove` claimed the gesture the instant `dragAxis` cleared an 8px
+slop and immediately `preventDefault`ed — killing native scroll for ANY drag
+past 8px, fast or slow — and `onTouchEnd` dispatched purely on
+`swipeDirection`'s 40px floor. So a slow, deliberate vertical drag meant to
+SCROLL a long draft (the textarea is `rows=1`, `resize:none` → overflow scrolls
+internally) got hijacked into history recall, and reviewing the top of a long
+draft on touch was impossible (#123, vjt-filed P1).
+
+**Both halves were the bug.** The CSS half compounded it: `.compose-box
+textarea` was `touch-action: none` (UX-3 UNDEC R3, 2026-06-24 — added to stop a
+drag from driving iOS's chrome gesture back when the textarea was treated as
+"chrome, not a scroll container"). `none` blocks ALL pan, so even with the JS
+fixed the slow drag could not scroll natively. The fix needs BOTH: JS must stop
+`preventDefault`ing slow drags AND the CSS must permit vertical pan.
+
+**The velocity gate.** New pure predicate `isFastSwipe(start, point,
+elapsedMs)` in `lib/swipe.ts` — dominant-axis speed (px/ms) ≥
+`SWIPE_MIN_VELOCITY_PX_PER_MS`. It is the SINGLE velocity source of truth,
+reused at BOTH decision points so a claim and a dispatch can never drift to two
+thresholds: (1) the mid-drag axis-claim — a drag `preventDefault`s + owns the
+gesture only if it's fast; a slow drag is ABANDONED (`swipeStart` nulled) so
+native `pan-y` scrolls the textarea, and once abandoned we stay hands-off (no
+mid-scroll hijack if the finger later speeds up); (2) touchend — the whole
+gesture is re-checked so a flick that decelerated into a slow release doesn't
+recall. Velocity is the ONLY thing `isFastSwipe` judges; the 8px slop
+(`dragAxis`) and 40px floor (`swipeDirection`) still bound displacement — a real
+flick is fast AND ≥40px. `ComposeBox` threads `performance.now()` timestamps in
+(browser time is fine in cic runtime — the `Date.now` ban is a workflow-script
+rule).
+
+**Threshold.** `SWIPE_MIN_VELOCITY_PX_PER_MS = 0.3` (~300px/s): above an
+empirical deliberate read-drag (<~150px/s), below a natural flick (>~500px/s).
+Velocity FEEL is a device call — a defensible default, not a measured optimum;
+vjt calibrates on-device post-ship.
+
+**CSS.** `.compose-box textarea` → `touch-action: pan-y` +
+`overscroll-behavior: contain` (the latter stops a past-the-limit scroll
+chaining to the shell / chrome, same guard as `.scrollback` and the UX-5 BO
+pan-y surfaces). `pan-y` re-enables vertical native scroll while still blocking
+pan-x / zoom / the double-drag chrome reveal the old `none` was guarding
+against. KNOWN device-test item: a SHORT non-overflowing draft at `pan-y` may
+still fall through to iOS chrome-reveal on a slow vertical drag (the
+`.scrollback` `none`↔`pan-y` overflow-toggle case) — accepted; re-open with a
+JS overflow-toggle only if it bites on-device.
+
+**Why the e2e is webkit-guard-only.** Velocity feel and iOS momentum are NOT
+webkit-reproducible (Playwright webkit ≠ iOS scroll physics), so the
+load-bearing gate is the `isFastSwipe` UNIT test (jsdom, pure fn:
+slow-drag→false, fast-flick→true, exact 0.3px/ms boundary, dominant-axis,
+divide-guard). The e2es guard the WIRING, not the physics:
+`issue123-compose-swipe-velocity.spec.ts` runs a chromium synthetic-touch pair
+(TouchEvent constructor + controlled timing: fast swipe-up recalls the last
+sent line, slow 350ms drag leaves the draft untouched — a mutually-validating
+pair, only jointly green if the gate actually distinguishes) plus a `@webkit`
+CSS-contract assertion (computed `touch-action: pan-y` +
+`overscroll-behavior: contain` on the real iPhone-15 target, the ux-6-a
+regression-guard pattern; reverting to `none` reds it). DEVICE test = vjt
+post-ship.
+
+**Deploy.** cic-only. BUILD-DEFER-NIGHT: rides the same night COLD+`--cic`
+batch as #171 — a daytime `--cic` would rebuild cic from main HEAD, which still
+carries #171's undeployed admin-rename expecting the not-yet-deployed
+`max_per_ip` server API.
