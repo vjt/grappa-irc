@@ -187,7 +187,13 @@ html.is-ios {
    THE selectable-text policy point: the blanket kill above is
    Telegram Web K's pattern, and Telegram pairs it with re-enables on
    every surface users copy from. New copyable surface → add its
-   selector HERE, nowhere else. Currently: scrollback message text
+   selector HERE and to keepKeyboard.ts's SELECTABLE_TEXT_SURFACES
+   allowlist (#79, 2026-07-03): keepKeyboard skips its mousedown
+   preventDefault on these same surfaces so a long-press can start a
+   selection with the iOS keyboard open. CSS and TS can't share a
+   constant, so the two lists MUST stay in sync — a surface added here
+   but not there stays unselectable while compose is focused.
+   Currently: scrollback message text
    (channels, queries, server window all render through .scrollback),
    the topic modal's full-topic text, and editable fields (WebKit
    honors inherited user-select:none inside inputs in some version

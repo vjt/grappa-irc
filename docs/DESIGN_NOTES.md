@@ -16170,3 +16170,73 @@ post-ship.
 batch as #171 — a daytime `--cic` would rebuild cic from main HEAD, which still
 carries #171's undeployed admin-rename expecting the not-yet-deployed
 `max_per_ip` server API.
+
+### 2026-07-03 — #79: let scrollback selection start with the keyboard open (keep-keyboard skips selectable surfaces)
+
+vjt iPhone dogfood: tap-hold text selection in the scrollback works ONLY with
+the on-screen keyboard CLOSED. Keyboard OPEN (compose focused) → long-pressing a
+scrollback message does nothing, no selection handles. Closing the keyboard
+first is a manual PRE-step no user should need.
+
+**Root cause — the unfinished half of Dispatch-1.** The 2026-06-11 "text
+selection dead" arc (above) had two stacked causes: (a) desktop, keepKeyboard's
+document-level capture mousedown `preventDefault` cancelling the
+selection-drag start — fixed by gating the handler on `isIos()`; (b) iOS, the
+blanket `html.is-ios { user-select: none }` — fixed by re-enabling
+`user-select: text` on `.scrollback` / `.topic-modal-text`. But (a)'s gate
+scoped the fix to *desktop*: on iOS the handler STILL preventDefaults every
+non-input mousedown while compose is focused — including on the very
+`.scrollback` surface (b) had just marked selectable. CSS granted
+`user-select: text`; the JS then cancelled the drag before it could start. The
+two fixes half-passed each other. The 2026-06-11 note even flagged this class
+("iPad-with-trackpad stays imperfect: a hardware-pointer drag still gets
+preventDefaulted while compose is focused") but filed it under a niche edge —
+#79 is the same defect on the mainline touch path.
+
+**Fix.** keepKeyboard's `handleMouseDown` gains one guard before the
+`preventDefault`: skip it when the mousedown target sits on a selectable-text
+surface. The allowlist is the SAME set the CSS re-enables — `.scrollback`,
+`.topic-modal-text` — MINUS the re-excluded control `.scrollback-invite-join`
+(a `[Join]` button inside scrollback; a tap there is a control, so
+keep-keyboard MUST still fire). Structural DOM test (`el.closest(...)`), not
+`getComputedStyle(...).userSelect`: the computed-style approach is elegant but
+jsdom does not resolve inherited `user-select` from a stylesheet, so it isn't
+unit-testable; the structural allowlist is. keep-keyboard is UNCHANGED for real
+chrome (tabs, arrows, buttons) — a tap there still pins the keyboard.
+
+**Two-site allowlist — deliberate duplication.** The selectable-surface set now
+lives in BOTH `default.css` (the `user-select: text` re-enable) and
+`keepKeyboard.ts` (`SELECTABLE_TEXT_SURFACES` / `_EXCLUDE`). CSS can't export a
+TS constant, so this is an unavoidable two-site policy — same shape as the
+nick-fold SQL/fragment invariant. Both sites carry a cross-referencing comment
+("selectable-text policy point — keep in sync"): a future copyable surface must
+be added to both, or a surface marked selectable by CSS stays un-drag-startable
+while compose is focused (or vice-versa). Kept small + named.
+
+**Accepted UX.** Starting a selection may shift focus / close the keyboard as a
+SIDE EFFECT — that satisfies the spec (the prohibition was on closing the
+keyboard as a manual PRE-step, not as a natural consequence of the gesture).
+Keeping the keyboard open AND selecting would need a materially heavier
+mechanism (on-screen-keyboard-visibility detection — the UX-6-D tar pit); not
+built without a vjt call. vjt device-judges the feel post-ship.
+
+**Why the e2e is webkit-contract-only.** Real iOS long-press selection
+(magnifier, handles, momentum) is NOT reproducible on Playwright
+webkit-iphone-15 (feedback_playwright_webkit_not_ios_scroll). The load-bearing
+gate is the keepKeyboard UNIT test (jsdom, RED→GREEN: a mousedown inside
+`div.scrollback` / `.topic-modal-text` is now NOT prevented; on
+`.scrollback-invite-join` and generic chrome it still IS; the misleading old
+"scrollback message text" case — a bare span NOT inside `.scrollback` that
+asserted prevented=true — was relabelled honest generic chrome, since it never
+was inside a selectable surface). `issue79-ios-select-keyboard-open.spec.ts`
+(`@webkit`) is the WIRING guard: on the live is-ios surface with compose
+focused it dispatches a cancelable mousedown on a real `.scrollback` line
+(`defaultPrevented === false`) and on the send button (`=== true`) — a
+mutually-validating pair, only jointly green if the guard actually
+discriminates; reverting the fix reds the scrollback half. DEVICE test (handles
+actually appearing) = vjt post-ship.
+
+**Deploy.** cic-only. BUILD-DEFER-NIGHT: appends to the same night COLD+`--cic`
+batch as #171 + #123 — a daytime `--cic` would rebuild cic from main HEAD,
+which still carries #171's undeployed admin-rename expecting the not-yet-deployed
+`max_per_ip` server API.

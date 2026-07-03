@@ -46,14 +46,38 @@
 
 import { isIos } from "./platform";
 
+// Selectable-text policy point — MUST stay in sync with default.css
+// (`html.is-ios .scrollback, .topic-modal-text` re-enable, minus the
+// `.scrollback-invite-join` control re-exclude). CSS can't export a TS
+// constant, so this allowlist is duplicated deliberately, same shape as
+// the nick-fold SQL/fragment invariant: a new copyable surface must be
+// added to BOTH sites or the two policies drift. Keep it small + named.
+// Why the skip exists: preventDefault on a mousedown cancels the focus
+// shift AND the text-selection-drag start, so without this guard a
+// long-press on scrollback text with the compose box focused could never
+// start a selection while the keyboard was open (#79). See
+// docs/DESIGN_NOTES.md 2026-06-11 (Dispatch-1) + 2026-07-03 (#79).
+const SELECTABLE_TEXT_SURFACES = ".scrollback, .topic-modal-text";
+const SELECTABLE_TEXT_EXCLUDE = ".scrollback-invite-join";
+
 function isTextEntry(el: Element | null): boolean {
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+}
+
+// True when a mousedown target sits on copyable text (so preventDefault
+// must be skipped to let the selection drag start). The exclude wins:
+// the [Join] CTA lives inside .scrollback but is a control.
+function isSelectableSurface(el: Element | null): boolean {
+  if (el === null) return false;
+  if (el.closest(SELECTABLE_TEXT_EXCLUDE) !== null) return false;
+  return el.closest(SELECTABLE_TEXT_SURFACES) !== null;
 }
 
 function handleMouseDown(e: MouseEvent): void {
   if (!isIos()) return;
   if (!isTextEntry(document.activeElement)) return;
   if (isTextEntry(e.target as Element | null)) return;
+  if (isSelectableSurface(e.target as Element | null)) return;
   e.preventDefault();
 }
 
