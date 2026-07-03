@@ -140,7 +140,7 @@ config :web_push_elixir,
 # transition tests don't drag. Math is identical, only magnitudes
 # shrink.
 config :grappa, :admission,
-  default_max_per_client_per_network: 10,
+  default_max_per_ip_per_network: 10,
   captcha_provider: Grappa.Admission.Captcha.Disabled,
   captcha_site_key: nil,
   network_circuit_threshold: 3,

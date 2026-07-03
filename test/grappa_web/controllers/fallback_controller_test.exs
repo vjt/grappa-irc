@@ -25,14 +25,14 @@ defmodule GrappaWeb.FallbackControllerTest do
   end
 
   describe "T31 admission capacity errors" do
-    # U-3 (UD3): client_cap_exceeded is resource exhaustion, not rate
-    # limit. The user isn't spamming — their device is at its 1-session-
-    # per-network limit. 503 is the right surface (cf. visitor/user cap
-    # below); the envelope stays `too_many_sessions` so cic's copy stays
-    # distinct from the network-wide `network_busy` arm. 429 was the
-    # original T31 mapping; U-3 corrects it.
-    test "{:error, :client_cap_exceeded} → 503 too_many_sessions" do
-      conn = FallbackController.call(build_conn_for_call(), {:error, :client_cap_exceeded})
+    # #171: ip_cap_exceeded is resource exhaustion, not rate limit. The
+    # actor isn't spamming — their source IP is at its per-network session
+    # limit. 503 is the right surface (cf. visitor/user cap below); the
+    # envelope stays `too_many_sessions` so cic's copy stays distinct from
+    # the network-wide `network_busy` arm. 429 was the original T31
+    # mapping; U-3 corrected it to 503, #171 kept the envelope.
+    test "{:error, :ip_cap_exceeded} → 503 too_many_sessions" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :ip_cap_exceeded})
 
       assert conn.status == 503
       assert Jason.decode!(conn.resp_body) == %{"error" => "too_many_sessions"}
@@ -107,7 +107,7 @@ defmodule GrappaWeb.FallbackControllerTest do
     # "fails loud" promise rots.
     test "every Admission.capacity_error() atom has an FC clause + asserted shape" do
       cases = [
-        {:client_cap_exceeded, 503, %{"error" => "too_many_sessions"}, []},
+        {:ip_cap_exceeded, 503, %{"error" => "too_many_sessions"}, []},
         {:visitor_cap_exceeded, 503, %{"error" => "network_busy"}, []},
         {:user_cap_exceeded, 503, %{"error" => "network_busy"}, []},
         {{:network_circuit_open, 7}, 503, %{"error" => "network_unreachable"}, [{"retry-after", "7"}]}

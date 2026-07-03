@@ -94,7 +94,7 @@ defmodule Grappa.AdminEvents.Wire do
           error: String.t(),
           network_id: integer(),
           network_slug: String.t() | nil,
-          client_id: String.t() | nil,
+          source_ip: String.t() | nil,
           at: String.t()
         }
 
@@ -165,7 +165,7 @@ defmodule Grappa.AdminEvents.Wire do
           network_slug: String.t(),
           max_concurrent_visitor_sessions: integer() | nil,
           max_concurrent_user_sessions: integer() | nil,
-          max_per_client: integer() | nil,
+          max_per_ip: integer() | nil,
           actor_user_id: String.t() | nil,
           actor_user_name: String.t() | nil,
           at: String.t()
@@ -407,17 +407,17 @@ defmodule Grappa.AdminEvents.Wire do
   @doc false
   @spec capacity_reject(atom(), term(), integer(), String.t() | nil, String.t() | nil) ::
           capacity_reject_event()
-  def capacity_reject(flow, error, network_id, network_slug, client_id)
+  def capacity_reject(flow, error, network_id, network_slug, source_ip)
       when is_atom(flow) and is_integer(network_id) and
              (is_binary(network_slug) or is_nil(network_slug)) and
-             (is_binary(client_id) or is_nil(client_id)) do
+             (is_binary(source_ip) or is_nil(source_ip)) do
     %{
       kind: :capacity_reject,
       flow: flow,
       error: error_to_string(error),
       network_id: network_id,
       network_slug: network_slug,
-      client_id: client_id,
+      source_ip: source_ip,
       at: now()
     }
   end
@@ -571,7 +571,7 @@ defmodule Grappa.AdminEvents.Wire do
         network_slug,
         max_concurrent_visitor_sessions,
         max_concurrent_user_sessions,
-        max_per_client,
+        max_per_ip,
         actor_user_id,
         actor_user_name
       ) do
@@ -581,7 +581,7 @@ defmodule Grappa.AdminEvents.Wire do
         network_slug,
         max_concurrent_visitor_sessions,
         max_concurrent_user_sessions,
-        max_per_client
+        max_per_ip
       )
 
     :ok = validate_actor(actor_user_id, actor_user_name)
@@ -592,7 +592,7 @@ defmodule Grappa.AdminEvents.Wire do
       network_slug: network_slug,
       max_concurrent_visitor_sessions: max_concurrent_visitor_sessions,
       max_concurrent_user_sessions: max_concurrent_user_sessions,
-      max_per_client: max_per_client,
+      max_per_ip: max_per_ip,
       actor_user_id: actor_user_id,
       actor_user_name: actor_user_name,
       at: now()
@@ -609,14 +609,14 @@ defmodule Grappa.AdminEvents.Wire do
          network_slug,
          max_concurrent_visitor_sessions,
          max_concurrent_user_sessions,
-         max_per_client
+         max_per_ip
        )
        when is_integer(network_id) and is_binary(network_slug) and network_slug != "" and
               (is_integer(max_concurrent_visitor_sessions) or
                  is_nil(max_concurrent_visitor_sessions)) and
               (is_integer(max_concurrent_user_sessions) or
                  is_nil(max_concurrent_user_sessions)) and
-              (is_integer(max_per_client) or is_nil(max_per_client)),
+              (is_integer(max_per_ip) or is_nil(max_per_ip)),
        do: :ok
 
   # Shared actor validator across every actor-bearing constructor
@@ -1121,9 +1121,9 @@ defmodule Grappa.AdminEvents.Wire do
   def from_telemetry(
         [:grappa, :admission, :capacity, :reject],
         _,
-        %{flow: f, error: e, network_id: nid, client_id: cid}
+        %{flow: f, error: e, network_id: nid, source_ip: sip}
       ) do
-    capacity_reject(f, e, nid, lookup_slug(nid), cid)
+    capacity_reject(f, e, nid, lookup_slug(nid), sip)
   end
 
   ## ----- Private --------------------------------------------------------
@@ -1143,7 +1143,7 @@ defmodule Grappa.AdminEvents.Wire do
   end
 
   # `:capacity_reject` error metadata can be an atom
-  # (`:visitor_cap_exceeded`, `:user_cap_exceeded`, `:client_cap_exceeded`),
+  # (`:visitor_cap_exceeded`, `:user_cap_exceeded`, `:ip_cap_exceeded`),
   # a tuple (`{:network_circuit_open, 60_000}`), or any term — collapse
   # to a stable string for the wire. Atoms stay readable; tuples become
   # an `inspect/1` for operator audit value.

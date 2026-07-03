@@ -33,7 +33,7 @@ defmodule Grappa.Networks.Network do
           slug: String.t() | nil,
           max_concurrent_visitor_sessions: non_neg_integer() | nil,
           max_concurrent_user_sessions: non_neg_integer() | nil,
-          max_per_client: non_neg_integer() | nil,
+          max_per_ip: non_neg_integer() | nil,
           servers: [Server.t()] | Ecto.Association.NotLoaded.t(),
           credentials: [Credential.t()] | Ecto.Association.NotLoaded.t(),
           featured_channels: [FeaturedChannel.t()] | Ecto.Association.NotLoaded.t(),
@@ -52,7 +52,12 @@ defmodule Grappa.Networks.Network do
     # single column.
     field :max_concurrent_visitor_sessions, :integer
     field :max_concurrent_user_sessions, :integer, default: 3
-    field :max_per_client, :integer
+    # #171: per-(source-IP, network) clone cap. Renamed from
+    # `max_per_client` when the per-(client, network) dimension was
+    # dropped — visitors have no stable client identity, so the source IP
+    # is the only durable per-actor handle; authed users are capped
+    # per-IP too. nil = unlimited, 0 = lock-down, N>0 = the cap.
+    field :max_per_ip, :integer
 
     has_many :servers, Server
     has_many :credentials, Credential
@@ -80,13 +85,13 @@ defmodule Grappa.Networks.Network do
       :slug,
       :max_concurrent_visitor_sessions,
       :max_concurrent_user_sessions,
-      :max_per_client
+      :max_per_ip
     ])
     |> validate_required([:slug])
     |> validate_change(:slug, &validate_slug/2)
     |> validate_change(:max_concurrent_visitor_sessions, &validate_non_negative_or_nil/2)
     |> validate_change(:max_concurrent_user_sessions, &validate_non_negative_or_nil/2)
-    |> validate_change(:max_per_client, &validate_non_negative_or_nil/2)
+    |> validate_change(:max_per_ip, &validate_non_negative_or_nil/2)
     |> unique_constraint(:slug)
   end
 

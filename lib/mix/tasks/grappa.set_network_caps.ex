@@ -1,10 +1,10 @@
 defmodule Mix.Tasks.Grappa.SetNetworkCaps do
-  @shortdoc "Sets / clears admission caps on a network: --network --max-visitor-sessions [N] --max-user-sessions [N] --max-per-client [N] --clear-max-visitor-sessions --clear-max-user-sessions --clear-max-per-client"
+  @shortdoc "Sets / clears admission caps on a network: --network --max-visitor-sessions [N] --max-user-sessions [N] --max-per-ip [N] --clear-max-visitor-sessions --clear-max-user-sessions --clear-max-per-ip"
 
   @moduledoc """
   Operator-side admission-cap binding. Updates
   `max_concurrent_visitor_sessions`, `max_concurrent_user_sessions`,
-  and/or `max_per_client` on a network row.
+  and/or `max_per_ip` on a network row.
 
   ## Usage
 
@@ -12,21 +12,21 @@ defmodule Mix.Tasks.Grappa.SetNetworkCaps do
         --network azzurra \\
         --max-visitor-sessions 3 \\
         --max-user-sessions 3 \\
-        --max-per-client 1
+        --max-per-ip 1
 
   At least one of `--max-visitor-sessions`, `--max-user-sessions`,
-  `--max-per-client`, `--clear-max-visitor-sessions`,
-  `--clear-max-user-sessions`, or `--clear-max-per-client` is
+  `--max-per-ip`, `--clear-max-visitor-sessions`,
+  `--clear-max-user-sessions`, or `--clear-max-per-ip` is
   required. Pass only the flag(s) you want to change — the
   unsupplied cap stays at its current value.
 
   ## Three-valued cap contract (decision F, B5.3)
 
     * `--max-visitor-sessions N` / `--max-user-sessions N` /
-      `--max-per-client N` with `N >= 0` sets the cap. `N == 0` is a
+      `--max-per-ip N` with `N >= 0` sets the cap. `N == 0` is a
       degenerate lock-down (allow none).
     * `--clear-max-visitor-sessions` / `--clear-max-user-sessions` /
-      `--clear-max-per-client` clears the cap (the column becomes
+      `--clear-max-per-ip` clears the cap (the column becomes
       `NULL`, meaning "unlimited").
     * `--max-*` and `--clear-max-*` for the same cap are mutually
       exclusive — passing both raises `Mix.Error`.
@@ -36,7 +36,7 @@ defmodule Mix.Tasks.Grappa.SetNetworkCaps do
   This Mix task works against any DB the container can reach. Run it
   inside the prod container via `scripts/mix.sh grappa.set_network_caps
   --network azzurra --max-visitor-sessions 3 --max-user-sessions 3
-  --max-per-client 1`, or live-mutate via IEx (`scripts/iex.sh`) calling
+  --max-per-ip 1`, or live-mutate via IEx (`scripts/iex.sh`) calling
   `Grappa.Networks.update_network_caps/2` directly. Both paths route
   through the same fn so the validation contract is single-sourced.
   """
@@ -57,10 +57,10 @@ defmodule Mix.Tasks.Grappa.SetNetworkCaps do
     network: :string,
     max_visitor_sessions: :integer,
     max_user_sessions: :integer,
-    max_per_client: :integer,
+    max_per_ip: :integer,
     clear_max_visitor_sessions: :boolean,
     clear_max_user_sessions: :boolean,
-    clear_max_per_client: :boolean
+    clear_max_per_ip: :boolean
   ]
 
   @impl Mix.Task
@@ -82,7 +82,7 @@ defmodule Mix.Tasks.Grappa.SetNetworkCaps do
           "set caps on #{updated.slug}: " <>
             "max_concurrent_visitor_sessions=#{inspect(updated.max_concurrent_visitor_sessions)} " <>
             "max_concurrent_user_sessions=#{inspect(updated.max_concurrent_user_sessions)} " <>
-            "max_per_client=#{inspect(updated.max_per_client)}"
+            "max_per_ip=#{inspect(updated.max_per_ip)}"
         )
 
       {:error, cs} ->
@@ -99,8 +99,8 @@ defmodule Mix.Tasks.Grappa.SetNetworkCaps do
       Mix.raise("--clear-max-user-sessions and --max-user-sessions are mutually exclusive")
     end
 
-    if opts[:max_per_client] && opts[:clear_max_per_client] do
-      Mix.raise("--clear-max-per-client and --max-per-client are mutually exclusive")
+    if opts[:max_per_ip] && opts[:clear_max_per_ip] do
+      Mix.raise("--clear-max-per-ip and --max-per-ip are mutually exclusive")
     end
   end
 
@@ -108,7 +108,7 @@ defmodule Mix.Tasks.Grappa.SetNetworkCaps do
 
   defp validate_non_empty!(_) do
     Mix.raise(
-      "no changes specified — pass at least one of --max-visitor-sessions, --max-user-sessions, --max-per-client, --clear-max-visitor-sessions, --clear-max-user-sessions, --clear-max-per-client"
+      "no changes specified — pass at least one of --max-visitor-sessions, --max-user-sessions, --max-per-ip, --clear-max-visitor-sessions, --clear-max-user-sessions, --clear-max-per-ip"
     )
   end
 
@@ -129,8 +129,8 @@ defmodule Mix.Tasks.Grappa.SetNetworkCaps do
     |> maybe_put_clear(:max_concurrent_visitor_sessions, opts[:clear_max_visitor_sessions])
     |> maybe_put(:max_concurrent_user_sessions, opts[:max_user_sessions])
     |> maybe_put_clear(:max_concurrent_user_sessions, opts[:clear_max_user_sessions])
-    |> maybe_put(:max_per_client, opts[:max_per_client])
-    |> maybe_put_clear(:max_per_client, opts[:clear_max_per_client])
+    |> maybe_put(:max_per_ip, opts[:max_per_ip])
+    |> maybe_put_clear(:max_per_ip, opts[:clear_max_per_ip])
   end
 
   defp maybe_put(map, _, nil), do: map

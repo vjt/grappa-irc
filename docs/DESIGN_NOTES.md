@@ -15928,3 +15928,96 @@ disables the blink.
 **Deploy coupling.** SERVER (event_router / server / client / channel /
 wire / numeric_router) → COLD; also `--cic` (new store, modal, userTopic
 arm, slash intents, transport). Build-deferred to the night cold batch.
+
+### 2026-07-03 — #171: the one per-actor cap is per-(source-IP, network)
+
+**The bug.** `Admission.check_capacity/1` composed a NetworkCircuit gate, a
+per-network total cap, and a per-(client, network) cap — no per-source-IP
+dimension. Visitor / unauthenticated logins carry `client_id: nil` (no
+`X-Grappa-Client-Id` header), so `check_client_cap/2` short-circuited to
+`:ok` **by construction** and one source IP could open arbitrary concurrent
+visitor sessions. Seven concurrent sessions from a single IP were observed
+live on the testnet — a connection-flood / resource-exhaustion vector.
+
+**The decision (vjt): drop per-client entirely, collapse to per-IP.** The
+first cut added a per-IP cap *alongside* the per-client cap, both reading the
+one `max_per_client` knob. That coupled the two dimensions — loosening the IP
+cap (needed for NAT + the shared-runner-IP e2e) also loosened the per-client
+cap. Rather than add a second knob to decouple them, vjt cut the per-client
+dimension altogether: **visitors have no stable client identity, so the
+source IP is the only durable per-actor handle; authenticated users are
+capped per-IP too.** So `check_capacity/1` is now circuit → network-total →
+per-(source-IP, network), and the knob is renamed to match its meaning:
+`networks.max_per_client` → `networks.max_per_ip`,
+`default_max_per_client_per_network` → `default_max_per_ip_per_network`,
+`effective_max_per_client/1` → `effective_max_per_ip/1`. The atom
+`:client_cap_exceeded` is retired; `:ip_cap_exceeded` is the sole per-actor
+cap error. `client_id` is removed from `capacity_input` (it stays on the
+session row for the #117 attach path + audit, just not for admission);
+`Telemetry.capacity_reject/4`'s 4th arg is now `source_ip`.
+
+**`accounts_sessions.ip` is the count source — derive, don't duplicate.**
+The `ip` column already exists and is populated at session creation
+(`Accounts.create_session/4`; login writes `RemoteIP.format(conn)`). So the
+per-IP count is a plain SQL query over persisted rows — NO new column, NO
+ETS tracker, NO parallel state. `count_subjects_for_ip_on_network/4` keeps
+the two disjoint subject-kind clauses (visitor JOINs visitors on
+`network_slug`, user JOINs credentials on `network_id`), `count(_, :distinct)`,
+the non-revoked filter, and the UX-5-BC self-exclusion of the requesting
+subject — an IP running a visitor + a user is two independent budgets,
+mirroring the per-network-total subject split. The `source_ip` handed to
+`check_capacity/1` MUST come through the SAME `GrappaWeb.RemoteIP.format/1`
+formatter login stores, or the string won't match the stored `ip` and the
+count silently reads 0. Login flows carry a pre-formatted `input.ip`; the two
+raw-conn surfaces (`NetworksController.orchestrate_spawn/4`,
+`SessionController`'s `:visitor_reconnect`) format the conn; cold-start
+Bootstrap + `subject_reset` carry `nil` (no HTTP conn → the cap skips).
+
+**Real client IP in prod, not the nginx socket.** The per-IP cap keys on
+`conn.remote_ip` *after* `GrappaWeb.Plugs.RemoteIpFromProxy`. Prod nginx is
+same-jail loopback (`infra/freebsd/nginx.conf` upstream `127.0.0.1:4000`) and
+sets `X-Forwarded-For`, so the plug's "loopback peer + XFF → trust XFF" arm
+rewrites `remote_ip` to the real client IP (the cp52 S2 mechanism that makes
+`accounts_sessions.ip` the real client IP + what #160 fail2ban bans on). The
+cap counts real client IPs, NOT a single global nginx IP. (In the docker/e2e
+stack nginx proxies via the non-loopback bridge `grappa:4000`, so that path
+surfaces the nginx bridge IP — a test-substrate artifact, not prod.)
+
+**`source_ip` is a required `capacity_input` field, nil-or-binary** — enforced
+by `check_ip_cap/2`'s clause patterns (`%{source_ip: nil}` skips; `is_binary`
+counts), so a construction site that omits it is a loud `FunctionClauseError`,
+never a silent nil-skip. `:ip_cap_exceeded → too_many_sessions` (the same 503
+envelope the retired `:client_cap_exceeded` used), so cic is unchanged (it
+keys on the wire string, not the atom).
+
+**NAT/CGNAT is a deliberate consequence, not an oversight.** With `max_per_ip`
+defaulting to 1, distinct legitimate users behind one address (carrier NAT,
+university, office) share a single per-network slot and all but one get
+503'd. That is exactly why the cap is a tunable knob and not a hardcoded 1:
+operators widen it by raising per-network `max_per_ip`. With per-client gone
+there is no coupling caveat — it is one honest per-IP knob.
+
+**Migration.** `ALTER TABLE networks RENAME COLUMN max_per_client TO
+max_per_ip` (in-place, no table-recreate → no FK-ref refresh, no
+`messages`-column-drift trap). SQLite 3.25+ rewrites the CHECK expression but
+NOT the constraint name, so `max_per_client_non_negative` keeps firing against
+the renamed column — same pattern as the U-1 `max_concurrent_sessions`
+rename. COLD (migration + server).
+
+**E2E (the shared-IP interaction).** The serial Playwright suite
+(`workers: 1`) drives every browser login through one source IP (the e2e
+nginx) and every direct API login through another (the runner) — many
+DISTINCT seeded subjects per IP. At the production default (1) the 2nd
+subject on a shared IP 503s, cascading unrelated specs. Fix (dev/test config,
+NEVER the production default): `config/dev.exs` raises
+`default_max_per_ip_per_network` to 10 (e2e boots `MIX_ENV=dev`;
+`config.exs`'s base 1 stays for prod); `azzurra` additionally seeds
+`max_per_ip: 100` for anon-visitor volume. The `#171` e2e drives the cap
+deterministically (patch `azzurra` to 1, two-visitor probe, restore 100).
+`u-3` still saturates end-to-end (two distinct users on the shared IP → 503
+`too_many_sessions`, now via the IP cap); `u-4` was REMOVED (its subject-kind
+cap-independence assertion ran through an ungated user *login*, so it was
+vacuous — the property stays unit-covered by `admission_test`'s cross-clause
+disjointness); `ux-5-bc` reframed to prove the gated `/connect` self-excludes
+the returning subject (tight-cap self-exclusion is unit-covered by
+`networks_controller_test`).

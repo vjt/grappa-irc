@@ -395,32 +395,25 @@ defmodule Grappa.Visitors.LoginTest do
       {:ok, network: network}
     end
 
-    test "client_cap_exceeded → {:error, :client_cap_exceeded}", %{network: net} do
-      # Pin the per-(client, network) cap at 1 via the network's
-      # max_per_client column (the operator's knob — Plan 1 schema).
+    test "ip_cap_exceeded → {:error, :ip_cap_exceeded}", %{network: net} do
+      # Pin the per-(source-IP, network) cap at 1 via the network's
+      # max_per_ip column (#171 — the operator's knob).
       {:ok, capped_net} =
         net
-        |> Network.changeset(%{max_per_client: 1})
+        |> Network.changeset(%{max_per_ip: 1})
         |> Repo.update()
 
-      # Seed one existing visitor + accounts_sessions row for client_id
-      # "device-a" on this network. Use direct fixture verbs, not
+      # Seed one existing visitor + accounts_sessions row from source IP
+      # "1.2.3.4" on this network. Use direct fixture verbs, not
       # Login.login, to avoid spinning a real Session.Server.
       {:ok, existing_visitor} =
         Visitors.find_or_provision_anon("old_user", capped_net.slug, "1.2.3.4")
 
-      client_id = "44c2ab8a-cb38-4960-b92a-a7aefb190386"
-
       {:ok, _} =
-        Accounts.create_session(
-          {:visitor, existing_visitor.id},
-          "1.2.3.4",
-          nil,
-          client_id: client_id
-        )
+        Accounts.create_session({:visitor, existing_visitor.id}, "1.2.3.4", nil, [])
 
-      # Second login attempt from same client_id on same network should
-      # fail at the admission gate, before any spawn attempt.
+      # Second login (distinct nick) from the SAME source IP should fail at
+      # the admission gate, before any spawn — regardless of client_id.
       result =
         Login.login(
           %{
@@ -430,12 +423,12 @@ defmodule Grappa.Visitors.LoginTest do
             user_agent: nil,
             token: nil,
             captcha_token: nil,
-            client_id: client_id
+            client_id: nil
           },
           []
         )
 
-      assert result == {:error, :client_cap_exceeded}
+      assert result == {:error, :ip_cap_exceeded}
     end
 
     test "visitor_cap_exceeded → {:error, :visitor_cap_exceeded}", %{network: net} do

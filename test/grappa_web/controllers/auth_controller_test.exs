@@ -125,16 +125,13 @@ defmodule GrappaWeb.AuthControllerTest do
       assert json_response(conn, 400)["error"] == "bad_request"
     end
 
-    # Codebase review 2026-05-08 H3 (Cross-infra): mode1_login was
-    # calling `Accounts.create_session/3` (no opts) so admin user
-    # logins skipped per-(client, network) cap tracking entirely.
-    # The `\\ []` default arg on `Accounts.create_session/4` (M2)
-    # silently accepted the under-arity call. T31 admission control
-    # specifically counts sessions by `(client_id, network_id)`;
-    # admins bypassing the counter is a bypass of the campaign.
-    # The visitor branch threads `current_client_id` correctly
-    # (auth_controller.ex:273); the admin branch must do the same.
-    test "writes X-Grappa-Client-Id to session row for admission counter", %{conn: conn} do
+    # `client_id` is persisted on the session row for the #117
+    # attach-to-existing-session path (one identity, N clients) and audit
+    # — NOT for admission (the per-(client, network) cap was retired in
+    # #171 in favour of a per-source-IP cap). The admin branch must still
+    # thread `current_client_id` onto the row like the visitor branch,
+    # else a re-login from the same device can't reattach.
+    test "writes X-Grappa-Client-Id to the session row", %{conn: conn} do
       {user, password} = user_fixture_with_password()
       client_id = "44c2ab8a-cb38-4960-b92a-a7aefb190387"
 
@@ -278,46 +275,34 @@ defmodule GrappaWeb.AuthControllerTest do
       assert body["provider"] == "disabled"
     end
 
-    test "client_cap_exceeded → 503 too_many_sessions (FallbackController wire shape)",
-         %{conn: conn} do
-      # T31: W3 per-IP cap retired in favour of per-(client, network) cap
-      # via Grappa.Admission.check_capacity/1. Set cap to 1, seed one
-      # existing session for client-id "test-device", then attempt a second
-      # login from the same device.
-      #
-      # Task 5: AuthController no longer hand-maps admission atoms — the
-      # `{:error, :client_cap_exceeded}` flows through `FallbackController`.
-      # U-3 (UD3): flipped 429 → 503 — this is resource exhaustion
-      # (the device's per-network slot is full), not rate limit. The
-      # envelope `too_many_sessions` stays distinct from network-wide
-      # `network_busy` so cic copy can distinguish "you're at the
-      # limit from THIS device" from "the network is full for everyone".
+    test "ip_cap_exceeded (nil-client bypass) → 503 too_many_sessions", %{conn: conn} do
+      # #171: the visitor-login path carries NO x-grappa-client-id, so the
+      # per-client cap short-circuits to :ok by construction — the bug that
+      # let one source IP open unbounded concurrent visitor sessions. Seed
+      # one existing visitor session at the test conn's source IP
+      # (127.0.0.1), cap max_per_ip=1, then a SECOND distinct visitor
+      # login from the SAME IP with NO client-id must 503. Since the client
+      # cap can't fire on a nil client, the rejection can only be the ip
+      # cap — and it reuses the same too_many_sessions envelope (cic
+      # unchanged, keys on the wire string not the atom).
       {_, _} = setup_visitor_network(pick_unused_port())
 
       {:ok, net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra"})
 
       {:ok, capped_net} =
         net
-        |> Grappa.Networks.Network.changeset(%{max_per_client: 1})
+        |> Grappa.Networks.Network.changeset(%{max_per_ip: 1})
         |> Repo.update()
 
       {:ok, existing_visitor} =
-        Visitors.find_or_provision_anon("existing_user", capped_net.slug, "127.0.0.1")
+        Visitors.find_or_provision_anon("ipcap_existing", capped_net.slug, "127.0.0.1")
 
-      client_id = "44c2ab8a-cb38-4960-b92a-a7aefb190386"
-
+      # Existing session carries NO client_id — the nil-client bypass path.
       {:ok, _} =
-        Accounts.create_session(
-          {:visitor, existing_visitor.id},
-          "127.0.0.1",
-          nil,
-          client_id: client_id
-        )
+        Accounts.create_session({:visitor, existing_visitor.id}, "127.0.0.1", nil, [])
 
-      conn =
-        conn
-        |> put_req_header("x-grappa-client-id", client_id)
-        |> post("/auth/login", %{"identifier" => "cc"})
+      # Second login, distinct nick, NO x-grappa-client-id header.
+      conn = post(conn, "/auth/login", %{"identifier" => "ipcap_new"})
 
       assert json_response(conn, 503) == %{"error" => "too_many_sessions"}
     end

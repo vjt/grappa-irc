@@ -59,7 +59,7 @@ const SEED_CHANNEL = AUTOJOIN_CHANNELS[0];
 type CapKnob =
   | "max_concurrent_user_sessions"
   | "max_concurrent_visitor_sessions"
-  | "max_per_client";
+  | "max_per_ip";
 
 async function adminPatchCaps(
   adminToken: string,
@@ -155,7 +155,7 @@ test.afterEach(async () => {
   await adminPatchCaps(admin.token, NETWORK_SLUG, {
     max_concurrent_user_sessions: null,
     max_concurrent_visitor_sessions: null,
-    max_per_client: null,
+    max_per_ip: null,
   }).catch(() => {});
 
   const vjt = getSeededVjt();
@@ -169,13 +169,13 @@ test.afterEach(async () => {
 // /connect by the same user → 503). That assertion pinned a bug:
 // the cap counted the requesting subject's own pre-existing session
 // against itself, which made T32 park → /connect always 503 at the
-// default `max_per_client = 1`. Per CLAUDE.md "Never assert buggy
+// default `max_per_ip = 1`. Per CLAUDE.md "Never assert buggy
 // behavior," the assertion was migrated to the genuine cap-saturation
 // case: a SECOND distinct user on the SAME device. m9b-test (seeded
 // alongside vjt in compose.yaml) provides the cross-subject fixture.
 //
 // What's still asserted end-to-end at the HTTP boundary:
-//   - admin-set `max_per_client = 1` saturates when 2 distinct users
+//   - admin-set `max_per_ip = 1` saturates when 2 distinct users
 //     each hold 1 accounts_session on the SAME client_id;
 //   - FallbackController U-3 clause maps `:client_cap_exceeded` →
 //     503 envelope `too_many_sessions` (status flip from pre-U-3's
@@ -185,7 +185,7 @@ test.afterEach(async () => {
 // blocked by its OWN pre-existing session. Covered server-side by
 // the UX-5 BC unit + controller tests, and at the e2e by
 // `ux-5-bc-park-respawn.spec.ts`.
-test("U-3 (UD3) — client cap saturation → 503 too_many_sessions", async () => {
+test("U-3 — per-IP cap saturation → 503 too_many_sessions", async () => {
   const vjt = getSeededVjt();
 
   // Park vjt's Bootstrap-spawned session so the /connect re-spawn
@@ -198,20 +198,18 @@ test("U-3 (UD3) — client cap saturation → 503 too_many_sessions", async () =
     },
   );
 
-  // MUST be canonical UUID v4 — `Grappa.ClientId.regex/0` rejects
-  // anything else at the `GrappaWeb.Plugs.ClientId` boundary, in
-  // which case `current_client_id` ends up nil and
-  // `Admission.check_client_cap/2` short-circuits to `:ok` (silent
-  // pass → false-200 instead of the asserted 503).
+  // #171: the per-IP cap ignores client_id, but the login/connect
+  // helpers still send a valid one (canonical UUID v4 — `ClientId.regex/0`
+  // rejects anything else at the `Plugs.ClientId` boundary). Harmless
+  // here; kept so the helpers stay reusable across specs.
   const clientId = "a3000000-0000-4000-8000-000000000033";
 
-  // Bump max_per_client UP first — e2e's MIX_ENV=dev defaults the
-  // global to 1 (config/config.exs), so a fresh /connect under a
-  // brand-new client_id with no admin-set per-network cap would
-  // saturate IMMEDIATELY (count=1, cap=1) and 503 before we ever get
-  // to exercise the U-3 mid-test cap-drop.
+  // Bump max_per_ip UP first so the setup connects have headroom before
+  // the mid-test drop to 1. The dev/e2e default is 10 (config/dev.exs);
+  // making it explicit keeps the spec independent of that default and of
+  // however many other users already hold a session on the shared IP.
   const admin = await login(ADMIN_IDENTIFIER, ADMIN_PASSWORD);
-  await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_client: 10 });
+  await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_ip: 10 });
 
   // vjt logs in under the fixed client_id → creates
   // accounts_session(vjt, client_id). /connect succeeds at cap=10.
@@ -219,14 +217,14 @@ test("U-3 (UD3) — client cap saturation → 503 too_many_sessions", async () =
   const vjtConnect = await connectWithClientId(vjtBearer, NETWORK_SLUG, clientId);
   expect(vjtConnect.status).toBe(200);
 
-  // Admin drops max_per_client to 1 — vjt's session occupies the slot.
-  await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_client: 1 });
+  // Admin drops max_per_ip to 1 — vjt's session occupies the slot.
+  await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_ip: 1 });
 
   // m9b-test (a DIFFERENT user with a credential for the SAME network,
-  // logged in from the SAME device) tries /connect. The cap counts vjt's
-  // session (different subject, NOT self-excluded) → count=1, cap=1 →
-  // :client_cap_exceeded → 503 too_many_sessions. This is the genuine
-  // cross-subject saturation the cap exists to enforce.
+  // /connecting from the SAME source IP) tries /connect. The per-IP cap
+  // counts vjt's session (different subject, NOT self-excluded) →
+  // count=1, cap=1 → :ip_cap_exceeded → 503 too_many_sessions. This is
+  // the genuine cross-subject saturation the cap exists to enforce.
   const m9bIdentifier = `${M9B_USER}@grappa.test`;
   const m9bBearer = await loginWithClientId(m9bIdentifier, "test-password-not-secret", clientId);
 
@@ -243,7 +241,7 @@ test("U-3 (UD3) — client cap saturation → 503 too_many_sessions", async () =
   expect(body.error).toBe("too_many_sessions");
 
   // Restore m9b's session so subsequent specs see a healthy baseline.
-  await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_client: null });
+  await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_ip: null });
   await patchNetworkConnectionState(m9bBearer, NETWORK_SLUG, {
     connection_state: "connected",
   }).catch(() => {});
@@ -305,8 +303,8 @@ test("U-3 (UD4) — admin Sessions tab renders per-network cap-count summary", a
   const usersCell = await page.getByTestId(`admin-sessions-summary-users-${slug}`).textContent();
   expect(usersCell).toMatch(/^\d+\/(\d+|∞)$/);
 
-  const perClientCell = await page
-    .getByTestId(`admin-sessions-summary-per-client-${slug}`)
+  const perIpCell = await page
+    .getByTestId(`admin-sessions-summary-per-ip-${slug}`)
     .textContent();
-  expect(perClientCell).toMatch(/^(\d+|∞)$/);
+  expect(perIpCell).toMatch(/^(\d+|∞)$/);
 });

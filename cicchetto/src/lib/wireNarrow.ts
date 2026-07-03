@@ -445,7 +445,7 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         typeof r.error !== "string" ||
         typeof r.network_id !== "number" ||
         !isNullableString(r.network_slug) ||
-        !isNullableString(r.client_id)
+        !isNullableString(r.source_ip)
       )
         return null;
       return {
@@ -454,7 +454,7 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         error: r.error,
         network_id: r.network_id,
         network_slug: r.network_slug as string | null,
-        client_id: r.client_id as string | null,
+        source_ip: r.source_ip as string | null,
         at: r.at as string,
       };
     case "visitor_deleted":
@@ -543,7 +543,7 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         typeof r.network_slug !== "string" ||
         !isNullableNumber(r.max_concurrent_visitor_sessions) ||
         !isNullableNumber(r.max_concurrent_user_sessions) ||
-        !isNullableNumber(r.max_per_client) ||
+        !isNullableNumber(r.max_per_ip) ||
         !isNullableString(r.actor_user_id) ||
         !isNullableString(r.actor_user_name)
       )
@@ -554,7 +554,7 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         network_slug: r.network_slug,
         max_concurrent_visitor_sessions: r.max_concurrent_visitor_sessions as number | null,
         max_concurrent_user_sessions: r.max_concurrent_user_sessions as number | null,
-        max_per_client: r.max_per_client as number | null,
+        max_per_ip: r.max_per_ip as number | null,
         actor_user_id: r.actor_user_id as string | null,
         actor_user_name: r.actor_user_name as string | null,
         at: r.at as string,

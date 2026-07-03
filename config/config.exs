@@ -51,9 +51,9 @@ config :grappa, :session_backoff,
 # CP11 S21 brainstorm). All values configurable per-env via
 # config/runtime.exs at deployment time.
 #
-#   * default_max_per_client_per_network — global per-(client_id,
-#     network_id) cap. Operator can override per-network via the
-#     networks.max_per_client column.
+#   * default_max_per_ip_per_network — global per-(source_ip,
+#     network_id) clone cap (#171). Operator can override per-network via
+#     the networks.max_per_ip column.
 #   * captcha_provider — module implementing Grappa.Admission.Captcha
 #     behaviour. Disabled = always :ok (test/dev/private deployments).
 #     Plan 2 adds Turnstile + HCaptcha modules.
@@ -73,7 +73,7 @@ config :grappa, :session_backoff,
 #   * network_circuit_threshold / window_ms / cooldown_ms — see
 #     Grappa.Admission.NetworkCircuit moduledoc.
 config :grappa, :admission,
-  default_max_per_client_per_network: 1,
+  default_max_per_ip_per_network: 1,
   captcha_provider: Grappa.Admission.Captcha.Disabled,
   captcha_secret: nil,
   captcha_site_key: nil,

@@ -135,7 +135,7 @@ describe("Login", () => {
     });
   });
 
-  it("renders too_many_sessions copy on 503 (U-3: client_cap_exceeded)", async () => {
+  it("renders too_many_sessions copy on 503 (U-3: ip_cap_exceeded)", async () => {
     vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "too_many_sessions"));
     renderLogin();
     fireEvent.input(screen.getByLabelText(/nick or email/i), {

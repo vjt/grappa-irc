@@ -586,16 +586,16 @@ describe("narrowAdminEvent (REV-G H24)", () => {
       error: "max_concurrent_visitor_sessions",
       network_id: 1,
       network_slug: "azzurra",
-      client_id: "abc",
+      source_ip: "203.0.113.5",
       at: "2026-05-22T12:00:00Z",
     };
     it("accepts valid", () => {
       expect(narrowAdminEvent(valid)).toEqual(valid);
     });
-    it("accepts null client_id", () => {
-      expect(narrowAdminEvent({ ...valid, client_id: null })).toEqual({
+    it("accepts null source_ip", () => {
+      expect(narrowAdminEvent({ ...valid, source_ip: null })).toEqual({
         ...valid,
-        client_id: null,
+        source_ip: null,
       });
     });
     it("rejects unknown flow", () => {
@@ -703,7 +703,7 @@ describe("narrowAdminEvent (REV-G H24)", () => {
       network_slug: "azzurra",
       max_concurrent_visitor_sessions: 100,
       max_concurrent_user_sessions: 50,
-      max_per_client: 5,
+      max_per_ip: 5,
       actor_user_id: "uuid-op",
       actor_user_name: "admin",
       at: "2026-05-22T12:00:00Z",
@@ -716,12 +716,12 @@ describe("narrowAdminEvent (REV-G H24)", () => {
         ...valid,
         max_concurrent_visitor_sessions: null,
         max_concurrent_user_sessions: null,
-        max_per_client: null,
+        max_per_ip: null,
       };
       expect(narrowAdminEvent(ev)).toEqual(ev);
     });
     it("rejects non-null non-number cap", () => {
-      expect(narrowAdminEvent({ ...valid, max_per_client: "5" })).toBeNull();
+      expect(narrowAdminEvent({ ...valid, max_per_ip: "5" })).toBeNull();
     });
     it("rejects null network_slug (required non-null on this arm)", () => {
       expect(narrowAdminEvent({ ...valid, network_slug: null })).toBeNull();

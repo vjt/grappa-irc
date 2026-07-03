@@ -40,7 +40,7 @@ import { installAdminEvents, uninstallAdminEvents } from "../lib/adminEvents";
 //
 // Per-row surface: three inline number editors
 // (max_concurrent_visitor_sessions + max_concurrent_user_sessions
-// + max_per_client) + per-row Save (enabled only when dirty vs.
+// + max_per_ip) + per-row Save (enabled only when dirty vs.
 // server-echoed value) + per-row Reset Circuit (InlineConfirmButton,
 // visible only when circuit_state !== null).
 //
@@ -58,7 +58,7 @@ const BAHAMUT: AdminNetwork = {
   slug: "bahamut-test",
   max_concurrent_visitor_sessions: 100,
   max_concurrent_user_sessions: 3,
-  max_per_client: 5,
+  max_per_ip: 5,
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
   circuit_state: null,
@@ -70,7 +70,7 @@ const AZZURRA: AdminNetwork = {
   slug: "azzurra",
   max_concurrent_visitor_sessions: 100,
   max_concurrent_user_sessions: 3,
-  max_per_client: 3,
+  max_per_ip: 3,
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
   circuit_state: null,
@@ -82,7 +82,7 @@ const OPEN_CIRCUIT: AdminNetwork = {
   slug: "tripped",
   max_concurrent_visitor_sessions: 100,
   max_concurrent_user_sessions: 3,
-  max_per_client: 3,
+  max_per_ip: 3,
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
   circuit_state: {
@@ -100,7 +100,7 @@ const UNLIMITED: AdminNetwork = {
   slug: "unlimited",
   max_concurrent_visitor_sessions: null,
   max_concurrent_user_sessions: null,
-  max_per_client: null,
+  max_per_ip: null,
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
   circuit_state: null,
@@ -177,10 +177,10 @@ describe("AdminNetworksTab", () => {
       `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
     )) as HTMLInputElement;
     expect(sessionsInput.value).toBe("100");
-    const perClientInput = screen.getByTestId(
-      `admin-network-max-per-client-${BAHAMUT.slug}`,
+    const perIpInput = screen.getByTestId(
+      `admin-network-max-per-ip-${BAHAMUT.slug}`,
     ) as HTMLInputElement;
-    expect(perClientInput.value).toBe("5");
+    expect(perIpInput.value).toBe("5");
   });
 
   it("renders empty input for null caps (unlimited)", async () => {
@@ -227,7 +227,7 @@ describe("AdminNetworksTab", () => {
     fireEvent.input(sessionsInput, { target: { value: "200" } });
     expect(save.disabled).toBe(false);
     fireEvent.click(save);
-    // Partial-body contract: cic must NOT echo `max_per_client` when
+    // Partial-body contract: cic must NOT echo `max_per_ip` when
     // the operator didn't touch it (CRIT-1 of M-10 review — sending
     // the unchanged value would lose concurrent edits to that field).
     await waitFor(() => {
@@ -248,12 +248,12 @@ describe("AdminNetworksTab", () => {
     vi.mocked(api.adminListNetworks)
       .mockResolvedValueOnce([BAHAMUT])
       .mockResolvedValueOnce([
-        { ...BAHAMUT, max_concurrent_visitor_sessions: 200, max_per_client: 9 },
+        { ...BAHAMUT, max_concurrent_visitor_sessions: 200, max_per_ip: 9 },
       ]);
     vi.mocked(api.adminPatchNetworkCaps).mockResolvedValue({
       ...BAHAMUT,
       max_concurrent_visitor_sessions: 200,
-      max_per_client: 9,
+      max_per_ip: 9,
     });
 
     render(() => <AdminNetworksTab />);
@@ -261,16 +261,16 @@ describe("AdminNetworksTab", () => {
     const sessionsInput = (await screen.findByTestId(
       `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
     )) as HTMLInputElement;
-    const perClientInput = screen.getByTestId(
-      `admin-network-max-per-client-${BAHAMUT.slug}`,
+    const perIpInput = screen.getByTestId(
+      `admin-network-max-per-ip-${BAHAMUT.slug}`,
     ) as HTMLInputElement;
     fireEvent.input(sessionsInput, { target: { value: "200" } });
-    fireEvent.input(perClientInput, { target: { value: "9" } });
+    fireEvent.input(perIpInput, { target: { value: "9" } });
     fireEvent.click(screen.getByTestId(`admin-network-save-${BAHAMUT.slug}`));
     await waitFor(() => {
       expect(api.adminPatchNetworkCaps).toHaveBeenCalledWith("test-bearer", BAHAMUT.slug, {
         max_concurrent_visitor_sessions: 200,
-        max_per_client: 9,
+        max_per_ip: 9,
       });
     });
   });

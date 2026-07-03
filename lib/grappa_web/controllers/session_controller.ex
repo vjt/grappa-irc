@@ -100,14 +100,17 @@ defmodule GrappaWeb.SessionController do
 
   # Mirror of `NetworksController.orchestrate_spawn/4`'s capacity_input,
   # with the visitor-flow discriminant. `requesting_subject` is the
-  # visitor itself so `Admission.check_client_cap`'s self-exclusion keeps
-  # the visitor's own live browser session from counting against the cap
-  # on the reconnect respawn (same rationale as the user PATCH /connect).
+  # visitor itself so the per-IP cap's self-exclusion keeps the visitor's
+  # own live browser session from counting against the cap on the
+  # reconnect respawn (same rationale as the user PATCH /connect).
   @spec capacity_input(Plug.Conn.t(), Visitor.t(), integer()) :: Grappa.Admission.capacity_input()
   defp capacity_input(conn, %Visitor{id: id}, network_id) do
     %{
       network_id: network_id,
-      client_id: conn.assigns[:current_client_id],
+      # #171: per-IP clone cap — raw conn, so format through the canonical
+      # `RemoteIP.format/1` (the same value login writes to
+      # accounts_sessions.ip), mirroring `orchestrate_spawn/4`.
+      source_ip: GrappaWeb.RemoteIP.format(conn),
       flow: :visitor_reconnect,
       requesting_subject: {:visitor, id}
     }

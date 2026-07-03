@@ -28,10 +28,12 @@ defmodule Grappa.Admission.Telemetry do
 
     * `[:grappa, :admission, :capacity, :reject]`
       measurements: `%{}`
-      metadata: `%{flow: atom(), error: atom() | tuple(), network_id: integer(), client_id: Grappa.ClientId.t() | nil}`
+      metadata: `%{flow: atom(), error: atom() | tuple(), network_id: integer(), source_ip: String.t() | nil}`
       Emitted from `Admission.check_capacity/1` on every rejection.
       Distinct concern from `:circuit, :open` — fires on every rejected
       candidate during an open window, not just on the transition.
+      `source_ip` is the per-(source-IP, network) cap key (#171), so a
+      rejection dashboard can attribute clone floods to an origin IP.
 
   Phase 5 PromEx exporter (deferred) will subscribe to these prefixes via
   `:telemetry.attach_many/4` or `TelemetryMetricsPrometheus`.
@@ -71,22 +73,23 @@ defmodule Grappa.Admission.Telemetry do
     )
   end
 
-  @spec capacity_reject(atom(), term(), integer(), Grappa.ClientId.t() | nil) :: :ok
+  @spec capacity_reject(atom(), term(), integer(), String.t() | nil) :: :ok
   @doc """
   Emits `[:grappa, :admission, :capacity, :reject]` on every
   capacity-check rejection. `flow` is the admission flow atom (e.g.
   `:user`, `:visitor`), `error` is the rejection reason atom or tuple,
-  `network_id` is the target network FK, and `client_id` is the
-  originating client (nil for system flows). Fires per-rejection, not
-  just on circuit open — enables per-network rejection-rate dashboards.
+  `network_id` is the target network FK, and `source_ip` is the
+  originating client IP (nil for cold-start system flows). Fires
+  per-rejection, not just on circuit open — enables per-network +
+  per-IP rejection-rate dashboards.
   """
-  def capacity_reject(flow, error, network_id, client_id)
+  def capacity_reject(flow, error, network_id, source_ip)
       when is_atom(flow) and is_integer(network_id) and
-             (is_binary(client_id) or is_nil(client_id)) do
+             (is_binary(source_ip) or is_nil(source_ip)) do
     :telemetry.execute(
       [:grappa, :admission, :capacity, :reject],
       %{},
-      %{flow: flow, error: error, network_id: network_id, client_id: client_id}
+      %{flow: flow, error: error, network_id: network_id, source_ip: source_ip}
     )
   end
 end

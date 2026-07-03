@@ -188,7 +188,16 @@ services:
         # bind here — visitor minting provisions its own anon visitor
         # rows at request time; the credential table stays
         # bind_network-scoped to user accounts.
-        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra", max_concurrent_visitor_sessions: 100})'
+        #
+        # #171: `max_per_ip: 100` is deliberate headroom, not a real
+        # limit. The per-(source-IP, network) clone cap reuses
+        # `max_per_ip`, and the serial Playwright runner drives many
+        # visitor logins through ONE shared source IP (runner → nginx →
+        # grappa). At the production default (1) the 2nd concurrent
+        # visitor on the shared IP would 503 `too_many_sessions`,
+        # regressing unrelated specs. Specs that need a tight cap set it
+        # explicitly and restore to 100 (issue171 spec, u-4).
+        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra", max_concurrent_visitor_sessions: 100, max_per_ip: 100})'
         mix grappa.add_server --network azzurra --server bahamut-test:6667 --no-tls
     networks:
       grappa-e2e: {}

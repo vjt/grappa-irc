@@ -54,7 +54,7 @@ const NETWORK: AdminNetwork = {
   slug: "azzurra",
   max_concurrent_visitor_sessions: null,
   max_concurrent_user_sessions: null,
-  max_per_client: null,
+  max_per_ip: null,
   inserted_at: "2026-05-31T00:00:00Z",
   updated_at: "2026-05-31T00:00:00Z",
   circuit_state: null,

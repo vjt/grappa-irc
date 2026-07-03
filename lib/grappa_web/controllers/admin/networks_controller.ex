@@ -30,7 +30,7 @@ defmodule GrappaWeb.Admin.NetworksController do
 
   Updates the operator-tunable admission caps
   (`max_concurrent_visitor_sessions`, `max_concurrent_user_sessions`,
-  `max_per_client`). Three-valued contract per
+  `max_per_ip`). Three-valued contract per
   `Networks.update_network_caps/2`: `nil` clears the cap (unlimited),
   `0` is degenerate lock-down, `N>0` is the cap itself. Negative
   integers fail validation at the changeset boundary.
@@ -120,7 +120,7 @@ defmodule GrappaWeb.Admin.NetworksController do
         network.slug,
         network.max_concurrent_visitor_sessions,
         network.max_concurrent_user_sessions,
-        network.max_per_client,
+        network.max_per_ip,
         actor_id,
         actor_name
       )
@@ -209,7 +209,7 @@ defmodule GrappaWeb.Admin.NetworksController do
       "slug",
       "max_concurrent_visitor_sessions",
       "max_concurrent_user_sessions",
-      "max_per_client"
+      "max_per_ip"
     ]
 
     extra = Map.keys(params) -- allowed
@@ -241,7 +241,7 @@ defmodule GrappaWeb.Admin.NetworksController do
   # Whitelist the three caps; everything else collapses to bad_request.
   # `update_network_caps/2` cares only about
   # `:max_concurrent_visitor_sessions`, `:max_concurrent_user_sessions`,
-  # and `:max_per_client` keys; an empty map is a no-op update (valid).
+  # and `:max_per_ip` keys; an empty map is a no-op update (valid).
   # Null is a meaningful "clear the cap" value; the changeset rejects
   # negative integers and non-integers, so the FallbackController
   # validation_failed clause carries the field error to the operator.
@@ -249,7 +249,7 @@ defmodule GrappaWeb.Admin.NetworksController do
     allowed = [
       "max_concurrent_visitor_sessions",
       "max_concurrent_user_sessions",
-      "max_per_client"
+      "max_per_ip"
     ]
 
     keys = Map.keys(params) -- ["slug"]

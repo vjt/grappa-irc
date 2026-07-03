@@ -169,7 +169,7 @@ const AdminSessionsTab: Component = () => {
                 <th>network</th>
                 <th>visitors</th>
                 <th>users</th>
-                <th>per-client cap</th>
+                <th>per-IP cap</th>
               </tr>
             </thead>
             <tbody>
@@ -196,8 +196,8 @@ const AdminSessionsTab: Component = () => {
                     >
                       {net.live_counts.users}/{renderCap(net.max_concurrent_user_sessions)}
                     </td>
-                    <td data-testid={`admin-sessions-summary-per-client-${net.slug}`}>
-                      {renderCap(net.max_per_client)}
+                    <td data-testid={`admin-sessions-summary-per-ip-${net.slug}`}>
+                      {renderCap(net.max_per_ip)}
                     </td>
                   </tr>
                 )}

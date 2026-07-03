@@ -414,26 +414,29 @@ defmodule GrappaWeb.NetworksControllerTest do
     # If a future bucket adds a sync probe to init/1, add the test then.
 
     # UX-5 bucket BC (2026-05-19) — cap-on-park unblocker. The operator's
-    # browser holds an active accounts_session under `client_id = X`;
-    # they X-button the network header (T32 park) then send /connect
+    # browser holds an active accounts_session from source IP X; they
+    # X-button the network header (T32 park) then send /connect
     # (PATCH connection_state=connected). Pre-BC the cap counted vjt's
-    # OWN session against him with the default `max_per_client = 1`,
+    # OWN session against him with the default `max_per_ip = 1`,
     # returning 503 `too_many_sessions`. T32 was a red herring — the
     # bug fired on first PATCH /connect from any logged-in user.
     # Post-BC, `requesting_subject: {:user, user.id}` is threaded into
     # the admission input and self-exclusion at
-    # `Admission.count_subjects_for_client_on_network/4` drops the
-    # requesting subject's rows from the cap count.
-    test "PATCH /connect succeeds when requesting user already holds own session on this device (UX-5 BC)",
+    # `Admission.count_subjects_for_ip_on_network/4` drops the
+    # requesting subject's rows from the cap count. The seeded session
+    # shares the test conn's source IP (127.0.0.1) so self-exclusion is
+    # load-bearing (#171: the cap is per-source-IP).
+    test "PATCH /connect succeeds when requesting user already holds own session on same IP (UX-5 BC)",
          %{conn: conn} do
       vjt = user_fixture(name: "vjt-ux5bc-self-#{u()}")
       client_id = "11111111-2222-4444-8888-fedcba987650"
 
-      # Session minted on the same client_id the PATCH will carry — this
-      # is the row that pre-BC counted toward the cap as 1, blocking
-      # any subsequent spawn from the SAME subject + same device.
+      # Session minted on the SAME source IP the PATCH will carry
+      # (127.0.0.1, the test conn's remote_ip) — this is the row that
+      # without self-exclusion counts toward the cap as 1, blocking any
+      # subsequent spawn from the SAME subject on the SAME IP.
       {:ok, session} =
-        Grappa.Accounts.create_session({:user, vjt.id}, "1.2.3.4", "ua", client_id: client_id)
+        Grappa.Accounts.create_session({:user, vjt.id}, "127.0.0.1", "ua", client_id: client_id)
 
       slug = "net-ux5bc-self-#{u()}"
       {:ok, irc_server} = IRCServer.start_link(fn state, _ -> {:reply, nil, state} end)
@@ -442,7 +445,7 @@ defmodule GrappaWeb.NetworksControllerTest do
 
       # Pin per-device cap at 1 — the tightest configuration AND the
       # production default. Pre-fix this guarantees the buggy path.
-      {:ok, _} = Networks.update_network_caps(network, %{max_per_client: 1})
+      {:ok, _} = Networks.update_network_caps(network, %{max_per_ip: 1})
 
       cred = credential_fixture(vjt, network)
       # Seed the credential as parked so :connected is a valid transition
@@ -474,11 +477,11 @@ defmodule GrappaWeb.NetworksControllerTest do
       :ok = Grappa.Session.stop_session({:user, vjt.id}, network.id)
     end
 
-    # Negative twin: a DIFFERENT user on the SAME device must still be
-    # cap-blocked. The fix narrows the cap to "different subjects on the
-    # same device," not "no cap at all." This guards against a regression
+    # Negative twin: a DIFFERENT user on the SAME source IP must still be
+    # cap-blocked. Self-exclusion narrows the cap to "different subjects on
+    # the same IP," not "no cap at all." This guards against a regression
     # that drops the exclusion clause and loosens the cap entirely.
-    test "PATCH /connect 503s when a DIFFERENT user holds the cap slot on same device (UX-5 BC negative)",
+    test "PATCH /connect 503s when a DIFFERENT user holds the cap slot on same IP (UX-5 BC negative)",
          %{conn: conn} do
       alice = user_fixture(name: "alice-ux5bc-other-#{u()}")
       bob = user_fixture(name: "bob-ux5bc-other-#{u()}")
@@ -486,15 +489,16 @@ defmodule GrappaWeb.NetworksControllerTest do
 
       slug = "net-ux5bc-other-#{u()}"
       {network, _} = network_with_server(port: 9_999, slug: slug)
-      {:ok, _} = Networks.update_network_caps(network, %{max_per_client: 1})
+      {:ok, _} = Networks.update_network_caps(network, %{max_per_ip: 1})
 
-      # alice has a credential + an accounts_session under client_id X.
-      # That row IS the cap-occupying session; bob trying to PATCH /connect
-      # from the same device must 503 (cross-subject = legit cap hit).
+      # alice has a credential + an accounts_session from source IP
+      # 127.0.0.1 (the test conn's remote_ip). That row IS the
+      # cap-occupying session; bob PATCHing /connect from the same IP must
+      # 503 (cross-subject = legit cap hit, not self-excluded).
       _ = credential_fixture(alice, network)
 
       {:ok, _} =
-        Grappa.Accounts.create_session({:user, alice.id}, "1.2.3.4", "ua", client_id: client_id)
+        Grappa.Accounts.create_session({:user, alice.id}, "127.0.0.1", "ua", client_id: client_id)
 
       # bob also has a credential on this network but no live session;
       # their PATCH carries bob's own bearer + same client_id header.

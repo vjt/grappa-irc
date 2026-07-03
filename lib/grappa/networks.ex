@@ -372,7 +372,7 @@ defmodule Grappa.Networks do
 
   @doc """
   Updates the admission caps (`max_concurrent_visitor_sessions`,
-  `max_concurrent_user_sessions`, `max_per_client`) on a network row.
+  `max_concurrent_user_sessions`, `max_per_ip`) on a network row.
   Operator-side entry point used by `mix grappa.set_network_caps`
   (any DB the container can reach) and live IEx mutations
   (`scripts/iex.sh`) — single source for the validation + Repo.update
@@ -382,7 +382,7 @@ defmodule Grappa.Networks do
 
     * `nil` — explicitly clears the cap (means "unlimited"). The
       `--clear-max-visitor-sessions` / `--clear-max-user-sessions` /
-      `--clear-max-per-client` mix flags surface this from the
+      `--clear-max-per-ip` mix flags surface this from the
       operator side.
     * `0` — degenerate lock-down (means "allow none"). Explicit
       operator intent, distinct from "unlimited".
@@ -392,7 +392,7 @@ defmodule Grappa.Networks do
   `Network.changeset/2`'s `validate_non_negative_or_nil/2` rule.
   Unsupplied keys keep their current value (changeset only casts the
   allowlist `[:slug, :max_concurrent_visitor_sessions,
-  :max_concurrent_user_sessions, :max_per_client]`).
+  :max_concurrent_user_sessions, :max_per_ip]`).
   """
   # B5.3 review-fix: tightened from `integer() | nil` to
   # `non_neg_integer() | nil` so the typespec matches the changeset's
@@ -404,7 +404,7 @@ defmodule Grappa.Networks do
   @spec update_network_caps(Network.t(), %{
           optional(:max_concurrent_visitor_sessions) => non_neg_integer() | nil,
           optional(:max_concurrent_user_sessions) => non_neg_integer() | nil,
-          optional(:max_per_client) => non_neg_integer() | nil
+          optional(:max_per_ip) => non_neg_integer() | nil
         }) :: {:ok, Network.t()} | {:error, Ecto.Changeset.t()}
   def update_network_caps(%Network{} = network, attrs) when is_map(attrs) do
     network

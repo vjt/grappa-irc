@@ -78,7 +78,7 @@ export type AdminEventsWireCapacityRejectEvent = {
   error: string;
   network_id: number;
   network_slug: string | null;
-  client_id: string | null;
+  source_ip: string | null;
   at: string;
 };
 
@@ -149,7 +149,7 @@ export type AdminEventsWireNetworkCapsUpdatedEvent = {
   network_slug: string;
   max_concurrent_visitor_sessions: number | null;
   max_concurrent_user_sessions: number | null;
-  max_per_client: number | null;
+  max_per_ip: number | null;
   actor_user_id: string | null;
   actor_user_name: string | null;
   at: string;

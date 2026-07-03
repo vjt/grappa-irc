@@ -42,7 +42,7 @@ function renderEvent(ev: WireAdminEvent): string {
       return `circuit closed for ${networkLabel(ev.network_slug, ev.network_id)} (${ev.reason})`;
     case "capacity_reject":
       return `${ev.flow} flow rejected on ${networkLabel(ev.network_slug, ev.network_id)} — ${ev.error}${
-        ev.client_id !== null ? ` (client ${ev.client_id})` : ""
+        ev.source_ip !== null ? ` (ip ${ev.source_ip})` : ""
       }`;
     case "visitor_deleted":
       return `${visitorLabel(ev.visitor_nick, ev.visitor_id)} deleted${actorSuffix(ev.actor_user_name)}`;
@@ -59,7 +59,7 @@ function renderEvent(ev: WireAdminEvent): string {
     case "session_terminated":
       return `${ev.subject_kind}:${ev.subject_id} @ ${networkLabel(ev.network_slug, ev.network_id)} terminated${actorSuffix(ev.actor_user_name)}`;
     case "network_caps_updated":
-      return `${ev.network_slug} caps: visitorSessions=${capLabel(ev.max_concurrent_visitor_sessions)}, userSessions=${capLabel(ev.max_concurrent_user_sessions)}, perClient=${capLabel(ev.max_per_client)}${actorSuffix(ev.actor_user_name)}`;
+      return `${ev.network_slug} caps: visitorSessions=${capLabel(ev.max_concurrent_visitor_sessions)}, userSessions=${capLabel(ev.max_concurrent_user_sessions)}, perIp=${capLabel(ev.max_per_ip)}${actorSuffix(ev.actor_user_name)}`;
     case "circuit_reset":
       return `circuit RESET for ${networkLabel(ev.network_slug, ev.network_id)}${actorSuffix(ev.actor_user_name)}`;
     case "cap_counts_changed":

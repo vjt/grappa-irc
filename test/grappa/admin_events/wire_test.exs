@@ -59,17 +59,17 @@ defmodule Grappa.AdminEvents.WireTest do
 
   describe "capacity_reject/5" do
     test "atom error" do
-      event = Wire.capacity_reject(:visitor, :network_cap_exceeded, 1, "azzurra", "client-abc")
+      event = Wire.capacity_reject(:visitor, :network_cap_exceeded, 1, "azzurra", "203.0.113.5")
       assert event.kind == :capacity_reject
       assert event.flow == :visitor
       assert event.error == "network_cap_exceeded"
-      assert event.client_id == "client-abc"
+      assert event.source_ip == "203.0.113.5"
     end
 
     test "tuple error renders via inspect" do
       event = Wire.capacity_reject(:user, {:network_circuit_open, 60_000}, 1, "azzurra", nil)
       assert event.error == "{:network_circuit_open, 60000}"
-      assert event.client_id == nil
+      assert event.source_ip == nil
     end
   end
 
@@ -139,14 +139,14 @@ defmodule Grappa.AdminEvents.WireTest do
       assert event.kind == :network_caps_updated
       assert event.max_concurrent_visitor_sessions == 5
       assert event.max_concurrent_user_sessions == 7
-      assert event.max_per_client == 2
+      assert event.max_per_ip == 2
     end
 
     test "nil caps mean unlimited" do
       event = Wire.network_caps_updated(1, "azzurra", nil, nil, nil, nil, nil)
       assert event.max_concurrent_visitor_sessions == nil
       assert event.max_concurrent_user_sessions == nil
-      assert event.max_per_client == nil
+      assert event.max_per_ip == nil
     end
 
     test "rejects empty slug" do
@@ -445,7 +445,7 @@ defmodule Grappa.AdminEvents.WireTest do
         Wire.from_telemetry(
           [:grappa, :admission, :capacity, :reject],
           %{},
-          %{flow: :visitor, error: :network_cap_exceeded, network_id: 9999, client_id: nil}
+          %{flow: :visitor, error: :network_cap_exceeded, network_id: 9999, source_ip: nil}
         )
 
       assert event.kind == :capacity_reject

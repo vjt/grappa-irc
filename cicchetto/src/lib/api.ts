@@ -981,7 +981,7 @@ export type WireAdminEvent =
       error: string;
       network_id: number;
       network_slug: string | null;
-      client_id: string | null;
+      source_ip: string | null;
       at: string;
     }
   | {
@@ -1045,7 +1045,7 @@ export type WireAdminEvent =
       network_slug: string;
       max_concurrent_visitor_sessions: number | null;
       max_concurrent_user_sessions: number | null;
-      max_per_client: number | null;
+      max_per_ip: number | null;
       actor_user_id: string | null;
       actor_user_name: string | null;
       at: string;
@@ -1513,7 +1513,7 @@ export type AdminNetwork = {
   slug: string;
   max_concurrent_visitor_sessions: number | null;
   max_concurrent_user_sessions: number | null;
-  max_per_client: number | null;
+  max_per_ip: number | null;
   inserted_at: string;
   updated_at: string;
   circuit_state: AdminCircuitState | null;
@@ -1525,7 +1525,7 @@ export type AdminNetworksResponse = { networks: AdminNetwork[] };
 // PATCH body is keys-optional per `Networks.update_network_caps/2`'s
 // `%{optional(:max_concurrent_visitor_sessions) => ...,
 // optional(:max_concurrent_user_sessions) => ...,
-// optional(:max_per_client) => ...}` contract: unsupplied keys keep
+// optional(:max_per_ip) => ...}` contract: unsupplied keys keep
 // their current value. Cic MUST only include keys whose value
 // actually changed vs the server-echoed row — sending all keys on
 // every edit creates a lost-update race (operator A's Save would
@@ -1534,7 +1534,7 @@ export type AdminNetworksResponse = { networks: AdminNetwork[] };
 export type AdminNetworkCapsPatch = {
   max_concurrent_visitor_sessions?: number | null;
   max_concurrent_user_sessions?: number | null;
-  max_per_client?: number | null;
+  max_per_ip?: number | null;
 };
 
 export async function adminListNetworks(token: string): Promise<AdminNetwork[]> {
@@ -2079,7 +2079,7 @@ export type AdminNetworkCreate = {
   slug: string;
   max_concurrent_visitor_sessions?: number | null;
   max_concurrent_user_sessions?: number | null;
-  max_per_client?: number | null;
+  max_per_ip?: number | null;
 };
 
 export async function adminCreateNetwork(

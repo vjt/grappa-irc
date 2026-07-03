@@ -30,7 +30,7 @@ import { token } from "./lib/auth";
 //
 // Per-row controls:
 //   * Inline number editors for `max_concurrent_visitor_sessions` +
-//     `max_concurrent_user_sessions` + `max_per_client` (post-U-1 the
+//     `max_concurrent_user_sessions` + `max_per_ip` (post-U-1 the
 //     network-total cap is split per subject; logic split lands in
 //     U-2). Empty string == null (the "unlimited" sentinel per
 //     `Networks.update_network_caps/2`'s three-valued contract).
@@ -69,7 +69,7 @@ import { token } from "./lib/auth";
 type RowEdit = {
   max_concurrent_visitor_sessions: string;
   max_concurrent_user_sessions: string;
-  max_per_client: string;
+  max_per_ip: string;
 };
 
 type ParseResult = { ok: true; value: number | null } | { ok: false };
@@ -87,13 +87,13 @@ const MAX_CAP = 2 ** 31 - 1;
 const FIELD_LABELS: Record<keyof RowEdit, string> = {
   max_concurrent_visitor_sessions: "max visitor sessions",
   max_concurrent_user_sessions: "max user sessions",
-  max_per_client: "max per client",
+  max_per_ip: "max per ip",
 };
 
 const FIELD_TEST_ID_SLUG: Record<keyof RowEdit, string> = {
   max_concurrent_visitor_sessions: "max-visitor-sessions",
   max_concurrent_user_sessions: "max-user-sessions",
-  max_per_client: "max-per-client",
+  max_per_ip: "max-per-ip",
 };
 
 function reapKey(): string {
@@ -178,7 +178,7 @@ const AdminNetworksTab: Component = () => {
           draft[n.slug] = {
             max_concurrent_visitor_sessions: capToInput(n.max_concurrent_visitor_sessions),
             max_concurrent_user_sessions: capToInput(n.max_concurrent_user_sessions),
-            max_per_client: capToInput(n.max_per_client),
+            max_per_ip: capToInput(n.max_per_ip),
           };
         }
       }),
@@ -590,7 +590,7 @@ const AdminNetworksTab: Component = () => {
               <th>max visitor sessions</th>
               <th>users (live/cap)</th>
               <th>max user sessions</th>
-              <th>max per client</th>
+              <th>max per ip</th>
               <th>circuit</th>
               <th>
                 <span class="sr-only">actions</span>
@@ -650,9 +650,9 @@ const AdminNetworksTab: Component = () => {
                     <td>
                       <CapInput
                         slug={net.slug}
-                        field="max_per_client"
-                        value={edits[net.slug]?.max_per_client ?? ""}
-                        onInput={(v) => onEditCap(net.slug, "max_per_client", v)}
+                        field="max_per_ip"
+                        value={edits[net.slug]?.max_per_ip ?? ""}
+                        onInput={(v) => onEditCap(net.slug, "max_per_ip", v)}
                       />
                     </td>
                     <td>
@@ -846,8 +846,8 @@ function buildPatchBody(net: AdminNetwork, edit: RowEdit): AdminNetworkCapsPatch
   if (!visitorSessions.ok) return null;
   const userSessions = parseCap(edit.max_concurrent_user_sessions);
   if (!userSessions.ok) return null;
-  const perClient = parseCap(edit.max_per_client);
-  if (!perClient.ok) return null;
+  const perIp = parseCap(edit.max_per_ip);
+  if (!perIp.ok) return null;
   const body: AdminNetworkCapsPatch = {};
   if (visitorSessions.value !== net.max_concurrent_visitor_sessions) {
     body.max_concurrent_visitor_sessions = visitorSessions.value;
@@ -855,8 +855,8 @@ function buildPatchBody(net: AdminNetwork, edit: RowEdit): AdminNetworkCapsPatch
   if (userSessions.value !== net.max_concurrent_user_sessions) {
     body.max_concurrent_user_sessions = userSessions.value;
   }
-  if (perClient.value !== net.max_per_client) {
-    body.max_per_client = perClient.value;
+  if (perIp.value !== net.max_per_ip) {
+    body.max_per_ip = perIp.value;
   }
   return body;
 }

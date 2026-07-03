@@ -19,7 +19,7 @@ defmodule Grappa.Networks.AdminWireTest do
         slug: "azzurra",
         max_concurrent_visitor_sessions: 10,
         max_concurrent_user_sessions: 5,
-        max_per_client: 2,
+        max_per_ip: 2,
         inserted_at: now,
         updated_at: now
       }
@@ -29,7 +29,7 @@ defmodule Grappa.Networks.AdminWireTest do
                slug: "azzurra",
                max_concurrent_visitor_sessions: 10,
                max_concurrent_user_sessions: 5,
-               max_per_client: 2,
+               max_per_ip: 2,
                inserted_at: ^now,
                updated_at: ^now
              } = AdminWire.network_to_admin_json(net)
@@ -51,7 +51,7 @@ defmodule Grappa.Networks.AdminWireTest do
       assert %{
                max_concurrent_visitor_sessions: nil,
                max_concurrent_user_sessions: nil,
-               max_per_client: nil
+               max_per_ip: nil
              } = AdminWire.network_to_admin_json(net)
     end
   end

@@ -108,7 +108,7 @@ const SEED_CHANNEL = AUTOJOIN_CHANNELS[0];
 type CapKnob =
   | "max_concurrent_user_sessions"
   | "max_concurrent_visitor_sessions"
-  | "max_per_client";
+  | "max_per_ip";
 
 async function adminPatchCaps(
   adminToken: string,
@@ -228,7 +228,7 @@ test.afterEach(async () => {
   await adminPatchCaps(admin.token, NETWORK_SLUG, {
     max_concurrent_user_sessions: null,
     max_concurrent_visitor_sessions: null,
-    max_per_client: null,
+    max_per_ip: null,
   }).catch((err: unknown) => {
     // eslint-disable-next-line no-console
     console.error(

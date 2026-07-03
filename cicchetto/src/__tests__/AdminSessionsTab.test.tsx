@@ -150,7 +150,7 @@ const BAHAMUT_NET: AdminNetwork = {
   slug: "bahamut",
   max_concurrent_visitor_sessions: 50,
   max_concurrent_user_sessions: 10,
-  max_per_client: 1,
+  max_per_ip: 1,
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-16T00:00:00Z",
   circuit_state: null,
@@ -162,7 +162,7 @@ const AZZURRA_NET: AdminNetwork = {
   slug: "azzurra",
   max_concurrent_visitor_sessions: null, // unlimited
   max_concurrent_user_sessions: 5,
-  max_per_client: 2,
+  max_per_ip: 2,
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-16T00:00:00Z",
   circuit_state: null,
@@ -503,7 +503,7 @@ describe("AdminSessionsTab", () => {
       "2/10",
     );
     expect(
-      screen.getByTestId(`admin-sessions-summary-per-client-${BAHAMUT_NET.slug}`).textContent,
+      screen.getByTestId(`admin-sessions-summary-per-ip-${BAHAMUT_NET.slug}`).textContent,
     ).toBe("1");
   });
 

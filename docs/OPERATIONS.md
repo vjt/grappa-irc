@@ -41,7 +41,7 @@ bin/grappa create-user --name <user> --password <pw>
 bin/grappa bind-network --user <user> --network <slug> --nick <nick> --auth <method> [--source <ip>]
 bin/grappa add-server --network <slug> --host <host> --port <port> [--tls] [--source <ip>]
 bin/grappa remove-server --network <slug> --host <host> --port <port>
-bin/grappa set-network-caps --network <slug> [--max-visitor-sessions N] [--max-user-sessions N] [--max-per-client N]
+bin/grappa set-network-caps --network <slug> [--max-visitor-sessions N] [--max-user-sessions N] [--max-per-ip N]
 bin/grappa unbind-network --user <user> --network <slug>
 bin/grappa update-network-credential ...
 bin/grappa seed-scrollback ...

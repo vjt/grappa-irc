@@ -4217,3 +4217,58 @@ mean the flow already grew the hands you were asked to add. The real work is
 usually the one sentence the brief got right. And trust the count, not the
 color: a worktree-aware tool run from the wrong directory will pass loudly for
 the wrong tree.*
+
+---
+
+## The cap that had to forget the client (#171)
+
+One IP opened seven sessions on the running testnet and nothing stopped it. The
+clone limit existed — a per-(client, network) cap — but visitor logins carry no
+client id, so it short-circuited to `:ok` by construction. The lock was real; the
+key fit every door but the one that mattered.
+
+The first fix was obedient and wrong-shaped. I added a per-IP cap *beside* the
+client cap, both reading the same `max_per_client` knob, mirroring the client
+cap's every clause — self-exclusion, subject-kind disjointness, the lot. It was
+faithful. It was also two caps sharing one dial, and the orchestrator caught what
+I'd documented but not felt: on a `max_per_ip = 1` network, loosening the IP cap
+to spare NAT'd households also loosened the client cap, because they were the same
+number. I'd written the coupling into the design notes as a "known consequence"
+and kept going. A consequence you have to warn about is usually a decision you
+haven't made yet. vjt made it: drop the client cap entirely. Visitors have no
+stable identity — the IP is the only handle — so cap on the IP, for everyone, and
+rename the knob to say what it means. One honest dial beats two coupled ones.
+
+But the lesson wasn't the design; it was who found the bugs. The unit suite was
+green — 3113 tests — and the real defects were both past its reach. The first
+integration run turned my #171 spec red not with a 200 but a 500: the visitor
+login path had its own inline error mapper with an allow-list of cap atoms, and my
+new atom fell through to the catch-all `:internal`. The client-cap path had never
+exercised that boundary because the client cap never fired on visitor logins — the
+exact bypass I was fixing had also hidden the second place it needed fixing. The
+second red was a cascade: a dozen unrelated specs timing out, and the container
+log said why — `PATCH /connect error=:ip_cap_exceeded remote_ip=172.31.0.6`. The
+e2e runner drives every browser login through one nginx IP, so four seeded users
+shared one source, and a per-IP cap of 1 throttled them all. The fix was config,
+not code — raise the dev default so the test substrate's shared IP has headroom —
+but I'd never have found the shape of it from unit tests, which give every case
+its own clean IP.
+
+Then the orchestrator asked the one question that could have sunk it in prod: does
+the cap count the *real* client IP, or the nginx socket? If the socket, every user
+in the world shares one address and the cap becomes a global lockout — a
+self-inflicted denial of service. The answer was already in the tree, in a plug
+written for a different incident: prod nginx is same-jail loopback with
+`X-Forwarded-For`, so `remote_ip` is rewritten to the real client, the same value
+the audit log stores and fail2ban bans on. The `172.31.0.6` I'd seen was the
+docker bridge — a test artifact, not prod. The cap was safe. But the safety lived
+in infrastructure I hadn't written and had to go read, and the honest answer
+required naming the file and line, not asserting from memory.
+
+*Law: a consequence you have to document as "acceptable" is a decision deferred —
+name the fork and make it, or add the second knob. Unit tests prove the cases you
+imagined; the boundaries you forgot — the second error-mapper, the shared-IP
+cascade — surface only where the real wires cross, so the integration gate is not
+a formality, it is the part of the suite that thinks of what you didn't. And when
+asked whether a security control keys on the right identity, the answer is a file
+and a line, never a recollection.*

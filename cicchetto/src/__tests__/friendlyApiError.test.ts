@@ -16,7 +16,7 @@ import { friendlyApiError } from "../lib/friendlyApiError";
 
 const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknown> }> = [
   { code: "invalid_credentials", matches: /invalid name or password/i },
-  // U-3: client_cap_exceeded → device-scoped copy
+  // U-3: ip_cap_exceeded → device-scoped copy
   { code: "too_many_sessions", matches: /at the session limit for this network from this device/i },
   // visitor_cap_exceeded / user_cap_exceeded both wire to network_busy
   { code: "network_busy", matches: /this network is at capacity/i },

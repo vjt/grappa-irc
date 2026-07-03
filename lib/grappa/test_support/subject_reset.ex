@@ -294,7 +294,8 @@ if Mix.env() in [:dev, :test] do
 
       capacity_input = %{
         network_id: cred.network_id,
-        client_id: nil,
+        # #171: reconnect helper is a boot-shaped path — no conn, no IP.
+        source_ip: nil,
         flow: :bootstrap_user,
         requesting_subject: nil
       }

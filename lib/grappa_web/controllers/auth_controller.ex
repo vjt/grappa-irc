@@ -302,8 +302,13 @@ defmodule GrappaWeb.AuthController do
   defp visitor_error_response(_, _, :password_mismatch),
     do: {:error, :password_mismatch}
 
-  defp visitor_error_response(_, _, :client_cap_exceeded),
-    do: {:error, :client_cap_exceeded}
+  # #171: visitor login is the primary per-source-IP-capped flow (its
+  # nil-client bypass was the whole reason the cap collapsed to source
+  # IP). Spelled explicitly so it reaches FallbackController's 503
+  # too_many_sessions envelope instead of the catch-all `:internal` 500
+  # below.
+  defp visitor_error_response(_, _, :ip_cap_exceeded),
+    do: {:error, :ip_cap_exceeded}
 
   defp visitor_error_response(_, _, :visitor_cap_exceeded),
     do: {:error, :visitor_cap_exceeded}

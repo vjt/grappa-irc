@@ -54,7 +54,7 @@ type CapDimension = "max_concurrent_user_sessions" | "max_concurrent_visitor_ses
 async function adminPatchCaps(
   adminToken: string,
   slug: string,
-  caps: Partial<Record<CapDimension | "max_per_client", number | null>>,
+  caps: Partial<Record<CapDimension | "max_per_ip", number | null>>,
 ): Promise<void> {
   const res = await fetch(`${GRAPPA_BASE_URL}/admin/networks/${encodeURIComponent(slug)}`, {
     method: "PATCH",

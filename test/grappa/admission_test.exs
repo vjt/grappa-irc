@@ -1,8 +1,9 @@
 defmodule Grappa.AdmissionTest do
   @moduledoc """
-  Verb-level tests for Grappa.Admission.check_capacity/1. Covers
-  each cap dimension and the bypass paths (Bootstrap flows skip
-  client-cap because no client_id).
+  Verb-level tests for Grappa.Admission.check_capacity/1. Covers each
+  cap dimension (circuit, per-network total, per-source-IP) and the
+  bypass path (Bootstrap flows carry `source_ip: nil`, so the per-IP cap
+  skips).
   """
   use Grappa.DataCase, async: false
 
@@ -32,7 +33,7 @@ defmodule Grappa.AdmissionTest do
 
       input = %{
         network_id: net.id,
-        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        source_ip: nil,
         flow: :login_fresh,
         requesting_subject: nil
       }
@@ -51,7 +52,7 @@ defmodule Grappa.AdmissionTest do
     test "nil cap = uncapped", %{network: net} do
       input = %{
         network_id: net.id,
-        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        source_ip: nil,
         flow: :login_fresh,
         requesting_subject: nil
       }
@@ -75,7 +76,7 @@ defmodule Grappa.AdmissionTest do
 
       input = %{
         network_id: net.id,
-        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        source_ip: nil,
         flow: :login_fresh,
         requesting_subject: nil
       }
@@ -96,7 +97,7 @@ defmodule Grappa.AdmissionTest do
 
       input = %{
         network_id: net.id,
-        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        source_ip: nil,
         flow: :patch_network_connect,
         requesting_subject: nil
       }
@@ -120,7 +121,7 @@ defmodule Grappa.AdmissionTest do
 
       input = %{
         network_id: net.id,
-        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        source_ip: nil,
         flow: :patch_network_connect,
         requesting_subject: nil
       }
@@ -142,7 +143,7 @@ defmodule Grappa.AdmissionTest do
 
       input = %{
         network_id: net.id,
-        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        source_ip: nil,
         flow: :login_fresh,
         requesting_subject: nil
       }
@@ -159,7 +160,7 @@ defmodule Grappa.AdmissionTest do
 
       input = %{
         network_id: net.id,
-        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        source_ip: nil,
         flow: :patch_network_connect,
         requesting_subject: nil
       }
@@ -168,11 +169,11 @@ defmodule Grappa.AdmissionTest do
     end
   end
 
-  describe "check_capacity/1 — Bootstrap paths skip client cap" do
-    test ":bootstrap_user with nil client_id is :ok", %{network: net} do
+  describe "check_capacity/1 — Bootstrap paths skip the per-IP cap (nil source_ip)" do
+    test ":bootstrap_user with nil source_ip is :ok", %{network: net} do
       input = %{
         network_id: net.id,
-        client_id: nil,
+        source_ip: nil,
         flow: :bootstrap_user,
         requesting_subject: nil
       }
@@ -180,10 +181,10 @@ defmodule Grappa.AdmissionTest do
       assert :ok = Admission.check_capacity(input)
     end
 
-    test ":bootstrap_visitor with nil client_id is :ok", %{network: net} do
+    test ":bootstrap_visitor with nil source_ip is :ok", %{network: net} do
       input = %{
         network_id: net.id,
-        client_id: nil,
+        source_ip: nil,
         flow: :bootstrap_visitor,
         requesting_subject: nil
       }
@@ -192,84 +193,87 @@ defmodule Grappa.AdmissionTest do
     end
   end
 
-  describe "check_capacity/1 — client cap subject-aware (UD5.B)" do
-    # UD5.B: a device (client_id) holding a session for subject S₁ must NOT
-    # contribute to the client-cap accounting for subject S₂ when S₁ and S₂
-    # are different subject_kinds (visitor vs user). The production filter
-    # is `Admission.count_subjects_for_client_on_network/3` which uses two
-    # disjoint clauses (visitor JOINs visitors, user JOINs credentials) so
-    # cross-subject contamination is structurally impossible.
-    #
-    # The bucket exists because U-2 incidentally shipped UD5.B's behaviour
-    # without explicit coverage of the cross-subject independence invariant
-    # (`network_cap` independence was tested but `client_cap` was not). U-4
-    # closes that gap. If a future refactor merges the two clauses into a
-    # single OR-join, these tests fire.
-    # Module attributes are file-scoped in Elixir, so this name is
-    # ud5b-prefixed to avoid silent shadowing if a future sibling test
-    # outside this describe references `@client_id`.
-    @ud5b_client_id "a5000000-0000-4000-8000-000000000044"
+  describe "check_capacity/1 — per-source-IP clone cap (#171)" do
+    # #171: the ONLY per-actor cap. Visitor / unauthenticated flows have
+    # no stable client identity, so the source IP is the durable per-actor
+    # handle; a single IP could otherwise open arbitrary concurrent
+    # sessions (7 observed live). Keyed on the persisted
+    # `accounts_sessions.ip` against `max_per_ip`, applied to ALL flows:
+    # DISTINCT subjects, network-bound, non-revoked, self-excluding the
+    # requesting subject, subject-kind disjoint (visitor JOINs visitors,
+    # user JOINs credentials).
+    @ip171 "203.0.113.7"
 
-    test "visitor session on client_id X does NOT block user login on same client_id",
+    test "2nd DISTINCT visitor subject from the same ip past cap → :ip_cap_exceeded",
          %{network: net} do
-      # max_per_client = 1: the tightest cap. A visitor session occupying
-      # the slot must NOT make a user-flow `check_capacity` fail when
-      # querying for the same client_id.
       {:ok, net} =
         net
-        |> Network.changeset(%{max_per_client: 1})
+        |> Network.changeset(%{max_per_ip: 1})
         |> Repo.update()
 
-      # Stand up a visitor row pinned to this network's slug + an
-      # accounts_session bound to (visitor, client_id) — this is the row
-      # `count_subjects_for_client_on_network/3` (visitor clause) would
-      # count, but the user clause (which we're about to exercise) joins
-      # against `credentials` so it cannot see this row.
       {:ok, visitor} =
-        Grappa.Visitors.find_or_provision_anon("ud5b-vis", net.slug, "1.2.3.4")
+        Grappa.Visitors.find_or_provision_anon("ip171-first", net.slug, @ip171)
 
       {:ok, _} =
-        Grappa.Accounts.create_session(
-          {:visitor, visitor.id},
-          "1.2.3.4",
-          "ua",
-          client_id: @ud5b_client_id
-        )
+        Grappa.Accounts.create_session({:visitor, visitor.id}, @ip171, "ua", [])
 
+      # A DIFFERENT (fresh anon) subject logging in from the same ip:
+      # count of existing distinct visitor subjects on @ip171 = 1 >= cap 1.
       input = %{
         network_id: net.id,
-        client_id: @ud5b_client_id,
-        flow: :patch_network_connect,
+        source_ip: @ip171,
+        flow: :login_fresh,
         requesting_subject: nil
       }
 
-      assert :ok = Admission.check_capacity(input)
+      assert {:error, :ip_cap_exceeded} = Admission.check_capacity(input)
     end
 
-    test "user session on client_id X does NOT block visitor login on same client_id",
+    test "an anon visitor with NO client-id is capped purely by ip",
          %{network: net} do
-      # Mirror: a user session occupying the slot must NOT block a fresh
-      # visitor login from the same device. Exercises the visitor clause
-      # against a populated user row.
+      # The core #171 scenario: an anon login carries no X-Grappa-Client-Id
+      # (the old per-client cap short-circuited to :ok and admitted an
+      # unbounded clone flood). The source-IP cap catches it regardless of
+      # client identity.
       {:ok, net} =
         net
-        |> Network.changeset(%{max_per_client: 1})
+        |> Network.changeset(%{max_per_ip: 1})
         |> Repo.update()
 
-      user = Grappa.AuthFixtures.user_fixture(name: "ud5b-user-#{System.unique_integer([:positive])}")
-      _ = Grappa.AuthFixtures.credential_fixture(user, net)
+      {:ok, visitor} =
+        Grappa.Visitors.find_or_provision_anon("ip171-nilclient", net.slug, @ip171)
 
+      # Existing session carries NO client_id — the source IP is the only
+      # handle the cap has.
       {:ok, _} =
-        Grappa.Accounts.create_session(
-          {:user, user.id},
-          "1.2.3.4",
-          "ua",
-          client_id: @ud5b_client_id
-        )
+        Grappa.Accounts.create_session({:visitor, visitor.id}, @ip171, "ua", [])
 
       input = %{
         network_id: net.id,
-        client_id: @ud5b_client_id,
+        source_ip: @ip171,
+        flow: :login_fresh,
+        requesting_subject: nil
+      }
+
+      assert {:error, :ip_cap_exceeded} = Admission.check_capacity(input)
+    end
+
+    test "nil source_ip → ip cap skipped (mirrors nil-client skip)", %{network: net} do
+      {:ok, net} =
+        net
+        |> Network.changeset(%{max_per_ip: 1})
+        |> Repo.update()
+
+      {:ok, visitor} =
+        Grappa.Visitors.find_or_provision_anon("ip171-nilip", net.slug, @ip171)
+
+      {:ok, _} =
+        Grappa.Accounts.create_session({:visitor, visitor.id}, @ip171, "ua", [])
+
+      # nil client AND nil source_ip → both device-scoped caps skip.
+      input = %{
+        network_id: net.id,
+        source_ip: nil,
         flow: :login_fresh,
         requesting_subject: nil
       }
@@ -277,219 +281,25 @@ defmodule Grappa.AdmissionTest do
       assert :ok = Admission.check_capacity(input)
     end
 
-    test "visitor session on client_id X DOES block another visitor login on same client_id",
+    test "requesting subject's own ip session does NOT count toward its own cap (self-exclusion)",
          %{network: net} do
-      # Same-subject saturation — sanity check that the subject-aware
-      # filter still REJECTS legit same-bucket overflow. Without this
-      # test, a regression that always returned :ok from the visitor
-      # clause would slip past the cross-subject independence tests.
+      # UX-5 bucket BC mirror on the ip dimension: a visitor re-spawning
+      # from the same ip must not be blocked by its own pre-existing
+      # accounts_session row.
       {:ok, net} =
         net
-        |> Network.changeset(%{max_per_client: 1})
+        |> Network.changeset(%{max_per_ip: 1})
         |> Repo.update()
 
       {:ok, visitor} =
-        Grappa.Visitors.find_or_provision_anon("ud5b-vis-block", net.slug, "1.2.3.4")
+        Grappa.Visitors.find_or_provision_anon("ip171-self", net.slug, @ip171)
 
       {:ok, _} =
-        Grappa.Accounts.create_session(
-          {:visitor, visitor.id},
-          "1.2.3.4",
-          "ua",
-          client_id: @ud5b_client_id
-        )
+        Grappa.Accounts.create_session({:visitor, visitor.id}, @ip171, "ua", [])
 
       input = %{
         network_id: net.id,
-        client_id: @ud5b_client_id,
-        flow: :login_fresh,
-        requesting_subject: nil
-      }
-
-      assert {:error, :client_cap_exceeded} = Admission.check_capacity(input)
-    end
-
-    test "revoked visitor session on client_id X does NOT count toward cap",
-         %{network: net} do
-      # UD5.A composition with UD5.B: after logout (revoke_session sets
-      # revoked_at), the device's slot must free. The `is_nil(revoked_at)`
-      # filter in both count clauses is the load-bearing predicate.
-      {:ok, net} =
-        net
-        |> Network.changeset(%{max_per_client: 1})
-        |> Repo.update()
-
-      {:ok, visitor} =
-        Grappa.Visitors.find_or_provision_anon("ud5b-revoked", net.slug, "1.2.3.4")
-
-      {:ok, vsession} =
-        Grappa.Accounts.create_session(
-          {:visitor, visitor.id},
-          "1.2.3.4",
-          "ua",
-          client_id: @ud5b_client_id
-        )
-
-      :ok = Grappa.Accounts.revoke_session(vsession.id)
-
-      input = %{
-        network_id: net.id,
-        client_id: @ud5b_client_id,
-        flow: :login_fresh,
-        requesting_subject: nil
-      }
-
-      assert :ok = Admission.check_capacity(input)
-    end
-
-    test "two sessions for SAME visitor count as 1 (DISTINCT clause; cap=N>1 path)",
-         %{network: net} do
-      # Reviewer R1 MED-1: the production query uses `count(s.visitor_id,
-      # :distinct)`, so multiple accounts_sessions for the same subject
-      # collapse to 1 toward the cap. A regression that drops `:distinct`
-      # (turning the count into `count(s.id)`) would silently start
-      # counting same-subject duplicates as N — none of the cap=1
-      # single-session tests above would catch it because they each have
-      # exactly one row. This test exercises BOTH the cap=N>1 path AND
-      # the DISTINCT predicate at once.
-      {:ok, net} =
-        net
-        |> Network.changeset(%{max_per_client: 2})
-        |> Repo.update()
-
-      {:ok, visitor1} =
-        Grappa.Visitors.find_or_provision_anon("ud5b-distinct-1", net.slug, "1.2.3.4")
-
-      # Two browser tabs / two devices = two accounts_sessions on same
-      # visitor_id. Distinct count must still see this as 1.
-      {:ok, _} =
-        Grappa.Accounts.create_session(
-          {:visitor, visitor1.id},
-          "1.2.3.4",
-          "ua-tab-1",
-          client_id: @ud5b_client_id
-        )
-
-      {:ok, _} =
-        Grappa.Accounts.create_session(
-          {:visitor, visitor1.id},
-          "1.2.3.4",
-          "ua-tab-2",
-          client_id: @ud5b_client_id
-        )
-
-      # A second DIFFERENT visitor on same client_id under cap=2 must be
-      # admitted: distinct count is 1 (visitor1's two rows collapse),
-      # plus the new candidate = 2, which is == cap (>= is the rejection
-      # predicate). The candidate is NOT yet counted (admission checks
-      # BEFORE spawn), so count(1) >= cap(2) is false → :ok.
-      input = %{
-        network_id: net.id,
-        client_id: @ud5b_client_id,
-        flow: :login_fresh,
-        requesting_subject: nil
-      }
-
-      assert :ok = Admission.check_capacity(input)
-    end
-
-    test "requesting subject's own session does NOT count toward its own cap (UX-5 BC)",
-         %{network: net} do
-      # UX-5 bucket BC (2026-05-19): the cap blocks DIFFERENT subjects on
-      # the same device, NEVER the requesting subject's own pre-existing
-      # session. T32 park then immediate /connect repro: vjt's browser
-      # holds an accounts_session under client_id X; X-button parks the
-      # IRC session; vjt PATCHes /connect from same device → the cap was
-      # COUNTING vjt's own session against him, so 1 >= 1 → 503. Bug
-      # fired for first-PATCH-from-logged-in-user too; T32 was just the
-      # most visible path. Fix: `capacity_input.requesting_subject` is
-      # excluded from the count.
-      {:ok, net} =
-        net
-        |> Network.changeset(%{max_per_client: 1})
-        |> Repo.update()
-
-      user = Grappa.AuthFixtures.user_fixture(name: "ux5bc-self-#{System.unique_integer([:positive])}")
-      _ = Grappa.AuthFixtures.credential_fixture(user, net)
-
-      {:ok, _} =
-        Grappa.Accounts.create_session(
-          {:user, user.id},
-          "1.2.3.4",
-          "ua",
-          client_id: @ud5b_client_id
-        )
-
-      input = %{
-        network_id: net.id,
-        client_id: @ud5b_client_id,
-        flow: :patch_network_connect,
-        requesting_subject: {:user, user.id}
-      }
-
-      assert :ok = Admission.check_capacity(input)
-    end
-
-    test "requesting subject's own session DOES count when requesting_subject is nil (Case 1 semantics)",
-         %{network: net} do
-      # Login Case 1 (fresh anon provision) carries `requesting_subject:
-      # nil` because there is no prior subject. The cap must still count
-      # whatever live sessions the device holds for the network — pre-
-      # fix semantics for the unknown-subject path. This test is the
-      # nil-branch sanity check; the `visitor session ... DOES block
-      # ANOTHER visitor login` test above covers the cross-subject path.
-      {:ok, net} =
-        net
-        |> Network.changeset(%{max_per_client: 1})
-        |> Repo.update()
-
-      {:ok, visitor} =
-        Grappa.Visitors.find_or_provision_anon("ux5bc-nil-prior", net.slug, "1.2.3.4")
-
-      {:ok, _} =
-        Grappa.Accounts.create_session(
-          {:visitor, visitor.id},
-          "1.2.3.4",
-          "ua",
-          client_id: @ud5b_client_id
-        )
-
-      input = %{
-        network_id: net.id,
-        client_id: @ud5b_client_id,
-        flow: :login_fresh,
-        requesting_subject: nil
-      }
-
-      assert {:error, :client_cap_exceeded} = Admission.check_capacity(input)
-    end
-
-    test "requesting subject's own session does NOT block visitor login-existing path (UX-5 BC, visitor mirror)",
-         %{network: net} do
-      # Mirror of the user path. Visitor login_existing (Case 2 password,
-      # Case 3 anon token) MUST not be blocked by the visitor's own
-      # pre-existing accounts_session on the same device. Pre-fix this
-      # silently failed Case 2/3 admission whenever max_per_client=1 and
-      # the visitor was already logged in elsewhere on the same device.
-      {:ok, net} =
-        net
-        |> Network.changeset(%{max_per_client: 1})
-        |> Repo.update()
-
-      {:ok, visitor} =
-        Grappa.Visitors.find_or_provision_anon("ux5bc-vis-self", net.slug, "1.2.3.4")
-
-      {:ok, _} =
-        Grappa.Accounts.create_session(
-          {:visitor, visitor.id},
-          "1.2.3.4",
-          "ua",
-          client_id: @ud5b_client_id
-        )
-
-      input = %{
-        network_id: net.id,
-        client_id: @ud5b_client_id,
+        source_ip: @ip171,
         flow: :login_existing,
         requesting_subject: {:visitor, visitor.id}
       }
@@ -497,34 +307,76 @@ defmodule Grappa.AdmissionTest do
       assert :ok = Admission.check_capacity(input)
     end
 
-    test "self-exclusion does NOT leak across subject_kinds (cross-clause disjointness)",
-         %{network: net} do
-      # The visitor + user count clauses are disjoint joins. A user-flow
-      # admission carrying `requesting_subject: {:user, _}` must not
-      # accidentally exclude visitor rows (and vice versa) — that would
-      # silently weaken the cap. Standing up BOTH a visitor session AND
-      # a user-with-matching-credential row under the same client_id is
-      # not a normal scenario (the visitor/user clauses each only see
-      # their own subject_kind's rows), but the test is a regression
-      # guard against a future refactor that merges the clauses.
+    test "revoked session on the ip does NOT count toward cap", %{network: net} do
       {:ok, net} =
         net
-        |> Network.changeset(%{max_per_client: 1})
+        |> Network.changeset(%{max_per_ip: 1})
         |> Repo.update()
 
-      # Visitor row + accounts_session on the same client_id: contributes
-      # to the visitor clause only.
-      {:ok, _} =
-        Grappa.Visitors.find_or_provision_anon("ux5bc-cross-vis", net.slug, "1.2.3.4")
+      {:ok, visitor} =
+        Grappa.Visitors.find_or_provision_anon("ip171-revoked", net.slug, @ip171)
 
-      # User flow, no user-row noise: count should be 0, self-exclusion
-      # is a no-op here, cap admits.
-      user = Grappa.AuthFixtures.user_fixture(name: "ux5bc-cross-#{System.unique_integer([:positive])}")
+      {:ok, vsession} =
+        Grappa.Accounts.create_session({:visitor, visitor.id}, @ip171, "ua", [])
+
+      :ok = Grappa.Accounts.revoke_session(vsession.id)
+
+      input = %{
+        network_id: net.id,
+        source_ip: @ip171,
+        flow: :login_fresh,
+        requesting_subject: nil
+      }
+
+      assert :ok = Admission.check_capacity(input)
+    end
+
+    test "a user ip-row does NOT cap a visitor flow (cross-clause disjointness)",
+         %{network: net} do
+      # The visitor clause JOINs visitors; a user session on the same ip
+      # is invisible to it. A user flooding user-sessions must not spend a
+      # visitor's ip budget and vice versa — same disjointness the client
+      # cap guarantees.
+      {:ok, net} =
+        net
+        |> Network.changeset(%{max_per_ip: 1})
+        |> Repo.update()
+
+      user = Grappa.AuthFixtures.user_fixture(name: "ip171-user-#{System.unique_integer([:positive])}")
+      _ = Grappa.AuthFixtures.credential_fixture(user, net)
+
+      {:ok, _} =
+        Grappa.Accounts.create_session({:user, user.id}, @ip171, "ua", [])
+
+      input = %{
+        network_id: net.id,
+        source_ip: @ip171,
+        flow: :login_fresh,
+        requesting_subject: nil
+      }
+
+      assert :ok = Admission.check_capacity(input)
+    end
+
+    test "a visitor ip-row does NOT cap a user flow (cross-clause disjointness mirror)",
+         %{network: net} do
+      {:ok, net} =
+        net
+        |> Network.changeset(%{max_per_ip: 1})
+        |> Repo.update()
+
+      {:ok, visitor} =
+        Grappa.Visitors.find_or_provision_anon("ip171-xvis", net.slug, @ip171)
+
+      {:ok, _} =
+        Grappa.Accounts.create_session({:visitor, visitor.id}, @ip171, "ua", [])
+
+      user = Grappa.AuthFixtures.user_fixture(name: "ip171-xuser-#{System.unique_integer([:positive])}")
       _ = Grappa.AuthFixtures.credential_fixture(user, net)
 
       input = %{
         network_id: net.id,
-        client_id: @ud5b_client_id,
+        source_ip: @ip171,
         flow: :patch_network_connect,
         requesting_subject: {:user, user.id}
       }
@@ -532,43 +384,31 @@ defmodule Grappa.AdmissionTest do
       assert :ok = Admission.check_capacity(input)
     end
 
-    test "visitor on different network's slug does NOT count toward current network's cap",
+    test "visitor on a DIFFERENT network's slug does NOT count toward this network's ip cap",
          %{network: net} do
-      # Reviewer R1 MED-2: the visitor clause filters on
-      # `v.network_slug == ^slug` — a regression that drops this join
-      # filter would let any visitor on the same client_id (regardless
-      # of which network they're pinned to) count toward this network's
-      # cap. None of the prior tests stand up a cross-network noise row.
+      # Mirror of the client-cap MED-2 guard: the visitor clause filters
+      # `v.network_slug == ^slug`, so a same-ip visitor pinned to another
+      # network must not consume this network's ip budget.
       {:ok, net} =
         net
-        |> Network.changeset(%{max_per_client: 1})
+        |> Network.changeset(%{max_per_ip: 1})
         |> Repo.update()
 
-      # Noise: a visitor pinned to a DIFFERENT network, same client_id.
-      # Must not count toward `net`'s admission decision below.
       {other_net, _} =
         Grappa.AuthFixtures.network_with_server(
-          port: 6_668,
-          slug: "ud5b-other-#{System.unique_integer([:positive])}"
+          port: 6_669,
+          slug: "ip171-other-#{System.unique_integer([:positive])}"
         )
 
       {:ok, other_visitor} =
-        Grappa.Visitors.find_or_provision_anon("ud5b-other", other_net.slug, "1.2.3.4")
+        Grappa.Visitors.find_or_provision_anon("ip171-other", other_net.slug, @ip171)
 
       {:ok, _} =
-        Grappa.Accounts.create_session(
-          {:visitor, other_visitor.id},
-          "1.2.3.4",
-          "ua",
-          client_id: @ud5b_client_id
-        )
+        Grappa.Accounts.create_session({:visitor, other_visitor.id}, @ip171, "ua", [])
 
-      # Admission decision for `net` under same client_id: cap=1,
-      # count for THIS network is 0 (the other_visitor row's
-      # network_slug doesn't match), so :ok.
       input = %{
         network_id: net.id,
-        client_id: @ud5b_client_id,
+        source_ip: @ip171,
         flow: :login_fresh,
         requesting_subject: nil
       }
@@ -677,7 +517,7 @@ defmodule Grappa.AdmissionTest do
 
       input = %{
         network_id: net.id,
-        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        source_ip: "203.0.113.9",
         flow: :login_fresh,
         requesting_subject: nil
       }
@@ -691,7 +531,7 @@ defmodule Grappa.AdmissionTest do
                         flow: :login_fresh,
                         error: {:network_circuit_open, _},
                         network_id: ^net_id,
-                        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386"
+                        source_ip: "203.0.113.9"
                       }},
                      500
     end
@@ -708,7 +548,7 @@ defmodule Grappa.AdmissionTest do
 
       input = %{
         network_id: capped_net.id,
-        client_id: "11111111-2222-4333-8444-555555555555",
+        source_ip: "203.0.113.10",
         flow: :login_fresh,
         requesting_subject: nil
       }
@@ -722,7 +562,7 @@ defmodule Grappa.AdmissionTest do
                         flow: :login_fresh,
                         error: :visitor_cap_exceeded,
                         network_id: ^net_id,
-                        client_id: "11111111-2222-4333-8444-555555555555"
+                        source_ip: "203.0.113.10"
                       }},
                      500
     end
@@ -732,7 +572,7 @@ defmodule Grappa.AdmissionTest do
 
       input = %{
         network_id: net.id,
-        client_id: "99999999-aaaa-4bbb-8ccc-dddddddddddd",
+        source_ip: nil,
         flow: :login_fresh,
         requesting_subject: nil
       }

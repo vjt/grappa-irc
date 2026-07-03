@@ -89,8 +89,8 @@ function friendlyKnown(err: ApiError, code: KnownApiErrorCode): string {
     case "invalid_credentials":
       return "Invalid name or password.";
     case "too_many_sessions":
-      // U-3 (UD3): client_cap_exceeded — this device already holds
-      // its allotted session for this network (`max_per_client`,
+      // U-3 (UD3): ip_cap_exceeded — this source IP already holds
+      // its allotted session(s) for this network (`max_per_ip`,
       // default 1). The operator's recourse is to disconnect the
       // existing session on this device OR open from a different
       // device. Distinct from `network_busy`, which is a

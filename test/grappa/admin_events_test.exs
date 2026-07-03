@@ -156,11 +156,11 @@ defmodule Grappa.AdminEventsTest do
       :telemetry.execute(
         [:grappa, :admission, :capacity, :reject],
         %{},
-        %{flow: :visitor, error: :network_cap_exceeded, network_id: 9999, client_id: "abc"}
+        %{flow: :visitor, error: :network_cap_exceeded, network_id: 9999, source_ip: "203.0.113.5"}
       )
 
       assert_receive %Phoenix.Socket.Broadcast{
-                       payload: %{kind: :capacity_reject, flow: :visitor, client_id: "abc"}
+                       payload: %{kind: :capacity_reject, flow: :visitor, source_ip: "203.0.113.5"}
                      },
                      500
     end

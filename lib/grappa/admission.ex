@@ -5,8 +5,8 @@ defmodule Grappa.Admission do
   Two verbs:
 
     * `check_capacity/1` — composes (a) NetworkCircuit gate,
-      (b) per-network total cap, (c) per-(client, network) cap.
-      Local + cheap (Registry count + one DB query). Consumed by
+      (b) per-network total cap, (c) per-(source-IP, network) cap.
+      Local + cheap (Registry count + a DB query). Consumed by
       `Grappa.Visitors.Login`, `Grappa.Bootstrap`, and any future
       session-spawning surface.
 
@@ -16,20 +16,37 @@ defmodule Grappa.Admission do
 
   Cap dimensions and where they're checked:
 
-  | cap                 | applies to                | source                                         |
-  |---------------------|---------------------------|------------------------------------------------|
-  | NetworkCircuit      | all flows                 | ETS via `Admission.NetworkCircuit.check/1`     |
-  | network total       | all flows                 | `Registry.count_select/2` on SessionRegistry   |
-  | client per network  | flows with non-nil client | SQL union over accounts_sessions               |
+  | cap                   | applies to                  | source                                       |
+  |-----------------------|-----------------------------|----------------------------------------------|
+  | NetworkCircuit        | all flows                   | ETS via `Admission.NetworkCircuit.check/1`   |
+  | network total         | all flows                   | `Registry.count_select/2` on SessionRegistry |
+  | source-IP per network | all flows w/ non-nil src IP | SQL over accounts_sessions.ip                |
+
+  The ONLY per-actor cap is per-(source-IP, network) (#171). It replaced
+  a per-(client, network) cap that was bypassable by construction:
+  visitor / unauthenticated logins carry `client_id: nil` (no
+  `X-Grappa-Client-Id`), so the per-client cap short-circuited to `:ok`
+  and a single IP could open arbitrary concurrent visitor sessions
+  (clone flood; 7 observed live). Visitors have no stable client
+  identity — the source IP is the only durable per-actor handle — so the
+  cap collapsed to source IP for ALL flows, authed users included. It
+  counts DISTINCT subjects, network-bound, non-revoked, self-excluding
+  the requesting subject, subject-kind disjoint, keyed on the persisted
+  `accounts_sessions.ip` (the value login writes) against the operator
+  knob `Network.max_per_ip` (default `default_max_per_ip_per_network`).
 
   Bootstrap flows (`:bootstrap_user`, `:bootstrap_visitor`) carry
-  `client_id: nil` because there's no live client at cold-start;
-  they bypass the client cap by construction.
+  `source_ip: nil` (cold-start: no HTTP conn), so they bypass the cap by
+  construction — intentional, boot is operator-initiated.
 
-  Identity-tier exemptions: NONE. Per Section 1 of the design,
-  cap is the operator's knob (raise per-network `max_per_client` to
-  allow multi-nick power users); identity tier exempts only CAPTCHA
-  (in `verify_captcha/2`), not concurrency.
+  NAT/CGNAT consequence (deliberate): distinct legit users behind one IP
+  share the per-network budget — operators widen it by raising
+  `max_per_ip`. That the cap is a tunable knob, not a hardcoded 1, is the
+  whole point. See DESIGN_NOTES 2026-07-03.
+
+  Identity-tier exemptions: NONE. Per Section 1 of the design, cap is the
+  operator's knob (raise per-network `max_per_ip`); identity tier exempts
+  only CAPTCHA (in `verify_captcha/2`), not concurrency.
   """
 
   use Boundary,
@@ -60,13 +77,13 @@ defmodule Grappa.Admission do
 
   @type capacity_input :: %{
           network_id: integer(),
-          client_id: Grappa.ClientId.t() | nil,
+          source_ip: String.t() | nil,
           flow: flow(),
           requesting_subject: Grappa.Session.subject() | nil
         }
 
   @type capacity_error ::
-          :client_cap_exceeded
+          :ip_cap_exceeded
           | :visitor_cap_exceeded
           | :user_cap_exceeded
           | {:network_circuit_open, non_neg_integer()}
@@ -82,7 +99,7 @@ defmodule Grappa.Admission do
   # `:network_circuit_open` appears as the bare atom; the test
   # constructs its payload tuple at runtime.
   @capacity_error_atoms [
-    :client_cap_exceeded,
+    :ip_cap_exceeded,
     :visitor_cap_exceeded,
     :user_cap_exceeded,
     :network_circuit_open
@@ -94,7 +111,7 @@ defmodule Grappa.Admission do
   on the typed shape directly.
   """
   @spec capacity_error_atoms() :: [
-          :client_cap_exceeded
+          :ip_cap_exceeded
           | :visitor_cap_exceeded
           | :user_cap_exceeded
           | :network_circuit_open,
@@ -109,16 +126,16 @@ defmodule Grappa.Admission do
   """
   @type live_counts :: %{visitors: non_neg_integer(), users: non_neg_integer()}
 
-  @default_max_per_client_per_network Application.compile_env!(
-                                        :grappa,
-                                        [:admission, :default_max_per_client_per_network]
-                                      )
+  @default_max_per_ip_per_network Application.compile_env!(
+                                    :grappa,
+                                    [:admission, :default_max_per_ip_per_network]
+                                  )
 
   @doc """
   Compose all capacity checks for a candidate new session.
 
   Order: NetworkCircuit (cheapest, ETS) → network total
-  (Registry count) → client cap (DB query). Bail at first failure.
+  (Registry count) → source-IP cap (DB query). Bail at first failure.
 
   `:ok` means the session may be spawned. Any error tag means caller
   must NOT spawn — they should surface the error to the user (Login)
@@ -129,7 +146,7 @@ defmodule Grappa.Admission do
         %{
           network_id: network_id,
           flow: flow,
-          client_id: client_id,
+          source_ip: source_ip,
           requesting_subject: requesting_subject
         } = input
       )
@@ -141,7 +158,7 @@ defmodule Grappa.Admission do
     result =
       with :ok <- check_circuit(network_id),
            :ok <- check_network_total(network_id, subject_kind),
-           :ok <- check_client_cap(input, subject_kind) do
+           :ok <- check_ip_cap(input, subject_kind) do
         :ok
       end
 
@@ -150,7 +167,7 @@ defmodule Grappa.Admission do
         :ok
 
       {:error, error} ->
-        Telemetry.capacity_reject(flow, error, network_id, client_id)
+        Telemetry.capacity_reject(flow, error, network_id, source_ip)
         {:error, error}
     end
   end
@@ -316,60 +333,70 @@ defmodule Grappa.Admission do
   defp bump(%{visitors: v} = m, :visitor, n), do: %{m | visitors: v + n}
   defp bump(%{users: u} = m, :user, n), do: %{m | users: u + n}
 
-  # Bootstrap flows have nil client — skip client-cap check.
-  defp check_client_cap(%{client_id: nil}, _), do: :ok
+  # #171: per-(source-IP, network) cap — the ONLY per-actor cap. Visitor
+  # / unauthenticated flows carry no stable client identity, so the
+  # source IP is the durable per-actor handle; authed users are capped
+  # per-IP too. Counts DISTINCT subjects, network-bound, non-revoked,
+  # self-excluding the requesting subject, subject-kind disjoint, keyed
+  # on the persisted `accounts_sessions.ip` against `Network.max_per_ip`.
+  #
+  # `source_ip: nil` skips (cold-start Bootstrap has no HTTP conn). A
+  # construction site that omits `source_ip` entirely hits neither clause
+  # → FunctionClauseError (loud) — a required-field guard, never a silent
+  # nil-skip.
+  defp check_ip_cap(%{source_ip: nil}, _), do: :ok
 
-  defp check_client_cap(
+  defp check_ip_cap(
          %{
-           client_id: client_id,
+           source_ip: source_ip,
            network_id: network_id,
            requesting_subject: requesting_subject
          },
          subject_kind
        )
-       when is_binary(client_id) do
-    cap = effective_max_per_client(network_id)
+       when is_binary(source_ip) do
+    cap = effective_max_per_ip(network_id)
 
     count =
-      count_subjects_for_client_on_network(
-        client_id,
+      count_subjects_for_ip_on_network(
+        source_ip,
         network_id,
         subject_kind,
         requesting_subject
       )
 
-    if count >= cap, do: {:error, :client_cap_exceeded}, else: :ok
+    if count >= cap, do: {:error, :ip_cap_exceeded}, else: :ok
   end
 
-  defp effective_max_per_client(network_id) do
+  defp effective_max_per_ip(network_id) do
     case Repo.get(Network, network_id) do
-      %Network{max_per_client: nil} -> @default_max_per_client_per_network
-      %Network{max_per_client: cap} -> cap
-      nil -> @default_max_per_client_per_network
+      %Network{max_per_ip: nil} -> @default_max_per_ip_per_network
+      %Network{max_per_ip: cap} -> cap
+      nil -> @default_max_per_ip_per_network
     end
   end
 
   # Count of distinct subjects (visitor_id ∪ user_id) reachable from
-  # accounts_sessions where client_id matches AND the subject is bound
-  # to the given network_id (visitor.network_slug = network's slug, OR
-  # user has a Credential for network_id). Only non-revoked sessions
-  # count. U-2 (UD5.B): subject-aware — a device that switches identity
-  # (visitor → user, or vice versa) counts independently against
-  # client_cap per subject_kind. The same client_id holding a visitor
-  # session must not block a user login on that device, and the inverse.
+  # accounts_sessions where the SOURCE IP matches AND the subject is
+  # bound to the given network_id (visitor.network_slug = network's slug,
+  # OR user has a Credential for network_id). Only non-revoked sessions
+  # count. Subject-aware (two disjoint clauses: visitor JOINs visitors,
+  # user JOINs credentials) so a visitor session on an IP counts against
+  # visitor logins and a user session against user logins — an IP running
+  # a visitor + a user is two independent budgets, mirroring the
+  # per-network total caps' subject split.
   #
   # UX-5 bucket BC (2026-05-19): `requesting_subject` is the prior
-  # identity the device is spawning AS. When non-nil AND its tag matches
+  # identity the actor is spawning AS. When non-nil AND its tag matches
   # `subject_kind`, the count EXCLUDES rows attributable to that subject
-  # — the cap blocks DIFFERENT subjects on the same device, never the
+  # — the cap blocks DIFFERENT subjects from the same IP, never the
   # requesting subject's own pre-existing accounts_sessions. Without
   # self-exclusion the cap counts the operator's own browser session
   # against them, making T32 park → /connect always fail at
-  # `max_per_client = 1` (the default). The visitor + user clauses
-  # remain disjoint (visitor JOINs visitors, user JOINs credentials) so
-  # an exclusion in one clause cannot leak into the other; see the
-  # UX-5 BC "cross-clause disjointness" test in `admission_test.exs`.
-  defp count_subjects_for_client_on_network(client_id, network_id, :visitor, requesting_subject) do
+  # `max_per_ip = 1` (the default). The two clauses stay disjoint so an
+  # exclusion in one cannot leak into the other; see the "cross-clause
+  # disjointness" test in `admission_test.exs`.
+  defp count_subjects_for_ip_on_network(source_ip, network_id, :visitor, requesting_subject) do
     %Network{slug: slug} = Repo.get!(Network, network_id)
 
     visitor_count_q =
@@ -377,7 +404,7 @@ defmodule Grappa.Admission do
         join: v in Visitor,
         on: v.id == s.visitor_id,
         where:
-          s.client_id == ^client_id and
+          s.ip == ^source_ip and
             v.network_slug == ^slug and
             is_nil(s.revoked_at),
         select: count(s.visitor_id, :distinct)
@@ -386,13 +413,13 @@ defmodule Grappa.Admission do
     Repo.one(exclude_visitor(visitor_count_q, requesting_subject))
   end
 
-  defp count_subjects_for_client_on_network(client_id, network_id, :user, requesting_subject) do
+  defp count_subjects_for_ip_on_network(source_ip, network_id, :user, requesting_subject) do
     user_count_q =
       from(s in AccountSession,
         join: c in Credential,
         on: c.user_id == s.user_id and c.network_id == ^network_id,
         where:
-          s.client_id == ^client_id and
+          s.ip == ^source_ip and
             is_nil(s.revoked_at),
         select: count(s.user_id, :distinct)
       )

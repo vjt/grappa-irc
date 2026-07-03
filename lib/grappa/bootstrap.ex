@@ -81,11 +81,10 @@ defmodule Grappa.Bootstrap do
       previously-spawned row is still up). Distinct from spawning so the
       operator dashboard can tell a fresh boot from a Bootstrap restart.
     * `capacity_rejected` — any `Admission.capacity_error()`
-      (`:visitor_cap_exceeded`, `:user_cap_exceeded`,
-      `:client_cap_exceeded`, `{:network_circuit_open, _}`) tripped the
-      admission gate. Operator policy decision, not a fault — sized the
-      cap correctly or accept the policy. (T31 Plan 2 Task 4 +
-      U-2 typed-error split.)
+      (`:visitor_cap_exceeded`, `:user_cap_exceeded`, `:ip_cap_exceeded`,
+      `{:network_circuit_open, _}`) tripped the admission gate. Operator
+      policy decision, not a fault — sized the cap correctly or accept
+      the policy. (T31 Plan 2 Task 4 + U-2 typed-error split.)
     * `network_failed` — `{:error, {:start_failed, _}}` from the
       SpawnOrchestrator. Hard Session-init failure (e.g. upstream
       connect refused at `init/1` validation, missing-password CRASH).
@@ -350,10 +349,11 @@ defmodule Grappa.Bootstrap do
       {:ok, plan} ->
         capacity_input = %{
           network_id: network_id,
-          client_id: nil,
+          # #171: cold-start has no HTTP conn → no source IP, so the
+          # per-(source-IP, network) cap short-circuits on nil.
+          source_ip: nil,
           flow: :bootstrap_user,
-          # Boot-time spawn has no client + no prior subject of record;
-          # cap is bypassed via the nil client_id short-circuit.
+          # Boot-time spawn has no prior subject of record.
           requesting_subject: nil
         }
 
@@ -390,7 +390,8 @@ defmodule Grappa.Bootstrap do
           {:ok, %Network{id: network_id}} ->
             capacity_input = %{
               network_id: network_id,
-              client_id: nil,
+              # #171: cold-start visitor spawn — no conn, no source IP.
+              source_ip: nil,
               flow: :bootstrap_visitor,
               requesting_subject: nil
             }
@@ -493,15 +494,20 @@ defmodule Grappa.Bootstrap do
   end
 
   def classify_outcome({:error, cap_err}, log_keys, acc)
-      when cap_err in [:visitor_cap_exceeded, :user_cap_exceeded, :client_cap_exceeded] do
-    # T31 Plan 2 Task 4 + U-2: per-network/per-client cap tripped.
-    # Best-effort per the moduledoc's failure-modes contract: skip
-    # the row + warn, no queue or retry shape. Operator sizes the
-    # cap correctly is the right pressure. Both visitor and user
-    # caps + client cap collapse here — the dashboard distinguishes
-    # via the per-row Logger line's :error key, not the summary
-    # counter (which collapses capacity-policy events into one
-    # actionable bucket).
+      when cap_err in [
+             :visitor_cap_exceeded,
+             :user_cap_exceeded,
+             :ip_cap_exceeded
+           ] do
+    # T31 Plan 2 Task 4 + U-2 + #171: a per-network total or per-IP cap
+    # tripped. Best-effort per the moduledoc's failure-modes contract:
+    # skip the row + warn, no queue or retry shape. Operator sizes the
+    # cap correctly is the right pressure. All cap atoms collapse here —
+    # the dashboard distinguishes via the per-row Logger line's :error
+    # key, not the summary counter (which collapses capacity-policy
+    # events into one actionable bucket). Bootstrap carries
+    # `source_ip: nil` so `:ip_cap_exceeded` is unreachable from boot; it
+    # stays in the guard for completeness over `capacity_error()`.
     Logger.warning(
       "session skipped — capacity rejected",
       [error: cap_err] ++ log_keys

@@ -10,7 +10,7 @@
 //
 // Root cause: `Admission.check_client_cap/2` counted the requesting
 // user's OWN pre-existing accounts_session against the cap. With the
-// production default `max_per_client = 1` (config/config.exs), the
+// production default `max_per_ip = 1` (config/config.exs), the
 // count was always 1 for the operator's own browser session →
 // `count >= cap` → 503. T32 park was a red herring; the bug fired on
 // any first PATCH /connect from a logged-in user under default cap.
@@ -138,13 +138,16 @@ test.afterEach(async () => {
   }
 });
 
-test("UX-5 BC — park then /connect under same device succeeds (default max_per_client = 1)", async () => {
+test("UX-5 BC — park then /connect from the same source IP succeeds (self-exclusion)", async () => {
   const vjt = getSeededVjt();
 
-  // Mint a fresh accounts_session(vjt, client_id) via cic-style POST
-  // /auth/login carrying the client_id header. Pre-BC this row was
-  // counted against vjt himself for the subsequent /connect → 503.
-  // Post-BC self-exclusion drops the count to 0 → /connect 200s.
+  // Mint a fresh accounts_session(vjt) via cic-style POST /auth/login.
+  // Pre-BC this row was counted against vjt himself for the subsequent
+  // /connect → 503. Post-BC (#171: the cap is per-source-IP) the
+  // requesting-subject self-exclusion drops vjt's own row from the count
+  // → /connect 200s. The tight-cap load-bearing case is unit-covered
+  // (networks_controller_test UX-5 BC); this proves the gated /connect
+  // path admits the returning subject end-to-end.
   const bearer = await loginWithClientId(
     vjt.identifier,
     vjt.password,

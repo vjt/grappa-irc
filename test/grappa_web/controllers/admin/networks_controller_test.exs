@@ -81,7 +81,7 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       assert row != nil
       assert Map.has_key?(row, "max_concurrent_visitor_sessions")
       assert Map.has_key?(row, "max_concurrent_user_sessions")
-      assert Map.has_key?(row, "max_per_client")
+      assert Map.has_key?(row, "max_per_ip")
       assert row["circuit_state"] == nil
       # U-3 (UD4): live_counts projection always present; structural
       # shape assertion (map with two non-negative integer fields)
@@ -150,12 +150,12 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
         conn
         |> put_bearer(session.id)
         |> put_req_header("content-type", "application/json")
-        |> patch("/admin/networks/#{slug}", Jason.encode!(%{max_concurrent_visitor_sessions: 7, max_per_client: 2}))
+        |> patch("/admin/networks/#{slug}", Jason.encode!(%{max_concurrent_visitor_sessions: 7, max_per_ip: 2}))
 
       body = json_response(conn, 200)
       assert body["slug"] == slug
       assert body["max_concurrent_visitor_sessions"] == 7
-      assert body["max_per_client"] == 2
+      assert body["max_per_ip"] == 2
       assert Map.has_key?(body, "circuit_state")
       # U-3 (UD4): PATCH response carries the same live_counts shape
       # as GET — operator's post-Save table render stays in sync
@@ -171,7 +171,7 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       # Verify DB was updated (subsequent GET reflects the change).
       {:ok, reload} = Networks.get_network_by_slug(slug)
       assert reload.max_concurrent_visitor_sessions == 7
-      assert reload.max_per_client == 2
+      assert reload.max_per_ip == 2
     end
 
     test "200 + persists max_concurrent_user_sessions (U-1 new cap)", %{conn: conn} do
@@ -216,7 +216,7 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
           Jason.encode!(%{
             max_concurrent_visitor_sessions: 11,
             max_concurrent_user_sessions: 4,
-            max_per_client: 2
+            max_per_ip: 2
           })
         )
 
@@ -229,7 +229,7 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
                          network_slug: ^slug,
                          max_concurrent_visitor_sessions: 11,
                          max_concurrent_user_sessions: 4,
-                         max_per_client: 2,
+                         max_per_ip: 2,
                          actor_user_id: actor_id,
                          actor_user_name: actor_name
                        }
@@ -338,11 +338,11 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
         conn
         |> put_bearer(session.id)
         |> put_req_header("content-type", "application/json")
-        |> post("/admin/networks", Jason.encode!(%{slug: slug, max_per_client: 3}))
+        |> post("/admin/networks", Jason.encode!(%{slug: slug, max_per_ip: 3}))
 
       body = json_response(conn, 201)
       assert body["slug"] == slug
-      assert body["max_per_client"] == 3
+      assert body["max_per_ip"] == 3
       assert is_integer(body["id"])
     end
 

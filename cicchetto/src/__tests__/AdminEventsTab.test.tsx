@@ -87,14 +87,14 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
         error: "network_cap_exceeded",
         network_id: 1,
         network_slug: "azzurra",
-        client_id: "abc-123",
+        source_ip: "203.0.113.5",
       }),
     ];
     render(() => <AdminEventsTab />);
     const row = screen.getByTestId("admin-event-capacity_reject");
     expect(row.textContent).toContain("bootstrap_visitor flow rejected on azzurra");
     expect(row.textContent).toContain("network_cap_exceeded");
-    expect(row.textContent).toContain("client abc-123");
+    expect(row.textContent).toContain("ip 203.0.113.5");
   });
 
   it("visitor_deleted with actor", () => {
@@ -220,7 +220,7 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
         network_slug: "azzurra",
         max_concurrent_visitor_sessions: 100,
         max_concurrent_user_sessions: 50,
-        max_per_client: 5,
+        max_per_ip: 5,
         actor_user_id: "vjt-uuid",
         actor_user_name: "vjt",
       } as WireAdminEvent),
@@ -229,7 +229,7 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
     const row = screen.getByTestId("admin-event-network_caps_updated");
     expect(row.textContent).toContain("azzurra caps: visitorSessions=100");
     expect(row.textContent).toContain("userSessions=50");
-    expect(row.textContent).toContain("perClient=5");
+    expect(row.textContent).toContain("perIp=5");
     expect(row.textContent).toContain("by vjt");
   });
 
@@ -241,7 +241,7 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
         network_slug: "azzurra",
         max_concurrent_visitor_sessions: null,
         max_concurrent_user_sessions: null,
-        max_per_client: null,
+        max_per_ip: null,
         actor_user_id: null,
         actor_user_name: null,
       } as WireAdminEvent),

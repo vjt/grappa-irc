@@ -4,13 +4,13 @@ defmodule Grappa.Networks.NetworkTest do
   alias Grappa.Networks.Network
 
   describe "changeset/2" do
-    test "accepts max_concurrent_visitor_sessions and max_per_client" do
-      attrs = %{slug: "testnet", max_concurrent_visitor_sessions: 10, max_per_client: 2}
+    test "accepts max_concurrent_visitor_sessions and max_per_ip" do
+      attrs = %{slug: "testnet", max_concurrent_visitor_sessions: 10, max_per_ip: 2}
       changeset = Network.changeset(%Network{}, attrs)
 
       assert changeset.valid?
       assert Ecto.Changeset.get_change(changeset, :max_concurrent_visitor_sessions) == 10
-      assert Ecto.Changeset.get_change(changeset, :max_per_client) == 2
+      assert Ecto.Changeset.get_change(changeset, :max_per_ip) == 2
     end
 
     test "both cap fields are optional (nil = uncapped / inherit default)" do
@@ -30,23 +30,23 @@ defmodule Grappa.Networks.NetworkTest do
       assert "must be non-negative integer or nil" in errors_on(changeset).max_concurrent_user_sessions
     end
 
-    test "rejects negative max_per_client" do
-      changeset = Network.changeset(%Network{}, %{slug: "testnet", max_per_client: -1})
+    test "rejects negative max_per_ip" do
+      changeset = Network.changeset(%Network{}, %{slug: "testnet", max_per_ip: -1})
       refute changeset.valid?
-      assert "must be non-negative integer or nil" in errors_on(changeset).max_per_client
+      assert "must be non-negative integer or nil" in errors_on(changeset).max_per_ip
     end
 
     test "accepts zero (degenerate lock-down — explicit 'allow none')" do
       changeset =
-        Network.changeset(%Network{}, %{slug: "testnet", max_concurrent_visitor_sessions: 0, max_per_client: 0})
+        Network.changeset(%Network{}, %{slug: "testnet", max_concurrent_visitor_sessions: 0, max_per_ip: 0})
 
       assert changeset.valid?
       assert Ecto.Changeset.get_change(changeset, :max_concurrent_visitor_sessions) == 0
-      assert Ecto.Changeset.get_change(changeset, :max_per_client) == 0
+      assert Ecto.Changeset.get_change(changeset, :max_per_ip) == 0
     end
 
     test "accepts nil to clear an existing cap" do
-      base = %Network{slug: "testnet", max_concurrent_visitor_sessions: 5, max_per_client: 3}
+      base = %Network{slug: "testnet", max_concurrent_visitor_sessions: 5, max_per_ip: 3}
       changeset = Network.changeset(base, %{max_concurrent_visitor_sessions: nil})
 
       assert changeset.valid?

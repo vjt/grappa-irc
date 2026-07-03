@@ -34,12 +34,17 @@ defmodule Grappa.Migrations.CheckConstraintsTest do
       end
     end
 
-    test "max_per_client_non_negative rejects -5" do
+    test "max_per_client_non_negative rejects -5 (#171: CHECK name unchanged; column renamed to max_per_ip)" do
       ts = "2026-05-04T00:00:00Z"
 
+      # The #171 migration uses ALTER TABLE RENAME COLUMN (max_per_client
+      # → max_per_ip), which rewrites the CHECK expression but NOT the
+      # constraint name. The constraint stays named
+      # `max_per_client_non_negative` and fires against the renamed column
+      # — same pattern as the U-1 max_concurrent rename above.
       assert_raise Exqlite.Error, ~r/max_per_client_non_negative/, fn ->
         Repo.query!(
-          "INSERT INTO networks (slug, inserted_at, updated_at, max_per_client) VALUES (?, ?, ?, ?)",
+          "INSERT INTO networks (slug, inserted_at, updated_at, max_per_ip) VALUES (?, ?, ?, ?)",
           ["check-test-#{System.unique_integer([:positive])}", ts, ts, -5]
         )
       end
@@ -62,7 +67,7 @@ defmodule Grappa.Migrations.CheckConstraintsTest do
 
       assert {:ok, _} =
                Repo.query(
-                 "INSERT INTO networks (slug, inserted_at, updated_at, max_concurrent_visitor_sessions, max_concurrent_user_sessions, max_per_client) VALUES (?, ?, ?, ?, ?, ?)",
+                 "INSERT INTO networks (slug, inserted_at, updated_at, max_concurrent_visitor_sessions, max_concurrent_user_sessions, max_per_ip) VALUES (?, ?, ?, ?, ?, ?)",
                  ["check-test-#{System.unique_integer([:positive])}", ts, ts, 0, 0, 0]
                )
     end

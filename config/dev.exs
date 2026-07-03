@@ -34,6 +34,20 @@ config :grappa, GrappaWeb.Endpoint,
 
 config :grappa, dev_routes: true
 
+# #171 — per-(source-IP, network) clone cap headroom for dev + e2e.
+# Production stays at config.exs's default of 1 (this key deep-merges
+# over the base :admission block). The serial Playwright suite drives
+# every browser login through ONE shared source IP (the e2e nginx) and
+# every direct API login through another (the runner) — many DISTINCT
+# seeded subjects per IP. At the production default of 1, user
+# `/connect` and visitor logins from the 2nd subject on a shared IP
+# would 503 `too_many_sessions`, cascading unrelated specs. 10 matches
+# the seeded bahamut-test user-session ceiling, so the per-IP cap is
+# never tighter than the network total in e2e. Networks that need a
+# tight cap set `max_per_ip` explicitly (the #171 spec); azzurra seeds
+# 100 for anon-visitor volume.
+config :grappa, :admission, default_max_per_ip_per_network: 10
+
 # Cloak vault key — non-secret, dev-only. Anyone with the repo has it;
 # the dev sqlite file is gitignored. Prod reads from GRAPPA_ENCRYPTION_KEY
 # env var (see config/runtime.exs).

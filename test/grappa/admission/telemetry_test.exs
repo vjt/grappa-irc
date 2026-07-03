@@ -100,24 +100,24 @@ defmodule Grappa.Admission.TelemetryTest do
     test "emits [:grappa, :admission, :capacity, :reject] with correct metadata" do
       attach_event([:grappa, :admission, :capacity, :reject], self())
 
-      :ok = Telemetry.capacity_reject(:login_fresh, :client_cap_exceeded, 7, "44c2ab8a-cb38-4960-b92a-a7aefb190386")
+      :ok = Telemetry.capacity_reject(:login_fresh, :ip_cap_exceeded, 7, "203.0.113.7")
 
       assert_receive {:telemetry, [:grappa, :admission, :capacity, :reject], %{},
                       %{
                         flow: :login_fresh,
-                        error: :client_cap_exceeded,
+                        error: :ip_cap_exceeded,
                         network_id: 7,
-                        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386"
+                        source_ip: "203.0.113.7"
                       }}
     end
 
-    test "accepts nil client_id (bootstrap flows)" do
+    test "accepts nil source_ip (bootstrap flows)" do
       attach_event([:grappa, :admission, :capacity, :reject], self())
 
       :ok = Telemetry.capacity_reject(:bootstrap_user, :network_cap_exceeded, 3, nil)
 
       assert_receive {:telemetry, [:grappa, :admission, :capacity, :reject], %{},
-                      %{flow: :bootstrap_user, error: :network_cap_exceeded, client_id: nil}}
+                      %{flow: :bootstrap_user, error: :network_cap_exceeded, source_ip: nil}}
     end
 
     test "accepts tuple error (circuit-open shape)" do
