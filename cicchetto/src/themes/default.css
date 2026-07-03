@@ -627,11 +627,27 @@ html.resize-dragging * {
   font-size: var(--font-size);
   cursor: pointer;
   line-height: 1;
+  /* #172: the × owns the pointer gesture — a hold-to-confirm must not be
+     stolen by scroll/zoom (mirrors .kbd-key). Desktop is mouse, so this only
+     matters on tablets, but it's the correct declaration for both. */
+  touch-action: none;
 }
 
 .sidebar-close:hover {
   background: var(--border);
   color: var(--fg);
+}
+
+/* #172 — "keep holding to close" cue while a touch/pen hold is in progress
+   (never shown for mouse, which closes instantly). A warning-red tint + a
+   slight grow signals the destructive action is arming. Immediate (not a
+   timed fill) so the 500ms HOLD_TO_CLOSE_MS constant isn't duplicated in
+   CSS; a timed progress fill is a possible on-device polish. Shared by both
+   surfaces' close ×. */
+.sidebar-close.close-holding,
+.bottom-bar-close.close-holding {
+  color: var(--mode-op);
+  transform: scale(1.25);
 }
 
 .sidebar-channel-name {
@@ -3106,6 +3122,10 @@ html.resize-dragging * {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* #172: the mobile fat-finger surface — the × owns the hold-to-confirm
+     gesture, so it must reject the .bottom-bar's pan-x scroll (touch-action
+     does NOT inherit) or a hold would be stolen by a horizontal drag. */
+  touch-action: none;
 }
 
 .bottom-bar-close:hover {

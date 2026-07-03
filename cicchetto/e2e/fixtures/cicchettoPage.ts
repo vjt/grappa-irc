@@ -60,7 +60,7 @@
 // cicchetto/src/lib/theme.ts MOBILE_QUERY = `(max-width: 768px)`.
 // Playwright's iPhone 15 device has viewport 393×852 → mobile branch.
 
-import { type Page, expect } from "@playwright/test";
+import { type Locator, type Page, expect } from "@playwright/test";
 import type { SeededUser } from "./grappaApi";
 
 const SHELL_READY_TIMEOUT_MS = 10_000;
@@ -267,6 +267,57 @@ export function sidebarCloseButton(page: Page, networkSlug: string, windowName: 
       .locator(`.bottom-bar-tab:has-text("${windowName}") + .bottom-bar-close`);
   }
   return sidebarWindow(page, networkSlug, windowName).locator(".sidebar-close");
+}
+
+// #172 — the close × is now HOLD-to-confirm for touch/pen (a bare tap must not
+// close). Playwright's touchscreen only taps, so drive the pointer sequence
+// synthetically. This is a TIMING/WIRING guard only — real long-press FEEL
+// (magnifier/haptics) is a device test (vjt), not reproducible in webkit
+// emulation (feedback_playwright_webkit_not_ios_scroll).
+//
+// Events are constructed + dispatched IN-PAGE via evaluate (the issue123 /
+// issue79 precedent), NOT Playwright's locator.dispatchEvent — a real,
+// bubbling PointerEvent reaches Solid's delegated onPointerDown; Playwright's
+// synthesized one did not (the gate never fired, so the window never closed).
+// pointerType MUST be "touch" or the mouse fast-path confirms instantly and
+// defeats the test.
+
+// Must exceed HOLD_TO_CLOSE_MS (500ms in src/lib/holdToClose.ts). Generous
+// buffer so the in-browser timer has definitely fired before we assert.
+export const HOLD_CLOSE_WAIT_MS = 800;
+// Comfortably below the threshold — a fat-finger tap that must NOT close.
+export const QUICK_TAP_WAIT_MS = 120;
+
+// Hold the close × past the threshold → the in-browser hold timer fires
+// onConfirm WHILE the pointer is still down (exactly the real UX: the close
+// happens on the hold, before you lift). No trailing pointerup on purpose: by
+// the time the wait elapses the confirm has fired and the × is being
+// unmounted; the confirm is the timer's job, not the release's.
+export async function holdClosePress(closeBtn: Locator, holdMs: number = HOLD_CLOSE_WAIT_MS) {
+  await closeBtn.evaluate((el) => {
+    el.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        pointerType: "touch",
+      }),
+    );
+  });
+  await closeBtn.page().waitForTimeout(holdMs);
+}
+
+// A quick touch tap: pointerdown → (brief) → pointerup → the trailing
+// synthetic click the browser fires after a real tap. Exercises the gate's
+// swallow path end-to-end; the window must survive.
+export async function quickTapClose(closeBtn: Locator, waitMs: number = QUICK_TAP_WAIT_MS) {
+  await closeBtn.evaluate(async (el, ms) => {
+    const opts = { bubbles: true, cancelable: true, pointerId: 1, pointerType: "touch" };
+    el.dispatchEvent(new PointerEvent("pointerdown", opts));
+    await new Promise((r) => setTimeout(r, ms));
+    el.dispatchEvent(new PointerEvent("pointerup", opts));
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  }, waitMs);
 }
 
 // Click the window to focus it. Solid's reactive flush + the shell's

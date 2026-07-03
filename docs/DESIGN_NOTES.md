@@ -16240,3 +16240,98 @@ actually appearing) = vjt post-ship.
 batch as #171 + #123 — a daytime `--cic` would rebuild cic from main HEAD,
 which still carries #171's undeployed admin-rename expecting the not-yet-deployed
 `max_per_ip` server API.
+
+### 2026-07-03 — #172: long-press to confirm window close (kill spurious taps; keep the bottom bar)
+
+**Symptom.** A bare tap on the BottomBar window-picker close `×` closed a
+window instantly. On mobile that made a fat-finger tap enough to lose a window
+the user never meant to close (spurious closures). Owner direction: KEEP the
+bottom bar (some users prefer it), make closing DELIBERATE — require a longer
+press/hold; a short tap must not close.
+
+**Cause.** All three close verbs — `closeChannelWindow`, `closeQueryWindow`,
+`disconnectNetwork` (`lib/windowClose.ts`) — were wired directly to the `×`
+button's `onClick` on both surfaces (`BottomBar.tsx` mobile, `Sidebar.tsx`
+desktop). A single click = an instant close, with no deliberation gate.
+
+**Placement (the crux — challenge the spec).** The issue suggested the gate
+"likely lives in/around `windowClose.ts` so both surfaces are covered." The
+instinct (one shared point) is right; the literal placement is wrong.
+`windowClose.*` is a synchronous STATE-PUSH layer with no pointer/event/timer
+context — stuffing a `setTimeout` + pointer tracking into `closeChannelWindow`
+would be a boundary violation (a gesture timer is a UI-interaction concern, not
+a state-push concern) and untestable. So the shared point is at the
+button-INTERACTION layer instead: a new pure gesture core + thin Solid handler
+factory `lib/holdToClose.ts`, wrapped by one `<CloseButton>` component that
+BOTH surfaces attach to; it calls the existing `windowClose.*` verb ON CONFIRM.
+`windowClose.ts` stays a pure state-push verb, unchanged. This is "reuse the
+verbs (windowClose.*), not the nouns" and genuinely covers both surfaces via
+one helper without the boundary violation. The pure core
+(`HoldToCloseGesture`) mirrors `keyboard/gesture.ts` `KeyGesture`: no DOM, no
+timer (the factory owns the `setTimeout`), unit-testable with plain method
+calls.
+
+**Touch-gated, not all-pointers (the key UX decision).** The spurious-close
+problem is a mobile fat-finger problem; a desktop MOUSE click on `×` is
+pixel-precise and already deliberate. Forcing desktop users to hold 500ms
+would be a regression. So the hold applies ONLY to touch/pen
+(`e.pointerType !== "mouse"`); a mouse click — and a keyboard Enter/Space —
+confirms instantly via the native `onClick`. This lets the SAME `<CloseButton>`
+attach to both surfaces safely: Sidebar-on-desktop mouse stays instant,
+Sidebar-on-tablet is held, consistent. The gate keys off `pointerType`, not
+the device — so the e2e drives it identically on both the chromium-desktop
+(`.sidebar-close`) and webkit-iPhone (`.bottom-bar-close`) surfaces with
+synthetic touch pointer events.
+
+**Synthetic-click swallow.** A touch tap/hold fires a trailing synthetic
+`click` after `pointerup`. If left alone it would confirm behind the gesture's
+back (defeating the whole fix). The factory sets a `swallowClick` flag on any
+gated (touch/pen) `pointerdown` and eats the next `click`; a mouse/keyboard
+click is never preceded by a gated pointerdown, so it flows through. The flag
+resets on every `pointerdown` (a mouse press clears any stale value), so a
+persistent button (the registered-user disconnect `×`, which survives a park)
+can't get wedged.
+
+**Which verbs are gated.** All of them, via `<CloseButton>`: channel close,
+query close, AND the network-header `disconnectNetwork` — the most destructive
+(visitor `quitAll` = park-all + logout), where an accidental nuke is worse than
+a channel-close. The Sidebar pseudo-row dismiss (`handleClosePseudo` →
+`setParted`) rides `<CloseButton>` too, for TOTAL consistency (one `×` code
+path, no half-migrated second pattern) — though it's a local projection clear
+on a desktop-only surface the mobile fat-finger never reaches, so the touch
+gate is a no-op there. Distinct from `InlineConfirmButton` (the two-click
+archive-delete affordance) — that stays; #172 is specifically the owner's
+preferred HOLD approach, not a confirm affordance.
+
+**Constants (FEEL knobs).** `HOLD_TO_CLOSE_MS = 500` — longer than the 300ms
+keyboard-variations `LONG_PRESS_MS` because a destructive confirm wants more
+deliberation; a device-calibration default vjt tunes on-device post-ship. Slop
+reuses `keyboard/gesture` `MOVE_SLOP_PX` (~10px) — a finger that drifts past it
+is scrolling, not confirming, so the hold cancels. `pointercancel`/
+`pointerleave` (iOS steals the gesture for a scroll) also cancel. Pointer
+events (not `touch*`) sidestep Solid's passive-touch delegation
+(project_solid_touch_passive_delegation); `touch-action: none` on the close
+buttons (mirroring `.kbd-key`) stops a hold being stolen by the bottom bar's
+`pan-x` scroll.
+
+**Short-tap affordance.** A short tap silently no-ops (the requirement is only
+"short tap doesn't close"). To signal the hold IS working, a `.close-holding`
+class tints the `×` warning-red + grows it slightly WHILE a touch hold is in
+progress (never for mouse). Immediate, not a timed fill, so the 500ms constant
+isn't duplicated in CSS; a timed progress fill is possible on-device polish.
+
+**Why the e2e is a timing/wiring guard.** Playwright webkit-iPhone-15 does NOT
+reproduce real iOS long-press FEEL (magnifier/haptics)
+(feedback_playwright_webkit_not_ios_scroll), but it CAN drive synthetic pointer
+timing. The load-bearing gate is the UNIT layer: the pure-core test
+(`HoldToCloseGesture`, method-level) + the BottomBar component test (RED→GREEN:
+a short touch tap no longer calls the close verb; a held press does).
+`x172-longpress-close-confirm.spec.ts` (chromium + `@webkit`) is the WIRING
+guard — a mutually-validating pair per surface: QUICK press → window still
+present, SUSTAINED hold → window closed; reverting the fix reds the "quick
+press ≠ close" half. Real long-press feel = vjt device test post-ship.
+
+**Deploy.** cic-only. BUILD-DEFER-NIGHT: appends to the same night COLD+`--cic`
+batch as #171 + #123 + #79 — a daytime `--cic` would rebuild cic from main
+HEAD, which still carries #171's undeployed admin-rename expecting the
+not-yet-deployed `max_per_ip` server API.

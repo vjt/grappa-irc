@@ -36,6 +36,7 @@
 
 import { expect, test } from "../fixtures/test";
 import {
+  holdClosePress,
   loginAs,
   selectChannel,
   sidebarCloseButton,
@@ -109,12 +110,14 @@ test("@webkit iOS-Z cluster — viewport + safe-area + close× + font-size", asy
     });
     expect(topBarPadding).not.toBeNull();
 
-    // iOS-3 — bottom-bar close × removes the tab.
+    // iOS-3 — bottom-bar close × removes the tab. #172: closing is now
+    // HOLD-to-confirm on touch (a bare tap must not spuriously close), so
+    // hold the × past the threshold instead of a quick .tap().
     const tab = sidebarWindow(page, NETWORK_SLUG, CHANNEL);
     await expect(tab).toBeVisible({ timeout: 10_000 });
     const closeBtn = sidebarCloseButton(page, NETWORK_SLUG, CHANNEL);
     await expect(closeBtn).toBeVisible();
-    await closeBtn.tap();
+    await holdClosePress(closeBtn);
     await expect(tab).not.toBeVisible({ timeout: 10_000 });
 
     // iOS-3b (folded from ios-3-bottom-bar-close 2026-05-26) — the

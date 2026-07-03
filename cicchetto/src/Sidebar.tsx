@@ -1,4 +1,5 @@
 import { type Component, createSignal, For, Show } from "solid-js";
+import CloseButton from "./CloseButton";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { deleteArchiveEntry } from "./lib/api";
 import { loadArchive, visibleArchiveForNetwork } from "./lib/archive";
@@ -363,14 +364,11 @@ const Sidebar: Component<Props> = () => {
                     networks parked + logout). Routing in
                     windowClose.disconnectNetwork; selection redirect
                     in selection.ts. */}
-                  <button
-                    type="button"
+                  <CloseButton
                     class="sidebar-close"
-                    aria-label={`Disconnect ${network.slug}`}
-                    onClick={() => handleCloseNetwork(network.slug)}
-                  >
-                    ×
-                  </button>
+                    ariaLabel={`Disconnect ${network.slug}`}
+                    onConfirm={() => handleCloseNetwork(network.slug)}
+                  />
                 </li>
 
                 {/* #84 — per-network channel directory (/list). Selects the `$list`
@@ -423,14 +421,11 @@ const Sidebar: Component<Props> = () => {
                             <span class="sidebar-mention">@{mentionCounts()[key]}</span>
                           </Show>
                         </button>
-                        <button
-                          type="button"
+                        <CloseButton
                           class="sidebar-close"
-                          aria-label={`Close ${channel.name}`}
-                          onClick={() => handleCloseChannel(network.slug, channel.name)}
-                        >
-                          ×
-                        </button>
+                          ariaLabel={`Close ${channel.name}`}
+                          onConfirm={() => handleCloseChannel(network.slug, channel.name)}
+                        />
                       </li>
                     );
                   }}
@@ -493,14 +488,17 @@ const Sidebar: Component<Props> = () => {
                         visibleArchiveForNetwork's pseudo-name filter
                         releases so the archive section shows the row
                         instead (single surface per window). */}
-                      <button
-                        type="button"
+                      {/* #172: pseudo-row dismiss is a LOCAL projection clear
+                        (setParted), sidebar-only + desktop-only — the mobile
+                        fat-finger problem never reaches it. It rides the same
+                        <CloseButton> anyway (touch-gate is free; a desktop
+                        mouse click stays instant) so every × is one code path
+                        — no half-migrated second pattern. */}
+                      <CloseButton
                         class="sidebar-close"
-                        aria-label={`Close ${row.name}`}
-                        onClick={() => handleClosePseudo(network.slug, row.name)}
-                      >
-                        ×
-                      </button>
+                        ariaLabel={`Close ${row.name}`}
+                        onConfirm={() => handleClosePseudo(network.slug, row.name)}
+                      />
                     </li>
                   )}
                 </For>
@@ -530,14 +528,11 @@ const Sidebar: Component<Props> = () => {
                             <span class="sidebar-mention">@{mentionCounts()[key]}</span>
                           </Show>
                         </button>
-                        <button
-                          type="button"
+                        <CloseButton
                           class="sidebar-close"
-                          aria-label={`Close DM with ${qw.targetNick}`}
-                          onClick={() => handleCloseQuery(network.id, qw.targetNick)}
-                        >
-                          ×
-                        </button>
+                          ariaLabel={`Close DM with ${qw.targetNick}`}
+                          onConfirm={() => handleCloseQuery(network.id, qw.targetNick)}
+                        />
                       </li>
                     );
                   }}

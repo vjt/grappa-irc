@@ -1,4 +1,5 @@
 import { type Component, createEffect, For, on, Show } from "solid-js";
+import CloseButton from "./CloseButton";
 import { channelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
@@ -104,15 +105,14 @@ const BottomBar: Component<Props> = (props) => {
               {/* Disconnect × — sibling of the header, same flat-flex
                   discipline as channel/query closes (post-UX-3-DEC).
                   Routes through disconnectNetwork → quitAll for visitors,
-                  PATCH-one for registered users. */}
-              <button
-                type="button"
+                  PATCH-one for registered users. #172: the most destructive
+                  close (visitor quitAll) — hold-gated so an accidental tap
+                  can't nuke the network. */}
+              <CloseButton
                 class="bottom-bar-close"
-                aria-label={`Disconnect ${network.slug}`}
-                onClick={() => disconnectNetwork(network.slug)}
-              >
-                ×
-              </button>
+                ariaLabel={`Disconnect ${network.slug}`}
+                onConfirm={() => disconnectNetwork(network.slug)}
+              />
 
               {/* Channel windows */}
               <For each={channelsBySlug()?.[network.slug] ?? []}>
@@ -142,14 +142,11 @@ const BottomBar: Component<Props> = (props) => {
                           <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
                         </Show>
                       </button>
-                      <button
-                        type="button"
+                      <CloseButton
                         class="bottom-bar-close"
-                        aria-label={`Close ${channel.name}`}
-                        onClick={() => closeChannelWindow(network.slug, channel.name)}
-                      >
-                        ×
-                      </button>
+                        ariaLabel={`Close ${channel.name}`}
+                        onConfirm={() => closeChannelWindow(network.slug, channel.name)}
+                      />
                     </>
                   );
                 }}
@@ -180,14 +177,11 @@ const BottomBar: Component<Props> = (props) => {
                           <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
                         </Show>
                       </button>
-                      <button
-                        type="button"
+                      <CloseButton
                         class="bottom-bar-close"
-                        aria-label={`Close DM with ${qw.targetNick}`}
-                        onClick={() => closeQueryWindow(network.id, qw.targetNick)}
-                      >
-                        ×
-                      </button>
+                        ariaLabel={`Close DM with ${qw.targetNick}`}
+                        onConfirm={() => closeQueryWindow(network.id, qw.targetNick)}
+                      />
                     </>
                   );
                 }}
