@@ -3,6 +3,7 @@ import type { ServerReplySource } from "./lib/api";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import { selectedChannel } from "./lib/selection";
 import { dismissServerReplyModal, serverReplyBySlug } from "./lib/serverReplyModal";
+import { MircBody } from "./MircText";
 
 // #127 — /info, /version, /motd modal. Centered, scrollable, dismissable
 // overlay rendering the raw reply lines from a `server_reply` event
@@ -93,7 +94,10 @@ const ServerReplyModal: Component = () => {
                   <For each={r.lines}>
                     {(line: string) => (
                       <div class="server-reply-modal-line" data-testid="server-reply-modal-line">
-                        {line}
+                        {/* #175 — MOTD/INFO/VERSION lines are server free-text and
+                            carry mIRC control bytes (colored banners); route them
+                            through the shared renderer instead of dumping raw. */}
+                        <MircBody body={line} />
                       </div>
                     )}
                   </For>

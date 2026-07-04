@@ -43,7 +43,7 @@ export class IrcPeer {
     this.nick = nick;
   }
 
-  static async connect(opts: { nick: string }): Promise<IrcPeer> {
+  static async connect(opts: { nick: string; gecos?: string }): Promise<IrcPeer> {
     const client = new Client();
     const peer = new IrcPeer(client, opts.nick);
 
@@ -71,7 +71,10 @@ export class IrcPeer {
       port: PORT,
       nick: opts.nick,
       username: opts.nick,
-      gecos: opts.nick,
+      // gecos (realname) defaults to the nick; callers can override to inject
+      // mIRC-formatted free-text so a WHO reply exercises the modal's
+      // formatting render path (#175).
+      gecos: opts.gecos ?? opts.nick,
       auto_reconnect: false,
     });
 

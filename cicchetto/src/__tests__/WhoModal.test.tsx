@@ -72,6 +72,35 @@ describe("WhoModal (#169)", () => {
     expect(screen.getByTestId("who-modal").textContent).toContain("#bofh — 1 user");
   });
 
+  // #175 — the WHO realname (gecos) is arbitrary user free-text and carries
+  // mIRC control bytes (colored / bold gecos). RED before the fix:
+  // `{u.realname}` interpolates the raw string so the control bytes leak into
+  // the DOM and no styled span exists. Only realname is free-text — nick,
+  // flags, user@host, server, hops are identifiers and stay literal.
+  it("renders mIRC formatting in the realname, never raw control bytes (#175)", () => {
+    focusNetwork();
+    // \x02 bold, \x0304 red, \x1f underline, \x0f reset — a colored gecos.
+    setWhoReply(
+      SLUG,
+      roster([row({ nick: "alice", realname: "\x02Alice\x02 \x1fLiddell\x1f \x0304X\x0f" })]),
+    );
+    render(() => <WhoModal />);
+    const rowEl = screen.getByTestId("who-modal-row");
+
+    // realname routed through MircBody → styled spans.
+    expect(rowEl.querySelector(".scrollback-mirc-bold")).not.toBeNull();
+    expect(rowEl.querySelector(".scrollback-mirc-underline")).not.toBeNull();
+
+    // The de-formatted visible text is present...
+    expect(rowEl.textContent).toContain("Alice");
+    expect(rowEl.textContent).toContain("Liddell");
+
+    // ...and NO raw mIRC control byte leaks into the DOM.
+    for (const byte of ["\x02", "\x03", "\x0f", "\x1f"]) {
+      expect(rowEl.textContent).not.toContain(byte);
+    }
+  });
+
   it("omits the realname span when the server sent no realname", () => {
     focusNetwork();
     setWhoReply(SLUG, roster([row({ nick: "alice", realname: null })]));

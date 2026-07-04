@@ -56,6 +56,38 @@ describe("ServerReplyModal (#127)", () => {
     expect(screen.queryByTestId("server-reply-modal")).toBeNull();
   });
 
+  // #175 — MOTD / INFO / VERSION lines are server free-text and carry mIRC
+  // control bytes (colored MOTD banners, bold VERSION headers). RED before
+  // the fix: `{line}` interpolates the raw string so the control bytes leak
+  // into the DOM and no styled span exists (same bug class as the WhoisCard
+  // #142 free-text-field leak). The lines must route through MircBody.
+  it("renders mIRC formatting in reply lines, never raw control bytes (#175)", () => {
+    focusNetwork();
+    // \x02 bold, \x0304 red, \x1f underline, \x0f reset — the codes a colored
+    // MOTD / VERSION banner carries on the wire.
+    setServerReply(
+      SLUG,
+      reply("motd", ["\x02Welcome\x02 to \x0304Azzurra\x0f", "\x1funderlined\x1f line"]),
+    );
+    render(() => <ServerReplyModal />);
+    const modal = screen.getByTestId("server-reply-modal");
+
+    // The parser splits the formatted runs into styled <span>s — proof the
+    // line routed through MircBody, not a raw `{line}` interpolation.
+    expect(modal.querySelector(".scrollback-mirc-bold")).not.toBeNull();
+    expect(modal.querySelector(".scrollback-mirc-underline")).not.toBeNull();
+
+    // The de-formatted visible text is present...
+    expect(modal.textContent).toContain("Welcome");
+    expect(modal.textContent).toContain("Azzurra");
+    expect(modal.textContent).toContain("underlined");
+
+    // ...and NO raw mIRC control byte leaks into the DOM.
+    for (const byte of ["\x02", "\x03", "\x0f", "\x1f"]) {
+      expect(modal.textContent).not.toContain(byte);
+    }
+  });
+
   it("renders an empty-reply fallback (422 no-MOTD)", () => {
     focusNetwork();
     setServerReply(SLUG, reply("motd", []));

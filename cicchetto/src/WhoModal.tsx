@@ -5,6 +5,7 @@ import { createOverlayLock } from "./lib/overlayScrollLock";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { selectedChannel, setSelectedChannel } from "./lib/selection";
 import { dismissWhoModal, whoModalBySlug } from "./lib/whoModal";
+import { MircBody } from "./MircText";
 import NickText, { type PrefixGlyph } from "./NickText";
 
 // #169 — /who modal. Centered, scrollable, dismissable overlay rendering the
@@ -114,7 +115,14 @@ const WhoModal: Component = () => {
                           <span class="who-modal-hops">{u.hops} hops</span>
                         </Show>
                         <Show when={u.realname}>
-                          <span class="who-modal-realname">{u.realname}</span>
+                          {/* #175 — the WHO realname (gecos) is arbitrary user
+                              free-text and carries mIRC control bytes; route it
+                              through the shared renderer. The other columns
+                              (nick, flags, user@host, server, hops) are
+                              identifiers and stay literal. */}
+                          <span class="who-modal-realname">
+                            <MircBody body={u.realname ?? ""} />
+                          </span>
                         </Show>
                       </li>
                     )}
