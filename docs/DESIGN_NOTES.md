@@ -16842,3 +16842,12 @@ so the auto-classifier deployed it HOT — reloaded `Grappa.Push` +
 IRC sessions preserved (no cold restart needed) — batched with the `--cic`
 bundle (`hash=C9iUUKr1`) in one window. #181 stays OPEN until vjt
 eyeball-confirms on device.
+---
+
+## 2026-07-04 — WS subprotocol / transport allowlist inheritance (closing #97)
+
+Issue #97 ("Phase 5: WS subprotocol allowlist inheritance") is closed as **already covered** — the constraint it asked to formalise is the last bullet of the *2026-04-26 — Phase 3 wrap: WS `check_origin`* section above. Restated here so it isn't lost in a closed issue:
+
+**Guardrail.** When adding a new WS subprotocol or an alternate Channel transport, it inherits the existing `check_origin` allowlist by construction. A feature that genuinely needs a *different* host (e.g. a login-free public-status endpoint) lands as a **separate `Phoenix.Endpoint`**, never as a relaxation of `check_origin` in `runtime.exs`. Relaxing the shared allowlist to fit one feature widens the authz-on-handshake surface for every socket.
+
+No action needed today: there is a single WS transport and no new subprotocol in flight. This is a pre-emptive guardrail, tripped only when a future transport is added.
