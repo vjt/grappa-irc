@@ -45,48 +45,16 @@
 // real regression.
 
 import { expect, test } from "../fixtures/test";
-import { composeSend, composeTextarea, loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import {
+  composeSend,
+  composeTextarea,
+  loginAs,
+  selectChannel,
+  synthSwipe,
+} from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-
-// Dispatch a synthetic touch drag on `.compose-box textarea` in the page
-// context, from (startX,startY) to (endX,endY). When `slowMs` > 0 a real
-// delay separates touchstart from touchmove/touchend so the handler's
-// performance.now() diff crosses the velocity threshold. Returns nothing;
-// the caller asserts the resulting draft. Coordinates are arbitrary client
-// px — dispatchEvent fires on the element regardless of hit-testing.
-async function synthSwipe(
-  page: import("@playwright/test").Page,
-  args: { startX: number; startY: number; endX: number; endY: number; slowMs: number },
-): Promise<void> {
-  await page.evaluate(
-    async ({ startX, startY, endX, endY, slowMs }) => {
-      const ta = document.querySelector(".compose-box textarea");
-      if (!(ta instanceof HTMLTextAreaElement)) throw new Error("compose textarea not found");
-      const touch = (x: number, y: number) =>
-        new Touch({ identifier: 1, target: ta, clientX: x, clientY: y });
-      const fire = (type: "touchstart" | "touchmove" | "touchend", x: number, y: number) => {
-        const t = touch(x, y);
-        const ended = type === "touchend";
-        ta.dispatchEvent(
-          new TouchEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            touches: ended ? [] : [t],
-            targetTouches: ended ? [] : [t],
-            changedTouches: [t],
-          }),
-        );
-      };
-      fire("touchstart", startX, startY);
-      if (slowMs > 0) await new Promise((r) => setTimeout(r, slowMs));
-      fire("touchmove", endX, endY);
-      fire("touchend", endX, endY);
-    },
-    args,
-  );
-}
 
 // Force the textarea's native scroll to `scrollTop`, then fire touchstart +
 // a single touchmove (an 80px vertical drag in `dir`), and report whether the

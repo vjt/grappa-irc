@@ -536,3 +536,43 @@ export async function closeMembersDrawer(page: Page): Promise<void> {
     .click({ position: { x: 20, y: 200 } });
   await expect(page.locator(".shell-members.open")).toHaveCount(0, { timeout: 5_000 });
 }
+
+// Dispatch a synthetic touch drag on `.compose-box textarea` from
+// (startX,startY) to (endX,endY). When `slowMs` > 0 a real delay separates
+// touchstart from touchmove/touchend so the ComposeBox handler's
+// performance.now() diff crosses the velocity threshold (#123). Coordinates
+// are arbitrary client px — dispatchEvent fires on the element regardless of
+// hit-testing. Chromium supports the TouchEvent constructor; WebKit's is
+// unreliable, so gesture specs using this run untagged (chromium). Shared by
+// the #123 velocity/handoff spec and the #173 recall-caret spec.
+export async function synthSwipe(
+  page: Page,
+  args: { startX: number; startY: number; endX: number; endY: number; slowMs: number },
+): Promise<void> {
+  await page.evaluate(
+    async ({ startX, startY, endX, endY, slowMs }) => {
+      const ta = document.querySelector(".compose-box textarea");
+      if (!(ta instanceof HTMLTextAreaElement)) throw new Error("compose textarea not found");
+      const touch = (x: number, y: number) =>
+        new Touch({ identifier: 1, target: ta, clientX: x, clientY: y });
+      const fire = (type: "touchstart" | "touchmove" | "touchend", x: number, y: number) => {
+        const t = touch(x, y);
+        const ended = type === "touchend";
+        ta.dispatchEvent(
+          new TouchEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            touches: ended ? [] : [t],
+            targetTouches: ended ? [] : [t],
+            changedTouches: [t],
+          }),
+        );
+      };
+      fire("touchstart", startX, startY);
+      if (slowMs > 0) await new Promise((r) => setTimeout(r, slowMs));
+      fire("touchmove", endX, endY);
+      fire("touchend", endX, endY);
+    },
+    args,
+  );
+}

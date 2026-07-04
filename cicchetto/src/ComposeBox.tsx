@@ -100,6 +100,29 @@ const ComposeBox: Component<Props> = (props) => {
     return { atTop: el.scrollTop <= 0, atBottom: el.scrollTop >= maxScroll - 1 };
   };
 
+  // #173 — after a history recall the controlled `value` swaps to the recalled
+  // line, but the pure compose store (recallPrev/recallNext) only mutates the
+  // draft — it never touches the caret or the native scroll. On a recalled line
+  // that OVERFLOWS the rows=1 textarea the browser leaves scrollTop at 0 with
+  // the end-caret below the fold — you recall a long line and can't see where
+  // you're typing (the dogfood symptom; a down-gesture reaches it most reliably
+  // because by the #123 mapping it fires only while atTop === scrollTop 0).
+  // Place the caret deterministically at the END (irssi recall semantics) and
+  // scroll the textarea so that caret is in view. queueMicrotask mirrors the
+  // tab-complete precedent: run AFTER the value re-render commits to the DOM.
+  // ONE helper, both recall entry points (swipe touchend + keydown ArrowUp/
+  // ArrowDown) — the defect and the fix are identical for both, so this is the
+  // general "after any recall the caret is visible" rule, not a gesture patch.
+  const scrollRecallCaretIntoView = (): void => {
+    const el = textareaEl;
+    if (el === undefined) return;
+    queueMicrotask(() => {
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+      el.scrollTop = el.scrollHeight;
+    });
+  };
+
   // Swipe gestures on the textarea give a stock mobile keyboard (no Tab, no
   // arrows) the same affordances as keys: swipe RIGHT = Tab (nick complete),
   // swipe UP = ArrowUp (older history), swipe DOWN = ArrowDown (newer
@@ -183,9 +206,11 @@ const ComposeBox: Component<Props> = (props) => {
     switch (action) {
       case "recall-prev":
         recallPrev(key());
+        scrollRecallCaretIntoView();
         break;
       case "recall-next":
         recallNext(key());
+        scrollRecallCaretIntoView();
         break;
       case "tab-complete": {
         const ta = e.currentTarget as HTMLTextAreaElement;
@@ -334,6 +359,7 @@ const ComposeBox: Component<Props> = (props) => {
       if (!before.includes("\n")) {
         e.preventDefault();
         recallPrev(key());
+        scrollRecallCaretIntoView();
       }
       return;
     }
@@ -343,6 +369,7 @@ const ComposeBox: Component<Props> = (props) => {
       if (!after.includes("\n")) {
         e.preventDefault();
         recallNext(key());
+        scrollRecallCaretIntoView();
       }
       return;
     }
