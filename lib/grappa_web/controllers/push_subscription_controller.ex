@@ -6,7 +6,10 @@ defmodule GrappaWeb.PushSubscriptionController do
   Three endpoints, all behind `[:api, :authn]`:
 
     * `POST /push/subscriptions` — body
-      `{"endpoint": <url>, "keys": {"p256dh": <b64>, "auth": <b64>}}`.
+      `{"endpoint": <url>, "keys": {"p256dh": <b64>, "auth": <b64>}}`,
+      plus an optional `"supersedes": <old-endpoint>` the client sends
+      on re-subscribe so the ghost row it is replacing is pruned
+      atomically (#181 churn dedup — see `Push.create/2`).
       201 with `%{id, created_at}` on success; 400 if the body shape
       is missing required fields; 422 with `{error:
       "validation_failed", field_errors: ...}` on validation
@@ -67,14 +70,18 @@ defmodule GrappaWeb.PushSubscriptionController do
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t()}
-  def create(conn, %{"endpoint" => endpoint, "keys" => %{"p256dh" => p256dh, "auth" => auth}})
+  def create(conn, %{"endpoint" => endpoint, "keys" => %{"p256dh" => p256dh, "auth" => auth}} = params)
       when is_binary(endpoint) and is_binary(p256dh) and is_binary(auth) do
-    attrs = %{
-      endpoint: endpoint,
-      p256dh_key: p256dh,
-      auth_key: auth,
-      user_agent: get_user_agent(conn)
-    }
+    attrs =
+      maybe_put_supersedes(
+        %{
+          endpoint: endpoint,
+          p256dh_key: p256dh,
+          auth_key: auth,
+          user_agent: get_user_agent(conn)
+        },
+        params
+      )
 
     with {:ok, sub} <- Push.create(Subject.from_assigns(conn.assigns), attrs) do
       conn
@@ -84,6 +91,17 @@ defmodule GrappaWeb.PushSubscriptionController do
   end
 
   def create(_, _), do: {:error, :bad_request}
+
+  # #181 — optional `supersedes` body field carrying the previous
+  # endpoint the client is replacing on re-subscribe. Passed straight to
+  # `Push.create/2`, which deletes that subject-scoped row atomically
+  # with the insert (churn dedup). Ignored when absent / blank / non-binary.
+  # (No @spec: the success typing pins the concrete attrs-map shape, so a
+  # `map()` contract is a Dialyzer supertype — the inferred type is exact.)
+  defp maybe_put_supersedes(attrs, %{"supersedes" => sup}) when is_binary(sup) and sup != "",
+    do: Map.put(attrs, :supersedes, sup)
+
+  defp maybe_put_supersedes(attrs, _), do: attrs
 
   @doc """
   `DELETE /push/subscriptions/:id` — remove a subscription. Cross-

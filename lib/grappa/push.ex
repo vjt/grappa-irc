@@ -134,13 +134,60 @@ defmodule Grappa.Push do
   :endpoint` override in `Subscription.changeset/2`) when the same
   browser re-subscribes — cic treats the 422 as "already subscribed,
   refresh local cache."
+
+  ## `:supersedes` — churn dedup (#181, 2026-07-04)
+
+  `attrs` MAY carry an optional `:supersedes` key holding a previous
+  endpoint URL the client is replacing. When present (and different
+  from the new `:endpoint`), the create runs in a transaction that
+  first deletes THAT subject-scoped endpoint, then inserts the new
+  row — so a re-subscribe after a silent client-side drop does not
+  leave a ghost row behind. The reconciliation is deliberately
+  **client-authoritative**: the client names the exact endpoint it is
+  superseding, and the delete is scoped to the requesting subject, so
+  it can never touch another subject's identically-named endpoint nor
+  a legitimate second device (a subject may own two devices with an
+  identical `user_agent` — proven in prod). `:supersedes == :endpoint`
+  (endpoint did not rotate) is a no-op delete so the same-endpoint
+  re-subscribe still surfaces as the unique-constraint replay.
   """
   @spec create(Subject.t(), map()) ::
           {:ok, Subscription.t()} | {:error, Ecto.Changeset.t()}
   def create({_, _} = subject, attrs) when is_map(attrs) do
+    case Map.pop(attrs, :supersedes) do
+      {supersedes, rest} when is_binary(supersedes) ->
+        insert_superseding(subject, rest, supersedes)
+
+      {_, rest} ->
+        do_insert(subject, rest)
+    end
+  end
+
+  defp do_insert(subject, attrs) do
     %Subscription{}
     |> Subscription.changeset(Subject.put_subject_id(attrs, subject))
     |> Repo.insert()
+  end
+
+  defp insert_superseding(subject, attrs, supersedes) do
+    Repo.transaction(fn ->
+      # Subject-scoped delete of the exact endpoint the client says it is
+      # replacing — but never the endpoint we are about to (re)insert, so
+      # a non-rotated re-subscribe still surfaces as the unique-constraint
+      # replay (#181). `subject_where/2` scopes to the requesting subject,
+      # so a shared endpoint string can never cross subjects.
+      if supersedes != Map.get(attrs, :endpoint) do
+        Subscription
+        |> Subject.subject_where(subject)
+        |> where([s], s.endpoint == ^supersedes)
+        |> Repo.delete_all()
+      end
+
+      case do_insert(subject, attrs) do
+        {:ok, sub} -> sub
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
   end
 
   @doc """

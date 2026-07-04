@@ -20,7 +20,7 @@ defmodule Grappa.PushTest do
   end
 
   defp valid_attrs(opts \\ []) do
-    %{
+    base = %{
       endpoint: Keyword.get(opts, :endpoint, "https://fcm.googleapis.com/wp/abc#{System.unique_integer([:positive])}"),
       p256dh_key:
         Keyword.get(
@@ -31,6 +31,13 @@ defmodule Grappa.PushTest do
       auth_key: Keyword.get(opts, :auth_key, "tBHItJI5svbpez7KI4CCXg=="),
       user_agent: Keyword.get(opts, :user_agent, "Mozilla/5.0 (Linux) Firefox/124.0")
     }
+
+    # #181 — optional `:supersedes` control key (a prior endpoint the
+    # create should prune). Not a schema field; the context pops it.
+    case Keyword.get(opts, :supersedes) do
+      nil -> base
+      supersedes -> Map.put(base, :supersedes, supersedes)
+    end
   end
 
   describe "create/2" do
@@ -103,6 +110,79 @@ defmodule Grappa.PushTest do
 
       assert {:ok, sub} = Push.create({:user, user.id}, attrs)
       assert is_nil(sub.last_used_at)
+    end
+  end
+
+  describe "create/2 — supersede prior endpoint (#181 churn dedup)" do
+    # #181: a client silently drops its browser subscription (iOS SW-swap
+    # / storage eviction) WITHOUT unsubscribing, so the push service keeps
+    # 2xx-ing the dead endpoint → no 410 → the server prune never fires and
+    # the row lingers as a ghost. The deterministic, SAFE reconciliation is
+    # client-authoritative: on re-subscribe the client names the exact prior
+    # endpoint it is replacing (`:supersedes`), and the server deletes THAT
+    # subject-scoped row atomically with the insert. Never keys on subject /
+    # user_agent (a user can own two identical-UA devices — proven in prod).
+    test "deletes the superseded endpoint for the same subject before inserting" do
+      user = user_fixture()
+      {:ok, old} = Push.create({:user, user.id}, valid_attrs(endpoint: "https://push.example/OLD"))
+
+      attrs = valid_attrs(endpoint: "https://push.example/NEW", supersedes: "https://push.example/OLD")
+
+      assert {:ok, new} = Push.create({:user, user.id}, attrs)
+
+      assert [%Subscription{endpoint: "https://push.example/NEW", id: new_id}] =
+               Push.list_for_subject({:user, user.id})
+
+      assert new_id == new.id
+      assert Grappa.Repo.get(Subscription, old.id) == nil
+    end
+
+    test "supersede is subject-scoped — never deletes another subject's identical endpoint" do
+      a = user_fixture()
+      b = user_fixture()
+      {:ok, b_row} = Push.create({:user, b.id}, valid_attrs(endpoint: "https://push.example/SHARED"))
+
+      attrs = valid_attrs(endpoint: "https://push.example/A-NEW", supersedes: "https://push.example/SHARED")
+
+      assert {:ok, _} = Push.create({:user, a.id}, attrs)
+
+      # `a` cannot supersede a device it doesn't own — `b`'s row survives.
+      assert Grappa.Repo.get(Subscription, b_row.id) != nil
+    end
+
+    test "absent :supersedes leaves existing rows untouched" do
+      user = user_fixture()
+      {:ok, keep} = Push.create({:user, user.id}, valid_attrs(endpoint: "https://push.example/KEEP"))
+      {:ok, _} = Push.create({:user, user.id}, valid_attrs(endpoint: "https://push.example/ALSO"))
+
+      assert length(Push.list_for_subject({:user, user.id})) == 2
+      assert Grappa.Repo.get(Subscription, keep.id) != nil
+    end
+
+    test "superseding a non-existent endpoint still inserts (idempotent)" do
+      user = user_fixture()
+
+      attrs = valid_attrs(endpoint: "https://push.example/FRESH", supersedes: "https://push.example/GHOST")
+
+      assert {:ok, _} = Push.create({:user, user.id}, attrs)
+
+      assert [%Subscription{endpoint: "https://push.example/FRESH"}] =
+               Push.list_for_subject({:user, user.id})
+    end
+
+    test ":supersedes equal to the new endpoint keeps the replay-422 contract" do
+      # When the endpoint did NOT rotate, the same-endpoint re-subscribe
+      # must still surface as the unique-constraint replay (cic reads it
+      # as "already subscribed, refresh cache") — the supersede must NOT
+      # self-delete the row it is about to (re)insert.
+      user = user_fixture()
+      {:ok, _} = Push.create({:user, user.id}, valid_attrs(endpoint: "https://push.example/SAME"))
+
+      attrs = valid_attrs(endpoint: "https://push.example/SAME", supersedes: "https://push.example/SAME")
+
+      assert {:error, %Ecto.Changeset{errors: errors}} = Push.create({:user, user.id}, attrs)
+      assert {"has already been taken", _} = errors[:endpoint]
+      assert length(Push.list_for_subject({:user, user.id})) == 1
     end
   end
 

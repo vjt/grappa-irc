@@ -26,7 +26,7 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
   defp uniq, do: System.unique_integer([:positive])
 
   defp valid_body(opts \\ []) do
-    %{
+    base = %{
       "endpoint" =>
         Keyword.get(
           opts,
@@ -43,6 +43,12 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
         "auth" => Keyword.get(opts, :auth, "tBHItJI5svbpez7KI4CCXg==")
       }
     }
+
+    # #181 — optional `supersedes` body field (a prior endpoint to prune).
+    case Keyword.get(opts, :supersedes) do
+      nil -> base
+      supersedes -> Map.put(base, "supersedes", supersedes)
+    end
   end
 
   describe "POST /push/subscriptions — auth gating" do
@@ -134,6 +140,55 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       # routes the changeset error to the field cic actually cares
       # about — surfaces as `field_errors.endpoint` in the wire body.
       assert ["has already been taken"] = fe["endpoint"]
+    end
+  end
+
+  describe "POST /push/subscriptions — supersede (#181)" do
+    setup %{conn: conn} do
+      {user, session} = user_and_session()
+      {:ok, conn: put_bearer(conn, session.id), user: user}
+    end
+
+    test "supersedes deletes the prior endpoint row for the subject", %{conn: conn, user: user} do
+      # Client re-subscribe after a silent drop: it names the endpoint it
+      # is replacing so the ghost row does not accumulate (#181).
+      _ = post(conn, "/push/subscriptions", valid_body(endpoint: "https://example.com/push/sup-old"))
+
+      body =
+        valid_body(
+          endpoint: "https://example.com/push/sup-new",
+          supersedes: "https://example.com/push/sup-old"
+        )
+
+      conn = post(conn, "/push/subscriptions", body)
+      assert %{"id" => _} = json_response(conn, 201)
+
+      endpoints = Enum.map(Push.list_for_subject({:user, user.id}), & &1.endpoint)
+      assert endpoints == ["https://example.com/push/sup-new"]
+    end
+
+    test "supersedes is ignored when it targets another subject's endpoint", %{conn: conn} do
+      {other, _} = user_and_session()
+
+      {:ok, _} =
+        Push.create({:user, other.id}, %{
+          endpoint: "https://example.com/push/other-owned",
+          p256dh_key: "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM=",
+          auth_key: "tBHItJI5svbpez7KI4CCXg=="
+        })
+
+      body =
+        valid_body(
+          endpoint: "https://example.com/push/mine-new",
+          supersedes: "https://example.com/push/other-owned"
+        )
+
+      conn = post(conn, "/push/subscriptions", body)
+      assert %{"id" => _} = json_response(conn, 201)
+
+      # The other subject's row must survive — supersede is subject-scoped.
+      assert [%{endpoint: "https://example.com/push/other-owned"}] =
+               Push.list_for_subject({:user, other.id})
     end
   end
 
