@@ -44,6 +44,8 @@
 // an iOS-UA test into every later desktop-UA test. Per-event cost is
 // one regex on a ~Hz event — immaterial.
 
+import { isDiagEnabled } from "../DiagFloat";
+import { diagPush } from "./diagLog";
 import { isIos } from "./platform";
 
 // Selectable-text policy point — MUST stay in sync with default.css
@@ -52,32 +54,73 @@ import { isIos } from "./platform";
 // constant, so this allowlist is duplicated deliberately, same shape as
 // the nick-fold SQL/fragment invariant: a new copyable surface must be
 // added to BOTH sites or the two policies drift. Keep it small + named.
-// Why the skip exists: preventDefault on a mousedown cancels the focus
-// shift AND the text-selection-drag start, so without this guard a
-// long-press on scrollback text with the compose box focused could never
-// start a selection while the keyboard was open (#79). See
-// docs/DESIGN_NOTES.md 2026-06-11 (Dispatch-1) + 2026-07-03 (#79).
+// These are the surfaces where a mousedown's preventDefault is DURATION-
+// GATED (see LONG_PRESS_MS / handleMouseDown) instead of always firing:
+// preventDefault cancels the focus shift AND the text-selection-drag
+// start, so on copyable text we only fire it for a long-press (keep the
+// keyboard so the selection survives) and skip it for a tap (let the
+// keyboard dismiss). See docs/DESIGN_NOTES.md 2026-06-11 (Dispatch-1) +
+// 2026-07-03 (#79 v1) + 2026-07-04 (#79 long-press rework).
 const SELECTABLE_TEXT_SURFACES = ".scrollback, .topic-modal-text";
 const SELECTABLE_TEXT_EXCLUDE = ".scrollback-invite-join";
+
+// #79 (2026-07-04) — long-press threshold for the tap-vs-hold split on
+// selectable scrollback text. iOS dispatches a mousedown on finger
+// RELEASE, so `mousedown - touchstart` is the held duration: below the
+// threshold is a TAP (let the keyboard dismiss — vjt-confirmed
+// tap-to-close, KEEP), at/above is a LONG-PRESS (iOS has begun a
+// selection; preventDefault the focus-shift so the keyboard-close reflow
+// doesn't tear it down). 500ms matches iOS's own long-press convention —
+// below it iOS would not have started a selection anyway. Feel change
+// accepted by vjt 2026-07-04; device-judged post-ship.
+export const LONG_PRESS_MS = 500;
 
 function isTextEntry(el: Element | null): boolean {
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
 }
 
-// True when a mousedown target sits on copyable text (so preventDefault
-// must be skipped to let the selection drag start). The exclude wins:
-// the [Join] CTA lives inside .scrollback but is a control.
+// True when a mousedown target sits on copyable text — the surfaces where
+// preventDefault is duration-gated (tap dismisses, long-press selects)
+// rather than always fired. The exclude wins: the [Join] CTA lives inside
+// .scrollback but is a control, so it falls through to the always-fire
+// path (keyboard preserved regardless of hold duration).
 function isSelectableSurface(el: Element | null): boolean {
   if (el === null) return false;
   if (el.closest(SELECTABLE_TEXT_EXCLUDE) !== null) return false;
   return el.closest(SELECTABLE_TEXT_SURFACES) !== null;
 }
 
+// Timestamp (performance.now, monotonic) of the most recent touchstart —
+// the mousedown handler reads it to classify a selectable-surface press
+// as tap vs long-press. 0 until the first touch; the desktop/no-touch
+// path never reaches the duration check (gated by isIos() upstream).
+let touchStartAt = 0;
+
+function handleTouchStart(): void {
+  touchStartAt = performance.now();
+}
+
 function handleMouseDown(e: MouseEvent): void {
   if (!isIos()) return;
   if (!isTextEntry(document.activeElement)) return;
   if (isTextEntry(e.target as Element | null)) return;
-  if (isSelectableSurface(e.target as Element | null)) return;
+  if (isSelectableSurface(e.target as Element | null)) {
+    // Copyable text: iOS dispatches this mousedown on finger-RELEASE, so
+    // the held duration (touchstart → now) already tells a tap from a
+    // long-press. Tap → leave the default (focus shift → keyboard
+    // dismisses, vjt-confirmed tap-to-close). Long-press → preventDefault
+    // the focus-shift so the keyboard-close reflow can't tear down the
+    // selection iOS just began. See LONG_PRESS_MS.
+    const heldMs = performance.now() - touchStartAt;
+    const longPress = heldMs >= LONG_PRESS_MS;
+    if (isDiagEnabled()) {
+      diagPush(
+        `kb: scrollback md held=${Math.round(heldMs)}ms → ${longPress ? "HOLD keep+select" : "tap close-kbd"}`,
+      );
+    }
+    if (longPress) e.preventDefault();
+    return;
+  }
   e.preventDefault();
 }
 
@@ -86,4 +129,8 @@ export function installKeyboardPreserve(
 ): void {
   if (!target) return;
   target.addEventListener("mousedown", handleMouseDown, { capture: true });
+  // Passive: we only READ the timestamp, never preventDefault a
+  // touchstart — that would block scroll/pan and the native selection
+  // gesture (the same reason the header hooks mousedown not pointerdown).
+  target.addEventListener("touchstart", handleTouchStart, { capture: true, passive: true });
 }

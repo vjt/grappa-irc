@@ -188,11 +188,14 @@ html.is-ios {
    Telegram Web K's pattern, and Telegram pairs it with re-enables on
    every surface users copy from. New copyable surface → add its
    selector HERE and to keepKeyboard.ts's SELECTABLE_TEXT_SURFACES
-   allowlist (#79, 2026-07-03): keepKeyboard skips its mousedown
-   preventDefault on these same surfaces so a long-press can start a
-   selection with the iOS keyboard open. CSS and TS can't share a
-   constant, so the two lists MUST stay in sync — a surface added here
-   but not there stays unselectable while compose is focused.
+   allowlist (#79, 2026-07-03 + 2026-07-04 rework): on these same
+   surfaces keepKeyboard DURATION-GATES its mousedown preventDefault —
+   a short tap is left un-prevented (keyboard dismisses) but a
+   long-press IS prevented (keyboard stays up so the iOS selection
+   survives). This `user-select: text` re-enable is the load-bearing
+   half — without it there is nothing to select. CSS and TS can't share
+   a constant, so the two lists MUST stay in sync — a surface added
+   here but not there stays unselectable while compose is focused.
    Currently: scrollback message text
    (channels, queries, server window all render through .scrollback),
    the topic modal's full-topic text, and editable fields (WebKit

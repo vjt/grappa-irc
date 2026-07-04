@@ -16278,6 +16278,15 @@ carries #171's undeployed admin-rename expecting the not-yet-deployed
 
 ### 2026-07-03 — #79: let scrollback selection start with the keyboard open (keep-keyboard skips selectable surfaces)
 
+> **SUPERSEDED 2026-07-04 (see next entry).** This v1 fix — an *unconditional*
+> skip of the preventDefault on `.scrollback` — was device-tested FAILING by
+> vjt: it did not deliver long-press selection (the freed focus-shift closed the
+> keyboard mid-press, and the keyboard-close reflow tore the long-press down
+> before iOS committed a selection), and its only observed effect was that a
+> plain TAP now closed the keyboard. vjt chose to KEEP tap-to-close and gate the
+> preventDefault on press DURATION instead. The v1 mechanism below is history;
+> the shipped behaviour is the 2026-07-04 rework.
+
 vjt iPhone dogfood: tap-hold text selection in the scrollback works ONLY with
 the on-screen keyboard CLOSED. Keyboard OPEN (compose focused) → long-pressing a
 scrollback message does nothing, no selection handles. Closing the keyboard
@@ -16518,3 +16527,66 @@ HEAD, which still carries #171's undeployed admin-rename expecting the
 not-yet-deployed `max_per_ip` server API. This attempt-3 supersedes the
 attempt-2 (4e828a2) cic already queued in that batch; no separate hot ship.
 Device dogfood happens once the batch lands.
+
+### 2026-07-04 — #79 rework: tap-to-close vs long-press-select, split by press DURATION
+
+The 2026-07-03 v1 (unconditional preventDefault-skip on `.scrollback`) failed on
+device: a plain TAP on a scrollback message now closed the keyboard (vjt liked
+this and asked to KEEP it), but a tap-HOLD still did nothing — no selection
+handles. Root cause of the still-dead selection with the skip already in place:
+freeing the mousedown default let the focus-shift proceed, which on iOS
+dismisses the keyboard; the keyboard-close reflow moves the pressed text out
+from under the finger before iOS's ~500ms long-press commits, so the selection
+never lands. (Three-state proof: keyboard CLOSED → selection works — no reflow,
+the keyboard is already down; keyboard OPEN + v0 unconditional preventDefault →
+dead — the preventDefault itself cancels the drag; keyboard OPEN + v1 skip →
+dead — the reflow tears it down on release.)
+
+**The conflict is real and lives in TIME.** Two behaviours are wanted on the
+SAME surface: a short tap must close the keyboard, a long-press must select. A
+single mousedown-time preventDefault decision cannot tell them apart — that
+distinction only exists over elapsed time. vjt was presented the trade-off and
+chose **Option 2: a long-press threshold** (accepting the small feel change,
+device-judged post-ship; the deeper iOS-selection unknown — whether
+`touch-action: none` on a non-overflowing `.scrollback` also blocks the gesture
+— was explicitly deferred to that dogfood, not pre-probed).
+
+**Mechanism — no timer, no async.** iOS dispatches the compat `mousedown` on
+finger-RELEASE, so at mousedown time the held duration is already known:
+`performance.now()` at the document `touchstart` (a new passive capture listener
+stamps it) subtracted from `performance.now()` in the mousedown handler. On a
+selectable surface: `held < LONG_PRESS_MS` (500) is a TAP → leave the default →
+focus shift → keyboard dismisses (tap-to-close KEPT); `held >= 500` is a
+LONG-PRESS → `preventDefault` the focus-shift → keyboard stays up → no reflow →
+the selection iOS began survives. 500ms matches iOS's own long-press convention
+— below it iOS would not have started a selection anyway, so closing the
+keyboard there is never wrong. Chrome (tabs, arrows, the send button) is
+UNCHANGED: not a selectable surface → preventDefault fires regardless of
+duration (UX-3 preserve). No `pointerdown`, no `touch-action` change (that
+regression risk stays out of scope; if the deferred `touch-action` unknown bites
+a non-overflowing channel on device, that is a separate follow-up).
+
+**Two-site allowlist still holds.** WHICH surfaces are duration-gated
+(`.scrollback` / `.topic-modal-text`, minus `.scrollback-invite-join`) is
+unchanged from v1 and still duplicated in `default.css` (the `user-select: text`
+re-enable, load-bearing — selection needs it) and `keepKeyboard.ts`
+(`SELECTABLE_TEXT_SURFACES`). Only the ACTION within them changed (skip →
+duration-gate); the sync invariant is intact, both comments updated.
+
+**On-device evidence.** A `cic_diag`-gated `diagPush` on the scrollback-branch
+decision (`held=Xms → HOLD keep+select | tap close-kbd`) surfaces in DiagFloat so
+vjt can confirm on-device that his holds cross the threshold — the observability
+for the post-ship dogfood that is now the SOLE real gate (webkit playwright is
+blind to the actual selection handles; `feedback_playwright_webkit_not_ios_scroll`).
+
+**e2e.** `issue79-ios-select-keyboard-open.spec.ts` (`@webkit`, needs `is-ios`)
+now asserts the three-way discrimination via synthetic dispatch + a real
+wall-clock hold (JS-level facts, not touch physics): short tap not prevented,
+long-press prevented, chrome prevented — only jointly green if the gate
+discriminates. Necessary, NOT sufficient. The keepKeyboard UNIT test carries the
+RED→GREEN boundary cases (short/long/threshold/exclude). #79 stays OPEN until
+vjt device-confirms.
+
+**Deploy.** cic-only, HOT `--cic` (prod server+cic both at ae2d34a — the
+BUILD-DEFER-NIGHT coupling from the #171 batch cleared once that batch landed, so
+a daytime `--cic` no longer rebuilds an undeployed-server dependency).
