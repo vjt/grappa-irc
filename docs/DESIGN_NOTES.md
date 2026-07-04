@@ -16673,3 +16673,70 @@ offline/online, and auto-dismiss.
 
 **Deploy.** cic-only, HOT `--cic`. `gen_wire_types --check` stays green — no
 wire touch. #119 stays OPEN until vjt device-confirms; #120 dispatched next.
+
+## 2026-07-04 — #120: surface service-worker registration failure in the #119 stacked error region
+
+**The bug.** `cicchetto/src/main.tsx` called `registerSW()` (vite-plugin-pwa /
+Workbox) **bare** — no options object, zero callbacks. A service-worker
+registration failure was therefore SWALLOWED SILENTLY: it reached only the
+browser console (vite-pwa's own log), never the UI. SW-dependent features (push
+notifications, offline shell, icon badge) then silently don't work with no
+in-app cause a user or operator can see. That silent swallow at a boundary is
+exactly the CLAUDE.md "no silent-swallow" anti-pattern. It surfaced verifying
+iOS Safari SW registration on prod (#94), where the only detection paths were
+Web Inspector console or "absence of SW features."
+
+**The fix — extend the #119 seam, don't build a new one.** #119 promised #120
+would slot in as ONE new `BannerSource` member + one `activeBanners()` push, and
+it did, verbatim:
+
+  * NEW source signal `cicchetto/src/lib/swRegistration.ts` — a module-singleton
+    Solid signal mirroring `socketHealth.ts` / `connectivity.ts` EXACTLY
+    (record fns + `shouldShowSwRegBanner()` predicate + `__resetForTests` seam +
+    a `window.__cic_swRegistration` e2e/devtools hook). It is the SINGLE owner of
+    the SW-registration state (derive-don't-duplicate); `errorBanners.ts` reads
+    it, never copies it.
+  * `main.tsx` now calls `registerSW({ onRegisterError, onRegisteredSW })`.
+    `onRegisterError` feeds the signal → the banner. `onRegisteredSW` (the
+    non-deprecated success callback — `onRegistered` the issue named is
+    `@deprecated` and only fires when `onRegisteredSW` is absent) records the
+    healthy outcome for devtools/#181 only, NO banner. Registration TIMING is
+    unchanged — still the default deferred-until-`window.load` behaviour; only
+    observability was added.
+  * `errorBanners.ts` gained ONE `BANNER_SOURCES` member (`sw-registration`,
+    hyphen form matching `bundle-refresh`) and ONE `activeBanners()` push gated
+    on `shouldShowSwRegBanner()`, ordered `warn` after the two error sources and
+    before the info bundle prompt (deterministic error→warn→info stacking). The
+    closed-set guards + `sanitizeBanners` accept it for free; unknown sources
+    (incl. the near-miss `sw_registration` / `service-worker`) still rejected.
+
+**Severity `warn`, no actionHint.** The app keeps working; only PWA capability
+is degraded — so `warn`, not `error`. It's a diagnostic, not a user action, so
+no reload/retry button (vite-plugin-pwa exposes no clean re-register anyway; a
+reload re-attempts). The error surface is STICKY: unlike connectivity's `online`
+event or socketHealth's clean-open reset, nothing clears it for the page
+lifetime — it only clears on an explicit reset (tests) or a later successful
+registration (won't happen for the same page).
+
+**The #181 diagnostic lever (the load-bearing non-obvious constraint).** The
+signal captures the ERROR DETAIL — `{ name, message }` normalized from the
+`onRegisterError` Error/DOMException — NOT a boolean. The push-notification
+cluster (#181) will need to know WHY SW registration failed; it reads that
+detail programmatically via the `swRegistration` accessor / the
+`window.__cic_swRegistration` hook. The banner message is merely the human view
+of the same captured detail. A boolean or a lossy one-liner would NOT deliver
+the lever, so both the banner text and the signal carry name + message.
+
+**Tests.** Unit: `swRegistration` (captures name+message from an Error, a plain
+object, and a bare string; predicate flips; sticky-until-reset; success clears);
+`errorBanners` (the derivation emits the `warn` entry with the captured detail,
+the closed set accepts `sw-registration` and rejects near-misses, 4-source
+stack + error→warn→info order). Unlike bundle-refresh, the signal is jsdom-
+driveable via its record fn — no mock needed. e2e (`error-banners.spec.ts`,
+extending #119's anti-hollow-green spec): drive `__cic_swRegistration.recordError`
+→ assert the `[data-source="sw-registration"]` slot is visible AND contains the
+error name+message AND the hook exposes the same detail; plus a second no-overlap
+stacking proof (WS + sw-registration, bounding boxes don't intersect).
+
+**Deploy.** cic-only, HOT `--cic`. `gen_wire_types --check` stays green — 100%
+client state, no wire touch. #120 stays OPEN until vjt eyeball-confirms.

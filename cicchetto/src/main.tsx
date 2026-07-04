@@ -21,6 +21,7 @@ import { applyIosClass, isStandalonePwa } from "./lib/platform";
 import { applyPushTargetFromUrl, installPushTargetListener } from "./lib/pushTarget";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing } from "./lib/socket";
+import { recordSwRegError, recordSwRegistered } from "./lib/swRegistration";
 import { applyTheme } from "./lib/theme";
 import { installSmartScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
 import Shell from "./Shell";
@@ -224,4 +225,18 @@ render(
 // contending with first-paint asset fetches for bandwidth on slow
 // connections — Workbox author flags `immediate: true` as
 // not-recommended for exactly this reason.
-registerSW();
+//
+// #120 — pass callbacks so a registration FAILURE is no longer swallowed
+// silently (CLAUDE.md no-silent-swallow). `onRegisterError` feeds the
+// `swRegistration` signal → the #119 unified stacked error region shows a typed
+// `sw-registration` warn entry carrying the error name+message; that captured
+// detail is ALSO the #181 push-notification diagnostic lever (read via the
+// `window.__cic_swRegistration` hook / the signal accessor). `onRegisteredSW`
+// (the non-deprecated success callback) records the healthy outcome for
+// devtools/#181 only — no banner. Registration TIMING is unchanged: still the
+// default deferred-until-`window.load` behaviour above; only observability is
+// added.
+registerSW({
+  onRegisterError: (error) => recordSwRegError(error),
+  onRegisteredSW: (_swScriptUrl, registration) => recordSwRegistered(registration),
+});

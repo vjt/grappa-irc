@@ -1,6 +1,7 @@
 import { performRefresh, shouldShowRefreshBanner } from "./bundleHash";
 import { isOffline } from "./connectivity";
 import { shouldShowBanner, socketHealth } from "./socketHealth";
+import { shouldShowSwRegBanner, swRegistration } from "./swRegistration";
 
 // #119 — unified stacked error-banner registry.
 //
@@ -21,12 +22,15 @@ import { shouldShowBanner, socketHealth } from "./socketHealth";
 // with runtime guards (`isBannerSource` / `isBannerSeverity`) and a
 // `sanitizeBanners` boundary that drops any entry outside the closed set.
 //
-// EXTENSIBILITY for #120: the service-worker-registration-failure surface
-// slots in as ONE new `BannerSource` member + one `activeBanners()` push
-// gated on the SW-failure signal. Nothing structural changes — the enum + the
-// derivation are the whole seam. (#120 is NOT implemented here.)
+// #120 extended this exactly as the seam promised: the
+// service-worker-registration-failure surface is ONE new `BannerSource` member
+// (`sw-registration`) + one `activeBanners()` push gated on the `swRegistration`
+// signal's `shouldShowSwRegBanner()` predicate. Nothing structural changed — the
+// enum + the derivation were the whole seam. The signal (`swRegistration.ts`)
+// stays the single owner of the SW-registration state (derive, don't duplicate)
+// and captures the error name+message as the #181 diagnostic lever.
 
-export const BANNER_SOURCES = ["connectivity", "ws", "bundle-refresh"] as const;
+export const BANNER_SOURCES = ["connectivity", "ws", "sw-registration", "bundle-refresh"] as const;
 export type BannerSource = (typeof BANNER_SOURCES)[number];
 
 export const BANNER_SEVERITIES = ["error", "warn", "info"] as const;
@@ -75,10 +79,21 @@ function wsMessage(): string {
   return `WebSocket connection failing — close code ${code}${reason} (${h.errorCount} consecutive errors).`;
 }
 
+// Surface the captured SW-registration error detail (name + message) — the same
+// detail the swRegistration signal persists as the #181 diagnostic lever, here
+// rendered as the human-visible cause. `warn`, not `error`: the app still works;
+// only the SW-dependent capabilities (push, offline shell, badge) are degraded.
+function swRegMessage(): string {
+  const { error } = swRegistration();
+  const detail = error !== null ? `${error.name}: ${error.message}` : "unknown error";
+  return `Service worker registration failed — ${detail}. Offline mode and push notifications are unavailable.`;
+}
+
 // Derive the currently-active banner entries from the source signals, in a
-// deterministic order (errors before the informational bundle prompt). Reads
-// each source's own accessor so the owner's <For> re-derives reactively when
-// any source changes — a recovered source drops its slot automatically.
+// deterministic severity order (error sources, then the sw-registration warn,
+// then the informational bundle prompt). Reads each source's own accessor so
+// the owner's <For> re-derives reactively when any source changes — a recovered
+// source drops its slot automatically.
 export function activeBanners(): BannerEntry[] {
   const entries: BannerEntry[] = [];
 
@@ -100,6 +115,18 @@ export function activeBanners(): BannerEntry[] {
       source: "ws",
       severity: "error",
       message: wsMessage(),
+    });
+  }
+
+  // Service-worker registration failed — the pre-#120 silent-swallow, now
+  // surfaced. Sticky (no auto-clear event; only reload re-attempts). `warn`:
+  // degraded PWA capability, the app itself keeps working. The message carries
+  // the captured error name+message (also the #181 diagnostic lever).
+  if (shouldShowSwRegBanner()) {
+    entries.push({
+      source: "sw-registration",
+      severity: "warn",
+      message: swRegMessage(),
     });
   }
 

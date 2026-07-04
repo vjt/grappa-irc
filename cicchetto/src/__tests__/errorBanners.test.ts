@@ -16,6 +16,7 @@ import {
   recordSocketError,
   recordSocketOpen,
 } from "../lib/socketHealth";
+import { __resetSwRegistrationForTests, recordSwRegError } from "../lib/swRegistration";
 
 // The bundle-refresh source depends on `bootBundleHash`, which reads a
 // `<script src="/assets/index-…">` tag that only exists in a real vite build
@@ -45,11 +46,28 @@ describe("errorBanners registry", () => {
   beforeEach(() => {
     __resetSocketHealthForTests();
     __setConnectivityForTests(true);
+    __resetSwRegistrationForTests();
     mockShouldShowRefresh.mockReturnValue(false);
   });
 
   it("is empty when every source is healthy", () => {
     expect(activeBanners()).toHaveLength(0);
+  });
+
+  it("emits a 'sw-registration' warn entry carrying the captured error name + message", () => {
+    recordSwRegError({
+      name: "SecurityError",
+      message: "Failed to register a ServiceWorker: origin not allowed",
+    });
+    const sw = activeBanners().find((e) => e.source === "sw-registration");
+    expect(sw).toBeDefined();
+    expect(sw?.severity).toBe("warn");
+    // The message MUST surface the captured detail (name AND message) — this is
+    // both the human-visible cause and the greppable #181 diagnostic lever.
+    expect(sw?.message).toContain("SecurityError");
+    expect(sw?.message).toContain("origin not allowed");
+    // A diagnostic, not a user action.
+    expect(sw?.actionHint).toBeUndefined();
   });
 
   it("emits a 'ws' error entry with the real close code once the threshold trips", () => {
@@ -80,12 +98,23 @@ describe("errorBanners registry", () => {
   it("stacks all active sources simultaneously (N sources → N entries)", () => {
     tripWs(1006, "");
     __setConnectivityForTests(false);
+    recordSwRegError({ name: "SecurityError", message: "denied" });
     mockShouldShowRefresh.mockReturnValue(true);
     const sources = activeBanners().map((e) => e.source);
     expect(sources).toContain("ws");
     expect(sources).toContain("connectivity");
+    expect(sources).toContain("sw-registration");
     expect(sources).toContain("bundle-refresh");
-    expect(activeBanners()).toHaveLength(3);
+    expect(activeBanners()).toHaveLength(4);
+  });
+
+  it("orders sw-registration (warn) after the error sources and before the info prompt", () => {
+    __setConnectivityForTests(false);
+    recordSwRegError({ name: "SecurityError", message: "denied" });
+    mockShouldShowRefresh.mockReturnValue(true);
+    const severities = activeBanners().map((e) => e.severity);
+    // errors before warns before info — deterministic stacking order.
+    expect(severities).toEqual(["error", "warn", "info"]);
   });
 
   it("drops the 'ws' entry automatically when the socket recovers (auto-clear)", () => {
@@ -106,7 +135,10 @@ describe("errorBanners registry", () => {
 describe("closed-set boundary", () => {
   it("recognises exactly the known sources", () => {
     for (const s of BANNER_SOURCES) expect(isBannerSource(s)).toBe(true);
+    expect(isBannerSource("sw-registration")).toBe(true);
+    // Near-misses stay rejected — the exact hyphen form is the contract.
     expect(isBannerSource("service-worker")).toBe(false);
+    expect(isBannerSource("sw_registration")).toBe(false);
     expect(isBannerSource("")).toBe(false);
     expect(isBannerSource(undefined)).toBe(false);
     expect(isBannerSource(42)).toBe(false);
