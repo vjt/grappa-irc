@@ -16740,3 +16740,101 @@ stacking proof (WS + sw-registration, bounding boxes don't intersect).
 
 **Deploy.** cic-only, HOT `--cic`. `gen_wire_types --check` stays green — 100%
 client state, no wire touch. #120 stays OPEN until vjt eyeball-confirms.
+
+---
+
+## 2026-07-04 — #181: push subscription survives an SW-swap re-subscribe; ghost rows superseded on re-subscribe (NOT prune-on-410)
+
+**Symptom (live iOS debug, vjt + morph, 2 devices).** Push "silently
+re-disables": the in-app toggle reads OFF and delivery stops; re-enabling
+re-subscribes and restores it — until it drops again. Second symptom
+(server): the device list shows a device as *subscribed* that in reality
+receives no push (ghost).
+
+**Evidence-first, on the LIVE prod node (read-only rpc + logs).** The
+brief handed down a two-part diagnosis: (client) no auto re-subscribe,
+(server) *dead subscriptions are never pruned*. Half of that was already
+false in the code — so we verified against prod before building:
+
+- 9 `push_subscriptions`; old Apple rows (inserted 06-22 / 06-23 / 07-03)
+  ALL carried `last_used_at` = 07-04 21:40. `last_used_at` is bumped ONLY
+  on a `{:ok,_}` send (`Push.touch_last_used/1`) → **the push service is
+  still returning 2xx for the ghosts.**
+- Logs across the retained window: `push.send subscription gone — deleted`
+  = 1, `push.send http error` = 0, `push.send failed` = 0.
+
+So the server 410-prune (`Push.Sender` → `{:error, :expired}` on vendor
+404/410 → `Push.delete_dead/1`, shipped B2 2026-05-14, covered by
+`sender_test.exs`) is **correct and firing** — but it *structurally cannot*
+touch these ghosts: the client dropped its browser subscription (iOS
+SW-swap / storage eviction) WITHOUT `unsubscribe()`, so Apple keeps the
+endpoint valid, returns 2xx, and no 410 ever arrives. Prune-on-410 is a
+backstop for endpoints the vendor invalidates, not for silently-dropped
+ones. The GIVEN "server never prunes" was a hypothesis from the issue's
+investigation direction; the code already did it. (This is why the
+escape-hatch report went back before building — CLAUDE.md "challenge the
+spec"; the spec inherited a wrong half.)
+
+**Why the ghosts accumulate — the real bug.** Two client defects, no
+server-mechanism defect:
+
+1. `disablePush` bailed on a null `getSubscription()` — it
+   `forgetSubscription()`d the stashed server-row id WITHOUT DELETEing the
+   row. Every silent-drop → toggle-off → toggle-on cycle ORPHANED the old
+   row and minted a new one.
+2. Nothing re-subscribed after the drop, so the toggle (which correctly
+   already reflects `getSubscription()`, not `Notification.permission` —
+   `SettingsDrawer.probeLocalSubscription`) sat at OFF.
+
+**Why NOT a server-side dedup keyed on subject/UA.** The reconciliation
+"subscribed ⇒ deliverable" cannot be derived server-side: the send
+response is 2xx, so the server has zero signal a still-valid endpoint is
+undeliverable. And this user genuinely owns 6 distinct devices incl. TWO
+iPhones with an IDENTICAL `user_agent` (iOS 18_7, Safari 26.5.2) — so
+dedup-by-(subject) or (subject, user_agent) would delete a REAL device.
+The only deterministic, safe signal is **client-authoritative**: the
+client knows the exact endpoint it is replacing.
+
+**The fix (client + server, one deploy window).**
+
+- **SERVER — supersede-on-(re)subscribe.** `Push.create/2` accepts an
+  optional `:supersedes` (previous endpoint) in attrs; the controller reads
+  the optional `"supersedes"` body field. When present and ≠ the new
+  endpoint, create runs in a transaction that subject-scoped-deletes that
+  endpoint, then inserts. Subject-scoped ⇒ a subject can only supersede its
+  own rows; `:supersedes == :endpoint` (endpoint didn't rotate) is a no-op
+  so the same-endpoint re-subscribe still surfaces as the unique-constraint
+  422 replay. 410-prune + `DELETE /push/subscriptions/:id` unchanged (both
+  already correct/existing).
+- **CLIENT — renew on the SW-update / resume seams.** `disablePush`'s
+  null-branch now DELETEs the stashed row instead of orphaning it.
+  `ensurePushSubscription` (RENEW-ONLY — never prompts; acts only when
+  permission granted + a stashed endpoint proves prior opt-in + the live
+  subscription is null) re-subscribes via the SAME VAPID path and POSTs the
+  fresh subscription with `supersedes: <old endpoint>`; a 422 replay counts
+  as present. `installPushResubscribe` (main.tsx) wires it on
+  `navigator.serviceWorker` `controllerchange` (the bundle-refresh trigger),
+  `document` `visibilitychange` (backgrounded eviction), and boot; a
+  single-flight guard prevents overlapping renews.
+
+**Boundary vs #182.** #182 is the presence-gate (suppress push when a WS is
+present — `Grappa.WSPresence`). #181 touches ONLY (1) subscription survival
+across SW updates and (2) ghost supersession. No presence-gating decision
+here.
+
+**No `pushsubscriptionchange` SW handler.** That event fires inside the SW,
+which has no bearer token to POST a renewal, and iOS does not fire it
+reliably anyway. The observed trigger is the page-side SW-swap
+(`controllerchange`), where the token lives — so renewal is page-driven.
+
+**Residual.** Ghosts whose client can't name them (localStorage cleared
+before the fix shipped) are not deterministically reap-able server-side
+(no signal); they get superseded on that device's next re-subscribe, or
+rot via the vendor's own TTL. A one-time operator reap was deemed optional
+(can't distinguish live-vs-ghost among identical-UA iPhones without
+guessing).
+
+**Wire.** `push` has no `wire.ex`; the subscribe request is a hand-written
+type — `gen_wire_types --check` stays green (no drift). **Deploy:** server
+COLD + `--cic`, one window (new BEAM code). #181 stays OPEN until vjt
+eyeball-confirms on device.
