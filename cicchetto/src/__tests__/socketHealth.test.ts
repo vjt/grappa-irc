@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   __resetSocketHealthForTests,
-  classifyFailure,
   ERROR_THRESHOLD,
   recordSocketClose,
   recordSocketError,
@@ -61,19 +60,10 @@ describe("socketHealth", () => {
     expect(socketHealth().lastCloseCode).toBe(1006);
   });
 
-  it("classifies 1006 close code as origin_rejected", () => {
-    recordSocketError();
-    recordSocketClose({ code: 1006, reason: "" } as CloseEvent);
-    expect(classifyFailure()).toBe("origin_rejected");
-  });
-
-  it("classifies non-1006 close codes as generic", () => {
+  it("captures the reason string when the browser exposes one", () => {
     recordSocketError();
     recordSocketClose({ code: 1011, reason: "internal error" } as CloseEvent);
-    expect(classifyFailure()).toBe("generic");
-  });
-
-  it("captures browser origin on signal init", () => {
-    expect(socketHealth().browserOrigin).toBe(window.location.origin);
+    expect(socketHealth().lastCloseCode).toBe(1011);
+    expect(socketHealth().lastCloseReason).toBe("internal error");
   });
 });

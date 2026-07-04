@@ -14,11 +14,11 @@ import AdminPane from "./AdminPane";
 import ArchiveModal from "./ArchiveModal";
 import AudioMiniPlayer from "./AudioMiniPlayer";
 import BottomBar from "./BottomBar";
-import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
 import CrtSplash from "./CrtSplash";
 import DiagFloat from "./DiagFloat";
 import DirectoryPane from "./DirectoryPane";
+import ErrorBanners from "./ErrorBanners";
 import HomePane from "./HomePane";
 import { ownNickForNetwork } from "./lib/api";
 import { archiveSlugForSelection } from "./lib/archiveContext";
@@ -59,7 +59,6 @@ import ServerReplyModal from "./ServerReplyModal";
 import SettingsDrawer from "./SettingsDrawer";
 import ShellChrome from "./ShellChrome";
 import Sidebar from "./Sidebar";
-import SocketHealthBanner from "./SocketHealthBanner";
 import TopicBar from "./TopicBar";
 import WhoModal from "./WhoModal";
 
@@ -518,8 +517,7 @@ const Shell: Component = () => {
       fallback={
         // ── Desktop three-pane layout (unchanged from pre-C6) ─────────
         <div class="shell" classList={{ "shell-no-members": !isActiveChannelJoined() }}>
-          <SocketHealthBanner />
-          <BundleRefreshBanner />
+          <ErrorBanners />
           <PrivacyModal />
           <MediaViewerModal />
           <NamesModal />
@@ -692,8 +690,7 @@ const Shell: Component = () => {
         <Portal>
           <DiagFloat />
         </Portal>
-        <SocketHealthBanner />
-        <BundleRefreshBanner />
+        <ErrorBanners />
         <PrivacyModal />
         <MediaViewerModal />
         <NamesModal />

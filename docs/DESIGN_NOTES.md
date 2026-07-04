@@ -16590,3 +16590,86 @@ vjt device-confirms.
 **Deploy.** cic-only, HOT `--cic` (prod server+cic both at ae2d34a — the
 BUILD-DEFER-NIGHT coupling from the #171 batch cleared once that batch landed, so
 a daytime `--cic` no longer rebuilds an undeployed-server dependency).
+
+## 2026-07-04 — #119: unified stacked error-banner region (WS + connectivity + bundle-refresh, no overlap)
+
+**The bug.** cic rendered its top status banners as independent components,
+each `position: fixed; top: 0; left/right: 0`. `SocketHealthBanner` (WS health,
+z=1000) and `BundleRefreshBanner` (new-bundle prompt, z=999) both pinned to the
+same top coordinate. A `position: fixed` element does NOT participate in normal
+flow, so the old CSS comment's claim that "document order handles stacking" was
+false — when both fired they OVERLAPPED (the higher z-index simply painted over
+the other). #120 (service-worker registration failure) would have added a third
+colliding banner.
+
+**The fix — ONE owner + a DERIVED typed registry.** `ErrorBanners.tsx` is the
+sole owner: a single `position: fixed; top: 0` **flex-column** container whose
+children (`BannerSlot`) live in normal flow INSIDE it, so N banners stack
+vertically without overlap. State is derived, never stored: `errorBanners.ts
+activeBanners()` reads the existing source signals (`socketHealth`,
+`connectivity`, `bundleHash`) and projects the active ones into typed entries —
+no parallel store, no housekeeping (each source stays the single owner of its
+state). `source` and `severity` are closed-set string-literal unions with
+runtime guards + a `sanitizeBanners` boundary that drops anything outside the
+set (CLAUDE.md "atoms or @type union, never untyped strings"). The 20% that
+differs between sources is modelled as entry FIELDS, not a type flag: WS +
+connectivity are derived-and-auto-clearing; bundle-refresh carries an
+`actionHint` (reload) and persists until reload. **#120 slots in as ONE new
+`BannerSource` member + one `activeBanners()` push — the enum + the derivation
+are the whole seam; #120 is NOT implemented here.**
+
+**Deleted a false cause (vjt refinement 1).** The old WS banner's
+`origin_rejected` arm guessed "your origin is most likely misconfigured" on a
+1006 abnormal close. That is FALSE: a 1006 with no server reason most often
+means there is simply no connection, not a `check_origin` misconfig. Showing a
+wrong cause is worse than showing none — so `classifyFailure`,
+`SocketFailureKind`, and the now-unused `browserOrigin` are DELETED. The WS
+entry now only ever surfaces the real close code + any reason string the browser
+exposed (the honest "generic" arm).
+
+**Honest connectivity source (vjt refinement 1).** `connectivity.ts` tracks
+`navigator.onLine` + the `online`/`offline` window events. When the device is
+offline THAT is the true message the 1006 could only guess at — a typed
+`connectivity` source in the same stacked region, replacing the deleted origin
+heuristic.
+
+**Connectivity-driven reconnect (vjt refinement 2) — phoenix native vs our
+delta.** phoenix.js's `Socket` ALREADY auto-reconnects natively: on an
+unexpected close/error it schedules `connect()` via its `reconnectTimer` using
+the default `reconnectAfterMs` backoff
+(`[10,50,100,150,200,250,500,1000,2000]` then 5000ms steady), and every joined
+Channel auto-rejoins on the new socket. We construct the Socket with NO
+`reconnectAfterMs` override, so that default is live, and we reimplement NONE of
+it. The DELTA phoenix does not give: it never listens to the browser's
+`online`/`offline` events. So `socket.ts` adds two window listeners — `offline`
+→ `disconnect()` (halt futile retries on a dead network + reset the backoff
+timer); `online` → `disconnect()`+`connect()` to force an IMMEDIATE reconnect
+rather than waiting out the pending native backoff (phoenix's own connect path
+re-evaluates `params()` and auto-rejoins every channel). The kick is a pure
+`kickReconnect`/`haltForOffline(ReconnectableSocket | null)` seam so it is
+unit-testable with a fake socket, no live WS server. Both no-op when no socket
+exists yet (logged out / lazy pre-join). `connectivity.ts` owns only the
+UI-facing signal; `socket.ts` owns the reconnect — the two just observe the same
+two events independently (no cross-import).
+
+**Preserved.** The bundle-refresh flow (banner on new-bundle broadcast +
+`performRefresh` SW-update/cache-purge/reload chain) is UNCHANGED — it became a
+registry entry with an `actionHint`, not a regressed text line. Its two e2e
+specs (`bundle-refresh-banner`, `bundle-refresh-real-swap`) stay green with only
+a selector migration (`.bundle-refresh-banner` → `.error-banner[data-source=
+"bundle-refresh"]`).
+
+**Tests.** Unit: `errorBanners` (derivation + closed-set sanitize/guards),
+`ErrorBanners` (N sources → N distinct stacked slots as children of one
+container + auto-clear), `BannerSlot` (message/severity-role/actionHint by
+injection), `connectivity` (online/offline signal), `socketReconnect`
+(kick/halt on a fake socket). The bundle-refresh source can't be driven in jsdom
+(`bootBundleHash` needs a real build's `<script src="/assets/index-…">` tag), so
+those unit tests mock ONLY that DOM-derived boundary. e2e
+(`error-banners.spec.ts`, anti-hollow-green): WS-down AND bundle-mismatch forced
+SIMULTANEOUSLY, asserting BOTH slots visible AND their bounding boxes do not
+intersect (the overlap regression); plus WS generic-close-code, connectivity
+offline/online, and auto-dismiss.
+
+**Deploy.** cic-only, HOT `--cic`. `gen_wire_types --check` stays green — no
+wire touch. #119 stays OPEN until vjt device-confirms; #120 dispatched next.

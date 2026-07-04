@@ -42,7 +42,9 @@ import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 import { snapshotBundle, swapToBundleB } from "../fixtures/bundleSwap";
 
-const BANNER_SELECTOR = ".bundle-refresh-banner";
+// #119 — bundle-refresh banner folded into the unified stacked error region;
+// renders as a `.error-banner` slot with data-source="bundle-refresh".
+const BANNER_SELECTOR = '.error-banner[data-source="bundle-refresh"]';
 
 test("UX-6-I.2 — single-press refresh converges to new bundle (real swap)", async ({ page }) => {
   const snap = await snapshotBundle();

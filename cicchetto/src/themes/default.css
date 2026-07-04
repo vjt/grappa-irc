@@ -466,60 +466,62 @@ html.resize-dragging * {
   }
 }
 
-/* SocketHealthBanner — fixed-position alert at the top of the viewport,
-   above every shell pane. Mounted in both desktop and mobile branches
-   in Shell.tsx; position:fixed avoids fighting the grid template of
-   either layout. z-index sits above SettingsDrawer (z=80 mobile) and
-   member-drawer overlay (z=90) so it's always reachable. */
-.socket-health-banner {
+/* #119 — unified stacked error-banner region. ONE fixed flex-column
+   container pinned to the top of the viewport; each active error source
+   (connectivity, ws, bundle-refresh; #120 will add sw-registration) is a
+   child `.error-banner` in NORMAL FLOW inside it, so N banners STACK
+   vertically without overlap. This replaces the pre-#119 pair of
+   independent `position: fixed; top: 0` banners that both painted on the
+   same top coordinate and collided.
+
+   z-index sits above SettingsDrawer (z=80 mobile) and the member-drawer
+   overlay (z=90) so the region is always reachable. Notch/Dynamic-Island
+   clearance (iOS-2) is applied ONCE on the container's top padding; the
+   slots carry a flat inner padding, so only the top of the stack clears
+   the status-bar overlay. */
+.error-banners {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   z-index: 1000;
-  /* iOS-2: clear notch/Dynamic Island — banner is fixed-top and must
-     not paint under the status-bar overlay on iPhone. */
-  padding: max(0.5rem, env(safe-area-inset-top)) 1rem 0.5rem 1rem;
-  background: #c33;
-  color: #fff;
-  font-family: var(--font-mono);
-  font-size: 0.9rem;
-  line-height: 1.4;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top);
 }
 
-.socket-health-banner code {
-  background: rgba(0, 0, 0, 0.25);
-  padding: 0 0.25rem;
-  border-radius: 2px;
-}
-
-/* CP23 S4 B5 — bundle refresh banner. Same fixed-top + above-drawer
-   shape as socket-health-banner, but a softer blue (informational, not
-   error-grade) and an inline button. Stacks BELOW socket-health-banner
-   when both render — order in JSX puts socket-health on top, this just
-   below; CSS top:auto + position:fixed flow handles stacking via
-   document order. */
-.bundle-refresh-banner {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 999;
-  /* iOS-2: same notch clearance as socket-health-banner above. */
-  padding: max(0.5rem, env(safe-area-inset-top)) 1rem 0.5rem 1rem;
-  background: #2a6;
-  color: #fff;
-  font-family: var(--font-mono);
-  font-size: 0.9rem;
-  line-height: 1.4;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+.error-banner {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
-.bundle-refresh-banner button {
+/* Severity drives colour: error/warn are alert-grade red/amber, info is
+   the softer bundle-refresh blue-green (informational, not error-grade). */
+.error-banner-error {
+  background: #c33;
+}
+
+.error-banner-warn {
+  background: #b70;
+}
+
+.error-banner-info {
+  background: #2a6;
+}
+
+.error-banner-message {
+  flex: 1 1 auto;
+}
+
+.error-banner-action {
+  flex: 0 0 auto;
   margin-left: auto;
   padding: 0.25rem 0.75rem;
   background: rgba(0, 0, 0, 0.25);
@@ -531,7 +533,7 @@ html.resize-dragging * {
   cursor: pointer;
 }
 
-.bundle-refresh-banner button:hover {
+.error-banner-action:hover {
   background: rgba(0, 0, 0, 0.4);
 }
 

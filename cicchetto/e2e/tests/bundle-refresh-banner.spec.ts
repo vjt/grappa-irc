@@ -15,7 +15,11 @@ import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 
-const BANNER_SELECTOR = ".bundle-refresh-banner";
+// #119 — the bundle-refresh banner folded into the unified stacked error
+// region as one typed source; it renders as a `.error-banner` slot with
+// data-source="bundle-refresh". Observable behavior (banner shows on hash
+// mismatch, button reloads) is unchanged.
+const BANNER_SELECTOR = '.error-banner[data-source="bundle-refresh"]';
 
 test("BundleRefreshBanner appears on hash mismatch and click reloads the page", async ({
   page,

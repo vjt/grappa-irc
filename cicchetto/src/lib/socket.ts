@@ -101,6 +101,61 @@ createRoot(() => {
   );
 });
 
+// #119 (vjt refinement, 2026-07-04) — connectivity-driven reconnect kick.
+//
+// phoenix.js's Socket ALREADY auto-reconnects natively: on an unexpected
+// close/error it schedules `connect()` via its internal `reconnectTimer`
+// using the default `reconnectAfterMs` backoff
+// ([10,50,100,150,200,250,500,1000,2000] then a 5000ms steady state), and
+// every joined Channel auto-rejoins on the new socket. We do NOT construct the
+// Socket with a `reconnectAfterMs` override, so that default backoff is live.
+// None of that is reimplemented here.
+//
+// The DELTA phoenix does not give: it never listens to the browser's
+// `online` / `offline` events. That leaves two gaps:
+//   * On `offline`, phoenix keeps firing futile `connect()` attempts against a
+//     demonstrably dead network, ratcheting its backoff toward the 5s ceiling
+//     — so when connectivity returns the next native retry can be up to ~5s
+//     away.
+//   * On `online`, nothing signals "retry NOW"; the socket waits out whatever
+//     backoff delay was pending.
+// So we add ONLY the two window listeners below: `offline` → `disconnect()`
+// (halt the futile retries + reset phoenix's backoff timer); `online` →
+// `disconnect()` + `connect()` to force an IMMEDIATE reconnect (phoenix's own
+// connect path re-evaluates `params()` and auto-rejoins every channel — we add
+// only the "don't wait out the backoff" kick). Both no-op when no socket has
+// been built yet (logged out / lazy pre-join).
+//
+// Structural subset of phoenix's `Socket` — lets the kick be unit-tested with
+// a fake, without a live WS server.
+export interface ReconnectableSocket {
+  isConnected(): boolean;
+  connect(): void;
+  disconnect(callback?: () => void, code?: number, reason?: string): void;
+}
+
+export function kickReconnect(s: ReconnectableSocket | null): void {
+  if (s === null) return;
+  if (s.isConnected()) return; // already up — don't tear a healthy socket
+  // Force an immediate reconnect: disconnect() cancels any pending native
+  // backoff timer and tears the half-open conn, so connect() opens NOW.
+  s.disconnect();
+  s.connect();
+}
+
+export function haltForOffline(s: ReconnectableSocket | null): void {
+  if (s === null) return;
+  // disconnect() stops phoenix's futile reconnect attempts on a dead network
+  // and resets its backoff timer. We keep the same instance + its joined
+  // channels so kickReconnect() re-opens and phoenix auto-rejoins on `online`.
+  s.disconnect();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("online", () => kickReconnect(_socket));
+  window.addEventListener("offline", () => haltForOffline(_socket));
+}
+
 // joinUser + joinChannel mirror Topic.user/1 + Topic.channel/3 from the
 // server. `joinNetwork` (per-(user, network) shape) is reserved
 // infrastructure on the server side but has no cicchetto consumer yet —

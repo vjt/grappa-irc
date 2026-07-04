@@ -1,6 +1,6 @@
 // UX-6-I.2 (2026-05-22) — real-bundle-swap fixture.
 //
-// The bundle-refresh-banner spec in bundle-refresh-banner.spec.ts stubs
+// The bundle-refresh spec in bundle-refresh-banner.spec.ts stubs
 // the SW + caches API + reload to assert the wiring chain. That proves
 // performRefresh INVOKES the right sequence — it does NOT prove the
 // browser + nginx + real precache actually converge to the new bundle
