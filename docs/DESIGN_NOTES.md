@@ -16835,6 +16835,10 @@ rot via the vendor's own TTL. A one-time operator reap was deemed optional
 guessing).
 
 **Wire.** `push` has no `wire.ex`; the subscribe request is a hand-written
-type — `gen_wire_types --check` stays green (no drift). **Deploy:** server
-COLD + `--cic`, one window (new BEAM code). #181 stays OPEN until vjt
+type — `gen_wire_types --check` stays green (no drift). **Deploy (actual).**
+The server half was pure BEAM code (no schema/config/deps/supervision change),
+so the auto-classifier deployed it HOT — reloaded `Grappa.Push` +
+`GrappaWeb.PushSubscriptionController` with the daemon pid unchanged and all
+IRC sessions preserved (no cold restart needed) — batched with the `--cic`
+bundle (`hash=C9iUUKr1`) in one window. #181 stays OPEN until vjt
 eyeball-confirms on device.
