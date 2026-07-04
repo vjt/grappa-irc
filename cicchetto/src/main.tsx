@@ -18,6 +18,7 @@ import { mountBadgeReconcile, mountBadgeSync } from "./lib/badge";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
 import { applyIosClass, isStandalonePwa } from "./lib/platform";
+import { installPushResubscribe } from "./lib/pushResubscribe";
 import { applyPushTargetFromUrl, installPushTargetListener } from "./lib/pushTarget";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing } from "./lib/socket";
@@ -139,6 +140,15 @@ bootstrapAuth();
 // reloaded the SPA at `/` and dropped the deep-link entirely.
 installPushTargetListener();
 applyPushTargetFromUrl();
+
+// #181 — auto-renew a dropped push subscription on the SW-update /
+// app-resume seams. iOS silently drops `pushManager.getSubscription()`
+// across a bundle-refresh SW-swap or a backgrounded storage eviction and
+// nothing re-subscribed, so push died silently while the row rotted as a
+// server-side ghost. RENEW-ONLY (never prompts): a no-op unless the user
+// already opted in and the live subscription is gone. See
+// `lib/pushResubscribe.ts`.
+installPushResubscribe(token);
 
 // S3.3 — pagehide immediate-away hint.
 //

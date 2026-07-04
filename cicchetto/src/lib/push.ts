@@ -81,6 +81,12 @@ export function clearVapidPublicKeyCache(): void {
 export type PushSubscribeRequest = {
   endpoint: string;
   keys: { p256dh: string; auth: string };
+  // #181 — on re-subscribe, the previous endpoint this subscription
+  // replaces. The server deletes that subject-scoped row atomically with
+  // the insert (churn dedup), so a silently-dropped endpoint does not
+  // linger as a ghost the push service keeps 2xx-ing. Omitted on the
+  // first subscribe.
+  supersedes?: string;
 };
 
 /**
@@ -289,6 +295,17 @@ export async function disablePush(token: string): Promise<boolean> {
 
   const subscription = await registration.pushManager.getSubscription();
   if (subscription === null) {
+    // #181 — the browser subscription vanished (iOS SW-swap / storage
+    // eviction) WITHOUT unsubscribing, so the push service never returned
+    // 410 and the server row is a ghost it keeps 2xx-ing. DELETE it by its
+    // stashed id instead of merely forgetting the mapping (the pre-#181 bug
+    // that orphaned the row). A missing row is a benign no-op.
+    const orphanId = localStorage.getItem(SUBSCRIPTION_ID_STORAGE_KEY);
+    if (orphanId !== null) {
+      await deletePushSubscription(token, orphanId).catch(() => {
+        /* swallowed — an already-gone row is fine */
+      });
+    }
     forgetSubscription();
     return false;
   }
@@ -304,6 +321,79 @@ export async function disablePush(token: string): Promise<boolean> {
   }
   forgetSubscription();
   return endpoint !== "";
+}
+
+/**
+ * Outcome of `ensurePushSubscription`:
+ *
+ *   * "renewed"   — the browser subscription had dropped; re-subscribed
+ *     and POSTed the fresh subscription (superseding the old row).
+ *   * "present"   — a live subscription already exists (or a same-endpoint
+ *     replay), nothing to do.
+ *   * "skipped"   — the runtime can't push (no Notification / SW /
+ *     pushManager) or permission isn't `granted`. Never prompts here.
+ *   * "no-intent" — the user never opted in / disabled push (no stashed
+ *     endpoint), so there is nothing to renew.
+ */
+export type EnsurePushOutcome = "renewed" | "present" | "skipped" | "no-intent";
+
+/**
+ * #181 — renew a dropped-but-still-wanted push subscription on the
+ * SW-update / app-resume lifecycle seams (wired by `lib/pushResubscribe.ts`).
+ *
+ * RENEW-ONLY: it never prompts for permission and never opts a user in.
+ * It acts only when ALL hold: `Notification.permission === "granted"`, the
+ * user previously opted in (a stashed endpoint proves intent — cleared on
+ * disable), AND the browser's live `pushManager.getSubscription()` has gone
+ * `null` (the silent drop the issue describes). On that exact state it
+ * re-subscribes via the SAME VAPID path as the initial enable and POSTs the
+ * fresh subscription with `supersedes: <old endpoint>` so the server prunes
+ * the ghost row. A `422` replay (endpoint did not rotate) counts as present.
+ */
+export async function ensurePushSubscription(token: string): Promise<EnsurePushOutcome> {
+  if (typeof Notification === "undefined") return "skipped";
+  if (typeof navigator === "undefined" || navigator.serviceWorker === undefined) return "skipped";
+  if (Notification.permission !== "granted") return "skipped";
+
+  const stashedEndpoint = localStorage.getItem(SUBSCRIPTION_ENDPOINT_STORAGE_KEY);
+  if (stashedEndpoint === null || stashedEndpoint === "") return "no-intent";
+
+  const registration = await navigator.serviceWorker.ready;
+  if (registration.pushManager === undefined) return "skipped";
+
+  const existing = await registration.pushManager.getSubscription();
+  if (existing !== null) return "present";
+
+  const subscription = await subscribeWithVapidRetry(registration);
+  const json = subscription.toJSON() as {
+    endpoint?: string;
+    keys?: { p256dh?: string; auth?: string };
+  };
+  if (
+    typeof json.endpoint !== "string" ||
+    typeof json.keys?.p256dh !== "string" ||
+    typeof json.keys?.auth !== "string"
+  ) {
+    throw new ApiError(500, "push_subscription_malformed");
+  }
+
+  try {
+    const created = await postPushSubscription(token, {
+      endpoint: json.endpoint,
+      keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+      supersedes: stashedEndpoint,
+    });
+    rememberSubscription(created.id, json.endpoint);
+    return "renewed";
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 422) {
+      // Endpoint did not rotate — the server row already exists (replay).
+      // Re-point the endpoint stash at the live sub; the id is unchanged.
+      localStorage.setItem(SUBSCRIPTION_ENDPOINT_STORAGE_KEY, json.endpoint);
+      return "present";
+    }
+    throw err;
+  }
 }
 
 async function subscribeWithVapidRetry(

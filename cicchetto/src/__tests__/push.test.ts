@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearVapidPublicKeyCache,
   deletePushSubscription,
+  disablePush,
+  ensurePushSubscription,
   getVapidPublicKey,
   listPushDevices,
   postPushSubscription,
@@ -31,7 +33,156 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   localStorage.clear();
+});
+
+// ── #181 harness: mock ONLY the browser push boundary ──────────────────
+// (pushManager / Notification / fetch); the real push.ts handlers run.
+const SUB_ID_KEY = "cic.pushSubscriptionId";
+const SUB_ENDPOINT_KEY = "cic.pushSubscriptionEndpoint";
+
+function fakeSub(endpoint: string): PushSubscription {
+  return {
+    endpoint,
+    toJSON: () => ({ endpoint, keys: { p256dh: "P256DH", auth: "AUTHSECRET" } }),
+    unsubscribe: vi.fn().mockResolvedValue(true),
+  } as unknown as PushSubscription;
+}
+
+function stubPushEnv(opts: {
+  permission?: NotificationPermission;
+  existingSubscription?: PushSubscription | null;
+  subscribeResult?: PushSubscription;
+}): { getSubscription: ReturnType<typeof vi.fn>; subscribe: ReturnType<typeof vi.fn> } {
+  const getSubscription = vi.fn().mockResolvedValue(opts.existingSubscription ?? null);
+  const subscribe = vi
+    .fn()
+    .mockResolvedValue(opts.subscribeResult ?? fakeSub("https://push.example/NEW"));
+  const registration = { pushManager: { getSubscription, subscribe } };
+  vi.stubGlobal("Notification", {
+    permission: opts.permission ?? "granted",
+    requestPermission: vi.fn(),
+  });
+  vi.stubGlobal("navigator", {
+    serviceWorker: {
+      ready: Promise.resolve(registration),
+      controller: {},
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    },
+  });
+  return { getSubscription, subscribe };
+}
+
+// Route fetch by URL: VAPID key GET, subscription POST, subscription DELETE.
+function stubPushFetch(): ReturnType<typeof vi.spyOn> {
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL, init?) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    if (url.includes("/push/vapid-public-key")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ public_key: sample.publicKey }), { status: 200 }),
+      );
+    }
+    if (url === "/push/subscriptions" && method === "POST") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: "srv-new", created_at: "2026-07-04T00:00:00Z" }), {
+          status: 201,
+        }),
+      );
+    }
+    if (url.startsWith("/push/subscriptions/") && method === "DELETE") {
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return Promise.resolve(new Response("unexpected", { status: 500 }));
+  });
+}
+
+describe("disablePush — #181: DELETE the stashed row, never orphan it", () => {
+  it("DELETEs the stashed server id when getSubscription() is null (silent drop)", async () => {
+    // The exact ghost path: the browser subscription vanished (iOS SW-swap),
+    // so the pre-#181 code forgot the stashed id WITHOUT deleting the row →
+    // the push service keeps 2xx-ing a dead endpoint forever.
+    localStorage.setItem(SUB_ID_KEY, "srv-ghost");
+    localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/OLD");
+    const fetchMock = stubPushFetch();
+    stubPushEnv({ existingSubscription: null });
+
+    const removed = await disablePush("tok");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/push/subscriptions/srv-ghost",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(localStorage.getItem(SUB_ID_KEY)).toBeNull();
+    expect(localStorage.getItem(SUB_ENDPOINT_KEY)).toBeNull();
+    expect(removed).toBe(false);
+  });
+
+  it("no server DELETE when there is no stashed id to clean up", async () => {
+    const fetchMock = stubPushFetch();
+    stubPushEnv({ existingSubscription: null });
+    await disablePush("tok");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("ensurePushSubscription — #181: renew a dropped-but-wanted subscription", () => {
+  it("re-subscribes and POSTs supersedes=<old endpoint> on a silent drop", async () => {
+    localStorage.setItem(SUB_ID_KEY, "srv-old");
+    localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/OLD");
+    const fetchMock = stubPushFetch();
+    stubPushEnv({
+      permission: "granted",
+      existingSubscription: null,
+      subscribeResult: fakeSub("https://push.example/NEW"),
+    });
+
+    const outcome = await ensurePushSubscription("tok");
+
+    expect(outcome).toBe("renewed");
+    const post = fetchMock.mock.calls.find(
+      (call: unknown[]) =>
+        call[0] === "/push/subscriptions" &&
+        (call[1] as RequestInit | undefined)?.method === "POST",
+    );
+    expect(post).toBeDefined();
+    const body = JSON.parse((post?.[1] as RequestInit).body as string);
+    expect(body.endpoint).toBe("https://push.example/NEW");
+    expect(body.supersedes).toBe("https://push.example/OLD");
+    // fresh server id + endpoint stashed for the next cycle
+    expect(localStorage.getItem(SUB_ID_KEY)).toBe("srv-new");
+    expect(localStorage.getItem(SUB_ENDPOINT_KEY)).toBe("https://push.example/NEW");
+  });
+
+  it("no-ops when a live subscription is already present", async () => {
+    localStorage.setItem(SUB_ID_KEY, "srv-old");
+    localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/LIVE");
+    const fetchMock = stubPushFetch();
+    stubPushEnv({
+      permission: "granted",
+      existingSubscription: fakeSub("https://push.example/LIVE"),
+    });
+
+    expect(await ensurePushSubscription("tok")).toBe("present");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("skips (never prompts) when permission is not granted", async () => {
+    localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/OLD");
+    const fetchMock = stubPushFetch();
+    stubPushEnv({ permission: "default", existingSubscription: null });
+    expect(await ensurePushSubscription("tok")).toBe("skipped");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the user never opted in (no stashed endpoint = no intent)", async () => {
+    const fetchMock = stubPushFetch();
+    stubPushEnv({ permission: "granted", existingSubscription: null });
+    expect(await ensurePushSubscription("tok")).toBe("no-intent");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("getVapidPublicKey", () => {
