@@ -49,7 +49,7 @@ describe("WhoModal (#169)", () => {
     expect(modal.textContent).toContain("End of /WHO list: 2");
   });
 
-  it("renders parsed per-user rows (user@host, flags, realname)", () => {
+  it("renders parsed per-user rows (user@host, decoded flags, realname)", () => {
     focusNetwork();
     setWhoReply(
       SLUG,
@@ -61,8 +61,61 @@ describe("WhoModal (#169)", () => {
     const text = rows[0]?.textContent ?? "";
     expect(text).toContain("alice");
     expect(text).toContain("au@ah.example.org");
-    expect(text).toContain("H@");
+    // #176 — the raw 352 flags token ("H@") is NO LONGER dumped as-is; it is
+    // decoded into human labels (see the decode test below).
+    expect(text).not.toContain("H@");
     expect(text).toContain("Alice L");
+  });
+
+  // #176 — the raw 352 flags string (e.g. "H@") was dumped verbatim (grezzo).
+  // Decode each flag char into a human label rendered as a per-flag colored
+  // chip, client-side — mirroring the `whoPrefix` precedent (cic already reads
+  // the modes string) + the WhoisCard tag-chip pattern. "H@" → here + chanop.
+  it("decodes WHO flags into labeled, per-flag styled chips (#176)", () => {
+    focusNetwork();
+    setWhoReply(SLUG, roster([row({ nick: "alice", modes: "H@" })]));
+    render(() => <WhoModal />);
+    const rowEl = screen.getByTestId("who-modal-row");
+    // Decoded labels render (not the raw "H@" token).
+    expect(rowEl.textContent).toContain("here");
+    expect(rowEl.textContent).toContain("chanop");
+    // Per-flag styled chips exist (reuse the WhoisCard tag-chip noun-pattern).
+    expect(rowEl.querySelector(".who-modal-flag-tag-here")).not.toBeNull();
+    expect(rowEl.querySelector(".who-modal-flag-tag-chanop")).not.toBeNull();
+  });
+
+  // #176 — an unknown/future flag char must NOT be dropped: it degrades to a
+  // neutral chip showing the raw char (bahamut can emit flags grappa never
+  // enumerates — the server passes the field through verbatim).
+  it("degrades an unknown flag char to a neutral chip, never dropped (#176)", () => {
+    focusNetwork();
+    setWhoReply(SLUG, roster([row({ nick: "alice", modes: "HZ" })]));
+    render(() => <WhoModal />);
+    const rowEl = screen.getByTestId("who-modal-row");
+    expect(rowEl.querySelector(".who-modal-flag-tag-here")).not.toBeNull();
+    const unknown = rowEl.querySelector(".who-modal-flag-tag-unknown");
+    expect(unknown).not.toBeNull();
+    expect(unknown?.textContent).toContain("Z");
+  });
+
+  // #176 — the realname (gecos) moves onto its OWN word-wrapping line, no
+  // longer an inline sibling of nick/host on a single flex row (the h-scroll
+  // root cause). Structural assertion: the realname lives in a distinct line
+  // container that does NOT contain the nick button.
+  it("renders the realname on its own line, separate from the nick (#176)", () => {
+    focusNetwork();
+    setWhoReply(SLUG, roster([row({ nick: "alice", realname: "Alice Liddell" })]));
+    render(() => <WhoModal />);
+    const rowEl = screen.getByTestId("who-modal-row");
+    const realnameLine = rowEl.querySelector(".who-modal-line-realname");
+    const headLine = rowEl.querySelector(".who-modal-line-head");
+    expect(realnameLine).not.toBeNull();
+    expect(headLine).not.toBeNull();
+    // The nick lives on the head line, NOT on the realname line.
+    expect(headLine?.querySelector(".who-modal-nick")).not.toBeNull();
+    expect(realnameLine?.querySelector(".who-modal-nick")).toBeNull();
+    // The realname content lives on the realname line.
+    expect(realnameLine?.querySelector(".who-modal-realname")).not.toBeNull();
   });
 
   it("renders one user (singular) for a single-row roster", () => {

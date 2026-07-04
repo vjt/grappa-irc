@@ -3457,10 +3457,13 @@ html.resize-dragging * {
   color: var(--muted);
 }
 
-/* #169 — /who modal body: a flat per-user table (nick, flags, user@host,
- * server, hops, realname). Unlike NamesModal's sigil-grouped grid, WHO rows
- * are a dense irssi-columnar list — one flex row per user, wrapping on
- * narrow viewports. */
+/* #169/#176 — /who modal body: one word-wrapping COLUMN block per user.
+ * #176 replaced the pre-existing flat single flex-row (nick, flags, user@host,
+ * server, hops, realname all inline, every child `white-space:nowrap`, the
+ * realname `flex:1 1 12rem`) — that model overflowed SIDEWAYS on long
+ * host/realname/server (the h-scroll root cause). Now each user is a vertical
+ * block of lines; every free-text / long-token line word-wraps, so the modal
+ * never scrolls horizontally. */
 .who-modal-rows {
   list-style: none;
   margin: 0;
@@ -3469,12 +3472,24 @@ html.resize-dragging * {
 
 .who-modal-row {
   display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.35rem 0.3rem;
+  border-bottom: 1px solid var(--border);
+}
+
+/* A logical line within a user block. `min-width:0` lets its flex/inline
+ * children shrink below content width so long tokens wrap, not force width. */
+.who-modal-line {
+  min-width: 0;
+}
+
+/* head line: nick + decoded flag chips; chips wrap onto extra rows if needed. */
+.who-modal-line-head {
+  display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0 0.5rem;
-  padding: 0.15rem 0.3rem;
-  min-height: 28px;
-  border-bottom: 1px solid var(--border);
+  gap: 0.15rem 0.4rem;
 }
 
 .who-modal-nick {
@@ -3493,33 +3508,103 @@ html.resize-dragging * {
   text-decoration: underline;
 }
 
+/* decoded flag chips container — wraps within the head line. */
 .who-modal-flags {
-  color: var(--muted);
-  white-space: nowrap;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem;
 }
 
-.who-modal-userhost {
+/* #176 — per-flag chip, mirroring the WhoisCard tag-chip noun-pattern
+ * (.whois-card-tag). Colors reuse the existing sigil tokens so a flag chip
+ * reads the same hue as its nick sigil elsewhere in cic: @→--mode-op,
+ * %→--mode-halfop, +→--mode-voiced. */
+.who-modal-flag-tag {
+  display: inline-block;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
   color: var(--muted);
-  white-space: nowrap;
 }
 
-.who-modal-server {
+/* here = the near-universal default state → understated (muted). */
+.who-modal-flag-tag-here {
   color: var(--muted);
-  white-space: nowrap;
 }
 
-.who-modal-hops {
+/* gone (away) = the notable exception → amber, stands out. */
+.who-modal-flag-tag-gone {
+  color: var(--mode-halfop);
+}
+
+.who-modal-flag-tag-chanop {
+  color: var(--mode-op);
+}
+
+.who-modal-flag-tag-halfop {
+  color: var(--mode-halfop);
+}
+
+.who-modal-flag-tag-voice {
+  color: var(--mode-voiced);
+}
+
+/* secure/TLS → the interactive-blue "trusted" accent. */
+.who-modal-flag-tag-secure {
+  color: var(--accent);
+}
+
+/* unknown/future flag char → neutral chip (raw char shown, never dropped). */
+.who-modal-flag-tag-unknown {
   color: var(--muted);
-  white-space: nowrap;
+}
+
+/* ircop = a FILLED red badge (mirror .whois-card-tag-oper) so the network-
+ * operator flag reads with more weight than channel-op's text-red. */
+.who-modal-flag-tag-ircop {
+  background: var(--mode-op);
+  color: var(--bg);
+  border-color: var(--mode-op);
+}
+
+/* realname on its OWN word-wrapping line (#176), keeping the #175 MircBody
+ * wrapping. `overflow-wrap:anywhere` breaks long unbroken gecos tokens. */
+.who-modal-line-realname {
+  color: var(--fg);
 }
 
 .who-modal-realname {
-  color: var(--fg);
-  flex: 1 1 12rem;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* host on its own line; a long user@host breaks instead of scrolling. */
+.who-modal-line-host {
+  color: var(--muted);
+}
+
+.who-modal-userhost {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* server + hops folded onto a muted meta line. */
+.who-modal-line-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.who-modal-server {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* #127 — /info, /version, /motd modal. Same overlay/panel/header/footer

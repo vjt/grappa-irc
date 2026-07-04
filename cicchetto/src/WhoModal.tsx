@@ -34,6 +34,34 @@ const whoPrefix = (modes: string): PrefixGlyph => {
   return "";
 };
 
+// #176 — decode the raw 352 flags string into human labels. The flags field is
+// an ordered string of single chars (e.g. "H@", "G*"); the server passes it
+// through verbatim (EventRouter stores the raw field as `modes` — no server
+// decode). This mapping is CLIENT-side, consistent with the `whoPrefix`
+// precedent (cic already reads `modes`) and the fork resolution A (no wire
+// change, HOT --cic). Labels + colors are cic-owned display strings — NOT mIRC
+// codes — so they render as CSS-styled chips, never through MircBody.
+//
+// Known chars map to a label + css modifier (colors reuse the existing sigil
+// tokens in default.css). An unknown/future char degrades to a neutral chip
+// showing the raw char — bahamut can emit flags grappa never enumerated, and
+// dropping one would silently lose information; surfacing the raw char is the
+// honest fallback.
+type WhoFlagChip = { label: string; cssMod: string };
+
+const WHO_FLAG_LABELS: Record<string, WhoFlagChip> = {
+  H: { label: "here", cssMod: "here" },
+  G: { label: "gone", cssMod: "gone" },
+  "*": { label: "ircop", cssMod: "ircop" },
+  "@": { label: "chanop", cssMod: "chanop" },
+  "%": { label: "halfop", cssMod: "halfop" },
+  "+": { label: "voice", cssMod: "voice" },
+  S: { label: "secure", cssMod: "secure" },
+};
+
+const decodeWhoFlags = (modes: string): WhoFlagChip[] =>
+  [...modes].map((ch) => WHO_FLAG_LABELS[ch] ?? { label: ch, cssMod: "unknown" });
+
 const WhoModal: Component = () => {
   const activeSlug = (): string | undefined => selectedChannel()?.networkSlug;
   const bundle = () => {
@@ -98,32 +126,59 @@ const WhoModal: Component = () => {
                 <ul class="who-modal-rows">
                   <For each={b.users}>
                     {(u: WhoUser) => (
+                      // #176 — one word-wrapping COLUMN block per user (was a
+                      // flat single flex-row that overflowed sideways). Head
+                      // line = nick + decoded flag chips; then realname, host,
+                      // and server/hops each on their own wrapping line.
                       <li class="who-modal-row" data-testid="who-modal-row">
-                        <button
-                          type="button"
-                          class="who-modal-nick"
-                          onClick={() => onNickClick(b.network, u.nick)}
-                        >
-                          <NickText nick={u.nick} prefix={whoPrefix(u.modes)} />
-                        </button>
-                        <span class="who-modal-flags">{u.modes}</span>
-                        <span class="who-modal-userhost">
-                          {u.user}@{u.host}
-                        </span>
-                        <span class="who-modal-server">{u.server}</span>
-                        <Show when={u.hops !== null}>
-                          <span class="who-modal-hops">{u.hops} hops</span>
-                        </Show>
-                        <Show when={u.realname}>
-                          {/* #175 — the WHO realname (gecos) is arbitrary user
-                              free-text and carries mIRC control bytes; route it
-                              through the shared renderer. The other columns
-                              (nick, flags, user@host, server, hops) are
-                              identifiers and stay literal. */}
-                          <span class="who-modal-realname">
-                            <MircBody body={u.realname ?? ""} />
+                        <div class="who-modal-line who-modal-line-head">
+                          <button
+                            type="button"
+                            class="who-modal-nick"
+                            onClick={() => onNickClick(b.network, u.nick)}
+                          >
+                            <NickText nick={u.nick} prefix={whoPrefix(u.modes)} />
+                          </button>
+                          {/* #176 — decoded flag chips. cic-owned display
+                              labels colored per flag via CSS — NOT mIRC codes,
+                              so they do NOT route through MircBody. */}
+                          <span class="who-modal-flags">
+                            <For each={decodeWhoFlags(u.modes)}>
+                              {(chip) => (
+                                <span
+                                  class={`who-modal-flag-tag who-modal-flag-tag-${chip.cssMod}`}
+                                >
+                                  {chip.label}
+                                </span>
+                              )}
+                            </For>
                           </span>
+                        </div>
+                        <Show when={u.realname}>
+                          {/* #175/#176 — the WHO realname (gecos) is arbitrary
+                              user free-text carrying mIRC control bytes; route
+                              it through the shared renderer (keep the #175
+                              MircBody wrapping) and give it its OWN word-
+                              wrapping line. The other fields (nick, flags,
+                              user@host, server, hops) are identifiers and stay
+                              literal. */}
+                          <div class="who-modal-line who-modal-line-realname">
+                            <span class="who-modal-realname">
+                              <MircBody body={u.realname ?? ""} />
+                            </span>
+                          </div>
                         </Show>
+                        <div class="who-modal-line who-modal-line-host">
+                          <span class="who-modal-userhost">
+                            {u.user}@{u.host}
+                          </span>
+                        </div>
+                        <div class="who-modal-line who-modal-line-meta">
+                          <span class="who-modal-server">{u.server}</span>
+                          <Show when={u.hops !== null}>
+                            <span class="who-modal-hops">· {u.hops} hops</span>
+                          </Show>
+                        </div>
                       </li>
                     )}
                   </For>
