@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { MOVE_SLOP_PX } from "../../keyboard/gesture";
-import { HoldToCloseGesture } from "../holdToClose";
+import { HoldToCloseGesture, MOVE_SLOP_PX } from "../holdToClose";
 
-// Pure state machine for the #172 hold-to-confirm close gate. Mirrors
-// keyboard/gesture.test.ts: drive the engine with plain method calls and
-// assert OUTCOMES (did it confirm?), no DOM, no timers — the handler factory
-// owns the real setTimeout; the core only decides.
+// Pure state machine for the #172 hold-to-confirm close gate: drive the engine
+// with plain method calls and assert OUTCOMES (did it confirm?), no DOM, no
+// timers — the handler factory owns the real setTimeout; the core only decides.
 
 const make = () => new HoldToCloseGesture({ moveSlopPx: MOVE_SLOP_PX });
 

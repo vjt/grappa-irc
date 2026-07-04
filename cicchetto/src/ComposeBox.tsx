@@ -4,7 +4,6 @@ import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from "./lib/compose";
 import { composePlaceholder } from "./lib/composePlaceholder";
 import { diagPush } from "./lib/diagLog";
-import { ircKeyboardEnabled } from "./lib/keyboardPref";
 import { networkBySlug } from "./lib/networks";
 import {
   claimAxis,
@@ -147,9 +146,6 @@ const ComposeBox: Component<Props> = (props) => {
   // `document`, where preventDefault silently no-ops. We need an element-level,
   // explicitly non-passive touchmove listener to preventDefault at the handoff.
   const onTouchStart = (e: TouchEvent) => {
-    // Stock-keyboard path only: with the IRC keyboard on, KeyboardHost owns
-    // the caret (textarea is inputmode=none) and has its own Tab key.
-    if (ircKeyboardEnabled()) return;
     const t = e.touches.length === 1 ? e.touches[0] : undefined;
     swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
     swipeStartTime = performance.now();
@@ -430,12 +426,6 @@ const ComposeBox: Component<Props> = (props) => {
           placeholder={composePlaceholder(props.networkSlug, props.channelName)}
           rows={1}
           aria-label="compose message"
-          // IRC keyboard: suppress the native on-screen keyboard while the
-          // opt-in is on. DECLARATIVE + reactive so every render of this
-          // textarea — including re-creation on channel switch — carries the
-          // attr; an imperative Shell effect missed freshly-rendered textareas
-          // and the native keyboard slipped through (dogfood bug, 2026-06-14).
-          inputmode={ircKeyboardEnabled() ? "none" : undefined}
         />
         {/* UX-6 bucket F (2026-05-21) — arrow glyph + aria-label
             preserve a11y + byRole queries. SVG (not Unicode ➤) so the
@@ -449,10 +439,9 @@ const ComposeBox: Component<Props> = (props) => {
           disabled={sending() || getDraft(key()).trim() === ""}
           // #59: keep the textarea focused when sending via the button.
           // Tapping a <button> moves focus off the textarea, which collapses
-          // the on-screen keyboard (native on Android; also drops the
-          // IRC-keyboard focus model). preventDefault on pointerdown stops
-          // the focus steal — the click still fires + submits. Same trick as
-          // the keyboard keys + the image-picker button.
+          // the native on-screen keyboard (Android especially). preventDefault
+          // on pointerdown stops the focus steal — the click still fires +
+          // submits. Same trick as the image-picker button.
           onPointerDown={(e) => e.preventDefault()}
         >
           <svg

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/compose", () => ({
   getDraft: vi.fn(() => ""),
@@ -70,7 +70,6 @@ vi.mock("../lib/networks", () => ({
 }));
 
 import ComposeBox from "../ComposeBox";
-import { setKeyboardPref } from "../lib/keyboardPref";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -202,37 +201,14 @@ describe("ComposeBox", () => {
     expect(ta.hasAttribute("disabled")).toBe(false);
   });
 
-  // IRC keyboard (2026-06-14 dogfood) — inputmode="none" suppresses the
-  // native on-screen keyboard so the custom in-page keyboard owns input.
-  // The attr is DECLARATIVE on the textarea (reactive to the per-device
-  // opt-in), NOT poked imperatively by a Shell effect — that imperative
-  // path missed textareas re-created on channel switch and the native
-  // keyboard slipped through.
-  describe("IRC keyboard — inputmode native-suppression", () => {
-    afterEach(() => setKeyboardPref(false));
-
-    it("textarea has NO inputmode attr when the IRC keyboard is off (native default unchanged)", () => {
-      setKeyboardPref(false);
-      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
-      expect(ta.getAttribute("inputmode")).toBeNull();
-    });
-
-    it("textarea gets inputmode='none' when the IRC keyboard is enabled", () => {
-      setKeyboardPref(true);
-      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
-      expect(ta.getAttribute("inputmode")).toBe("none");
-    });
-
-    it("toggling the opt-in flips the attr on the SAME textarea (reactive, not mount-only)", () => {
-      setKeyboardPref(false);
-      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
-      expect(ta.getAttribute("inputmode")).toBeNull();
-      setKeyboardPref(true);
-      expect(ta.getAttribute("inputmode")).toBe("none");
-    });
+  // #177 removed the custom on-screen IRC keyboard. The compose textarea no
+  // longer carries `inputmode="none"` (which used to suppress the native
+  // keyboard so the custom widget could own input) — the NATIVE keyboard is
+  // now the sole input path and must always be raiseable.
+  it("compose textarea never sets inputmode (native keyboard is the only input)", () => {
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+    expect(ta.getAttribute("inputmode")).toBeNull();
   });
 
   // CP15 B5: greyed-state visual when window state is failed/kicked/parked.

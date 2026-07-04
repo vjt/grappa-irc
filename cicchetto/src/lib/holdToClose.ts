@@ -1,5 +1,4 @@
 import { type Accessor, createSignal } from "solid-js";
-import { MOVE_SLOP_PX } from "../keyboard/gesture";
 
 // #172 — hold-to-confirm gate for destructive window-close × buttons.
 //
@@ -16,19 +15,23 @@ import { MOVE_SLOP_PX } from "../keyboard/gesture";
 // module is the pure gesture core + a thin Solid handler factory that both
 // BottomBar and Sidebar attach to via <CloseButton>.
 
-// A destructive confirm wants a LONGER hold than the 300ms keyboard-variations
-// popup (keyboard/gesture LONG_PRESS_MS) — an accidental fat-finger tap on a
-// tiny × must not slip past. 500ms is a device-calibration default; it's a
-// FEEL knob vjt tunes on-device post-ship. Named, no magic number at the call
-// sites (mirrors LONG_PRESS_MS). Slop reuses keyboard/gesture MOVE_SLOP_PX —
-// a finger that drifts past ~10px is scrolling, not confirming.
+// A destructive confirm wants a LONGER hold than a plain tap — an accidental
+// fat-finger tap on a tiny × must not slip past. 500ms is a device-calibration
+// default; it's a FEEL knob vjt tunes on-device post-ship. Named, no magic
+// number at the call sites.
 export const HOLD_TO_CLOSE_MS = 500;
+
+// Min pointer drift (px) before a hold is read as a scroll, not a confirm: a
+// finger that wanders past ~10px is panning the page, so cancel the hold.
+// (Owned here since #177 removed the custom keyboard, this constant's former
+// home.)
+export const MOVE_SLOP_PX = 10;
 
 export type HoldPhase = "idle" | "holding" | "cancelled" | "confirmed";
 
 // Pure per-press state machine. Framework-free, no DOM, no timer (the factory
-// owns the setTimeout and feeds samples in) — mirrors keyboard/gesture.ts
-// KeyGesture so it's unit-testable with plain method calls.
+// owns the setTimeout and feeds samples in) so it's unit-testable with plain
+// method calls.
 //
 // Touch/pen presses are GATED: they must be held past the timer without
 // drifting more than moveSlopPx. A mouse press is pixel-precise and already

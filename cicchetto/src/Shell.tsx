@@ -20,7 +20,6 @@ import CrtSplash from "./CrtSplash";
 import DiagFloat from "./DiagFloat";
 import DirectoryPane from "./DirectoryPane";
 import HomePane from "./HomePane";
-import KeyboardHost from "./KeyboardHost";
 import { ownNickForNetwork } from "./lib/api";
 import { archiveSlugForSelection } from "./lib/archiveContext";
 import { token } from "./lib/auth";
@@ -513,15 +512,6 @@ const Shell: Component = () => {
     coldLoadAutoSelected = true;
   });
 
-  // IRC keyboard wiring lives entirely in KeyboardHost now:
-  //   • inputmode="none" is declarative on the ComposeBox <textarea>
-  //     (reactive to the opt-in) — see ComposeBox.tsx.
-  //   • the --irc-kb-height reservation is set by KeyboardHost from the
-  //     keyboard's MEASURED height + actual (focus-driven) visibility.
-  // Neither belongs on a Shell effect: the old imperative inputmode poke
-  // missed re-created textareas, and a flag-driven reservation reserved
-  // space even when the focus-driven keyboard was closed.
-
   return (
     <Show
       when={isMobile()}
@@ -911,7 +901,6 @@ const Shell: Component = () => {
             })
           }
         />
-        <KeyboardHost />
       </div>
     </Show>
   );

@@ -161,7 +161,6 @@ vi.mock("../DeleteAccountModal", async () => {
   };
 });
 
-import { getKeyboardPref } from "../lib/keyboardPref";
 import SettingsDrawer from "../SettingsDrawer";
 
 const wrap = (open: boolean, onClose = vi.fn(), onOpenAdmin = vi.fn()) =>
@@ -813,18 +812,17 @@ describe("SettingsDrawer delete-account gating (#157)", () => {
   });
 });
 
-describe("SettingsDrawer IRC keyboard toggle", () => {
+describe("SettingsDrawer — IRC keyboard toggle removed (#177)", () => {
   beforeEach(() => localStorage.clear());
 
-  it("persists the keyboard opt-in and reflects it in the checkbox when toggled", () => {
-    const { getByTestId } = wrap(true);
-    const toggle = getByTestId("irc-keyboard-toggle") as HTMLInputElement;
-    expect(toggle.checked).toBe(false);
-    fireEvent.click(toggle);
-    expect(getKeyboardPref()).toBe(true);
-    expect(toggle.checked).toBe(true); // UI reflects the persisted state
-    fireEvent.click(toggle); // off again clears the preference
-    expect(getKeyboardPref()).toBe(false);
-    expect(toggle.checked).toBe(false);
+  // #177 removed the custom on-screen IRC keyboard (failed experiment;
+  // gestures replaced it). The per-device opt-in toggle is gone, so there
+  // is no longer any way to enable the widget. Negative assertion paired
+  // with a positive twin (the notifications master toggle, a stable
+  // settings row) so a testid typo can't silently green the absence.
+  it("no longer offers an IRC keyboard toggle (native keyboard is the only input)", () => {
+    const { queryByTestId } = wrap(true);
+    expect(queryByTestId("push-master-toggle")).not.toBeNull();
+    expect(queryByTestId("irc-keyboard-toggle")).toBeNull();
   });
 });

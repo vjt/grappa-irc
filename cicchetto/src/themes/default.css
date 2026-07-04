@@ -1,5 +1,3 @@
-@import "../keyboard/keyboard.css";
-
 /*
  * P4-1 theme system — single CSS file with mIRC-light + irssi-dark
  * presets via :root[data-theme="..."] blocks.
@@ -2705,13 +2703,11 @@ html.resize-dragging * {
        (global, line 67) means the inset is consumed FROM the height,
        not added to it. */
     padding-top: env(safe-area-inset-top);
-    /* IRC-keyboard height reservation folded into the bottom inset: the
-       always-docked in-page keyboard (KeyboardHost) never shrinks the
-       visual viewport, so we reserve its height here instead. --irc-kb-height
-       is 0px unless the IRC keyboard is enabled (set in Shell), so when off
-       this resolves to env(safe-area-inset-bottom) — byte-for-byte the
-       previous value. When on, it dominates the home-indicator inset. */
-    padding-bottom: max(env(safe-area-inset-bottom), var(--irc-kb-height, 0px));
+    /* Home-indicator safe-area inset. (#177 removed the custom on-screen
+       keyboard, whose height reservation was folded in here; the native
+       keyboard shrinks the visual viewport on its own, so no extra
+       reservation is needed.) */
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   /* UX-6 bucket D11 (2026-05-21) — D1 restored after D9 removal
@@ -2728,12 +2724,10 @@ html.resize-dragging * {
      (`:has(textarea:focus, input:focus)`) closes the gap. */
   .shell-mobile:has(textarea:focus, input:focus) {
     /* Native keyboard up → collapse the home-indicator inset (it would
-       double-count against the shrunken visual viewport). But in IRC-keyboard
-       mode the textarea is ALSO focused (inputmode=none keeps it focusable)
-       while the viewport does NOT shrink and the in-page keyboard is docked —
-       so reserve its height instead of collapsing to 0. --irc-kb-height is 0px
-       when the IRC keyboard is off, preserving the original collapse exactly. */
-    padding-bottom: var(--irc-kb-height, 0px);
+       double-count against the shrunken visual viewport). (#177: the custom
+       keyboard's height reservation was previously folded in here; with it
+       gone, this reverts to the original collapse-to-0 behavior.) */
+    padding-bottom: 0;
   }
 
   /* Legacy fallback for browsers that don't grok `dvh` (Safari < 15.4).
