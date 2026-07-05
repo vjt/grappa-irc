@@ -70,8 +70,6 @@ defmodule Grappa.WSPresence do
 
   alias Grappa.PubSub.Topic
 
-  require Logger
-
   # Test-only atom guarding `reset_for_test/0` — ONLY compiled in test mix env.
   # (A `@test_only` marker is the documented way to keep test helpers alive
   # without weakening the production contract.)

@@ -41,8 +41,6 @@ defmodule Grappa.Log do
 
   use Boundary, top_level?: true, deps: []
 
-  require Logger
-
   @type session_metadata :: [user: String.t(), network: String.t()]
 
   # Mirrored at `Grappa.IRC.Client.session_metadata` (irc/S6, 2026-05-12

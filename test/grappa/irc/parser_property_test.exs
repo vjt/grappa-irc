@@ -289,7 +289,7 @@ defmodule Grappa.IRC.Parser.PropertyTest do
   defp sprinkle_unsafe(base, inserts) do
     Enum.reduce(inserts, base, fn {sep, pos}, acc ->
       pos = min(pos, byte_size(acc))
-      <<head::binary-size(pos), tail::binary>> = acc
+      <<head::binary-size(^pos), tail::binary>> = acc
       head <> sep <> tail
     end)
   end

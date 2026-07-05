@@ -8,8 +8,6 @@ defmodule Grappa.LogTest do
 
   alias Grappa.Log
 
-  require Logger
-
   describe "session_context/2" do
     test "returns canonical [user:, network:] keyword list" do
       assert Log.session_context("vjt", "azzurra") == [user: "vjt", network: "azzurra"]

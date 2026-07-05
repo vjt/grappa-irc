@@ -25,8 +25,6 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
   alias Grappa.Networks.{Credentials, Servers}
   alias GrappaWeb.Plugs.ResolveNetwork
 
-  require Logger
-
   setup do
     {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
     %{network: network}
