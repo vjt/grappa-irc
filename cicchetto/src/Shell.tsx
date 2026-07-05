@@ -412,103 +412,134 @@ const Shell: Component = () => {
   );
 
   // UX-4 bucket B (2026-05-18) — cold-load default lands on the
-  // `$home` window. ONE-SHOT: fires once after `user()` (the /me
-  // resource) resolves, then disarms forever via `coldLoadAutoSelected`.
-  // Does NOT override an existing selection — if the operator clicked
-  // a channel between mount and /me-arrival, the early-return at
-  // `selectedChannel() !== null` keeps the click-driven selection.
+  // `$home` window. Fires after `user()` (the /me resource) resolves.
+  // Does NOT override an operator selection — if a channel was clicked
+  // between mount and /me-arrival, the guard below keeps that selection.
   //
   // Replaces the prior /names N-3 first-joined-channel auto-select.
   // The home pane IS the new landing window for both visitor and
   // registered identities; the operator navigates to specific
   // channels via the sidebar / BottomBar / keybindings.
   //
-  // Issue #35 (2026-06-01) — before defaulting to `$home`, try to
-  // restore the last focused channel/query/server window from
-  // localStorage (`lib/lastFocusedChannel.ts`). Validity gate:
+  // Issue #35 (2026-06-01) — before defaulting to `$home`, restore the
+  // last focused channel/query/server window from localStorage
+  // (`lib/lastFocusedChannel.ts`). Validity gate:
   //   * channel → must appear in `channelsBySlug()[slug]`.
   //   * query   → must appear in `queryWindowsByNetwork()[net.id]`.
   //   * server  → its network must be live in `networkBySlug(slug)`.
-  // The arm waits for `channelsBySlug()` to leave the loading state
-  // before deciding — otherwise a fast reload would never see the
-  // persisted channel because the resource is still `undefined`. If
-  // the saved window doesn't validate, fall through to `$home` (the
-  // pre-#35 behaviour) so a closed / parted / kicked window doesn't
-  // strand the operator on a dead pane.
-  let coldLoadAutoSelected = false;
+  //
+  // Issue #187 (2026-07-05) — TWO changes, both to make restore work for
+  // VISITORS (registered users already worked; visitors were the gap):
+  //   1. No subject-kind gate. A visitor's `/me` id is a stable UUID
+  //      (resolved from the persisted grappa-token), keying the same
+  //      `cic.lastFocusedChannel.<id>` slot the focus-write in selection.ts
+  //      already fills for every subject — so restore keys on `m.id` for
+  //      any class, not just `kind === "user"`.
+  //   2. Reactive, not decide-once. A registered user's saved channel is an
+  //      autojoin — always in the FIRST `channelsBySlug` snapshot. A
+  //      visitor's saved channel is runtime-joined: the bouncer session
+  //      survives the reload, but `/channels` can snapshot mid-reconnect and
+  //      return WITHOUT it under load, the channel arriving a beat later via
+  //      a refetch. A decide-once arm latched `$home` before it and stranded
+  //      the visitor — the exact #187 symptom. So the effect keeps
+  //      re-attempting the restore (each branch reads the very resource that
+  //      will gain the target, so it re-runs when the window lands), landing
+  //      `$home` PROVISIONALLY meanwhile so the screen is never blank, and
+  //      overriding it when the saved window appears. It stops the instant
+  //      the operator navigates. If the saved window never appears (parted
+  //      while cic was closed), `$home` is the correct terminal fallback.
+  let coldLoadDone = false;
+  let provisionalHome = false;
   createEffect(() => {
-    if (coldLoadAutoSelected) return;
-    if (selectedChannel() !== null) {
-      coldLoadAutoSelected = true;
+    if (coldLoadDone) return;
+
+    const sel = selectedChannel();
+    // The operator navigated to a real window (or one was pre-seeded) —
+    // cold load is over. Our OWN provisional `$home` does not count: while
+    // it stands we keep watching for the saved window to arrive.
+    if (sel !== null && !(provisionalHome && sel.kind === "home")) {
+      coldLoadDone = true;
       return;
     }
-    // Wait for /me to land before we can pick a default at all.
+
+    // Wait for /me + the channels resource's first resolve. `createResource`
+    // returns `undefined` while loading; a resolved empty object `{}` is
+    // truthy and means "no channels yet".
     const m = user();
     if (!m) return;
-    // Wait for channels resource to resolve at least once so the
-    // restore validity check can see the operator's joined list.
-    // `createResource` returns `undefined` while loading; a resolved
-    // empty object `{}` is still truthy and means "no networks have
-    // channels yet" — restore will fall through to home, which is
-    // the desired pre-#35 behaviour for that case anyway.
     const cbs = channelsBySlug();
     if (cbs === undefined) return;
 
-    // Try restore for `kind: "user"` identities. Visitors get a
-    // fresh single-network session per visit, so persisting their
-    // last window has no useful payoff; skip straight to home.
+    const saved = loadLastFocused(m.id);
+    if (saved === null) {
+      // No saved window → land on `$home` and finish.
+      if (sel === null) {
+        setSelectedChannel({
+          networkSlug: HOME_WINDOW_SLUG,
+          channelName: HOME_WINDOW_NAME,
+          kind: "home",
+        });
+      }
+      coldLoadDone = true;
+      return;
+    }
+
+    const slug = saved.networkSlug;
     let restored = false;
-    if (m.kind === "user") {
-      const saved = loadLastFocused(m.id);
-      if (saved !== null) {
-        const slug = saved.networkSlug;
-        if (saved.kind === "channel") {
-          const list = cbs[slug] ?? [];
-          if (list.some((c) => c.name === saved.channelName)) {
-            setSelectedChannel({
-              networkSlug: slug,
-              channelName: saved.channelName,
-              kind: "channel",
-            });
-            restored = true;
-          }
-        } else if (saved.kind === "query") {
-          const net = networkBySlug(slug);
-          if (net) {
-            const qs = queryWindowsByNetwork()[net.id] ?? [];
-            const lower = saved.channelName.toLowerCase();
-            const match = qs.find((q) => q.targetNick.toLowerCase() === lower);
-            if (match !== undefined) {
-              setSelectedChannel({
-                networkSlug: slug,
-                channelName: match.targetNick,
-                kind: "query",
-              });
-              restored = true;
-            }
-          }
-        } else if (saved.kind === "server") {
-          if (networkBySlug(slug) !== undefined) {
-            setSelectedChannel({
-              networkSlug: slug,
-              channelName: saved.channelName,
-              kind: "server",
-            });
-            restored = true;
-          }
+    if (saved.kind === "channel") {
+      const list = cbs[slug] ?? [];
+      if (list.some((c) => c.name === saved.channelName)) {
+        setSelectedChannel({
+          networkSlug: slug,
+          channelName: saved.channelName,
+          kind: "channel",
+        });
+        restored = true;
+      }
+    } else if (saved.kind === "query") {
+      const net = networkBySlug(slug);
+      if (net) {
+        const qs = queryWindowsByNetwork()[net.id] ?? [];
+        const lower = saved.channelName.toLowerCase();
+        const match = qs.find((q) => q.targetNick.toLowerCase() === lower);
+        if (match !== undefined) {
+          setSelectedChannel({
+            networkSlug: slug,
+            channelName: match.targetNick,
+            kind: "query",
+          });
+          restored = true;
         }
+      }
+    } else if (saved.kind === "server") {
+      if (networkBySlug(slug) !== undefined) {
+        setSelectedChannel({
+          networkSlug: slug,
+          channelName: saved.channelName,
+          kind: "server",
+        });
+        restored = true;
       }
     }
 
-    if (!restored) {
-      // Default landing: home window. Both registered + visitor.
+    if (restored) {
+      provisionalHome = false;
+      coldLoadDone = true;
+      return;
+    }
+
+    // Saved window not present YET — land on `$home` provisionally (never a
+    // blank screen) but do NOT latch: this effect re-runs when the tracked
+    // resource above updates, and the re-run overrides `$home` once the
+    // saved window arrives.
+    if (sel === null) {
       setSelectedChannel({
         networkSlug: HOME_WINDOW_SLUG,
         channelName: HOME_WINDOW_NAME,
         kind: "home",
       });
+      provisionalHome = true;
     }
-    coldLoadAutoSelected = true;
   });
 
   return (

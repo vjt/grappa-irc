@@ -17062,3 +17062,71 @@ server-side, `GET /channels/u/messages` returns `[]` (ordered after the
 **Deploy class: SERVER change → COLD** (BEAM restart, drops live IRC
 sessions). The `compose.ts` comment fix is a runtime no-op (comment
 stripped from the bundle) and needs no separate `--cic` deploy.
+
+---
+
+## 2026-07-05 — #187: last-open-window restore for visitors (kind-gate + decide-once race)
+
+**Contract reaffirmed: last-open-window restore is CLIENT-owned, keyed on
+the subject's `/me` id.** cic persists the focused window to
+`localStorage["cic.lastFocusedChannel.<id>"]` on every focus change
+(`selection.ts` `on(selectedChannel)` → `saveLastFocused`) and re-selects
+it on cold load (`Shell.tsx`). The server owns read-cursors and
+`last_joined_channels`, NOT "which window was focused" — that is a pure UI
+concern and stays on the client. A visitor's `/me` `id` is a stable
+`Ecto.UUID` resolved from the persisted `grappa-token`, so it keys the
+same slot across a refresh/reopen exactly like a registered user's id.
+
+**Bug 1 — the restore READ was gated to `kind === "user"`.** #34/#35
+shipped restore for registered users; the cold-load arm wrapped the whole
+attempt in `if (m.kind === "user")` on the (wrong) assumption that
+"visitors get a fresh single-network session per visit, so persisting has
+no payoff." The WRITE path was never gated — it fired for every subject —
+so visitors reliably FILLED a slot the read refused to consult, and every
+visitor refresh fell through to the `$home` default. Fix: drop the gate;
+restore keys on `m.id` for any subject class (both `MeResponse` arms carry
+`id: string`).
+
+**Bug 2 — the restore was DECIDE-ONCE, so a late-arriving channel was
+missed.** A registered user's saved channel is an autojoin — always in the
+FIRST `channelsBySlug` snapshot after reconnect. A visitor's saved channel
+is runtime-joined: the bouncer session survives the browser reload, but
+`GET /channels` can snapshot mid-reconnect and return WITHOUT it, the
+channel arriving a beat later via a refetch. The old arm decided once
+(latched `coldLoadAutoSelected` after the first `channelsBySlug !==
+undefined`), so it selected `$home` before the channel appeared and never
+re-checked — the exact #187 symptom (the sidebar row was present but never
+`.selected`). This is why registered-user restore looked fine while
+visitors broke: the asymmetry is autojoin-in-first-snapshot vs
+runtime-joined-arrives-late, NOT the subject kind per se.
+
+Fix: make the cold-load restore arm **reactive, not decide-once**. It
+lands `$home` PROVISIONALLY (never a blank screen), keeps re-attempting the
+restore as the tracked resource updates (each branch reads exactly the
+resource — `channelsBySlug` / `networkBySlug` / `queryWindowsByNetwork` —
+that will gain the target, so Solid re-runs the effect when the window
+arrives), overrides the provisional `$home` when the saved window appears,
+and stops the instant the operator navigates (a real, non-`home` selection
+latches `coldLoadDone`). If the saved window never returns (parted while
+cic was closed), `$home` is the correct terminal fallback. Two flags:
+`coldLoadDone` (terminal) and `provisionalHome` (we placed `$home` as a
+placeholder, so a later restore may still override it — distinct from an
+operator who selected home). The effect reaches a fixed point in one extra
+no-op run and cannot thrash: it writes only `selectedChannel`, which feeds
+none of the resources it tracks, and `setSelectedChannel` short-circuits
+same-tuple writes.
+
+**Tests.** Unit (`Shell.test.tsx`): a visitor restores its saved channel
+(not `$home`); and — the decide-once regression net — a saved channel that
+lands AFTER the first `channelsBySlug` resolve still overrides the
+provisional `$home` (RED against a decide-once latch, proven by temporarily
+re-latching). The mock's `channelsBySlug` became a real mutable Solid
+signal so the late-arrival can be driven deterministically. E2E
+(`issue187-visitor-window-restore.spec.ts`): a visitor `/join`s a channel,
+focuses it, `page.reload()`s, and the channel row is `.selected` again (not
+`$home`) — the deterministic race proof is the unit test (forcing a split
+`/channels` snapshot in-browser is impractical), the e2e proves the
+end-to-end visitor-restore outcome.
+
+**Deploy class: cic-only** (bundle swap, no BEAM restart). No server or
+wire-type change.

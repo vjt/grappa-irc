@@ -87,18 +87,41 @@ const userHolder = vi.hoisted(() => {
   };
 });
 
+// #187 — mutable channelsBySlug so the reactive cold-load restore arm can be
+// exercised for a channel that lands AFTER the first resource resolve (the
+// visitor-refresh-under-load race). Real Solid signal (lazy-init, same reason
+// as userHolder) so a mid-test mutation notifies Shell's restore effect.
+const channelsHolder = vi.hoisted(() => {
+  type Chans = Record<string, Array<{ name: string; joined: boolean; source: string }>>;
+  const DEFAULT: Chans = {
+    freenode: [
+      { name: "#a", joined: true, source: "autojoin" },
+      { name: "#b", joined: true, source: "autojoin" },
+    ],
+  };
+  let sig: [() => Chans, (v: Chans) => Chans] | null = null;
+  const ensure = () => {
+    if (sig === null) sig = createSignal<Chans>(DEFAULT);
+    return sig;
+  };
+  return {
+    DEFAULT,
+    get current() {
+      return ensure()[0]();
+    },
+    set current(v: Chans) {
+      ensure()[1](v);
+    },
+  };
+});
+
 vi.mock("@solidjs/router", () => ({
   useNavigate: () => vi.fn(),
 }));
 
 vi.mock("../lib/networks", () => ({
   networks: () => [{ id: 1, slug: "freenode", nick: "vjt", inserted_at: "", updated_at: "" }],
-  channelsBySlug: () => ({
-    freenode: [
-      { name: "#a", joined: true, source: "autojoin" },
-      { name: "#b", joined: true, source: "autojoin" },
-    ],
-  }),
+  channelsBySlug: () => channelsHolder.current,
   user: () => userHolder.current,
   // UX-4 bucket N — Shell.tsx imports `isAdmin` from networks.ts as
   // single source of truth (hoisted from Shell + SettingsDrawer +
@@ -301,6 +324,9 @@ vi.mock("../lib/windowState", () => ({
   },
 }));
 
+// #187 — real (un-mocked) focus-persistence writer, used to seed the
+// last-focused slot the way production does (keyed on the subject id).
+import { saveLastFocused } from "../lib/lastFocusedChannel";
 import Shell from "../Shell";
 
 beforeEach(async () => {
@@ -314,6 +340,13 @@ beforeEach(async () => {
   mobileState.value = false;
   mockWindowIsJoined.mockReturnValue(true);
   windowStateMap.current = {};
+  // #187 — drop any last-focused slot a prior test persisted so an id
+  // collision can't bleed a saved window into an unrelated test.
+  for (const k of Object.keys(localStorage)) {
+    if (k.startsWith("cic.lastFocusedChannel")) localStorage.removeItem(k);
+  }
+  // #187 default — full channel list present. Late-arrival test mutates it.
+  channelsHolder.current = channelsHolder.DEFAULT;
   // M-7 default — non-admin user. M-7 tests below opt in via mutation.
   userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" };
   // UX-4 bucket M default — no token unless a test opts in.
@@ -386,6 +419,91 @@ describe("Shell — three-pane integration", () => {
         networkSlug: "$home",
         channelName: "$home",
         kind: "home",
+      });
+    });
+  });
+
+  it("#187 — VISITOR restores its last-focused channel on cold load (not home)", async () => {
+    // #187: last-open-window restore must cover the VISITOR user class,
+    // not only registered users. A visitor's `/me` id is a stable UUID
+    // (resolved from the persisted grappa-token), so it keys the SAME
+    // `cic.lastFocusedChannel.<id>` slot the focus-write already fills
+    // for every subject. On refresh/reopen the visitor must land back on
+    // their last channel — not the $home default. Pre-fix Shell gated
+    // the restore on `m.kind === "user"`, stranding visitors on home.
+    userHolder.current = {
+      kind: "visitor",
+      id: "v187",
+      nick: "guest",
+      network_slug: "freenode",
+      expires_at: "x",
+    };
+    // Seed via the production writer (keyed on the same id) — no
+    // hardcoded storage key / JSON shape.
+    saveLastFocused("v187", {
+      networkSlug: "freenode",
+      channelName: "#b",
+      kind: "channel",
+    });
+    render(() => <Shell />);
+    await waitFor(() => {
+      expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "#b",
+        kind: "channel",
+      });
+    });
+    // Must NOT fall back to the home default for a visitor.
+    expect(selectionState.setSelectedChannelMock).not.toHaveBeenCalledWith({
+      networkSlug: "$home",
+      channelName: "$home",
+      kind: "home",
+    });
+  });
+
+  it("#187 — restore overrides the provisional $home when the saved channel arrives LATE", async () => {
+    // The visitor-refresh-under-load race: the bouncer session survives the
+    // reload but `/channels` can snapshot mid-reconnect WITHOUT the saved
+    // channel, which then arrives a beat later via a refetch. A decide-once
+    // arm latches $home before it and strands the visitor. The reactive arm
+    // must land $home PROVISIONALLY, then override it to the saved channel
+    // when it appears.
+    userHolder.current = {
+      kind: "visitor",
+      id: "v187late",
+      nick: "guest",
+      network_slug: "freenode",
+      expires_at: "x",
+    };
+    saveLastFocused("v187late", {
+      networkSlug: "freenode",
+      channelName: "#b",
+      kind: "channel",
+    });
+    // First /channels snapshot does NOT yet include #b (mid-reconnect).
+    channelsHolder.current = { freenode: [] };
+
+    render(() => <Shell />);
+
+    // Provisional landing: $home (never a blank screen while we wait).
+    await waitFor(() => {
+      expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "$home",
+        channelName: "$home",
+        kind: "home",
+      });
+    });
+
+    // The saved channel now lands via a later refetch.
+    channelsHolder.current = channelsHolder.DEFAULT;
+
+    // Reactive restore overrides the provisional $home → #b is selected.
+    // (A decide-once arm would have disarmed after $home and never fire this.)
+    await waitFor(() => {
+      expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "#b",
+        kind: "channel",
       });
     });
   });
