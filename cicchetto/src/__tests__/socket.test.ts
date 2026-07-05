@@ -201,6 +201,78 @@ describe("notifyClientClosing (S3.3 — pagehide immediate-away hint)", () => {
   });
 });
 
+describe("reportVisibility (#182 — foreground push-suppression signal)", () => {
+  it("is a no-op when no user channel has been joined yet", async () => {
+    localStorage.setItem("grappa-token", "tok-1");
+    const socket = await import("../lib/socket");
+    // No joinUser call — _userChannel is null
+    socket.reportVisibility();
+    expect(h.mockChannel.push).not.toHaveBeenCalled();
+  });
+
+  it("pushes visibility with the current document.visibilityState after joinUser", async () => {
+    localStorage.setItem("grappa-token", "tok-1");
+    const socket = await import("../lib/socket");
+    socket.joinUser("alice");
+    // joinUser fires an initial reportVisibility only when the join "ok"
+    // callback runs (server round-trip); the mock does not auto-invoke it,
+    // so a direct call is the deterministic unit under test.
+    h.mockChannel.push.mockClear();
+
+    socket.reportVisibility();
+
+    // jsdom defaults document.visibilityState to "visible".
+    expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: true });
+  });
+
+  it("reports {visible: false} when the document is hidden", async () => {
+    localStorage.setItem("grappa-token", "tok-1");
+    const socket = await import("../lib/socket");
+    socket.joinUser("alice");
+    h.mockChannel.push.mockClear();
+
+    const spy = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    try {
+      socket.reportVisibility();
+      expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: false });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("joinUser's join-ok callback fires the initial visibility report", async () => {
+    localStorage.setItem("grappa-token", "tok-1");
+    const socket = await import("../lib/socket");
+    socket.joinUser("alice");
+
+    // Find and invoke the "ok" hook the join registered — this is what
+    // phoenix calls on (re)join, and it must report the initial visibility.
+    const okCb = h.mockJoinPush.receive.mock.calls.find(([ev]) => ev === "ok")?.[1] as (
+      reply: unknown,
+    ) => void;
+    expect(okCb).toBeTypeOf("function");
+    okCb({});
+
+    expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: true });
+  });
+
+  it("visibilitychange event triggers reportVisibility via document listener", async () => {
+    // Mirrors the main.tsx wiring without importing main.tsx.
+    localStorage.setItem("grappa-token", "tok-1");
+    const socket = await import("../lib/socket");
+    const { reportVisibility } = socket;
+
+    socket.joinUser("alice");
+    h.mockChannel.push.mockClear();
+
+    document.addEventListener("visibilitychange", reportVisibility);
+    document.dispatchEvent(new Event("visibilitychange"));
+    document.removeEventListener("visibilitychange", reportVisibility);
+
+    expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: true });
+  });
+});
+
 describe("pushAwaySet / pushAwayUnset (S3.4 — /away channel push)", () => {
   it("pushAwaySet is a no-op (rejected) when no user channel joined", async () => {
     localStorage.setItem("grappa-token", "tok-1");

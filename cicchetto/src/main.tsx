@@ -21,7 +21,7 @@ import { applyIosClass, isStandalonePwa } from "./lib/platform";
 import { installPushResubscribe } from "./lib/pushResubscribe";
 import { applyPushTargetFromUrl, installPushTargetListener } from "./lib/pushTarget";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
-import { notifyClientClosing } from "./lib/socket";
+import { notifyClientClosing, reportVisibility } from "./lib/socket";
 import { recordSwRegError, recordSwRegistered } from "./lib/swRegistration";
 import { applyTheme } from "./lib/theme";
 import { installSmartScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
@@ -168,6 +168,14 @@ installPushResubscribe(token);
 // reach the server.
 window.addEventListener("pagehide", notifyClientClosing);
 window.addEventListener("beforeunload", notifyClientClosing);
+
+// #182 — foreground push-suppression: report PWA visibility to the server
+// on every foreground/background transition. `visibilitychange` fires in
+// the PAGE context (reliable on iOS PWAs, unlike the SW's clients.matchAll)
+// so the server can suppress Web Push while the app is on-screen and
+// deliver it once backgrounded. The initial state is reported on
+// user-channel join (see socket.ts joinUser); this keeps it live after.
+document.addEventListener("visibilitychange", reportVisibility);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found in index.html");

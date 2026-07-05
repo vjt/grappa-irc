@@ -132,11 +132,15 @@ async function handlePush(payload: PushPayload): Promise<void> {
   // matchAll across all windows (includeUncontrolled: true) so a tab
   // opened before the SW activated still counts.
   //
-  // Per spec — server still sends every push (~50% wasted when
-  // foreground); APNs quota tax acceptable at current scale. Hybrid
-  // follow-up (server-side WSPresence + visibility-heartbeat
-  // fast-path skip with SW defensive re-check) parked until quota
-  // bites.
+  // #182 (2026-07-05): the hybrid landed — the server now suppresses the
+  // push at source when any device reports the PWA is visible (page-context
+  // `document.visibilitychange` → WSPresence → Push.Triggers gate), because
+  // this SW `clients.matchAll` visibility is UNRELIABLE on iOS PWAs (often
+  // an empty/non-"visible" client list while foregrounded). This client
+  // re-check is RETAINED as a defensive backstop for the small
+  // just-connected window before a fresh tab reports visibility (server
+  // defaults it :hidden = deliver-leaning), and for non-iOS where matchAll
+  // is trustworthy.
   // PWA icon badge (door #1 receive side, 2026-06-21): stamp the
   // server-computed count onto the home-screen icon. Done BEFORE the
   // suppress-return below — a badge update is non-intrusive, so it must

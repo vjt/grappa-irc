@@ -167,6 +167,12 @@ export function joinUser(userName: string, onJoinOk?: (reply: unknown) => void):
   ch.join()
     .receive("ok", (reply: unknown) => {
       if (onJoinOk) onJoinOk(reply);
+      // #182 — report the current PWA visibility right after the join
+      // (and on every auto-rejoin, since phoenix re-fires this "ok" hook
+      // on reconnect). The server's WSPresence defaults a fresh transport
+      // pid to :hidden, so this initial report is what lets a foregrounded
+      // tab suppress push + cancel auto-away without a visibilitychange.
+      reportVisibility();
     })
     .receive("error", (err: unknown) => {
       console.error("[grappa] channel join failed", topic, err);
@@ -174,7 +180,8 @@ export function joinUser(userName: string, onJoinOk?: (reply: unknown) => void):
     .receive("timeout", () => {
       console.error("[grappa] channel join timed out", topic);
     });
-  // Track the user-level channel for the pagehide immediate-away hint (S3.3).
+  // Track the user-level channel for the pagehide immediate-away hint (S3.3)
+  // and the visibility reporter (#182).
   _userChannel = ch;
   return ch;
 }
@@ -247,10 +254,11 @@ export function joinAdminEvents(): Channel {
 // S3.3 — pagehide immediate-away hint.
 //
 // Pushes `client_closing` over the active user-level channel so the
-// server's WSPresence fires `:ws_all_disconnected` immediately —
-// bypassing the 30s auto-away debounce — if this is the last socket
-// for the user. No-op if no user channel has been joined yet (which
-// can happen if the page unloads before `joinUser` completes).
+// server's WSPresence marks the closing tab hidden and fires
+// `:ws_all_hidden` immediately — bypassing the 30s auto-away debounce —
+// if it was the last visible device. No-op if no user channel has been
+// joined yet (which can happen if the page unloads before `joinUser`
+// completes).
 //
 // The push is fire-and-forget: `pagehide` / `beforeunload` give no
 // time to await a reply. The server handles idempotency — the pid DOWN
@@ -259,6 +267,28 @@ export function joinAdminEvents(): Channel {
 export function notifyClientClosing(): void {
   if (_userChannel === null) return;
   _userChannel.push("client_closing", {});
+}
+
+// #182 — foreground push-suppression: report the PWA's foreground
+// visibility to the server over the user-level channel. The server
+// (WSPresence) keys it per socket pid and uses the RAW signal to (a)
+// suppress foreground Web Push (Push.Triggers) and (b) drive the
+// 30s-debounced auto-away FSM (Session.Server). Page-context
+// `document.visibilityState` is reliable on iOS PWAs — unlike the SW's
+// `clients.matchAll`, which is the root cause of #182.
+//
+// Fire-and-forget + low frequency (fires on user-channel join and on
+// each `visibilitychange`), so no debounce. No-op before `joinUser`.
+export function reportVisibility(): void {
+  if (_userChannel === null) return;
+  if (typeof document === "undefined") return;
+  const visible = document.visibilityState === "visible";
+  _userChannel.push("visibility", { visible }).receive("ok", () => {
+    // e2e seam: the last server-acked visibility (mirrors beep.ts's
+    // `__lastBeepAt`). Lets a Playwright spec await the WS round-trip
+    // deterministically before asserting delivery/suppression.
+    if (typeof window !== "undefined") window.__visibilityAck = visible;
+  });
 }
 
 // S3.4 — /away slash-command pushes.
@@ -625,6 +655,8 @@ declare global {
   interface Window {
     __cic_dropSocketForTests?: () => Promise<void>;
     __cic_resumeSocketForTests?: () => Promise<void>;
+    // #182 e2e seam — last visibility the server acked (see reportVisibility).
+    __visibilityAck?: boolean;
   }
 }
 

@@ -19,10 +19,12 @@
  * in another app) returns false → SW falls through to
  * `showNotification`.
  *
- * Per UX-6-L spec — accept caveat: server still sends every push
- * (~50% wasted when foreground); APNs quota tax acceptable at
- * current scale. Hybrid follow-up (server-side WSPresence +
- * visibility-heartbeat fast-path skip) parked until quota bites.
+ * #182 (2026-07-05): the server now suppresses the push at source when
+ * any device reports the PWA visible (WSPresence + Push.Triggers gate),
+ * because this SW-side `visibilityState` is unreliable on iOS PWAs. This
+ * predicate is RETAINED as a defensive backstop (the small just-connected
+ * window before a fresh tab reports visibility; non-iOS where matchAll is
+ * trustworthy) — it must never be weakened.
  */
 export function shouldSuppressPush(
   clients: ReadonlyArray<{ visibilityState: DocumentVisibilityState }>,
