@@ -16842,6 +16842,7 @@ so the auto-classifier deployed it HOT — reloaded `Grappa.Push` +
 IRC sessions preserved (no cold restart needed) — batched with the `--cic`
 bundle (`hash=C9iUUKr1`) in one window. #181 stays OPEN until vjt
 eyeball-confirms on device.
+
 ---
 
 ## 2026-07-04 — WS subprotocol / transport allowlist inheritance (closing #97)
@@ -16851,3 +16852,31 @@ Issue #97 ("Phase 5: WS subprotocol allowlist inheritance") is closed as **alrea
 **Guardrail.** When adding a new WS subprotocol or an alternate Channel transport, it inherits the existing `check_origin` allowlist by construction. A feature that genuinely needs a *different* host (e.g. a login-free public-status endpoint) lands as a **separate `Phoenix.Endpoint`**, never as a relaxation of `check_origin` in `runtime.exs`. Relaxing the shared allowlist to fit one feature widens the authz-on-handshake surface for every socket.
 
 No action needed today: there is a single WS transport and no new subprotocol in flight. This is a pre-emptive guardrail, tripped only when a future transport is added.
+
+## 2026-07-05 — #180: enlarge the CRT loading-splash text +30%, proven by a FROZEN-splash e2e
+
+vjt device report: the retro CRT loading splash (`CrtSplash.tsx`, #134)
+text read too small. Fix is a pure font-size bump — `.crt-splash-boot`
+0.8→1.04rem and `.crt-splash-status` 1.4→1.82rem (both ×1.3, scoped to
+the splash selectors; the rem/`--font-size` base is untouched so no
+unrelated text grows). CRT aesthetic (letter-spacing, glow, line-height)
+unchanged.
+
+**The reusable bit — how you e2e a loading-ONLY component.** `CrtSplash`
+is the Shell main-pane `<Switch fallback>`, alive only in the cold-load
+window before `/me` resolves, then it hands off to `$home`. Its own vitest
+calls it "e2e-hostile (gone the moment the page finishes loading)", and
+jsdom can't resolve a rem `font-size` to px (no cascade/layout) — so
+neither existing surface can assert the RENDERED size. The e2e
+(`crt-splash-font.spec.ts`) freezes the splash deterministically: seed a
+bearer (RequireAuth gates on token PRESENCE, not `/me` — `auth.ts`
+`isAuthenticated`) so Shell mounts, then HANG `/me` (a never-resolving
+`page.route`) so the `user` resource stays PENDING → `user()` undefined →
+`loading()` true → the splash persists under a real Chromium that cascades
+`default.css`. Then assert the rem-RATIO (computed text px ÷ root font px),
+which is layout-independent (holds for any root px; == the rem multiplier).
+Hang, NOT `abort()`: an aborted resource ERRORS and Solid re-throws it on
+read (trips an ErrorBoundary, kills the splash); a 401 would fire `on401`
+→ clear the token → bounce to `/login`. Pending is the genuine cold-load
+state. This is the pattern for any future loading-only / transient-overlay
+e2e.

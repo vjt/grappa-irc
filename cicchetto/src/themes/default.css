@@ -4198,7 +4198,7 @@ html.resize-dragging * {
 
 .crt-splash-boot {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: 1.04rem; /* #180 — CRT splash text +30% (was 0.8rem; vjt device report: too small) */
   line-height: 1.5;
   white-space: pre-wrap;
   color: var(--crt-phosphor-dim);
@@ -4209,7 +4209,7 @@ html.resize-dragging * {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 1.4rem;
+  font-size: 1.82rem; /* #180 — CRT splash text +30% (was 1.4rem) */
   letter-spacing: 0.2em;
 }
 
