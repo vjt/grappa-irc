@@ -1183,21 +1183,109 @@ html.resize-dragging * {
   font-style: italic;
 }
 
-/* MentionsWindow rows (#139). Each row is a <button>, and form controls
-   do NOT inherit font-family — without `font: inherit` the row renders in
-   the UA proportional font instead of the cic monospace (same fix the
-   other inline-clickable buttons already carry, see .nick-clickable /
-   .scrollback-invite-join). The body span then needs the same whitespace
-   treatment as a scrollback body (.scrollback-line) so aligned/monospace
-   content keeps its consecutive spaces + leading indentation instead of
-   HTML-folding to a single space. pre-wrap preserves space runs AND still
-   wraps long lines; word-break breaks pathologically long unbroken tokens
-   so they never force a horizontal scrollbar. */
+/* MentionsWindow (#139; restyled #188). Mirrors the /list directory pane
+   (.directory-pane): flex column, a fixed header with a close-x, over a
+   SCROLLABLE grouped row list. The `.mentions-window` frame + header +
+   list echo `.directory-pane` / `.directory-pane-header` / `.directory-
+   list` so the two panes read as siblings; the close-x literally reuses
+   `.directory-close`. */
+.mentions-window {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  color: var(--fg);
+  max-height: var(--viewport-height, 100dvh);
+  touch-action: pan-y;
+}
+
+.mentions-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.mentions-header-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* #188 item 1 — heading is slightly bigger than the body font and bold so
+   the "/away" scope + count reads at a glance. flex:1 pushes the close-x
+   to the right edge. */
+.mentions-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 1.15em;
+  font-weight: bold;
+  color: var(--fg);
+}
+
+.mentions-header-meta {
+  font-size: 0.85em;
+}
+
+/* #188 item 4 — the list scrolls when it overflows; rows never force a
+   horizontal scrollbar (mirror of `.directory-list`). */
+.mentions-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.mentions-group {
+  border-bottom: 1px solid var(--border);
+}
+
+/* #188 item 2 — muted per-channel label heading a cluster of rows. */
+.mentions-group-channel {
+  padding: 0.4rem 1rem 0.15rem;
+  font-size: 0.85em;
+  font-weight: bold;
+}
+
+/* #188 item 3 — rows are lighter and NOT button-y. They mirror the reset
+   `.directory-row-join` applies (transparent bg, no border, left-aligned,
+   monospace via `font: inherit`) — the same properties, copied rather than
+   class-shared because the mentions row layout differs from the directory
+   grid — so a form control stops rendering as UA button chrome. Padding
+   separates rows; the whole padded area is the tap target. Touch UIs have
+   no `:hover`, so `:active` gives the tap feedback that signals the row is
+   clickable — the row still LOOKS tappable without relying on hover. */
 .mentions-row {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  width: 100%;
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  padding: 0.4rem 1rem;
   font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mentions-row:hover,
+.mentions-row:active {
+  background: var(--border);
+}
+
+.mentions-row-sender {
+  flex-shrink: 0;
 }
 
 .mentions-row-body {
+  flex: 1 1 100%;
   white-space: pre-wrap;
   word-break: break-word;
 }

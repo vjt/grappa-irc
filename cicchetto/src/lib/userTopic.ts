@@ -15,7 +15,7 @@ import { channelKey } from "./channelKey";
 import { patchHomeNetwork } from "./home";
 import { appendInviteAck } from "./inviteAck";
 import { setLusersBundle } from "./lusersBundle";
-import { setMentionsBundle } from "./mentionsWindow";
+import { clearMentionsBundle, setMentionsBundle } from "./mentionsWindow";
 import { setNamesReply } from "./namesModal";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
 import { setPeerAway } from "./peerAway";
@@ -603,6 +603,14 @@ createRoot(() => {
           // and cancel paths. Update the awayByNetwork signal so the
           // Sidebar can show [away].
           setAwayState(payload.network, payload.state === "away");
+          // #188 — clear-on-away lifecycle. Going /away AGAIN drops the
+          // prior mentions bundle so the next return-from-away consults a
+          // fresh panel. Clear on GOING away (state === "away") only — the
+          // bundle is re-SET on RETURN via `mentions_bundle`, so clearing
+          // on "present" would wipe it the instant it arrives.
+          if (payload.state === "away") {
+            clearMentionsBundle(payload.network);
+          }
           return;
 
         case "own_nick_changed":

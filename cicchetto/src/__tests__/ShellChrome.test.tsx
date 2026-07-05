@@ -30,9 +30,19 @@ let mockSelected: {
   channelName: string;
   kind: "channel" | "query" | "server" | "home" | "mentions";
 } | null = null;
+const mockSetSelectedChannel = vi.fn();
 vi.mock("../lib/selection", () => ({
   selectedChannel: () => mockSelected,
+  setSelectedChannel: (...args: unknown[]) => mockSetSelectedChannel(...args),
   applySeedEnvelope: vi.fn(),
+}));
+
+// #188 — the open-mentions button only surfaces when a bundle exists for
+// the selected window's network. A mutable holder lets each test control
+// which slugs have a bundle.
+const mentionsBundles = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
+vi.mock("../lib/mentionsWindow", () => ({
+  mentionsBundleBySlug: () => mentionsBundles.value,
 }));
 
 // Post-bundle desktop fix — ShellChrome's archive button is now gated on
@@ -51,6 +61,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockSelected = null;
   mobileState.value = true;
+  mentionsBundles.value = {};
 });
 
 describe("ShellChrome (bucket L)", () => {
@@ -148,6 +159,52 @@ describe("ShellChrome (bucket L)", () => {
       mockSelected = { networkSlug: "freenode", channelName: "$server", kind: "server" };
       render(() => <ShellChrome onOpenSettings={vi.fn()} />);
       expect(screen.queryByTestId("shell-chrome-archive")).toBeNull();
+    });
+  });
+
+  // #188 item 6 — a button next to the cog opens the mentions panel. It
+  // derives the network from the current selection (like the archive
+  // button) and renders ONLY when that network has a bundle to consult.
+  describe("open-mentions button (#188)", () => {
+    it("shows the button when the selected network has a mentions bundle", () => {
+      mockSelected = { networkSlug: "freenode", channelName: "#italia", kind: "channel" };
+      mentionsBundles.value = { freenode: {} };
+      render(() => <ShellChrome onOpenSettings={vi.fn()} />);
+      expect(screen.getByTestId("shell-chrome-mentions")).toBeInTheDocument();
+    });
+
+    it("hides the button when the selected network has no bundle", () => {
+      mockSelected = { networkSlug: "freenode", channelName: "#italia", kind: "channel" };
+      mentionsBundles.value = {};
+      render(() => <ShellChrome onOpenSettings={vi.fn()} />);
+      expect(screen.queryByTestId("shell-chrome-mentions")).toBeNull();
+    });
+
+    it("hides the button when no window carries a network context (home)", () => {
+      mockSelected = { networkSlug: "home", channelName: "home", kind: "home" };
+      mentionsBundles.value = { home: {} };
+      render(() => <ShellChrome onOpenSettings={vi.fn()} />);
+      expect(screen.queryByTestId("shell-chrome-mentions")).toBeNull();
+    });
+
+    it("shows on desktop too (not mobile-gated like archive)", () => {
+      mobileState.value = false;
+      mockSelected = { networkSlug: "freenode", channelName: "#italia", kind: "channel" };
+      mentionsBundles.value = { freenode: {} };
+      render(() => <ShellChrome onOpenSettings={vi.fn()} />);
+      expect(screen.getByTestId("shell-chrome-mentions")).toBeInTheDocument();
+    });
+
+    it("clicking it opens the mentions pseudo-window for the selected network", () => {
+      mockSelected = { networkSlug: "freenode", channelName: "#italia", kind: "channel" };
+      mentionsBundles.value = { freenode: {} };
+      render(() => <ShellChrome onOpenSettings={vi.fn()} />);
+      fireEvent.click(screen.getByTestId("shell-chrome-mentions"));
+      expect(mockSetSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "",
+        kind: "mentions",
+      });
     });
   });
 });

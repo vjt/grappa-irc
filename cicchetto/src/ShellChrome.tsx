@@ -1,6 +1,8 @@
 import { type Component, Show } from "solid-js";
 import { setArchiveModalNetwork } from "./lib/archive";
 import { archiveSlugForSelection } from "./lib/archiveContext";
+import { mentionsBundleBySlug } from "./lib/mentionsWindow";
+import { setSelectedChannel } from "./lib/selection";
 import { isMobile } from "./lib/theme";
 
 // UX-4 bucket L (2026-05-19) — sticky chrome bar at the top of
@@ -43,9 +45,38 @@ export type Props = {
 };
 
 const ShellChrome: Component<Props> = (props) => {
+  // #188 item 6 — which network's mentions bundle should the open button
+  // consult? Derive the network from the current selection like the
+  // archive button (`archiveSlugForSelection`), and render the button
+  // ONLY when that network has a bundle — there's nothing to open
+  // otherwise. Not mobile-gated: unlike the archive drawer, the mentions
+  // panel has no desktop sidebar equivalent, so the button surfaces on
+  // both. `archiveSlugForSelection` returns null while the mentions panel
+  // itself is open, which correctly hides the (redundant) re-open button.
+  const mentionsOpenSlug = (): string | null => {
+    const slug = archiveSlugForSelection();
+    if (slug === null) return null;
+    return mentionsBundleBySlug()[slug] ? slug : null;
+  };
+
   return (
     <header class="shell-chrome" data-testid="shell-chrome">
       <span class="shell-chrome-spacer" />
+      <Show when={mentionsOpenSlug()}>
+        {(slug) => (
+          <button
+            type="button"
+            class="shell-chrome-btn shell-chrome-mentions"
+            aria-label="open mentions"
+            data-testid="shell-chrome-mentions"
+            onClick={() =>
+              setSelectedChannel({ networkSlug: slug(), channelName: "", kind: "mentions" })
+            }
+          >
+            @
+          </button>
+        )}
+      </Show>
       <Show when={isMobile() && archiveSlugForSelection()}>
         {(slug) => (
           <button

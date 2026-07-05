@@ -150,8 +150,19 @@ const exports = identityScopedStore((onIdentityChange) => {
     ) {
       return;
     }
-    // Entering the $list overlay from a real window — remember it.
-    if (next?.kind === "list" && cur !== null && cur.kind !== "list") {
+    // Entering a transient overlay — the $list directory pane or the #188
+    // mentions panel — from a real window: remember it so
+    // closeToPreviousWindow restores the exact window that was focused
+    // before the overlay opened (#125). Both panes reuse `.directory-close`
+    // + closeToPreviousWindow, so they must record their opener the same
+    // way. Overlay→overlay transitions never overwrite the remembered
+    // opener.
+    if (
+      (next?.kind === "list" || next?.kind === "mentions") &&
+      cur !== null &&
+      cur.kind !== "list" &&
+      cur.kind !== "mentions"
+    ) {
       backTarget = cur;
     }
     setSelectedChannelRaw(next);

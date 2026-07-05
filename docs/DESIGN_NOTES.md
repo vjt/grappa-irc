@@ -17130,3 +17130,86 @@ end-to-end visitor-restore outcome.
 
 **Deploy class: cic-only** (bundle swap, no BEAM restart). No server or
 wire-type change.
+
+---
+
+### 2026-07-05 — #188: "while you were /away" mentions panel restyle + open-button + clear-on-away
+
+The mentions-while-away panel (C8, spec #19) worked but read as a raw flat
+list of default-chrome `<button>` rows with a terse `N mentions while away
+(HH:MM:SS – HH:MM:SS · reason)` header. #188 is a POLISH pass — the server
+path (`maybe_broadcast_mentions_bundle` → `mentions_bundle` on the user
+topic) and the row-click-jumps-to-message contract are untouched; only cic
+presentation + one lifecycle rule changed.
+
+**Panel restyle contract (`MentionsWindow.tsx` + `.mentions-*` CSS).** The
+pane now mirrors the `/list` directory pane (`DirectoryPane`) so the two
+read as siblings: a flex-column frame (`.mentions-window` ≈ `.directory-
+pane`), a fixed header, and a SCROLLABLE list (`.mentions-list` ≈
+`.directory-list`). Concretely:
+- **Heading** leads with the `/away` phrasing and a count that makes the
+  scope visible before scrolling: `while you were /away — N messages in M
+  channels` (slightly-bigger bold `.mentions-heading`). The away interval +
+  reason survive as a muted sub-line (`.mentions-header-meta.muted`), the
+  reason still routed through `MircBody` (#142 control-byte render).
+- **Grouped by channel.** Rows cluster under a muted per-channel label
+  (`.mentions-group-channel.muted`); the old per-row channel column is
+  gone. `groupByChannel/1` is a pure first-seen-order grouping — the server
+  already returns messages `server_time ASC`, so the first channel to
+  appear leads.
+- **Rows are not button-y.** `.mentions-row` mirrors the SAME reset the
+  `/list` rows use (`.directory-row-join`: transparent bg, no border,
+  left-aligned, `font: inherit`) — the properties are copied, not
+  class-shared, because the mentions row layout differs from the directory
+  grid — so a form control stops rendering as UA button chrome. Padding
+  separates rows; the whole padded area is the tap target. (The close-x, by
+  contrast, IS a literal `.directory-close` class reuse — same shape.) Touch has no `:hover`, so `:active` (which DOES fire on tap)
+  carries the "this is tappable" feedback — the row reads as tappable
+  without relying on hover.
+
+**Close-x = the `/list` affordance, and the mentions panel now records its
+opener.** Item 5 reuses `.directory-close` + `closeToPreviousWindow` (#125).
+But `closeToPreviousWindow` restores the pre-overlay window only if
+`setSelectedChannel` recorded `backTarget` when the overlay opened — and
+that recording was gated on `kind === "list"` alone. Extended it to
+`kind === "list" || kind === "mentions"` (with an overlay→overlay guard):
+both panes are transient network-context overlays, so they must remember
+their opener identically ("same problem, same solution"). Without this the
+mentions close-x fell through the MRU→server→home fallback instead of
+restoring the exact window you were in. `MentionsWindow` stays presentational
+— it takes an `onClose` callback (like it already takes `onMentionClicked`);
+Shell wires it to `closeToPreviousWindow(slug)`.
+
+**Open button — network-derivation decision.** A `@` button next to the
+Settings cog (`ShellChrome`, `shell-chrome-mentions`) opens the panel via
+the SAME verb the return-from-away auto-open uses
+(`setSelectedChannel({networkSlug, channelName: "", kind: "mentions"})`).
+Which network's bundle? Derive it from the current selection exactly like
+the archive button (`archiveSlugForSelection()`), and render the button
+ONLY when `mentionsBundleBySlug()[slug]` has a bundle — there's nothing to
+consult otherwise. NOT mobile-gated (unlike archive, which is redundant
+with the desktop sidebar drawer): the mentions panel has no sidebar
+equivalent, so the button surfaces on both. `archiveSlugForSelection()`
+returns null while the panel itself is open, which conveniently hides the
+redundant re-open button.
+
+**Clear-on-away lifecycle.** The bundle is SET on RETURN-from-away
+(`mentions_bundle`) and now CLEARED on GOING away again: the
+`away_confirmed` handler calls `clearMentionsBundle(network)` when
+`state === "away"` (NOT on `"present"` — that IS the return path, and
+clearing there would wipe the bundle the instant it arrives). Within a
+session you tap through all the mentions; the next away resets the panel so
+the following return consults a fresh one. `clearMentionsBundle/1` is a
+per-network delete on the `mentionsBundleBySlug` store (sibling to
+`setMentionsBundle`) — sibling networks' bundles are untouched.
+
+E2E (`issue188-mentions-panel-polish.spec.ts`) drives the REAL path — no
+synthetic bundle: operator joins two channels, goes `/away`, a peer PRIVMSGs
+the operator's nick into both, operator returns → the server aggregates and
+pushes `mentions_bundle` → the panel auto-opens. It then asserts the
+restyle (heading + count, two muted per-channel groups, scroll container),
+row-click navigation, the open-button re-open, the close-x, and — going
+`/away` again — the open-button disappearing (bundle cleared).
+
+**Deploy class: cic-only** (bundle swap, no BEAM restart). No server or
+wire-type change.

@@ -56,6 +56,7 @@ vi.mock("../lib/awayStatus", () => ({
 
 vi.mock("../lib/mentionsWindow", () => ({
   setMentionsBundle: vi.fn(),
+  clearMentionsBundle: vi.fn(),
 }));
 
 vi.mock("../lib/selection", () => ({
@@ -431,6 +432,33 @@ describe("userTopic", () => {
         state: "pending",
       });
       expect(ws.setPending).not.toHaveBeenCalled();
+    });
+  });
+
+  // #188 — clear-on-away lifecycle. Going /away AGAIN clears the prior
+  // mentions bundle so the next return-from-away consults a fresh panel.
+  // The bundle is SET on RETURN (mentions_bundle) and CLEARED on GOING
+  // away (away_confirmed state === "away"); state === "present" must NOT
+  // clear (that IS the return path).
+  describe("clear-on-away lifecycle (#188)", () => {
+    it("clears the network's mentions bundle when state flips to away", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      channelMock.fireEvent({
+        kind: "away_confirmed",
+        network: "azzurra",
+        state: "away",
+      });
+      expect(mw.clearMentionsBundle).toHaveBeenCalledWith("azzurra");
+    });
+
+    it("does NOT clear the mentions bundle when state is present (return path)", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      channelMock.fireEvent({
+        kind: "away_confirmed",
+        network: "azzurra",
+        state: "present",
+      });
+      expect(mw.clearMentionsBundle).not.toHaveBeenCalled();
     });
   });
 

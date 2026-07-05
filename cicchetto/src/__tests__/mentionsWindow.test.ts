@@ -75,3 +75,31 @@ describe("mentionsWindow store — identity-rotation cleanup (H1)", () => {
     });
   });
 });
+
+describe("mentionsWindow store — clearMentionsBundle (#188 clear-on-away)", () => {
+  it("removes only the given slug's bundle, leaving siblings intact", async () => {
+    localStorage.setItem("grappa-token", "tokA");
+    const mw = await import("../lib/mentionsWindow");
+
+    mw.setMentionsBundle("freenode", fixture("freenode"));
+    mw.setMentionsBundle("azzurra", fixture("azzurra"));
+    expect(mw.mentionsBundleBySlug().freenode).toBeDefined();
+    expect(mw.mentionsBundleBySlug().azzurra).toBeDefined();
+
+    mw.clearMentionsBundle("freenode");
+
+    expect(mw.mentionsBundleBySlug().freenode).toBeUndefined();
+    // Sibling network's bundle is untouched — clear is per-network.
+    expect(mw.mentionsBundleBySlug().azzurra).toBeDefined();
+  });
+
+  it("is a no-op for a slug with no bundle", async () => {
+    localStorage.setItem("grappa-token", "tokA");
+    const mw = await import("../lib/mentionsWindow");
+
+    mw.setMentionsBundle("azzurra", fixture("azzurra"));
+    mw.clearMentionsBundle("freenode");
+
+    expect(mw.mentionsBundleBySlug().azzurra).toBeDefined();
+  });
+});

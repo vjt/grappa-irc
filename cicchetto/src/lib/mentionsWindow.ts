@@ -26,8 +26,22 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     setMentionsBundleBySlug((prev) => ({ ...prev, [networkSlug]: bundle }));
   };
 
-  return { mentionsBundleBySlug, setMentionsBundle };
+  // #188 — clear-on-away lifecycle. Called from userTopic's away_confirmed
+  // handler when a network flips back to "away": drop that network's stale
+  // bundle so the NEXT return-from-away consults a fresh panel (the bundle
+  // is re-SET via `mentions_bundle` on return). Per-network — sibling
+  // networks' bundles are untouched. No-op when the slug has no bundle.
+  const clearMentionsBundle = (networkSlug: string): void => {
+    setMentionsBundleBySlug((prev) => {
+      if (!(networkSlug in prev)) return prev;
+      const { [networkSlug]: _dropped, ...rest } = prev;
+      return rest;
+    });
+  };
+
+  return { mentionsBundleBySlug, setMentionsBundle, clearMentionsBundle };
 });
 
 export const mentionsBundleBySlug = exports_.mentionsBundleBySlug;
 export const setMentionsBundle = exports_.setMentionsBundle;
+export const clearMentionsBundle = exports_.clearMentionsBundle;

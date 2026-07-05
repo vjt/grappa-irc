@@ -37,7 +37,12 @@ import {
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
-import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
+import {
+  closeToPreviousWindow,
+  selectedChannel,
+  setSelectedChannel,
+  unreadCounts,
+} from "./lib/selection";
 import { isMobile } from "./lib/theme";
 import { loadUploadTtlSeconds } from "./lib/uploadOrchestrator";
 import {
@@ -656,6 +661,7 @@ const Shell: Component = () => {
                   }
                   ownNick={ownNickForSlug(selectedChannel()?.networkSlug ?? "")}
                   onMentionClicked={handleMentionClicked}
+                  onClose={() => closeToPreviousWindow(selectedChannel()?.networkSlug ?? "")}
                 />
               </Match>
               <Match when={selKind() === "home"}>
@@ -816,6 +822,7 @@ const Shell: Component = () => {
                 }
                 ownNick={ownNickForSlug(selectedChannel()?.networkSlug ?? "")}
                 onMentionClicked={handleMentionClicked}
+                onClose={() => closeToPreviousWindow(selectedChannel()?.networkSlug ?? "")}
               />
             </Match>
             <Match when={selKind() === "home"}>
