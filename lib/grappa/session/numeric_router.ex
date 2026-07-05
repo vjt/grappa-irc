@@ -106,58 +106,80 @@ defmodule Grappa.Session.NumericRouter do
   # Numeric class lookup tables (compile-time)
   # ---------------------------------------------------------------------------
 
+  # #184 — STATS reply family: RPL_STATS* (211–219, 240–250) +
+  # RPL_ENDOFSTATS (219). Server-directed status replies whose MIDDLE
+  # params are DATA, never destinations — the stats letter (`/stats o` →
+  # 219 `[nick, "o", "End of /STATS report"]`), the O/I/K/C-line class
+  # letter (243/215/216/213), a link name, a host mask.
+  # `Identifier.valid_nick?` accepts a bare letter, so pre-fix the param
+  # scan routed the whole reply set into a `{:query, <letter>}` window (a
+  # bogus DM named "o") that even leaked into Archive via list_archive's
+  # `COALESCE(dm_with, channel)` — the exact disease as the 004/042
+  # connect-storm ghost below. STATS is server-directed by definition →
+  # always `{:server, nil}`. We deny the full 211–219 / 240–250 range —
+  # the STATS reply set Azzurra's bahamut actually emits (characterized
+  # across the STATS letters in #155) — not just the letter the report
+  # named, so EVERY `/stats <x>` reply lands on `$server`, not only
+  # `/stats o`. NB this is the observed range, not universal STATS
+  # coverage: other ircds define STATS numerics in 220–239 too; add them
+  # here if a bound network emits them.
+  @stats_numerics Enum.to_list(211..219) ++ Enum.to_list(240..250)
+
   # Active deny list: numerics whose params look nick-shaped but the
   # token is NOT a routing destination — it's the rejected/offending
-  # input, a server-metadata token, or just an ack. Always go to
-  # `{:server, nil}`. Closed set; expand deliberately.
-  @active_numerics MapSet.new([
-                     # UX-4 bucket I (2026-05-19): connect-storm numerics
-                     # whose middle params are server metadata (own ID,
-                     # server name, version string, supported umode/chanmode
-                     # letters) that happen to match `Identifier.valid_nick?`
-                     # syntax. Pre-fix `scan_params/2` speculatively routed
-                     # these to `{:query, <metadata-token>}`, persisting a
-                     # `:notice` row at `channel=<metadata-token>` that
-                     # surfaced as a ghost entry in the per-network Archive
-                     # section (via `Scrollback.list_archive/3`'s
-                     # `COALESCE(dm_with, channel)` GROUP BY). All connect-
-                     # storm numerics belong on `$server` by definition —
-                     # they describe the SERVER, not a user-correlatable
-                     # destination.
-                     #
-                     # 004 RPL_MYINFO       — params: [own_nick, servername,
-                     #                        version, usermodes, chanmodes,
-                     #                        chanmodes_with_param?]. The
-                     #                        usermodes token (e.g.
-                     #                        "oiwgrsk") is the reported
-                     #                        ghost.
-                     # 042 RPL_YOURID       — params: [own_nick, <id>,
-                     #                        "your unique ID"]. Alphanumeric
-                     #                        ID (e.g. "6FXAAAAAB") matches
-                     #                        nick-shape.
-                     # 263 RPL_TRYAGAIN     — params: [own_nick, command,
-                     #                        "Please wait..."]. The
-                     #                        offending command name is not
-                     #                        a routing destination (mirrors
-                     #                        461 ERR_NEEDMOREPARAMS).
-                     4,
-                     42,
-                     263,
-                     # 305 RPL_UNAWAY — upstream confirmed away unset
-                     305,
-                     # 306 RPL_NOWAWAY — upstream confirmed away set
-                     306,
-                     # 421 ERR_UNKNOWNCOMMAND — unknown IRC command issued
-                     421,
-                     # 432 ERR_ERRONEUSNICKNAME — bad nick format in /nick
-                     432,
-                     # 433 ERR_NICKNAMEINUSE — nick taken in /nick
-                     433,
-                     # 437 ERR_UNAVAILRESOURCE — nick temporarily unavailable
-                     437,
-                     # 461 ERR_NEEDMOREPARAMS — command missing required params
-                     461
-                   ])
+  # input, a server-metadata token, a STATS class letter, or just an
+  # ack. Always go to `{:server, nil}`. Closed set; expand deliberately.
+  @active_numerics MapSet.new(
+                     @stats_numerics ++
+                       [
+                         # UX-4 bucket I (2026-05-19): connect-storm numerics
+                         # whose middle params are server metadata (own ID,
+                         # server name, version string, supported umode/chanmode
+                         # letters) that happen to match `Identifier.valid_nick?`
+                         # syntax. Pre-fix `scan_params/2` speculatively routed
+                         # these to `{:query, <metadata-token>}`, persisting a
+                         # `:notice` row at `channel=<metadata-token>` that
+                         # surfaced as a ghost entry in the per-network Archive
+                         # section (via `Scrollback.list_archive/3`'s
+                         # `COALESCE(dm_with, channel)` GROUP BY). All connect-
+                         # storm numerics belong on `$server` by definition —
+                         # they describe the SERVER, not a user-correlatable
+                         # destination.
+                         #
+                         # 004 RPL_MYINFO       — params: [own_nick, servername,
+                         #                        version, usermodes, chanmodes,
+                         #                        chanmodes_with_param?]. The
+                         #                        usermodes token (e.g.
+                         #                        "oiwgrsk") is the reported
+                         #                        ghost.
+                         # 042 RPL_YOURID       — params: [own_nick, <id>,
+                         #                        "your unique ID"]. Alphanumeric
+                         #                        ID (e.g. "6FXAAAAAB") matches
+                         #                        nick-shape.
+                         # 263 RPL_TRYAGAIN     — params: [own_nick, command,
+                         #                        "Please wait..."]. The
+                         #                        offending command name is not
+                         #                        a routing destination (mirrors
+                         #                        461 ERR_NEEDMOREPARAMS).
+                         4,
+                         42,
+                         263,
+                         # 305 RPL_UNAWAY — upstream confirmed away unset
+                         305,
+                         # 306 RPL_NOWAWAY — upstream confirmed away set
+                         306,
+                         # 421 ERR_UNKNOWNCOMMAND — unknown IRC command issued
+                         421,
+                         # 432 ERR_ERRONEUSNICKNAME — bad nick format in /nick
+                         432,
+                         # 433 ERR_NICKNAMEINUSE — nick taken in /nick
+                         433,
+                         # 437 ERR_UNAVAILRESOURCE — nick temporarily unavailable
+                         437,
+                         # 461 ERR_NEEDMOREPARAMS — command missing required params
+                         461
+                       ]
+                   )
 
   # Delegated numerics: already handled by dedicated EventRouter/Server
   # handlers. `:delegated` short-circuits the matrix; the caller defers.

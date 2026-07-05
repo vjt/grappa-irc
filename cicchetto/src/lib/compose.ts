@@ -695,12 +695,17 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
         // #155 — /stats [query] [server] + /rehash. Native parser sugar over
         // the #153-de-gated raw transport (mirrors /quote): build the raw
-        // STATS/REHASH frame and ship it via pushRaw. No server change — the
-        // numeric_router scan-then-server fallback already routes the STATS
-        // reply numerics (211-219, 240-250) and REHASH/permission numerics to
-        // the `$server` window as :notice rows. AWAIT the push so a
-        // WS-disconnected / server {:error,_} surfaces as an inline compose
-        // error instead of a silent green ✓ (the #154 no-silent-drop lesson).
+        // STATS/REHASH frame and ship it via pushRaw. Server routing: the
+        // STATS reply family (211-219, 240-250) is server-directed — grappa's
+        // numeric_router pins the whole family to the `$server` window as
+        // :notice rows via its @active_numerics deny list (#184). Before that
+        // fix the terminating 219 RPL_ENDOFSTATS's stats-letter param was
+        // mis-read by the scan fallback as a query target, forking a bogus
+        // window named after the letter; #155's original "no server change"
+        // premise was wrong. REHASH/permission numerics (e.g. 481) land on
+        // `$server` too. AWAIT the push so a WS-disconnected / server
+        // {:error,_} surfaces as an inline compose error instead of a silent
+        // green ✓ (the #154 no-silent-drop lesson).
         case "stats": {
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/stats: network not found" };

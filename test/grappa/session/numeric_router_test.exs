@@ -121,7 +121,12 @@ defmodule Grappa.Session.NumericRouterTest do
   # Active deny list: nick-shaped tokens that are NOT destinations
   # ---------------------------------------------------------------------------
 
-  @active_numerics [4, 42, 263, 305, 306, 421, 432, 433, 437, 461]
+  # Mirror of NumericRouter's @active_numerics. #184 folded the STATS
+  # reply family (211–219 RPL_STATS* + RPL_ENDOFSTATS, 240–250) in — the
+  # stats letter (`/stats o` → 219 `[nick, "o", "End of /STATS report"]`)
+  # is a nick-shaped metadata token, NOT a query destination.
+  @active_numerics [4, 42, 263, 305, 306, 421, 432, 433, 437, 461] ++
+                     Enum.to_list(211..219) ++ Enum.to_list(240..250)
 
   describe "@active_numerics deny list → {:server, nil}" do
     property "all @active_numerics route to {:server, nil} regardless of params" do
@@ -178,6 +183,31 @@ defmodule Grappa.Session.NumericRouterTest do
 
     test "306 RPL_NOWAWAY routes to $server" do
       m = msg(306, ["vjt", "You have been marked as being away"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    # #184 — STATS reply family. `/stats <letter>` numerics carry the
+    # stats letter (and O-line/I-line class letters) as a middle param
+    # that is nick-shaped but is metadata, not a routing destination.
+    # Pre-fix the param scan routed `/stats o` (219) to `{:query, "o"}`,
+    # spawning a bogus query window "o" that even leaked into Archive.
+    test "219 RPL_ENDOFSTATS: stats letter is NOT a query destination (#184 headline)" do
+      m = msg(219, ["vjt", "o", "End of /STATS report"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "243 RPL_STATSOLINE: O-line class letter is NOT a query destination" do
+      m = msg(243, ["vjt", "O", "*@*.azzurra.org", "*", "vjt"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "215 RPL_STATSILINE: I-line class letter is NOT a query destination" do
+      m = msg(215, ["vjt", "I", "*@*", "*", "0", "6667", "azzurra"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "242 RPL_STATSUPTIME: trailing-only STATS reply stays on $server" do
+      m = msg(242, ["vjt", "Server Up 12 days, 03:45:12"])
       assert {:server, nil} = NumericRouter.route(m, state())
     end
   end

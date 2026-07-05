@@ -17011,3 +17011,54 @@ now background the page first (their delivery is gated by
 prefs/mention, not foreground). Away-transition coverage lives in
 `server_test.exs` (WSPresence → PubSub → Session → real `AWAY` line),
 firing `:auto_away_debounce_fire` directly to avoid a 30s wait.
+
+## 2026-07-05 — #184: STATS reply numerics are server-directed → `$server`, never a query window
+
+`/stats <letter>` output was rendering in a bogus QUERY window named
+after the stats letter (a DM "o" for `/stats o`) instead of the network's
+`$server` window, and even leaked into the per-network Archive.
+
+**Root cause was SERVER-side** (`Grappa.Session.NumericRouter`), not cic —
+cic is a faithful mirror of the server's routing target. The STATS reply
+family (211–219 `RPL_STATS*` + `RPL_ENDOFSTATS`, 240–250) was in NEITHER
+`@active_numerics` NOR `@delegated_numerics`, so it fell through to the
+`scan_params/2` param-scan. Every `/stats` query terminates with
+**219 RPL_ENDOFSTATS `[own_nick, <letter>, "End of /STATS report"]`**; the
+bare stats letter is nick-shaped (`Identifier.valid_nick?("o")` is true,
+no dot, ≠ own_nick), so the scan resolved `{:query, "o"}` and the server
+persisted a `:notice` on `channel="o"` — which surfaced as a query tab AND
+leaked into Archive via `Scrollback.list_archive`'s
+`COALESCE(dm_with, channel)` GROUP BY. This is the **exact same disease**
+as the UX-4 004/042 connect-storm ghost: a nick-shaped middle param that
+is metadata, not a destination.
+
+**Rule (invariant): STATS replies are server-directed — always
+`{:server, nil}`.** The fix folds the whole `211–219 / 240–250` range —
+the STATS reply set Azzurra's bahamut actually emits — into
+`@active_numerics` via a `@stats_numerics` attribute. None of these
+numerics ever names a user-correlatable destination: their nick-shaped
+middle params are all data (the stats letter, the O/I/K/C-line class
+letter, a link name, a host mask). We deny the observed range, not a
+claim of universal STATS coverage — other ircds put STATS numerics in
+220–239 too; add them here if a bound network emits them. Verified
+disjoint from `@delegated_numerics` (no collision / no double-persist);
+250 RPL_STATSCONN already routed to `$server` at connect-time both before
+and after, so zero connect-storm change.
+
+**#155's e2e MASKED this** (the #78 hollow-green lesson): it drives
+`/stats u` and asserts only that 242 RPL_STATSUPTIME lands in `$server`.
+242 is trailing-only (`[nick, "Server Up…"]`, no middle param) so it
+routed to `$server` by ACCIDENT even pre-fix — while the sibling 219 (same
+query) silently forked a "u" query window it never looked for. #155's
+`compose.ts` "No server change — scan-then-server already routes STATS"
+comment inherited the same false premise and was corrected at source.
+
+**e2e** (`issue184-stats-window-routing.spec.ts`): drives `/stats u` as a
+visitor and asserts (a) the 219 "End of /STATS report" renders in
+`$server`, (b) NO sidebar window `data-window-name="u"`, (c) decisively,
+server-side, `GET /channels/u/messages` returns `[]` (ordered after the
+219 lands, so the reply is fully drained). All three legs are RED pre-fix.
+
+**Deploy class: SERVER change → COLD** (BEAM restart, drops live IRC
+sessions). The `compose.ts` comment fix is a runtime no-op (comment
+stripped from the bundle) and needs no separate `--cic` deploy.
