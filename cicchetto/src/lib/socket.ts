@@ -596,30 +596,52 @@ export function pushWatchlistList(): Promise<{ patterns: string[] }> {
   });
 }
 
-// E2E hook (message-replay-on-reconnect cluster, 2026-05-12) — drops
-// the live socket and reconnects so Playwright can simulate the
-// tab-suspend / network-blip / iOS-Safari-tab-resume gap class
+// E2E hooks (message-replay-on-reconnect cluster, 2026-05-12) — drop the
+// live socket, then reconnect on an EXPLICIT resume, so Playwright can
+// simulate the tab-suspend / network-blip / iOS-Safari-tab-resume gap class
 // without juggling browser-context offline mode (which closes ALL
 // connections including the REST fetches the test depends on).
 //
-// Drop emits `phx_close` on every joined Channel; phoenix.js
-// auto-rejoins after the next `connect()`. The reconnect-backfill
-// flow's onJoinOk callback fires on every successful re-join, so
-// the gap-recovery path is exercised end-to-end. Keep gap >0ms so
-// in-flight pushes drain before the new socket lands.
+// Two-phase (drop → resume) so the "socket is down" window is
+// DETERMINISTIC. `Socket.disconnect()` is an EXPLICIT close: phoenix.js
+// resets its internal reconnectTimer, so — unlike an unexpected drop — the
+// socket does NOT auto-retry. It stays non-open until the test calls
+// `__cic_resumeSocketForTests()`. This is the same halt-and-hold phoenix
+// behaviour `haltForOffline` relies on.
+//
+// The prior single-call variant (disconnect → microtask → connect)
+// RACED: phoenix reopened so fast that `socketHealth.state` flipped back to
+// "open" before a Playwright `waitForFunction(state !== "open")` could
+// catch the transient non-open window — a flaky WS-gap premise that timed
+// out ~40% under load, on both the 1.19 and 1.20 toolchains (GH #186, found
+// during the #53 migration validation). Holding the socket down makes the
+// non-open state STABLE, so the gate observes it every time.
+//
+// On resume, `connect()` re-evaluates `params()` and phoenix auto-rejoins
+// every joined Channel; each per-channel rejoin's onJoinOk fires the
+// reconnect-backfill flow, so the gap-recovery path is exercised end-to-end
+// exactly as before.
 declare global {
   interface Window {
     __cic_dropSocketForTests?: () => Promise<void>;
+    __cic_resumeSocketForTests?: () => Promise<void>;
   }
 }
 
 if (typeof window !== "undefined") {
+  // Drop and HOLD — resolve only once the WS close has actually landed
+  // (disconnect's completion callback fires after teardown), so the caller
+  // can immediately assert a stable non-open `socketHealth.state`.
   window.__cic_dropSocketForTests = async () => {
     const s = _socket;
     if (!s) return;
-    s.disconnect();
-    // Microtask boundary so phx_close fires before reconnect.
-    await Promise.resolve();
+    await new Promise<void>((resolve) => s.disconnect(() => resolve()));
+  };
+  // Resume the held socket — phoenix reconnects and auto-rejoins every
+  // channel, driving the reconnect-backfill recovery path.
+  window.__cic_resumeSocketForTests = async () => {
+    const s = _socket;
+    if (!s) return;
     s.connect();
   };
 }

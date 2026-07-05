@@ -54,38 +54,46 @@ test("message replay on reconnect — peer PRIVMSG during WS gap appears after r
       peer.privmsg(CHANNEL, MSG_BEFORE_GAP);
       await expect(scrollbackLine(page, "privmsg", MSG_BEFORE_GAP)).toBeVisible();
 
-      // Phase 2 — drop the cic socket. phoenix.js will auto-reconnect
-      // on `connect()`. The drop emits phx_close on every joined Channel
-      // (including this one); the room-rejoin loop's onJoinOk callback
-      // is what triggers the backfill.
-      //
-      // Wait for the disconnect to land before sending the gap message
-      // so the test is deterministic — without the wait the peer's
-      // PRIVMSG could land BEFORE the disconnect lands and would be
-      // delivered live, defeating the test's premise.
+      // Phase 2 — drop the cic socket AND HOLD it down. The drop emits
+      // phx_close on every joined Channel (including this one). Unlike an
+      // unexpected disconnect, `__cic_dropSocketForTests` does NOT
+      // auto-reconnect: phoenix.js's explicit `disconnect()` resets its
+      // reconnectTimer, so the socket stays down until the explicit resume
+      // in Phase 3b. The hook resolves only once the WS close has landed.
       await page.evaluate(async () => {
         if (!window.__cic_dropSocketForTests) {
           throw new Error("__cic_dropSocketForTests hook missing");
         }
         await window.__cic_dropSocketForTests();
       });
-      // Wait for the WS to actually be in a non-open state — the
-      // disconnect call above is sync but the underlying WebSocket close
-      // is async. Without this gate the gap-message could land before
-      // the WS unsubscribed, defeating the test premise.
+      // The socket is now held down, so `socketHealth.state` is STABLY
+      // non-open — this gate is deterministic. (The pre-hardening variant
+      // reconnected immediately and this poll raced phoenix's fast reopen,
+      // timing out ~40% under load — see socket.ts + GH #186.)
       await page.waitForFunction(
         () => window.__cic_socketHealth?.state().state !== "open",
       );
 
-      // Phase 3 — peer sends a PRIVMSG during the gap. Server persists
-      // it (Session.Server's persist runs synchronously) and broadcasts
-      // on the per-channel topic; with cic's WS disconnected, the
-      // broadcast has no subscriber and the row is dropped from the
-      // live stream. Only the DB row remains.
+      // Phase 3 — peer sends a PRIVMSG while cic is CONFIRMED disconnected
+      // (the gate above passed). Server persists it (Session.Server's
+      // persist runs synchronously) and broadcasts on the per-channel
+      // topic; with cic's WS held down, the broadcast has no subscriber and
+      // the row is dropped from the live stream. Only the DB row remains.
       peer.privmsg(CHANNEL, MSG_DURING_GAP);
 
-      // Phase 4 — once cic auto-reconnects (phoenix.js retries), the
-      // re-join's onJoinOk callback fires the backfill flow. The
+      // Phase 3b — resume the socket. Held down deterministically until
+      // now, so the gap PRIVMSG above was guaranteed sent with no live cic
+      // subscriber. `connect()` reconnects and phoenix auto-rejoins every
+      // channel; each per-channel rejoin's onJoinOk fires the backfill.
+      await page.evaluate(async () => {
+        if (!window.__cic_resumeSocketForTests) {
+          throw new Error("__cic_resumeSocketForTests hook missing");
+        }
+        await window.__cic_resumeSocketForTests();
+      });
+
+      // Phase 4 — once cic reconnects, the re-join's onJoinOk callback
+      // fires the backfill flow. The
       // missed PRIVMSG is fetched via REST `?after=<lastSeenId>` and
       // appended through the same `appendToScrollback` verb the live
       // WS handler uses — appearing in the scrollback pane WITHOUT a
@@ -108,6 +116,7 @@ test("message replay on reconnect — peer PRIVMSG during WS gap appears after r
 declare global {
   interface Window {
     __cic_dropSocketForTests?: () => Promise<void>;
+    __cic_resumeSocketForTests?: () => Promise<void>;
     __cic_socketHealth?: {
       state: () => { state: string };
     };

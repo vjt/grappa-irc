@@ -21,13 +21,14 @@
 // This spec exercises the deterministic path:
 //   1. Operator focuses #bofh; cold REST seeds the pane.
 //   2. Peer privmsg lands live (sets the high-water mark).
-//   3. cic socket dropped via __cic_dropSocketForTests (deterministic
-//      — phoenix.js's auto-reconnect fires once `connect()` is called
-//      from the same hook). NOT a real network outage so the test
-//      doesn't depend on fragile timing.
-//   4. Peer privmsg sent during the gap → server persists, broadcasts
-//      to a dead subscriber, lost from the live stream.
-//   5. cic auto-reconnects; per-channel re-join's onJoinOk callback
+//   3. cic socket dropped via __cic_dropSocketForTests, which HOLDS it
+//      down (phoenix.js's explicit disconnect resets its reconnectTimer —
+//      no auto-retry) until the explicit __cic_resumeSocketForTests. NOT a
+//      real network outage, and the "socket is down" window is a stable
+//      state, not a timing-fragile transient.
+//   4. Peer privmsg sent during the held-down gap → server persists,
+//      broadcasts to a dead subscriber, lost from the live stream.
+//   5. Test resumes the socket; per-channel re-join's onJoinOk callback
 //      fires `refreshScrollback`. The gap row's id > the high-water
 //      mark, so it's fetched and appended.
 //
@@ -69,35 +70,46 @@ test("CP29 R-5 — peer PRIVMSG during WS gap recovered via refresh-on-WS-join-o
       peer.privmsg(CHANNEL, MSG_BEFORE_GAP);
       await expect(scrollbackLine(page, "privmsg", MSG_BEFORE_GAP)).toBeVisible();
 
-      // Phase 2 — drop the cic socket deterministically. phoenix.js
-      // auto-reconnects once `connect()` is called from the same hook
-      // (post-microtask). The drop emits phx_close on every joined
-      // Channel; the per-channel rejoin's onJoinOk fires
-      // refreshScrollback in subscribe.ts — that's the path under test.
+      // Phase 2 — drop the cic socket AND HOLD it down. The drop emits
+      // phx_close on every joined Channel. Unlike an unexpected disconnect,
+      // `__cic_dropSocketForTests` does NOT auto-reconnect: phoenix.js's
+      // explicit `disconnect()` resets its reconnectTimer, so the socket
+      // stays down until the explicit resume in Phase 3b. The hook resolves
+      // only once the WS close has landed.
       await page.evaluate(async () => {
         if (!window.__cic_dropSocketForTests) {
           throw new Error("__cic_dropSocketForTests hook missing");
         }
         await window.__cic_dropSocketForTests();
       });
-      // Wait for the WS to actually be in a non-open state — the
-      // disconnect call above is sync but the underlying WebSocket
-      // close is async. Without this gate the gap message could land
-      // before the WS unsubscribed, defeating the test premise.
+      // The socket is now held down, so `socketHealth.state` is STABLY
+      // non-open — this gate is deterministic. (The pre-hardening variant
+      // reconnected immediately and this poll raced phoenix's fast reopen,
+      // timing out ~40% under load — see socket.ts + GH #186.)
       await page.waitForFunction(
         () => window.__cic_socketHealth?.state().state !== "open",
       );
 
-      // Phase 3 — peer sends a PRIVMSG during the gap. Server persists
-      // (Session.Server's persist runs synchronously) and broadcasts
-      // on the per-channel topic; cic's WS is disconnected, so the
-      // broadcast has no subscriber and the row is dropped from the
-      // live stream. Only the DB row remains.
+      // Phase 3 — peer sends a PRIVMSG while cic is CONFIRMED disconnected
+      // (the gate above passed). Server persists (Session.Server's persist
+      // runs synchronously) and broadcasts on the per-channel topic; cic's
+      // WS is held down, so the broadcast has no subscriber and the row is
+      // dropped from the live stream. Only the DB row remains.
       peer.privmsg(CHANNEL, MSG_DURING_GAP);
 
-      // Phase 4 — cic auto-reconnects (phoenix.js retries on its
-      // built-in backoff). The per-channel rejoin's onJoinOk callback
-      // calls refreshScrollback; the resume cursor is the
+      // Phase 3b — resume the socket. Held down deterministically until
+      // now, so the gap PRIVMSG above was guaranteed sent with no live cic
+      // subscriber. phoenix reconnects and auto-rejoins every channel; the
+      // per-channel rejoin's onJoinOk fires refreshScrollback.
+      await page.evaluate(async () => {
+        if (!window.__cic_resumeSocketForTests) {
+          throw new Error("__cic_resumeSocketForTests hook missing");
+        }
+        await window.__cic_resumeSocketForTests();
+      });
+
+      // Phase 4 — cic reconnects. The per-channel rejoin's onJoinOk
+      // callback calls refreshScrollback; the resume cursor is the
       // high-water mark from Phase 1, so refreshScrollback fetches
       // every row with id > that mark — including the gap message —
       // and appends through appendToScrollback (id-deduped).
@@ -119,6 +131,7 @@ test("CP29 R-5 — peer PRIVMSG during WS gap recovered via refresh-on-WS-join-o
 declare global {
   interface Window {
     __cic_dropSocketForTests?: () => Promise<void>;
+    __cic_resumeSocketForTests?: () => Promise<void>;
     __cic_socketHealth?: {
       state: () => { state: string };
     };
