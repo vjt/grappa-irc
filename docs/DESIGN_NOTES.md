@@ -16932,3 +16932,82 @@ read (trips an ErrorBoundary, kills the splash); a 401 would fire `on401`
 → clear the token → bounce to `/login`. Pending is the genuine cold-load
 state. This is the pattern for any future loading-only / transient-overlay
 e2e.
+
+## 2026-07-05 — #182: server-side foreground push-suppression (one visibility signal, two consumers, two timings)
+
+**The bug.** Web Push was delivered even while the PWA was on-screen
+(iOS). The pre-existing suppression was CLIENT-side in the SW
+(`shouldSuppressPush` → `clients.matchAll().visibilityState`), and its
+pure predicate is correct — but `clients.matchAll` is UNRELIABLE on iOS
+PWAs (the SW often sees an empty/non-"visible" client list while
+foregrounded), so the client gate cannot detect iOS foreground. The fix
+moves suppression SERVER-side, driven by a signal the PAGE reports:
+page-context `document.visibilitychange` IS reliable on iOS (unlike the
+SW's `clients.matchAll`).
+
+**The signal.** cic's `reportVisibility` (`socket.ts`) pushes
+`{visible}` on the user-level channel — on every `visibilitychange`
+(main.tsx listener) AND on every user-channel (re)join
+(`joinUser` receive-ok, so a reconnect re-reports since the server
+defaults a fresh transport pid to `:hidden`). `GrappaChannel`'s
+`handle_in("visibility", …)` forwards it to
+`WSPresence.set_visibility/3` keyed by `socket.transport_pid` — the SAME
+pid `UserSocket.connect` registered, so DOWN cleanup is automatic.
+
+**The store — WSPresence EXTENDED, not duplicated** (vjt 11:07: "non
+reinventare la ruota"). The map went `%{user_name => MapSet.t(pid())}` →
+`%{user_name => %{pid() => :visible | :hidden}}`. `ws_count`/
+`list_user_names` still derive from the pid keys (byte-for-byte
+unchanged). Default on register = `:hidden` (DELIVER-leaning: erring
+toward hidden never suppresses a wanted push; the SW re-check backstops a
+false delivery, whereas defaulting `:visible` would risk suppressing a
+push to a connected-but-backgrounded iOS device = a lost notification).
+No second GenServer: a parallel store would monitor the same socket pids
+= duplicated lifecycle housekeeping that drifts.
+
+**One raw bool, TWO consumers, TWO timings (the crux).**
+- **Push suppression — RAW, immediate.** `Push.Triggers.evaluate_and_dispatch`
+  gates the whole fan-out: `should_notify?/4 and not
+  WSPresence.any_visible?(subject_label)`. `should_notify?/4` stays a PURE
+  predicate (no IO); the visibility read is a SEPARATE step. No debounce —
+  a debounced gate would miss a mention landing right after you set the
+  phone down. Keyed by `subject_label` (== `user.name` / `"visitor:"<>id`,
+  threaded through the Triggers ctx from `Session.Server.state`), so
+  WSPresence stays Accounts-free. Applies to visitors too.
+- **IRC auto-away — DEBOUNCED 30s, network-visible.** The auto-away FSM
+  was generalized: its trigger moved from "all sockets disconnected" to
+  "no VISIBLE device." WSPresence now fires `:ws_visible` /
+  `:ws_all_hidden` on the `any_visible?` TRANSITION (renamed from
+  `:ws_connected` / `:ws_all_disconnected`; sole PubSub consumer is
+  `Session.Server`'s Topic.ws_presence subscriber, so the rename is
+  self-contained). `Session.Server` reuses the existing 30s debounce +
+  real upstream `AWAY :reason`.
+
+**REAL behavior change (intended):** backgrounding the PWA >30s now marks
+you `/away` to OTHER network users (301/whois), because iOS holds the
+socket while backgrounded — a live socket is no longer proof of presence.
+The 30s debounce prevents channel-flap on brief glances; foregrounding
+unaways immediately. This SUPERSEDES the earlier S3.x auto-away note
+("last socket gone → away"): the trigger is now visibility, not
+connection. Auto-away stays USER-only (visitors don't subscribe); the
+push gate still applies to visitor subjects via raw `any_visible?`.
+
+**The SW client re-check is RETAINED** as a defensive backstop (the small
+just-connected window before a fresh tab reports visibility; non-iOS
+where `matchAll` is trustworthy) — the parked "hybrid until quota bites"
+notes in `service-worker.ts` / `pushDedup.ts` are now stale and were
+corrected at source. Never weaken `shouldSuppressPush`.
+
+**e2e.** The old `push-server-fires-regardless-of-focus.spec.ts` encoded
+the now-reversed contract and was reworked into
+`push-foreground-suppression.spec.ts`: device visible → DM → catcher
+receives NOTHING; device hidden → DM → catcher DOES receive it. A shared
+`setPageVisibility(page, visible)` fixture overrides
+`document.visibilityState` + dispatches `visibilitychange` (drives the
+PRODUCTION reporter), then blocks on the `window.__visibilityAck` seam
+until the server acks — so the trigger can't race the visibility update.
+The three delivery-asserting specs (dm / channel-mention / prefs-whitelist)
+now background the page first (their delivery is gated by
+prefs/mention, not foreground). Away-transition coverage lives in
+`server_test.exs` (WSPresence → PubSub → Session → real `AWAY` line),
+firing `:auto_away_debounce_fire` directly to avoid a 30s wait.

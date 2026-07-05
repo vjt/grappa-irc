@@ -67,13 +67,18 @@ defmodule GrappaWeb.UserSocket do
       # connect time) is the pid that owns the WS connection; when it
       # exits, the WS is gone.
       #
-      # Two consumers care:
+      # Three consumers care:
       #   * Auto-away (user-only): user `Session.Server` subscribes to
       #     `Topic.ws_presence/1` and debounces auto-away on
-      #     `:ws_all_disconnected`. Visitor `Session.Server` does NOT
-      #     subscribe (see `Session.Server.init/1`'s `match?({:user, _},
-      #     opts.subject)` guard) so the registration is a harmless
-      #     no-op on the auto-away path for visitors.
+      #     `:ws_all_hidden` (no visible device) / cancels on `:ws_visible`
+      #     (#182). Visitor `Session.Server` does NOT subscribe (see
+      #     `Session.Server.init/1`'s `match?({:user, _}, opts.subject)`
+      #     guard) so the registration is a harmless no-op on the
+      #     auto-away path for visitors.
+      #   * Foreground push suppression (user + visitor, #182): the page
+      #     reports `document.visibilitychange` over the `"visibility"`
+      #     channel event → `WSPresence.set_visibility/3` keyed by this
+      #     same transport pid; `Push.Triggers` reads `any_visible?/1`.
       #   * cic-bundle-changed broadcast (user + visitor): the admin
       #     endpoint iterates `WSPresence.list_user_names/0` to fan out
       #     the new bundle hash on every connected user-topic. Pre-fix

@@ -314,12 +314,11 @@ defmodule GrappaWeb.GrappaChannel do
   # S3.3 — pagehide immediate-away hint.
   #
   # Cicchetto fires `client_closing` on `pagehide` / `beforeunload` via the
-  # user-level channel so WSPresence can fire `:ws_all_disconnected`
-  # immediately rather than waiting for the 30s debounce. The transport_pid
-  # is the WS process that UserSocket.connect/3 registered with WSPresence
-  # at connect time (WSPresence tracks the transport process, not the channel
-  # process). Visitors are excluded — visitor disconnect = bouncer disconnect
-  # (ephemeral credential, no upstream session to mark away).
+  # user-level channel so WSPresence marks the closing tab hidden and fires
+  # `:ws_all_hidden` immediately if it was the last visible device, rather
+  # than waiting for the 30s debounce. The transport_pid is the WS process
+  # that UserSocket.connect/3 registered with WSPresence at connect time
+  # (WSPresence tracks the transport process, not the channel process).
   @impl Phoenix.Channel
   def handle_in("client_closing", _, socket) do
     user_name = socket.assigns.user_name
@@ -329,12 +328,31 @@ defmodule GrappaWeb.GrappaChannel do
     # `Session.Server` does not subscribe to `Topic.ws_presence/1`,
     # but registering keeps `list_user_names/0` complete for the
     # cic-bundle-changed broadcast). client_closing on a non-tracked
-    # pid is idempotent (the MapSet membership check inside
+    # pid is idempotent (the map membership check inside
     # `WSPresence.handle_call({:client_closing, ...}, ...)` no-ops
     # if the pid was never registered).
     :ok = WSPresence.client_closing(user_name, socket.transport_pid)
 
     {:noreply, socket}
+  end
+
+  # #182 — the page reports its PWA foreground visibility (page-context
+  # `document.visibilitychange`, reliable on iOS unlike the SW's
+  # `clients.matchAll`). WSPresence stores it per-transport-pid; the raw
+  # signal feeds the push-suppression gate (Push.Triggers, immediate) and
+  # the auto-away FSM (Session.Server, 30s-debounced). Keyed by the same
+  # `transport_pid` UserSocket.connect registered, so DOWN cleanup is
+  # automatic. Both users and visitors report (the gate applies to both);
+  # only user sessions drive auto-away.
+  def handle_in("visibility", %{"visible" => visible}, socket) when is_boolean(visible) do
+    :ok = WSPresence.set_visibility(socket.assigns.user_name, socket.transport_pid, visible)
+    {:reply, {:ok, %{}}, socket}
+  end
+
+  # Boundary: reject a malformed payload loudly rather than silently
+  # coercing — a non-boolean `visible` is a client bug.
+  def handle_in("visibility", _, socket) do
+    {:reply, {:error, %{error: "invalid_payload"}}, socket}
   end
 
   # S3.4 — /away slash-command: set explicit away.

@@ -42,7 +42,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   import Grappa.AuthFixtures
 
   alias Grappa.IRCServer
-  alias Grappa.{Networks, QueryWindows, Repo, ScrollbackHelpers, Session}
+  alias Grappa.{Networks, QueryWindows, Repo, ScrollbackHelpers, Session, WSPresence}
   alias Grappa.Networks.{Credentials, Servers}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
@@ -2507,6 +2507,67 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :error, %{error: "invalid_channel"})
+    end
+  end
+
+  # #182 — foreground-suppression: the page reports its PWA visibility over
+  # the user-level channel; the handler forwards it to WSPresence keyed by
+  # the SAME transport_pid UserSocket.connect registers.
+  describe "handle_in visibility (#182)" do
+    setup do
+      :ok = WSPresence.reset_for_test()
+      :ok
+    end
+
+    defp join_user_socket(user_name) do
+      # Mirror UserSocket.connect: register the transport pid with
+      # WSPresence, then join the user-level channel. In ChannelTest the
+      # transport pid is the test process, so register/set_visibility both
+      # key off the same pid.
+      {:ok, _, socket} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(Topic.user(user_name), %{})
+
+      :ok = WSPresence.register(user_name, socket.transport_pid)
+      socket
+    end
+
+    test "visibility=true marks the transport pid visible" do
+      user_name = "ch-vis-#{System.unique_integer([:positive])}"
+      _ = user_fixture(name: user_name)
+      socket = join_user_socket(user_name)
+      refute WSPresence.any_visible?(user_name)
+
+      ref = push(socket, "visibility", %{"visible" => true})
+      assert_reply(ref, :ok)
+
+      assert WSPresence.any_visible?(user_name)
+    end
+
+    test "visibility=false marks the transport pid hidden again" do
+      user_name = "ch-vis-#{System.unique_integer([:positive])}"
+      _ = user_fixture(name: user_name)
+      socket = join_user_socket(user_name)
+
+      ref1 = push(socket, "visibility", %{"visible" => true})
+      assert_reply(ref1, :ok)
+      assert WSPresence.any_visible?(user_name)
+
+      ref2 = push(socket, "visibility", %{"visible" => false})
+      assert_reply(ref2, :ok)
+      refute WSPresence.any_visible?(user_name)
+    end
+
+    test "a non-boolean payload is rejected at the boundary" do
+      user_name = "ch-vis-#{System.unique_integer([:positive])}"
+      _ = user_fixture(name: user_name)
+      socket = join_user_socket(user_name)
+
+      ref = push(socket, "visibility", %{"visible" => "yes"})
+      assert_reply(ref, :error, %{error: "invalid_payload"})
+
+      refute WSPresence.any_visible?(user_name)
     end
   end
 end

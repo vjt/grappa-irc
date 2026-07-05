@@ -734,7 +734,7 @@ defmodule Grappa.Session do
   UNLESS the current state is `:away_explicit` (don't touch an explicit
   away on reconnect) or `:present` (no-op).
 
-  Driven internally by the WSPresence `:ws_connected` event. Exposed on
+  Driven internally by the WSPresence `:ws_visible` event. Exposed on
   the facade for test observability — production callers are the
   Session.Server's own `handle_info` callbacks.
 

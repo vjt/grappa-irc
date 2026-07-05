@@ -1,12 +1,17 @@
 defmodule Grappa.WSPresenceTest do
   @moduledoc """
-  Unit tests for `Grappa.WSPresence` — WS-connection counter per user.
+  Unit tests for `Grappa.WSPresence` — per-user WS presence + per-pid
+  visibility tracker.
 
-  The module tracks live socket pids per `user_name` and fires auto-away
-  notifications to `Session.Server`s when all connections for a user close.
+  The module tracks live socket pids per `user_name` AND each pid's
+  reported PWA visibility (`:visible | :hidden`). The auto-away FSM in
+  `Session.Server` is driven by the `any_visible?/1` transition:
+  `:ws_visible` fires when a user goes from no-visible-device to at
+  least one; `:ws_all_hidden` fires when the last visible device hides
+  or leaves (#182).
 
-  `async: false` because `Grappa.WSPresence` is a singleton GenServer; concurrent
-  tests would collide on the single shared state.
+  `async: false` because `Grappa.WSPresence` is a singleton GenServer;
+  concurrent tests would collide on the single shared state.
   """
   use ExUnit.Case, async: false
 
@@ -17,40 +22,38 @@ defmodule Grappa.WSPresenceTest do
 
   setup do
     # WSPresence is started in the application supervision tree under test.
-    # Ensure it's running and reset to clean state between tests via a
-    # direct GenServer call that we expose for test use.
+    # Reset to clean state between tests via the test-only helper.
     :ok = WSPresence.reset_for_test()
     :ok
   end
 
+  defp stub_pid do
+    spawn(fn ->
+      receive do
+        :stop -> :ok
+      end
+    end)
+  end
+
   describe "register/2 and ws_count/1" do
     test "registering a socket pid bumps the count" do
-      pid = self()
-      :ok = WSPresence.register("vjt", pid)
+      :ok = WSPresence.register("vjt", self())
       assert WSPresence.ws_count("vjt") == 1
     end
 
     test "registering two different pids for same user gives count 2" do
-      # Simulate two tabs: spawn a process, keep self()
-      other =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
+      other = stub_pid()
 
       :ok = WSPresence.register("vjt", self())
       :ok = WSPresence.register("vjt", other)
       assert WSPresence.ws_count("vjt") == 2
 
-      # Cleanup spawned process
       send(other, :stop)
     end
 
-    test "registering same pid twice is idempotent (MapSet semantics)" do
+    test "registering same pid twice is idempotent (map semantics)" do
       :ok = WSPresence.register("vjt", self())
       :ok = WSPresence.register("vjt", self())
-      # MapSet deduplicates — count stays 1
       assert WSPresence.ws_count("vjt") == 1
     end
 
@@ -59,30 +62,96 @@ defmodule Grappa.WSPresenceTest do
     end
   end
 
+  describe "register defaults to :hidden (deliver-leaning, #182)" do
+    test "a freshly-registered socket is NOT visible" do
+      :ok = WSPresence.register("vjt", self())
+      refute WSPresence.any_visible?("vjt")
+    end
+
+    test "register alone does NOT fire :ws_visible (a hidden device can't cancel away)" do
+      p = stub_pid()
+      :ok = WSPresence.register_with_notify("eve", p, self())
+      refute_receive {:ws_visible, "eve"}, 100
+      send(p, :stop)
+    end
+  end
+
+  describe "set_visibility/3 and any_visible?/1" do
+    test "any_visible? is false for an unknown user" do
+      refute WSPresence.any_visible?("nobody")
+    end
+
+    test "marking a tracked pid visible flips any_visible? and fires :ws_visible" do
+      :ok = WSPresence.register_with_notify("vjt", self(), self())
+      refute WSPresence.any_visible?("vjt")
+
+      :ok = WSPresence.set_visibility("vjt", self(), true)
+
+      assert WSPresence.any_visible?("vjt")
+      assert_receive {:ws_visible, "vjt"}, 200
+    end
+
+    test "marking the last visible pid hidden flips any_visible? and fires :ws_all_hidden" do
+      :ok = WSPresence.register_with_notify("vjt", self(), self())
+      :ok = WSPresence.set_visibility("vjt", self(), true)
+      assert_receive {:ws_visible, "vjt"}, 200
+
+      :ok = WSPresence.set_visibility("vjt", self(), false)
+
+      refute WSPresence.any_visible?("vjt")
+      assert_receive {:ws_all_hidden, "vjt"}, 200
+    end
+
+    test "re-marking an already-visible pid visible does NOT re-fire :ws_visible" do
+      :ok = WSPresence.register_with_notify("vjt", self(), self())
+      :ok = WSPresence.set_visibility("vjt", self(), true)
+      assert_receive {:ws_visible, "vjt"}, 200
+
+      :ok = WSPresence.set_visibility("vjt", self(), true)
+      refute_receive {:ws_visible, "vjt"}, 100
+    end
+
+    test "with two devices, hiding one while the other stays visible does NOT fire :ws_all_hidden" do
+      p2 = stub_pid()
+      :ok = WSPresence.register_with_notify("vjt", self(), self())
+      :ok = WSPresence.register_with_notify("vjt", p2, self())
+
+      :ok = WSPresence.set_visibility("vjt", self(), true)
+      assert_receive {:ws_visible, "vjt"}, 200
+      :ok = WSPresence.set_visibility("vjt", p2, true)
+      # p2 visible while self() already visible — no transition
+      refute_receive {:ws_visible, "vjt"}, 100
+
+      :ok = WSPresence.set_visibility("vjt", self(), false)
+      # p2 still visible — any_visible? stays true, no all-hidden
+      assert WSPresence.any_visible?("vjt")
+      refute_receive {:ws_all_hidden, "vjt"}, 100
+
+      send(p2, :stop)
+    end
+
+    test "set_visibility on an untracked pid is a no-op (no event, stays hidden)" do
+      ghost = stub_pid()
+      :ok = WSPresence.register_with_notify("vjt", self(), self())
+
+      :ok = WSPresence.set_visibility("vjt", ghost, true)
+
+      refute WSPresence.any_visible?("vjt")
+      refute_receive {:ws_visible, "vjt"}, 100
+      send(ghost, :stop)
+    end
+  end
+
   describe "socket pid DOWN handling" do
     test "count decrements when a tracked pid exits" do
-      # Spawn two processes: we'll kill one
-      p1 =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
-
-      p2 =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
+      p1 = stub_pid()
+      p2 = stub_pid()
 
       :ok = WSPresence.register("alice", p1)
       :ok = WSPresence.register("alice", p2)
       assert WSPresence.ws_count("alice") == 2
 
-      # Kill p1 — WSPresence monitors it and handles the DOWN
       Process.exit(p1, :kill)
-      # Give WSPresence time to process the DOWN message
       :timer.sleep(50)
 
       assert WSPresence.ws_count("alice") == 1
@@ -90,129 +159,82 @@ defmodule Grappa.WSPresenceTest do
       send(p2, :stop)
     end
 
-    test "closing last socket sends ws_all_disconnected notification to test receiver" do
-      # Register THIS test process as the notification target via
-      # the notify_pid option in register/3.
-      p =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
-
+    test "a VISIBLE pid dying fires :ws_all_hidden (last visible device gone)" do
+      p = stub_pid()
       :ok = WSPresence.register_with_notify("bob", p, self())
+      :ok = WSPresence.set_visibility("bob", p, true)
+      assert_receive {:ws_visible, "bob"}, 200
 
-      # Kill the only socket
       Process.exit(p, :kill)
       :timer.sleep(50)
 
       assert WSPresence.ws_count("bob") == 0
-      assert_receive {:ws_all_disconnected, "bob"}, 200
+      refute WSPresence.any_visible?("bob")
+      assert_receive {:ws_all_hidden, "bob"}, 200
     end
 
-    test "closing one of two sockets does NOT send ws_all_disconnected" do
-      p1 =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
+    test "a HIDDEN pid dying does NOT fire :ws_all_hidden (was never visible)" do
+      p = stub_pid()
+      :ok = WSPresence.register_with_notify("bob", p, self())
+      # p stays hidden (default)
 
-      p2 =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
+      Process.exit(p, :kill)
+      :timer.sleep(50)
+
+      assert WSPresence.ws_count("bob") == 0
+      refute_receive {:ws_all_hidden, "bob"}, 100
+    end
+
+    test "one of two visible sockets dying does NOT fire :ws_all_hidden" do
+      p1 = stub_pid()
+      p2 = stub_pid()
 
       :ok = WSPresence.register_with_notify("carol", p1, self())
       :ok = WSPresence.register_with_notify("carol", p2, self())
+      :ok = WSPresence.set_visibility("carol", p1, true)
+      :ok = WSPresence.set_visibility("carol", p2, true)
+      assert_receive {:ws_visible, "carol"}, 200
 
-      # Kill p1 — p2 is still up
       Process.exit(p1, :kill)
       :timer.sleep(50)
 
       assert WSPresence.ws_count("carol") == 1
-      # No all-disconnected notification
-      refute_receive {:ws_all_disconnected, "carol"}, 100
+      assert WSPresence.any_visible?("carol")
+      refute_receive {:ws_all_hidden, "carol"}, 100
 
       send(p2, :stop)
     end
   end
 
-  describe "ws_connected notification on re-register" do
-    test "registering a socket for a user with zero count sends ws_connected" do
-      :ok = WSPresence.register_with_notify("eve", self(), self())
-      assert_receive {:ws_connected, "eve"}, 200
-    end
-
-    test "registering a second socket does NOT send ws_connected again" do
-      p =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
-
-      :ok = WSPresence.register_with_notify("frank", p, self())
-      # Consume the first ws_connected
-      assert_receive {:ws_connected, "frank"}, 200
-
-      # Register second — no second notification expected
-      :ok = WSPresence.register_with_notify("frank", self(), self())
-      refute_receive {:ws_connected, "frank"}, 100
-
-      send(p, :stop)
-    end
-  end
-
   describe "client_closing/2 immediate path" do
-    test "client_closing with last socket sends immediate ws_all_disconnected" do
-      p =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
-
+    test "client_closing on the last VISIBLE socket fires immediate :ws_all_hidden" do
+      p = stub_pid()
       :ok = WSPresence.register_with_notify("grace", p, self())
-      # Consume the ws_connected
-      assert_receive {:ws_connected, "grace"}, 200
+      :ok = WSPresence.set_visibility("grace", p, true)
+      assert_receive {:ws_visible, "grace"}, 200
 
-      # Signal immediate close — this is the pagehide path
+      # pagehide hint — the tab is closing, treat as no-longer-visible now
       :ok = WSPresence.client_closing("grace", p)
+      assert_receive {:ws_all_hidden, "grace"}, 200
 
-      # Should receive ws_all_disconnected immediately (no debounce)
-      assert_receive {:ws_all_disconnected, "grace"}, 200
-
-      # Subsequent real DOWN from the dying socket is idempotent
+      # Subsequent real DOWN is idempotent (already hidden → no re-fire)
       Process.exit(p, :kill)
       :timer.sleep(50)
-      refute_receive {:ws_all_disconnected, "grace"}, 100
+      refute_receive {:ws_all_hidden, "grace"}, 100
     end
 
-    test "client_closing with other sockets remaining does NOT fire all-disconnected" do
-      p1 =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
-
-      p2 =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
-          end
-        end)
+    test "client_closing with another VISIBLE socket remaining does NOT fire :ws_all_hidden" do
+      p1 = stub_pid()
+      p2 = stub_pid()
 
       :ok = WSPresence.register_with_notify("heidi", p1, self())
       :ok = WSPresence.register_with_notify("heidi", p2, self())
-      assert_receive {:ws_connected, "heidi"}, 200
+      :ok = WSPresence.set_visibility("heidi", p1, true)
+      :ok = WSPresence.set_visibility("heidi", p2, true)
+      assert_receive {:ws_visible, "heidi"}, 200
 
-      # Only p1 is closing — p2 still alive
       :ok = WSPresence.client_closing("heidi", p1)
-      refute_receive {:ws_all_disconnected, "heidi"}, 100
+      refute_receive {:ws_all_hidden, "heidi"}, 100
 
       send(p1, :stop)
       send(p2, :stop)
@@ -223,7 +245,6 @@ defmodule Grappa.WSPresenceTest do
     test "drops the user_name's entries without touching other users" do
       :ok = WSPresence.reset_for_test()
 
-      # Spawn two long-lived dummy pids so monitor refs survive the test.
       vjt_pid = spawn(fn -> Process.sleep(1_000) end)
       admin_pid = spawn(fn -> Process.sleep(1_000) end)
       :ok = WSPresence.register("vjt", vjt_pid)

@@ -744,10 +744,13 @@ defmodule Grappa.Session.Server do
       directory_refresh: nil
     }
 
-    # S3.1 / S3.2: subscribe to the WSPresence PubSub topic for this user so
-    # auto-away debounce and cancel fire on WS connect/disconnect events.
-    # Only user sessions (not visitor sessions) participate in auto-away;
-    # visitor disconnect = bouncer disconnect (ephemeral credential).
+    # S3.1 / S3.2 / #182: subscribe to the WSPresence PubSub topic for this
+    # user so auto-away debounce and cancel fire on `:ws_visible` /
+    # `:ws_all_hidden` (device-foreground) transitions. Only user sessions
+    # (not visitor sessions) participate in auto-away; visitor disconnect =
+    # bouncer disconnect (ephemeral credential). Visitors still report
+    # visibility to WSPresence for the push-suppression gate, but their
+    # Session.Server doesn't subscribe here.
     if match?({:user, _}, opts.subject) do
       :ok =
         Phoenix.PubSub.subscribe(
@@ -1626,11 +1629,15 @@ defmodule Grappa.Session.Server do
 
   def handle_info(:irc_connected, state), do: {:noreply, state}
 
-  # S3.2 — WS reconnect: a new browser tab opened for this user. Cancel
-  # any pending auto-away debounce timer and (if currently :away_auto)
-  # unset auto-away. Explicit away is left untouched — reconnecting a tab
-  # should not silently clear a `/away` the user issued deliberately.
-  def handle_info({:ws_connected, _}, state) do
+  # S3.2 / #182 — a device became VISIBLE (foreground) when none was
+  # before. Cancel any pending auto-away debounce timer and (if currently
+  # :away_auto) unset auto-away. Explicit away is left untouched —
+  # foregrounding a tab should not silently clear a `/away` the user
+  # issued deliberately. Driven by WSPresence's `any_visible?` false→true
+  # transition (a connected-but-backgrounded device does NOT trigger this
+  # — iOS holds the socket while backgrounded, so a live socket is not
+  # proof of foreground).
+  def handle_info({:ws_visible, _}, state) do
     :ok = cancel_and_drain(state.auto_away_timer, :auto_away_debounce_fire)
     state1 = %{state | auto_away_timer: nil}
 
@@ -1644,16 +1651,17 @@ defmodule Grappa.Session.Server do
     {:noreply, state2}
   end
 
-  # S3.2 — WS disconnect: the last browser tab for this user closed.
-  # Schedule the 30s debounce before issuing auto-away. If already
-  # `:away_explicit`, skip entirely — the user intentionally went away.
-  def handle_info({:ws_all_disconnected, _}, %{away_state: %AwayState{state: :away_explicit}} = state) do
+  # S3.2 / #182 — the last VISIBLE device for this user backgrounded or
+  # closed (sockets may still be connected but hidden). Schedule the 30s
+  # debounce before issuing auto-away. If already `:away_explicit`, skip
+  # entirely — the user intentionally went away.
+  def handle_info({:ws_all_hidden, _}, %{away_state: %AwayState{state: :away_explicit}} = state) do
     {:noreply, state}
   end
 
-  def handle_info({:ws_all_disconnected, _}, state) do
+  def handle_info({:ws_all_hidden, _}, state) do
     # Cancel any existing debounce timer + drain a possibly-already-fired
-    # :auto_away_debounce_fire from the mailbox. Two rapid disconnects
+    # :auto_away_debounce_fire from the mailbox. Two rapid hide transitions
     # ~30s apart used to leave the OLD timer's fire queued ahead of the
     # second handler, which then ran set_auto_away_internal at T=30s
     # instead of T=60s — and the second timer would later fire again,
@@ -2806,6 +2814,7 @@ defmodule Grappa.Session.Server do
     else
       PushTriggers.evaluate_and_dispatch(message, %{
         subject: subject,
+        subject_label: state.subject_label,
         network_slug: state.network_slug,
         own_nick: state.nick
       })

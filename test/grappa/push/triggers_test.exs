@@ -20,7 +20,7 @@ defmodule Grappa.Push.TriggersTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{Accounts, Push, UserSettings, Visitors}
+  alias Grappa.{Accounts, Push, UserSettings, Visitors, WSPresence}
   alias Grappa.Push.{Subscription, Triggers}
   alias Grappa.Scrollback.Message
 
@@ -263,6 +263,7 @@ defmodule Grappa.Push.TriggersTest do
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
                  subject: subject,
+                 subject_label: user.name,
                  network_slug: "libera",
                  own_nick: "vjt"
                })
@@ -289,6 +290,7 @@ defmodule Grappa.Push.TriggersTest do
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
                  subject: subject,
+                 subject_label: "visitor:" <> visitor.id,
                  network_slug: "libera",
                  own_nick: "vjt"
                })
@@ -319,6 +321,7 @@ defmodule Grappa.Push.TriggersTest do
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
                  subject: subject,
+                 subject_label: user.name,
                  network_slug: "libera",
                  own_nick: "vjt"
                })
@@ -342,6 +345,7 @@ defmodule Grappa.Push.TriggersTest do
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
                  subject: subject,
+                 subject_label: user.name,
                  network_slug: "libera",
                  own_nick: "vjt"
                })
@@ -365,6 +369,7 @@ defmodule Grappa.Push.TriggersTest do
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
                  subject: {:user, user.id},
+                 subject_label: user.name,
                  network_slug: "libera",
                  own_nick: "vjt"
                })
@@ -399,6 +404,7 @@ defmodule Grappa.Push.TriggersTest do
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
                  subject: subject,
+                 subject_label: user.name,
                  network_slug: "libera",
                  own_nick: "vjt"
                })
@@ -423,6 +429,7 @@ defmodule Grappa.Push.TriggersTest do
       :ok =
         Triggers.evaluate_and_dispatch(m, %{
           subject: subject,
+          subject_label: user.name,
           network_slug: "libera",
           own_nick: "vjt"
         })
@@ -431,6 +438,123 @@ defmodule Grappa.Push.TriggersTest do
 
       reloaded = Repo.get!(Subscription, sub.id)
       refute is_nil(reloaded.last_used_at)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # evaluate_and_dispatch/2 — foreground visibility gate (#182)
+  #
+  # When ANY of the subject's devices reports the PWA is on-screen, the
+  # server suppresses the ENTIRE push fan-out — it never calls
+  # Sender.send_to_subject, so NO start/stop telemetry fires. The gate
+  # reads WSPresence.any_visible?/1 (RAW, no debounce) keyed by the
+  # subject_label threaded from Session.Server.
+  # ---------------------------------------------------------------------------
+
+  describe "evaluate_and_dispatch/2 — foreground visibility gate (#182)" do
+    setup do
+      :ok = WSPresence.reset_for_test()
+      bypass = Bypass.open()
+      {:ok, bypass: bypass, endpoint: "http://localhost:#{bypass.port}/wp"}
+    end
+
+    test "a VISIBLE device suppresses the whole fan-out (no telemetry) even when should_notify?",
+         %{bypass: bypass, endpoint: endpoint} do
+      attach_telemetry([[:grappa, :push, :send, :start]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+
+      # Register a device for this user (subject_label == user.name) and
+      # mark it visible → the gate must suppress.
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      :ok = WSPresence.set_visibility(user.name, device, true)
+      assert WSPresence.any_visible?(user.name)
+
+      m = msg(channel: "#sniffo", sender: "alice", body: "vjt: ping")
+
+      assert :ok =
+               Triggers.evaluate_and_dispatch(m, %{
+                 subject: subject,
+                 subject_label: user.name,
+                 network_slug: "libera",
+                 own_nick: "vjt"
+               })
+
+      refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
+
+      Process.exit(device, :kill)
+    end
+
+    test "a HIDDEN device does NOT suppress — the push still fires", %{
+      bypass: bypass,
+      endpoint: endpoint
+    } do
+      attach_telemetry([[:grappa, :push, :send, :start], [:grappa, :push, :send, :stop]])
+      Bypass.expect(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+
+      # Device connected but backgrounded (default :hidden) → gate open.
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      refute WSPresence.any_visible?(user.name)
+
+      m = msg(channel: "#sniffo", sender: "alice", body: "vjt: ping")
+
+      assert :ok =
+               Triggers.evaluate_and_dispatch(m, %{
+                 subject: subject,
+                 subject_label: user.name,
+                 network_slug: "libera",
+                 own_nick: "vjt"
+               })
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{subject: ^subject}},
+                     2_000
+
+      # Wait for fan-out completion so the Bypass HTTP POST has landed
+      # before on_exit verifies the `expect` (stop fires after fan-out).
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{subject: ^subject}}, 2_000
+
+      Process.exit(device, :kill)
+    end
+
+    test "VISITOR with a visible device is suppressed too (gate applies to visitor subjects)", %{
+      bypass: bypass,
+      endpoint: endpoint
+    } do
+      attach_telemetry([[:grappa, :push, :send, :start]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
+
+      visitor = visitor_fixture()
+      subject = {:visitor, visitor.id}
+      label = "visitor:" <> visitor.id
+      _ = subscription_fixture(subject, endpoint)
+
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(label, device)
+      :ok = WSPresence.set_visibility(label, device, true)
+      assert WSPresence.any_visible?(label)
+
+      m = msg(channel: "#sniffo", sender: "alice", body: "vjt: ping")
+
+      assert :ok =
+               Triggers.evaluate_and_dispatch(m, %{
+                 subject: subject,
+                 subject_label: label,
+                 network_slug: "libera",
+                 own_nick: "vjt"
+               })
+
+      refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
+
+      Process.exit(device, :kill)
     end
   end
 end

@@ -54,7 +54,7 @@ defmodule Grappa.Push.Triggers do
   `feedback_no_silent_drops_*`.
   """
 
-  alias Grappa.{Mentions, Push, Subject, UserSettings}
+  alias Grappa.{Mentions, Push, Subject, UserSettings, WSPresence}
   alias Grappa.Push.Payload
   alias Grappa.Scrollback.Message
 
@@ -62,9 +62,15 @@ defmodule Grappa.Push.Triggers do
   Caller context for `evaluate_and_dispatch/2`. Session.Server
   assembles this map from `state` at the call site so Triggers
   doesn't reach back into the GenServer state shape.
+
+  `subject_label` is the WSPresence presence key (`user.name` for
+  users, `"visitor:" <> visitor.id` for visitors — identical to
+  `Session.Server.state.subject_label`); the foreground-suppression
+  gate reads `WSPresence.any_visible?/1` with it (#182).
   """
   @type ctx :: %{
           required(:subject) => Subject.t(),
+          required(:subject_label) => String.t(),
           required(:network_slug) => String.t(),
           required(:own_nick) => String.t()
         }
@@ -97,14 +103,33 @@ defmodule Grappa.Push.Triggers do
   @spec evaluate_and_dispatch(Message.t(), ctx()) :: :ok
   def evaluate_and_dispatch(%Message{kind: kind} = message, ctx)
       when kind in [:privmsg, :action] and is_map(ctx) do
-    %{subject: subject, network_slug: network_slug, own_nick: own_nick} = ctx
+    %{
+      subject: subject,
+      subject_label: subject_label,
+      network_slug: network_slug,
+      own_nick: own_nick
+    } = ctx
 
     {:ok, _} =
       Task.start(fn ->
         prefs = UserSettings.get_notification_prefs(subject)
         patterns = UserSettings.get_highlight_patterns(subject)
 
-        if should_notify?(message, own_nick, prefs, patterns) do
+        # #182 — foreground-suppression gate. `should_notify?/4` stays a
+        # PURE predicate (no IO); the visibility check reads WSPresence
+        # GenServer state, so it is a SEPARATE explicit step here. If ANY
+        # of the subject's devices reports the PWA is on-screen, skip the
+        # ENTIRE fan-out to ALL of that subject's subscriptions. This is
+        # PER-USER (cross-device) suppression, NOT the old SW gate's
+        # per-device parity — the server has no push-endpoint→socket-pid
+        # mapping, so it can't suppress selectively. Moved server-side
+        # because the SW's `clients.matchAll` is unreliable on iOS
+        # (root cause of #182). Read RAW (no debounce) so a mention landing
+        # right after you background still delivers. Deliver-leaning: an
+        # unreported/backgrounded device reads `:hidden`, so this never
+        # suppresses to a device that hasn't claimed the foreground.
+        if should_notify?(message, own_nick, prefs, patterns) and
+             not WSPresence.any_visible?(subject_label) do
           payload = build_payload(message, network_slug, own_nick, subject)
           Push.Sender.send_to_subject(subject, payload)
         end

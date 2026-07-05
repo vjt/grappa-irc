@@ -74,7 +74,8 @@ defmodule Grappa.Push do
       Grappa.Repo,
       Grappa.Scrollback,
       Grappa.Subject,
-      Grappa.UserSettings
+      Grappa.UserSettings,
+      Grappa.WSPresence
     ],
     dirty_xrefs: [Grappa.Visitors.Visitor],
     exports: [BadgeSource, Payload, Sender, Subscription, Triggers]

@@ -30,7 +30,7 @@ defmodule Grappa.Session.ServerTest do
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
   alias Grappa.IRC.Message
-  alias Grappa.{IRCServer, PubSub.Topic, Repo, Scrollback, Session}
+  alias Grappa.{IRCServer, PubSub.Topic, Repo, Scrollback, Session, WSPresence}
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.Session.{AwayState, Backoff, GhostRecovery, Server, WindowState}
 
@@ -639,7 +639,7 @@ defmodule Grappa.Session.ServerTest do
     # GenServer dispatches — racing whatever fresh state was set up
     # immediately after the cancel call.
     #
-    # Concrete repro from the review: two :ws_all_disconnected events
+    # Concrete repro from the review: two :ws_all_hidden events
     # ~30s apart leave the OLD :auto_away_debounce_fire queued ahead of
     # the second handler, which then runs set_auto_away_internal at
     # T=30s instead of T=60s — and the fresh timer later fires AGAIN,
@@ -5050,6 +5050,59 @@ defmodule Grappa.Session.ServerTest do
       # The auto-away reason is the fixed string
       assert String.starts_with?(away_line, "AWAY :auto-away")
 
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #182 — the visibility signal drives the EXISTING auto-away FSM. This
+    # exercises the FULL chain (WSPresence → PubSub → Session.Server →
+    # real AWAY line), proving auto-away now transitions on "no VISIBLE
+    # device" rather than "no socket": a connected-but-backgrounded device
+    # is away-eligible. The 30s debounce is driven directly via
+    # :auto_away_debounce_fire to avoid a real wait (the debounce timing
+    # itself is covered by the cancel_and_drain unit tests).
+    test "visibility drives auto-away: hidden arms debounce → AWAY, visible unaways (#182)" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      # The session subscribes to Topic.ws_presence(user.name); WSPresence
+      # broadcasts there on the any_visible? transition. Register a device
+      # and mark it visible (present).
+      :ok = WSPresence.reset_for_test()
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      :ok = WSPresence.set_visibility(user.name, device, true)
+
+      # Background the only visible device → :ws_all_hidden → 30s debounce
+      # ARMED (no immediate AWAY, and the socket is still connected).
+      :ok = WSPresence.set_visibility(user.name, device, false)
+
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :auto"), 200)
+
+      # Confirm the debounce was armed by the visibility event (so the
+      # silence above is the debounce, not a dropped/mis-routed event).
+      assert :sys.get_state(pid).auto_away_timer != nil
+
+      # Fire the debounce directly (avoids a real 30s wait) → real AWAY.
+      send(pid, :auto_away_debounce_fire)
+
+      assert {:ok, away_line} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :auto"), 1_000)
+
+      assert String.starts_with?(away_line, "AWAY :auto-away")
+      assert AwayState.state_of(:sys.get_state(pid).away_state) == :away_auto
+
+      # Foreground the device again → :ws_visible → unaway → bare AWAY.
+      :ok = WSPresence.set_visibility(user.name, device, true)
+
+      assert {:ok, "AWAY\r\n"} = IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"), 1_000)
+      assert AwayState.state_of(:sys.get_state(pid).away_state) == :present
+
+      Process.exit(device, :kill)
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
