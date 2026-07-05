@@ -35,6 +35,7 @@ import {
   pushCatcherEndpoint,
   resetPushCatcher,
   resetPushSubscriptions,
+  setPageVisibility,
   stubPushManager,
 } from "../fixtures/push";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -95,6 +96,12 @@ test("notification_prefs whitelist: messages in allow-list push, messages elsewh
     // can be mistaken for "user is reading this" (irrelevant server-
     // side, but keeps the spec's semantics clean).
     await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: NETWORK_NICK });
+
+    // #182 — background the device so the delivery this spec asserts is
+    // gated by PREFS, not foreground-suppression. Set hidden before BOTH
+    // paths so the negative path proves the prefs skip (not a visible
+    // device suppressing) and the positive path can actually deliver.
+    await setPageVisibility(page, false);
 
     // Negative path FIRST — peer talks in OTHER, no mention. No push
     // expected because: channel_messages_all=false, channel_mentions=false,

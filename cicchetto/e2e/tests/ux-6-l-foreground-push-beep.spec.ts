@@ -16,11 +16,13 @@
 //     the right moments through real WS + IRC.
 //
 // We do NOT assert that the SW suppressed showNotification — same
-// reason `push-server-fires-regardless-of-focus.spec.ts` doesn't:
-// the integration harness has no real Web Push vendor; the SW never
-// receives a real PushEvent. The SW gate is unit-tested in
-// `pushDedup.test.ts`. The e2e contract here is the WS-driven beep
-// path.
+// reason `push-foreground-suppression.spec.ts` (#182) asserts the
+// SERVER-side gate via push-catcher instead: the integration harness
+// has no real Web Push vendor; the SW never receives a real PushEvent.
+// The SW gate is unit-tested in `pushDedup.test.ts`. The e2e contract
+// here is the WS-driven beep path (this page stays foreground, so the
+// server suppresses the OS push at source — the beep is the
+// foreground alert).
 
 import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel, sidebarWindow, waitForDmListenerReady } from "../fixtures/cicchettoPage";

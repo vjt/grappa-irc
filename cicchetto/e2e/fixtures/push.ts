@@ -318,6 +318,41 @@ export async function assertNoPushDelivery(id: string, windowMs = 1_500): Promis
 }
 
 /**
+ * #182 — drives the page's foreground visibility for foreground-
+ * suppression specs. Overrides `document.visibilityState` / `.hidden`
+ * and dispatches `visibilitychange`, which fires cic's PRODUCTION
+ * `reportVisibility` reporter → server WSPresence. Then blocks on the
+ * `window.__visibilityAck` seam until the server has acked the WS
+ * round-trip, so a subsequent triggering PRIVMSG can't race the
+ * visibility update.
+ *
+ * This drives the PAGE-context signal the server now keys off (the
+ * reliable one on iOS); the SW's own `clients.matchAll` gate is a
+ * separate defensive backstop and is not exercised here.
+ */
+export async function setPageVisibility(page: Page, visible: boolean): Promise<void> {
+  await page.evaluate((v) => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => (v ? "visible" : "hidden"),
+    });
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: () => !v,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, visible);
+
+  // Deterministic barrier: block until the reporter's server ack lands,
+  // so the caller knows WSPresence has recorded the new visibility.
+  await page.waitForFunction(
+    (v) => (window as unknown as { __visibilityAck?: boolean }).__visibilityAck === v,
+    visible,
+    { timeout: 5_000 },
+  );
+}
+
+/**
  * Decodes the body of a CaughtDelivery into the JSON push payload
  * `Push.Payload.build/3` wrote. Helper around base64 + `JSON.parse`
  * so spec assertions stay readable.

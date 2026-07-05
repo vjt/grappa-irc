@@ -26,6 +26,7 @@ import {
   pushCatcherEndpoint,
   resetPushCatcher,
   resetPushSubscriptions,
+  setPageVisibility,
   stubPushManager,
 } from "../fixtures/push";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -53,6 +54,11 @@ test("DM while push-enabled fires Sender → push-catcher receives a POST", asyn
 
   const peer = await IrcPeer.connect({ nick: PEER_NICK });
   try {
+    // #182 — background the device so the server delivers. A VISIBLE
+    // device now suppresses at source; the foreground case is the
+    // push-foreground-suppression spec.
+    await setPageVisibility(page, false);
+
     // PRIVMSG straight to the operator's nick — no JOIN needed.
     // Server-side this hits Session.Server's :persist arm with
     // `channel = own_nick`; Triggers' dm? predicate matches.

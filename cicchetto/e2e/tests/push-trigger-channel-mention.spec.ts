@@ -43,6 +43,7 @@ import {
   pushCatcherEndpoint,
   resetPushCatcher,
   resetPushSubscriptions,
+  setPageVisibility,
   stubPushManager,
 } from "../fixtures/push";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -94,6 +95,12 @@ test("channel mention while push-enabled fires Sender → push-catcher receives 
 
     // Re-focus #bofh so the mention lands UNFOCUSED.
     await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: NETWORK_NICK });
+
+    // #182 — background the device so the server delivers. The server
+    // now suppresses at source when ANY device is visible, so the
+    // former "land it in an unfocused window" trick is no longer what
+    // lets the push through — the device being hidden is.
+    await setPageVisibility(page, false);
 
     // Peer mentions the operator. Mentions.mentioned?/3 matches
     // the bare nick at a word boundary.
