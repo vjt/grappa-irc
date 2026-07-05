@@ -12,6 +12,8 @@ defmodule Grappa.PubSubTest do
   """
   use ExUnit.Case, async: true
 
+  import Grappa.TypeLaundry
+
   alias Grappa.PubSub
   alias Phoenix.Socket.Broadcast
 
@@ -26,7 +28,7 @@ defmodule Grappa.PubSubTest do
     test "rejects struct payloads with FunctionClauseError" do
       # A schema-shaped struct stand-in: any defstruct'd module qualifies.
       assert_raise FunctionClauseError, fn ->
-        PubSub.broadcast_event("grappa:user:test", %URI{scheme: "https"})
+        PubSub.broadcast_event("grappa:user:test", opaque(%URI{scheme: "https"}))
       end
     end
 
@@ -42,17 +44,17 @@ defmodule Grappa.PubSubTest do
 
     test "rejects non-map payloads" do
       assert_raise FunctionClauseError, fn ->
-        PubSub.broadcast_event("grappa:user:test", "not a map")
+        PubSub.broadcast_event("grappa:user:test", opaque("not a map"))
       end
 
       assert_raise FunctionClauseError, fn ->
-        PubSub.broadcast_event("grappa:user:test", nil)
+        PubSub.broadcast_event("grappa:user:test", opaque(nil))
       end
     end
 
     test "rejects non-binary topic" do
       assert_raise FunctionClauseError, fn ->
-        PubSub.broadcast_event(:not_a_string, %{ok: true})
+        PubSub.broadcast_event(opaque(:not_a_string), %{ok: true})
       end
     end
   end

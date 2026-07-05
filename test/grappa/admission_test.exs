@@ -6,6 +6,7 @@ defmodule Grappa.AdmissionTest do
   skips).
   """
   use Grappa.DataCase, async: false
+  import Grappa.TypeLaundry
 
   alias Grappa.{Admission, AdmissionStateHelpers, Repo, SessionRegistry}
   alias Grappa.Admission.Captcha.{Disabled, HCaptcha, Turnstile}
@@ -44,7 +45,7 @@ defmodule Grappa.AdmissionTest do
       assert {:error, {:network_circuit_open, retry_after}} =
                Admission.check_capacity(input)
 
-      assert is_integer(retry_after) and retry_after >= 0
+      assert is_integer(opaque(retry_after)) and retry_after >= 0
     end
   end
 

@@ -27,6 +27,7 @@ defmodule Grappa.Session.AwayStateTest do
       symmetric with `in_flight_joins` from cluster #6.
   """
   use ExUnit.Case, async: true
+  import Grappa.TypeLaundry
 
   alias Grappa.Session.AwayState
 
@@ -175,7 +176,7 @@ defmodule Grappa.Session.AwayStateTest do
   describe "type guards" do
     test "set_explicit_away/2 requires a binary reason" do
       assert_raise FunctionClauseError, fn ->
-        AwayState.set_explicit_away(AwayState.new(), :not_a_string)
+        AwayState.set_explicit_away(AwayState.new(), opaque(:not_a_string))
       end
     end
   end

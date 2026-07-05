@@ -13,6 +13,7 @@ defmodule Grappa.AdminEvents.WireTest do
       without a Wire arm fails loudly.
   """
   use Grappa.DataCase, async: true
+  import Grappa.TypeLaundry
 
   alias Grappa.AdminEvents.Wire
 
@@ -52,7 +53,7 @@ defmodule Grappa.AdminEvents.WireTest do
       # attribution; passing :operator_reset here would silently strip
       # the actor.
       assert_raise FunctionClauseError, fn ->
-        Wire.circuit_close(1, "azzurra", :operator_reset)
+        Wire.circuit_close(1, "azzurra", opaque(:operator_reset))
       end
     end
   end
@@ -128,7 +129,7 @@ defmodule Grappa.AdminEvents.WireTest do
 
     test "rejects unknown subject_kind" do
       assert_raise FunctionClauseError, fn ->
-        Wire.session_terminated(:robot, "id", 1, "n", "a", "b")
+        Wire.session_terminated(opaque(:robot), "id", 1, "n", "a", "b")
       end
     end
   end
@@ -378,7 +379,7 @@ defmodule Grappa.AdminEvents.WireTest do
 
     test "rejects unknown session_action" do
       assert_raise FunctionClauseError, fn ->
-        Wire.credential_updated("u-uuid", "alice", 7, "azzurra", :restarted, "a", "vjt")
+        Wire.credential_updated("u-uuid", "alice", 7, "azzurra", opaque(:restarted), "a", "vjt")
       end
     end
   end

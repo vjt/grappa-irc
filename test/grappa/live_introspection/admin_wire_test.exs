@@ -6,6 +6,7 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
   JSON-encodable map.
   """
   use ExUnit.Case, async: true
+  import Grappa.TypeLaundry
 
   alias Grappa.LiveIntrospection.{AdminWire, SessionEntry}
 
@@ -101,7 +102,7 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
     # Guard `is_binary(label) or is_nil(label)` — anything else is a
     # contract violation that surfaces as FunctionClauseError.
     assert_raise FunctionClauseError, fn ->
-      AdminWire.session_to_admin_json(entry, :atom_label, nil)
+      AdminWire.session_to_admin_json(entry, opaque(:atom_label), nil)
     end
   end
 
@@ -165,7 +166,7 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
     }
 
     assert_raise FunctionClauseError, fn ->
-      AdminWire.session_to_admin_json(entry, "vjt", "2026-01-01T00:00:00Z")
+      AdminWire.session_to_admin_json(entry, "vjt", opaque("2026-01-01T00:00:00Z"))
     end
   end
 end

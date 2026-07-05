@@ -1,6 +1,7 @@
 defmodule Grappa.Deploy.PreflightTest do
   # async: true — pure logic, no global state.
   use ExUnit.Case, async: true
+  import Grappa.TypeLaundry
 
   alias Grappa.Deploy.Preflight
 
@@ -126,13 +127,13 @@ defmodule Grappa.Deploy.PreflightTest do
   describe "classify_paths/2 — substrate is a closed set" do
     test "unknown substrate raises FunctionClauseError (loud usage error, never a silent guess)" do
       assert_raise FunctionClauseError, fn ->
-        Preflight.classify_paths(["lib/grappa/scrollback.ex"], :freebsd)
+        Preflight.classify_paths(["lib/grappa/scrollback.ex"], opaque(:freebsd))
       end
     end
 
     test "string substrate raises FunctionClauseError (atoms only past the CLI boundary)" do
       assert_raise FunctionClauseError, fn ->
-        Preflight.classify_paths(["lib/grappa/scrollback.ex"], "docker")
+        Preflight.classify_paths(["lib/grappa/scrollback.ex"], opaque("docker"))
       end
     end
   end

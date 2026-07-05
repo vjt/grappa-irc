@@ -14,6 +14,7 @@ defmodule Grappa.Networks.WireTest do
   password to JSON.
   """
   use Grappa.DataCase, async: true
+  import Grappa.TypeLaundry
 
   alias Grappa.{Accounts, Networks, Repo}
   alias Grappa.Networks.{Credential, Credentials, Wire}
@@ -403,7 +404,7 @@ defmodule Grappa.Networks.WireTest do
       cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
 
       assert_raise FunctionClauseError, fn -> Wire.home_network_row(cred, "") end
-      assert_raise FunctionClauseError, fn -> Wire.home_network_row(cred, nil) end
+      assert_raise FunctionClauseError, fn -> Wire.home_network_row(cred, opaque(nil)) end
     end
   end
 

@@ -16932,3 +16932,77 @@ read (trips an ErrorBoundary, kills the splash); a 401 would fire `on401`
 → clear the token → bounce to `/login`. Pending is the genuine cold-load
 state. This is the pattern for any future loading-only / transient-overlay
 e2e.
+
+---
+
+## 2026-07-05 — Elixir 1.20 / OTP 29 toolchain bump (PR #53) + the `opaque/1` negative-type-test convention
+
+dependabot bumped the Docker base image `elixir:1.19-otp-28-alpine →
+1.20.0-otp-29-alpine` (PR #53, Dockerfile-only). vjt authorised landing it
+as the FULL 1.20 migration (m42/prod confirmed OTP-29-ready). Validated in
+isolation under a clean 1.20/OTP-29 image *before* merge: the full suite
+(3156 tests) + dialyzer are runtime/type-clean under OTP 29 — the toolchain
+itself is compatible. The only blockers were **new compiler strictness**,
+fixed as a companion migration in the same merge:
+
+- **`.tool-versions`** bumped to `elixir 1.20.0-otp-29` / `erlang 29.0.1`
+  (was `1.19.5-otp-28` / `28.5`) to match the image tag. dependabot only
+  manages the docker ecosystem, so it left this drift; the pin is
+  load-bearing (CLAUDE.md "pinned in .tool-versions").
+- **Two dead `require Logger`** removed from `lib/grappa/log.ex` +
+  `lib/grappa/ws_presence.ex`. 1.20 tightened unused-`require` detection:
+  both modules call only Logger *functions* (`Logger.metadata/1`), never a
+  Logger *macro*, so the require was genuinely unused — and under
+  `--warnings-as-errors` it failed `mix compile`.
+- **Three mechanical test fixes:** two more dead `require Logger`
+  (`log_test.exs`, `resolve_network_test.exs`); one bitstring pin
+  (`parser_property_test.exs` — `size(pos)` → `size(^pos)`; 1.20 requires
+  the pin when the size var is bound outside the match).
+- **The `xref: [exclude: …]` deprecation notice is NOT ours.** grappa's
+  `mix.exs` has no such key (the `xref` hits in `lib/` are Boundary's
+  `dirty_xrefs:`, unrelated). The notice comes from dependencies' mix.exs
+  and is a mix-level notice, not a compiler diagnostic, so it never counts
+  toward `--warnings-as-errors`. No action.
+
+### The `opaque/1` convention (`Grappa.TypeLaundry`) — precedent for negative-type guard tests
+
+Elixir 1.20's set-theoretic type checker now **statically** flags a call
+that passes a literal wrong-typed value to a function whose guard/spec
+rejects it — even when asserting that rejection is the entire point of the
+test (`assert_raise FunctionClauseError, fn -> f(wrong_type) end`). 15 such
+intentional negative-type guard tests across 9 files tripped
+`"incompatible types given to …"`, failing `mix test --warnings-as-errors`.
+The tests are correct and valuable (defensive-guard / no-silent-drops
+coverage); the fix must not weaken them or the production guard.
+
+**Decision (vjt, option A1):** a dedicated **test-support** module
+`Grappa.TypeLaundry` (`test/support/type_laundry.ex`, test-env only)
+exposing a runtime-identity passthrough whose declared return type is
+`term()`:
+
+```elixir
+@spec opaque(term()) :: term()
+def opaque(value), do: value
+```
+
+Because the declared return is `term()`, the compile-time checker cannot
+narrow the argument type at the call site (stays silent) while runtime
+behaviour — and therefore the test's assertion — is unchanged. Verified on
+one site first (warning silenced, tests still pass) before fanning to all 15.
+
+**The rule going forward:** a negative-type guard test wraps ONLY the
+deliberately-wrong argument in `opaque/1` (after `import Grappa.TypeLaundry`):
+
+```elixir
+assert_raise FunctionClauseError, fn ->
+  PubSub.broadcast_event("grappa:user:test", opaque(%URI{scheme: "https"}))
+end
+```
+
+This is the single sanctioned pattern. Do NOT sprinkle `@dialyzer` /
+`@compile` suppressions, disable the type checker project-wide, or weaken a
+production guard to appease the checker. `opaque/1` also clears the sibling
+"conditional will always succeed" warning (e.g. `is_integer(opaque(x))`
+when the type system already proved `x :: integer()`). It lives in a
+dedicated, explicitly-imported module — NOT `Grappa.DataCase` — to keep the
+type-laundering visible at every call site.

@@ -6,6 +6,7 @@ defmodule Grappa.Visitors.VisitorTest do
   regression on one rule doesn't get hidden by an adjacent failure.
   """
   use ExUnit.Case, async: true
+  import Grappa.TypeLaundry
 
   alias Grappa.Visitors.Visitor
 
@@ -133,7 +134,7 @@ defmodule Grappa.Visitors.VisitorTest do
 
     test "rejects non-string non-nil via the guard", %{visitor: visitor} do
       assert_raise FunctionClauseError, fn ->
-        Visitor.ip_changeset(visitor, {1, 2, 3, 4})
+        Visitor.ip_changeset(visitor, opaque({1, 2, 3, 4}))
       end
     end
   end

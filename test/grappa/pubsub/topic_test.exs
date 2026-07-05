@@ -8,6 +8,7 @@ defmodule Grappa.PubSub.TopicTest do
   namespace, see DESIGN_NOTES 2026-04-25).
   """
   use ExUnit.Case, async: true
+  import Grappa.TypeLaundry
 
   alias Grappa.PubSub.Topic
 
@@ -118,7 +119,7 @@ defmodule Grappa.PubSub.TopicTest do
     end
 
     test "raises on non-binary user_name" do
-      assert_raise FunctionClauseError, fn -> Topic.ws_presence(nil) end
+      assert_raise FunctionClauseError, fn -> Topic.ws_presence(opaque(nil)) end
     end
   end
 
