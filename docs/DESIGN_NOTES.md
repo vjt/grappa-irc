@@ -17213,3 +17213,62 @@ row-click navigation, the open-button re-open, the close-x, and — going
 
 **Deploy class: cic-only** (bundle swap, no BEAM restart). No server or
 wire-type change.
+
+## 2026-07-06 — #192: presence folds window focus, not just Page Visibility (a #182 regression)
+
+**Symptom.** A user on phone + desktop simultaneously never got Web Push on
+the phone while the desktop tab was open. Root cause: #182's
+`reportVisibility()` (`socket.ts`) reported presence off
+`document.visibilityState` alone. On desktop that stays `"visible"` whenever
+the tab isn't minimized/switched-away — including when the user clicks
+another application and the grappa window sits on-screen but unfocused. So
+the 30s auto-away FSM never armed and, because #182's push-suppression is
+**per-user across all devices** (`any_visible?`, by design — the server has
+no push-endpoint→socket-pid map), one un-minimized desktop tab pinned
+presence and suppressed the whole fan-out on every device.
+
+**Fix — reuse the existing focus-aware signal, don't duplicate.** cicchetto
+already had `lib/documentVisibility.ts` exporting `isDocumentVisible` — a
+Solid signal computing exactly `visibilityState === "visible" &&
+document.hasFocus()`, already listening to `visibilitychange` + window
+`focus`/`blur`, already consumed by `subscribe.ts` + `selection.ts`. The
+#182 server-presence reporter was the one consumer that bypassed it. So the
+fix is two edits, no new logic:
+- `socket.ts reportVisibility()` folds `&& document.hasFocus()` into the
+  reported bool (same predicate as `documentVisibility.ts`; kept as a fresh
+  imperative DOM read because the reporter is a fire-and-forget push, not a
+  reactive consumer — decoupled from signal timing and trivially unit-testable).
+- `main.tsx` replaces the raw `document.addEventListener("visibilitychange",
+  reportVisibility)` with a `createRoot(() => createEffect(() => {
+  isDocumentVisible(); reportVisibility(); }))`. Driving the report off the
+  signal REUSES its one set of focus/blur/visibilitychange listeners — no
+  parallel registration — and fires the report on every transition. The
+  initial state is still reported explicitly on user-channel join (`joinUser`).
+
+**Server FSM/debounce/gate unchanged.** WSPresence `any_visible?` →
+`:ws_all_hidden`/`:ws_visible` → 30s debounce → upstream `AWAY` → push gate
+are all reused untouched; #192 only makes the INPUT signal focus-aware. A
+brief blur→refocus within 30s is absorbed by the existing debounce (refocus
+fires `:ws_visible`, cancelling the pending timer — no push churn). Mobile
+PWA is unaffected: backgrounding already flips `visibilityState` to
+`"hidden"`, so `&& hasFocus()` doesn't change mobile behaviour.
+
+**Test-isolation footnote.** Making `reportVisibility` read
+`document.hasFocus()` exposed a latent order-dependency in
+`socket.test.ts`: the existing #182 cases asserting `{visible:true}` never
+controlled focus and relied on jsdom's default `hasFocus()===true`. Under
+the full suite another file could leave the shared jsdom document blurred,
+flipping the assertion. Fixed by pinning `hasFocus()` true in the
+`reportVisibility` describe's `beforeEach` (surgical `mockRestore` in
+`afterEach`) — the tests now state their focus precondition explicitly.
+
+**E2E** (`push-focus-suppression.spec.ts`, sibling of
+`push-foreground-suppression.spec.ts`): with `visibilityState` pinned
+`"visible"` (so focus is the only variable), a new `setPageFocus` fixture
+overrides `document.hasFocus()` + dispatches window `focus`/`blur` and blocks
+on the `__visibilityAck` seam. Asserts the visible outcome via push-catcher:
+visible+focused → DM → no delivery; visible+**blurred** → DM → delivered
+(the #192 fix); refocused → DM → suppressed again.
+
+**Deploy class: cic-only** (bundle swap, no BEAM restart). No server or
+wire-type change.

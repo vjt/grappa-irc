@@ -15,6 +15,7 @@ import ShareConsume from "./ShareConsume";
 import "./lib/subscribe";
 import "./lib/userTopic";
 import { mountBadgeReconcile, mountBadgeSync } from "./lib/badge";
+import { isDocumentVisible } from "./lib/documentVisibility";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
 import { applyIosClass, isStandalonePwa } from "./lib/platform";
@@ -169,13 +170,23 @@ installPushResubscribe(token);
 window.addEventListener("pagehide", notifyClientClosing);
 window.addEventListener("beforeunload", notifyClientClosing);
 
-// #182 — foreground push-suppression: report PWA visibility to the server
-// on every foreground/background transition. `visibilitychange` fires in
-// the PAGE context (reliable on iOS PWAs, unlike the SW's clients.matchAll)
-// so the server can suppress Web Push while the app is on-screen and
-// deliver it once backgrounded. The initial state is reported on
-// user-channel join (see socket.ts joinUser); this keeps it live after.
-document.addEventListener("visibilitychange", reportVisibility);
+// #182/#192 — foreground push-suppression: report PWA presence to the server
+// on every transition. Presence = visibilityState "visible" AND window focus,
+// so the report is driven off documentVisibility.ts's isDocumentVisible signal
+// (which tracks visibilitychange + window focus/blur — reliable on iOS PWAs,
+// unlike the SW's clients.matchAll). #192: a raw `visibilitychange` listener
+// missed the "desktop tab on-screen but unfocused" case, so a blurred tab
+// pinned presence and #182's per-user gate suppressed Web Push on every
+// device. Reusing the signal shares one set of listeners (no parallel
+// registration). The initial state is reported on user-channel join (see
+// socket.ts joinUser); this effect keeps it live on every focus/visibility
+// transition after.
+createRoot(() => {
+  createEffect(() => {
+    isDocumentVisible();
+    reportVisibility();
+  });
+});
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found in index.html");

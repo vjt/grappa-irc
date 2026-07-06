@@ -282,7 +282,14 @@ export function notifyClientClosing(): void {
 export function reportVisibility(): void {
   if (_userChannel === null) return;
   if (typeof document === "undefined") return;
-  const visible = document.visibilityState === "visible";
+  // #192 — presence is visibility AND window focus, not visibility alone.
+  // `document.visibilityState` stays "visible" for a desktop tab that is
+  // on-screen but has lost keyboard focus (user clicked another app without
+  // minimizing/switching tabs), so visibility-only never trips auto-away and
+  // #182's per-user any_visible? gate keeps suppressing push on every device.
+  // Same predicate as documentVisibility.ts; main.tsx drives this off that
+  // module's signal so the blur/focus/visibilitychange listeners are shared.
+  const visible = document.visibilityState === "visible" && document.hasFocus();
   _userChannel.push("visibility", { visible }).receive("ok", () => {
     // e2e seam: the last server-acked visibility (mirrors beep.ts's
     // `__lastBeepAt`). Lets a Playwright spec await the WS round-trip

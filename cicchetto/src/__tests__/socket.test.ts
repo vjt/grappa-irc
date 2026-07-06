@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 
 // `phoenix.Socket` is a class with private fields — vi.fn().mockImplementation
 // doesn't expose a constructor that JS engine accepts under `new`, so we mock
@@ -202,6 +202,19 @@ describe("notifyClientClosing (S3.3 — pagehide immediate-away hint)", () => {
 });
 
 describe("reportVisibility (#182 — foreground push-suppression signal)", () => {
+  // #192 — reportVisibility now folds document.hasFocus() into the reported
+  // signal (presence = visible AND focused). These #182 cases assert the
+  // focused+visible state, so pin hasFocus() true here. Without it the suite
+  // is order-dependent: another test file leaving the shared jsdom document
+  // blurred flips hasFocus() and breaks the {visible:true} assertions.
+  let hasFocusSpy: MockInstance<() => boolean>;
+  beforeEach(() => {
+    hasFocusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  });
+  afterEach(() => {
+    hasFocusSpy.mockRestore();
+  });
+
   it("is a no-op when no user channel has been joined yet", async () => {
     localStorage.setItem("grappa-token", "tok-1");
     const socket = await import("../lib/socket");
@@ -270,6 +283,25 @@ describe("reportVisibility (#182 — foreground push-suppression signal)", () =>
     document.removeEventListener("visibilitychange", reportVisibility);
 
     expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: true });
+  });
+
+  it("reports {visible: false} when on-screen but the window is unfocused (#192)", async () => {
+    // #192 regression: a desktop tab left on-screen (visibilityState stays
+    // "visible") but no longer holding keyboard focus — user clicked another
+    // app without minimizing/switching tabs — must be reported as NOT present.
+    // reportVisibility folds document.hasFocus() into the signal (mirroring
+    // documentVisibility.ts), so visibility-alone is no longer sufficient.
+    // Without this, #182's per-user any_visible? gate keeps suppressing Web
+    // Push on EVERY device (a backgrounded phone included).
+    localStorage.setItem("grappa-token", "tok-1");
+    const socket = await import("../lib/socket");
+    socket.joinUser("alice");
+    h.mockChannel.push.mockClear();
+
+    // visibilityState stays "visible" (jsdom default) — only focus is lost.
+    hasFocusSpy.mockReturnValue(false);
+    socket.reportVisibility();
+    expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: false });
   });
 });
 
