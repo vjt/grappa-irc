@@ -353,6 +353,37 @@ export async function setPageVisibility(page: Page, visible: boolean): Promise<v
 }
 
 /**
+ * #192 — drives the page's window FOCUS for the focus-suppression spec.
+ * Overrides `document.hasFocus()` and dispatches a `window` `focus`/`blur`
+ * event, which fires cic's PRODUCTION presence reporter via
+ * documentVisibility.ts's signal → `reportVisibility` → WSPresence. Unlike
+ * `setPageVisibility`, `document.visibilityState` is left untouched: this
+ * isolates the "desktop tab on-screen but unfocused" case that Page
+ * Visibility alone misses. Blocks on the same `__visibilityAck` seam.
+ *
+ * Precondition: call `setPageVisibility(page, true)` first so visibilityState
+ * is pinned "visible" — presence = visible AND focused, so with visibility
+ * held true the acked value equals `focused`.
+ */
+export async function setPageFocus(page: Page, focused: boolean): Promise<void> {
+  await page.evaluate((f) => {
+    Object.defineProperty(document, "hasFocus", {
+      configurable: true,
+      value: () => f,
+    });
+    window.dispatchEvent(new Event(f ? "focus" : "blur"));
+  }, focused);
+
+  // Presence folds visibility AND focus; with visibilityState pinned
+  // "visible", the server-acked presence equals `focused`.
+  await page.waitForFunction(
+    (f) => (window as unknown as { __visibilityAck?: boolean }).__visibilityAck === f,
+    focused,
+    { timeout: 5_000 },
+  );
+}
+
+/**
  * Decodes the body of a CaughtDelivery into the JSON push payload
  * `Push.Payload.build/3` wrote. Helper around base64 + `JSON.parse`
  * so spec assertions stay readable.
