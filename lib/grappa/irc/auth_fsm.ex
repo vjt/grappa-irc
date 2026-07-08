@@ -193,6 +193,22 @@ defmodule Grappa.IRC.AuthFSM do
 
   defp validate_password_line_safe(%{auth_method: :none}), do: :ok
 
+  # S30 — :server_pass and :auto ship the password as the SINGLE PASS wire
+  # token (RFC 2812 §3.1.1). safe_line_token? (CR/LF/NUL only) let a space or
+  # tab through, which the server splits off → the password silently
+  # truncates to the first token → 464 ERR_PASSWDMISMATCH + a restart loop
+  # with no breadcrumb. Gate the PASS-bound password with the stricter
+  # single-token predicate OPER already uses. `validate_password_present/1`
+  # has already guaranteed a non-empty binary here.
+  defp validate_password_line_safe(%{auth_method: m, password: pw})
+       when m in [:server_pass, :auto] do
+    if Identifier.safe_oper_token?(pw),
+      do: :ok,
+      else: {:error, {:invalid_line_token, :password}}
+  end
+
+  # :sasl (base64-encoded payload) and :nickserv_identify keep the
+  # CR/LF/NUL-only line-token gate — a space is legal in those.
   defp validate_password_line_safe(%{password: pw}) do
     if Identifier.safe_line_token?(pw),
       do: :ok,

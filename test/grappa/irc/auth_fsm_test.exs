@@ -110,6 +110,26 @@ defmodule Grappa.IRC.AuthFSMTest do
                AuthFSM.new(base_opts(%{auth_method: :nickserv_identify, password: "p\r\nQUIT :pwn"}))
     end
 
+    # S30 — PASS is a single wire token (RFC 2812 §3.1.1). A space/tab in a
+    # :server_pass / :auto password would split it, silently truncating
+    # server-side to the first token → 464 + restart loop with no breadcrumb.
+    test ":server_pass with a space in password rejected at new/1 (S30)" do
+      assert {:error, {:invalid_line_token, :password}} =
+               AuthFSM.new(base_opts(%{auth_method: :server_pass, password: "sword fish"}))
+    end
+
+    test ":auto with a tab in password rejected at new/1 (S30)" do
+      assert {:error, {:invalid_line_token, :password}} =
+               AuthFSM.new(base_opts(%{auth_method: :auto, password: "sword\tfish"}))
+    end
+
+    # :sasl base64-encodes the payload, so a space in the password is safe on
+    # the wire — the stricter PASS gate must NOT tighten SASL.
+    test ":sasl with a space in password is still accepted (only CR/LF/NUL barred)" do
+      assert {:ok, %AuthFSM{auth_method: :sasl, password: "sword fish"}} =
+               AuthFSM.new(base_opts(%{auth_method: :sasl, password: "sword fish"}))
+    end
+
     test ":none with CRLF in nick rejected at new/1 (irc/S5)" do
       # :none also writes NICK + USER lines; the guard applies regardless
       # of auth_method since every method emits NICK/USER at handshake.
