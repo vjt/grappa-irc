@@ -2163,14 +2163,22 @@ defmodule Grappa.Session.Server do
 
   # Terminal failure handling — k-line or permanent SASL (Decision C,
   # locked). Fires the `credential_failer` callback (if present) in a
-  # detached Task so the DB transition + PubSub broadcast happen AFTER
-  # this GenServer has exited. Calling mark_failed synchronously would
+  # detached, SUPERVISED Task so the DB transition + PubSub broadcast happen
+  # AFTER this GenServer has exited. Calling mark_failed synchronously would
   # deadlock: mark_failed calls Session.stop_session → DynamicSupervisor
   # .terminate_child → the server can't exit while blocked in the call.
   # The Task's async execution is safe: by the time it calls
   # mark_failed_by_ids → stop_session → whereis, the process is already
   # gone (whereis returns nil → stop_session is a no-op → DB transition
   # and broadcast proceed normally).
+  #
+  # S37: routed through `Grappa.TaskSupervisor` rather than a bare
+  # `Task.start/1`. The detach is still required (see the deadlock reason
+  # above — we can't link, or the task dies with our :normal exit before
+  # the DB write lands), but the task must not be UNSUPERVISED: if the
+  # failer raises, the `:failed` transition silently never happens and
+  # Bootstrap re-spawns the k-lined session next deploy. Under the
+  # supervisor the crash surfaces as a SASL report instead of vanishing.
   #
   # CP24 bucket E lifecycle/S1: visitor sessions ALSO carry a
   # `credential_failer` now — `Visitors.SessionPlan` injects a closure
@@ -2187,7 +2195,7 @@ defmodule Grappa.Session.Server do
     _ =
       if is_function(state.credential_failer, 1) do
         failer = state.credential_failer
-        Task.start(fn -> failer.(reason) end)
+        Task.Supervisor.start_child(Grappa.TaskSupervisor, fn -> failer.(reason) end)
       end
 
     {:stop, :normal, state}

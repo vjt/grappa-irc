@@ -133,6 +133,18 @@ defmodule Grappa.Application do
         # placed here to sit alongside the other ETS singletons
         # (Backoff, NetworkCircuit) for ordering clarity.
         Grappa.Visitors.ShareTokens,
+        # Task.Supervisor for detached fire-and-forget work that must NOT be
+        # linked to the spawning process (S37). `Session.Server`'s terminal-
+        # failure handler runs its `credential_failer` callback here: it
+        # can't run it synchronously (mark_failed → stop_session would
+        # deadlock the exiting server) nor linked (a linked task dies with
+        # the server's :normal exit before the DB transition lands), so it
+        # detaches. `Task.start/1` detached it but left it unsupervised — a
+        # raise in the failer then silently skipped the `:failed` DB
+        # transition. Under this supervisor the task is tracked and its crash
+        # is a visible SASL report. Must precede SessionSupervisor so a
+        # session terminating on its start path can already reach it.
+        {Task.Supervisor, name: Grappa.TaskSupervisor},
         # max_restarts: 10_000, max_seconds: 60 — DynamicSupervisor's
         # default (3 restarts in 5s) is GLOBAL across all children; one
         # upstream network-wide outage causing several Session.Server
