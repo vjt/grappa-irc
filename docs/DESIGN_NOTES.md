@@ -17272,3 +17272,28 @@ visible+focused → DM → no delivery; visible+**blurred** → DM → delivered
 
 **Deploy class: cic-only** (bundle swap, no BEAM restart). No server or
 wire-type change.
+
+**2026-07-08 — follow-up: the desktop-FOCUSED case is intentional, not a bug.**
+vjt re-opened #192 reporting "with the PWA open on desktop I never go away →
+breaks push." Diagnosed live against prod (`:sys.get_state` on `WSPresence` +
+each `Session.Server.away_state` via the `su -l grappa` sourced-env release
+`rpc`): at the time of the report he was correctly `:away_auto` with one
+`:hidden` socket and `any_visible? == false` — i.e. the #192 fix was already
+working; the earlier "never away" was the *old bundle* before he refreshed the
+desktop PWA. The ONLY remaining case is when the desktop is genuinely
+**focused**: `any_visible? == true` → no `/away`, and #182's push-suppression
+(per-user across all sockets) correctly stays quiet on every device. **That is
+#182 working as specified, not a defect** — the point of the per-user gate is
+that a mention you can already see on a focused screen shouldn't also buzz your
+phone. vjt reviewed and chose **keep-as-is**, explicitly declining both
+per-device gating (each device gated by its own visibility — would kill the
+cross-device suppression #182 built, and produce redundant buzzes) and a
+focus-idle timeout (focused-but-no-interaction → hidden — more machinery for a
+narrow "walked away from a focused window" case). So: **no per-device push,
+no idle-away timer.** If this resurfaces, it is a WON'T-FIX by design, not a
+bug to chase. Also note the auto-away FSM is edge-triggered (`:ws_all_hidden`
+fires only on a *visible→hidden* transition in `WSPresence`); a socket that is
+`:hidden` from birth and never goes visible produces no edge — not hit in
+practice here (his desktop had been visible then blurred), but a latent sharp
+edge worth remembering if a future change lets a session sit at `:present`
+with only hidden sockets.
