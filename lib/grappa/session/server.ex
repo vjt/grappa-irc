@@ -200,11 +200,12 @@ defmodule Grappa.Session.Server do
   here for the same Boundary reason as `visitor_committer` (Networks
   already deps Session; closing the cycle is banned by `use Boundary`).
 
-  Calling convention: fire inside `Task.start/1` BEFORE `{:stop, :normal}`
-  so the Server's GenServer exit is truly `:normal` and the `:transient`
-  supervisor doesn't restart. The Task's async execution means
-  `mark_failed_by_ids` runs after the process has exited — `stop_session`
-  inside `mark_failed` finds `whereis → nil` and is a no-op.
+  Calling convention: fire inside a supervised `Task.Supervisor.start_child/2`
+  (S37) BEFORE `{:stop, :normal}` so the Server's GenServer exit is truly
+  `:normal` and the `:transient` supervisor doesn't restart. The Task's
+  async execution means `mark_failed_by_ids` runs after the process has
+  exited — `stop_session` inside `mark_failed` finds `whereis → nil` and is
+  a no-op.
   """
   @type credential_failer :: (String.t() -> :ok)
 
@@ -450,7 +451,10 @@ defmodule Grappa.Session.Server do
           # S10: monotonic-ms prime stamp for each `labels_pending` label,
           # driving the lazy TTL sweep. Swept + written in lockstep with
           # `labels_pending` (prime in `prepare_label/2`, drop in the labeled-
-          # numeric drain) so the two never diverge.
+          # numeric drain) so the two never diverge. Read via Map.get /
+          # written via Map.put (NOT map-update) so a HOT reload of a pre-S10
+          # process — whose state map lacks this key — does not crash; same
+          # defensive contract as `awaiting_invite` / `in_flight_joins`.
           labels_pending_at: %{String.t() => integer()},
           # S4.3: last window that originated a cicchetto command. Updated
           # on every `:send_*` call that carries an origin_window. Used by
@@ -2109,10 +2113,25 @@ defmodule Grappa.Session.Server do
       routing ->
         # Consume label if matched (keeps labels_pending bounded). S10 —
         # drop the sibling stamp in lockstep so the two maps never diverge.
+        # `labels_pending_at` is a NEW field: read via Map.get / written via
+        # Map.put (NOT map-update syntax) so a HOT reload of a pre-S10 process
+        # — whose state map lacks the key — doesn't KeyError on the next
+        # routed numeric. Same defensive contract as awaiting_invite /
+        # in_flight_joins.
         label = Message.tag(msg, "label")
-        labels_pending = if label, do: Map.delete(state.labels_pending, label), else: state.labels_pending
-        labels_pending_at = if label, do: Map.delete(state.labels_pending_at, label), else: state.labels_pending_at
-        state_with_labels = %{state | labels_pending: labels_pending, labels_pending_at: labels_pending_at}
+        prev_labels_at = Map.get(state, :labels_pending_at, %{})
+
+        {labels_pending, labels_pending_at} =
+          if label do
+            {Map.delete(state.labels_pending, label), Map.delete(prev_labels_at, label)}
+          else
+            {state.labels_pending, prev_labels_at}
+          end
+
+        state_with_labels =
+          state
+          |> Map.put(:labels_pending, labels_pending)
+          |> Map.put(:labels_pending_at, labels_pending_at)
 
         numeric_code = numeric_code(msg)
         trailing = List.last(msg.params)
@@ -2626,15 +2645,20 @@ defmodule Grappa.Session.Server do
       # S10 — prime the label + its sibling stamp, sweeping any label whose
       # labeled reply never arrived (stale > @pending_ttl_ms). last_command_window
       # keeps the RAW window_ref (no stamp) so its `window_ref()` type is intact.
+      # `labels_pending_at` read via Map.get / written via Map.put (NOT
+      # map-update) so a HOT reload of a pre-S10 process doesn't crash.
       now = System.monotonic_time(:millisecond)
-      live_at = sweep_stale(state.labels_pending_at, now, fn at, _ -> at end)
+      live_at = sweep_stale(Map.get(state, :labels_pending_at, %{}), now, fn at, _ -> at end)
 
-      {label,
-       %{
-         state
-         | labels_pending: state.labels_pending |> Map.take(Map.keys(live_at)) |> Map.put(label, origin_window),
-           labels_pending_at: Map.put(live_at, label, now)
-       }}
+      labels_pending =
+        state.labels_pending |> Map.take(Map.keys(live_at)) |> Map.put(label, origin_window)
+
+      new_state =
+        state
+        |> Map.put(:labels_pending, labels_pending)
+        |> Map.put(:labels_pending_at, Map.put(live_at, label, now))
+
+      {label, new_state}
     else
       {nil, state}
     end

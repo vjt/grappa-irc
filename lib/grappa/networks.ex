@@ -603,7 +603,8 @@ defmodule Grappa.Networks do
   `Session.Server.handle_terminal_failure/2`. Looks up the credential by
   `user_id` + `network_id` and delegates to `mark_failed/2`.
 
-  Called from a `Task.start` inside `Session.Server` to avoid a deadlock:
+  Called from a supervised Task (`Task.Supervisor.start_child`) inside
+  `Session.Server` to avoid a deadlock:
   `mark_failed/2` calls `Session.stop_session/2` which calls
   `DynamicSupervisor.terminate_child/2` — if the Session.Server called
   `mark_failed/2` synchronously while still running, the terminate_child

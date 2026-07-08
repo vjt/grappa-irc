@@ -5605,6 +5605,31 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # S10 / H1 — the new `labels_pending_at` field must be read via Map.get
+    # and written via Map.put so a HOT code-reload of a pre-S10 process
+    # (whose state map lacks the key) doesn't KeyError on its next routed
+    # numeric. Simulate that process by deleting the key, then feed a
+    # non-delegated numeric (402 ERR_NOSUCHSERVER hits the routing/drain
+    # branch) and prove the session survives + the key is repopulated.
+    test "hot-reload safety: a routed numeric on a state map missing labels_pending_at does not crash", %{
+      server: server,
+      user: _user,
+      network: _network,
+      pid: pid
+    } do
+      _ = :sys.replace_state(pid, fn state -> Map.delete(state, :labels_pending_at) end)
+
+      ref = Process.monitor(pid)
+      IRCServer.feed(server, ":irc.test.org 402 grappa-test nosuchserver :No such server\r\n")
+
+      refute_receive {:DOWN, ^ref, :process, ^pid, _}, 300
+
+      state = :sys.get_state(pid)
+      assert Map.has_key?(state, :labels_pending_at)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "311+312+313+317+319+318 burst broadcasts whois_bundle on Topic.user/1", %{
       server: server,
       user: user,

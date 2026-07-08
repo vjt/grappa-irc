@@ -98,9 +98,9 @@ defmodule Grappa.Networks.SessionPlan do
       # SASL) without a static Networks dependency from Session. Session
       # is already a dep of Networks — adding the reverse would create a
       # Boundary cycle. The closure captures the IDs; Session.Server
-      # calls it inside a Task.start so the GenServer has already exited
-      # before mark_failed_by_ids calls stop_session (which finds the
-      # session gone and is a no-op).
+      # calls it inside a supervised Task (Task.Supervisor.start_child) so
+      # the GenServer has already exited before mark_failed_by_ids calls
+      # stop_session (which finds the session gone and is a no-op).
       credential_failer: fn reason ->
         Networks.mark_failed_by_ids(user.id, cred.network_id, reason)
       end,
