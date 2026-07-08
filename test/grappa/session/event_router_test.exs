@@ -1821,6 +1821,36 @@ defmodule Grappa.Session.EventRouterTest do
                _ -> false
              end)
     end
+
+    # S1 (GH #194): the 4th positional of 333 is fully upstream-controlled.
+    # A non-numeric timestamp must NOT crash the Session — the setter is
+    # still recorded, only the (cosmetic) set_at is dropped to nil.
+    test "333 with a non-integer timestamp records set_by, drops set_at to nil (no crash)" do
+      state = base_state()
+      m = msg({:numeric, 333}, ["vjt", "#italia", "ChanServ", "not-a-number"], {:server, "irc"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.topics["#italia"].set_by == "ChanServ"
+      assert new_state.topics["#italia"].set_at == nil
+
+      assert Enum.any?(effects, fn
+               {:topic_changed, "#italia", %{set_by: "ChanServ", set_at: nil}} -> true
+               _ -> false
+             end)
+    end
+
+    # S1 (GH #194): an in-range-parse-but-out-of-calendar bignum still
+    # raises inside DateTime.from_unix!/1 — the non-bang path must fold it
+    # to a nil set_at, not crash.
+    test "333 with an out-of-range unix timestamp drops set_at to nil (no crash)" do
+      state = base_state()
+      huge = String.duplicate("9", 40)
+      m = msg({:numeric, 333}, ["vjt", "#italia", "ChanServ", huge], {:server, "irc"})
+
+      assert {:cont, new_state, _effects} = EventRouter.route(m, state)
+      assert new_state.topics["#italia"].set_by == "ChanServ"
+      assert new_state.topics["#italia"].set_at == nil
+    end
   end
 
   describe "route/2 — :numeric 329 RPL_CREATIONTIME (channel creation timestamp)" do
@@ -1841,6 +1871,17 @@ defmodule Grappa.Session.EventRouterTest do
     test "329 with malformed unix_ts is silently dropped (no cache write, no effect)" do
       state = base_state()
       m = msg({:numeric, 329}, ["vjt", "#italia", "not-a-number"], {:server, "irc"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    # S1 (GH #194): the 329 arm parsed with Integer.parse but still fed the
+    # result to DateTime.from_unix!/1, which raises on an out-of-calendar
+    # bignum — the non-bang from_unix/2 must fold it to a no-op drop.
+    test "329 with an out-of-range unix timestamp is silently dropped (no crash)" do
+      state = base_state()
+      huge = String.duplicate("9", 40)
+      m = msg({:numeric, 329}, ["vjt", "#italia", huge], {:server, "irc"})
 
       assert {:cont, ^state, []} = EventRouter.route(m, state)
     end
@@ -2493,6 +2534,16 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, [{:peer_away, "alice", "Gone fishing"}]} = EventRouter.route(m, state)
       assert new_state.whois_pending == %{}
+    end
+
+    # S31: a malformed 301 with no trailing (params == [_, target]) must
+    # still emit a String.t() away message, not nil — SessionWire.peer_away/3
+    # guards on is_binary(message) and would FunctionClauseError → crash.
+    test "301 with no trailing coalesces the peer_away message to \"\" (no nil, no crash)" do
+      state = base_state(%{whois_pending: %{}})
+      m = msg({:numeric, 301}, ["vjt", "alice"], {:server, "irc.test.org"})
+
+      assert {:cont, _new_state, [{:peer_away, "alice", ""}]} = EventRouter.route(m, state)
     end
 
     test "307 RPL_WHOISREGNICK folds is_registered: true" do

@@ -890,15 +890,17 @@ defmodule Grappa.Session.EventRouter do
          state
        )
        when is_binary(channel) and is_binary(unix_ts_str) do
-    case Integer.parse(unix_ts_str) do
-      {ts, ""} when ts > 0 ->
-        chan_key = normalize_channel(channel)
-        dt = DateTime.from_unix!(ts)
-        channels_created = Map.put(Map.get(state, :channels_created, %{}), chan_key, dt)
-        {:cont, %{state | channels_created: channels_created}, [{:channel_created, channel, dt}]}
-
-      _ ->
-        {:cont, state, []}
+    # Non-bang from_unix/2: an in-range-parse-but-out-of-calendar bignum
+    # still raises inside from_unix!/1, so a hostile 329 would crash the
+    # Session (S1 / GH #194). Fold the out-of-range case to the same
+    # silent no-op drop as a non-integer trailing.
+    with {ts, ""} when ts > 0 <- Integer.parse(unix_ts_str),
+         {:ok, dt} <- DateTime.from_unix(ts) do
+      chan_key = normalize_channel(channel)
+      channels_created = Map.put(Map.get(state, :channels_created, %{}), chan_key, dt)
+      {:cont, %{state | channels_created: channels_created}, [{:channel_created, channel, dt}]}
+    else
+      _ -> {:cont, state, []}
     end
   end
 
@@ -1128,7 +1130,11 @@ defmodule Grappa.Session.EventRouter do
         {:cont, whois_fold(state, target, %{away_message: msg}), []}
 
       false ->
-        {:cont, state, [{:peer_away, target, msg}]}
+        # S31: a malformed 301 with no trailing yields msg == nil, but the
+        # `:peer_away` effect type + `SessionWire.peer_away/3` demand a
+        # String.t() (the builder's `is_binary(message)` guard would
+        # FunctionClauseError → Session crash). Coalesce to "" at the source.
+        {:cont, state, [{:peer_away, target, msg || ""}]}
     end
   end
 
@@ -2380,11 +2386,22 @@ defmodule Grappa.Session.EventRouter do
     %{entry | modes: List.delete(entry.modes, mode), params: Map.delete(entry.params, mode)}
   end
 
-  # Parse a Unix timestamp string; let it crash on non-integer input (bad
-  # upstream → supervisor restart per CLAUDE.md "let it crash").
-  @spec parse_unix_ts(String.t()) :: DateTime.t()
+  # Parse an upstream-controlled Unix timestamp string (333 topic-setter
+  # time). Non-bang throughout: `String.to_integer/1` + `DateTime.from_unix!/1`
+  # BOTH raise, and the 4th positional of 333 RPL_TOPICWHOTIME is fully
+  # hostile-controllable — a non-numeric or out-of-calendar bignum must not
+  # crash the always-on Session (S1 / GH #194). Returns `nil` on any parse
+  # failure so the caller drops the cosmetic set_at metadata; mirrors the
+  # graceful 329 RPL_CREATIONTIME arm. This is the sanctioned CLAUDE.md
+  # "malformed input rejected at boundary" carve-out, not a let-it-crash site.
+  @spec parse_unix_ts(String.t()) :: DateTime.t() | nil
   defp parse_unix_ts(ts_str) when is_binary(ts_str) do
-    DateTime.from_unix!(String.to_integer(ts_str))
+    with {ts, ""} when ts > 0 <- Integer.parse(ts_str),
+         {:ok, dt} <- DateTime.from_unix(ts) do
+      dt
+    else
+      _ -> nil
+    end
   end
 
   # ---------------------------------------------------------------------------
