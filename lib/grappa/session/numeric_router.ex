@@ -95,7 +95,9 @@ defmodule Grappa.Session.NumericRouter do
       (which is always the own-nick echo) and to filter the param scan
       (a routed numeric's own-nick mention is never a destination).
     * `labels_pending` — `%{label_string => window_ref}` tracking
-      labeled-response correlations. Bounded by in-flight commands.
+      labeled-response correlations. Bounded by in-flight commands AND a
+      lazy `@pending_ttl_ms` sweep in `Session.Server` (S10) — a withheld
+      labeled reply can't strand an entry for the process lifetime.
   """
   @type router_state :: %{
           required(:own_nick) => String.t() | nil,

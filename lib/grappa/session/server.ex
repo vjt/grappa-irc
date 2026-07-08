@@ -438,14 +438,20 @@ defmodule Grappa.Session.Server do
           # (a registered-phase CAP DEL is not handled — out of S4 scope).
           caps_active: MapSet.t(String.t()),
           # S4.2: in-flight label → origin_window correlations for the
-          # `labeled-response` cap. Bounded to currently-in-flight tracked
-          # commands (typically <10 at a time; users issue one command, wait
-          # for response, issue next). Entries are removed on numeric arrival
-          # (see handle_numeric_with_routing/2) so the map stays small.
-          # NOT persisted across crashes — a crash clears the window, and
-          # any labeled numerics that arrive post-restart are routed via
-          # param-derived or last_command_window fallback.
+          # `labeled-response` cap. Entries are removed on the labeled numeric
+          # arriving (see handle_numeric_with_routing/2). S10: a withheld
+          # labeled reply (dropped line / non-conforming ircd) would otherwise
+          # strand the entry for the process lifetime, so `labels_pending_at`
+          # stamps each prime and the next prime sweeps entries older than
+          # @pending_ttl_ms — same lazy-TTL bound as `in_flight_joins`. Kept
+          # as a sibling stamp map so the value stays a pristine `window_ref()`
+          # (NumericRouter's closed type). NOT persisted across crashes.
           labels_pending: %{String.t() => window_ref()},
+          # S10: monotonic-ms prime stamp for each `labels_pending` label,
+          # driving the lazy TTL sweep. Swept + written in lockstep with
+          # `labels_pending` (prime in `prepare_label/2`, drop in the labeled-
+          # numeric drain) so the two never diverge.
+          labels_pending_at: %{String.t() => integer()},
           # S4.3: last window that originated a cicchetto command. Updated
           # on every `:send_*` call that carries an origin_window. Used by
           # NumericRouter as the `:active` fallback when labeled-response
@@ -473,7 +479,10 @@ defmodule Grappa.Session.Server do
           # is_operator, idle_seconds, signon, channels}`. Populated by
           # EventRouter on 311/312/313/317/319 and drained by 318
           # RPL_ENDOFWHOIS into a `{:whois_bundle, target, accum}` effect.
-          # Bounded by in-flight /whois commands (typically 0-1 at a time).
+          # Bounded by in-flight /whois commands (typically 0-1 at a time)
+          # AND a lazy @pending_ttl_ms sweep (S10) — a withheld 318 can't
+          # strand the entry. Each value carries an internal `:__primed_at_ms`
+          # stamp (invisible to the wire builder's explicit field extraction).
           whois_pending: %{String.t() => map()},
           # CP22 cluster B — per-target WHO accumulator. Keyed by
           # lowercased target channel. Entry shape:
@@ -483,7 +492,8 @@ defmodule Grappa.Session.Server do
           # 315 RPL_ENDOFWHO into N+1 `{:persist, :notice, attrs}` effects
           # (one per reply + one EOF terminator), routed to the target
           # channel if joined or `$server` otherwise. Bounded by in-flight
-          # /who commands (typically 0-1 at a time).
+          # /who commands (typically 0-1 at a time) AND the S10 lazy
+          # @pending_ttl_ms sweep (withheld 315 can't strand the entry).
           who_pending: %{String.t() => map()},
           # P-0d — pending LUSERS accumulator. Bahamut emits a fixed
           # sequence (251 → 252 → 253? → 254 → 255 → 265 → 266) on connect-
@@ -513,7 +523,8 @@ defmodule Grappa.Session.Server do
           # effect (broadcast on the user topic, NOT persisted — mirror of
           # the whois_pending accumulator). The drain is gated on a pending
           # entry, so a bare JOIN seeds members without opening a modal.
-          # NOT persisted across crashes — operator re-types /names.
+          # Bounded also by the S10 lazy @pending_ttl_ms sweep (withheld 366
+          # can't strand the entry). NOT persisted across crashes.
           names_pending: %{String.t() => map()},
           # P-0c — pending WHOWAS accumulators keyed by lowercased target
           # nick. Set up on `:send_whowas`; 314 RPL_WHOWASUSER appends an
@@ -522,7 +533,8 @@ defmodule Grappa.Session.Server do
           # the LAST entry; 369 RPL_ENDOFWHOWAS emits `{:whowas_bundle,
           # target, accum}` and 406 ERR_WASNOSUCHNICK emits a bundle with
           # `not_found: true`. Bounded by in-flight /whowas commands
-          # (typically 0-1 at a time). NOT persisted across crashes.
+          # (typically 0-1 at a time) AND the S10 lazy @pending_ttl_ms sweep
+          # (withheld 369/406 can't strand the entry). NOT persisted.
           whowas_pending: %{String.t() => map()},
           # Channel directory (#84) refresh tunables — config-derived at
           # boot (`config :grappa, Grappa.ChannelDirectory`), opts-overridable
@@ -692,6 +704,8 @@ defmodule Grappa.Session.Server do
       auto_away_timer: nil,
       caps_active: MapSet.new(),
       labels_pending: %{},
+      # S10 — sibling prime-stamp map for the labels_pending lazy TTL sweep.
+      labels_pending_at: %{},
       last_command_window: nil,
       modes_per_chunk: 3,
       linelen: 512,
@@ -1209,7 +1223,7 @@ defmodule Grappa.Session.Server do
   # to drain it; harmless until the next /whois replaces the entry.
   def handle_call({:send_whois, target}, _, state) when is_binary(target) do
     nick_key = Identifier.canonical_nick(target)
-    next_pending = Map.put(state.whois_pending, nick_key, %{target_display: target})
+    next_pending = prime_pending(state.whois_pending, nick_key, %{target_display: target})
     next_state = %{state | whois_pending: next_pending}
     {:reply, Client.send_whois(state.client, target), next_state}
   end
@@ -1227,7 +1241,7 @@ defmodule Grappa.Session.Server do
     nick_key = Identifier.canonical_nick(target)
 
     next_pending =
-      Map.put(state.whowas_pending, nick_key, %{target_display: target, entries: []})
+      prime_pending(state.whowas_pending, nick_key, %{target_display: target, entries: []})
 
     next_state = %{state | whowas_pending: next_pending}
     {:reply, Client.send_whowas(state.client, target), next_state}
@@ -1250,7 +1264,7 @@ defmodule Grappa.Session.Server do
   # arrive to drain it; harmless until the next /who replaces the entry.
   def handle_call({:send_who, target}, _, state) when is_binary(target) do
     chan_key = String.downcase(target)
-    next_pending = Map.put(state.who_pending, chan_key, %{target_display: target, replies: []})
+    next_pending = prime_pending(state.who_pending, chan_key, %{target_display: target, replies: []})
     next_state = %{state | who_pending: next_pending}
     {:reply, Client.send_who(state.client, target), next_state}
   end
@@ -1272,7 +1286,7 @@ defmodule Grappa.Session.Server do
     chan_key = String.downcase(target)
 
     next_pending =
-      Map.put(state.names_pending, chan_key, %{target_display: target, names: []})
+      prime_pending(state.names_pending, chan_key, %{target_display: target, names: []})
 
     next_state = %{state | names_pending: next_pending}
     {:reply, Client.send_names(state.client, target), next_state}
@@ -2093,10 +2107,12 @@ defmodule Grappa.Session.Server do
         delegate(msg, state)
 
       routing ->
-        # Consume label if matched (keeps labels_pending bounded).
+        # Consume label if matched (keeps labels_pending bounded). S10 —
+        # drop the sibling stamp in lockstep so the two maps never diverge.
         label = Message.tag(msg, "label")
         labels_pending = if label, do: Map.delete(state.labels_pending, label), else: state.labels_pending
-        state_with_labels = %{state | labels_pending: labels_pending}
+        labels_pending_at = if label, do: Map.delete(state.labels_pending_at, label), else: state.labels_pending_at
+        state_with_labels = %{state | labels_pending: labels_pending, labels_pending_at: labels_pending_at}
 
         numeric_code = numeric_code(msg)
         trailing = List.last(msg.params)
@@ -2599,8 +2615,18 @@ defmodule Grappa.Session.Server do
 
     if MapSet.member?(state.caps_active, "labeled-response") do
       label = generate_label()
-      labels_pending = Map.put(state.labels_pending, label, origin_window)
-      {label, %{state | labels_pending: labels_pending}}
+      # S10 — prime the label + its sibling stamp, sweeping any label whose
+      # labeled reply never arrived (stale > @pending_ttl_ms). last_command_window
+      # keeps the RAW window_ref (no stamp) so its `window_ref()` type is intact.
+      now = System.monotonic_time(:millisecond)
+      live_at = sweep_stale(state.labels_pending_at, now, fn at, _ -> at end)
+
+      {label,
+       %{
+         state
+         | labels_pending: state.labels_pending |> Map.take(Map.keys(live_at)) |> Map.put(label, origin_window),
+           labels_pending_at: Map.put(live_at, label, now)
+       }}
     else
       {nil, state}
     end
@@ -2610,6 +2636,53 @@ defmodule Grappa.Session.Server do
   # sufficient uniqueness for in-flight correlation (bounded, short-lived map).
   @spec generate_label() :: String.t()
   defp generate_label, do: Ecto.UUID.generate()
+
+  # ---------------------------------------------------------------------------
+  # S10 — pending-accumulator lazy TTL sweep
+  # ---------------------------------------------------------------------------
+
+  # WHOIS/WHO/NAMES/WHOWAS accumulators (and labels_pending) shrink only on
+  # the terminator numeric (318/315/366/369-or-406 / the labeled reply). A
+  # withheld terminator — a dropped line or a non-conforming/hostile ircd —
+  # would otherwise strand the entry for the always-on process lifetime. This
+  # is the same failure mode `in_flight_joins` already guards against, so we
+  # reuse its lazy pattern: stamp each entry at prime time with a monotonic
+  # ms, and evict entries older than @pending_ttl_ms on the NEXT prime. No
+  # separate Process.send_after timer — the sweep is O(map) amortized onto the
+  # already-happening prime. 60s ≫ any real terminator latency (even a
+  # many-line /WHO on a large channel resolves in seconds), so a legitimate
+  # in-flight bundle is never dropped mid-stream.
+  @pending_ttl_ms 60_000
+
+  # Drop every `{key, value}` whose `read_stamp.(value, now)` monotonic ms is
+  # older than @pending_ttl_ms. Shared "verb" for both stamp-storage shapes:
+  # the open-map accumulators stamp in-value (`:__primed_at_ms`), labels_pending
+  # stamps in its sibling `labels_pending_at`. `now` is threaded so a
+  # (theoretical) unstamped entry defaults to "fresh" rather than being evicted.
+  @spec sweep_stale(map(), integer(), (term(), integer() -> integer())) :: map()
+  defp sweep_stale(pending, now, read_stamp) when is_map(pending) do
+    cutoff = now - @pending_ttl_ms
+
+    pending
+    |> Enum.reject(fn {_k, v} -> read_stamp.(v, now) < cutoff end)
+    |> Map.new()
+  end
+
+  # Prime an open-map accumulator (whois/who/names/whowas): sweep stale
+  # entries, then insert `value` stamped with the current monotonic ms under
+  # the internal `:__primed_at_ms` key. The stamp never reaches the wire — the
+  # `*_bundle` builders read the accumulator via explicit `Map.get` field
+  # extraction — and dies with the entry on drain (Map.delete of the whole key),
+  # so no drain site needs to know about it.
+  @spec prime_pending(%{optional(String.t()) => map()}, String.t(), map()) ::
+          %{optional(String.t()) => map()}
+  defp prime_pending(pending, key, value) when is_map(pending) and is_map(value) do
+    now = System.monotonic_time(:millisecond)
+
+    pending
+    |> sweep_stale(now, fn v, default -> Map.get(v, :__primed_at_ms, default) end)
+    |> Map.put(key, Map.put(value, :__primed_at_ms, now))
+  end
 
   # ---------------------------------------------------------------------------
   # NumericRouter state builder

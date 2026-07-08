@@ -5554,6 +5554,57 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # S10 — a withheld terminator (dropped 318 / hostile ircd) must not
+    # strand the pending entry for the process lifetime. Mirrors the
+    # in_flight_joins lazy-TTL sweep: seed a stale entry directly via
+    # :sys.replace_state (same `:__primed_at_ms`-stamped shape the prime
+    # writes), then prime a fresh /whois — the insert sweeps first.
+    test "TTL: whois_pending entries older than the TTL are swept on next prime", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      stale_at = System.monotonic_time(:millisecond) - 61_000
+
+      _ =
+        :sys.replace_state(pid, fn state ->
+          %{state | whois_pending: %{"ghost" => %{target_display: "ghost", __primed_at_ms: stale_at}}}
+        end)
+
+      assert :ok = Session.send_whois({:user, user.id}, network.id, "fresh")
+      _ = IRCServer.wait_for_line(server, &(&1 == "WHOIS fresh\r\n"), 1_000)
+
+      state = :sys.get_state(pid)
+      refute Map.has_key?(state.whois_pending, "ghost")
+      assert Map.has_key?(state.whois_pending, "fresh")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "TTL: whois_pending entries within the TTL survive the next prime", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      recent_at = System.monotonic_time(:millisecond) - 5_000
+
+      _ =
+        :sys.replace_state(pid, fn state ->
+          %{state | whois_pending: %{"recent" => %{target_display: "recent", __primed_at_ms: recent_at}}}
+        end)
+
+      assert :ok = Session.send_whois({:user, user.id}, network.id, "fresh")
+      _ = IRCServer.wait_for_line(server, &(&1 == "WHOIS fresh\r\n"), 1_000)
+
+      state = :sys.get_state(pid)
+      assert Map.has_key?(state.whois_pending, "recent")
+      assert Map.has_key?(state.whois_pending, "fresh")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "311+312+313+317+319+318 burst broadcasts whois_bundle on Topic.user/1", %{
       server: server,
       user: user,
