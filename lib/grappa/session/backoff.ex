@@ -234,6 +234,27 @@ defmodule Grappa.Session.Backoff do
     GenServer.cast(__MODULE__, {:reset, {subject, network_id}})
   end
 
+  @doc """
+  Evict ALL per-network failure counters for `subject` — the
+  subject-destruction hook (S11).
+
+  `reset/2` / `record_success/2` clear a single `(subject, network_id)`
+  key, but a destroyed visitor subject is never coming back under the
+  same id: each fresh anon login mints a new UUID, so a crash-before-001
+  followed by the visitor row's deletion (`Visitors.purge_if_anon` /
+  `Visitors.delete` at the reap + admin choke points) would strand every
+  `{{:visitor, uuid}, _}` entry for the node lifetime — a PUBLIC-OPEN
+  churn leak. `forget/1` `match_delete`s every network for the subject at
+  the single delete/reap choke point.
+
+  Synchronous (`call`): the caller has just deleted the DB row and the
+  ETS eviction must have happened before it returns.
+  """
+  @spec forget(Session.subject()) :: :ok
+  def forget(subject) do
+    GenServer.call(__MODULE__, {:forget, subject})
+  end
+
   @doc false
   @spec failure_count(Session.subject(), integer()) :: non_neg_integer()
   def failure_count(subject, network_id) when is_integer(network_id) do
@@ -260,6 +281,15 @@ defmodule Grappa.Session.Backoff do
       end
 
     :ets.insert(@table, {key, new_count, System.monotonic_time(:millisecond)})
+    {:reply, :ok, state}
+  end
+
+  # S11 — evict every `{{subject, _network_id}, _count, _ts}` row for the
+  # destroyed subject. Serviced by `call` so a late `record_failure` from a
+  # crashing session can't slip in between the row delete and the eviction.
+  def handle_call({:forget, subject}, _, state) do
+    :ets.match_delete(@table, {{subject, :_}, :_, :_})
+    :telemetry.execute([:grappa, :session, :backoff, :forget], %{count: 1}, %{subject: subject})
     {:reply, :ok, state}
   end
 

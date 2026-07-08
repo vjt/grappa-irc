@@ -445,6 +445,12 @@ defmodule Grappa.Visitors do
   @doc """
   Delete a visitor row. The DB-level FK ON DELETE CASCADE on
   `messages`, and `sessions` wipes dependents in the same transaction.
+
+  This is the single reap + admin delete choke point (`Visitors.Reaper`,
+  `Operator.delete_visitor`, `AccountDeletion`), so it also evicts the
+  subject's `Session.Backoff` ETS entries (S11): the destroyed UUID never
+  logs in again, so its per-network failure counters would otherwise
+  orphan for the node lifetime.
   """
   @spec delete(Ecto.UUID.t()) :: :ok | {:error, :not_found}
   def delete(visitor_id) when is_binary(visitor_id) do
@@ -454,6 +460,7 @@ defmodule Grappa.Visitors do
 
       visitor ->
         {:ok, _} = Repo.delete(visitor)
+        :ok = Session.Backoff.forget({:visitor, visitor.id})
         :ok
     end
   end
@@ -753,6 +760,11 @@ defmodule Grappa.Visitors do
 
       %Visitor{password_encrypted: nil} = visitor ->
         {:ok, _} = Repo.delete(visitor)
+        # S11 — the anon subject is destroyed here (login case-1 failure /
+        # preempt); evict its Backoff entries so the retired UUID leaves no
+        # orphan. The registered clause below is a no-op: the identity
+        # persists, so its backoff history must survive.
+        :ok = Session.Backoff.forget({:visitor, visitor.id})
         :ok
 
       %Visitor{} ->

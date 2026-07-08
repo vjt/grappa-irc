@@ -147,6 +147,42 @@ defmodule Grappa.Session.BackoffTest do
     end
   end
 
+  describe "forget/1" do
+    # S11: a destroyed visitor subject mints a fresh UUID on the next anon
+    # login, so its `{{:visitor, uuid}, network_id}` backoff rows would
+    # otherwise orphan for the node lifetime. forget/1 evicts ALL networks
+    # for the subject at the visitor delete/reap choke point.
+    test "evicts every network entry for the subject" do
+      :ok = Backoff.record_failure({:visitor, "v1"}, 1)
+      :ok = Backoff.record_failure({:visitor, "v1"}, 1)
+      :ok = Backoff.record_failure({:visitor, "v1"}, 2)
+
+      assert Backoff.failure_count({:visitor, "v1"}, 1) == 2
+      assert Backoff.failure_count({:visitor, "v1"}, 2) == 1
+
+      :ok = Backoff.forget({:visitor, "v1"})
+
+      assert Backoff.failure_count({:visitor, "v1"}, 1) == 0
+      assert Backoff.failure_count({:visitor, "v1"}, 2) == 0
+    end
+
+    test "leaves other subjects untouched" do
+      :ok = Backoff.record_failure({:visitor, "v1"}, 1)
+      :ok = Backoff.record_failure({:visitor, "v2"}, 1)
+      :ok = Backoff.record_failure({:user, "u1"}, 1)
+
+      :ok = Backoff.forget({:visitor, "v1"})
+
+      assert Backoff.failure_count({:visitor, "v1"}, 1) == 0
+      assert Backoff.failure_count({:visitor, "v2"}, 1) == 1
+      assert Backoff.failure_count({:user, "u1"}, 1) == 1
+    end
+
+    test "is a no-op for a subject with no entries" do
+      assert :ok = Backoff.forget({:visitor, "never-seen"})
+    end
+  end
+
   describe "ETS persistence across caller crashes" do
     test "failure recorded by a now-dead caller is still queryable" do
       key_subject = {:visitor, "ephemeral"}

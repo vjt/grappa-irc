@@ -11,6 +11,7 @@ defmodule Grappa.VisitorsTest do
 
   alias Grappa.{Accounts, Visitors}
   alias Grappa.Accounts.Session
+  alias Grappa.Session.Backoff
   alias Grappa.Visitors.Visitor
 
   @network "azzurra"
@@ -395,6 +396,19 @@ defmodule Grappa.VisitorsTest do
     test "returns {:error, :not_found} for unknown visitor_id" do
       assert {:error, :not_found} = Visitors.delete(Ecto.UUID.generate())
     end
+
+    # S11: delete/1 is the reap + admin choke point — evicting the row must
+    # also evict the subject's Backoff ETS entries, or they orphan for the
+    # node lifetime (the destroyed UUID never logs in again).
+    test "evicts the subject's Backoff entries" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-bo", @network, "1.2.3.4")
+      :ok = Backoff.record_failure({:visitor, v.id}, 1)
+      assert Backoff.failure_count({:visitor, v.id}, 1) == 1
+
+      assert :ok = Visitors.delete(v.id)
+
+      assert Backoff.failure_count({:visitor, v.id}, 1) == 0
+    end
   end
 
   # CP24 bucket E lifecycle/S1: visitor sessions had no equivalent of
@@ -508,6 +522,31 @@ defmodule Grappa.VisitorsTest do
 
       assert %Visitor{} = Repo.get(Visitor, v.id)
       assert %Session{} = Repo.get(Session, session.id)
+    end
+
+    # S11: the login case-1 failure branch purges the just-provisioned anon
+    # via this path — the delete must evict the subject's Backoff entries too
+    # (a crash-before-001 mid-provision seeds them).
+    test "anon delete evicts the subject's Backoff entries" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-bo2", @network, "1.2.3.4")
+      :ok = Backoff.record_failure({:visitor, v.id}, 1)
+      assert Backoff.failure_count({:visitor, v.id}, 1) == 1
+
+      assert :ok = Visitors.purge_if_anon(v.id)
+
+      assert Backoff.failure_count({:visitor, v.id}, 1) == 0
+    end
+
+    # S11: a registered visitor is NOT destroyed (row preserved, identity
+    # persists) — its backoff history must survive the no-op purge.
+    test "registered no-op purge leaves Backoff entries intact" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-bo3", @network, "1.2.3.4")
+      {:ok, _registered} = Visitors.commit_password(v.id, "s3cret")
+      :ok = Backoff.record_failure({:visitor, v.id}, 1)
+
+      assert :ok = Visitors.purge_if_anon(v.id)
+
+      assert Backoff.failure_count({:visitor, v.id}, 1) == 1
     end
 
     test "missing row → no-op (idempotent)" do
