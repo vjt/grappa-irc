@@ -455,6 +455,26 @@ read-cursor with an invalid `message_id` on service-nick query windows
 still bannable. Validate edits with
 `fail2ban-regex <line> <filter.conf> '<ignoreregex>'`.
 
+**Admin login brute-force coverage (S6, 2026-07-09).** The `http-400`
+jail's filter is extended via an upgrade-safe
+`filter.d/nginx-bad-request.local` carrying **three** `failregex`
+lines (all share the jail's `maxretry 8` / `findtime 600s`): the
+original malformed-request `… "[^"]*" 400`, plus
+`… "POST /auth/login[^"]*" 401` (admin credential brute-force — the
+app returns a clean 401 on a bad login, so this is edge-side only,
+zero BEAM change) and `… "[^"]*" 403` (host-wide 403 accretion —
+catches scanners probing `/admin`, leakix, etc.). Reload with
+`fail2ban-client reload http-400`; validate every line with
+`fail2ban-regex` on the live `irc.openssl.it-access.log` BEFORE reload.
+**NEVER broaden this filter to an all-endpoint `401` match.** The
+shared `http-400` jail tails **all ~50 vhost access logs** and the
+`main` log format has **no vhost field**, so an all-401 rule cannot
+scope to grappa — it would ban legit HTTP basic-auth challenge 401s on
+`mon.openssl.it` (9000+/day) and `rspam.openssl.it` (~2000/day) after
+8 page loads, self-DoSing the operator. If grappa ever needs
+"any 401 on grappa" banning, stand up a **dedicated** jail tailing
+only `irc.openssl.it-access.log`, never touch the shared filter.
+
 ## CSP / security headers (nginx-added, NOT Phoenix)
 
 The Content-Security-Policy + sibling security headers
