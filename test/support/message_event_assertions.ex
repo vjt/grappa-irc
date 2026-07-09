@@ -40,17 +40,20 @@ defmodule Grappa.MessageEventAssertions do
         body: "hello",
         channel: "#sniffo",
         network_id: "test",
-        kind: "privmsg",
+        kind: :privmsg,
         meta: %{}
       )
 
       assert is_integer(msg.id)
       assert is_integer(msg.server_time)
 
-  Per `Grappa.Scrollback.Wire.to_json/1` (B6.3 / HIGH-26), the wire
-  shape stringifies `kind` at the boundary — so `kind:` expectations
-  must use string literals (`"privmsg"`, `"notice"`, etc.), NOT
-  atoms (`:privmsg`).
+  This macro matches the PRE-serialization broadcast term (before
+  Phoenix's socket serializer runs `Jason.encode!/1`). Per
+  `Grappa.Scrollback.Wire.to_json/1` (S14), `kind` is the
+  `Message.kind()` ATOM in that term — Jason stringifies it only at
+  the JSON edge — so `kind:` expectations must use atoms (`:privmsg`,
+  `:notice`, …), NOT string literals. REST-JSON assertions (on
+  `json_response/2` output) still read the stringified `"privmsg"`.
   """
   defmacro assert_message_event(expected_attrs, timeout \\ 1_000) do
     quote do

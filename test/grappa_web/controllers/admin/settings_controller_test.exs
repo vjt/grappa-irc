@@ -255,7 +255,7 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
         event: "event",
         payload: %{
           kind: "server_settings_changed",
-          upload: %{active_host: "litterbox"}
+          upload: %{active_host: :litterbox}
         }
       }
     end

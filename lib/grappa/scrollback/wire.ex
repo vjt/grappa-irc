@@ -40,7 +40,7 @@ defmodule Grappa.Scrollback.Wire do
           network: String.t(),
           channel: String.t(),
           server_time: integer(),
-          kind: String.t(),
+          kind: Message.kind(),
           sender: String.t(),
           body: String.t() | nil,
           meta: Meta.t()
@@ -77,27 +77,34 @@ defmodule Grappa.Scrollback.Wire do
   fails loudly otherwise. Adding a field to the wire requires
   extending the schema first, then this function and `t/0`.
 
-  ## kind atom-stringify (no-silent-drops B6.3 / HIGH-26)
+  ## kind — atom passes through, codegen pins the literal union (S14)
 
   `Message.kind` is an `Ecto.Enum` over `@kinds` (atom values).
   `Jason.encode!/1` converts atom values to JSON strings on its own,
-  so the wire ALWAYS shipped a string — but this module's `t/0`
-  typespec declared `kind: Message.kind()` (atom), and the same
-  module's `archive_entry/1` correctly atom-stringified its `kind`
-  via `Atom.to_string/1`. Two patterns in one file. Now both
-  `to_json/1` and `t/0` are consistent: `kind: String.t()` typespec,
-  explicit `Atom.to_string(m.kind)` at the wire boundary. Lifts the
-  closed-set convention out of the implicit Jason-conversion path
-  and into a typed contract Dialyzer can read.
+  so the wire ALWAYS ships a string. `t/0` declares `kind:
+  Message.kind()` — the closed atom union — and `to_json/1` passes the
+  atom through UNCHANGED (Jason stringifies at the JSON boundary,
+  identical bytes to `Atom.to_string/1`). This is the
+  `server_reply_source` precedent (`Grappa.Session.Wire`): keep the
+  atom in the typed contract so `mix grappa.gen_wire_types` emits a
+  LITERAL string union (`"privmsg" | "notice" | ...`) that cic asserts
+  against, instead of the `kind: String.t()` widening that erased the
+  closed set from codegen (review S14). Superseding the earlier B6.3
+  `Atom.to_string(m.kind)` boundary: that produced a `String.t()` value
+  Dialyzer could not type as a union, defeating the codegen gate — the
+  atom-through form is strictly stronger (Dialyzer reads the union AND
+  codegen pins it). `archive_entry/1` keeps its own `Atom.to_string/1`
+  because its `:channel | :query` set is not a `Message.kind()` and has
+  no generated counterpart.
   """
   @spec to_json(Message.t()) :: t()
-  def to_json(%Message{network: %Network{slug: slug}} = m) do
+  def to_json(%Message{network: %Network{slug: slug}, kind: kind} = m) when kind != nil do
     %{
       id: m.id,
       network: slug,
       channel: m.channel,
       server_time: m.server_time,
-      kind: Atom.to_string(m.kind),
+      kind: kind,
       sender: m.sender,
       body: m.body,
       meta: m.meta

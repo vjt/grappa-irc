@@ -49,16 +49,16 @@ defmodule Grappa.Scrollback.WireTest do
                network: network.slug,
                channel: "#sniffo",
                server_time: 42,
-               kind: "privmsg",
+               kind: :privmsg,
                sender: "vjt",
                body: "msg 42",
                meta: %{}
              }
     end
 
-    # B6.3 / HIGH-26: kind is atom-stringified at the wire boundary
-    # (was implicit-via-Jason; now explicit to match the @type t spec).
-    test "stringifies :kind atom for non-privmsg kinds",
+    # S14: kind is the Message.kind() ATOM in the term (Jason
+    # stringifies at the JSON edge; codegen pins the literal union).
+    test "carries the :kind atom in the term for non-privmsg kinds",
          %{user: user, network: network} do
       {:ok, _} =
         ScrollbackHelpers.insert(sample(user, network, 0, %{kind: :nick_change, body: nil, meta: %{new_nick: "vjt2"}}))
@@ -66,9 +66,20 @@ defmodule Grappa.Scrollback.WireTest do
       [fetched] = Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 10, nil)
       wire = fetched |> Repo.preload(:network) |> Wire.to_json()
 
-      assert wire.kind == "nick_change"
+      assert wire.kind == :nick_change
       assert wire.body == nil
       assert wire.meta == %{new_nick: "vjt2"}
+    end
+
+    # S14: prove the WIRE BYTES are unchanged — Jason stringifies the
+    # kind atom to the same JSON value the former `Atom.to_string/1`
+    # emitted, so no runtime contract change reaches cic.
+    test "Jason encodes the kind atom to its string on the wire",
+         %{user: user, network: network} do
+      {:ok, msg} = ScrollbackHelpers.insert(sample(user, network, 7, %{kind: :notice}))
+      wire = msg |> Repo.preload(:network) |> Wire.to_json()
+
+      assert Jason.decode!(Jason.encode!(wire))["kind"] == "notice"
     end
 
     test "does NOT expose user_id (decision G3 — topic discriminator, not payload)",

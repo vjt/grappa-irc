@@ -3400,7 +3400,8 @@ defmodule Grappa.Session.Server do
   # on the user-level PubSub topic so cicchetto can update its status display.
   # REV-H H3: the atom→string conversion lives at the Wire boundary
   # (`SessionWire.away_confirmed/2` accepts the `:present | :away` atom
-  # directly), mirroring `Scrollback.Wire.to_json/1`'s `Atom.to_string(m.kind)`.
+  # directly), mirroring `Scrollback.Wire.to_json/1`'s atom-through
+  # `kind` (Jason stringifies at the JSON edge; S14).
   defp apply_effects([{:away_confirmed, away_atom} | rest], state)
        when away_atom in [:present, :away] do
     :ok =

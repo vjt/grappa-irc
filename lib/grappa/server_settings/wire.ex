@@ -23,14 +23,22 @@ defmodule Grappa.ServerSettings.Wire do
   `socket.channel(...).join()`, and an existing snapshot site for
   cold WS subscribe parity.
 
-  ## Wire shape — atoms-out
+  ## Wire shape — atom passes through, codegen pins the literal union (S15)
 
   `Grappa.ServerSettings.public_view/0` returns the upload subtree
-  with the host as an atom (`:embedded | :litterbox`). Wire shape
-  flattens to the string the cic side reads (mirrors
-  `GrappaWeb.ServerSettingsController`'s `GET /api/server-settings`). Adding a field to
-  the upload subtree is one edit here + one mirror in the cic-side
-  narrower; no second wire-shape definition to keep in sync.
+  with the host as an atom (`ServerSettings.upload_host/0` =
+  `:embedded | :litterbox`). The Wire typespec declares
+  `active_host: :embedded | :litterbox` and `upload_view/1` passes the
+  atom through UNCHANGED — `Jason.encode!/1` stringifies it at the JSON
+  edge (identical bytes to the former `Atom.to_string/1`), while
+  `mix grappa.gen_wire_types` emits a LITERAL string union
+  (`"embedded" | "litterbox"`) that cic asserts against, instead of the
+  `active_host: String.t()` widening that erased the closed set from
+  codegen (review S15). Same `server_reply_source` precedent as
+  `Grappa.Session.Wire`. The union mirrors `ServerSettings.upload_host/0`;
+  a third host (`:s3`) is one edit there + here. Adding an upload
+  subtree field is one edit in `upload_view/1`; no second wire-shape
+  definition to keep in sync.
   """
 
   use Boundary, top_level?: true, deps: []
@@ -43,7 +51,7 @@ defmodule Grappa.ServerSettings.Wire do
   `upload.*` field is one edit here, not three.
   """
   @type upload_view :: %{
-          active_host: String.t(),
+          active_host: :embedded | :litterbox,
           image_per_file_cap_bytes: pos_integer(),
           video_per_file_cap_bytes: pos_integer(),
           document_per_file_cap_bytes: pos_integer(),
@@ -62,12 +70,12 @@ defmodule Grappa.ServerSettings.Wire do
 
   @doc """
   Renders the `upload` subtree of `Grappa.ServerSettings.public_view/0`
-  to its public wire shape. Atoms-out: `:embedded` / `:litterbox` →
-  string. Shared by every wire-emitter to keep the field set
-  single-source.
+  to its public wire shape. The `:embedded | :litterbox` host atom
+  passes through unchanged (Jason stringifies at the JSON edge; S15).
+  Shared by every wire-emitter to keep the field set single-source.
   """
   @spec upload_view(%{
-          active_host: atom(),
+          active_host: :embedded | :litterbox,
           image_per_file_cap_bytes: pos_integer(),
           video_per_file_cap_bytes: pos_integer(),
           document_per_file_cap_bytes: pos_integer(),
@@ -76,7 +84,7 @@ defmodule Grappa.ServerSettings.Wire do
         }) :: upload_view()
   def upload_view(%{} = upload) do
     %{
-      active_host: Atom.to_string(upload.active_host),
+      active_host: upload.active_host,
       image_per_file_cap_bytes: upload.image_per_file_cap_bytes,
       video_per_file_cap_bytes: upload.video_per_file_cap_bytes,
       document_per_file_cap_bytes: upload.document_per_file_cap_bytes,

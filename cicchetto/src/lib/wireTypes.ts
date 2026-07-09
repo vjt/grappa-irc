@@ -10,6 +10,19 @@ export type NetworksCredentialAuthMethod = IRCAuthFSMAuthMethod;
 
 export type NetworksCredentialConnectionState = "connected" | "parked" | "failed";
 
+export type ScrollbackMessageKind =
+  | "privmsg"
+  | "notice"
+  | "action"
+  | "join"
+  | "part"
+  | "quit"
+  | "nick_change"
+  | "mode"
+  | "topic"
+  | "kick"
+  | "server_event";
+
 export type ScrollbackMetaT = Record<string, unknown>;
 
 // === Grappa.Accounts.Wire ===
@@ -465,7 +478,7 @@ export type ScrollbackWireT = {
   network: string;
   channel: string;
   server_time: number;
-  kind: string;
+  kind: ScrollbackMessageKind;
   sender: string;
   body: string | null;
   meta: ScrollbackMetaT;
@@ -501,7 +514,7 @@ export type ScrollbackWireArchivePurgedPayload = {
 // === Grappa.ServerSettings.Wire ===
 
 export type ServerSettingsWireUploadView = {
-  active_host: string;
+  active_host: "embedded" | "litterbox";
   image_per_file_cap_bytes: number;
   video_per_file_cap_bytes: number;
   document_per_file_cap_bytes: number;
@@ -684,7 +697,7 @@ export type SessionWireMentionsBundleMessage = {
   channel: string;
   sender: string;
   body: string | null;
-  kind: string;
+  kind: ScrollbackMessageKind;
 };
 
 export type SessionWireMentionsBundlePayload = {

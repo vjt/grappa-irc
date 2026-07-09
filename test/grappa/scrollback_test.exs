@@ -1374,7 +1374,7 @@ defmodule Grappa.ScrollbackTest do
       assert wire.id == message.id
       assert wire.channel == "#sniffo"
       assert wire.server_time == 42
-      assert wire.kind == "privmsg"
+      assert wire.kind == :privmsg
       assert wire.sender == "vjt"
       assert wire.body == "hello"
       assert wire.meta == %{}

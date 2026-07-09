@@ -296,7 +296,7 @@ defmodule Grappa.Session.Wire do
           channel: String.t(),
           sender: String.t(),
           body: String.t() | nil,
-          kind: String.t()
+          kind: Message.kind()
         }
 
   @type mentions_bundle_payload :: %{
@@ -817,9 +817,10 @@ defmodule Grappa.Session.Wire do
   @doc """
   Cross-channel mentions summary fired on auto-away → present
   transition. Per-message map is a deliberately-stripped projection
-  of `Scrollback.Wire.t/0`. `Message.kind()` (atom) is converted to
-  string at the Wire boundary inside this fn — callers pass
-  `Message.t()` instances unchanged.
+  of `Scrollback.Wire.t/0`. `Message.kind()` (atom) passes through the
+  Wire boundary unchanged (Jason stringifies at the JSON edge) so
+  codegen pins the same literal union — callers pass `Message.t()`
+  instances unchanged (S14).
   """
   @spec mentions_bundle(String.t(), String.t(), String.t(), String.t() | nil, [Message.t()]) ::
           mentions_bundle_payload()
@@ -837,13 +838,16 @@ defmodule Grappa.Session.Wire do
   end
 
   @spec project_bundle_message(Message.t()) :: mentions_bundle_message()
-  defp project_bundle_message(%Message{} = m) do
+  defp project_bundle_message(%Message{kind: kind} = m) when kind != nil do
     %{
       server_time: m.server_time,
       channel: m.channel,
       sender: m.sender,
       body: m.body,
-      kind: Atom.to_string(m.kind)
+      # S14 consistency: this sibling Message-kind projection passes the
+      # atom through (Jason stringifies) so codegen pins the same literal
+      # union as `Scrollback.Wire.t/0`, not a widened `String.t()`.
+      kind: kind
     }
   end
 

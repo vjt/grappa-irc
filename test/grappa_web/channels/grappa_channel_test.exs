@@ -862,7 +862,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         }
       })
 
-      assert active_host in ["embedded", "litterbox"]
+      assert active_host in [:embedded, :litterbox]
       assert is_integer(image_cap) and image_cap > 0
       assert is_integer(video_cap) and video_cap > 0
       assert is_integer(document_cap) and document_cap > 0
@@ -884,7 +884,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         upload: %{active_host: active_host}
       })
 
-      assert active_host in ["embedded", "litterbox"]
+      assert active_host in [:embedded, :litterbox]
     end
 
     test "after-join snapshot: query_windows_list payload is JSON-serializable (regression)" do

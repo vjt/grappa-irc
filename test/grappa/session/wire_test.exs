@@ -473,14 +473,14 @@ defmodule Grappa.Session.WireTest do
                    channel: "#grappa",
                    sender: "alice",
                    body: "vjt: hey",
-                   kind: "privmsg"
+                   kind: :privmsg
                  },
                  %{
                    server_time: 1_700_000_002,
                    channel: "#grappa",
                    sender: "bob",
                    body: "vjt: pong",
-                   kind: "action"
+                   kind: :action
                  }
                ]
              }

@@ -4,7 +4,7 @@ defmodule Grappa.ServerSettings.WireTest do
   alias Grappa.ServerSettings.Wire
 
   describe "server_settings_changed/1 — wire shape" do
-    test "renders embedded host as string" do
+    test "passes embedded host atom through (Jason stringifies at the edge)" do
       view = %{
         upload: %{
           active_host: :embedded,
@@ -19,7 +19,10 @@ defmodule Grappa.ServerSettings.WireTest do
       payload = Wire.server_settings_changed(view)
 
       assert payload.kind == "server_settings_changed"
-      assert payload.upload.active_host == "embedded"
+      # S15: the host atom passes through the term unchanged; the Jason
+      # boundary (see the encodable test below) stringifies it to
+      # "embedded" so the wire bytes are identical.
+      assert payload.upload.active_host == :embedded
       assert payload.upload.image_per_file_cap_bytes == 10_485_760
       assert payload.upload.video_per_file_cap_bytes == 52_428_800
       assert payload.upload.document_per_file_cap_bytes == 10_485_760
@@ -27,7 +30,7 @@ defmodule Grappa.ServerSettings.WireTest do
       assert payload.upload.global_cap_bytes == 10_737_418_240
     end
 
-    test "renders litterbox host as string" do
+    test "passes litterbox host atom through" do
       view = %{
         upload: %{
           active_host: :litterbox,
@@ -41,7 +44,7 @@ defmodule Grappa.ServerSettings.WireTest do
 
       payload = Wire.server_settings_changed(view)
 
-      assert payload.upload.active_host == "litterbox"
+      assert payload.upload.active_host == :litterbox
       assert payload.upload.image_per_file_cap_bytes == 5_000_000
       assert payload.upload.video_per_file_cap_bytes == 6_000_000
       assert payload.upload.document_per_file_cap_bytes == 7_000_000
@@ -90,10 +93,10 @@ defmodule Grappa.ServerSettings.WireTest do
     end
   end
 
-  describe "upload_view/1 — shared atoms-out projection" do
+  describe "upload_view/1 — shared atom-through projection" do
     test "renders embedded with explicit field set" do
       assert %{
-               active_host: "embedded",
+               active_host: :embedded,
                image_per_file_cap_bytes: 10_485_760,
                video_per_file_cap_bytes: 52_428_800,
                document_per_file_cap_bytes: 10_485_760,
@@ -111,7 +114,7 @@ defmodule Grappa.ServerSettings.WireTest do
     end
 
     test "renders litterbox" do
-      assert %{active_host: "litterbox"} =
+      assert %{active_host: :litterbox} =
                Wire.upload_view(%{
                  active_host: :litterbox,
                  image_per_file_cap_bytes: 1,

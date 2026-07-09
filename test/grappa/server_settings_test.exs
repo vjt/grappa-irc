@@ -125,7 +125,7 @@ defmodule Grappa.ServerSettingsTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
         event: "event",
-        payload: %{kind: "server_settings_changed", upload: %{active_host: "litterbox"}}
+        payload: %{kind: "server_settings_changed", upload: %{active_host: :litterbox}}
       }
     end
 
