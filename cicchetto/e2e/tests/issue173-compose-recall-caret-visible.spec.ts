@@ -102,9 +102,15 @@ test("issue173 — gesture (fast up-flick) recall scrolls the end-caret into vie
   const ta = composeTextarea(page);
   await expect(ta).toHaveValue("");
 
-  // Empty draft = at BOTH scroll edges → a fast up-flick (same tick → ~0ms →
-  // ≫0.3px/ms) claims + classifies "up" → recallPrev. Proves the touchend
-  // entry point routes through the same caret-scroll helper as keydown.
+  // #178: gesture recall now fires ONLY on a NON-empty draft (an empty
+  // compose + flick is scroll/look-at-history, not recall). Seed a short
+  // in-progress draft so the fast up-flick is allowed to recall; a short
+  // non-overflowing draft is still at both scroll edges, so the flick
+  // still claims + classifies "up" → recallPrev (which stashes the draft
+  // and pulls LONG_BODY). Proves the touchend entry point routes through
+  // the same caret-scroll helper as keydown.
+  await ta.fill("wip");
+  await expect(ta).toHaveValue("wip");
   await synthSwipe(page, { startX: 100, startY: 300, endX: 100, endY: 220, slowMs: 0 });
   await expect(ta).toHaveValue(LONG_BODY, { timeout: 2_000 });
 
