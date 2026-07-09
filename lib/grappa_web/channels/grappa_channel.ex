@@ -85,7 +85,9 @@ defmodule GrappaWeb.GrappaChannel do
   - `"banlist"` — query the channel ban list. Payload: `%{"network_id" => id,
     "channel" => chan}`. Issues `MODE #chan b` (no sign); server replies with 367/368.
 
-  - `"whois"` — issue WHOIS on a nick. Payload: `%{"network_id" => id, "nick" => nick}`.
+  - `"whois"` — issue WHOIS on a nick. Payload: `%{"network_id" => id, "nick" => nick}`,
+    with an optional `"server"` (#198 — RFC 2812 §3.6.2 target-server routing:
+    when present the emitted frame is `WHOIS <server> <nick>`, else `WHOIS <nick>`).
     Server primes the per-target accumulator and emits `WHOIS nick`; EventRouter
     folds 311/312/313/317/319 into a bundle and broadcasts it on `Topic.user/1`
     when 318 RPL_ENDOFWHOIS arrives. Per spec #2: bundle is ephemeral — NOT
