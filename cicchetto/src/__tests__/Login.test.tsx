@@ -42,6 +42,22 @@ describe("Login", () => {
     expect(screen.getByRole("button", { name: /log in/i })).toBeInTheDocument();
   });
 
+  it("guards the nick field against mobile-keyboard mangling (#138)", () => {
+    // Mobile Chrome/Android soft keyboards inject a trailing space / an
+    // autocapitalized first letter / an autocorrect suggestion into the
+    // login field, producing `400 malformed_nick`. The field disables
+    // autocapitalize + autocorrect + spellcheck so the keyboard can't
+    // mangle the value at source. autocomplete stays "username" so
+    // password-manager autofill still works on the "Nick or email" field
+    // (the server-side trim in AuthController is the belt-and-suspenders).
+    renderLogin();
+    const field = screen.getByLabelText(/nick or email/i);
+    expect(field).toHaveAttribute("autocapitalize", "none");
+    expect(field).toHaveAttribute("autocorrect", "off");
+    expect(field).toHaveAttribute("spellcheck", "false");
+    expect(field).toHaveAttribute("autocomplete", "username");
+  });
+
   it("calls auth.login with form values on submit", async () => {
     vi.mocked(auth.login).mockResolvedValue(undefined);
     renderLogin();

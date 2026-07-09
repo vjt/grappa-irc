@@ -174,6 +174,9 @@ const Login: Component = () => {
           id="login-identifier"
           type="text"
           autocomplete="username"
+          autocapitalize="none"
+          autocorrect="off"
+          spellcheck={false}
           value={identifier()}
           onInput={(e) => setIdentifier(e.currentTarget.value)}
           required

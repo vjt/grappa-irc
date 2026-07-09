@@ -97,7 +97,7 @@ defmodule GrappaWeb.AuthController do
 
     case validate_captcha_token(captcha_token) do
       :ok ->
-        case IdentifierClassifier.classify(id) do
+        case IdentifierClassifier.classify(sanitize_identifier(id)) do
           {:email, email} -> mode1_login(conn, email, password)
           {:nick, nick} -> visitor_login(conn, nick, password, captcha_token)
           {:error, :malformed} -> {:error, :malformed_nick}
@@ -109,6 +109,33 @@ defmodule GrappaWeb.AuthController do
   end
 
   def login(_, _), do: {:error, :bad_request}
+
+  # #138 — sanitize the login identifier at the HTTP boundary before
+  # classification. Mobile Chrome/Android soft keyboards inject a
+  # trailing space (or other surrounding whitespace / non-printable
+  # control chars) via autocapitalize/autocorrect/autofill, which trips
+  # the anchored nick regex in `Identifier.valid_nick?/1` → the login
+  # 400s with `malformed_nick` BEFORE the password is ever checked, so a
+  # legitimate visitor cannot log in from a phone.
+  #
+  # Two-step, order matters: strip C0 + DEL + C1 control chars
+  # (`\x00-\x1F`, `\x7F`, `\x80-\x9F` — never valid in a nick or email,
+  # and an interior control char would survive a bare trim) FIRST, then
+  # `String.trim/1` the surrounding whitespace (Unicode-aware — also
+  # eats the NBSP ` ` some keyboards emit). This is the single
+  # boundary: it runs upstream of BOTH the email and nick branches and
+  # upstream of `Login.validate_nick/1`'s second classify, and it keeps
+  # `IdentifierClassifier` / `Identifier.valid_nick?` pure syntactic
+  # predicates (they deliberately do NOT trim — see their tests), per
+  # the CLAUDE.md "convert/sanitize at the boundary, not inside business
+  # logic" rule.
+  @control_chars ~r/[\x{0000}-\x{001F}\x{007F}-\x{009F}]/u
+  @spec sanitize_identifier(String.t()) :: String.t()
+  defp sanitize_identifier(id) do
+    id
+    |> String.replace(@control_chars, "")
+    |> String.trim()
+  end
 
   # M-web-3: captcha_token is operator-attacker-controlled wire input.
   # Reject non-binary (JSON `42`, `null`, lists, maps) and oversize

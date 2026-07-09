@@ -177,6 +177,34 @@ defmodule GrappaWeb.AuthControllerTest do
       assert json_response(conn, 400)["error"] == "malformed_nick"
     end
 
+    # #138 — mobile Chrome/Android soft keyboards inject a trailing space
+    # (or other surrounding whitespace / non-printable control chars) into
+    # the login field via autocapitalize/autocorrect/autofill. Pre-fix that
+    # tripped the anchored nick regex → 400 malformed_nick before the
+    # password check, so a legit visitor could not log in from a phone. The
+    # controller now sanitizes the identifier (trim surrounding whitespace +
+    # strip control chars) at the boundary BEFORE classification, so a nick
+    # with a trailing space logs in as the trimmed nick.
+    test "nick with a trailing space is trimmed → 200 + subject{nick: trimmed}", %{conn: conn} do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      task = Task.async(fn -> post(conn, "/auth/login", %{"identifier" => "vjt "}) end)
+
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+
+      result = Task.await(task, 10_000)
+      body = json_response(result, 200)
+
+      assert body["subject"]["kind"] == "visitor"
+      assert body["subject"]["nick"] == "vjt"
+
+      v = Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra")
+      assert v
+      stop_visitor_session(v.id, network.id)
+    end
+
     # M-web-3: captcha_token shape validation. Reject non-binary or
     # oversize tokens at the boundary BEFORE any Login.login/2 work
     # (which would forward the abuse-shaped payload to the Turnstile /
