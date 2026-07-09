@@ -4,7 +4,7 @@ defmodule GrappaWeb.Admin.TestResetSubjectControllerTest do
   `POST /admin/test/reset-subject` (E2E-ROBUSTNESS bucket D, T9).
 
   The seeded user has NO `network_credentials` rows so
-  `SubjectReset.reset!/1`'s respawn loop is empty — no real IRC
+  `SubjectReset.reset!/2`'s respawn loop is empty — no real IRC
   fake needed for the 204 path. Per-credential reconnect-timeout
   + reconnect-failed surfaces (504, 500) are covered by the
   `SubjectReset` unit test; here we just verify the controller's
@@ -14,7 +14,7 @@ defmodule GrappaWeb.Admin.TestResetSubjectControllerTest do
 
   ## Test isolation
 
-  `async: false` because `SubjectReset.reset!/1` reaches into
+  `async: false` because `SubjectReset.reset!/2` reaches into
   singleton ETS tables (NetworkCircuit, WSPresence) and the
   singleton `Grappa.SessionRegistry` — concurrent tests would
   cross-contaminate.

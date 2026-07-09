@@ -152,7 +152,7 @@ if Mix.env() in [:dev, :test] do
     #{@autojoin_timeout_ms}ms after `:session_ready`.
     """
     @spec reset!(String.t(), reset_opts()) :: :ok | {:error, reset_error()}
-    def reset!(user_name, opts \\ %{}) when is_binary(user_name) and is_map(opts) do
+    def reset!(user_name, opts) when is_binary(user_name) and is_map(opts) do
       case Repo.get_by(Accounts.User, name: user_name) do
         nil -> {:error, :user_not_found}
         %Accounts.User{} = user -> do_reset(user, opts)

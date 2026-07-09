@@ -54,9 +54,9 @@ defmodule Grappa.TestSupport.SubjectResetTest do
     %{user: user, network: network, message: msg}
   end
 
-  describe "reset!/1" do
+  describe "reset!/2" do
     test "drains all mutable DB surfaces for the user", %{user: user, network: network} do
-      assert :ok = SubjectReset.reset!(user.name)
+      assert :ok = SubjectReset.reset!(user.name, %{})
 
       assert ReadCursor.get({:user, user.id}, network.id, "#bofh") == nil
       assert QueryWindows.list_for_subject({:user, user.id}) == %{}
@@ -72,7 +72,7 @@ defmodule Grappa.TestSupport.SubjectResetTest do
       {:ok, _} = ReadCursor.set({:user, other.id}, network.id, "#bofh", other_msg.id)
       {:ok, _} = UserSettings.set_highlight_patterns({:user, other.id}, ["keep-me"])
 
-      assert :ok = SubjectReset.reset!(user.name)
+      assert :ok = SubjectReset.reset!(user.name, %{})
 
       other_cursor = ReadCursor.get({:user, other.id}, network.id, "#bofh")
       assert other_cursor != nil
@@ -82,7 +82,10 @@ defmodule Grappa.TestSupport.SubjectResetTest do
 
     test "returns {:error, :user_not_found} for unknown user_name" do
       assert {:error, :user_not_found} =
-               SubjectReset.reset!("ghost-nonexistent-user-#{System.unique_integer([:positive])}")
+               SubjectReset.reset!(
+                 "ghost-nonexistent-user-#{System.unique_integer([:positive])}",
+                 %{}
+               )
     end
   end
 end
