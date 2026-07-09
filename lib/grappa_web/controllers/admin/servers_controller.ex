@@ -34,6 +34,7 @@ defmodule GrappaWeb.Admin.ServersController do
   alias Grappa.Networks.Servers
   alias Grappa.Networks.Servers.AdminWire, as: ServerWire
   alias GrappaWeb.Admin.AuthPlug
+  alias GrappaWeb.Validation
 
   @doc """
   List servers for `network_id`. Returns `200 OK` with
@@ -184,20 +185,9 @@ defmodule GrappaWeb.Admin.ServersController do
     extra = Map.keys(params) -- ["network_id" | ["id" | allowed]]
 
     if extra == [] do
-      {:ok, take_atomized(params, allowed)}
+      {:ok, Validation.take_atomized(params, allowed)}
     else
       {:error, :bad_request}
-    end
-  end
-
-  defp take_atomized(params, keys) do
-    Enum.reduce(keys, %{}, fn key, acc -> put_if_present(acc, params, key) end)
-  end
-
-  defp put_if_present(acc, params, key) do
-    case Map.fetch(params, key) do
-      {:ok, v} -> Map.put(acc, String.to_existing_atom(key), v)
-      :error -> acc
     end
   end
 end

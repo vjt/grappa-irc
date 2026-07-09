@@ -48,6 +48,7 @@ defmodule GrappaWeb.Admin.NetworksController do
   alias Grappa.Admission.NetworkCircuit.AdminWire, as: CircuitWire
   alias Grappa.Networks.AdminWire, as: NetworkWire
   alias GrappaWeb.Admin.AuthPlug
+  alias GrappaWeb.Validation
 
   @doc """
   Enumerate every networks row + project its live circuit state +
@@ -215,20 +216,9 @@ defmodule GrappaWeb.Admin.NetworksController do
     extra = Map.keys(params) -- allowed
 
     if extra == [] do
-      {:ok, take_atomized(params, allowed)}
+      {:ok, Validation.take_atomized(params, allowed)}
     else
       {:error, :bad_request}
-    end
-  end
-
-  defp take_atomized(params, keys) do
-    Enum.reduce(keys, %{}, fn key, acc -> put_if_present(acc, params, key) end)
-  end
-
-  defp put_if_present(acc, params, key) do
-    case Map.fetch(params, key) do
-      {:ok, v} -> Map.put(acc, String.to_existing_atom(key), v)
-      :error -> acc
     end
   end
 
@@ -256,18 +246,9 @@ defmodule GrappaWeb.Admin.NetworksController do
     extra = keys -- allowed
 
     if extra == [] do
-      {:ok, atomize_caps(params, allowed)}
+      {:ok, Validation.take_atomized(params, allowed)}
     else
       {:error, :bad_request}
     end
-  end
-
-  defp atomize_caps(params, allowed) do
-    Enum.reduce(allowed, %{}, fn key, acc ->
-      case Map.fetch(params, key) do
-        {:ok, v} -> Map.put(acc, String.to_existing_atom(key), v)
-        :error -> acc
-      end
-    end)
   end
 end

@@ -52,6 +52,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
   alias Grappa.Networks.Credentials
   alias Grappa.Networks.Credentials.AdminWire
   alias GrappaWeb.Admin.AuthPlug
+  alias GrappaWeb.Validation
 
   @doc """
   Enumerate every (user, network) credential row + project
@@ -270,7 +271,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
     extra = keys -- @allowed_update_keys
 
     if extra == [] do
-      {:ok, atomize(params, @allowed_update_keys)}
+      {:ok, Validation.take_atomized(params, @allowed_update_keys, &maybe_atomize_auth_method/2)}
     else
       {:error, :bad_request}
     end
@@ -287,19 +288,10 @@ defmodule GrappaWeb.Admin.CredentialsController do
     extra = keys -- @allowed_create_keys
 
     if extra == [] and Map.has_key?(params, "nick") and Map.has_key?(params, "auth_method") do
-      {:ok, atomize(params, @allowed_create_keys)}
+      {:ok, Validation.take_atomized(params, @allowed_create_keys, &maybe_atomize_auth_method/2)}
     else
       {:error, :bad_request}
     end
-  end
-
-  defp atomize(params, allowed) do
-    Enum.reduce(allowed, %{}, fn key, acc ->
-      case Map.fetch(params, key) do
-        {:ok, v} -> Map.put(acc, String.to_existing_atom(key), maybe_atomize_auth_method(key, v))
-        :error -> acc
-      end
-    end)
   end
 
   # auth_method is an Ecto.Enum; the changeset accepts string OR

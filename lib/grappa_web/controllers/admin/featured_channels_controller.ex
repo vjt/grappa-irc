@@ -24,6 +24,7 @@ defmodule GrappaWeb.Admin.FeaturedChannelsController do
   alias Grappa.Networks
   alias Grappa.Networks.FeaturedChannels
   alias Grappa.Networks.FeaturedChannels.AdminWire
+  alias GrappaWeb.Validation
 
   @attrs ["name", "description", "position", "enabled"]
 
@@ -104,20 +105,9 @@ defmodule GrappaWeb.Admin.FeaturedChannelsController do
     extra = Map.keys(params) -- ["network_id" | ["id" | @attrs]]
 
     if extra == [] do
-      {:ok, take_atomized(params, @attrs)}
+      {:ok, Validation.take_atomized(params, @attrs)}
     else
       {:error, :bad_request}
-    end
-  end
-
-  defp take_atomized(params, keys) do
-    Enum.reduce(keys, %{}, fn key, acc -> put_if_present(acc, params, key) end)
-  end
-
-  defp put_if_present(acc, params, key) do
-    case Map.fetch(params, key) do
-      {:ok, v} -> Map.put(acc, String.to_existing_atom(key), v)
-      :error -> acc
     end
   end
 end

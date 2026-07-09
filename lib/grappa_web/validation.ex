@@ -71,4 +71,40 @@ defmodule GrappaWeb.Validation do
   def validate_post_target_name("$server"), do: {:error, :bad_request}
 
   def validate_post_target_name(name), do: validate_target_name(name)
+
+  @doc """
+  Atomizes a whitelisted subset of string-keyed `params` into an
+  atom-keyed attrs map — the shared PATCH/POST helper for the admin
+  JSON controllers (`servers`, `users`, `networks`, `featured_channels`,
+  `credentials`).
+
+  Only keys **present** in `params` land in the result: a whitelisted
+  key absent from `params` is omitted, never `nil`-filled, so an empty
+  result map is a valid no-op update. Every retained key resolves via
+  `String.to_existing_atom/1` — the caller MUST have already rejected
+  non-whitelisted keys (extra keys → `{:error, :bad_request}`), so the
+  atom is guaranteed to exist.
+
+  The `/2` form is identity-valued — the correct behavior for a
+  controller with no per-field normalization. The `/3` form threads each
+  retained value through `value_fun.(key, value)`, letting a controller
+  normalize a field at the boundary (e.g. `credentials` atomizes the
+  `auth_method` `Ecto.Enum` string so a typo surfaces as a changeset
+  validation error against the enum allowlist rather than a silent
+  no-op). Both share one reduce so the whitelist semantics can never
+  drift between controllers (a widened/narrowed copy is a security
+  regression — CLAUDE.md "Implement once, reuse everywhere").
+  """
+  @spec take_atomized(map(), [String.t()]) :: map()
+  def take_atomized(params, keys), do: take_atomized(params, keys, fn _key, v -> v end)
+
+  @spec take_atomized(map(), [String.t()], (String.t(), term() -> term())) :: map()
+  def take_atomized(params, keys, value_fun) do
+    Enum.reduce(keys, %{}, fn key, acc ->
+      case Map.fetch(params, key) do
+        {:ok, v} -> Map.put(acc, String.to_existing_atom(key), value_fun.(key, v))
+        :error -> acc
+      end
+    end)
+  end
 end

@@ -47,6 +47,7 @@ defmodule GrappaWeb.Admin.UsersController do
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias GrappaWeb.Admin.AuthPlug
   alias GrappaWeb.UserSocket
+  alias GrappaWeb.Validation
 
   @doc """
   Enumerate every user row + project per-row live_session_count.
@@ -212,7 +213,7 @@ defmodule GrappaWeb.Admin.UsersController do
     extra = Map.keys(params) -- allowed
 
     if extra == [] and Map.has_key?(params, "name") and Map.has_key?(params, "password") do
-      {:ok, take_atomized(params, allowed)}
+      {:ok, Validation.take_atomized(params, allowed)}
     else
       if extra == [], do: {:error, :bad_request}, else: {:error, :bad_request}
     end
@@ -223,7 +224,7 @@ defmodule GrappaWeb.Admin.UsersController do
     extra = Map.keys(params) -- ["id" | allowed]
 
     if extra == [] do
-      {:ok, take_atomized(params, allowed)}
+      {:ok, Validation.take_atomized(params, allowed)}
     else
       {:error, :bad_request}
     end
@@ -237,20 +238,9 @@ defmodule GrappaWeb.Admin.UsersController do
     extra = keys -- allowed
 
     if extra == [] do
-      {:ok, take_atomized(params, allowed)}
+      {:ok, Validation.take_atomized(params, allowed)}
     else
       {:error, :bad_request}
-    end
-  end
-
-  defp take_atomized(params, keys) do
-    Enum.reduce(keys, %{}, fn key, acc -> put_if_present(acc, params, key) end)
-  end
-
-  defp put_if_present(acc, params, key) do
-    case Map.fetch(params, key) do
-      {:ok, v} -> Map.put(acc, String.to_existing_atom(key), v)
-      :error -> acc
     end
   end
 end
