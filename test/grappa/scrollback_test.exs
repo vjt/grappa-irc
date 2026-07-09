@@ -2048,4 +2048,33 @@ defmodule Grappa.ScrollbackTest do
              """
     end
   end
+
+  # S33 (2026-07-08 codebase review — rides-along) — the network-delete
+  # gate `has_messages_for_network?/1` reads `WHERE network_id = ? LIMIT
+  # 1`. Every composite messages index leads with user_id / visitor_id,
+  # so pre-fix that read (and the RESTRICT-FK child scan on network
+  # delete) full-scanned the largest table. The leading `[:network_id]`
+  # index turns both into an index seek.
+  describe "S33 — messages.network_id leading index" do
+    test "has_messages_for_network?/1 query plan uses messages_network_id_index",
+         %{user: user, network: net} do
+      for st <- [10, 20, 30], do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, st))
+
+      # Mirrors `has_messages_for_network?/1`'s query verbatim.
+      %Exqlite.Result{rows: rows} =
+        Repo.query!(
+          "EXPLAIN QUERY PLAN SELECT 1 FROM messages WHERE network_id = ? LIMIT 1",
+          [net.id]
+        )
+
+      plan = Enum.map_join(rows, "\n", fn [_, _, _, detail] -> detail end)
+
+      assert plan =~ "messages_network_id_index",
+             """
+             Expected EXPLAIN QUERY PLAN to SEARCH via messages_network_id_index
+             (not SCAN messages), got:
+             #{plan}
+             """
+    end
+  end
 end
