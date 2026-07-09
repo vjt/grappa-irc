@@ -18,6 +18,7 @@ import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
+import { mediaViewerState } from "./lib/mediaViewer";
 import { networks, user } from "./lib/networks";
 import { senderPrefix, snapshotSenderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
@@ -729,6 +730,11 @@ const ScrollbackPane: Component<Props> = (props) => {
   // UP (scrollTop decreased → leave the tail) from a programmatic content-
   // grow above the viewport (scrollTop unchanged → keep following).
   let lastScrollTop = 0;
+  // #196 — scrollTop snapshot captured when the media-viewer overlay opens,
+  // re-asserted across the overlay's open/close so the preview never strands
+  // the reader (see the effect near the activation block below). Plain let —
+  // pure mutation, no Solid reactivity.
+  let viewerScrollSnapshot: number | null = null;
   const [atBottom, setAtBottom] = createSignal(true);
   // UX-3 Z3 R4: actual-overflow gate for the `pan-y → chrome reveal`
   // trap. Recomputed on every layout-affecting signal (messages,
@@ -1159,6 +1165,37 @@ const ScrollbackPane: Component<Props> = (props) => {
       }
     });
   });
+
+  // #196 — preserve the reader's scroll position across the media-viewer
+  // overlay (image/video/audio preview). Opening the preview was dropping the
+  // scrollback list's scrollTop, stranding the reader far from where they
+  // were ("re-reading old messages as if new"). ScrollbackPane owns the scroll
+  // container and is the single scroll authority — the fixed overlay can't
+  // reach `listRef` — so the capture/restore lives here, keyed on the
+  // overlay's open/close EDGE (`defer: true` skips the initial mount). Snapshot
+  // the position when the overlay opens; re-assert it across the next two
+  // frames (matching `scrollToActivation`'s rAF×2 — any perturbation lands
+  // after the overlay's layout commits) and again on close, so NEITHER
+  // transition yanks the viewport. Restoring the operator's own captured
+  // position can never move them anywhere they weren't already.
+  createEffect(
+    on(
+      () => mediaViewerState() !== null,
+      (open) => {
+        if (!listRef) return;
+        if (open) viewerScrollSnapshot = listRef.scrollTop;
+        const target = viewerScrollSnapshot;
+        if (target === null) return;
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            if (listRef && listRef.scrollTop !== target) listRef.scrollTop = target;
+            if (!open) viewerScrollSnapshot = null;
+          }),
+        );
+      },
+      { defer: true },
+    ),
+  );
 
   createEffect(
     on(shouldAutoFocusOnOwnJoin, (shouldFocus) => {
