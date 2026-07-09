@@ -432,6 +432,39 @@ defmodule Grappa.Deploy.PreflightTest do
       refute Preflight.extract_state_block(unparseable) ==
                Preflight.extract_state_block(parseable)
     end
+
+    test "extracts an init/1 {:ok, %{...}} map literal (S25 — deploy.sh's promised third shape)" do
+      source = """
+      defmodule Foo do
+        use GenServer
+
+        @impl true
+        def init(_opts) do
+          {:ok, %{count: 0, peers: %{}}}
+        end
+      end
+      """
+
+      block = Preflight.extract_state_block(source)
+      assert block =~ "count: 0"
+      assert block =~ "peers:"
+    end
+
+    test "an init/1 map is extracted but a same-shaped {:ok, %{...}} in another function is NOT (scoping)" do
+      # Session.Server's RPL_LIST parser returns `{:ok, %{name: ...}}`
+      # from a NON-init helper — that must never be read as state shape.
+      source = """
+      defmodule Foo do
+        def init(_), do: {:ok, %{a: 1}}
+
+        defp parse_list_reply(x), do: {:ok, %{name: x, count: 0}}
+      end
+      """
+
+      block = Preflight.extract_state_block(source)
+      assert block =~ "a: 1"
+      refute block =~ "name:"
+    end
   end
 
   describe "classify_state_shape/2 — long-lived module state-shape diff" do
@@ -510,6 +543,96 @@ defmodule Grappa.Deploy.PreflightTest do
                 a: integer(),
                 b: String.t()
               }
+      end
+      """
+
+      assert :hot = Preflight.classify_state_shape(from_src, to_src)
+    end
+
+    test "field added inside an init/1 {:ok, %{...}} map literal → :cold (S25)" do
+      # The S25 gap: a module carrying state as a bare init map with
+      # NEITHER @type t NOR defstruct. deploy.sh:20-23 promises this
+      # shape is detected; before the fix the classifier collected
+      # nothing → false :hot → the silent-corruption class.
+      from_src = """
+      defmodule Foo do
+        def init(_), do: {:ok, %{a: 1}}
+      end
+      """
+
+      to_src = """
+      defmodule Foo do
+        def init(_), do: {:ok, %{a: 1, b: 2}}
+      end
+      """
+
+      assert :cold = Preflight.classify_state_shape(from_src, to_src)
+    end
+
+    test "field added inside init/1 {:ok, %{...}, {:continue, _}} → :cold" do
+      from_src = """
+      defmodule Foo do
+        def init(_), do: {:ok, %{a: 1}, {:continue, :boot}}
+      end
+      """
+
+      to_src = """
+      defmodule Foo do
+        def init(_), do: {:ok, %{a: 1, b: 2}, {:continue, :boot}}
+      end
+      """
+
+      assert :cold = Preflight.classify_state_shape(from_src, to_src)
+    end
+
+    test "field added inside a GUARDED init/1 head's {:ok, %{...}} → :cold" do
+      # A guarded head quotes as `{:when, _, [{:init, _, [_]}, guard]}`;
+      # the classifier must unwrap it or the same false-HOT gap reopens.
+      from_src = """
+      defmodule Foo do
+        def init(opts) when is_list(opts), do: {:ok, %{a: 1}}
+      end
+      """
+
+      to_src = """
+      defmodule Foo do
+        def init(opts) when is_list(opts), do: {:ok, %{a: 1, b: 2}}
+      end
+      """
+
+      assert :cold = Preflight.classify_state_shape(from_src, to_src)
+    end
+
+    test "ETS-only init/1 {:ok, %{}} unchanged across revs → :hot (no false-COLD)" do
+      # Backoff / NetworkCircuit boot as `{:ok, %{}}` (state in ETS).
+      # An empty init map is stable → must stay :hot, or every deploy
+      # touching those files forces a needless cold restart.
+      source = """
+      defmodule Foo do
+        def init(_) do
+          _ = :ets.new(:t, [:named_table])
+          {:ok, %{}}
+        end
+      end
+      """
+
+      assert :hot = Preflight.classify_state_shape(source, source)
+    end
+
+    test "a {:ok, %{...}} change OUTSIDE init/1 does not force :cold (scoping)" do
+      # Only the init/1 return is state shape. A shape change in an
+      # unrelated helper (e.g. an RPL_LIST parser) must stay :hot.
+      from_src = """
+      defmodule Foo do
+        def init(_), do: {:ok, %{a: 1}}
+        defp parse(x), do: {:ok, %{name: x}}
+      end
+      """
+
+      to_src = """
+      defmodule Foo do
+        def init(_), do: {:ok, %{a: 1}}
+        defp parse(x), do: {:ok, %{name: x, extra: true}}
       end
       """
 

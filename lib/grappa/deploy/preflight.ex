@@ -355,9 +355,15 @@ defmodule Grappa.Deploy.Preflight do
     String.starts_with?(path, "config/") and String.ends_with?(path, ".exs")
   end
 
-  # Walk the AST collecting nodes that match either:
-  #   * `@type t :: %{...}` — bare-map state shape
-  #   * `defstruct ...`     — struct state shape
+  # Walk the AST collecting nodes that match any of:
+  #   * `@type t :: %{...}`     — bare-map state typespec
+  #   * `defstruct ...`         — struct state shape
+  #   * `init/1` `{:ok, %{...}}` map literal — the state a GenServer
+  #     that carries its shape as a bare init map (no @type/defstruct)
+  #     boots with. `deploy.sh:20-23` promises this third shape is
+  #     detected; without this clause a field-add to such a map
+  #     classifies HOT and the next callback pattern-matches the new
+  #     shape against OLD in-memory state (silent-corruption class).
   # Returns a list of quoted forms (one per match) so the caller can
   # render to a comparable string.
   defp collect_state_blocks(ast) do
@@ -371,11 +377,52 @@ defmodule Grappa.Deploy.Preflight do
         {:defstruct, _, _} = node, acc ->
           {node, [node | acc]}
 
+        # `def init(_) do ... end` / `defp init(_) do ... end` (a
+        # guarded head `init(_) when ...` too) — collect the map
+        # literal(s) it returns as state. Scoped to init/1 so a
+        # same-shaped `{:ok, %{...}}` in an unrelated helper (e.g. an
+        # RPL_LIST parser) is NOT mistaken for state shape.
+        {def_kw, _, [head, _]} = node, acc when def_kw in [:def, :defp] ->
+          if init_head?(head), do: {node, init_return_maps(node) ++ acc}, else: {node, acc}
+
         node, acc ->
           {node, acc}
       end)
 
     Enum.reverse(acc)
+  end
+
+  # True when a `def`/`defp` head is the `init/1` callback, unwrapping an
+  # optional `when` guard (`def init(x) when is_map(x)` quotes the head
+  # as `{:when, _, [{:init, _, [_]}, guard]}`).
+  defp init_head?({:when, _, [inner | _]}), do: init_head?(inner)
+  defp init_head?({:init, _, [_]}), do: true
+  defp init_head?(_), do: false
+
+  # Collect the map literal(s) an `init/1` clause returns as its
+  # GenServer state: every `{:ok, %{...}}` (2-tuple) and
+  # `{:ok, %{...}, _}` (n-tuple, e.g. `{:continue, _}`) in the init
+  # body — case/with branches included, so a multi-branch init that
+  # returns different state shapes contributes all of them. A struct
+  # return (`{:ok, %__MODULE__{}}`) is deliberately skipped: its second
+  # element is a `%Struct{}` node, not a bare `%{}`, so its shape is
+  # already tracked via the module's `defstruct`.
+  defp init_return_maps(init_node) do
+    {_, maps} =
+      Macro.prewalk(init_node, [], fn
+        # `{:ok, %{...}}` — 2-tuples are literal tuples in the AST.
+        {:ok, {:%{}, _, _} = map} = node, acc ->
+          {node, [map | acc]}
+
+        # `{:ok, %{...}, _}` — 3+-tuples quote as `{:{}, _, [...]}`.
+        {:{}, _, [:ok, {:%{}, _, _} = map | _]} = node, acc ->
+          {node, [map | acc]}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.reverse(maps)
   end
 
   # Normalize a quoted form to a whitespace-collapsed string. Two
