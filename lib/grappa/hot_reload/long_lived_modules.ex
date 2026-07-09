@@ -24,10 +24,10 @@ defmodule Grappa.HotReload.LongLivedModules do
        attribute blocks;
     2. translates each module to its source-file path
        (`Grappa.Foo.Bar` → `lib/grappa/foo/bar.ex`);
-    3. for each touched long-lived file, extracts the `@type t :: %{...}`
-       and `defstruct ...` blocks at both revs via
-       `Code.string_to_quoted/1` (Elixir's tokenizer is the authority
-       on syntax — no regex);
+    3. for each touched long-lived file, extracts the `@type t :: %{...}`,
+       `defstruct ...`, and `init/1` `{:ok, %{...}}` map-literal state
+       blocks at both revs via `Code.string_to_quoted/1` (Elixir's
+       tokenizer is the authority on syntax — no regex);
     4. classifies COLD if the normalized block strings differ.
 
   CLAUDE.md "Hot vs cold deploy" cites this module by name as the
@@ -50,10 +50,15 @@ defmodule Grappa.HotReload.LongLivedModules do
   they are not directly supervised but their shape is part of the
   parent's hot-reload surface.
 
-  Modules that hold ETS only (state := `%{}` empty) intentionally
-  fall outside the list: their hot-reload surface is the function
-  bodies, not the GenServer state, and `Phoenix.CodeReloader`
-  handles function bodies natively.
+  Modules that hold ETS only (state := `%{}` empty) may still be
+  listed — `Grappa.Session.Backoff` and `Grappa.Admission.NetworkCircuit`
+  are. Their `init/1` returns a stable `{:ok, %{}}`, so the state-shape
+  check extracts an empty map that never differs across revs → they are
+  a permanent no-op today, harmless, and the entry future-proofs the day
+  one gains non-ETS state (the check would then catch the field-add).
+  A pure-ETS module that is *not* listed is equally fine — its
+  hot-reload surface is the function bodies, which `Phoenix.CodeReloader`
+  handles natively. Listing is a judgement call, not a contradiction.
 
   ## Adding a new module
 
@@ -63,7 +68,8 @@ defmodule Grappa.HotReload.LongLivedModules do
     2. If it has a `defstruct`, `Grappa.Deploy.Preflight` extracts
        its shape via the Elixir tokenizer — covers field-additions,
        removals, and rearrangements.
-    3. Same for `@type t :: %{...}` bare-map shapes. (A `defstruct`
+    3. Same for `@type t :: %{...}` bare-map shapes and an `init/1`
+       that returns a bare `{:ok, %{...}}` map literal. (A `defstruct`
        is preferred — it gives Dialyzer something to check too.)
 
   ## Invariants
