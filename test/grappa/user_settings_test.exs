@@ -393,6 +393,27 @@ defmodule Grappa.UserSettingsTest do
       assert result.private_messages_only == ["alice", "bob"]
     end
 
+    test "folds nick whitelist under rfc1459, channels under plain downcase (#121)" do
+      user = user_fixture()
+
+      prefs = %{
+        channel_messages_all: false,
+        # Channels fold via canonical_channel (sigil-gated downcase). `[`/`~`
+        # are NOT national chars for channels, so `#Foo[X]` only lowercases.
+        channel_messages_only: ["#Foo[X]"],
+        channel_mentions: true,
+        private_messages_all: false,
+        # Nicks fold via canonical_nick (rfc1459): `[`→`{`, `~`→`^`, plus case.
+        private_messages_only: ["Foo[Bar]", "quux~"]
+      }
+
+      assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
+
+      result = UserSettings.get_notification_prefs({:user, user.id})
+      assert result.channel_messages_only == ["#foo[x]"]
+      assert result.private_messages_only == ["foo{bar}", "quux^"]
+    end
+
     test "deduplicates whitelist members preserving first-occurrence order" do
       user = user_fixture()
 

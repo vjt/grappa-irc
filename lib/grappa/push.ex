@@ -70,6 +70,7 @@ defmodule Grappa.Push do
     top_level?: true,
     deps: [
       Grappa.Accounts,
+      Grappa.IRC,
       Grappa.Mentions,
       Grappa.Repo,
       Grappa.Scrollback,

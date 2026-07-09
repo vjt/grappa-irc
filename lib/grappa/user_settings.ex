@@ -66,13 +66,13 @@ defmodule Grappa.UserSettings do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Repo, Grappa.Subject],
+    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Subject],
     dirty_xrefs: [Grappa.Visitors.Visitor],
     exports: [Settings]
 
   import Ecto.Query
 
-  alias Grappa.{Accounts.User, Repo, Subject, UserSettings.Settings, Visitors.Visitor}
+  alias Grappa.{Accounts.User, IRC.Identifier, Repo, Subject, UserSettings.Settings, Visitors.Visitor}
 
   @typedoc """
   Per-subject notification preferences — push-notifications cluster B3.
@@ -555,7 +555,7 @@ defmodule Grappa.UserSettings do
   defp cast_lists([key | rest], prefs, subject, acc) do
     case fetch_list(prefs, key) do
       {:ok, v} ->
-        cast_lists(rest, prefs, subject, Map.put(acc, key, normalize_list(v)))
+        cast_lists(rest, prefs, subject, Map.put(acc, key, normalize_list(v, key)))
 
       {:error, reason} ->
         {:error, prefs_changeset_error("#{key} #{reason}", subject)}
@@ -581,13 +581,24 @@ defmodule Grappa.UserSettings do
     end
   end
 
-  # lowercase + trim + drop empties + dedup. Preserves order on first occurrence.
-  defp normalize_list(list) do
+  # trim + case-fold + drop empties + dedup. Preserves order on first
+  # occurrence. The fold is identity-key-correct per list type (#121):
+  # `private_messages_only` is a nick list → canonical_nick/1 (rfc1459,
+  # folds `[ ] \ ~` → `{ } | ^`); `channel_messages_only` is a channel
+  # list → canonical_channel/1 (sigil-gated downcase). A bare
+  # String.downcase would fork foo[bar]/foo{bar} on bahamut and never
+  # match the folded sender in Triggers.sender_in_whitelist?/2.
+  defp normalize_list(list, key) do
+    fold = list_fold(key)
+
     list
-    |> Enum.map(&(&1 |> String.trim() |> String.downcase()))
+    |> Enum.map(&(&1 |> String.trim() |> fold.()))
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
   end
+
+  defp list_fold(:private_messages_only), do: &Identifier.canonical_nick/1
+  defp list_fold(:channel_messages_only), do: &Identifier.canonical_channel/1
 
   defp ensure_at_least_one_trigger(prefs, subject) do
     if Enum.any?(@prefs_trigger_keys, &Map.fetch!(prefs, &1)) do

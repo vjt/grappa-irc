@@ -121,6 +121,33 @@ defmodule Grappa.Push.TriggersTest do
              )
     end
 
+    test "whitelist match folds sender under rfc1459 — bracket → brace (#121)" do
+      # bahamut CASEMAPPING=rfc1459 folds `[` → `{`, so foo[bar] and
+      # foo{bar} are the SAME nick. The stored list is canonicalized to the
+      # folded form (UserSettings.normalize_list), so an inbound foo[bar]
+      # must fold to foo{bar} and match. A plain String.downcase leaves the
+      # bracket untouched → whitelisted DM silently missed.
+      m = msg(channel: "vjt", sender: "foo[bar]", body: "ping")
+
+      assert Triggers.should_notify?(
+               m,
+               "vjt",
+               prefs(private_messages_all: false, private_messages_only: ["foo{bar}"]),
+               []
+             )
+    end
+
+    test "whitelist match folds sender under rfc1459 — tilde → caret + case (#121)" do
+      m = msg(channel: "vjt", sender: "Foo~Baz", body: "ping")
+
+      assert Triggers.should_notify?(
+               m,
+               "vjt",
+               prefs(private_messages_all: false, private_messages_only: ["foo^baz"]),
+               []
+             )
+    end
+
     test "DM does NOT consider channel_messages flags" do
       # A DM with channel_messages_all=true but private_messages_all=false
       # should NOT notify — the DM branch is independent.

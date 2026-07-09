@@ -19,11 +19,11 @@ defmodule Grappa.Push.Triggers do
 
     1. **DM** (`message.channel == own_nick`):
        `prefs.private_messages_all` OR
-       `String.downcase(message.sender) in prefs.private_messages_only`.
+       `Identifier.canonical_nick(message.sender) in prefs.private_messages_only`.
 
     2. **Channel message** (everything else): any of
        `prefs.channel_messages_all` OR
-       `String.downcase(message.channel) in prefs.channel_messages_only` OR
+       `Identifier.canonical_channel(message.channel) in prefs.channel_messages_only` OR
        (`prefs.channel_mentions` AND
        `Mentions.mentioned?(body, own_nick, highlight_patterns)`).
 
@@ -55,6 +55,7 @@ defmodule Grappa.Push.Triggers do
   """
 
   alias Grappa.{Mentions, Push, Subject, UserSettings, WSPresence}
+  alias Grappa.IRC.Identifier
   alias Grappa.Push.Payload
   alias Grappa.Scrollback.Message
 
@@ -206,7 +207,11 @@ defmodule Grappa.Push.Triggers do
   end
 
   defp sender_in_whitelist?(%Message{sender: sender}, prefs) when is_binary(sender) do
-    String.downcase(sender) in Map.get(prefs, :private_messages_only, [])
+    # Fold the sender through the rfc1459 nick SSOT (#121) — never a bare
+    # String.downcase, which leaves `[ ] \ ~` unfolded and misses a
+    # whitelisted foo[bar] when the inbound nick is foo{bar}. The stored
+    # list is canonicalized to the same fold by UserSettings.normalize_list.
+    Identifier.canonical_nick(sender) in Map.get(prefs, :private_messages_only, [])
   end
 
   defp sender_in_whitelist?(_, _), do: false
@@ -218,7 +223,10 @@ defmodule Grappa.Push.Triggers do
   end
 
   defp channel_in_whitelist?(%Message{channel: channel}, prefs) when is_binary(channel) do
-    String.downcase(channel) in Map.get(prefs, :channel_messages_only, [])
+    # Fold via the channel SSOT (sigil-gated downcase) to match the store
+    # path; keeps the nick vs channel fold distinction explicit rather than
+    # a bare downcase that happens to coincide today.
+    Identifier.canonical_channel(channel) in Map.get(prefs, :channel_messages_only, [])
   end
 
   defp channel_in_whitelist?(_, _), do: false
