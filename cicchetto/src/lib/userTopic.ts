@@ -475,9 +475,15 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // P-0d — LUSERS bundle. All counts are integer-or-null (253
       // RPL_LUSERUNKNOWN is optional; defensive nullability covers
       // truncated server responses).
+      //
+      // S44 (codebase review 2026-07-08): dropped the dead `v === null ?
+      // null : null` tautology. Per-field null-coercion of a non-number is
+      // RETAINED deliberately (not whole-payload reject like the file's
+      // state-bearing narrowers): this bundle is a display-only card in the
+      // $server window, and a single garbled optional count should render as
+      // "—", not blow away the 11 good counts alongside it.
       if (typeof r.network !== "string") return null;
-      const intOrNull = (v: unknown): number | null =>
-        typeof v === "number" ? v : v === null ? null : null;
+      const intOrNull = (v: unknown): number | null => (typeof v === "number" ? v : null);
       return {
         kind: "lusers_bundle",
         network: r.network,
