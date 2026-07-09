@@ -104,8 +104,17 @@ defmodule GrappaWeb.Admin.UsersController do
   Admin-panel bucket 2 — rotate a user's password. Dedicated
   endpoint (`PUT /admin/users/:id/password`) so the operator
   doesn't conflate the `:is_admin` toggle with credential
-  rotation. Body: `%{password: string}`. Auth sessions are NOT
-  revoked (token is session-id, not derived from password).
+  rotation. Body: `%{password: string}`.
+
+  S8: after the rotation, revoke ALL of the target's bearer sessions
+  (`revoke_sessions_for_user/1`) and close their live WebSocket
+  (`disconnect_subject/1`). The bearer token is the session-id, NOT
+  derived from the password, so without this an operator rotating a
+  COMPROMISED account's password could not evict the attacker — every
+  previously-minted bearer would stay valid, defeating the point of a
+  forced reset. Only the TARGET's sessions are revoked; an admin
+  rotating another account's password keeps their own session (an admin
+  self-rotating is forced to re-login, the secure default).
   """
   @spec update_password(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}
@@ -113,6 +122,8 @@ defmodule GrappaWeb.Admin.UsersController do
     with {:ok, attrs} <- password_attrs(params),
          %Grappa.Accounts.User{} = user <- Accounts.get_user(id),
          {:ok, updated} <- Accounts.update_password(user, attrs) do
+      :ok = Accounts.revoke_sessions_for_user(updated)
+      :ok = UserSocket.disconnect_subject({:user, updated})
       :ok = emit_user_password_changed(updated, conn)
       counts = LiveIntrospection.count_sessions_by_user()
       json(conn, AdminWire.user_to_admin_json(updated, Map.get(counts, updated.id, 0)))

@@ -207,6 +207,10 @@ config :logger, :console,
     # +r-observed → commit_password log lines so operator can grep
     # the visitor lifecycle across login + first-IDENTIFY.
     :visitor_id,
+    # User identity: `user_id` rides the `revoke_sessions_for_user/1`
+    # audit line (admin password rotation, S8) — sibling of
+    # `visitor_id` on `revoke_sessions_for_visitor/1`.
+    :user_id,
     # IRC client (Phase 2 sub-task 2f): SASL handshake numerics
     # (904 / 905 failures, etc.) ride this key so operator log search
     # can grep "sasl" + numeric in a single pass. `:sasl_user` is the

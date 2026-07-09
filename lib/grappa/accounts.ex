@@ -269,9 +269,9 @@ defmodule Grappa.Accounts do
   bearer token IS the session row id (no derived-from-password
   material in the token), so existing sessions keep working.
 
-  Operators that need to evict every active session must call
-  `revoke_session/1` (or future `revoke_sessions_for_user/1`) on
-  the relevant rows alongside.
+  Operators that need to evict every active session call
+  `revoke_sessions_for_user/1` alongside — the admin rotation endpoint
+  (`PUT /admin/users/:id/password`) does exactly this (S8).
   """
   @spec update_password(User.t(), %{optional(:password) => String.t()}) ::
           {:ok, User.t()} | {:error, Ecto.Changeset.t()}
@@ -462,6 +462,34 @@ defmodule Grappa.Accounts do
     Logger.info(
       "visitor sessions revoked",
       visitor_id: visitor_id,
+      affected: affected
+    )
+
+    :ok
+  end
+
+  @doc """
+  Bulk-revoke every non-revoked `Session` row tied to the given user.
+  Used by admin password rotation (`PUT /admin/users/:id/password`, S8):
+  the bearer token IS the session-id (not derived from the password), so
+  rotating a compromised account's password does NOT invalidate existing
+  bearers on its own — revoking here restores the usual point of a forced
+  reset (evict the attacker).
+
+  Idempotent — a subsequent call finds no candidate rows and updates
+  zero. The affected count rides the audit log so a user with zero prior
+  sessions stays distinguishable from one whose sessions were all already
+  revoked. Sibling of `revoke_sessions_for_visitor/1`.
+  """
+  @spec revoke_sessions_for_user(User.t()) :: :ok
+  def revoke_sessions_for_user(%User{id: user_id}) do
+    query = from(s in Session, where: s.user_id == ^user_id and is_nil(s.revoked_at))
+
+    {affected, _} = Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
+
+    Logger.info(
+      "user sessions revoked",
+      user_id: user_id,
       affected: affected
     )
 

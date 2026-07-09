@@ -278,13 +278,16 @@ defmodule GrappaWeb.Admin.UsersControllerTest do
       assert json_response(conn, 403) == %{"error" => "forbidden"}
     end
 
-    test "200 + rotates the password, leaves auth sessions intact", %{conn: conn} do
-      {target, _} = user_and_session()
-      admin_session = admin_session()
+    test "200 + rotates the password AND revokes the target's sessions (S8)", %{conn: conn} do
+      {target, target_session} = user_and_session()
+      admin_sess = admin_session()
+
+      # The target's bearer authenticates BEFORE the rotation.
+      assert {:ok, _} = Accounts.authenticate(target_session.id)
 
       conn =
         conn
-        |> put_bearer(admin_session.id)
+        |> put_bearer(admin_sess.id)
         |> put_req_header("content-type", "application/json")
         |> put(
           "/admin/users/#{target.id}/password",
@@ -297,6 +300,50 @@ defmodule GrappaWeb.Admin.UsersControllerTest do
 
       reloaded = Accounts.get_user!(target.id)
       assert Argon2.verify_pass("rotated horse staple", reloaded.password_hash)
+
+      # S8: every previously-minted bearer for the target is now revoked —
+      # the point of a forced reset (evict a compromised account).
+      assert {:error, :revoked} = Accounts.authenticate(target_session.id)
+    end
+
+    test "PUT /password closes the target's live WebSocket (S8)", %{conn: conn} do
+      target = user_fixture(name: "wspw-#{System.unique_integer([:positive])}")
+      topic = "user_socket:" <> target.name
+      :ok = GrappaWeb.Endpoint.subscribe(topic)
+
+      admin_sess = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(admin_sess.id)
+        |> put_req_header("content-type", "application/json")
+        |> put(
+          "/admin/users/#{target.id}/password",
+          Jason.encode!(%{password: "rotated horse staple"})
+        )
+
+      assert json_response(conn, 200)
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}, 500
+    end
+
+    test "rotating another user's password leaves the acting admin's session valid (S8)",
+         %{conn: conn} do
+      {target, _} = user_and_session()
+      admin_sess = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(admin_sess.id)
+        |> put_req_header("content-type", "application/json")
+        |> put(
+          "/admin/users/#{target.id}/password",
+          Jason.encode!(%{password: "rotated horse staple"})
+        )
+
+      assert json_response(conn, 200)
+      # Only the TARGET's sessions are revoked — the admin acted on
+      # another account and keeps their own bearer.
+      assert {:ok, _} = Accounts.authenticate(admin_sess.id)
     end
 
     test "404 on unknown id", %{conn: conn} do
