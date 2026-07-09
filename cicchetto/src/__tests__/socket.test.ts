@@ -75,11 +75,13 @@ describe("socket singleton", () => {
     expect(h.mockSocketInstance.connect).not.toHaveBeenCalled();
   });
 
-  it("constructs Socket with /socket and a params callback returning the live token", async () => {
+  it("constructs Socket with an absolute /socket endpoint and a params callback returning the live token", async () => {
     localStorage.setItem("grappa-token", "tok-1");
     await import("../lib/socket");
+    // jsdom serves the test doc from http://localhost:3000/, so the
+    // endpoint is the ws:// absolute form (see socketEndpoint #193 tests).
     expect(h.socketCtor).toHaveBeenCalledWith(
-      "/socket",
+      "ws://localhost:3000/socket",
       expect.objectContaining({ params: expect.any(Function) }),
     );
     const opts = h.socketCtor.mock.calls[0]?.[1] as { params: () => { token: string } };
@@ -163,6 +165,41 @@ describe("socket singleton", () => {
     const eventNames = h.mockJoinPush.receive.mock.calls.map((c) => c[0]);
     expect(eventNames).toContain("error");
     expect(eventNames).toContain("timeout");
+  });
+});
+
+// #193 — the WS reconnect went out over ws:// on an https PWA, hit the
+// :80 vhost's `301 https://…`, and the handshake (which doesn't follow
+// redirects) failed → client stuck on the splash after a BEAM restart.
+// The durable fix: OUR code pins the scheme from the page origin, so the
+// endpoint is always an absolute wss:// on https (never phoenix's
+// derivation, never a stale-SW-pinned ws://).
+describe("socketEndpoint (#193 — force wss on https origin)", () => {
+  it("returns a wss:// absolute endpoint on an https origin", async () => {
+    const { socketEndpoint } = await import("../lib/socket");
+    expect(socketEndpoint({ protocol: "https:", host: "irc.sniffo.org" })).toBe(
+      "wss://irc.sniffo.org/socket",
+    );
+  });
+
+  it("returns wss:// even with a non-default https port (host carries the port)", async () => {
+    const { socketEndpoint } = await import("../lib/socket");
+    expect(socketEndpoint({ protocol: "https:", host: "irc.sniffo.org:8443" })).toBe(
+      "wss://irc.sniffo.org:8443/socket",
+    );
+  });
+
+  it("returns ws:// only on a genuinely plaintext http origin (dev/LAN)", async () => {
+    const { socketEndpoint } = await import("../lib/socket");
+    expect(socketEndpoint({ protocol: "http:", host: "localhost:5173" })).toBe(
+      "ws://localhost:5173/socket",
+    );
+  });
+
+  it("reads the ambient location when no arg is given (jsdom → http://localhost:3000)", async () => {
+    const { socketEndpoint } = await import("../lib/socket");
+    // jsdom serves the doc from http://localhost:3000/ by default.
+    expect(socketEndpoint()).toBe("ws://localhost:3000/socket");
   });
 });
 

@@ -42,6 +42,37 @@ import { recordSocketClose, recordSocketError, recordSocketOpen } from "./socket
 
 let _socket: Socket | null = null;
 
+// #193 — force the correct WS scheme from the page origin, absolutely.
+//
+// Passing the relative `"/socket"` to phoenix.js makes phoenix derive
+// the scheme from `location.protocol` at connect time — normally fine.
+// But the bug: on an https-served PWA a subset of reconnects went out
+// over `ws://` (plaintext :80), the :80 vhost answered `301 https://…`,
+// and a WS handshake does NOT follow redirects → the upgrade failed and
+// the client backoff-looped on the splash after a BEAM restart (34 such
+// `GET /socket/websocket → 301` lines across 5 real clients).
+//
+// The durable fix is to construct an ABSOLUTE endpoint with the scheme
+// pinned by OUR code, not phoenix's derivation: on any `https:` origin
+// the scheme is unconditionally `wss:`; only a genuinely plaintext
+// `http:` origin (dev over http, LAN dev) gets `ws:`. Because the
+// running bundle recomputes this from `location.protocol` at every
+// connect(), a stale service-worker-cached bundle can't pin a `ws://`
+// endpoint either (belt to the SW's own suspenders — the SW denylists
+// `/socket` and never caches the WS upgrade; VitePWA `autoUpdate` swaps
+// the bundle on the next load regardless). SSR / no-DOM → relative
+// `/socket` (jsdom unit tests, no location to read).
+//
+// The server-side `:80` mitigation (proxy the upgrade instead of 301'ing
+// it) is an m42 nginx HOST-config change, out of scope for this fix —
+// noted for the orchestrator. This client change stands on its own.
+export function socketEndpoint(loc?: Location | { protocol: string; host: string }): string {
+  const l = loc ?? (typeof location !== "undefined" ? location : undefined);
+  if (!l) return "/socket";
+  const scheme = l.protocol === "https:" ? "wss:" : "ws:";
+  return `${scheme}//${l.host}/socket`;
+}
+
 // Module-level reference to the joined user-level channel. Set by
 // `joinUser` so `notifyClientClosing` can push the `client_closing`
 // event on pagehide / beforeunload without passing the channel reference
@@ -50,7 +81,7 @@ let _userChannel: Channel | null = null;
 
 function getSocket(): Socket {
   if (_socket === null) {
-    _socket = new Socket("/socket", {
+    _socket = new Socket(socketEndpoint(), {
       params: () => ({ token: token() ?? "" }),
     });
     // SocketHealth wiring — single install at construction time so the
