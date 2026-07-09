@@ -366,3 +366,46 @@ describe("pushAwaySet / pushAwayUnset (S3.4 — /away channel push)", () => {
     await expect(socket.pushAwayUnset("libera")).rejects.toThrow("not connected");
   });
 });
+
+// S21 (codebase review 2026-07-08) — /topic -delete was fire-and-forget:
+// `pushChannelTopicClear` returned void with no `.receive` chain, so a
+// server {:error,_} or a WS-down was swallowed. It now shares the
+// `pushUserChannelVerb` Promise shape (resolve on "ok", reject with a typed
+// ChannelPushError on "error", reject "not connected" when the socket is
+// down) like every other state-changing verb (#154).
+describe("pushChannelTopicClear (S21 — /topic -delete verb ack)", () => {
+  it("rejects 'not connected' when no user channel joined", async () => {
+    localStorage.setItem("grappa-token", "tok-1");
+    const socket = await import("../lib/socket");
+    await expect(socket.pushChannelTopicClear(1, "#a")).rejects.toThrow("not connected");
+  });
+
+  it("pushes the topic_clear payload and resolves on the server 'ok' reply", async () => {
+    localStorage.setItem("grappa-token", "tok-1");
+    const socket = await import("../lib/socket");
+    socket.joinUser("alice");
+
+    const promise = socket.pushChannelTopicClear(7, "#a");
+    const okCb = h.mockPush.receive.mock.calls.find(([ev]) => ev === "ok")?.[1] as () => void;
+    okCb();
+    await promise;
+
+    expect(h.mockChannel.push).toHaveBeenCalledWith("topic_clear", {
+      network_id: 7,
+      channel: "#a",
+    });
+  });
+
+  it("rejects on the server 'error' reply (no silent swallow)", async () => {
+    localStorage.setItem("grappa-token", "tok-1");
+    const socket = await import("../lib/socket");
+    socket.joinUser("alice");
+
+    const promise = socket.pushChannelTopicClear(7, "#a");
+    const errCb = h.mockPush.receive.mock.calls.find(([ev]) => ev === "error")?.[1] as (
+      e: unknown,
+    ) => void;
+    errCb({ error: "no_session" });
+    await expect(promise).rejects.toThrow();
+  });
+});

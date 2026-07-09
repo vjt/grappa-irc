@@ -343,7 +343,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
             };
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/topic -delete: network not found" };
-          pushChannelTopicClear(networkId, ch);
+          // S21: AWAIT the verb ack (#154 no-silent-drops). A WS-down / server
+          // {:error,_} now rejects into the shared catch → friendlyChannelError
+          // inline alert, instead of painting a green ✓ on a dropped frame.
+          await pushChannelTopicClear(networkId, ch);
           result = { ok: true };
           break;
         }

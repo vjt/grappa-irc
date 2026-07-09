@@ -472,9 +472,12 @@ export function pushChannelMode(
 }
 
 // /topic -delete → TOPIC #chan : (empty trailing — irssi convention).
-export function pushChannelTopicClear(networkId: number, channel: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("topic_clear", { network_id: networkId, channel });
+// S21: awaited verb-ack (was fire-and-forget). Routes through the same
+// `pushUserChannelVerb` Promise as the ops verbs — the server handles
+// `topic_clear` via `dispatch_subject_verb/3` (`{:reply, :ok | {:error, _}}`),
+// so a WS-down / server rejection now rejects instead of being swallowed.
+export function pushChannelTopicClear(networkId: number, channel: string): Promise<void> {
+  return pushUserChannelVerb("topic_clear", { network_id: networkId, channel });
 }
 
 // /topic <text> → TOPIC #chan :text (pushed via channel event, not REST postTopic).

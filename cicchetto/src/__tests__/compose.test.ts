@@ -1331,6 +1331,29 @@ describe("compose submit — /topic branches", () => {
     expect(result).toEqual({ ok: true });
   });
 
+  // S21 (codebase review 2026-07-08) — /topic -delete was fire-and-forget:
+  // `pushChannelTopicClear` returned void and compose painted { ok: true }
+  // synchronously, so a WS-down / server {:error,_} was swallowed and the box
+  // showed a false success. It must now `await` the #154 verb-ack Promise and
+  // surface the failure inline, exactly like op/deop/kick/ban/mode.
+  it("/topic -delete surfaces the error when the channel push fails (no false success)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const socket = await import("../lib/socket");
+    const friendly = await import("../lib/friendlyChannelError");
+    const compose = await import("../lib/compose");
+    const err = new api.ChannelPushError("no_session");
+    vi.mocked(socket.pushChannelTopicClear).mockRejectedValueOnce(err);
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/topic -delete");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    // Failure surfaces as the friendly inline error — NOT a green ✓.
+    expect(result).toEqual({ error: friendly.friendlyChannelError(err) });
+    // Draft is preserved so the operator can retry without re-typing.
+    expect(compose.getDraft(k)).toBe("/topic -delete");
+  });
+
   it("/topic bare returns inline error (C3 wires the inline render)", async () => {
     localStorage.setItem("grappa-token", "tok");
     const compose = await import("../lib/compose");
