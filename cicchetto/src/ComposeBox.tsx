@@ -122,6 +122,29 @@ const ComposeBox: Component<Props> = (props) => {
     });
   };
 
+  // #178 — gesture recall fires ONLY on a non-empty compose.
+  //
+  // An empty/short (rows=1) draft sits at BOTH scroll edges, so by the
+  // #123 boundary mapping (`claimAxis`) ANY vertical flick over it claims
+  // the gesture, and a fast up-flick then hands off to `recallPrev` —
+  // pulling an old sent line into a draft the user never intended to
+  // edit. On an empty compose a vertical flick is a "scroll / look at
+  // history" gesture, NOT "recall the last thing I sent"; the two are
+  // indistinguishable to `claimAxis` when there's nothing in the textarea
+  // to scroll. Gating recall on a non-empty draft removes the false
+  // positive while keeping the affordance where it's meaningful: once
+  // you've started typing, swipe-up/down cycles history around your
+  // in-progress draft (which `recallPrev` stashes + `recallNext`
+  // restores).
+  //
+  // Scoped to the GESTURE path only (this `onTouchEnd`). The keydown
+  // ArrowUp/ArrowDown recall (`onKeyDown`) is deliberately untouched — a
+  // physical arrow press on an empty compose is an unambiguous,
+  // long-standing "recall" intent (irssi/readline behavior), with no
+  // scroll-vs-recall ambiguity because there's no boundary-claim step.
+  // `.trim()` so a stray space/newline doesn't count as "content".
+  const gestureRecallAllowed = (): boolean => getDraft(key()).trim() !== "";
+
   // Swipe gestures on the textarea give a stock mobile keyboard (no Tab, no
   // arrows) the same affordances as keys: swipe RIGHT = Tab (nick complete),
   // swipe UP = ArrowUp (older history), swipe DOWN = ArrowDown (newer
@@ -201,12 +224,16 @@ const ComposeBox: Component<Props> = (props) => {
     }
     switch (action) {
       case "recall-prev":
-        recallPrev(key());
-        scrollRecallCaretIntoView();
+        if (gestureRecallAllowed()) {
+          recallPrev(key());
+          scrollRecallCaretIntoView();
+        }
         break;
       case "recall-next":
-        recallNext(key());
-        scrollRecallCaretIntoView();
+        if (gestureRecallAllowed()) {
+          recallNext(key());
+          scrollRecallCaretIntoView();
+        }
         break;
       case "tab-complete": {
         const ta = e.currentTarget as HTMLTextAreaElement;

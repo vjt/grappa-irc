@@ -149,20 +149,32 @@ test("issue123 — fast swipe-up recalls history, slow drag does not (touchend v
   const ta = composeTextarea(page);
   await expect(ta).toHaveValue("");
 
-  // Empty draft = at BOTH scroll edges → any vertical flick claims. FAST swipe
-  // UP (80px, same tick → ~0ms → ≫0.3px/ms): touchend classifies "up" → recall.
+  // #178: gesture recall now fires ONLY on a NON-empty draft (an empty
+  // compose + vertical flick is "scroll / look at history", not recall).
+  // So type an in-progress draft first; the velocity gate is what this
+  // test isolates, on top of the non-empty precondition. A non-empty
+  // rows=1 draft that doesn't overflow is still at both scroll edges, so
+  // the flick still claims — velocity alone decides recall-vs-no-op here.
+  const editing = `editing ${tag}`;
+  await ta.fill(editing);
+  await expect(ta).toHaveValue(editing);
+
+  // FAST swipe UP (80px, same tick → ~0ms → ≫0.3px/ms): touchend
+  // classifies "up" → recall. recallPrev stashes the live `editing` draft
+  // and pulls the sent line.
   await synthSwipe(page, { startX: 100, startY: 300, endX: 100, endY: 220, slowMs: 0 });
   await expect(ta).toHaveValue(sent, { timeout: 2_000 });
 
-  // Back to an empty draft (typing resets historyCursor; history stays).
-  await ta.fill("");
-  await expect(ta).toHaveValue("");
+  // Back to the in-progress (non-empty) draft so the velocity gate — not
+  // the #178 non-empty gate — is what the slow-drag assertion exercises.
+  await ta.fill(editing);
+  await expect(ta).toHaveValue(editing);
 
-  // SLOW drag UP (same 80px, over 350ms → ~0.23px/ms < 0.3): claimed at the
-  // boundary but the touchend full-gesture velocity gate rejects the slow
-  // release → no recall → draft stays empty.
+  // SLOW drag UP (same 80px, over 350ms → ~0.23px/ms < 0.3): claimed at
+  // the boundary but the touchend full-gesture velocity gate rejects the
+  // slow release → no recall → the draft stays as typed.
   await synthSwipe(page, { startX: 100, startY: 300, endX: 100, endY: 220, slowMs: 350 });
-  await expect(ta).toHaveValue("");
+  await expect(ta).toHaveValue(editing);
 });
 
 test("issue123 — nested-scroll handoff: native scroll owns the drag until the edge, then the gesture claims (both directions)", async ({
