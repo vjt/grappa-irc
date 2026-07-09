@@ -32,6 +32,8 @@
 
 import { test, expect } from "../fixtures/test";
 import {
+  confirmModal,
+  confirmModalYes,
   loginAs,
   selectChannel,
   sidebarWindow,
@@ -65,6 +67,11 @@ test("M9 — sidebar X-button PARTs the channel and dismisses the window", async
   await sidebarWindow(page, NETWORK_SLUG, CHANNEL)
     .locator('button[aria-label="Close #bofh"]')
     .click();
+
+  // #195 — the × now opens an explicit "leave #chan?" confirm modal; the PART
+  // fires only on Yes (no longer instant on click).
+  await expect(confirmModal(page)).toBeVisible();
+  await confirmModalYes(page);
 
   // Server-side: PART row persisted (sender = own nick). PART rows
   // have body=null (or the reason if any was given) — match by kind.

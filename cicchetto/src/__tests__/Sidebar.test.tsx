@@ -160,6 +160,11 @@ vi.mock("../lib/windowState", () => ({
 
 import * as apiMod from "../lib/api";
 import * as archiveMod from "../lib/archive";
+// #195 — the confirm-dialog store, imported STATICALLY so the test shares the
+// SAME module instance windowClose writes to on × click (a dynamic
+// `await import` would resolve a second instance under vitest's mocked graph
+// and never reflect the requestConfirm write).
+import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
 // Capture mocked module references at import time, before any resetModules
 import * as qwMod from "../lib/queryWindows";
 import * as selMod from "../lib/selection";
@@ -316,13 +321,23 @@ describe("Sidebar", () => {
     expect(qwMod.closeQueryWindowState).toHaveBeenCalledWith(1, "alice");
   });
 
-  // C1.2: Clicking X on a channel calls postPart
-  it("clicking close on channel calls postPart", () => {
+  // #195 — clicking × on a channel opens the leave-confirm modal; the PART
+  // (postPart) fires only on affirmative confirm, never on the bare click.
+  // Replaces the pre-#195 instant-PART (and the #172 hold gate). Sidebar is
+  // rendered in isolation here (no <ConfirmModal>), so we drive the real
+  // confirmDialog store directly to assert the gate.
+  it("clicking close on channel opens a leave-confirm modal; confirming calls postPart (#195)", () => {
+    dismissConfirm();
     render(() => <Sidebar />);
     const italiaEntry = screen.getByText("#italia");
     const li = italiaEntry.closest("li");
     const closeBtn = li?.querySelector(".sidebar-close") as HTMLElement;
     fireEvent.click(closeBtn);
+    // Modal requested with the interpolated channel name; PART NOT yet fired.
+    expect(confirmRequest()?.body).toBe("Do you want to leave #italia?");
+    expect(apiMod.postPart).not.toHaveBeenCalled();
+    // Confirming fires the PART.
+    acceptConfirm();
     expect(apiMod.postPart).toHaveBeenCalledWith("tok", "freenode", "#italia");
   });
 
@@ -788,13 +803,20 @@ describe("Sidebar", () => {
       expect(closeBtn?.getAttribute("aria-label")).toBe("Disconnect freenode");
     });
 
-    it("clicking × on the header row triggers patchNetwork(:parked) for registered users", async () => {
+    // #195 — clicking × opens the disconnect-confirm modal; the park
+    // (patchNetwork) fires only on affirmative confirm, never on the bare
+    // click.
+    it("clicking × on the header row opens a disconnect-confirm modal; confirming calls patchNetwork(:parked) (#195)", async () => {
       mockSubject = { kind: "user", id: "u-1", name: "alice" };
       const apiMod2 = await import("../lib/api");
+      dismissConfirm();
       const { container } = render(() => <Sidebar />);
       const header = container.querySelector("li.sidebar-network-header");
       const closeBtn = header?.querySelector(".sidebar-close") as HTMLElement;
       fireEvent.click(closeBtn);
+      expect(confirmRequest()?.body).toBe("Disconnect from freenode?");
+      expect(apiMod2.patchNetwork).not.toHaveBeenCalled();
+      acceptConfirm();
       await Promise.resolve();
       expect(apiMod2.patchNetwork).toHaveBeenCalledWith("tok", "freenode", {
         connection_state: "parked",

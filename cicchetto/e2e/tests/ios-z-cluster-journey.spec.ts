@@ -36,7 +36,8 @@
 
 import { expect, test } from "../fixtures/test";
 import {
-  holdClosePress,
+  confirmModal,
+  confirmModalYes,
   loginAs,
   selectChannel,
   sidebarCloseButton,
@@ -110,14 +111,17 @@ test("@webkit iOS-Z cluster — viewport + safe-area + close× + font-size", asy
     });
     expect(topBarPadding).not.toBeNull();
 
-    // iOS-3 — bottom-bar close × removes the tab. #172: closing is now
-    // HOLD-to-confirm on touch (a bare tap must not spuriously close), so
-    // hold the × past the threshold instead of a quick .tap().
+    // iOS-3 — bottom-bar close × removes the tab. #195: closing a channel is
+    // now a plain click that opens an explicit "leave #chan?" confirm modal
+    // (the #172 hold-to-confirm gesture was removed — it read as a broken × on
+    // touch). Click ×, then Yes.
     const tab = sidebarWindow(page, NETWORK_SLUG, CHANNEL);
     await expect(tab).toBeVisible({ timeout: 10_000 });
     const closeBtn = sidebarCloseButton(page, NETWORK_SLUG, CHANNEL);
     await expect(closeBtn).toBeVisible();
-    await holdClosePress(closeBtn);
+    await closeBtn.click();
+    await expect(confirmModal(page)).toBeVisible();
+    await confirmModalYes(page);
     await expect(tab).not.toBeVisible({ timeout: 10_000 });
 
     // iOS-3b (folded from ios-3-bottom-bar-close 2026-05-26) — the

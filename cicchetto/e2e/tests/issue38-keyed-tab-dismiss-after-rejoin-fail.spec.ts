@@ -45,6 +45,8 @@
 import { test, expect } from "../fixtures/test";
 import {
   composeSend,
+  confirmModal,
+  confirmModalYes,
   loginAs,
   selectChannel,
   sidebarCloseButton,
@@ -153,5 +155,10 @@ test("issue #38 — × dismisses a 475-failed +k autojoin channel row", async ({
   const closeBtn = sidebarCloseButton(page, NETWORK_SLUG, NEW_CHANNEL);
   await expect(closeBtn).toBeVisible({ timeout: 5_000 });
   await closeBtn.click();
+  // #195 — the channel × now opens a leave-confirm modal; the row dismisses
+  // on Yes. (NEW_CHANNEL is a channelsBySlug greyed autojoin row →
+  // handleCloseChannel, so it gets the same confirm gate as a live leave.)
+  await expect(confirmModal(page)).toBeVisible();
+  await confirmModalYes(page);
   await expect(sidebarWindow(page, NETWORK_SLUG, NEW_CHANNEL)).toHaveCount(0, { timeout: 10_000 });
 });

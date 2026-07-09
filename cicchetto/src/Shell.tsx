@@ -15,6 +15,7 @@ import ArchiveModal from "./ArchiveModal";
 import AudioMiniPlayer from "./AudioMiniPlayer";
 import BottomBar from "./BottomBar";
 import ComposeBox from "./ComposeBox";
+import ConfirmModal from "./ConfirmModal";
 import CrtSplash from "./CrtSplash";
 import DiagFloat from "./DiagFloat";
 import DirectoryPane from "./DirectoryPane";
@@ -559,6 +560,7 @@ const Shell: Component = () => {
           <NamesModal />
           <WhoModal />
           <ServerReplyModal />
+          <ConfirmModal />
           <aside class="shell-sidebar">
             <Sidebar />
             {/* UX-5 bucket BS — drag handle on the inner edge of the
@@ -733,6 +735,7 @@ const Shell: Component = () => {
         <NamesModal />
         <WhoModal />
         <ServerReplyModal />
+        <ConfirmModal />
         <Show when={membersOpen()}>
           <div
             class="shell-drawer-backdrop open"

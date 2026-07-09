@@ -5,7 +5,11 @@ import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
-import { closeChannelWindow, closeQueryWindow, disconnectNetwork } from "./lib/windowClose";
+import {
+  closeQueryWindow,
+  confirmDisconnectNetwork,
+  confirmLeaveChannel,
+} from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import NickText from "./NickText";
@@ -105,13 +109,13 @@ const BottomBar: Component<Props> = (props) => {
               {/* Disconnect × — sibling of the header, same flat-flex
                   discipline as channel/query closes (post-UX-3-DEC).
                   Routes through disconnectNetwork → quitAll for visitors,
-                  PATCH-one for registered users. #172: the most destructive
-                  close (visitor quitAll) — hold-gated so an accidental tap
-                  can't nuke the network. */}
+                  PATCH-one for registered users. #195: the most destructive
+                  close — gated behind an explicit "Disconnect from <slug>?"
+                  confirm modal so an accidental tap can't nuke the network. */}
               <CloseButton
                 class="bottom-bar-close"
                 ariaLabel={`Disconnect ${network.slug}`}
-                onConfirm={() => disconnectNetwork(network.slug)}
+                onConfirm={() => confirmDisconnectNetwork(network.slug)}
               />
 
               {/* Channel windows */}
@@ -145,7 +149,7 @@ const BottomBar: Component<Props> = (props) => {
                       <CloseButton
                         class="bottom-bar-close"
                         ariaLabel={`Close ${channel.name}`}
-                        onConfirm={() => closeChannelWindow(network.slug, channel.name)}
+                        onConfirm={() => confirmLeaveChannel(network.slug, channel.name)}
                       />
                     </>
                   );

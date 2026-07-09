@@ -1,6 +1,7 @@
 import { patchNetwork, postPart } from "./api";
 import { getSubject, token } from "./auth";
 import { channelKey } from "./channelKey";
+import { requestConfirm } from "./confirmDialog";
 import { closeQueryWindowState } from "./queryWindows";
 import { quitAll } from "./quit";
 import { setParted } from "./windowState";
@@ -9,6 +10,14 @@ import { setParted } from "./windowState";
 // desktop, BottomBar × on mobile (iOS-3). Mirror the
 // one-feature-one-code-path rule (CLAUDE.md): channel close goes through
 // PART; query close drops the cic-side window row.
+//
+// #195 — the two DESTRUCTIVE closes (leave a channel → upstream PART;
+// disconnect a network → park/quit) are gated behind an explicit confirm
+// modal via `confirmLeaveChannel` / `confirmDisconnectNetwork` (below),
+// replacing the removed #172 hold-to-close gesture. The raw verbs stay the
+// on-confirm ACTION and remain the direct path for NON-destructive closes
+// (query + pseudo windows, which just drop a local row and are trivially
+// reopened — no confirm).
 
 export function closeChannelWindow(networkSlug: string, channelName: string): void {
   const t = token();
@@ -76,5 +85,32 @@ export function disconnectNetwork(networkSlug: string): void {
   }
   void patchNetwork(t, networkSlug, { connection_state: "parked" }).catch((err) => {
     console.warn(`[/disconnect] PATCH park failed for network ${networkSlug}:`, err);
+  });
+}
+
+// #195 — confirm-gated channel leave. The × on a channel tab opens an
+// explicit "Do you want to leave <#channel>?" modal; Yes runs the PART via
+// closeChannelWindow, Cancel dismisses. Non-destructive default (Cancel
+// focused) so an accidental tap can't PART a channel — the exact regression
+// #195 fixes (the #172 hold gate that silently swallowed touch taps is gone).
+export function confirmLeaveChannel(networkSlug: string, channelName: string): void {
+  requestConfirm({
+    title: "Leave channel",
+    body: `Do you want to leave ${channelName}?`,
+    confirmLabel: "Yes",
+    onConfirm: () => closeChannelWindow(networkSlug, channelName),
+  });
+}
+
+// #195 — confirm-gated network disconnect. The × on a network-header row is
+// the most destructive close (visitor → quitAll = park-all + logout;
+// registered → park the one network), so it too gets an explicit
+// "Disconnect from <slug>?" modal before firing disconnectNetwork.
+export function confirmDisconnectNetwork(networkSlug: string): void {
+  requestConfirm({
+    title: "Disconnect network",
+    body: `Disconnect from ${networkSlug}?`,
+    confirmLabel: "Yes",
+    onConfirm: () => disconnectNetwork(networkSlug),
   });
 }

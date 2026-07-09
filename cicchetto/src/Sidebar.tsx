@@ -10,7 +10,11 @@ import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, isAdmin, networkBySlug, networks } from "./lib/networks";
 import { openQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
-import { closeChannelWindow, closeQueryWindow, disconnectNetwork } from "./lib/windowClose";
+import {
+  closeQueryWindow,
+  confirmDisconnectNetwork,
+  confirmLeaveChannel,
+} from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import {
   ADMIN_WINDOW_NAME,
@@ -181,8 +185,11 @@ const Sidebar: Component<Props> = () => {
     setSelectedChannel({ networkSlug: slug, channelName: name, kind });
   };
 
+  // #195 — the × on a channel row opens an explicit "leave #channel?" confirm
+  // modal (windowClose.confirmLeaveChannel → PART on Yes), replacing the
+  // removed #172 hold-to-close gesture.
   const handleCloseChannel = (slug: string, channelName: string) => {
-    closeChannelWindow(slug, channelName);
+    confirmLeaveChannel(slug, channelName);
   };
 
   const handleCloseQuery = (networkId: number, targetNick: string) => {
@@ -216,8 +223,11 @@ const Sidebar: Component<Props> = () => {
   // `:parked`. Selection auto-redirects to home via the
   // `connection_state_changed` arm in selection.ts (one effect, all
   // park triggers).
+  // #195 — the × on a network-header row opens an explicit "Disconnect from
+  // <slug>?" confirm modal (windowClose.confirmDisconnectNetwork →
+  // park/quit on Yes), same gate as the channel leave.
   const handleCloseNetwork = (slug: string) => {
-    disconnectNetwork(slug);
+    confirmDisconnectNetwork(slug);
   };
 
   // UX-1 (2026-05-17) — confirmed delete of an archive entry. Both

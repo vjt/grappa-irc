@@ -641,18 +641,6 @@ html.resize-dragging * {
   color: var(--fg);
 }
 
-/* #172 — "keep holding to close" cue while a touch/pen hold is in progress
-   (never shown for mouse, which closes instantly). A warning-red tint + a
-   slight grow signals the destructive action is arming. Immediate (not a
-   timed fill) so the 500ms HOLD_TO_CLOSE_MS constant isn't duplicated in
-   CSS; a timed progress fill is a possible on-device polish. Shared by both
-   surfaces' close ×. */
-.sidebar-close.close-holding,
-.bottom-bar-close.close-holding {
-  color: var(--mode-op);
-  transform: scale(1.25);
-}
-
 .sidebar-channel-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2107,6 +2095,74 @@ html.resize-dragging * {
   color: var(--muted);
   border-color: var(--border);
   cursor: not-allowed;
+}
+
+/* #195 — explicit confirm modal for destructive window actions (leave
+   channel, disconnect network). Replaces the removed #172 hold-to-close
+   gesture. Centered dialog over a dim scrim; structure mirrors
+   .delete-account-* (the closest existing confirm modal). */
+.confirm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.confirm-modal {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  width: 100%;
+  max-width: 24rem;
+  margin: 1rem;
+  padding: 1rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  overscroll-behavior: contain;
+}
+
+.confirm-modal-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: normal;
+  color: var(--fg);
+}
+
+.confirm-modal-body {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.confirm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.confirm-modal-cancel {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+.confirm-modal-confirm {
+  background: #c00;
+  color: #fff;
+  border: 1px solid #c00;
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
 }
 
 /* M-cluster M-7 — admin pane. Replaces channel content in the main

@@ -53,9 +53,11 @@ vi.mock("../lib/queryWindows", () => ({
 }));
 
 vi.mock("../lib/windowClose", () => ({
-  closeChannelWindow: vi.fn(),
+  // #195 — the channel/network × now route through the confirm-gated verbs;
+  // query stays a direct (non-destructive) close.
   closeQueryWindow: vi.fn(),
-  disconnectNetwork: vi.fn(),
+  confirmLeaveChannel: vi.fn(),
+  confirmDisconnectNetwork: vi.fn(),
 }));
 
 vi.mock("../lib/archive", () => ({
@@ -68,39 +70,8 @@ vi.mock("../lib/archive", () => ({
 }));
 
 import BottomBar from "../BottomBar";
-import { HOLD_TO_CLOSE_MS } from "../lib/holdToClose";
 import * as selMod from "../lib/selection";
 import * as windowCloseMod from "../lib/windowClose";
-
-// #172 — dispatch a pointer-shaped event with an explicit pointerType. jsdom's
-// PointerEvent constructor is unreliable (see ResizeHandle.test.tsx), so build
-// a MouseEvent and augment the fields the hold gate reads (pointerType,
-// pointerId, clientX/Y).
-function firePointer(
-  el: Element,
-  type: string,
-  pointerType: string,
-  init: { clientX?: number; clientY?: number } = {},
-): void {
-  const e = new MouseEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    clientX: init.clientX ?? 0,
-    clientY: init.clientY ?? 0,
-  });
-  Object.defineProperty(e, "pointerType", { value: pointerType });
-  Object.defineProperty(e, "pointerId", { value: 1 });
-  el.dispatchEvent(e);
-}
-
-// A quick touch tap = pointerdown + pointerup + the trailing synthetic click,
-// all before the hold threshold. This is exactly the fat-finger gesture #172
-// must NOT treat as a close.
-function touchTap(el: Element): void {
-  firePointer(el, "pointerdown", "touch");
-  firePointer(el, "pointerup", "touch");
-  fireEvent.click(el); // the browser's synthetic click after a tap
-}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -355,30 +326,34 @@ describe("BottomBar", () => {
     expect(closeBtn!.getAttribute("aria-label")).toBe("Disconnect freenode");
   });
 
-  // #172 — a bare click (mouse or keyboard Enter/Space, no preceding touch
-  // gesture) stays INSTANT: pixel-precise input is already deliberate, so
-  // desktop is never punished by the hold gate.
-  it("a mouse/keyboard click on the network-header close × calls disconnectNetwork instantly", () => {
+  // #195 — the #172 hold-to-close gesture is GONE. A plain click on the
+  // channel/network × now opens the explicit confirm modal (the raw close
+  // verb runs only on Yes, not from BottomBar). A tap == a click on touch, so
+  // this covers both mouse and touch. The confirm-gated verbs are mocked; the
+  // modal render + Yes/Cancel is covered by ConfirmModal + the e2e.
+  it("clicking the network-header close × opens the disconnect confirm (#195)", () => {
     const { container } = render(() => <BottomBar />);
     const header = container.querySelector(
       '.bottom-bar-network-header[data-network-slug="freenode"]',
     ) as HTMLElement;
     const closeBtn = header.nextElementSibling as HTMLElement;
     fireEvent.click(closeBtn);
-    expect(windowCloseMod.disconnectNetwork).toHaveBeenCalledWith("freenode");
+    expect(windowCloseMod.confirmDisconnectNetwork).toHaveBeenCalledWith("freenode");
   });
 
-  it("a mouse/keyboard click on a channel close × calls closeChannelWindow instantly", () => {
+  it("clicking a channel close × opens the leave confirm (#195)", () => {
     render(() => <BottomBar />);
     const italiaTab = screen.getByText("#italia").closest("button");
     expect(italiaTab).not.toBeNull();
     const closeBtn = italiaTab!.nextElementSibling as HTMLElement | null;
     expect(closeBtn).not.toBeNull();
     fireEvent.click(closeBtn!);
-    expect(windowCloseMod.closeChannelWindow).toHaveBeenCalledWith("freenode", "#italia");
+    expect(windowCloseMod.confirmLeaveChannel).toHaveBeenCalledWith("freenode", "#italia");
   });
 
-  it("a mouse/keyboard click on a query close × calls closeQueryWindow instantly", () => {
+  // Query close stays a direct, non-destructive close — no confirm modal
+  // (a DM window is trivially reopened; only channel PART / network park gate).
+  it("clicking a query close × closes it directly, no confirm (#195)", () => {
     render(() => <BottomBar />);
     const aliceTab = screen.getByText("alice").closest("button");
     expect(aliceTab).not.toBeNull();
@@ -386,82 +361,5 @@ describe("BottomBar", () => {
     expect(closeBtn).not.toBeNull();
     fireEvent.click(closeBtn!);
     expect(windowCloseMod.closeQueryWindow).toHaveBeenCalledWith(1, "alice");
-  });
-
-  // #172 — the whole point: a SHORT TOUCH TAP must NOT close a window. Before
-  // the fix a bare tap's synthetic click fired the close verb (spurious
-  // closure); after the fix the gate swallows it.
-  it("a short touch tap on a channel close × does NOT call closeChannelWindow", () => {
-    render(() => <BottomBar />);
-    const italiaTab = screen.getByText("#italia").closest("button");
-    const closeBtn = italiaTab!.nextElementSibling as HTMLElement;
-    touchTap(closeBtn);
-    expect(windowCloseMod.closeChannelWindow).not.toHaveBeenCalled();
-  });
-
-  it("a short touch tap on a query close × does NOT call closeQueryWindow", () => {
-    render(() => <BottomBar />);
-    const aliceTab = screen.getByText("alice").closest("button");
-    const closeBtn = aliceTab!.nextElementSibling as HTMLElement;
-    touchTap(closeBtn);
-    expect(windowCloseMod.closeQueryWindow).not.toHaveBeenCalled();
-  });
-
-  it("a short touch tap on the network-header close × does NOT call disconnectNetwork", () => {
-    const { container } = render(() => <BottomBar />);
-    const header = container.querySelector(
-      '.bottom-bar-network-header[data-network-slug="freenode"]',
-    ) as HTMLElement;
-    const closeBtn = header.nextElementSibling as HTMLElement;
-    touchTap(closeBtn);
-    expect(windowCloseMod.disconnectNetwork).not.toHaveBeenCalled();
-  });
-
-  // #172 — a touch press HELD past the threshold DOES confirm the close.
-  it("a held touch press on a channel close × calls closeChannelWindow after the threshold", () => {
-    vi.useFakeTimers();
-    try {
-      render(() => <BottomBar />);
-      const italiaTab = screen.getByText("#italia").closest("button");
-      const closeBtn = italiaTab!.nextElementSibling as HTMLElement;
-      firePointer(closeBtn, "pointerdown", "touch");
-      expect(windowCloseMod.closeChannelWindow).not.toHaveBeenCalled(); // not yet
-      vi.advanceTimersByTime(HOLD_TO_CLOSE_MS);
-      expect(windowCloseMod.closeChannelWindow).toHaveBeenCalledWith("freenode", "#italia");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("a held touch press on the network-header close × calls disconnectNetwork after the threshold", () => {
-    vi.useFakeTimers();
-    try {
-      const { container } = render(() => <BottomBar />);
-      const header = container.querySelector(
-        '.bottom-bar-network-header[data-network-slug="freenode"]',
-      ) as HTMLElement;
-      const closeBtn = header.nextElementSibling as HTMLElement;
-      firePointer(closeBtn, "pointerdown", "touch");
-      vi.advanceTimersByTime(HOLD_TO_CLOSE_MS);
-      expect(windowCloseMod.disconnectNetwork).toHaveBeenCalledWith("freenode");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  // #172 — a drift past the slop mid-hold cancels (a scroll, not a close).
-  it("a touch hold that drifts past slop does NOT call closeChannelWindow", () => {
-    vi.useFakeTimers();
-    try {
-      render(() => <BottomBar />);
-      const italiaTab = screen.getByText("#italia").closest("button");
-      const closeBtn = italiaTab!.nextElementSibling as HTMLElement;
-      firePointer(closeBtn, "pointerdown", "touch", { clientX: 10, clientY: 10 });
-      firePointer(closeBtn, "pointermove", "touch", { clientX: 10, clientY: 60 });
-      vi.advanceTimersByTime(HOLD_TO_CLOSE_MS);
-      expect(windowCloseMod.closeChannelWindow).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

@@ -1,18 +1,16 @@
-import { type Component } from "solid-js";
-import { createHoldToClose } from "./lib/holdToClose";
+import type { Component } from "solid-js";
 
-// #172 — shared destructive close × for BottomBar (mobile) + Sidebar (desktop).
+// Shared destructive close × for BottomBar (mobile) + Sidebar (desktop).
 //
-// A touch/pen press must be HELD past the threshold to confirm, so a mobile
-// fat-finger tap can't spuriously close a window; a mouse click (and keyboard
-// Enter/Space) stays instant — pixel-precise input is already deliberate, so
-// desktop is never punished. The `.close-holding` class is applied while a
-// touch hold is in progress (a "keep holding" cue).
-//
-// The actual close verb (windowClose.*) is injected via `onConfirm`: this
-// component owns ONLY the interaction gate, keeping the state-push layer pure
-// (CLAUDE.md "reuse the verbs, not the nouns"). One component, both surfaces —
-// so a new close site inherits the gate for free.
+// #195 — the #172 hold-to-close gesture was REMOVED: on touch it read as a
+// broken × (a tap did nothing; a >10px finger drift cancelled the 500ms
+// hold), so users perceived "the X stopped working". Closing is now a plain
+// instant click on every surface; the DELIBERATE-ness that the hold gate was
+// meant to provide moved to an explicit confirm modal at the destructive call
+// sites (windowClose.confirmLeaveChannel / confirmDisconnectNetwork). This
+// component is a thin styled button again — the `onConfirm` prop is the click
+// handler (a raw close for non-destructive windows, a confirm-opener for
+// channel/network).
 export interface CloseButtonProps {
   onConfirm: () => void;
   ariaLabel: string;
@@ -21,19 +19,12 @@ export interface CloseButtonProps {
 }
 
 const CloseButton: Component<CloseButtonProps> = (props) => {
-  const g = createHoldToClose(() => props.onConfirm());
   return (
     <button
       type="button"
       class={props.class}
-      classList={{ "close-holding": g.holding() }}
       aria-label={props.ariaLabel}
-      onPointerDown={g.onPointerDown}
-      onPointerMove={g.onPointerMove}
-      onPointerUp={g.onPointerUp}
-      onPointerCancel={g.onPointerCancel}
-      onPointerLeave={g.onPointerLeave}
-      onClick={g.onClick}
+      onClick={() => props.onConfirm()}
     >
       ×
     </button>
