@@ -34,7 +34,7 @@
 import { createHandlerBoundToURL, precacheAndRoute } from "workbox-precaching";
 import { NavigationRoute, registerRoute } from "workbox-routing";
 import { shouldSuppressPush } from "./lib/pushDedup";
-import { narrowPushPayload, type PushPayload } from "./lib/pushPayload";
+import { narrowPushPayload, type PushPayload, pushNotificationOptions } from "./lib/pushPayload";
 import { deliverNavigate } from "./lib/swNavigate";
 
 declare const self: ServiceWorkerGlobalScope & {
@@ -157,13 +157,7 @@ async function handlePush(payload: PushPayload): Promise<void> {
     return;
   }
 
-  await self.registration.showNotification(payload.title, {
-    body: payload.body,
-    tag: payload.tag,
-    icon: "/icons/icon-192.png",
-    badge: "/icons/icon-192.png",
-    data: { url: payload.url },
-  });
+  await self.registration.showNotification(payload.title, pushNotificationOptions(payload));
 }
 
 // Home-screen icon badge via the Badging API on the WorkerNavigator.

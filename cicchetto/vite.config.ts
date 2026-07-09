@@ -1,6 +1,10 @@
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import solid from "vite-plugin-solid";
+// S18: the manifest icon set is the single source of truth shared with the
+// service-worker's Web Push notification icon (`src/lib/pwaIcons.ts`), so a
+// rename can't silently drift the SW into a 404 path.
+import { PWA_ICONS } from "./src/lib/pwaIcons";
 
 // Dev-only proxy: vite serves the SolidJS app on :5173 and forwards the
 // REST + Channels surfaces to grappa on :4000. In prod, sub-task 6's
@@ -80,20 +84,9 @@ export default defineConfig({
         background_color: "#0a0a0a",
         theme_color: "#0a0a0a",
         orientation: "any",
-        icons: [
-          {
-            src: "/icon-192.png",
-            sizes: "192x192",
-            type: "image/png",
-            purpose: "any maskable",
-          },
-          {
-            src: "/icon-512.png",
-            sizes: "512x512",
-            type: "image/png",
-            purpose: "any maskable",
-          },
-        ],
+        // Single source of truth shared with the SW notification icon —
+        // see `src/lib/pwaIcons.ts` (S18).
+        icons: [...PWA_ICONS],
       },
       injectManifest: {
         // Shell-only: precache the build's hashed JS/CSS + index.html

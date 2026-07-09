@@ -10,6 +10,8 @@
 // functions, dedicated vitest. The SW imports from here at runtime;
 // no SW APIs are touched.
 
+import { NOTIFICATION_ICON } from "./pwaIcons";
+
 /**
  * Wire shape for a Web Push payload (server → cic SW).
  *
@@ -84,6 +86,27 @@ export type PushTarget = {
   channelName: string;
   kind: "channel" | "query";
 };
+
+/**
+ * Build the `NotificationOptions` the SW passes to
+ * `self.registration.showNotification(payload.title, ...)`.
+ *
+ * Extracted from `service-worker.ts` (per this module's precedent) so
+ * vitest can assert the notification `icon`/`badge` without instantiating
+ * the SW global scope. The `icon` + `badge` derive from the single
+ * `NOTIFICATION_ICON` source (shared with the Vite manifest via
+ * `pwaIcons.ts`) — S18: they previously hardcoded `/icons/icon-192.png`,
+ * a 404 path (icons are served at root) that rendered the blank glyph.
+ */
+export function pushNotificationOptions(payload: PushPayload): NotificationOptions {
+  return {
+    body: payload.body,
+    tag: payload.tag,
+    icon: NOTIFICATION_ICON,
+    badge: NOTIFICATION_ICON,
+    data: { url: payload.url },
+  };
+}
 
 export function parsePushTargetUrl(rawUrl: string): PushTarget | null {
   let url: URL;
