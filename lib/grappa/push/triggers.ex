@@ -54,8 +54,8 @@ defmodule Grappa.Push.Triggers do
   `feedback_no_silent_drops_*`.
   """
 
-  alias Grappa.{Mentions, Push, Subject, UserSettings, WSPresence}
   alias Grappa.IRC.Identifier
+  alias Grappa.{Mentions, Push, Subject, UserSettings, WSPresence}
   alias Grappa.Push.Payload
   alias Grappa.Scrollback.Message
 

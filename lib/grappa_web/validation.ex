@@ -96,7 +96,7 @@ defmodule GrappaWeb.Validation do
   regression — CLAUDE.md "Implement once, reuse everywhere").
   """
   @spec take_atomized(map(), [String.t()]) :: map()
-  def take_atomized(params, keys), do: take_atomized(params, keys, fn _key, v -> v end)
+  def take_atomized(params, keys), do: take_atomized(params, keys, fn _, v -> v end)
 
   @spec take_atomized(map(), [String.t()], (String.t(), term() -> term())) :: map()
   def take_atomized(params, keys, value_fun) do

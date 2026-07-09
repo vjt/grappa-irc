@@ -48,7 +48,7 @@ defmodule GrappaWeb.ValidationTest do
 
       fun = fn
         "auth_method", v -> String.to_atom(v)
-        _key, v -> v
+        _, v -> v
       end
 
       assert Validation.take_atomized(params, ["auth_method", "nick"], fun) ==
@@ -57,8 +57,8 @@ defmodule GrappaWeb.ValidationTest do
 
     test "value_fun never runs for an absent whitelisted key" do
       fun = fn
-        "sasl_user", _v -> raise "must not be called for an absent key"
-        _key, v -> v
+        "sasl_user", _ -> raise "must not be called for an absent key"
+        _, v -> v
       end
 
       assert Validation.take_atomized(%{"nick" => "vjt"}, ["nick", "sasl_user"], fun) ==

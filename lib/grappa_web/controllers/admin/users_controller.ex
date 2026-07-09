@@ -45,9 +45,7 @@ defmodule GrappaWeb.Admin.UsersController do
   alias Grappa.{Accounts, AdminEvents, LiveIntrospection, Operator}
   alias Grappa.Accounts.AdminWire
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
-  alias GrappaWeb.Admin.AuthPlug
-  alias GrappaWeb.UserSocket
-  alias GrappaWeb.Validation
+  alias GrappaWeb.{Admin.AuthPlug, UserSocket, Validation}
 
   @doc """
   Enumerate every user row + project per-row live_session_count.
