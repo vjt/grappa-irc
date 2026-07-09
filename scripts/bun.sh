@@ -44,11 +44,19 @@ mkdir -p "$CICCHETTO_DIR" "$BUN_CACHE_DIR"
 # so both the implicit install and the real invocation share one
 # definition of the mount/uid/cache wiring.
 run_bun() {
+    # Honor CONTAINER_UID/GID like every compose service does (compose.yaml
+    # `user:` + cicchetto-build tmpfs). runtime/bun-cache is bind-mounted and
+    # SHARED with the compose `cicchetto-build` path; if this raw-`docker run`
+    # bun used the live host UID while compose pins CONTAINER_UID, the two
+    # write cache files under different owners → intermittent EACCES.
+    local uid gid
+    uid="${CONTAINER_UID:-$(id -u)}"
+    gid="${CONTAINER_GID:-$(id -g)}"
     docker run --rm -i \
-        --user "$(id -u):$(id -g)" \
+        --user "$uid:$gid" \
         -v "$CICCHETTO_DIR:/app" \
         -v "$BUN_CACHE_DIR:/cache" \
-        --tmpfs "/tmp:exec,uid=$(id -u),gid=$(id -g)" \
+        --tmpfs "/tmp:exec,uid=$uid,gid=$gid" \
         -e HOME=/tmp \
         -e BUN_INSTALL_CACHE_DIR=/cache \
         -w /app \
