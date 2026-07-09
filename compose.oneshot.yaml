@@ -1,4 +1,5 @@
-# grappa — oneshot override (layered AFTER compose.yaml or compose.prod.yaml).
+# grappa — oneshot override (layered AFTER the unified compose.yaml).
+# (compose.prod.yaml was collapsed into compose.yaml per CP23.)
 #
 # Used by `scripts/_lib.sh` `in_oneshot()` for ephemeral mix tasks (test,
 # credo, dialyzer, format, deps.get, ecto.migrate, etc.) so they coexist

@@ -5,8 +5,9 @@
 #   . "$(dirname "$0")/_lib.sh"
 #
 # Worktree-aware: when invoked from a git worktree, docker compose still
-# uses the MAIN repo's compose project (same image, same named volumes —
-# deps cache, _build cache, PLT cache, hex cache all shared). The worktree's
+# uses the MAIN repo's compose project (same image; `_build`/`deps`/`.mix`/
+# `.hex` live inside the MAIN repo's `./:/app` bind mount — the named-volume
+# shadowing was dropped, see compose.yaml grappa `volumes:`). The worktree's
 # source files are bind-mounted on top via -v overrides during oneshot runs,
 # so the container sees worktree code with main's compiled artifacts cache.
 #
@@ -37,8 +38,9 @@ else
 fi
 export SRC_ROOT
 
-# REPO_ROOT — the MAIN repo (so docker compose project + named volumes are
-# shared across all worktrees). `git rev-parse --git-common-dir` returns the
+# REPO_ROOT — the MAIN repo (so the docker compose project + the repo-tree
+# bind mounts that carry the `_build`/`deps` caches are shared across all
+# worktrees). `git rev-parse --git-common-dir` returns the
 # main repo's `.git` regardless of whether we're in a worktree.
 REPO_ROOT="$(git -C "$SRC_ROOT" rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
 export REPO_ROOT
