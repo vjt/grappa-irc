@@ -179,6 +179,14 @@ defmodule GrappaWeb.UploadsController do
       conn
       |> put_resp_header("content-type", row.mime)
       |> put_resp_header("content-disposition", disposition_header(row))
+      # S5: user bytes are served inline from the SAME origin as cic and
+      # text/plain is in the accept allowlist, so uploaded text carrying
+      # HTML/JS could be MIME-sniffed into an executable HTML response on
+      # the app origin (where the bearer lives in client storage).
+      # `nosniff` pins the browser to the declared content-type. Set here,
+      # BEFORE send_ranged/4, so it rides every path it emits — 200, 206
+      # (range), and 416 — from one source.
+      |> put_resp_header("x-content-type-options", "nosniff")
       |> put_resp_header("cache-control", "public, max-age=3600")
       |> put_resp_header("accept-ranges", "bytes")
       |> send_ranged(path, size, get_req_header(conn, "range"))

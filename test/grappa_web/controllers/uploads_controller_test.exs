@@ -443,6 +443,43 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
   end
 
+  describe "GET /uploads/:slug — nosniff (S5, stored-XSS defense-in-depth)" do
+    # Uploaded bytes are served from the SAME origin as cic with
+    # content-disposition: inline and content-type: row.mime. text/plain
+    # is in the accept allowlist, so uploaded text containing HTML/JS
+    # could be MIME-sniffed and rendered as HTML on the app origin (where
+    # the bearer lives in client storage). `X-Content-Type-Options:
+    # nosniff` must ride EVERY served path — 200, 206 (range), 416 — so a
+    # sniffing browser never reinterprets the declared content-type.
+    test "plain 200 carries x-content-type-options: nosniff", %{conn: _conn} do
+      slug = uploaded_slug(Phoenix.ConnTest.build_conn(), "x.txt", "text/plain", "<script>1</script>")
+
+      get_conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
+
+      assert response(get_conn, 200)
+      assert get_resp_header(get_conn, "x-content-type-options") == ["nosniff"]
+    end
+
+    test "206 range response carries x-content-type-options: nosniff", %{conn: _conn} do
+      slug = uploaded_slug(Phoenix.ConnTest.build_conn(), "x.txt", "text/plain", "0123456789ABCDEF")
+
+      get_conn = ranged_get(slug, "bytes=0-3")
+
+      assert response(get_conn, 206) == "0123"
+      assert get_resp_header(get_conn, "x-content-type-options") == ["nosniff"]
+    end
+
+    test "416 unsatisfiable range still carries x-content-type-options: nosniff",
+         %{conn: _conn} do
+      slug = uploaded_slug(Phoenix.ConnTest.build_conn(), "x.txt", "text/plain", "0123456789ABCDEF")
+
+      get_conn = ranged_get(slug, "bytes=99-")
+
+      assert response(get_conn, 416) == ""
+      assert get_resp_header(get_conn, "x-content-type-options") == ["nosniff"]
+    end
+  end
+
   describe "GET /uploads/:slug — Range requests (iOS video playback needs 206)" do
     # 16 known bytes so content-range arithmetic is assertable by eye.
     # text/plain: Range serving is mime-agnostic (send_file on stored
