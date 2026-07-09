@@ -578,35 +578,47 @@ defmodule Grappa.IRC.ClientTest do
     end
   end
 
-  describe "TLS warning" do
-    test "tls: true emits Logger.warning about verify_none on init" do
-      # We attempt TLS against a plain-TCP fake server. The handshake fails;
-      # what we're verifying is that the warning was emitted BEFORE the
-      # connection attempt completed. start_link returns `{:error, _}` here,
-      # so we trap and ignore the exit.
-      {_, port} = start_server()
-      Process.flag(:trap_exit, true)
+  describe "TLS posture (#89 verify_peer)" do
+    # #89 replaced the Phase-1 `verify: :verify_none` expedient with full
+    # CA-chain verification. These tests pin the ssl opts SHAPE via the
+    # `__tls_connect_opts_for_test__/1` seam (mirrors
+    # `__source_bind_for_test__/2`). A real verify_peer handshake to
+    # azzurra was proven out-of-band against the live prod node before the
+    # flip (issue #89 cert-probe comment) — the certs chain to a public CA
+    # (Let's Encrypt → ISRG Root) with `irc.azzurra.chat` in every
+    # round-robin member's SAN.
+    test "TLS opts carry verify_peer against the system CA store" do
+      opts = Client.__tls_connect_opts_for_test__(~c"irc.azzurra.chat")
 
-      log =
-        capture_log(fn ->
-          # The connection will fail or hang; allow either by passing a tiny
-          # timeout indirectly via the spawned process death.
-          spawn(fn ->
-            Client.start_link(%{
-              host: "127.0.0.1",
-              port: port,
-              tls: true,
-              dispatch_to: self(),
-              logger_metadata: [],
-              nick: "grappa-test",
-              auth_method: :none
-            })
-          end)
+      assert Keyword.fetch!(opts, :verify) == :verify_peer
+      # System trust store loaded via OTP's :public_key.cacerts_get/0 — a
+      # non-empty anchor list is the honest signal the store resolved.
+      cacerts = Keyword.fetch!(opts, :cacerts)
+      assert is_list(cacerts) and cacerts != []
+      # NEVER ship verify_none — that was the Phase-1 lockout-free expedient
+      # this issue closes.
+      refute Keyword.get(opts, :verify) == :verify_none
+    end
 
-          Process.sleep(200)
-        end)
+    test "TLS opts pin SNI + hostname check to the connect host" do
+      opts = Client.__tls_connect_opts_for_test__(~c"irc.azzurra.chat")
 
-      assert log =~ "verify_none"
+      # SNI must be the host we dialed so the round-robin pool serves the
+      # cert whose SAN covers irc.azzurra.chat.
+      assert Keyword.fetch!(opts, :server_name_indication) == ~c"irc.azzurra.chat"
+
+      # Hostname verification is mandatory — a valid-but-wrong-host cert
+      # (MITM with any CA-signed leaf) must be rejected. The https match_fun
+      # does SAN/CN matching per RFC 6125.
+      match = Keyword.fetch!(opts, :customize_hostname_check)
+      assert Keyword.has_key?(match, :match_fun)
+    end
+
+    test "TLS opts bound chain depth" do
+      opts = Client.__tls_connect_opts_for_test__(~c"irc.azzurra.chat")
+      # A finite depth caps intermediate-CA chain length (azzurra's chain
+      # is leaf → LE intermediate → ISRG root = depth 2).
+      assert is_integer(Keyword.fetch!(opts, :depth))
     end
   end
 

@@ -31,15 +31,36 @@ defmodule Grappa.IRC.Client do
   state — `:tcp` or `:ssl` — picks the right module pair via private
   `transport_send/2` and `transport_setopts/2` helpers.
 
-  ## TLS posture (Phase 1)
+  ## TLS posture (#89 — verify_peer)
 
-  When started with `tls: true`, the Phase 1 connection uses
-  `verify: :verify_none` — connect-and-encrypt without certificate
-  chain validation. CLAUDE.md "TLS verification on by default. The
-  Phase 1 `verify: :verify_none` is a temporary expedient — Phase 5
-  hardening adds proper CA chain verification." A `Logger.warning` is
-  emitted on every TLS connection attempt so the posture is visible
-  in logs, not buried in code.
+  When started with `tls: true`, the connection uses
+  `verify: :verify_peer` — full certificate-chain validation against the
+  operator's **system CA trust store** (`:public_key.cacerts_get/0`, OTP
+  25+). This closes the Phase-1 `verify: :verify_none` expedient.
+
+  ### Operator trust-store strategy
+
+  The anchor set is the host's OS CA bundle — grappa ships no cacertfile
+  and rotates no pinned cert. `:public_key.cacerts_get/0` reads the
+  platform store: `/etc/ssl/cert.pem` on FreeBSD (the prod bastille jail),
+  the ca-certificates bundle on Linux, the system keychain on macOS. Keep
+  that bundle current the way you keep any other (FreeBSD: the
+  `ca_root_nss` package; Linux: `update-ca-certificates`).
+
+  Verification is three-fold: (1) the chain must validate to a trusted
+  root within `depth: 3`; (2) `server_name_indication` sends SNI so a
+  round-robin pool member serves the cert whose SAN covers the dialed
+  host; (3) `customize_hostname_check` with the RFC-6125 `:https`
+  match_fun rejects a valid-CA cert issued for a different host. See
+  `tls_connect_opts/1` for the per-opt rationale.
+
+  If the upstream presents a cert that does NOT chain to a system-trusted
+  CA (a private/self-signed IRC network), the connect fails at the TLS
+  handshake and the existing connect-fail throttle + `:transient` give-up
+  path handles it — the operator must add that network's CA to the system
+  trust store (the standard OS mechanism), not weaken grappa. An
+  `init/1` `Logger.info` line records the verify_peer posture per
+  connection so it's visible in logs, not buried in code.
 
   ## Auth handshake — delegated to `Grappa.IRC.AuthFSM`
 
@@ -684,13 +705,14 @@ defmodule Grappa.IRC.Client do
   def init(opts) do
     Logger.metadata(opts.logger_metadata)
 
-    # TLS posture warning fires BEFORE AuthFSM.new/1 — `init/1` may abort
-    # if the FSM rejects the opts (missing password etc.), and we want
-    # the warning to land regardless. The warning is observability, not
-    # contingent on handshake validity. Phase 5 hardening will move this
-    # to `Bootstrap` per `lib/grappa/bootstrap.ex` (CP10 finding S24).
+    # #89 — TLS posture observability. The connection now uses
+    # `verify: :verify_peer` against the system CA store (see
+    # `tls_connect_opts/1`). This info line lands BEFORE AuthFSM.new/1 —
+    # `init/1` may abort if the FSM rejects the opts (missing password
+    # etc.), and we want the posture visible regardless. Observability,
+    # not contingent on handshake validity.
     if opts.tls do
-      Logger.warning("phase 1 TLS posture: verify_none — no certificate chain validation. Phase 5 hardens this.")
+      Logger.info("TLS posture: verify_peer — certificate chain validated against system CA store (#89)")
     end
 
     case AuthFSM.new(opts) do
@@ -837,10 +859,63 @@ defmodule Grappa.IRC.Client do
     :ssl.connect(
       host,
       port,
-      [:binary, fam, packet: :line, active: :once, verify: :verify_none] ++ bind_opts,
+      [:binary, fam, packet: :line, active: :once] ++ tls_connect_opts(host) ++ bind_opts,
       @connect_timeout_ms
     )
   end
+
+  # #89 — TLS certificate-chain verification (replaces the Phase-1
+  # `verify: :verify_none` expedient). Four load-bearing opts:
+  #
+  #   * `verify: :verify_peer` — reject a peer whose cert chain does not
+  #     validate. This is the whole point; without it the other opts are
+  #     inert.
+  #   * `cacerts: :public_key.cacerts_get()` — the OS trust store (OTP 25+
+  #     reads the platform CA bundle: /etc/ssl/cert.pem on FreeBSD, the
+  #     macOS keychain, the Linux ca-certificates bundle). No cacertfile to
+  #     ship or rotate — the operator's system trust store IS the anchor
+  #     set. `cacerts_get/0` raises if no store is found; that's the honest
+  #     loud failure (a box with no CA bundle can't safely verify_peer) and
+  #     it surfaces at connect time in the connect-fail throttle path rather
+  #     than silently downgrading to no-verification.
+  #   * `depth: 3` — cap the intermediate-CA chain length. Azzurra's chain
+  #     is leaf → Let's Encrypt intermediate → ISRG root (depth 2); 3 leaves
+  #     one slot of headroom for a cross-signed root without inviting an
+  #     arbitrarily long attacker-supplied chain.
+  #   * hostname verification — `server_name_indication` sends SNI (so a
+  #     round-robin pool member serves the cert whose SAN covers the dialed
+  #     host) AND `customize_hostname_check` with the RFC-6125 https
+  #     match_fun rejects a valid-CA cert issued for the wrong host (the
+  #     MITM-with-any-leaf class). SNI is the charlist host we dialed.
+  #
+  # Operator trust-store strategy is documented in the moduledoc "TLS
+  # posture" section + docs/OPERATIONS.md. The upstream cert was probed
+  # against the live prod node before this flip (issue #89): azzurra's
+  # round-robin members all chain to ISRG Root with `irc.azzurra.chat` in
+  # SAN, so verify_peer is safe and does not risk locking the bouncer out.
+  @tls_verify_depth 3
+
+  @spec tls_connect_opts(charlist()) :: [:ssl.tls_client_option()]
+  defp tls_connect_opts(host) do
+    [
+      verify: :verify_peer,
+      cacerts: :public_key.cacerts_get(),
+      depth: @tls_verify_depth,
+      server_name_indication: host,
+      customize_hostname_check: [
+        match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+      ]
+    ]
+  end
+
+  @doc false
+  # Test-only seam for the #89 verify_peer opts. Production callers go
+  # through transport_connect/5. Mirrors __source_bind_for_test__/2 —
+  # greppable, absent from public docs. Lets the client_test assert the
+  # ssl-opts SHAPE without standing up a real TLS listener (the real
+  # handshake to azzurra was proven out-of-band, see issue #89).
+  @spec __tls_connect_opts_for_test__(charlist()) :: [:ssl.tls_client_option()]
+  def __tls_connect_opts_for_test__(host), do: tls_connect_opts(host)
 
   # Fixed source present → bind that literal as `ifaddr` over its own
   # family, after confirming the upstream is reachable in that family.

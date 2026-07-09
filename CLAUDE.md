@@ -529,9 +529,18 @@ is due. Don't just look at todo.md.
   never hits a config file. Phase 5 hardening adds HSM-keyed Vault
   (yubico-hsm / TPM / KMS) for operators who want to escape "env on
   disk" key storage.
-- **TLS verification on by default.** The Phase 1 `verify: :verify_none`
-  is a temporary expedient — Phase 5 hardening adds proper CA chain
-  verification. Document the change when it lands.
+- **TLS verification on by default (#89, shipped 2026-07-10).** Upstream
+  TLS connects use `verify: :verify_peer` against the operator's **system
+  CA trust store** (`:public_key.cacerts_get/0`), with `depth: 3`, SNI,
+  and RFC-6125 hostname checking (`customize_hostname_check` +
+  `pkix_verify_hostname_match_fun(:https)`). Single source of truth:
+  `Grappa.IRC.Client.tls_connect_opts/1`. grappa ships no cacertfile and
+  pins no cert — the anchor set IS the host OS CA bundle (FreeBSD
+  `/etc/ssl/cert.pem` via `ca_root_nss`, Linux `ca-certificates`, macOS
+  keychain); operators keep it current the OS way. A private/self-signed
+  upstream must have its CA added to the system store, NOT verify_peer
+  weakened. Operator strategy: `Client` moduledoc "TLS posture" +
+  `docs/OPERATIONS.md`.
 - **Sobelow is a CI gate** — Medium-or-above findings fail the build.
   Every Phoenix app gets it.
 - **`mix deps.audit` + `mix hex.audit` are CI gates.** CVE-flagged

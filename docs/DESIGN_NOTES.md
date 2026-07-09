@@ -17297,3 +17297,70 @@ fires only on a *visible→hidden* transition in `WSPresence`); a socket that is
 practice here (his desktop had been visible then blurred), but a latent sharp
 edge worth remembering if a future change lets a session sit at `:present`
 with only hidden sockets.
+
+---
+
+## 2026-07-10 — #89: upstream TLS `verify_none` → `verify_peer` (system CA store)
+
+The Phase-1 expedient in `Grappa.IRC.Client`'s TLS connect —
+`verify: :verify_none`, connect-and-encrypt with no chain validation — is
+closed. Upstream TLS sockets now use `verify: :verify_peer` against the
+operator's **system CA trust store**, with `depth: 3`, SNI, and RFC-6125
+hostname verification.
+
+**The lockout risk, and why it didn't bite.** A wrong flip is
+catastrophic: if the upstream cert doesn't validate, `verify_peer` refuses
+the handshake and grappa can never reconnect after a restart — total
+upstream IRC outage. vjt's caveat was explicit: probe azzurra's cert
+BEFORE any code change, and hard-stop rather than flip blind. So the
+go/no-go was gated **solely** on a cert probe, run before touching code:
+
+- Upstream (from prod `network_servers`): `irc.azzurra.chat:6697`,
+  round-robin = 2×A + 2×AAAA.
+- openssl chain-probe of **every** pool member against the system CA
+  store: all four validate (`Verify return code: 0`), chain
+  `Let's Encrypt YE1 → ISRG Root`, unexpired, and — critically for
+  round-robin under a hostname check — **every** member carries
+  `DNS:irc.azzurra.chat` in its SAN (leaf CNs are per-server:
+  ruby / raccooncity / allnight6 / nightwish). The v6 members were
+  probed from m42 (voyager, the dev Mac, has no v6 route).
+- The decisive proof was **real OTP**, not openssl: ran
+  `:public_key.cacerts_get/0` + `:ssl.connect(verify: :verify_peer, …)`
+  against the LIVE prod node via the release `rpc` — `cacerts_get: OK
+  (119 anchors)`, `HANDSHAKE OK (verify_peer)`. Intermittent `:closed` /
+  `unsupported_record_type,58` on rapid back-to-back probes was azzurra
+  **rate-limiting** the probe connects (a transport drop BEFORE TLS cert
+  verification — identical under verify_none), confirmed by spacing
+  probes 6s apart (2/2 clean). This is the same connection-storm the
+  `Client` connect-fail throttle exists to prevent; probing stopped
+  immediately to avoid throttling grappa's real IP.
+
+**The four opts (`Client.tls_connect_opts/1`).**
+`verify: :verify_peer` is the whole point; the rest make it correct:
+`cacerts: :public_key.cacerts_get()` (OTP 25+ reads the platform bundle —
+no cacertfile to ship or rotate; it RAISES if no store exists, which is
+the honest loud failure rather than a silent downgrade),
+`depth: 3` (azzurra's chain is depth 2; one slot of headroom for a
+cross-signed root), and hostname verification via `server_name_indication`
+(SNI, so the pool serves the SAN-matching cert) +
+`customize_hostname_check` with `pkix_verify_hostname_match_fun(:https)`
+(rejects a valid-CA cert issued for the wrong host — the MITM-with-any-leaf
+class). Without the hostname check, verify_peer alone would accept any
+publicly-trusted cert for any host.
+
+**Operator trust-store strategy.** The anchor set is the host OS CA bundle
+(FreeBSD `/etc/ssl/cert.pem` via `ca_root_nss`; Linux `ca-certificates`;
+macOS keychain). grappa pins nothing. A private/self-signed upstream must
+have its CA added to the system store — grappa is never weakened to a
+per-network `verify_none`. Documented in the `Client` moduledoc "TLS
+posture" section, `CLAUDE.md` Security, and `docs/OPERATIONS.md`.
+
+**e2e is unaffected:** the bahamut testnet binds `--no-tls` on 6667, so
+the flip only touches real TLS connects; the self-signed testnet certs are
+never presented to grappa.
+
+The `init/1` per-connection `Logger.warning` about verify_none became a
+`Logger.info` recording the verify_peer posture. The AuthFSM's historical
+comments about SASL-blob leaks "under verify_none" are left as-is — the
+phase-pin guard (C1) is the real fix; verify_none only widened the blast
+radius, and that context stays accurate as a record.

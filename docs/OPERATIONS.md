@@ -104,6 +104,40 @@ Operational facts that bite:
   operator's config responsibility (point `:visitor_network` at a
   pool-only network).
 
+### Upstream TLS trust store (`--tls`, #89)
+
+TLS server entries (`--tls`, typically port 6697) connect with
+`verify: :verify_peer` — the upstream cert chain is validated against
+this host's **system CA trust store**, with SNI + RFC-6125 hostname
+matching (`Grappa.IRC.Client.tls_connect_opts/1`). grappa ships no
+cacertfile and pins no cert; the anchor set IS the OS CA bundle.
+
+Operational facts that bite:
+
+- **Keep the OS CA bundle current** — that's the entire trust
+  configuration. FreeBSD (the m42 bastille jail): the `ca_root_nss`
+  package provides `/etc/ssl/cert.pem`; `pkg upgrade ca_root_nss` inside
+  the jail refreshes it. Linux: `update-ca-certificates`. macOS (dev):
+  the system keychain. If `:public_key.cacerts_get/0` finds no store it
+  **raises** at connect time (surfaced via the connect-fail throttle) —
+  a loud failure, never a silent downgrade to no-verification.
+- **A private / self-signed upstream will NOT connect.** The handshake
+  fails at cert validation and the session enters the connect-fail
+  throttle. The fix is to add that network's CA to the **system** trust
+  store (the standard OS mechanism) — grappa is never weakened to a
+  per-network `verify_none`.
+- **Hostname mismatch is fatal too.** The cert's SAN (or CN) must cover
+  the host in the `network_servers` row. For a round-robin upstream
+  (e.g. `irc.azzurra.chat`), EVERY pool member's cert must carry the
+  dialed name in its SAN, or connects fail intermittently on the members
+  that don't. Probe before binding a new TLS host:
+  ```sh
+  openssl s_client -connect <host>:<port> -servername <host> \
+    -verify_return_error </dev/null 2>&1 | grep -iE "Verify return code|CN ="
+  ```
+  Run it per A/AAAA record for a round-robin host; all must return
+  `Verify return code: 0` AND carry the dialed name in SAN.
+
 ## Developer scripts — `scripts/*.sh`
 
 Sibling layer to `bin/grappa` for inner-loop development: gates,
