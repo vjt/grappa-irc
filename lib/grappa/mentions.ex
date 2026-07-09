@@ -68,7 +68,9 @@ defmodule Grappa.Mentions do
   alias Grappa.Repo
   alias Grappa.Scrollback.Message
 
-  @content_kinds [:privmsg, :notice, :action]
+  # S17: derive the content subset from the schema SSOT rather than
+  # restating it — a new content kind lands once in `Message`.
+  @content_kinds Message.content_kinds()
 
   @doc """
   Returns all scrollback messages for `user_id` on `network_id` that

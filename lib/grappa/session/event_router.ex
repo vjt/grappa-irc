@@ -2200,7 +2200,9 @@ defmodule Grappa.Session.EventRouter do
   # #25: content kinds whose sender shows an irssi-style @/%/+ glyph. The
   # glyph must reflect the sender's grade AT SEND TIME, not their current
   # grade — so it's snapshotted into meta here, not derived live by cic.
-  @content_kinds [:privmsg, :action, :notice]
+  # S17 — derived from the schema SSOT (`Message` here is the IRC parser
+  # struct, so the content subset is spelled with its full path).
+  @content_kinds Grappa.Scrollback.Message.content_kinds()
 
   # #127 — accumulate one server-reply line (INFO/MOTD burst). LIFO prepend
   # for O(1) fold; server_reply_drain/1 reverses to restore wire order. The

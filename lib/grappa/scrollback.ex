@@ -64,9 +64,11 @@ defmodule Grappa.Scrollback do
   @max_limit 500
 
   # Content-bearing kinds: the ones that carry a notification meaning.
-  # Mirrors `count_after_split/5`'s `:messages` bucket + `Grappa.Mentions`'
-  # `@content_kinds`. Presence/control kinds never notify.
-  @content_kinds [:privmsg, :notice, :action]
+  # S17 — derived from the schema SSOT (`Message.content_kinds/0`);
+  # feeds `count_after_split/5`'s `:messages` bucket, the content-row
+  # fetch, and the `dm_peer/4` guard here. Presence/control kinds
+  # never notify.
+  @content_kinds Message.content_kinds()
 
   @doc """
   Maximum rows returned by a single `fetch/5` call.
@@ -163,7 +165,7 @@ defmodule Grappa.Scrollback do
   """
   @spec dm_peer(Message.kind(), String.t(), String.t(), String.t() | nil) :: String.t() | nil
   def dm_peer(kind, target, sender, own_nick)
-      when kind in [:privmsg, :action, :notice] and is_binary(target) and is_binary(sender) and
+      when kind in @content_kinds and is_binary(target) and is_binary(sender) and
              is_binary(own_nick) do
     own = Identifier.canonical_nick(own_nick)
 
@@ -424,9 +426,14 @@ defmodule Grappa.Scrollback do
       |> where([m], m.network_id == ^network_id)
       |> channel_or_dm_where(channel, own_nick)
       |> where([m], m.id > ^after_id)
-      |> group_by([m], fragment("CASE WHEN ? IN ('privmsg','notice','action') THEN 1 ELSE 0 END", m.kind))
+      # S17: the content bucket derives from `@content_kinds` (schema
+      # SSOT) via Ecto's `in` — which renders the same
+      # `kind IN (?, ?, ?)` predicate the hand-maintained raw-SQL list
+      # did, with the atoms dumped to their Ecto.Enum string values.
+      # SQLite evaluates the CASE to integer 1/0, unchanged from before.
+      |> group_by([m], fragment("CASE WHEN ? THEN 1 ELSE 0 END", m.kind in ^@content_kinds))
       |> select([m], {
-        fragment("CASE WHEN ? IN ('privmsg','notice','action') THEN 1 ELSE 0 END", m.kind),
+        fragment("CASE WHEN ? THEN 1 ELSE 0 END", m.kind in ^@content_kinds),
         count(m.id)
       })
 

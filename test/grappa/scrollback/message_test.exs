@@ -17,6 +17,36 @@ defmodule Grappa.Scrollback.MessageTest do
     body: "ciao"
   }
 
+  describe "content_kinds/0" do
+    test "is the human-content subset [:privmsg, :notice, :action]" do
+      assert Message.content_kinds() == [:privmsg, :notice, :action]
+    end
+
+    test "every content kind is a valid schema kind (subset of kinds/0)" do
+      for k <- Message.content_kinds() do
+        assert k in Message.kinds(), "#{inspect(k)} is not a valid Message kind"
+      end
+    end
+
+    test "content kinds are exactly the dm-eligible kinds" do
+      # S17 — ties the @dm_with_eligible_kinds derivation back to the
+      # SSOT: every content kind accepts a dm_with peer, and every
+      # non-content kind rejects one (channel-scope discipline).
+      for k <- Message.content_kinds() do
+        cs = Message.changeset(%Message{}, Map.merge(@valid_attrs, %{kind: k, dm_with: "alice"}))
+        assert cs.valid?, "expected content kind #{inspect(k)} to accept dm_with"
+      end
+
+      for k <- Message.kinds(), k not in Message.content_kinds() do
+        attrs = Map.merge(@valid_attrs, %{kind: k, dm_with: "alice", body: "x"})
+        cs = Message.changeset(%Message{}, attrs)
+
+        assert cs.errors[:dm_with] != nil,
+               "expected non-content kind #{inspect(k)} to reject dm_with"
+      end
+    end
+  end
+
   describe "changeset/2" do
     test "valid for fully-populated attrs" do
       cs = Message.changeset(%Message{}, @valid_attrs)

@@ -112,6 +112,19 @@ defmodule Grappa.Scrollback.Message do
 
   @body_required_kinds [:privmsg, :notice, :action, :topic]
 
+  # S17 (2026-07-08 review) — the human-content subset of `@kinds`:
+  # the kinds that carry a notification/message meaning (a real body
+  # from a real sender), as opposed to presence/control events
+  # (:join, :part, :quit, :nick_change, :mode, :topic, :kick,
+  # :server_event). SINGLE SOURCE for the subset that was previously
+  # restated verbatim across `Grappa.Scrollback`, `Grappa.Mentions`,
+  # `Grappa.Session.EventRouter`, this module's `@dm_with_eligible_kinds`,
+  # the `dm_peer/4` guard, and a raw-SQL `IN (...)` bucket — six copies,
+  # one already reordered. Every consumer now derives from
+  # `content_kinds/0` at compile time so a new content kind is one edit
+  # here. Mirrors the cic `CONTENT_KINDS` set (`cicchetto/src/lib/api.ts`).
+  @content_kinds [:privmsg, :notice, :action]
+
   # M8 fix 2026-05-08: kinds for which `:dm_with` may legitimately
   # carry a peer nick. CP23 cluster `code-reload` extended the list to
   # include :notice — peer-to-peer NOTICEs (CTCP-VERSION-query
@@ -131,7 +144,12 @@ defmodule Grappa.Scrollback.Message do
   # nil dm_with on a :join row) silently contaminated the
   # active/archive view-derivation rule that depends on dm_with
   # being unique to DM rows.
-  @dm_with_eligible_kinds [:privmsg, :action, :notice]
+  #
+  # S17: the DM-eligible set IS the content subset — a DM is human
+  # content; every content kind is DM-shaped and vice versa — so it
+  # derives from `@content_kinds` rather than restating it (this copy
+  # was the one already reordered vs the others).
+  @dm_with_eligible_kinds @content_kinds
 
   @doc """
   Returns the closed-set list of valid `:kind` values. Exposed so
@@ -142,6 +160,17 @@ defmodule Grappa.Scrollback.Message do
   """
   @spec kinds() :: [kind(), ...]
   def kinds, do: @kinds
+
+  @doc """
+  Returns the human-content subset of `kinds/0` — `[:privmsg,
+  :notice, :action]`. S17 SINGLE SOURCE: every consumer that filters
+  scrollback to "real message content" (notification counts, mention
+  aggregation, DM-peer eligibility, the unread messages-vs-events
+  split) derives from this at compile time instead of restating the
+  three atoms. Adding a content kind is one edit to `@content_kinds`.
+  """
+  @spec content_kinds() :: [:privmsg | :notice | :action, ...]
+  def content_kinds, do: @content_kinds
 
   @type kind ::
           :privmsg
