@@ -204,6 +204,40 @@ defmodule GrappaWeb.UploadsControllerTest do
       assert %{"error" => "file_too_large", "max_bytes" => 2} = json_response(conn, 413)
     end
 
+    test "413 rejects oversize BEFORE reading bytes — real multipart parser path (S4)",
+         %{conn: conn} do
+      # S4: the per-file cap must be enforced against the on-disk size
+      # (File.stat) BEFORE the temp file is read into the BEAM heap —
+      # otherwise ~127 MiB can be buffered into memory before a 10 MiB
+      # policy rejects it (~12× amplification, visitor-eligible DoS).
+      #
+      # The existing 413 tests build a %Plug.Upload{} by hand, which
+      # bypasses Plug.Parsers; this one drives the REAL multipart parser
+      # so `Plug.Upload.path` is a parser-synthesized temp file — the
+      # exact provenance the pre-read stat gate must handle. Squeeze the
+      # image cap to 2 bytes and post a 64 KiB body: rejected 413 with
+      # the cap echoed, and MetadataStrip is never reached (no 422).
+      {_, session} = user_and_session([])
+      :ok = ServerSettings.put_upload_per_file_cap_bytes(:image, 2)
+
+      bytes = :binary.copy(<<0>>, 64 * 1024)
+      boundary = "s4preread"
+
+      body =
+        "--#{boundary}\r\n" <>
+          ~s(Content-Disposition: form-data; name="file"; filename="big.png"\r\n) <>
+          "Content-Type: image/png\r\n\r\n" <>
+          bytes <> "\r\n--#{boundary}--\r\n"
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "multipart/form-data; boundary=#{boundary}")
+        |> post("/api/uploads", body)
+
+      assert %{"error" => "file_too_large", "max_bytes" => 2} = json_response(conn, 413)
+    end
+
     test "507 insufficient_storage when global cap exceeded", %{conn: conn} do
       {_, session} = user_and_session([])
 

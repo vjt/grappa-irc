@@ -150,8 +150,8 @@ defmodule GrappaWeb.UploadsController do
     with {:ok, upload} <- extract_upload_field(params),
          {:ok, ttl_seconds} <- parse_ttl(params),
          {:ok, mime, category} <- validate_mime(upload),
+         :ok <- check_per_file_cap(upload, category),
          {:ok, bytes} <- read_file(upload),
-         :ok <- check_per_file_cap(bytes, category),
          :ok <-
            Uploads.check_global_cap(byte_size(bytes), ServerSettings.get_upload_global_cap_bytes()),
          {:ok, row} <-
@@ -297,13 +297,27 @@ defmodule GrappaWeb.UploadsController do
     end
   end
 
-  defp check_per_file_cap(bytes, category) do
+  # S4: enforce the per-file cap against the on-disk size (`File.stat`)
+  # BEFORE `read_file/1` pulls the whole temp file into the BEAM heap.
+  # The transport ceiling is 128 MiB (endpoint.ex:79) but the image cap
+  # is 10 MiB — without this pre-read gate an authenticated user OR a
+  # visitor can buffer ~127 MiB into the heap before the policy rejects
+  # it (~12× amplification, repeatable concurrently, visitor-eligible).
+  # The cap is checked on the RAW file size, identical to the previous
+  # post-read `byte_size(bytes)` semantics (the cap always applied to the
+  # pre-strip bytes) — only the ordering moved earlier. A stat failure
+  # (temp file vanished under us) collapses to 400, the same reject
+  # `read_file/1` would have produced on the following line.
+  #
+  # `path` is `Plug.Upload.path`, a tmp file synthesized by
+  # `Plug.Parsers :multipart` — never user-controlled string input.
+  defp check_per_file_cap(%Plug.Upload{path: path}, category) do
     cap = ServerSettings.get_upload_per_file_cap_bytes(category)
 
-    if byte_size(bytes) <= cap do
-      :ok
-    else
-      {:error, {:file_too_large, cap}}
+    case File.stat(path) do
+      {:ok, %File.Stat{size: size}} when size <= cap -> :ok
+      {:ok, %File.Stat{}} -> {:error, {:file_too_large, cap}}
+      {:error, _} -> {:error, :bad_request}
     end
   end
 
