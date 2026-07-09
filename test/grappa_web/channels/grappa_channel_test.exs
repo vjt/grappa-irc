@@ -1590,7 +1590,7 @@ defmodule GrappaWeb.GrappaChannelTest do
          %{socket: socket, network: network, user: user} do
       # REV-F (H10): `dispatch_subject_verb/3` (sister of `dispatch_ops_verb/3`)
       # was missing the catch-all `{:error, reason}` arm REV-E HIGH-1 added
-      # to its sibling. `Session.send_whois/3` (and other subject-verb
+      # to its sibling. `Session.send_whois/4` (and other subject-verb
       # facades — `send_who`, `send_names`, `send_banlist`) post-U-cluster
       # CAN return `Session.send_transport_error/0` shapes (`:no_socket
       # | :closed | :inet.posix()`) when the underlying client socket is
@@ -1656,10 +1656,42 @@ defmodule GrappaWeb.GrappaChannelTest do
       {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "WHOIS alice\r\n"), 1_000)
     end
 
+    # #198 — two-arg `/whois <server> <nick>` (RFC 2812 §3.6.2 target-server
+    # routing). When the push carries a non-null "server" field, the bouncer
+    # emits `WHOIS <server> <nick>` upstream so the query is answered by that
+    # server; single-arg behaviour is byte-identical when "server" is absent.
+    test "visitor socket: whois with server emits WHOIS <server> <nick> upstream (#198)" do
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "whois", %{
+          "network_id" => network.id,
+          "nick" => "alice",
+          "server" => "irc.example.org"
+        })
+
+      assert_reply(ref, :ok)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(irc_server, &(&1 == "WHOIS irc.example.org alice\r\n"), 1_000)
+    end
+
     test "visitor socket: whois without session returns no_session (NOT visitor_not_allowed)" do
       # No `setup_visitor_and_network_with_session/1` here — the visitor
       # exists but has no live `Session.Server`. The fix MUST surface
-      # `no_session` from `Session.send_whois/3` rather than short-circuit
+      # `no_session` from `Session.send_whois/4` rather than short-circuit
       # on the visitor gate the way the pre-fix `dispatch_ops_verb/2` did.
       slug = "snap-visitor-noses-#{System.unique_integer([:positive])}"
       {:ok, network} = Networks.find_or_create_network(%{slug: slug})
@@ -1686,7 +1718,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # Belt-and-braces — bucket E web/S7 added `Identifier.valid_nick?`
       # gate at the channel inbound boundary. Pin that visitors hit the
       # same rejection users do (defense in depth — gate fires BEFORE
-      # `Session.send_whois/3` is called).
+      # `Session.send_whois/4` is called).
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(irc_server)

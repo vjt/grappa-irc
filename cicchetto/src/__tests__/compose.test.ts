@@ -1474,7 +1474,7 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     compose.setDraft(k, "/whois");
     const result = await compose.submit(k, "freenode", "bob");
 
-    expect(socket.pushWhois).toHaveBeenCalledWith(1, "bob");
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "bob", null);
     expect(result).toEqual({ ok: true });
   });
 
@@ -1498,7 +1498,7 @@ describe("compose submit — info verbs (TODO stubs)", () => {
       expect.objectContaining({ slug: "freenode" }),
       nets.user(),
     );
-    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick");
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick", null);
     expect(result).toEqual({ ok: true });
   });
 
@@ -1514,7 +1514,7 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     compose.setDraft(k, "/w");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick");
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick", null);
     expect(result).toEqual({ ok: true });
   });
 
@@ -1545,7 +1545,7 @@ describe("compose submit — info verbs (TODO stubs)", () => {
       expect.objectContaining({ slug: "freenode" }),
       nets.user(),
     );
-    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick");
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick", null);
     expect(result).toEqual({ ok: true });
   });
 
@@ -1567,7 +1567,7 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     compose.setDraft(k, "/w");
     const result = await compose.submit(k, "freenode", "$server");
 
-    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick");
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "mynick", null);
     expect(result).toEqual({ ok: true });
   });
 
@@ -1580,7 +1580,21 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     compose.setDraft(k, "/w alice");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(socket.pushWhois).toHaveBeenCalledWith(1, "alice");
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "alice", null);
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #198 — /whois <server> <nick> threads the target server through to
+  // pushWhois so the bouncer emits `WHOIS <server> <nick>` upstream.
+  it("/whois <server> <nick> forwards the target server (#198)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/whois irc.example.org alice");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "alice", "irc.example.org");
     expect(result).toEqual({ ok: true });
   });
 

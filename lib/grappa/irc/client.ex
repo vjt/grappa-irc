@@ -458,15 +458,29 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
-  Sends `WHOIS <nick>\\r\\n`. Validates nick syntax with
-  `{:error, :invalid_line}` on rejection. The single-target form is the
-  ergonomic call shape — multi-target WHOIS (RFC 2812 §3.6.2 allows a
-  comma-separated list AND a server prefix arg) is out of MVP scope.
+  Sends `WHOIS [<server>] <nick>\\r\\n`.
+
+  `server` is the optional RFC 2812 §3.6.2 target-server the query routes
+  through (#198): when nil the frame is the single-target `WHOIS <nick>`,
+  when a binary the two-arg `WHOIS <server> <nick>` (the server answers on
+  behalf of the queried nick). The nick is validated with `valid_nick?/1`;
+  the server — a single routing slot that may be a server name or a nick —
+  with the single-token `safe_oper_token?/1` predicate (no
+  whitespace/CRLF/NUL, so it cannot splice an extra wire slot or inject a
+  follow-up command). Either rejection yields `{:error, :invalid_line}`.
+  The multi-target comma-separated list (RFC 2812 §3.6.2) stays out of MVP
+  scope.
   """
-  @spec send_whois(pid(), String.t()) :: send_result()
-  def send_whois(client, nick) do
+  @spec send_whois(pid(), String.t(), String.t() | nil) :: send_result()
+  def send_whois(client, nick, nil) do
     if Identifier.valid_nick?(nick),
       do: send_line(client, "WHOIS #{nick}\r\n"),
+      else: reject_invalid_line(:whois)
+  end
+
+  def send_whois(client, nick, server) when is_binary(server) do
+    if Identifier.valid_nick?(nick) and Identifier.safe_oper_token?(server),
+      do: send_line(client, "WHOIS #{server} #{nick}\r\n"),
       else: reject_invalid_line(:whois)
   end
 

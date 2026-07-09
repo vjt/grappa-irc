@@ -1225,11 +1225,17 @@ defmodule Grappa.Session.Server do
   # On send_line failure the accumulator stays primed — a transient send
   # error doesn't strand the whois flow because no numerics will arrive
   # to drain it; harmless until the next /whois replaces the entry.
-  def handle_call({:send_whois, target}, _, state) when is_binary(target) do
+  # #198 — `server` is the optional RFC 2812 §3.6.2 target-server the query
+  # routes through (nil for the single-arg form). The accumulator still keys
+  # on `target` (the nick) — routing only changes which server answers, not
+  # the bundle's target — so priming is identical; only the emitted frame
+  # differs (`WHOIS <server> <nick>` vs `WHOIS <nick>`).
+  def handle_call({:send_whois, target, server}, _, state)
+      when is_binary(target) and (is_binary(server) or is_nil(server)) do
     nick_key = Identifier.canonical_nick(target)
     next_pending = prime_pending(state.whois_pending, nick_key, %{target_display: target})
     next_state = %{state | whois_pending: next_pending}
-    {:reply, Client.send_whois(state.client, target), next_state}
+    {:reply, Client.send_whois(state.client, target, server), next_state}
   end
 
   # P-0c — /whowas <nick>. Mirror of :send_whois shape. Two effects:

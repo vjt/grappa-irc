@@ -576,6 +576,26 @@ defmodule GrappaWeb.GrappaChannel do
   # only consumer). Routes via `dispatch_subject_verb/3`, which accepts
   # BOTH `{:user, _}` and `{:visitor, _}` subjects and rejects only on
   # `:no_session`.
+  # #198 — two-arg `/whois <server> <nick>` (RFC 2812 §3.6.2 target-server
+  # routing). This clause matches ONLY when "server" is a non-null binary;
+  # cic sends `server: null` for the single-arg + bare forms, so a null
+  # server binary-fails the `is_binary(server)` guard and falls through to
+  # the single-arg clause below (the extra "server" => nil map key is inert
+  # in its pattern). The server token is validated with the single-token
+  # `:server` predicate (server name or routing nick — no whitespace/CRLF).
+  def handle_in(
+        "whois",
+        %{"network_id" => network_id, "nick" => nick, "server" => server},
+        socket
+      )
+      when is_integer(network_id) and is_binary(nick) and is_binary(server) do
+    dispatch_subject_verb(
+      socket,
+      fn -> validate_args(nick: nick, server: server) end,
+      fn subject -> Session.send_whois(subject, network_id, nick, server) end
+    )
+  end
+
   def handle_in(
         "whois",
         %{"network_id" => network_id, "nick" => nick},
@@ -585,7 +605,7 @@ defmodule GrappaWeb.GrappaChannel do
     dispatch_subject_verb(
       socket,
       fn -> validate_args(nick: nick) end,
-      fn subject -> Session.send_whois(subject, network_id, nick) end
+      fn subject -> Session.send_whois(subject, network_id, nick, nil) end
     )
   end
 
@@ -1178,6 +1198,7 @@ defmodule GrappaWeb.GrappaChannel do
            | {:mask, String.t()}
            | {:line, String.t()}
            | {:oper_token, String.t()}
+           | {:server, String.t()}
            | {:params, [String.t()]}
 
   @spec validate_args([validate_arg()]) ::
@@ -1218,6 +1239,18 @@ defmodule GrappaWeb.GrappaChannel do
   end
 
   defp validate_args([{:oper_token, value} | rest]) do
+    if Identifier.safe_oper_token?(value),
+      do: validate_args(rest),
+      else: {:error, :invalid_line}
+  end
+
+  # #198 — WHOIS target-server: a single whitespace-delimited routing slot
+  # (server name like `irc.azzurra.org` or a nick whose server answers).
+  # Same single-token semantics as an OPER field, so it shares the
+  # `safe_oper_token?/1` predicate (non-empty, no whitespace/CRLF/NUL) — a
+  # multi-token or CRLF-bearing value would splice extra wire slots or
+  # inject a follow-up command.
+  defp validate_args([{:server, value} | rest]) do
     if Identifier.safe_oper_token?(value),
       do: validate_args(rest),
       else: {:error, :invalid_line}

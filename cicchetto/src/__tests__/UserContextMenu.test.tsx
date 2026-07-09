@@ -168,10 +168,11 @@ describe("UserContextMenu", () => {
       });
     });
 
-    it("WHOIS button calls pushWhois with networkId and nick", async () => {
+    it("WHOIS button calls pushWhois with networkId and nick (server null)", async () => {
       render(() => <UserContextMenu {...baseProps} ownModes={["@"]} />);
       fireEvent.click(screen.getByRole("button", { name: /^whois$/i }));
-      expect(mockPushWhois).toHaveBeenCalledWith(42, "alice");
+      // #198 — context-menu WHOIS is single-nick: null target-server.
+      expect(mockPushWhois).toHaveBeenCalledWith(42, "alice", null);
     });
   });
 

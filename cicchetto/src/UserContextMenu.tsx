@@ -84,7 +84,7 @@ const UserContextMenu: Component<Props> = (props) => {
       label: "WHOIS",
       // Always enabled — no perm required.
       enabled: true,
-      action: () => pushWhois(props.networkId, props.targetNick),
+      action: () => pushWhois(props.networkId, props.targetNick, null),
     },
     {
       label: "Query",

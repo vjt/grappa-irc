@@ -529,12 +529,16 @@ export function pushRaw(networkId: number, line: string): Promise<void> {
   });
 }
 
-// /whois <nick> → WHOIS nick — pushes on the user-level channel.
-// Server-side `handle_in("whois", ...)` handler in GrappaChannel is
-// pending (C5 gap: cicchetto side landed; server side deferred to next bucket).
-export function pushWhois(networkId: number, nick: string): void {
+// /whois [<server>] <nick> → WHOIS — pushes on the user-level channel.
+// `server` is the optional RFC 2812 §3.6.2 target-server (#198): non-null
+// for the two-arg `/whois <server> <nick>` form (bouncer emits `WHOIS
+// <server> <nick>` upstream), null for the single-arg + bare forms (plain
+// `WHOIS <nick>`). Sent explicitly (never omitted) so the server clause
+// selection is unambiguous — a null server binary-fails the two-arg
+// handle_in guard and falls through to the single-arg clause.
+export function pushWhois(networkId: number, nick: string, server: string | null): void {
   if (_userChannel === null) return;
-  _userChannel.push("whois", { network_id: networkId, nick });
+  _userChannel.push("whois", { network_id: networkId, nick, server });
 }
 
 // P-0c — /whowas <nick> → WHOWAS nick — pushes on the user-level

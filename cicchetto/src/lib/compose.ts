@@ -746,7 +746,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           if (typeof nick !== "string") return nick;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/whois: network not found" };
-          pushWhois(networkId, nick);
+          // #198 — cmd.server is set only for the two-arg `/whois <server>
+          // <nick>` form; null for single-arg + bare. The bouncer emits
+          // `WHOIS <server> <nick>` upstream when present, plain `WHOIS
+          // <nick>` otherwise.
+          pushWhois(networkId, nick, cmd.server);
           result = { ok: true };
           break;
         }

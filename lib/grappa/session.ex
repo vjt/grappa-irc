@@ -1091,22 +1091,30 @@ defmodule Grappa.Session do
   end
 
   @doc """
-  Sends `WHOIS <nick>` upstream and primes the per-target accumulator
-  in `state.whois_pending` so EventRouter folds the 311/312/313/317/319
-  numerics into a bundle. The bundle is broadcast on `Topic.user/1` as
-  a `whois_bundle` event when 318 RPL_ENDOFWHOIS arrives.
+  Sends `WHOIS [<server>] <nick>` upstream and primes the per-target
+  accumulator in `state.whois_pending` so EventRouter folds the
+  311/312/313/317/319 numerics into a bundle. The bundle is broadcast on
+  `Topic.user/1` as a `whois_bundle` event when 318 RPL_ENDOFWHOIS arrives.
+
+  `server` is the optional RFC 2812 §3.6.2 target-server the query routes
+  through (`/whois <server> <nick>`, #198): when non-nil the frame is
+  `WHOIS <server> <nick>`, when nil it is the byte-identical single-arg
+  `WHOIS <nick>`. The accumulator keys on `nick` either way — the routing
+  server only changes which server answers, not the bundle's target.
 
   Per spec #2: ephemeral — NOT persisted in scrollback. Bundle replaces
   any prior bundle for the same target.
 
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
-  if the nick syntax is rejected by `Grappa.IRC.Client.send_whois/2`.
+  if the nick or server syntax is rejected by
+  `Grappa.IRC.Client.send_whois/3`.
   """
-  @spec send_whois(subject(), integer(), String.t()) ::
+  @spec send_whois(subject(), integer(), String.t(), String.t() | nil) ::
           :ok | {:error, :no_session | :invalid_line | send_transport_error()}
-  def send_whois(subject, network_id, nick)
-      when is_subject(subject) and is_integer(network_id) and is_binary(nick) do
-    call_session(subject, network_id, {:send_whois, nick})
+  def send_whois(subject, network_id, nick, server)
+      when is_subject(subject) and is_integer(network_id) and is_binary(nick) and
+             (is_binary(server) or is_nil(server)) do
+    call_session(subject, network_id, {:send_whois, nick, server})
   end
 
   @doc """

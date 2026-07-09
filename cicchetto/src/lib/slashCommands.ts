@@ -105,7 +105,7 @@ export type SlashCommand =
   | { kind: "motd" }
   | { kind: "stats"; query: string | null; target: string | null }
   | { kind: "rehash" }
-  | { kind: "whois"; nick: string | null }
+  | { kind: "whois"; nick: string | null; server: string | null }
   | { kind: "whowas"; nick: string }
   | { kind: "watchlist"; action: "add"; pattern: string }
   | { kind: "watchlist"; action: "del"; pattern: string }
@@ -415,9 +415,21 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   // nick signals "use the current context": the compose consumer resolves
   // the active query window's nick (and errors if not in a query window).
   // Mirrors the bare-target tolerance of /who and /names.
+  //
+  // #198 — two-arg RFC 2812 §3.6.2 form `/whois <server> <nick>`: the FIRST
+  // token is the target server the query routes through, the SECOND is the
+  // nick. Single-arg `/whois <nick>` keeps server null; bare `/whois` keeps
+  // both null. Trailing tokens past the second are ignored (WHOIS is a
+  // 2-slot wire frame). Server validation is the wire boundary's job
+  // (grappa_channel `validate_args` + `Client.send_whois/3`).
   whois: (_verb, rest) => {
-    const [nick] = tokens(rest);
-    return { kind: "whois", nick: nick ?? null };
+    const [first, second] = tokens(rest);
+    // Both tokens present → two-arg form: first=server, second=nick.
+    if (first !== undefined && second !== undefined) {
+      return { kind: "whois", nick: second, server: first };
+    }
+    // Zero tokens → bare (both null); one token → single-arg (server null).
+    return { kind: "whois", nick: first ?? null, server: null };
   },
 
   whowas: (verb, rest) => {

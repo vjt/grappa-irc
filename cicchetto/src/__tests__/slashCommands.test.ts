@@ -22,23 +22,53 @@ describe("parseSlash — basics", () => {
 });
 
 describe("parseSlash — /whois (C2)", () => {
-  it("/whois <nick> parses to {kind: 'whois', nick}", () => {
-    expect(parseSlash("/whois alice")).toEqual({ kind: "whois", nick: "alice" });
+  it("/whois <nick> parses to {kind: 'whois', nick, server: null}", () => {
+    expect(parseSlash("/whois alice")).toEqual({ kind: "whois", nick: "alice", server: null });
+  });
+
+  // #198 — two-arg RFC form `/whois <server> <nick>`: first token is the
+  // target server the query routes through, second is the nick.
+  it("/whois <server> <nick> → {kind: 'whois', nick, server} (#198)", () => {
+    expect(parseSlash("/whois irc.azzurra.org bob")).toEqual({
+      kind: "whois",
+      nick: "bob",
+      server: "irc.azzurra.org",
+    });
+  });
+
+  // #198 — extra tokens past the second are ignored (WHOIS is a 2-slot
+  // wire frame: <server> <nick>), so `/w <server> <nick> junk` still
+  // routes server+nick.
+  it("/whois <server> <nick> <junk> ignores trailing tokens (#198)", () => {
+    expect(parseSlash("/whois irc.azzurra.org bob extra")).toEqual({
+      kind: "whois",
+      nick: "bob",
+      server: "irc.azzurra.org",
+    });
   });
 
   // #122 — bare /whois no longer errors in the parser; the consumer
   // resolves the current query window's nick (context-default).
-  it("/whois bare → {kind: 'whois', nick: null} (context-default in compose)", () => {
-    expect(parseSlash("/whois")).toEqual({ kind: "whois", nick: null });
+  it("/whois bare → {kind: 'whois', nick: null, server: null} (context-default in compose)", () => {
+    expect(parseSlash("/whois")).toEqual({ kind: "whois", nick: null, server: null });
   });
 
   // #122 — /w is the post-init alias of /whois.
   it("/w <nick> → same as /whois", () => {
-    expect(parseSlash("/w alice")).toEqual({ kind: "whois", nick: "alice" });
+    expect(parseSlash("/w alice")).toEqual({ kind: "whois", nick: "alice", server: null });
   });
 
-  it("/w bare → {kind: 'whois', nick: null}", () => {
-    expect(parseSlash("/w")).toEqual({ kind: "whois", nick: null });
+  // #198 — the /w alias shares the parser, so the two-arg form works too.
+  it("/w <server> <nick> → same two-arg form (#198)", () => {
+    expect(parseSlash("/w irc.azzurra.org bob")).toEqual({
+      kind: "whois",
+      nick: "bob",
+      server: "irc.azzurra.org",
+    });
+  });
+
+  it("/w bare → {kind: 'whois', nick: null, server: null}", () => {
+    expect(parseSlash("/w")).toEqual({ kind: "whois", nick: null, server: null });
   });
 });
 
