@@ -744,7 +744,7 @@ defmodule Grappa.ScrollbackTest do
          %{user: user, network: net} do
       for i <- 0..4, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0) == 5
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil) == 5
     end
 
     test "cursor at the newest row id returns 0",
@@ -756,13 +756,13 @@ defmodule Grappa.ScrollbackTest do
         end
         |> List.last()
 
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", latest.id) == 0
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", latest.id, nil) == 0
     end
 
     test "past-tail cursor returns 0", %{user: user, network: net} do
       for i <- 0..2, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 999_999_999) == 0
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 999_999_999, nil) == 0
     end
 
     test "counts only rows strictly greater than after_id",
@@ -775,7 +775,7 @@ defmodule Grappa.ScrollbackTest do
 
       [_, _, m2 | _] = rows
 
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", m2.id) == 2
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", m2.id, nil) == 2
     end
 
     test "isolated by (subject, network, channel) — same shape as fetch_after",
@@ -788,7 +788,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, other_net, 2, %{body: "wrong-net"}))
       {:ok, _} = ScrollbackHelpers.insert(sample(alice, net, 3, %{sender: "alice", body: "wrong-user"}))
 
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0) == 1
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil) == 1
     end
 
     test "DM bidirectional — peer target counts inbound + outbound after the cursor",
@@ -872,7 +872,7 @@ defmodule Grappa.ScrollbackTest do
       for i <- 0..(cap + 4), do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
       total = cap + 5
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0) == total
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil) == total
     end
   end
 
@@ -890,13 +890,13 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 4, %{kind: :part, body: nil}))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 5, %{kind: :quit, body: nil}))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil) ==
                %{messages: 3, events: 3}
     end
 
     test "returns %{messages: 0, events: 0} for empty partition",
          %{user: user, network: net} do
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#empty", 0) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#empty", 0, nil) ==
                %{messages: 0, events: 0}
     end
 
@@ -904,7 +904,7 @@ defmodule Grappa.ScrollbackTest do
          %{user: user, network: net} do
       for i <- 0..2, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 999_999_999) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 999_999_999, nil) ==
                %{messages: 0, events: 0}
     end
 
@@ -914,7 +914,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :join, body: nil}))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :privmsg}))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", m0.id) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", m0.id, nil) ==
                %{messages: 1, events: 1}
     end
 
@@ -923,7 +923,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg}))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :notice}))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil) ==
                %{messages: 2, events: 0}
     end
 
@@ -932,7 +932,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :join, body: nil}))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :mode, body: nil}))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil) ==
                %{messages: 0, events: 2}
     end
   end

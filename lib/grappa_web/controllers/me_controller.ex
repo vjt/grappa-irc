@@ -64,15 +64,27 @@ defmodule GrappaWeb.MeController do
   Built inline here (not in `Scrollback`) so the slug→id resolution
   stays controller-side and `Scrollback` doesn't grow a dependency
   edge onto `Networks` (that would close a `Networks → Scrollback →
-  Networks` cycle). One `Networks.network_id_by_slug_index/0` call
-  feeds an Enum.reduce over the cursor envelope; per-cursor
-  `count_after_split/5` is a single SQL round-trip — bounded by the
-  same ~600 worst-case cursor count `bulk_for_subject/1` carries.
-  `own_nick` is passed `nil` here — the `/me` seed is a coarse cold-
-  load fallback that the per-channel join reply (which DOES resolve
-  the per-network own_nick via `Session.current_nick/2`) refines once
-  the user joins. Skipping per-network nick resolution keeps the /me
-  path off of `Grappa.Session`.
+  Networks` cycle). Inclusion is keyed on the GLOBAL
+  `Networks.network_id_by_slug_index/0` (every existing network row) —
+  NOT the credential-scoped window map — so a network the user unbound
+  but whose scrollback + cursors it retained (GH #105) still seeds, same
+  as the WS `join_reply` door. Per-cursor `count_after_split/5` is a
+  single SQL round-trip — bounded by the same ~600 worst-case cursor
+  count `bulk_for_subject/1` carries.
+
+  `own_nick` is threaded per-network from the CONFIGURED credential nick
+  — the same off-Session resolver `Push.BadgeCount` uses
+  (`configured_nick_windows/1`), `nil` when the subject holds no
+  credential on that slug (the unbound-but-retained case). It narrows
+  the own-nick query window (`channel == own_nick`) to self-msgs so
+  inbound DMs don't over-count it; without it the seed disagreed with
+  the per-channel WS `join_reply` (which threads the live session nick)
+  by every inbound DM ever received (S2, 2026-07-08 review — the
+  CP14-B3 leak re-opened by `count_after_split/5`'s former
+  `own_nick \\ nil` default). Resolving from the configured nick keeps
+  the /me path off of `Grappa.Session` (a `GenServer.call` per network
+  at cold-load is unacceptable — DESIGN_NOTES 2026-06-21); accepted
+  staleness after a `/nick` until reconnect rewrites the credential.
 
   ## badge_count (PWA icon badge door #2, 2026-06-21)
 
@@ -221,13 +233,30 @@ defmodule GrappaWeb.MeController do
     do: %{}
 
   defp build_unread_counts(subject, cursor_envelope) do
+    # Inclusion stays keyed on the GLOBAL network index (every existing
+    # network row), NOT on the credential-scoped window map: a user can
+    # unbind a network yet retain its scrollback + read cursors (GH #105
+    # — unbind deletes only the credential row). Those cursors must still
+    # seed unread_counts, matching the WS `join_reply` door (which keys on
+    # `get_network_by_slug`, credential-independent). Scoping inclusion to
+    # credentials would silently drop unbound-but-retained networks from
+    # the cold-load seed.
     slug_to_id = Networks.network_id_by_slug_index()
+
+    # own_nick is resolved SEPARATELY from the off-Session configured-nick
+    # window map (`Push.BadgeCount.configured_nick_windows/1`); `nil` when
+    # the subject holds no credential on that slug (unbound network). nil
+    # own_nick falls back to channel-shape narrowing — the same shape the
+    # WS door uses when it has no live session, so the two doors stay
+    # consistent for the unbound case too.
+    own_nicks = BadgeCount.configured_nick_windows(subject)
 
     for {slug, per_channel} <- cursor_envelope,
         Map.has_key?(slug_to_id, slug),
         reduce: %{} do
       acc ->
         net_id = Map.fetch!(slug_to_id, slug)
+        own_nick = own_nick_for_slug(own_nicks, slug)
 
         channel_counts =
           for {channel, cursor} <- per_channel,
@@ -237,7 +266,7 @@ defmodule GrappaWeb.MeController do
               Map.put(
                 inner,
                 channel,
-                Scrollback.count_after_split(subject, net_id, channel, cursor)
+                Scrollback.count_after_split(subject, net_id, channel, cursor, own_nick)
               )
           end
 
@@ -249,6 +278,18 @@ defmodule GrappaWeb.MeController do
         else
           Map.put(acc, slug, channel_counts)
         end
+    end
+  end
+
+  # Configured own-nick for `slug`, or `nil` when the subject holds no
+  # credential there (unbound-but-retained network). `nil` selects
+  # channel-shape narrowing in `Scrollback.count_after_split/5`.
+  @spec own_nick_for_slug(%{String.t() => {integer(), String.t()}}, String.t()) ::
+          String.t() | nil
+  defp own_nick_for_slug(own_nicks, slug) do
+    case Map.fetch(own_nicks, slug) do
+      {:ok, {_, own_nick}} -> own_nick
+      :error -> nil
     end
   end
 end

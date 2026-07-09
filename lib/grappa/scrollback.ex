@@ -339,8 +339,8 @@ defmodule Grappa.Scrollback do
 
   Sole consumer: the unread-badges-from-cursor refactor (2026-06-01).
   Phoenix Channel `join_reply/1` calls `count_after(subject,
-  network.id, channel, cursor || 0)` to seed cic's per-channel unread
-  badge with the server-authoritative count at sync time; cic then
+  network.id, channel, cursor || 0, own_nick)` to seed cic's per-channel
+  unread badge with the server-authoritative count at sync time; cic then
   derives the live count by counting local scrollback rows with `id >
   cursor` and falls back to this seed when scrollback hasn't been
   hydrated yet (or for channels the user has never opened in this
@@ -348,7 +348,7 @@ defmodule Grappa.Scrollback do
 
   Same predicates as `fetch_after/6` so the count exactly matches what
   a `fetch_after(..., :infinity)` would return — modulo the
-  `@max_limit` cap, which `count_after/4` deliberately does not apply.
+  `@max_limit` cap, which `count_after/5` deliberately does not apply.
   Counts unbounded by definition: a channel with 10k unread rows
   must surface as `10000`, not `@max_limit`.
 
@@ -357,10 +357,15 @@ defmodule Grappa.Scrollback do
   Mirrors the `fetch_after/6` contract (CP14 B3 narrowing rule). When
   `own_nick` equals `channel` (case-insensitive), the count restricts
   to self-msgs so every inbound DM doesn't inflate the own-nick
-  window's unread count. Pass `nil` when the caller doesn't have a
-  session — the channel-shape default applies. The Phoenix Channel
-  `join_reply` path threads the current credential's nick when it can
-  resolve one, `nil` otherwise.
+  window's unread count. `own_nick` is a REQUIRED positional (no
+  defaulting wrapper — same rule as `fetch/6`, REV-J M12: a default
+  silently re-opens the CP14-B3 leak for a caller that forgets to
+  thread it — S2, 2026-07-08 review). Pass `nil` explicitly when the
+  caller doesn't have a session; the channel-shape narrowing then
+  applies. The Phoenix Channel `join_reply` path threads the live
+  session nick when it can resolve one, `nil` otherwise; the `/me`
+  cold-load threads the configured credential nick (off-Session, via
+  `Push.BadgeCount.configured_nick_windows/1`).
 
   Returns `0` for the past-tail case (`after_id >= max(id)`), `0` for
   the impossible-subject case (no rows match the subject + network),
@@ -369,7 +374,7 @@ defmodule Grappa.Scrollback do
   """
   @spec count_after(subject(), integer(), String.t(), integer(), String.t() | nil) ::
           non_neg_integer()
-  def count_after(subject, network_id, channel, after_id, own_nick \\ nil)
+  def count_after(subject, network_id, channel, after_id, own_nick)
       when is_integer(network_id) and is_integer(after_id) and
              (is_binary(own_nick) or is_nil(own_nick)) do
     Message
@@ -402,10 +407,15 @@ defmodule Grappa.Scrollback do
   Returns `%{messages: 0, events: 0}` for past-tail / impossible
   subject / empty partition — never a missing key, so callers can
   pattern-match without a default.
+
+  `own_nick` is a REQUIRED positional (same rule as `count_after/5` /
+  `fetch/6`): a defaulting wrapper silently re-opens the CP14-B3
+  own-nick DM over-count for any caller that forgets to thread it
+  (S2, 2026-07-08 review — the `/me` cold-load did exactly that).
   """
   @spec count_after_split(subject(), integer(), String.t(), integer(), String.t() | nil) ::
           %{messages: non_neg_integer(), events: non_neg_integer()}
-  def count_after_split(subject, network_id, channel, after_id, own_nick \\ nil)
+  def count_after_split(subject, network_id, channel, after_id, own_nick)
       when is_integer(network_id) and is_integer(after_id) and
              (is_binary(own_nick) or is_nil(own_nick)) do
     query =

@@ -276,6 +276,58 @@ defmodule GrappaWeb.MeControllerTest do
       refute Map.has_key?(body["unread_counts"], network.slug)
     end
 
+    # S2 review-fix regression guard — inclusion is keyed on the GLOBAL
+    # network index, NOT the credential-scoped own-nick window map. A
+    # user can unbind a network yet retain its scrollback + read cursors
+    # (GH #105 — unbind deletes only the credential row), and those
+    # cursors MUST still seed unread_counts (matching the WS join_reply
+    # door). Here the network has NO credential for the user: own_nick
+    # resolves to nil (channel-shape narrowing), but the #channel count
+    # is still seeded. A credential-scoped inclusion would drop it.
+    test "cursored network with no credential still seeds unread_counts",
+         %{conn: conn} do
+      {user, session} = user_and_session()
+
+      {network, _} =
+        network_with_server(port: 7410, slug: "nocred-#{System.unique_integer([:positive])}")
+
+      # Deliberately NO credential_fixture/2 — mirror the unbind-but-
+      # retain-scrollback state (network row exists, no credential row).
+      {:ok, anchor} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#retained",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "peer",
+          body: "anchor"
+        })
+
+      {:ok, _} = Grappa.ReadCursor.set({:user, user.id}, network.id, "#retained", anchor.id)
+
+      {:ok, _} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#retained",
+          server_time: 2,
+          kind: :privmsg,
+          sender: "peer",
+          body: "after-cursor"
+        })
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/me")
+
+      body = json_response(conn, 200)
+
+      assert body["unread_counts"][network.slug]["#retained"] ==
+               %{"messages" => 1, "events" => 0}
+    end
+
     # PROD HOTFIX 2026-06-01 — `ReadCursor.bulk_for_subject/1` returns
     # `c.last_read_message_id` as-is; the column is nullable so a row
     # with explicit-no-cursor or legacy-null state surfaces as a nil
@@ -332,6 +384,93 @@ defmodule GrappaWeb.MeControllerTest do
       body = json_response(conn, 200)
       assert is_map(body["unread_counts"])
       refute Map.has_key?(body["unread_counts"], network.slug)
+    end
+
+    # S2 (2026-07-08 codebase review) — the own-nick query window
+    # (`channel == own_nick`) must narrow to self-msgs only. The two
+    # doors that seed the same badge — the per-channel WS `join_reply`
+    # and this `/me` cold-load — MUST agree. Pre-fix `build_unread_counts/2`
+    # passed no `own_nick`, so `channel_or_dm_where/3` fell through to
+    # the peer-DM OR-shape and counted EVERY inbound DM ever received
+    # (all stored at `channel = own_nick`), over-counting the own-nick
+    # window vs the WS door (which threads `own_nick`). own_nick resolves
+    # off-Session from the configured credential nick (same stance as
+    # `Push.BadgeCount`), so the fix needs no live session.
+    test "own-nick window excludes inbound DMs — /me matches the WS join_reply count",
+         %{conn: conn} do
+      {user, session} = user_and_session()
+
+      {network, _} =
+        network_with_server(port: 7409, slug: "ownnick-#{System.unique_integer([:positive])}")
+
+      # credential_fixture defaults nick "grappa-test" → the own-nick
+      # query window is keyed on channel "grappa-test".
+      _ = credential_fixture(user, network)
+      own_nick = "grappa-test"
+
+      # Cursor on the own-nick window at row 0 so both rows are unread.
+      {:ok, anchor} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: own_nick,
+          server_time: 1,
+          kind: :privmsg,
+          sender: "peer",
+          body: "anchor"
+        })
+
+      {:ok, _} = Grappa.ReadCursor.set({:user, user.id}, network.id, own_nick, anchor.id)
+
+      # Inbound DM from a peer — stored at `channel = own_nick, dm_with =
+      # peer`. This must NOT inflate the own-nick window count.
+      {:ok, _} =
+        Grappa.Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: own_nick,
+          server_time: 2,
+          kind: :privmsg,
+          sender: "peer",
+          body: "inbound-dm",
+          meta: %{},
+          dm_with: "peer"
+        })
+
+      # A genuine self-msg (`/msg <ownnick>`) — stored at `channel =
+      # dm_with = own_nick`. This IS a member of the own-nick window.
+      {:ok, _} =
+        Grappa.Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: own_nick,
+          server_time: 3,
+          kind: :privmsg,
+          sender: own_nick,
+          body: "note-to-self",
+          meta: %{},
+          dm_with: own_nick
+        })
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/me")
+
+      body = json_response(conn, 200)
+
+      # Only the self-msg counts — the inbound DM is narrowed out.
+      assert body["unread_counts"][network.slug][own_nick] ==
+               %{"messages" => 1, "events" => 0}
+
+      # Door parity: the /me total equals what the WS `join_reply` seeds
+      # via the SAME predicate `Scrollback.count_after/5`, with own_nick
+      # resolved to the configured nick.
+      ws_count =
+        Grappa.Scrollback.count_after({:user, user.id}, network.id, own_nick, anchor.id, own_nick)
+
+      %{"messages" => m, "events" => e} = body["unread_counts"][network.slug][own_nick]
+      assert m + e == ws_count
     end
   end
 

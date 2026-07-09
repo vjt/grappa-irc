@@ -112,7 +112,7 @@ defmodule Grappa.Push.BadgeCount do
       cursors ->
         prefs = UserSettings.get_notification_prefs(subject)
         patterns = UserSettings.get_highlight_patterns(subject)
-        windows = resolve_windows(subject)
+        windows = configured_nick_windows(subject)
 
         cursors
         |> flatten_entries(windows)
@@ -172,15 +172,32 @@ defmodule Grappa.Push.BadgeCount do
     |> Enum.count(&Triggers.should_notify?(&1, own_nick, prefs, patterns))
   end
 
-  # `%{slug => {network_id, configured_own_nick}}` for the subject.
-  # Users: one joined credentials⋈networks query. Visitors: the single
-  # `(network_slug, nick)` the visitor row carries, resolved to a
-  # network_id via the slug index (empty map when the visitor or its
-  # network is gone).
-  @spec resolve_windows(Subject.t()) :: %{String.t() => {integer(), String.t()}}
-  defp resolve_windows({:user, user_id}), do: Networks.configured_nick_index(user_id)
+  @doc """
+  `%{slug => {network_id, configured_own_nick}}` for the subject — the
+  per-network CONFIGURED IRC nick (credential nick for users,
+  `visitor.nick` for visitors), NEVER the live `Session.current_nick/2`.
 
-  defp resolve_windows({:visitor, visitor_id}) do
+  The shared, off-Session own-nick resolver behind BOTH notify-count
+  doors: this module's badge count AND the `/me` unread-count seed
+  (`GrappaWeb.MeController.build_unread_counts/2`, S2 2026-07-08 review).
+  Both need each network's own-nick to narrow the own-nick query window
+  (`channel == own_nick`) so inbound DMs don't over-count — and both
+  deliberately stay off `Grappa.Session` (a `GenServer.call` per network
+  on the cold-load / settle hot path is unacceptable; see the moduledoc
+  "own_nick is the CONFIGURED nick" note + DESIGN_NOTES 2026-06-21).
+  Accepted staleness: after a `/nick` the count uses the configured nick
+  until the next reconnect rewrites the credential.
+
+    * Users: one joined credentials⋈networks query
+      (`Networks.configured_nick_index/1`).
+    * Visitors: the single `(network_slug, nick)` the visitor row
+      carries, resolved to a network_id via the slug index (empty map
+      when the visitor or its network is gone).
+  """
+  @spec configured_nick_windows(Subject.t()) :: %{String.t() => {integer(), String.t()}}
+  def configured_nick_windows({:user, user_id}), do: Networks.configured_nick_index(user_id)
+
+  def configured_nick_windows({:visitor, visitor_id}) do
     case Visitors.get(visitor_id) do
       nil ->
         %{}
