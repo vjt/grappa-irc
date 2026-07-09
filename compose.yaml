@@ -147,7 +147,12 @@ services:
       - ./runtime/bun-cache:/cache
       - ./runtime/cicchetto-dist:/app/dist
     tmpfs:
-      - /tmp:exec,uid=1000,gid=1000
+      # UID/GID must track the `user:` field above — bun writes to
+      # HOME=/tmp, so a hardcoded uid=1000 tmpfs while the process runs
+      # as CONTAINER_UID!=1000 fails every write with EACCES and the
+      # `bun install && bun run build` never completes (nginx's
+      # depends_on service_completed_successfully hangs the deploy).
+      - /tmp:exec,uid=${CONTAINER_UID:-1000},gid=${CONTAINER_GID:-1000}
     environment:
       HOME: /tmp
       BUN_INSTALL_CACHE_DIR: /cache
