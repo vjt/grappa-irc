@@ -1235,3 +1235,86 @@ describe("purgeScrollback (UX-7-B 2026-05-22)", () => {
     expect(scrollback.scrollbackByChannel()[key]).toBeUndefined();
   });
 });
+
+// S20 (codebase review 2026-07-08) — the scrollback store only grew (append
+// live, prepend history, append refresh); the only removals were
+// archive-delete + identity reset. A PWA kept open for days accumulated
+// every live message in memory with no cap. Fix: a per-channel ring cap on
+// the LIVE-append path (`appendToScrollback`) that evicts the OLDEST rows —
+// but NEVER a row at/after the read cursor, so the in-pane `── XX unread ──`
+// divider (anchored on the cursor) and its unread rows are always preserved.
+// An eviction also resets the `loadMore` exhausted latch so scroll-up can
+// re-page the now-missing older history.
+describe("appendToScrollback — S20 per-channel ring cap", () => {
+  const mkRow = (id: number): import("../lib/api").ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: "#grappa",
+    server_time: id,
+    kind: "privmsg",
+    sender: "peer",
+    body: `line ${id}`,
+    meta: {},
+  });
+
+  it("caps the per-channel ring, evicting the OLDEST rows when no cursor gates eviction", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    mockGetReadCursor.mockReturnValue(null); // no divider → free eviction
+    const scrollback = await import("../lib/scrollback");
+    const cap = scrollback.SCROLLBACK_RING_CAP;
+    const key = channelKey("freenode", "#grappa");
+    const total = cap + 50;
+    for (let i = 1; i <= total; i++) scrollback.appendToScrollback(key, mkRow(i));
+    const rows = scrollback.scrollbackByChannel()[key] ?? [];
+    expect(rows.length).toBe(cap);
+    // Oldest 50 evicted; the newest row is retained (live tail).
+    expect(rows[0]?.id).toBe(51);
+    expect(rows[rows.length - 1]?.id).toBe(total);
+  });
+
+  it("never evicts a row at/after the read cursor (unread divider boundary is preserved)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const scrollback = await import("../lib/scrollback");
+    const cap = scrollback.SCROLLBACK_RING_CAP;
+    const key = channelKey("freenode", "#grappa");
+    // Cursor near the very start → almost the whole buffer is "unread"
+    // (id > cursor). Appending well past the cap must NOT drop any row
+    // with id >= cursor — dropping the boundary would break the divider.
+    const cursor = 5;
+    mockGetReadCursor.mockReturnValue(cursor);
+    const total = cap + 200;
+    for (let i = 1; i <= total; i++) scrollback.appendToScrollback(key, mkRow(i));
+    const ids = (scrollback.scrollbackByChannel()[key] ?? []).map((m) => m.id);
+    // The divider anchor (the cursor row) + every unread row survive, even
+    // though that leaves the buffer temporarily above the cap.
+    expect(ids).toContain(cursor);
+    for (let i = cursor; i <= total; i++) expect(ids).toContain(i);
+    // Only the read rows below the cursor (id < cursor) are evictable.
+    expect(ids).not.toContain(1);
+    expect(ids).not.toContain(cursor - 1);
+  });
+
+  it("resets the loadMore exhausted latch on eviction so scroll-up can re-page older history", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    mockGetReadCursor.mockReturnValue(null);
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    const cap = scrollback.SCROLLBACK_RING_CAP;
+    const key = channelKey("freenode", "#grappa");
+    scrollback.appendToScrollback(key, mkRow(1));
+    // Latch loadMore as exhausted (server has no older history yet).
+    vi.mocked(api.listMessages).mockResolvedValueOnce([]);
+    await scrollback.loadMore("freenode", "#grappa");
+    expect(api.listMessages).toHaveBeenCalledTimes(1);
+    // Latched: a second loadMore is a no-op.
+    await scrollback.loadMore("freenode", "#grappa");
+    expect(api.listMessages).toHaveBeenCalledTimes(1);
+    // Grow past the cap so eviction fires → the seed (id 1) is dropped, so
+    // there IS older history again → the exhausted latch must clear.
+    for (let i = 2; i <= cap + 5; i++) scrollback.appendToScrollback(key, mkRow(i));
+    expect(scrollback.scrollbackByChannel()[key]?.some((m) => m.id === 1)).toBe(false);
+    vi.mocked(api.listMessages).mockResolvedValueOnce([]);
+    await scrollback.loadMore("freenode", "#grappa");
+    expect(api.listMessages).toHaveBeenCalledTimes(2);
+  });
+});

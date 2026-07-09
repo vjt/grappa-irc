@@ -6,7 +6,7 @@ import {
   type ScrollbackMessage,
 } from "./api";
 import { token } from "./auth";
-import { type ChannelKey, channelKey } from "./channelKey";
+import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
 import { getReadCursor, setReadCursor } from "./readCursor";
 import { getResumeCursor, recordSeen } from "./reconnectBackfill";
@@ -57,6 +57,55 @@ import { getResumeCursor, recordSeen } from "./reconnectBackfill";
 // Service NOTICEs land at $server (the dedicated server-messages
 // window) per existing routing, so the noise that motivated the
 // filter is already absent from the DM fetch surface.
+
+// S20 (codebase review 2026-07-08) — per-channel ring cap. The live-append
+// path (`appendToScrollback`, fed by the WS handler + reconnect refresh) was
+// the unbounded growth vector for a passively-open PWA: a channel accumulated
+// every live row with no prune (archive-delete + identity reset aside). Cap
+// the per-channel row count, evicting the OLDEST rows on live append — but
+// NEVER a row at/after the read cursor (see `capScrollbackRing`): the in-pane
+// `── XX unread ──` divider anchors on the cursor + its unread rows, and
+// dropping the boundary would break the read-state contract.
+//
+// Honest scope of the bound (the divider constraint is load-bearing, so the
+// cap is NOT an unconditional ceiling):
+//   * `mergeIntoScrollback` (loadMore prepends OLDER rows on explicit
+//     scroll-up) is not capped at the prepend, so a scroll-up burst isn't
+//     truncated mid-scroll. But the WHOLE list IS bounded on the NEXT live
+//     append, which can evict the oldest READ rows a deep scroll-up loaded.
+//     Recoverable: eviction resets the loadMore exhausted latch, so scrolling
+//     up re-pages them.
+//   * A channel that is BUSY but never focused this session, carrying a stale
+//     non-null cursor (e.g. set on another device), holds every live row as
+//     unread (id > cursor) → all protected → the buffer can grow past the
+//     cap. That is the cost of the divider invariant, not an oversight: those
+//     rows can't be dropped without corrupting the (server-authoritative)
+//     unread count + divider. It bounds the moment the operator reads the
+//     channel — the cursor advances and the now-read rows become evictable.
+export const SCROLLBACK_RING_CAP = 1000;
+
+// Trim `rows` (ASC by id) to the ring cap by dropping the OLDEST, but NEVER a
+// row at/after the read cursor: the in-pane `── XX unread ──` divider anchors
+// on the cursor and its unread rows (CLAUDE.md "Read state is server-owned"),
+// so dropping the boundary would break the unread contract. The evictable
+// region is exactly the read-context strictly below the divider (id <
+// cursor); a pathological all-unread channel simply holds above the cap until
+// the operator reads (advancing the cursor makes those rows evictable). With
+// no cursor (fresh channel, no divider) eviction is unconstrained.
+const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): ScrollbackMessage[] => {
+  if (rows.length <= SCROLLBACK_RING_CAP) return rows;
+  let dropCount = rows.length - SCROLLBACK_RING_CAP;
+  const decoded = decodeChannelKey(key);
+  const cursor = decoded ? getReadCursor(decoded.slug, decoded.name) : null;
+  if (cursor !== null) {
+    // Rows are ASC by id, so the first index with id >= cursor bounds the
+    // evictable prefix (everything before it is read-context below the divider).
+    const firstProtected = rows.findIndex((m) => m.id >= cursor);
+    const maxDroppable = firstProtected === -1 ? rows.length : firstProtected;
+    if (dropCount > maxDroppable) dropCount = maxDroppable;
+  }
+  return dropCount > 0 ? rows.slice(dropCount) : rows;
+};
 
 const exports = identityScopedStore((onIdentityChange) => {
   const loadedChannels = new Set<ChannelKey>();
@@ -134,12 +183,23 @@ const exports = identityScopedStore((onIdentityChange) => {
   // WS push from the per-channel PubSub broadcast. Both paths route
   // through here; whichever lands first wins, the second is dropped.
   const appendToScrollback = (key: ChannelKey, msg: ScrollbackMessage) => {
+    // S20: track whether the ring cap evicted older rows so we can reset the
+    // loadMore exhausted latch below. Computed inside the pure updater,
+    // consumed after it runs (Solid calls a plain-signal updater exactly once,
+    // synchronously) — keeps the setter body free of the Set side-effect.
+    let evicted = false;
     setScrollbackByChannel((prev) => {
       const existing = prev[key];
       if (existing?.some((m) => m.id === msg.id)) return prev;
       const next = existing ? [...existing, msg] : [msg];
-      return { ...prev, [key]: next };
+      const capped = capScrollbackRing(key, next);
+      evicted = capped.length < next.length;
+      return { ...prev, [key]: capped };
     });
+    // Eviction removed older history → the loadMore exhausted latch (if set)
+    // is now stale: the server DOES have rows older than the new oldest. Clear
+    // it so a scroll-to-top re-pages the evicted region.
+    if (evicted) loadMoreExhausted.delete(key);
   };
 
   // Merge a freshly-fetched REST page into the per-channel list. Server
