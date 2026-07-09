@@ -187,14 +187,16 @@ config :logger, :console,
     # re-prefix them. In the allowlist to satisfy the known_keys↔metadata
     # sync test even though no Logger call carries it today.
     :sender_prefix,
-    # Auth context (Phase 2): bearer-token session lifecycle. `session_id`
-    # rides every authn-plug failure and revoke; `affected` rides the
-    # revoke audit log so a typo'd-id revoke is greppable. `socket_id`
-    # rides the logout-side `Endpoint.broadcast(socket_id, "disconnect")`
-    # path (auth_controller.ex broadcast_disconnect/1) so an operator
-    # grep can correlate a logout with the WS lifecycle line that picked
-    # up the disconnect.
-    :session_id,
+    # Auth context (Phase 2): bearer-token session lifecycle. `session_ref`
+    # is a non-reversible SHA-256 handle of the session-id (S9: the raw id
+    # IS the bearer token, so it must NEVER hit the log stream) — it rides
+    # the revoke + backward-clock lines to correlate a session without
+    # leaking a usable credential. `affected` rides the revoke audit log
+    # so a typo'd-id revoke is greppable. `socket_id` rides the
+    # logout-side `Endpoint.broadcast(socket_id, "disconnect")` path so an
+    # operator grep can correlate a logout with the WS lifecycle line that
+    # picked up the disconnect.
+    :session_ref,
     :affected,
     :authn_failure,
     :socket_id,

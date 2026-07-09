@@ -436,7 +436,7 @@ defmodule Grappa.Accounts do
   def revoke_session(id) when is_binary(id) do
     query = from(s in Session, where: s.id == ^id)
     {affected, _} = Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
-    Logger.info("session revoked", session_id: id, affected: affected)
+    Logger.info("session revoked", session_ref: session_handle(id), affected: affected)
     :ok
   end
 
@@ -528,11 +528,24 @@ defmodule Grappa.Accounts do
 
       {:error, _} ->
         Logger.warning("touch_session backward-clock detected; ignoring",
-          session_id: session.id,
+          session_ref: session_handle(session.id),
           reason: :backward_clock
         )
 
         session
     end
+  end
+
+  # S9: the bearer token IS the session-id (accounts/session.ex), so
+  # logging the raw id emits a live credential into the log stream —
+  # log-read access is broader than DB access, and this path fires for an
+  # ACTIVE, non-revoked session (the backward-clock warning). A truncated
+  # SHA-256 hex digest is a stable, non-reversible handle: it correlates
+  # log lines for one session without ever exposing a usable token. 12
+  # hex chars (48 bits) disambiguates concurrent sessions in a grep;
+  # reversing it would mean brute-forcing the 122-bit UUID space.
+  @spec session_handle(String.t()) :: String.t()
+  defp session_handle(id) when is_binary(id) do
+    :crypto.hash(:sha256, id) |> Base.encode16(case: :lower) |> binary_part(0, 12)
   end
 end
