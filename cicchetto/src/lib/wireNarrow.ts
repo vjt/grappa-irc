@@ -45,19 +45,37 @@ import type { MemberEntry } from "./memberTypes";
 // per-topic narrowers (e.g. a `narrowAdminEvent` if Phase 5 grows the
 // /admin LiveDashboard's WS surface).
 
-const VALID_MESSAGE_KINDS: ReadonlySet<MessageKind> = new Set([
-  "privmsg",
-  "notice",
-  "action",
-  "join",
-  "part",
-  "quit",
-  "nick_change",
-  "mode",
-  "topic",
-  "kick",
-  "server_event",
-]);
+// S14 — exhaustive `Record<MessageKind, true>` so a new server kind
+// (`Message.@kinds` → `ScrollbackWireT.kind` literal union →
+// `MessageKind`, pinned by `_Assert_MessageKind` in `wireTypesAssert.ts`)
+// FAILS tsc here until it is added, instead of silently dropping every
+// message of that kind at `narrowScrollbackMessage`. The runtime Set
+// derives from the keys — one edit, tsc-enforced completeness.
+const MESSAGE_KIND_PRESENCE: Record<MessageKind, true> = {
+  privmsg: true,
+  notice: true,
+  action: true,
+  join: true,
+  part: true,
+  quit: true,
+  nick_change: true,
+  mode: true,
+  topic: true,
+  kick: true,
+  server_event: true,
+};
+
+const VALID_MESSAGE_KINDS: ReadonlySet<MessageKind> = new Set(
+  Object.keys(MESSAGE_KIND_PRESENCE) as MessageKind[],
+);
+
+// S14 — shared runtime guard for the `Message.kind()` closed set. Used
+// by `narrowScrollbackMessage` here and `narrowMentionsBundleMessage`
+// in `userTopic.ts` so both Message-kind wire projections gate the
+// same set (no second hand-maintained kind check).
+export function isMessageKind(v: unknown): v is MessageKind {
+  return typeof v === "string" && VALID_MESSAGE_KINDS.has(v as MessageKind);
+}
 
 function narrowScrollbackMessage(raw: unknown): ScrollbackMessage | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -67,8 +85,7 @@ function narrowScrollbackMessage(raw: unknown): ScrollbackMessage | null {
     typeof r.network !== "string" ||
     typeof r.channel !== "string" ||
     typeof r.server_time !== "number" ||
-    typeof r.kind !== "string" ||
-    !VALID_MESSAGE_KINDS.has(r.kind as MessageKind) ||
+    !isMessageKind(r.kind) ||
     typeof r.sender !== "string" ||
     (r.body !== null && typeof r.body !== "string") ||
     typeof r.meta !== "object" ||
@@ -195,7 +212,12 @@ export type WireWindowStateEvent =
       channel: string;
       state: "failed";
       reason: string | null;
-      numeric: number;
+      // S13 — mirror the server typespec `join_failed_payload.numeric:
+      // pos_integer() | nil`. The cold-subscribe snapshot builds this
+      // via `Map.get(failure_numerics, channel)` = nil when the failing
+      // numeric was never recorded; typing it non-null made the narrower
+      // DROP the whole "failed tab" snapshot on reconnect (CP15-B3).
+      numeric: number | null;
     }
   | {
       kind: "kicked";
@@ -221,7 +243,9 @@ export function narrowWindowStateEvent(raw: unknown): WireWindowStateEvent | nul
         typeof r.channel !== "string" ||
         r.state !== "failed" ||
         (r.reason !== null && typeof r.reason !== "string") ||
-        typeof r.numeric !== "number"
+        // S13 — accept null (server contract permits it; see the type
+        // above). Dropping on null regressed the reconnect "failed tab".
+        (r.numeric !== null && typeof r.numeric !== "number")
       )
         return null;
       return {
@@ -230,7 +254,7 @@ export function narrowWindowStateEvent(raw: unknown): WireWindowStateEvent | nul
         channel: r.channel,
         state: "failed",
         reason: r.reason as string | null,
-        numeric: r.numeric,
+        numeric: r.numeric as number | null,
       };
     case "kicked":
       if (

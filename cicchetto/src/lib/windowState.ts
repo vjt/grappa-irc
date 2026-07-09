@@ -32,7 +32,10 @@ export type WindowState = "pending" | "invited" | "joined" | "failed" | "kicked"
 
 export type WindowFailure = {
   reason: string | null;
-  numeric: number;
+  // S13 — mirrors the server contract `join_failed_payload.numeric:
+  // pos_integer() | nil` (nil when the failing numeric was never
+  // recorded, e.g. the cold-subscribe "failed tab" snapshot).
+  numeric: number | null;
 };
 
 export type WindowKickedMeta = {
@@ -86,7 +89,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     });
   };
 
-  const setFailed = (key: ChannelKey, reason: string | null, numeric: number): void => {
+  const setFailed = (key: ChannelKey, reason: string | null, numeric: number | null): void => {
     setWindowStateByChannel((prev) => ({ ...prev, [key]: "failed" }));
     setWindowFailureByChannel((prev) => ({ ...prev, [key]: { reason, numeric } }));
   };

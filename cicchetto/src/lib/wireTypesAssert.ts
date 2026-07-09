@@ -44,11 +44,38 @@
 //     update api.ts to match wireTypes.ts (server is the source of
 //     truth per CLAUDE.md "Implement once, reuse everywhere").
 
-import type { ConnectionState, DirectoryEntry, FeaturedChannelLink } from "./api";
+import type {
+  ConnectionState,
+  CredentialJson,
+  DirectoryEntry,
+  FeaturedChannelLink,
+  HomeData,
+  HomeNetworkRow,
+  MentionsBundleMessage,
+  MessageKind,
+  QueryWindowEntry,
+  ScrollbackMessage,
+  ServerReplySource,
+  WhoUser,
+} from "./api";
+import type { ModesEntry, TopicEntry } from "./channelTopic";
+import type { MemberEntry } from "./memberTypes";
 import type {
   ChannelDirectoryWireEntry,
   NetworksCredentialConnectionState,
   NetworksFeaturedChannelsWireLink,
+  NetworksWireCredentialJson,
+  NetworksWireHomeData,
+  NetworksWireHomeNetworkRow,
+  QueryWindowsWireWindowsEntry,
+  ScrollbackMessageKind,
+  ScrollbackWireT,
+  SessionWireChannelModesWire,
+  SessionWireMember,
+  SessionWireMentionsBundleMessage,
+  SessionWireServerReplySource,
+  SessionWireTopicEntryWire,
+  SessionWireWhoUser,
 } from "./wireTypes";
 
 // Bi-directional subtype assert helper. `Equal<A, B>` is `true` when
@@ -76,7 +103,37 @@ export type _Assert_FeaturedChannelLink = Assert<
 >;
 export type _Assert_DirectoryEntry = Assert<Equal<DirectoryEntry, ChannelDirectoryWireEntry>>;
 
-// TODO future buckets: add asserts as we flip other Wire modules to
-// atom-literal `kind` (M19 needs scrollback/wire.ex flip; C1/H1/H3-H6
-// each need a server-side typespec tightening so codegen emits the
-// discriminator union cic can assert against).
+// === S3 (2026-07-08 review) — end-to-end gate for the flat wire mirrors ===
+// Every hand-rolled `api.ts` type below has a structurally-identical
+// codegen counterpart; the `Equal` assert makes ANY drift between the
+// two a `tsc` error (`Type 'true' is not assignable to type 'never'`).
+// This is the S3 fix: ~90% of the wire was previously an unguarded
+// parallel transcription. The gate now covers the scrollback message
+// (S14 kind atom union), the mentions bundle (S14 sibling), the query
+// window (S43), the /who + /topic + /modes + members payloads, the
+// home rows, the credential JSON (S3 caught `auth_method` drift), and
+// the `server_reply` + connection-state closed sets.
+//
+// Enriched / discriminated types (`WireUserEvent`, `WireChannelEvent`,
+// `WireAdminEvent`, `MeResponse`, `Network`) carry cic-side
+// consumer enrichments and are validated via their runtime narrowers +
+// `assertNever`; their per-arm PAYLOADS that have a flat counterpart
+// are pinned below (e.g. `ScrollbackMessage`, `MentionsBundleMessage`).
+export type _Assert_MessageKind = Assert<Equal<MessageKind, ScrollbackMessageKind>>;
+export type _Assert_ScrollbackMessage = Assert<Equal<ScrollbackMessage, ScrollbackWireT>>;
+export type _Assert_MentionsBundleMessage = Assert<
+  Equal<MentionsBundleMessage, SessionWireMentionsBundleMessage>
+>;
+export type _Assert_ServerReplySource = Assert<
+  Equal<ServerReplySource, SessionWireServerReplySource>
+>;
+export type _Assert_WhoUser = Assert<Equal<WhoUser, SessionWireWhoUser>>;
+export type _Assert_MemberEntry = Assert<Equal<MemberEntry, SessionWireMember>>;
+export type _Assert_TopicEntry = Assert<Equal<TopicEntry, SessionWireTopicEntryWire>>;
+export type _Assert_ModesEntry = Assert<Equal<ModesEntry, SessionWireChannelModesWire>>;
+export type _Assert_QueryWindowEntry = Assert<
+  Equal<QueryWindowEntry, QueryWindowsWireWindowsEntry>
+>;
+export type _Assert_HomeNetworkRow = Assert<Equal<HomeNetworkRow, NetworksWireHomeNetworkRow>>;
+export type _Assert_HomeData = Assert<Equal<HomeData, NetworksWireHomeData>>;
+export type _Assert_CredentialJson = Assert<Equal<CredentialJson, NetworksWireCredentialJson>>;

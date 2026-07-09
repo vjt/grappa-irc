@@ -14,6 +14,11 @@
 import type { ModesEntry, TopicEntry } from "./channelTopic";
 import { getOrCreateClientId } from "./clientId";
 import type { MemberEntry } from "./memberTypes";
+// S15/S3 — derive the upload-settings wire shape from the codegen
+// mirror of `Grappa.ServerSettings.Wire.upload_view/0`; the
+// `active_host` closed set (`"embedded" | "litterbox"`) is pinned by
+// the server typespec, not re-hardcoded here.
+import type { NetworksCredentialAuthMethod, ServerSettingsWireUploadView } from "./wireTypes";
 
 function buildHeaders(token?: string): HeadersInit {
   const headers: Record<string, string> = {
@@ -191,7 +196,13 @@ export type MeResponse =
       id: string;
       nick: string;
       network_slug: string;
-      expires_at: string;
+      // S16 — mirror the server contract: `me_json.ex` renders
+      // `DateTime.t() | nil` (generated `VisitorsWireT.expires_at:
+      // string | null`). NickServ-registered visitors carry
+      // `expires_at = NULL` ("indefinite"); typing it non-null would
+      // give any future countdown `new Date(null)`. Matches the
+      // sibling `AdminVisitor.expires_at: string | null`.
+      expires_at: string | null;
       // #126 — `registered` = NickServ identity present (the detach /
       // disconnect gate); `connected` = whereis-derived live upstream
       // (drives the SettingsDrawer disconnect ⇄ reconnect toggle). Both
@@ -571,7 +582,9 @@ export type WireChannelEvent =
       channel: string;
       state: "failed";
       reason: string | null;
-      numeric: number;
+      // S13 — server contract is `pos_integer() | nil`; nil when the
+      // failing numeric was never recorded (cold-subscribe snapshot).
+      numeric: number | null;
     }
   | {
       kind: "kicked";
@@ -608,7 +621,15 @@ export type ChannelEvent = Extract<WireChannelEvent, { kind: "message" }>;
 // server-side `windows_map` keys on integer `network_id`; on the wire
 // JSON keys are strings (Object), see `parseWindowsMap` in
 // `userTopic.ts` for the typed coercion.
+//
+// S43 — `network_id` mirrors the field the server emits on each entry
+// (`windows_entry/0`). It is redundant on cic (the network is the map
+// key) but its presence pins the type to the generated
+// `QueryWindowsWireWindowsEntry` (see `_Assert_QueryWindowEntry`), and
+// the `query_windows_list` narrower now validates each entry against
+// this shape instead of a bare cast.
 export type QueryWindowEntry = {
+  network_id: number;
   target_nick: string;
   opened_at: string;
 };
@@ -617,13 +638,16 @@ export type QueryWindowEntry = {
 // `mentions_bundle_message/0`). Deliberately stripped vs
 // `ScrollbackMessage`: no id/network/meta — the bundle is a
 // cross-channel summary view that doesn't need persistence keys.
-// `kind` is the same string projection of `Message.kind()`.
+// S14 — `kind` is the `Message.kind()` closed set (same as
+// `ScrollbackMessage.kind`); the server typespec now pins the literal
+// union so codegen emits it and `_Assert_MentionsBundleMessage` gates
+// this mirror.
 export type MentionsBundleMessage = {
   server_time: number;
   channel: string;
   sender: string;
   body: string | null;
-  kind: string;
+  kind: MessageKind;
 };
 
 // C2 — WHOIS bundle payload. Mirrors `Grappa.Session.Wire.whois_bundle/3`.
@@ -888,7 +912,9 @@ export type WireUserEvent =
       channel: string;
       state: "failed";
       reason: string | null;
-      numeric: number;
+      // S13 — server contract is `pos_integer() | nil`; nil when the
+      // failing numeric was never recorded (cold-subscribe snapshot).
+      numeric: number | null;
     }
   | {
       kind: "kicked";
@@ -906,14 +932,10 @@ export type WireUserEvent =
   // `Grappa.ServerSettings.Wire.server_settings_changed/1` (atoms-out).
   | {
       kind: "server_settings_changed";
-      upload: {
-        active_host: "embedded" | "litterbox";
-        image_per_file_cap_bytes: number;
-        video_per_file_cap_bytes: number;
-        document_per_file_cap_bytes: number;
-        audio_per_file_cap_bytes: number;
-        global_cap_bytes: number;
-      };
+      // S15 — derives from the generated `ServerSettingsWireUploadView`
+      // (drift-gated against `Grappa.ServerSettings.Wire`); the
+      // `active_host` closed set is no longer re-hardcoded here.
+      upload: ServerSettingsWireUploadView;
     }
   | { kind: "archive_changed"; network_slug: string }
   // UX-7-B (2026-05-22) — `archive_purged` push after a destructive
@@ -1602,14 +1624,10 @@ export async function adminResetCircuit(
 // public_view/0` re-shaped (atoms-out — active_host is the string
 // `"embedded" | "litterbox"`).
 export type AdminSettingsView = {
-  upload: {
-    active_host: "embedded" | "litterbox";
-    image_per_file_cap_bytes: number;
-    video_per_file_cap_bytes: number;
-    document_per_file_cap_bytes: number;
-    audio_per_file_cap_bytes: number;
-    global_cap_bytes: number;
-  };
+  // S15 — same generated upload shape as the WS `server_settings_changed`
+  // event; the REST GET/PUT `/admin/settings` view and the push share
+  // one drift-gated definition.
+  upload: ServerSettingsWireUploadView;
 };
 
 export type AdminSettingsResponse = { settings: AdminSettingsView };
@@ -1620,14 +1638,9 @@ export type AdminSettingsResponse = { settings: AdminSettingsView };
 // the controller's tolerance keeps backward-compat with partial
 // payloads.
 export type AdminSettingsUpdate = {
-  upload?: {
-    active_host?: "embedded" | "litterbox";
-    image_per_file_cap_bytes?: number;
-    video_per_file_cap_bytes?: number;
-    document_per_file_cap_bytes?: number;
-    audio_per_file_cap_bytes?: number;
-    global_cap_bytes?: number;
-  };
+  // S15 — the PUT body is a per-key-optional projection of the same
+  // generated upload shape; `active_host?` inherits the closed set.
+  upload?: Partial<ServerSettingsWireUploadView>;
 };
 
 export async function adminGetSettings(token: string): Promise<AdminSettingsView> {
@@ -1972,7 +1985,10 @@ export type CredentialJson = {
   nick: string;
   realname: string | null;
   sasl_user: string | null;
-  auth_method: string;
+  // S3 — the codegen gate (`_Assert_CredentialJson`) revealed this had
+  // drifted to open `string`; pinned back to the server's closed
+  // `Grappa.IRC.AuthFSM.auth_method/0` union.
+  auth_method: NetworksCredentialAuthMethod;
   auth_command_template: string | null;
   autojoin_channels: string[];
   connection_state: ConnectionState;

@@ -16,19 +16,15 @@ import {
   type UploadProgress,
   xhrUpload,
 } from "../lib/uploadHost";
+import type { ServerSettingsWireUploadView } from "../lib/wireTypes";
 
 // Wire-shaped upload subtree builder — the server pushes the three
 // per-category cap fields since uploads cluster Task 2 (385129f).
+// S15 — derives from the generated `ServerSettingsWireUploadView` so
+// `active_host` is the closed set, not open `string`.
 const wireUpload = (
-  overrides: Partial<{
-    active_host: string;
-    image_per_file_cap_bytes: number;
-    video_per_file_cap_bytes: number;
-    document_per_file_cap_bytes: number;
-    audio_per_file_cap_bytes: number;
-    global_cap_bytes: number;
-  }> = {},
-) => ({
+  overrides: Partial<ServerSettingsWireUploadView> = {},
+): ServerSettingsWireUploadView => ({
   active_host: "embedded",
   image_per_file_cap_bytes: 10 * 1024 * 1024,
   video_per_file_cap_bytes: 50 * 1024 * 1024,

@@ -58,7 +58,10 @@ import type { ServerSettingsWireUploadView } from "./wireTypes";
 // `archive.ts`, etc.
 
 export type ServerSettingsView = {
-  uploadActiveHost: "embedded" | "litterbox";
+  // S15 — the internal (camelCase) host model derives its closed set
+  // from the generated wire type, so a new server host propagates here
+  // without a second hardcoded union.
+  uploadActiveHost: ServerSettingsWireUploadView["active_host"];
   uploadPerFileCapBytes: Record<UploadCategory, number>;
   uploadGlobalCapBytes: number;
 };

@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setToken } from "../lib/auth";
 import { applyServerSettings, loadServerSettings, serverSettings } from "../lib/serverSettings";
+import type { ServerSettingsWireUploadView } from "../lib/wireTypes";
 
 // UX-6-B2 (2026-05-21) tests for the operator-visible server-settings
 // reactive signal + REST initial-fetch helper. Wire shape carries the
 // three per-type cap fields since uploads cluster Task 2 (385129f).
 
-const wireUpload = (active_host: string) => ({
+// S15 — `active_host` is the generated closed set, not open `string`.
+const wireUpload = (active_host: ServerSettingsWireUploadView["active_host"]) => ({
   active_host,
   image_per_file_cap_bytes: 1,
   video_per_file_cap_bytes: 2,

@@ -157,13 +157,16 @@ describe("userTopic", () => {
   // camelCase before calling setQueryWindowsByNetwork.
   it("query_windows_list event calls setQueryWindowsByNetwork with parsed state", async () => {
     const qw = await import("../lib/queryWindows");
+    // S43 — the server emits `network_id` on each entry (redundant with
+    // the map key); the narrower now validates it, so realistic mocks
+    // carry it. `parseWindowsMap` still derives the key from the map key.
     channelMock.fireEvent({
       kind: "query_windows_list",
       windows: {
-        "1": [{ target_nick: "alice", opened_at: "2026-05-04T10:00:00Z" }],
+        "1": [{ network_id: 1, target_nick: "alice", opened_at: "2026-05-04T10:00:00Z" }],
         "2": [
-          { target_nick: "bob", opened_at: "2026-05-04T11:00:00Z" },
-          { target_nick: "carol", opened_at: "2026-05-04T12:00:00Z" },
+          { network_id: 2, target_nick: "bob", opened_at: "2026-05-04T11:00:00Z" },
+          { network_id: 2, target_nick: "carol", opened_at: "2026-05-04T12:00:00Z" },
         ],
       },
     });
@@ -180,6 +183,18 @@ describe("userTopic", () => {
     const qw = await import("../lib/queryWindows");
     channelMock.fireEvent({ kind: "query_windows_list", windows: {} });
     expect(qw.setQueryWindowsByNetwork).toHaveBeenCalledWith({});
+  });
+
+  // S43 — a malformed entry (here: missing the required `network_id`)
+  // drops the WHOLE event at the narrower rather than admitting a
+  // half-typed window map via a bare cast.
+  it("query_windows_list event drops on a malformed entry (no network_id)", async () => {
+    const qw = await import("../lib/queryWindows");
+    channelMock.fireEvent({
+      kind: "query_windows_list",
+      windows: { "1": [{ target_nick: "alice", opened_at: "2026-05-04T10:00:00Z" }] },
+    });
+    expect(qw.setQueryWindowsByNetwork).not.toHaveBeenCalled();
   });
 
   it("unrelated events do NOT call setQueryWindowsByNetwork", async () => {
@@ -605,7 +620,12 @@ describe("userTopic", () => {
 
     it("accepts an empty line list (422 no-MOTD)", async () => {
       const srm = await import("../lib/serverReplyModal");
-      channelMock.fireEvent({ kind: "server_reply", network: "azzurra", source: "info", lines: [] });
+      channelMock.fireEvent({
+        kind: "server_reply",
+        network: "azzurra",
+        source: "info",
+        lines: [],
+      });
       expect(srm.setServerReply).toHaveBeenCalledWith("azzurra", {
         network: "azzurra",
         source: "info",
@@ -1117,7 +1137,10 @@ describe("narrowUserEvent — names_reply (#140)", () => {
         kind: "names_reply",
         network: "azzurra",
         channel: "#bofh",
-        members: [{ nick: "alice", modes: ["@"] }, { nick: 42, modes: [] }],
+        members: [
+          { nick: "alice", modes: ["@"] },
+          { nick: 42, modes: [] },
+        ],
       }),
     ).toBeNull();
   });

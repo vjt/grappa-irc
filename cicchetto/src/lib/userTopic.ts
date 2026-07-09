@@ -30,7 +30,8 @@ import { setWhoisBundle } from "./whoisCard";
 import { setWhoReply } from "./whoModal";
 import { setWhowasBundle } from "./whowasCard";
 import { setFailed, setInvited, setJoined, setKicked, setPending } from "./windowState";
-import { narrowMembers, narrowWhoUsers, narrowWindowStateEvent } from "./wireNarrow";
+import { isMessageKind, narrowMembers, narrowWhoUsers, narrowWindowStateEvent } from "./wireNarrow";
+import type { ServerSettingsWireUploadView } from "./wireTypes";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
 // imports for effect, exports nothing public. `main.tsx` imports this
@@ -80,6 +81,24 @@ function isConnectionState(value: unknown): value is ConnectionState {
   return value === "connected" || value === "parked" || value === "failed";
 }
 
+// S15 — exhaustive `Record<Host, true>` over the generated
+// `ServerSettingsWireUploadView["active_host"]` closed set so a new
+// server host (`Grappa.ServerSettings.upload_host/0` → codegen literal
+// union) FAILS tsc here until handled, instead of the
+// `server_settings_changed` narrower silently DROPPING the whole
+// settings event on the unknown value. Same posture as
+// `MESSAGE_KIND_PRESENCE` in `wireNarrow.ts`.
+type UploadActiveHost = ServerSettingsWireUploadView["active_host"];
+
+const UPLOAD_ACTIVE_HOST_PRESENCE: Record<UploadActiveHost, true> = {
+  embedded: true,
+  litterbox: true,
+};
+
+function isUploadActiveHost(v: unknown): v is UploadActiveHost {
+  return typeof v === "string" && Object.hasOwn(UPLOAD_ACTIVE_HOST_PRESENCE, v);
+}
+
 // no-silent-drops B6.10 HIGH-11 — per-element narrowers for bundle
 // arrays. Pre-fix `narrowUserEvent` checked `Array.isArray(messages)`
 // for `mentions_bundle` and `Array.isArray(channels)` for
@@ -97,7 +116,9 @@ function narrowMentionsBundleMessage(raw: unknown): MentionsBundleMessage | null
     typeof r.channel !== "string" ||
     typeof r.sender !== "string" ||
     (r.body !== null && typeof r.body !== "string") ||
-    typeof r.kind !== "string"
+    // S14 — gate `kind` against the shared `Message.kind()` closed set
+    // (same as `narrowScrollbackMessage`), not a bare `typeof string`.
+    !isMessageKind(r.kind)
   )
     return null;
   return {
@@ -117,6 +138,28 @@ function narrowWhoisChannel(raw: unknown): string | null {
   return typeof raw === "string" ? raw : null;
 }
 
+// S43 — per-entry narrower for `query_windows_list`. Mirror of
+// `Grappa.QueryWindows.Wire.windows_entry/0` (pinned to the generated
+// `QueryWindowsWireWindowsEntry` by `_Assert_QueryWindowEntry`).
+// Replaces the pre-S43 bare `as Record<string, QueryWindowEntry[]>`
+// cast that admitted any shape — closing the "narrow every WS payload"
+// gap for this arm.
+function narrowQueryWindowEntry(raw: unknown): QueryWindowEntry | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.network_id !== "number" ||
+    typeof r.target_nick !== "string" ||
+    typeof r.opened_at !== "string"
+  )
+    return null;
+  return {
+    network_id: r.network_id,
+    target_nick: r.target_nick,
+    opened_at: r.opened_at,
+  };
+}
+
 // Maps a per-element narrower across an array; returns the array of
 // narrowed values or null if any element fails. Strict — partial
 // bundles are server bugs, not graceful-degradation cases.
@@ -127,6 +170,22 @@ function narrowArray<T>(raw: unknown, narrow: (el: unknown) => T | null): T[] | 
     const n = narrow(el);
     if (n === null) return null;
     out.push(n);
+  }
+  return out;
+}
+
+// S43 — narrows the `query_windows_list` `windows` map: a
+// network-id-keyed object whose values are arrays of query-window
+// entries. Every entry is validated (`narrowQueryWindowEntry`); a
+// single malformed entry drops the whole map (strict, matching the
+// bundle narrowers). Returns null on a non-object or any bad entry.
+function narrowWindowsMap(raw: unknown): Record<string, QueryWindowEntry[]> | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const out: Record<string, QueryWindowEntry[]> = {};
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    const entries = narrowArray(val, narrowQueryWindowEntry);
+    if (entries === null) return null;
+    out[key] = entries;
   }
   return out;
 }
@@ -147,12 +206,12 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
   switch (r.kind) {
     case "channels_changed":
       return { kind: "channels_changed" };
-    case "query_windows_list":
-      if (typeof r.windows !== "object" || r.windows === null) return null;
-      return {
-        kind: "query_windows_list",
-        windows: r.windows as Record<string, QueryWindowEntry[]>,
-      };
+    case "query_windows_list": {
+      // S43 — validate each entry instead of a bare cast.
+      const windows = narrowWindowsMap(r.windows);
+      if (windows === null) return null;
+      return { kind: "query_windows_list", windows };
+    }
     case "mentions_bundle": {
       if (
         typeof r.network !== "string" ||
@@ -381,7 +440,7 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       const u = up as Record<string, unknown>;
       const posInt = (v: unknown): v is number => typeof v === "number" && v > 0;
       if (
-        (u.active_host !== "embedded" && u.active_host !== "litterbox") ||
+        !isUploadActiveHost(u.active_host) ||
         !posInt(u.image_per_file_cap_bytes) ||
         !posInt(u.video_per_file_cap_bytes) ||
         !posInt(u.document_per_file_cap_bytes) ||

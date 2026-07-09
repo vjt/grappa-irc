@@ -358,6 +358,29 @@ describe("narrowChannelEvent (bucket G H4+U3)", () => {
         }),
       ).toBeNull();
     });
+
+    // S13 — the server contract permits `numeric: null` (the failing
+    // numeric was never recorded, e.g. the cold-subscribe snapshot).
+    // Pre-S13 the narrower DROPPED the whole event, regressing the
+    // reconnect "failed tab" snapshot.
+    it("accepts null numeric (cold-subscribe snapshot)", () => {
+      const out = narrowChannelEvent({
+        kind: "join_failed",
+        network: "azzurra",
+        channel: "#italia",
+        state: "failed",
+        reason: "channel is invite-only",
+        numeric: null,
+      });
+      expect(out).toEqual({
+        kind: "join_failed",
+        network: "azzurra",
+        channel: "#italia",
+        state: "failed",
+        reason: "channel is invite-only",
+        numeric: null,
+      });
+    });
   });
 
   describe("kind: kicked", () => {
@@ -455,6 +478,28 @@ describe("narrowWindowStateEvent (REV-A H1)", () => {
       state: "failed",
       reason: "channel key required",
       numeric: 475,
+    });
+  });
+
+  // S13 — dual-broadcast path (user-topic) must accept null numeric too;
+  // both narrowers share this contract.
+  it("narrows a join_failed arm with null numeric", () => {
+    expect(
+      narrowWindowStateEvent({
+        kind: "join_failed",
+        network: "azzurra",
+        channel: "#sekrit",
+        state: "failed",
+        reason: null,
+        numeric: null,
+      }),
+    ).toEqual({
+      kind: "join_failed",
+      network: "azzurra",
+      channel: "#sekrit",
+      state: "failed",
+      reason: null,
+      numeric: null,
     });
   });
 
