@@ -446,4 +446,24 @@ defmodule Grappa.ReadCursorTest do
       assert :ok = ReadCursor.clear_all_for_user(user.id)
     end
   end
+
+  # S12 (2026-07-08 codebase review) — `read_cursors.last_read_message_id`
+  # is `REFERENCES messages(id) ON DELETE SET NULL`. When a `messages`
+  # row is deleted (the `Scrollback.delete_for_channel/3` /
+  # `delete_for_dm/3` bulk-purge path drops tens of thousands in one
+  # transaction under the single SQLite write lock), SQLite must locate
+  # every CHILD `read_cursors` row whose FK equals the deleted parent to
+  # NULL it. Without an index on the child key that is a full
+  # `read_cursors` scan per deleted message — `O(deleted × read_cursors)`.
+  # A prior migration dropped this index on a backwards rationale
+  # ("scans by message PK, patches in place"); this asserts it was
+  # recreated so the child-key lookup stays an index seek.
+  describe "FK child-key index (S12)" do
+    test "read_cursors has an index on last_read_message_id for the ON DELETE SET NULL purge path" do
+      {:ok, %{rows: rows}} =
+        Repo.query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'read_cursors'")
+
+      assert "read_cursors_last_read_message_id_index" in List.flatten(rows)
+    end
+  end
 end
