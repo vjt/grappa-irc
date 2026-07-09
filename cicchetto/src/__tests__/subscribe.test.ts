@@ -3034,3 +3034,137 @@ describe("subscribe — UX-6-L foreground beep wiring", () => {
     expect(beep.playBeep).not.toHaveBeenCalled();
   });
 });
+
+// S19 (codebase review 2026-07-08) — per-channel WS subscriptions were
+// only `.leave()`d on token rotation. On own-PART, `setParted(key)` dropped
+// the windowState entry but left the Phoenix `Channel` + its
+// `phx.on("event", ...)` handler alive on the socket forever. Over an
+// always-on session that joins/parts many channels, the subscriptions +
+// handlers accumulate until logout.
+//
+// Fix: on OWN-part (sender === ownNick), also `joined.get(key)?.leave()`
+// + `joined.delete(key)`. A re-JOIN re-subscribes fresh via the pending
+// pre-subscribe loop (guarded by `joined.has`). A PART from ANOTHER user
+// MUST NOT tear down — that would blank a live channel we're still in.
+describe("subscribe — S19 own-PART tears down the per-channel WS subscription", () => {
+  // Locate the per-topic Channel mock created for a given channel: the
+  // Nth joinChannel(...) call maps to the Nth pushed perTopicChannels
+  // entry, so find the join call by (slug, chan) and index into the pool.
+  const channelMockFor = (
+    socket: typeof import("../lib/socket"),
+    chan: string,
+  ): PerTopicMock | undefined => {
+    const idx = vi
+      .mocked(socket.joinChannel)
+      .mock.calls.findIndex((c) => c[1] === "freenode" && c[2] === chan);
+    return idx >= 0 ? perTopicChannels[idx] : undefined;
+  };
+
+  const handlerOf = (mock: PerTopicMock): ((p: unknown) => void) =>
+    mock.on.mock.calls.find((c) => c[0] === "event")?.[1] as (p: unknown) => void;
+
+  // Self-contained window-state: a sibling test in this file `vi.doMock`s
+  // windowState with a `#new-room` pending entry, and beforeEach only
+  // re-establishes socket + queryWindows — so without re-mocking here the
+  // leaked pending pre-subscribe loop would join a phantom #new-room and
+  // skew the join count. Re-mock empty so these tests see only the seeded
+  // channels.
+  const cleanWindowState = (): void => {
+    vi.doMock("../lib/windowState", () => ({
+      setPending: vi.fn(),
+      setJoined: vi.fn(),
+      setFailed: vi.fn(),
+      setKicked: vi.fn(),
+      setParted: vi.fn(),
+      windowStateByChannel: () => ({}),
+      windowFailureByChannel: () => ({}),
+      windowKickedMetaByChannel: () => ({}),
+      windowIsJoined: vi.fn(() => false),
+      windowIsPresent: vi.fn(() => false),
+      isActiveChannelJoined: vi.fn(() => false),
+    }));
+  };
+
+  const partPayload = (channel: string, sender: string) => ({
+    kind: "message" as const,
+    message: {
+      id: 1,
+      network: "freenode",
+      channel,
+      server_time: 0,
+      kind: "part",
+      sender,
+      body: "",
+      meta: {},
+    },
+  });
+
+  it("own-PART leaves the Phoenix channel so later events on that topic don't leak", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    cleanWindowState();
+    await seedStubs();
+    const socket = await import("../lib/socket");
+    await usePerTopicChannels();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      // 2 channels + DM-listener(alice) + $server = 4.
+      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
+    });
+
+    const grappa = channelMockFor(socket, "#grappa");
+    if (!grappa) throw new Error("#grappa channel mock not found");
+    expect(grappa.left).toBe(false);
+
+    // Operator (alice = own nick) parts #grappa.
+    handlerOf(grappa)(partPayload("#grappa", "alice"));
+
+    // The subscription is torn down: leave() called, channel retired.
+    expect(grappa.leave).toHaveBeenCalledTimes(1);
+    expect(grappa.left).toBe(true);
+
+    const key = channelKey("freenode", "#grappa");
+    // The PART line itself DID land (routeMessage runs before teardown).
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.id)).toContain(1);
+
+    // A later broadcast on the (now-left) #grappa topic reaches NO live
+    // handler — the leak is gone. fireMessageToAllHandlers walks only
+    // non-left channels, modelling phoenix.js removing a left Channel from
+    // socket.channels[].
+    fireMessageToAllHandlers("#grappa", { id: 2, body: "after part" });
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.id) ?? []).not.toContain(2);
+  });
+
+  it("a PART from ANOTHER user does NOT tear down the subscription (channel stays live)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    cleanWindowState();
+    await seedStubs();
+    const socket = await import("../lib/socket");
+    await usePerTopicChannels();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
+    });
+
+    const grappa = channelMockFor(socket, "#grappa");
+    if (!grappa) throw new Error("#grappa channel mock not found");
+
+    // bob (NOT own nick) parts #grappa — we're still in the channel.
+    handlerOf(grappa)(partPayload("#grappa", "bob"));
+
+    expect(grappa.leave).not.toHaveBeenCalled();
+    expect(grappa.left).toBe(false);
+
+    // The channel is still live: a subsequent message still appends.
+    fireMessageToAllHandlers("#grappa", { id: 5, body: "still here" });
+    const key = channelKey("freenode", "#grappa");
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.id)).toContain(5);
+  });
+});

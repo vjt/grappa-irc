@@ -412,7 +412,8 @@ createRoot(() => {
           // BUG5a: own PART → drop the windowState entry. Selection
           // redirection is owned by the close-watcher in selection.ts
           // (UX-4-E), which fires off the channels_changed broadcast.
-          if (message.kind === "part" && nickEquals(message.sender, ownNick)) {
+          const ownPart = message.kind === "part" && nickEquals(message.sender, ownNick);
+          if (ownPart) {
             // CP15 B5: own-PART projects to absence in the windowState
             // map. Server intentionally does NOT broadcast `kind:
             // "parted"` — cic derives the projection here.
@@ -420,6 +421,21 @@ createRoot(() => {
           }
 
           routeMessage(slug, key, name, message, ownNick);
+
+          // S19 (codebase review 2026-07-08): tear down the per-channel WS
+          // subscription on OWN-part. Pre-fix `joined` was only `.leave()`d
+          // on token rotation, so an own-part left the Phoenix Channel + its
+          // `phx.on("event", …)` handler alive on the socket forever — a leak
+          // that accumulates over an always-on session that joins/parts many
+          // channels. Runs AFTER routeMessage so the PART line still lands in
+          // scrollback. Only OWN-part (guarded above) tears down — a peer's
+          // PART must NOT drop the sub, or we'd blank a channel we're still
+          // in. A subsequent re-JOIN re-subscribes fresh via the pending
+          // pre-subscribe loop (its `joined.has(key)` guard sees the delete).
+          if (ownPart) {
+            joined.get(key)?.leave();
+            joined.delete(key);
+          }
           return;
         }
         default:
@@ -917,6 +933,16 @@ createRoot(() => {
       },
     ),
   );
+
+  // S19 e2e seam — expose the LIVE set of per-channel WS subscription keys
+  // so a Playwright spec can assert own-PART tears the subscription down
+  // (the leak fix). A getter over the real `joined` Map (not a mirrored
+  // Set) so it can never drift from the actual bookkeeping. Production
+  // never reads it; same window-seam convention as `__cic_dmListenerReady`
+  // and `__cic_suppressChannelDeliveryForTests` below.
+  if (typeof window !== "undefined") {
+    window.__cic_joinedTopicKeys = () => Array.from(joined.keys());
+  }
 });
 
 // #159 E2E hook — silence live `phx.on("event")` delivery for a SINGLE
@@ -931,6 +957,9 @@ declare global {
   interface Window {
     __cic_suppressChannelDeliveryForTests?: (slug: string, name: string) => void;
     __cic_resumeChannelDeliveryForTests?: (slug: string, name: string) => void;
+    // S19 e2e seam — live per-channel WS subscription keys (see the
+    // getter installed inside the createRoot above).
+    __cic_joinedTopicKeys?: () => string[];
   }
 }
 
