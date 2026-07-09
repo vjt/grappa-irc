@@ -65,12 +65,10 @@ defmodule Grappa.Operator do
       Grappa.Visitors.Reaper
     ]
 
-  alias Grappa.Accounts
+  alias Grappa.{Accounts, AdminEvents, LiveIntrospection, Networks, Session, Visitors}
   alias Grappa.Accounts.User
-  alias Grappa.AdminEvents
   alias Grappa.AdminEvents.Wire, as: AdminWire
   alias Grappa.Admission.NetworkCircuit
-  alias Grappa.{LiveIntrospection, Networks, Session, Visitors}
   alias Grappa.LiveIntrospection.SessionEntry
   alias Grappa.Networks.Credentials
   alias Grappa.Visitors.Visitor

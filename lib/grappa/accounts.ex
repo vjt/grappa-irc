@@ -546,6 +546,7 @@ defmodule Grappa.Accounts do
   # reversing it would mean brute-forcing the 122-bit UUID space.
   @spec session_handle(String.t()) :: String.t()
   defp session_handle(id) when is_binary(id) do
-    :crypto.hash(:sha256, id) |> Base.encode16(case: :lower) |> binary_part(0, 12)
+    digest = :crypto.hash(:sha256, id)
+    binary_part(Base.encode16(digest, case: :lower), 0, 12)
   end
 end

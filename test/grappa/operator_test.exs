@@ -16,8 +16,8 @@ defmodule Grappa.OperatorTest do
   import ExUnit.CaptureIO
   import Grappa.AuthFixtures
 
-  alias Grappa.{AdmissionStateHelpers, Operator, Session}
   alias Grappa.Accounts.User
+  alias Grappa.{AdmissionStateHelpers, Operator, Session}
   alias Grappa.Networks.Credential
   alias Grappa.Visitors.Visitor
 
@@ -117,8 +117,8 @@ defmodule Grappa.OperatorTest do
 
     test "refuses :last_admin and tears down NOTHING (row + live session survive)" do
       {_, port} = start_irc_server()
-      admin = user_fixture(name: "sole-#{System.unique_integer([:positive])}")
-      {:ok, admin} = Grappa.Accounts.update_admin_flags(admin, %{is_admin: true})
+      raw_admin = user_fixture(name: "sole-#{System.unique_integer([:positive])}")
+      {:ok, admin} = Grappa.Accounts.update_admin_flags(raw_admin, %{is_admin: true})
       {network, _} = network_with_server(port: port)
       _ = credential_fixture(admin, network, %{nick: "sole"})
       pid = start_session_for(admin, network)
