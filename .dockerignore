@@ -27,7 +27,11 @@ runtime/
 *~
 
 docs/
-node_modules/
+# `**/` matches at any depth: root `node_modules/` was root-anchored and
+# missed `cicchetto/node_modules` (316 MB), which `COPY . .` tarred into
+# every Elixir image build context (the runtime bind-mount shadows it, so
+# it is never used — pure context-transfer waste).
+**/node_modules
 
 # e2e runtime artifacts — test-only, never needed in any grappa image.
 # nginx-cert-init writes cicchetto/e2e/nginx-certs/nginx.key as root-owned
