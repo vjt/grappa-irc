@@ -82,7 +82,27 @@ let _userChannel: Channel | null = null;
 function getSocket(): Socket {
   if (_socket === null) {
     _socket = new Socket(socketEndpoint(), {
-      params: () => ({ token: token() ?? "" }),
+      // #95 — the bearer rides the `Sec-WebSocket-Protocol` subprotocol
+      // (`authToken`) ONLY, so it is entirely OFF the WS upgrade URL
+      // (`?token=…` was pre-redaction visible in access logs). phoenix.js
+      // sends it as `base64url.bearer.phx.<token>`; the server reads
+      // `connect_info.auth_token`.
+      //
+      // We deliberately do NOT also pass `params: {token}`: phoenix.js's
+      // `endPointURL()` appends `params()` to the query string, so
+      // keeping the token there would defeat the entire point of this
+      // change (the token would still sit in the URL). The server-side
+      // `params["token"]` fallback in `UserSocket.connect/3` exists for
+      // OLD bundles still in the wild mid-cold-deploy — a NEW bundle must
+      // never put the bearer in the URL.
+      //
+      // `authToken` is captured ONCE at construction (unlike a `params`
+      // callback, which phoenix re-evaluates every handshake), so a fresh
+      // token must REBUILD the socket — the token-effect below nulls
+      // `_socket` on both logout AND rotation so the next `getSocket()`
+      // captures the current bearer. Do NOT switch rotation to a
+      // reconnect: that would replay the stale ctor-time `authToken`.
+      authToken: token() ?? "",
     });
     // SocketHealth wiring — single install at construction time so the
     // banner reflects every transition, including silent retry loops
@@ -120,11 +140,19 @@ createRoot(() => {
       }
       const s = getSocket();
       if (prev != null && prev !== t) {
-        // Token rotation: live socket is pinned to `prev`; drop and
-        // reconnect so the params callback returns `t` on the next
-        // handshake.
+        // Token rotation (Phase 5 refresh / admin re-issue). #95: the
+        // bearer now rides the `authToken` subprotocol, which phoenix
+        // captures ONCE at construction — a plain disconnect+reconnect
+        // would replay the STALE ctor-time token. So rebuild: drop the
+        // instance (like logout) and let the next getSocket() capture
+        // the rotated bearer, then connect. The query-string `params`
+        // callback would refresh on its own, but the server prefers the
+        // subprotocol, so the subprotocol MUST carry the fresh token —
+        // hence the rebuild, not a reconnect.
         if (s.isConnected()) s.disconnect();
-        s.connect();
+        _socket = null;
+        _userChannel = null;
+        getSocket().connect();
         return;
       }
       if (!s.isConnected()) s.connect();

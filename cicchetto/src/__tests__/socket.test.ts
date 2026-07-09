@@ -75,17 +75,26 @@ describe("socket singleton", () => {
     expect(h.mockSocketInstance.connect).not.toHaveBeenCalled();
   });
 
-  it("constructs Socket with an absolute /socket endpoint and a params callback returning the live token", async () => {
+  it("constructs Socket with an absolute /socket endpoint and the authToken subprotocol (no token in the URL)", async () => {
     localStorage.setItem("grappa-token", "tok-1");
     await import("../lib/socket");
     // jsdom serves the test doc from http://localhost:3000/, so the
     // endpoint is the ws:// absolute form (see socketEndpoint #193 tests).
+    // #95: authToken carries the bearer via the Sec-WebSocket-Protocol
+    // subprotocol; the token is deliberately NOT passed via `params`
+    // (phoenix appends params to the URL query — that would re-leak it).
     expect(h.socketCtor).toHaveBeenCalledWith(
       "ws://localhost:3000/socket",
-      expect.objectContaining({ params: expect.any(Function) }),
+      expect.objectContaining({ authToken: "tok-1" }),
     );
-    const opts = h.socketCtor.mock.calls[0]?.[1] as { params: () => { token: string } };
-    expect(opts.params()).toEqual({ token: "tok-1" });
+    const opts = h.socketCtor.mock.calls[0]?.[1] as {
+      authToken: string;
+      params?: unknown;
+    };
+    // authToken is the live token captured at construction (#95).
+    expect(opts.authToken).toBe("tok-1");
+    // No `params` — the token must not ride the URL query string.
+    expect(opts.params).toBeUndefined();
   });
 
   it("disconnects when the token signal goes null", async () => {
@@ -97,21 +106,30 @@ describe("socket singleton", () => {
     expect(h.mockSocketInstance.disconnect).toHaveBeenCalledTimes(1);
   });
 
-  it("force-reconnects on token rotation between two non-null values", async () => {
-    // phoenix.js evaluates the `params` callback only at handshake time,
-    // so a live socket stays pinned to the original bearer. A rotation
-    // (Phase 5 token-refresh, admin-driven re-issue) must drop and
-    // reconnect to surface the new bearer on the next handshake.
+  it("rebuilds the Socket on token rotation so the fresh authToken subprotocol is captured", async () => {
+    // #95: the bearer rides `authToken`, which phoenix captures ONCE at
+    // construction (unlike the `params` callback). A plain
+    // disconnect+reconnect on the same instance would replay the STALE
+    // ctor-time token, so a rotation (Phase 5 refresh / admin re-issue)
+    // must REBUILD the socket. Assert a second construction whose
+    // authToken is the rotated bearer.
     localStorage.setItem("grappa-token", "tok-A");
     const auth = await import("../lib/auth");
     await import("../lib/socket");
+    expect(h.socketCtor).toHaveBeenCalledTimes(1);
     expect(h.mockSocketInstance.connect).toHaveBeenCalledTimes(1);
     h.mockSocketInstance.isConnected.mockReturnValue(true);
 
     auth.setToken("tok-B");
 
+    // Old instance dropped, fresh instance built + connected.
     expect(h.mockSocketInstance.disconnect).toHaveBeenCalledTimes(1);
+    expect(h.socketCtor).toHaveBeenCalledTimes(2);
     expect(h.mockSocketInstance.connect).toHaveBeenCalledTimes(2);
+    // The rebuilt socket's authToken is the rotated bearer (the whole
+    // point — the subprotocol must carry the new token).
+    const opts2 = h.socketCtor.mock.calls[1]?.[1] as { authToken: string };
+    expect(opts2.authToken).toBe("tok-B");
   });
 
   it("logout+login constructs a fresh Socket instance (2026-05-27)", async () => {
@@ -138,9 +156,14 @@ describe("socket singleton", () => {
 
     // Two Socket instances: one for tok-A, fresh one for tok-B.
     expect(h.socketCtor).toHaveBeenCalledTimes(2);
-    // The second construction's params callback returns tok-B.
-    const opts2 = h.socketCtor.mock.calls[1]?.[1] as { params: () => { token: string } };
-    expect(opts2.params()).toEqual({ token: "tok-B" });
+    // The second construction carries tok-B on the authToken subprotocol
+    // (#95) — and no token in the URL (no `params`).
+    const opts2 = h.socketCtor.mock.calls[1]?.[1] as {
+      authToken: string;
+      params?: unknown;
+    };
+    expect(opts2.authToken).toBe("tok-B");
+    expect(opts2.params).toBeUndefined();
   });
 
   it("joinChannel builds the topic-vocabulary string and calls channel.join()", async () => {

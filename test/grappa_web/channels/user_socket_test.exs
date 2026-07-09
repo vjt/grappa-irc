@@ -34,6 +34,13 @@ defmodule GrappaWeb.UserSocketTest do
     Phoenix.ChannelTest.connect(UserSocket, params, connect_info: %{})
   end
 
+  # #95 — subprotocol path: the bearer arrives via
+  # `connect_info.auth_token` (Phoenix decodes it from the
+  # `Sec-WebSocket-Protocol` header), NOT via a query-string param.
+  defp connect_via_subprotocol(token) do
+    Phoenix.ChannelTest.connect(UserSocket, %{}, connect_info: %{auth_token: token})
+  end
+
   describe "connect/3" do
     test "returns :error when no token param is given" do
       assert :error = connect_with(%{})
@@ -61,6 +68,87 @@ defmodule GrappaWeb.UserSocketTest do
       assert {:ok, socket} = connect_with(%{"token" => session.id})
       assert socket.assigns.user_name == user_name
       assert socket.assigns.current_session_id == session.id
+    end
+
+    # #95 — the token now rides the Sec-WebSocket-Protocol subprotocol
+    # (connect_info.auth_token), OFF the WS upgrade URL. The query-string
+    # param path above is retained only as a temporary fallback.
+    test "authenticates via connect_info.auth_token (subprotocol path)" do
+      user_name = "vjt-#{System.unique_integer([:positive])}"
+      {_, session} = user_and_session(name: user_name)
+
+      assert {:ok, socket} = connect_via_subprotocol(session.id)
+      assert socket.assigns.user_name == user_name
+      assert socket.assigns.current_session_id == session.id
+    end
+
+    test "prefers the subprotocol token over a query-string token when both are present" do
+      sub_name = "vjt-sub-#{System.unique_integer([:positive])}"
+      qs_name = "vjt-qs-#{System.unique_integer([:positive])}"
+      {_, sub_session} = user_and_session(name: sub_name)
+      {_, qs_session} = user_and_session(name: qs_name)
+
+      # Both sources carry a valid (but DIFFERENT) session; the
+      # subprotocol must win so a stale query-string bearer can't shadow
+      # the header-supplied one.
+      assert {:ok, socket} =
+               Phoenix.ChannelTest.connect(UserSocket, %{"token" => qs_session.id},
+                 connect_info: %{auth_token: sub_session.id}
+               )
+
+      assert socket.assigns.user_name == sub_name
+    end
+
+    test "returns :error for a malformed token via the subprotocol path" do
+      assert :error = connect_via_subprotocol("not-a-uuid")
+    end
+
+    test "returns :error when connect_info.auth_token is empty and no param token" do
+      assert :error = Phoenix.ChannelTest.connect(UserSocket, %{}, connect_info: %{auth_token: ""})
+    end
+  end
+
+  # #95 — auth-method observability: connect/3 emits a
+  # [:grappa, :ws, :connect] telemetry event tagging the source method
+  # (:subprotocol | :query_string), METHOD ONLY — never the token value.
+  # This is the operator signal that gates dropping the query-string
+  # fallback (follow-up), so the tag must be correct for each path.
+  describe "auth-method telemetry (#95)" do
+    setup do
+      ref = make_ref()
+      handler_id = "ws-connect-test-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:grappa, :ws, :connect],
+        fn _, measurements, metadata, _ ->
+          send(test_pid, {ref, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+      %{ref: ref}
+    end
+
+    test "tags :subprotocol when the bearer rides the subprotocol", %{ref: ref} do
+      {_, session} = user_and_session(name: "vjt-#{System.unique_integer([:positive])}")
+
+      assert {:ok, _} = connect_via_subprotocol(session.id)
+      assert_receive {^ref, %{count: 1}, %{auth_method: :subprotocol}}
+    end
+
+    test "tags :query_string on the legacy fallback path", %{ref: ref} do
+      {_, session} = user_and_session(name: "vjt-#{System.unique_integer([:positive])}")
+
+      assert {:ok, _} = connect_with(%{"token" => session.id})
+      assert_receive {^ref, %{count: 1}, %{auth_method: :query_string}}
+    end
+
+    test "emits NO connect event on an auth failure (method tag is post-auth)", %{ref: ref} do
+      assert :error = connect_with(%{"token" => Ecto.UUID.generate()})
+      refute_receive {^ref, _, _}
     end
   end
 

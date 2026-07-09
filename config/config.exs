@@ -200,6 +200,13 @@ config :logger, :console,
     :affected,
     :authn_failure,
     :socket_id,
+    # #95: WS connect-time auth source — `:subprotocol` (bearer via the
+    # Sec-WebSocket-Protocol header) vs `:query_string` (legacy `?token=`
+    # fallback). METHOD ONLY, never the token value (the raw bearer IS
+    # the credential — S9). Rides the `ws connect authenticated` line so
+    # an operator grep can confirm zero query-string auth before the
+    # fallback is dropped.
+    :auth_method,
     # Client IP, post-RemoteIp plug rewrite (so what you see is the
     # real client, not the docker-bridge nginx IP). Useful for grep-
     # correlating an authn failure or captcha rejection back to the

@@ -38,8 +38,29 @@ defmodule GrappaWeb.Endpoint do
   @session_key "_grappa_key"
   @session_persistent_term_key {__MODULE__, :session_opts}
 
+  # #95 — accept the bearer via the `Sec-WebSocket-Protocol` subprotocol
+  # (`auth_token: true`) so it no longer has to ride `?token=` on the WS
+  # upgrade URL (pre-redaction URL exposure). Phoenix decodes the
+  # `base64url.bearer.phx.<token>` subprotocol into
+  # `connect_info.auth_token` and echoes the selected subprotocol back on
+  # the handshake; phoenix.js sends it via `new Socket(ep, {authToken})`.
+  # `auth_token: true` MUST be a TOP-LEVEL socket option, NOT nested
+  # under `websocket:` — `Phoenix.Endpoint`'s `put_auth_token/2` reads
+  # `opts[:auth_token]` (the socket-level key) and merges it into the
+  # transport config itself; nesting it under `websocket:` leaves
+  # `opts[:auth_token]` nil, silently disables decoding, and every
+  # subprotocol handshake 403s (found via e2e — the WS refused in ~11µs
+  # because `connect_info.auth_token` was never populated). `connect_info:
+  # [:auth_token]` on the websocket transport then surfaces the decoded
+  # token to `UserSocket.connect/3`.
+  #
+  # The legacy `params["token"]` query-string path is retained as a
+  # fallback in `connect/3` for one deploy cycle (a stale bundle mid-cold-
+  # deploy still connects); dropping it is tracked as a follow-up gated on
+  # the auth-method telemetry showing sustained zero query-string auth.
   socket "/socket", GrappaWeb.UserSocket,
-    websocket: true,
+    auth_token: true,
+    websocket: [connect_info: [:auth_token]],
     longpoll: false
 
   plug Plug.RequestId
