@@ -56,7 +56,7 @@
 //   - `/ns <cmd>` → NickServ
 //   - `/ms <cmd>` → MemoServ
 //   - `/os <cmd>` → OperServ
-//   - `/hs <cmd>` → HostServ
+//   - `/hs <cmd>` → HelpServ
 //   - `/rs <cmd>` → RootServ
 //
 // Power-user verbs:
@@ -452,7 +452,7 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   ns: (_verb, rest) => parseServiceShortcut("ns", "NickServ", rest),
   ms: (_verb, rest) => parseServiceShortcut("ms", "MemoServ", rest),
   os: (_verb, rest) => parseServiceShortcut("os", "OperServ", rest),
-  hs: (_verb, rest) => parseServiceShortcut("hs", "HostServ", rest),
+  hs: (_verb, rest) => parseServiceShortcut("hs", "HelpServ", rest),
   rs: (_verb, rest) => parseServiceShortcut("rs", "RootServ", rest),
 
   // /quote <raw irc line> — escape hatch. Sends the raw bytes

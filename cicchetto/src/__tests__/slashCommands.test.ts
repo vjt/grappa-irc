@@ -723,7 +723,7 @@ describe("parseSlash — services shortcuts (#20)", () => {
     ["ns", "NickServ"],
     ["ms", "MemoServ"],
     ["os", "OperServ"],
-    ["hs", "HostServ"],
+    ["hs", "HelpServ"],
     ["rs", "RootServ"],
   ])("/%s <cmd> → msg target=%s", (verb, target) => {
     expect(parseSlash(`/${verb} HELP`)).toEqual({
