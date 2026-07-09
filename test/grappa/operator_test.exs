@@ -17,6 +17,7 @@ defmodule Grappa.OperatorTest do
   import Grappa.AuthFixtures
 
   alias Grappa.{AdmissionStateHelpers, Operator, Session}
+  alias Grappa.Accounts.User
   alias Grappa.Networks.Credential
   alias Grappa.Visitors.Visitor
 
@@ -85,6 +86,74 @@ defmodule Grappa.OperatorTest do
                  Operator.delete_visitor!(bogus_id)
                end
              end) =~ "visitor #{bogus_id} not found"
+    end
+  end
+
+  describe "delete_user/2 (admin user teardown, S7)" do
+    test "stops the user's live Session.Server(s) and deletes the row" do
+      {_, port} = start_irc_server()
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {network, _} = network_with_server(port: port)
+      _ = credential_fixture(vjt, network, %{nick: "vjt"})
+      pid = start_session_for(vjt, network)
+      ref = Process.monitor(pid)
+
+      assert Session.whereis({:user, vjt.id}, network.id) == pid
+
+      assert :ok = Operator.delete_user(vjt, {"actor-id", "actor-name"})
+
+      # Live pid stopped + row gone BEFORE delete_user/2 returned.
+      assert_received {:DOWN, ^ref, :process, ^pid, _}
+      assert Session.whereis({:user, vjt.id}, network.id) == nil
+      assert Repo.get(User, vjt.id) == nil
+    end
+
+    test "is idempotent: user with no live session still deletes the row" do
+      vjt = user_fixture(name: "nolive-#{System.unique_integer([:positive])}")
+
+      assert :ok = Operator.delete_user(vjt, {"actor-id", "actor-name"})
+      assert Repo.get(User, vjt.id) == nil
+    end
+
+    test "refuses :last_admin and tears down NOTHING (row + live session survive)" do
+      {_, port} = start_irc_server()
+      admin = user_fixture(name: "sole-#{System.unique_integer([:positive])}")
+      {:ok, admin} = Grappa.Accounts.update_admin_flags(admin, %{is_admin: true})
+      {network, _} = network_with_server(port: port)
+      _ = credential_fixture(admin, network, %{nick: "sole"})
+      pid = start_session_for(admin, network)
+
+      # The surviving session would otherwise crash on `:tcp_closed` when
+      # the test's IRCServer tears down — stop it explicitly (proving the
+      # teardown-that-didn't-run is now under our control, not the refusal).
+      on_exit(fn -> Session.stop_session({:user, admin.id}, network.id) end)
+
+      assert {:error, :last_admin} = Operator.delete_user(admin, {"actor-id", "actor-name"})
+
+      assert Repo.get(User, admin.id) != nil
+      assert Process.alive?(pid)
+      assert Session.whereis({:user, admin.id}, network.id) == pid
+    end
+
+    test "emits :user_deleted with actor attribution" do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.admin_events())
+      vjt = user_fixture(name: "evt-#{System.unique_integer([:positive])}")
+      vid = vjt.id
+      vname = vjt.name
+
+      assert :ok = Operator.delete_user(vjt, {"actor-id-x", "actor-name-x"})
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :user_deleted,
+                         user_id: ^vid,
+                         user_name: ^vname,
+                         actor_user_id: "actor-id-x",
+                         actor_user_name: "actor-name-x"
+                       }
+                     },
+                     500
     end
   end
 

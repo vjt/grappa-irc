@@ -42,10 +42,11 @@ defmodule GrappaWeb.Admin.UsersController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, AdminEvents, LiveIntrospection}
+  alias Grappa.{Accounts, AdminEvents, LiveIntrospection, Operator}
   alias Grappa.Accounts.AdminWire
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias GrappaWeb.Admin.AuthPlug
+  alias GrappaWeb.UserSocket
 
   @doc """
   Enumerate every user row + project per-row live_session_count.
@@ -122,17 +123,24 @@ defmodule GrappaWeb.Admin.UsersController do
   end
 
   @doc """
-  Admin-panel bucket 2 — delete a user. Cascades to bearer-auth
-  sessions, scrollback, and per-(user, network) credentials via
-  FK ON DELETE CASCADE. Refuses with `:last_admin` when the
-  target is the sole admin.
+  Admin-panel bucket 2 — delete a user. Routes through
+  `Operator.delete_user/2` (S7), which stops the target's live
+  `Session.Server`(s) then deletes the row; the DB cascade wipes
+  bearer-auth sessions, scrollback, and per-(user, network) credentials.
+  This controller then closes the live WebSocket via
+  `UserSocket.disconnect_subject/1` — otherwise a deleted user keeps a
+  live upstream IRC connection AND a live WS receiving PubSub pushes
+  until the socket happens to close (mid-flight authz leak). Same
+  stop-session + disconnect teardown as self-delete (#157) and admin
+  visitor deletion. Refuses with `:last_admin` when the target is the
+  sole admin (nothing torn down).
   """
   @spec delete(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :not_found | :last_admin}
   def delete(conn, %{"id" => id}) when is_binary(id) do
     with {:ok, user} <- fetch_user(id),
-         :ok <- Accounts.delete_user(user) do
-      :ok = emit_user_deleted(user, conn)
+         :ok <- Operator.delete_user(user, AuthPlug.actor_from_conn(conn)) do
+      :ok = UserSocket.disconnect_subject({:user, user})
       conn |> put_status(:no_content) |> text("")
     end
   end
@@ -161,12 +169,6 @@ defmodule GrappaWeb.Admin.UsersController do
     {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
 
     AdminEvents.record(AdminEventsWire.user_password_changed(user.id, user.name, actor_id, actor_name))
-  end
-
-  defp emit_user_deleted(user, conn) do
-    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
-
-    AdminEvents.record(AdminEventsWire.user_deleted(user.id, user.name, actor_id, actor_name))
   end
 
   defp fetch_user(id) do

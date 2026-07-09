@@ -349,6 +349,20 @@ defmodule GrappaWeb.Admin.UsersControllerTest do
       assert {:error, :not_found} = Accounts.authenticate(target_session.id)
     end
 
+    test "204 closes the target's live WebSocket (S7)", %{conn: conn} do
+      target = user_fixture(name: "wsdel-#{System.unique_integer([:positive])}")
+      topic = "user_socket:" <> target.name
+      :ok = GrappaWeb.Endpoint.subscribe(topic)
+
+      session = admin_session()
+      conn = conn |> put_bearer(session.id) |> delete("/admin/users/#{target.id}")
+      assert response(conn, 204) == ""
+
+      # Mid-flight WS enforcement: without the disconnect the deleted
+      # user's socket keeps receiving PubSub fan-out until it reconnects.
+      assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "disconnect"}, 500
+    end
+
     test "422 last_admin when target is the sole admin", %{conn: conn} do
       # Set up two admins, then delete one so the remaining is the sole.
       {actor, actor_session} = user_and_session()

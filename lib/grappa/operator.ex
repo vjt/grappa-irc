@@ -55,6 +55,7 @@ defmodule Grappa.Operator do
   use Boundary,
     top_level?: true,
     deps: [
+      Grappa.Accounts,
       Grappa.Admission,
       Grappa.AdminEvents,
       Grappa.LiveIntrospection,
@@ -64,6 +65,8 @@ defmodule Grappa.Operator do
       Grappa.Visitors.Reaper
     ]
 
+  alias Grappa.Accounts
+  alias Grappa.Accounts.User
   alias Grappa.AdminEvents
   alias Grappa.AdminEvents.Wire, as: AdminWire
   alias Grappa.Admission.NetworkCircuit
@@ -76,6 +79,7 @@ defmodule Grappa.Operator do
 
   @disconnect_reason "disconnected by admin"
   @terminate_reason "terminated by admin"
+  @user_deleted_reason "account deleted by admin"
 
   @typedoc """
   Optional admin actor attribution for M-11 admin-event emission.
@@ -145,6 +149,72 @@ defmodule Grappa.Operator do
         :ok = emit_visitor_deleted(visitor, actor)
         :ok
     end
+  end
+
+  @doc """
+  Admin-attributed user deletion (`DELETE /admin/users/:id`). Mirrors
+  `delete_visitor/2`: stop the user's live `Session.Server`(s) — one per
+  bound network — then delete the DB row and emit `:user_deleted`.
+
+  Order is delete-first (guarded) THEN teardown, unlike
+  `delete_visitor/2`'s stop-before-delete: `Accounts.delete_user/1`
+  carries the last-admin lockout guard (A-4), so stopping sessions first
+  would kill the live upstream connections of an admin whose delete we
+  then REFUSE. Capturing the bound network ids before the delete lets us
+  still stop each live pid after the cascade wipes the credential rows —
+  the registered `Session.Server`s outlive their DB rows until we
+  terminate them (that outliving IS the leak this fixes: a deleted user
+  otherwise keeps a live upstream IRC connection + a live WS receiving
+  PubSub pushes until the socket happens to close).
+
+  Socket teardown is the CONTROLLER's job (`UsersController.delete/2` →
+  `UserSocket.disconnect_subject/1`); this boundary carries no web deps,
+  same split as `AccountDeletion` + `MeController`.
+
+  Returns `{:error, :last_admin}` (target is the sole admin — nothing
+  torn down) or `{:error, :not_found}` (row vanished concurrently).
+
+  `actor` is REQUIRED (`{user_id, user_name}`, never `nil`): user
+  deletion is admin-REST-only — there is no `bin/grappa` / system door
+  the way visitor deletion has — so the `:user_deleted` event always
+  carries a real operator. `AdminEvents.Wire.user_deleted/4` rejects a
+  nil actor at the boundary; this guard is the same fail-loud contract,
+  one call earlier.
+  """
+  @spec delete_user(User.t(), {String.t(), String.t()}) ::
+          :ok | {:error, :not_found | :last_admin}
+  def delete_user(%User{} = user, {actor_id, actor_name} = actor)
+      when is_binary(actor_id) and is_binary(actor_name) do
+    network_ids =
+      user |> Credentials.list_credentials_for_user() |> Enum.map(& &1.network_id)
+
+    case Accounts.delete_user(user) do
+      :ok ->
+        :ok = stop_user_sessions(user, network_ids)
+        :ok = emit_user_deleted(user, actor)
+        :ok
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @spec emit_user_deleted(User.t(), {String.t(), String.t()}) :: :ok
+  defp emit_user_deleted(%User{} = user, {actor_id, actor_name}) do
+    AdminEvents.record(AdminWire.user_deleted(user.id, user.name, actor_id, actor_name))
+  end
+
+  # Stop every live Session.Server the user owned (one per bound network),
+  # captured before the cascade delete dropped the credential rows.
+  # Idempotent per network: `stop_session/3` returns `:ok` whether or not
+  # a pid is registered, so parked/failed credentials (no live pid) are
+  # harmless no-ops. `@user_deleted_reason` is a static literal (no
+  # CR/LF/NUL) so the pre-QUIT never returns `:invalid_line`.
+  @spec stop_user_sessions(User.t(), [integer()]) :: :ok
+  defp stop_user_sessions(%User{id: user_id}, network_ids) do
+    Enum.each(network_ids, fn network_id ->
+      :ok = Session.stop_session({:user, user_id}, network_id, @user_deleted_reason)
+    end)
   end
 
   @spec emit_visitor_deleted(Visitor.t(), actor()) :: :ok
