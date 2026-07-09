@@ -2696,7 +2696,7 @@ defmodule Grappa.Session.Server do
     cutoff = now - @pending_ttl_ms
 
     pending
-    |> Enum.reject(fn {_k, v} -> read_stamp.(v, now) < cutoff end)
+    |> Enum.reject(fn {_, v} -> read_stamp.(v, now) < cutoff end)
     |> Map.new()
   end
 

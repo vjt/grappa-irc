@@ -541,7 +541,7 @@ defmodule Grappa.VisitorsTest do
     # persists) — its backoff history must survive the no-op purge.
     test "registered no-op purge leaves Backoff entries intact" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt-bo3", @network, "1.2.3.4")
-      {:ok, _registered} = Visitors.commit_password(v.id, "s3cret")
+      {:ok, _} = Visitors.commit_password(v.id, "s3cret")
       :ok = Backoff.record_failure({:visitor, v.id}, 1)
 
       assert :ok = Visitors.purge_if_anon(v.id)

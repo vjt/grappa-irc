@@ -1847,7 +1847,7 @@ defmodule Grappa.Session.EventRouterTest do
       huge = String.duplicate("9", 40)
       m = msg({:numeric, 333}, ["vjt", "#italia", "ChanServ", huge], {:server, "irc"})
 
-      assert {:cont, new_state, _effects} = EventRouter.route(m, state)
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
       assert new_state.topics["#italia"].set_by == "ChanServ"
       assert new_state.topics["#italia"].set_at == nil
     end
@@ -2543,7 +2543,7 @@ defmodule Grappa.Session.EventRouterTest do
       state = base_state(%{whois_pending: %{}})
       m = msg({:numeric, 301}, ["vjt", "alice"], {:server, "irc.test.org"})
 
-      assert {:cont, _new_state, [{:peer_away, "alice", ""}]} = EventRouter.route(m, state)
+      assert {:cont, _, [{:peer_away, "alice", ""}]} = EventRouter.route(m, state)
     end
 
     test "307 RPL_WHOISREGNICK folds is_registered: true" do

@@ -5611,12 +5611,8 @@ defmodule Grappa.Session.ServerTest do
     # numeric. Simulate that process by deleting the key, then feed a
     # non-delegated numeric (402 ERR_NOSUCHSERVER hits the routing/drain
     # branch) and prove the session survives + the key is repopulated.
-    test "hot-reload safety: a routed numeric on a state map missing labels_pending_at does not crash", %{
-      server: server,
-      user: _user,
-      network: _network,
-      pid: pid
-    } do
+    test "hot-reload safety: a routed numeric on a state map missing labels_pending_at does not crash",
+         %{server: server, pid: pid} do
       _ = :sys.replace_state(pid, fn state -> Map.delete(state, :labels_pending_at) end)
 
       ref = Process.monitor(pid)
