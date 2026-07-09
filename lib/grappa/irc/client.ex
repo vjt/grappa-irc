@@ -712,7 +712,7 @@ defmodule Grappa.IRC.Client do
     # etc.), and we want the posture visible regardless. Observability,
     # not contingent on handshake validity.
     if opts.tls do
-      Logger.info("TLS posture: verify_peer — certificate chain validated against system CA store (#89)")
+      Logger.info("TLS posture: verify_peer — certificate chain will be validated against the system CA store (#89)")
     end
 
     case AuthFSM.new(opts) do
@@ -875,9 +875,14 @@ defmodule Grappa.IRC.Client do
   #     macOS keychain, the Linux ca-certificates bundle). No cacertfile to
   #     ship or rotate — the operator's system trust store IS the anchor
   #     set. `cacerts_get/0` raises if no store is found; that's the honest
-  #     loud failure (a box with no CA bundle can't safely verify_peer) and
-  #     it surfaces at connect time in the connect-fail throttle path rather
-  #     than silently downgrading to no-verification.
+  #     loud failure (a box with no CA bundle can't safely verify_peer). The
+  #     raise is evaluated inside `handle_continue(:connect, _)`, so it
+  #     crashes the Client, propagates the link signal to `Session.Server`,
+  #     and drives its terminate/2 → Backoff → `:transient` respawn path —
+  #     loud + throttled, NOT a silent downgrade to no-verification. (This
+  #     is the crash path, distinct from the `{:connect_failed_giveup, _}`
+  #     deferred throttle, which fires only when `do_connect` RETURNS
+  #     `{:error, _}` from a handshake failure.)
   #   * `depth: 3` — cap the intermediate-CA chain length. Azzurra's chain
   #     is leaf → Let's Encrypt intermediate → ISRG root (depth 2); 3 leaves
   #     one slot of headroom for a cross-signed root without inviting an

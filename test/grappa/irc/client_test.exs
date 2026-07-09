@@ -609,16 +609,20 @@ defmodule Grappa.IRC.ClientTest do
 
       # Hostname verification is mandatory — a valid-but-wrong-host cert
       # (MITM with any CA-signed leaf) must be rejected. The https match_fun
-      # does SAN/CN matching per RFC 6125.
+      # does SAN/CN matching per RFC 6125. Assert the value IS the 2-arity
+      # match fun, not merely that the key exists — a `match_fun: nil` or a
+      # swap away from the :https fun would slip past a key-presence check.
       match = Keyword.fetch!(opts, :customize_hostname_check)
-      assert Keyword.has_key?(match, :match_fun)
+      assert is_function(Keyword.fetch!(match, :match_fun), 2)
     end
 
     test "TLS opts bound chain depth" do
       opts = Client.__tls_connect_opts_for_test__(~c"irc.azzurra.chat")
-      # A finite depth caps intermediate-CA chain length (azzurra's chain
-      # is leaf → LE intermediate → ISRG root = depth 2).
-      assert is_integer(Keyword.fetch!(opts, :depth))
+      # Pin the exact depth — azzurra's chain is leaf → LE intermediate →
+      # ISRG root (depth 2); a regression that loosened this (e.g. the OTP
+      # default 10, or 100) would pass an `is_integer/1` check but widen the
+      # accepted chain length. `== 3` is the contract.
+      assert Keyword.fetch!(opts, :depth) == 3
     end
   end
 
