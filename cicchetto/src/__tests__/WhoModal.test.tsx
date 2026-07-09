@@ -53,7 +53,15 @@ describe("WhoModal (#169)", () => {
     focusNetwork();
     setWhoReply(
       SLUG,
-      roster([row({ nick: "alice", user: "au", host: "ah.example.org", modes: "H@", realname: "Alice L" })]),
+      roster([
+        row({
+          nick: "alice",
+          user: "au",
+          host: "ah.example.org",
+          modes: "H@",
+          realname: "Alice L",
+        }),
+      ]),
     );
     render(() => <WhoModal />);
     const rows = screen.getAllByTestId("who-modal-row");

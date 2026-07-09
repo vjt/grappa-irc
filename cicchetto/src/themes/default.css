@@ -3781,7 +3781,9 @@ html.resize-dragging * {
   font-size: var(--font-size);
   overflow: hidden;
   /* Retro double-frame accent (inset ring) without new colors. */
-  box-shadow: inset 0 0 0 1px var(--bg), inset 0 0 0 2px var(--border);
+  box-shadow:
+    inset 0 0 0 1px var(--bg),
+    inset 0 0 0 2px var(--border);
 }
 
 .server-reply-modal-header {
@@ -4389,11 +4391,7 @@ html.resize-dragging * {
   pointer-events: none;
   border-radius: inherit;
   box-shadow: inset 0 0 6rem 1.5rem rgba(0, 0, 0, 0.85);
-  background: radial-gradient(
-    ellipse at center,
-    rgba(0, 0, 0, 0) 55%,
-    rgba(0, 0, 0, 0.55) 100%
-  );
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.55) 100%);
 }
 
 @keyframes crt-blink {

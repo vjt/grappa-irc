@@ -16,9 +16,9 @@ import { token } from "./lib/auth";
 import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
+import { mediaViewerState } from "./lib/mediaViewer";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
-import { mediaViewerState } from "./lib/mediaViewer";
 import { networks, user } from "./lib/networks";
 import { senderPrefix, snapshotSenderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
@@ -2038,10 +2038,7 @@ const ScrollbackPane: Component<Props> = (props) => {
                 // `scrollToActivation` marker-or-tail branch owns the lookup —
                 // there is no long-lived pointer to go stale.
                 return (
-                  <div
-                    class="scrollback-unread-marker"
-                    data-testid="unread-marker"
-                  >
+                  <div class="scrollback-unread-marker" data-testid="unread-marker">
                     <span class="scrollback-unread-marker-line" />
                     <span class="scrollback-unread-marker-label">
                       {row.count} unread message{row.count !== 1 ? "s" : ""}

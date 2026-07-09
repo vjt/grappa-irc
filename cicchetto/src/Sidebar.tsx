@@ -10,11 +10,7 @@ import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, isAdmin, networkBySlug, networks } from "./lib/networks";
 import { openQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
-import {
-  closeQueryWindow,
-  confirmDisconnectNetwork,
-  confirmLeaveChannel,
-} from "./lib/windowClose";
+import { closeQueryWindow, confirmDisconnectNetwork, confirmLeaveChannel } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import {
   ADMIN_WINDOW_NAME,

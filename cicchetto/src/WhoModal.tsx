@@ -118,7 +118,12 @@ const WhoModal: Component = () => {
                 <h2 id="who-modal-title">
                   {b.target} — {total()} {total() === 1 ? "user" : "users"}
                 </h2>
-                <button type="button" class="who-modal-close" aria-label="close who" onClick={close}>
+                <button
+                  type="button"
+                  class="who-modal-close"
+                  aria-label="close who"
+                  onClick={close}
+                >
                   ×
                 </button>
               </header>

@@ -1,6 +1,6 @@
 import { type Component, For, Show } from "solid-js";
-import type { MemberEntry } from "./lib/memberTypes";
 import { memberSigil } from "./lib/memberSigil";
+import type { MemberEntry } from "./lib/memberTypes";
 import { dismissNamesModal, namesModalBySlug } from "./lib/namesModal";
 import { networks } from "./lib/networks";
 import { createOverlayLock } from "./lib/overlayScrollLock";

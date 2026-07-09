@@ -45,40 +45,40 @@ import { applyMeEnvelope } from "./readCursor";
 // see the updated nick immediately.
 
 const exports = createRoot(() => {
-  const [user, { refetch: refetchUserResource }] = createResource<
-    MeResponse | null,
-    string | null
-  >(token, async (t) => {
-    if (!t) return null;
-    const m = await me(t);
-    // CP29 R-4: hydrate the readCursor signal map from the bulk envelope
-    // BEFORE downstream consumers (subscribe.ts join effects, etc.)
-    // observe `user()` and start joining channel topics. The join-reply
-    // arm (`applyJoinReply`) layers per-channel refreshes on top later;
-    // this is the cold-load primer. Default to `{}` if the server omits
-    // the field (older test mocks predating the field landing in
-    // `MeResponse`) — production /me always emits it.
-    applyMeEnvelope(m.read_cursors ?? {});
-    // PWA icon badge door #2 (2026-06-21): seed the badge signal from the
-    // `/me` notify-worthy unread total so the home-screen icon /
-    // document.title reflect the count before any push or read_cursor_set
-    // arrives. `badge.ts` has no networks/selection imports, so seeding
-    // here (unlike `unread_counts`) closes no import cycle. Default 0 for
-    // older test mocks / pre-field servers.
-    setBadge(m.badge_count ?? 0);
-    // Bucket C (2026-06-01) — the parallel `unread_counts` cold-load
-    // primer for `selection.ts`'s `serverSeedCounts` lives inside
-    // selection.ts itself (an `on(user)` effect there reads
-    // `m.unread_counts` and calls `applySeedEnvelope`). Routing the
-    // call back through networks.ts would close a networks ↔ selection
-    // import cycle that breaks under vitest module re-entry: the named
-    // binding `applySeedEnvelope` resolves to `undefined` because
-    // selection.ts is still mid-eval when networks.ts captures it.
-    // selection.ts already imports `user` from this module for its
-    // existing selection-clear arm, so the new effect is one extra
-    // line in a module that already lives downstream.
-    return m;
-  });
+  const [user, { refetch: refetchUserResource }] = createResource<MeResponse | null, string | null>(
+    token,
+    async (t) => {
+      if (!t) return null;
+      const m = await me(t);
+      // CP29 R-4: hydrate the readCursor signal map from the bulk envelope
+      // BEFORE downstream consumers (subscribe.ts join effects, etc.)
+      // observe `user()` and start joining channel topics. The join-reply
+      // arm (`applyJoinReply`) layers per-channel refreshes on top later;
+      // this is the cold-load primer. Default to `{}` if the server omits
+      // the field (older test mocks predating the field landing in
+      // `MeResponse`) — production /me always emits it.
+      applyMeEnvelope(m.read_cursors ?? {});
+      // PWA icon badge door #2 (2026-06-21): seed the badge signal from the
+      // `/me` notify-worthy unread total so the home-screen icon /
+      // document.title reflect the count before any push or read_cursor_set
+      // arrives. `badge.ts` has no networks/selection imports, so seeding
+      // here (unlike `unread_counts`) closes no import cycle. Default 0 for
+      // older test mocks / pre-field servers.
+      setBadge(m.badge_count ?? 0);
+      // Bucket C (2026-06-01) — the parallel `unread_counts` cold-load
+      // primer for `selection.ts`'s `serverSeedCounts` lives inside
+      // selection.ts itself (an `on(user)` effect there reads
+      // `m.unread_counts` and calls `applySeedEnvelope`). Routing the
+      // call back through networks.ts would close a networks ↔ selection
+      // import cycle that breaks under vitest module re-entry: the named
+      // binding `applySeedEnvelope` resolves to `undefined` because
+      // selection.ts is still mid-eval when networks.ts captures it.
+      // selection.ts already imports `user` from this module for its
+      // existing selection-clear arm, so the new effect is one extra
+      // line in a module that already lives downstream.
+      return m;
+    },
+  );
 
   // Networks resource is keyed on `user` (not raw token) so the
   // boundary tagger reads the explicit server-set `kind` discriminator

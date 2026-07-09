@@ -1487,9 +1487,7 @@ describe("ScrollbackPane", () => {
       seedReadCursor("freenode", "#grappa", 0);
       setScrollback({ "freenode #grappa": fourUnread });
       setDocVisible(true);
-      render(() => (
-        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
-      ));
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
 
       // Divider present after mount (frozen-display contract).
       expect(screen.getByTestId("unread-marker")).toBeInTheDocument();

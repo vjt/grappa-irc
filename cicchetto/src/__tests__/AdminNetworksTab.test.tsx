@@ -247,9 +247,7 @@ describe("AdminNetworksTab", () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminListNetworks)
       .mockResolvedValueOnce([BAHAMUT])
-      .mockResolvedValueOnce([
-        { ...BAHAMUT, max_concurrent_visitor_sessions: 200, max_per_ip: 9 },
-      ]);
+      .mockResolvedValueOnce([{ ...BAHAMUT, max_concurrent_visitor_sessions: 200, max_per_ip: 9 }]);
     vi.mocked(api.adminPatchNetworkCaps).mockResolvedValue({
       ...BAHAMUT,
       max_concurrent_visitor_sessions: 200,

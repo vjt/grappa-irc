@@ -5,11 +5,7 @@ import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
-import {
-  closeQueryWindow,
-  confirmDisconnectNetwork,
-  confirmLeaveChannel,
-} from "./lib/windowClose";
+import { closeQueryWindow, confirmDisconnectNetwork, confirmLeaveChannel } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import NickText from "./NickText";
