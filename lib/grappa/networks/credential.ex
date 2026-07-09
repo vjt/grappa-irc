@@ -357,6 +357,34 @@ defmodule Grappa.Networks.Credential do
     |> put_encrypted_password()
   end
 
+  @doc """
+  Narrow changeset for the `last_joined_channels` snapshot written on
+  the self-JOIN/PART/KICK hot path (S34, 2026-07-08 review). Mirrors the
+  narrow-changeset pattern of
+  `Grappa.Visitors.Visitor.last_joined_channels_changeset/2`.
+
+  `Credentials.update_last_joined_channels/3` fires this on every
+  self-membership change; routing it through the WIDE `changeset/2`
+  re-ran every unrelated validator (`validate_password_for_auth_method`,
+  `put_encrypted_password`, the `unique_constraint`) on a high-frequency
+  write that only touches one JSON column. This casts + canonicalises +
+  caps ONLY that column — applying the exact same operations the wide
+  `changeset/2` applies to `:last_joined_channels` (canonicalisation via
+  `canonicalize_channel_entry/1`, the H15 `@last_joined_channels_max`
+  cap; the wide path runs NO per-entry channel-syntax validation on this
+  field — that guard is `autojoin_channels`-only), so persisted values
+  are byte-identical to the wide path.
+  """
+  @spec last_joined_channels_changeset(t(), [String.t()]) :: Ecto.Changeset.t()
+  def last_joined_channels_changeset(%__MODULE__{} = credential, channels)
+      when is_list(channels) do
+    canonical = Enum.map(channels, &canonicalize_channel_entry/1)
+
+    credential
+    |> cast(%{last_joined_channels: canonical}, [:last_joined_channels])
+    |> validate_length(:last_joined_channels, max: @last_joined_channels_max)
+  end
+
   defp validate_safe_line_token(field, value) when is_binary(value) do
     if Identifier.safe_line_token?(value),
       do: [],

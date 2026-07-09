@@ -232,7 +232,12 @@ defmodule Grappa.Networks.Credentials do
         {:error, :not_found}
 
       %Credential{} = cred ->
-        changeset = Credential.changeset(cred, %{last_joined_channels: capped})
+        # S34: narrow changeset — this fires on every self-JOIN/PART/KICK,
+        # so it must not drag the wide `changeset/2`'s unrelated validators
+        # (`validate_password_for_auth_method`, `put_encrypted_password`,
+        # the `unique_constraint`) onto the hot path. Twin of the visitor
+        # side's `Visitor.last_joined_channels_changeset/2`.
+        changeset = Credential.last_joined_channels_changeset(cred, capped)
 
         case Repo.update(changeset) do
           {:ok, _} -> :ok

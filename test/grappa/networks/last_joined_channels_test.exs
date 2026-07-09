@@ -56,6 +56,24 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
       assert reloaded.last_joined_channels == ["#bofh", "#grappa", "#italia"]
     end
 
+    # S34 (2026-07-08 review) — routed through the NARROW
+    # `Credential.last_joined_channels_changeset/2` instead of the wide
+    # `changeset/2`. This asserts the narrow path still canonicalises
+    # channel names (UX-4 bucket A) exactly as the wide path did — the
+    # persisted values must be byte-identical, not just the cap behaviour.
+    test "canonicalises mixed-case channel names (narrow-changeset parity)" do
+      {_, _, cred} = setup_credential()
+
+      assert :ok =
+               Credentials.update_last_joined_channels(
+                 cred.user_id,
+                 cred.network_id,
+                 ["#Sniffo", "#BOFH"]
+               )
+
+      assert reload(cred).last_joined_channels == ["#sniffo", "#bofh"]
+    end
+
     test "overwrites prior snapshot on each call (latest write wins)" do
       {_, _, cred} = setup_credential()
 
