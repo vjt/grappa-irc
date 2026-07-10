@@ -171,12 +171,14 @@ export function resetAutoFocusedJoinsForTest(): void {
   autoFocusedJoins.clear();
 }
 
-const formatTime = (epochMs: number): string => {
+// Message-row timestamp: local HH:MM (no seconds — #208 recovers gutter
+// space; minute resolution is enough for scrollback). Exported as a test
+// seam so the format is guarded without rendering the whole pane.
+export const formatTime = (epochMs: number): string => {
   const d = new Date(epochMs);
   const hh = d.getHours().toString().padStart(2, "0");
   const mm = d.getMinutes().toString().padStart(2, "0");
-  const ss = d.getSeconds().toString().padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
+  return `${hh}:${mm}`;
 };
 
 // Format epoch-ms as a human-readable date label (e.g. "Saturday, May 3")
