@@ -1464,4 +1464,106 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :tcp_closed} = Task.await(task, 2_000)
     end
   end
+
+  describe "liveness watchdog (#100): self-PING + timeout" do
+    # #100 — the ONE genuinely-absent drop trigger. A half-open socket
+    # (mobile radio drop / NAT idle-eviction with no FIN) is invisible to
+    # {:tcp_closed}/{:ssl_closed} and would hang until the ~2h OS TCP
+    # keepalive. The watchdog closes it: after `liveness_idle_ms` of
+    # INBOUND silence the client sends its own PING; if `liveness_timeout_ms`
+    # elapses with STILL no inbound, the connection is declared dead and the
+    # client stops with `:ping_timeout` — which propagates as a link EXIT to
+    # `Session.Server` and drives the EXISTING respawn/backoff chain (no new
+    # reconnect path). Any inbound line (the server's PONG, a channel line,
+    # a server-originated PING) resets the cycle, so a healthy-but-quiet
+    # connection can never false-trigger.
+    #
+    # Timers are opts-overridable (default 60s idle / 30s timeout in
+    # config); these tests inject tiny values so the cycle runs in ms.
+
+    # Server that answers our self-PING with a PONG — models a live upstream.
+    # The inbound PONG resets the liveness cycle every round.
+    defp liveness_pong_handler do
+      fn state, line ->
+        if String.starts_with?(line, "PING") do
+          {:reply, ":server PONG grappa-test :grappa-liveness\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+    end
+
+    test "dead upstream (self-PING unanswered) trips :ping_timeout → link EXIT" do
+      # passthrough server: accepts the connection, buffers our PING, never
+      # replies. No inbound ever reaches the client → idle fires → self-PING
+      # → still no inbound → timeout fires → {:stop, :ping_timeout, _}.
+      {server, port} = start_server()
+      Process.flag(:trap_exit, true)
+
+      client = start_client(port, %{liveness_idle_ms: 100, liveness_timeout_ms: 200})
+
+      # The self-PING is on the wire after ~idle ms — proves the probe fired.
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PING"), 1_000)
+
+      # No PONG (no inbound at all) → timeout fires → the client stops with
+      # the reconnect-triggering reason. This is the link EXIT the linked
+      # Session.Server converts into a Backoff-paced respawn.
+      assert_receive {:EXIT, ^client, :ping_timeout}, 1_000
+    end
+
+    test "healthy upstream answering PING does NOT trip liveness (no false positive)" do
+      # The server PONGs every self-PING; each inbound PONG resets the cycle,
+      # so the timeout timer is cancelled before it can fire. The client must
+      # survive well past idle+timeout. This is the load-bearing "don't kill a
+      # healthy-but-quiet connection" assertion.
+      {server, port} = start_server(liveness_pong_handler())
+      Process.flag(:trap_exit, true)
+
+      client = start_client(port, %{liveness_idle_ms: 100, liveness_timeout_ms: 200})
+
+      # Prove ≥2 full liveness cycles ran (the probe keeps firing on a quiet
+      # link) — a single PING could pass by luck; two means the reset→re-arm
+      # loop is working.
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PING"), 1_000)
+
+      # Sleep past several (idle + timeout) windows. If liveness incorrectly
+      # fired, the client would already be dead by now. Intentional sleep:
+      # asserting a NEGATIVE (nothing killed it) over a window that comfortably
+      # exceeds 2×(idle+timeout) = 600ms.
+      Process.sleep(700)
+
+      assert Process.alive?(client),
+             "healthy upstream answering PING must NOT be declared dead"
+
+      refute_received {:EXIT, ^client, :ping_timeout}
+
+      pings = Enum.count(IRCServer.sent_lines(server), &String.starts_with?(&1, "PING"))
+      assert pings >= 2, "expected the liveness probe to keep firing on a quiet link, saw #{pings}"
+    end
+
+    test "inbound traffic (not just PONG) resets the idle timer" do
+      # Any inbound line proves liveness — a busy channel keeps the socket
+      # alive without the client ever needing to self-PING. Server feeds a
+      # PRIVMSG every 40ms (< the 100ms idle) so the idle timer never elapses.
+      {server, port} = start_server()
+      Process.flag(:trap_exit, true)
+
+      client = start_client(port, %{liveness_idle_ms: 100, liveness_timeout_ms: 200})
+
+      # Feed 6 lines at 40ms spacing (240ms total) — each resets the idle
+      # timer before it reaches 100ms, so no self-PING should ever be sent.
+      Enum.each(1..6, fn i ->
+        IRCServer.feed(server, ":a!~a@h PRIVMSG #x :keepalive #{i}\r\n")
+        Process.sleep(40)
+      end)
+
+      assert Process.alive?(client)
+      refute_received {:EXIT, ^client, :ping_timeout}
+
+      pings = Enum.count(IRCServer.sent_lines(server), &String.starts_with?(&1, "PING"))
+      assert pings == 0, "steady inbound traffic must reset idle before the probe fires, saw #{pings}"
+    end
+  end
 end

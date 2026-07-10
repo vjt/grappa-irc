@@ -83,9 +83,20 @@ defmodule Grappa.IRC.Client do
   reasons (`{:sasl_failed, 904 | 905}`, `:sasl_unavailable`,
   `{:nick_rejected, 432 | 433, nick}`) propagate the same way. The
   Session is then restarted by its `DynamicSupervisor` (transient
-  policy on abnormal exit), spawning a fresh Client.
-  Reconnect-with-backoff is Phase 5; Phase 1/2 take the simpler
-  "let it crash" route.
+  policy on abnormal exit), spawning a fresh Client — the reconnect is
+  paced by `Grappa.Session.Backoff` (per-(subject, network) exponential
+  ladder, ±25% jitter, 5-min cap).
+
+  ## Liveness watchdog (#100)
+
+  `:tcp_closed`/`:ssl_closed` only fire on a graceful FIN or RST. A
+  half-open socket (mobile radio drop, NAT idle-eviction) leaves no
+  signal and would hang until the OS TCP keepalive (~2h). The liveness
+  watchdog closes that gap: after `@liveness_idle_ms` of inbound silence
+  the Client sends its own `PING`; if `@liveness_timeout_ms` passes with
+  still no inbound, it stops with `:ping_timeout`, feeding the same
+  link-EXIT → Backoff → `:transient` respawn chain. See the
+  `@liveness_idle_ms` docstring for the full two-phase cycle.
   """
   use GenServer
 
@@ -131,14 +142,28 @@ defmodule Grappa.IRC.Client do
           required(:sasl_user) => String.t(),
           required(:auth_method) => AuthFSM.auth_method(),
           optional(:password) => String.t() | nil,
-          optional(:source_address) => String.t() | nil
+          optional(:source_address) => String.t() | nil,
+          # #100 liveness watchdog — test seam. Production omits both and
+          # inherits the `@liveness_*_ms` config defaults; tests inject tiny
+          # values so the two-phase cycle runs in milliseconds.
+          optional(:liveness_idle_ms) => pos_integer(),
+          optional(:liveness_timeout_ms) => pos_integer()
         }
 
   @type t :: %__MODULE__{
           socket: :gen_tcp.socket() | :ssl.sslsocket() | nil,
           transport: :tcp | :ssl,
           dispatch_to: pid(),
-          fsm: AuthFSM.t()
+          fsm: AuthFSM.t(),
+          # #100 liveness watchdog. `liveness_idle_ms` / `liveness_timeout_ms`
+          # are static config for the process lifetime; `idle_timer` /
+          # `ping_timer` are the two-phase timer refs (at most one armed at a
+          # time — idle counts down inbound-silence, ping counts down the
+          # self-PING reply window). Both nil pre-connect + between cycles.
+          liveness_idle_ms: pos_integer(),
+          liveness_timeout_ms: pos_integer(),
+          idle_timer: reference() | nil,
+          ping_timer: reference() | nil
         }
 
   # `:socket` is intentionally NOT enforced — pre-connect (between `init/1`
@@ -146,8 +171,21 @@ defmodule Grappa.IRC.Client do
   # code path that touches the socket runs from `handle_info` / `handle_call`,
   # both of which are queued behind the `{:continue, :connect}` per OTP, so
   # the only legal `socket: nil` window is bounded by the continue.
-  @enforce_keys [:transport, :dispatch_to, :fsm]
-  defstruct [:socket, :transport, :dispatch_to, :fsm]
+  #
+  # #100: `liveness_idle_ms` / `liveness_timeout_ms` ARE enforced — they are
+  # always resolved in `init/1` and a `nil` would crash `Process.send_after/3`
+  # at arm time. Timer refs (`idle_timer` / `ping_timer`) start nil.
+  @enforce_keys [:transport, :dispatch_to, :fsm, :liveness_idle_ms, :liveness_timeout_ms]
+  defstruct [
+    :socket,
+    :transport,
+    :dispatch_to,
+    :fsm,
+    :liveness_idle_ms,
+    :liveness_timeout_ms,
+    :idle_timer,
+    :ping_timer
+  ]
 
   # Cluster visitor-auth hotfix: pre-crash throttle when do_connect/4
   # fails (ECONNREFUSED, ECONNRESET, ssl handshake :closed, the
@@ -179,6 +217,43 @@ defmodule Grappa.IRC.Client do
                               :irc_client_connect_failure_sleep_ms,
                               30_000
                             )
+
+  # #100 — liveness watchdog: the ONE genuinely-absent upstream-drop
+  # trigger. `{:tcp_closed}`/`{:ssl_closed}` fire only on a graceful FIN
+  # or RST; a half-open socket (mobile radio drop, NAT idle-eviction,
+  # cable yanked) leaves NO signal and the connection hangs until the OS
+  # TCP keepalive (~2h by default) — invisible for hours, no reconnect.
+  #
+  # The watchdog is a two-phase cycle driven purely by INBOUND activity:
+  #
+  #   1. After `@liveness_idle_ms` of inbound silence, send our own
+  #      `PING :grappa-liveness` and start the reply window.
+  #   2. If `@liveness_timeout_ms` elapses with STILL no inbound line, the
+  #      peer is unreachable → `{:stop, :ping_timeout, state}`. That stop
+  #      propagates as a link EXIT to `Session.Server`, whose abnormal
+  #      terminate/2 clause records a Backoff failure and the `:transient`
+  #      supervisor respawns — the EXISTING reconnect chain, no new path.
+  #
+  # ANY inbound line resets the cycle back to phase 1 (the server's PONG
+  # to our probe, a channel PRIVMSG, an unsolicited server PING, a
+  # numeric — anything). So a healthy connection, however quiet, always
+  # answers the probe and can never be falsely declared dead; only a
+  # genuinely silent socket trips the timeout.
+  #
+  # Defaults 60s idle / 30s timeout: comfortably above IRC's normal
+  # server-PING cadence (most ircd ping every 90-180s, but ANY inbound
+  # resets us, so 60s of TOTAL silence is already unusual) and well under
+  # the OS keepalive. Opts-overridable (`:liveness_idle_ms` /
+  # `:liveness_timeout_ms`) so tests drive the cycle in milliseconds
+  # without touching production timing; `config/test.exs` leaves the
+  # defaults intact so existing client tests that never inject the opts
+  # never see a spurious probe within their sub-second windows.
+  @liveness_idle_ms Application.compile_env(:grappa, [:irc_client, :liveness_idle_ms], 60_000)
+  @liveness_timeout_ms Application.compile_env(
+                         :grappa,
+                         [:irc_client, :liveness_timeout_ms],
+                         30_000
+                       )
 
   ## API
 
@@ -721,7 +796,14 @@ defmodule Grappa.IRC.Client do
           socket: nil,
           transport: if(opts.tls, do: :ssl, else: :tcp),
           dispatch_to: opts.dispatch_to,
-          fsm: fsm
+          fsm: fsm,
+          # #100 liveness — resolve config (opts override for tests) at
+          # init; timers stay nil until the socket comes up in
+          # handle_continue(:connect, _).
+          liveness_idle_ms: Map.get(opts, :liveness_idle_ms, @liveness_idle_ms),
+          liveness_timeout_ms: Map.get(opts, :liveness_timeout_ms, @liveness_timeout_ms),
+          idle_timer: nil,
+          ping_timer: nil
         }
 
         {:ok, state, {:continue, {:connect, opts}}}
@@ -754,7 +836,9 @@ defmodule Grappa.IRC.Client do
         # list at session/server.ex:660-677 (U-cluster cleanup
         # 2026-05-17 root cause).
         Enum.each(sends, &(_ = transport_send(connected, &1)))
-        {:noreply, %{connected | fsm: fsm}}
+        # #100 — arm the liveness idle timer now that the socket is up. Every
+        # inbound line resets it (arm_idle/1); if it ever elapses we self-PING.
+        {:noreply, arm_idle(%{connected | fsm: fsm})}
 
       {:error, reason} ->
         Process.send_after(self(), {:connect_failed_giveup, reason}, @connect_failure_sleep_ms)
@@ -763,10 +847,42 @@ defmodule Grappa.IRC.Client do
   end
 
   @impl GenServer
-  def handle_info({:tcp, _, line}, state), do: process_line(line, state)
-  def handle_info({:ssl, _, line}, state), do: process_line(line, state)
+  # #100 — any inbound byte proves the socket is alive. Reset the liveness
+  # cycle (cancel a pending self-PING reply window, re-arm the idle timer)
+  # at this single choke point BEFORE parsing, so even a malformed line —
+  # which `process_line/2` logs + drops — still counts as liveness. The
+  # server's PONG to our own probe flows through here too, closing the loop.
+  def handle_info({:tcp, _, line}, state), do: process_line(line, arm_idle(state))
+  def handle_info({:ssl, _, line}, state), do: process_line(line, arm_idle(state))
   def handle_info({:tcp_closed, _}, state), do: {:stop, :tcp_closed, state}
   def handle_info({:ssl_closed, _}, state), do: {:stop, :ssl_closed, state}
+
+  # #100 — liveness phase 1: idle window elapsed (no inbound for
+  # `liveness_idle_ms`). Send our own PING and open the reply window; if
+  # `liveness_timeout_ms` passes with still no inbound, phase 2 fires. The
+  # PING token is a fixed liveness marker — the reply resets the cycle via
+  # the inbound choke point above regardless of the token echoed back.
+  # `_ =`-discard the send result: a dead socket returns `{:error, _}` and
+  # the ping_timer will fire the stop anyway (or a `:tcp_closed` beats it);
+  # either way the reconnect chain engages.
+  def handle_info(:liveness_idle, state) do
+    _ = transport_send(state, "PING :grappa-liveness\r\n")
+    timer = Process.send_after(self(), :liveness_timeout, state.liveness_timeout_ms)
+    {:noreply, %{state | idle_timer: nil, ping_timer: timer}}
+  end
+
+  # #100 — liveness phase 2: the self-PING went unanswered for the full
+  # reply window. The peer is unreachable (half-open socket). Stop with
+  # `:ping_timeout` → link EXIT → Session.Server abnormal terminate/2 →
+  # Backoff.record_failure → `:transient` respawn (the existing chain).
+  def handle_info(:liveness_timeout, state) do
+    Logger.warning("upstream liveness timeout — no reply to self-PING, declaring connection dead",
+      liveness_idle_ms: state.liveness_idle_ms,
+      liveness_timeout_ms: state.liveness_timeout_ms
+    )
+
+    {:stop, :ping_timeout, %{state | ping_timer: nil}}
+  end
 
   # H1 — connect-fail throttle deferred-stop. See @connect_failure_sleep_ms
   # docstring for the rationale. Pairs with handle_continue's send_after.
@@ -1042,6 +1158,50 @@ defmodule Grappa.IRC.Client do
         Enum.each(sends, &(_ = transport_send(state, &1)))
         log_stop_reason(reason, fsm)
         {:stop, reason, %{state | fsm: fsm}}
+    end
+  end
+
+  # #100 — reset the liveness cycle to phase 1 (idle countdown). Called on
+  # connect-success and on EVERY inbound line. Cancels whichever timer is
+  # armed (idle counting down, OR the ping reply window if we're mid-probe),
+  # drains any already-fired timer message stranded in the mailbox, then
+  # arms a fresh idle timer.
+  #
+  # The drain is load-bearing: `Process.cancel_timer/1` returns `false` when
+  # the timer already fired and its message is queued behind the inbound line
+  # currently being processed. Without draining, that stale `:liveness_idle`
+  # / `:liveness_timeout` would run AFTER we re-armed and either double-probe
+  # or falsely stop a live connection. Same discipline as
+  # `Session.Server.cancel_and_drain/2`.
+  @spec arm_idle(t()) :: t()
+  defp arm_idle(state) do
+    cancel_and_drain(state.idle_timer, :liveness_idle)
+    cancel_and_drain(state.ping_timer, :liveness_timeout)
+    timer = Process.send_after(self(), :liveness_idle, state.liveness_idle_ms)
+    %{state | idle_timer: timer, ping_timer: nil}
+  end
+
+  # Cancel `ref` and, if it had already fired, drain the stranded `msg` from
+  # the mailbox. `nil` ref is a no-op. Mirrors `Session.Server.cancel_and_drain/2`
+  # — kept local so `IRC.Client` stays free of the optional `Grappa`-app deps
+  # (extraction memory `project_extract_irc_libs`). `msg` is one of the two
+  # liveness timer atoms (typed narrow — Dialyzer rejects a wider `atom()`
+  # spec as a supertype since those are the only call sites).
+  @spec cancel_and_drain(reference() | nil, :liveness_idle | :liveness_timeout) :: :ok
+  defp cancel_and_drain(nil, _), do: :ok
+
+  defp cancel_and_drain(ref, msg) when is_reference(ref) and is_atom(msg) do
+    case Process.cancel_timer(ref) do
+      ms_left when is_integer(ms_left) -> :ok
+      false -> drain_liveness(msg)
+    end
+  end
+
+  defp drain_liveness(msg) do
+    receive do
+      ^msg -> drain_liveness(msg)
+    after
+      0 -> :ok
     end
   end
 

@@ -36,6 +36,23 @@ config :grappa, :badge_source, Grappa.Push.BadgeCount
 # replaces with proper exponential backoff + per-session health.
 config :grappa, :irc_client_connect_failure_sleep_ms, 30_000
 
+# #100 — `Grappa.IRC.Client` liveness watchdog. Detects half-open
+# upstream sockets (mobile radio drop / NAT idle-eviction with no FIN)
+# that {:tcp_closed}/{:ssl_closed} can't see and that would otherwise
+# hang until the ~2h OS TCP keepalive. After `liveness_idle_ms` of
+# INBOUND silence the client self-PINGs; if `liveness_timeout_ms` passes
+# with still no inbound, it stops with :ping_timeout → the existing
+# link-EXIT → Session.Backoff → :transient respawn chain. ANY inbound
+# line resets the cycle, so a healthy-but-quiet connection never
+# false-triggers. Defaults sit well below the OS keepalive and above
+# normal IRC ping cadence. Tests inject per-client overrides via
+# start_link opts (`:liveness_idle_ms` / `:liveness_timeout_ms`), so —
+# unlike the connect-failure sleep — config/test.exs deliberately does
+# NOT shrink these (the 60s default is inert within any test's lifetime).
+config :grappa, :irc_client,
+  liveness_idle_ms: 60_000,
+  liveness_timeout_ms: 30_000
+
 # `Grappa.Session.Backoff` — per-(subject, network_id) exponential
 # backoff curve for IRC reconnect after Session.Server crashes. Layer
 # ABOVE the IRC.Client per-attempt throttle: failure count survives
@@ -331,7 +348,13 @@ config :logger, :console,
     # per CLAUDE.md "Don't bake silent fallbacks" — operator log search
     # surfaces unknown shapes before they become production bugs.
     :subject_kind,
-    :network_id
+    :network_id,
+    # #100 liveness watchdog — `Grappa.IRC.Client`'s :liveness_timeout
+    # warning logs the configured idle + reply-window budgets so the
+    # operator can grep half-open-socket disconnects and confirm the
+    # thresholds that tripped. Mirrors the B6.1 Logger-allowlist sync rule.
+    :liveness_idle_ms,
+    :liveness_timeout_ms
   ]
 
 import_config "#{config_env()}.exs"
