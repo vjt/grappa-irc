@@ -17436,3 +17436,59 @@ hollow. The regression guard is instead a source-level vitest
 no bare clipping `100vh`. Real on-device iPad confirmation stays a manual
 dogfood — recorded, not automated. Companion of the on-device
 dogfood-verification backlog (#111).
+
+---
+
+## 2026-07-10 — #207: error banners were sticky → per-source × dismiss with recovery re-arm
+
+**P0 (vjt, "appena possibile").** The stacked error-banner region (#119)
+had no dismiss affordance. Two of its four sources auto-clear when the
+underlying condition recovers (`ws` on a clean open resets `errorCount`;
+`connectivity` on the `online` event), but `sw-registration` and
+`bundle-refresh` have **no** auto-clear event — once shown they stayed up
+forever with no × and no timeout, piling up and obscuring the UI.
+
+**Fix: a × on every banner, dismissed-state client-local, with re-arm.**
+The design is constrained by two documented invariants, and the
+interesting decision is how they interact:
+
+- **Never fabricate server state.** The source signals (`socketHealth`,
+  `connectivity`, `swRegistration`, `bundleHash`) remain the single owners
+  of whether a source is *active*. Dismiss is NOT a new state on those
+  signals — it's a pure render filter layered on top. `activeBanners()`
+  (the raw derivation) is untouched; the new `visibleBanners()` =
+  `activeBanners()` minus a client-local `dismissed: Set<BannerSource>`
+  signal. The owner renders `visibleBanners()`.
+
+- **A dismiss must not permanently silence a recurring fault**
+  (`feedback_silent_retry_anti_pattern`). A × that stuck forever would be
+  a silent-retry-loop-shaped bug: the operator dismisses a WS-failing
+  banner, the connection later breaks *again*, and they never see it. So
+  the dismiss is scoped to the **current episode**: `rearmDismissed(active)`
+  — run by the owner inside a `createEffect` on every re-derivation — drops
+  any dismissed source no longer in the active set. When a dismissed source
+  recovers (leaves the active set) and later re-fires, its banner returns.
+
+**Why NO auto-dismiss timer** (the other option the issue offered). `ws` +
+`connectivity` already auto-clear on recovery; a timer hiding them *while
+the fault persists* would mask a live problem — the exact anti-pattern
+above. `sw-registration` is the #181 push-diagnostic surface (hiding it on
+a clock the user didn't set loses the lever); `bundle-refresh` is
+user-actionable (the Refresh CTA). None of the four wants a clock. The ×
+(with re-arm) is the whole fix — no timer anywhere.
+
+**Reactivity note.** `rearmDismissed` reads the `dismissed` set via
+`untrack`, so the owner's `createEffect(() => rearmDismissed(activeBanners()))`
+depends only on the *active* set, not on its own write. The re-arm graph
+converges in ≤2 effect runs (a kept dismissal is kept because its source is
+still active → no further write). The intermediate empty-active state
+between a recover and a re-fire is observed because those arrive as
+separate signal writes (Solid flushes the effect between them) — not
+batched. `BannerSlot` stays pure: it takes an optional `onDismiss`
+callback and renders a labelled × button, knowing nothing about which
+source it is; the owner (`ErrorBanners`) holds the dismiss state.
+
+**E2E.** `error-banners.spec.ts` gained a click-× test and a
+recover-then-re-fire re-arm test, both driven through the existing
+`__cic_socketHealth` injected-event hook — no real backend op, so the
+shared testnet is never poisoned (the #204 cascade lesson).
