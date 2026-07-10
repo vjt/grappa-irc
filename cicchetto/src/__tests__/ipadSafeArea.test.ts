@@ -77,4 +77,31 @@ describe("#205 iPad standalone-PWA safe area", () => {
     expect(body).toMatch(/height:\s*100dvh/);
     expect(body).not.toMatch(/height:\s*100vh\b/);
   });
+
+  it("base .shell-members carries NO safe-area insets (relocated to mobile)", () => {
+    // The desktop members aside is a grid CHILD of the now-inset `.shell`,
+    // so it must NOT re-inset or it double-counts the top status-bar
+    // height (members column shoved down 2× while sidebar + main sit
+    // flush). Reintroducing `env()` here silently returns the #205
+    // double-inset regression — guard against it. `ruleBody` anchors to
+    // column 0, so it captures the BASE rule, not the indented mobile
+    // override.
+    const body = ruleBody(".shell-members");
+    expect(body).not.toMatch(/env\(safe-area-inset-/);
+  });
+
+  it("mobile .shell-members (the fixed drawer) keeps its own safe-area insets", () => {
+    // The mobile members drawer is `position: fixed` — it escapes
+    // `.shell`'s container padding box, so it genuinely needs its own
+    // insets. These were RELOCATED from the base rule; assert they landed
+    // in the `@media (max-width: 768px)` override (indented, so matched by
+    // substring, not `ruleBody`'s column-0 anchor). Both top and the
+    // 1.5rem-floored bottom must survive the move.
+    expect(css).toMatch(
+      /@media[^{]*\(max-width: 768px\)[\s\S]*\.shell-members\s*\{[\s\S]*?padding-top:\s*env\(safe-area-inset-top\)/,
+    );
+    expect(css).toMatch(
+      /\.shell-members\s*\{[\s\S]*?padding-bottom:\s*max\(1\.5rem,\s*env\(safe-area-inset-bottom\)\)/,
+    );
+  });
 });

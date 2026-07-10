@@ -2908,6 +2908,23 @@ html.resize-dragging * {
        keyboard shrinks the visual viewport on its own, so no extra
        reservation is needed.) */
     padding-bottom: env(safe-area-inset-bottom);
+    /* #205 — left/right insets declared EXPLICITLY here. The mobile
+       element is `<div class="shell shell-mobile">` (Shell.tsx) — it
+       carries BOTH classes — so it inherits base `.shell`'s new
+       `padding-left/right: env(safe-area-inset-*)` (#205) via the
+       cascade (same specificity, base declares it, this override didn't).
+       Rather than let that leak IN silently, own all four edges here so
+       the mobile shell's inset story is self-contained (CLAUDE.md: the
+       codebase is the instruction set — a reader of `.shell-mobile` sees
+       every inset it gets, not top+bottom here and left+right smuggled in
+       from the base rule). The values match base `.shell` anyway, so this
+       is the same visual result made explicit. Side insets are 0 in
+       portrait (where the mobile shell renders — landscape notched
+       iPhones exceed 768px and get the desktop shell) but non-zero in the
+       sub-768 landscape edge (small notched devices): correct clearance
+       for the camera housing / rounded corners, not a regression. */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
 
   /* UX-6 bucket D11 (2026-05-21) — D1 restored after D9 removal
