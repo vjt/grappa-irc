@@ -240,10 +240,7 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // #100 — transient reconnect badge signal. Closed state set enforced
       // at the boundary (mirrors away_confirmed) so a malformed value can't
       // corrupt the reconnectingByNetwork store.
-      if (
-        typeof r.network !== "string" ||
-        (r.state !== "connecting" && r.state !== "connected")
-      )
+      if (typeof r.network !== "string" || (r.state !== "connecting" && r.state !== "connected"))
         return null;
       return { kind: "connection_progress", network: r.network, state: r.state };
     case "own_nick_changed":

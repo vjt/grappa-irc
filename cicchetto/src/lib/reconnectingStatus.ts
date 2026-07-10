@@ -23,9 +23,9 @@ import { identityScopedStore } from "./identityScopedStore";
 // all reconnect state so a stale badge never survives a subject switch.
 
 const exports_ = identityScopedStore((onIdentityChange) => {
-  const [reconnectingByNetwork, setReconnectingByNetwork] = createSignal<
-    Record<string, boolean>
-  >({});
+  const [reconnectingByNetwork, setReconnectingByNetwork] = createSignal<Record<string, boolean>>(
+    {},
+  );
 
   onIdentityChange(() => setReconnectingByNetwork({}));
 
