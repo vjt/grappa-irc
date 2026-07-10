@@ -54,7 +54,10 @@ test("BundleRefreshBanner appears on hash mismatch and click reloads the page", 
   // window.location.reload() which fires Page navigation in
   // Playwright.
   const navPromise = page.waitForNavigation();
-  await banner.locator("button").click();
+  // Click the Refresh action specifically — #207 added a sibling ×
+  // dismiss button to every banner, so a bare `button` locator is
+  // ambiguous. `.error-banner-action` is the CTA.
+  await banner.locator(".error-banner-action").click();
   await navPromise;
 
   // After reload, banner is gone (server hasn't pushed yet, and the
@@ -194,8 +197,9 @@ test("UX-6-I — refresh button forces SW update + cache purge before reload", a
   const banner = page.locator(BANNER_SELECTOR);
   await expect(banner).toBeVisible();
 
-  // Single click; allow async performRefresh chain to settle.
-  await banner.locator("button").click();
+  // Single click; allow async performRefresh chain to settle. Target the
+  // Refresh action specifically — #207 added a sibling × dismiss button.
+  await banner.locator(".error-banner-action").click();
   // Wait for the reload stub to be invoked. performRefresh awaits
   // SW + caches before reload, so the probe transitions from
   // reloaded:false to reloaded:true once the chain completes.
