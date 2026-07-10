@@ -17364,3 +17364,75 @@ The `init/1` per-connection `Logger.warning` about verify_none became a
 comments about SASL-blob leaks "under verify_none" are left as-is — the
 phase-pin guard (C1) is the real fix; verify_none only widened the blast
 radius, and that context stays accurate as a record.
+
+---
+
+## 2026-07-10 — #205: iPad standalone-PWA layout broke because it renders the DESKTOP shell, not the mobile one
+
+Reported on #it-opers: cicchetto installed as a Home-Screen PWA on iPadOS
+rendered clipped in both orientations (landscape worse), the top chrome
+painted UNDER the iOS status bar, and the settings cog was dead — neither
+touch nor pointer reached it.
+
+The issue's suspected cause was the classic naive one (missing
+`viewport-fit=cover` / missing `env(safe-area-inset-*)` / `100vh`). But
+`index.html` already had `viewport-fit=cover` +
+`apple-mobile-web-app-status-bar-style: black-translucent`, and the
+stylesheet already carried extensive safe-area + `100dvh` +
+VisualViewport handling. So the naive fix was already in place — the bug
+was subtler.
+
+**Root cause: the breakpoint, not the insets.** `isMobile()` is
+`matchMedia("(max-width: 768px)")` (`lib/theme.ts`). An iPad is WIDER than
+768px in BOTH orientations (portrait ≥810 CSS-px on modern models,
+landscape ≥1024), so `isMobile()` is `false` and `Shell.tsx` renders the
+DESKTOP `.shell` branch — never `.shell-mobile`. And every safe-area /
+dynamic-viewport rule in `default.css` was scoped to the mobile shell
+(`@media (max-width: 768px)` / `.shell-mobile` / mobile `.shell-members`).
+The desktop `.shell` shipped a bare `height: 100vh` with zero insets. With
+the `black-translucent` status bar the page paints under the bar, so the
+shell's top edge — carrying the always-visible `.shell-chrome` settings
+cog — landed inside the status-bar reservation zone: clipped, and
+non-interactive because iOS captures touches in that zone (the exact
+failure mode the mobile shell's own UX-3 BIS comment already documents:
+"insets on the container, not the bars, because iOS captures touches in
+the status-bar reservation zone"). The desktop shell simply never got the
+UX-3 BIS treatment — it predates iPad-as-PWA dogfooding.
+
+**Fix (mirror the mobile shell onto the desktop shell):**
+1. `.shell` gets `env(safe-area-inset-*)` padding on all FOUR edges
+   (container-level: `box-sizing: border-box` consumes the inset from the
+   height, pushing the whole shell — background included — inside the safe
+   area, so the cog clears the bar AND stays in the hit region; left/right
+   matter in landscape where the home-indicator + camera housing eat the
+   side gutters) and `height: 100dvh` (visible viewport, vs `100vh`'s
+   taller layout viewport that overflowed + clipped the bottom), with a
+   `@supports not (height: 100dvh)` 100vh floor for Safari < 15.4.
+2. The base `.shell-members` `env()` insets were RELOCATED into the mobile
+   `.shell-members` override. On desktop the members aside is a grid child
+   of the now-padded `.shell`, so keeping its own insets double-counted
+   the top inset (members column shoved down 2× the status-bar height
+   while sidebar + main sat flush). The mobile drawer is `position: fixed`
+   (escapes the container padding box → its own containing block) so it
+   genuinely needs its own insets; that's where they live now. Values are
+   byte-identical, so mobile is unchanged.
+
+**Double-inset audit.** Every other `env(safe-area-inset-top)` consumer in
+`default.css` is either `position: fixed` itself (`.error-banners`,
+`.settings-drawer`, `.diag-float`, the `*-modal-backdrop`s) or a child of
+a `position: fixed` backdrop (`.delete-account-modal`, `.archive-modal`) —
+each establishes a viewport-relative containing block, so none double-count
+against `.shell`'s new padding. Desktop browsers resolve
+`env(safe-area-inset-*)` to 0 and `100dvh == 100vh`, so the change is a
+visual no-op there (the members column loses a mobile-only 1.5rem bottom
+floor, which had no desktop launcher footer to justify it).
+
+**Why no e2e.** Playwright chromium/webkit does NOT reproduce real iPadOS
+Safari safe-area/dvh physics — no status bar, `env(safe-area-inset-*)`
+resolves to 0 — so the cog is reachable in Playwright even on the BROKEN
+code. A layout/clickability e2e would pass on both broken and fixed code:
+hollow. The regression guard is instead a source-level vitest
+(`ipadSafeArea.test.ts`): viewport-fit present, four insets on `.shell`,
+no bare clipping `100vh`. Real on-device iPad confirmation stays a manual
+dogfood — recorded, not automated. Companion of the on-device
+dogfood-verification backlog (#111).
