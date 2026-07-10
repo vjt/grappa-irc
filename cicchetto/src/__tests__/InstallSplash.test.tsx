@@ -126,4 +126,24 @@ describe("InstallSplash", () => {
     window.dispatchEvent(event);
     expect(screen.getByRole("button", { name: /Install app/i })).not.toBeDisabled();
   });
+
+  // #204 — Add-to-Home-Screen arrow. vjt Q2: it lives ONLY on the install
+  // splash (never the login screen), and only for iOS Safari in browser-tab
+  // mode (the platform whose Share → Add to Home Screen flow the arrow
+  // points at). "Continue from browser" unmounts the whole splash, so the
+  // arrow disappears with it — no separate suppression needed.
+  it("does NOT render the A2HS arrow on non-iOS (jsdom default UA)", () => {
+    render(() => <InstallSplash onDismiss={() => {}} />);
+    expect(screen.queryByTestId("install-a2hs-arrow")).toBeNull();
+  });
+
+  it("renders the A2HS arrow on iOS Safari (browser-tab mode)", () => {
+    vi.stubGlobal("navigator", {
+      ...window.navigator,
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    });
+    render(() => <InstallSplash onDismiss={() => {}} />);
+    expect(screen.getByTestId("install-a2hs-arrow")).toBeInTheDocument();
+  });
 });

@@ -1,4 +1,5 @@
 import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js";
+import { isStandalonePwa } from "./lib/platform";
 
 // Push notifications cluster B0 (2026-05-14) — pre-PWA install splash.
 //
@@ -133,6 +134,17 @@ const InstallSplash: Component<{ onDismiss: () => void }> = (props) => {
               Share, then choose <strong>Add to Home Screen</strong>.
             </p>
           </div>
+          {/* #204 — dim/subtle A2HS arrow pointing at Safari's bottom share
+              toolbar. Shown ONLY here (never on login, per vjt Q2) and only
+              when NOT already installed (a standalone PWA has no Safari
+              chrome to point at). "Continue from browser" unmounts the whole
+              splash, so the arrow vanishes with it. */}
+          <Show when={!isStandalonePwa()}>
+            <div class="install-a2hs" data-testid="install-a2hs-arrow" aria-hidden="true">
+              <span class="install-a2hs-caption">tap Share</span>
+              <span class="install-a2hs-arrow">↓</span>
+            </div>
+          </Show>
         </Show>
         <Show when={!ios}>
           <button

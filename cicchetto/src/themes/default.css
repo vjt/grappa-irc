@@ -289,24 +289,90 @@ html.overlay-open #root > div {
      to the parent (#root, height: 100%) instead. */
   min-height: 100%;
   padding: 1rem;
+  position: relative;
+  overflow: hidden;
+}
+
+/* #204 — Matrix-rain backdrop. Pure CSS app chrome behind the card: a
+   repeating dim vertical-glyph gradient drifting downward. No canvas / RAF
+   loop (cheap, no teardown, e2e-stable). Sits behind the card via z-index;
+   the card + connecting view are position:relative to stack above it.
+   Reduced-motion freezes the drift (see the media query below). */
+.login-matrix {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      color-mix(in srgb, var(--accent) 14%, transparent) 0px,
+      color-mix(in srgb, var(--accent) 14%, transparent) 2px,
+      transparent 2px,
+      transparent 10px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 8%, transparent) 0px,
+      color-mix(in srgb, var(--accent) 8%, transparent) 1px,
+      transparent 1px,
+      transparent 14px
+    );
+  background-size:
+    100% 220px,
+    100% 100%;
+  opacity: 0.5;
+  animation: login-matrix-fall 6s linear infinite;
+}
+
+@keyframes login-matrix-fall {
+  from {
+    background-position:
+      0 0,
+      0 0;
+  }
+  to {
+    background-position:
+      0 220px,
+      0 0;
+  }
 }
 
 .login-form {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.75rem;
   width: 100%;
   max-width: 22rem;
   padding: 1.5rem;
   border: 1px solid var(--border);
   background: var(--bg);
+  position: relative;
+  z-index: 1;
 }
 
-.login-form h1 {
-  font-size: 1.2rem;
-  font-weight: normal;
-  color: var(--accent);
+/* #204 — big "IRC" hero wordmark + small "cicchetto" sub-wordmark. vjt: IRC
+   must be visible in big letters, not only cicchetto. */
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   margin: 0 0 0.5rem;
+}
+
+.login-brand-irc {
+  font-size: 3.2rem;
+  line-height: 1;
+  font-weight: bold;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+}
+
+.login-brand-cic {
+  font-size: 1rem;
+  letter-spacing: 0.35em;
+  color: var(--muted);
+  text-transform: lowercase;
 }
 
 .login-form label {
@@ -318,7 +384,9 @@ html.overlay-open #root > div {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  padding: 0.5rem;
+  /* #204 tap target: comfortable ≥44px touch height (iPad/mobile-first). */
+  padding: 0.7rem 0.6rem;
+  min-height: 44px;
   font-family: var(--font-mono);
   font-size: var(--font-size);
 }
@@ -327,26 +395,108 @@ html.overlay-open #root > div {
   outline: 1px solid var(--accent);
 }
 
-.login-form button {
+/* Primary Connect CTA — the accent-filled button. Scoped to .login-connect
+   so the quiet Advanced toggle doesn't inherit the fill. */
+.login-connect {
   background: var(--accent);
   color: var(--bg);
   border: none;
-  padding: 0.5rem 1rem;
+  /* #204 tap target: ≥44px, generous horizontal padding. */
+  padding: 0.75rem 1rem;
+  min-height: 44px;
   font-family: var(--font-mono);
   font-size: var(--font-size);
   cursor: pointer;
-  margin-top: 0.5rem;
+  margin-top: 0.25rem;
 }
 
-.login-form button:disabled {
+.login-connect:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* #204 — Advanced disclosure toggle. Quiet text-button between the nick
+   input and Connect (vjt layout fix). Full-width comfortable tap target,
+   left-aligned so the ▸/▾ affordance reads as a disclosure, not a CTA. */
+.login-advanced-toggle {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  text-align: left;
+  padding: 0.6rem 0.25rem;
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.login-advanced-toggle:hover {
+  color: var(--fg);
+}
+
+.login-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.login-advanced-hint {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: 0;
 }
 
 .login-error {
   color: var(--accent);
   margin: 0.5rem 0 0;
   font-size: 0.9rem;
+}
+
+/* #204 — connecting view (replaces the form in place). Spinner + rotating
+   cosmetic reassurance copy. */
+.login-connecting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  max-width: 22rem;
+  padding: 2rem 1.5rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  position: relative;
+  z-index: 1;
+}
+
+.login-spinner {
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 3px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: login-spin 0.9s linear infinite;
+}
+
+@keyframes login-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.login-connecting-msg {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin: 0;
+  text-align: center;
+}
+
+/* Reduced-motion: freeze the matrix drift + spinner rotation. The spinner
+   stays as a static ring (still a clear "busy" affordance). */
+@media (prefers-reduced-motion: reduce) {
+  .login-matrix,
+  .login-spinner {
+    animation: none;
+  }
 }
 
 /* Three-pane shell (P4-1) */
@@ -4336,6 +4486,48 @@ html.resize-dragging * {
   display: inline-block;
   font-size: 1.1rem;
   vertical-align: middle;
+}
+
+/* #204 — dim/subtle Add-to-Home-Screen arrow. Points down at Safari's
+   bottom share toolbar on iOS. Deliberately understated (muted color, low
+   weight) per vjt Q3: a quiet nudge, not a billboard. The gentle bob draws
+   the eye without shouting; frozen under reduced-motion. */
+.install-a2hs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  margin-top: auto;
+  padding-top: 1rem;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.install-a2hs-caption {
+  font-size: 0.8rem;
+  letter-spacing: 0.05em;
+}
+
+.install-a2hs-arrow {
+  font-size: 1.6rem;
+  line-height: 1;
+  animation: install-a2hs-bob 1.6s ease-in-out infinite;
+}
+
+@keyframes install-a2hs-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .install-a2hs-arrow {
+    animation: none;
+  }
 }
 
 .install-splash-primary {

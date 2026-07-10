@@ -3,7 +3,9 @@ import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js
 import { ApiError } from "./lib/api";
 import * as auth from "./lib/auth";
 import { type CaptchaProvider, mountCaptchaWidget } from "./lib/captcha";
+import { CONNECTING_MESSAGES } from "./lib/connectingMessages";
 import { friendlyApiError } from "./lib/friendlyApiError";
+import { classifyLoginIdentifier } from "./lib/loginIdentifier";
 
 // Bare credential form. The walking-skeleton login surface is one card,
 // no branding, no "remember me" — the bouncer is single-tenant per
@@ -103,9 +105,35 @@ const Login: Component = () => {
   const [identifier, setIdentifier] = createSignal("");
   const [password, setPassword] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
-  const [submitting, setSubmitting] = createSignal(false);
+  const [advanced, setAdvanced] = createSignal(false);
+  // `connecting` drives the whole-view swap: while an auth.login attempt is
+  // in flight the form is replaced by the spinner + reassurance copy. It is
+  // NOT the same as "submitting a field" — it's "the one blocking login
+  // request is running" (see the honesty note on CONNECTING_MESSAGES).
+  const [connecting, setConnecting] = createSignal(false);
+  const [msgIndex, setMsgIndex] = createSignal(0);
   const [captcha, setCaptcha] = createSignal<CaptchaChallenge | null>(null);
   const navigate = useNavigate();
+
+  // Cosmetic reassurance rotation. There is no server progress stream to
+  // subscribe to — login is one blocking request — so this timer just walks
+  // the copy forward so the user sees motion. Capped at the last line (no
+  // wrap) so it settles rather than looping forever. Cleared on leave +
+  // on unmount so no timer survives the connecting state.
+  let rotationTimer: ReturnType<typeof setInterval> | undefined;
+  const startRotation = (): void => {
+    setMsgIndex(0);
+    rotationTimer = setInterval(() => {
+      setMsgIndex((i) => Math.min(i + 1, CONNECTING_MESSAGES.length - 1));
+    }, 1200);
+  };
+  const stopRotation = (): void => {
+    if (rotationTimer !== undefined) {
+      clearInterval(rotationTimer);
+      rotationTimer = undefined;
+    }
+  };
+  onCleanup(stopRotation);
 
   const handleError = (err: unknown): void => {
     if (err instanceof ApiError) {
@@ -126,89 +154,185 @@ const Login: Component = () => {
     }
   };
 
-  const handleCaptchaSolve = async (token: string): Promise<void> => {
-    setSubmitting(true);
+  // Shared tail for both the plain submit and the captcha-solve retry: run
+  // the one blocking login request under the connecting view, navigate on
+  // success, revert to the form (with a friendly error) on failure.
+  const attemptLogin = async (
+    id: string,
+    pwd: string | null,
+    captchaToken?: string,
+  ): Promise<void> => {
+    setError(null);
+    setConnecting(true);
+    startRotation();
     try {
-      const pwd = password();
-      await auth.login(identifier(), pwd === "" ? null : pwd, token);
+      // Preserve the auth.login(id, pwd, captcha?) boundary shape: forward
+      // the captcha token only when present, so the plain path stays a
+      // 2-arg call (the captcha retry is the only 3-arg caller).
+      if (captchaToken === undefined) {
+        await auth.login(id, pwd);
+      } else {
+        await auth.login(id, pwd, captchaToken);
+      }
       navigate("/", { replace: true });
     } catch (err) {
-      setCaptcha(null);
+      setConnecting(false);
+      stopRotation();
       handleError(err);
-    } finally {
-      setSubmitting(false);
     }
+  };
+
+  const handleCaptchaSolve = async (token: string): Promise<void> => {
+    // By the time the captcha is solved the identifier has already been
+    // sanitized by the first submit, so it's safe to pass through verbatim.
+    const pwd = password();
+    setCaptcha(null);
+    await attemptLogin(identifier(), pwd === "" ? null : pwd, token);
   };
 
   const handleCaptchaMountFailure = (err: unknown): void => {
     // CDN blocked, network error, or provider script failed to load —
-    // surface a user-actionable toast and re-enable submit so the user
+    // surface a user-actionable toast and revert to the form so the user
     // can retry once they unblock the CDN.
     console.warn("[captcha] mount failed:", err);
     setCaptcha(null);
+    setConnecting(false);
+    stopRotation();
     setError("Captcha unavailable. Disable ad-blocker or try again.");
-    setSubmitting(false);
   };
 
-  const onSubmit = async (e: Event) => {
+  const onSubmit = async (e: Event): Promise<void> => {
     e.preventDefault();
     setError(null);
-    setSubmitting(true);
-    try {
-      const pwd = password();
-      await auth.login(identifier(), pwd === "" ? null : pwd);
-      navigate("/", { replace: true });
-    } catch (err) {
-      handleError(err);
-    } finally {
-      setSubmitting(false);
+
+    // #204 — validate ON SUBMIT (vjt override), never as-typed. The field
+    // is dual-purpose: "@" present → email branch, else nick branch. An
+    // invalid value surfaces foolproof inline copy instead of letting the
+    // server 400 with a raw `malformed_nick`.
+    const raw = identifier();
+    const classified = classifyLoginIdentifier(raw);
+    if (classified.kind === "invalid") {
+      setError(
+        raw.includes("@")
+          ? "That doesn't look like a valid email address. Check for typos."
+          : "Please pick a valid nickname — it must start with a letter and contain no spaces.",
+      );
+      return;
     }
+
+    // Reflect the sanitized value back into the field so the user SEES the
+    // correction before the request fires (`my nick` → `my_nick`).
+    setIdentifier(classified.value);
+    const pwd = password();
+    await attemptLogin(classified.value, pwd === "" ? null : pwd);
   };
+
+  let nickInput: HTMLInputElement | undefined;
+  onMount(() => {
+    // Nick-first: focus the one field the minimal view shows.
+    nickInput?.focus();
+  });
+
+  const Brand = () => (
+    <div class="login-brand">
+      <span class="login-brand-irc">IRC</span>
+      <span class="login-brand-cic">cicchetto</span>
+    </div>
+  );
 
   return (
     <main class="login">
-      <form class="login-form" onSubmit={onSubmit}>
-        <h1>cicchetto</h1>
-        <label for="login-identifier">Nick or email</label>
-        <input
-          id="login-identifier"
-          type="text"
-          autocomplete="username"
-          autocapitalize="none"
-          autocorrect="off"
-          spellcheck={false}
-          value={identifier()}
-          onInput={(e) => setIdentifier(e.currentTarget.value)}
-          required
-        />
-        <label for="login-password">Password (optional for visitors)</label>
-        <input
-          id="login-password"
-          type="password"
-          autocomplete="current-password"
-          value={password()}
-          onInput={(e) => setPassword(e.currentTarget.value)}
-        />
-        <button type="submit" disabled={submitting()}>
-          Log in
-        </button>
-        <Show when={captcha()} keyed>
-          {(c) => (
-            <CaptchaMount
-              challenge={c}
-              onSolve={handleCaptchaSolve}
-              onMountFailure={handleCaptchaMountFailure}
+      {/* Matrix-rain backdrop — pure CSS app chrome behind the card. Dim,
+          reduced-motion-safe (freezes to a static grid). Not scrollback
+          media, so the IRC-text-only invariant is untouched. */}
+      <div class="login-matrix" aria-hidden="true" />
+
+      <Show
+        when={connecting()}
+        fallback={
+          <form class="login-form" onSubmit={onSubmit}>
+            <Brand />
+            <label for="login-identifier">Nick or email</label>
+            <input
+              ref={(el) => {
+                nickInput = el;
+              }}
+              id="login-identifier"
+              type="text"
+              autocomplete="username"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck={false}
+              value={identifier()}
+              onInput={(e) => setIdentifier(e.currentTarget.value)}
+              required
             />
-          )}
-        </Show>
-        <Show when={error()}>
-          {(msg) => (
-            <p role="alert" class="login-error">
-              {msg()}
-            </p>
-          )}
-        </Show>
-      </form>
+
+            {/* Advanced toggle sits BETWEEN the nick input and Connect
+                (vjt layout fix). Real button + aria-expanded + conditional
+                render (not display:none) so a11y + tests see the truth. */}
+            <button
+              type="button"
+              class="login-advanced-toggle"
+              aria-expanded={advanced() ? "true" : "false"}
+              aria-controls="login-advanced"
+              onClick={() => setAdvanced((v) => !v)}
+            >
+              {advanced() ? "▾ Advanced" : "▸ Advanced"}
+            </button>
+            <Show when={advanced()}>
+              <div id="login-advanced" class="login-advanced">
+                <label for="login-password">Password</label>
+                <input
+                  id="login-password"
+                  type="password"
+                  autocomplete="current-password"
+                  value={password()}
+                  onInput={(e) => setPassword(e.currentTarget.value)}
+                />
+                <p class="login-advanced-hint">
+                  Leave blank to join as a guest. Enter your account password to log into a
+                  registered account.
+                </p>
+              </div>
+            </Show>
+
+            <button type="submit" class="login-connect" disabled={connecting()}>
+              Connect
+            </button>
+
+            <Show when={captcha()} keyed>
+              {(c) => (
+                <CaptchaMount
+                  challenge={c}
+                  onSolve={handleCaptchaSolve}
+                  onMountFailure={handleCaptchaMountFailure}
+                />
+              )}
+            </Show>
+            <Show when={error()}>
+              {(msg) => (
+                <p role="alert" class="login-error">
+                  {msg()}
+                </p>
+              )}
+            </Show>
+          </form>
+        }
+      >
+        {/* Connecting view — replaces the form in place. Spinner + rotating
+            cosmetic reassurance copy (NOT real server phases). */}
+        <div
+          class="login-connecting"
+          data-testid="login-connecting"
+          role="status"
+          aria-live="polite"
+        >
+          <Brand />
+          <div class="login-spinner" aria-hidden="true" />
+          <p class="login-connecting-msg">{CONNECTING_MESSAGES[msgIndex()]}</p>
+        </div>
+      </Show>
     </main>
   );
 };

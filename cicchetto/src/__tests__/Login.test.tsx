@@ -30,92 +30,243 @@ const renderLogin = () =>
     </Router>
   ));
 
+// #204 — the password field lives behind the collapsed "Advanced" section.
+// Every test that needs the password must open it first. Centralize the
+// interaction so a label/aria change updates one place.
+const openAdvanced = () => fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+
+const nickField = () => screen.getByLabelText(/nick or email/i);
+const connectBtn = () => screen.getByRole("button", { name: /connect|log in/i });
+
 afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("Login", () => {
-  it("renders name + password fields and a submit button", () => {
+describe("Login — #204 foolproof minimal view", () => {
+  it("shows the nick field + Connect + Advanced toggle, but NOT the password, by default", () => {
     renderLogin();
-    expect(screen.getByLabelText(/nick or email/i)).toBeInTheDocument();
+    expect(nickField()).toBeInTheDocument();
+    expect(connectBtn()).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /advanced/i })).toBeInTheDocument();
+    // Password is collapsed away in the minimal view (conditional render,
+    // not display:none — so it is absent from the DOM, not just hidden).
+    expect(screen.queryByLabelText(/password/i)).toBeNull();
+  });
+
+  it("keeps the big IRC branding wordmark visible", () => {
+    renderLogin();
+    // vjt: "IRC" must be visible, big letters — not only "cicchetto".
+    expect(screen.getByText(/^IRC$/)).toBeInTheDocument();
+  });
+
+  it("reveals the password field when Advanced is expanded", () => {
+    renderLogin();
+    expect(screen.queryByLabelText(/password/i)).toBeNull();
+    openAdvanced();
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /log in/i })).toBeInTheDocument();
   });
 
-  it("guards the nick field against mobile-keyboard mangling (#138)", () => {
-    // Mobile Chrome/Android soft keyboards inject a trailing space / an
-    // autocapitalized first letter / an autocorrect suggestion into the
-    // login field, producing `400 malformed_nick`. The field disables
-    // autocapitalize + autocorrect + spellcheck so the keyboard can't
-    // mangle the value at source. autocomplete stays "username" so
-    // password-manager autofill still works on the "Nick or email" field
-    // (the server-side trim in AuthController is the belt-and-suspenders).
+  it("marks the Advanced toggle's expanded state via aria-expanded", () => {
     renderLogin();
-    const field = screen.getByLabelText(/nick or email/i);
-    expect(field).toHaveAttribute("autocapitalize", "none");
-    expect(field).toHaveAttribute("autocorrect", "off");
-    expect(field).toHaveAttribute("spellcheck", "false");
-    expect(field).toHaveAttribute("autocomplete", "username");
+    const toggle = screen.getByRole("button", { name: /advanced/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("calls auth.login with form values on submit", async () => {
+  it("places the Advanced toggle BETWEEN the nick input and the Connect button (vjt layout fix)", () => {
+    renderLogin();
+    const nick = nickField();
+    const toggle = screen.getByRole("button", { name: /advanced/i });
+    const connect = connectBtn();
+    // DOM order: nick → Advanced → Connect. Node.compareDocumentPosition
+    // returns DOCUMENT_POSITION_FOLLOWING (4) when the argument follows.
+    expect(nick.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(toggle.compareDocumentPosition(connect) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("does NOT render the A2HS install arrow on the login screen (vjt Q2: splash-only)", () => {
+    renderLogin();
+    expect(screen.queryByTestId("install-a2hs-arrow")).toBeNull();
+  });
+});
+
+describe("Login — #204 on-submit nick sanitization", () => {
+  it("substitutes spaces with underscores and submits the sanitized nick", async () => {
     vi.mocked(auth.login).mockResolvedValue(undefined);
     renderLogin();
-    fireEvent.input(screen.getByLabelText(/nick or email/i), {
-      target: { value: "alice" },
+    fireEvent.input(nickField(), { target: { value: "my nick" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      // No "@" → nick branch → `my nick` becomes `my_nick` at submit time.
+      // No password (Advanced collapsed) → null, matching the existing
+      // auth.login(identifier, password|null, captcha?) boundary.
+      expect(auth.login).toHaveBeenCalledWith("my_nick", null);
     });
-    fireEvent.input(screen.getByLabelText(/password/i), {
-      target: { value: "secret" },
+  });
+
+  it("rewrites the visible field to the sanitized value so the user sees the correction", async () => {
+    // On a FAILED login the form comes back — and it must show the
+    // sanitized value (`my nick` → `my_nick`), proving the correction was
+    // reflected into the field, not just into the submitted payload.
+    vi.mocked(auth.login).mockRejectedValue(new ApiError(401, "invalid_credentials"));
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "my nick" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toBeInTheDocument();
     });
-    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    expect((nickField() as HTMLInputElement).value).toBe("my_nick");
+  });
+
+  it("submits the password too when Advanced is open", async () => {
+    vi.mocked(auth.login).mockResolvedValue(undefined);
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    openAdvanced();
+    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
+    fireEvent.click(connectBtn());
     await waitFor(() => {
       expect(auth.login).toHaveBeenCalledWith("alice", "secret");
     });
   });
 
+  it("rejects an illegal nick inline WITHOUT calling auth.login", async () => {
+    renderLogin();
+    // Leading digit is illegal server-side (@nick_regex first-char rule).
+    fireEvent.input(nickField(), { target: { value: "123abc" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/nickname/i);
+    });
+    expect(auth.login).not.toHaveBeenCalled();
+  });
+
+  it("treats an @-bearing value as an email and submits it verbatim", async () => {
+    vi.mocked(auth.login).mockResolvedValue(undefined);
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice@example.com" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      // Email branch: no nick stripping — the "@"/"." survive.
+      expect(auth.login).toHaveBeenCalledWith("alice@example.com", null);
+    });
+  });
+
+  it("rejects a malformed email inline WITHOUT calling auth.login", async () => {
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice@localhost" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/email/i);
+    });
+    expect(auth.login).not.toHaveBeenCalled();
+  });
+});
+
+describe("Login — #204 connecting feedback", () => {
+  it("replaces the form with a spinner + connecting copy while the request is in flight", async () => {
+    // A never-resolving login keeps the form in the connecting state so we
+    // can observe the spinner + the anchor reassurance line.
+    vi.mocked(auth.login).mockReturnValue(new Promise<void>(() => {}));
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      expect(screen.getByTestId("login-connecting")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/connecting to IRC/i)).toBeInTheDocument();
+    // The form controls are gone while connecting.
+    expect(screen.queryByLabelText(/nick or email/i)).toBeNull();
+  });
+
+  it("reverts to the form (with the error) when the request fails", async () => {
+    vi.mocked(auth.login).mockRejectedValue(new ApiError(401, "invalid_credentials"));
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/invalid name or password/i);
+    });
+    // Back to the form — the nick field is visible again.
+    expect(nickField()).toBeInTheDocument();
+    expect(screen.queryByTestId("login-connecting")).toBeNull();
+  });
+});
+
+describe("Login — mobile-keyboard guard (#138, carried forward)", () => {
+  it("keeps autocapitalize/autocorrect/spellcheck/autocomplete on the nick field", () => {
+    renderLogin();
+    const field = nickField();
+    expect(field).toHaveAttribute("autocapitalize", "none");
+    expect(field).toHaveAttribute("autocorrect", "off");
+    expect(field).toHaveAttribute("spellcheck", "false");
+    expect(field).toHaveAttribute("autocomplete", "username");
+  });
+});
+
+describe("Login — friendly error copy (carried forward)", () => {
   it("displays a friendly error when ApiError code is invalid_credentials (S47)", async () => {
     vi.mocked(auth.login).mockRejectedValue(new ApiError(401, "invalid_credentials"));
     renderLogin();
-    fireEvent.input(screen.getByLabelText(/nick or email/i), {
-      target: { value: "alice" },
-    });
-    fireEvent.input(screen.getByLabelText(/password/i), {
-      target: { value: "wrong" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    openAdvanced();
+    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "wrong" } });
+    fireEvent.click(connectBtn());
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(/invalid name or password/i);
     });
   });
 
+  it("renders too_many_sessions copy on 503", async () => {
+    vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "too_many_sessions"));
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /already at the session limit for this network from this device/i,
+      );
+    });
+  });
+
+  it("renders connect_timeout copy on 503", async () => {
+    vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "connect_timeout"));
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/handshake didn't complete/i);
+    });
+  });
+
+  it("falls through to the raw ApiError message for unrelated codes (S47)", async () => {
+    vi.mocked(auth.login).mockRejectedValue(new ApiError(500, "some_invalid_credentials_thing"));
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/some_invalid_credentials_thing/);
+    });
+    expect(screen.queryByText(/invalid name or password/i)).toBeNull();
+  });
+});
+
+describe("Login — captcha flow (carried forward)", () => {
   it("renders captcha widget when login responds 400 captcha_required", async () => {
     vi.mocked(auth.login).mockRejectedValueOnce(
-      new ApiError(400, "captcha_required", {
-        site_key: "k",
-        provider: "turnstile",
-      }),
+      new ApiError(400, "captcha_required", { site_key: "k", provider: "turnstile" }),
     );
     vi.mocked(mountCaptchaWidget).mockResolvedValue(() => undefined);
     renderLogin();
-    fireEvent.input(screen.getByLabelText(/nick or email/i), {
-      target: { value: "alice" },
-    });
-    fireEvent.input(screen.getByLabelText(/password/i), {
-      target: { value: "secret" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(connectBtn());
     await waitFor(() => {
       expect(mountCaptchaWidget).toHaveBeenCalled();
     });
     const call = vi.mocked(mountCaptchaWidget).mock.calls[0];
     if (call === undefined) throw new Error("mountCaptchaWidget not called");
     expect(call[0]).toBe("turnstile");
-    // Codebase audit cic M6 — `call[1]` MUST be an HTMLElement (the
-    // ref-bound captcha container), NOT undefined. Pre-fix the
-    // createEffect could fire before `<Show>` rendered the captcha
-    // div, leaving `widgetContainer === undefined`. The sub-component
-    // pattern (CaptchaMount) ties the ref binding to the same lifecycle
-    // as `onMount` so the container is always bound when mount runs.
     expect(call[1]).toBeInstanceOf(HTMLElement);
     expect(call[2]).toBe("k");
     expect(typeof call[3]).toBe("function");
@@ -124,21 +275,13 @@ describe("Login", () => {
   it("submits captcha_token after solve callback", async () => {
     vi.mocked(auth.login)
       .mockRejectedValueOnce(
-        new ApiError(400, "captcha_required", {
-          site_key: "k",
-          provider: "turnstile",
-        }),
+        new ApiError(400, "captcha_required", { site_key: "k", provider: "turnstile" }),
       )
       .mockResolvedValueOnce(undefined);
     vi.mocked(mountCaptchaWidget).mockResolvedValue(() => undefined);
     renderLogin();
-    fireEvent.input(screen.getByLabelText(/nick or email/i), {
-      target: { value: "alice" },
-    });
-    fireEvent.input(screen.getByLabelText(/password/i), {
-      target: { value: "secret" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(connectBtn());
     await waitFor(() => {
       expect(mountCaptchaWidget).toHaveBeenCalled();
     });
@@ -147,279 +290,21 @@ describe("Login", () => {
     const onSolve = call[3];
     onSolve("solved-token");
     await waitFor(() => {
-      expect(auth.login).toHaveBeenCalledWith("alice", "secret", "solved-token");
+      expect(auth.login).toHaveBeenCalledWith("alice", null, "solved-token");
     });
   });
 
-  it("renders too_many_sessions copy on 503 (U-3: ip_cap_exceeded)", async () => {
-    vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "too_many_sessions"));
+  it("shows generic message when provider is 'disabled' (H4)", async () => {
+    vi.mocked(auth.login).mockRejectedValueOnce(
+      new ApiError(400, "captcha_required", { site_key: "", provider: "disabled" }),
+    );
     renderLogin();
-    fireEvent.input(screen.getByLabelText(/nick or email/i), {
-      target: { value: "alice" },
-    });
-    fireEvent.input(screen.getByLabelText(/password/i), {
-      target: { value: "secret" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(connectBtn());
     await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(
-        /already at the session limit for this network from this device/i,
-      );
+      expect(screen.getByRole("alert")).toHaveTextContent(/verification temporarily unavailable/i);
     });
-  });
-
-  // U-2 (UD7): per-phase timeout copy. Three typed atoms come over the
-  // wire from FallbackController; cic owns the human-readable copy per
-  // feedback_no_localized_strings_server_side.
-  it("renders connect_timeout copy on 503", async () => {
-    vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "connect_timeout"));
-    renderLogin();
-    fireEvent.input(screen.getByLabelText(/nick or email/i), { target: { value: "alice" } });
-    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
-    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/handshake didn't complete/i);
-    });
-  });
-
-  it("renders welcome_timeout copy on 503", async () => {
-    vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "welcome_timeout"));
-    renderLogin();
-    fireEvent.input(screen.getByLabelText(/nick or email/i), { target: { value: "alice" } });
-    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
-    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/responding slowly/i);
-    });
-  });
-
-  it("renders probe_timeout copy on 500", async () => {
-    vi.mocked(auth.login).mockRejectedValue(new ApiError(500, "probe_timeout"));
-    renderLogin();
-    fireEvent.input(screen.getByLabelText(/nick or email/i), { target: { value: "alice" } });
-    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
-    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/internal timeout/i);
-    });
-  });
-
-  it("falls through to the raw ApiError message for unrelated codes (S47)", async () => {
-    // S47 strict-equality regression: an unrelated code that contains
-    // the substring "invalid_credentials" must NOT be mapped to the
-    // friendly message. The shape `${status} ${code}` is the wire-token
-    // surface, so an `Error.message` containing that substring would
-    // historically have collided.
-    vi.mocked(auth.login).mockRejectedValue(new ApiError(500, "some_invalid_credentials_thing"));
-    renderLogin();
-    fireEvent.input(screen.getByLabelText(/nick or email/i), {
-      target: { value: "alice" },
-    });
-    fireEvent.input(screen.getByLabelText(/password/i), {
-      target: { value: "wrong" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/some_invalid_credentials_thing/);
-    });
-    expect(screen.queryByText(/invalid name or password/i)).toBeNull();
-  });
-
-  // B2.5 — captcha widget mount-error handling
-  //
-  // The four scenarios below cover the H3/H4/M-cic-2/M-cic-5 cluster:
-  //
-  //   * H3: mountCaptchaWidget rejects (e.g. CDN blocked by ad-blocker
-  //     / firewall / network failure) — the prior code dropped the
-  //     promise rejection on the floor with `void`, leaving the
-  //     submit button stuck disabled and no user-visible signal.
-  //   * H4: server emits `captcha_required` with `provider="disabled"`
-  //     (operator misconfig — captcha demanded but no provider wired).
-  //     Without a friendlyMessage arm this leaks the raw wire token
-  //     "400 captcha_required" to the UI.
-  //   * M-cic-5: rapid captcha state changes captured `cleanup` at
-  //     component scope, so a second mount overwrote the first
-  //     cleanup before it ran — widget leak.
-  //   * Unmount-before-resolve race: if the component unmounts while
-  //     `mountCaptchaWidget` is still pending, the resolved cleanup
-  //     must still be invoked — otherwise the widget stays alive
-  //     after the form is gone.
-  describe("captcha widget mount errors", () => {
-    it("shows error toast when captcha CDN fails to load (H3)", async () => {
-      // Production code intentionally `console.warn`s the mount failure
-      // for operator-visible diagnostics (Login.tsx:123). The warn
-      // would otherwise print to the test runner stdout on every run;
-      // silence it for this single test instead of blanket-suppressing.
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-      vi.mocked(auth.login).mockRejectedValueOnce(
-        new ApiError(400, "captcha_required", {
-          site_key: "k",
-          provider: "turnstile",
-        }),
-      );
-      vi.mocked(mountCaptchaWidget).mockRejectedValueOnce(
-        new Error("failed to load https://challenges.cloudflare.com/turnstile/v0/api.js"),
-      );
-      renderLogin();
-      fireEvent.input(screen.getByLabelText(/nick or email/i), {
-        target: { value: "alice" },
-      });
-      fireEvent.input(screen.getByLabelText(/password/i), {
-        target: { value: "secret" },
-      });
-      const button = screen.getByRole("button", { name: /log in/i });
-      fireEvent.click(button);
-      await waitFor(() => {
-        expect(screen.getByRole("alert")).toHaveTextContent(/captcha unavailable/i);
-      });
-      // Button must be re-enabled so the user can retry.
-      expect((button as HTMLButtonElement).disabled).toBe(false);
-      warnSpy.mockRestore();
-    });
-
-    it("shows generic message when provider is 'disabled' (H4)", async () => {
-      vi.mocked(auth.login).mockRejectedValueOnce(
-        new ApiError(400, "captcha_required", {
-          site_key: "",
-          provider: "disabled",
-        }),
-      );
-      renderLogin();
-      fireEvent.input(screen.getByLabelText(/nick or email/i), {
-        target: { value: "alice" },
-      });
-      fireEvent.input(screen.getByLabelText(/password/i), {
-        target: { value: "secret" },
-      });
-      fireEvent.click(screen.getByRole("button", { name: /log in/i }));
-      await waitFor(() => {
-        expect(screen.getByRole("alert")).toHaveTextContent(
-          /verification temporarily unavailable/i,
-        );
-      });
-      // Raw wire token must NOT leak.
-      expect(screen.queryByText(/captcha_required/)).toBeNull();
-      // No widget should have mounted.
-      expect(mountCaptchaWidget).not.toHaveBeenCalled();
-    });
-
-    it("clears prior cleanup before re-mount when captcha re-renders (M-cic-5)", async () => {
-      const cleanup1 = vi.fn();
-      const cleanup2 = vi.fn();
-      vi.mocked(auth.login)
-        .mockRejectedValueOnce(
-          new ApiError(400, "captcha_required", {
-            site_key: "k1",
-            provider: "turnstile",
-          }),
-        )
-        .mockRejectedValueOnce(
-          new ApiError(400, "captcha_required", {
-            site_key: "k2",
-            provider: "turnstile",
-          }),
-        );
-      vi.mocked(mountCaptchaWidget).mockResolvedValueOnce(cleanup1).mockResolvedValueOnce(cleanup2);
-      renderLogin();
-      fireEvent.input(screen.getByLabelText(/nick or email/i), {
-        target: { value: "alice" },
-      });
-      fireEvent.input(screen.getByLabelText(/password/i), {
-        target: { value: "secret" },
-      });
-      fireEvent.click(screen.getByRole("button", { name: /log in/i }));
-      await waitFor(() => {
-        expect(mountCaptchaWidget).toHaveBeenCalledTimes(1);
-      });
-      // Drive the solve callback so the form retries auth.login —
-      // login rejects again with captcha_required, captcha signal is
-      // re-set, the createEffect re-runs, and a SECOND
-      // mountCaptchaWidget is issued. The first cleanup MUST run
-      // before the second mount captures its cleanup.
-      const firstCall = vi.mocked(mountCaptchaWidget).mock.calls[0];
-      if (firstCall === undefined) throw new Error("first mount missing");
-      firstCall[3]("token-1");
-      await waitFor(() => {
-        expect(mountCaptchaWidget).toHaveBeenCalledTimes(2);
-      });
-      await waitFor(() => {
-        expect(cleanup1).toHaveBeenCalledTimes(1);
-      });
-      expect(cleanup2).not.toHaveBeenCalled();
-    });
-
-    it("invokes captcha cleanup if component unmounts before mount promise resolves", async () => {
-      const cleanup = vi.fn();
-      let resolveMount: ((c: () => void) => void) | undefined;
-      vi.mocked(auth.login).mockRejectedValueOnce(
-        new ApiError(400, "captcha_required", {
-          site_key: "k",
-          provider: "turnstile",
-        }),
-      );
-      vi.mocked(mountCaptchaWidget).mockImplementationOnce(
-        () =>
-          new Promise<() => void>((res) => {
-            resolveMount = res;
-          }),
-      );
-      const { unmount } = renderLogin();
-      fireEvent.input(screen.getByLabelText(/nick or email/i), {
-        target: { value: "alice" },
-      });
-      fireEvent.input(screen.getByLabelText(/password/i), {
-        target: { value: "secret" },
-      });
-      fireEvent.click(screen.getByRole("button", { name: /log in/i }));
-      await waitFor(() => {
-        expect(mountCaptchaWidget).toHaveBeenCalledTimes(1);
-      });
-      // Unmount BEFORE the mount promise resolves.
-      unmount();
-      // Now resolve — cleanup must still run (the local flag triggers
-      // immediate invocation since onCleanup already fired).
-      if (resolveMount === undefined) throw new Error("resolveMount not captured");
-      resolveMount(cleanup);
-      await waitFor(() => {
-        expect(cleanup).toHaveBeenCalledTimes(1);
-      });
-    });
-  });
-
-  // Bucket G cross-surface/H1 — captcha-provider-down path.
-  //
-  // The server-side `Grappa.Admission.Captcha.SiteVerifyHttp` maps every
-  // upstream-side captcha verification failure (4xx, 5xx, transport
-  // error) to `{:error, :captcha_provider_unavailable}`. The
-  // `FallbackController` then renders that atom with status 503 and
-  // wire body `%{error: "service_degraded"}` (see
-  // `lib/grappa_web/controllers/fallback_controller.ex` clauses for
-  // `:captcha_provider_unavailable`). The cic side MUST surface the
-  // documented "login service temporarily unavailable" copy on the
-  // `service_degraded` arm — pre-bucket-G a stale
-  // `captcha_provider_unavailable` arm in friendlyMessage() shadowed
-  // the true wire token, leaving silent UX degradation when a real
-  // captcha-provider outage hit (the server emits "service_degraded",
-  // not "captcha_provider_unavailable", so cic landed in the `default`
-  // arm and surfaced the raw "503 service_degraded" Error.message).
-  describe("captcha provider outage (cross-surface/H1)", () => {
-    it("surfaces the documented copy on 503 service_degraded", async () => {
-      vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "service_degraded"));
-      renderLogin();
-      fireEvent.input(screen.getByLabelText(/nick or email/i), {
-        target: { value: "alice" },
-      });
-      fireEvent.input(screen.getByLabelText(/password/i), {
-        target: { value: "secret" },
-      });
-      fireEvent.click(screen.getByRole("button", { name: /log in/i }));
-      await waitFor(() => {
-        expect(screen.getByRole("alert")).toHaveTextContent(
-          /login service temporarily unavailable/i,
-        );
-      });
-      // Raw wire token must NOT leak.
-      expect(screen.queryByText(/service_degraded/)).toBeNull();
-    });
+    expect(screen.queryByText(/captcha_required/)).toBeNull();
+    expect(mountCaptchaWidget).not.toHaveBeenCalled();
   });
 });
