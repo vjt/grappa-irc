@@ -2971,6 +2971,85 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "#100 sustained-reconnect reset gate (Backoff.record_success)" do
+    # #100 — the Backoff ladder must only reset after the connection has
+    # SURVIVED for `connection_stable_ms` past 001, not on 001 itself.
+    # Otherwise a welcome-then-drop flap resets the ladder every cycle and
+    # re-hammers upstream at the 5s base delay forever. The gate arms a
+    # `:connection_stable` timer on 001 that fires record_success only if
+    # the Session is still alive when it elapses.
+
+    test "record_success is DEFERRED — does NOT fire immediately on 001" do
+      {server, port} = start_server()
+      {user, network, credential} = setup_user_and_network(port)
+
+      # Seed a non-zero ladder so a reset would be observable as a count drop.
+      :ok = Backoff.reset({:user, user.id}, network.id)
+      :ok = Backoff.record_failure({:user, user.id}, network.id)
+      :ok = Backoff.record_failure({:user, user.id}, network.id)
+      assert Backoff.failure_count({:user, user.id}, network.id) == 2
+
+      # Long stable window so it cannot fire within the assertion window.
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+      plan = Map.put(base_plan, :connection_stable_ms, 60_000)
+      {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      # Autojoin JOIN proves 001 was fully processed — record_success, if it
+      # were still on the 001 path, would have already cleared the ladder.
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      # Flush the Backoff mailbox (serialize behind any in-flight cast).
+      :ok = Backoff.reset({:user, Ecto.UUID.generate()}, -1)
+
+      assert Backoff.failure_count({:user, user.id}, network.id) == 2,
+             "record_success must NOT fire on 001 — the ladder stays until the connection proves stable"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "record_success FIRES after the connection survives connection_stable_ms" do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:grappa, :session, :backoff, :success]
+        ])
+
+      {server, port} = start_server()
+      {user, network, credential} = setup_user_and_network(port)
+
+      :ok = Backoff.reset({:user, user.id}, network.id)
+      :ok = Backoff.record_failure({:user, user.id}, network.id)
+      assert Backoff.failure_count({:user, user.id}, network.id) == 1
+
+      # Stable window long enough to observe the "not yet" gap deterministically.
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+      plan = Map.put(base_plan, :connection_stable_ms, 500)
+      {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      expected_key = {{:user, user.id}, network.id}
+
+      # BEFORE the window elapses: success must NOT have fired. This is the
+      # discriminating assertion — a regression that resets on 001 would
+      # trip here. 250ms < the 500ms stable window.
+      refute_receive {[:grappa, :session, :backoff, :success], ^ref, _, %{key: ^expected_key}}, 250
+
+      # AFTER the window: the gate fires record_success (a cast; telemetry is
+      # the deterministic sync point).
+      assert_receive {[:grappa, :session, :backoff, :success], ^ref, %{count: 1}, %{key: ^expected_key}},
+                     2_000
+
+      assert Backoff.failure_count({:user, user.id}, network.id) == 0,
+             "a connection that survives the stable window must reset the ladder"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "*Serv-targeted PRIVMSG skips scrollback + PubSub (W12 privacy)" do
     test "NickServ target: no row, no broadcast, returns {:ok, :no_persist}" do
       {server, port} = start_server()

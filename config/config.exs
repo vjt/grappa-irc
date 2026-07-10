@@ -71,6 +71,19 @@ config :grappa, :session_backoff,
   base_ms: 5_000,
   cap_ms: 5 * 60 * 1_000
 
+# #100 — sustained-reconnect reset gate. `Session.Server` clears the
+# Backoff ladder (Backoff.record_success) only after the connection has
+# survived `connection_stable_ms` past 001 RPL_WELCOME, NOT on 001
+# itself. Without the gate, an upstream that welcomes then drops seconds
+# later resets the ladder to count=1 every cycle → welcome-then-drop
+# flapping re-hammers at the 5s base delay forever. The gate is a
+# Process.send_after(:connection_stable) that fires only if the Session
+# is still alive (a sub-threshold drop crashes the Session, killing the
+# timer with it — the ladder keeps climbing). Opts-overridable
+# (`:connection_stable_ms`) as a test seam; config/test.exs leaves the
+# 60s default intact (inert within existing tests' lifetimes).
+config :grappa, :session, connection_stable_ms: 60_000
+
 # T31 admission control. Defaults match the design (CP11 S20 →
 # CP11 S21 brainstorm). All values configurable per-env via
 # config/runtime.exs at deployment time.

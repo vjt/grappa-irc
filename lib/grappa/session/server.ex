@@ -144,6 +144,21 @@ defmodule Grappa.Session.Server do
   @directory_progress_throttle_ms Keyword.get(@directory_cfg, :progress_throttle_ms, 1_000)
   @directory_ingest_batch Keyword.get(@directory_cfg, :ingest_batch, 200)
 
+  # #100 — sustained-reconnect reset gate. On 001 RPL_WELCOME we arm a
+  # `:connection_stable` timer instead of resetting the Backoff ladder
+  # immediately; only if the Session survives `@connection_stable_ms`
+  # does `Backoff.record_success/2` fire. A welcome-then-drop flap
+  # crashes the Session (link EXIT from the dead Client) before the timer
+  # elapses, so the timer dies with the process and the ladder keeps
+  # climbing — the flap is paced instead of resetting to the 5s base
+  # every cycle. Opts-overridable (`:connection_stable_ms`) as a test
+  # seam. See `config :grappa, :session, connection_stable_ms:`.
+  @connection_stable_ms Application.compile_env(
+                          :grappa,
+                          [:session, :connection_stable_ms],
+                          60_000
+                        )
+
   @typedoc """
   Optional opaque callback the visitor-side `SessionPlan` injects into
   every visitor plan. Invoked by `apply_effects/2` when EventRouter
@@ -364,7 +379,10 @@ defmodule Grappa.Session.Server do
           optional(:credential_failer) => credential_failer(),
           optional(:credential_committer) => credential_committer(),
           optional(:last_joined_persister) => last_joined_persister(),
-          optional(:refresh_plan) => refresh_plan_check()
+          optional(:refresh_plan) => refresh_plan_check(),
+          # #100 sustained-reconnect reset gate — test seam. Production
+          # omits it and inherits `@connection_stable_ms`.
+          optional(:connection_stable_ms) => pos_integer()
         }
 
   @type t :: %{
@@ -567,7 +585,13 @@ defmodule Grappa.Session.Server do
                 count: non_neg_integer(),
                 last_emit_ms: integer(),
                 timer: reference() | nil
-              }
+              },
+          # #100 sustained-reconnect reset gate. `connection_stable_ms` is
+          # static config for the process lifetime; `connection_stable_timer`
+          # is the armed-on-001 ref (nil until 001, nil again once it fires
+          # or is cancelled). See `@connection_stable_ms`.
+          connection_stable_ms: pos_integer(),
+          connection_stable_timer: reference() | nil
         }
 
   ## API
@@ -759,7 +783,11 @@ defmodule Grappa.Session.Server do
       directory_ingest_batch: Map.get(opts, :directory_ingest_batch, @directory_ingest_batch),
       # Channel directory (#84) — no refresh in flight at boot. Set when the
       # operator triggers a `LIST` refresh; cleared on 323 / timeout.
-      directory_refresh: nil
+      directory_refresh: nil,
+      # #100 sustained-reconnect reset gate — config default, opts-overridable
+      # for tests. Timer armed on 001, nil until then.
+      connection_stable_ms: Map.get(opts, :connection_stable_ms, @connection_stable_ms),
+      connection_stable_timer: nil
     }
 
     # S3.1 / S3.2 / #182: subscribe to the WSPresence PubSub topic for this
@@ -1870,13 +1898,31 @@ defmodule Grappa.Session.Server do
       )
     end
 
-    # Backoff success: 001 RPL_WELCOME proves upstream accepted us. Any
-    # prior failure history is stale — clear the entry so the next
-    # failure starts the exponential ladder at count=1 again instead of
-    # whatever depth the previous outage reached.
-    Backoff.record_success(state.subject, state.network_id)
+    # #100 sustained-reconnect reset gate: 001 RPL_WELCOME proves upstream
+    # accepted us, but a welcome-then-drop flap that reset the Backoff
+    # ladder here would re-hammer at the 5s base delay every cycle. Instead
+    # arm a `:connection_stable` timer; `Backoff.record_success/2` fires
+    # only if the Session survives `connection_stable_ms` (a sub-threshold
+    # drop crashes the Session, killing the timer with it, so the ladder
+    # keeps climbing). Cancel + drain any prior timer for the defensive
+    # re-welcome case (a second 001 without an intervening crash) so we
+    # never leak a stale fire or double-count.
+    :ok = cancel_and_drain(state.connection_stable_timer, :connection_stable)
 
-    delegate(msg, state)
+    stable_timer =
+      Process.send_after(self(), :connection_stable, state.connection_stable_ms)
+
+    delegate(msg, %{state | connection_stable_timer: stable_timer})
+  end
+
+  # #100 — the connection survived `connection_stable_ms` past 001 without
+  # crashing. NOW clear the Backoff ladder: this welcome was durable, prior
+  # failure history is genuinely stale. A flap that dropped before this
+  # fired never reached here (the Session crashed, the timer died with it),
+  # so the ladder correctly kept climbing for unstable upstreams.
+  def handle_info(:connection_stable, state) do
+    Backoff.record_success(state.subject, state.network_id)
+    {:noreply, %{state | connection_stable_timer: nil}}
   end
 
   # Cleared 10s after the last NSInterceptor capture if no +r MODE
