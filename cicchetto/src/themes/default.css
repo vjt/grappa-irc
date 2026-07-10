@@ -359,8 +359,53 @@ html.overlay-open #root > div {
   display: grid;
   grid-template-columns: var(--sidebar-width, 16rem) 1fr var(--members-width, 14rem);
   grid-template-rows: 1fr;
-  height: 100vh;
+  /* #205 — iPad standalone-PWA safe area. An iPad is WIDER than the
+     768px mobile breakpoint in BOTH orientations, so `isMobile()` is
+     false and iPadOS renders THIS desktop shell — not `.shell-mobile`.
+     Every safe-area / dynamic-viewport rule in this stylesheet was
+     scoped to the mobile shell, so the desktop shell shipped a bare
+     `height: 100vh` with no insets. On an installed PWA the status bar
+     is `black-translucent` (index.html apple-mobile-web-app-status-bar-
+     style) — the page paints UNDER it — so the shell's top edge (with
+     the always-visible `.shell-chrome` settings cog) landed inside the
+     status-bar reservation zone, clipped and NON-interactive (iOS
+     swallows touches there). Two fixes, mirroring the mobile shell:
+
+     1. Insets on the CONTAINER, not the bars (same rationale as the
+        `.shell-mobile` UX-3 BIS comment ~:2849): box-sizing: border-box
+        (global, ~:133) consumes the inset FROM the height, pushing the
+        whole shell — background included — inside the safe area so the
+        top chrome clears the status bar AND stays in the hit region.
+        All four edges: left/right matter in landscape where the
+        home-indicator + camera housing eat the side gutters.
+     2. `100dvh`, not `100vh`. `100vh` resolves to iOS Safari's LAYOUT
+        viewport (taller than the visible area), so the shell overflows
+        and the bottom clips; `100dvh` tracks the visible viewport.
+        `@supports not (dvh)` below keeps a `100vh` floor for ancient
+        engines (Safari < 15.4) that don't grok dvh. Desktop keeps a
+        real height (unlike the mobile shell it doesn't need the
+        VisualViewport `--viewport-height` keyboard-react — a physical
+        keyboard on iPad doesn't resize the visual viewport, and the
+        on-screen keyboard over the wide desktop layout is out of scope
+        for this fix; revisit if iPad soft-keyboard clipping is
+        reported). */
+  height: 100dvh;
   min-height: 0;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* #205 — dvh fallback floor for engines without dynamic-viewport units
+   (Safari < 15.4). Same @supports-gated pattern as `.shell-mobile`
+   (~:2898): biome forbids the classic `height: 100vh; height: 100dvh`
+   duplicate-property cascade, so gate the legacy value behind
+   `not (height: 100dvh)`. */
+@supports not (height: 100dvh) {
+  .shell {
+    height: 100vh;
+  }
 }
 
 /* Suppress the right (members) column when the active window has no
@@ -395,17 +440,15 @@ html.overlay-open #root > div {
   border-left: 1px solid var(--border);
   background: var(--bg-alt);
   overflow-y: auto;
-  /* iOS-2 + UX-5 BD: top + bottom insets — drawer is full-height on
-     mobile, so both notch and home-indicator regions need clearance.
-     BD (2026-05-20) bumped the bottom floor to 1.5rem (same root
-     cause as the 3 modals): the BM `.mobile-panel-actions` launcher
-     footer (~:2283) hosts archive + settings buttons that relied on
-     env(safe-area-inset-bottom) alone — which is 0px on non-notched
-     iPhones, leaving the launcher row cramped under Safari chrome /
-     gesture indicator. Desktop aside doesn't visually suffer from
-     the 1.5rem floor (no chrome below the aside in the grid layout). */
-  padding-top: env(safe-area-inset-top);
-  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+  /* #205 — safe-area insets removed from the base rule and relocated to
+     the mobile `.shell-members` override (~:2969). On desktop the members
+     aside is a grid CHILD of `.shell`, which now insets the whole
+     container (#205), so keeping insets here too double-counted the top
+     inset — pushing the members column's content down twice the status-
+     bar height while the sidebar + main (no insets) sat flush. The
+     mobile drawer is `position: fixed` (escapes the container padding
+     box) so it genuinely needs its own insets; that's where they live
+     now. */
   /* UX-5 BS: relative positioning so .resize-handle (absolute, inner-edge)
      anchors against this aside. */
   position: relative;
@@ -2938,6 +2981,18 @@ html.resize-dragging * {
        OR browsers without VisualViewport. Mirrors `.shell-mobile`
        (~:2120). */
     height: var(--viewport-height, 100dvh);
+    /* #205 — safe-area insets relocated here from the base `.shell-members`
+       rule (~:439). The mobile members drawer is `position: fixed` so it
+       sits OUTSIDE `.shell`'s container padding box and needs its own
+       insets: top notch/Dynamic-Island clearance + bottom home-indicator
+       clearance. iOS-2 + UX-5 BD rationale (unchanged): BD bumped the
+       bottom floor to 1.5rem (same root cause as the 3 modals) because
+       the `.mobile-panel-actions` launcher footer (~:2238) hosts archive
+       + settings buttons that relied on env(safe-area-inset-bottom)
+       alone — 0px on non-notched iPhones — leaving the row cramped under
+       Safari chrome / the gesture indicator. */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
     width: 80vw;
     max-width: 18rem;
     z-index: 90;
