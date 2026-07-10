@@ -122,27 +122,34 @@ const ComposeBox: Component<Props> = (props) => {
     });
   };
 
-  // #178 — gesture recall fires ONLY on a non-empty compose.
+  // #178 + #203 — gesture recall gating, split by direction.
   //
-  // An empty/short (rows=1) draft sits at BOTH scroll edges, so by the
-  // #123 boundary mapping (`claimAxis`) ANY vertical flick over it claims
-  // the gesture, and a fast up-flick then hands off to `recallPrev` —
+  // #178 gated BOTH gesture-recall directions on a non-empty draft: an
+  // empty/short (rows=1) draft sits at BOTH scroll edges, so by the #123
+  // boundary mapping (`claimAxis`) ANY vertical flick over it claims the
+  // gesture, and a fast up-flick then handed off to `recallPrev` —
   // pulling an old sent line into a draft the user never intended to
-  // edit. On an empty compose a vertical flick is a "scroll / look at
-  // history" gesture, NOT "recall the last thing I sent"; the two are
-  // indistinguishable to `claimAxis` when there's nothing in the textarea
-  // to scroll. Gating recall on a non-empty draft removes the false
-  // positive while keeping the affordance where it's meaningful: once
-  // you've started typing, swipe-up/down cycles history around your
-  // in-progress draft (which `recallPrev` stashes + `recallNext`
-  // restores).
+  // edit.
   //
-  // Scoped to the GESTURE path only (this `onTouchEnd`). The keydown
-  // ArrowUp/ArrowDown recall (`onKeyDown`) is deliberately untouched — a
-  // physical arrow press on an empty compose is an unambiguous,
-  // long-standing "recall" intent (irssi/readline behavior), with no
-  // scroll-vs-recall ambiguity because there's no boundary-claim step.
-  // `.trim()` so a stray space/newline doesn't count as "content".
+  // #203 corrected that for swipe-UP: the gate was too broad and broke
+  // swipe≡ArrowUp parity. The compose textarea is rows=1 — an EMPTY one
+  // has nothing to scroll (the scrollback pane is a SEPARATE touch
+  // surface), so the #178 "empty up-flick is a scroll/look gesture"
+  // premise doesn't hold there; the only coherent intent of an up-flick
+  // over an empty compose is recall — exactly what the physical ArrowUp
+  // key does (`onKeyDown`, which #178 always left recalling on empty).
+  // So swipe-UP → `recallPrev` now fires UNCONDITIONALLY (see the
+  // `case "recall-prev"` below), restoring the stock-mobile-keyboard
+  // affordance's parity with the arrow key AND killing the dead-gesture
+  // defect where an empty up-flick suppressed native scroll (onTouchMove
+  // preventDefault) yet did nothing.
+  //
+  // `gestureRecallAllowed` is KEPT on swipe-DOWN (`recallNext`): a
+  // down-flick's job is "walk back down toward the live draft you
+  // stashed on the way up", meaningful only once there IS an in-progress
+  // draft — and `recallNext` is a no-op on a null cursor anyway, so
+  // gating it costs nothing while preserving #178's scope. `.trim()` so
+  // a stray space/newline doesn't count as "content".
   const gestureRecallAllowed = (): boolean => getDraft(key()).trim() !== "";
 
   // Swipe gestures on the textarea give a stock mobile keyboard (no Tab, no
@@ -224,12 +231,13 @@ const ComposeBox: Component<Props> = (props) => {
     }
     switch (action) {
       case "recall-prev":
-        if (gestureRecallAllowed()) {
-          recallPrev(key());
-          scrollRecallCaretIntoView();
-        }
+        // #203 — swipe-UP recalls unconditionally (parity with ArrowUp;
+        // see gestureRecallAllowed's doc). No empty-draft gate here.
+        recallPrev(key());
+        scrollRecallCaretIntoView();
         break;
       case "recall-next":
+        // #178 — swipe-DOWN recall stays gated on a non-empty draft.
         if (gestureRecallAllowed()) {
           recallNext(key());
           scrollRecallCaretIntoView();

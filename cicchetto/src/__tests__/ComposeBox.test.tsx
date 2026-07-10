@@ -161,6 +161,94 @@ describe("ComposeBox", () => {
     expect(compose.recallNext).toHaveBeenCalled();
   });
 
+  // ----------------------------------------------------------------
+  // #203 — swipe-up recall parity with keydown ArrowUp on an EMPTY
+  // compose.
+  //
+  // #178 gated BOTH gesture-recall directions on a non-empty draft to
+  // kill a fast up-flick over an empty compose accidentally pulling an
+  // old sent line in. But the compose textarea is rows=1 — an empty one
+  // has NOTHING to scroll (the scrollback pane is a separate touch
+  // surface), so the "empty up-flick is a scroll/look gesture" premise
+  // doesn't hold there: the only coherent intent is recall, exactly
+  // like the physical ArrowUp key (which #178 left recalling on empty).
+  // #203 restores that swipe≡ArrowUp parity for swipe-UP while KEEPING
+  // #178's non-empty gate on swipe-DOWN (recall-next).
+  //
+  // These drive the real touch handler wiring (onTouchStart → claim on
+  // touchmove → touchend → gestureAction → recall). jsdom has no
+  // TouchEvent/Touch constructor, so we dispatch plain Events with
+  // touches/changedTouches shaped on — the handlers only read
+  // `.length`, `[0]`, `.clientX`, `.clientY` (same faking pattern the
+  // upload tests use for ClipboardEvent). An empty rows=1 textarea sits
+  // at BOTH scroll edges in jsdom (scrollHeight/clientHeight/scrollTop
+  // all 0), so any vertical flick claims — mirroring a real short draft.
+  describe("#203 — empty-compose gesture recall parity", () => {
+    type Pt = { clientX: number; clientY: number };
+    const touchEvent = (type: string, pts: Pt[]): Event => {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      const ended = type === "touchend";
+      Object.defineProperty(ev, "touches", { value: ended ? [] : pts });
+      Object.defineProperty(ev, "targetTouches", { value: ended ? [] : pts });
+      Object.defineProperty(ev, "changedTouches", { value: pts });
+      return ev;
+    };
+
+    // Fast vertical flick from (x,startY) to (x,endY): touchstart, one
+    // claiming touchmove past the slop, then a same-tick touchend so the
+    // #123 velocity gate reads it as a flick (elapsed ≈ 0 → fast).
+    const flick = (ta: Element, startY: number, endY: number): void => {
+      const x = 100;
+      ta.dispatchEvent(touchEvent("touchstart", [{ clientX: x, clientY: startY }]));
+      ta.dispatchEvent(touchEvent("touchmove", [{ clientX: x, clientY: endY }]));
+      ta.dispatchEvent(touchEvent("touchend", [{ clientX: x, clientY: endY }]));
+    };
+
+    it("fast swipe-UP over an EMPTY compose calls recallPrev (parity with ArrowUp)", async () => {
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.getDraft).mockReturnValue(""); // empty draft
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i);
+      flick(ta, 300, 220); // up: dy = -80
+      expect(compose.recallPrev).toHaveBeenCalled();
+    });
+
+    it("fast swipe-UP over a NON-empty compose still calls recallPrev (#178 affordance preserved)", async () => {
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.getDraft).mockReturnValue("half-typed");
+      try {
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i);
+        flick(ta, 300, 220);
+        expect(compose.recallPrev).toHaveBeenCalled();
+      } finally {
+        vi.mocked(compose.getDraft).mockReturnValue("");
+      }
+    });
+
+    it("fast swipe-DOWN over an EMPTY compose does NOT call recallNext (#178 gate kept on recall-next)", async () => {
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.getDraft).mockReturnValue(""); // empty draft
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i);
+      flick(ta, 220, 300); // down: dy = +80
+      expect(compose.recallNext).not.toHaveBeenCalled();
+    });
+
+    it("fast swipe-DOWN over a NON-empty compose calls recallNext (recall-next affordance preserved)", async () => {
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.getDraft).mockReturnValue("half-typed");
+      try {
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i);
+        flick(ta, 220, 300); // down: dy = +80
+        expect(compose.recallNext).toHaveBeenCalled();
+      } finally {
+        vi.mocked(compose.getDraft).mockReturnValue("");
+      }
+    });
+  });
+
   it("error from submit renders an alert banner", async () => {
     const compose = await import("../lib/compose");
     vi.mocked(compose.submit).mockResolvedValue({ error: "unknown command: /whois" });
