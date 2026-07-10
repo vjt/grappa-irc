@@ -52,7 +52,7 @@ defmodule Grappa.Session.Backoff do
 
   ## Tuning
 
-  Defaults: 5s base × 2^(count-1), capped at 30 min, with ±25%
+  Defaults: 5s base × 2^(count-1), capped at 5 min, with ±25%
   jitter to avoid herd-respawn alignment. Override per-environment
   via `config :grappa, :session_backoff, base_ms: ..., cap_ms: ...`.
   Test config sets these to a few ms so retries don't dominate
@@ -68,15 +68,13 @@ defmodule Grappa.Session.Backoff do
   | 4     | 40s          |
   | 5     | 80s          |
   | 6     | 160s         |
-  | 7     | 320s         |
-  | 8     | 640s         |
-  | 9     | 1280s        |
-  | 10+   | 1800s (cap)  |
+  | 7+    | 300s (cap)   |
 
-  After ~5 consecutive failures we're already at >1m wait; after 10
-  we're at the 30-min cap. A k-line bouncer would idle for the cap
-  duration between attempts instead of hammering — the IP K-line
-  expires (typically 24h on azzurra) without further escalation.
+  After ~5 consecutive failures we're already at >1m wait; after 7
+  we're at the 5-min cap (#100 lowered it from 30 min). A k-line
+  bouncer idles for the cap duration between attempts instead of
+  hammering; a whole-network outage retries at most every 5 min, so
+  recovery is prompt when upstream returns without pummelling it.
 
   ## Telemetry
 
@@ -138,7 +136,7 @@ defmodule Grappa.Session.Backoff do
   def table_name, do: @table
 
   @base_ms Application.compile_env(:grappa, [:session_backoff, :base_ms], 5_000)
-  @cap_ms Application.compile_env(:grappa, [:session_backoff, :cap_ms], 30 * 60 * 1_000)
+  @cap_ms Application.compile_env(:grappa, [:session_backoff, :cap_ms], 5 * 60 * 1_000)
 
   @typep entry :: {key(), pos_integer(), integer()}
   @typep key :: {Session.subject(), integer()}

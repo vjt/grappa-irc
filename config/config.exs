@@ -43,9 +43,16 @@ config :grappa, :irc_client_connect_failure_sleep_ms, 30_000
 # bouncer's IP doesn't loop at restart-rate. See the module doc for
 # the full curve table. `config/test.exs` shrinks both values so test
 # delays don't drag.
+#
+# #100: cap lowered 30 min → 5 min. A whole-network outage means every
+# session retries at most every 5 min (vs 30) — more reconnect traffic
+# during a long outage, but faster recovery when upstream returns
+# (matches the interactive-bouncer expectation; vjt accepted the
+# outage-noise trade in the #100 decision record). At base 5s × 2^(n-1)
+# the cap is reached at n=7 (5·64 = 320s > 300s).
 config :grappa, :session_backoff,
   base_ms: 5_000,
-  cap_ms: 30 * 60 * 1_000
+  cap_ms: 5 * 60 * 1_000
 
 # T31 admission control. Defaults match the design (CP11 S20 →
 # CP11 S21 brainstorm). All values configurable per-env via
