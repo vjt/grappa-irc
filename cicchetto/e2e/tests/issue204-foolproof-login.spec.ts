@@ -66,23 +66,55 @@ test.describe("#204 foolproof login", () => {
     expect(order).toEqual({ nickBeforeAdv: true, advBeforeConnect: true });
   });
 
-  test("on-submit: space→_ sanitization reflected in the field + connecting spinner renders", async ({
+  test("on-submit: space→_ sanitization hits the wire + connecting spinner renders", async ({
     page,
   }) => {
+    // Intercept /auth/login so this test NEVER touches the real
+    // azzurra-testnet: (a) it lets us hold the response open long enough to
+    // deterministically observe the transient connecting view (a fast real
+    // backend mints a session + navigates to Shell before Playwright can
+    // catch the flash — the CI failure that motivated this), and (b) it
+    // means the test provisions ZERO real visitor sessions, so it can't
+    // leave a live Session.Server + upstream IRC connection dangling on the
+    // shared stack to poison downstream specs. Precedent: crt-splash-font
+    // holds **/me open the same way to observe its loading splash.
+    let capturedBody: unknown;
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    await page.route("**/auth/login", async (route) => {
+      capturedBody = route.request().postDataJSON();
+      // Hold until the assertions below have seen the connecting view, then
+      // fulfil with a benign error so the form reverts (no session minted,
+      // no navigation, no testnet contact).
+      await held;
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "invalid_credentials" }),
+      });
+    });
+
     await page.getByLabel(/nick or email/i).fill("e2e nick");
     await page.getByRole("button", { name: /^connect$/i }).click();
 
-    // The connecting view replaces the form the moment the request fires
-    // (setConnecting is synchronous, before any await), so the spinner +
-    // generic reassurance copy render regardless of how the backend
-    // resolves. This is the visible "connecting feedback" outcome.
+    // While the (held) request is in flight the form is replaced by the
+    // connecting view — spinner + generic reassurance copy. This is the
+    // visible "connecting feedback" outcome (#204).
     await expect(page.getByTestId("login-connecting")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText(/connecting to IRC/i)).toBeVisible();
-    // Sanitization ran before submit: the value carried into the request
-    // is the underscored form (the field itself is now unmounted under the
-    // connecting view, so we assert the copy the connecting view shows +
-    // that we left the pristine form — the field-rewrite unit test pins
-    // the exact `my nick` → `my_nick` value).
+
+    // Sanitization ran ON SUBMIT: the value carried over the wire is the
+    // underscored form (`e2e nick` → `e2e_nick`). Asserting the request
+    // body is STRONGER than reading the field back — it proves the
+    // sanitized value is what the server would actually receive.
+    expect(capturedBody).toMatchObject({ identifier: "e2e_nick" });
+
+    // Release the request → the 401 reverts the form; nothing was minted.
+    release?.();
+    await expect(page.getByRole("alert")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("login-connecting")).toHaveCount(0);
   });
 
   test("illegal nick (leading digit) → inline error, stays on the form", async ({ page }) => {
