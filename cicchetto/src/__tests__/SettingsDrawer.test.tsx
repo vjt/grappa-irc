@@ -479,6 +479,20 @@ describe("SettingsDrawer (bucket M — upload-TTL fieldset)", () => {
     expect(opts).toContain("86400");
   });
 
+  // #206 — the "use site default" option must render the default TTL's
+  // human-readable label (embeddedHost's 86400s entry → "24 hours"), not
+  // the raw seconds value. The label is looked up from the SAME
+  // ttlOptions ladder the other options use — no bespoke formatter.
+  it("renders the site-default option with a human label, not raw seconds", () => {
+    wrap(true);
+    const select = screen.getByTestId("upload-ttl-select") as HTMLSelectElement;
+    const defaultOpt = Array.from(select.querySelectorAll("option")).find((o) => o.value === "");
+    expect(defaultOpt).toBeDefined();
+    // embeddedHost.defaultTtl === "86400", whose ttlOptions label is "24 hours".
+    expect(defaultOpt?.textContent).toContain("24 hours");
+    expect(defaultOpt?.textContent).not.toContain("86400");
+  });
+
   // #170 — the fieldset is type-agnostic (class upload-ttl-fieldset,
   // control "upload duration", server stores plain integer seconds), so
   // the legend must read "upload retention", not "image upload retention"

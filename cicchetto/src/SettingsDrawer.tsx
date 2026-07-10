@@ -393,6 +393,18 @@ const SettingsDrawer: Component<Props> = (props) => {
     return activeHost().ttlOptions.find((o) => o.seconds === seconds)?.value ?? "";
   };
 
+  // #206 — human-readable label for the "use site default" option. The
+  // default TTL is stored as a raw seconds token ("86400"); resolve it
+  // through the SAME ttlOptions ladder the other options render from
+  // ("24 hours") instead of leaking the integer. Falls back to the raw
+  // token only if the default isn't in the ladder (host misconfig).
+  const defaultTtlLabel = (): string => {
+    const host = activeHost();
+    const d = host.defaultTtl;
+    if (d == null) return "";
+    return host.ttlOptions.find((o) => o.value === d)?.label ?? d;
+  };
+
   return (
     <>
       <div
@@ -605,7 +617,7 @@ const SettingsDrawer: Component<Props> = (props) => {
                   void onUploadTtlChange(e);
                 }}
               >
-                <option value="">use site default ({activeHost().defaultTtl ?? ""})</option>
+                <option value="">use site default ({defaultTtlLabel()})</option>
                 <For each={activeHost().ttlOptions}>
                   {(opt) => <option value={opt.value}>{opt.label}</option>}
                 </For>
