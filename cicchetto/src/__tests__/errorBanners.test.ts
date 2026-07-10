@@ -2,12 +2,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { shouldShowRefreshBanner } from "../lib/bundleHash";
 import { __setConnectivityForTests } from "../lib/connectivity";
 import {
+  __resetDismissedForTests,
   activeBanners,
   BANNER_SOURCES,
   type BannerEntry,
+  dismissBanner,
   isBannerSeverity,
   isBannerSource,
+  isDismissed,
+  rearmDismissed,
   sanitizeBanners,
+  visibleBanners,
 } from "../lib/errorBanners";
 import {
   __resetSocketHealthForTests,
@@ -47,6 +52,7 @@ describe("errorBanners registry", () => {
     __resetSocketHealthForTests();
     __setConnectivityForTests(true);
     __resetSwRegistrationForTests();
+    __resetDismissedForTests();
     mockShouldShowRefresh.mockReturnValue(false);
   });
 
@@ -169,5 +175,77 @@ describe("closed-set boundary", () => {
     const kept = sanitizeBanners(raw);
     expect(kept).toHaveLength(1);
     expect(kept[0]?.message).toBe("ok");
+  });
+});
+
+// #207 — client-local per-source dismiss. Banners were STICKY: no × and no
+// auto-clear for sw-registration / bundle-refresh, so they piled up and
+// obscured the UI. The fix adds a × affordance whose state is client-local
+// (never fabricated server state — the invariant) and, crucially, RE-ARMS when
+// the underlying source recovers: dismissing hides THIS episode, but if the
+// source goes inactive and later re-fires, the banner returns. A dismiss that
+// stuck forever would mask a real recurring problem
+// (feedback_silent_retry_anti_pattern).
+describe("errorBanners dismiss", () => {
+  beforeEach(() => {
+    __resetSocketHealthForTests();
+    __setConnectivityForTests(true);
+    __resetSwRegistrationForTests();
+    __resetDismissedForTests();
+    mockShouldShowRefresh.mockReturnValue(false);
+  });
+
+  it("visibleBanners equals activeBanners when nothing is dismissed", () => {
+    tripWs(1006, "");
+    __setConnectivityForTests(false);
+    expect(visibleBanners().map((e) => e.source)).toEqual(activeBanners().map((e) => e.source));
+  });
+
+  it("dismissBanner hides only the dismissed source, leaving the rest visible", () => {
+    tripWs(1006, "");
+    __setConnectivityForTests(false);
+    expect(activeBanners()).toHaveLength(2);
+
+    dismissBanner("ws");
+    const visible = visibleBanners();
+    expect(visible.map((e) => e.source)).toEqual(["connectivity"]);
+    // activeBanners (the raw derivation) is unchanged — dismiss is a render
+    // filter, not a mutation of the source signals.
+    expect(activeBanners()).toHaveLength(2);
+  });
+
+  it("isDismissed reflects the dismissed set", () => {
+    expect(isDismissed("ws")).toBe(false);
+    dismissBanner("ws");
+    expect(isDismissed("ws")).toBe(true);
+    expect(isDismissed("connectivity")).toBe(false);
+  });
+
+  it("re-arms a dismissed source once it recovers, so a later re-fire shows again", () => {
+    tripWs(1006, "");
+    expect(visibleBanners().some((e) => e.source === "ws")).toBe(true);
+
+    dismissBanner("ws");
+    expect(visibleBanners().some((e) => e.source === "ws")).toBe(false);
+
+    // Source recovers → no longer active → the dismiss must be forgotten so a
+    // future failure is not silently suppressed.
+    recordSocketOpen();
+    rearmDismissed(activeBanners());
+    expect(isDismissed("ws")).toBe(false);
+
+    // It re-fires → visible again, no lingering dismiss.
+    tripWs(1006, "");
+    expect(visibleBanners().some((e) => e.source === "ws")).toBe(true);
+  });
+
+  it("keeps a dismissal armed while the same source is still active", () => {
+    tripWs(1006, "");
+    dismissBanner("ws");
+    // Still failing — rearm must NOT clear the dismiss (that would re-show the
+    // banner the user just dismissed on every render tick).
+    rearmDismissed(activeBanners());
+    expect(isDismissed("ws")).toBe(true);
+    expect(visibleBanners().some((e) => e.source === "ws")).toBe(false);
   });
 });

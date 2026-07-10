@@ -1,3 +1,4 @@
+import { createSignal } from "solid-js";
 import { performRefresh, shouldShowRefreshBanner } from "./bundleHash";
 import { isOffline } from "./connectivity";
 import { shouldShowBanner, socketHealth } from "./socketHealth";
@@ -141,4 +142,78 @@ export function activeBanners(): BannerEntry[] {
   }
 
   return entries;
+}
+
+// #207 — client-local per-source dismiss.
+//
+// Pre-#207 the banners were STICKY: sw-registration and bundle-refresh have no
+// auto-clear event (only a reload re-attempts them), so once shown they stayed
+// up with no × and no timeout, piling up and obscuring the UI. The fix gives
+// every banner a × affordance whose dismissed-state lives HERE, client-side.
+//
+// Two design constraints from CLAUDE.md, both load-bearing:
+//   1. NEVER fabricate server state. The source signals (socketHealth,
+//      connectivity, swRegistration, bundleHash) remain the single owners of
+//      whether a source is active. Dismiss is a pure RENDER FILTER layered on
+//      top — `activeBanners()` is unchanged; `visibleBanners()` is
+//      `activeBanners()` minus the dismissed set.
+//   2. A dismiss must NOT permanently silence a recurring fault
+//      (feedback_silent_retry_anti_pattern). So the dismiss is scoped to the
+//      CURRENT episode: `rearmDismissed()` (called by the owner on every
+//      re-derivation) drops any dismissed source that is no longer active. When
+//      the source recovers and later re-fires, its banner returns.
+//
+// Why NO auto-dismiss timer: ws + connectivity already auto-clear when the
+// underlying condition recovers (a healthy open resets errorCount; the `online`
+// event clears offline) — a timer hiding them WHILE the fault persists would
+// mask a live problem. sw-registration is the #181 diagnostic surface and
+// bundle-refresh is user-actionable; neither should vanish on a clock the user
+// didn't ask for. The × (with re-arm) is the whole fix.
+const [dismissed, setDismissed] = createSignal<ReadonlySet<BannerSource>>(new Set<BannerSource>());
+
+// True iff this source is currently dismissed (hidden by an explicit ×).
+export function isDismissed(source: BannerSource): boolean {
+  return dismissed().has(source);
+}
+
+// Hide this source's banner client-locally until it recovers + re-fires.
+export function dismissBanner(source: BannerSource): void {
+  const next = new Set<BannerSource>(dismissed());
+  next.add(source);
+  setDismissed(next);
+}
+
+// Re-arm: forget any dismissal whose source is no longer in `active`. Called by
+// the owner with the freshly-derived `activeBanners()` on every render so a
+// recovered-then-recurring source surfaces again instead of staying silenced.
+// No-op (no signal write) when nothing changes, so it's safe inside a tracked
+// scope — it won't loop the reactive graph.
+export function rearmDismissed(active: readonly BannerEntry[]): void {
+  const current = dismissed();
+  if (current.size === 0) return;
+  const activeSources = new Set(active.map((e) => e.source));
+  let changed = false;
+  const next = new Set<BannerSource>();
+  for (const source of current) {
+    if (activeSources.has(source)) {
+      next.add(source);
+    } else {
+      changed = true;
+    }
+  }
+  if (changed) setDismissed(next);
+}
+
+// The render-facing projection: active sources minus the dismissed ones. This
+// is what the owner (`ErrorBanners.tsx`) maps onto `BannerSlot`s.
+export function visibleBanners(): BannerEntry[] {
+  const active = activeBanners();
+  const hidden = dismissed();
+  return active.filter((e) => !hidden.has(e.source));
+}
+
+// Test-only — clear the dismissed set. Production code never calls this; the ×
+// (dismiss) and recovery (rearm) are the only production mutators.
+export function __resetDismissedForTests(): void {
+  setDismissed(new Set<BannerSource>());
 }

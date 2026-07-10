@@ -62,6 +62,40 @@ test("WS-health source renders the generic close-code entry, auto-dismisses on o
   await expect(page.locator(WS)).toHaveCount(0);
 });
 
+// #207 — every banner carries a × dismiss affordance. Clicking it hides the
+// banner client-locally (no fabricated server state; the source signal is
+// untouched). Driven via the SAME injected-event hook the specs above use — no
+// real backend op, so the shared testnet is never poisoned.
+test("clicking the × dismisses a banner (#207)", async ({ page }) => {
+  await loginAs(page, getSeededVjt());
+  await tripWsUnhealthy(page, 1006, "");
+
+  const ws = page.locator(WS);
+  await expect(ws).toBeVisible();
+
+  await ws.locator(".error-banner-dismiss").click();
+  await expect(page.locator(WS)).toHaveCount(0);
+});
+
+// #207 — the dismiss is per-episode, not permanent: a dismissed source that
+// recovers (recordOpen resets errorCount) and later re-fails must surface the
+// banner again, so a real recurring fault is never silently suppressed.
+test("a dismissed banner re-arms and re-appears after the source recovers + re-fires (#207)", async ({
+  page,
+}) => {
+  await loginAs(page, getSeededVjt());
+
+  await tripWsUnhealthy(page, 1006, "");
+  await expect(page.locator(WS)).toBeVisible();
+  await page.locator(WS).locator(".error-banner-dismiss").click();
+  await expect(page.locator(WS)).toHaveCount(0);
+
+  // Recover, then fail again — the previously-dismissed banner returns.
+  await page.evaluate(() => window.__cic_socketHealth?.recordOpen());
+  await tripWsUnhealthy(page, 1006, "");
+  await expect(page.locator(WS)).toBeVisible();
+});
+
 test("WS-health generic entry surfaces the real close code + reason for non-1006", async ({
   page,
 }) => {

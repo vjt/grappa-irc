@@ -1,6 +1,12 @@
-import { type Component, For, Show } from "solid-js";
+import { type Component, createEffect, For, Show } from "solid-js";
 import BannerSlot from "./BannerSlot";
-import { activeBanners, sanitizeBanners } from "./lib/errorBanners";
+import {
+  activeBanners,
+  dismissBanner,
+  rearmDismissed,
+  sanitizeBanners,
+  visibleBanners,
+} from "./lib/errorBanners";
 
 // #119 — unified stacked error-banner owner.
 //
@@ -16,15 +22,31 @@ import { activeBanners, sanitizeBanners } from "./lib/errorBanners";
 // (see `lib/errorBanners.ts`); `sanitizeBanners` enforces the closed-set
 // source/severity contract at the render boundary; each entry renders through
 // the pure `BannerSlot`. cic never originates banner state.
+//
+// #207 — the owner also holds the client-local dismiss state (in
+// `lib/errorBanners.ts`). Render `visibleBanners()` (active minus dismissed);
+// pass each slot an `onDismiss` that hides that source until it recovers. An
+// effect calls `rearmDismissed(activeBanners())` whenever the active set
+// changes, so a dismissed source that recovers and later re-fires surfaces
+// again — a × must never permanently silence a real fault.
 
 const ErrorBanners: Component = () => {
-  const banners = (): ReturnType<typeof activeBanners> => sanitizeBanners(activeBanners());
+  const banners = (): ReturnType<typeof visibleBanners> => sanitizeBanners(visibleBanners());
+
+  // Re-arm dismissed sources that are no longer active. Kept in an effect (not
+  // the render derivation) so the conditional signal write stays out of the
+  // tracked <For> scope — rearmDismissed no-ops when nothing changed, so this
+  // converges without looping the reactive graph.
+  createEffect(() => rearmDismissed(activeBanners()));
+
   return (
     <Show when={banners().length > 0}>
       {/* <section> with an accessible name is a region landmark — the
           semantic form of role="region" (biome a11y/useSemanticElements). */}
       <section class="error-banners" aria-label="Connection and app status">
-        <For each={banners()}>{(entry) => <BannerSlot entry={entry} />}</For>
+        <For each={banners()}>
+          {(entry) => <BannerSlot entry={entry} onDismiss={() => dismissBanner(entry.source)} />}
+        </For>
       </section>
     </Show>
   );

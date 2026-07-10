@@ -31,7 +31,7 @@ describe("BannerSlot", () => {
     expect(info.querySelector(".error-banner")?.getAttribute("role")).toBe("status");
   });
 
-  it("renders no button when the entry has no actionHint", () => {
+  it("renders no button when the entry has no actionHint and no onDismiss", () => {
     const { container } = render(() => (
       <BannerSlot entry={{ source: "connectivity", severity: "error", message: "offline" }} />
     ));
@@ -51,5 +51,33 @@ describe("BannerSlot", () => {
     expect(button).toBeInTheDocument();
     button.click();
     expect(onAction).toHaveBeenCalledTimes(1);
+  });
+
+  // #207 — every banner carries a × dismiss affordance. The owner passes an
+  // onDismiss handler; the slot renders a labelled close button that invokes it
+  // (the owner already knows which source this slot is, so no argument needed).
+  it("renders a × dismiss button whose click invokes onDismiss", () => {
+    const onDismiss = vi.fn();
+    const entry: BannerEntry = { source: "ws", severity: "error", message: "boom" };
+    render(() => <BannerSlot entry={entry} onDismiss={onDismiss} />);
+    const close = screen.getByRole("button", { name: /dismiss/i });
+    expect(close).toBeInTheDocument();
+    close.click();
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the × dismiss button alongside the actionHint button", () => {
+    const onDismiss = vi.fn();
+    const entry: BannerEntry = {
+      source: "bundle-refresh",
+      severity: "info",
+      message: "New version available",
+      actionHint: { label: "Refresh", onAction: vi.fn() },
+    };
+    render(() => <BannerSlot entry={entry} onDismiss={onDismiss} />);
+    // Action + dismiss coexist — an actionable banner is still dismissable
+    // (client-local hide, re-arms on recovery).
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /dismiss/i })).toBeInTheDocument();
   });
 });
