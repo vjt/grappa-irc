@@ -953,7 +953,15 @@ export type WireUserEvent =
   // wireTypes.ts).
   | { kind: "directory_progress"; network: string; count: number }
   | { kind: "directory_complete"; network: string; total: number }
-  | { kind: "directory_failed"; network: string; reason: string };
+  | { kind: "directory_failed"; network: string; reason: string }
+  // #100 — transient upstream (re)connect indicator. PRESENTATIONAL ONLY:
+  // "connecting" fires as a Session.Server (re)establishes the upstream
+  // socket, "connected" on 001 RPL_WELCOME. cic mirrors it into a
+  // per-network "reconnecting…" sidebar badge (reconnectingStatus.ts).
+  // NOT the durable `connection_state` — that stays `connected` through a
+  // transient reconnect; the badge is an ephemeral overlay. Rides the user
+  // topic with the `network` slug discriminator (mirrors away_confirmed).
+  | { kind: "connection_progress"; network: string; state: "connecting" | "connected" };
 
 // M-11 — Admin events stream. Discriminated union mirrors
 // `Grappa.AdminEvents.Wire`'s closed `event_kind` enum. Server emits

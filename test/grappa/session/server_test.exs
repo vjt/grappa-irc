@@ -3050,6 +3050,53 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "#100 connection_progress badge broadcasts (presentational)" do
+    # #100 — the server emits a transient connection_progress signal on the
+    # USER topic (like every network-scoped Session event) so cic can render
+    # a per-network "reconnecting…" badge. state "connecting" fires when the
+    # Session starts its client-connect attempt; "connected" fires on 001.
+    # This is NOT a connection_state DB transition — purely presentational.
+
+    test "emits connecting on client-start then connected on 001" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+
+      # "connecting" fires as the Session establishes the upstream socket —
+      # keyed by the network slug so cic scopes the badge per-network.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :connection_progress,
+                         network: network_slug,
+                         state: "connecting"
+                       }
+                     },
+                     1_000
+
+      assert network_slug == network.slug
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      # "connected" clears the badge the instant 001 lands.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :connection_progress,
+                         network: ^network_slug,
+                         state: "connected"
+                       }
+                     },
+                     1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "*Serv-targeted PRIVMSG skips scrollback + PubSub (W12 privacy)" do
     test "NickServ target: no row, no broadcast, returns {:ok, :no_persist}" do
       {server, port} = start_server()

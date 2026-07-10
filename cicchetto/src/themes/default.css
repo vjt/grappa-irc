@@ -729,6 +729,17 @@ html.resize-dragging * {
   font-size: 0.75rem;
 }
 
+/* #100 — transient reconnect indicator on the network-header row. Same
+   muted-pill treatment as the away badge; italic to read as "in flight"
+   (mirrors the pending-window italic convention). Driven by the
+   connection_progress server event; clears on 001. */
+.sidebar-reconnecting-badge {
+  margin-left: 0.4rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-style: italic;
+}
+
 /* CP15 B5 — pending JOIN visual: distinct from greyed (italic + dim is
    "this isn't live"; pending is "we asked, awaiting upstream echo"). */
 .sidebar-window-pending {

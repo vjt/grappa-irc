@@ -21,6 +21,7 @@ import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks"
 import { setPeerAway } from "./peerAway";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { clearSeen } from "./reconnectBackfill";
+import { setReconnecting } from "./reconnectingStatus";
 import { purgeScrollback } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { setServerReply } from "./serverReplyModal";
@@ -235,6 +236,16 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       if (typeof r.network !== "string" || (r.state !== "present" && r.state !== "away"))
         return null;
       return { kind: "away_confirmed", network: r.network, state: r.state };
+    case "connection_progress":
+      // #100 — transient reconnect badge signal. Closed state set enforced
+      // at the boundary (mirrors away_confirmed) so a malformed value can't
+      // corrupt the reconnectingByNetwork store.
+      if (
+        typeof r.network !== "string" ||
+        (r.state !== "connecting" && r.state !== "connected")
+      )
+        return null;
+      return { kind: "connection_progress", network: r.network, state: r.state };
     case "own_nick_changed":
       if (typeof r.network_id !== "number" || typeof r.nick !== "string") return null;
       return { kind: "own_nick_changed", network_id: r.network_id, nick: r.nick };
@@ -705,6 +716,18 @@ createRoot(() => {
           // where Sidebar saw the new state but HomePane hadn't yet.
           patchHomeNetwork(payload.network);
           refetchNetworks();
+          // #100 — clear a stuck "reconnecting…" badge on a SETTLED state.
+          // The badge is set on connection_progress "connecting" and cleared
+          // on "connected" (001). But a reconnect that ends terminally —
+          // k-line / permanent-SASL → connection_state :failed, or an
+          // operator /disconnect → :parked — never emits "connected", so
+          // without this the badge would stay stuck. `parked`/`failed` are
+          // non-connecting settled states, so clear the overlay. `connected`
+          // is already cleared by connection_progress; clearing here too is
+          // idempotent.
+          if (payload.to === "parked" || payload.to === "failed") {
+            setReconnecting(payload.network_slug, false);
+          }
           return;
 
         case "window_pending":
@@ -921,6 +944,14 @@ createRoot(() => {
           return;
         case "directory_failed":
           void onDirectoryFailed(payload.network);
+          return;
+
+        case "connection_progress":
+          // #100 — flip the per-network "reconnecting…" sidebar badge.
+          // "connecting" (a Session (re)establishing the upstream socket)
+          // shows it; "connected" (001 RPL_WELCOME) clears it. Presentational
+          // overlay only — the durable connection_state is untouched.
+          setReconnecting(payload.network, payload.state === "connecting");
           return;
 
         default:

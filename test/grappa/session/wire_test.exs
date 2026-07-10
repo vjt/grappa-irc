@@ -434,6 +434,34 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "connection_progress/2 (#100)" do
+    test "carries the connecting/connected state string (atom→string at the wire boundary)" do
+      assert Wire.connection_progress("azzurra", :connecting) == %{
+               kind: :connection_progress,
+               network: "azzurra",
+               state: "connecting"
+             }
+
+      assert Wire.connection_progress("azzurra", :connected) == %{
+               kind: :connection_progress,
+               network: "azzurra",
+               state: "connected"
+             }
+    end
+
+    test "rejects unknown atoms (closed set enforced at the boundary)" do
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :connection_progress, ["azzurra", :parked])
+      end
+    end
+
+    test "rejects string input (callers pass the atom, not a string)" do
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :connection_progress, ["azzurra", "connecting"])
+      end
+    end
+  end
+
   describe "mentions_bundle/5" do
     test "projects each Message.t() to {server_time, channel, sender, body, kind} per CP15-decision; kind atom→string" do
       m1 = %Message{
@@ -733,7 +761,9 @@ defmodule Grappa.Session.WireTest do
         Wire.invite_ack("net", "#italia", "alice"),
         Wire.lusers_bundle("net", %{}),
         Wire.whowas_bundle("net", "alice", %{}),
-        Wire.whowas_bundle("net", "ghost", %{not_found: true})
+        Wire.whowas_bundle("net", "ghost", %{not_found: true}),
+        Wire.connection_progress("net", :connecting),
+        Wire.connection_progress("net", :connected)
       ]
 
       for p <- payloads do

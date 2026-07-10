@@ -9,6 +9,7 @@ import { type ChannelKey, channelKey, decodeChannelKey } from "./lib/channelKey"
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, isAdmin, networkBySlug, networks } from "./lib/networks";
 import { openQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
+import { reconnectingByNetwork } from "./lib/reconnectingStatus";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import { closeQueryWindow, confirmDisconnectNetwork, confirmLeaveChannel } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
@@ -342,6 +343,17 @@ const Sidebar: Component<Props> = () => {
                       server event via awayStatus.ts. */}
                     <Show when={awayByNetwork()[network.slug]}>
                       <span class="sidebar-away-badge">[away]</span>
+                    </Show>
+                    {/* #100 — transient reconnect indicator. Surfaces on the
+                      network-header row while a Session (re)establishes the
+                      upstream socket after a drop. Driven by the
+                      `connection_progress` server event via
+                      reconnectingStatus.ts; presentational overlay only (the
+                      durable connection_state is unchanged). Clears on 001. */}
+                    <Show when={reconnectingByNetwork()[network.slug]}>
+                      <span class="sidebar-reconnecting-badge" data-testid="reconnecting-badge">
+                        reconnecting…
+                      </span>
                     </Show>
                     {/* CP13 — server-window receives :notice rows for server-routed
                       numerics + NickServ + MOTD + ChanServ-fallback. Same badge

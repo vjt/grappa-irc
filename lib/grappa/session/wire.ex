@@ -90,6 +90,7 @@ defmodule Grappa.Session.Wire do
           | :directory_progress
           | :directory_complete
           | :directory_failed
+          | :connection_progress
 
   @type channels_changed_payload :: %{kind: :channels_changed}
 
@@ -477,6 +478,28 @@ defmodule Grappa.Session.Wire do
           kind: :directory_failed,
           network: String.t(),
           reason: String.t()
+        }
+
+  @typedoc """
+  #100 — transient upstream-connection progress signal, PRESENTATIONAL
+  ONLY. `state` is `"connecting"` while a `Session.Server` (re)spawn is
+  establishing the upstream socket + registering, flipped to
+  `"connected"` on `001 RPL_WELCOME`. cic mirrors it into a per-network
+  "reconnecting…" sidebar badge.
+
+  This is NOT the durable `Credential.connection_state`
+  (`:connected | :parked | :failed`) — that DB state stays `:connected`
+  through a transient reconnect (a crashed pid respawning is not an
+  operator-intent state change; the DB/live divergence is the honesty
+  signal per the CLAUDE.md invariant). The badge is an ephemeral overlay
+  the server emits; cic never originates it. Broadcast on `Topic.user/1`
+  (like every other network-scoped Session event) with the `network`
+  slug discriminator — cic has no per-network channel to receive on.
+  """
+  @type connection_progress_payload :: %{
+          kind: :connection_progress,
+          network: String.t(),
+          state: String.t()
         }
 
   @doc """
@@ -1030,5 +1053,19 @@ defmodule Grappa.Session.Wire do
   def directory_failed(network_slug, reason)
       when is_binary(network_slug) and is_binary(reason) do
     %{kind: :directory_failed, network: network_slug, reason: reason}
+  end
+
+  @doc """
+  #100 — transient connection-progress signal for the cic reconnecting
+  badge. `state` ∈ `:connecting | :connected`; serialized to the string
+  the wire carries (mirrors `away_confirmed/2`'s atom→string projection).
+  See `t:connection_progress_payload/0` for why this is distinct from the
+  DB `connection_state`.
+  """
+  @spec connection_progress(String.t(), :connecting | :connected) ::
+          connection_progress_payload()
+  def connection_progress(network_slug, state)
+      when is_binary(network_slug) and state in [:connecting, :connected] do
+    %{kind: :connection_progress, network: network_slug, state: Atom.to_string(state)}
   end
 end

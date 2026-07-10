@@ -553,7 +553,8 @@ export type SessionWireWireEventKind =
   | "whowas_bundle"
   | "directory_progress"
   | "directory_complete"
-  | "directory_failed";
+  | "directory_failed"
+  | "connection_progress";
 
 export type SessionWireChannelsChangedPayload = {
   kind: "channels_changed";
@@ -797,6 +798,12 @@ export type SessionWireDirectoryFailedPayload = {
   reason: string;
 };
 
+export type SessionWireConnectionProgressPayload = {
+  kind: "connection_progress";
+  network: string;
+  state: string;
+};
+
 export type WireSessionEvent =
   | SessionWireChannelsChangedPayload
   | SessionWireOwnNickChangedPayload
@@ -821,7 +828,8 @@ export type WireSessionEvent =
   | SessionWireWhowasBundlePayload
   | SessionWireDirectoryProgressPayload
   | SessionWireDirectoryCompletePayload
-  | SessionWireDirectoryFailedPayload;
+  | SessionWireDirectoryFailedPayload
+  | SessionWireConnectionProgressPayload;
 
 // === Grappa.Visitors.Wire ===
 

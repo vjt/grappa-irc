@@ -856,6 +856,13 @@ defmodule Grappa.Session.Server do
   end
 
   defp do_start_client(client_opts, state) do
+    # #100 — presentational "connecting…" badge: we're about to establish
+    # the upstream socket (initial spawn OR a :transient respawn after a
+    # drop). Emit before the connect attempt so cic shows the badge for the
+    # whole connect+register window; it clears on 001 (connection_connected).
+    # This is NOT a connection_state change — the DB row stays :connected.
+    broadcast_connection_progress(state, :connecting)
+
     case Client.start_link(client_opts) do
       {:ok, client} ->
         {:noreply, %{state | client: client}}
@@ -1911,6 +1918,12 @@ defmodule Grappa.Session.Server do
 
     stable_timer =
       Process.send_after(self(), :connection_stable, state.connection_stable_ms)
+
+    # #100 — clear the presentational "connecting…" badge: 001 means the
+    # upstream accepted us and we're live. Distinct from the stable-gate
+    # timer above (which paces the Backoff-ladder RESET, 60s) — the badge
+    # flips the instant we're connected, not after the stability window.
+    broadcast_connection_progress(state, :connected)
 
     delegate(msg, %{state | connection_stable_timer: stable_timer})
   end
@@ -3712,6 +3725,25 @@ defmodule Grappa.Session.Server do
         Topic.user(state.subject_label),
         payload
       )
+  end
+
+  # #100 — presentational connection-progress badge. Broadcasts
+  # `connection_progress` on the user topic (same carrier as every other
+  # network-scoped Session event; cic has no per-network channel). `state`
+  # ∈ `:connecting | :connected`. NOT a `connection_state` DB transition —
+  # this is an ephemeral overlay cic mirrors into a "reconnecting…" sidebar
+  # badge; the durable state stays `:connected` through a transient
+  # reconnect. Fire-and-forget; a broadcast failure telemeters via
+  # `broadcast_event/2` and must not disturb the connect path.
+  @spec broadcast_connection_progress(t(), :connecting | :connected) :: :ok
+  defp broadcast_connection_progress(state, progress) do
+    _ =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.connection_progress(state.network_slug, progress)
+      )
+
+    :ok
   end
 
   # Channel directory (#84) C3 — per-numeric handling of an in-flight LIST

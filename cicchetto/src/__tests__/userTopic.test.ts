@@ -26,6 +26,7 @@ vi.mock("../lib/socket", () => ({
 vi.mock("../lib/networks", () => ({
   user: vi.fn(() => ({ kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" })),
   refetchChannels: vi.fn(),
+  refetchNetworks: vi.fn(),
   networks: vi.fn(() => []),
   mutateNetworkNick: vi.fn(),
 }));
@@ -52,6 +53,14 @@ vi.mock("../lib/windowState", () => ({
 
 vi.mock("../lib/awayStatus", () => ({
   setAwayState: vi.fn(),
+}));
+
+vi.mock("../lib/reconnectingStatus", () => ({
+  setReconnecting: vi.fn(),
+}));
+
+vi.mock("../lib/home", () => ({
+  patchHomeNetwork: vi.fn(),
 }));
 
 vi.mock("../lib/mentionsWindow", () => ({
@@ -110,6 +119,28 @@ vi.mock("../lib/channelDirectory", () => ({
   onDirectoryComplete: vi.fn(),
   onDirectoryFailed: vi.fn(),
 }));
+
+// #100 — builds a valid connection_state_changed payload (the narrower
+// requires the full set of top-level + nested `network` fields).
+function connectionStateChanged(slug: string, to: "connected" | "parked" | "failed") {
+  return {
+    kind: "connection_state_changed",
+    user_id: "u1",
+    network_id: 1,
+    network_slug: slug,
+    from: "connected",
+    to,
+    reason: to === "connected" ? null : "test reason",
+    at: "2026-07-10T00:00:00Z",
+    network: {
+      slug,
+      nick: "vjt-grappa",
+      connection_state: to,
+      connection_state_reason: to === "connected" ? null : "test reason",
+      connection_state_changed_at: "2026-07-10T00:00:00Z",
+    },
+  };
+}
 
 describe("userTopic", () => {
   beforeEach(async () => {
@@ -474,6 +505,69 @@ describe("userTopic", () => {
         state: "present",
       });
       expect(mw.clearMentionsBundle).not.toHaveBeenCalled();
+    });
+  });
+
+  // #100 — connection_progress dispatch: the transient reconnect badge
+  // signal flips reconnectingByNetwork via setReconnecting. "connecting"
+  // → true (badge shows); "connected" → false (badge clears).
+  describe("connection_progress arm (#100)", () => {
+    it("sets reconnecting=true on state connecting", async () => {
+      const rs = await import("../lib/reconnectingStatus");
+      channelMock.fireEvent({
+        kind: "connection_progress",
+        network: "bahamut-test",
+        state: "connecting",
+      });
+      expect(rs.setReconnecting).toHaveBeenCalledWith("bahamut-test", true);
+    });
+
+    it("sets reconnecting=false on state connected", async () => {
+      const rs = await import("../lib/reconnectingStatus");
+      channelMock.fireEvent({
+        kind: "connection_progress",
+        network: "bahamut-test",
+        state: "connected",
+      });
+      expect(rs.setReconnecting).toHaveBeenCalledWith("bahamut-test", false);
+    });
+
+    it("drops payload with an unknown state (no setReconnecting call)", async () => {
+      const rs = await import("../lib/reconnectingStatus");
+      channelMock.fireEvent({
+        kind: "connection_progress",
+        network: "bahamut-test",
+        state: "parked",
+      });
+      expect(rs.setReconnecting).not.toHaveBeenCalled();
+    });
+
+    it("drops payload missing network (no setReconnecting call)", async () => {
+      const rs = await import("../lib/reconnectingStatus");
+      channelMock.fireEvent({ kind: "connection_progress", state: "connecting" });
+      expect(rs.setReconnecting).not.toHaveBeenCalled();
+    });
+
+    // #100 — a reconnect that ends terminally (k-line → :failed) or is
+    // operator-parked (:parked) never emits connection_progress "connected",
+    // so the badge would stay stuck. The connection_state_changed arm clears
+    // it on those settled non-connecting states.
+    it("clears reconnecting when connection_state_changed → failed", async () => {
+      const rs = await import("../lib/reconnectingStatus");
+      channelMock.fireEvent(connectionStateChanged("bahamut-test", "failed"));
+      expect(rs.setReconnecting).toHaveBeenCalledWith("bahamut-test", false);
+    });
+
+    it("clears reconnecting when connection_state_changed → parked", async () => {
+      const rs = await import("../lib/reconnectingStatus");
+      channelMock.fireEvent(connectionStateChanged("bahamut-test", "parked"));
+      expect(rs.setReconnecting).toHaveBeenCalledWith("bahamut-test", false);
+    });
+
+    it("does NOT clear reconnecting when connection_state_changed → connected", async () => {
+      const rs = await import("../lib/reconnectingStatus");
+      channelMock.fireEvent(connectionStateChanged("bahamut-test", "connected"));
+      expect(rs.setReconnecting).not.toHaveBeenCalled();
     });
   });
 
