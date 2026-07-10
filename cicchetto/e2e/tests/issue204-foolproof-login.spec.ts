@@ -124,8 +124,8 @@ test.describe("#204 foolproof login @webkit mobile", () => {
     await toggle.tap();
     await expect(page.getByLabel(/password/i)).toBeVisible();
 
-    // Connect + nick + toggle are comfortably tall (≥44px) — the tap-target
-    // contract from the CSS. Assert the rendered box, not the declared rule.
+    // Connect is comfortably tall (≥44px) — the tap-target contract from
+    // the CSS, asserted on the rendered box rather than the declared rule.
     const connectBox = await page.getByRole("button", { name: /^connect$/i }).boundingBox();
     expect(connectBox?.height ?? 0).toBeGreaterThanOrEqual(44);
   });

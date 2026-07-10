@@ -122,6 +122,9 @@ const Login: Component = () => {
   // on unmount so no timer survives the connecting state.
   let rotationTimer: ReturnType<typeof setInterval> | undefined;
   const startRotation = (): void => {
+    // Defensive: never leave a prior interval orphaned if start is called
+    // twice without an intervening stop.
+    stopRotation();
     setMsgIndex(0);
     rotationTimer = setInterval(() => {
       setMsgIndex((i) => Math.min(i + 1, CONNECTING_MESSAGES.length - 1));
@@ -174,6 +177,11 @@ const Login: Component = () => {
       } else {
         await auth.login(id, pwd, captchaToken);
       }
+      // Stop the cosmetic rotation before we leave — navigation unmounts
+      // Login (onCleanup would catch it too), but being explicit means a
+      // future route guard that bounces back to /login without unmounting
+      // can't leave the interval running.
+      stopRotation();
       navigate("/", { replace: true });
     } catch (err) {
       setConnecting(false);
