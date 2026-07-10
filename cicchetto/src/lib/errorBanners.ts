@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { createSignal, untrack } from "solid-js";
 import { performRefresh, shouldShowRefreshBanner } from "./bundleHash";
 import { isOffline } from "./connectivity";
 import { shouldShowBanner, socketHealth } from "./socketHealth";
@@ -189,7 +189,12 @@ export function dismissBanner(source: BannerSource): void {
 // No-op (no signal write) when nothing changes, so it's safe inside a tracked
 // scope — it won't loop the reactive graph.
 export function rearmDismissed(active: readonly BannerEntry[]): void {
-  const current = dismissed();
+  // Read the dismissed set UNTRACKED: the owner runs this inside a createEffect
+  // that should depend only on the active set (passed in as `active`). Tracking
+  // `dismissed()` here would make the effect self-trigger on its own write — a
+  // bounded, converging no-op run, but the untrack makes the reactive
+  // dependency exactly match intent (re-arm when the ACTIVE set changes).
+  const current = untrack(dismissed);
   if (current.size === 0) return;
   const activeSources = new Set(active.map((e) => e.source));
   let changed = false;
