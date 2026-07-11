@@ -31,6 +31,7 @@ defmodule Grappa.Networks.Network do
   @type t :: %__MODULE__{
           id: integer() | nil,
           slug: String.t() | nil,
+          visitor_enabled: boolean() | nil,
           max_concurrent_visitor_sessions: non_neg_integer() | nil,
           max_concurrent_user_sessions: non_neg_integer() | nil,
           max_per_ip: non_neg_integer() | nil,
@@ -43,6 +44,15 @@ defmodule Grappa.Networks.Network do
 
   schema "networks" do
     field :slug, :string
+    # #211 phase 1 — runtime per-network visitor allowlist flag.
+    # Replaces the compile-time `:visitor_network` pin: an admin can
+    # toggle which networks accept visitor attachment without a restart.
+    # The login/attach READ of this column is phase 3; phase 1 only lands
+    # the column + field + default. Default `false` — visitors disabled
+    # per-network unless an admin opts a network in ("play safe", vjt
+    # 2026-07-11). Schema default mirrors the DB column default so
+    # `Repo.insert/2` returns a struct matching the persisted row.
+    field :visitor_enabled, :boolean, default: false
     # U-1 split: visitor + user caps independently. Visitor cap inherits
     # the historic `max_concurrent_sessions` value via migration rename;
     # user cap defaults to 3 at both the DB level (column DEFAULT 3) and
@@ -83,6 +93,7 @@ defmodule Grappa.Networks.Network do
     network
     |> cast(attrs, [
       :slug,
+      :visitor_enabled,
       :max_concurrent_visitor_sessions,
       :max_concurrent_user_sessions,
       :max_per_ip

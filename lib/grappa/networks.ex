@@ -51,6 +51,15 @@ defmodule Grappa.Networks do
       Grappa.Vault,
       Grappa.Wire.Time
     ],
+    # `Visitors.Visitor` is referenced by `Networks.Credential` (the
+    # #211 `belongs_to :visitor` XOR association) in struct-only form.
+    # Declared as a dirty xref — NOT a real dep — because a
+    # `Networks → Visitors` edge would close the `Visitors → Networks`
+    # cycle (Visitors deps Networks for slug lookup + SessionPlan). The
+    # FK reference carries no behaviour we'd want Boundary to gate;
+    # mirrors the identical handling in `Grappa.Scrollback` /
+    # `Grappa.ReadCursor` for their own `belongs_to :visitor`.
+    dirty_xrefs: [Grappa.Visitors.Visitor],
     exports: [
       AdminWire,
       Credential,

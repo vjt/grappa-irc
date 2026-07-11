@@ -17735,3 +17735,109 @@ the own-presence unread-marker/badge suppression, not the focus mechanism.
 
 **Deploy class: cic-only → HOT** (`subscribe.ts` + tests; no `.ex` touched, no
 migration).
+
+## 2026-07-11 — #211 phase 1 (L2 epic): Credential becomes subject-polymorphic (XOR FK) + `networks.visitor_enabled`
+
+First phase of the #211 L2 epic (unify visitor identity onto the user
+Credential model → visitors ≈ users, multi-network visitors). **L2
+confirmed by vjt; L3 (full `subjects`+`subject_id` merge) DEFERRED.**
+Phase 1 is **schema EXPAND only** — no behavior cutover, no drops. It
+rode a combined COLD deploy window with #152 + #200, so the hard
+constraints were: strictly expand-only, rollback-safe, backfill
+idempotent + zero-data-loss on real prod visitors.
+
+### What landed
+
+- **`network_credentials` promoted to the subject-XOR shape.** Gains a
+  nullable `visitor_id` (FK visitors, ON DELETE CASCADE) as the XOR
+  partner of `user_id` — the established `Grappa.Subject` pattern the 8
+  downstream tables already use (NOT a role/type flag; Rule-6 is not
+  triggered by XOR-FK). Enforced at 3 layers mirroring
+  `Grappa.ReadCursor.Cursor`: schema `validate_subject_xor/1` (errors on
+  synthetic `:subject` key), DB CHECK `network_credentials_subject_xor`,
+  and two partial unique indexes
+  (`(user_id,network_id) WHERE user_id IS NOT NULL` +
+  `(visitor_id,network_id) WHERE visitor_id IS NOT NULL`).
+- **`networks.visitor_enabled BOOLEAN NOT NULL DEFAULT false`** — the
+  runtime per-network visitor allowlist flag that will replace the
+  compile-time `:visitor_network` pin. Phase 1 lands ONLY the column +
+  schema field + `false` default ("play safe", vjt); the login/attach
+  READ + admin toggle endpoint are **phase 3**. Behavior-neutral now.
+
+### Why the composite PK had to go (the one structural change)
+
+Pre-#211 `network_credentials` was `PRIMARY KEY (user_id, network_id)`
+with `user_id NOT NULL`. A composite-PK column cannot be NULL, but a
+visitor credential carries `user_id IS NULL`; sqlite also rejects
+`ALTER TABLE ADD CONSTRAINT` and in-place PK drops. So the XOR promotion
+is a **table-recreate** (the `20260515005117_xor_fk_user_settings`
+template) that drops the composite PK for a **surrogate `id INTEGER PK
+AUTOINCREMENT`** — matching every other already-XOR table (read_cursors,
+query_windows, user_settings; none keep a composite). The surrogate is
+invisible to callers: every callsite keys by `(subject_id, network_id)`
+via `Repo.get_by`/`where`, never by PK struct identity. Per-subject
+uniqueness moved from the PK to the two partial indexes. Notably the
+named index `network_credentials_user_id_network_id_index` — which the
+changeset's `unique_constraint/3` already referenced but which NO
+migration ever actually created (the composite PK had provided the
+uniqueness) — is finally created here, alongside its visitor twin.
+
+### The identity columns already existed
+
+Every per-network identity column the epic scoped for visitors
+(`nick`/`ident`/`realname`/`sasl_user`/`password_encrypted`/
+`auth_method`/`last_joined_channels`) was ALREADY on Credential (users
+have them). So phase 1's net-new columns are exactly **two**:
+`visitor_id` + `visitor_enabled`. The shared identity-tuple EXTRACTION
+that kills the #152 duplication is **phase 2**, not phase 1.
+
+### Backfill (prod-critical, idempotent, zero-loss)
+
+A separate data migration (`20260711125000`) creates ONE Credential per
+existing visitor: `nick/ident/realname/last_joined_channels` copied;
+`network_id` resolved from `visitors.network_slug`; `auth_method` =
+`nickserv_identify` iff a committed password exists else `none` (mirrors
+`Visitors.SessionPlan.auth_method/1`); `sasl_user` = the visitor nick.
+Key decisions:
+
+- **`password_encrypted` is a raw ciphertext byte-copy in SQL** — both
+  columns are the same Cloak `EncryptedBinary` BLOB under the same
+  `Grappa.Vault`, so copying the stored bytes preserves
+  encryption-at-rest with NO decrypt/re-encrypt. A test asserts the
+  copied bytes are byte-identical AND that the vault decrypts them back
+  to the original plaintext.
+- **`inserted_at`/`updated_at` are COPIED from the visitor row**, not
+  stamped `now` in raw SQL — the visitor timestamps are already in the
+  exact ecto_sqlite3 `:utc_datetime_usec` storage shape, so they
+  round-trip through the loader guaranteed; a hand-built `strftime` risks
+  a format drift that only surfaces as a load crash. Semantically the
+  binding age IS the visitor age.
+- **Idempotent** via `WHERE NOT EXISTS (matching visitor credential)` —
+  the dry-run vjt ran against a COPY of the prod sqlite DB and the real
+  run are identical + repeatable.
+- **`expires_at`/`ip` STAY on the visitor identity row** — they are
+  identity/TTL lifecycle, not per-`(subject, network)` attributes.
+- **Orphan-slug visitors are skipped** (JOIN drops them; no Credential,
+  no error, visitor row untouched) — `Bootstrap.validate_visitor_networks!`
+  remains the loud boot-time signal for that case.
+
+### Expand→contract boundary (explicit)
+
+`Visitor` is UNTOUCHED this phase (expand rule): it keeps
+`network_slug` + its `(fold(nick), network_slug)` folded-unique index
+(#121) + all identity columns, because ~30 readers still assume
+`Visitor.network_slug` non-null. Dropping those is **phase 7
+(contract)**. The rfc1459 folded-nick UNIQUENESS therefore stays on
+`visitors` this phase and only migrates onto the Credential at phase 7
+(where it must reuse `Identifier.nick_fold` char-identical SQL). Phase 1
+adds no nick-bearing index, so the fold invariant is preserved by not
+being touched.
+
+Rollback: `down/0` reverts to the composite-PK user-only shape,
+discarding the backfilled visitor credentials (`WHERE user_id IS NOT
+NULL`) — visitor rows themselves are untouched, so no visitor data is
+lost. Full up→down→up round-trip verified.
+
+**Deploy class: COLD** (table-recreate + new columns + data backfill;
+the hot path skips `ecto.migrate`). Design comment: issue #211
+comment 4945661060.

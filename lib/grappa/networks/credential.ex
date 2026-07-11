@@ -20,12 +20,35 @@ defmodule Grappa.Networks.Credential do
   against upstream. Every other method REQUIRES a non-empty password;
   validation returns a normal changeset error on failure.
 
-  ## Composite primary key
+  ## Subject XOR (#211 phase 1)
 
-  `(user_id, network_id)` is the natural key — a user has at most one
-  credential per network. We don't carry a surrogate `id` because
-  every callsite (the operator mix tasks, future REST credentials
-  surface, the Session.Server boot path) already has both halves.
+  A credential is subject-polymorphic: exactly one of `:user_id` /
+  `:visitor_id` is set — the established `Grappa.Subject` XOR-FK pattern
+  the 8 downstream subject-scoped tables already use (NOT a role/type
+  flag; Rule-6 is not triggered by XOR-FK). Enforced at three layers,
+  mirroring `Grappa.ReadCursor.Cursor`:
+
+    * Schema-level `validate_subject_xor/1` (errors attach to the
+      synthetic `:subject` key for uniform client-side rendering).
+    * DB CHECK constraint `network_credentials_subject_xor`.
+    * Two partial unique indexes — `(user_id, network_id)
+      WHERE user_id IS NOT NULL` and `(visitor_id, network_id)
+      WHERE visitor_id IS NOT NULL` — so per-subject uniqueness holds
+      without NULL pairs colliding spuriously.
+
+  ## Surrogate primary key
+
+  A surrogate `id` autoincrement is the primary key. Pre-#211 the natural
+  key `(user_id, network_id)` WAS the composite PK — but a composite PK
+  column cannot be NULL, and a visitor credential carries `user_id IS
+  NULL`. So the XOR promotion (migration
+  `20260711123000_xor_fk_network_credentials`) dropped the composite PK
+  for a surrogate `id`, matching every other already-XOR table
+  (`read_cursors`, `query_windows`, `user_settings`). The surrogate is
+  invisible to callers: every callsite keys by `(subject_id, network_id)`
+  via `Repo.get_by`/`where`, never by PK struct identity. Per-subject
+  uniqueness now lives in the two partial unique indexes above rather
+  than the PK.
   """
   use Ecto.Schema
   import Ecto.Changeset
@@ -34,6 +57,7 @@ defmodule Grappa.Networks.Credential do
   alias Grappa.EncryptedBinary
   alias Grappa.IRC.{AuthFSM, Identifier}
   alias Grappa.Networks.Network
+  alias Grappa.Visitors.Visitor
 
   # The atom literal stays here (Ecto.Enum needs a compile-time literal for
   # validates_inclusion + DB cast); the @type forwards to AuthFSM so there
@@ -101,8 +125,11 @@ defmodule Grappa.Networks.Credential do
   @type connection_state :: :connected | :parked | :failed
 
   @type t :: %__MODULE__{
+          id: integer() | nil,
           user_id: Ecto.UUID.t() | nil,
           user: User.t() | Ecto.Association.NotLoaded.t() | nil,
+          visitor_id: Ecto.UUID.t() | nil,
+          visitor: Visitor.t() | Ecto.Association.NotLoaded.t() | nil,
           network_id: integer() | nil,
           network: Network.t() | Ecto.Association.NotLoaded.t() | nil,
           nick: String.t() | nil,
@@ -122,10 +149,10 @@ defmodule Grappa.Networks.Credential do
           updated_at: DateTime.t() | nil
         }
 
-  @primary_key false
   schema "network_credentials" do
-    belongs_to :user, User, type: :binary_id, primary_key: true
-    belongs_to :network, Network, primary_key: true
+    belongs_to :user, User, type: :binary_id
+    belongs_to :visitor, Visitor, type: :binary_id
+    belongs_to :network, Network
 
     field :nick, :string
     # GH #152 — the per-(user, network) IRC ident (the `user` slot of
@@ -191,6 +218,7 @@ defmodule Grappa.Networks.Credential do
     credential
     |> cast(attrs, [
       :user_id,
+      :visitor_id,
       :network_id,
       :nick,
       :ident,
@@ -207,7 +235,12 @@ defmodule Grappa.Networks.Credential do
     ])
     |> canonicalize_channel_lists()
     |> sanitize_ident()
-    |> validate_required([:user_id, :network_id, :nick, :auth_method])
+    |> validate_required([:network_id, :nick, :auth_method])
+    # #211 — subject XOR: exactly one of user_id / visitor_id. Replaces
+    # the pre-#211 `validate_required([:user_id])`, which is now
+    # XOR-gated (a visitor credential carries user_id IS NULL). Mirror
+    # of `Grappa.ReadCursor.Cursor.validate_subject_xor/1`.
+    |> validate_subject_xor()
     # A8: nick syntax + length is the same `Identifier.valid_nick?/1`
     # rule that `Grappa.Scrollback.Message.changeset/2` and the IRC
     # parser already use — single regex, single source. The local
@@ -252,10 +285,29 @@ defmodule Grappa.Networks.Credential do
     # error. Declaring the constraint here lets `Repo.insert/2` map
     # it to a normal changeset error keyed on `:user_id`; the
     # controller's `pk_collision?/1` classifier then collapses it
-    # to `{:error, :already_exists}` for the 409 wire body.
+    # to `{:error, :already_exists}` for the 409 wire body. #211 moved
+    # the physical uniqueness from the composite PK to a partial unique
+    # index (`WHERE user_id IS NOT NULL`) of the same name, so the
+    # constraint mapping is unchanged.
     |> unique_constraint(:user_id,
       name: :network_credentials_user_id_network_id_index,
       message: "credential already exists for this (user, network)"
+    )
+    # #211 — visitor twin of the uniqueness above (partial unique index
+    # `WHERE visitor_id IS NOT NULL`). Keyed on `:visitor_id` so a
+    # duplicate visitor credential surfaces as a changeset error, not an
+    # exception — same collapse-to-409 path as the user branch.
+    |> unique_constraint(:visitor_id,
+      name: :network_credentials_visitor_id_network_id_index,
+      message: "credential already exists for this (visitor, network)"
+    )
+    # #211 — DB-level XOR mirror. Maps the CHECK violation to a changeset
+    # error on the synthetic `:subject` key (mirror of
+    # `Grappa.ReadCursor.Cursor`) so a raw both-set / both-null insert
+    # slipping past `validate_subject_xor/1` still surfaces cleanly.
+    |> check_constraint(:subject,
+      name: :network_credentials_subject_xor,
+      message: "user_id and visitor_id are mutually exclusive"
     )
   end
 
@@ -307,6 +359,23 @@ defmodule Grappa.Networks.Credential do
     if Identifier.valid_nick?(value),
       do: [],
       else: [{field, "must be a valid IRC nickname"}]
+  end
+
+  # #211 — subject XOR: exactly one of user_id / visitor_id must be set.
+  # Byte-mirror of `Grappa.ReadCursor.Cursor.validate_subject_xor/1`;
+  # errors attach to the synthetic `:subject` key so the client renders
+  # one uniform subject error regardless of which FK column is at fault.
+  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp validate_subject_xor(changeset) do
+    user_id = get_field(changeset, :user_id)
+    visitor_id = get_field(changeset, :visitor_id)
+
+    case {user_id, visitor_id} do
+      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
+      {_, nil} -> changeset
+      {nil, _} -> changeset
+      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
+    end
   end
 
   # GH #152 — strip a leading `~` from a user-supplied ident BEFORE

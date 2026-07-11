@@ -119,4 +119,46 @@ defmodule Grappa.Networks.CredentialTest do
       assert Ecto.Changeset.get_change(cs, :connection_state_changed_at) == ts
     end
   end
+
+  describe "subject XOR (#211 phase 1)" do
+    # Mirror of `Grappa.ReadCursor.Cursor`'s subject-XOR contract:
+    # exactly one of `:user_id` / `:visitor_id` is set. Errors attach
+    # to the synthetic `:subject` key for uniform client rendering.
+    defp xor_attrs(extra) do
+      Map.merge(%{network_id: 1, nick: "vjt", auth_method: :none}, extra)
+    end
+
+    test "accepts a user-only credential (visitor_id nil)" do
+      cs = Credential.changeset(%Credential{}, xor_attrs(%{user_id: Ecto.UUID.generate()}))
+      assert cs.valid?
+    end
+
+    test "accepts a visitor-only credential (user_id nil)" do
+      cs = Credential.changeset(%Credential{}, xor_attrs(%{visitor_id: Ecto.UUID.generate()}))
+      assert cs.valid?
+    end
+
+    test "rejects a both-null subject" do
+      cs = Credential.changeset(%Credential{}, xor_attrs(%{}))
+      refute cs.valid?
+      assert "must set user_id or visitor_id" in errors_on(cs).subject
+    end
+
+    test "rejects a both-set subject (user_id AND visitor_id)" do
+      cs =
+        Credential.changeset(
+          %Credential{},
+          xor_attrs(%{user_id: Ecto.UUID.generate(), visitor_id: Ecto.UUID.generate()})
+        )
+
+      refute cs.valid?
+      assert "user_id and visitor_id are mutually exclusive" in errors_on(cs).subject
+    end
+
+    test "casts visitor_id" do
+      vid = Ecto.UUID.generate()
+      cs = Credential.changeset(%Credential{}, xor_attrs(%{visitor_id: vid}))
+      assert Ecto.Changeset.get_change(cs, :visitor_id) == vid
+    end
+  end
 end

@@ -115,6 +115,50 @@ defmodule Grappa.Migrations.CheckConstraintsTest do
     end
   end
 
+  describe "network_credentials.subject_xor CHECK (#211)" do
+    setup do
+      ts = "2026-07-11T00:00:00Z"
+
+      {:ok, user} =
+        Accounts.create_user(%{name: "u-#{System.unique_integer([:positive])}", password: "correct horse battery"})
+
+      {:ok, network} = Networks.find_or_create_network(%{slug: "n-#{System.unique_integer([:positive])}"})
+
+      {:ok, visitor} =
+        %{nick: "guest", network_slug: network.slug, expires_at: DateTime.add(DateTime.utc_now(), 48, :hour)}
+        |> Grappa.Visitors.Visitor.create_changeset()
+        |> Repo.insert()
+
+      %{ts: ts, user: user, network: network, visitor: visitor}
+    end
+
+    test "rejects a both-null subject raw insert", %{ts: ts, network: network} do
+      assert_raise Exqlite.Error, ~r/network_credentials_subject_xor/, fn ->
+        Repo.query!(
+          "INSERT INTO network_credentials (user_id, visitor_id, network_id, nick, auth_method, autojoin_channels, inserted_at, updated_at) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?)",
+          [network.id, "vjt", "none", "[]", ts, ts]
+        )
+      end
+    end
+
+    test "rejects a both-set subject raw insert", %{ts: ts, user: user, visitor: visitor, network: network} do
+      assert_raise Exqlite.Error, ~r/network_credentials_subject_xor/, fn ->
+        Repo.query!(
+          "INSERT INTO network_credentials (user_id, visitor_id, network_id, nick, auth_method, autojoin_channels, inserted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          [user.id, visitor.id, network.id, "vjt", "none", "[]", ts, ts]
+        )
+      end
+    end
+
+    test "accepts a visitor-only subject raw insert", %{ts: ts, visitor: visitor, network: network} do
+      assert {:ok, _} =
+               Repo.query(
+                 "INSERT INTO network_credentials (user_id, visitor_id, network_id, nick, auth_method, autojoin_channels, inserted_at, updated_at) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)",
+                 [visitor.id, network.id, "guest", "none", "[]", ts, ts]
+               )
+    end
+  end
+
   describe "messages.kind enum" do
     test "kind_enum rejects an unknown atom string" do
       ts = "2026-05-04T00:00:00Z"
