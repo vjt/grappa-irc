@@ -18138,3 +18138,58 @@ column-drop (a different concern from the auth secret; not smuggled into a
 **Deploy class: COLD** (rides the end-of-crank window with the rest of the
 stack). NO standalone deploy. Design comment: issue #211 comment 4948330894;
 ruling comment 4948477338.
+
+## 2026-07-11 — #211 phase 4b (L2 epic): credential-side folded-nick unique index
+
+Schema EXPAND for the identity-key cutover. Adds a partial unique index
+`network_credentials_visitor_folded_nick_network_id_index` on
+`(fold(nick), network_id) WHERE visitor_id IS NOT NULL` (migration
+`20260711131000`) + the matching `unique_constraint(:nick, ...)` on
+`Credential.changeset/2`.
+
+### Why
+
+This mirrors the `visitors`-table `(fold(nick), network_slug)` folded-unique
+index (GH #121, `20260628100000`) onto the Credential, keyed by `network_id`
+instead of the `network_slug` scalar. It is the per-network VISITOR identity
+guard on the Credential — the prerequisite for:
+
+- **phase 4c** — login resolves the visitor identity credential-first by
+  `(fold(nick), network_id)` → `visitor_id` (instead of the visitor-row
+  `(fold(nick), network_slug)` lookup), and accretion gets a cross-network
+  nick-collision guard;
+- **phase 7** — the `visitors`-table folded index can be dropped once identity
+  lives on the Credential.
+
+### Additive — nothing dropped (expand→contract)
+
+The `visitors`-table folded index STAYS through every functional phase; it is
+dropped only at the phase-7 contract. During the transition BOTH indexes hold
+— the phase-3 write-through keeps the visitor row and its credential in sync,
+so a folded-nick collision on one is a collision on the other. A visitor NICK
+rename hits the `visitors` index FIRST (`Visitor.nick_changeset`) and returns
+a changeset error before the credential write, so the two never disagree.
+
+### Partial + rfc1459-folded
+
+`WHERE visitor_id IS NOT NULL` — users are a separate operator-bound identity
+space (guarded by the `(user_id, network_id)` partial index), so a user
+credential and a visitor credential may share a nick on one network (proven by
+test). The fold SQL is character-identical to `Identifier.nick_fold/1` and
+`20260628100000`'s `fold/1` (`lower()` + the four bracket `replace()`s) or
+SQLite won't use the index — the #121 invariant. A defensive duplicate-collapse
+DELETE runs before the index create (survivor: connected > identified > newest)
+so a drifted prod DB migrates rather than aborting; no-op on a clean DB.
+
+### Tests
+
+`credential_xor_test.exs` — two DIFFERENT visitors can't hold one folded nick
+on one network; the collision is rfc1459-folded (`Mez[1]` == `mez{1}`); the
+SAME visitor MAY hold the nick on TWO networks (accretion); a user + a visitor
+may share a nick (partial index). The pre-existing "second credential for same
+(visitor, network)" test was tightened to use distinct nicks so it isolates the
+`(visitor_id, network_id)` guard (the same nick now also trips the folded
+index — both are correct, the test just pins one).
+
+**Deploy class: COLD** (new migration; hot path skips `ecto.migrate`). Rides
+the end-of-crank window. NO standalone deploy.

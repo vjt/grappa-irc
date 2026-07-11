@@ -302,6 +302,20 @@ defmodule Grappa.Networks.Credential do
       name: :network_credentials_visitor_id_network_id_index,
       message: "credential already exists for this (visitor, network)"
     )
+    # #211 phase 4b — the credential-side folded-nick partial unique index
+    # for VISITOR credentials (`(fold(nick), network_id) WHERE visitor_id
+    # IS NOT NULL`, GH #121). Two DIFFERENT visitors cannot hold the same
+    # rfc1459-folded nick on one network — the per-network identity guard
+    # that phase 4c resolves identity against and accretion collision-checks
+    # (mirrors the `visitors`-table folded index onto the Credential). Keyed
+    # on `:nick` so a cross-visitor collision surfaces as a changeset error.
+    # Partial (`WHERE visitor_id IS NOT NULL`), so a user credential sharing
+    # the nick does NOT collide — users are a separate operator-bound
+    # identity space.
+    |> unique_constraint(:nick,
+      name: :network_credentials_visitor_folded_nick_network_id_index,
+      message: "nick already taken on this network"
+    )
     # #211 — DB-level XOR mirror. Maps the CHECK violation to a changeset
     # error on the synthetic `:subject` key (mirror of
     # `Grappa.ReadCursor.Cursor`) so a raw both-set / both-null insert

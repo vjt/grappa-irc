@@ -113,12 +113,155 @@ defmodule Grappa.Networks.CredentialXorTest do
       visitor: visitor,
       network: network
     } do
-      attrs = %{visitor_id: visitor.id, network_id: network.id, nick: "guest", auth_method: :none}
-      assert {:ok, _} = %Credential{} |> Credential.changeset(attrs) |> Repo.insert()
+      # Distinct nicks so ONLY the (visitor_id, network_id) uniqueness can
+      # fire — the same nick would ALSO trip the phase-4b folded-nick index
+      # (see the dedicated describe below), and SQLite would report whichever
+      # index it checks first. This test isolates the per-(visitor, network)
+      # guard: a visitor gets exactly one credential per network regardless
+      # of nick.
+      first = %{visitor_id: visitor.id, network_id: network.id, nick: "guest", auth_method: :none}
+      assert {:ok, _} = %Credential{} |> Credential.changeset(first) |> Repo.insert()
 
-      assert {:error, cs} = %Credential{} |> Credential.changeset(attrs) |> Repo.insert()
+      second = %{visitor_id: visitor.id, network_id: network.id, nick: "guest2", auth_method: :none}
+      assert {:error, cs} = %Credential{} |> Credential.changeset(second) |> Repo.insert()
       refute cs.valid?
       assert "credential already exists for this (visitor, network)" in errors_on(cs).visitor_id
+    end
+  end
+
+  # #211 phase 4b — the credential-side folded-nick partial unique index
+  # `(fold(nick), network_id) WHERE visitor_id IS NOT NULL`. This is the
+  # per-network identity guard for VISITOR credentials, mirroring the
+  # `visitors` table's `(fold(nick), network_slug)` folded-unique index
+  # (GH #121) onto the Credential so phase 4c can resolve identity
+  # credential-first + accretion can guard cross-network nick collisions,
+  # and phase 7 can drop the visitors-table index. Additive — the
+  # visitors-table index stays until phase 7.
+  describe "visitor folded-nick uniqueness (phase-4b, GH #121)" do
+    setup do
+      network = network_fixture()
+      v1 = visitor_fixture(network_slug: network.slug, nick: "one")
+      v2 = visitor_fixture(network_slug: network.slug, nick: "two")
+      %{network: network, v1: v1, v2: v2}
+    end
+
+    test "two DIFFERENT visitors cannot hold the same nick on one network", %{
+      network: network,
+      v1: v1,
+      v2: v2
+    } do
+      assert {:ok, _} =
+               %Credential{}
+               |> Credential.changeset(%{
+                 visitor_id: v1.id,
+                 network_id: network.id,
+                 nick: "mezmerize",
+                 auth_method: :none
+               })
+               |> Repo.insert()
+
+      assert {:error, cs} =
+               %Credential{}
+               |> Credential.changeset(%{
+                 visitor_id: v2.id,
+                 network_id: network.id,
+                 nick: "mezmerize",
+                 auth_method: :none
+               })
+               |> Repo.insert()
+
+      refute cs.valid?
+      assert "nick already taken on this network" in errors_on(cs).nick
+    end
+
+    test "the collision is rfc1459-folded (Mezmerize == mezmerize == nick[1]/nick{1})", %{
+      network: network,
+      v1: v1,
+      v2: v2
+    } do
+      assert {:ok, _} =
+               %Credential{}
+               |> Credential.changeset(%{
+                 visitor_id: v1.id,
+                 network_id: network.id,
+                 nick: "Mez[1]",
+                 auth_method: :none
+               })
+               |> Repo.insert()
+
+      # `[` folds to `{` under rfc1459 — a different display case + a
+      # bracket variant is the SAME identity, so this must collide.
+      assert {:error, cs} =
+               %Credential{}
+               |> Credential.changeset(%{
+                 visitor_id: v2.id,
+                 network_id: network.id,
+                 nick: "mez{1}",
+                 auth_method: :none
+               })
+               |> Repo.insert()
+
+      refute cs.valid?
+      assert "nick already taken on this network" in errors_on(cs).nick
+    end
+
+    test "the SAME visitor may hold the same folded nick on TWO networks (accretion)", %{
+      v1: v1
+    } do
+      net_a = network_fixture()
+      net_b = network_fixture()
+
+      assert {:ok, _} =
+               %Credential{}
+               |> Credential.changeset(%{
+                 visitor_id: v1.id,
+                 network_id: net_a.id,
+                 nick: "spanner",
+                 auth_method: :none
+               })
+               |> Repo.insert()
+
+      # Different network → the folded uniqueness is per-(nick, network),
+      # so accreting the same nick onto a second network is allowed.
+      assert {:ok, _} =
+               %Credential{}
+               |> Credential.changeset(%{
+                 visitor_id: v1.id,
+                 network_id: net_b.id,
+                 nick: "spanner",
+                 auth_method: :none
+               })
+               |> Repo.insert()
+    end
+
+    test "a USER credential and a visitor credential can share a nick on one network", %{
+      network: network,
+      v1: v1
+    } do
+      user = user_fixture()
+
+      assert {:ok, _} =
+               %Credential{}
+               |> Credential.changeset(%{
+                 visitor_id: v1.id,
+                 network_id: network.id,
+                 nick: "shared",
+                 auth_method: :none
+               })
+               |> Repo.insert()
+
+      # The folded index is partial (`WHERE visitor_id IS NOT NULL`), so a
+      # user credential with the same nick does NOT collide — users are a
+      # separate identity space (operator-bound), guarded independently.
+      assert {:ok, _} =
+               %Credential{}
+               |> Credential.changeset(%{
+                 user_id: user.id,
+                 network_id: network.id,
+                 nick: "shared",
+                 auth_method: :none
+               })
+               |> Repo.insert()
     end
   end
 
