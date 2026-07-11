@@ -27,6 +27,20 @@ defmodule Grappa.Visitors.VisitorTest do
       assert cs.valid?
     end
 
+    test "accepts optional ident + realname at creation (#152 login-Advanced)" do
+      cs = Visitor.create_changeset(valid_attrs(%{ident: "~grp", realname: "Real Name"}))
+      assert cs.valid?
+      # tilde stripped at the create boundary too
+      assert Ecto.Changeset.get_change(cs, :ident) == "grp"
+      assert Ecto.Changeset.get_change(cs, :realname) == "Real Name"
+    end
+
+    test "rejects an invalid ident at creation" do
+      cs = Visitor.create_changeset(valid_attrs(%{ident: "a b"}))
+      refute cs.valid?
+      assert "must be a valid IRC ident" in errors_on(cs).ident
+    end
+
     test "rejects past expires_at (B5.4 M-pers-3)" do
       # System-clock skew or a bad operator-supplied TTL must NOT slide
       # past the time-monotonicity contract — a visitor whose row is
@@ -135,6 +149,46 @@ defmodule Grappa.Visitors.VisitorTest do
       assert_raise FunctionClauseError, fn ->
         Visitor.ip_changeset(visitor, {1, 2, 3, 4})
       end
+    end
+  end
+
+  describe "identity_changeset/2 (#152 live-apply)" do
+    setup do
+      {:ok, visitor: %Visitor{id: Ecto.UUID.generate(), nick: "vjt"}}
+    end
+
+    test "casts ident + realname", %{visitor: visitor} do
+      cs = Visitor.identity_changeset(visitor, %{ident: "grp", realname: "Real Name"})
+      assert cs.valid?
+      assert Ecto.Changeset.get_change(cs, :ident) == "grp"
+      assert Ecto.Changeset.get_change(cs, :realname) == "Real Name"
+    end
+
+    test "strips a leading tilde from ident (anti-spoof)", %{visitor: visitor} do
+      cs = Visitor.identity_changeset(visitor, %{ident: "~grp"})
+      assert cs.valid?
+      assert Ecto.Changeset.get_change(cs, :ident) == "grp"
+    end
+
+    test "rejects an over-length ident", %{visitor: visitor} do
+      cs = Visitor.identity_changeset(visitor, %{ident: String.duplicate("a", 11)})
+      refute cs.valid?
+      assert "must be a valid IRC ident" in errors_on(cs).ident
+    end
+
+    test "rejects a realname carrying CR/LF/NUL (wire-injection guard)", %{visitor: visitor} do
+      cs = Visitor.identity_changeset(visitor, %{realname: "evil\r\nQUIT"})
+      refute cs.valid?
+      assert "contains CR, LF, or NUL byte" in errors_on(cs).realname
+    end
+
+    test "accepts a free-form realname with spaces (no anti-spoof)", %{visitor: visitor} do
+      cs = Visitor.identity_changeset(visitor, %{realname: "Marcello B. — grappa"})
+      assert cs.valid?
+    end
+
+    test "empty attrs is a valid no-op changeset", %{visitor: visitor} do
+      assert Visitor.identity_changeset(visitor, %{}).valid?
     end
   end
 

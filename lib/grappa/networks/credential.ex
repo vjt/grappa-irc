@@ -106,6 +106,7 @@ defmodule Grappa.Networks.Credential do
           network_id: integer() | nil,
           network: Network.t() | Ecto.Association.NotLoaded.t() | nil,
           nick: String.t() | nil,
+          ident: String.t() | nil,
           realname: String.t() | nil,
           sasl_user: String.t() | nil,
           password_encrypted: binary() | nil,
@@ -127,6 +128,11 @@ defmodule Grappa.Networks.Credential do
     belongs_to :network, Network, primary_key: true
 
     field :nick, :string
+    # GH #152 — the per-(user, network) IRC ident (the `user` slot of
+    # `nick!user@host`). Free-form, non-unique, nullable;
+    # `effective_ident/1` falls back to nick when unset, mirroring
+    # `effective_realname/1`/`effective_sasl_user/1`.
+    field :ident, :string
     field :realname, :string
     field :sasl_user, :string
     # `redact: true` on `password_encrypted` is load-bearing: Cloak's
@@ -187,6 +193,7 @@ defmodule Grappa.Networks.Credential do
       :user_id,
       :network_id,
       :nick,
+      :ident,
       :realname,
       :sasl_user,
       :password,
@@ -199,6 +206,7 @@ defmodule Grappa.Networks.Credential do
       :connection_state_changed_at
     ])
     |> canonicalize_channel_lists()
+    |> sanitize_ident()
     |> validate_required([:user_id, :network_id, :nick, :auth_method])
     # A8: nick syntax + length is the same `Identifier.valid_nick?/1`
     # rule that `Grappa.Scrollback.Message.changeset/2` and the IRC
@@ -206,6 +214,11 @@ defmodule Grappa.Networks.Credential do
     # `@nick_format` + `validate_length(:nick, ...)` pair was retired
     # in favor of Identifier's RFC-aligned 30-char cap.
     |> validate_change(:nick, &validate_nick/2)
+    # GH #152 — ident shape guard. The `sanitize_ident/1` step above has
+    # already stripped a leading `~` (anti-spoof, grappa runs no identd),
+    # so this rejects anything still not matching the RFC-user-charset /
+    # cap-10 shape (residual tilde, `@`, whitespace, over-length).
+    |> validate_change(:ident, &validate_ident/2)
     |> validate_password_for_auth_method()
     # S29 C1 review-fix #1: every text field that ends up interpolated
     # into a wire line — PASS, NICK, USER, PRIVMSG NickServ — must be
@@ -294,6 +307,29 @@ defmodule Grappa.Networks.Credential do
     if Identifier.valid_nick?(value),
       do: [],
       else: [{field, "must be a valid IRC nickname"}]
+  end
+
+  # GH #152 — strip a leading `~` from a user-supplied ident BEFORE
+  # validation. grappa runs no identd; the upstream tilde-prefixes
+  # unverified idents, so a user-supplied leading `~` must not be
+  # presented as identd-verified. `Identifier.sanitize_ident/1` owns the
+  # single-tilde-strip rule (see its moduledoc for the anti-spoof
+  # rationale). No-op when `:ident` isn't being changed.
+  @spec sanitize_ident(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp sanitize_ident(changeset) do
+    case get_change(changeset, :ident) do
+      ident when is_binary(ident) ->
+        put_change(changeset, :ident, Identifier.sanitize_ident(ident))
+
+      _ ->
+        changeset
+    end
+  end
+
+  defp validate_ident(field, value) when is_binary(value) do
+    if Identifier.valid_ident?(value),
+      do: [],
+      else: [{field, "must be a valid IRC ident"}]
   end
 
   @doc """
@@ -479,6 +515,17 @@ defmodule Grappa.Networks.Credential do
   @spec effective_realname(t()) :: String.t()
   def effective_realname(%__MODULE__{realname: nil, nick: nick}) when is_binary(nick), do: nick
   def effective_realname(%__MODULE__{realname: r}) when is_binary(r), do: r
+
+  @doc """
+  Returns `:ident` if set, otherwise `:nick` (GH #152). Same nil-fallback
+  contract as `effective_realname/1` — the ident defaults to the nick, so
+  the AuthFSM's USER line stays `USER <nick> ...` for a credential that
+  never set a distinct ident (upstream behaviour today). Threaded into
+  the plan by `Grappa.Networks.SessionPlan.build_plan/4`.
+  """
+  @spec effective_ident(t()) :: String.t()
+  def effective_ident(%__MODULE__{ident: nil, nick: nick}) when is_binary(nick), do: nick
+  def effective_ident(%__MODULE__{ident: i}) when is_binary(i), do: i
 
   @doc """
   Returns `:sasl_user` if set, otherwise `:nick`. Same rationale as
