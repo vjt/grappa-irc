@@ -243,6 +243,36 @@ defmodule Grappa.VisitorsTest do
     end
   end
 
+  describe "update_identity/2 persist-only path (#152, no live session)" do
+    test "persists ident + realname and returns {:ok, visitor} when no session is live" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-ident", @network, "1.2.3.4")
+
+      assert {:ok, updated} = Visitors.update_identity(v, %{ident: "grp", realname: "Real Name"})
+      assert updated.ident == "grp"
+      assert updated.realname == "Real Name"
+
+      reloaded = Grappa.Repo.reload!(v)
+      assert reloaded.ident == "grp"
+      assert reloaded.realname == "Real Name"
+    end
+
+    test "strips a leading tilde from ident before persisting (anti-spoof)" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-ident-tilde", @network, "1.2.3.4")
+
+      assert {:ok, updated} = Visitors.update_identity(v, %{ident: "~grp"})
+      assert updated.ident == "grp"
+    end
+
+    test "returns {:error, changeset} on an invalid ident (no persist)" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-ident-bad", @network, "1.2.3.4")
+
+      assert {:error, %Ecto.Changeset{}} =
+               Visitors.update_identity(v, %{ident: String.duplicate("a", 11)})
+
+      assert Grappa.Repo.reload!(v).ident == nil
+    end
+  end
+
   describe "touch/1" do
     test "bumps expires_at if ≥1h since last bump (delta to fresh target ≥ cadence)" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")

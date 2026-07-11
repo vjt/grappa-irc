@@ -125,6 +125,8 @@ defmodule Grappa.Visitors.Login do
   @type input :: %{
           required(:nick) => String.t(),
           required(:password) => String.t() | nil,
+          required(:ident) => String.t() | nil,
+          required(:realname) => String.t() | nil,
           required(:ip) => String.t() | nil,
           required(:user_agent) => String.t() | nil,
           required(:token) => String.t() | nil,
@@ -136,6 +138,7 @@ defmodule Grappa.Visitors.Login do
 
   @type login_error ::
           :malformed_nick
+          | :malformed_ident
           | :ip_cap_exceeded
           | :visitor_cap_exceeded
           | :user_cap_exceeded
@@ -167,8 +170,17 @@ defmodule Grappa.Visitors.Login do
   """
   @spec login(input(), keyword()) :: {:ok, result()} | {:error, login_error()}
   def login(
-        %{nick: _, password: _, ip: _, user_agent: _, token: _, captcha_token: _, client_id: _} =
-          input,
+        %{
+          nick: _,
+          password: _,
+          ident: _,
+          realname: _,
+          ip: _,
+          user_agent: _,
+          token: _,
+          captcha_token: _,
+          client_id: _
+        } = input,
         opts
       )
       when is_list(opts) do
@@ -224,7 +236,8 @@ defmodule Grappa.Visitors.Login do
     with :ok <- Grappa.Admission.check_capacity(capacity_input),
          :ok <- Grappa.Admission.verify_captcha(input.captcha_token, input.ip),
          {:ok, visitor} <-
-           Visitors.find_or_provision_anon(input.nick, network.slug, input.ip) do
+           Visitors.find_or_provision_anon(input.nick, network.slug, input.ip),
+         {:ok, visitor} <- apply_login_identity(visitor, input) do
       case continue_case_1(visitor, network, input, timeouts) do
         {:ok, _} = ok ->
           :ok = NetworkCircuit.record_success(network.id)
@@ -281,6 +294,46 @@ defmodule Grappa.Visitors.Login do
       rotate_token(visitor, input)
     end
   end
+
+  # #152 — persist the login-Advanced ident/realname onto the freshly
+  # provisioned anon row BEFORE the spawn, so the plan resolver reads
+  # them and the FIRST USER line at registration carries the identity
+  # (no reconnect needed at initial login). Reuses the schema's
+  # `identity_changeset/2` (tilde-strip + shape guard) via
+  # `Visitors.update_identity/2` — but this is a NOT-yet-live row, so
+  # that call takes the persist-only branch (no session to reconnect).
+  # A bad ident surfaces as `:malformed_ident` so the login 400s (the
+  # caller purges the fresh row on this error, same as a spawn failure).
+  # No-op when neither field is set (guest / plain login).
+  @spec apply_login_identity(Visitor.t(), input()) ::
+          {:ok, Visitor.t()} | {:error, :malformed_ident}
+  defp apply_login_identity(visitor, input) do
+    identity = login_identity_attrs(input)
+
+    if identity == %{} do
+      {:ok, visitor}
+    else
+      case Visitors.update_identity(visitor, identity) do
+        {:ok, updated} -> {:ok, updated}
+        {:error, %Ecto.Changeset{}} -> {:error, :malformed_ident}
+        {:error, :not_found} -> {:error, :malformed_ident}
+      end
+    end
+  end
+
+  # Build the identity attrs map from the login input, omitting keys the
+  # user left blank so a plain/guest login is a no-op (and never clobbers
+  # the visitor defaults).
+  @spec login_identity_attrs(input()) :: map()
+  defp login_identity_attrs(input) do
+    %{}
+    |> put_if_present(:ident, input.ident)
+    |> put_if_present(:realname, input.realname)
+  end
+
+  defp put_if_present(map, _, nil), do: map
+  defp put_if_present(map, _, ""), do: map
+  defp put_if_present(map, key, value) when is_binary(value), do: Map.put(map, key, value)
 
   # Case 2 fresh-spawn path (no live session for the identity). Capacity gates
   # the SPAWN here; the attach path is deliberately ungated — it spawns nothing,

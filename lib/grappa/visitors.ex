@@ -66,7 +66,7 @@ defmodule Grappa.Visitors do
 
   import Ecto.Query
 
-  alias Grappa.{Admission, Repo, Session, SpawnOrchestrator}
+  alias Grappa.{Admission, Networks, Repo, Session, SpawnOrchestrator}
   alias Grappa.IRC.Identifier
   alias Grappa.Visitors.{SessionPlan, Visitor}
 
@@ -738,6 +738,102 @@ defmodule Grappa.Visitors do
 
         {:error, :resolve_failed}
     end
+  end
+
+  @doc """
+  #152 — set a visitor's user-settable IRC identity (`ident` +
+  `realname`) and LIVE-APPLY it.
+
+  ident/realname are carried only by the USER command, sent once at IRC
+  registration; there is no live verb to change them (a second `USER` is
+  rejected 462 ERR_ALREADYREGISTRED). So applying to a live session means
+  re-registering the upstream connection: this is the visitor half of the
+  #126 disconnect ⇄ reconnect seam, reused exactly (per #152 design + vjt
+  ruling A — two thin per-subject wrappers over the shared cores).
+
+  Sequence:
+
+    1. Validate + persist via `Visitor.identity_changeset/2` (tilde-strip
+       + shape guard on ident, CR/LF/NUL guard on realname). A bad value
+       returns `{:error, changeset}` and NOTHING is persisted or bounced.
+    2. If a live `Session.Server` is registered for the visitor, reconnect
+       it: `Session.stop_session/3` (graceful QUIT) → `SpawnOrchestrator.spawn/4`.
+       `Server.init/1`'s `refresh_plan` re-reads the just-persisted row, so
+       the new ident/realname land in the fresh USER line for free — no new
+       Session.Server state, no new teardown. Scrollback + last_joined
+       survive (DB-backed); 001 re-JOINs from autojoin.
+    3. If no live session (parked / orphaned network / never connected),
+       persist only — the next spawn reads the new values from the row.
+
+  Returns `{:ok, visitor}` (the persisted row) on success — the reconnect
+  is a side effect, and its admission/spawn failures are logged, not
+  surfaced (the identity IS saved; the bounce is best-effort, mirroring
+  how a cap-blocked reconnect leaves the row updated). Returns
+  `{:error, changeset}` on validation failure and `{:error, :not_found}`
+  if the row was concurrently deleted.
+  """
+  @spec update_identity(Visitor.t(), map()) ::
+          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def update_identity(%Visitor{} = visitor, attrs) when is_map(attrs) do
+    case visitor |> Visitor.identity_changeset(attrs) |> Repo.update() do
+      {:ok, updated} ->
+        _ = maybe_reconnect_after_identity(updated)
+        {:ok, updated}
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        {:error, cs}
+    end
+  rescue
+    # A concurrent `delete/1` between the caller's fetch and this update
+    # surfaces as a stale-struct error; report it as :not_found (mirrors
+    # rotate_password/2's H14 concurrent-delete handling).
+    Ecto.StaleEntryError -> {:error, :not_found}
+  end
+
+  # Reconnect the live upstream so the new ident/realname re-register.
+  # No-op (returns :ok) when the network is orphaned or no session is
+  # live — the persist already happened, and the next spawn reads the
+  # row. Failures are logged, never surfaced: the identity is saved
+  # regardless of whether the bounce succeeded.
+  @spec maybe_reconnect_after_identity(Visitor.t()) :: :ok
+  defp maybe_reconnect_after_identity(%Visitor{} = visitor) do
+    with {:ok, %Networks.Network{id: network_id}} <-
+           Networks.get_network_by_slug(visitor.network_slug),
+         pid when is_pid(pid) <- Session.whereis({:visitor, visitor.id}, network_id) do
+      :ok = Session.stop_session({:visitor, visitor.id}, network_id, "applying identity change")
+
+      case reconnect_session(visitor, network_id, identity_capacity_input(visitor, network_id)) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("visitor identity change: reconnect failed (identity persisted)",
+            visitor_id: visitor.id,
+            error: inspect(reason)
+          )
+
+          :ok
+      end
+    else
+      # Orphaned network row or no live session — nothing to reconnect.
+      _ -> :ok
+    end
+  end
+
+  # Mirror of `GrappaWeb.SessionController.capacity_input/3` for the
+  # visitor reconnect flow. `requesting_subject` is the visitor itself so
+  # the per-IP cap's self-exclusion keeps the visitor's own live browser
+  # session from counting against the cap on this reconnect respawn.
+  # `source_ip` is the visitor's stored login IP (the same value login
+  # writes to accounts_sessions.ip).
+  @spec identity_capacity_input(Visitor.t(), integer()) :: Admission.capacity_input()
+  defp identity_capacity_input(%Visitor{id: id, ip: ip}, network_id) do
+    %{
+      network_id: network_id,
+      source_ip: ip,
+      flow: :visitor_reconnect,
+      requesting_subject: {:visitor, id}
+    }
   end
 
   @doc """

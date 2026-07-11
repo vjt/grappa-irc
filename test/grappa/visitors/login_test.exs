@@ -61,7 +61,17 @@ defmodule Grappa.Visitors.LoginTest do
 
   defp login_input(overrides \\ %{}) do
     Map.merge(
-      %{nick: "vjt", password: nil, ip: "1.2.3.4", user_agent: "ua", token: nil, captcha_token: nil, client_id: nil},
+      %{
+        nick: "vjt",
+        password: nil,
+        ident: nil,
+        realname: nil,
+        ip: "1.2.3.4",
+        user_agent: "ua",
+        token: nil,
+        captcha_token: nil,
+        client_id: nil
+      },
       overrides
     )
   end
@@ -99,6 +109,32 @@ defmodule Grappa.Visitors.LoginTest do
 
       assert {:ok, %AccountsSession{visitor_id: vid}} = Accounts.authenticate(token)
       assert vid == v.id
+
+      stop_visitor_session(v.id, network.id)
+    end
+
+    test "fresh-nick login with ident + realname persists them and emits them in USER (#152)" do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      task =
+        Task.async(fn ->
+          Login.login(login_input(%{ident: "~grp", realname: "Real Name"}), [])
+        end)
+
+      # The USER line at handshake carries the login-Advanced ident +
+      # realname (tilde stripped) — the observable wire proof the identity
+      # reached the plan before first registration.
+      {:ok, user_line} =
+        IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
+
+      assert user_line == "USER grp 0 * :Real Name\r\n"
+
+      feed_001(server, "vjt")
+
+      assert {:ok, %{visitor: %Visitor{} = v}} = Task.await(task, 10_000)
+      assert v.ident == "grp"
+      assert v.realname == "Real Name"
 
       stop_visitor_session(v.id, network.id)
     end
@@ -419,6 +455,8 @@ defmodule Grappa.Visitors.LoginTest do
           %{
             nick: "second_user",
             password: nil,
+            ident: nil,
+            realname: nil,
             ip: "1.2.3.4",
             user_agent: nil,
             token: nil,
@@ -452,6 +490,8 @@ defmodule Grappa.Visitors.LoginTest do
           %{
             nick: "any_nick",
             password: nil,
+            ident: nil,
+            realname: nil,
             ip: "1.2.3.4",
             user_agent: nil,
             token: nil,
@@ -480,6 +520,8 @@ defmodule Grappa.Visitors.LoginTest do
                  %{
                    nick: "fresh",
                    password: nil,
+                   ident: nil,
+                   realname: nil,
                    ip: "1.2.3.4",
                    user_agent: nil,
                    token: nil,

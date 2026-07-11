@@ -19,6 +19,7 @@ defmodule Grappa.Visitors.SessionPlanTest do
       assert opts.subject == {:visitor, visitor.id}
       assert opts.subject_label == "visitor:" <> visitor.id
       assert opts.nick == "vjt"
+      assert opts.ident == "vjt"
       assert opts.realname == "Grappa Visitor"
       assert opts.sasl_user == "vjt"
       assert opts.auth_method == :none
@@ -26,6 +27,17 @@ defmodule Grappa.Visitors.SessionPlanTest do
       assert opts.network_slug == "azzurra"
       assert opts.autojoin_channels == []
       assert opts.source_address == nil
+    end
+
+    test "visitor with set ident + realname → plan carries them (#152)" do
+      network_with_server(slug: "azzurra", port: 6667)
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
+      {:ok, updated} = Visitors.update_identity(visitor, %{ident: "grp", realname: "Real Name"})
+
+      assert {:ok, opts} = SessionPlan.resolve(updated)
+      assert opts.nick == "vjt"
+      assert opts.ident == "grp"
+      assert opts.realname == "Real Name"
     end
 
     test "carries the picked server's source_address into the plan" do

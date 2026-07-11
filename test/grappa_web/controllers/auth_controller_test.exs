@@ -465,6 +465,8 @@ defmodule GrappaWeb.AuthControllerTest do
             %{
               nick: "vjt",
               password: nil,
+              ident: nil,
+              realname: nil,
               ip: "1.2.3.4",
               user_agent: "ua",
               token: nil,
@@ -532,6 +534,8 @@ defmodule GrappaWeb.AuthControllerTest do
             %{
               nick: "vjt",
               password: nil,
+              ident: nil,
+              realname: nil,
               ip: "1.2.3.4",
               user_agent: "ua",
               token: nil,
@@ -581,6 +585,8 @@ defmodule GrappaWeb.AuthControllerTest do
             %{
               nick: "vjt",
               password: nil,
+              ident: nil,
+              realname: nil,
               ip: "1.2.3.4",
               user_agent: "ua",
               token: nil,
@@ -768,6 +774,8 @@ defmodule GrappaWeb.AuthControllerTest do
             %{
               nick: "vjt",
               password: nil,
+              ident: nil,
+              realname: nil,
               ip: "1.2.3.4",
               user_agent: "ua",
               token: nil,

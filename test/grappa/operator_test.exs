@@ -455,4 +455,56 @@ defmodule Grappa.OperatorTest do
                Operator.disconnect_session({:user, user_id}, 999_999_999, nil)
     end
   end
+
+  describe "Visitors.update_identity/2 live-apply reconnect (#152)" do
+    alias Grappa.Visitors
+
+    test "a live session is bounced (new pid) and the fresh plan carries the new ident" do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      old_pid = start_visitor_session_for(visitor, network)
+      old_ref = Process.monitor(old_pid)
+
+      assert Session.whereis({:visitor, visitor.id}, network.id) == old_pid
+
+      assert {:ok, updated} = Visitors.update_identity(visitor, %{ident: "grp", realname: "RN"})
+      assert updated.ident == "grp"
+      assert updated.realname == "RN"
+
+      # The old Session.Server was torn down (graceful QUIT + stop) and a
+      # fresh one respawned — proving the reconnect fired, not a no-op.
+      assert_receive {:DOWN, ^old_ref, :process, ^old_pid, _}, 1_000
+
+      new_pid = Session.whereis({:visitor, visitor.id}, network.id)
+      assert is_pid(new_pid)
+      assert new_pid != old_pid
+      register_reconnect_cleanup(new_pid)
+
+      # The respawn's refresh_plan re-reads the just-persisted row, so the
+      # fresh plan carries the new ident/realname — this is what lands in
+      # the new USER line at re-registration.
+      {:ok, plan} = Grappa.Visitors.SessionPlan.resolve(Grappa.Repo.reload!(visitor))
+      assert plan.ident == "grp"
+      assert plan.realname == "RN"
+    end
+
+    test "no live session → persist only, no spawn" do
+      # No IRC server started + no session spawned for this visitor.
+      {visitor, network} = visitor_with_network(1)
+
+      # No session started for this visitor.
+      assert Session.whereis({:visitor, visitor.id}, network.id) == nil
+
+      assert {:ok, updated} = Visitors.update_identity(visitor, %{ident: "grp"})
+      assert updated.ident == "grp"
+      # Still no session — persist path didn't spawn one.
+      assert Session.whereis({:visitor, visitor.id}, network.id) == nil
+    end
+
+    defp register_reconnect_cleanup(pid) do
+      on_exit(fn ->
+        _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+      end)
+    end
+  end
 end

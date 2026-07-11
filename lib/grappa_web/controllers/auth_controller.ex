@@ -81,6 +81,7 @@ defmodule GrappaWeb.AuthController do
           | {:error,
              :bad_request
              | :malformed_nick
+             | :malformed_ident
              | :password_required
              | :password_mismatch
              | :invalid_credentials
@@ -94,12 +95,15 @@ defmodule GrappaWeb.AuthController do
   def login(conn, %{"identifier" => id} = params) when is_binary(id) do
     password = Map.get(params, "password")
     captcha_token = Map.get(params, "captcha_token")
+    # #152 — login-Advanced ident/realname (both optional). Passed raw;
+    # the Visitor changeset sanitizes (tilde-strip) + shape-validates.
+    identity = %{ident: Map.get(params, "ident"), realname: Map.get(params, "realname")}
 
     case validate_captcha_token(captcha_token) do
       :ok ->
         case IdentifierClassifier.classify(sanitize_identifier(id)) do
           {:email, email} -> mode1_login(conn, email, password)
-          {:nick, nick} -> visitor_login(conn, nick, password, captcha_token)
+          {:nick, nick} -> visitor_login(conn, nick, password, captcha_token, identity)
           {:error, :malformed} -> {:error, :malformed_nick}
         end
 
@@ -288,10 +292,12 @@ defmodule GrappaWeb.AuthController do
   # entry-point bypassed the `login/2` shape — the validate_captcha_token
   # plug only fires once on the `login/2` call, so the captcha boundary
   # and the upstream verify call must both consume the same value.
-  defp visitor_login(conn, nick, password, captcha_token) do
+  defp visitor_login(conn, nick, password, captcha_token, identity) do
     input = %{
       nick: nick,
       password: password,
+      ident: identity.ident,
+      realname: identity.realname,
       ip: format_ip(conn),
       user_agent: user_agent(conn),
       token: extract_bearer(conn),
@@ -322,6 +328,10 @@ defmodule GrappaWeb.AuthController do
   # without grepping the FallbackController.
   defp visitor_error_response(_, _, :malformed_nick),
     do: {:error, :malformed_nick}
+
+  # #152 — login-Advanced ident failed shape validation.
+  defp visitor_error_response(_, _, :malformed_ident),
+    do: {:error, :malformed_ident}
 
   defp visitor_error_response(_, _, :password_required),
     do: {:error, :password_required}
