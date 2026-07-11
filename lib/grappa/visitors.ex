@@ -1187,6 +1187,16 @@ defmodule Grappa.Visitors do
           :ok
 
         {:ok, :ignored} ->
+          # The visitor row vanished between the whereis check and the
+          # respawn (a concurrent delete/reap). Not a failure — the row
+          # is legitimately gone — but log at :info so the "identity
+          # change bounced but nothing came back up" no-op is observable
+          # (CLAUDE.md log-honesty; :warning would over-state a benign
+          # race as an error).
+          Logger.info("visitor identity change: row gone mid-reconnect (no respawn)",
+            visitor_id: id
+          )
+
           :ok
 
         {:error, reason} ->
