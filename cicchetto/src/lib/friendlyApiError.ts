@@ -41,6 +41,7 @@ export type KnownApiErrorCode =
   | "service_degraded"
   | "captcha_failed"
   | "captcha_required"
+  | "malformed_ident"
   | "not_connected"
   | "upstream_unreachable"
   | "nick_in_use"
@@ -63,6 +64,7 @@ const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "service_degraded",
   "captcha_failed",
   "captcha_required",
+  "malformed_ident",
   "not_connected",
   "upstream_unreachable",
   "nick_in_use",
@@ -135,6 +137,10 @@ function friendlyKnown(err: ApiError, code: KnownApiErrorCode): string {
       // — every other captcha_required path branches into the widget
       // mount.
       return "Verification temporarily unavailable.";
+    case "malformed_ident":
+      // #152 — login-Advanced / settings ident failed shape validation
+      // (over 10 chars, illegal char, or a residual `~` after strip).
+      return "Ident must be 1–10 characters: letters, digits, dot, dash, or underscore.";
     case "not_connected":
       // T32 — `/connect <network>` against a credential that's not in
       // `:parked` or `:failed` state, OR `/disconnect` against an

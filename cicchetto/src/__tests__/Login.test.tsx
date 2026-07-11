@@ -99,9 +99,13 @@ describe("Login — #204 on-submit nick sanitization", () => {
     fireEvent.click(connectBtn());
     await waitFor(() => {
       // No "@" → nick branch → `my nick` becomes `my_nick` at submit time.
-      // No password (Advanced collapsed) → null, matching the existing
-      // auth.login(identifier, password|null, captcha?) boundary.
-      expect(auth.login).toHaveBeenCalledWith("my_nick", null);
+      // No password (Advanced collapsed) → null. #152: the 4th arg is the
+      // login-Advanced ident/realname bundle (both blank when the toggle
+      // is collapsed), the 3rd is the captcha token (undefined here).
+      expect(auth.login).toHaveBeenCalledWith("my_nick", null, undefined, {
+        ident: "",
+        realname: "",
+      });
     });
   });
 
@@ -127,7 +131,26 @@ describe("Login — #204 on-submit nick sanitization", () => {
     fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
     fireEvent.click(connectBtn());
     await waitFor(() => {
-      expect(auth.login).toHaveBeenCalledWith("alice", "secret");
+      expect(auth.login).toHaveBeenCalledWith("alice", "secret", undefined, {
+        ident: "",
+        realname: "",
+      });
+    });
+  });
+
+  it("submits login-Advanced realname + ident (#152)", async () => {
+    vi.mocked(auth.login).mockResolvedValue(undefined);
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    openAdvanced();
+    fireEvent.input(screen.getByLabelText(/real name/i), { target: { value: "Alice L" } });
+    fireEvent.input(screen.getByLabelText(/^ident$/i), { target: { value: "~grp" } });
+    fireEvent.click(connectBtn());
+    await waitFor(() => {
+      expect(auth.login).toHaveBeenCalledWith("alice", null, undefined, {
+        ident: "~grp",
+        realname: "Alice L",
+      });
     });
   });
 
@@ -149,7 +172,10 @@ describe("Login — #204 on-submit nick sanitization", () => {
     fireEvent.click(connectBtn());
     await waitFor(() => {
       // Email branch: no nick stripping — the "@"/"." survive.
-      expect(auth.login).toHaveBeenCalledWith("alice@example.com", null);
+      expect(auth.login).toHaveBeenCalledWith("alice@example.com", null, undefined, {
+        ident: "",
+        realname: "",
+      });
     });
   });
 
@@ -290,7 +316,10 @@ describe("Login — captcha flow (carried forward)", () => {
     const onSolve = call[3];
     onSolve("solved-token");
     await waitFor(() => {
-      expect(auth.login).toHaveBeenCalledWith("alice", null, "solved-token");
+      expect(auth.login).toHaveBeenCalledWith("alice", null, "solved-token", {
+        ident: "",
+        realname: "",
+      });
     });
   });
 

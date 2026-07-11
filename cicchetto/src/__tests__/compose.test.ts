@@ -731,6 +731,7 @@ describe("compose submit — T32 verbs", () => {
     vi.mocked(api.patchNetwork).mockResolvedValue({
       network: "freenode",
       nick: "vjt",
+      ident: null,
       realname: null,
       sasl_user: null,
       auth_method: "sasl",
@@ -769,6 +770,7 @@ describe("compose submit — T32 verbs", () => {
     vi.mocked(api.patchNetwork).mockResolvedValue({
       network: "freenode",
       nick: "vjt",
+      ident: null,
       realname: null,
       sasl_user: null,
       auth_method: "sasl",
@@ -802,6 +804,7 @@ describe("compose submit — T32 verbs", () => {
       .mockResolvedValueOnce({
         network: "libera",
         nick: "vjt",
+        ident: null,
         realname: null,
         sasl_user: null,
         auth_method: "sasl",
@@ -867,6 +870,7 @@ describe("compose submit — T32 verbs", () => {
     vi.mocked(api.patchNetwork).mockResolvedValue({
       network: "freenode",
       nick: "vjt",
+      ident: null,
       realname: null,
       sasl_user: null,
       auth_method: "sasl",
@@ -897,6 +901,7 @@ describe("compose submit — T32 verbs", () => {
     vi.mocked(api.patchNetwork).mockResolvedValue({
       network: "libera",
       nick: "vjt",
+      ident: null,
       realname: null,
       sasl_user: null,
       auth_method: "sasl",
@@ -926,6 +931,7 @@ describe("compose submit — T32 verbs", () => {
     vi.mocked(api.patchNetwork).mockResolvedValue({
       network: "libera",
       nick: "vjt",
+      ident: null,
       realname: null,
       sasl_user: null,
       auth_method: "sasl",
@@ -956,6 +962,7 @@ describe("compose submit — T32 verbs", () => {
     vi.mocked(api.patchNetwork).mockResolvedValue({
       network: "libera",
       nick: "vjt",
+      ident: null,
       realname: null,
       sasl_user: null,
       auth_method: "sasl",

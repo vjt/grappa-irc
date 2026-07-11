@@ -74,10 +74,20 @@ export async function login(
   identifier: string,
   password: string | null,
   captchaToken?: string,
+  // #152 — login-Advanced ident + realname (both optional). Blank/absent
+  // fields are omitted from the request so a plain/guest login stays a
+  // minimal `{identifier}` body and never clobbers visitor defaults.
+  advanced?: { ident?: string | null; realname?: string | null },
 ): Promise<void> {
   const req: api.LoginRequest =
     password !== null && password !== "" ? { identifier, password } : { identifier };
   if (captchaToken !== undefined) req.captcha_token = captchaToken;
+  if (advanced?.ident !== null && advanced?.ident !== undefined && advanced.ident !== "") {
+    req.ident = advanced.ident;
+  }
+  if (advanced?.realname !== null && advanced?.realname !== undefined && advanced.realname !== "") {
+    req.realname = advanced.realname;
+  }
   const { token: t, subject } = await api.login(req);
   localStorage.setItem(SUBJECT_KEY, JSON.stringify(subject));
   setToken(t);

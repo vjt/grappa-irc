@@ -104,6 +104,11 @@ function isCaptchaInfo(info: unknown): info is { provider: string; site_key: str
 const Login: Component = () => {
   const [identifier, setIdentifier] = createSignal("");
   const [password, setPassword] = createSignal("");
+  // #152 — login-Advanced realname + ident (both optional, collapsed
+  // under the Advanced toggle alongside password). Blank = use server
+  // defaults (nick for ident, "Grappa Visitor" for realname).
+  const [realname, setRealname] = createSignal("");
+  const [ident, setIdent] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   const [advanced, setAdvanced] = createSignal(false);
   // `connecting` drives the whole-view swap: while an auth.login attempt is
@@ -169,13 +174,17 @@ const Login: Component = () => {
     setConnecting(true);
     startRotation();
     try {
+      // #152 — thread login-Advanced ident/realname through the same
+      // boundary. Blank fields are omitted downstream (auth.login), so a
+      // guest/plain login stays a minimal request.
+      const advanced = { ident: ident(), realname: realname() };
       // Preserve the auth.login(id, pwd, captcha?) boundary shape: forward
       // the captcha token only when present, so the plain path stays a
       // 2-arg call (the captcha retry is the only 3-arg caller).
       if (captchaToken === undefined) {
-        await auth.login(id, pwd);
+        await auth.login(id, pwd, undefined, advanced);
       } else {
-        await auth.login(id, pwd, captchaToken);
+        await auth.login(id, pwd, captchaToken, advanced);
       }
       // Stop the cosmetic rotation before we leave — navigation unmounts
       // Login (onCleanup would catch it too), but being explicit means a
@@ -301,6 +310,37 @@ const Login: Component = () => {
                 <p class="login-advanced-hint">
                   Leave blank to join as a guest. Enter your account password to log into a
                   registered account.
+                </p>
+
+                {/* #152 — realname + ident, optional. Blank = server
+                    defaults (nick for ident, "Grappa Visitor" for
+                    realname). ident is the `user` slot of nick!user@host. */}
+                <label for="login-realname">Real name</label>
+                <input
+                  id="login-realname"
+                  type="text"
+                  autocomplete="off"
+                  autocapitalize="none"
+                  autocorrect="off"
+                  spellcheck={false}
+                  value={realname()}
+                  onInput={(e) => setRealname(e.currentTarget.value)}
+                />
+
+                <label for="login-ident">Ident</label>
+                <input
+                  id="login-ident"
+                  type="text"
+                  autocomplete="off"
+                  autocapitalize="none"
+                  autocorrect="off"
+                  spellcheck={false}
+                  value={ident()}
+                  onInput={(e) => setIdent(e.currentTarget.value)}
+                />
+                <p class="login-advanced-hint">
+                  Real name and ident are optional and shown to other users. Leave blank to use the
+                  defaults.
                 </p>
               </div>
             </Show>

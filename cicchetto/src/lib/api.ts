@@ -33,6 +33,10 @@ export type LoginRequest = {
   identifier: string;
   password?: string;
   captcha_token?: string;
+  // #152 — login-Advanced ident + realname (both optional). Sent raw;
+  // the server sanitizes (leading-`~` strip) + shape-validates.
+  ident?: string;
+  realname?: string;
 };
 
 export type AdmissionError =
@@ -195,6 +199,12 @@ export type MeResponse =
       kind: "visitor";
       id: string;
       nick: string;
+      // #152 — user-settable IRC ident + realname (both nullable until
+      // set). Optional on the type so test mocks predating the fields
+      // don't need touching; production /me always emits them (null when
+      // unset). cic's SettingsDrawer identity editor reads + writes these.
+      ident?: string | null;
+      realname?: string | null;
       network_slug: string;
       // S16 — mirror the server contract: `me_json.ex` renders
       // `DateTime.t() | nil` (generated `VisitorsWireT.expires_at:
@@ -1372,6 +1382,39 @@ export async function me(token: string): Promise<MeResponse> {
   return (await res.json()) as MeResponse;
 }
 
+// #152 — response for `PATCH /me/identity`. The updated visitor identity
+// (kind + nick + ident + realname + connected). Mirror of
+// `GrappaWeb.MeJSON.identity/1`.
+export type IdentityResponse = {
+  kind: "visitor";
+  id: string;
+  nick: string;
+  ident: string | null;
+  realname: string | null;
+  network_slug: string;
+  expires_at: string | null;
+  registered: boolean;
+  connected: boolean;
+};
+
+// #152 — set the visitor's user-settable IRC identity (ident + realname),
+// live-applied via internal reconnect. Visitor-only (users 403). Both
+// fields optional; an omitted field is left unchanged server-side. The
+// server sanitizes ident (leading-`~` strip) + shape-validates; a bad
+// value surfaces as a 422 ApiError the caller renders inline.
+export async function updateIdentity(
+  token: string,
+  body: { ident?: string; realname?: string },
+): Promise<IdentityResponse> {
+  const res = await fetch("/me/identity", {
+    method: "PATCH",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as IdentityResponse;
+}
+
 // M-cluster M-8 — admin Visitors tab wire types + fetch wrappers.
 // Mirror of `Grappa.Visitors.AdminWire.t()`
 // (lib/grappa/visitors/admin_wire.ex). `live_state === null` is the
@@ -1991,6 +2034,8 @@ export type CredentialConnectionStateRequest = "connected" | "parked";
 export type CredentialJson = {
   network: string;
   nick: string;
+  // #152 — per-network IRC ident (nullable; falls back to nick server-side).
+  ident: string | null;
   realname: string | null;
   sasl_user: string | null;
   // S3 — the codegen gate (`_Assert_CredentialJson`) revealed this had

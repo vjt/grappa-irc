@@ -1,4 +1,9 @@
-import { deleteAccount as apiDeleteAccount, disconnectSession, reconnectSession } from "./api";
+import {
+  deleteAccount as apiDeleteAccount,
+  updateIdentity as apiUpdateIdentity,
+  disconnectSession,
+  reconnectSession,
+} from "./api";
 import { clearLocalAuth, getSubject, logout, token } from "./auth";
 import { refetchUser } from "./networks";
 import { quitAll } from "./quit";
@@ -92,6 +97,23 @@ export async function reconnect(): Promise<void> {
   const t = token();
   if (t === null) return;
   await reconnectSession(t);
+  refetchUser();
+}
+
+/**
+ * updateIdentity — #152 set the visitor's IRC ident + realname,
+ * live-applied via internal reconnect. Registered/anon visitor only
+ * (the server 403s users). Refetches `/me` so the SettingsDrawer
+ * reflects the persisted values + the post-reconnect `connected` flag.
+ *
+ * Errors PROPAGATE (unlike quit/logout): a 422 (bad ident) must surface
+ * so the drawer can render the inline validation message instead of
+ * silently swallowing the change.
+ */
+export async function updateIdentity(fields: { ident?: string; realname?: string }): Promise<void> {
+  const t = token();
+  if (t === null) return;
+  await apiUpdateIdentity(t, fields);
   refetchUser();
 }
 

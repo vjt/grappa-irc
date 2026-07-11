@@ -384,6 +384,7 @@ export type NetworksFeaturedChannelsWireIndexPayload = {
 export type NetworksWireCredentialJson = {
   network: string;
   nick: string;
+  ident: string | null;
   realname: string | null;
   sasl_user: string | null;
   auth_method: NetworksCredentialAuthMethod;
@@ -836,6 +837,8 @@ export type WireSessionEvent =
 export type VisitorsWireCredentialJson = {
   id: string;
   nick: string;
+  ident: string | null;
+  realname: string | null;
   network_slug: string;
   registered: boolean;
 };
@@ -843,6 +846,8 @@ export type VisitorsWireCredentialJson = {
 export type VisitorsWireT = {
   id: string;
   nick: string;
+  ident: string | null;
+  realname: string | null;
   network_slug: string;
   expires_at: string | null;
   registered: boolean;

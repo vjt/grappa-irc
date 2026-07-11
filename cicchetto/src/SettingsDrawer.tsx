@@ -10,10 +10,11 @@ import {
 } from "solid-js";
 import DeleteAccountModal from "./DeleteAccountModal";
 import InlineConfirmButton from "./InlineConfirmButton";
-import { displayNick } from "./lib/api";
+import { ApiError, displayNick } from "./lib/api";
 import { getSubject, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
-import { detach, disconnect, quit, reconnect } from "./lib/lifecycle";
+import { friendlyApiError } from "./lib/friendlyApiError";
+import { detach, disconnect, quit, reconnect, updateIdentity } from "./lib/lifecycle";
 import { isAdmin, user } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
@@ -178,6 +179,55 @@ const SettingsDrawer: Component<Props> = (props) => {
     await reconnect();
   };
 
+  // #152 — visitor identity editor (ident + realname), live-applied via
+  // PATCH /me/identity → internal reconnect. Visitor-only. The text
+  // shadows seed from /me on drawer open; a save PATCHes then refetches
+  // /me so `user()` reflects the persisted values. A 422 (bad ident)
+  // surfaces inline via `identityError`.
+  const [identText, setIdentText] = createSignal("");
+  const [realnameText, setRealnameText] = createSignal("");
+  const [identitySaving, setIdentitySaving] = createSignal(false);
+  const [identityError, setIdentityError] = createSignal<string | null>(null);
+  const [identitySaved, setIdentitySaved] = createSignal(false);
+  // Two-tap arm for the apply button (parent owns the flag per
+  // InlineConfirmButton's contract) — the reconnect is disruptive
+  // (session bounces), so it gets the same confirm gate as quit.
+  const [identityArmed, setIdentityArmed] = createSignal(false);
+
+  // Seed the identity fields from /me whenever the drawer opens (or the
+  // resource refetches). Guards on `isVisitor()` so a user subject never
+  // touches these signals.
+  createEffect(() => {
+    if (!props.open) return;
+    const u = user();
+    if (u?.kind === "visitor") {
+      setIdentText(u.ident ?? "");
+      setRealnameText(u.realname ?? "");
+    }
+  });
+
+  const onSaveIdentity = async () => {
+    setIdentityArmed(false);
+    setIdentityError(null);
+    setIdentitySaved(false);
+    setIdentitySaving(true);
+    try {
+      // Send both fields; blank clears back to the server default
+      // (ident → nick, realname → "Grappa Visitor"). Empty string is a
+      // legitimate "unset" intent here, distinct from login-Advance where
+      // blank means "don't set" — the settings editor is the canonical
+      // edit surface, so it owns the full value including clear.
+      await updateIdentity({ ident: identText(), realname: realnameText() });
+      setIdentitySaved(true);
+    } catch (err) {
+      setIdentityError(
+        err instanceof ApiError ? friendlyApiError(err) : "Couldn't apply identity. Try again.",
+      );
+    } finally {
+      setIdentitySaving(false);
+    }
+  };
+
   // The drawer stays mounted across open/close (CSS .open toggle, not a
   // <Show>), so an armed quit button would survive a close → reopen and
   // sit one stray tap from killing the bouncer. Disarm on every close.
@@ -187,6 +237,12 @@ const SettingsDrawer: Component<Props> = (props) => {
     if (!props.open) {
       setQuitArmed(false);
       setDeleteOpen(false);
+      // #152 — disarm the identity apply + clear transient save state so a
+      // reopened drawer never sits one tap from a reconnect or shows a
+      // stale "applied"/error banner.
+      setIdentityArmed(false);
+      setIdentitySaved(false);
+      setIdentityError(null);
     }
   });
 
@@ -705,6 +761,65 @@ const SettingsDrawer: Component<Props> = (props) => {
         </Show>
 
         <Show when={isVisitor()}>
+          {/* #152 — visitor identity editor. Saving PATCHes /me/identity
+              which live-applies via internal reconnect (the session
+              bounces + rejoins). The confirm-armed save communicates the
+              reconnect cost; a 422 renders inline. */}
+          <div class="settings-identity" data-testid="settings-identity">
+            <label for="settings-realname">Real name</label>
+            <input
+              id="settings-realname"
+              type="text"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck={false}
+              value={realnameText()}
+              onInput={(e) => setRealnameText(e.currentTarget.value)}
+            />
+
+            <label for="settings-ident">Ident</label>
+            <input
+              id="settings-ident"
+              type="text"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck={false}
+              value={identText()}
+              onInput={(e) => setIdentText(e.currentTarget.value)}
+            />
+            <p class="settings-identity-hint">
+              Applying reconnects your session — you'll briefly drop and rejoin your channels.
+            </p>
+
+            <InlineConfirmButton
+              idleLabel={identitySaving() ? "applying…" : "apply identity"}
+              confirmLabel="apply — this reconnects"
+              testId="settings-identity-apply"
+              armed={identityArmed()}
+              onArm={() => setIdentityArmed(true)}
+              onConfirm={() => {
+                void onSaveIdentity();
+              }}
+            />
+
+            <Show when={identityError()}>
+              {(msg) => (
+                <p
+                  role="alert"
+                  class="settings-identity-error"
+                  data-testid="settings-identity-error"
+                >
+                  {msg()}
+                </p>
+              )}
+            </Show>
+            <Show when={identitySaved()}>
+              <p class="settings-identity-ok" data-testid="settings-identity-ok">
+                Identity applied.
+              </p>
+            </Show>
+          </div>
+
           <button
             type="button"
             class="share-session-entry"

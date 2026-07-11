@@ -33,7 +33,7 @@ const MAX_NICK_LEN = 30;
 // char-by-char. Kept byte-identical in spirit to the server's @nick_regex
 // first-char vs rest split.
 const NICK_FIRST = /[A-Za-z[\]\\`_^{|}]/;
-const NICK_REST = /[A-Za-z0-9[\]\\`_^{|}\-]/;
+const NICK_REST = /[A-Za-z0-9[\]\\`_^{|}-]/;
 
 // Naive email check: a non-empty local part, an "@", and a domain carrying
 // at least one dot with a non-empty label after it. Deliberately loose —

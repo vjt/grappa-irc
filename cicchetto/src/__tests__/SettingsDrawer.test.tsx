@@ -43,6 +43,23 @@ vi.mock("../lib/auth", () => ({
 vi.mock("../lib/api", () => ({
   disconnectSession: vi.fn().mockResolvedValue(undefined),
   reconnectSession: vi.fn().mockResolvedValue(undefined),
+  // #152 — the identity editor PATCHes /me/identity via lib/lifecycle's
+  // updateIdentity, which calls api.updateIdentity. Stub so the click
+  // doesn't hit the network + the call is observable.
+  updateIdentity: vi.fn().mockResolvedValue({
+    kind: "visitor",
+    id: "v1",
+    nick: "vjt",
+    ident: "grp",
+    realname: "Real Name",
+    network_slug: "azzurra",
+    expires_at: null,
+    registered: true,
+    connected: true,
+  }),
+  // The drawer imports ApiError for the identity-save catch (instanceof
+  // narrowing). A minimal class stand-in keeps the import resolvable.
+  ApiError: class ApiError extends Error {},
   // #157 — the drawer derives the delete-account confirm text from
   // displayNick(me). Mirror the production discriminant.
   displayNick: (me: { kind: "user"; name: string } | { kind: "visitor"; nick: string }) =>
@@ -72,6 +89,8 @@ const meHolder = vi.hoisted(() => ({
         nick: string;
         network_slug: string;
         expires_at: string;
+        ident?: string | null;
+        realname?: string | null;
         registered?: boolean;
         connected?: boolean;
       }
@@ -749,6 +768,55 @@ describe("SettingsDrawer (#126 — registered-visitor lifecycle verbs)", () => {
     await waitFor(() => {
       expect(api.reconnectSession).toHaveBeenCalledWith("test-bearer");
     });
+  });
+
+  it("#152 — identity editor seeds from /me, two-tap apply calls api.updateIdentity", async () => {
+    const api = await import("../lib/api");
+    meHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "vjt",
+      network_slug: "azzurra",
+      expires_at: "2099-01-01T00:00:00Z",
+      ident: "grp",
+      realname: "Seed Name",
+      registered: true,
+      connected: true,
+    };
+    wrap(true);
+
+    // Fields seed from /me on open.
+    const identInput = screen.getByLabelText(/^ident$/i) as HTMLInputElement;
+    const realnameInput = screen.getByLabelText(/real name/i) as HTMLInputElement;
+    expect(identInput.value).toBe("grp");
+    expect(realnameInput.value).toBe("Seed Name");
+
+    // Edit + two-tap apply (arm, then confirm).
+    fireEvent.input(identInput, { target: { value: "newid" } });
+    fireEvent.input(realnameInput, { target: { value: "New Name" } });
+    const applyBtn = screen.getByTestId("settings-identity-apply");
+    fireEvent.click(applyBtn); // arm
+    fireEvent.click(applyBtn); // confirm
+
+    await waitFor(() => {
+      expect(api.updateIdentity).toHaveBeenCalledWith("test-bearer", {
+        ident: "newid",
+        realname: "New Name",
+      });
+    });
+  });
+
+  it("#152 — identity editor is NOT shown for a user subject", () => {
+    meHolder.current = {
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      is_admin: false,
+      inserted_at: "2026-06-29T00:00:00Z",
+    };
+    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
+    wrap(true);
+    expect(screen.queryByTestId("settings-identity")).toBeNull();
   });
 });
 
