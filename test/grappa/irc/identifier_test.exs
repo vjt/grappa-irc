@@ -90,6 +90,78 @@ defmodule Grappa.IRC.IdentifierTest do
     end
   end
 
+  describe "sanitize_ident/1" do
+    test "strips a single leading tilde (the identd-verified anti-spoof guard)" do
+      # grappa runs no identd; the ircd tilde-prefixes unverified idents.
+      # A user-supplied leading `~` must not be presented as identd-verified,
+      # so strip it (vjt ruling B: sanitize off, don't reject).
+      assert Identifier.sanitize_ident("~foo") == "foo"
+      assert Identifier.sanitize_ident("~a") == "a"
+    end
+
+    test "strips only ONE leading tilde (residual tildes fail validation)" do
+      # A second tilde is left in place so valid_ident?/1 rejects it —
+      # stripping-all would silently accept `~~evil` as `evil`.
+      assert Identifier.sanitize_ident("~~foo") == "~foo"
+      refute Identifier.valid_ident?(Identifier.sanitize_ident("~~foo"))
+    end
+
+    test "leaves a tilde-free ident untouched" do
+      assert Identifier.sanitize_ident("foo") == "foo"
+      assert Identifier.sanitize_ident("a.b-c_1") == "a.b-c_1"
+    end
+
+    test "a bare tilde sanitizes to empty (then fails validation)" do
+      assert Identifier.sanitize_ident("~") == ""
+      refute Identifier.valid_ident?(Identifier.sanitize_ident("~"))
+    end
+
+    test "passes non-binary through unchanged (mirrors canonical_nick/1)" do
+      assert Identifier.sanitize_ident(nil) == nil
+      assert Identifier.sanitize_ident(:atom) == :atom
+    end
+  end
+
+  describe "valid_ident?/1" do
+    test "accepts RFC-user-charset idents up to 10 chars" do
+      assert Identifier.valid_ident?("vjt")
+      assert Identifier.valid_ident?("a")
+      assert Identifier.valid_ident?("user_1")
+      assert Identifier.valid_ident?("a.b-c_d")
+      assert Identifier.valid_ident?("1digit")
+      assert Identifier.valid_ident?(String.duplicate("a", 10))
+    end
+
+    test "rejects idents longer than 10 chars (vjt ruling B: USERLEN cap)" do
+      refute Identifier.valid_ident?(String.duplicate("a", 11))
+    end
+
+    test "rejects a leading tilde (must be sanitized off upstream, not validated in)" do
+      refute Identifier.valid_ident?("~foo")
+    end
+
+    test "rejects @ and whitespace (would split the USER wire token)" do
+      refute Identifier.valid_ident?("foo@bar")
+      refute Identifier.valid_ident?("with space")
+      refute Identifier.valid_ident?(" leading")
+      refute Identifier.valid_ident?("trailing ")
+    end
+
+    test "rejects empty / nil / non-binary" do
+      refute Identifier.valid_ident?("")
+      refute Identifier.valid_ident?(nil)
+      refute Identifier.valid_ident?(:atom)
+    end
+
+    property "accepts any 1..10-length string over the allowed charset" do
+      allowed = Enum.concat([?A..?Z, ?a..?z, ?0..?9, [?., ?_, ?-]])
+
+      check all(chars <- StreamData.list_of(StreamData.member_of(allowed), min_length: 1, max_length: 10)) do
+        assert Identifier.valid_ident?(List.to_string(chars))
+      end
+    end
+  end
+
   describe "canonical_channel/1" do
     test "lowercases sigil-prefixed channel names" do
       assert Identifier.canonical_channel("#Chan") == "#chan"

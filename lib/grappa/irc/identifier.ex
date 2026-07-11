@@ -36,6 +36,17 @@ defmodule Grappa.IRC.Identifier do
   # including the prefix.
   @channel_regex ~r/^[#&+!][^\s,\x07]{1,49}$/
 
+  # GH #152 — the IRC `ident` (the `user` slot of `nick!user@host`, sent
+  # in the USER command's first param). Free-form, non-unique — validated
+  # for SHAPE only: RFC-2812 `user`-charset subset (letters, digits, `.`,
+  # `_`, `-`), 1..10 chars. Cap 10 is the common ircd `USERLEN` (vjt
+  # ruling B). Excludes `@` (would split `user@host`), whitespace (would
+  # split the USER wire token), and a leading `~` — see
+  # `sanitize_ident/1` for the tilde anti-spoof rationale. The regex is
+  # deliberately NARROWER than `@nick_regex` (no bracket chars): ident is
+  # the identd username, not a nick.
+  @ident_regex ~r/^[A-Za-z0-9._-]{1,10}$/
+
   # Grappa-internal: lowercase alphanum + dash + underscore, 1-32 chars.
   # Used as URL path segment, PubSub topic component, log key value.
   # The cap is 32 (not 64 like the legacy `Network` schema's
@@ -72,6 +83,50 @@ defmodule Grappa.IRC.Identifier do
   @spec valid_channel?(term()) :: boolean()
   def valid_channel?(s) when is_binary(s), do: Regex.match?(@channel_regex, s)
   def valid_channel?(_), do: false
+
+  @doc """
+  Strips a SINGLE leading `~` from a user-supplied IRC ident (GH #152).
+
+  ## Why strip the tilde (the anti-spoof guard)
+
+  grappa runs no identd. An IRC server that cannot verify a client's
+  ident via the identd protocol tilde-prefixes it (`~foo`) to mark it
+  **unverified**. If we let a user set their ident to `~verified`, the
+  upstream would present `nick!~verified@host` — visually
+  indistinguishable from an identd-*checked* `verified` on a network
+  that DOES run identd. Stripping a user-supplied leading tilde is the
+  whole anti-spoof guard (vjt ruling B): the client cannot masquerade
+  as identd-verified.
+
+  Strips only ONE tilde so `~~evil` sanitizes to `~evil`, which then
+  fails `valid_ident?/1` — stripping all leading tildes would silently
+  accept the spoof attempt as `evil`. Sanitize, don't reject the whole
+  input: a bare `~foo` is a legitimate "I typed the tilde out of habit"
+  and becomes `foo`.
+
+  Non-binary input passes through unchanged (mirrors `canonical_nick/1`
+  / `canonical_channel/1` — the changeset boundary may see `nil`).
+  """
+  @spec sanitize_ident(term()) :: term()
+  def sanitize_ident("~" <> rest), do: rest
+  def sanitize_ident(other), do: other
+
+  @doc """
+  True iff the input is a syntactically valid IRC ident (GH #152) — the
+  `user` slot of `nick!user@host`. Shape only: RFC-2812 `user`-charset
+  subset (`A-Za-z0-9._-`), 1..10 chars, no leading `~` (must be
+  sanitized off via `sanitize_ident/1` at the producing boundary, NOT
+  accepted here), no `@`, no whitespace.
+
+  ident is a free-form, NON-unique attribute (GH #152 design note) —
+  this is a shape validator, never a uniqueness key. Sibling to
+  `valid_nick?/1` / `valid_channel?/1`; the single source of truth for
+  the ident shape, applied at both changeset boundaries (Credential +
+  Visitor).
+  """
+  @spec valid_ident?(term()) :: boolean()
+  def valid_ident?(s) when is_binary(s), do: Regex.match?(@ident_regex, s)
+  def valid_ident?(_), do: false
 
   @doc """
   Returns the canonical lowercase form of a channel name. Non-channel
