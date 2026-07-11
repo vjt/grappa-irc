@@ -190,6 +190,22 @@ defmodule Grappa.Visitors.VisitorTest do
     test "empty attrs is a valid no-op changeset", %{visitor: visitor} do
       assert Visitor.identity_changeset(visitor, %{}).valid?
     end
+
+    test "clearing a set field with \"\" resets it to nil (→ falls back to default)", %{
+      visitor: _visitor
+    } do
+      # #152 clear-to-default contract: a visitor who blanks the ident/
+      # realname field in Settings sends "". Ecto's cast maps "" to nil for
+      # a :string field (default empty_values), so the change persists as
+      # nil — and the SessionPlan effective_ident/effective_realname
+      # fallbacks then apply (ident → nick, realname → "Grappa Visitor").
+      # Without this, a "cleared" field would silently keep its old value.
+      seeded = %Visitor{id: Ecto.UUID.generate(), nick: "vjt", ident: "grp", realname: "Old Name"}
+      cs = Visitor.identity_changeset(seeded, %{ident: "", realname: ""})
+      assert cs.valid?
+      assert Ecto.Changeset.get_field(cs, :ident) == nil
+      assert Ecto.Changeset.get_field(cs, :realname) == nil
+    end
   end
 
   defp errors_on(changeset) do

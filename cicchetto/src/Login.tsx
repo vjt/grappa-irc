@@ -176,15 +176,17 @@ const Login: Component = () => {
     try {
       // #152 — thread login-Advanced ident/realname through the same
       // boundary. Blank fields are omitted downstream (auth.login), so a
-      // guest/plain login stays a minimal request.
-      const advanced = { ident: ident(), realname: realname() };
+      // guest/plain login stays a minimal request. Named `advancedFields`
+      // (not `advanced`) so it doesn't shadow the `advanced()` toggle
+      // signal accessor in this scope.
+      const advancedFields = { ident: ident(), realname: realname() };
       // Preserve the auth.login(id, pwd, captcha?) boundary shape: forward
       // the captcha token only when present, so the plain path stays a
       // 2-arg call (the captcha retry is the only 3-arg caller).
       if (captchaToken === undefined) {
-        await auth.login(id, pwd, undefined, advanced);
+        await auth.login(id, pwd, undefined, advancedFields);
       } else {
-        await auth.login(id, pwd, captchaToken, advanced);
+        await auth.login(id, pwd, captchaToken, advancedFields);
       }
       // Stop the cosmetic rotation before we leave — navigation unmounts
       // Login (onCleanup would catch it too), but being explicit means a

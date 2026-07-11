@@ -775,18 +775,38 @@ defmodule Grappa.Visitors do
   @spec update_identity(Visitor.t(), map()) ::
           {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
   def update_identity(%Visitor{} = visitor, attrs) when is_map(attrs) do
-    case visitor |> Visitor.identity_changeset(attrs) |> Repo.update() do
+    changeset = Visitor.identity_changeset(visitor, attrs)
+    # A no-change PATCH (empty body, or re-applying the current values)
+    # must NOT bounce the live session — a reconnect drops + rejoins every
+    # channel, so firing it for a no-op is a gratuitous disruption. Gate
+    # the reconnect on the changeset actually carrying :ident/:realname
+    # changes; Repo.update still runs (idempotent {:ok, _}) so the caller
+    # contract is unchanged.
+    changed? = changeset.changes != %{}
+
+    case persist_identity(changeset) do
       {:ok, updated} ->
-        _ = maybe_reconnect_after_identity(updated)
+        # The reconnect is a side effect OUTSIDE the persist rescue below:
+        # the identity is already committed, and maybe_reconnect_after_identity
+        # swallows its own admission/spawn failures — a StaleEntryError from
+        # the persist must NOT be conflated with a reconnect outcome.
+        if changed?, do: maybe_reconnect_after_identity(updated)
         {:ok, updated}
 
-      {:error, %Ecto.Changeset{} = cs} ->
-        {:error, cs}
+      {:error, _} = err ->
+        err
     end
+  end
+
+  # Persist the identity changeset, mapping a concurrent-delete stale-struct
+  # race to {:error, :not_found} (mirrors rotate_password/2's H14 handling).
+  # Scoped so ONLY Repo.update is under the rescue — the reconnect side
+  # effect in the caller stays outside it.
+  @spec persist_identity(Ecto.Changeset.t()) ::
+          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  defp persist_identity(changeset) do
+    Repo.update(changeset)
   rescue
-    # A concurrent `delete/1` between the caller's fetch and this update
-    # surfaces as a stale-struct error; report it as :not_found (mirrors
-    # rotate_password/2's H14 concurrent-delete handling).
     Ecto.StaleEntryError -> {:error, :not_found}
   end
 

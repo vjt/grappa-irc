@@ -17614,12 +17614,17 @@ layer) calls the orchestrator. Combined with the Fork-C deferral of the
 registered-user cic self-service surface, the user reconnect wrapper had
 NO caller this issue. Resolution: build ONLY the visitor wrapper
 (`Visitors.update_identity/2`); the user ident rides the EXISTING admin
-credentials PATCH (which already stops the live session on an
-auth-touching change). The deferred user-cic follow-on's reconnect
-wrapper will live in the **web layer** (mirroring `orchestrate_spawn`),
-never in the Networks context. Same intent as Ruling A (per-subject
-wrappers over shared teardown+respawn cores, no polymorphic verb), minus
-one boundary-impossible/caller-less module.
+credentials PATCH. That PATCH does NOT live-apply an ident change: like
+its sibling `realname` (and unlike `password`/`auth_method`), `ident` is
+NOT in `classify_session_action`'s auth-touching set, so an ident-only
+admin edit is `:left_alone` and the new ident applies on the NEXT
+reconnect (operator `/connect`, or the deferred user-cic self-service
+path). This is deliberate + consistent — realname behaves identically
+today — not a bug: the deferred user-cic follow-on's reconnect wrapper
+(web layer, mirroring `orchestrate_spawn`, never the Networks context) is
+what will make the user ident live-apply. Same intent as Ruling A
+(per-subject wrappers over shared teardown+respawn cores, no polymorphic
+verb), minus one boundary-impossible/caller-less module.
 
 **Shape of the build.**
 

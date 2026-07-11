@@ -147,6 +147,19 @@ defmodule Grappa.IRC.IdentifierTest do
       refute Identifier.valid_ident?("trailing ")
     end
 
+    test "rejects a trailing newline / CR (PCRE `$` anchor footgun)" do
+      # `$` in Elixir/PCRE matches BEFORE a trailing `\n`, so a `^...$`
+      # regex would ACCEPT `grp\n` — letting a newline-terminated ident
+      # reach the wire (CRLF injection). The regex uses `\A...\z` anchors
+      # precisely to reject these. (The AuthFSM @line_bound_fields guard is
+      # a second line of defense, but the shape validator must reject at
+      # the boundary.)
+      refute Identifier.valid_ident?("grp\n")
+      refute Identifier.valid_ident?("grp\r")
+      refute Identifier.valid_ident?("grp\r\n")
+      refute Identifier.valid_ident?("\ngrp")
+    end
+
     test "rejects empty / nil / non-binary" do
       refute Identifier.valid_ident?("")
       refute Identifier.valid_ident?(nil)

@@ -184,10 +184,17 @@ defmodule GrappaWeb.MeController do
     end
   end
 
-  # Whitelist the two identity fields from the request body. Keys the
-  # caller omits are left out so `identity_changeset/2` leaves them
-  # unchanged (no clobber-to-nil). String keys → atom keys for the
-  # changeset cast.
+  # Whitelist the two identity fields from the request body. A key the
+  # caller OMITS is left out so `identity_changeset/2` leaves that field
+  # unchanged (no clobber-to-nil). A key present with `""` is PASSED
+  # THROUGH on purpose — the settings editor is the canonical edit
+  # surface, so `""` is a deliberate "clear to default" (Ecto's cast maps
+  # "" → nil → the SessionPlan effective_* fallback applies). This is the
+  # OPPOSITE of `Grappa.Visitors.Login.login_identity_attrs/1`, which
+  # DROPS `""` (a blank login-Advanced field means "don't set", never
+  # "clear"). Do NOT "deduplicate" the two helpers into one — the empty-
+  # string semantics are load-bearing and deliberately divergent. String
+  # keys → atom keys for the changeset cast.
   @spec identity_attrs(map()) :: %{optional(:ident) => term(), optional(:realname) => term()}
   defp identity_attrs(params) do
     %{}

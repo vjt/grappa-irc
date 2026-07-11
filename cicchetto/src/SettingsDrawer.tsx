@@ -194,15 +194,20 @@ const SettingsDrawer: Component<Props> = (props) => {
   // (session bounces), so it gets the same confirm gate as quit.
   const [identityArmed, setIdentityArmed] = createSignal(false);
 
-  // Seed the identity fields from /me whenever the drawer opens (or the
-  // resource refetches). Guards on `isVisitor()` so a user subject never
-  // touches these signals.
+  // Seed the identity fields from /me ONCE per open-session — on the
+  // open transition, or (if /me hadn't loaded yet at open) the first time
+  // `user()` resolves to a visitor while open. `identitySeeded` latches
+  // after the first seed so a later /me refetch (the post-apply refetch,
+  // or an unrelated disconnect/reconnect verb) never clobbers the
+  // visitor's in-progress typing. Reset on close (see the close effect).
+  const [identitySeeded, setIdentitySeeded] = createSignal(false);
   createEffect(() => {
-    if (!props.open) return;
+    if (!props.open || identitySeeded()) return;
     const u = user();
     if (u?.kind === "visitor") {
       setIdentText(u.ident ?? "");
       setRealnameText(u.realname ?? "");
+      setIdentitySeeded(true);
     }
   });
 
@@ -239,10 +244,12 @@ const SettingsDrawer: Component<Props> = (props) => {
       setDeleteOpen(false);
       // #152 — disarm the identity apply + clear transient save state so a
       // reopened drawer never sits one tap from a reconnect or shows a
-      // stale "applied"/error banner.
+      // stale "applied"/error banner. Reset the seed latch so the next
+      // open re-seeds the fields from the (now-current) /me values.
       setIdentityArmed(false);
       setIdentitySaved(false);
       setIdentityError(null);
+      setIdentitySeeded(false);
     }
   });
 

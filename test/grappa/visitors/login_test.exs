@@ -139,6 +139,22 @@ defmodule Grappa.Visitors.LoginTest do
       stop_visitor_session(v.id, network.id)
     end
 
+    test "malformed login-Advanced ident → :malformed_ident AND purges the fresh anon row (#152)" do
+      {_, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      # An 11-char ident fails the shape guard. The fresh anon row provisioned
+      # by find_or_provision_anon must be PURGED (not left squatting the nick
+      # until the TTL reaper) — the purge lives in dispatch/4's error branch,
+      # and apply_login_identity runs INSIDE continue_case_1 so its failure
+      # reaches that branch.
+      assert {:error, :malformed_ident} =
+               Login.login(login_input(%{nick: "orphan152", ident: "way-too-long"}), [])
+
+      # No row survives for the nick — a corrected retry starts clean.
+      assert Visitors.get_by_nick_and_network("orphan152", network.slug) == nil
+    end
+
     test "fresh-nick login with a password identifies via :nickserv_identify at 001" do
       {server, port} = start_server()
       {network, _} = setup_visitor_network(port)

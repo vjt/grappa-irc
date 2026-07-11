@@ -236,8 +236,7 @@ defmodule Grappa.Visitors.Login do
     with :ok <- Grappa.Admission.check_capacity(capacity_input),
          :ok <- Grappa.Admission.verify_captcha(input.captcha_token, input.ip),
          {:ok, visitor} <-
-           Visitors.find_or_provision_anon(input.nick, network.slug, input.ip),
-         {:ok, visitor} <- apply_login_identity(visitor, input) do
+           Visitors.find_or_provision_anon(input.nick, network.slug, input.ip) do
       case continue_case_1(visitor, network, input, timeouts) do
         {:ok, _} = ok ->
           :ok = NetworkCircuit.record_success(network.id)
@@ -249,6 +248,9 @@ defmodule Grappa.Visitors.Login do
           # clean. purge_if_anon/1 short-circuits on registered rows
           # (which can't be reached in case 1 anyway) — the call is
           # safe even on the can't-happen case-2/3-mid-race edge.
+          # This also covers a `:malformed_ident` from apply_login_identity
+          # (now inside continue_case_1): a bad login-Advanced ident must
+          # not leave the fresh anon row squatting the nick.
           :ok = Visitors.purge_if_anon(visitor.id)
           err
       end
@@ -306,7 +308,7 @@ defmodule Grappa.Visitors.Login do
   # caller purges the fresh row on this error, same as a spawn failure).
   # No-op when neither field is set (guest / plain login).
   @spec apply_login_identity(Visitor.t(), input()) ::
-          {:ok, Visitor.t()} | {:error, :malformed_ident}
+          {:ok, Visitor.t()} | {:error, :malformed_ident | :upstream_unreachable}
   defp apply_login_identity(visitor, input) do
     identity = login_identity_attrs(input)
 
@@ -316,7 +318,11 @@ defmodule Grappa.Visitors.Login do
       case Visitors.update_identity(visitor, identity) do
         {:ok, updated} -> {:ok, updated}
         {:error, %Ecto.Changeset{}} -> {:error, :malformed_ident}
-        {:error, :not_found} -> {:error, :malformed_ident}
+        # A concurrent delete of the just-provisioned row (services
+        # enforce-rename race, operator delete) is NOT a bad ident — map
+        # it to the same surface the spawn `:ignore` path uses so the user
+        # isn't told to fix a well-formed ident.
+        {:error, :not_found} -> {:error, :upstream_unreachable}
       end
     end
   end
@@ -367,7 +373,13 @@ defmodule Grappa.Visitors.Login do
   end
 
   defp continue_case_1(visitor, network, input, timeouts) do
-    with {:ok, _} <- spawn_and_await(visitor, network, input.password, timeouts) do
+    # apply_login_identity runs INSIDE this fn (not the dispatch/4 `with`
+    # head) so a `:malformed_ident` flows through dispatch/4's error branch
+    # that purges the just-provisioned anon row — otherwise a bad
+    # login-Advanced ident leaves the row squatting the nick until the TTL
+    # reaper. Persist BEFORE spawn so the first USER carries the identity.
+    with {:ok, visitor} <- apply_login_identity(visitor, input),
+         {:ok, _} <- spawn_and_await(visitor, network, input.password, timeouts) do
       issue_token(visitor, input)
     end
   end

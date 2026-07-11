@@ -44,8 +44,11 @@ defmodule Grappa.IRC.Identifier do
   # split the USER wire token), and a leading `~` — see
   # `sanitize_ident/1` for the tilde anti-spoof rationale. The regex is
   # deliberately NARROWER than `@nick_regex` (no bracket chars): ident is
-  # the identd username, not a nick.
-  @ident_regex ~r/^[A-Za-z0-9._-]{1,10}$/
+  # the identd username, not a nick. Anchored with `\A...\z` (NOT
+  # `^...$`): in PCRE `$` matches before a trailing `\n`, so `^...$` would
+  # ACCEPT `grp\n` and let a newline-terminated ident reach the USER wire
+  # line (CRLF injection). `\z` matches only the true end of string.
+  @ident_regex ~r/\A[A-Za-z0-9._-]{1,10}\z/
 
   # Grappa-internal: lowercase alphanum + dash + underscore, 1-32 chars.
   # Used as URL path segment, PubSub topic component, log key value.

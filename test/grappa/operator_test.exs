@@ -501,6 +501,23 @@ defmodule Grappa.OperatorTest do
       assert Session.whereis({:visitor, visitor.id}, network.id) == nil
     end
 
+    test "a no-change update does NOT bounce a live session" do
+      {_, port} = start_irc_server()
+      # Seed the visitor already carrying the identity we'll re-send.
+      {visitor, network} = visitor_with_network(port)
+      {:ok, seeded} = Visitors.update_identity(visitor, %{ident: "grp", realname: "RN"})
+
+      pid = start_visitor_session_for(seeded, network)
+      assert Session.whereis({:visitor, seeded.id}, network.id) == pid
+
+      # Re-send the SAME values → zero changeset changes → the live session
+      # must NOT be torn down (a reconnect drops + rejoins every channel;
+      # firing it for a no-op is a gratuitous disruption).
+      assert {:ok, _} = Visitors.update_identity(seeded, %{ident: "grp", realname: "RN"})
+      assert Session.whereis({:visitor, seeded.id}, network.id) == pid
+      assert Process.alive?(pid)
+    end
+
     defp register_reconnect_cleanup(pid) do
       on_exit(fn ->
         _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
