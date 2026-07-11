@@ -158,7 +158,7 @@ Operators get a 4-tab admin pane in cicchetto, gated on `User.is_admin` (REST `/
 
 - **Visitors** — list visitor sessions; delete to free cap slots.
 - **Sessions** — every live `Session.Server` (user + visitor) with DB `connection_state` and live pid shown side by side; per-row disconnect (park) / terminate.
-- **Networks** — per-network cap editor + live counters, plus reset-circuit and force-reap.
+- **Networks** — per-network cap editor + live counters, plus reset-circuit and force-reap. `PATCH /admin/networks/:slug` also flips the per-network **`visitor_enabled`** allowlist flag: visitors may attach only visitor-enabled networks, toggled live with no restart (the runtime replacement for the old compile-time visitor-network pin).
 - **Events** — real-time admin-event tail over the `grappa:admin:events` topic.
 
 The admin UI's Promote button needs an existing admin, so bootstrap the **first** admin with `--admin` on `create-user`:

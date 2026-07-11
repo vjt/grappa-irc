@@ -17943,3 +17943,126 @@ round-trips to upstream identically for both subjects.
 **Deploy class: COLD** (deferred to the end-of-crank window with the
 rest of the functional stack; NO standalone deploy). Design comment:
 issue #211 comment 4946480803.
+
+## 2026-07-11 — #211 phase 3 (L2 epic): multi-network entry + runtime `visitor_enabled` allowlist + the visitor read-cutover to Credential
+
+Third phase of the #211 L2 epic — the first **behavior-changing** one
+(phases 1-2 were expand + pure refactor). Phase 3 makes the visitor
+connect chain resolve identity from the per-`(subject, network)`
+**Credential** (not the raw `%Visitor{}` columns), replaces the
+compile-time `:visitor_network` pin with the runtime
+`networks.visitor_enabled` allowlist, and adds the admin toggle for it.
+Rides the same deferred end-of-crank COLD window; NOT deployed on its
+own. All 7 design forks ruled by vjt (recommended option on each).
+
+### Piece A — runtime `visitor_enabled` allowlist replaces the compile pin
+
+The compile-time `Application.compile_env!(:grappa, :visitor_network)`
+coupling is GONE from BOTH sites (`Visitors.Login` + `AuthController`);
+the `:grappa, :visitor_network` config key is removed from
+`config/{config,test}.exs`. Which networks accept visitors is now the
+DB flag `networks.visitor_enabled` (landed dormant in phase 1), read at
+login time — naturally hot, admin-togglable without a restart, and
+CLAUDE.md-compliant vs app-env. New readers:
+`Networks.list_visitor_enabled/0` +
+`Networks.get_visitor_enabled_network_by_slug/1`.
+
+**Login network selection (fork 1).** `Login.login/2` input gains an
+OPTIONAL `:network` slug. Present → must be `visitor_enabled` (else
+`:network_not_visitor_enabled` → 403) → the existing
+`(nick, network_slug)` lookup/provision runs against it. Absent (today's
+cic) → default to the **sole** `visitor_enabled` network:
+exactly-one-enabled = backward-compatible; zero = `:network_unconfigured`
+(503); more-than-one = `:network_ambiguous` (400, can't happen until an
+admin enables a 2nd network — cic sends a slug once the phase-6 picker
+ships). This SUBSUMES #42 (closed).
+
+**Continuity seed (fork 2).** `visitor_enabled` defaults `false`, so a
+naive cutover leaves zero enabled networks → every visitor login breaks.
+Migration `20260711130000` is **derive-from-reality** (NOT a hardcoded
+slug): `UPDATE networks SET visitor_enabled = true WHERE id IN (SELECT
+DISTINCT network_id FROM network_credentials WHERE visitor_id IS NOT
+NULL)` — a network that currently serves visitors IS a visitor network.
+Idempotent, expand-only, works for any deployment.
+
+### Piece B — admin `visitor_enabled` toggle (no new route, no nginx change)
+
+The toggle rides the EXISTING `PATCH /admin/networks/:slug`
+(`Admin.NetworksController.update/2`, already behind `:admin_authn`,
+already nginx-allowlisted — `/admin/networks` is in the
+`locations-api.conf` regex alternation). `Networks.update_network_caps/2`
+was renamed `update_network_settings/2` (one verb now owns the whole
+editable-network-settings surface — caps + the allowlist flag; a
+"caps"-named verb that also flips `visitor_enabled` would mislead). The
+controller's body allowlist widened to accept `visitor_enabled`;
+`Networks.AdminWire.network_to_admin_json/1` now surfaces it. cic UI is
+deferred to phase 6 (fork 7) — phase 3 ships endpoint + wire only.
+
+### Piece C — the READ-CUTOVER (the heart)
+
+`Visitors.SessionPlan.resolve/1` stops reading `%Visitor{}` identity
+columns and reads the visitor's `(visitor_id, network_id)`
+**Credential**. Cutting that ONE resolver cuts the whole chain — all
+three callers (Login spawn, Bootstrap respawn, reconnect) + the injected
+`refresh_plan` closure route through it (total consistency, no split
+reader).
+
+**Two resolvers, shared fields-only builder (fork 3).** Extracted
+`Networks.SessionPlan.base_plan/6` — the ~14 identity/connect fields that
+are byte-identical for a user and a visitor credential (subject / label
+/ nick / ident / realname / sasl_user / auth_method / password / autojoin
+/ host / port / tls / source_address). Each resolver merges its OWN
+subject-specific callbacks on top (user: 4; visitor: 6 + the anon→IDENTIFY
+login dance) — those genuinely differ and live in different context
+modules. This is exactly phase 2's ruling ("reuse the VERBS, not the
+nouns"): shared verb = the field-flatten; per-subject wiring = the
+callbacks. The `realname` fallback is a `base_plan` PARAMETER (user → its
+own nick; visitor → `"Grappa Visitor"`, ruling E), one rule two call
+sites (fork 4). One-resolver unification is a natural phase-5/7 endgame,
+NOT forced here.
+
+**Fields converge (why the cutover is clean).** The phase-1 backfill made
+`credential.auth_method` == the visitor's derived `:none |
+:nickserv_identify`; `sasl_user` == nick; `autojoin_channels='[]'` so
+`merge_autojoin([], last_joined)` == the pre-cutover `last_joined`-only
+list. Only the realname fallback diverged (handled by the param). So the
+existing `session_plan_test` characterization lock stays green through
+the cutover — behavior-neutral for existing visitors because the
+write-through keeps the Credential == the visitor row.
+
+**Write-path maintenance + reconcile (forks 5, 6).** ONE idempotent
+choke-point verb, `Credentials.upsert_visitor_credential/3` (primitives,
+no `%Visitor{}` — Networks needs no Visitors dep, the FK stays a
+dirty_xref), is reused by BOTH: (a) the per-mutation write-through —
+`Grappa.Visitors` calls it after EVERY visitor identity mutation
+(`find_or_provision_anon`, `commit_password`, `rotate_password`,
+`update_nick`, `update_identity`, `update_last_joined_channels`,
+`remove_autojoin_channel`) via the private `sync_credential/1`; and (b)
+the bulk reconcile at `Bootstrap.run/0` (before `spawn_visitors`) via
+`Visitors.reconcile_credential/1`. Same operation ("make the Credential
+match the visitor"), bulk-applied vs single. This MOOTS the phase-1
+dormant-drift concern (new/changed visitors get correct creds at write
+time) and self-heals drift at boot. `resolve/1` also self-heals a
+missing credential on first use (`Visitors.resolve_credential/2` creates
+it from the visitor row). The subject-scoped reader
+`Credentials.get_visitor_credential/2` (`WHERE visitor_id ==`, never
+`user_id ==`) keeps a visitor out of the user resolver's
+`Accounts.get_user!(nil)` crash BY CONSTRUCTION — the phase-1
+subject-blind-reader class (`feedback_xor_fk_promotion_audit`).
+
+### What STAYS (phase-7 hold — HARD rule)
+
+No visitor column dropped: `visitors.network_slug`/`nick`/`ident`/
+`realname`/`password_encrypted`/`last_joined_channels` all stay and are
+DUAL-WRITTEN (visitor row + Credential) through the transition. The
+`(fold(nick), network_slug)` folded-unique index stays the identity
+guard. Visitor wire display (`Visitors.Wire`/`AdminWire`) untouched —
+dropping singular `network_slug` from the wire is phase 6.
+`Bootstrap.validate_visitor_networks!` still reads `visitor.network_slug`
+as the boot orphan-guard. The temporary identity duplication is the
+standard expand→contract shape the whole L2 epic is built on; phase 7
+removes it.
+
+**Deploy class: COLD** (data migration + read/write cutover; hot path
+skips `ecto.migrate`). Deferred to the end-of-crank window. Design
+comment: issue #211 comment 4947161594.
