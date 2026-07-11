@@ -47,7 +47,7 @@ defmodule Grappa.Visitors.LoginTest do
   end
 
   defp setup_visitor_network(port) do
-    network_with_server(port: port, slug: "azzurra")
+    network_with_server(port: port, slug: "azzurra", visitor_enabled: true)
   end
 
   defp feed_001(server, nick) do
@@ -278,7 +278,11 @@ defmodule Grappa.Visitors.LoginTest do
 
     test "no SessionPlan server row → {:error, :no_server}, anon row purged" do
       # No Server row means SessionPlan.resolve fails with :no_server.
-      {:ok, network} = Grappa.Networks.find_or_create_network(%{slug: "azzurra"})
+      # #211 phase 3 — must be visitor_enabled so login's allowlist gate
+      # admits it and the flow reaches SessionPlan.resolve.
+      {:ok, network} =
+        Grappa.Networks.create_network(%{slug: "azzurra", visitor_enabled: true})
+
       _ = network
 
       assert {:error, :no_server} = Login.login(login_input(), [])
@@ -441,9 +445,13 @@ defmodule Grappa.Visitors.LoginTest do
       AdmissionStateHelpers.reset_network_circuit()
 
       # Use the visitor network slug ("azzurra") so Login.login's
-      # visitor_network() lookup succeeds. No IRC server needed — capacity
-      # checks hit DB + ETS only and do not spawn sessions.
-      network = network_fixture(slug: "azzurra")
+      # runtime visitor_enabled allowlist admits it. No IRC server needed
+      # — capacity checks hit DB + ETS only and do not spawn sessions.
+      # #211 phase 3 — must be visitor_enabled or login 503s before the
+      # capacity gate.
+      {:ok, network} =
+        Grappa.Networks.create_network(%{slug: "azzurra", visitor_enabled: true})
+
       {:ok, network: network}
     end
 

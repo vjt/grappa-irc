@@ -183,6 +183,45 @@ defmodule Grappa.Networks do
   end
 
   @doc """
+  #211 phase 3 — every network with `visitor_enabled = true`, ordered by
+  slug. This is the runtime visitor allowlist that replaces the
+  compile-time `:visitor_network` pin: a visitor may attach ONLY these
+  networks, and `Grappa.Visitors.Login` reads this at request time
+  (naturally hot — an admin toggle takes effect without a restart).
+
+  Ordered by slug for a deterministic "sole enabled network" default +
+  a stable multi-network picker order.
+  """
+  @spec list_visitor_enabled() :: [Network.t()]
+  def list_visitor_enabled do
+    query = from(n in Network, where: n.visitor_enabled == true, order_by: [asc: n.slug])
+    Repo.all(query)
+  end
+
+  @doc """
+  #211 phase 3 — the visitor-attach allowlist gate. Resolves `slug` to a
+  network only when it is `visitor_enabled`.
+
+    * `{:ok, network}` — the slug exists AND accepts visitors.
+    * `{:error, :not_visitor_enabled}` — the slug exists but visitors
+      are not allowed (admin has not opted it in).
+    * `{:error, :not_found}` — no such slug.
+
+  The two distinct error tags let `Grappa.Visitors.Login` surface a
+  precise reason (403 not-enabled vs unconfigured) without leaking
+  network existence beyond what the visitor already named.
+  """
+  @spec get_visitor_enabled_network_by_slug(String.t()) ::
+          {:ok, Network.t()} | {:error, :not_found | :not_visitor_enabled}
+  def get_visitor_enabled_network_by_slug(slug) when is_binary(slug) do
+    case Repo.get_by(Network, slug: slug) do
+      %Network{visitor_enabled: true} = net -> {:ok, net}
+      %Network{} -> {:error, :not_visitor_enabled}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  @doc """
   Strict-create sibling of `find_or_create_network/1` for the admin
   REST surface (`POST /admin/networks`, admin-panel bucket 1). Returns
   `{:error, :already_exists}` when the slug is taken — operator
@@ -387,12 +426,19 @@ defmodule Grappa.Networks do
   end
 
   @doc """
-  Updates the admission caps (`max_concurrent_visitor_sessions`,
-  `max_concurrent_user_sessions`, `max_per_ip`) on a network row.
-  Operator-side entry point used by `mix grappa.set_network_caps`
-  (any DB the container can reach) and live IEx mutations
-  (`scripts/iex.sh`) — single source for the validation + Repo.update
-  round-trip.
+  Updates the operator-tunable network settings on a network row — the
+  admission caps (`max_concurrent_visitor_sessions`,
+  `max_concurrent_user_sessions`, `max_per_ip`) AND the #211 phase-3
+  runtime visitor allowlist flag (`visitor_enabled`). Operator-side
+  entry point used by `mix grappa.set_network_caps` (any DB the
+  container can reach), the `PATCH /admin/networks/:slug` admin console,
+  and live IEx mutations (`scripts/iex.sh`) — single source for the
+  validation + Repo.update round-trip.
+
+  #211 phase 3 renamed this from `update_network_settings/2`: the verb now
+  owns the whole editable-network-settings surface (caps + the visitor
+  allowlist toggle), not just caps. `visitor_enabled` is a plain boolean
+  — no three-valued contract; `Network.changeset/2` casts it.
 
   Three-valued contract per cap (decision F, B5.3):
 
@@ -407,7 +453,7 @@ defmodule Grappa.Networks do
   Negative integers and non-integers are rejected by
   `Network.changeset/2`'s `validate_non_negative_or_nil/2` rule.
   Unsupplied keys keep their current value (changeset only casts the
-  allowlist `[:slug, :max_concurrent_visitor_sessions,
+  allowlist `[:slug, :visitor_enabled, :max_concurrent_visitor_sessions,
   :max_concurrent_user_sessions, :max_per_ip]`).
   """
   # B5.3 review-fix: tightened from `integer() | nil` to
@@ -417,12 +463,13 @@ defmodule Grappa.Networks do
   # (loose) and the runtime contract (strict) misled callers into
   # thinking negative values were a runtime concern; they're rejected
   # at the changeset boundary unconditionally.
-  @spec update_network_caps(Network.t(), %{
+  @spec update_network_settings(Network.t(), %{
+          optional(:visitor_enabled) => boolean(),
           optional(:max_concurrent_visitor_sessions) => non_neg_integer() | nil,
           optional(:max_concurrent_user_sessions) => non_neg_integer() | nil,
           optional(:max_per_ip) => non_neg_integer() | nil
         }) :: {:ok, Network.t()} | {:error, Ecto.Changeset.t()}
-  def update_network_caps(%Network{} = network, attrs) when is_map(attrs) do
+  def update_network_settings(%Network{} = network, attrs) when is_map(attrs) do
     network
     |> Network.changeset(attrs)
     |> Repo.update()

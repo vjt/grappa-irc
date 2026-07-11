@@ -41,23 +41,13 @@ defmodule GrappaWeb.AuthController do
 
   @anon_retry_after_ceiling_seconds 48 * 3600
 
-  # M-web-2 + B6.6 X3 (no-silent-drops 2026-05-14): `:visitor_network`
-  # is read at COMPILE TIME via `Application.compile_env!/2`, mirroring
-  # `Grappa.Visitors.Login`'s contract (lib/grappa/visitors/login.ex)
-  # and `endpoint.ex:33` / `admission.ex:73`. Bang form because a `nil`
-  # at compile time narrows `Login.login/2`'s success typing to
-  # `:network_unconfigured` only and cascades "pattern can never
-  # match" warnings here — the right validation point is at boot, not
-  # at the first request post-deploy. Switching to a runtime
-  # `Application.get_env/2` read is BANNED per CLAUDE.md
-  # ("Application.{put,get}_env/2: boot-time only, runtime banned"
-  # — neither read nor written from any controller / GenServer
-  # callback / plug body). Operators changing the visitor network
-  # must rebuild + redeploy. Boot-time-snapshot via the
-  # `Grappa.Admission.Config` pattern (`:persistent_term`) is the
-  # alternative if runtime variability ever becomes a real operator
-  # need; today it isn't.
-  @visitor_network_slug Application.compile_env!(:grappa, :visitor_network)
+  # #211 phase 3 — the compile-time `:visitor_network` pin is GONE. The
+  # visitor network is now resolved at request time from the runtime
+  # `networks.visitor_enabled` allowlist (`Networks.list_visitor_enabled/0`
+  # / the optional per-request `network` slug), admin-togglable without
+  # a restart. The retry-after hint on `:anon_collision` resolves the
+  # slug the same way (`collision_network_slug/1`). No
+  # `Application.compile_env`/`get_env` read remains here.
 
   # M-web-3: cap captcha_token at 4096 bytes BEFORE forwarding to
   # Login.login/2 (which would forward to the upstream Turnstile /
@@ -84,6 +74,9 @@ defmodule GrappaWeb.AuthController do
              | :malformed_ident
              | :password_required
              | :password_mismatch
+             | :network_not_visitor_enabled
+             | :network_ambiguous
+             | :network_unconfigured
              | :invalid_credentials
              | :upstream_unreachable
              | :connect_timeout
@@ -98,12 +91,15 @@ defmodule GrappaWeb.AuthController do
     # #152 — login-Advanced ident/realname (both optional). Passed raw;
     # the Visitor changeset sanitizes (tilde-strip) + shape-validates.
     identity = %{ident: Map.get(params, "ident"), realname: Map.get(params, "realname")}
+    # #211 phase 3 — optional target network slug. Absent (today's cic)
+    # → Login defaults to the sole `visitor_enabled` network.
+    network = Map.get(params, "network")
 
     case validate_captcha_token(captcha_token) do
       :ok ->
         case IdentifierClassifier.classify(sanitize_identifier(id)) do
           {:email, email} -> mode1_login(conn, email, password)
-          {:nick, nick} -> visitor_login(conn, nick, password, captcha_token, identity)
+          {:nick, nick} -> visitor_login(conn, nick, password, captcha_token, identity, network)
           {:error, :malformed} -> {:error, :malformed_nick}
         end
 
@@ -292,7 +288,7 @@ defmodule GrappaWeb.AuthController do
   # entry-point bypassed the `login/2` shape — the validate_captcha_token
   # plug only fires once on the `login/2` call, so the captcha boundary
   # and the upstream verify call must both consume the same value.
-  defp visitor_login(conn, nick, password, captcha_token, identity) do
+  defp visitor_login(conn, nick, password, captcha_token, identity, network) do
     input = %{
       nick: nick,
       password: password,
@@ -302,7 +298,9 @@ defmodule GrappaWeb.AuthController do
       user_agent: user_agent(conn),
       token: extract_bearer(conn),
       captcha_token: captcha_token,
-      client_id: conn.assigns[:current_client_id]
+      client_id: conn.assigns[:current_client_id],
+      # #211 phase 3 — optional target network (nil = sole enabled).
+      network: network
     }
 
     case Login.login(input, []) do
@@ -312,7 +310,7 @@ defmodule GrappaWeb.AuthController do
         |> render(:login, token: token, subject: {:visitor, v})
 
       {:error, reason} ->
-        visitor_error_response(conn, nick, reason)
+        visitor_error_response(conn, nick, network, reason)
     end
   end
 
@@ -326,17 +324,17 @@ defmodule GrappaWeb.AuthController do
   # 500 internal / 409 anon_collision+Retry-After. The matching clause
   # is spelled exactly so the inline action's contract stays auditable
   # without grepping the FallbackController.
-  defp visitor_error_response(_, _, :malformed_nick),
+  defp visitor_error_response(_, _, _, :malformed_nick),
     do: {:error, :malformed_nick}
 
   # #152 — login-Advanced ident failed shape validation.
-  defp visitor_error_response(_, _, :malformed_ident),
+  defp visitor_error_response(_, _, _, :malformed_ident),
     do: {:error, :malformed_ident}
 
-  defp visitor_error_response(_, _, :password_required),
+  defp visitor_error_response(_, _, _, :password_required),
     do: {:error, :password_required}
 
-  defp visitor_error_response(_, _, :password_mismatch),
+  defp visitor_error_response(_, _, _, :password_mismatch),
     do: {:error, :password_mismatch}
 
   # #171: visitor login is the primary per-source-IP-capped flow (its
@@ -344,66 +342,97 @@ defmodule GrappaWeb.AuthController do
   # IP). Spelled explicitly so it reaches FallbackController's 503
   # too_many_sessions envelope instead of the catch-all `:internal` 500
   # below.
-  defp visitor_error_response(_, _, :ip_cap_exceeded),
+  defp visitor_error_response(_, _, _, :ip_cap_exceeded),
     do: {:error, :ip_cap_exceeded}
 
-  defp visitor_error_response(_, _, :visitor_cap_exceeded),
+  defp visitor_error_response(_, _, _, :visitor_cap_exceeded),
     do: {:error, :visitor_cap_exceeded}
 
-  defp visitor_error_response(_, _, :user_cap_exceeded),
+  defp visitor_error_response(_, _, _, :user_cap_exceeded),
     do: {:error, :user_cap_exceeded}
 
-  defp visitor_error_response(_, _, {:network_circuit_open, _} = err),
+  defp visitor_error_response(_, _, _, {:network_circuit_open, _} = err),
     do: {:error, err}
 
-  defp visitor_error_response(_, _, :captcha_required),
+  defp visitor_error_response(_, _, _, :captcha_required),
     do: {:error, :captcha_required}
 
-  defp visitor_error_response(_, _, :captcha_failed),
+  defp visitor_error_response(_, _, _, :captcha_failed),
     do: {:error, :captcha_failed}
 
-  defp visitor_error_response(_, _, :captcha_provider_unavailable),
+  defp visitor_error_response(_, _, _, :captcha_provider_unavailable),
     do: {:error, :captcha_provider_unavailable}
 
-  defp visitor_error_response(_, nick, :anon_collision),
-    do: {:error, {:anon_collision, anon_collision_retry_after(nick)}}
+  defp visitor_error_response(_, nick, network, :anon_collision),
+    do: {:error, {:anon_collision, anon_collision_retry_after(nick, network)}}
 
-  defp visitor_error_response(_, _, :upstream_unreachable),
+  defp visitor_error_response(_, _, _, :upstream_unreachable),
     do: {:error, :upstream_unreachable}
 
   # #40: 433 ERR_NICKNAMEINUSE during registration. Surfaced as the
   # 409 nick_in_use envelope (FallbackController) so cic renders
   # "pick another nick" instead of the generic handshake-failed copy.
-  defp visitor_error_response(_, _, :nick_in_use),
+  defp visitor_error_response(_, _, _, :nick_in_use),
     do: {:error, :nick_in_use}
 
-  defp visitor_error_response(_, _, :connect_timeout),
+  defp visitor_error_response(_, _, _, :connect_timeout),
     do: {:error, :connect_timeout}
 
-  defp visitor_error_response(_, _, :welcome_timeout),
+  defp visitor_error_response(_, _, _, :welcome_timeout),
     do: {:error, :welcome_timeout}
 
-  defp visitor_error_response(_, _, :probe_timeout),
+  defp visitor_error_response(_, _, _, :probe_timeout),
     do: {:error, :probe_timeout}
 
-  defp visitor_error_response(_, _, _),
+  # #211 phase 3 — the visitor picked a network that isn't in the runtime
+  # `visitor_enabled` allowlist. FallbackController maps to 403 (see its
+  # `:network_not_visitor_enabled` clause); distinct from
+  # `:network_unconfigured` (no such / no enabled network) so cic can
+  # tell "not allowed here" from "misconfigured".
+  defp visitor_error_response(_, _, _, :network_not_visitor_enabled),
+    do: {:error, :network_not_visitor_enabled}
+
+  # #211 phase 3 — more than one network is visitor_enabled but the
+  # request named none. Can't happen from today's cic (single enabled
+  # network); the phase-6 picker sends a slug. 400 via FallbackController.
+  defp visitor_error_response(_, _, _, :network_ambiguous),
+    do: {:error, :network_ambiguous}
+
+  defp visitor_error_response(_, _, _, _),
     do: {:error, :internal}
 
   # L-web-1: Retry-After value computed at the controller boundary —
   # the FallbackController shouldn't query Visitors directly. Threaded
   # to the FallbackController via the `{:anon_collision, retry_after}`
   # tuple shape mirroring `{:network_circuit_open, retry_after}`.
-  @spec anon_collision_retry_after(String.t()) :: non_neg_integer()
-  defp anon_collision_retry_after(nick) do
-    case Visitors.get_by_nick_and_network(nick, @visitor_network_slug) do
-      %Visitor{expires_at: expires_at} ->
-        expires_at
-        |> DateTime.diff(DateTime.utc_now())
-        |> max(1)
-        |> min(@anon_retry_after_ceiling_seconds)
+  #
+  # #211 phase 3 — the target network slug is resolved from the request's
+  # optional `network` param (falling back to the sole `visitor_enabled`
+  # network) via the SAME runtime allowlist readers `Login` uses, rather
+  # than the retired compile-time `:visitor_network` constant. If the
+  # slug can't be resolved (ambiguous / none enabled) the collision hint
+  # falls back to the ceiling — the collision itself already surfaced.
+  @spec anon_collision_retry_after(String.t(), String.t() | nil) :: non_neg_integer()
+  defp anon_collision_retry_after(nick, network) do
+    with {:ok, slug} <- collision_network_slug(network),
+         %Visitor{expires_at: expires_at} <-
+           Visitors.get_by_nick_and_network(nick, slug) do
+      expires_at
+      |> DateTime.diff(DateTime.utc_now())
+      |> max(1)
+      |> min(@anon_retry_after_ceiling_seconds)
+    else
+      _ -> @anon_retry_after_ceiling_seconds
+    end
+  end
 
-      nil ->
-        @anon_retry_after_ceiling_seconds
+  @spec collision_network_slug(String.t() | nil) :: {:ok, String.t()} | :error
+  defp collision_network_slug(slug) when is_binary(slug) and slug != "", do: {:ok, slug}
+
+  defp collision_network_slug(_) do
+    case Networks.list_visitor_enabled() do
+      [%Networks.Network{slug: slug}] -> {:ok, slug}
+      _ -> :error
     end
   end
 

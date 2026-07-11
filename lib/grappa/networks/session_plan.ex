@@ -18,6 +18,7 @@ defmodule Grappa.Networks.SessionPlan do
   """
   alias Grappa.{Accounts, Networks, Session}
   alias Grappa.Accounts.User
+  alias Grappa.IRC.Identity
   alias Grappa.Networks.{Credential, Credentials, Network, NoServerError, Server, Servers}
   alias Grappa.Repo
 
@@ -70,30 +71,9 @@ defmodule Grappa.Networks.SessionPlan do
 
   @spec build_plan(User.t(), Network.t(), Credential.t(), Server.t()) :: Session.start_opts()
   defp build_plan(%User{} = user, %Network{} = network, %Credential{} = cred, %Server{} = server) do
-    %{
-      subject: {:user, user.id},
-      subject_label: user.name,
-      network_slug: network.slug,
-      nick: cred.nick,
-      ident: Credential.effective_ident(cred),
-      realname: Credential.effective_realname(cred),
-      sasl_user: Credential.effective_sasl_user(cred),
-      auth_method: cred.auth_method,
-      password: Credential.upstream_password(cred),
-      # CP22 cluster B (channel-client-polish #14, B-restart) — boot
-      # channel list is the union of operator config + last-live snapshot.
-      # `autojoin_channels` = "channels you ALWAYS want auto-joined no
-      # matter what" (operator-bound at credential creation, never
-      # changes).  `last_joined_channels` = "channels you were in last
-      # time the session was alive" (Session.Server overwrites on every
-      # self-JOIN/PART/KICK, so a restart rehydrates the live state).
-      # Dedupe at the merge site; order preference: autojoin first
-      # (operator intent stable), then snapshot extras (runtime growth).
-      autojoin_channels: merge_autojoin(cred.autojoin_channels, cred.last_joined_channels),
-      host: server.host,
-      port: server.port,
-      tls: server.tls,
-      source_address: server.source_address,
+    base = base_plan({:user, user.id}, user.name, cred, network, server, cred.nick)
+
+    Map.merge(base, %{
       # Opaque callback injected so Session.Server can transition the
       # credential to :failed on hard upstream errors (k-line, permanent
       # SASL) without a static Networks dependency from Session. Session
@@ -155,6 +135,75 @@ defmodule Grappa.Networks.SessionPlan do
             err
         end
       end
+    })
+  end
+
+  @doc """
+  #211 phase 3 — the shared fields-only plan builder for BOTH subjects.
+
+  Flattens the ~14 identity/connect fields that are **identical** for a
+  user and a visitor credential (subject/label/network_slug/nick/ident/
+  realname/sasl_user/auth_method/password/autojoin/host/port/tls/
+  source_address) into the primitive opts map. Each subject's resolver
+  merges its OWN subject-specific callbacks on top (user: 4; visitor: 6
+  + the anon→IDENTIFY login dance) — those genuinely differ and live in
+  different context modules, so they stay per-resolver.
+
+  This is exactly the phase-2 ruling ("reuse the VERBS, not the nouns"):
+  the shared verb is the field-flatten (identical bytes); the wiring is
+  the per-subject callbacks. `realname_fallback` is a parameter (user →
+  its own nick; visitor → `"Grappa Visitor"`, ruling E), one rule two
+  call sites — the same shape phase 2 gave `Identity.effective_realname/2`.
+
+  Public (exported from the `Grappa.Networks` boundary) so
+  `Grappa.Visitors.SessionPlan` can build on it. Takes a `%Credential{}`
+  for BOTH subjects — the visitor read-cutover means a visitor now
+  resolves from its Credential too. Returns a plain map (no leaky
+  struct ref) so the Session boundary stays Networks-independent.
+  """
+  @spec base_plan(
+          Session.subject(),
+          String.t(),
+          Credential.t(),
+          Network.t(),
+          Server.t(),
+          String.t()
+        ) :: map()
+  def base_plan(
+        subject,
+        subject_label,
+        %Credential{} = cred,
+        %Network{} = network,
+        %Server{} = server,
+        realname_fallback
+      ) do
+    %{
+      subject: subject,
+      subject_label: subject_label,
+      network_slug: network.slug,
+      nick: cred.nick,
+      ident: Credential.effective_ident(cred),
+      realname: Identity.effective_realname(cred.realname, realname_fallback),
+      sasl_user: Credential.effective_sasl_user(cred),
+      auth_method: cred.auth_method,
+      password: Credential.upstream_password(cred),
+      # CP22 cluster B (channel-client-polish #14, B-restart) — boot
+      # channel list is the union of operator config + last-live snapshot.
+      # `autojoin_channels` = "channels you ALWAYS want auto-joined no
+      # matter what" (operator-bound at credential creation, never
+      # changes).  `last_joined_channels` = "channels you were in last
+      # time the session was alive" (Session.Server overwrites on every
+      # self-JOIN/PART/KICK, so a restart rehydrates the live state).
+      # Dedupe at the merge site; order preference: autojoin first
+      # (operator intent stable), then snapshot extras (runtime growth).
+      # For a visitor credential `autojoin_channels` is empty ('[]'), so
+      # the merge is exactly the `last_joined` list the pre-cutover
+      # visitor plan produced via `Visitors.list_autojoin_channels/1`.
+      autojoin_channels: merge_autojoin(cred.autojoin_channels, cred.last_joined_channels),
+      host: server.host,
+      port: server.port,
+      tls: server.tls,
+      source_address: server.source_address
     }
   end
 

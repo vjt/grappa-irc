@@ -220,6 +220,18 @@ defmodule Grappa.Bootstrap do
     # while no session has spawned yet.
     exclude_fixed_sources_from_pool()
 
+    # #211 phase 3 — reconcile every active visitor's Credential BEFORE
+    # spawning visitor sessions: the read path (`Visitors.SessionPlan`)
+    # resolves visitor identity from the Credential, so it must be
+    # current at boot. Self-healing (refresh existing + create missing)
+    # via the SAME idempotent upsert the per-mutation write-through uses,
+    # bulk-applied — catches drift from the phase-1-backfill→phase-3
+    # window. After phase 3 the write-through keeps them current, so every
+    # subsequent boot-reconcile is a no-op. Runs AFTER the invariant
+    # gates (a validated network exists for each active visitor) and
+    # BEFORE `spawn_visitors/1` (which resolves through the Credential).
+    reconcile_visitor_credentials(visitors)
+
     user_stats =
       case credentials do
         [] ->
@@ -233,6 +245,24 @@ defmodule Grappa.Bootstrap do
     visitor_stats = spawn_visitors(visitors)
 
     {:ok, sum_results(user_stats, visitor_stats)}
+  end
+
+  # #211 phase 3 — bulk visitor→Credential reconcile. Delegates each row
+  # to `Grappa.Visitors.reconcile_credential/1` (the context owns
+  # translating a `%Visitor{}` into credential attrs + the orphan-slug
+  # skip); Bootstrap only drives the enumeration. Idempotent + best
+  # effort per row — a single failed reconcile logs and does not abort
+  # the others or the boot (the visitor invariant gate already ran).
+  @spec reconcile_visitor_credentials([Visitor.t()]) :: :ok
+  defp reconcile_visitor_credentials(visitors) do
+    reconciled = Enum.count(visitors, &(Visitors.reconcile_credential(&1) == :ok))
+
+    Logger.info("bootstrap visitor credential reconcile",
+      visitors: length(visitors),
+      spawned: reconciled
+    )
+
+    :ok
   end
 
   # Refines the effective OutboundV6Pool = raw - fixed sources before any

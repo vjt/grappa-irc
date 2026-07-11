@@ -345,7 +345,7 @@ defmodule GrappaWeb.NetworksControllerTest do
       # at admission. No live session needed — `Admission.check_network_total/1`
       # short-circuits on cap==0. U-2 split: a user-flow PATCH consults
       # `max_concurrent_user_sessions`; the visitor cap is independent.
-      {:ok, _} = Networks.update_network_caps(network, %{max_concurrent_user_sessions: 0})
+      {:ok, _} = Networks.update_network_settings(network, %{max_concurrent_user_sessions: 0})
 
       conn =
         conn
@@ -445,7 +445,7 @@ defmodule GrappaWeb.NetworksControllerTest do
 
       # Pin per-device cap at 1 — the tightest configuration AND the
       # production default. Pre-fix this guarantees the buggy path.
-      {:ok, _} = Networks.update_network_caps(network, %{max_per_ip: 1})
+      {:ok, _} = Networks.update_network_settings(network, %{max_per_ip: 1})
 
       cred = credential_fixture(vjt, network)
       # Seed the credential as parked so :connected is a valid transition
@@ -489,7 +489,7 @@ defmodule GrappaWeb.NetworksControllerTest do
 
       slug = "net-ux5bc-other-#{u()}"
       {network, _} = network_with_server(port: 9_999, slug: slug)
-      {:ok, _} = Networks.update_network_caps(network, %{max_per_ip: 1})
+      {:ok, _} = Networks.update_network_settings(network, %{max_per_ip: 1})
 
       # alice has a credential + an accounts_session from source IP
       # 127.0.0.1 (the test conn's remote_ip). That row IS the

@@ -118,7 +118,7 @@ defmodule Grappa.Networks.Network do
   # values are invalid. validate_change/3 only fires when the field is
   # present in the changeset's :changes — unsupplied keys keep their
   # current value (per the "supply only what you want to change" verb
-  # contract on Networks.update_network_caps/2).
+  # contract on Networks.update_network_settings/2).
   defp validate_non_negative_or_nil(_, nil), do: []
   defp validate_non_negative_or_nil(_, n) when is_integer(n) and n >= 0, do: []
   defp validate_non_negative_or_nil(field, _), do: [{field, "must be non-negative integer or nil"}]

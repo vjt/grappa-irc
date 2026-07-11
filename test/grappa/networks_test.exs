@@ -1158,7 +1158,7 @@ defmodule Grappa.NetworksTest do
     end
   end
 
-  describe "update_network_caps/2" do
+  describe "update_network_settings/2" do
     test "sets all three caps (visitor + user + per_client)" do
       net = network_fixture()
       assert is_nil(net.max_concurrent_visitor_sessions)
@@ -1166,7 +1166,7 @@ defmodule Grappa.NetworksTest do
       assert is_nil(net.max_per_ip)
 
       assert {:ok, %Network{} = updated} =
-               Networks.update_network_caps(net, %{
+               Networks.update_network_settings(net, %{
                  max_concurrent_visitor_sessions: 3,
                  max_concurrent_user_sessions: 5,
                  max_per_ip: 1
@@ -1182,13 +1182,13 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       {:ok, with_both} =
-        Networks.update_network_caps(net, %{
+        Networks.update_network_settings(net, %{
           max_concurrent_visitor_sessions: 5,
           max_per_ip: 2
         })
 
       assert {:ok, %Network{} = updated} =
-               Networks.update_network_caps(with_both, %{max_concurrent_visitor_sessions: 10})
+               Networks.update_network_settings(with_both, %{max_concurrent_visitor_sessions: 10})
 
       assert updated.max_concurrent_visitor_sessions == 10
       assert updated.max_per_ip == 2
@@ -1198,12 +1198,12 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.update_network_caps(net, %{max_per_ip: -1})
+               Networks.update_network_settings(net, %{max_per_ip: -1})
 
       assert errors_on(cs)[:max_per_ip] != nil
 
       assert {:error, %Ecto.Changeset{} = cs2} =
-               Networks.update_network_caps(net, %{max_concurrent_user_sessions: -1})
+               Networks.update_network_settings(net, %{max_concurrent_user_sessions: -1})
 
       assert errors_on(cs2)[:max_concurrent_user_sessions] != nil
     end
@@ -1212,7 +1212,7 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       assert {:ok, %Network{} = updated} =
-               Networks.update_network_caps(net, %{max_concurrent_visitor_sessions: 0})
+               Networks.update_network_settings(net, %{max_concurrent_visitor_sessions: 0})
 
       assert updated.max_concurrent_visitor_sessions == 0
     end
@@ -1221,13 +1221,13 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       {:ok, with_caps} =
-        Networks.update_network_caps(net, %{
+        Networks.update_network_settings(net, %{
           max_concurrent_visitor_sessions: 5,
           max_per_ip: 3
         })
 
       assert {:ok, %Network{} = cleared} =
-               Networks.update_network_caps(with_caps, %{max_concurrent_visitor_sessions: nil})
+               Networks.update_network_settings(with_caps, %{max_concurrent_visitor_sessions: nil})
 
       assert is_nil(cleared.max_concurrent_visitor_sessions)
       # the unsupplied other cap is preserved
@@ -1238,13 +1238,13 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       {:ok, with_caps} =
-        Networks.update_network_caps(net, %{
+        Networks.update_network_settings(net, %{
           max_concurrent_visitor_sessions: 5,
           max_per_ip: 3
         })
 
       assert {:ok, %Network{} = cleared} =
-               Networks.update_network_caps(with_caps, %{max_per_ip: nil})
+               Networks.update_network_settings(with_caps, %{max_per_ip: nil})
 
       assert is_nil(cleared.max_per_ip)
       assert cleared.max_concurrent_visitor_sessions == 5
@@ -1256,7 +1256,7 @@ defmodule Grappa.NetworksTest do
       assert net.max_concurrent_user_sessions == 3
 
       assert {:ok, %Network{} = cleared} =
-               Networks.update_network_caps(net, %{max_concurrent_user_sessions: nil})
+               Networks.update_network_settings(net, %{max_concurrent_user_sessions: nil})
 
       assert is_nil(cleared.max_concurrent_user_sessions)
     end
@@ -1265,7 +1265,7 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       assert {:ok, %Network{} = updated} =
-               Networks.update_network_caps(net, %{
+               Networks.update_network_settings(net, %{
                  max_concurrent_visitor_sessions: 4,
                  garbage: "ignored"
                })

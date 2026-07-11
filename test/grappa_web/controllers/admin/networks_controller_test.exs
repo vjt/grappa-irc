@@ -250,7 +250,7 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
     test "200 + nil clears the cap (unlimited)", %{conn: conn} do
       slug = "p-clear-#{System.unique_integer([:positive])}"
       {:ok, net} = Networks.find_or_create_network(%{slug: slug})
-      {:ok, _} = Networks.update_network_caps(net, %{max_concurrent_visitor_sessions: 3})
+      {:ok, _} = Networks.update_network_settings(net, %{max_concurrent_visitor_sessions: 3})
 
       session = admin_session()
 
@@ -309,6 +309,64 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
         |> patch("/admin/networks/#{slug}", Jason.encode!(%{foo: "bar"}))
 
       assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+
+    # #211 phase 3 — the visitor allowlist toggle rides the SAME
+    # PATCH endpoint (no new route, no nginx change).
+    test "200 + toggles visitor_enabled on (no restart)", %{conn: conn} do
+      slug = "p-ve-#{System.unique_integer([:positive])}"
+      {:ok, _} = Networks.find_or_create_network(%{slug: slug})
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/admin/networks/#{slug}", Jason.encode!(%{visitor_enabled: true}))
+
+      body = json_response(conn, 200)
+      assert body["slug"] == slug
+      assert body["visitor_enabled"] == true
+
+      {:ok, reload} = Networks.get_network_by_slug(slug)
+      assert reload.visitor_enabled == true
+      # And the runtime allowlist now includes it (login would admit it).
+      assert Enum.any?(Networks.list_visitor_enabled(), &(&1.slug == slug))
+    end
+
+    test "200 + toggles visitor_enabled off", %{conn: conn} do
+      slug = "p-ve-off-#{System.unique_integer([:positive])}"
+      {:ok, _} = Networks.create_network(%{slug: slug, visitor_enabled: true})
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/admin/networks/#{slug}", Jason.encode!(%{visitor_enabled: false}))
+
+      body = json_response(conn, 200)
+      assert body["visitor_enabled"] == false
+
+      refute Enum.any?(Networks.list_visitor_enabled(), &(&1.slug == slug))
+    end
+
+    test "GET /admin/networks rows carry visitor_enabled", %{conn: conn} do
+      slug = "p-ve-get-#{System.unique_integer([:positive])}"
+      {:ok, _} = Networks.create_network(%{slug: slug, visitor_enabled: true})
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/networks")
+
+      rows = json_response(conn, 200)["networks"]
+      row = Enum.find(rows, &(&1["slug"] == slug))
+      assert row["visitor_enabled"] == true
     end
   end
 

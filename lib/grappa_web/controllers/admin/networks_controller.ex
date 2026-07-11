@@ -26,18 +26,24 @@ defmodule GrappaWeb.Admin.NetworksController do
   (always present, never `nil` — the Registry count is
   authoritative).
 
-  ## PATCH /admin/networks/:slug — edit caps
+  ## PATCH /admin/networks/:slug — edit network settings
 
   Updates the operator-tunable admission caps
   (`max_concurrent_visitor_sessions`, `max_concurrent_user_sessions`,
-  `max_per_ip`). Three-valued contract per
-  `Networks.update_network_caps/2`: `nil` clears the cap (unlimited),
-  `0` is degenerate lock-down, `N>0` is the cap itself. Negative
-  integers fail validation at the changeset boundary.
+  `max_per_ip`) AND the #211 phase-3 `visitor_enabled` allowlist flag.
+  Three-valued contract per cap (`Networks.update_network_settings/2`):
+  `nil` clears the cap (unlimited), `0` is degenerate lock-down, `N>0`
+  is the cap itself; negative integers fail validation at the changeset
+  boundary. `visitor_enabled` is a plain boolean — toggling it opts a
+  network in/out of the runtime visitor allowlist WITHOUT a restart
+  (login reads `networks.visitor_enabled` at request time). No new
+  route + no nginx change: `/admin/networks` is already allowlisted and
+  behind `:admin_authn`.
 
   Returns `200 OK` with the updated row in the same shape as a
-  single GET row (including `live_counts`). `404 not_found` on
-  unknown slug; `422 validation_failed` on a bad cap value.
+  single GET row (including `visitor_enabled` + `live_counts`).
+  `404 not_found` on unknown slug; `422 validation_failed` on a bad
+  value; `400 bad_request` on an unknown body key.
   """
   use GrappaWeb, :controller
 
@@ -83,19 +89,20 @@ defmodule GrappaWeb.Admin.NetworksController do
   end
 
   @doc """
-  Edit caps. Body keys are optional; unsupplied fields keep their
-  current value (per `Networks.update_network_caps/2`'s contract).
+  Edit network settings — caps + the #211 phase-3 `visitor_enabled`
+  allowlist flag. Body keys are optional; unsupplied fields keep their
+  current value (per `Networks.update_network_settings/2`'s contract).
   """
   @spec update(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}
   def update(conn, %{"slug" => slug} = params) when is_binary(slug) do
     with {:ok, network} <- Networks.get_network_by_slug(slug),
-         {:ok, attrs} <- caps_attrs(params),
-         {:ok, updated} <- Networks.update_network_caps(network, attrs) do
+         {:ok, attrs} <- settings_attrs(params),
+         {:ok, updated} <- Networks.update_network_settings(network, attrs) do
       now_ms = System.monotonic_time(:millisecond)
       circuit_entry = find_circuit_entry(updated.id)
 
-      :ok = emit_network_caps_updated(updated, conn)
+      :ok = emit_network_settings_updated(updated, conn)
 
       body =
         updated
@@ -108,11 +115,15 @@ defmodule GrappaWeb.Admin.NetworksController do
   end
 
   # M-11: emit `:network_caps_updated` admin event with operator
-  # attribution after a successful caps update. Actor extraction
+  # attribution after a successful settings update. Actor extraction
   # delegated to `GrappaWeb.Admin.AuthPlug.actor_from_conn/1` —
   # single source for the admin-attribution shape across every
-  # `/admin/*` controller.
-  defp emit_network_caps_updated(network, conn) do
+  # `/admin/*` controller. #211 phase 3 folds the `visitor_enabled`
+  # toggle into this same PATCH; the event reuses the existing
+  # `network_caps_updated` shape (no new event kind — the operator
+  # audit line already carries network id/slug + actor, and the toggle
+  # is a network-settings edit like the caps).
+  defp emit_network_settings_updated(network, conn) do
     {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
 
     AdminEvents.record(
@@ -229,14 +240,23 @@ defmodule GrappaWeb.Admin.NetworksController do
   end
 
   # Whitelist the three caps; everything else collapses to bad_request.
-  # `update_network_caps/2` cares only about
+  # `update_network_settings/2` cares only about
   # `:max_concurrent_visitor_sessions`, `:max_concurrent_user_sessions`,
   # and `:max_per_ip` keys; an empty map is a no-op update (valid).
   # Null is a meaningful "clear the cap" value; the changeset rejects
   # negative integers and non-integers, so the FallbackController
   # validation_failed clause carries the field error to the operator.
-  defp caps_attrs(params) do
+  # Whitelist the three caps + the #211 phase-3 `visitor_enabled`
+  # toggle; everything else collapses to bad_request.
+  # `update_network_settings/2` casts only those keys; an empty map is a
+  # no-op update (valid). Null is a meaningful "clear the cap" value for
+  # the caps; `visitor_enabled` is a plain boolean. The changeset rejects
+  # negative integers / non-integers / non-booleans, so the
+  # FallbackController validation_failed clause carries the field error to
+  # the operator.
+  defp settings_attrs(params) do
     allowed = [
+      "visitor_enabled",
       "max_concurrent_visitor_sessions",
       "max_concurrent_user_sessions",
       "max_per_ip"

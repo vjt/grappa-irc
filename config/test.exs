@@ -96,14 +96,11 @@ config :grappa, :attach_admin_telemetry, false
 config :phoenix, :plug_init_mode, :runtime
 config :phoenix, :json_library, Jason
 
-# Visitor self-service config (cluster visitor-auth, Task 9). The slug
-# matches the test fixture network created by `network_with_server/1`
-# in `Grappa.AuthFixtures` when no slug override is given to test
-# helpers that assume the visitor-default network. The per-IP cap is
-# kept low so the cap-exceeded test path stays cheap (provision 2 →
-# 3rd fails). Production values land in `config/runtime.exs`; bootstrap
-# (Task 20 W7) is the boot-time gate that rejects an unconfigured slug.
-config :grappa, :visitor_network, "azzurra"
+# Visitor self-service config (cluster visitor-auth, Task 9). The per-IP
+# cap is kept low so the cap-exceeded test path stays cheap (provision 2
+# → 3rd fails). #211 phase 3 — the `:visitor_network` slug pin is gone;
+# tests opt a network into the visitor allowlist via
+# `network_with_server(visitor_enabled: true)` (see `Grappa.AuthFixtures`).
 config :grappa, :max_visitors_per_ip, 2
 
 # IRC.Client connect-failure pre-crash sleep — shrunk so the C2

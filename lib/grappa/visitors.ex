@@ -68,6 +68,7 @@ defmodule Grappa.Visitors do
 
   alias Grappa.{Admission, Networks, Repo, Session, SpawnOrchestrator}
   alias Grappa.IRC.Identifier
+  alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.Visitors.{SessionPlan, Visitor}
 
   # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment).
@@ -100,9 +101,21 @@ defmodule Grappa.Visitors do
           {:ok, Visitor.t()} | {:error, Ecto.Changeset.t()}
   def find_or_provision_anon(nick, network_slug, ip)
       when is_binary(nick) and is_binary(network_slug) do
-    case Repo.one(by_folded_nick(nick, network_slug)) do
-      %Visitor{} = existing -> maybe_refresh_ip(existing, ip)
-      nil -> create_anon(nick, network_slug, ip)
+    result =
+      case Repo.one(by_folded_nick(nick, network_slug)) do
+        %Visitor{} = existing -> maybe_refresh_ip(existing, ip)
+        nil -> create_anon(nick, network_slug, ip)
+      end
+
+    # #211 phase 3 — the read path resolves a visitor session from its
+    # Credential, so provision MUST also write/refresh that Credential.
+    # This is what makes a NEW visitor get a correct Credential with no
+    # separate backfill run (vjt's write-path requirement — moots the
+    # phase-1 dormant-drift concern). Idempotent for the found-existing
+    # branch.
+    with {:ok, visitor} <- result do
+      :ok = sync_credential(visitor)
+      {:ok, visitor}
     end
   end
 
@@ -137,6 +150,151 @@ defmodule Grappa.Visitors do
     |> Repo.insert()
   end
 
+  # #211 phase 3 — the visitor→Credential write-through choke point.
+  # Called after EVERY visitor identity mutation so the Credential the
+  # read path (`Visitors.SessionPlan.resolve/1`) resolves from stays
+  # current. Delegates the actual upsert to the ONE shared verb
+  # `Networks.Credentials.upsert_visitor_credential/3` (reused by the
+  # `Grappa.Bootstrap` bulk reconcile) — passing PRIMITIVES built from
+  # the visitor row so `Grappa.Networks` needs no `Grappa.Visitors` dep
+  # (the FK stays a dirty_xref). This context OWNS translating a
+  # `%Visitor{}` into per-`(subject, network)` credential attrs.
+  #
+  # Best-effort by design: a visitor pinned to a slug with no `networks`
+  # row (orphan — the boot-time `Bootstrap.validate_visitor_networks!`
+  # is the loud guard) skips the write and returns `:ok`, so a visitor
+  # mutation never crashes on a config the operator already broke. A
+  # changeset failure is logged, not surfaced — the visitor mutation
+  # already committed; the credential is a derived mirror the next
+  # mutation / the boot reconcile re-applies.
+  @spec sync_credential(Visitor.t()) :: :ok
+  defp sync_credential(%Visitor{network_slug: slug} = visitor) do
+    case Networks.get_network_by_slug(slug) do
+      {:ok, %Networks.Network{id: network_id}} ->
+        case Credentials.upsert_visitor_credential(
+               visitor.id,
+               network_id,
+               credential_attrs(visitor)
+             ) do
+          {:ok, _} ->
+            :ok
+
+          {:error, changeset} ->
+            Logger.warning("visitor credential sync failed (visitor mutation still applied)",
+              visitor_id: visitor.id,
+              network: slug,
+              error: inspect(changeset.errors)
+            )
+
+            :ok
+        end
+
+      {:error, :not_found} ->
+        # Orphan slug — no network to bind the credential to. The
+        # boot-time invariant is the loud signal; the mutation itself
+        # must not crash on an operator-broken config.
+        :ok
+    end
+  end
+
+  # Flatten a `%Visitor{}` into the per-`(subject, network)` credential
+  # attrs. Mirrors the phase-1 backfill mapping (the runtime SoT for
+  # visitor→credential field derivation): `sasl_user` = nick,
+  # `auth_method` = `:nickserv_identify` iff a committed password exists
+  # else `:none`, `password` (virtual, re-encrypted by the changeset)
+  # only when set, `last_joined_channels` mirrored. `expires_at`/`ip`
+  # stay on the visitor identity row (TTL/audit, not per-network creds).
+  @spec credential_attrs(Visitor.t()) :: map()
+  defp credential_attrs(%Visitor{password_encrypted: nil} = v) do
+    %{
+      nick: v.nick,
+      ident: v.ident,
+      realname: v.realname,
+      sasl_user: v.nick,
+      auth_method: :none,
+      last_joined_channels: v.last_joined_channels
+    }
+  end
+
+  defp credential_attrs(%Visitor{password_encrypted: pw} = v) when is_binary(pw) do
+    %{
+      nick: v.nick,
+      ident: v.ident,
+      realname: v.realname,
+      sasl_user: v.nick,
+      auth_method: :nickserv_identify,
+      # `password_encrypted` carries plaintext in memory post-Cloak-load;
+      # route it through the virtual `:password` so the credential
+      # changeset re-encrypts under the same vault.
+      password: pw,
+      last_joined_channels: v.last_joined_channels
+    }
+  end
+
+  # Thread the credential write-through onto a mutation that returns the
+  # `{:ok, %Visitor{}}` / `{:error, _}` shape: sync on success (the
+  # visitor row is the fresh source), pass errors through untouched.
+  @spec sync_credential_on_ok({:ok, Visitor.t()} | {:error, term()}) ::
+          {:ok, Visitor.t()} | {:error, term()}
+  defp sync_credential_on_ok({:ok, %Visitor{} = visitor} = ok) do
+    :ok = sync_credential(visitor)
+    ok
+  end
+
+  defp sync_credential_on_ok({:error, _} = err), do: err
+
+  @doc """
+  #211 phase 3 — resolve the visitor's `(visitor_id, network_id)`
+  Credential, self-healing a missing one from the visitor row.
+
+  The visitor read-cutover (`Grappa.Visitors.SessionPlan.resolve/1`)
+  reads identity from the Credential. This verb is the single reader for
+  that path: it returns the existing Credential, or — if none exists
+  (drift from a logged `sync_credential/1` failure, or a pre-phase-3
+  visitor the boot reconcile hasn't yet touched) — it CREATES it from
+  the visitor row via the same shared upsert, so resolve never crashes
+  on a missing credential and the row self-heals on first use.
+
+  `{:error, :not_found}` only when the credential can't be built (the
+  changeset rejects the derived attrs — should not happen for a
+  well-formed visitor row); the resolver maps that to
+  `:network_unconfigured`-class handling.
+  """
+  @spec resolve_credential(Visitor.t(), pos_integer()) ::
+          {:ok, Credential.t()} | {:error, :not_found}
+  def resolve_credential(%Visitor{} = visitor, network_id) when is_integer(network_id) do
+    case Credentials.get_visitor_credential(visitor.id, network_id) do
+      {:ok, cred} ->
+        {:ok, cred}
+
+      {:error, :not_found} ->
+        case Credentials.upsert_visitor_credential(
+               visitor.id,
+               network_id,
+               credential_attrs(visitor)
+             ) do
+          {:ok, cred} -> {:ok, cred}
+          {:error, _} -> {:error, :not_found}
+        end
+    end
+  end
+
+  @doc """
+  #211 phase 3 — reconcile a single visitor's Credential to match its
+  row (create-or-refresh). Public entry point for the `Grappa.Bootstrap`
+  bulk boot reconcile: the context owns translating a `%Visitor{}` into
+  per-`(subject, network)` credential attrs + the orphan-slug skip, so
+  Bootstrap just drives the enumeration.
+
+  Same idempotent operation as the per-mutation write-through
+  (delegates to the shared `sync_credential/1` choke point). Returns
+  `:ok` on success OR on a non-fatal skip (orphan slug, logged
+  changeset error) — a bad row never aborts the boot; the boot-time
+  `Bootstrap.validate_visitor_networks!` gate is the loud orphan signal.
+  """
+  @spec reconcile_credential(Visitor.t()) :: :ok
+  def reconcile_credential(%Visitor{} = visitor), do: sync_credential(visitor)
+
   @doc """
   Atomically write a NickServ password (encrypted at rest by Cloak)
   and clear `expires_at` to NULL. Called from `Grappa.Session.Server`
@@ -168,13 +326,16 @@ defmodule Grappa.Visitors do
         # layer instead of a typed result). Map back to the documented
         # return shape so callers handle the concurrent-delete case the
         # same way as the initial Repo.get/2 miss.
-        try do
-          visitor
-          |> Visitor.commit_password_changeset(password, nil)
-          |> Repo.update()
-        rescue
-          Ecto.StaleEntryError -> {:error, :not_found}
-        end
+        result =
+          try do
+            visitor
+            |> Visitor.commit_password_changeset(password, nil)
+            |> Repo.update()
+          rescue
+            Ecto.StaleEntryError -> {:error, :not_found}
+          end
+
+        sync_credential_on_ok(result)
     end
   end
 
@@ -212,13 +373,16 @@ defmodule Grappa.Visitors do
         {:error, :not_identified}
 
       %Visitor{} = visitor ->
-        try do
-          visitor
-          |> Visitor.commit_password_changeset(password, nil)
-          |> Repo.update()
-        rescue
-          Ecto.StaleEntryError -> {:error, :not_found}
-        end
+        result =
+          try do
+            visitor
+            |> Visitor.commit_password_changeset(password, nil)
+            |> Repo.update()
+          rescue
+            Ecto.StaleEntryError -> {:error, :not_found}
+          end
+
+        sync_credential_on_ok(result)
     end
   end
 
@@ -562,8 +726,12 @@ defmodule Grappa.Visitors do
 
       %Visitor{} = visitor ->
         case visitor |> Visitor.last_joined_channels_changeset(capped) |> Repo.update() do
-          {:ok, _} -> :ok
-          {:error, changeset} -> {:error, changeset}
+          {:ok, updated} ->
+            :ok = sync_credential(updated)
+            :ok
+
+          {:error, changeset} ->
+            {:error, changeset}
         end
     end
   end
@@ -597,7 +765,11 @@ defmodule Grappa.Visitors do
 
       %Visitor{} = visitor ->
         kept = Enum.reject(visitor.last_joined_channels, &(&1 == canonical))
-        visitor |> Visitor.last_joined_channels_changeset(kept) |> Repo.update()
+
+        visitor
+        |> Visitor.last_joined_channels_changeset(kept)
+        |> Repo.update()
+        |> sync_credential_on_ok()
     end
   end
 
@@ -659,13 +831,16 @@ defmodule Grappa.Visitors do
         # H14 (REV-D 2026-05-22): same concurrent-delete race as
         # commit_password/2 — map StaleEntryError to the spec'd
         # `{:error, :not_found}` return.
-        try do
-          visitor
-          |> Visitor.nick_changeset(new_nick)
-          |> Repo.update()
-        rescue
-          Ecto.StaleEntryError -> {:error, :not_found}
-        end
+        result =
+          try do
+            visitor
+            |> Visitor.nick_changeset(new_nick)
+            |> Repo.update()
+          rescue
+            Ecto.StaleEntryError -> {:error, :not_found}
+          end
+
+        sync_credential_on_ok(result)
     end
   end
 
@@ -786,6 +961,12 @@ defmodule Grappa.Visitors do
 
     case persist_identity(changeset) do
       {:ok, updated} ->
+        # #211 phase 3 — write the ident/realname through to the
+        # Credential BEFORE the reconnect: the reconnect re-resolves the
+        # plan from the Credential (post-cutover), so the fresh USER line
+        # only carries the new identity if the Credential is current.
+        :ok = sync_credential(updated)
+
         # The reconnect is a side effect OUTSIDE the persist rescue below:
         # the identity is already committed, and maybe_reconnect_after_identity
         # swallows its own admission/spawn failures — a StaleEntryError from

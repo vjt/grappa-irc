@@ -37,7 +37,7 @@ defmodule Mix.Tasks.Grappa.SetNetworkCaps do
   inside the prod container via `scripts/mix.sh grappa.set_network_caps
   --network azzurra --max-visitor-sessions 3 --max-user-sessions 3
   --max-per-ip 1`, or live-mutate via IEx (`scripts/iex.sh`) calling
-  `Grappa.Networks.update_network_caps/2` directly. Both paths route
+  `Grappa.Networks.update_network_settings/2` directly. Both paths route
   through the same fn so the validation contract is single-sourced.
   """
   use Boundary,
@@ -76,7 +76,7 @@ defmodule Mix.Tasks.Grappa.SetNetworkCaps do
 
     network = fetch_network!(slug)
 
-    case Networks.update_network_caps(network, attrs) do
+    case Networks.update_network_settings(network, attrs) do
       {:ok, updated} ->
         IO.puts(
           "set caps on #{updated.slug}: " <>

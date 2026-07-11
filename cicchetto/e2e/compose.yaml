@@ -176,18 +176,20 @@ services:
         # conflict with it.
         mix grappa.set_network_caps --network bahamut-test --max-user-sessions 10
         # M-cluster M-8 — visitor mint endpoint (`POST /auth/login`
-        # with `{identifier: nick}`) requires the configured
-        # `:visitor_network` slug (`config/config.exs`: "azzurra") to
-        # exist as a Networks.Network row PLUS at least one Server row
-        # so the visitor session can spawn an upstream IRC connection.
-        # `:visitor_network` is `compile_env!` (not runtime), so
-        # changing it per-environment isn't an option. Seed an
-        # "azzurra" network pointing at the same bahamut-test leaf via
-        # `Networks.find_or_create_network/1` (idempotent) + a server
-        # row via the existing `add_server` mix task. No credential
-        # bind here — visitor minting provisions its own anon visitor
-        # rows at request time; the credential table stays
-        # bind_network-scoped to user accounts.
+        # with `{identifier: nick}`) requires a VISITOR-ENABLED
+        # Networks.Network row PLUS at least one Server row so the visitor
+        # session can spawn an upstream IRC connection.
+        #
+        # #211 phase 3 — the compile-time `:visitor_network` pin is GONE:
+        # which networks accept visitors is now the runtime DB flag
+        # `networks.visitor_enabled`, read by login via
+        # `Networks.list_visitor_enabled/0`. So the seeded "azzurra"
+        # network MUST be created with `visitor_enabled: true` (via the
+        # idempotent `find_or_create_network/1`) or every visitor spec
+        # 503s `network_unconfigured` at login. Points at the same
+        # bahamut-test leaf. No credential bind here — visitor minting
+        # provisions its own anon visitor rows (+ their per-network
+        # Credential via the phase-3 write-through) at request time.
         #
         # #171: `max_per_ip: 100` is deliberate headroom, not a real
         # limit. The per-(source-IP, network) clone cap reuses
@@ -197,7 +199,7 @@ services:
         # visitor on the shared IP would 503 `too_many_sessions`,
         # regressing unrelated specs. Specs that need a tight cap set it
         # explicitly and restore to 100 (issue171 spec, u-4).
-        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra", max_concurrent_visitor_sessions: 100, max_per_ip: 100})'
+        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra", visitor_enabled: true, max_concurrent_visitor_sessions: 100, max_per_ip: 100})'
         mix grappa.add_server --network azzurra --server bahamut-test:6667 --no-tls
     networks:
       grappa-e2e: {}

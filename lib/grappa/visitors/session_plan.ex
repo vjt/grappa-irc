@@ -26,9 +26,9 @@ defmodule Grappa.Visitors.SessionPlan do
   no own boundary either).
   """
 
-  alias Grappa.IRC.Identity
   alias Grappa.{Networks, Repo, Session, Visitors}
-  alias Grappa.Networks.{NoServerError, Servers}
+  alias Grappa.Networks.{Credential, NoServerError, Servers}
+  alias Grappa.Networks.SessionPlan, as: NetworksSessionPlan
   alias Grappa.Visitors.Visitor
 
   @doc """
@@ -45,12 +45,13 @@ defmodule Grappa.Visitors.SessionPlan do
   @spec resolve(Visitor.t()) ::
           {:ok, Session.start_opts()} | {:error, :network_unconfigured | :no_server}
   def resolve(%Visitor{} = visitor) do
-    with {:ok, network} <- fetch_network(visitor.network_slug) do
+    with {:ok, network} <- fetch_network(visitor.network_slug),
+         {:ok, credential} <- fetch_credential(visitor, network) do
       network = Repo.preload(network, :servers)
 
       try do
         server = Servers.pick_server!(network)
-        {:ok, build_plan(visitor, network, server)}
+        {:ok, build_plan(visitor, credential, network, server)}
       rescue
         NoServerError -> {:error, :no_server}
       end
@@ -98,24 +99,35 @@ defmodule Grappa.Visitors.SessionPlan do
     end
   end
 
-  defp build_plan(%Visitor{} = visitor, network, server) do
-    autojoin = Visitors.list_autojoin_channels(visitor)
+  # #211 phase 3 — resolve the visitor's `(visitor_id, network_id)`
+  # Credential (self-healing a missing one from the visitor row). The
+  # read-cutover means visitor identity now comes from the Credential,
+  # not the raw `%Visitor{}` columns. A credential that can't be built
+  # (should not happen for a well-formed visitor) collapses to
+  # `:network_unconfigured` — the same "subject no longer viable" surface
+  # the `refresh_plan` closure ends the respawn loop on.
+  defp fetch_credential(%Visitor{} = visitor, network) do
+    case Visitors.resolve_credential(visitor, network.id) do
+      {:ok, %Credential{} = cred} -> {:ok, cred}
+      {:error, :not_found} -> {:error, :network_unconfigured}
+    end
+  end
 
-    %{
-      subject: {:visitor, visitor.id},
-      subject_label: "visitor:" <> visitor.id,
-      network_slug: network.slug,
-      nick: visitor.nick,
-      ident: Identity.effective_ident(visitor.ident, visitor.nick),
-      realname: Identity.effective_realname(visitor.realname, "Grappa Visitor"),
-      sasl_user: visitor.nick,
-      auth_method: auth_method(visitor),
-      password: visitor.password_encrypted,
-      autojoin_channels: autojoin,
-      host: server.host,
-      port: server.port,
-      tls: server.tls,
-      source_address: server.source_address,
+  defp build_plan(%Visitor{} = visitor, %Credential{} = credential, network, server) do
+    # Shared fields-only builder (user + visitor identical bytes). The
+    # visitor's realname falls back to the "Grappa Visitor" anon branding
+    # (ruling E) — passed as the parameter, one rule two call sites.
+    base =
+      NetworksSessionPlan.base_plan(
+        {:visitor, visitor.id},
+        "visitor:" <> visitor.id,
+        credential,
+        network,
+        server,
+        "Grappa Visitor"
+      )
+
+    Map.merge(base, %{
       # Task 15: opaque function-reference indirection. Session.Server
       # cannot statically alias Grappa.Visitors (closes a Boundary
       # cycle — Visitors deps Session via Login). Every visitor plan
@@ -165,7 +177,9 @@ defmodule Grappa.Visitors.SessionPlan do
       # reap between snapshot write and Repo round-trip surfaces as
       # `{:error, :not_found}` inside `update_last_joined_channels/2`,
       # which `Session.Server`'s logger swallows non-fatally — the next
-      # mutation overwrites and the row is gone anyway.
+      # mutation overwrites and the row is gone anyway. #211 phase 3:
+      # `update_last_joined_channels/2` also write-throughs the Credential,
+      # so a mid-session restart rehydrates from the fresh snapshot.
       last_joined_persister: fn channels ->
         Visitors.update_last_joined_channels(visitor.id, channels)
       end,
@@ -197,11 +211,8 @@ defmodule Grappa.Visitors.SessionPlan do
             end
         end
       end
-    }
+    })
   end
-
-  defp auth_method(%Visitor{password_encrypted: nil}), do: :none
-  defp auth_method(%Visitor{password_encrypted: _}), do: :nickserv_identify
 
   # Wrap the injected `refresh_plan` closure so the login IDENTIFY
   # survives `init/1`'s DB-wins re-resolve WHILE the visitor row is

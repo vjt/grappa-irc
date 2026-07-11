@@ -344,6 +344,91 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  #211 phase 3 — subject-scoped reader for a VISITOR credential.
+
+  Sibling of `get_credential_by_ids/2` (user-scoped) but keyed on
+  `visitor_id` — the visitor read-cutover (`Grappa.Visitors.SessionPlan`)
+  resolves a visitor session from its `(visitor_id, network_id)`
+  Credential via this reader. Subject-aware BY CONSTRUCTION: it only
+  ever matches `visitor_id IS NOT NULL` rows, so a visitor can never be
+  routed into the user resolver's `Accounts.get_user!(nil)` crash
+  (the phase-1 subject-blind-reader class — the whole reason
+  `network_credentials` uses the XOR-FK pattern).
+
+  Returns `{:error, :not_found}` on miss.
+  """
+  @spec get_visitor_credential(Ecto.UUID.t(), pos_integer()) ::
+          {:ok, Credential.t()} | {:error, :not_found}
+  def get_visitor_credential(visitor_id, network_id)
+      when is_binary(visitor_id) and is_integer(network_id) do
+    case Repo.one(visitor_credential_query(visitor_id, network_id)) do
+      %Credential{} = c -> {:ok, c}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp visitor_credential_query(visitor_id, network_id) do
+    from(c in Credential,
+      where: c.visitor_id == ^visitor_id and c.network_id == ^network_id
+    )
+  end
+
+  @doc """
+  #211 phase 3 — the single idempotent choke-point that keeps a
+  visitor's `(visitor_id, network_id)` Credential current.
+
+  This ONE verb is reused by BOTH:
+
+    * the per-mutation write-through in `Grappa.Visitors` (each visitor
+      identity mutation — provision / commit_password / rotate_password
+      / update_nick / update_identity / update_last_joined_channels —
+      re-applies the visitor's current identity onto the Credential so
+      the read path always sees fresh data), AND
+    * the bulk reconcile in `Grappa.Bootstrap.run/0` (self-healing:
+      refresh every existing visitor Credential + create any missing at
+      boot, catching drift from the phase-1-backfill→phase-3-deploy
+      window).
+
+  The two callers are the SAME operation ("make the Credential match
+  the visitor"), bulk-applied vs single — so they share this verb
+  rather than forking two write paths (CLAUDE.md "implement once, reuse
+  everywhere").
+
+  Takes PRIMITIVES (`visitor_id`, `network_id`, an identity `attrs`
+  map) — never a `%Visitor{}` — so `Grappa.Networks` needs no
+  `Grappa.Visitors` dep; the FK stays a `dirty_xref` (a real edge would
+  close the `Visitors → Networks` cycle). The caller
+  (`Grappa.Visitors`) owns building the attrs from the visitor row.
+
+  `attrs` flows through the wide `Credential.changeset/2` so the virtual
+  `:password` re-encrypts under the same Cloak vault (in-memory the
+  loaded value is plaintext), the subject XOR + partial-unique guards
+  fire, and `auth_method` validation runs. `:user_id` is never set —
+  the changeset's `validate_subject_xor/1` accepts the visitor-only
+  shape. Idempotent: identical attrs on an existing row are a no-op
+  Repo.update; re-running never creates a duplicate (the
+  `(visitor_id, network_id)` partial unique index + the get-or-insert
+  branch guarantee one row).
+  """
+  @spec upsert_visitor_credential(Ecto.UUID.t(), pos_integer(), map()) ::
+          {:ok, Credential.t()} | {:error, Ecto.Changeset.t()}
+  def upsert_visitor_credential(visitor_id, network_id, attrs)
+      when is_binary(visitor_id) and is_integer(network_id) and is_map(attrs) do
+    attrs =
+      attrs
+      |> Map.put(:visitor_id, visitor_id)
+      |> Map.put(:network_id, network_id)
+
+    case get_visitor_credential(visitor_id, network_id) do
+      {:ok, existing} ->
+        existing |> Credential.changeset(attrs) |> Repo.update()
+
+      {:error, :not_found} ->
+        %Credential{} |> Credential.changeset(attrs) |> Repo.insert()
+    end
+  end
+
+  @doc """
   Detaches `user` from `network`: deletes the user's credential row and
   stops the running `Session.Server`, if any. Idempotent — a
   non-existent binding still returns `:ok`.

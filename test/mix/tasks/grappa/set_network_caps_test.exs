@@ -40,7 +40,7 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
 
   test "updates only the cap flags supplied; preserves the rest" do
     {:ok, _} =
-      Networks.update_network_caps(Networks.get_network_by_slug!("azzurra"), %{
+      Networks.update_network_settings(Networks.get_network_by_slug!("azzurra"), %{
         max_concurrent_visitor_sessions: 5,
         max_per_ip: 2
       })
@@ -83,7 +83,7 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
 
   test "--clear-max-visitor-sessions clears the cap", %{network: network} do
     {:ok, _} =
-      Networks.update_network_caps(network, %{
+      Networks.update_network_settings(network, %{
         max_concurrent_visitor_sessions: 5,
         max_per_ip: 2
       })
@@ -100,7 +100,7 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
 
   test "--clear-max-user-sessions clears the cap", %{network: network} do
     {:ok, _} =
-      Networks.update_network_caps(network, %{
+      Networks.update_network_settings(network, %{
         max_concurrent_user_sessions: 7,
         max_per_ip: 2
       })
@@ -116,7 +116,7 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
 
   test "--clear-max-per-ip clears the cap", %{network: network} do
     {:ok, _} =
-      Networks.update_network_caps(network, %{
+      Networks.update_network_settings(network, %{
         max_concurrent_visitor_sessions: 5,
         max_per_ip: 2
       })

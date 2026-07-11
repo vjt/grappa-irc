@@ -191,6 +191,15 @@ defmodule Grappa.Networks.CredentialXorTest do
       visitor = visitor_fixture(network_slug: network.slug, nick: "identd1")
       {:ok, _} = Visitors.commit_password(visitor.id, "s3cret-pw")
 
+      # #211 phase 3 — `commit_password/2` now write-throughs a Credential
+      # (re-encrypting via the changeset → a fresh AES-GCM IV). This test
+      # exercises the PHASE-1 migration's RAW byte-copy in isolation, which
+      # requires the migration's precondition: a visitor with NO credential
+      # yet. Clear the write-through credential so `@backfill_sql`'s
+      # `WHERE NOT EXISTS` actually performs the copy under test.
+      visitor_creds = from(c in Credential, where: not is_nil(c.visitor_id))
+      Repo.delete_all(visitor_creds)
+
       # Grab the raw stored ciphertext BEFORE the backfill copies it.
       # binary_id is stored as a TEXT UUID string in sqlite (same as the
       # existing check_constraints_test raw inserts), so pass v.id directly.
@@ -219,6 +228,12 @@ defmodule Grappa.Networks.CredentialXorTest do
       network = network_fixture()
       visitor = visitor_fixture(network_slug: network.slug, nick: "joiner")
       _ = visitor_channel_fixture(visitor, "#grappa")
+
+      # #211 phase 3 — clear the write-through Credential so the phase-1
+      # migration under test performs the insert (see the byte-fidelity
+      # test above for the rationale).
+      visitor_creds = from(c in Credential, where: not is_nil(c.visitor_id))
+      Repo.delete_all(visitor_creds)
 
       Repo.query!(@backfill_sql, [])
 

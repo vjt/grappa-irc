@@ -50,6 +50,9 @@ defmodule GrappaWeb.FallbackController do
            | :malformed_ident
            | :password_required
            | :password_mismatch
+           | :network_not_visitor_enabled
+           | :network_ambiguous
+           | :network_unconfigured
            | :upstream_unreachable
            | :connect_timeout
            | :welcome_timeout
@@ -332,6 +335,35 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:unauthorized)
     |> json(%{error: "password_mismatch"})
+  end
+
+  # #211 phase 3 — the visitor targeted a network that is not in the
+  # runtime `visitor_enabled` allowlist. 403: the network exists but does
+  # not accept visitors (admin has not opted it in). Distinct from
+  # `:network_unconfigured` (no such / no enabled network) below.
+  def call(conn, {:error, :network_not_visitor_enabled}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "network_not_visitor_enabled"})
+  end
+
+  # #211 phase 3 — more than one network is visitor_enabled but the login
+  # named none. 400: the client must specify a network (the phase-6 cic
+  # picker sends a slug). Can't happen from today's single-enabled-network
+  # cic.
+  def call(conn, {:error, :network_ambiguous}) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "network_ambiguous"})
+  end
+
+  # #211 phase 3 — no network is configured / visitor_enabled for the
+  # login (zero enabled, or an explicit unknown slug). 503: the visitor
+  # surface is unavailable until an operator enables a network.
+  def call(conn, {:error, :network_unconfigured}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "network_unconfigured"})
   end
 
   def call(conn, {:error, :upstream_unreachable}) do

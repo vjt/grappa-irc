@@ -34,6 +34,7 @@ defmodule Grappa.Networks.AdminWire do
   @type t :: %{
           id: integer(),
           slug: String.t(),
+          visitor_enabled: boolean(),
           max_concurrent_visitor_sessions: non_neg_integer() | nil,
           max_concurrent_user_sessions: non_neg_integer() | nil,
           max_per_ip: non_neg_integer() | nil,
@@ -51,6 +52,10 @@ defmodule Grappa.Networks.AdminWire do
     %{
       id: net.id,
       slug: net.slug,
+      # #211 phase 3 — the runtime visitor allowlist flag, admin-togglable
+      # via `PATCH /admin/networks/:slug`. Operator console reads it to
+      # render + toggle which networks accept visitor attachment.
+      visitor_enabled: net.visitor_enabled,
       max_concurrent_visitor_sessions: net.max_concurrent_visitor_sessions,
       max_concurrent_user_sessions: net.max_concurrent_user_sessions,
       max_per_ip: net.max_per_ip,

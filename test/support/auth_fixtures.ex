@@ -124,7 +124,10 @@ defmodule Grappa.AuthFixtures do
   @doc """
   Builds a network row with one server endpoint. `slug` defaults to a
   unique generated value; `host` / `port` / `tls` describe the server
-  the test's IRC fake is listening on.
+  the test's IRC fake is listening on. `visitor_enabled` (default
+  `false`) sets the #211 phase-3 visitor allowlist flag — visitor login
+  tests pass `visitor_enabled: true` so the login allowlist gate admits
+  the network.
   """
   @spec network_with_server(keyword()) :: {Network.t(), Server.t()}
   def network_with_server(attrs \\ []) do
@@ -132,8 +135,10 @@ defmodule Grappa.AuthFixtures do
     host = Keyword.get(attrs, :host, "127.0.0.1")
     port = Keyword.fetch!(attrs, :port)
     tls = Keyword.get(attrs, :tls, false)
+    visitor_enabled = Keyword.get(attrs, :visitor_enabled, false)
 
-    {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+    {:ok, network} =
+      Networks.find_or_create_network(%{slug: slug, visitor_enabled: visitor_enabled})
 
     {:ok, server} =
       Servers.add_server(network, %{

@@ -49,7 +49,7 @@ defmodule GrappaWeb.AuthControllerTest do
   end
 
   defp setup_visitor_network(port),
-    do: network_with_server(port: port, slug: "azzurra")
+    do: network_with_server(port: port, slug: "azzurra", visitor_enabled: true)
 
   defp feed_001(server, nick),
     do: IRCServer.feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
@@ -795,6 +795,14 @@ defmodule GrappaWeb.AuthControllerTest do
       # the controller's degenerate-case handling is what this test
       # asserts, not the live-session teardown.
       stop_visitor_session(visitor.id, network.id)
+      # #211 phase 3 — the visitor now has a Credential (write-through)
+      # whose network_id FK is ON DELETE RESTRICT, so drop it first to
+      # simulate the operator having fully removed the network binding
+      # before the network row itself. (Pre-cutover the visitor carried no
+      # credential, so the network delete was unconstrained.)
+      {:ok, cred} = Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
+      Repo.delete!(cred)
+
       Repo.delete!(network)
 
       log =

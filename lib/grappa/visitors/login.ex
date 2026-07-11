@@ -8,12 +8,14 @@ defmodule Grappa.Visitors.Login do
 
     1. Validate nick shape (delegates to
        `Grappa.Auth.IdentifierClassifier`).
-    2. Resolve the configured visitor `Network` row (compile-time
-       slug via `Application.compile_env/3` → DB lookup; missing
-       row surfaces as `:network_unconfigured`). Boot-time
-       presence of the slug itself is asserted by
-       `Grappa.Bootstrap` (Task 20 W7) — Login trusts the boot
-       gate.
+    2. Resolve the target visitor `Network` from the RUNTIME
+       `networks.visitor_enabled` allowlist (#211 phase 3 — replaces
+       the compile-time `:visitor_network` pin). An explicit `:network`
+       slug in the input must be `visitor_enabled` (else
+       `:network_not_visitor_enabled` / `:network_unconfigured`); no
+       slug defaults to the SOLE enabled network (`:network_ambiguous`
+       when more than one is enabled and no slug is given — cic sends a
+       slug once the phase-6 picker ships).
     3. Look up an existing `Visitor` row by `(nick, network_slug)`.
     4. Branch on `(visitor existence × password_encrypted)`:
 
@@ -89,11 +91,13 @@ defmodule Grappa.Visitors.Login do
 
   require Logger
 
-  # B6.6 X3 (no-silent-drops 2026-05-14): bang form so a missing
-  # `:visitor_network` config value crashes at compile time, not at
-  # the first request. Mirrors auth_controller.ex:58, endpoint.ex:33,
-  # admission.ex:73.
-  @visitor_network Application.compile_env!(:grappa, :visitor_network)
+  # #211 phase 3 — the compile-time `:visitor_network` pin is GONE.
+  # Which networks accept visitors is now the runtime DB flag
+  # `networks.visitor_enabled`, read at login time via
+  # `Networks.list_visitor_enabled/0` /
+  # `Networks.get_visitor_enabled_network_by_slug/1` (admin-togglable
+  # without a restart). `Application.compile_env!(:grappa,
+  # :visitor_network)` and the `visitor_network/0` helper are removed.
 
   # U-2 (UD7): split single `:login_probe_timeout_ms` budget into two
   # inner timeouts (connect / welcome) + one outer guard. Pre-U-2 a 3s
@@ -131,7 +135,15 @@ defmodule Grappa.Visitors.Login do
           required(:user_agent) => String.t() | nil,
           required(:token) => String.t() | nil,
           required(:captcha_token) => String.t() | nil,
-          required(:client_id) => Grappa.ClientId.t() | nil
+          required(:client_id) => Grappa.ClientId.t() | nil,
+          # #211 phase 3 — optional target network slug. Present → must be
+          # `visitor_enabled` (else `:network_not_visitor_enabled`).
+          # Absent → default to the SOLE visitor-enabled network
+          # (backward-compatible with the pre-phase-3 single-network cic);
+          # zero enabled → `:network_unconfigured`; more than one enabled
+          # with no slug → `:network_ambiguous` (cic gains the picker in
+          # phase 6 before a 2nd network is expected).
+          optional(:network) => String.t() | nil
         }
 
   @type result :: %{visitor: Visitor.t(), token: Ecto.UUID.t()}
@@ -153,6 +165,8 @@ defmodule Grappa.Visitors.Login do
           | :probe_timeout
           | :no_server
           | :network_unconfigured
+          | :network_not_visitor_enabled
+          | :network_ambiguous
           | :password_required
           | :password_mismatch
           | :anon_collision
@@ -191,7 +205,7 @@ defmodule Grappa.Visitors.Login do
     }
 
     with :ok <- validate_nick(input.nick),
-         {:ok, network} <- visitor_network() do
+         {:ok, network} <- resolve_visitor_network(Map.get(input, :network)) do
       input.nick
       |> lookup_visitor(network.slug)
       |> dispatch(input, network, timeouts)
@@ -205,10 +219,35 @@ defmodule Grappa.Visitors.Login do
     end
   end
 
-  defp visitor_network do
-    case Networks.get_network_by_slug(@visitor_network) do
+  # #211 phase 3 — resolve the target visitor network from the runtime
+  # `networks.visitor_enabled` allowlist (replacing the compile-time
+  # `:visitor_network` pin).
+  #
+  #   * an explicit slug → must be `visitor_enabled` (the attach gate):
+  #     unknown → `:network_unconfigured`, exists-but-disabled →
+  #     `:network_not_visitor_enabled`.
+  #   * no slug (today's cic) → default to the SOLE enabled network.
+  #     Zero enabled → `:network_unconfigured` (the operator has not
+  #     opted any network in / the `azzurra` continuity seed did not
+  #     run). More than one enabled → `:network_ambiguous` (cic sends a
+  #     slug once the phase-6 picker ships; until then a single enabled
+  #     network is the expected prod shape).
+  @spec resolve_visitor_network(String.t() | nil) ::
+          {:ok, Networks.Network.t()}
+          | {:error, :network_unconfigured | :network_not_visitor_enabled | :network_ambiguous}
+  defp resolve_visitor_network(slug) when is_binary(slug) and slug != "" do
+    case Networks.get_visitor_enabled_network_by_slug(slug) do
       {:ok, %Networks.Network{} = network} -> {:ok, network}
       {:error, :not_found} -> {:error, :network_unconfigured}
+      {:error, :not_visitor_enabled} -> {:error, :network_not_visitor_enabled}
+    end
+  end
+
+  defp resolve_visitor_network(_) do
+    case Networks.list_visitor_enabled() do
+      [%Networks.Network{} = only] -> {:ok, only}
+      [] -> {:error, :network_unconfigured}
+      [_ | _] -> {:error, :network_ambiguous}
     end
   end
 
