@@ -786,6 +786,37 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
+  #211 phase 4c — credential-first VISITOR identity resolution: which
+  synthetic visitor identity owns `nick` (rfc1459-folded) on `network_id`?
+
+  Resolves via the visitor's `(fold(nick), network_id)` **Credential**
+  (`Credentials.fetch_visitor_credential_by_nick/2`) → its `visitor_id` →
+  the `%Visitor{}` row. This is the phase-7-ready replacement for the
+  `get_by_nick_and_network/2` row lookup (which queries the
+  `visitors.network_slug` scalar dropped at phase 7): identity is keyed on
+  the Credential, so a visitor whose credentials span multiple networks
+  resolves to ONE identity from any of them. Returns the `%Visitor{}` or
+  `nil` (no credential holds the nick on the network → the caller
+  provisions).
+
+  A credential whose `visitor_id` FK is dangling (the visitor row was
+  reaped between the credential read and the visitor load — should not
+  happen, the FK is `:restrict`) surfaces as `nil` so login provisions
+  cleanly rather than crashing.
+  """
+  @spec resolve_identity_by_nick(String.t(), pos_integer()) :: Visitor.t() | nil
+  def resolve_identity_by_nick(nick, network_id)
+      when is_binary(nick) and is_integer(network_id) do
+    case Credentials.fetch_visitor_credential_by_nick(nick, network_id) do
+      {:ok, %Credential{visitor_id: visitor_id}} when is_binary(visitor_id) ->
+        Repo.get(Visitor, visitor_id)
+
+      {:error, :not_found} ->
+        nil
+    end
+  end
+
+  @doc """
   Visitor-side NICK rename pre-check (V9). Returns `true` if a
   DIFFERENT visitor row already holds `target_nick` on
   `network_slug`; the caller surfaces that as 409 nick_in_use BEFORE
@@ -908,6 +939,149 @@ defmodule Grappa.Visitors do
       {:error, reason} ->
         Logger.warning("visitor reconnect: session plan resolve failed",
           visitor_id: visitor.id,
+          error: inspect(reason)
+        )
+
+        {:error, :resolve_failed}
+    end
+  end
+
+  @doc """
+  #211 phase 4c — ACCRETION: attach an ADDITIONAL network to an
+  already-authenticated visitor identity, then spawn its upstream session.
+
+  The genuinely-new multi-network capability (F7). A registered visitor
+  authenticated on network A adds network B **while authenticated**: this
+  attaches a NEW `(visitor_id, network_B)` Credential to the EXISTING
+  synthetic identity (NOT a new visitor row) and spawns B via the SAME
+  `SpawnOrchestrator.spawn/4` core that reconnect drives. The identity is
+  ONE `%Visitor{}` spanning both networks; B carries the identity's nick
+  (F4 per-network nick — B starts on the identity's canonical nick; a
+  later per-network rename is `update_nick` scoped to B's credential).
+
+  Gates, in order:
+
+    1. `slug` must be `visitor_enabled` (the runtime allowlist — you cannot
+       accrete a non-enabled network) → `{:error, :network_not_visitor_enabled}`
+       / `{:error, :network_unconfigured}`.
+    2. The visitor must not ALREADY hold a credential on that network
+       (idempotent guard) → `{:error, :already_attached}` so a
+       double-accrete is a clean 409, not a silent re-spawn.
+
+  B starts ANON on its NickServ (`auth_method: :none`) — the visitor may
+  not be registered on B; if they identify, B's `+r` observer commits B's
+  secret exactly as initial registration does (the credential is the proof,
+  per-network). `source_ip` is the caller's client IP (for the per-IP cap +
+  audit); the capacity_input is assembled internally once the target
+  network is resolved (unlike `reconnect_session/3`, the caller can't
+  pre-build it — the network slug is arbitrary request input, not the
+  visitor's pinned network).
+
+  Returns `{:ok, pid}` on spawn (or idempotent `:already_started`),
+  `{:error, :network_not_visitor_enabled | :network_unconfigured |
+  :already_attached | :resolve_failed}`, or an admission/`{:start_failed,
+  _}` error from the shared spawn.
+  """
+  @spec accrete_network(Visitor.t(), String.t(), String.t() | nil) ::
+          {:ok, pid()}
+          | {:error,
+             :network_not_visitor_enabled
+             | :network_unconfigured
+             | :already_attached
+             | :resolve_failed
+             | term()}
+  def accrete_network(%Visitor{} = visitor, slug, source_ip)
+      when is_binary(slug) and (is_binary(source_ip) or is_nil(source_ip)) do
+    with {:ok, network} <- fetch_accretable_network(slug),
+         :ok <- ensure_not_attached(visitor, network),
+         {:ok, _} <- attach_credential(visitor, network),
+         {:ok, plan} <- resolve_accreted_plan(visitor, network) do
+      capacity_input = accretion_capacity_input(visitor, network.id, source_ip)
+
+      case SpawnOrchestrator.spawn({:visitor, visitor.id}, network.id, plan, capacity_input) do
+        {:ok, :spawned, pid} -> {:ok, pid}
+        {:ok, :already_started, pid} -> {:ok, pid}
+        {:ok, :ignored} -> {:error, {:start_failed, :ignore}}
+        {:error, _} = err -> err
+      end
+    end
+  end
+
+  # Accretion dials a NEW upstream, so it uses the `:login_fresh` flow (a
+  # genuinely new connection, gated by the network-total + circuit caps) —
+  # NOT `:visitor_reconnect` (which is for restoring a dropped session).
+  # `requesting_subject` is the visitor itself so the per-IP cap's
+  # self-exclusion keeps the visitor's own live browser session from
+  # counting against the cap on this spawn.
+  @spec accretion_capacity_input(Visitor.t(), pos_integer(), String.t() | nil) ::
+          Admission.capacity_input()
+  defp accretion_capacity_input(%Visitor{id: id}, network_id, source_ip) do
+    %{
+      network_id: network_id,
+      source_ip: source_ip,
+      flow: :login_fresh,
+      requesting_subject: {:visitor, id}
+    }
+  end
+
+  # Only a `visitor_enabled` network may be accreted (the runtime
+  # allowlist gate — same readers `Login` uses). Distinct error tags so the
+  # controller surfaces 403 not-enabled vs 404/503 unconfigured.
+  @spec fetch_accretable_network(String.t()) ::
+          {:ok, Networks.Network.t()}
+          | {:error, :network_not_visitor_enabled | :network_unconfigured}
+  defp fetch_accretable_network(slug) do
+    case Networks.get_visitor_enabled_network_by_slug(slug) do
+      {:ok, %Networks.Network{} = network} -> {:ok, network}
+      {:error, :not_visitor_enabled} -> {:error, :network_not_visitor_enabled}
+      {:error, :not_found} -> {:error, :network_unconfigured}
+    end
+  end
+
+  # Idempotency guard: refuse a second accrete of a network the identity
+  # already holds a credential for, so a double-attach is a clean
+  # `:already_attached` rather than a silent re-spawn.
+  @spec ensure_not_attached(Visitor.t(), Networks.Network.t()) ::
+          :ok | {:error, :already_attached}
+  defp ensure_not_attached(%Visitor{id: id}, %Networks.Network{id: network_id}) do
+    case Credentials.get_visitor_credential(id, network_id) do
+      {:error, :not_found} -> :ok
+      {:ok, %Credential{}} -> {:error, :already_attached}
+    end
+  end
+
+  # Attach the accreted credential: the identity's nick/ident/realname on
+  # the new network, ANON (`auth_method: :none`) — B is a fresh upstream
+  # the visitor has not yet identified on. Goes through the SAME shared
+  # `upsert_visitor_credential/3` choke point as the write-through +
+  # reconcile (one write path). The credential-side folded-nick unique
+  # index (phase 4b) guards a cross-visitor nick collision on B → surfaces
+  # as a changeset error, mapped to `:already_attached`-class handling by
+  # the caller's `{:error, _}` propagation.
+  @spec attach_credential(Visitor.t(), Networks.Network.t()) ::
+          {:ok, Credential.t()} | {:error, Ecto.Changeset.t()}
+  defp attach_credential(%Visitor{} = visitor, %Networks.Network{id: network_id}) do
+    Credentials.upsert_visitor_credential(visitor.id, network_id, %{
+      nick: visitor.nick,
+      ident: visitor.ident,
+      realname: visitor.realname,
+      sasl_user: visitor.nick,
+      auth_method: :none,
+      last_joined_channels: []
+    })
+  end
+
+  @spec resolve_accreted_plan(Visitor.t(), Networks.Network.t()) ::
+          {:ok, Session.start_opts()} | {:error, :resolve_failed}
+  defp resolve_accreted_plan(%Visitor{} = visitor, %Networks.Network{} = network) do
+    case SessionPlan.resolve(visitor, network) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} ->
+        Logger.warning("visitor accretion: session plan resolve failed",
+          visitor_id: visitor.id,
+          network: network.slug,
           error: inspect(reason)
         )
 

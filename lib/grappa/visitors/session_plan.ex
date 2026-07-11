@@ -45,8 +45,29 @@ defmodule Grappa.Visitors.SessionPlan do
   @spec resolve(Visitor.t()) ::
           {:ok, Session.start_opts()} | {:error, :network_unconfigured | :no_server}
   def resolve(%Visitor{} = visitor) do
-    with {:ok, network} <- fetch_network(visitor.network_slug),
-         {:ok, credential} <- fetch_credential(visitor, network) do
+    with {:ok, network} <- fetch_network(visitor.network_slug) do
+      resolve(visitor, network)
+    end
+  end
+
+  @doc """
+  #211 phase 4c — resolve a `%Visitor{}` for an EXPLICIT `%Network{}`
+  (accretion / per-network reconnect). `resolve/1` delegates here with the
+  visitor's pinned `network_slug`; a multi-network caller passes the target
+  network directly so a visitor whose credentials span networks resolves
+  the RIGHT one — not always the primary `network_slug` (which phase 7
+  drops).
+
+  Same shape as `resolve/1`: resolve the visitor's `(visitor_id,
+  network_id)` Credential (self-healing), pick the lowest-priority enabled
+  server, build the plan. `{:error, :no_server}` when the network has no
+  enabled endpoints; `{:error, :network_unconfigured}` when the credential
+  can't be built.
+  """
+  @spec resolve(Visitor.t(), Networks.Network.t()) ::
+          {:ok, Session.start_opts()} | {:error, :network_unconfigured | :no_server}
+  def resolve(%Visitor{} = visitor, %Networks.Network{} = network) do
+    with {:ok, credential} <- fetch_credential(visitor, network) do
       network = Repo.preload(network, :servers)
 
       try do
@@ -199,15 +220,28 @@ defmodule Grappa.Visitors.SessionPlan do
       # viable, so `Server.init/1` returns `:ignore` and the
       # supervisor drops the child permanently. Operator manually
       # re-spawns once the underlying config is fixed.
+      #
+      # #211 phase 4c — re-resolve the SAME network this session was spawned
+      # for, NOT the visitor's primary `network_slug`. A visitor's
+      # credentials can span multiple networks (accretion); the network-B
+      # session's `:transient` restart must re-resolve network B. Capture
+      # its id and reload it fresh (so a mid-session config change is picked
+      # up) then `resolve/2` against it.
       refresh_plan: fn ->
         case Visitors.get(visitor.id) do
           nil ->
             {:error, :not_found}
 
           fresh ->
-            case resolve(fresh) do
-              {:ok, _} = ok -> ok
-              {:error, _} -> {:error, :not_found}
+            case Networks.get_network(network.id) do
+              nil ->
+                {:error, :not_found}
+
+              %Networks.Network{} = fresh_network ->
+                case resolve(fresh, fresh_network) do
+                  {:ok, _} = ok -> ok
+                  {:error, _} -> {:error, :not_found}
+                end
             end
         end
       end

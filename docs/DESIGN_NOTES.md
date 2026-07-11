@@ -18193,3 +18193,104 @@ index — both are correct, the test just pins one).
 
 **Deploy class: COLD** (new migration; hot path skips `ecto.migrate`). Rides
 the end-of-crank window. NO standalone deploy.
+
+## 2026-07-11 — #211 phase 4c (L2 epic): identity-key cutover + multi-network ACCRETION
+
+The core multi-network capability (F7 + #166). Login resolves the visitor
+identity credential-first; a new authenticated verb accretes additional
+networks onto ONE identity; Bootstrap respawns every credential. NO
+migration (4b added the enabling index).
+
+### Identity resolution — credential-first
+
+`Login.lookup_visitor/2` previously resolved the identity via the
+`visitors.(fold(nick), network_slug)` row lookup
+(`get_by_nick_and_network/2`). Phase 4c resolves it via the visitor's
+`(fold(nick), network_id)` **Credential**
+(`Credentials.fetch_visitor_credential_by_nick/2` →
+`Visitors.resolve_identity_by_nick/2` → the `%Visitor{}` by the
+credential's `visitor_id`). This is the phase-7-ready lookup — the visitor
+scalar `network_slug` is dropped at phase 7, so the row query must go.
+Behavior-equivalent during transition (the phase-3 write-through keeps the
+row and credential in sync), proven by the full `login_test` corpus staying
+green. The reader is visitor-scoped (`WHERE visitor_id IS NOT NULL`) so a
+user credential with the same nick never resolves.
+
+### `SessionPlan.resolve/2` — network-explicit
+
+`Visitors.SessionPlan.resolve/1` was pinned to `visitor.network_slug`.
+Added `resolve/2` taking an explicit `%Network{}`; `resolve/1` delegates
+with the pinned slug. Accretion + per-network reconnect pass the target
+network so a multi-network visitor resolves the RIGHT one. The injected
+`refresh_plan` closure now re-resolves the SAME network the session was
+spawned for (captures `network.id`, reloads it fresh) — NOT always the
+primary `network_slug` — so a network-B session's `:transient` restart
+re-resolves B.
+
+### Accretion — the new verb
+
+`Visitors.accrete_network/3` (registered visitor, target slug, source_ip):
+gate `visitor_enabled` (the runtime allowlist — can't accrete a disabled
+network) → idempotency guard (`:already_attached` if the identity already
+holds a credential on that network) → attach a NEW `(visitor_id, network)`
+credential via the SAME `upsert_visitor_credential/3` choke point (the
+identity's nick/ident/realname, ANON on B — the visitor hasn't identified
+there; B's `+r` observer commits B's secret if they do) → resolve the plan
+for B → spawn via the SAME `SpawnOrchestrator.spawn/4` core (flow
+`:login_fresh` — a new upstream dial, cap+circuit gated). The identity
+stays ONE `%Visitor{}`; accretion attaches a credential, never a second
+visitor row.
+
+Surface: `POST /session/networks {network}` on `SessionController`
+(registered-visitor-only, `require_registered_visitor/1`; rides the
+existing `/session/` nginx allowlist — no proxy change). Errors flow
+through `FallbackController` (new `:already_attached` → 409; existing
+`:network_not_visitor_enabled` → 403, cap/circuit/upstream). cic picker
+drives it in phase 6 — server verb ships now (mirrors phase-3 scoping).
+
+### Bootstrap — respawn PER credential
+
+`Bootstrap.spawn_visitor/2` iterated one session from `visitor.network_slug`.
+Now it enumerates ALL the visitor's credentials
+(`Credentials.list_visitor_credentials/1`) and spawns one Session.Server
+per credential, so a reboot restores every accreted network. Each resolves
+via `SessionPlan.resolve/2` for that credential's network. The
+`reconcile_credential/1` bulk pass (phase 3) still runs first, so a
+fresh/drifted visitor has its credential(s) before this read.
+
+### Cross-phase note (NOT a phase-4c bug — scoped to phase 6/7)
+
+`Visitors.sync_credential/1` (+ the `+r` `commit_password/2` write-through)
+still targets the visitor's PRIMARY `network_slug` credential. So a `+r`
+IDENTIFY observed on an ACCRETED network commits the secret to the visitor
+row + the primary credential, NOT the accreted network's credential.
+Accreted networks are ANON-by-design this phase (multi-network
+registration is out of scope); per-network password commit is F4
+(per-network nick/password), naturally addressed when the visitor scalar
+is dropped (phase 7) and the write-through becomes per-credential. Flagged
+so phase 6/7 closes it deliberately, not by accident.
+
+### Auth-risk audit (accretion is new auth surface)
+
+`fetch_visitor_credential_by_nick/2` + `get_visitor_credential/2` are both
+`WHERE visitor_id ==` (never `user_id`) — a visitor can never resolve onto
+a user's identity nor another visitor's. Accretion is gated to a REGISTERED
+visitor (the bearer proves the identity) + the `visitor_enabled` allowlist +
+the `:already_attached` idempotency guard. The phase-4b folded-nick unique
+index guards a cross-visitor nick collision on the accreted network. The
+identity's nick carries to B under the same nick (F4 per-network nick; a
+later per-network rename is `update_nick` scoped to B's credential — phase
+6).
+
+### Tests
+
+`credentials/upsert_visitor_credential_test` (credential-first reader:
+folded, network-scoped, user-isolation); `session_controller_test`
+(accretion 204 — one identity two credentials, no duplicate visitor row,
+NICK on B; 403 non-enabled; 409 already-attached; 400 missing param; 403
+user/anon); `bootstrap_test` (multi-network visitor respawns one session
+per credential); the full `login_test` corpus (credential-first identity
+resolution behavior-equivalent).
+
+**Deploy class: COLD** (rides the end-of-crank window; NO standalone
+deploy). Design comment: issue #211 comment 4948330894; ruling 4948477338.

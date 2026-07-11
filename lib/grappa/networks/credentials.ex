@@ -35,8 +35,12 @@ defmodule Grappa.Networks.Credentials do
   import Ecto.Query
 
   alias Grappa.Accounts.User
+  alias Grappa.IRC.Identifier
   alias Grappa.Networks.{Credential, Network}
   alias Grappa.{Repo, Session}
+
+  # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment).
+  require Identifier
 
   @doc """
   Binds `user` to `network` with the given attrs. Validation rules
@@ -371,6 +375,70 @@ defmodule Grappa.Networks.Credentials do
     from(c in Credential,
       where: c.visitor_id == ^visitor_id and c.network_id == ^network_id
     )
+  end
+
+  @doc """
+  #211 phase 4c — every credential a VISITOR holds, with `:network`
+  preloaded, ordered by `network_id` (deterministic across reboots — the
+  Bootstrap per-credential log lines stay diff-friendly).
+
+  A multi-network visitor (post-accretion) has one credential per attached
+  network; `Grappa.Bootstrap` respawns ONE `Session.Server` per credential
+  so a reboot restores ALL of a visitor's networks, not just the primary
+  `network_slug`. Subject-scoped (`WHERE visitor_id ==`) — never surfaces a
+  user credential. Empty list when the visitor holds none (a fresh row the
+  reconcile hasn't touched — Bootstrap self-heals it via
+  `reconcile_credential/1` before this read).
+  """
+  @spec list_visitor_credentials(Ecto.UUID.t()) :: [Credential.t()]
+  def list_visitor_credentials(visitor_id) when is_binary(visitor_id) do
+    query =
+      from(c in Credential,
+        where: c.visitor_id == ^visitor_id,
+        order_by: [asc: c.network_id],
+        preload: [network: :servers]
+      )
+
+    Repo.all(query)
+  end
+
+  @doc """
+  #211 phase 4c — credential-first VISITOR identity resolution: find the
+  visitor credential holding `nick` (rfc1459-folded, GH #121) on
+  `network_id`.
+
+  This is the phase-7-ready replacement for the `visitors` row lookup
+  `Visitors.get_by_nick_and_network/2` (which queries the
+  `visitors.network_slug` scalar dropped at phase 7). Login uses the
+  returned credential's `visitor_id` to resolve WHICH synthetic identity
+  owns `(nick, network)` — else it provisions a new one.
+
+  Folds both the `nick` column and the supplied `nick` through the SAME
+  casemapper (`Identifier.nick_fold/1` fragment + `canonical_nick/1`), so
+  it matches the phase-4b folded partial unique index
+  (`network_credentials_visitor_folded_nick_network_id_index`) and stays
+  index-eligible. Visitor-scoped BY CONSTRUCTION (`WHERE visitor_id IS NOT
+  NULL`): a USER credential with the same nick never matches — a visitor
+  can't be resolved onto a user's identity (the phase-1
+  subject-blind-reader class). Returns `{:error, :not_found}` on miss.
+  """
+  @spec fetch_visitor_credential_by_nick(String.t(), pos_integer()) ::
+          {:ok, Credential.t()} | {:error, :not_found}
+  def fetch_visitor_credential_by_nick(nick, network_id)
+      when is_binary(nick) and is_integer(network_id) do
+    folded = Identifier.canonical_nick(nick)
+
+    query =
+      from(c in Credential,
+        where:
+          not is_nil(c.visitor_id) and c.network_id == ^network_id and
+            Identifier.nick_fold(c.nick) == ^folded
+      )
+
+    case Repo.one(query) do
+      %Credential{} = c -> {:ok, c}
+      nil -> {:error, :not_found}
+    end
   end
 
   @doc """

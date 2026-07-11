@@ -64,6 +64,7 @@ defmodule GrappaWeb.FallbackController do
            | :insufficient_storage
            | :unsupported_media_type
            | :already_exists
+           | :already_attached
            | :scrollback_present
            | :last_admin
            | :share_token_expired
@@ -507,6 +508,15 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:conflict)
     |> json(%{error: "already_exists"})
+  end
+
+  # #211 phase 4c — visitor accretion (`POST /session/networks`) of a
+  # network the identity already holds a credential for. 409 so a
+  # double-accrete is a clean conflict, not a silent re-spawn.
+  def call(conn, {:error, :already_attached}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "already_attached"})
   end
 
   # Admin-panel bucket 1 — `DELETE /admin/networks/:id` with bound

@@ -70,6 +70,34 @@ defmodule GrappaWeb.SessionController do
     end
   end
 
+  @doc """
+  `POST /session/networks` — registered visitor only. #211 phase 4c
+  ACCRETION: attach an ADDITIONAL `visitor_enabled` network to the
+  authenticated visitor identity and spawn its upstream session. The
+  identity stays ONE `%Visitor{}` spanning both networks (NOT a new
+  visitor row). Body: `{"network": "<slug>"}`.
+
+  204 on success; 400 if the `network` param is missing/blank; 403 for any
+  non-registered-visitor subject; the accretion / admission / spawn error
+  atoms flow through `FallbackController` (403 network_not_visitor_enabled,
+  409 already_attached, 503 cap/circuit, 502 upstream, etc.).
+
+  The cic network picker (phase 6) drives this; the server verb ships now
+  (mirrors the phase-3 scoping — server capability first, cic UI later).
+  """
+  @spec add_network(Plug.Conn.t(), map()) ::
+          Plug.Conn.t()
+          | {:error, :forbidden | :bad_request | :network_not_visitor_enabled | term()}
+  def add_network(conn, %{"network" => slug}) when is_binary(slug) and slug != "" do
+    with {:ok, visitor} <- require_registered_visitor(conn),
+         {:ok, _} <-
+           Visitors.accrete_network(visitor, slug, GrappaWeb.RemoteIP.format(conn)) do
+      send_resp(conn, :no_content, "")
+    end
+  end
+
+  def add_network(_, _), do: {:error, :bad_request}
+
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------

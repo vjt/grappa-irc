@@ -413,46 +413,59 @@ defmodule Grappa.Bootstrap do
   end
 
   @spec spawn_visitor(Visitor.t(), Result.t()) :: Result.t()
-  defp spawn_visitor(%Visitor{id: visitor_id, network_slug: slug} = visitor, acc) do
-    case VisitorSessionPlan.resolve(visitor) do
+  defp spawn_visitor(%Visitor{id: visitor_id} = visitor, acc) do
+    # #211 phase 4c — a visitor's credentials can span MULTIPLE networks
+    # (accretion). Respawn ONE Session.Server per credential so a reboot
+    # restores ALL of the identity's networks, not just the primary
+    # `network_slug`. `reconcile_credential/1` ran earlier in `run/0`, so a
+    # fresh/drifted visitor already has its credential(s); an identity with
+    # none (should not happen post-reconcile) contributes nothing.
+    case Credentials.list_visitor_credentials(visitor_id) do
+      [] ->
+        Logger.warning("bootstrap visitor has no credentials — skipped",
+          visitor_id: visitor_id,
+          network: visitor.network_slug
+        )
+
+        acc
+
+      credentials ->
+        Enum.reduce(credentials, acc, &spawn_visitor_credential(visitor, &1, &2))
+    end
+  end
+
+  @spec spawn_visitor_credential(Visitor.t(), Credential.t(), Result.t()) :: Result.t()
+  defp spawn_visitor_credential(
+         %Visitor{id: visitor_id} = visitor,
+         %Credential{network: %Network{} = network},
+         acc
+       ) do
+    log_keys = [visitor_id: visitor_id, network: network.slug]
+
+    case VisitorSessionPlan.resolve(visitor, network) do
       {:ok, plan} ->
-        case Networks.get_network_by_slug(plan.network_slug) do
-          {:ok, %Network{id: network_id}} ->
-            capacity_input = %{
-              network_id: network_id,
-              # #171: cold-start visitor spawn — no conn, no source IP.
-              source_ip: nil,
-              flow: :bootstrap_visitor,
-              requesting_subject: nil
-            }
+        capacity_input = %{
+          network_id: network.id,
+          # #171: cold-start visitor spawn — no conn, no source IP.
+          source_ip: nil,
+          flow: :bootstrap_visitor,
+          requesting_subject: nil
+        }
 
-            log_keys = [visitor_id: visitor_id, network: slug]
-
-            spawn_with_admission(
-              {:visitor, visitor_id},
-              network_id,
-              plan,
-              capacity_input,
-              log_keys,
-              acc
-            )
-
-          {:error, reason} ->
-            Logger.error(
-              "visitor session plan failed",
-              visitor_id: visitor_id,
-              network: slug,
-              error: inspect(reason)
-            )
-
-            %{acc | plan_failed: acc.plan_failed + 1}
-        end
+        spawn_with_admission(
+          {:visitor, visitor_id},
+          network.id,
+          plan,
+          capacity_input,
+          log_keys,
+          acc
+        )
 
       {:error, reason} ->
         Logger.error(
           "visitor session plan failed",
           visitor_id: visitor_id,
-          network: slug,
+          network: network.slug,
           error: inspect(reason)
         )
 

@@ -215,7 +215,7 @@ defmodule Grappa.Visitors.Login do
     with :ok <- validate_nick(input.nick),
          {:ok, network} <- resolve_visitor_network(Map.get(input, :network)) do
       input.nick
-      |> lookup_visitor(network.slug)
+      |> lookup_visitor(network)
       |> dispatch(input, network, timeouts)
     end
   end
@@ -259,12 +259,17 @@ defmodule Grappa.Visitors.Login do
     end
   end
 
-  # Delegates to the context's rfc1459-folded lookup (GH #121) so a
-  # different-case reconnect resolves to the SAME visitor.id — which is
+  # #211 phase 4c — credential-first identity resolution. Delegates to the
+  # context's `(fold(nick), network_id)` **Credential** lookup (GH #121) so
+  # a different-case reconnect resolves to the SAME visitor.id — which is
   # what the #117 attach-to-existing-session path keys on, reattaching
-  # instead of provisioning a duplicate.
-  defp lookup_visitor(nick, slug) do
-    Visitors.get_by_nick_and_network(nick, slug)
+  # instead of provisioning a duplicate. This is the phase-7-ready
+  # replacement for the `(nick, network_slug)` visitor-row lookup (the
+  # visitor scalar `network_slug` is dropped at phase 7); identity now lives
+  # on the Credential, so a multi-network visitor resolves to one identity
+  # from any of its networks.
+  defp lookup_visitor(nick, %Networks.Network{id: network_id}) do
+    Visitors.resolve_identity_by_nick(nick, network_id)
   end
 
   # Case 1 — provision new anon

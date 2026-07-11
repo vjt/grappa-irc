@@ -201,6 +201,12 @@ defmodule GrappaWeb.Router do
     post "/session/disconnect", SessionController, :disconnect
     post "/session/reconnect", SessionController, :reconnect
 
+    # #211 phase 4c — visitor multi-network ACCRETION: attach an additional
+    # visitor_enabled network to the authenticated identity + spawn it.
+    # Registered-visitor-only (gated in the controller). Rides the existing
+    # `/session/` nginx allowlist entry (both :80 and :443) — no proxy change.
+    post "/session/networks", SessionController, :add_network
+
     get "/me", MeController, :show
 
     # #152 — visitor self-service IRC identity (ident + realname), live-

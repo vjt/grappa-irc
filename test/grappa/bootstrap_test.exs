@@ -386,6 +386,37 @@ defmodule Grappa.BootstrapTest do
       assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
     end
 
+    test "#211 phase 4c — a multi-network visitor respawns ONE session PER credential" do
+      # A single visitor identity with credentials on TWO networks
+      # (post-accretion). Bootstrap must restore BOTH sessions, not just the
+      # primary network_slug.
+      {_, port_a} = start_server()
+      {visitor, net_a} = visitor_with_network(port_a)
+
+      {_, port_b} = start_server()
+      {net_b, _} = network_with_server(port: port_b, slug: "beta", visitor_enabled: true)
+
+      # Accrete B: attach a (visitor_id, net_b) credential to the SAME
+      # identity (the credential-write choke point the accretion verb uses).
+      {:ok, _} =
+        Grappa.Networks.Credentials.upsert_visitor_credential(visitor.id, net_b.id, %{
+          nick: visitor.nick,
+          sasl_user: visitor.nick,
+          auth_method: :none
+        })
+
+      on_exit(fn ->
+        stop_visitor_session(visitor.id, net_a.id)
+        stop_visitor_session(visitor.id, net_b.id)
+      end)
+
+      assert {:ok, %Result{}} = Bootstrap.run()
+
+      # BOTH networks live for the one identity.
+      assert is_pid(Session.whereis({:visitor, visitor.id}, net_a.id))
+      assert is_pid(Session.whereis({:visitor, visitor.id}, net_b.id))
+    end
+
     test "expired visitor row is skipped (list_active filters)" do
       past = DateTime.add(DateTime.utc_now(), -1, :hour)
       visitor = visitor_fixture(expires_at: past)

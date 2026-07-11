@@ -61,6 +61,64 @@ defmodule Grappa.Networks.Credentials.UpsertVisitorCredentialTest do
     end
   end
 
+  # #211 phase 4c — credential-first identity resolution. Login resolves
+  # WHICH visitor identity owns a `(nick, network)` by looking up the
+  # visitor credential rfc1459-folded on `(fold(nick), network_id)` — the
+  # phase-7-ready replacement for the `visitors.(fold(nick), network_slug)`
+  # row lookup (the visitor scalar `network_slug` is dropped at phase 7).
+  describe "fetch_visitor_credential_by_nick/2 (phase-4c identity resolution)" do
+    test "returns the visitor credential matching the folded nick on the network" do
+      {visitor, network} = visitor_with_network(6667)
+
+      {:ok, _} =
+        Credentials.upsert_visitor_credential(visitor.id, network.id, %{
+          nick: "Mezmerize",
+          auth_method: :none
+        })
+
+      # rfc1459-folded: a different-case / bracket-variant nick resolves to
+      # the SAME credential (GH #121).
+      assert {:ok, %Credential{} = cred} =
+               Credentials.fetch_visitor_credential_by_nick("mezmerize", network.id)
+
+      assert cred.visitor_id == visitor.id
+      assert cred.network_id == network.id
+    end
+
+    test "returns {:error, :not_found} when no visitor holds the nick on the network" do
+      {_, network} = visitor_with_network(6667)
+
+      assert {:error, :not_found} =
+               Credentials.fetch_visitor_credential_by_nick("nobody", network.id)
+    end
+
+    test "does NOT match a USER credential with the same nick (subject isolation)" do
+      user = user_fixture()
+      network = network_fixture()
+      _ = credential_fixture(user, network, %{nick: "shared"})
+
+      # A user credential on the same network + nick must NOT resolve — the
+      # lookup is visitor-scoped by construction (WHERE visitor_id IS NOT
+      # NULL), so a visitor can never be resolved onto a user's credential.
+      assert {:error, :not_found} =
+               Credentials.fetch_visitor_credential_by_nick("shared", network.id)
+    end
+
+    test "scopes by network — the same nick on a different network is not matched" do
+      {visitor, net_a} = visitor_with_network(6667)
+      net_b = network_fixture()
+
+      {:ok, _} =
+        Credentials.upsert_visitor_credential(visitor.id, net_a.id, %{
+          nick: "spanner",
+          auth_method: :none
+        })
+
+      assert {:error, :not_found} =
+               Credentials.fetch_visitor_credential_by_nick("spanner", net_b.id)
+    end
+  end
+
   describe "upsert_visitor_credential/3 — create" do
     test "creates a visitor credential when none exists" do
       {visitor, network} = visitor_with_network(6667)
