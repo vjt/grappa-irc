@@ -295,8 +295,18 @@ defmodule Grappa.AuthFixtures do
   """
   @spec visitor_channel_fixture(Visitor.t(), String.t()) :: Visitor.t()
   def visitor_channel_fixture(%Visitor{} = visitor, name) when is_binary(name) do
-    fresh = Repo.get!(Visitor, visitor.id)
-    :ok = Visitors.update_last_joined_channels(visitor.id, [name | fresh.last_joined_channels])
+    # #211 phase 4c — a visitor's rejoin list is PER-NETWORK on the
+    # credential now (not the single `visitors.last_joined_channels`
+    # scalar). Resolve the visitor's network + write through the
+    # network-explicit `update_last_joined_channels/3` so tests exercise
+    # the real per-network path. `resolve_credential/2` self-heals a
+    # missing credential from the visitor row (a `visitor_fixture`-inserted
+    # visitor bypasses `find_or_provision_anon`, so it has no credential
+    # yet) — mirrors what a real login/spawn does before the first snapshot.
+    {:ok, network} = Networks.get_network_by_slug(visitor.network_slug)
+    {:ok, _} = Visitors.resolve_credential(visitor, network.id)
+    existing = Visitors.list_autojoin_channels(visitor, network.id)
+    :ok = Visitors.update_last_joined_channels(visitor.id, network.id, [name | existing])
     Repo.get!(Visitor, visitor.id)
   end
 

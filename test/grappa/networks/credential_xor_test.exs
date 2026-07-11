@@ -370,11 +370,19 @@ defmodule Grappa.Networks.CredentialXorTest do
     test "last_joined_channels carries onto the credential" do
       network = network_fixture()
       visitor = visitor_fixture(network_slug: network.slug, nick: "joiner")
-      _ = visitor_channel_fixture(visitor, "#grappa")
 
-      # #211 phase 3 — clear the write-through Credential so the phase-1
-      # migration under test performs the insert (see the byte-fidelity
-      # test above for the rationale).
+      # This exercises the PHASE-1 backfill SQL, which copies the visitor
+      # SCALAR `last_joined_channels` -> the credential. #211 phase 4c moved
+      # the live channel writes onto the credential (the scalar is
+      # write-dead), so populate the scalar DIRECTLY here — the backfill is
+      # historical (already ran in prod) and legitimately reads the scalar.
+      {:ok, _} =
+        visitor
+        |> Grappa.Visitors.Visitor.last_joined_channels_changeset(["#grappa"])
+        |> Repo.update()
+
+      # Clear any write-through Credential so the phase-1 migration under
+      # test performs the insert (see the byte-fidelity test for rationale).
       visitor_creds = from(c in Credential, where: not is_nil(c.visitor_id))
       Repo.delete_all(visitor_creds)
 

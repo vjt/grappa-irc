@@ -167,6 +167,39 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  #211 phase 4c — remove `channel_name` from a VISITOR credential's
+  PER-NETWORK `last_joined_channels` rejoin list (keyed on `(visitor_id,
+  network_id)`).
+
+  A visitor has no operator-bound `autojoin_channels` — its rejoin list IS
+  `last_joined_channels` — so the cic "dismiss tab" path removes from THAT
+  column on the specific network's credential (NOT the single
+  `visitors.last_joined_channels` scalar). Canonicalises the channel (RFC
+  2812 casemapping); stored entries are already canonical, so an
+  exact-match reject mirrors the user helper. Narrow
+  `last_joined_channels_changeset` (no wide-changeset validators on this
+  path). `{:error, :not_found}` when the credential was unbound.
+  """
+  @spec remove_visitor_last_joined_channel(Ecto.UUID.t(), pos_integer(), String.t()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def remove_visitor_last_joined_channel(visitor_id, network_id, channel_name)
+      when is_binary(visitor_id) and is_integer(network_id) and is_binary(channel_name) do
+    canonical = Grappa.IRC.Identifier.canonical_channel(channel_name)
+
+    case get_visitor_credential(visitor_id, network_id) do
+      {:ok, cred} ->
+        kept = Enum.reject(cred.last_joined_channels, &(&1 == canonical))
+
+        cred
+        |> Credential.last_joined_channels_changeset(kept)
+        |> Repo.update()
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
   Removes `channel_name` from `autojoin_channels` on the `(user, network)`
   credential. Called by `DELETE /networks/:slug/channels/:channel_id` so
   that the next `GET /channels` response omits the closed channel entirely
@@ -241,6 +274,40 @@ defmodule Grappa.Networks.Credentials do
         # (`validate_password_for_auth_method`, `put_encrypted_password`,
         # the `unique_constraint`) onto the hot path. Twin of the visitor
         # side's `Visitor.last_joined_channels_changeset/2`.
+        changeset = Credential.last_joined_channels_changeset(cred, capped)
+
+        case Repo.update(changeset) do
+          {:ok, _} -> :ok
+          {:error, changeset} -> {:error, changeset}
+        end
+    end
+  end
+
+  @doc """
+  #211 phase 4c — visitor twin of `update_last_joined_channels/3`, keyed on
+  `(visitor_id, network_id)`.
+
+  A visitor's `last_joined_channels` snapshot is now PER-NETWORK on the
+  Credential (a multi-network visitor has one credential per network), NOT
+  the single `visitors.last_joined_channels` scalar. `Session.Server`'s
+  `last_joined_persister` writes here so network A's channel set and
+  network B's don't clobber each other (the scalar is a single-network
+  field, dropped at phase 7). Same narrow changeset as the user path.
+  Returns `:ok`, or `{:error, :not_found}` when the credential was unbound
+  between snapshot write and now (race tolerated — restart-rehydrate
+  semantics).
+  """
+  @spec update_visitor_last_joined_channels(Ecto.UUID.t(), pos_integer(), [String.t()]) ::
+          :ok | {:error, :not_found | Ecto.Changeset.t()}
+  def update_visitor_last_joined_channels(visitor_id, network_id, channels)
+      when is_binary(visitor_id) and is_integer(network_id) and is_list(channels) do
+    capped = Enum.take(channels, Credential.last_joined_channels_max())
+
+    case Repo.get_by(Credential, visitor_id: visitor_id, network_id: network_id) do
+      nil ->
+        {:error, :not_found}
+
+      %Credential{} = cred ->
         changeset = Credential.last_joined_channels_changeset(cred, capped)
 
         case Repo.update(changeset) do

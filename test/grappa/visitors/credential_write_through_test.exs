@@ -88,29 +88,84 @@ defmodule Grappa.Visitors.CredentialWriteThroughTest do
     end
   end
 
-  describe "update_last_joined_channels/2" do
-    test "mirrors the channel snapshot onto the Credential" do
+  describe "update_last_joined_channels/3 (per-network, #211 phase 4c)" do
+    test "writes the channel snapshot onto THIS network's Credential" do
       {_, network} = visitor_with_network(6667)
       {:ok, visitor} = Visitors.find_or_provision_anon("chvis", network.slug, "1.2.3.4")
 
-      :ok = Visitors.update_last_joined_channels(visitor.id, ["#alpha", "#beta"])
+      :ok = Visitors.update_last_joined_channels(visitor.id, network.id, ["#alpha", "#beta"])
 
       assert {:ok, cred} = read(visitor, network)
       assert cred.last_joined_channels == ["#alpha", "#beta"]
     end
   end
 
-  describe "remove_autojoin_channel/2" do
-    test "drops the channel from the Credential snapshot too" do
+  describe "remove_autojoin_channel/3 (per-network, #211 phase 4c)" do
+    test "drops the channel from THIS network's Credential snapshot" do
       {_, network} = visitor_with_network(6667)
       {:ok, visitor} = Visitors.find_or_provision_anon("rmvis", network.slug, "1.2.3.4")
-      :ok = Visitors.update_last_joined_channels(visitor.id, ["#alpha", "#beta"])
+      :ok = Visitors.update_last_joined_channels(visitor.id, network.id, ["#alpha", "#beta"])
       fresh = Visitors.get!(visitor.id)
 
-      {:ok, _} = Visitors.remove_autojoin_channel(fresh, "#alpha")
+      {:ok, _} = Visitors.remove_autojoin_channel(fresh, network.id, "#alpha")
 
       assert {:ok, cred} = read(visitor, network)
       assert cred.last_joined_channels == ["#beta"]
+    end
+  end
+
+  # #211 phase 4c — the multi-network isolation guard (the regression the
+  # code-review flagged): a visitor whose credentials span networks A + B
+  # must keep a DISTINCT channel set per network. Pre-fix the persister
+  # wrote the single `visitors.last_joined_channels` scalar (+ the primary
+  # credential), so two concurrent sessions clobbered each other's rejoin
+  # lists. Post-fix each write is keyed on `(visitor_id, network_id)`.
+  describe "per-network channel isolation across accreted networks" do
+    test "network A and network B channel sets do NOT clobber each other" do
+      {_, net_a} = visitor_with_network(6667)
+      {:ok, visitor} = Visitors.find_or_provision_anon("multichan", net_a.slug, "1.2.3.4")
+
+      # Accrete B: a second credential on the SAME visitor identity.
+      {net_b, _} = network_with_server(port: 6668, slug: "beta-chan", visitor_enabled: true)
+
+      {:ok, _} =
+        Credentials.upsert_visitor_credential(visitor.id, net_b.id, %{
+          nick: visitor.nick,
+          sasl_user: visitor.nick,
+          auth_method: :none
+        })
+
+      # Distinct channel sets per network.
+      :ok = Visitors.update_last_joined_channels(visitor.id, net_a.id, ["#alpha-only"])
+      :ok = Visitors.update_last_joined_channels(visitor.id, net_b.id, ["#beta-only"])
+
+      # Each network keeps ITS OWN set — no cross-contamination.
+      assert {:ok, cred_a} = read(visitor, net_a)
+      assert {:ok, cred_b} = read(visitor, net_b)
+      assert cred_a.last_joined_channels == ["#alpha-only"]
+      assert cred_b.last_joined_channels == ["#beta-only"]
+
+      # The per-network reader agrees.
+      assert Visitors.list_autojoin_channels(visitor, net_a.id) == ["#alpha-only"]
+      assert Visitors.list_autojoin_channels(visitor, net_b.id) == ["#beta-only"]
+
+      # A dismiss on B does not touch A.
+      {:ok, _} = Visitors.remove_autojoin_channel(visitor, net_b.id, "#beta-only")
+      assert Visitors.list_autojoin_channels(visitor, net_a.id) == ["#alpha-only"]
+      assert Visitors.list_autojoin_channels(visitor, net_b.id) == []
+    end
+
+    test "an identity nick-change sync does NOT clobber per-network channel sets" do
+      {_, net_a} = visitor_with_network(6667)
+      {:ok, visitor} = Visitors.find_or_provision_anon("syncvis", net_a.slug, "1.2.3.4")
+      :ok = Visitors.update_last_joined_channels(visitor.id, net_a.id, ["#kept"])
+
+      # An identity mutation fires sync_credential/1 — which must NOT reset
+      # the credential's per-network channel list back to the visitor scalar
+      # (credential_attrs no longer carries last_joined_channels).
+      {:ok, _} = Visitors.update_nick(visitor.id, "syncvis2")
+
+      assert Visitors.list_autojoin_channels(visitor, net_a.id) == ["#kept"]
     end
   end
 

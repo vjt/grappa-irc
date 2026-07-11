@@ -81,8 +81,14 @@ defmodule GrappaWeb.ChannelsController do
     end
   end
 
-  defp subject_autojoin({:visitor, visitor}, _) do
-    {:ok, Visitors.list_autojoin_channels(visitor)}
+  defp subject_autojoin({:visitor, visitor}, network) do
+    # #211 phase 4c — read the visitor's PER-NETWORK rejoin list from its
+    # `(visitor_id, network_id)` Credential, NOT the single
+    # `visitors.last_joined_channels` scalar (a multi-network visitor has a
+    # distinct channel set per network). Network-scoped by the request
+    # (`conn.assigns.network`). No credential on this network → empty list
+    # (the visitor hasn't attached / joined anything there yet).
+    {:ok, Visitors.list_autojoin_channels(visitor, network.id)}
   end
 
   # Q3 pinned: when a channel is in both autojoin and session, source
@@ -242,8 +248,10 @@ defmodule GrappaWeb.ChannelsController do
     end
   end
 
-  defp remove_from_autojoin({:visitor, %Visitors.Visitor{} = visitor}, _, channel) do
-    case Visitors.remove_autojoin_channel(visitor, channel) do
+  defp remove_from_autojoin({:visitor, %Visitors.Visitor{} = visitor}, %Network{id: network_id}, channel) do
+    # #211 phase 4c — remove from the visitor's PER-NETWORK credential
+    # rejoin list (network-scoped by the request), not the single scalar.
+    case Visitors.remove_autojoin_channel(visitor, network_id, channel) do
       {:ok, _} ->
         :ok
 

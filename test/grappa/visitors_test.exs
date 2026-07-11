@@ -8,6 +8,7 @@ defmodule Grappa.VisitorsTest do
   use Grappa.DataCase, async: false
 
   import Ecto.Query
+  import Grappa.AuthFixtures
 
   alias Grappa.{Accounts, Visitors}
   alias Grappa.Accounts.Session
@@ -490,43 +491,49 @@ defmodule Grappa.VisitorsTest do
     end
   end
 
-  # #87 — visitor-side mirror of `Credentials.remove_autojoin_channel/3`.
-  # The visitor's `last_joined_channels` IS its autojoin source, so leaving
-  # a channel must drop it here or the row keeps surfacing in GET /channels.
-  describe "remove_autojoin_channel/2" do
-    test "drops the channel from the visitor autojoin source, keeps the rest" do
-      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
-      with_one = Grappa.AuthFixtures.visitor_channel_fixture(visitor, "#one")
-      _ = Grappa.AuthFixtures.visitor_channel_fixture(with_one, "#two")
+  # #87 + #211 phase 4c — visitor-side per-network "dismiss channel"
+  # (`remove_autojoin_channel/3`). The visitor's rejoin list lives PER
+  # NETWORK on the `(visitor_id, network_id)` credential, so leaving a
+  # channel drops it from THAT network's credential or the row keeps
+  # surfacing in GET /channels.
+  describe "remove_autojoin_channel/3 (per-network)" do
+    test "drops the channel from the visitor's per-network rejoin list, keeps the rest" do
+      {_, network} = visitor_with_network(6667)
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", network.slug, "1.2.3.4")
+      :ok = Visitors.update_last_joined_channels(visitor.id, network.id, ["#one", "#two"])
 
-      assert {:ok, %Visitor{last_joined_channels: kept}} =
-               Visitors.remove_autojoin_channel(visitor, "#one")
+      assert {:ok, _} = Visitors.remove_autojoin_channel(visitor, network.id, "#one")
 
+      kept = Visitors.list_autojoin_channels(visitor, network.id)
       assert "#one" not in kept
       assert "#two" in kept
     end
 
     test "matches case-insensitively (RFC 2812 channel casemapping)" do
-      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
-      _ = Grappa.AuthFixtures.visitor_channel_fixture(visitor, "#italia")
+      {_, network} = visitor_with_network(6667)
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", network.slug, "1.2.3.4")
+      :ok = Visitors.update_last_joined_channels(visitor.id, network.id, ["#italia"])
 
-      assert {:ok, %Visitor{last_joined_channels: []}} =
-               Visitors.remove_autojoin_channel(visitor, "#ITALIA")
+      assert {:ok, _} = Visitors.remove_autojoin_channel(visitor, network.id, "#ITALIA")
+      assert Visitors.list_autojoin_channels(visitor, network.id) == []
     end
 
     test "absent channel is a no-op (idempotent leave)" do
-      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
-      _ = Grappa.AuthFixtures.visitor_channel_fixture(visitor, "#one")
+      {_, network} = visitor_with_network(6667)
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", network.slug, "1.2.3.4")
+      :ok = Visitors.update_last_joined_channels(visitor.id, network.id, ["#one"])
 
-      assert {:ok, %Visitor{last_joined_channels: ["#one"]}} =
-               Visitors.remove_autojoin_channel(visitor, "#two")
+      assert {:ok, _} = Visitors.remove_autojoin_channel(visitor, network.id, "#two")
+      assert Visitors.list_autojoin_channels(visitor, network.id) == ["#one"]
     end
 
-    test "{:error, :not_found} when the visitor was reaped mid-request" do
-      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
-      Repo.delete!(visitor)
+    test "{:error, :not_found} when the credential is gone" do
+      {_, network} = visitor_with_network(6667)
+      # A visitor with no credential on this network (no provision/accretion).
+      visitor = visitor_fixture(nick: "nocreds", network_slug: network.slug)
 
-      assert {:error, :not_found} = Visitors.remove_autojoin_channel(visitor, "#one")
+      assert {:error, :not_found} =
+               Visitors.remove_autojoin_channel(visitor, network.id, "#one")
     end
   end
 

@@ -192,17 +192,19 @@ defmodule Grappa.Visitors.SessionPlan do
       end,
       # Visitor-parity rejoin-on-restart: mirror of the user-side
       # `Networks.SessionPlan`'s `last_joined_persister`. Forwards the
-      # `Map.keys(state.members)` snapshot to `visitors.last_joined_channels`
-      # via the context helper so a graceful or crash restart rehydrates
-      # the channel list. Closure captures the visitor id; a concurrent
-      # reap between snapshot write and Repo round-trip surfaces as
-      # `{:error, :not_found}` inside `update_last_joined_channels/2`,
-      # which `Session.Server`'s logger swallows non-fatally — the next
-      # mutation overwrites and the row is gone anyway. #211 phase 3:
-      # `update_last_joined_channels/2` also write-throughs the Credential,
-      # so a mid-session restart rehydrates from the fresh snapshot.
+      # `Map.keys(state.members)` snapshot to the visitor's PER-NETWORK
+      # `(visitor_id, network_id)` Credential (#211 phase 4c — NOT the
+      # single `visitors.last_joined_channels` scalar, which two concurrent
+      # sessions on different networks would clobber). Captures THIS
+      # session's `network.id` so an accreted network-B session persists to
+      # B's credential. A concurrent unbind between snapshot write and Repo
+      # round-trip surfaces as `{:error, :not_found}` inside
+      # `update_last_joined_channels/3`, which `Session.Server`'s logger
+      # swallows non-fatally. The read side (`base_plan` +
+      # `resolve/2`) already reads `cred.last_joined_channels` per-network,
+      # so write + read are now symmetric per-network.
       last_joined_persister: fn channels ->
-        Visitors.update_last_joined_channels(visitor.id, channels)
+        Visitors.update_last_joined_channels(visitor.id, network.id, channels)
       end,
       # Re-resolve the plan from the DB on every `Session.Server.init/1`
       # invocation — both first boot AND `:transient` restart.

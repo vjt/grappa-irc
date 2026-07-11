@@ -860,7 +860,8 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert {:ok, "PART #italia\r\n"} =
                IRCServer.wait_for_line(server, &(&1 == "PART #italia\r\n"), 1_000)
 
-      assert Grappa.Visitors.get!(visitor.id).last_joined_channels == []
+      # #211 phase 4c — the rejoin list is PER-NETWORK on the credential now.
+      assert Grappa.Visitors.list_autojoin_channels(visitor, network.id) == []
 
       get_conn =
         Phoenix.ConnTest.build_conn()
@@ -898,7 +899,8 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert {:ok, "PART #italia\r\n"} =
                IRCServer.wait_for_line(server, &(&1 == "PART #italia\r\n"), 1_000)
 
-      assert Grappa.Visitors.get!(visitor.id).last_joined_channels == []
+      # #211 phase 4c — the rejoin list is PER-NETWORK on the credential now.
+      assert Grappa.Visitors.list_autojoin_channels(visitor, network.id) == []
 
       get_conn =
         Phoenix.ConnTest.build_conn()

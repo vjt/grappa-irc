@@ -18282,6 +18282,43 @@ identity's nick carries to B under the same nick (F4 per-network nick; a
 later per-network rename is `update_nick` scoped to B's credential — phase
 6).
 
+### Per-network `last_joined_channels` (code-review CRITICAL, fixed in 4c)
+
+A code-review pass on the 4c diff caught a real multi-network regression:
+the visitor `last_joined_channels` (rejoin list) was read + written through
+the SINGLE `visitors.last_joined_channels` scalar — but making
+multi-network sessions real (Bootstrap-per-credential + accretion) meant
+two concurrent sessions (network A + network B) would CLOBBER each other's
+channel snapshots (the persister wrote the scalar + primary credential; the
+`GET /channels` sidebar + cic dismiss read/wrote the scalar too). Root
+cause: the channel list is per-network but lived on the single-network
+scalar.
+
+Fix (root-cause, per-network on the credential — the read side `base_plan`
+already read `cred.last_joined_channels` per-network, so this makes write +
+read symmetric): all three visitor channel-list sites now key on
+`(visitor_id, network_id)`:
+- `Session.Server`'s visitor `last_joined_persister` captures THIS
+  session's `network.id` → `Visitors.update_last_joined_channels/3` →
+  `Credentials.update_visitor_last_joined_channels/3`;
+- `GET /channels` visitor branch → `Visitors.list_autojoin_channels/2`
+  (reads the network's credential; the request is already network-scoped);
+- cic dismiss → `Visitors.remove_autojoin_channel/3` →
+  `Credentials.remove_visitor_last_joined_channel/3`.
+
+`credential_attrs/1` (the identity write-through) STOPPED carrying
+`last_joined_channels` — an identity mutation (nick/ident/password →
+`sync_credential/1`) must not reset a live session's per-network channel
+list back to the stale scalar. The three now-dead scalar helpers
+(`list_autojoin_channels/1`, `update_last_joined_channels/2`,
+`remove_autojoin_channel/2` on `Grappa.Visitors`) were REMOVED — zero
+production callers remained (pulled the phase-7 cleanup forward rather than
+carry dead code). The `visitors.last_joined_channels` COLUMN +
+`Visitor.last_joined_channels_changeset/2` stay (write-dead) for the
+phase-7 contract drop. Regression guard: `credential_write_through_test`
+"per-network channel isolation" (A + B distinct sets; a dismiss on B
+leaves A; an identity nick-change does NOT clobber the per-network set).
+
 ### Tests
 
 `credentials/upsert_visitor_credential_test` (credential-first reader:
@@ -18289,8 +18326,9 @@ folded, network-scoped, user-isolation); `session_controller_test`
 (accretion 204 — one identity two credentials, no duplicate visitor row,
 NICK on B; 403 non-enabled; 409 already-attached; 400 missing param; 403
 user/anon); `bootstrap_test` (multi-network visitor respawns one session
-per credential); the full `login_test` corpus (credential-first identity
-resolution behavior-equivalent).
+per credential); `credential_write_through_test` (per-network channel
+isolation — the code-review CRITICAL guard); the full `login_test` corpus
+(credential-first identity resolution behavior-equivalent).
 
 **Deploy class: COLD** (rides the end-of-crank window; NO standalone
 deploy). Design comment: issue #211 comment 4948330894; ruling 4948477338.

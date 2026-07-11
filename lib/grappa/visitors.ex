@@ -204,6 +204,18 @@ defmodule Grappa.Visitors do
   # else `:none`, `password` (virtual, re-encrypted by the changeset)
   # only when set, `last_joined_channels` mirrored. `expires_at`/`ip`
   # stay on the visitor identity row (TTL/audit, not per-network creds).
+  # Flatten a `%Visitor{}` into the per-`(subject, network)` credential
+  # IDENTITY attrs. #211 phase 4c: `last_joined_channels` is DELIBERATELY
+  # excluded — it is now owned PER-NETWORK by the credential (written by
+  # `Session.Server`'s `last_joined_persister` via
+  # `update_last_joined_channels/3`), NOT derived from the single
+  # `visitors.last_joined_channels` scalar. Including it here would make an
+  # identity mutation (nick/ident/password change → `sync_credential/1`)
+  # clobber a live session's per-network channel snapshot back to the
+  # stale scalar. `upsert_visitor_credential/3`'s changeset only casts the
+  # keys present, so omitting the field leaves the credential's channel
+  # list untouched on sync; a freshly-created credential defaults to `[]`
+  # (schema default) until the session persists its first snapshot.
   @spec credential_attrs(Visitor.t()) :: map()
   defp credential_attrs(%Visitor{password_encrypted: nil} = v) do
     %{
@@ -211,8 +223,7 @@ defmodule Grappa.Visitors do
       ident: v.ident,
       realname: v.realname,
       sasl_user: v.nick,
-      auth_method: :none,
-      last_joined_channels: v.last_joined_channels
+      auth_method: :none
     }
   end
 
@@ -226,8 +237,7 @@ defmodule Grappa.Visitors do
       # `password_encrypted` carries plaintext in memory post-Cloak-load;
       # route it through the virtual `:password` so the credential
       # changeset re-encrypts under the same vault.
-      password: pw,
-      last_joined_channels: v.last_joined_channels
+      password: pw
     }
   end
 
@@ -685,92 +695,65 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  Visitor-side autojoin channel list — the `last_joined_channels`
-  snapshot persisted by `Session.Server` on every self-JOIN /
-  self-PART / self-KICK. Mirror of
-  `Networks.Credential.last_joined_channels` for user subjects (single
-  source consumed by `Grappa.Visitors.SessionPlan` for Bootstrap-respawn
-  rejoin AND `GrappaWeb.ChannelsController.index/2` for the cicchetto
-  sidebar render).
+  #211 phase 4c — PER-NETWORK visitor rejoin list, read from the
+  `(visitor_id, network_id)` Credential.
 
-  Visitors have no operator-bound autojoin (mirror of
-  `Credential.autojoin_channels`) — the snapshot IS the rejoin list.
+  A multi-network visitor has a distinct channel set per network; the
+  `GET /channels` sidebar (network-scoped by the request) reads THIS
+  network's set from its credential — NOT the single
+  `visitors.last_joined_channels` scalar (which is write-dead as of phase
+  4c and dropped at phase 7). No credential on this network (the visitor
+  hasn't attached / joined there) → empty list.
   """
-  @spec list_autojoin_channels(Visitor.t()) :: [String.t()]
-  def list_autojoin_channels(%Visitor{last_joined_channels: channels})
-      when is_list(channels),
-      do: channels
-
-  @doc """
-  Overwrite the per-visitor `last_joined_channels` snapshot. Mirror of
-  `Grappa.Networks.Credentials.update_last_joined_channels/3` for
-  visitor subjects — called by `Session.Server` on every self-JOIN /
-  self-PART / self-KICK so a graceful or crash restart can rehydrate
-  the channel list at boot.
-
-  Truncated to `Visitor.last_joined_channels_max/0` entries (200) so a
-  pathological session can't grow the JSON column without limit.
-  Returns `:ok` on success, `{:error, :not_found}` if the visitor was
-  reaped between snapshot write and now (race tolerated — next
-  Bootstrap cycle skips the absent visitor naturally).
-  """
-  @spec update_last_joined_channels(Ecto.UUID.t(), [String.t()]) ::
-          :ok | {:error, :not_found | Ecto.Changeset.t()}
-  def update_last_joined_channels(visitor_id, channels)
-      when is_binary(visitor_id) and is_list(channels) do
-    capped = Enum.take(channels, Visitor.last_joined_channels_max())
-
-    case Repo.get(Visitor, visitor_id) do
-      nil ->
-        {:error, :not_found}
-
-      %Visitor{} = visitor ->
-        case visitor |> Visitor.last_joined_channels_changeset(capped) |> Repo.update() do
-          {:ok, updated} ->
-            :ok = sync_credential(updated)
-            :ok
-
-          {:error, changeset} ->
-            {:error, changeset}
-        end
+  @spec list_autojoin_channels(Visitor.t(), pos_integer()) :: [String.t()]
+  def list_autojoin_channels(%Visitor{id: id}, network_id) when is_integer(network_id) do
+    case Credentials.get_visitor_credential(id, network_id) do
+      {:ok, %Credential{last_joined_channels: channels}} when is_list(channels) -> channels
+      {:error, :not_found} -> []
     end
   end
 
   @doc """
-  Removes `channel_name` from the visitor's `last_joined_channels` rejoin
-  snapshot — the visitor-side mirror of
-  `Grappa.Networks.Credentials.remove_autojoin_channel/3`.
+  #211 phase 4c — PER-NETWORK visitor `last_joined_channels` write, keyed
+  on `(visitor_id, network_id)`.
 
-  For a visitor the snapshot IS the autojoin source
-  (`list_autojoin_channels/1`), so a PART of a channel the visitor is NOT
-  currently live-joined to (a stale autojoin entry that 475'd on reconnect,
-  with no live membership for `Session.Server` to snapshot away) must drop
-  it here — otherwise the `GET /channels` union keeps surfacing it as
-  `source: autojoin, joined: false` and the cic tab never dismisses (#87).
-
-  Canonicalises the incoming channel (RFC 2812 casemapping); stored entries
-  are already canonical (`Visitor.last_joined_channels_changeset/2` writes
-  them so), so the exact-match reject mirrors the user-side helper. Reloads
-  the row by id rather than trusting the (possibly stale) caller-held
-  struct. `{:error, :not_found}` when the visitor was reaped mid-request.
+  A multi-network visitor (post-accretion) has one credential per network;
+  each live `Session.Server` must persist ITS network's channel snapshot
+  to ITS credential — NOT the single `visitors.last_joined_channels`
+  scalar, which two concurrent sessions (network A + network B) would
+  clobber. `Session.Server`'s visitor `last_joined_persister` calls here
+  with the network it was spawned for. Delegates to the shared
+  `Credentials.update_visitor_last_joined_channels/3` (the per-network
+  credential writer — mirror of the user path). The `visitors`-scalar
+  column is write-dead as of phase 4c and drops entirely at phase 7.
+  Returns `:ok` or `{:error, :not_found}` (the credential was unbound
+  mid-flight — race tolerated).
   """
-  @spec remove_autojoin_channel(Visitor.t(), String.t()) ::
-          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
-  def remove_autojoin_channel(%Visitor{id: id}, channel_name) when is_binary(channel_name) do
-    canonical = Grappa.IRC.Identifier.canonical_channel(channel_name)
+  @spec update_last_joined_channels(Ecto.UUID.t(), pos_integer(), [String.t()]) ::
+          :ok | {:error, :not_found | Ecto.Changeset.t()}
+  def update_last_joined_channels(visitor_id, network_id, channels)
+      when is_binary(visitor_id) and is_integer(network_id) and is_list(channels) do
+    Credentials.update_visitor_last_joined_channels(visitor_id, network_id, channels)
+  end
 
-    case Repo.get(Visitor, id) do
-      nil ->
-        {:error, :not_found}
+  @doc """
+  #211 phase 4c — PER-NETWORK visitor "dismiss channel": remove
+  `channel_name` from the `(visitor_id, network_id)` Credential's
+  `last_joined_channels` rejoin list.
 
-      %Visitor{} = visitor ->
-        kept = Enum.reject(visitor.last_joined_channels, &(&1 == canonical))
-
-        visitor
-        |> Visitor.last_joined_channels_changeset(kept)
-        |> Repo.update()
-        |> sync_credential_on_ok()
-    end
+  A multi-network visitor's rejoin list is per-network on the credential,
+  so the cic dismiss path (network-scoped by the request) removes from
+  THIS network's credential — NOT the single `visitors.last_joined_channels`
+  scalar (write-dead as of phase 4c, dropped at phase 7). Delegates to the
+  shared `Credentials.remove_visitor_last_joined_channel/3`.
+  `{:ok, credential}` or `{:error, :not_found}` (no credential on this
+  network).
+  """
+  @spec remove_autojoin_channel(Visitor.t(), pos_integer(), String.t()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def remove_autojoin_channel(%Visitor{id: id}, network_id, channel_name)
+      when is_integer(network_id) and is_binary(channel_name) do
+    Credentials.remove_visitor_last_joined_channel(id, network_id, channel_name)
   end
 
   @doc """
