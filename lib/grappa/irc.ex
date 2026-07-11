@@ -6,10 +6,11 @@ defmodule Grappa.IRC do
   (`Grappa.IRC.Message`), the GenServer-owned upstream client
   (`Grappa.IRC.Client`), the pure auth state machine
   (`Grappa.IRC.AuthFSM`), identifier validators
-  (`Grappa.IRC.Identifier`), and CTCP framing classification
-  (`Grappa.IRC.CTCP`). Phase 6's IRCv3 listener facade reuses the
-  parser + message struct directly and reuses the AuthFSM SHAPE (pure
-  FSM with `(state, [iodata])` step contract) for a peer
+  (`Grappa.IRC.Identifier`), the shared IRC-registration identity tuple
+  validators (`Grappa.IRC.Identity`, #211 phase 2), and CTCP framing
+  classification (`Grappa.IRC.CTCP`). Phase 6's IRCv3 listener facade
+  reuses the parser + message struct directly and reuses the AuthFSM
+  SHAPE (pure FSM with `(state, [iodata])` step contract) for a peer
   server-side registration FSM. The module set is intentionally
   factored as a reusable library — see the `project_extract_irc_libs`
   memory for the eventual extraction plan.
@@ -21,5 +22,5 @@ defmodule Grappa.IRC do
   use Boundary,
     top_level?: true,
     deps: [Grappa.OutboundV6Pool],
-    exports: [AuthFSM, Client, CTCP, Identifier, LineSplit, Message]
+    exports: [AuthFSM, Client, CTCP, Identifier, Identity, LineSplit, Message]
 end

@@ -26,6 +26,7 @@ defmodule Grappa.Visitors.SessionPlan do
   no own boundary either).
   """
 
+  alias Grappa.IRC.Identity
   alias Grappa.{Networks, Repo, Session, Visitors}
   alias Grappa.Networks.{NoServerError, Servers}
   alias Grappa.Visitors.Visitor
@@ -105,8 +106,8 @@ defmodule Grappa.Visitors.SessionPlan do
       subject_label: "visitor:" <> visitor.id,
       network_slug: network.slug,
       nick: visitor.nick,
-      ident: effective_ident(visitor),
-      realname: effective_realname(visitor),
+      ident: Identity.effective_ident(visitor.ident, visitor.nick),
+      realname: Identity.effective_realname(visitor.realname, "Grappa Visitor"),
       sasl_user: visitor.nick,
       auth_method: auth_method(visitor),
       password: visitor.password_encrypted,
@@ -201,20 +202,6 @@ defmodule Grappa.Visitors.SessionPlan do
 
   defp auth_method(%Visitor{password_encrypted: nil}), do: :none
   defp auth_method(%Visitor{password_encrypted: _}), do: :nickserv_identify
-
-  # #152 — visitor ident falls back to nick when unset (matches upstream
-  # behaviour today: the USER username slot mirrored the nick). Mirror of
-  # the user-side `Grappa.Networks.Credential.effective_ident/1`.
-  @spec effective_ident(Visitor.t()) :: String.t()
-  defp effective_ident(%Visitor{ident: nil, nick: nick}) when is_binary(nick), do: nick
-  defp effective_ident(%Visitor{ident: ident}) when is_binary(ident), do: ident
-
-  # #152 — visitor realname falls back to the `"Grappa Visitor"` anon
-  # branding when unset (vjt ruling E: defaults unchanged), uses the
-  # stored value when the visitor set one via login-Advanced / settings.
-  @spec effective_realname(Visitor.t()) :: String.t()
-  defp effective_realname(%Visitor{realname: nil}), do: "Grappa Visitor"
-  defp effective_realname(%Visitor{realname: realname}) when is_binary(realname), do: realname
 
   # Wrap the injected `refresh_plan` closure so the login IDENTIFY
   # survives `init/1`'s DB-wins re-resolve WHILE the visitor row is

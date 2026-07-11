@@ -55,7 +55,7 @@ defmodule Grappa.Networks.Credential do
 
   alias Grappa.Accounts.User
   alias Grappa.EncryptedBinary
-  alias Grappa.IRC.{AuthFSM, Identifier}
+  alias Grappa.IRC.{AuthFSM, Identifier, Identity}
   alias Grappa.Networks.Network
   alias Grappa.Visitors.Visitor
 
@@ -234,7 +234,7 @@ defmodule Grappa.Networks.Credential do
       :connection_state_changed_at
     ])
     |> canonicalize_channel_lists()
-    |> sanitize_ident()
+    |> Identity.sanitize_ident()
     |> validate_required([:network_id, :nick, :auth_method])
     # #211 — subject XOR: exactly one of user_id / visitor_id. Replaces
     # the pre-#211 `validate_required([:user_id])`, which is now
@@ -246,12 +246,13 @@ defmodule Grappa.Networks.Credential do
     # parser already use — single regex, single source. The local
     # `@nick_format` + `validate_length(:nick, ...)` pair was retired
     # in favor of Identifier's RFC-aligned 30-char cap.
-    |> validate_change(:nick, &validate_nick/2)
-    # GH #152 — ident shape guard. The `sanitize_ident/1` step above has
-    # already stripped a leading `~` (anti-spoof, grappa runs no identd),
-    # so this rejects anything still not matching the RFC-user-charset /
-    # cap-10 shape (residual tilde, `@`, whitespace, over-length).
-    |> validate_change(:ident, &validate_ident/2)
+    |> validate_change(:nick, &Identity.validate_nick/2)
+    # GH #152 — ident shape guard. The `Identity.sanitize_ident/1` step
+    # above has already stripped a leading `~` (anti-spoof, grappa runs no
+    # identd), so this rejects anything still not matching the
+    # RFC-user-charset / cap-10 shape (residual tilde, `@`, whitespace,
+    # over-length).
+    |> validate_change(:ident, &Identity.validate_ident/2)
     |> validate_password_for_auth_method()
     # S29 C1 review-fix #1: every text field that ends up interpolated
     # into a wire line — PASS, NICK, USER, PRIVMSG NickServ — must be
@@ -261,10 +262,10 @@ defmodule Grappa.Networks.Credential do
     # Client and needs the same hygiene. autojoin_channels gets the
     # full Identifier.valid_channel?/1 regex (which excludes whitespace
     # + control bytes) since these become JOIN <name> on registration.
-    |> validate_change(:realname, &validate_safe_line_token/2)
-    |> validate_change(:sasl_user, &validate_safe_line_token/2)
-    |> validate_change(:password, &validate_safe_line_token/2)
-    |> validate_change(:auth_command_template, &validate_safe_line_token/2)
+    |> validate_change(:realname, &Identity.safe_line_token/2)
+    |> validate_change(:sasl_user, &Identity.safe_line_token/2)
+    |> validate_change(:password, &Identity.safe_line_token/2)
+    |> validate_change(:auth_command_template, &Identity.safe_line_token/2)
     |> validate_change(:autojoin_channels, &validate_autojoin_channels/2)
     # H15 (REV-D 2026-05-22): defensive schema-level cap on the
     # `last_joined_channels` snapshot. The context helper
@@ -355,12 +356,6 @@ defmodule Grappa.Networks.Credential do
     end
   end
 
-  defp validate_nick(field, value) when is_binary(value) do
-    if Identifier.valid_nick?(value),
-      do: [],
-      else: [{field, "must be a valid IRC nickname"}]
-  end
-
   # #211 — subject XOR: exactly one of user_id / visitor_id must be set.
   # Byte-mirror of `Grappa.ReadCursor.Cursor.validate_subject_xor/1`;
   # errors attach to the synthetic `:subject` key so the client renders
@@ -376,29 +371,6 @@ defmodule Grappa.Networks.Credential do
       {nil, _} -> changeset
       {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
     end
-  end
-
-  # GH #152 — strip a leading `~` from a user-supplied ident BEFORE
-  # validation. grappa runs no identd; the upstream tilde-prefixes
-  # unverified idents, so a user-supplied leading `~` must not be
-  # presented as identd-verified. `Identifier.sanitize_ident/1` owns the
-  # single-tilde-strip rule (see its moduledoc for the anti-spoof
-  # rationale). No-op when `:ident` isn't being changed.
-  @spec sanitize_ident(Ecto.Changeset.t()) :: Ecto.Changeset.t()
-  defp sanitize_ident(changeset) do
-    case get_change(changeset, :ident) do
-      ident when is_binary(ident) ->
-        put_change(changeset, :ident, Identifier.sanitize_ident(ident))
-
-      _ ->
-        changeset
-    end
-  end
-
-  defp validate_ident(field, value) when is_binary(value) do
-    if Identifier.valid_ident?(value),
-      do: [],
-      else: [{field, "must be a valid IRC ident"}]
   end
 
   @doc """
@@ -429,7 +401,7 @@ defmodule Grappa.Networks.Credential do
       :connection_state_changed_at
     ])
     |> validate_required([:connection_state, :connection_state_changed_at])
-    |> validate_change(:connection_state_reason, &validate_safe_line_token/2)
+    |> validate_change(:connection_state_reason, &Identity.safe_line_token/2)
   end
 
   @doc """
@@ -458,7 +430,7 @@ defmodule Grappa.Networks.Credential do
     # byte would split or truncate the outbound frame. A SET PASSWD password
     # is rest-of-line (spaces are legal — `safe_line_token?` only rejects
     # CR/LF/NUL), so this rejects only genuinely wire-unsafe values.
-    |> validate_change(:password, &validate_safe_line_token/2)
+    |> validate_change(:password, &Identity.safe_line_token/2)
     |> put_encrypted_password()
   end
 
@@ -488,12 +460,6 @@ defmodule Grappa.Networks.Credential do
     credential
     |> cast(%{last_joined_channels: canonical}, [:last_joined_channels])
     |> validate_length(:last_joined_channels, max: @last_joined_channels_max)
-  end
-
-  defp validate_safe_line_token(field, value) when is_binary(value) do
-    if Identifier.safe_line_token?(value),
-      do: [],
-      else: [{field, "contains CR, LF, or NUL byte"}]
   end
 
   defp validate_autojoin_channels(field, list) when is_list(list) do
@@ -580,10 +546,14 @@ defmodule Grappa.Networks.Credential do
   builder) never have to write `credential.realname || credential.nick`
   inline — that pattern was flagged in the 2f code review (I1) for
   silently masking the contract that `realname` defaults to `nick`.
+
+  Thin struct-accessor over `Grappa.IRC.Identity.effective_realname/2`
+  (#211 phase 2) — the fallback logic is shared with the visitor
+  write-path; the user subject's fallback is its own `:nick`.
   """
   @spec effective_realname(t()) :: String.t()
-  def effective_realname(%__MODULE__{realname: nil, nick: nick}) when is_binary(nick), do: nick
-  def effective_realname(%__MODULE__{realname: r}) when is_binary(r), do: r
+  def effective_realname(%__MODULE__{realname: realname, nick: nick}),
+    do: Identity.effective_realname(realname, nick)
 
   @doc """
   Returns `:ident` if set, otherwise `:nick` (GH #152). Same nil-fallback
@@ -591,16 +561,22 @@ defmodule Grappa.Networks.Credential do
   the AuthFSM's USER line stays `USER <nick> ...` for a credential that
   never set a distinct ident (upstream behaviour today). Threaded into
   the plan by `Grappa.Networks.SessionPlan.build_plan/4`.
+
+  Thin struct-accessor over `Grappa.IRC.Identity.effective_ident/2`
+  (#211 phase 2).
   """
   @spec effective_ident(t()) :: String.t()
-  def effective_ident(%__MODULE__{ident: nil, nick: nick}) when is_binary(nick), do: nick
-  def effective_ident(%__MODULE__{ident: i}) when is_binary(i), do: i
+  def effective_ident(%__MODULE__{ident: ident, nick: nick}),
+    do: Identity.effective_ident(ident, nick)
 
   @doc """
   Returns `:sasl_user` if set, otherwise `:nick`. Same rationale as
   `effective_realname/1`.
+
+  Thin struct-accessor over `Grappa.IRC.Identity.effective_sasl_user/2`
+  (#211 phase 2).
   """
   @spec effective_sasl_user(t()) :: String.t()
-  def effective_sasl_user(%__MODULE__{sasl_user: nil, nick: nick}) when is_binary(nick), do: nick
-  def effective_sasl_user(%__MODULE__{sasl_user: s}) when is_binary(s), do: s
+  def effective_sasl_user(%__MODULE__{sasl_user: sasl_user, nick: nick}),
+    do: Identity.effective_sasl_user(sasl_user, nick)
 end

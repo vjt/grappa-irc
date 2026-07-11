@@ -29,7 +29,7 @@ defmodule Grappa.Visitors.Visitor do
   import Ecto.Changeset
 
   alias Grappa.EncryptedBinary
-  alias Grappa.IRC.Identifier
+  alias Grappa.IRC.{Identifier, Identity}
 
   # Hard ceiling on the per-visitor `last_joined_channels` snapshot.
   # Mirror of `Grappa.Networks.Credential.@last_joined_channels_max`.
@@ -104,11 +104,11 @@ defmodule Grappa.Visitors.Visitor do
   def create_changeset(attrs) do
     %__MODULE__{}
     |> cast(attrs, [:nick, :ident, :realname, :network_slug, :expires_at, :ip])
-    |> sanitize_ident()
+    |> Identity.sanitize_ident()
     |> validate_required([:nick, :network_slug, :expires_at])
-    |> validate_change(:nick, &validate_nick/2)
-    |> validate_change(:ident, &validate_ident/2)
-    |> validate_change(:realname, &validate_safe_line_token/2)
+    |> validate_change(:nick, &Identity.validate_nick/2)
+    |> validate_change(:ident, &Identity.validate_ident/2)
+    |> validate_change(:realname, &Identity.safe_line_token/2)
     |> validate_change(:network_slug, &validate_network_slug/2)
     |> validate_change(:expires_at, &validate_future_expires_at/2)
     |> unique_constraint(:nick, name: :visitors_nick_folded_network_slug_index)
@@ -197,9 +197,9 @@ defmodule Grappa.Visitors.Visitor do
   def identity_changeset(%__MODULE__{} = visitor, attrs) when is_map(attrs) do
     visitor
     |> cast(attrs, [:ident, :realname])
-    |> sanitize_ident()
-    |> validate_change(:ident, &validate_ident/2)
-    |> validate_change(:realname, &validate_safe_line_token/2)
+    |> Identity.sanitize_ident()
+    |> validate_change(:ident, &Identity.validate_ident/2)
+    |> validate_change(:realname, &Identity.safe_line_token/2)
   end
 
   @doc """
@@ -221,7 +221,7 @@ defmodule Grappa.Visitors.Visitor do
     visitor
     |> cast(%{nick: new_nick}, [:nick])
     |> validate_required([:nick])
-    |> validate_change(:nick, &validate_nick/2)
+    |> validate_change(:nick, &Identity.validate_nick/2)
     |> unique_constraint(:nick, name: :visitors_nick_folded_network_slug_index)
   end
 
@@ -285,44 +285,6 @@ defmodule Grappa.Visitors.Visitor do
         true -> []
       end
     end)
-  end
-
-  defp validate_nick(field, value) when is_binary(value) do
-    if Identifier.valid_nick?(value),
-      do: [],
-      else: [{field, "must be a valid IRC nickname"}]
-  end
-
-  # GH #152 — strip a leading `~` from a user-supplied ident BEFORE
-  # validation (anti-spoof — grappa runs no identd, so a user-supplied
-  # leading `~` must not be presented as identd-verified).
-  # `Identifier.sanitize_ident/1` is the single source of the strip rule.
-  # No-op when `:ident` isn't being changed. Mirror of the user-side
-  # `Grappa.Networks.Credential.sanitize_ident/1`.
-  @spec sanitize_ident(Ecto.Changeset.t()) :: Ecto.Changeset.t()
-  defp sanitize_ident(changeset) do
-    case get_change(changeset, :ident) do
-      ident when is_binary(ident) ->
-        put_change(changeset, :ident, Identifier.sanitize_ident(ident))
-
-      _ ->
-        changeset
-    end
-  end
-
-  defp validate_ident(field, value) when is_binary(value) do
-    if Identifier.valid_ident?(value),
-      do: [],
-      else: [{field, "must be a valid IRC ident"}]
-  end
-
-  # Mirror of `Grappa.Networks.Credential.validate_safe_line_token/2` —
-  # realname is free-form trailing text (spaces legal), gated only for
-  # CR/LF/NUL so it can't split the USER wire line (no anti-spoof).
-  defp validate_safe_line_token(field, value) when is_binary(value) do
-    if Identifier.safe_line_token?(value),
-      do: [],
-      else: [{field, "contains CR, LF, or NUL byte"}]
   end
 
   defp validate_network_slug(field, value) when is_binary(value) do
