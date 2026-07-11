@@ -18332,3 +18332,114 @@ isolation — the code-review CRITICAL guard); the full `login_test` corpus
 
 **Deploy class: COLD** (rides the end-of-crank window; NO standalone
 deploy). Design comment: issue #211 comment 4948330894; ruling 4948477338.
+
+## 2026-07-12 — #211 phase 5 (L2 epic): reconnect symmetry (F6) — shared `SpawnOrchestrator.reconnect` bounce verb
+
+The F6 ruling: a shared top-level reconnect verb, both subjects thin-wrap.
+Grounded against the shipped code (phases 1-4 merged), this turned out to
+be a SMALL, behavior-neutral REFACTOR — with one load-bearing
+challenge-the-spec finding that reshaped what F6 actually is. NO migration,
+NO schema/wire/cic change.
+
+### Challenge-the-spec: F6 conflated two distinct intents
+
+F6 was written before phase 4 landed and pictured the disconnect⇄reconnect
+CONTROLLER verbs (`POST /session/reconnect` + user `PATCH {:connected}`) as
+atomic **stop-then-spawn bounces** to collapse onto one verb. Reading the
+code, they are NOT bounces — they are **connect-after-separate-teardown**,
+idempotent-*keep* on a live session:
+
+- `POST /session/reconnect` (`Visitors.reconnect_session/3`) is the
+  reconnect *half* of the #126 pair; teardown is the SEPARATE `POST
+  /session/disconnect`. On a live session it's an idempotent
+  `:already_started` keep.
+- User `PATCH {:connected}` (`NetworksController.orchestrate_spawn`) is the
+  connect *half* of the `{:parked}`⇄`{:connected}` pair; teardown is the
+  SEPARATE `{:parked}`. Its moduledoc documents concurrent-PATCH safety
+  RELYING on `:already_started` being a no-op keep.
+
+The ONLY atomic stop-then-spawn in the tree was `Visitors`'
+`maybe_reconnect_after_identity/1` (#152 ident/realname live-apply) — a
+bounce is *required* there because ident/realname ride the once-only IRC
+USER line, so the only way to re-register a changed identity on a live
+session is drop + respawn.
+
+Two distinct intents, two verbs (CLAUDE.md "reuse the verbs, not the
+nouns"; never one verb with a `keep_if_live` type-flag):
+- **connect / keep** = `spawn/4` (bring up a session that should be down;
+  keep if already live). The two controller paths.
+- **bounce** = the new `reconnect/5` (stop a live session on purpose, then
+  respawn). The #152 site.
+
+### The verb (ruling R1)
+
+`SpawnOrchestrator.reconnect/5` = `Session.stop_session/3` (graceful QUIT
+teardown) THEN `spawn/4` (admission → `Backoff.reset` → `start_session`).
+Signature `reconnect(subject, network_id, plan, capacity_input,
+quit_reason)` returns the SAME `spawn_outcome/0` as `spawn/4`. Like
+`spawn/4` it does NOT resolve the plan — the caller (the context that knows
+the subject) passes a pre-resolved plan + capacity_input, keeping the
+orchestrator subject-agnostic and Boundary-clean (deps stay `[Admission,
+Session]` — no graph change, per the F6 bullet).
+
+Key properties (all from the code, argued in the moduledoc):
+- **Never `:already_started`.** `stop_session/3` completes its `:DOWN` wait
+  + registry-unregister poll BEFORE the spawn, so the Registry slot is free
+  ⇒ `spawn/4` returns `{:ok, :spawned, _}`. That IS the definitional
+  contrast with the keep verb.
+- **Single Backoff reset.** `stop_session/3` never touches `Backoff`; the
+  one `Backoff.reset/2` lives in `spawn/4` on admission-`:ok`. A bounce
+  resets exactly once (no double-reset).
+- **Idempotent teardown.** `stop_session/3` returns `:ok` with no live
+  session, so `reconnect/5` composes whether or not a session is live.
+- `quit_reason` is required (no `\\` default) and
+  `Identifier.safe_line_token?`-guarded inside `stop_session/3` (CR/LF/NUL
+  crashes loud, not silent degradation).
+
+### R1: only the #152 site collapses; the connect paths keep `spawn/4`
+
+`maybe_reconnect_after_identity/1` now calls `SpawnOrchestrator.reconnect/5`
+instead of an inline `stop_session/3` + `reconnect_session/3`. The connect
+controller paths KEEP `spawn/4` unchanged — routing them through the bounce
+verb would convert their documented idempotent-keep into a spurious
+drop+rejoin AND regress the concurrent-PATCH double-spawn safety
+`NetworksController` relies on. R2 (route them too, per the literal F6
+bullet) was rejected for that behavior change; R3 (a mode flag) was rejected
+as the type-flag-splits-behavior anti-pattern.
+
+**Behavior-neutral proof:** the #152 characterization lock
+(`operator_test.exs` — live session→FRESH pid + fresh plan carries the new
+ident; no live session→persist-only, no spawn; no-change update→no bounce)
+stays green through the extraction. One conscious, strictly-safer delta: the
+pre-resolved-plan contract resolves the plan BEFORE the stop (was
+stop-then-resolve), so a pathological plan-resolve failure now leaves the
+working session ALIVE instead of torn-down; the identity is persisted either
+way. The `whereis`-live-pid guard + the `changed?` no-op gate (in
+`update_identity/2`) are retained so a persist-only update never bounces.
+
+### Retires the #152 user-reconnect follow-on
+
+The #152 entry (above) deferred a user-side reconnect wrapper (web layer,
+mirroring `orchestrate_spawn`) because Fork-C deferred the registered-user
+cic self-service editor → it had no caller. F6 retires that deferral: the
+phase-6 registered-user identity editor's live-apply thin-wraps
+`SpawnOrchestrator.reconnect/5` (resolve the user plan in the controller →
+call the shared verb) instead of re-inlining `stop_session` + `spawn` — the
+exact duplication #152 flagged. Phase 5 does NOT build that user wrapper
+(still no caller until phase 6); it establishes the verb it will wrap.
+
+### Tests
+
+`spawn_orchestrator_test` (reconnect/5 direct: bounces a LIVE session to a
+FRESH pid — never `:already_started`; no-live → stop is a no-op then spawns
+fresh; admission rejection propagates; single Backoff reset). The #152
+`operator_test` live-apply lock + the connect-path controller tests
+(`session_controller_test` reconnect, `networks_controller_test`
+connect/disconnect) stay green (untouched). The end-to-end bounce path is
+proven by the existing real e2e `issue152-ident-realname.spec.ts` (a peer
+IRC client witnesses the re-registered ident + rejoined channel + live
+PRIVMSG after a SettingsDrawer identity apply → `PATCH /me/identity` →
+`update_identity` → `SpawnOrchestrator.reconnect/5`).
+
+**Deploy class: COLD** (rides the end-of-crank window; NO standalone
+deploy). Design comment: issue #211 comment 4948892801.
