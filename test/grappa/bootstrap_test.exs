@@ -403,6 +403,67 @@ defmodule Grappa.BootstrapTest do
 
       assert keys == []
     end
+
+    # #211 regression: a backfilled visitor Credential (user_id IS NULL,
+    # connection_state :connected) MUST NOT be picked up by the
+    # user-credential spawn path. Pre-fix, `list_credentials_for_all_users/0`
+    # had no subject guard, so it returned the visitor row; Bootstrap fed
+    # it to `SessionPlan.resolve/1` which called `Accounts.get_user!(nil)`
+    # → `Repo.get!(User, nil)` raised `ArgumentError` (NOT the rescued
+    # `Ecto.NoResultsError`), crash-looping Bootstrap into app
+    # termination on the boot after the visitor backfill.
+    test "backfilled visitor credential is NOT spawned via the user path (no crash)" do
+      {_, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+
+      # Simulate the phase-1 backfill: a visitor Credential on the same
+      # network, mirroring `20260711125000_backfill_visitor_credentials`.
+      {:ok, _} =
+        %Grappa.Networks.Credential{}
+        |> Grappa.Networks.Credential.changeset(%{
+          visitor_id: visitor.id,
+          network_id: network.id,
+          nick: visitor.nick,
+          auth_method: :none,
+          connection_state: :connected
+        })
+        |> Repo.insert()
+
+      on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
+
+      # Must return cleanly — no ArgumentError from get_user!(nil).
+      assert {:ok, %Result{}} = Bootstrap.run()
+
+      # The user-credential spawn path must never have touched the
+      # visitor row: no `{:user, nil}` session, and the visitor is
+      # spawned only via its own `spawn_visitors/1` path.
+      assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
+    end
+
+    test "list_credentials_for_all_users/0 excludes visitor credentials" do
+      {_, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {:ok, _} = Credentials.bind_credential(user, network, %{nick: "vjt", auth_method: :none})
+
+      {:ok, _} =
+        %Grappa.Networks.Credential{}
+        |> Grappa.Networks.Credential.changeset(%{
+          visitor_id: visitor.id,
+          network_id: network.id,
+          nick: visitor.nick,
+          auth_method: :none,
+          connection_state: :connected
+        })
+        |> Repo.insert()
+
+      on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
+
+      rows = Credentials.list_credentials_for_all_users()
+      assert Enum.all?(rows, &(not is_nil(&1.user_id)))
+      assert Enum.any?(rows, &(&1.user_id == user.id))
+      refute Enum.any?(rows, &(&1.visitor_id == visitor.id))
+    end
   end
 
   describe "run/0 W7 hard-error on visitor pinned to unconfigured network" do

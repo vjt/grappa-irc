@@ -250,8 +250,15 @@ defmodule Grappa.Networks do
   end
 
   defp count_credentials_for_network(network_id) do
+    # #211 — count by the surrogate `:id` (always present), NOT `:user_id`.
+    # SQL COUNT(user_id) skips NULLs, so a network bound only by visitor
+    # credentials (`user_id IS NULL`) would count 0, the delete-guard
+    # would pass, and `Repo.delete` would then crash on the visitor
+    # credential's FK `ON DELETE RESTRICT`. Counting `:id` guards against
+    # BOTH subjects — a network with any credential (user or visitor)
+    # refuses deletion, which is the intended invariant.
     query = from(c in Credential, where: c.network_id == ^network_id)
-    Repo.aggregate(query, :count, :user_id)
+    Repo.aggregate(query, :count, :id)
   end
 
   @doc """

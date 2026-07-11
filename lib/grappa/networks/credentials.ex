@@ -425,9 +425,22 @@ defmodule Grappa.Networks.Credentials do
   """
   @spec list_credentials_for_all_users() :: [Credential.t()]
   def list_credentials_for_all_users do
+    # #211 — `network_credentials` is subject-polymorphic now. This
+    # query drives `Bootstrap.spawn_all/1`, whose `SessionPlan.resolve/1`
+    # calls `Accounts.get_user!(credential.user_id)`: a visitor
+    # credential (`user_id IS NULL`) would make that `Repo.get!(User,
+    # nil)` raise `ArgumentError` — NOT the `Ecto.NoResultsError` the
+    # resolver rescues — crash-looping Bootstrap into app termination on
+    # the boot after the visitor backfill. Visitor sessions are spawned
+    # independently by `Bootstrap.spawn_visitors/1` from
+    # `Visitors.list_active/0`, so scoping this to user credentials
+    # (`user_id IS NOT NULL`) is both correct AND behavior-neutral — the
+    # name + the `{:user, user_id}` spawn semantics already meant "user
+    # credentials"; the polymorphic table just made the assumption
+    # explicit-worthy.
     query =
       from(c in Credential,
-        where: c.connection_state == :connected,
+        where: c.connection_state == :connected and not is_nil(c.user_id),
         order_by: [asc: c.inserted_at, asc: c.user_id, asc: c.network_id],
         preload: [network: :servers]
       )
@@ -436,7 +449,7 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
-  Returns every credential regardless of `connection_state`, with
+  Returns every USER credential regardless of `connection_state`, with
   `:network` preloaded. Counterpart to `list_credentials_for_all_users/0`
   for surfaces that need to show parked + failed rows alongside
   connected ones — `bin/grappa list-credentials` (T-3) needs ALL
@@ -444,11 +457,20 @@ defmodule Grappa.Networks.Credentials do
 
   Same ordering as `list_credentials_for_all_users/0` so the two
   outputs are diff-friendly.
+
+  #211 — scoped to `user_id IS NOT NULL` so the admin `/admin/credentials`
+  listing + `bin/grappa list-credentials` operator surface render only
+  user credentials. A backfilled visitor credential (`user_id IS NULL`)
+  would otherwise appear as a phantom `user_id: nil` row + trigger a
+  `LiveIntrospection.lookup_session({:user, nil}, …)` at the admin
+  controller. Visitor credentials belong to the (future) visitor
+  surface, not the user-credentials door.
   """
   @spec list_all_credentials() :: [Credential.t()]
   def list_all_credentials do
     query =
       from(c in Credential,
+        where: not is_nil(c.user_id),
         order_by: [asc: c.inserted_at, asc: c.user_id, asc: c.network_id],
         preload: [network: :servers]
       )
@@ -457,9 +479,9 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
-  Returns a map of `connection_state` → row count across every credential
-  in the DB. Used by `Grappa.Bootstrap.run/0` to surface honest startup
-  logs when zero credentials are `:connected` (e.g. all parked after
+  Returns a map of `connection_state` → USER-credential row count. Used
+  by `Grappa.Bootstrap.run/0` to surface honest startup logs when zero
+  credentials are `:connected` (e.g. all parked after
   T32 disconnect) — the pre-T-4 "no credentials bound — running
   web-only" message lied when N rows existed but all were parked or
   failed (per `feedback_no_silent_drops_closed` log-honesty class).
@@ -469,11 +491,18 @@ defmodule Grappa.Networks.Credentials do
   dashboards can pattern-match without `Map.get(_, _, 0)` defensive
   reads. A single SQL `GROUP BY connection_state` round-trip backs the
   count; the per-state zero-fill happens in Elixir.
+
+  #211 — scoped to `user_id IS NOT NULL` so the count matches the set
+  `list_credentials_for_all_users/0` actually spawns. Otherwise the
+  Bootstrap "N parked, M failed — running web-only" honesty line would
+  count backfilled visitor credentials that this path never spawns,
+  re-lying in the exact way T-4 fixed.
   """
   @spec count_by_state() :: %{Credential.connection_state() => non_neg_integer()}
   def count_by_state do
     query =
       from(c in Credential,
+        where: not is_nil(c.user_id),
         group_by: c.connection_state,
         select: {c.connection_state, count()}
       )
