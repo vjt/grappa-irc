@@ -863,9 +863,9 @@ defmodule Grappa.Visitors do
   the visitor row + scrollback + the web/auth session (the teardown half
   of the disconnect ⇄ reconnect verb pair). Delegates to the SAME shared
   teardown core (`Session.stop_session/3`) that `Networks.disconnect/2`
-  uses for users and that #152's reconnect-with-new-ident will reuse for
-  its teardown step. Idempotent — returns `:ok` whether or not a live
-  session was registered.
+  uses for users and that the #152 identity live-apply bounces through
+  (via `SpawnOrchestrator.reconnect/5` since #211 phase 5). Idempotent —
+  returns `:ok` whether or not a live session was registered.
 
   Persistent-identity surface: the caller (`GrappaWeb.SessionController`)
   gates this to registered (NickServ-identified) visitors; an anon
@@ -882,9 +882,14 @@ defmodule Grappa.Visitors do
   of disconnect ⇄ reconnect). Resolves the visitor's `SessionPlan` and
   runs the shared admission → `Backoff.reset` → spawn dance via
   `Grappa.SpawnOrchestrator.spawn/4` — the SAME respawn core
-  `NetworksController` drives for a user `:connected` transition, and the
-  seam #152's reconnect-with-new-ident reuses (resolve a CHANGED plan,
-  then this same spawn).
+  `NetworksController` drives for a user `:connected` transition.
+
+  This is a CONNECT-intent verb (teardown is the separate `POST
+  /session/disconnect` → `disconnect_session/2`), so it uses `spawn/4`
+  (idempotent-keep on an already-live session), NOT the phase-5
+  `SpawnOrchestrator.reconnect/5` BOUNCE verb — which is reserved for the
+  #152 identity live-apply that must drop + respawn a live session to
+  re-register the once-only USER line (#211 phase 5, R1 ruling).
 
   `capacity_input` is built by the caller (the `flow: :visitor_reconnect`
   discriminant + `client_id` + `requesting_subject`), mirroring
@@ -1149,31 +1154,52 @@ defmodule Grappa.Visitors do
   end
 
   # Reconnect the live upstream so the new ident/realname re-register.
-  # No-op (returns :ok) when the network is orphaned or no session is
-  # live — the persist already happened, and the next spawn reads the
-  # row. Failures are logged, never surfaced: the identity is saved
-  # regardless of whether the bounce succeeded.
+  # No-op (returns :ok) when the network is orphaned, no session is
+  # live, or the plan can't be resolved — the persist already happened,
+  # and the next spawn reads the row. Failures are logged, never
+  # surfaced: the identity is saved regardless of whether the bounce
+  # succeeded.
+  #
+  # #211 phase 5 (F6): the stop-then-spawn is the SHARED
+  # `SpawnOrchestrator.reconnect/5` BOUNCE verb (was an inline
+  # `stop_session/3` + `reconnect_session/3` here). The `whereis` guard
+  # is load-bearing — it keeps this to an ALREADY-LIVE session (the
+  # #152 semantic), so a persist-only update never spawns a session that
+  # wasn't there. Plan resolution stays in the visitor context (the
+  # orchestrator takes a pre-resolved plan); resolving before the stop
+  # (vs the pre-phase-5 stop-then-resolve) means a pathological
+  # resolve failure now leaves the working session ALIVE instead of
+  # torn-down — strictly safer, and the identity is persisted either way.
   @spec maybe_reconnect_after_identity(Visitor.t()) :: :ok
-  defp maybe_reconnect_after_identity(%Visitor{} = visitor) do
+  defp maybe_reconnect_after_identity(%Visitor{id: id} = visitor) do
     with {:ok, %Networks.Network{id: network_id}} <-
            Networks.get_network_by_slug(visitor.network_slug),
-         pid when is_pid(pid) <- Session.whereis({:visitor, visitor.id}, network_id) do
-      :ok = Session.stop_session({:visitor, visitor.id}, network_id, "applying identity change")
+         pid when is_pid(pid) <- Session.whereis({:visitor, id}, network_id),
+         {:ok, plan} <- resolve_visitor_plan(visitor) do
+      case SpawnOrchestrator.reconnect(
+             {:visitor, id},
+             network_id,
+             plan,
+             identity_capacity_input(visitor, network_id),
+             "applying identity change"
+           ) do
+        {:ok, _, _} ->
+          :ok
 
-      case reconnect_session(visitor, network_id, identity_capacity_input(visitor, network_id)) do
-        {:ok, _} ->
+        {:ok, :ignored} ->
           :ok
 
         {:error, reason} ->
           Logger.warning("visitor identity change: reconnect failed (identity persisted)",
-            visitor_id: visitor.id,
+            visitor_id: id,
             error: inspect(reason)
           )
 
           :ok
       end
     else
-      # Orphaned network row or no live session — nothing to reconnect.
+      # Orphaned network row, no live session, or unresolvable plan —
+      # nothing to reconnect.
       _ -> :ok
     end
   end

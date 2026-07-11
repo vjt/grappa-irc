@@ -116,6 +116,46 @@ defmodule Grappa.SpawnOrchestrator do
        `spawn_outcome/0` shape so call sites can branch on it
        without re-encoding `{:already_started, _}` semantics.
 
+  ## The `reconnect/5` bounce verb (#211 phase 5, F6)
+
+  `reconnect/5` is `spawn/4`'s sibling for the **atomic bounce**: tear
+  down a live session on purpose (`Session.stop_session/3`, graceful
+  QUIT) THEN respawn (`spawn/4`), as one call. It exists because ONE
+  site genuinely needs it — `Grappa.Visitors`' `#152` ident/realname
+  live-apply, which must re-register the once-only IRC USER line and so
+  MUST drop + respawn a live session. Before phase 5 that site inlined
+  `stop_session/3` + a context reconnect helper; F6 promotes the pair to
+  this shared verb (retiring the #152-deferred user-side reconnect
+  wrapper: a future registered-user cic self-service editor thin-wraps
+  THIS verb instead of re-inlining the pair).
+
+  **`reconnect/5` is NOT `spawn/4` with teardown bolted on** — they
+  encode two DISTINCT intents (CLAUDE.md "reuse the verbs, not the
+  nouns"; two verbs, never one verb with a `keep_if_live` flag):
+
+    * `spawn/4` = **connect / keep**. Bring up a session that should be
+      down; if one is already live, KEEP it (`:already_started`). The
+      disconnect⇄reconnect controller paths (`POST /session/reconnect`,
+      user `PATCH {:connected}`) are connect-intent — their teardown is
+      a SEPARATE prior verb (`POST /session/disconnect`, `PATCH
+      {:parked}`) — so they use `spawn/4` and are NOT routed here.
+      Routing them through `reconnect/5` would convert their documented
+      idempotent-keep into a spurious drop+rejoin (and regress the
+      concurrent-PATCH safety `NetworksController` relies on).
+    * `reconnect/5` = **bounce**. Stop a live session on purpose, then
+      respawn. Because `stop_session/3` completes (its `:DOWN` wait +
+      registry-unregister poll) BEFORE the spawn, the Registry slot is
+      free when `spawn/4` runs ⇒ it returns `{:ok, :spawned, _}`, NEVER
+      `:already_started`. That is the definitional contrast with the
+      keep verb.
+
+  Teardown is `stop_session/3` (idempotent — no live session ⇒ `:ok`),
+  so `reconnect/5` composes cleanly whether or not a session is live.
+  `stop_session/3` never touches `Backoff`; the single `Backoff.reset/2`
+  happens inside `spawn/4` on admission-`:ok` — so a bounce resets
+  exactly once (no double-reset). Same `deps: [Admission, Session]`; no
+  Boundary-graph change (F6: "No Boundary-graph surgery").
+
   ## Telemetry / logging — call sites OWN observability
 
   Cluster #8 design judgment (vjt-blessed Option A): this module
@@ -214,5 +254,43 @@ defmodule Grappa.SpawnOrchestrator do
       {:error, _} = err ->
         err
     end
+  end
+
+  @doc """
+  Atomic BOUNCE: tear down the live session for `subject` on
+  `network_id` (graceful `QUIT :<quit_reason>` via
+  `Session.stop_session/3`) THEN respawn it with the pre-resolved
+  `plan` via `spawn/4`. One verb for the stop-then-spawn dance the #152
+  ident/realname live-apply needs (re-registering the once-only USER
+  line requires dropping + respawning the upstream).
+
+  `stop_session/3` is idempotent (no live session ⇒ `:ok`), so this
+  composes whether or not a session is live. Teardown completes (its
+  `:DOWN` wait + registry-unregister poll) before the spawn, so the
+  Registry slot is free ⇒ the returned `spawn_outcome/0` is
+  `{:ok, :spawned, _}` on success, NEVER `{:ok, :already_started, _}`
+  (the definitional contrast with the `spawn/4` keep verb — see the
+  moduledoc).
+
+  Like `spawn/4`, does NOT resolve the plan — the caller (the context
+  that knows the subject) passes a pre-resolved `plan` +
+  `capacity_input`, keeping this module subject-agnostic and
+  Boundary-clean. `quit_reason` is `Identifier.safe_line_token?`-guarded
+  inside `stop_session/3` (a CR/LF/NUL reason crashes loud, not silently
+  degrades). Returns the same `spawn_outcome/0` as `spawn/4` so callers
+  pattern-match identically.
+  """
+  @spec reconnect(
+          Session.subject(),
+          integer(),
+          Session.start_opts(),
+          Admission.capacity_input(),
+          String.t()
+        ) :: spawn_outcome()
+  def reconnect(subject, network_id, plan, capacity_input, quit_reason)
+      when is_integer(network_id) and is_map(plan) and is_map(capacity_input) and
+             is_binary(quit_reason) do
+    :ok = Session.stop_session(subject, network_id, quit_reason)
+    spawn(subject, network_id, plan, capacity_input)
   end
 end

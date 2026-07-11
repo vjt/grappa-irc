@@ -336,4 +336,132 @@ defmodule Grappa.SpawnOrchestratorTest do
       assert Backoff.failure_count(subject_b, network.id) == 1
     end
   end
+
+  # #211 phase 5 (F6) — the shared BOUNCE verb: teardown (stop_session/3)
+  # THEN respawn (spawn/4) as one call. This is the atomic stop-then-spawn
+  # that #152's `maybe_reconnect_after_identity/1` inlined; the connect
+  # paths (POST /session/reconnect, user PATCH {:connected}) keep the plain
+  # `spawn/4` (idempotent-keep) and are NOT routed here (R1 ruling).
+  describe "reconnect/5 bounce semantics" do
+    test "tears down the LIVE session and respawns a FRESH pid (never :already_started)" do
+      vjt = user_fixture(name: "bounce-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+      slug = "bounce-#{System.unique_integer([:positive])}"
+      {network, plan} = setup_credential(vjt, slug, port)
+      :ok = clear_registry_for(network.id)
+      on_exit(fn -> stop_session({:user, vjt.id}, network.id) end)
+
+      subject = {:user, vjt.id}
+      cap_in = capacity_input(network.id, :bootstrap_user)
+
+      # Bring a session up first — reconnect must BOUNCE it, unlike spawn/4
+      # which would return {:ok, :already_started, old_pid} (see the
+      # "spawn/4 idempotency" describe above — the definitional contrast).
+      assert {:ok, :spawned, old_pid} =
+               SpawnOrchestrator.spawn(subject, network.id, plan, cap_in)
+
+      old_ref = Process.monitor(old_pid)
+
+      assert {:ok, :spawned, new_pid} =
+               SpawnOrchestrator.reconnect(subject, network.id, plan, cap_in, "test bounce")
+
+      # The old Session.Server was torn down (stop_session's DOWN wait) and
+      # a fresh one respawned — the reconnect FIRED, it did not keep the old.
+      assert_receive {:DOWN, ^old_ref, :process, ^old_pid, _}, 1_000
+      assert is_pid(new_pid)
+      assert new_pid != old_pid
+      assert Session.whereis(subject, network.id) == new_pid
+    end
+
+    test "no live session — stop is a no-op, then spawns fresh {:ok, :spawned, pid}" do
+      vjt = user_fixture(name: "recon-nolive-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+      slug = "recon-nolive-#{System.unique_integer([:positive])}"
+      {network, plan} = setup_credential(vjt, slug, port)
+      :ok = clear_registry_for(network.id)
+      on_exit(fn -> stop_session({:user, vjt.id}, network.id) end)
+
+      subject = {:user, vjt.id}
+
+      # No session live — idempotent stop_session/3 returns :ok, then spawn.
+      assert Session.whereis(subject, network.id) == nil
+
+      assert {:ok, :spawned, pid} =
+               SpawnOrchestrator.reconnect(
+                 subject,
+                 network.id,
+                 plan,
+                 capacity_input(network.id, :bootstrap_user),
+                 "test reconnect"
+               )
+
+      assert is_pid(pid)
+      assert Session.whereis(subject, network.id) == pid
+    end
+
+    test "admission rejection propagates — {:error, :user_cap_exceeded}, no session spawned" do
+      vjt_a = user_fixture(name: "recon-capa-#{System.unique_integer([:positive])}")
+      vjt_b = user_fixture(name: "recon-capb-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+      slug = "recon-cap-#{System.unique_integer([:positive])}"
+
+      {network, plan_a} = setup_credential(vjt_a, slug, port, %{max_concurrent_user_sessions: 1})
+
+      {:ok, cred_b} =
+        Credentials.bind_credential(vjt_b, network, %{
+          nick: "vjtb",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      {:ok, plan_b} = SessionPlan.resolve(cred_b)
+
+      :ok = clear_registry_for(network.id)
+      on_exit(fn -> clear_registry_for(network.id) end)
+
+      cap_in = capacity_input(network.id, :bootstrap_user)
+
+      # vjt_a fills the cap.
+      assert {:ok, :spawned, _} =
+               SpawnOrchestrator.spawn({:user, vjt_a.id}, network.id, plan_a, cap_in)
+
+      # vjt_b's reconnect: teardown is a no-op (no live B session), then the
+      # spawn hits the cap and the error propagates verbatim.
+      assert {:error, :user_cap_exceeded} =
+               SpawnOrchestrator.reconnect({:user, vjt_b.id}, network.id, plan_b, cap_in, "x")
+
+      assert Session.whereis({:user, vjt_b.id}, network.id) == nil
+    end
+
+    test "successful reconnect clears prior Backoff failure history (single reset, no double)" do
+      vjt = user_fixture(name: "recon-bo-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+      slug = "recon-bo-#{System.unique_integer([:positive])}"
+      {network, plan} = setup_credential(vjt, slug, port)
+      :ok = clear_registry_for(network.id)
+      on_exit(fn -> stop_session({:user, vjt.id}, network.id) end)
+
+      subject = {:user, vjt.id}
+
+      # Prime synthetic prior failures — the reconnect's spawn step resets
+      # them exactly once (stop_session never touches Backoff), same as the
+      # spawn/4 M-life-5 contract. No double-reset.
+      :ok = Backoff.record_failure(subject, network.id)
+      :ok = Backoff.record_failure(subject, network.id)
+      _ = sync_backoff()
+      assert Backoff.failure_count(subject, network.id) == 2
+
+      assert {:ok, :spawned, _} =
+               SpawnOrchestrator.reconnect(
+                 subject,
+                 network.id,
+                 plan,
+                 capacity_input(network.id, :bootstrap_user),
+                 "test reconnect"
+               )
+
+      _ = sync_backoff()
+      assert Backoff.failure_count(subject, network.id) == 0
+    end
+  end
 end
