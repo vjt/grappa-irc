@@ -1935,14 +1935,28 @@ describe("subscribe — nick-clash regression (user.name === targetNick, IRC nic
   });
 });
 
-// BUG4: self-JOIN auto-focus.
+// #200 (2026-07-11) — self-JOIN auto-focus is DECOUPLED from the
+// per-channel WS subscription. Pre-#200, `subscribe.ts`'s channel
+// handler called `setSelectedChannel` on an own-nick JOIN echo (the old
+// "BUG4" path). That entangled auto-focus with the per-channel broadcast
+// timing — which (a) forced the S19 own-PART sub-teardown revert (81c0e90a),
+// because a re-JOIN's fresh subscribe raced the JOIN echo and Phoenix
+// doesn't replay to late subscribers, and (b) fanned focus out to EVERY
+// connected device (the broadcast reaches all subscribed sockets), not
+// just the one that issued the join.
 //
-// When the server echoes a JOIN event with sender === ownNick, the channel
-// handler must call setSelectedChannel for the new channel so the user
-// lands in it immediately — mirroring irssi's auto-focus on /join.
-// Without this, typing /join #foo sends the user to #foo server-side but
-// leaves the cicchetto UI stuck in whatever window was previously selected.
-describe("subscribe — BUG4: self-JOIN auto-focus", () => {
+// #200 ruling (b): focus is PER-DEVICE. Every this-device join site
+// already focuses explicitly and race-free at the issuing boundary —
+// `compose.ts` (`/join`), `HomePane.tsx` (featured link), and
+// `ScrollbackPane.handleJoinChannel` (invite CTA). So the per-channel WS
+// handler must NOT originate focus: it is redundant for this-device joins
+// and, for a cross-device / external (raw-REST) re-JOIN, focusing would
+// yank the operator's window on THIS device from an action taken
+// ELSEWHERE — exactly the cross-device sync ruling (b) forbids.
+//
+// With auto-focus off the per-channel path, tearing the subscription down
+// on own-PART is safe (see the "#200 own-PART tears down…" describe below).
+describe("subscribe — #200: self-JOIN does NOT auto-focus from the per-channel WS handler", () => {
   const seedWithNick = async (ircNick: string) => {
     const api = await import("../lib/api");
     vi.mocked(api.listNetworks).mockResolvedValue([
@@ -1961,7 +1975,7 @@ describe("subscribe — BUG4: self-JOIN auto-focus", () => {
     vi.mocked(api.listMessages).mockResolvedValue([]);
   };
 
-  it("self-JOIN event auto-focuses the new channel", async () => {
+  it("own-nick JOIN echo on the per-channel handler does NOT change selectedChannel", async () => {
     localStorage.setItem("grappa-token", "tok");
     localStorage.setItem(
       "grappa-subject",
@@ -1971,7 +1985,13 @@ describe("subscribe — BUG4: self-JOIN auto-focus", () => {
     const store = await loadStores();
     await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
 
-    // Fire a join event from own nick on #grappa.
+    // Precondition: the operator is looking at a DIFFERENT window (the
+    // $server pseudo-window). A cross-device/external re-JOIN echo must
+    // NOT yank focus to #grappa on this device.
+    store.setSelectedChannel({ networkSlug: "freenode", channelName: "Server", kind: "server" });
+
+    // Fire a join event from own nick on #grappa (models the WS echo of
+    // a JOIN issued from ANOTHER device or an external REST call).
     const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
       p: unknown,
     ) => void;
@@ -1989,10 +2009,12 @@ describe("subscribe — BUG4: self-JOIN auto-focus", () => {
       },
     });
 
+    // Focus stays where the operator put it — the per-channel handler
+    // does not originate selection (#200 ruling b, per-device focus).
     expect(store.selectedChannel()).toEqual({
       networkSlug: "freenode",
-      channelName: "#grappa",
-      kind: "channel",
+      channelName: "Server",
+      kind: "server",
     });
   });
 
@@ -2025,6 +2047,150 @@ describe("subscribe — BUG4: self-JOIN auto-focus", () => {
 
     // selectedChannel must remain null (no window was focused before).
     expect(store.selectedChannel()).toBeNull();
+  });
+});
+
+// #200 (2026-07-11) — own-PART tears down the per-channel WS
+// subscription. Pre-#200, per-channel subscriptions were only
+// `.leave()`d on token rotation. On own-PART, `setParted(key)` dropped
+// the windowState entry but left the Phoenix `Channel` + its
+// `phx.on("event", ...)` handler alive on the socket forever. Over an
+// always-on session that joins/parts many channels, the subscriptions +
+// handlers accumulate until logout.
+//
+// This was originally shipped as S19 (`7a1cecdf`) and REVERTED
+// (`81c0e90a`) because the teardown regressed part→re-JOIN auto-focus:
+// the old per-channel self-JOIN auto-focus depended on the retained
+// subscription delivering the own-JOIN echo LIVE. #200 decouples
+// auto-focus from the per-channel sub (see the "self-JOIN does NOT
+// auto-focus" describe above — focus is now per-device, originated at the
+// issuing boundary), so the teardown is finally safe.
+//
+// Fix: on OWN-part (sender === ownNick), also `joined.get(key)?.leave()`
+// + `joined.delete(key)`. A re-JOIN re-subscribes fresh via the pending
+// pre-subscribe loop (guarded by `joined.has`). A PART from ANOTHER user
+// MUST NOT tear down — that would blank a live channel we're still in.
+describe("subscribe — #200 own-PART tears down the per-channel WS subscription", () => {
+  // Locate the per-topic Channel mock created for a given channel: the
+  // Nth joinChannel(...) call maps to the Nth pushed perTopicChannels
+  // entry, so find the join call by (slug, chan) and index into the pool.
+  const channelMockFor = (
+    socket: typeof import("../lib/socket"),
+    chan: string,
+  ): PerTopicMock | undefined => {
+    const idx = vi
+      .mocked(socket.joinChannel)
+      .mock.calls.findIndex((c) => c[1] === "freenode" && c[2] === chan);
+    return idx >= 0 ? perTopicChannels[idx] : undefined;
+  };
+
+  const handlerOf = (mock: PerTopicMock): ((p: unknown) => void) =>
+    mock.on.mock.calls.find((c) => c[0] === "event")?.[1] as (p: unknown) => void;
+
+  // Self-contained window-state: a sibling test in this file `vi.doMock`s
+  // windowState with a `#new-room` pending entry, and beforeEach only
+  // re-establishes socket + queryWindows — so without re-mocking here the
+  // leaked pending pre-subscribe loop would join a phantom #new-room and
+  // skew the join count. Re-mock empty so these tests see only the seeded
+  // channels.
+  const cleanWindowState = (): void => {
+    vi.doMock("../lib/windowState", () => ({
+      setPending: vi.fn(),
+      setInvited: vi.fn(),
+      setJoined: vi.fn(),
+      setFailed: vi.fn(),
+      setKicked: vi.fn(),
+      setParted: vi.fn(),
+      windowStateByChannel: () => ({}),
+      windowFailureByChannel: () => ({}),
+      windowKickedMetaByChannel: () => ({}),
+      windowIsJoined: vi.fn(() => false),
+      windowIsPresent: vi.fn(() => false),
+      isActiveChannelJoined: vi.fn(() => false),
+    }));
+  };
+
+  const partPayload = (channel: string, sender: string) => ({
+    kind: "message" as const,
+    message: {
+      id: 1,
+      network: "freenode",
+      channel,
+      server_time: 0,
+      kind: "part",
+      sender,
+      body: "",
+      meta: {},
+    },
+  });
+
+  it("own-PART leaves the Phoenix channel so later events on that topic don't leak", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    cleanWindowState();
+    await seedStubs();
+    const socket = await import("../lib/socket");
+    await usePerTopicChannels();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      // 2 channels + DM-listener(alice) + $server = 4.
+      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
+    });
+
+    const grappa = channelMockFor(socket, "#grappa");
+    if (!grappa) throw new Error("#grappa channel mock not found");
+    expect(grappa.left).toBe(false);
+
+    // Operator (alice = own nick) parts #grappa.
+    handlerOf(grappa)(partPayload("#grappa", "alice"));
+
+    // The subscription is torn down: leave() called, channel retired.
+    expect(grappa.leave).toHaveBeenCalledTimes(1);
+    expect(grappa.left).toBe(true);
+
+    const key = channelKey("freenode", "#grappa");
+    // The PART line itself DID land (routeMessage runs before teardown).
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.id)).toContain(1);
+
+    // A later broadcast on the (now-left) #grappa topic reaches NO live
+    // handler — the leak is gone. fireMessageToAllHandlers walks only
+    // non-left channels, modelling phoenix.js removing a left Channel from
+    // socket.channels[].
+    fireMessageToAllHandlers("#grappa", { id: 2, body: "after part" });
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.id) ?? []).not.toContain(2);
+  });
+
+  it("a PART from ANOTHER user does NOT tear down the subscription (channel stays live)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    cleanWindowState();
+    await seedStubs();
+    const socket = await import("../lib/socket");
+    await usePerTopicChannels();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
+    });
+
+    const grappa = channelMockFor(socket, "#grappa");
+    if (!grappa) throw new Error("#grappa channel mock not found");
+
+    // bob (NOT own nick) parts #grappa — we're still in the channel.
+    handlerOf(grappa)(partPayload("#grappa", "bob"));
+
+    expect(grappa.leave).not.toHaveBeenCalled();
+    expect(grappa.left).toBe(false);
+
+    // The channel is still live: a subsequent message still appends.
+    fireMessageToAllHandlers("#grappa", { id: 5, body: "still here" });
+    const key = channelKey("freenode", "#grappa");
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.id)).toContain(5);
   });
 });
 

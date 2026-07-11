@@ -18,7 +18,7 @@ import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { applyJoinReply, applyReadCursorSet } from "./readCursor";
 import { recordSeen } from "./reconnectBackfill";
 import { appendToScrollback, refreshScrollback } from "./scrollback";
-import { selectedChannel, setSelectedChannel, setServerSeedCount } from "./selection";
+import { selectedChannel, setServerSeedCount } from "./selection";
 import { joinChannel } from "./socket";
 import { socketHealth } from "./socketHealth";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
@@ -278,9 +278,12 @@ createRoot(() => {
   // the dedicated DM-listener handler — this handler is now purely
   // about its own topic.
   //
-  // BUG4: self-JOIN auto-focus. When `message.kind === "join"` and
-  // `sender === ownNick`, call `setSelectedChannel` so the operator
-  // lands in the new channel immediately. Mirrors irssi's auto-focus.
+  // #200 (2026-07-11): self-JOIN auto-focus is NO LONGER handled here.
+  // Focus is per-device, originated at the issuing boundary (compose.ts
+  // `/join`, HomePane featured link, ScrollbackPane invite CTA). The
+  // per-channel handler must not originate selection — see the message
+  // arm below for the full rationale (it's what makes the own-PART
+  // teardown safe).
   //
   // BUG5a: self-PART windowState projection. When `message.kind === "part"`
   // and `sender === ownNick`, call `setParted(key)` so the windowState map
@@ -288,15 +291,8 @@ createRoot(() => {
   // dismissal — picking the next focused window — is owned by the UX-4-E
   // close-watcher in `selection.ts:317`: own-PART → `channels_changed`
   // broadcast → `channelsBySlug` drops the channel → close-watcher fires
-  // its MRU/server/home picker for the focused-channel case.
-  //
-  // Pre-UX-7-C (2026-05-22) this handler also called
-  // `setSelectedChannel(null)` eagerly on EVERY own-PART. That nuked
-  // selection when the operator partied a channel OTHER than the focused
-  // one ("select a channel below" placeholder, no MRU/home redirect at
-  // all). And even for the focused-channel case the eager null
-  // short-circuited the close-watcher (its `if (!sel) return;` bails on
-  // null), so the MRU/server/home chain never ran.
+  // its MRU/server/home picker for the focused-channel case. #200 also
+  // tears down the per-channel WS subscription on own-PART (see below).
   const installChannelHandler = (
     phx: Channel,
     slug: string,
@@ -404,15 +400,26 @@ createRoot(() => {
         case "message": {
           const { message } = payload;
 
-          // BUG4: own JOIN → auto-focus the channel.
-          if (message.kind === "join" && nickEquals(message.sender, ownNick)) {
-            setSelectedChannel({ networkSlug: slug, channelName: name, kind: "channel" });
-          }
+          // #200 (2026-07-11): self-JOIN auto-focus is NO LONGER driven
+          // from the per-channel WS handler. Pre-#200 an own-nick JOIN
+          // echo here called `setSelectedChannel` (the old "BUG4" path),
+          // which entangled focus with per-channel broadcast timing: it
+          // (a) forced the S19 own-PART sub-teardown revert (81c0e90a)
+          // because a re-JOIN's fresh subscribe raced the JOIN echo and
+          // Phoenix doesn't replay to late subscribers, and (b) fanned
+          // focus out to EVERY connected device. #200 ruling (b): focus is
+          // PER-DEVICE, originated at the issuing boundary — `compose.ts`
+          // (`/join`), `HomePane` (featured link), and
+          // `ScrollbackPane.handleJoinChannel` (invite CTA) each call
+          // `setSelectedChannel` directly. The per-channel handler no
+          // longer originates selection; that decoupling is what makes the
+          // own-PART teardown below safe.
 
           // BUG5a: own PART → drop the windowState entry. Selection
           // redirection is owned by the close-watcher in selection.ts
           // (UX-4-E), which fires off the channels_changed broadcast.
-          if (message.kind === "part" && nickEquals(message.sender, ownNick)) {
+          const ownPart = message.kind === "part" && nickEquals(message.sender, ownNick);
+          if (ownPart) {
             // CP15 B5: own-PART projects to absence in the windowState
             // map. Server intentionally does NOT broadcast `kind:
             // "parted"` — cic derives the projection here.
@@ -420,6 +427,25 @@ createRoot(() => {
           }
 
           routeMessage(slug, key, name, message, ownNick);
+
+          // #200: tear down the per-channel WS subscription on OWN-part.
+          // Pre-#200 `joined` was only `.leave()`d on token rotation, so an
+          // own-part left the Phoenix Channel + its `phx.on("event", …)`
+          // handler alive on the socket forever — a leak that accumulates
+          // over an always-on session that joins/parts many channels. Runs
+          // AFTER routeMessage so the PART line still lands in scrollback.
+          // Only OWN-part (guarded above) tears down — a peer's PART must
+          // NOT drop the sub, or we'd blank a channel we're still in. A
+          // subsequent re-JOIN re-subscribes fresh via the pending
+          // pre-subscribe loop (its `joined.has(key)` guard sees the
+          // delete); the race-free user-topic `window_pending` → `joined`
+          // chain (userTopic.ts) drives state recovery, and the join-reply
+          // `refreshScrollback` backfills the JOIN row — none of which
+          // depend on this per-channel subscription surviving the part.
+          if (ownPart) {
+            joined.get(key)?.leave();
+            joined.delete(key);
+          }
           return;
         }
         default:
@@ -917,6 +943,16 @@ createRoot(() => {
       },
     ),
   );
+
+  // #200 e2e seam — expose the LIVE set of per-channel WS subscription
+  // keys so a Playwright spec can assert own-PART tears the subscription
+  // down (the leak fix). A getter over the real `joined` Map (not a
+  // mirrored Set) so it can never drift from the actual bookkeeping.
+  // Production never reads it; same window-seam convention as
+  // `__cic_dmListenerReady` and `__cic_suppressChannelDeliveryForTests`.
+  if (typeof window !== "undefined") {
+    window.__cic_joinedTopicKeys = () => Array.from(joined.keys());
+  }
 });
 
 // #159 E2E hook — silence live `phx.on("event")` delivery for a SINGLE
@@ -931,6 +967,9 @@ declare global {
   interface Window {
     __cic_suppressChannelDeliveryForTests?: (slug: string, name: string) => void;
     __cic_resumeChannelDeliveryForTests?: (slug: string, name: string) => void;
+    // #200 e2e seam — live per-channel WS subscription keys (see the
+    // getter installed inside the createRoot above).
+    __cic_joinedTopicKeys?: () => string[];
   }
 }
 

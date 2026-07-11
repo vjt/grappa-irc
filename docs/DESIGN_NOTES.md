@@ -17665,3 +17665,73 @@ after login-Advanced, then `nick!~grp2@host` after a settings live-apply
 reconnect (the `~` proves bahamut tilde-prefixed the unverified ident; the
 new prefix + a unique post-reconnect marker prove the reconnect
 re-registered upstream AND rejoined the channel).
+
+## 2026-07-11 — #200: decouple self-JOIN auto-focus from the per-channel WS sub lifecycle
+
+**The leak.** Per-channel Phoenix `Channel` subscriptions in `subscribe.ts`'s
+`joined` Map were only `.leave()`d on token rotation. On own-PART,
+`setParted(key)` dropped the windowState entry but left the `Channel` + its
+`phx.on("event", …)` handler + the framework fastlane subscription alive on the
+socket forever. Over an always-on session that joins/parts many channels, the
+subs accrete — bounded by *distinct channels joined-then-parted over the
+session's lifetime* (it does not self-heal), tiny per unit. **Benign** resource
+hygiene: a parted channel's topic goes silent server-side (the session drops the
+channel from `state.members`, so it only broadcasts on `Topic.channel` for
+channels it's in) — the dangling sub is inert, no event doubling, no correctness
+impact. Affects users + visitors.
+
+**The trap (why the naive fix was reverted).** S19 (`7a1cecdf`) added the
+obvious teardown (`joined.get(key)?.leave(); joined.delete(key)` on own-PART) and
+was REVERTED (`81c0e90a`) because it regressed part→re-JOIN auto-focus. The old
+"BUG4" self-JOIN auto-focus fired on the per-channel `kind:"join"` presence
+*message* (`subscribe.ts` channel handler → `setSelectedChannel`). Tearing the
+sub down forced a fresh `phx.join()` on re-JOIN whose subscribe RACED the
+upstream JOIN echo; when the echo won, Phoenix does not replay to a late
+subscriber (framework fastlane only), BUG4 never fired, and the rejoined pane
+wasn't focused.
+
+**Challenge-the-spec (the finding that reshaped the fix).** The window STATE was
+ALREADY replayed on every channel-topic (re)subscribe — `push_channel_snapshot/4`
+re-seeds topic + modes + members + window_state, and `join_reply/1` re-seeds the
+read cursor. The ONLY thing missing on re-subscribe was the interactive-`/join`
+auto-focus TRIGGER. And you can't just replay the JOIN message on subscribe: the
+snapshot path fires on EVERY join including cold-reconnect auto-rejoins, so
+unconditional replay would yank focus on every reconnect. The server cannot tell
+interactive-rejoin from auto-rejoin — that distinction is cic-side. So the fix
+belongs in cic.
+
+Second finding, decisive: **every this-device join site ALREADY focuses
+explicitly and race-free at the issuing boundary** — `compose.ts` (`/join`,
+CP17 moved focus here precisely because the per-channel path raced),
+`HomePane.tsx` (featured link), `ScrollbackPane.handleJoinChannel` (invite CTA);
+`DirectoryPane` deliberately does NOT (#125). So BUG4's per-channel
+`setSelectedChannel` was REDUNDANT for this-device joins and only reliably fired
+for CROSS-DEVICE / external (raw-REST) re-JOINs on a still-live sub.
+
+**vjt's binding rulings (GO Option 3).**
+- **(a)** focus-intent is cic-LOCAL — join/focus state stays local to the single
+  cic (acceptable under the "cic NEVER originates *window-state*" invariant:
+  focus is a SELECTION concern, always cic-owned, not window-state).
+- **(b)** PER-DEVICE focus, NO cross-device window-state sync — focus follows the
+  issuing device, not all connected devices.
+
+**The fix (cic-only).** (1) Remove BUG4's per-channel `setSelectedChannel` — the
+per-channel WS handler no longer originates selection. (2) Re-apply S19's
+teardown-on-own-PART. This is safe now precisely because auto-focus is decoupled:
+on re-JOIN, the race-free user-topic `window_pending → joined` chain (CP17/F1,
+delivered on the boot-joined user topic — cannot race a subscribe) drives state
+recovery + re-subscribe (the pending pre-subscribe loop), the join-reply
+`refreshScrollback` backfills the JOIN row, and focus comes from the this-device
+issuing boundary. No arm/consume-intent machinery was needed — interactive focus
+already existed synchronously in compose/HomePane/CTA.
+
+**Behavior change (per ruling b).** An external/cross-device re-JOIN no longer
+auto-focuses the channel on a device that didn't issue it (previously the
+per-channel broadcast fanned focus to every device). This is more correct
+(per-client focus, irssi-like). The one e2e that leaned on the old cross-device
+behavior — `r6-own-action-no-events-badge` (re-JOINs via raw REST, then relied on
+BUG4 to focus #bofh) — was updated to select explicitly; its actual subject is
+the own-presence unread-marker/badge suppression, not the focus mechanism.
+
+**Deploy class: cic-only → HOT** (`subscribe.ts` + tests; no `.ex` touched, no
+migration).

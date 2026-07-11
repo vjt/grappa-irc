@@ -98,14 +98,22 @@ test("CP29 R-6 — operator's own /part → /join cycle does NOT raise an unread
   await partChannel(vjt.token, NETWORK_SLUG, CHANNEL);
   await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toHaveCount(0, { timeout: 5_000 });
 
-  // 3. Re-JOIN #bofh via REST. The own JOIN row arrives on the per-
-  //    channel topic; subscribe.ts's BUG4 self-JOIN auto-focus path
-  //    re-selects #bofh AND the channels_changed broadcast brings the
-  //    sidebar entry back. ScrollbackPane mounts against the channel
-  //    key with the post-PART cursor and a sessionTopId that bounds
-  //    the own JOIN row.
+  // 3. Re-JOIN #bofh via REST (an EXTERNAL join — not issued from this
+  //    cic). The own JOIN row arrives on the per-channel topic and the
+  //    channels_changed broadcast brings the sidebar entry back.
+  //
+  //    #200 (2026-07-11): an external/cross-device re-JOIN no longer
+  //    auto-focuses on this device (ruling b — focus is per-device,
+  //    originated at the issuing boundary; the per-channel WS handler no
+  //    longer calls setSelectedChannel). So we explicitly select #bofh to
+  //    reach the focused state this test needs. The test's actual subject
+  //    is the in-pane unread-MARKER + events-badge for own presence rows,
+  //    not the focus mechanism — selecting explicitly restores the exact
+  //    ScrollbackPane mount (post-PART cursor, sessionTopId bounding the
+  //    own JOIN row) the assertion exercises.
   await joinChannel(vjt.token, NETWORK_SLUG, CHANNEL);
   await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toHaveCount(1, { timeout: 10_000 });
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
   // 4. The in-pane unread-marker MUST be absent. Pre-R-6 the marker
   //    derivation counted the own PART/JOIN rows in `(cursor,
@@ -114,9 +122,8 @@ test("CP29 R-6 — operator's own /part → /join cycle does NOT raise an unread
   //    renders.
   //
   //    Wait for the new JOIN row to be visible in the focused #bofh
-  //    pane (post-BUG4 auto-focus) before asserting the marker's
-  //    absence — without the wait, the marker query could resolve
-  //    against a still-mounting pane.
+  //    pane before asserting the marker's absence — without the wait, the
+  //    marker query could resolve against a still-mounting pane.
   await expect(
     page
       .locator('[data-testid="scrollback-line"][data-kind="join"]')
@@ -129,9 +136,9 @@ test("CP29 R-6 — operator's own /part → /join cycle does NOT raise an unread
   // 5. Sibling assertion: the events badge on #bofh's sidebar entry
   //    MUST also be absent. Same predicate, two surfaces; if the badge
   //    rendered, the subscribe.ts bump-gate regressed. Currently
-  //    focused on #bofh (BUG4 auto-focus), so badges would clear on
-  //    focus regardless — but the bump-gate runs BEFORE the focus
-  //    check, so a regression at the gate would still leave a badge
+  //    focused on #bofh (explicit select in step 3, #200), so badges
+  //    would clear on focus regardless — but the bump-gate runs BEFORE the
+  //    focus check, so a regression at the gate would still leave a badge
   //    when re-checked from the channel's sidebar locator. The
   //    assertion is "no badge ever appeared," which is what the gate
   //    enforces.
