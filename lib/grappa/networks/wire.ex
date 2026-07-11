@@ -31,6 +31,7 @@ defmodule Grappa.Networks.Wire do
   @type credential_json :: %{
           network: String.t(),
           nick: String.t(),
+          ident: String.t() | nil,
           realname: String.t() | nil,
           sasl_user: String.t() | nil,
           auth_method: Credential.auth_method(),
@@ -196,6 +197,7 @@ defmodule Grappa.Networks.Wire do
     %{
       network: slug,
       nick: c.nick,
+      ident: c.ident,
       realname: c.realname,
       sasl_user: c.sasl_user,
       auth_method: c.auth_method,

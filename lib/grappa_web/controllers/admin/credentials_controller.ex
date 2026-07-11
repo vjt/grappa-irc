@@ -263,7 +263,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
   # and `auth_command_template` to the pre-existing M-6 set. Password
   # changes route through `update_credential_with_session_lifecycle/3`
   # which kills the live session per A-2.
-  @allowed_update_keys ~w(autojoin_channels nick sasl_user realname auth_method
+  @allowed_update_keys ~w(autojoin_channels nick ident sasl_user realname auth_method
                           auth_command_template password)
 
   defp update_attrs(params) do
@@ -280,7 +280,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
   # POST whitelist (admin-panel bucket 3): strict-create. user_id +
   # network_id required (parsed separately above); the rest are the
   # operator-editable fields.
-  @allowed_create_keys ~w(nick sasl_user realname auth_method
+  @allowed_create_keys ~w(nick ident sasl_user realname auth_method
                           auth_command_template password autojoin_channels)
 
   defp create_attrs(params) do

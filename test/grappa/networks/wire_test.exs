@@ -37,6 +37,7 @@ defmodule Grappa.Networks.WireTest do
       {:ok, _} =
         Credentials.bind_credential(user, network, %{
           nick: "vjt",
+          ident: "grp",
           realname: "Marcello",
           sasl_user: "vjt",
           auth_method: :sasl,
@@ -50,6 +51,7 @@ defmodule Grappa.Networks.WireTest do
 
       assert json.network == network.slug
       assert json.nick == "vjt"
+      assert json.ident == "grp"
       assert json.realname == "Marcello"
       assert json.sasl_user == "vjt"
       assert json.auth_method == :sasl

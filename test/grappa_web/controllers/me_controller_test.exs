@@ -105,6 +105,10 @@ defmodule GrappaWeb.MeControllerTest do
       assert body["id"] == visitor.id
       assert body["nick"] == "vjt"
       assert body["network_slug"] == "azzurra"
+      # #152 — visitor /me carries ident + realname (nil until set) so
+      # cic's SettingsDrawer can render the current identity.
+      assert body["ident"] == nil
+      assert body["realname"] == nil
       assert is_binary(body["expires_at"])
       # CP29 R-3: read_cursors envelope present for visitors too.
       assert body["read_cursors"] == %{}
@@ -712,6 +716,58 @@ defmodule GrappaWeb.MeControllerTest do
     test "without Bearer → 401", %{conn: conn} do
       conn
       |> delete("/me")
+      |> json_response(401)
+    end
+  end
+
+  describe "PATCH /me/identity — visitor subject (#152)" do
+    test "200 + persists ident + realname, strips leading tilde", %{conn: conn} do
+      {visitor, session} = visitor_and_session(nick: "vjt", network_slug: "azzurra")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/me/identity", Jason.encode!(%{ident: "~grp", realname: "Real Name"}))
+
+      body = json_response(conn, 200)
+      assert body["kind"] == "visitor"
+      assert body["ident"] == "grp"
+      assert body["realname"] == "Real Name"
+
+      reload = Grappa.Repo.get!(Grappa.Visitors.Visitor, visitor.id)
+      assert reload.ident == "grp"
+      assert reload.realname == "Real Name"
+    end
+
+    test "422 on invalid ident (over-length)", %{conn: conn} do
+      {_, session} = visitor_and_session(nick: "vjt", network_slug: "azzurra")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/me/identity", Jason.encode!(%{ident: "way-too-long-ident"}))
+
+      assert json_response(conn, 422)
+    end
+
+    test "403 for a user subject (visitor-only door)", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/me/identity", Jason.encode!(%{ident: "grp"}))
+
+      assert json_response(conn, 403)
+    end
+
+    test "401 without Bearer", %{conn: conn} do
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> patch("/me/identity", Jason.encode!(%{ident: "grp"}))
       |> json_response(401)
     end
   end

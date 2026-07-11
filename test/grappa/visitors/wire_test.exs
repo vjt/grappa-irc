@@ -23,6 +23,8 @@ defmodule Grappa.Visitors.WireTest do
     %Visitor{
       id: Keyword.get(opts, :id, "11111111-1111-1111-1111-111111111111"),
       nick: Keyword.get(opts, :nick, "vjt"),
+      ident: Keyword.get(opts, :ident, nil),
+      realname: Keyword.get(opts, :realname, nil),
       network_slug: Keyword.get(opts, :network_slug, "azzurra"),
       password_encrypted: Keyword.get(opts, :password_encrypted, nil),
       expires_at: expires_at,
@@ -33,13 +35,15 @@ defmodule Grappa.Visitors.WireTest do
   end
 
   describe "visitor_to_credential_json/1" do
-    test "renders the credential-exchange shape (id, nick, network_slug, registered)" do
-      v = build_visitor()
+    test "renders the credential-exchange shape (id, nick, ident, realname, network_slug, registered)" do
+      v = build_visitor(ident: "grp", realname: "Real Name")
       json = Wire.visitor_to_credential_json(v)
 
       assert json == %{
                id: v.id,
                nick: "vjt",
+               ident: "grp",
+               realname: "Real Name",
                network_slug: "azzurra",
                registered: false
              }
@@ -73,17 +77,25 @@ defmodule Grappa.Visitors.WireTest do
   end
 
   describe "visitor_to_json/1" do
-    test "renders the full profile shape (id, nick, network_slug, expires_at, registered)" do
-      v = build_visitor()
+    test "renders the full profile shape (id, nick, ident, realname, network_slug, expires_at, registered)" do
+      v = build_visitor(ident: "grp", realname: "Real Name")
       json = Wire.visitor_to_json(v)
 
       assert json == %{
                id: v.id,
                nick: "vjt",
+               ident: "grp",
+               realname: "Real Name",
                network_slug: "azzurra",
                expires_at: v.expires_at,
                registered: false
              }
+    end
+
+    test "ident + realname are nil when unset (defaults not baked into the wire)" do
+      json = Wire.visitor_to_json(build_visitor())
+      assert json.ident == nil
+      assert json.realname == nil
     end
 
     test "registered mirrors password_encrypted presence (#126 cic detach/disconnect gate)" do

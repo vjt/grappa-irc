@@ -51,6 +51,8 @@ defmodule Grappa.Visitors.Wire do
   @type credential_json :: %{
           id: Ecto.UUID.t(),
           nick: String.t(),
+          ident: String.t() | nil,
+          realname: String.t() | nil,
           network_slug: String.t(),
           registered: boolean()
         }
@@ -58,6 +60,8 @@ defmodule Grappa.Visitors.Wire do
   @type t :: %{
           id: Ecto.UUID.t(),
           nick: String.t(),
+          ident: String.t() | nil,
+          realname: String.t() | nil,
           network_slug: String.t(),
           expires_at: DateTime.t() | nil,
           registered: boolean()
@@ -65,7 +69,7 @@ defmodule Grappa.Visitors.Wire do
 
   @doc """
   Renders a `Visitors.Visitor` row to its credential-exchange JSON
-  shape — `{id, nick, network_slug, registered}`. Used by
+  shape — `{id, nick, ident, realname, network_slug, registered}`. Used by
   `AuthJSON.login/1`.
 
   Excludes `:password_encrypted` (the post-Cloak-load plaintext
@@ -78,6 +82,8 @@ defmodule Grappa.Visitors.Wire do
     %{
       id: v.id,
       nick: v.nick,
+      ident: v.ident,
+      realname: v.realname,
       network_slug: v.network_slug,
       registered: registered?(v)
     }
@@ -85,8 +91,9 @@ defmodule Grappa.Visitors.Wire do
 
   @doc """
   Renders a `Visitors.Visitor` row to its full profile JSON shape —
-  `{id, nick, network_slug, expires_at, registered}`. Used by
-  `MeJSON.show/1` for the SPA's session-end countdown.
+  `{id, nick, ident, realname, network_slug, expires_at, registered}`.
+  Used by `MeJSON.show/1` for the SPA's session-end countdown + the
+  #152 SettingsDrawer identity editor.
 
   Excludes `:password_encrypted` explicitly (same rationale as
   `visitor_to_credential_json/1`). Excludes `:ip` (operator-audit
@@ -98,6 +105,8 @@ defmodule Grappa.Visitors.Wire do
     %{
       id: v.id,
       nick: v.nick,
+      ident: v.ident,
+      realname: v.realname,
       network_slug: v.network_slug,
       expires_at: v.expires_at,
       registered: registered?(v)

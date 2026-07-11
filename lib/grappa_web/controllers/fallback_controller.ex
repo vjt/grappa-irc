@@ -47,6 +47,7 @@ defmodule GrappaWeb.FallbackController do
            | :invalid_line
            | :unauthorized
            | :malformed_nick
+           | :malformed_ident
            | :password_required
            | :password_mismatch
            | :upstream_unreachable
@@ -310,6 +311,15 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:bad_request)
     |> json(%{error: "malformed_nick"})
+  end
+
+  # #152 — login-Advanced ident failed shape validation (over-length,
+  # bad charset, residual tilde). Parity with :malformed_nick — 400 with
+  # a distinct wire token so cic can surface the ident-specific hint.
+  def call(conn, {:error, :malformed_ident}) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "malformed_ident"})
   end
 
   def call(conn, {:error, :password_required}) do

@@ -21,7 +21,7 @@ defmodule GrappaWeb.MeController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{AccountDeletion, Networks, ReadCursor, Scrollback, Session}
+  alias Grappa.{AccountDeletion, Networks, ReadCursor, Scrollback, Session, Visitors}
   alias Grappa.Push.BadgeCount
   alias Grappa.Visitors.Visitor
   alias GrappaWeb.UserSocket
@@ -145,6 +145,60 @@ defmodule GrappaWeb.MeController do
 
       _ ->
         {:error, :unauthorized}
+    end
+  end
+
+  @doc """
+  `PATCH /me/identity` — #152 visitor self-service IRC identity
+  (`ident` + `realname`), live-applied via internal reconnect.
+
+  Visitor-only: a user subject gets 403 (registered-user self-service
+  is a deferred follow-on; users' identity is operator-set via
+  `/admin/credentials`). Delegates to `Visitors.update_identity/2`,
+  which validates + persists (tilde-strip + shape guard on ident,
+  CR/LF/NUL guard on realname) and, if a live session exists, reconnects
+  the upstream so the new ident/realname re-register. Returns 200 with
+  the updated visitor identity; 422 on validation failure (via
+  FallbackController's changeset clause); 403 for a user subject; 401
+  without a Bearer.
+
+  Body: `{ident?: string, realname?: string}` — both optional; an
+  omitted field is left unchanged.
+  """
+  @spec update_identity(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :forbidden | :not_found | :unauthorized | Ecto.Changeset.t()}
+  def update_identity(conn, params) do
+    case conn.assigns[:current_subject] do
+      {:visitor, %Visitor{} = visitor} ->
+        attrs = identity_attrs(params)
+
+        with {:ok, updated} <- Visitors.update_identity(visitor, attrs) do
+          render(conn, :identity, visitor: updated, connected: visitor_connected?(updated))
+        end
+
+      {:user, _} ->
+        {:error, :forbidden}
+
+      _ ->
+        {:error, :unauthorized}
+    end
+  end
+
+  # Whitelist the two identity fields from the request body. Keys the
+  # caller omits are left out so `identity_changeset/2` leaves them
+  # unchanged (no clobber-to-nil). String keys → atom keys for the
+  # changeset cast.
+  @spec identity_attrs(map()) :: %{optional(:ident) => term(), optional(:realname) => term()}
+  defp identity_attrs(params) do
+    %{}
+    |> maybe_put(params, "ident", :ident)
+    |> maybe_put(params, "realname", :realname)
+  end
+
+  defp maybe_put(acc, params, string_key, atom_key) do
+    case Map.fetch(params, string_key) do
+      {:ok, value} -> Map.put(acc, atom_key, value)
+      :error -> acc
     end
   end
 

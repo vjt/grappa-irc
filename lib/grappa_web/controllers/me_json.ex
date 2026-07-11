@@ -164,4 +164,21 @@ defmodule GrappaWeb.MeJSON do
     |> Map.put(:connected, connected)
     |> Map.put(:home_data, nil)
   end
+
+  @doc """
+  #152 — response for `PATCH /me/identity`. The updated visitor profile
+  (via `VisitorsWire.visitor_to_json/1`, so ident/realname/registered
+  ride the same allowlist as `GET /me`) plus the `connected` flag so cic
+  can reflect the post-reconnect live state. No cursors/badge/home_data
+  envelope — this is an identity mutation response, not a full profile
+  reload.
+  """
+  @spec identity(%{visitor: Visitor.t(), connected: boolean()}) :: map()
+  def identity(%{visitor: %Visitor{} = visitor, connected: connected})
+      when is_boolean(connected) do
+    visitor
+    |> VisitorsWire.visitor_to_json()
+    |> Map.put(:kind, "visitor")
+    |> Map.put(:connected, connected)
+  end
 end

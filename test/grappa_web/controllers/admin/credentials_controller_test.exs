@@ -160,6 +160,42 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
       assert body["realname"] == "New Real"
     end
 
+    test "200 + edits ident (#152) + strips leading tilde + persists to DB", %{conn: conn} do
+      {user, network, _} = bound_credential()
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/admin/credentials/#{user.id}/#{network.id}", Jason.encode!(%{ident: "~grp"}))
+
+      body = json_response(conn, 200)
+      # Tilde stripped by the changeset (anti-spoof).
+      assert body["ident"] == "grp"
+
+      reload = Credentials.get_credential!(user, network)
+      assert reload.ident == "grp"
+    end
+
+    test "422 on invalid ident (#152 shape guard)", %{conn: conn} do
+      {user, network, _} = bound_credential()
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch(
+          "/admin/credentials/#{user.id}/#{network.id}",
+          Jason.encode!(%{ident: "way-too-long-ident"})
+        )
+
+      assert json_response(conn, 422)
+    end
+
     test "404 on unknown user_id", %{conn: conn} do
       {_, network, _} = bound_credential()
       session = admin_session()
