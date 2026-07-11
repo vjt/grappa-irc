@@ -3,10 +3,15 @@
 #
 # A turn-based Claude session can't self-poll (no background clock), so
 # this EXTERNAL loop watches the orchestrator pane and, when its context
-# crosses a threshold while idle + quiet, types `/clear` then
-# `/orchestrate` so the orchestrator reloads from
-# /tmp/orchestrator-resume.md (the persistent brain) + resume-checks the
-# sibling daemon. Automates what vjt does manually.
+# crosses a threshold while idle + quiet, FIRST prompts the orchestrator
+# to flush its handoff, WAITS for that flush turn to settle, and only
+# THEN types `/clear` + `/orchestrate` so the orchestrator reloads from
+# /srv/grappa/.orchestrate/orchestrator-resume.md (the persistent brain,
+# durable path) + resume-checks the sibling daemon. The flush-before-clear
+# step exists because the handoff is the ONLY thing that survives /clear —
+# wiping with unsaved in-flight state (open decision, pending halt, a
+# just-dispatched phase, a live waiter id) would lose it. Automates what
+# vjt does manually.
 #
 # Resolves the target pane BY TITLE every tick (default "grappa-orch")
 # — pane ids are ephemeral, the title is stable. Never hardcode %NN.
@@ -27,6 +32,7 @@ THRESHOLD="${AUTOCLEAR_THRESHOLD:-40}"
 TICK="${AUTOCLEAR_TICK:-15}"                       # seconds between checks
 IDLE_TICKS_REQUIRED="${AUTOCLEAR_IDLE_TICKS:-2}"   # consecutive qualifying ticks (2*15=30s; is_busy already guards mid-turn)
 COOLDOWN="${AUTOCLEAR_COOLDOWN:-90}"               # pause after a clear
+FLUSH_MAX="${AUTOCLEAR_FLUSH_MAX:-180}"            # max secs to wait for the pre-clear handoff flush to settle
 
 SLUG="$(printf '%s' "$TITLE" | tr -c 'a-zA-Z0-9' '-')"
 PIDFILE="/tmp/orchestrate-autoclear-${SLUG}.pid"
@@ -66,7 +72,32 @@ run() {
     qualifying=$((qualifying + 1))
     log "ctx=${ctx}% idle+quiet (${qualifying}/${IDLE_TICKS_REQUIRED})"
     if [ "$qualifying" -ge "$IDLE_TICKS_REQUIRED" ]; then
-      log "FIRING auto-clear on ${pane} (ctx=${ctx}%)"
+      log "FIRING on ${pane} (ctx=${ctx}%) — prompting handoff flush BEFORE clear"
+      # 1. Prompt the orchestrator to flush its handoff FIRST. The
+      #    handoff (/srv/grappa/.orchestrate/orchestrator-resume.md) is
+      #    the ONLY thing that survives /clear — clearing with in-flight
+      #    unsaved state (open decision, pending halt, just-dispatched
+      #    phase, live waiter id) loses it. Give it a turn to persist.
+      local msg="AUTO-CLEAR IMMINENT (ctx=${ctx}%): flush ALL in-flight state to the handoff /srv/grappa/.orchestrate/orchestrator-resume.md NOW — open decisions, pending halts, the dispatched/awaited phase, live waiter ids, anything not yet written — then go idle. I /clear you the moment you settle, so save first or lose it."
+      tmux send-keys -t "$pane" C-u; sleep 1
+      tmux send-keys -t "$pane" -l "$msg"; sleep 1
+      tmux send-keys -t "$pane" Enter; sleep 1
+      tmux send-keys -t "$pane" Enter                 # 2nd Enter — flush the submit
+      # 2. WAIT for the flush turn to finish before wiping. Give it a
+      #    beat to pick up the prompt (go busy), then poll until idle
+      #    (no spinner), capped at FLUSH_MAX so a wedged flush can't hang
+      #    the watchdog forever. Clearing mid-flush would be worse than
+      #    not prompting at all, so this wait is the point of the fix.
+      sleep 8
+      local fwait=0
+      while [ "$fwait" -lt "$FLUSH_MAX" ]; do
+        local fcap; fcap="$(tmux capture-pane -t "$pane" -p -S -25 2>/dev/null)"
+        is_busy "$fcap" || break
+        sleep 5; fwait=$((fwait + 5))
+      done
+      log "handoff flush settled after ~${fwait}s (cap ${FLUSH_MAX}s) — clearing now"
+      # 3. Now wipe + reload (the orchestrator re-reads the freshly
+      #    flushed handoff on /orchestrate).
       tmux send-keys -t "$pane" C-u; sleep 1
       tmux send-keys -t "$pane" '/clear' Enter; sleep 4
       tmux send-keys -t "$pane" '/orchestrate' Enter; sleep 1

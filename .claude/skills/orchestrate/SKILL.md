@@ -106,9 +106,13 @@ are ephemeral): sibling = "grappa-worker", orchestrator = "grappa-orch", ircbot 
   Elixir-only; `integration` is the real e2e gate. See [[feedback_e2e_mandatory_and_ci_blocks]].
 - **Close-out = `gh issue close N`** (+ announce). Ship+announce alone is NOT done.
 - **Auto-clearer**: `lib/auto-clear-watch.sh start|status grappa-orch` runs an external
-  watchdog that /clears + /orchestrates the orchestrator at ctx≥40% (idle+quiet, 60s
-  debounce). ALWAYS flush the handoff (esp. any open decision) before going idle on something
-  unresolved — the watchdog doesn't know about pending questions.
+  watchdog that, at ctx≥40% (idle+quiet, 60s debounce), FIRST prompts the orchestrator to
+  flush its handoff, WAITS for that flush turn to settle (polls busy→idle, capped at
+  `AUTOCLEAR_FLUSH_MAX`=180s), and only THEN /clears + /orchestrates. The flush-before-clear
+  step (added on vjt's order) means an auto-clear no longer races your unsaved in-flight state.
+  Still: keep the handoff current proactively — the watchdog's flush-prompt is a safety net,
+  not a substitute (a wedged/slow flush past the cap clears anyway; and you may be mid-halt on
+  something the prompt can't fully capture). ALWAYS flush any open decision before going idle.
 - **Halt + ESCALATE** on: design picker, plan deviation, real breakage, CI regression (2nd
   recurrence), ambiguous scope, daemon/pane death, PACK COMPLETE. Don't auto-pick design/
   product choices; orchestration mechanics MAY be auto-defaulted.
