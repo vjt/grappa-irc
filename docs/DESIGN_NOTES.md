@@ -17538,3 +17538,125 @@ authenticate/pass/oper deny-list tests. Integration
 appears on the wire the mailbox-ordered inbound PONG is already processed,
 so `Scrollback.fetch(…, "$server", …)` deterministically observes `[]` —
 the user-visible absence is the real guard.
+
+---
+
+## 2026-07-11 — #152: ident + realname user-settable, live-applied via internal reconnect
+
+**The ask.** Split the three IRC identity fields that grappa collapsed
+onto one value (`nick == ident == userid`) so `ident` and `realname` are
+independent + user-settable, as in every standard IRC client. Applying a
+change to a LIVE session must not force a manual quit/relogin.
+
+**Challenge-the-spec (three findings that shrank the work).**
+
+- **`realname` was already half-built.** `Credential` already carried a
+  nullable `realname` column with `validate_safe_line_token` + an
+  `effective_realname/1` nick-fallback threaded into the USER trailing
+  param. For registered USERS, realname was already split + settable —
+  the only net-new realname pieces were the VISITOR side (hardcoded
+  `"Grappa Visitor"`), a cic field, and live-apply.
+- **`ident` is the one genuinely net-new field.** The USER username slot
+  was a mechanical copy of the nick (`USER #{nick} 0 * :#{realname}`). New
+  column on Credential + Visitor, new struct field on `AuthFSM`, new
+  `effective_ident/1` fallback — symmetric with the EXISTING
+  `realname`/`sasl_user` pair (reuse the pattern, not a new pattern).
+- **Live-apply genuinely requires a reconnect (confirmed, no cheaper
+  path).** ident/realname are carried ONLY by the `USER` command, sent
+  exactly once at registration; a second `USER` on an established socket
+  is rejected `462 ERR_ALREADYREGISTRED`. There is no live IRC verb to
+  change them. But the reconnect *primitive already existed* (#126's
+  disconnect ⇄ reconnect seam): `Session.stop_session/3` (graceful QUIT)
+  + `SpawnOrchestrator.spawn/4`, and `Server.init/1`'s injected
+  `refresh_plan` closure ALREADY re-reads the DB row on every respawn. So
+  live-apply = **persist new value → stop → respawn → refresh_plan picks
+  it up for free.** No new Session.Server state, no new teardown, no new
+  live-client verb. Derive, don't duplicate.
+
+**vjt's binding rulings.**
+
+- **B — ident validation:** STRIP a leading `~` (sanitize off, don't
+  reject the input), cap length **10**, shape `^[A-Za-z0-9._-]{1,10}$`
+  (no `@`, no whitespace). **Stripping the tilde IS the anti-spoof
+  guard**: grappa runs no identd, so the upstream ircd tilde-prefixes
+  unverified idents (`~foo`) to mark them identd-UNVERIFIED; a
+  user-supplied leading `~` must not be presented as identd-checked.
+  Strip only ONE tilde so `~~evil` → `~evil` then FAILS validation
+  (stripping-all would silently accept the spoof as `evil`). realname
+  needs only the existing CR/LF/NUL `safe_line_token` guard — free-form,
+  spaces legal, NO anti-spoof (realname isn't an identd surface). Single
+  source: `Grappa.IRC.Identifier.{sanitize_ident,valid_ident?}/1`,
+  siblings to `valid_nick?`/`valid_channel?`.
+- **C — both subjects, same storage:** ident on the existing `Credential`
+  row (users) + `ident`+`realname` on the existing `Visitor` row
+  (visitors). NO new identity schema/table. Non-unique, no fold, no
+  conflict target — free-form attrs, NOT keys (the design note is
+  explicit: ident must NOT be unique; multiple users may share one).
+- **D — no new event:** rely on the reconnect's natural re-emission of the
+  existing identity/window-state events + the #204 connecting view. No
+  `identity_changed` event introduced.
+- **E — visitor defaults unchanged:** realname unset → `"Grappa Visitor"`;
+  ident unset → nick. Anon branding preserved.
+
+**Fork A + the Boundary constraint (Option A, orch 2026-07-11).** Ruling
+A called for two thin per-subject reconnect wrappers (visitor +
+user-side `Networks.reconnect_credential`). Building the user wrapper
+surfaced a hard Boundary collision: `SpawnOrchestrator` deps `Admission`,
+and `Admission` **formally deps `Networks`** — so a `Networks →
+SpawnOrchestrator` edge closes a 3-node cycle
+(`Networks → SpawnOrchestrator → Admission → Networks`). The VISITOR
+wrapper is boundary-clean only because `Admission` reaches Visitors via
+`dirty_xrefs: [Visitors.Visitor]` (schema-only, not a formal dep). This is
+also *why the existing user `/connect` path already keeps spawn
+orchestration OUT of the Networks context* — `Networks.connect/1` is
+DB-transition-only and `NetworksController.orchestrate_spawn/4` (the WEB
+layer) calls the orchestrator. Combined with the Fork-C deferral of the
+registered-user cic self-service surface, the user reconnect wrapper had
+NO caller this issue. Resolution: build ONLY the visitor wrapper
+(`Visitors.update_identity/2`); the user ident rides the EXISTING admin
+credentials PATCH (which already stops the live session on an
+auth-touching change). The deferred user-cic follow-on's reconnect
+wrapper will live in the **web layer** (mirroring `orchestrate_spawn`),
+never in the Networks context. Same intent as Ruling A (per-subject
+wrappers over shared teardown+respawn cores, no polymorphic verb), minus
+one boundary-impossible/caller-less module.
+
+**Shape of the build.**
+
+- **Data:** `Credential.ident` + `effective_ident/1`; `Visitor.ident` +
+  `Visitor.realname` + `identity_changeset/2`; migration adds three
+  nullable columns → **COLD deploy** (hot path skips `ecto.migrate`).
+- **Handshake:** `AuthFSM` gains `:ident` on struct/opts/`@line_bound_fields`
+  (CRLF-injection self-defense fires on it too); USER line →
+  `USER #{ident} 0 * :#{realname}`. Threaded through BOTH SessionPlans,
+  `Session.start_opts`, `Server.{init_opts,client_opts}`, `Client.opts` —
+  total consistency, both subjects.
+- **Live-apply:** `Visitors.update_identity/2` = validate+persist →
+  (if a live session exists) `stop_session/3` → `SpawnOrchestrator.spawn/4`;
+  the respawn's `refresh_plan` re-reads the new values. Scrollback +
+  `last_joined_channels` survive (DB-backed); 001 re-JOINs from autojoin.
+  Persist-only when no session is live. Returns `{:ok, visitor}` — the
+  reconnect is best-effort (identity IS saved; a cap-blocked bounce is
+  logged, not surfaced).
+- **Doors:** `PATCH /me/identity` (visitor-only, 403 for users; rides the
+  existing `/me` nginx allowlist entry — no proxy change); admin
+  credentials PATCH/POST whitelist gains `ident`. Login-Advanced
+  (`POST /auth/login`) carries `ident`/`realname` onto the freshly
+  provisioned anon row BEFORE first spawn (a bad ident → `:malformed_ident`
+  400, the row purged like a spawn failure).
+- **cic:** Login-Advanced adds realname+ident fields; SettingsDrawer gains
+  a visitor identity editor (seeds from `/me`, two-tap apply → PATCH →
+  reconnect, reusing the connecting affordance). Registered-user cic
+  self-service is the deferred follow-on.
+
+**Test evidence.** Unit (ident sanitize/validate, both changesets,
+effective fallbacks, AuthFSM USER-line with ident≠nick + ident
+line-safety, plan threading); server-level (`update_identity` bounces a
+live session → new pid + fresh plan carries the new ident; persist-only
+when no session); REST (PATCH /me/identity 200/422/403/401, admin creds
+ident edit + tilde-strip); REAL e2e (`issue152-ident-realname.spec.ts`) —
+a peer IRC client witnesses `nick!~grp@host` on the visitor's PRIVMSG
+after login-Advanced, then `nick!~grp2@host` after a settings live-apply
+reconnect (the `~` proves bahamut tilde-prefixed the unverified ident; the
+new prefix + a unique post-reconnect marker prove the reconnect
+re-registered upstream AND rejoined the channel).
