@@ -17841,3 +17841,105 @@ lost. Full up→down→up round-trip verified.
 **Deploy class: COLD** (table-recreate + new columns + data backfill;
 the hot path skips `ecto.migrate`). Design comment: issue #211
 comment 4945661060.
+
+## 2026-07-11 — #211 phase 2 (L2 epic): extract the shared IRC-identity tuple (`Grappa.IRC.Identity`)
+
+Second phase of the #211 L2 epic. Phase 2 is a **pure behavior-neutral
+refactor** — the de-duplication the epic exists to enable. No storage
+change, no migration, no wire/cic change, no visitor column dropped
+(that is phase 7's contract). Rides the same deferred end-of-crank COLD
+window as the rest of the functional stack; NOT deployed on its own.
+
+### The duplication it kills
+
+The IRC-registration identity tuple's validators + `effective_*`
+fallbacks were pasted **verbatim into two schemas** — the #152 pain the
+L2 epic exists to remove, where a review-fix bug had to be patched three
+times independently:
+
+- `Networks.Credential`: `sanitize_ident/1`, `validate_nick/2`,
+  `validate_ident/2`, `validate_safe_line_token/2`, plus public
+  `effective_ident/1`/`effective_realname/1`/`effective_sasl_user/1`.
+- `Visitors.Visitor`: verbatim copies of the same four validators.
+- `Visitors.SessionPlan`: private `effective_ident/1` +
+  `effective_realname/1` (the latter with the visitor-specific
+  `"Grappa Visitor"` realname default).
+
+All four validators were already thin adapters over primitives centralised
+in `Grappa.IRC.Identifier` (`sanitize_ident/1`, `valid_nick?/1`,
+`valid_ident?/1`, `safe_line_token?/1`) — the duplication was the
+CHANGESET-LEVEL wiring (`validate_change` callbacks + the changeset step),
+not the primitives.
+
+### Shape — shared VERBS, not an embedded schema (challenge-the-spec)
+
+The epic body said "extract into ONE embedded schema / changeset
+pipeline." Investigation rejected both framings:
+
+- **Embedded schema is wrong here.** Both schemas store the tuple as
+  **flat columns** (`nick`/`ident`/`realname`/`sasl_user`/… are
+  top-level fields). An `embedded_schema` forces the tuple into a nested
+  map column = a storage change = out of scope (phase-7 territory, and
+  unwanted even then). The codebase uses **zero** `embedded_schema`
+  today; introducing the first for a refactor that changes no storage is
+  heavyweight-for-nothing.
+- **A single bundled pipeline is insufficient.** `Credential` applies
+  `safe_line_token` to non-identity fields too (`sasl_user`, `password`,
+  `auth_command_template`, `connection_state_reason`), so that verb must
+  be a standalone export regardless. Given that, a bundle-plus-verb
+  surface would be two ways to do the same thing — the "half-migrated →
+  copy whichever is closer" trap. One consistent pattern = expose the
+  verbs.
+- **"Reuse the verbs, not the nouns" (rule 6) — literally.** The shared
+  unit is the validators (verbs); each schema keeps its own
+  `cast`/`validate_required`/`unique_constraint` wiring (the nouns,
+  which genuinely differ — a visitor row has no
+  `sasl_user`/`password`/`auth_method` column).
+
+### The module
+
+`Grappa.IRC.Identity` (`lib/grappa/irc/identity.ex`), exported from the
+`Grappa.IRC` boundary alongside `Identifier` (the primitives it
+delegates to). **Boundary rationale:** `Grappa.IRC` is the acyclic sink
+(deps only `Grappa.OutboundV6Pool`) and **both `Networks` and
+`Visitors` already dep it** — so both route through the shared module
+with zero graph change and no cycle. `import Ecto.Changeset` is
+ungated (external app) and `Identifier` already couples the IRC boundary
+to Ecto via its `nick_fold/1` fragment macro. Surface:
+
+- `sanitize_ident/1` — the leading-`~`-strip changeset step.
+- `validate_nick/2`, `validate_ident/2`, `safe_line_token/2` —
+  `validate_change/3` callbacks (same error strings verbatim).
+- `effective_ident/2`, `effective_sasl_user/2`, `effective_realname/2` —
+  value-level fallbacks taking plain strings (NOT structs), so the
+  module never depends on either schema struct.
+
+### The `effective_realname` divergence is a PARAMETER, not two impls
+
+A user's realname falls back to its `nick`; a visitor's falls back to
+the `"Grappa Visitor"` branding default (vjt ruling E). That is one rule
+with a per-subject fallback ARGUMENT (`effective_realname(realname,
+fallback)`): `Credential` passes `nick`, the visitor plan passes
+`"Grappa Visitor"`. `Credential.effective_ident/1`/`effective_realname/1`
+/`effective_sasl_user/1` stay as thin struct-accessor wrappers
+delegating to the shared verbs — the public API + domain-accessor
+contract (no leaky abstraction) is preserved, so `Networks.SessionPlan`
+call sites are unchanged.
+
+### Behavior-neutral proof
+
+The existing `credential_test`/`credential_xor_test`/`visitor_test`/
+`session_plan_test` are the characterization lock — staying green proves
+neutrality; the new `Grappa.IRC.IdentityTest` pins the shared verbs
+directly (schemaless changeset, both realname fallback branches). A
+review agent enumerated the full `(binary | nil)²` input space for every
+`effective_*` verb against its deleted original and confirmed
+byte-identical results (including the unreachable both-nil
+`FunctionClauseError`). e2e `issue152-ident-realname` (visitor
+login-Advanced ident → USER line → settings live-apply reconnect) +
+`admin-credentials` realname edit both green — the tuple still
+round-trips to upstream identically for both subjects.
+
+**Deploy class: COLD** (deferred to the end-of-crank window with the
+rest of the functional stack; NO standalone deploy). Design comment:
+issue #211 comment 4946480803.
