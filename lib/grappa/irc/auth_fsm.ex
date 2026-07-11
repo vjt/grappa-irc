@@ -92,6 +92,7 @@ defmodule Grappa.IRC.AuthFSM do
 
   @type opts :: %{
           required(:nick) => String.t(),
+          required(:ident) => String.t(),
           required(:realname) => String.t(),
           required(:sasl_user) => String.t(),
           required(:auth_method) => auth_method(),
@@ -105,6 +106,7 @@ defmodule Grappa.IRC.AuthFSM do
 
   @type t :: %__MODULE__{
           nick: String.t(),
+          ident: String.t(),
           realname: String.t(),
           sasl_user: String.t(),
           password: String.t() | nil,
@@ -113,7 +115,7 @@ defmodule Grappa.IRC.AuthFSM do
           caps_buffer: [String.t()]
         }
 
-  @enforce_keys [:nick, :realname, :sasl_user, :auth_method, :phase]
+  @enforce_keys [:nick, :ident, :realname, :sasl_user, :auth_method, :phase]
   # `:password` is the only secret on the struct — `@derive Inspect`
   # excludes it so SASL-report dumps + IEx `:sys.get_state/1` (transitively
   # via the host Client struct) introspection never leak plaintext.
@@ -121,6 +123,7 @@ defmodule Grappa.IRC.AuthFSM do
   @derive {Inspect, except: [:password]}
   defstruct [
     :nick,
+    :ident,
     :realname,
     :sasl_user,
     :password,
@@ -149,13 +152,14 @@ defmodule Grappa.IRC.AuthFSM do
   @spec new(opts()) ::
           {:ok, t()}
           | {:error, {:missing_password, auth_method()}}
-          | {:error, {:invalid_line_token, :nick | :realname | :sasl_user | :password}}
+          | {:error, {:invalid_line_token, :nick | :ident | :realname | :sasl_user | :password}}
   def new(%{auth_method: m} = opts) when m in @auth_methods do
     with :ok <- validate_password_present(opts),
          :ok <- validate_line_safe(opts) do
       {:ok,
        %__MODULE__{
          nick: opts.nick,
+         ident: opts.ident,
          realname: opts.realname,
          sasl_user: opts.sasl_user,
          password: Map.get(opts, :password),
@@ -175,13 +179,13 @@ defmodule Grappa.IRC.AuthFSM do
     do: {:error, {:missing_password, m}}
 
   # irc/S5: reject CR/LF/NUL in every field that lands on the wire as
-  # part of the registration handshake. `:nick`, `:realname`, `:sasl_user`
-  # are always emitted (NICK + USER + AUTHENTICATE PLAIN); `:password`
-  # is emitted on `:server_pass` (PASS), `:nickserv_identify`
+  # part of the registration handshake. `:nick`, `:ident`, `:realname`,
+  # `:sasl_user` are always emitted (NICK + USER + AUTHENTICATE PLAIN);
+  # `:password` is emitted on `:server_pass` (PASS), `:nickserv_identify`
   # (PRIVMSG NickServ :IDENTIFY), and `:sasl` (SASL PLAIN payload).
   # `:none` carries no password but still emits NICK + USER, so the
-  # nick/realname/sasl_user gates fire regardless of method.
-  @line_bound_fields [:nick, :realname, :sasl_user]
+  # nick/ident/realname/sasl_user gates fire regardless of method.
+  @line_bound_fields [:nick, :ident, :realname, :sasl_user]
   defp validate_line_safe(opts) do
     case Enum.find(@line_bound_fields, fn f ->
            not Identifier.safe_line_token?(Map.fetch!(opts, f))
@@ -259,9 +263,15 @@ defmodule Grappa.IRC.AuthFSM do
   defp send_nick_and_user({state, sends}) do
     # Reversed-build order: USER pushed before NICK so post-Enum.reverse
     # the final list reads NICK then USER.
+    #
+    # #152 — the USER username slot carries `ident`, decoupled from the
+    # nick. `Networks.SessionPlan` / `Visitors.SessionPlan` thread
+    # `Credential.effective_ident/1` / the visitor's ident-or-nick into
+    # this field, so a credential that never set a distinct ident still
+    # emits `USER <nick> ...` (fallback), preserving pre-#152 behaviour.
     {state,
      [
-       "USER #{state.nick} 0 * :#{state.realname}\r\n",
+       "USER #{state.ident} 0 * :#{state.realname}\r\n",
        "NICK #{state.nick}\r\n"
        | sends
      ]}

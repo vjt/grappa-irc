@@ -138,6 +138,7 @@ defmodule Grappa.IRC.Client do
           required(:dispatch_to) => pid(),
           required(:logger_metadata) => session_metadata(),
           required(:nick) => String.t(),
+          required(:ident) => String.t(),
           required(:realname) => String.t(),
           required(:sasl_user) => String.t(),
           required(:auth_method) => AuthFSM.auth_method(),

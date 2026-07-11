@@ -52,6 +52,7 @@ defmodule Grappa.IRC.ClientTest do
           dispatch_to: self(),
           logger_metadata: [],
           nick: "grappa-test",
+          ident: "grappa-test",
           realname: "grappa-test",
           sasl_user: "grappa-test",
           auth_method: :none
@@ -754,6 +755,7 @@ defmodule Grappa.IRC.ClientTest do
           dispatch_to: self(),
           logger_metadata: [],
           nick: "grappa-test",
+          ident: "grappa-test",
           realname: "grappa-test",
           sasl_user: "vjt",
           password: "wrong",
@@ -872,6 +874,7 @@ defmodule Grappa.IRC.ClientTest do
           dispatch_to: self(),
           logger_metadata: [],
           nick: "grappa-test",
+          ident: "grappa-test",
           realname: "grappa-test",
           sasl_user: "vjt",
           password: "swordfish",
@@ -1052,6 +1055,7 @@ defmodule Grappa.IRC.ClientTest do
           dispatch_to: self(),
           logger_metadata: [],
           nick: "grappa-test",
+          ident: "grappa-test",
           realname: "grappa-test",
           sasl_user: "grappa-test",
           auth_method: :none
@@ -1294,6 +1298,7 @@ defmodule Grappa.IRC.ClientTest do
                  dispatch_to: self(),
                  logger_metadata: [],
                  nick: "grappa-test",
+                 ident: "grappa-test",
                  realname: "grappa-test",
                  sasl_user: "grappa-test",
                  auth_method: :none
@@ -1323,6 +1328,7 @@ defmodule Grappa.IRC.ClientTest do
                  dispatch_to: self(),
                  logger_metadata: [],
                  nick: "grappa-test",
+                 ident: "grappa-test",
                  realname: "grappa-test",
                  sasl_user: "grappa-test",
                  auth_method: :none
@@ -1352,6 +1358,7 @@ defmodule Grappa.IRC.ClientTest do
                  dispatch_to: self(),
                  logger_metadata: [],
                  nick: "grappa-test",
+                 ident: "grappa-test",
                  realname: "grappa-test",
                  sasl_user: "grappa-test",
                  auth_method: :sasl
@@ -1370,6 +1377,7 @@ defmodule Grappa.IRC.ClientTest do
                  dispatch_to: self(),
                  logger_metadata: [],
                  nick: "grappa-test",
+                 ident: "grappa-test",
                  realname: "grappa-test",
                  sasl_user: "grappa-test",
                  auth_method: :nickserv_identify

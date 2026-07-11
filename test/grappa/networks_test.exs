@@ -1335,10 +1335,11 @@ defmodule Grappa.NetworksTest do
       assert plan.subject_label == user.name
       assert plan.network_slug == net.slug
       assert plan.nick == "vjt-grappa"
-      # effective_realname / effective_sasl_user fall back to nick
-      # — the build_plan helper in Networks owns the fallback.
+      # effective_realname / effective_sasl_user / effective_ident fall
+      # back to nick — the build_plan helper in Networks owns the fallback.
       assert plan.realname == "vjt-grappa"
       assert plan.sasl_user == "vjt-grappa"
+      assert plan.ident == "vjt-grappa"
       assert plan.auth_method == :sasl
       assert plan.password == "loadbearing"
       assert plan.autojoin_channels == ["#sniffo"]

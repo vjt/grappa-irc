@@ -75,6 +75,7 @@ defmodule Grappa.Networks.SessionPlan do
       subject_label: user.name,
       network_slug: network.slug,
       nick: cred.nick,
+      ident: Credential.effective_ident(cred),
       realname: Credential.effective_realname(cred),
       sasl_user: Credential.effective_sasl_user(cred),
       auth_method: cred.auth_method,

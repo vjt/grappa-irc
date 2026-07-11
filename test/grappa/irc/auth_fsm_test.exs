@@ -17,6 +17,7 @@ defmodule Grappa.IRC.AuthFSMTest do
     Map.merge(
       %{
         nick: "vjt",
+        ident: "vjt",
         realname: "Vincenzo",
         sasl_user: "vjt",
         auth_method: :none
@@ -93,6 +94,15 @@ defmodule Grappa.IRC.AuthFSMTest do
     test ":sasl with NUL in sasl_user rejected at new/1 (irc/S5)" do
       assert {:error, {:invalid_line_token, :sasl_user}} =
                AuthFSM.new(base_opts(%{auth_method: :sasl, sasl_user: "vjt\x00", password: "p"}))
+    end
+
+    test "CR in ident rejected at new/1 (irc/S5, #152)" do
+      # ident lands on the USER line's username slot — same CRLF-injection
+      # class as nick/realname/sasl_user. The schema sanitizes/validates
+      # ident upstream, but the FSM self-defends (Phase-6 listener + any
+      # future REST caller that bypasses the changeset).
+      assert {:error, {:invalid_line_token, :ident}} =
+               AuthFSM.new(base_opts(%{auth_method: :sasl, ident: "grp\rEVIL", password: "p"}))
     end
 
     test ":sasl with NUL in password rejected at new/1 (irc/S5+S4)" do
@@ -184,6 +194,13 @@ defmodule Grappa.IRC.AuthFSMTest do
       state = new!(%{})
       assert {%AuthFSM{phase: :pre_register}, sends} = AuthFSM.initial_handshake(state)
       assert send_lines(sends) == ["NICK vjt", "USER vjt 0 * :Vincenzo"]
+    end
+
+    test "USER line uses ident (not nick) when ident differs from nick (#152)" do
+      # The USER username slot carries `ident`, decoupled from the nick.
+      state = new!(%{ident: "grp"})
+      assert {%AuthFSM{}, sends} = AuthFSM.initial_handshake(state)
+      assert send_lines(sends) == ["NICK vjt", "USER grp 0 * :Vincenzo"]
     end
 
     test ":server_pass -> PASS BEFORE NICK + USER, no CAP" do

@@ -137,6 +137,7 @@ defmodule Grappa.Session do
           required(:subject_label) => String.t(),
           required(:network_slug) => String.t(),
           required(:nick) => String.t(),
+          required(:ident) => String.t(),
           required(:realname) => String.t(),
           required(:sasl_user) => String.t(),
           required(:auth_method) => AuthFSM.auth_method(),
