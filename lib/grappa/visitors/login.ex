@@ -17,7 +17,14 @@ defmodule Grappa.Visitors.Login do
        when more than one is enabled and no slug is given — cic sends a
        slug once the phase-6 picker ships).
     3. Look up an existing `Visitor` row by `(nick, network_slug)`.
-    4. Branch on `(visitor existence × password_encrypted)`:
+    4. Branch on `(visitor existence × the Credential's password_encrypted)`.
+       #211 phase 4a: the registered-vs-anon discriminator + the password
+       gate read the visitor's `(visitor_id, network_id)` **Credential**
+       secret (via the self-healing `Visitors.resolve_credential/2`), NOT
+       the `visitors.password_encrypted` scalar — the credential is the
+       read-of-record for auth just as it already is for session identity
+       (phase 3). Phase 7 drops the visitor scalar; reading the Credential
+       here makes that a pure column-drop, not an auth-logic change.
 
        * **Case 1 — no row.** Check per-(client, network) cap via
          `Grappa.Admission.check_capacity/1` (T31), verify CAPTCHA,
@@ -30,11 +37,11 @@ defmodule Grappa.Visitors.Login do
          bumps the circuit. Mint an `Accounts.Session` and return
          `{:ok, %{visitor, token}}`.
 
-       * **Case 2 — registered (`password_encrypted` set).**
+       * **Case 2 — registered (Credential `password_encrypted` set).**
          Require password FIRST (constant-time compare via
-         `Plug.Crypto.secure_compare/2` to avoid timing oracles), then
-         branch on whether a live `Session.Server` already serves this
-         identity (`Session.whereis/2`):
+         `Plug.Crypto.secure_compare/2` against the CREDENTIAL secret, to
+         avoid timing oracles), then branch on whether a live
+         `Session.Server` already serves this identity (`Session.whereis/2`):
 
            - **Live session → ATTACH (#117).** Mint a fresh
              `accounts_sessions` row and return — the new client rides
@@ -63,7 +70,7 @@ defmodule Grappa.Visitors.Login do
          send a second one post-readiness (#27): a duplicate IDENTIFY
          made NickServ reply with the "identified" NOTICE twice.
 
-       * **Case 3 — anon (`password_encrypted` nil).** Check
+       * **Case 3 — anon (Credential `password_encrypted` nil).** Check
          capacity, then require a valid bearer token that resolves
          (via `Accounts.authenticate/1`) to THIS visitor's id. On
          match: rotate token (revoke old, mint new), keep the live
@@ -86,6 +93,7 @@ defmodule Grappa.Visitors.Login do
   alias Grappa.{Accounts, Networks, Session, Visitors}
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.Auth.IdentifierClassifier
+  alias Grappa.Networks.Credential
   alias Grappa.Session.Backoff
   alias Grappa.Visitors.{SessionPlan, Visitor}
 
@@ -296,8 +304,38 @@ defmodule Grappa.Visitors.Login do
     end
   end
 
-  # Case 2 — registered, password gate
-  defp dispatch(%Visitor{password_encrypted: pwd} = visitor, input, network, timeouts)
+  # Case 2/3 — existing visitor row. #211 phase 4a: the registered-vs-anon
+  # discriminator AND the password gate read the visitor's
+  # `(visitor_id, network_id)` **Credential** secret — the phase-3
+  # read-of-record for session identity, now also the read-of-record for
+  # AUTH — NOT the `visitors.password_encrypted` scalar (phase 7 drops the
+  # scalar; reading the Credential here makes that a pure column-drop, not
+  # an auth-logic change). `Visitors.resolve_credential/2` is the
+  # self-healing reader (mirrors `Visitors.SessionPlan`): a drifted
+  # credential is rebuilt from the visitor row before the compare, so the
+  # compared bytes are the visitor's current secret. Behavior-neutral today
+  # — phase-3 dual-write keeps `visitor.password_encrypted ==
+  # credential.password_encrypted`.
+  defp dispatch(%Visitor{} = visitor, input, network, timeouts) do
+    case Visitors.resolve_credential(visitor, network.id) do
+      {:ok, %Credential{password_encrypted: pwd}} when is_binary(pwd) ->
+        dispatch_registered(visitor, pwd, input, network, timeouts)
+
+      {:ok, %Credential{password_encrypted: nil}} ->
+        dispatch_anon(visitor, input, network)
+
+      {:error, :not_found} ->
+        # The credential can't be built from the visitor row (its changeset
+        # rejected the derived attrs — should not happen for a well-formed
+        # row). Same "subject no longer viable" surface the login
+        # probe-connect path uses for a vanished row / failed resolve.
+        {:error, :upstream_unreachable}
+    end
+  end
+
+  # Case 2 — registered, password gate. `pwd` is the CREDENTIAL secret
+  # (resolved by dispatch/4 above), not the visitor scalar.
+  defp dispatch_registered(%Visitor{} = visitor, pwd, input, network, timeouts)
        when is_binary(pwd) do
     # Password is the auth gate — prove identity BEFORE deciding attach vs
     # respawn (and before any capacity/spawn work, so a wrong-password attempt
@@ -321,8 +359,8 @@ defmodule Grappa.Visitors.Login do
     end
   end
 
-  # Case 3 — anon, token gate
-  defp dispatch(%Visitor{password_encrypted: nil, id: visitor_id} = visitor, input, network, _) do
+  # Case 3 — anon (credential carries no secret), token gate.
+  defp dispatch_anon(%Visitor{id: visitor_id} = visitor, input, network) do
     capacity_input = %{
       network_id: network.id,
       source_ip: input.ip,

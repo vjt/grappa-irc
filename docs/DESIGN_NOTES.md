@@ -18066,3 +18066,75 @@ removes it.
 **Deploy class: COLD** (data migration + read/write cutover; hot path
 skips `ecto.migrate`). Deferred to the end-of-crank window. Design
 comment: issue #211 comment 4947161594.
+
+## 2026-07-11 — #211 phase 4a (L2 epic): auth-gate read-cutover to the Credential
+
+Fourth phase of the #211 L2 epic. vjt LIFTED the phase-7 hold this crank
+("i do not want to carry shit over for ages") — so the epic is being
+completed 4→7 in one crank (still expand→contract: every reader cuts
+over BEFORE any column drops; the contract migration is dry-run against a
+prod-DB copy multiple times before the window). Phase 4 is split:
+
+- **4a (this entry)** — the auth-gate read-cutover. Behavior-neutral, NO
+  migration.
+- **4b** — schema expand: the credential-side folded-nick partial unique
+  index (additive).
+- **4c** — identity-key cutover + multi-network accretion.
+
+### The cutover — auth reads the Credential secret, not the visitor scalar
+
+`Visitors.Login.dispatch/4` previously pattern-matched the case-2 (registered)
+vs case-3 (anon) branch on the **`visitors.password_encrypted` scalar**, and
+`secure_compare`d the login password against that scalar. Phase 4a moves BOTH
+the discriminator AND the compare onto the visitor's `(visitor_id, network_id)`
+**Credential** secret, read via the self-healing `Visitors.resolve_credential/2`
+(the same reader `Visitors.SessionPlan` already uses — a drifted credential is
+rebuilt from the visitor row before the compare). This is the auth-side twin of
+phase 3's session-identity read-cutover: the Credential is now the
+read-of-record for AUTH too, so phase 7's `visitors.password_encrypted`
+column-drop is a pure column-drop, not an auth-logic change.
+
+The three `dispatch/4` clauses became: case 1 (nil row → provision, unchanged);
+a single `%Visitor{}` clause that resolves the credential and dispatches to
+`dispatch_registered/5` (credential secret present) or `dispatch_anon/3`
+(credential secret nil). `Plug.Crypto.secure_compare/2` stays the gate
+(constant-time). The DB read happens in both branches before the split, so no
+new differential-timing oracle.
+
+### Behavior-neutral proof
+
+Phase-3 dual-write keeps `visitor.password_encrypted ==
+credential.password_encrypted`, so the compared bytes are identical today and
+the existing login_test corpus (register → re-auth) stays green. Two NEW
+divergence tests (`login_test.exs` "case dispatch reads the Credential secret")
+DIVERGE the two stores — mutate the credential directly, bypassing the
+write-through — so the read source is observable: (1) credential-secret-set +
+visitor-scalar-nil → case 2 + a wrong password → `:password_mismatch` (proves
+dispatch chose case 2 from the credential AND compared the credential secret;
+an anon case-3 branch with no token could only return `:anon_collision`); (2)
+credential-secret-nil + visitor-scalar-set → case 3 → `:anon_collision` (proves
+the gate ignores the scalar).
+
+### Subject-blind-reader audit (the phase-1 CRITICAL class)
+
+The gate reads `Credentials.get_visitor_credential/2` (`WHERE visitor_id ==`,
+via `resolve_credential/2`), never a user-scoped reader — a visitor can never
+compare against a User credential nor against ANOTHER visitor's credential (the
+reader is keyed by the resolved `visitor.id`). Cross-network is impossible:
+`resolve_credential(visitor, network.id)` keys the same `(visitor, network)`
+the row lookup resolved.
+
+### What STAYS (still, until phase 7)
+
+The `visitors.password_encrypted` scalar STAYS (dual-written) — only the AUTH
+read moved off it. The LIFECYCLE gates that read the scalar as a proxy for "is
+this a persistent identity" (`auth_controller` logout-anon-purge,
+`session_controller.require_registered_visitor`, `Visitors.maybe_bump` /
+`purge_if_anon`) read a per-identity PERSISTENCE property, which canonically
+lives in `expires_at IS NULL` — those are re-homed at phase 7 alongside the
+column-drop (a different concern from the auth secret; not smuggled into a
+"behavior-neutral" turn). No migration, no wire/cic change.
+
+**Deploy class: COLD** (rides the end-of-crank window with the rest of the
+stack). NO standalone deploy. Design comment: issue #211 comment 4948330894;
+ruling comment 4948477338.

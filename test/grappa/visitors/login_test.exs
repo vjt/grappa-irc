@@ -18,7 +18,7 @@ defmodule Grappa.Visitors.LoginTest do
   alias Grappa.Accounts.Session, as: AccountsSession
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.AdmissionStateHelpers
-  alias Grappa.Networks.Network
+  alias Grappa.Networks.{Credential, Credentials, Network}
   alias Grappa.Visitors.{Login, Visitor}
 
   # NetworkCircuit is ETS-backed and survives Ecto sandbox resets. Each
@@ -391,6 +391,80 @@ defmodule Grappa.Visitors.LoginTest do
       # Multi-client bouncer semantics: the first client's token is NOT revoked.
       assert {:ok, _} = Accounts.authenticate(first_token)
       assert {:ok, _} = Accounts.authenticate(second_token)
+    end
+  end
+
+  # #211 phase 4a — the auth-gate read-cutover. The registered/anon
+  # discriminator AND the password compare must read the visitor's
+  # `(visitor_id, network_id)` **Credential** secret (the phase-3
+  # read-of-record for session identity, now also the read-of-record for
+  # AUTH), not the `visitors.password_encrypted` scalar (phase-7 drops it).
+  # These tests DIVERGE the two stores (mutate the credential directly,
+  # bypassing the write-through) so the read source is observable — a test
+  # that only asserts the happy path where both agree cannot prove which
+  # store the gate reads.
+  describe "case dispatch reads the Credential secret (phase-4a cutover)" do
+    setup do
+      {_, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+      {:ok, anon} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
+
+      on_exit(fn -> stop_visitor_session(anon.id, network.id) end)
+
+      {:ok, network: network, visitor: anon}
+    end
+
+    test "credential has a secret but the visitor scalar is nil → case 2 (registered), compares the CREDENTIAL secret",
+         %{network: network, visitor: anon} do
+      # Diverge: credential gets a secret; the visitor row scalar stays nil.
+      {:ok, _} =
+        Credentials.upsert_visitor_credential(anon.id, network.id, %{
+          nick: anon.nick,
+          sasl_user: anon.nick,
+          auth_method: :nickserv_identify,
+          password: "credpass"
+        })
+
+      # Confirm the divergence is real (guards against a write-through that
+      # silently re-synced the scalar and made the test tautological).
+      assert %Visitor{password_encrypted: nil} = Repo.get!(Visitor, anon.id)
+
+      assert {:ok, %Credential{password_encrypted: "credpass"}} =
+               Credentials.get_visitor_credential(anon.id, network.id)
+
+      # Pre-cutover: the visitor scalar is nil → case 3 → {:error, :anon_collision}.
+      # Post-cutover: the credential has a secret → case 2 → password gate;
+      # a wrong password compared against the CREDENTIAL secret →
+      # {:error, :password_mismatch}. No token supplied, so an anon (case 3)
+      # branch could ONLY return :anon_collision — the mismatch proves BOTH
+      # that dispatch chose case 2 from the credential AND that the compare
+      # read the credential secret.
+      assert {:error, :password_mismatch} =
+               Login.login(login_input(%{password: "wrongpass"}), [])
+    end
+
+    test "credential has no secret but the visitor scalar is set → case 3 (anon), NOT the scalar",
+         %{network: network, visitor: anon} do
+      # Reverse divergence: promote the visitor SCALAR only (write straight
+      # through the schema changeset so the write-through choke point does not
+      # fire and re-sync the credential).
+      {:ok, _} =
+        anon
+        |> Visitor.commit_password_changeset("scalarpass", nil)
+        |> Repo.update()
+
+      # Credential still anon (auth_method :none, no secret).
+      assert {:ok, %Credential{password_encrypted: nil}} =
+               Credentials.get_visitor_credential(anon.id, network.id)
+
+      assert %Visitor{password_encrypted: "scalarpass"} = Repo.get!(Visitor, anon.id)
+
+      # Post-cutover the gate reads the CREDENTIAL (no secret) → case 3 anon →
+      # a login with the SCALAR password but no bearer token is an
+      # {:error, :anon_collision}. Pre-cutover it would read the scalar → case 2
+      # → the matching "scalarpass" would attach/respawn ({:ok, _}).
+      assert {:error, :anon_collision} =
+               Login.login(login_input(%{password: "scalarpass"}), [])
     end
   end
 
