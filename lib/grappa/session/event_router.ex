@@ -1747,7 +1747,17 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  @no_persist_verbs ~w(authenticate pass oper)a
+  # #210: `ping`/`pong` suppress keepalive noise from the $server status
+  # window. A well-formed server PING is answered by the dedicated
+  # `Session.Server.handle_info({:irc, %Message{command: :ping, params:
+  # [token | _]}}, ...)` clause and never reaches here; the reply to our
+  # OWN liveness probe (`Client` sends `PING :grappa-liveness` after 60s
+  # inbound silence) arrives as an inbound PONG with no dedicated clause,
+  # so it delegated to the catch-all below and persisted a :server_event
+  # ~1/min — continuous protocol noise. `pong` closes that; `ping` is
+  # belt-and-braces for a malformed param-less `PING\r\n` that misses the
+  # Server clause's `[token | _]` guard and would otherwise fall through.
+  @no_persist_verbs ~w(authenticate pass oper ping pong)a
 
   defp do_route(%Message{command: command} = _, state)
        when command in @no_persist_verbs,

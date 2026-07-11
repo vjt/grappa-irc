@@ -316,6 +316,32 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, ^state, []} = EventRouter.route(m, state)
     end
 
+    # #210: server keepalive PONG (the reply to our own liveness PING,
+    # client.ex sends `PING :grappa-liveness` after 60s inbound silence)
+    # is handled by NO dedicated Server clause, so it reaches this router
+    # via the catch-all delegate. Without the deny-list it persists a
+    # :server_event on $server ~1/min — continuous protocol noise in the
+    # cic status window. PONG carries no user-facing content; suppress it.
+    test "PONG deny-list: zero effects (#210 status-window keepalive noise)" do
+      state = base_state()
+      m = msg(:pong, ["irc.example.org", "grappa-liveness"], {:server, "irc.example.org"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    # #210 belt-and-braces: a well-formed server PING is answered by the
+    # dedicated `Server.handle_info({:irc, %Message{command: :ping,
+    # params: [token | _]}}, ...)` clause and never reaches the router. A
+    # malformed param-less `PING\r\n` (params: []) misses that clause's
+    # `[token | _]` guard and falls through to the catch-all delegate, so
+    # :ping is deny-listed here too — no PING variant persists.
+    test "PING deny-list: zero effects (param-less PING misses Server clause)" do
+      state = base_state()
+      m = msg(:ping, [], {:server, "irc.example.org"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
     test "{:numeric, _} without dedicated clause returns NO effects (Server owns numeric persist)" do
       # Critical: numerics also flow through EventRouter via Server's
       # numeric handler (server.ex:1555 calls EventRouter.route after

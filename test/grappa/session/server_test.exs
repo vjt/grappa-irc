@@ -814,6 +814,37 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    # #210: the reply to our own liveness PING (client.ex sends `PING
+    # :grappa-liveness` after 60s inbound silence) arrives as an inbound
+    # PONG with no dedicated Server clause. Pre-fix it fell through the
+    # catch-all delegate and persisted a :server_event on $server ~1/min,
+    # rendering as continuous protocol noise in the cic status window.
+    # This asserts the USER-VISIBLE absence: an inbound PONG leaves the
+    # $server scrollback empty.
+    #
+    # Synchronisation: the socket → Client → Session.Server mailbox is
+    # strictly ordered. We feed PONG, then a server PING; when the
+    # outbound PONG reply to that PING appears on the wire the earlier
+    # inbound PONG has already been fully processed, so the subsequent
+    # $server fetch observes its (non-)effect deterministically.
+    test "inbound server PONG does NOT persist to $server scrollback (#210)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      IRCServer.feed(server, ":irc.test.org PONG irc.test.org :grappa-liveness\r\n")
+      IRCServer.feed(server, "PING :irc.test.org\r\n")
+
+      assert {:ok, "PONG :irc.test.org\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PONG"), 1_000)
+
+      assert [] = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 10, nil)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   describe "PRIVMSG persistence + broadcast" do

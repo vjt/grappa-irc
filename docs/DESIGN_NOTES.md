@@ -17492,3 +17492,49 @@ source it is; the owner (`ErrorBanners`) holds the dismiss state.
 recover-then-re-fire re-arm test, both driven through the existing
 `__cic_socketHealth` injected-event hook — no real backend op, so the
 shared testnet is never poisoned (the #204 cascade lesson).
+
+## 2026-07-11 — #210: suppress server PING/PONG keepalive from the `$server` status window
+
+**Symptom.** The cic status window accreted ~1 protocol-noise row per
+minute — a keepalive artefact rendered as a `:server_event`. Standard IRC
+clients hide server ping/pong; grappa wasn't.
+
+**Root cause (traced, not assumed).** Two distinct PING/PONG flows:
+
+1. **Inbound server PING** (`command: :ping`) is answered by the dedicated
+   `Session.Server.handle_info({:irc, %Message{command: :ping, params:
+   [token | _]}}, state)` clause (`server.ex`), which replies `PONG` and
+   returns `{:noreply, …}` — it never delegates to the router. Already
+   silent. Not the noise.
+2. **Our OWN liveness probe.** `IRC.Client` sends `PING :grappa-liveness`
+   after 60s of inbound silence (the #100 half-open-socket watchdog).
+   Upstream answers with a **PONG**, which arrives as `{:irc,
+   %Message{command: :pong}}`. There is **no dedicated `:pong` handler**,
+   so it falls through `Session.Server`'s catch-all `handle_info({:irc,
+   %Message{} = msg}, state) → delegate/2 → EventRouter.route`. `:pong`
+   was not in `@no_persist_verbs`, so `route_unhandled_command/2`
+   persisted a `:server_event` on `$server`. **That** is the ~1/min row.
+
+**Fix.** One line: `@no_persist_verbs` gains `ping pong`
+(`event_router.ex`). `pong` closes the real leak. `ping` is
+belt-and-braces: a malformed param-less `PING\r\n` (`params: []`) misses
+the Server clause's `[token | _]` guard and would fall through to the same
+catch-all — deny-listing `:ping` keeps every PING variant off `$server`
+too.
+
+**Why `@no_persist_verbs` is the correct gate.** The `do_route/2` clause
+order is numeric-catchall → inbound-INVITE (#78) → **`@no_persist_verbs`
+guard** → persisting catch-all. Both `:pong` and a param-less `:ping`
+reach the guard before the persisting fallthrough. This is the same
+suppression point already used for the `authenticate`/`pass`/`oper`
+credential-leak deny-list (B6.1 CRIT-1) — one allowlist, one reason:
+verbs that carry no user-facing content and must never touch scrollback.
+
+**Tests.** Unit (`event_router_test.exs`): `:pong` and param-less `:ping`
+each assert `{:cont, ^state, []}` — zero effects, mirroring the
+authenticate/pass/oper deny-list tests. Integration
+(`server_test.exs`, PING/PONG describe): feed an inbound PONG through the
+`Grappa.IRCServer` fake, then a server PING; when the outbound PONG reply
+appears on the wire the mailbox-ordered inbound PONG is already processed,
+so `Scrollback.fetch(…, "$server", …)` deterministically observes `[]` —
+the user-visible absence is the real guard.
