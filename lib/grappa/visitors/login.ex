@@ -234,9 +234,10 @@ defmodule Grappa.Visitors.Login do
   @spec maybe_autoconnect({:ok, result()} | {:error, login_error()}, Networks.Network.t(), input()) ::
           {:ok, result()} | {:error, login_error()}
   defp maybe_autoconnect({:ok, %{visitor: %Visitor{} = visitor}} = ok, anchor, input) do
-    Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
-      Visitors.autoconnect(visitor, anchor.id, input.ip)
-    end)
+    {:ok, _} =
+      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
+        Visitors.autoconnect(visitor, anchor.id, input.ip)
+      end)
 
     ok
   end

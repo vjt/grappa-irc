@@ -864,7 +864,7 @@ defmodule Grappa.Networks do
   # (the SAME label `Session`/`UserSocket`/`Visitors.SessionPlan` use).
   # A visitor needs no `%Visitor{}` load — the id alone builds the label.
   @spec subject_label_of(Credential.t()) :: String.t()
-  defp subject_label_of(%Credential{user: %User{name: name}}), do: name
+  defp subject_label_of(%Credential{user: %User{name: name}}) when is_binary(name), do: name
   defp subject_label_of(%Credential{visitor_id: vid}) when is_binary(vid), do: "visitor:" <> vid
 
   # Preload the network (both subjects) + the User struct (user
