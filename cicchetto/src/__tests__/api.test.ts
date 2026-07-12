@@ -391,6 +391,8 @@ describe("ownNickForNetwork (cic H3 fix + bucket F H4 type split)", () => {
     id: 1,
     slug: "azzurra",
     nick: "grappa",
+    ident: null,
+    realname: null,
     connection_state: "connected",
     connection_state_reason: null,
     connection_state_changed_at: null,
@@ -402,6 +404,8 @@ describe("ownNickForNetwork (cic H3 fix + bucket F H4 type split)", () => {
     id: 1,
     slug: "azzurra",
     nick: "guest42",
+    ident: null,
+    realname: null,
     connection_state: "connected",
     connection_state_reason: null,
     connection_state_changed_at: null,
@@ -413,6 +417,8 @@ describe("ownNickForNetwork (cic H3 fix + bucket F H4 type split)", () => {
     id: 2,
     slug: "ircnet",
     nick: "guest42-alt",
+    ident: null,
+    realname: null,
     connection_state: "parked",
     connection_state_reason: null,
     connection_state_changed_at: null,
@@ -430,7 +436,6 @@ describe("ownNickForNetwork (cic H3 fix + bucket F H4 type split)", () => {
   const visitorMe: api.MeResponse = {
     kind: "visitor",
     id: "v1",
-    nick: "guest42",
     expires_at: "2026-12-31T00:00:00Z",
   };
 
@@ -500,6 +505,8 @@ describe("tagNetwork (bucket F H4)", () => {
       id: 7,
       slug: "azzurra",
       nick: "grappa",
+      ident: null,
+      realname: null,
       connection_state: "connected",
       connection_state_reason: null,
       connection_state_changed_at: null,

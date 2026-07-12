@@ -99,7 +99,6 @@ export type AdminEventsWireVisitorDeletedEvent = {
   kind: "visitor_deleted";
   visitor_id: string;
   visitor_nick: string | null;
-  network_slug: string | null;
   actor_user_id: string | null;
   actor_user_name: string | null;
   at: string;
@@ -109,7 +108,6 @@ export type AdminEventsWireVisitorReapedEvent = {
   kind: "visitor_reaped";
   visitor_id: string;
   visitor_nick: string | null;
-  network_slug: string | null;
   at: string;
 };
 
@@ -402,6 +400,8 @@ export type NetworksWireNetworkWithNickJson = {
   id: number;
   slug: string;
   nick: string;
+  ident: string | null;
+  realname: string | null;
   connection_state: NetworksCredentialConnectionState;
   connection_state_reason: string | null;
   connection_state_changed_at: string | null;
@@ -414,6 +414,8 @@ export type NetworksWireVisitorNetworkWithNickJson = {
   id: number;
   slug: string;
   nick: string;
+  ident: string | null;
+  realname: string | null;
   connection_state: NetworksCredentialConnectionState;
   connection_state_reason: string | null;
   connection_state_changed_at: string | null;
@@ -847,17 +849,11 @@ export type WireSessionEvent =
 
 export type VisitorsWireCredentialJson = {
   id: string;
-  nick: string;
-  ident: string | null;
-  realname: string | null;
   registered: boolean;
 };
 
 export type VisitorsWireT = {
   id: string;
-  nick: string;
-  ident: string | null;
-  realname: string | null;
   expires_at: string | null;
   registered: boolean;
 };

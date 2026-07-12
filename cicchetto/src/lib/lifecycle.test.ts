@@ -26,7 +26,7 @@ vi.mock("./auth", () => ({
 
 vi.mock("./api", () => ({
   deleteAccount: vi.fn().mockResolvedValue(undefined),
-  updateIdentity: vi.fn().mockResolvedValue(undefined),
+  updateNetworkIdentity: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./quit", () => ({

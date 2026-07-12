@@ -77,12 +77,13 @@ export type Subject =
   // validates (treated as not-registered until the next login refreshes
   // it); fresh logins always carry it.
   //
-  // #211 phase 6 — `network_slug` DROPPED. A visitor is multi-network
-  // now (accretion + autoconnect); per-network attachment lives on the
-  // GET /networks rows, not the singular subject scalar. Mirrors the
-  // server-side `Grappa.Visitors.Wire` drop + the `isValidSubject`
-  // relaxation in auth.ts.
-  | { kind: "visitor"; id: string; nick: string; registered?: boolean };
+  // #211 phase 7 — `nick`/`ident`/`realname` DROPPED from the subject too
+  // (network_slug went in phase 6). A visitor is multi-network with
+  // per-network identity on the GET /networks rows; the subject carries
+  // only the identity-wide `{id, registered}`. Mirrors the server-side
+  // `Grappa.Visitors.Wire` drop + the `isValidSubject` relaxation in
+  // auth.ts. `registered` is derived server-side (≥1 NickServ credential).
+  | { kind: "visitor"; id: string; registered?: boolean };
 
 export type LoginResponse = {
   token: string;
@@ -215,32 +216,22 @@ export type MeResponse =
   | {
       kind: "visitor";
       id: string;
-      nick: string;
-      // #152 — user-settable IRC ident + realname (both nullable until
-      // set). Optional on the type so test mocks predating the fields
-      // don't need touching; production /me always emits them (null when
-      // unset). cic's SettingsDrawer identity editor reads + writes these.
-      ident?: string | null;
-      realname?: string | null;
-      // #211 phase 6 — `network_slug` DROPPED. A visitor is multi-network
-      // now; per-network attachment (slug + nick + connection_state)
-      // lives on the GET /networks rows, not the singular /me scalar.
-      // Mirrors the server-side `Grappa.Visitors.Wire` drop.
+      // #211 phase 7 — `nick`/`ident`/`realname` DROPPED from the subject.
+      // A visitor is multi-network; per-network identity (nick/ident/
+      // realname) lives on the GET /networks rows, not the identity-wide
+      // /me scalar. Mirrors the server-side `Grappa.Visitors.Wire` drop.
       // S16 — mirror the server contract: `me_json.ex` renders
       // `DateTime.t() | nil` (generated `VisitorsWireT.expires_at:
-      // string | null`). NickServ-registered visitors carry
-      // `expires_at = NULL` ("indefinite"); typing it non-null would
-      // give any future countdown `new Date(null)`. Matches the
-      // sibling `AdminVisitor.expires_at: string | null`.
+      // string | null`). Post-phase-7 a registered visitor keeps its
+      // anon-shaped `expires_at` (registration is derived from the
+      // credentials, not a cleared TTL); legacy permanent rows carry
+      // `expires_at = NULL` ("indefinite").
       expires_at: string | null;
-      // #126 — `registered` = NickServ identity present (the detach /
-      // disconnect gate). Optional so test mocks predating the field
-      // don't need touching; production /me always emits it.
-      //
-      // #211 phase 6 — the singular `connected` scalar is DROPPED. A
-      // visitor is multi-network now; per-network live status lives on
-      // the GET /networks rows' `connection_state` (ruling A/D). Mirrors
-      // the server-side MeJSON drop.
+      // `registered` = NickServ identity present (the detach / quit gate).
+      // #211 phase 7 — DERIVED server-side (≥1 credential with a committed
+      // NickServ secret), not a stored flag; cic just reads the boolean.
+      // Optional so test mocks predating the field don't need touching;
+      // production /me always emits it.
       registered?: boolean;
       read_cursors?: ReadCursorsEnvelope;
       // Bucket C (2026-06-01) — visitors get the same envelope shape;
@@ -257,11 +248,13 @@ export type MeResponse =
       home_data?: HomeData;
     };
 
-// Display-nick for a `MeResponse` — `user.name` for users,
-// `visitor.nick` for visitors. Centralizes the discriminant so
-// callers (ScrollbackPane self-highlight, mention-match) don't
-// repeat the per-kind branch. Mirror of server-side
-// `auth.socketUserName()` selection at the rendering layer.
+// Display-nick for a `MeResponse` — `user.name` for users. #211 phase 7 —
+// a visitor has NO identity-wide nick (per-network identity lives on the
+// GET /networks rows), so the visitor branch returns the generic "Visitor"
+// label. For any per-network "what is my nick here" use
+// `ownNickForNetwork(net, me)`; for a visitor display label that needs a
+// concrete nick (delete-confirmation), resolve the anchor row's nick at the
+// call site via `visitorAnchorNick(networks)`.
 //
 // **WARNING** — for "what is my IRC nick on THIS network", use
 // `ownNickForNetwork(net, me)` instead. `displayNick(me)` returns
@@ -275,7 +268,19 @@ export type MeResponse =
 // which equals `channel:<accountName>`, cic subscribes to the wrong
 // topic and re-keys messages to the wrong window).
 export function displayNick(me: MeResponse): string {
-  return me.kind === "user" ? me.name : me.nick;
+  return me.kind === "user" ? me.name : "Visitor";
+}
+
+// #211 phase 7 — a visitor's representative display nick: the anchor
+// (lowest-id) network row's nick, or null when the visitor holds no
+// networks. Used where a concrete visitor label is needed (the
+// SettingsDrawer delete-confirmation text) now that the subject carries no
+// identity-wide nick.
+export function visitorAnchorNick(networks: Network[]): string | null {
+  const anchor = networks
+    .filter((n) => n.kind === "visitor")
+    .reduce<Network | null>((lo, n) => (lo == null || n.id < lo.id ? n : lo), null);
+  return anchor?.nick ?? null;
 }
 
 // Per-network own IRC nick — the canonical answer to "which nick am I
@@ -346,6 +351,12 @@ export type UserNetwork = {
   // (`lib/networks.ts` resource fetch) instead of the consumption
   // boundary (every callsite that reads `.nick`).
   nick: string;
+  // #211 phase 7 — per-network IRC ident + realname (both nullable until
+  // set) now ride the GET /networks rows so the SettingsDrawer per-network
+  // identity editor can seed its inputs for BOTH subjects. The wire change
+  // the phase-6 visitor editor deferred to "the phase-7 convergence".
+  ident: string | null;
+  realname: string | null;
   // T32 connection-state fields — REQUIRED for user subjects. Default
   // for a freshly-bound credential is "connected". `failed` is a
   // server-set transition (admission failure / network unreachable);
@@ -372,6 +383,11 @@ export type VisitorNetwork = {
   // users, persistent across reboot). Only `kind` differs from
   // UserNetwork.
   nick: string;
+  // #211 phase 7 — per-network ident + realname (see UserNetwork). A
+  // visitor's identity is per-network now; the SettingsDrawer editor seeds
+  // + edits these via PATCH /networks/:id/identity.
+  ident: string | null;
+  realname: string | null;
   connection_state: ConnectionState;
   connection_state_reason: string | null;
   connection_state_changed_at: string | null;
@@ -400,6 +416,11 @@ export type RawNetwork = {
   id: number;
   slug: string;
   nick?: string;
+  // #211 phase 7 — per-network ident + realname (nullable). Optional on the
+  // raw type for legacy fixtures / mid-rollout servers that predate them;
+  // `tagNetwork` defaults a missing value to null.
+  ident?: string | null;
+  realname?: string | null;
   connection_state?: ConnectionState;
   connection_state_reason?: string | null;
   connection_state_changed_at?: string | null;
@@ -442,6 +463,8 @@ export function tagNetwork(raw: RawNetwork): Network | null {
     id: raw.id,
     slug: raw.slug,
     nick: raw.nick,
+    ident: raw.ident ?? null,
+    realname: raw.realname ?? null,
     connection_state: raw.connection_state,
     connection_state_reason: raw.connection_state_reason ?? null,
     connection_state_changed_at: raw.connection_state_changed_at ?? null,
@@ -1397,41 +1420,10 @@ export async function me(token: string): Promise<MeResponse> {
   return (await res.json()) as MeResponse;
 }
 
-// #152 — response for `PATCH /me/identity`. The updated visitor identity
-// (kind + nick + ident + realname + connected). Mirror of
-// `GrappaWeb.MeJSON.identity/1`.
-export type IdentityResponse = {
-  kind: "visitor";
-  id: string;
-  nick: string;
-  ident: string | null;
-  realname: string | null;
-  // #211 phase 6 — `network_slug` DROPPED from the visitor wire (the
-  // `PATCH /me/identity` response delegates to `VisitorsWire.visitor_to_json`,
-  // which no longer emits it). `connected` still rides this identity-wide
-  // response (the /me/identity door keeps it until phase 7's convergence).
-  expires_at: string | null;
-  registered: boolean;
-  connected: boolean;
-};
-
-// #152 — set the visitor's user-settable IRC identity (ident + realname),
-// live-applied via internal reconnect. Visitor-only (users 403). Both
-// fields optional; an omitted field is left unchanged server-side. The
-// server sanitizes ident (leading-`~` strip) + shape-validates; a bad
-// value surfaces as a 422 ApiError the caller renders inline.
-export async function updateIdentity(
-  token: string,
-  body: { ident?: string; realname?: string },
-): Promise<IdentityResponse> {
-  const res = await fetch("/me/identity", {
-    method: "PATCH",
-    headers: buildHeaders(token),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw await readError(res);
-  return (await res.json()) as IdentityResponse;
-}
+// #211 phase 7 — `PATCH /me/identity` + its `IdentityResponse` are RETIRED.
+// Visitor identity editing is per-network now via `updateNetworkIdentity`
+// below (the subject-agnostic `PATCH /networks/:slug/identity` door), the
+// same door users use.
 
 // M-cluster M-8 — admin Visitors tab wire types + fetch wrappers.
 // Mirror of `Grappa.Visitors.AdminWire.t()`
@@ -1463,15 +1455,27 @@ export type AdminLiveState = {
 
 export type AdminVisitorLiveState = AdminLiveState;
 
+// #211 phase 7 — per-network entry inside an AdminVisitor. A visitor is
+// multi-network; each attached network carries its own nick +
+// connection_state + live_state (`null` = the U-0 honesty signal). Mirror
+// of `Grappa.Visitors.AdminWire.network_json/0`.
+export type AdminVisitorNetwork = {
+  network_slug: string;
+  nick: string;
+  connection_state: ConnectionState;
+  live_state: AdminVisitorLiveState | null;
+};
+
+// #211 phase 7 — the admin visitor row is identity-wide + a per-network
+// list (was flat `{nick, network_slug, live_state}`). `identified` derives
+// server-side from the credentials (any network holds a NickServ secret).
 export type AdminVisitor = {
   id: string;
-  nick: string;
-  network_slug: string;
   expires_at: string | null;
   identified: boolean;
   ip: string | null;
   inserted_at: string;
-  live_state: AdminVisitorLiveState | null;
+  networks: AdminVisitorNetwork[];
 };
 
 export type AdminVisitorsResponse = { visitors: AdminVisitor[] };

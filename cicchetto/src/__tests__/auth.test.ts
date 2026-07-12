@@ -144,14 +144,22 @@ describe("auth signal store", () => {
       expect(localStorage.getItem("grappa-subject")).toBeNull();
     });
 
-    it("returns null + clears key on tampered visitor (missing nick)", async () => {
-      localStorage.setItem(
-        "grappa-subject",
-        JSON.stringify({ kind: "visitor", id: "v1" }),
-      );
+    it("returns null + clears key on tampered visitor (missing id)", async () => {
+      // #211 phase 7 — `nick` is DROPPED from the visitor subject, so the
+      // only required field is `id`. A subject with a missing/non-string
+      // id is the tamper case now.
+      localStorage.setItem("grappa-subject", JSON.stringify({ kind: "visitor" }));
       const auth = await import("../lib/auth");
       expect(auth.getSubject()).toBeNull();
       expect(localStorage.getItem("grappa-subject")).toBeNull();
+    });
+
+    it("returns valid visitor subject with no nick (#211 phase 7 — nick dropped)", async () => {
+      localStorage.setItem("grappa-subject", JSON.stringify({ kind: "visitor", id: "v1" }));
+      const auth = await import("../lib/auth");
+      const s = auth.getSubject();
+      expect(s?.kind).toBe("visitor");
+      expect(s?.id).toBe("v1");
     });
 
     it("returns null + clears key on unknown kind", async () => {

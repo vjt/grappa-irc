@@ -1,6 +1,12 @@
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
 import InlineConfirmButton from "./InlineConfirmButton";
-import { type AdminVisitor, ApiError, adminDeleteVisitor, adminListVisitors } from "./lib/api";
+import {
+  type AdminVisitor,
+  type AdminVisitorNetwork,
+  ApiError,
+  adminDeleteVisitor,
+  adminListVisitors,
+} from "./lib/api";
 import { token } from "./lib/auth";
 
 // M-cluster M-8 — Visitors admin tab. Fetches GET /admin/visitors
@@ -131,9 +137,8 @@ const AdminVisitorsTab: Component = () => {
         <table class="admin-visitors-table" data-testid="admin-visitors-table">
           <thead>
             <tr>
-              <th>state</th>
-              <th>nick</th>
-              <th>network</th>
+              <th>identified</th>
+              <th>networks (state · nick)</th>
               <th>ip</th>
               <th>expires</th>
               <th>joined</th>
@@ -144,11 +149,32 @@ const AdminVisitorsTab: Component = () => {
             <For each={visitors() ?? []}>
               {(v) => (
                 <tr class="admin-visitors-row" data-testid={`admin-visitor-row-${v.id}`}>
+                  <td>{v.identified ? "yes" : "no"}</td>
                   <td>
-                    <LiveBadge live={v.live_state} />
+                    {/* #211 phase 7 — a visitor is multi-network; render
+                        one line per attached network with its own
+                        live-state badge + nick + slug. Empty = a
+                        credential-less identity. */}
+                    <Show
+                      when={v.networks.length > 0}
+                      fallback={<span class="muted">no networks</span>}
+                    >
+                      <ul class="admin-visitor-networks">
+                        <For each={v.networks}>
+                          {(net) => (
+                            <li data-testid={`admin-visitor-network-${v.id}-${net.network_slug}`}>
+                              <LiveBadge live={net.live_state} />
+                              <span class="admin-visitor-network-nick">{net.nick}</span>
+                              <span class="admin-visitor-network-slug">{net.network_slug}</span>
+                              <span class="admin-visitor-network-state">
+                                {net.connection_state}
+                              </span>
+                            </li>
+                          )}
+                        </For>
+                      </ul>
+                    </Show>
                   </td>
-                  <td>{v.nick}</td>
-                  <td>{v.network_slug}</td>
                   <td>{v.ip ?? "—"}</td>
                   <td>{renderExpires(v)}</td>
                   <td>{renderInserted(v.inserted_at)}</td>
@@ -176,7 +202,7 @@ const AdminVisitorsTab: Component = () => {
 // M-8 live_state badge — three visual states. M-9 will add a
 // detail surface for mailbox_len / memory_bytes / pid_inspect /
 // introspection_degraded; M-8 keeps the per-row rendering minimal.
-const LiveBadge: Component<{ live: AdminVisitor["live_state"] }> = (props) => {
+const LiveBadge: Component<{ live: AdminVisitorNetwork["live_state"] }> = (props) => {
   if (props.live === null) {
     // U-0 honesty signal per `feedback_no_silent_drops_closed`.
     // DB intent active, BEAM has no pid for this visitor.

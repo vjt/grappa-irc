@@ -162,14 +162,14 @@ function isValidSubject(v: unknown): v is api.Subject {
   if (r.kind === "visitor") {
     return (
       typeof r.id === "string" &&
-      typeof r.nick === "string" &&
-      // #211 phase 6 — `network_slug` DROPPED from the visitor subject
-      // (visitors are multi-network now; per-network attachment lives on
-      // GET /networks). Guarding it here would fail every persisted
-      // pre-drop AND post-drop subject → logout loop. Not validated.
-      // #126 — `registered` is optional for backward compat: a subject
-      // persisted before the field landed still validates (read as
-      // not-registered). When present it MUST be a boolean.
+      // #211 phase 7 — `nick` DROPPED from the visitor subject too
+      // (network_slug went in phase 6). A visitor is multi-network;
+      // per-network identity lives on GET /networks. Guarding nick here
+      // would fail every persisted pre-drop AND post-drop subject → logout
+      // loop. Not validated.
+      // `registered` is optional for backward compat: a subject persisted
+      // before the field landed still validates (read as not-registered).
+      // When present it MUST be a boolean.
       (r.registered === undefined || typeof r.registered === "boolean")
     );
   }

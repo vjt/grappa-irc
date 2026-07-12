@@ -1,8 +1,8 @@
 import { type Component, createResource, createSignal, For, Show } from "solid-js";
 import {
-  addNetwork,
   ApiError,
   type AvailableNetworkRow,
+  addNetwork,
   getFeaturedChannels,
   patchNetwork,
   postJoin,
@@ -129,8 +129,8 @@ const HomeVisitorWelcome: Component = () => (
     <h2 class="home-pane-title">Welcome to Grappa</h2>
     <p>
       Grappa is an always-on IRC bouncer. Pick a channel and start talking — while your session
-      stays open the bouncer keeps you connected, so you can close this tab and reopen it right where
-      you left off.
+      stays open the bouncer keeps you connected, so you can close this tab and reopen it right
+      where you left off.
     </p>
     <p class="muted">
       You're here as a guest. A visitor session is ephemeral: when it expires, its scrollback goes

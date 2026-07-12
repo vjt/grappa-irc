@@ -39,72 +39,91 @@ import AdminVisitorsTab from "../AdminVisitorsTab";
 
 const ALIVE: AdminVisitor = {
   id: "00000000-0000-0000-0000-000000000001",
-  nick: "alice",
-  network_slug: "azzurra",
   expires_at: "2099-01-01T00:00:00Z",
   identified: false,
   ip: "1.2.3.4",
   inserted_at: "2026-05-16T00:00:00Z",
-  live_state: {
-    alive: true,
-    pid_inspect: "#PID<0.123.0>",
-    mailbox_len: 0,
-    memory_bytes: 100_000,
-    joined_channels: ["#a", "#b"],
-    introspection_degraded: [],
-  },
+  networks: [
+    {
+      network_slug: "azzurra",
+      nick: "alice",
+      connection_state: "connected",
+      live_state: {
+        alive: true,
+        pid_inspect: "#PID<0.123.0>",
+        mailbox_len: 0,
+        memory_bytes: 100_000,
+        joined_channels: ["#a", "#b"],
+        introspection_degraded: [],
+      },
+    },
+  ],
 };
 
 const ORPHANED: AdminVisitor = {
   id: "00000000-0000-0000-0000-000000000002",
-  nick: "bob",
-  network_slug: "azzurra",
   expires_at: "2099-01-01T00:00:00Z",
   identified: false,
   ip: "5.6.7.8",
   inserted_at: "2026-05-16T00:00:00Z",
-  // U-0 honesty signal: DB intent says active, BEAM has no pid.
-  live_state: null,
+  networks: [
+    {
+      network_slug: "azzurra",
+      nick: "bob",
+      connection_state: "connected",
+      // U-0 honesty signal: DB intent says active, BEAM has no pid.
+      live_state: null,
+    },
+  ],
 };
 
 const DEAD: AdminVisitor = {
   id: "00000000-0000-0000-0000-000000000003",
-  nick: "carol",
-  network_slug: "azzurra",
   expires_at: "2099-01-01T00:00:00Z",
   identified: false,
   ip: null,
   inserted_at: "2026-05-16T00:00:00Z",
-  live_state: {
-    alive: false,
-    pid_inspect: "#PID<0.999.0>",
-    mailbox_len: 0,
-    memory_bytes: 100_000,
-    joined_channels: null,
-    introspection_degraded: ["joined_channels"],
-  },
+  networks: [
+    {
+      network_slug: "azzurra",
+      nick: "carol",
+      connection_state: "connected",
+      live_state: {
+        alive: false,
+        pid_inspect: "#PID<0.999.0>",
+        mailbox_len: 0,
+        memory_bytes: 100_000,
+        joined_channels: null,
+        introspection_degraded: ["joined_channels"],
+      },
+    },
+  ],
 };
 
-// Bucket D — NickServ-identified visitor: server cleared expires_at
-// after +r MODE observation (V7 semantics, `commit_password_changeset/3`
-// in visitor.ex). Persists forever; the row must surface the WHY of
-// the indefinite expiration so the operator doesn't read it as a bug.
+// Bucket D — NickServ-identified visitor: `identified: true` (derived
+// server-side from the credentials) + `expires_at: null` (legacy permanent
+// shape). The row must surface the WHY of the indefinite expiration.
 const NICKSERV_IDENTIFIED: AdminVisitor = {
   id: "00000000-0000-0000-0000-000000000004",
-  nick: "M\\Grappa",
-  network_slug: "azzurra",
   expires_at: null,
   identified: true,
   ip: "9.10.11.12",
   inserted_at: "2026-05-16T00:00:00Z",
-  live_state: {
-    alive: true,
-    pid_inspect: "#PID<0.555.0>",
-    mailbox_len: 0,
-    memory_bytes: 100_000,
-    joined_channels: ["#italia"],
-    introspection_degraded: [],
-  },
+  networks: [
+    {
+      network_slug: "azzurra",
+      nick: "M\\Grappa",
+      connection_state: "connected",
+      live_state: {
+        alive: true,
+        pid_inspect: "#PID<0.555.0>",
+        mailbox_len: 0,
+        memory_bytes: 100_000,
+        joined_channels: ["#italia"],
+        introspection_degraded: [],
+      },
+    },
+  ],
 };
 
 beforeEach(() => {

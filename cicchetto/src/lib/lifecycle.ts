@@ -1,6 +1,6 @@
 import {
   deleteAccount as apiDeleteAccount,
-  updateIdentity as apiUpdateIdentity,
+  updateNetworkIdentity as apiUpdateNetworkIdentity,
 } from "./api";
 import { clearLocalAuth, getSubject, logout, token } from "./auth";
 import { refetchUser } from "./networks";
@@ -70,19 +70,23 @@ export async function quit(): Promise<void> {
 }
 
 /**
- * updateIdentity — #152 set the visitor's IRC ident + realname,
- * live-applied via internal reconnect. Registered/anon visitor only
- * (the server 403s users). Refetches `/me` so the SettingsDrawer
- * reflects the persisted values.
+ * updateIdentity — #211 phase 7 — set a visitor's PER-NETWORK IRC identity
+ * (nick + ident + realname) on `networkSlug`, live-applied server-side via
+ * internal reconnect (`PATCH /networks/:slug/identity`, the subject-agnostic
+ * door that replaced the retired `PATCH /me/identity`). Refetches `/me` so
+ * the SettingsDrawer reflects the persisted values.
  *
- * Errors PROPAGATE (unlike quit/logout): a 422 (bad ident) must surface
- * so the drawer can render the inline validation message instead of
+ * Errors PROPAGATE (unlike quit/logout): a 422 (bad nick/ident) must
+ * surface so the drawer can render the inline validation message instead of
  * silently swallowing the change.
  */
-export async function updateIdentity(fields: { ident?: string; realname?: string }): Promise<void> {
+export async function updateIdentity(
+  networkSlug: string,
+  fields: { nick?: string; ident?: string; realname?: string },
+): Promise<void> {
   const t = token();
   if (t === null) return;
-  await apiUpdateIdentity(t, fields);
+  await apiUpdateNetworkIdentity(t, networkSlug, fields);
   refetchUser();
 }
 

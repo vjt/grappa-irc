@@ -1,6 +1,6 @@
 import type { Channel } from "phoenix";
 import { createEffect, createRoot, on, untrack } from "solid-js";
-import { assertNever, type ChannelEvent, displayNick, ownNickForNetwork } from "./api";
+import { assertNever, type ChannelEvent, ownNickForNetwork } from "./api";
 import { socketUserName, token } from "./auth";
 import { incrementBadge, setBadge } from "./badge";
 import { playBeep } from "./beep";
@@ -250,7 +250,13 @@ createRoot(() => {
       !nickEquals(message.sender, ownNick)
     ) {
       const u = untrack(user);
-      if (u && mentionsUser(message.body, displayNick(u))) {
+      // #211 phase 7 — mention-match on the PER-NETWORK own nick (`ownNick`,
+      // already threaded into this handler), NOT the retired identity-wide
+      // `displayNick(u)` (a visitor has no single nick now). `ownNick` is
+      // the credential nick for this network — the correct "is this a
+      // mention of ME here" key. Guard on `u` so a not-yet-loaded /me still
+      // skips (same as before).
+      if (u && ownNick != null && mentionsUser(message.body, ownNick)) {
         bumpMention(key);
         playBeep();
         // PWA icon badge: optimistic foreground bump so the desktop

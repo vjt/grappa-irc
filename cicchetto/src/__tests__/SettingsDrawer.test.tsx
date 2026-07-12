@@ -40,25 +40,30 @@ vi.mock("../lib/auth", () => ({
 // lib/lifecycle.test.ts. We mock the api verbs the drawer touches
 // (updateIdentity) so a click doesn't hit the network.
 vi.mock("../lib/api", () => ({
-  // #152 — the identity editor PATCHes /me/identity via lib/lifecycle's
-  // updateIdentity, which calls api.updateIdentity. Stub so the click
-  // doesn't hit the network + the call is observable.
-  updateIdentity: vi.fn().mockResolvedValue({
-    kind: "visitor",
-    id: "v1",
+  // #211 phase 7 — the identity editor PATCHes /networks/:slug/identity via
+  // lib/lifecycle's updateIdentity, which calls api.updateNetworkIdentity.
+  // Stub so the click doesn't hit the network + the call is observable.
+  updateNetworkIdentity: vi.fn().mockResolvedValue({
+    network: "azzurra",
     nick: "vjt",
     ident: "grp",
     realname: "Real Name",
-    expires_at: null,
-    registered: true,
+    auth_method: "none",
   }),
   // The drawer imports ApiError for the identity-save catch (instanceof
   // narrowing). A minimal class stand-in keeps the import resolvable.
   ApiError: class ApiError extends Error {},
   // #157 — the drawer derives the delete-account confirm text from
-  // displayNick(me). Mirror the production discriminant.
-  displayNick: (me: { kind: "user"; name: string } | { kind: "visitor"; nick: string }) =>
-    me.kind === "user" ? me.name : me.nick,
+  // displayNick(me) (user) / visitorAnchorNick(networks) (visitor).
+  displayNick: (me: { kind: "user"; name: string } | { kind: "visitor" }) =>
+    me.kind === "user" ? me.name : "Visitor",
+  visitorAnchorNick: (nets: Array<{ kind: string; id: number; nick: string }>) =>
+    nets
+      .filter((n) => n.kind === "visitor")
+      .reduce<{ id: number; nick: string } | null>(
+        (lo, n) => (lo == null || n.id < lo.id ? n : lo),
+        null,
+      )?.nick ?? null,
 }));
 
 // Issue #43 — "quit IRC" composite (park all user-networks + logout)
@@ -89,8 +94,31 @@ const meHolder = vi.hoisted(() => ({
       }
     | null,
 }));
+// #211 phase 7 — the visitor's network rows (identity editor anchor +
+// delete-confirm nick source). Default: one azzurra visitor row.
+const networksHolder = vi.hoisted(() => ({
+  current: [
+    {
+      kind: "visitor" as const,
+      id: 1,
+      slug: "azzurra",
+      nick: "vjt",
+      ident: null as string | null,
+      realname: null as string | null,
+      connection_state: "connected" as const,
+      connection_state_reason: null as string | null,
+      connection_state_changed_at: null as string | null,
+      inserted_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    },
+  ] as unknown[],
+}));
 vi.mock("../lib/networks", () => ({
   user: () => meHolder.current,
+  // #211 phase 7 — the identity editor + delete-confirm read the visitor's
+  // network rows (anchor nick + per-network ident/realname seed). Stub a
+  // single azzurra visitor row so the editor has an anchor to target.
+  networks: () => networksHolder.current,
   // #126 — disconnect/reconnect refetch /me; the drawer imports this via
   // lib/lifecycle. Stub so the import resolves + the verb is observable.
   refetchUser: vi.fn(),
@@ -705,26 +733,43 @@ describe("SettingsDrawer (#126 — registered-visitor lifecycle verbs)", () => {
     expect(screen.queryByText(/^log out$/i)).toBeNull();
   });
 
-  it("#152 — identity editor seeds from /me, two-tap apply calls api.updateIdentity", async () => {
+  it("#211 phase 7 — identity editor seeds from the anchor network row, two-tap apply calls api.updateNetworkIdentity", async () => {
     const api = await import("../lib/api");
     meHolder.current = {
       kind: "visitor",
       id: "v1",
       nick: "vjt",
       expires_at: "2099-01-01T00:00:00Z",
-      ident: "grp",
-      realname: "Seed Name",
       registered: true,
     };
+    // Seed the anchor network row's identity fields.
+    networksHolder.current = [
+      {
+        kind: "visitor" as const,
+        id: 1,
+        slug: "azzurra",
+        nick: "vjt",
+        ident: "grp" as string | null,
+        realname: "Seed Name" as string | null,
+        connection_state: "connected" as const,
+        connection_state_reason: null as string | null,
+        connection_state_changed_at: null as string | null,
+        inserted_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    ];
     wrap(true);
 
-    // Fields seed from /me on open.
+    // Fields seed from the anchor network row on open.
+    const nickInput = screen.getByLabelText(/^nick$/i) as HTMLInputElement;
     const identInput = screen.getByLabelText(/^ident$/i) as HTMLInputElement;
     const realnameInput = screen.getByLabelText(/real name/i) as HTMLInputElement;
+    expect(nickInput.value).toBe("vjt");
     expect(identInput.value).toBe("grp");
     expect(realnameInput.value).toBe("Seed Name");
 
     // Edit + two-tap apply (arm, then confirm).
+    fireEvent.input(nickInput, { target: { value: "vjt2" } });
     fireEvent.input(identInput, { target: { value: "newid" } });
     fireEvent.input(realnameInput, { target: { value: "New Name" } });
     const applyBtn = screen.getByTestId("settings-identity-apply");
@@ -732,7 +777,8 @@ describe("SettingsDrawer (#126 — registered-visitor lifecycle verbs)", () => {
     fireEvent.click(applyBtn); // confirm
 
     await waitFor(() => {
-      expect(api.updateIdentity).toHaveBeenCalledWith("test-bearer", {
+      expect(api.updateNetworkIdentity).toHaveBeenCalledWith("test-bearer", "azzurra", {
+        nick: "vjt2",
         ident: "newid",
         realname: "New Name",
       });

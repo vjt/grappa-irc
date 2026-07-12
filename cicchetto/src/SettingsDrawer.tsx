@@ -10,12 +10,12 @@ import {
 } from "solid-js";
 import DeleteAccountModal from "./DeleteAccountModal";
 import InlineConfirmButton from "./InlineConfirmButton";
-import { ApiError, displayNick } from "./lib/api";
+import { ApiError, displayNick, type Network, visitorAnchorNick } from "./lib/api";
 import { getSubject, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { detach, quit, updateIdentity } from "./lib/lifecycle";
-import { isAdmin, user } from "./lib/networks";
+import { isAdmin, networks, user } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
   deletePushSubscription,
@@ -115,11 +115,15 @@ const SettingsDrawer: Component<Props> = (props) => {
     return u.registered === true;
   };
   // The exact string the operator must type to arm deletion — account
-  // name (user) or nick (visitor). Empty when /me hasn't loaded (the
-  // button is withheld in that state anyway).
+  // name (user) or the visitor's anchor-network nick (visitor). #211
+  // phase 7 — a visitor has no identity-wide nick, so use the anchor
+  // (lowest-id) network row's nick. Empty when /me or /networks hasn't
+  // loaded (the button is withheld in that state anyway).
   const deleteConfirmationText = (): string => {
     const u = user();
-    return u ? displayNick(u) : "";
+    if (!u) return "";
+    if (u.kind === "user") return displayNick(u);
+    return visitorAnchorNick(networks() ?? []) ?? "";
   };
   // Comma-separated UI shadows for the two whitelist text inputs — the
   // server stores normalized lists; cic edits are joined with ", " and
@@ -164,11 +168,21 @@ const SettingsDrawer: Component<Props> = (props) => {
   // is `quit`). The `visitorConnected()` accessor (read the singular /me
   // `connected` scalar) went with them — the scalar is dropped from /me.
 
-  // #152 — visitor identity editor (ident + realname), live-applied via
-  // PATCH /me/identity → internal reconnect. Visitor-only. The text
-  // shadows seed from /me on drawer open; a save PATCHes then refetches
-  // /me so `user()` reflects the persisted values. A 422 (bad ident)
-  // surfaces inline via `identityError`.
+  // #211 phase 7 — per-network identity editor (nick + ident + realname),
+  // live-applied via PATCH /networks/:slug/identity → internal reconnect.
+  // A visitor is multi-network with no identity-wide nick, so the editor
+  // targets the visitor's ANCHOR network (lowest-id row) — the minimal
+  // viable per-network editor. The text shadows seed from that network's
+  // GET /networks row on drawer open; a save PATCHes then refetches /me +
+  // /networks. A 422 (bad nick/ident) surfaces inline via `identityError`.
+  const visitorAnchor = (): Network | null => {
+    const list = networks() ?? [];
+    return list
+      .filter((n) => n.kind === "visitor")
+      .reduce<Network | null>((lo, n) => (lo == null || n.id < lo.id ? n : lo), null);
+  };
+
+  const [nickText, setNickText] = createSignal("");
   const [identText, setIdentText] = createSignal("");
   const [realnameText, setRealnameText] = createSignal("");
   const [identitySaving, setIdentitySaving] = createSignal(false);
@@ -179,19 +193,21 @@ const SettingsDrawer: Component<Props> = (props) => {
   // (session bounces), so it gets the same confirm gate as quit.
   const [identityArmed, setIdentityArmed] = createSignal(false);
 
-  // Seed the identity fields from /me ONCE per open-session — on the
-  // open transition, or (if /me hadn't loaded yet at open) the first time
-  // `user()` resolves to a visitor while open. `identitySeeded` latches
-  // after the first seed so a later /me refetch (the post-apply refetch,
-  // or an unrelated disconnect/reconnect verb) never clobbers the
-  // visitor's in-progress typing. Reset on close (see the close effect).
+  // Seed the identity fields from the visitor's ANCHOR network row ONCE per
+  // open-session — on the open transition, or (if /networks hadn't loaded
+  // yet at open) the first time the anchor resolves while open.
+  // `identitySeeded` latches after the first seed so a later refetch never
+  // clobbers the visitor's in-progress typing. Reset on close (see the
+  // close effect).
   const [identitySeeded, setIdentitySeeded] = createSignal(false);
   createEffect(() => {
     if (!props.open || identitySeeded()) return;
-    const u = user();
-    if (u?.kind === "visitor") {
-      setIdentText(u.ident ?? "");
-      setRealnameText(u.realname ?? "");
+    if (getSubject()?.kind !== "visitor") return;
+    const anchor = visitorAnchor();
+    if (anchor) {
+      setNickText(anchor.nick);
+      setIdentText(anchor.ident ?? "");
+      setRealnameText(anchor.realname ?? "");
       setIdentitySeeded(true);
     }
   });
@@ -200,14 +216,20 @@ const SettingsDrawer: Component<Props> = (props) => {
     setIdentityArmed(false);
     setIdentityError(null);
     setIdentitySaved(false);
+    const anchor = visitorAnchor();
+    if (!anchor) return;
     setIdentitySaving(true);
     try {
-      // Send both fields; blank clears back to the server default
-      // (ident → nick, realname → "Grappa Visitor"). Empty string is a
-      // legitimate "unset" intent here, distinct from login-Advance where
-      // blank means "don't set" — the settings editor is the canonical
-      // edit surface, so it owns the full value including clear.
-      await updateIdentity({ ident: identText(), realname: realnameText() });
+      // Send all three fields; blank ident/realname clears back to the
+      // server default (ident → nick, realname → "Grappa Visitor"). Empty
+      // string is a legitimate "unset" intent here — the settings editor is
+      // the canonical edit surface, so it owns the full value including
+      // clear. Nick is required (the credential can't be nickless).
+      await updateIdentity(anchor.slug, {
+        nick: nickText(),
+        ident: identText(),
+        realname: realnameText(),
+      });
       setIdentitySaved(true);
     } catch (err) {
       setIdentityError(
@@ -753,11 +775,23 @@ const SettingsDrawer: Component<Props> = (props) => {
         </Show>
 
         <Show when={isVisitor()}>
-          {/* #152 — visitor identity editor. Saving PATCHes /me/identity
-              which live-applies via internal reconnect (the session
-              bounces + rejoins). The confirm-armed save communicates the
-              reconnect cost; a 422 renders inline. */}
+          {/* #211 phase 7 — per-network visitor identity editor (targets
+              the anchor network). Saving PATCHes /networks/:slug/identity
+              which live-applies via internal reconnect (the session bounces
+              + rejoins). The confirm-armed save communicates the reconnect
+              cost; a 422 renders inline. */}
           <div class="settings-identity" data-testid="settings-identity">
+            <label for="settings-nick">Nick</label>
+            <input
+              id="settings-nick"
+              type="text"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck={false}
+              value={nickText()}
+              onInput={(e) => setNickText(e.currentTarget.value)}
+            />
+
             <label for="settings-realname">Real name</label>
             <input
               id="settings-realname"
