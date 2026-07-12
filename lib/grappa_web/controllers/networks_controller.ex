@@ -52,7 +52,7 @@ defmodule GrappaWeb.NetworksController do
 
   alias Grappa.Accounts.User
   alias Grappa.IRC.Identifier
-  alias Grappa.{Networks, Session}
+  alias Grappa.{Networks, Session, Visitors}
   alias Grappa.Networks.{Credential, Credentials, SessionPlan}
   alias Grappa.Visitors.Visitor
 
@@ -133,6 +133,50 @@ defmodule GrappaWeb.NetworksController do
            fetch_credential(conn.assigns.current_subject, conn.assigns.network),
          {:ok, updated_cred} <-
            apply_transition(conn, conn.assigns.current_subject, credential, target_state, reason) do
+      render(conn, :update, credential: updated_cred)
+    end
+  end
+
+  @doc """
+  `PATCH /networks/:network_id/identity` — #211 phase 6 (ruling E, subsumes
+  original #211): per-network IRC identity edit (`nick` + `ident` +
+  `realname`) for BOTH subjects, live-applied via an internal reconnect.
+
+  Identity is per-`(subject, network)` credential (the same nick may be
+  in use on other networks), so this edits ONE network's credential. The
+  `ResolveNetwork` plug asserts ownership (a caller with no credential on
+  the network 404s). On success the upstream is RE-REGISTERED so the new
+  ident/realname/nick take effect: ident/realname ride the once-only USER
+  line (no live verb), so applying to a live session means a bounce — via
+  the shared `SpawnOrchestrator.reconnect/5` (phase 5), wrapped HERE in
+  the web layer (never the Networks context — that closes the
+  `Networks → SpawnOrchestrator → Admission → Networks` Boundary cycle,
+  DESIGN_NOTES 2026-07-11). A parked/no-live-session edit persists only;
+  the next spawn reads the row.
+
+  Visitor primary-network dual-write: a visitor's `find_or_provision_anon`
+  login-lookup still keys on the visitor-row `(fold(nick), network_slug)`
+  scalar for the PRIMARY network (phase-7 drops it). So when the edited
+  network IS the visitor's primary, the scalar identity fields are
+  dual-written to keep login resolving. Accreted (non-primary) networks
+  are credential-only. Users have no such scalar.
+
+  Body: `{nick?, ident?, realname?}` — all optional. 200 with the updated
+  credential; 422 on validation (bad nick / folded-nick collision); 404
+  if the credential vanished; 401 without a Bearer.
+  """
+  @spec identity(Plug.Conn.t(), map()) ::
+          Plug.Conn.t()
+          | {:error, :bad_request | :not_found | Ecto.Changeset.t()}
+  def identity(conn, params) do
+    subject = conn.assigns.current_subject
+    network = conn.assigns.network
+
+    with {:ok, attrs} <- parse_identity_attrs(params),
+         {:ok, credential} <- fetch_credential(subject, network),
+         {:ok, updated_cred} <- Credentials.update_credential_identity(credential, attrs) do
+      :ok = maybe_dual_write_visitor_scalar(subject, network, attrs)
+      :ok = live_apply_identity(subject, network, updated_cred)
       render(conn, :update, credential: updated_cred)
     end
   end
@@ -332,4 +376,106 @@ defmodule GrappaWeb.NetworksController do
   @spec connect_flow(GrappaWeb.Subject.t()) :: Grappa.Admission.flow()
   defp connect_flow({:user, _}), do: :patch_network_connect
   defp connect_flow({:visitor, _}), do: :visitor_reconnect
+
+  # ---------------------------------------------------------------------------
+  # PATCH /networks/:network_id/identity helpers (#211 phase 6, ruling E)
+  # ---------------------------------------------------------------------------
+
+  # Whitelist the three identity fields from the body. A key the caller
+  # OMITS is left out (no clobber); a present `""` passes through (a
+  # deliberate "clear to default" — the SessionPlan effective_* fallback
+  # applies). Same empty-string semantics as `MeController.identity_attrs/1`
+  # (the settings editor is the canonical edit surface). `nil` values are
+  # rejected (a JSON null for an identity field is malformed). Empty map is
+  # a valid no-op.
+  @spec parse_identity_attrs(map()) ::
+          {:ok, %{optional(:nick) => String.t(), optional(:ident) => String.t(), optional(:realname) => String.t()}}
+          | {:error, :bad_request}
+  defp parse_identity_attrs(params) do
+    Enum.reduce_while([{"nick", :nick}, {"ident", :ident}, {"realname", :realname}], {:ok, %{}}, fn
+      {string_key, atom_key}, {:ok, acc} ->
+        case Map.fetch(params, string_key) do
+          {:ok, v} when is_binary(v) -> {:cont, {:ok, Map.put(acc, atom_key, v)}}
+          {:ok, _} -> {:halt, {:error, :bad_request}}
+          :error -> {:cont, {:ok, acc}}
+        end
+    end)
+  end
+
+  # Visitor primary-network dual-write (see the `identity/2` moduledoc):
+  # keep the visitor-row scalar identity in sync with the credential on
+  # the PRIMARY network so `find_or_provision_anon`'s login-lookup
+  # `(fold(nick), network_slug)` still resolves. Reuses the existing
+  # `Visitors` verbs (`update_nick/2` + `update_identity/2`) which persist
+  # the row + sync-through; their own reconnect side effect is harmless
+  # (idempotent with the credential already written). No-op for users (no
+  # scalar) and for a visitor's NON-primary (accreted) network.
+  @spec maybe_dual_write_visitor_scalar(GrappaWeb.Subject.t(), Grappa.Networks.Network.t(), map()) ::
+          :ok
+  defp maybe_dual_write_visitor_scalar({:visitor, %Visitor{network_slug: slug} = visitor}, %{slug: slug}, attrs) do
+    # Primary network — the row scalar is the login-lookup key here.
+    _ = if Map.has_key?(attrs, :nick), do: Visitors.update_nick(visitor.id, attrs.nick)
+
+    ident_realname = Map.take(attrs, [:ident, :realname])
+    _ = if ident_realname != %{}, do: Visitors.update_identity(visitor, ident_realname)
+
+    :ok
+  end
+
+  defp maybe_dual_write_visitor_scalar(_, _, _), do: :ok
+
+  # Web-layer reconnect wrapper (NEVER the Networks context — Boundary
+  # cycle). Resolves the subject's plan for the network + bounces the
+  # LIVE session via `SpawnOrchestrator.reconnect/5` so the new
+  # ident/realname/nick re-register on a fresh USER line. The `whereis`
+  # guard keeps it to an already-live session (a parked/no-session edit
+  # persists only). Failures are logged, never surfaced — the identity is
+  # saved regardless of the bounce (mirrors `Visitors.maybe_reconnect_after_identity/1`).
+  @spec live_apply_identity(GrappaWeb.Subject.t(), Grappa.Networks.Network.t(), Credential.t()) ::
+          :ok
+  defp live_apply_identity(subject, %{id: network_id} = network, credential) do
+    session_subject = to_session_subject(subject)
+
+    with pid when is_pid(pid) <- Session.whereis(session_subject, network_id),
+         {:ok, plan} <- resolve_plan(subject, credential, network) do
+      case Grappa.SpawnOrchestrator.reconnect(
+             session_subject,
+             network_id,
+             plan,
+             identity_capacity_input(subject, network_id),
+             "applying identity change"
+           ) do
+        {:ok, _, _} ->
+          :ok
+
+        other ->
+          Logger.warning(
+            "PATCH /identity: reconnect failed (identity persisted) #{inspect(session_subject)}",
+            network_id: network_id,
+            error: inspect(other)
+          )
+
+          :ok
+      end
+    else
+      # No live session (parked / never connected) or unresolvable plan —
+      # persist-only; the next spawn reads the new identity.
+      _ -> :ok
+    end
+  end
+
+  # Mirror of `orchestrate_spawn/4`'s capacity_input for the identity
+  # bounce. `requesting_subject` self-excludes the caller's own session
+  # from the per-IP cap on the respawn.
+  @spec identity_capacity_input(GrappaWeb.Subject.t(), integer()) :: Grappa.Admission.capacity_input()
+  defp identity_capacity_input(subject, network_id) do
+    session_subject = to_session_subject(subject)
+
+    %{
+      network_id: network_id,
+      source_ip: nil,
+      flow: connect_flow(subject),
+      requesting_subject: session_subject
+    }
+  end
 end

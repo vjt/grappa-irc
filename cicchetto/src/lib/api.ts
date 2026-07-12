@@ -2079,6 +2079,25 @@ export async function addNetwork(token: string, networkSlug: string): Promise<vo
   if (!res.ok) throw await readError(res);
 }
 
+// #211 phase 6 (ruling E, subsumes original #211) — per-network IRC
+// identity edit (nick/ident/realname) for BOTH subjects, live-applied
+// server-side via an internal reconnect (`PATCH /networks/:slug/identity`).
+// Returns the updated credential JSON. 422 on a bad nick / folded-nick
+// collision; 404 if the caller holds no credential on the network.
+export async function updateNetworkIdentity(
+  token: string,
+  networkSlug: string,
+  fields: { nick?: string; ident?: string; realname?: string },
+): Promise<CredentialJson> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/identity`, {
+    method: "PATCH",
+    headers: buildHeaders(token),
+    body: JSON.stringify(fields),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as CredentialJson;
+}
+
 // ----- Admin-panel buckets 2-5 — REST CRUD wrappers -------------------
 //
 // Mirrors of the bucket-1/2/3 admin REST surface. All require an

@@ -618,6 +618,79 @@ defmodule GrappaWeb.NetworksControllerTest do
     end
   end
 
+  describe "PATCH /networks/:network_id/identity (#211 phase 6, ruling E)" do
+    test "user edits ident + realname on their credential → 200 + persisted", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-id-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-id-#{u()}"
+      {network, _} = network_with_server(port: 9_999, slug: slug)
+      _ = credential_fixture(vjt, network, %{nick: "vjt-irc"})
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/networks/#{slug}/identity", %{ident: "grp", realname: "Real Name"})
+
+      body = json_response(conn, 200)
+      assert body["ident"] == "grp"
+      assert body["realname"] == "Real Name"
+
+      {:ok, cred} = Credentials.get_credential(vjt, network)
+      assert cred.ident == "grp"
+      assert cred.realname == "Real Name"
+    end
+
+    test "visitor edits identity on their credential → 200 + persisted (per-network)", %{conn: conn} do
+      slug = "net-vid-#{u()}"
+      {_, _} = network_with_server(port: 9_999, slug: slug, visitor_enabled: true)
+      visitor = visitor_with_credential_fixture(network_slug: slug, nick: "v-#{u()}")
+      session = visitor_session_fixture(visitor)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/networks/#{slug}/identity", %{ident: "vgrp", realname: "Guest Real"})
+
+      body = json_response(conn, 200)
+      assert body["ident"] == "vgrp"
+      assert body["realname"] == "Guest Real"
+    end
+
+    test "rejects a malformed nick with 422", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-idbad-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-idbad-#{u()}"
+      {network, _} = network_with_server(port: 9_999, slug: slug)
+      _ = credential_fixture(vjt, network, %{nick: "vjt-irc"})
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/networks/#{slug}/identity", %{nick: "9bad"})
+
+      assert json_response(conn, 422)
+    end
+
+    test "404 when the caller holds no credential on the network (authz)", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-idauthz-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-idauthz-#{u()}"
+      {:ok, _} = Networks.find_or_create_network(%{slug: slug})
+      # No credential bound → ResolveNetwork 404s at the plug.
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/networks/#{slug}/identity", %{ident: "x"})
+
+      assert json_response(conn, 404)
+    end
+  end
+
   describe "PATCH /networks/:network_id — authorization" do
     test "returns 404 when user has no credential for the network (authz oracle)", %{conn: conn} do
       vjt = user_fixture(name: "vjt-patch-authz-#{u()}")

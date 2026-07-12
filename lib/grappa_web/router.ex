@@ -282,6 +282,13 @@ defmodule GrappaWeb.Router do
 
     patch "/", NetworksController, :update
 
+    # #211 phase 6 (ruling E, subsumes original #211) — per-network IRC
+    # identity edit (nick/ident/realname) for BOTH subjects, live-applied
+    # via internal reconnect. Rides the `/networks/:network_id`
+    # ResolveNetwork pipeline (ownership built-in) + the `networks` nginx
+    # allowlist — no proxy change.
+    patch "/identity", NetworksController, :identity
+
     get "/channels", ChannelsController, :index
     post "/channels", ChannelsController, :create
     delete "/channels/:channel_id", ChannelsController, :delete

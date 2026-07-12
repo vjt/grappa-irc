@@ -318,6 +318,33 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  #211 phase 6 — per-network IDENTITY edit on a `(subject, network)`
+  credential (`nick` + `ident` + `realname`). Backs
+  `PATCH /networks/:network_id/identity` for BOTH subjects (ruling E).
+
+  Takes the already-resolved `%Credential{}` (the controller fetched it
+  subject-scoped via `get_credential/2` / `get_visitor_credential/2`, so
+  ownership is asserted) + the identity attrs. Routes through the narrow
+  `Credential.identity_changeset/2` (nick/ident/realname only — no
+  password/auth/state touch). A folded-nick collision surfaces as a
+  changeset error; a concurrent unbind surfaces as `{:error, :not_found}`
+  (mirrors `commit_password/3`'s H14 stale-struct handling).
+  """
+  @spec update_credential_identity(Credential.t(), map()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def update_credential_identity(%Credential{} = credential, attrs) when is_map(attrs) do
+    case credential |> Credential.identity_changeset(attrs) |> Repo.update() do
+      # Preload :network so the HTTP caller can render the credential wire
+      # shape (which carries the network slug) without a Repo dep at the
+      # GrappaWeb boundary. Mirrors `update_credential/3`.
+      {:ok, updated} -> {:ok, Repo.preload(updated, :network)}
+      {:error, _} = err -> err
+    end
+  rescue
+    Ecto.StaleEntryError -> {:error, :not_found}
+  end
+
+  @doc """
   Rotates the stored upstream NickServ password for `(user_id, network_id)`.
 
   #131: the id-keyed write `Session.Server`'s `credential_committer`

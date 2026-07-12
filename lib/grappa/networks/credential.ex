@@ -449,6 +449,46 @@ defmodule Grappa.Networks.Credential do
   end
 
   @doc """
+  #211 phase 6 — narrow changeset for a per-network IDENTITY edit
+  (`nick` + `ident` + `realname`) on the `(subject, network)` credential.
+  Backs `PATCH /networks/:network_id/identity` for BOTH subjects (ruling
+  E: "everything per-network" — the same nick may be in use on other
+  networks, so identity is scoped to the credential).
+
+  Casts + validates ONLY the three identity fields (mirror of the
+  narrow-changeset pattern): nick via `Identity.validate_nick/2` + the
+  folded-unique-index constraints (a cross-subject/cross-visitor nick
+  collision on the network surfaces as a changeset error, not an
+  exception); ident sanitized (leading-`~` strip) then shape-validated;
+  realname CR/LF/NUL wire-hygiene guarded. Does NOT touch
+  password/auth_method/autojoin/connection_state — an identity edit is
+  not an auth or state change. All three optional: an empty attrs map is
+  a valid no-op (the controller may PATCH just one field).
+  """
+  @spec identity_changeset(t(), map()) :: Ecto.Changeset.t()
+  def identity_changeset(%__MODULE__{} = credential, attrs) when is_map(attrs) do
+    credential
+    |> cast(attrs, [:nick, :ident, :realname])
+    |> Identity.sanitize_ident()
+    |> validate_change(:nick, &Identity.validate_nick/2)
+    |> validate_change(:ident, &Identity.validate_ident/2)
+    |> validate_change(:realname, &Identity.safe_line_token/2)
+    # The visitor folded-nick partial unique index (phase 4b) — a rename
+    # colliding with another visitor's nick on this network surfaces as a
+    # changeset error keyed on :nick (not an Ecto.ConstraintError).
+    |> unique_constraint(:nick,
+      name: :network_credentials_visitor_folded_nick_network_id_index,
+      message: "nick already taken on this network"
+    )
+    # The user partial unique index twin (a user's rename colliding with
+    # another of their own... n/a — but a future cross-user guard).
+    |> unique_constraint(:nick,
+      name: :network_credentials_user_id_network_id_index,
+      message: "credential already exists for this (user, network)"
+    )
+  end
+
+  @doc """
   Narrow changeset for the `last_joined_channels` snapshot written on
   the self-JOIN/PART/KICK hot path (S34, 2026-07-08 review). Mirrors the
   narrow-changeset pattern of
