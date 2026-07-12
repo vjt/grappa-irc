@@ -650,11 +650,14 @@ describe("narrowAdminEvent (REV-G H24)", () => {
 
   describe("kind: visitor_deleted / visitor_reaped", () => {
     it("accepts visitor_deleted", () => {
+      // #211 phase 7 — the server event no longer carries `network_slug`
+      // (a visitor is multi-network; the delete event uses the
+      // representative-credential nick). The narrower must accept the
+      // slug-less shape.
       const ev = {
         kind: "visitor_deleted",
         visitor_id: "uuid-1",
         visitor_nick: "alice",
-        network_slug: "azzurra",
         actor_user_id: "uuid-op",
         actor_user_name: "admin",
         at: "2026-05-22T12:00:00Z",
@@ -666,7 +669,6 @@ describe("narrowAdminEvent (REV-G H24)", () => {
         kind: "visitor_reaped",
         visitor_id: "uuid-1",
         visitor_nick: null,
-        network_slug: null,
         at: "2026-05-22T12:00:00Z",
       };
       expect(narrowAdminEvent(ev)).toEqual(ev);

@@ -39,14 +39,13 @@ vi.mock("../lib/api", () => ({
   displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
     me.kind === "user" ? (me.name ?? "") : (me.nick ?? ""),
   // Mirror of production `ownNickForNetwork` — see subscribe.test.ts
-  // moduledoc + cic H3.
+  // moduledoc + cic H3. #211 phase 7 — subject-agnostic; mirror production.
   ownNickForNetwork: (
     net: { slug: string; nick?: string },
-    me: { kind: "user" | "visitor"; nick?: string; network_slug?: string } | null | undefined,
+    me: { kind: "user" | "visitor" } | null | undefined,
   ) => {
     if (me == null) return null;
-    if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
-    return net.nick && net.nick !== "" ? net.nick : null;
+    return net.nick ?? null;
   },
   // HIGH-24 (no-silent-drops B6.9a 2026-05-14): tagNetwork now reads
   // the discriminator off `raw.kind` instead of taking a subjectKind

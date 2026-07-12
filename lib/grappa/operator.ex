@@ -568,7 +568,13 @@ defmodule Grappa.Operator do
     IO.puts(Enum.join(visitor_columns(), "\t"))
 
     Enum.each(Visitors.list_active(), fn %Visitor{} = v ->
-      identified = if is_nil(v.expires_at), do: "true", else: "false"
+      # #211 phase 7 — "identified" is DERIVED from the credentials (≥1
+      # NickServ secret), NOT `expires_at IS NULL`. commit_password/3 no
+      # longer clears expires_at, so a registered visitor carries an
+      # anon-shaped TTL value; the nil check would print `false` for every
+      # post-phase-7 registered visitor. Route through the same source of
+      # truth every other surface uses (Reaper, admin wire, /me wire).
+      identified = if Credentials.visitor_registered?(v.id), do: "true", else: "false"
 
       row = [
         v.id,

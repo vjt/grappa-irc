@@ -39,16 +39,16 @@ vi.mock("../lib/api", () => ({
     me.kind === "user" ? (me.name ?? "") : (me.nick ?? ""),
   // Mirror of production `ownNickForNetwork` — single source for
   // per-network IRC nick (cic H3 fix). Tests stub `Network` fixtures
-  // with `nick: <stub>` so the user branch returns it; without
-  // explicit `nick`, returns null (matching prod's contract-violation
-  // branch). Visitor branch returns me.nick when network_slug matches.
+  // with `nick: <stub>` so the network branch returns it. #211 phase 7 —
+  // a visitor's nick lives per-network on the GET /networks row now, so
+  // this is subject-agnostic: mirror production (`api.ts:ownNickForNetwork`)
+  // — null only when `me` is absent, else the network row's nick.
   ownNickForNetwork: (
     net: { slug: string; nick?: string },
-    me: { kind: "user" | "visitor"; nick?: string; network_slug?: string } | null | undefined,
+    me: { kind: "user" | "visitor" } | null | undefined,
   ) => {
     if (me == null) return null;
-    if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
-    return net.nick && net.nick !== "" ? net.nick : null;
+    return net.nick ?? null;
   },
   // Bucket F H4: lib/networks resource calls tagNetwork — passthrough
   // mock that mirrors production behavior so tests don't need to add
@@ -2848,11 +2848,11 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
       displayNick: (me: { kind: string; name?: string }) => me.name ?? "",
       ownNickForNetwork: (
         net: { slug: string; nick?: string },
-        me: { kind: "user" | "visitor"; nick?: string; network_slug?: string } | null | undefined,
+        me: { kind: "user" | "visitor" } | null | undefined,
       ) => {
+        // #211 phase 7 — subject-agnostic; mirror production.
         if (me == null) return null;
-        if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
-        return net.nick && net.nick !== "" ? net.nick : null;
+        return net.nick ?? null;
       },
       tagNetwork: (
         raw: {

@@ -154,12 +154,13 @@ defmodule GrappaWeb.NetworksController do
   DESIGN_NOTES 2026-07-11). A parked/no-live-session edit persists only;
   the next spawn reads the row.
 
-  Visitor primary-network dual-write: a visitor's `find_or_provision_anon`
-  login-lookup still keys on the visitor-row `(fold(nick), network_slug)`
-  scalar for the PRIMARY network (phase-7 drops it). So when the edited
-  network IS the visitor's primary, the scalar identity fields are
-  dual-written to keep login resolving. Accreted (non-primary) networks
-  are credential-only. Users have no such scalar.
+  #211 phase 7 — the per-network credential is the SINGLE identity write
+  path for BOTH subjects. The phase-6 visitor primary-network scalar
+  dual-write is GONE: the `visitors.nick`/`network_slug` scalars are
+  dropped, and `find_or_provision_anon`'s login-lookup resolves
+  credential-first (`resolve_identity_by_nick/2`, keyed on the credential's
+  `(fold(nick), network_id)`), so there is no row scalar left to keep in
+  sync.
 
   Body: `{nick?, ident?, realname?}` — all optional. 200 with the updated
   credential; 422 on validation (bad nick / folded-nick collision); 404
@@ -387,10 +388,10 @@ defmodule GrappaWeb.NetworksController do
   # Whitelist the three identity fields from the body. A key the caller
   # OMITS is left out (no clobber); a present `""` passes through (a
   # deliberate "clear to default" — the SessionPlan effective_* fallback
-  # applies). Same empty-string semantics as `MeController.identity_attrs/1`
-  # (the settings editor is the canonical edit surface). `nil` values are
-  # rejected (a JSON null for an identity field is malformed). Empty map is
-  # a valid no-op.
+  # applies). #211 phase 7 — this is the CANONICAL identity edit surface
+  # for both subjects (the retired `PATCH /me/identity` / `identity_attrs/1`
+  # is gone). `nil` values are rejected (a JSON null for an identity field
+  # is malformed). Empty map is a valid no-op.
   @spec parse_identity_attrs(map()) ::
           {:ok, %{optional(:nick) => String.t(), optional(:ident) => String.t(), optional(:realname) => String.t()}}
           | {:error, :bad_request}

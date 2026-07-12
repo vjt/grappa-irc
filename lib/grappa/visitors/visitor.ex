@@ -12,24 +12,34 @@ defmodule Grappa.Visitors.Visitor do
   `visitor_id` FK points at), the `expires_at` TTL, the audit `ip`, and
   timestamps. The `nick`/`network_slug`/`ident`/`realname`/
   `password_encrypted`/`last_joined_channels` scalars were dropped in the
-  phase-7 table-recreate migration.
+  phase-7 native `ALTER TABLE ... DROP COLUMN` migration (NOT a
+  table-recreate — `visitors` is a parent table with seven inbound FKs; a
+  rename-aside would dangle them, see the migration moduledoc).
 
   ## Lifecycle
 
   - Created on first `POST /auth/login` with a non-`@` identifier —
     `Grappa.Visitors.find_or_provision_anon/3` inserts this bare row PLUS
     an anon `(visitor_id, network)` credential atomically.
-  - `expires_at` non-nil = anon: slides forward on user-initiated REST/WS
-    verbs (≥1h cadence) up to the 48h TTL. `expires_at == nil` = registered:
-    `Grappa.Visitors.commit_password/3` clears it the moment the visitor
-    identifies (`+r`) on ANY network — identity is then permanent, removed
-    only via operator `Visitors.delete/1`. The `expires_at` TTL axis is the
-    single anon-vs-registered discriminator now (the retired
-    `password_encrypted` scalar is gone); the derived `registered` boolean
-    on the wire is `is_nil(expires_at)`.
+  - `expires_at` is the anon sliding-TTL clock: it slides forward on
+    user-initiated REST/WS verbs (≥1h cadence) up to the 48h TTL. #211
+    phase 7 — `commit_password/3` NO LONGER clears it; registration is
+    DERIVED from the credentials (`Credentials.visitor_registered?/1` =
+    holds ≥1 credential with a committed NickServ secret on ANY network),
+    NOT a stored `expires_at`-nil flag. A registered visitor therefore
+    still carries an anon-shaped `expires_at` value; the derived predicate
+    (not the nil check) is what overrides expiry wherever "permanent"
+    matters (`list_active/0`, `list_expired/0`, `count_active_for_ip/1`,
+    `touch/1`), and the `registered` boolean on the wire comes from that
+    same derivation. Unbinding the last registered credential makes the
+    identity anon again, automatically — no flag to drift.
+  - Legacy pre-phase-7 permanent rows carry `expires_at == nil` AND ≥1
+    NickServ credential; both the nil-guard and the derived check keep them
+    alive.
   - Reaped by `Grappa.Visitors.Reaper` when
-    `expires_at IS NOT NULL AND expires_at <= now()`. CASCADE wipes related
-    rows in `network_credentials`, `messages`, `accounts_sessions`.
+    `expires_at IS NOT NULL AND expires_at <= now() AND NOT registered`.
+    CASCADE wipes related rows in `network_credentials`, `messages`,
+    `accounts_sessions`.
   """
 
   use Ecto.Schema
@@ -88,9 +98,12 @@ defmodule Grappa.Visitors.Visitor do
 
   Equal-to-prev is admitted (degenerate-but-not-skewed — a tight
   touch loop under high load can reasonably observe `now == prev`
-  at usec resolution). Rows with `expires_at = nil` (registered
-  visitors) are not callable here because `Visitors.touch/1`
+  at usec resolution). Rows with `expires_at = nil` (legacy pre-phase-7
+  permanent visitors) are not callable here because `Visitors.touch/1`
   short-circuits the nil branch before reaching this changeset.
+  Post-phase-7 registered visitors carry an anon-shaped non-nil
+  `expires_at` and DO reach this changeset, but `touch/1`'s derived
+  registered-check no-ops them before the bump.
 
   Forced-expiry paths (`Visitors.mark_failed/2`) move the column
   backward by design and use `expire_changeset/2` instead — the
@@ -124,10 +137,12 @@ defmodule Grappa.Visitors.Visitor do
   Refreshes `:ip` to the current client address observed at login.
   Schema-only changeset.
 
-  For a long-lived registered visitor (`expires_at: nil`), the audit value
-  would otherwise freeze at the row's birth IP regardless of how many times
-  the holder logged in from a different network. Cic's admin Visitors tab
-  consequently showed stale (often nginx-bridge) addresses indefinitely.
+  For a long-lived registered visitor (a legacy pre-phase-7 permanent row
+  with `expires_at: nil`, or a post-phase-7 identity registered via a
+  credential), the audit value would otherwise freeze at the row's birth IP
+  regardless of how many times the holder logged in from a different
+  network. Cic's admin Visitors tab consequently showed stale (often
+  nginx-bridge) addresses indefinitely.
 
   Wire-validated as `String.t() | nil`: callers (the controller boundary
   that already saw `conn.remote_ip` post-`RemoteIpFromProxy`) pass either

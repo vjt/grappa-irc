@@ -317,6 +317,28 @@ defmodule Grappa.VisitorsTest do
       refute alive.id in ids
       assert dead.id in ids
     end
+
+    test "still reaps an expired anon when a USER credential with a password exists (NULL-poisoning regression)",
+         %{network: net} do
+      # #211 phase 7 CRITICAL regression: `registered_ids_subquery/0` feeds
+      # `list_expired/0` via `v.id NOT IN (…)`. If the subquery selected
+      # `visitor_id` from ALL credentials with a password — including USER
+      # credentials, whose `visitor_id IS NULL` — a single user password
+      # would inject a NULL into the set, and SQL `x NOT IN (…, NULL)` is
+      # NULL (never TRUE) for every x, zeroing out the Reaper in prod. Seed
+      # exactly that shape: a user credential WITH a password alongside an
+      # expired anon visitor, and assert the anon is still returned.
+      user = user_fixture()
+      _ = credential_fixture(user, net, %{password: "hunter2", auth_method: :nickserv_identify})
+
+      {:ok, dead_anon} = Visitors.find_or_provision_anon("deadanon", @network, "1.2.3.4")
+
+      query = from(x in Visitor, where: x.id == ^dead_anon.id)
+      Repo.update_all(query, set: [expires_at: DateTime.add(DateTime.utc_now(), -1, :hour)])
+
+      ids = Enum.map(Visitors.list_expired(), & &1.id)
+      assert dead_anon.id in ids
+    end
   end
 
   describe "list_all/0 (M-4 admin console)" do

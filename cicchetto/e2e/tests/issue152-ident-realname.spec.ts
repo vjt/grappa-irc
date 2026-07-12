@@ -68,9 +68,17 @@ test("issue #152 — login-Advanced ident + settings live-apply reach upstream",
       const raw = localStorage.getItem("grappa-subject");
       return raw ? (JSON.parse(raw) as { id: string }).id : null;
     });
-    const networkSlug = await page.evaluate(() => {
-      const raw = localStorage.getItem("grappa-subject");
-      return raw ? (JSON.parse(raw) as { network_slug: string }).network_slug : "azzurra";
+    // #211 phase 7 — the subject wire no longer carries `network_slug`
+    // (a visitor is multi-network; per-network attachment lives on the
+    // GET /networks rows). Resolve the anchor slug from /networks using
+    // the persisted bearer, the same pattern `mintVisitor` uses — reading
+    // `subject.network_slug` would be a dead `undefined`.
+    const networkSlug = await page.evaluate(async () => {
+      const token = localStorage.getItem("grappa-token");
+      if (!token) return "azzurra";
+      const r = await fetch("/networks", { headers: { authorization: `Bearer ${token}` } });
+      const nets = (await r.json()) as Array<{ slug: string }>;
+      return nets[0]?.slug ?? "azzurra";
     });
 
     // Wait for the visitor's upstream registration (server-window notices)

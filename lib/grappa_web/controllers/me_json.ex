@@ -14,11 +14,13 @@ defmodule GrappaWeb.MeJSON do
       networks list cic's HomePane renders.
     * visitor → `{kind: "visitor", id, expires_at, registered,
       read_cursors, unread_counts, badge_count, home_data}` — delegates to
-      `Grappa.Visitors.Wire.visitor_to_json/1`. #211 phase 7 —
+      `Grappa.Visitors.Wire.visitor_to_json/2`. #211 phase 7 —
       nick/ident/realname are DROPPED from the subject: a visitor is
       multi-network, so per-network identity (nick) lives on the
       `GET /networks` rows, not the identity-wide subject. `registered` is
-      the derived permanence flag (`expires_at == nil`); see
+      the DERIVED permanence flag (≥1 credential holding a committed
+      NickServ secret — resolved by the controller via
+      `Networks.Credentials.visitor_registered?/1` and passed in); see
       `Grappa.Visitors.Wire` moduledoc. `home_data` is POPULATED for
       visitors (ruling A — the user + visitor home pages are the SAME
       data-driven component) via `Networks.home_data_for_visitor/1`.

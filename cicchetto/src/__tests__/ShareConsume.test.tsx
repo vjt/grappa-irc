@@ -41,7 +41,9 @@ describe("ShareConsume", () => {
   it("posts to consume on mount and installs the session on success", async () => {
     apiHolder.consumeShareToken.mockResolvedValue({
       token: "new-bearer-uuid",
-      subject: { kind: "visitor", id: "v1", nick: "alice", network_slug: "azzurra" },
+      // #211 phase 7 — the visitor subject wire carries only
+      // {kind, id, registered}; nick/network_slug moved to GET /networks.
+      subject: { kind: "visitor", id: "v1", registered: false },
     });
 
     render(() => <ShareConsume />);
@@ -54,8 +56,7 @@ describe("ShareConsume", () => {
       expect(authHolder.installSharedSession).toHaveBeenCalledWith("new-bearer-uuid", {
         kind: "visitor",
         id: "v1",
-        nick: "alice",
-        network_slug: "azzurra",
+        registered: false,
       });
       expect(routerHolder.navigate).toHaveBeenCalledWith("/", { replace: true });
     });

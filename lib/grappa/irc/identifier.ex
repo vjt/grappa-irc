@@ -218,17 +218,19 @@ defmodule Grappa.IRC.Identifier do
   (mirrors how `query_windows` indexes `lower(target_nick)`). ASCII
   `lower()` + the four bracket `replace()`s; the SQL text MUST stay
   character-identical to the folded-index expression in the
-  `visitors` / `query_windows` migrations, or SQLite won't recognise
-  the query as index-eligible.
+  `network_credentials` / `query_windows` migrations, or SQLite won't
+  recognise the query as index-eligible.
 
   The caller must `require Grappa.IRC.Identifier` (macro) and have
   `Ecto.Query` imported (the expanded `fragment/2` resolves in the
-  caller's context):
+  caller's context). #211 phase 7 — the folded-nick index lives on
+  `network_credentials` now (the `visitors` scalar + its index were
+  dropped), so the query targets a credential:
 
-      from v in Visitor,
+      from c in Credential,
         where:
-          Identifier.nick_fold(v.nick) == ^Identifier.canonical_nick(input) and
-            v.network_slug == ^slug
+          Identifier.nick_fold(c.nick) == ^Identifier.canonical_nick(input) and
+            c.network_id == ^network_id
   """
   defmacro nick_fold(column) do
     quote do

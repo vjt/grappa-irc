@@ -18730,3 +18730,40 @@ joined `visitors.network_slug`; now joins `network_credentials`
 `ecto.migrate`). Preconditions: fresh prod DB backup + multiple prod-DB
 dry-runs of the migration against a copy + explicit go. The L2 epic
 (visitors ≡ users) is COMPLETE after this deploy.
+
+### Pre-ship cross-phase review — the `NOT IN`-NULL Reaper CRITICAL (caught, fixed)
+
+The pre-ship de-risk pass over the WHOLE undeployed cold-deploy diff (base
+`9758397` deploy #100 → P7 tip; 40 commits, 9 migrations) caught one
+CRITICAL that the per-phase merge reviews missed — a cross-phase
+interaction only visible when the derived-registration subquery meets a
+subject-XOR `network_credentials` table holding USER rows. The DERIVED
+predicate `registered_ids_subquery/0` originally selected `c.visitor_id`
+from EVERY credential with `password_encrypted IS NOT NULL`. But user
+credentials carry `visitor_id IS NULL`, so any operator-bound user with a
+stored password (the steady state — `nickserv_identify`/`sasl`/`server_pass`
+all set it) injected a NULL into the set. `list_expired/0` consumes it as
+`v.id NOT IN (subquery)`, and SQL `x NOT IN (…, NULL)` evaluates to NULL
+(never TRUE) for EVERY `x` — so a single user password silently ZEROED the
+Reaper: every expired anon visitor row (plus its `accounts_sessions` /
+`messages` / `query_windows` CASCADE deps) would leak forever. The whole
+test corpus masked it because isolated sandboxes rarely seed a
+user-credential-with-password ALONGSIDE an expired anon visitor, so the
+subquery was empty and `x NOT IN ()` is TRUE. **Fix:** scope the subquery
+to `not is_nil(c.visitor_id) and not is_nil(c.password_encrypted)` (mirrors
+the phase-4b partial index `WHERE visitor_id IS NOT NULL`), removing the
+NULLs at the source — correct for both the positive-`IN` callers
+(`list_active/0`, `count_active_for_ip/1`, NULL-safe already) and the
+`NOT IN` caller (`list_expired/0`). Regression test seeds exactly the
+poisoning shape (user cred with password + expired anon) and asserts the
+anon is still reaped; it fails on the pre-fix subquery. General rule
+(memory `feedback_xor_fk_promotion_audit_subject_blind_readers`): a
+polymorphic-FK subquery feeding a `NOT IN` is NULL-poisonable — scope it to
+the subject column, and never trust an isolated-sandbox test corpus to
+surface the poisoning coexistence. Two accompanying stale-doc / stale-flag
+fixes: `Operator.list_visitors_text!/0` computed `identified` from
+`is_nil(expires_at)` (retired flag → printed `false` for every registered
+visitor; now derives via `Credentials.visitor_registered?/1`), and the
+`Visitor` + `MeJSON` moduledocs still asserted the retired
+`commit_password clears expires_at` / `registered = is_nil(expires_at)`
+model.

@@ -43,8 +43,6 @@ test("visitor session-sharing — mint on device A, consume on device B, both co
     const visitorSubject = {
       kind: "visitor",
       id: visitor.id,
-      nick: visitor.nick,
-      network_slug: visitor.network_slug,
     };
 
     await pageA.addInitScript(
@@ -92,17 +90,30 @@ test("visitor session-sharing — mint on device A, consume on device B, both co
     await expect(pageB.getByTestId("share-consume-error")).toHaveCount(0);
 
     // Device B's persisted subject matches device A's visitor row.
+    // #211 phase 7 — the subject wire carries only `{id, registered}`
+    // now (nick/network_slug moved to the per-network GET /networks rows),
+    // so cross-device identity is proven by the shared `id`; the
+    // per-network nick is asserted separately against /networks below.
     const subjectB = await pageB.evaluate(() => localStorage.getItem("grappa-subject"));
     expect(subjectB).not.toBeNull();
     const parsedB = JSON.parse(subjectB ?? "{}") as {
       kind: string;
       id: string;
-      nick: string;
-      network_slug: string;
     };
     expect(parsedB.kind).toBe("visitor");
     expect(parsedB.id).toBe(visitor.id);
-    expect(parsedB.nick).toBe(visitorNick);
+
+    // Device B resolves the SAME per-network identity — the visitor's nick
+    // lives on the GET /networks rows now, and device B (same visitor row)
+    // must see it via its own bearer.
+    const tokenB = await pageB.evaluate(() => localStorage.getItem("grappa-token"));
+    expect(tokenB).not.toBeNull();
+    const netsB = await pageB.evaluate(async (t) => {
+      const r = await fetch("/networks", { headers: { authorization: `Bearer ${t}` } });
+      return (await r.json()) as Array<{ slug: string; nick: string }>;
+    }, tokenB ?? "");
+    const anchorB = netsB.find((n) => n.slug === visitor.network_slug);
+    expect(anchorB?.nick).toBe(visitorNick);
 
     // Device A's token + subject UNCHANGED — this is sharing, not
     // transfer. The original bearer must still be present, and a

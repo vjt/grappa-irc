@@ -1066,7 +1066,9 @@ export type WireAdminEvent =
       kind: "visitor_deleted";
       visitor_id: string;
       visitor_nick: string | null;
-      network_slug: string | null;
+      // #211 phase 7 — `network_slug` DROPPED (a visitor is multi-network;
+      // the delete event uses the representative-credential nick, not a
+      // singular slug). Mirrors the server `AdminEvents.Wire` drop.
       actor_user_id: string | null;
       actor_user_name: string | null;
       at: string;
@@ -1075,7 +1077,7 @@ export type WireAdminEvent =
       kind: "visitor_reaped";
       visitor_id: string;
       visitor_nick: string | null;
-      network_slug: string | null;
+      // #211 phase 7 — `network_slug` DROPPED (see visitor_deleted).
       at: string;
     }
   | { kind: "reaper_swept"; count: number; at: string }

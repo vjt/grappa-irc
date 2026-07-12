@@ -79,15 +79,17 @@ export async function mintVisitor(nick: string): Promise<MintedVisitor> {
   }
   const body = (await response.json()) as {
     token: string;
-    subject: { kind: "visitor"; id: string; nick: string };
+    subject: { kind: "visitor"; id: string };
   };
   if (body.subject.kind !== "visitor") {
     throw new Error(`grappaApi.mintVisitor: expected visitor subject, got ${body.subject.kind}`);
   }
-  // #211 phase 6 — the singular subject `network_slug` is off the login
-  // wire (visitors are multi-network). Resolve the anchor network from
-  // the list-shaped GET /networks (the network login synchronously
-  // connected) so specs still have a slug to drive channel selection.
+  // #211 phase 7 — the visitor SUBJECT wire carries only `{id, registered}`
+  // now (nick went in phase 7; network_slug in phase 6): a visitor is
+  // multi-network, so per-network identity (nick) lives on the list-shaped
+  // GET /networks rows. Resolve the anchor network (the one login
+  // synchronously connected) for BOTH the slug specs drive channel
+  // selection with AND the per-network nick.
   const netsRes = await fetch(`${GRAPPA_BASE_URL}/networks`, {
     headers: { authorization: `Bearer ${body.token}` },
   });
@@ -96,14 +98,14 @@ export async function mintVisitor(nick: string): Promise<MintedVisitor> {
       `grappaApi.mintVisitor: GET /networks → ${netsRes.status} ${await netsRes.text()}`,
     );
   }
-  const nets = (await netsRes.json()) as Array<{ slug: string }>;
+  const nets = (await netsRes.json()) as Array<{ slug: string; nick: string }>;
   const anchor = nets[0];
   if (!anchor) {
     throw new Error(`grappaApi.mintVisitor: ${nick} has no attached network after login`);
   }
   return {
     id: body.subject.id,
-    nick: body.subject.nick,
+    nick: anchor.nick,
     network_slug: anchor.slug,
     token: body.token,
   };

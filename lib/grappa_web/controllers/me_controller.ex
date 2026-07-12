@@ -4,12 +4,13 @@ defmodule GrappaWeb.MeController do
   discriminated union mirroring `GrappaWeb.AuthJSON.subject_wire`:
 
     * user    → `{kind: "user", id, name, inserted_at, home_data}`
-    * visitor → `{kind: "visitor", id, nick, ident, realname,
-      expires_at, registered, home_data}` (#126 — `registered` =
-      NickServ identity present). #211 phase 6 — `network_slug` + the
-      singular `connected` scalar are DROPPED (visitors are multi-network;
-      per-network live status is on the `GET /networks` rows); `home_data`
-      is populated for visitors too (ruling A).
+    * visitor → `{kind: "visitor", id, expires_at, registered, home_data}`
+      (`registered` = DERIVED from the credentials — ≥1 holding a NickServ
+      secret). #211 phase 7 — `nick`/`ident`/`realname` are DROPPED from
+      the subject (a visitor is multi-network; per-network identity lives
+      on the `GET /networks` rows); `network_slug` + the singular
+      `connected` scalar went in phase 6. `home_data` is populated for
+      visitors too (ruling A).
 
   Lives behind `:authn`; missing / invalid / revoked / expired Bearer
   all collapse to a uniform 401 via `GrappaWeb.Plugs.Authn`.

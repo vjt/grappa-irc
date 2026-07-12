@@ -408,9 +408,26 @@ defmodule Grappa.Visitors do
   # `visitors.expires_at`-nil flag. Composed into `list_active/0`,
   # `list_expired/0`, and `count_active_for_ip/1` so all three axes agree
   # by construction (no parallel flag to drift).
+  #
+  # CRITICAL — the `not is_nil(c.visitor_id)` guard is load-bearing, NOT
+  # redundant with the visitor-side XOR. The subject-XOR `network_credentials`
+  # table holds USER credentials too (`visitor_id IS NULL`), and a user with
+  # a stored password (the steady state — nickserv_identify / sasl /
+  # server_pass all set `password_encrypted`) would otherwise contribute a
+  # NULL into this set. `list_expired/0` consumes it as `v.id NOT IN (…)`,
+  # and SQL `x NOT IN (…, NULL)` evaluates to NULL (never TRUE) for EVERY
+  # `x` — so a single user password would silently zero out the Reaper,
+  # leaking every expired anon visitor row forever. Scoping to visitor
+  # credentials (mirrors the phase-4b partial index
+  # `WHERE visitor_id IS NOT NULL`) removes the NULLs at the source, keeping
+  # both the positive-`IN` callers (list_active/count_active_for_ip) and the
+  # `NOT IN` caller (list_expired) correct.
   @spec registered_ids_subquery() :: Ecto.Query.t()
   defp registered_ids_subquery do
-    from(c in Credential, where: not is_nil(c.password_encrypted), select: c.visitor_id)
+    from(c in Credential,
+      where: not is_nil(c.visitor_id) and not is_nil(c.password_encrypted),
+      select: c.visitor_id
+    )
   end
 
   @doc """

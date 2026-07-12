@@ -485,7 +485,9 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
       if (
         typeof r.visitor_id !== "string" ||
         !isNullableString(r.visitor_nick) ||
-        !isNullableString(r.network_slug) ||
+        // #211 phase 7 — `network_slug` DROPPED from the server event; a
+        // guard on it would make `isNullableString(undefined)` false →
+        // narrow to null → blank the admin events tab. Not validated.
         !isNullableString(r.actor_user_id) ||
         !isNullableString(r.actor_user_name)
       )
@@ -494,7 +496,6 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         kind: "visitor_deleted",
         visitor_id: r.visitor_id,
         visitor_nick: r.visitor_nick as string | null,
-        network_slug: r.network_slug as string | null,
         actor_user_id: r.actor_user_id as string | null,
         actor_user_name: r.actor_user_name as string | null,
         at: r.at as string,
@@ -502,15 +503,14 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
     case "visitor_reaped":
       if (
         typeof r.visitor_id !== "string" ||
-        !isNullableString(r.visitor_nick) ||
-        !isNullableString(r.network_slug)
+        !isNullableString(r.visitor_nick)
+        // #211 phase 7 — `network_slug` DROPPED (see visitor_deleted).
       )
         return null;
       return {
         kind: "visitor_reaped",
         visitor_id: r.visitor_id,
         visitor_nick: r.visitor_nick as string | null,
-        network_slug: r.network_slug as string | null,
         at: r.at as string,
       };
     case "reaper_swept":

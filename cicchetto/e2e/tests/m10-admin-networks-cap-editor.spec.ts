@@ -51,9 +51,16 @@ test("M-10 admin Networks tab lists seeded network rows", async ({ page }) => {
   await openAdminNetworksTab(page);
 
   // bahamut-test (user network) + azzurra (visitor network) both
-  // seeded → at least 2 admin-network rows.
+  // seeded → AT LEAST 2 admin-network rows. #211 phase 6 seeded two
+  // MORE visitor_enabled networks (azzurra2 + azzurra3) for the matrix
+  // spec, so the count is now >2 — assert the floor + the two canonical
+  // rows by testid rather than an exact count (per
+  // `feedback_seed_expansion_audit`: a hardcoded seed count is fragile
+  // to seed growth; the two named rows are the real intent).
   const rows = page.locator("[data-testid^='admin-network-row-']");
-  await expect(rows).toHaveCount(2, { timeout: 15_000 });
+  await expect
+    .poll(async () => await rows.count(), { timeout: 15_000 })
+    .toBeGreaterThanOrEqual(2);
   await expect(page.getByTestId("admin-network-row-bahamut-test")).toBeVisible();
   await expect(page.getByTestId("admin-network-row-azzurra")).toBeVisible();
 });
