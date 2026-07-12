@@ -5596,7 +5596,11 @@ html.resize-dragging * {
   position: relative;
   min-width: 12rem;
   min-height: 6rem;
-  overflow: auto;
+  /* hidden (was auto) so a pinch-zoomed image's scaled paint is CLIPPED to
+     the viewer body — the #213 confinement. The media already fits via
+     .media-viewer-media max-width/height, so `auto` never actually scrolled;
+     hidden costs nothing for video/audio and confines the zoom transform. */
+  overflow: hidden;
 }
 
 /* Load spinner — shown until the media element reports readiness
@@ -5640,6 +5644,20 @@ html.resize-dragging * {
   /* Header row (~2.5rem) + body padding + viewport margin. */
   max-height: calc(var(--viewport-height, 100dvh) - 8rem);
   object-fit: contain;
+}
+
+/* Pinch-zoomable image (#213). `touch-action: none` hands EVERY touch to our
+   element-level JS handlers instead of letting the browser interpret it as a
+   scroll/zoom pan — mandatory for the synthesized pinch (the shell's native
+   pinch is dead via iOS-1's viewport lock; this reclaims the raw touch stream
+   for the modal image only). transform-origin: center matches the geometry in
+   lib/pinchZoom.ts (translate is measured from center). will-change hints the
+   compositor for smooth pinch. The inline `transform` style is written by the
+   component per gesture frame. */
+.media-viewer-media--zoomable {
+  touch-action: none;
+  transform-origin: center center;
+  will-change: transform;
 }
 
 /* <audio> has no intrinsic size — give the bare controls strip a

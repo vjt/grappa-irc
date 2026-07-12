@@ -18975,3 +18975,61 @@ behavior. e2e (`issue217-timestamp-format.spec.ts`) drives the real journey:
 default is seconds → open Settings → the with-seconds radio is checked → switch
 to no-seconds → the OPEN scrollback re-renders live → reload → the choice
 persists.
+
+## 2026-07-12 — #213 pinch-zoom the media-viewer image, confined to the modal
+
+The media-viewer modal (`MediaViewerModal.tsx`, the in-app image/video/audio
+lightbox) rendered images at fixed fit-size with no zoom. Requested: pinch-to-
+zoom + pan the modal IMAGE on touch, with the gesture CONFINED to the viewer —
+no page-zoom, no body-scroll bleed.
+
+**Why the native browser pinch is unavailable — and why we hand-roll.** iOS-1
+(2026-05-17) locked the app viewport with `<meta viewport ... maximum-scale=1,
+user-scalable=no>` so cic feels like an app, not a website. That kills the
+browser's native pinch-zoom **app-wide**, and it is a viewport-level property
+with **no per-element opt-out** — there is no CSS or attribute that re-enables
+native pinch on one element while the page stays locked. So the only way to zoom
+the modal image is to synthesize the gesture ourselves: read the two-finger
+touch distance, compute a scale, and apply a CSS `transform` to the `<img>`
+alone. Because the transform is element-scoped (not a page zoom) and every
+`touchmove` is `preventDefault`'d, the zoom/pan is confined to the viewer BY
+CONSTRUCTION — belt (element-scoped transform) and braces (preventDefault +
+`overflow: hidden` clip on `.media-viewer-body`).
+
+**Split: pure geometry vs DOM wiring (swipe.ts precedent).** The math lives in
+`lib/pinchZoom.ts` — DOM-free, unit-tested without touch physics, gemello di
+`swipe.ts`. A `Transform` is `{ scale, tx, ty }` → `translate(tx,ty) scale(s)`
+under a **center** transform-origin. Pure functions: `applyPinch` (scale the
+gesture-start transform by current/start finger-distance ratio, with a zero-
+distance divide guard), `applyPan` (add drag delta to start translate),
+`toggleZoom` (double-tap fit⇄2×), and the load-bearing `clampTransform` — scale
+is clamped to `[1,4]` FIRST, then translate is confined to `±maxTranslate(scale,
+axis)` where `maxTranslate = max(0, (scale-1)*axis/2)` (half the overflow each
+side). Clamping scale first means pinching back down shrinks the pan bound and
+re-confines a pan that was legal at the larger scale — an un-zoomed image has
+bound 0, so it can't pan for free. The `ZoomableImage` component in
+`MediaViewerModal.tsx` owns only the gesture state + DOM wiring.
+
+**The passive-listener trap (same as compose-swipe #123, 2026-06-24).** Solid
+DELEGATES `touchstart/touchmove/touchend` to a single **passive** document
+listener (its `DelegatedEvents` set), so a JSX `onTouchMove`'s `preventDefault`
+silently no-ops — nothing would be suppressed and the gesture would bleed to the
+page. So the three listeners are bound element-level via a `ref` +
+`addEventListener` with `touchmove` `{ passive: false }` (+ `onCleanup`), the
+`bindSwipe` precedent. `touch-action: none` on `.media-viewer-media--zoomable`
+hands the raw touch stream to our handlers instead of the browser's scroll/zoom
+interpretation. NB: vitest/jsdom does NOT enforce passive semantics, so the
+delegation bug would pass the unit suite green — it's only catchable by binding
+element-level (done) and by the e2e's `defaultPrevented` assertion.
+
+**Test surface.** `pinchZoom.test.ts` (26 assertions, jsdom) covers all the
+geometry. `issue213-pinch-zoom.spec.ts` has two guards, one per what's provable
+where (issue123 precedent): (1) WIRING (chromium) — a synthesized two-finger
+`TouchEvent` whose fingers move apart scales the `<img>` transform above 1, and
+a single-finger `touchmove` is `defaultPrevented` (the confinement signal, a
+JS-level fact independent of `touch-action`; chromium supports the
+Touch/TouchEvent constructors, webkit's are unreliable); (2) CSS CONTRACT
+(`@webkit` iPhone 15) — `getComputedStyle(img).touchAction === "none"` on the
+real webkit target. The pinch/pan PHYSICS (does it feel right on a real iPhone?)
+is a device call — vjt dogfoods post-ship; the e2es guard the wiring + CSS, not
+the momentum. Client-only, no wire/migration/server change.

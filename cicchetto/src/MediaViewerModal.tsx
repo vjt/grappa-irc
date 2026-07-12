@@ -9,6 +9,17 @@ import {
 } from "solid-js";
 import { closeMediaViewer, type MediaViewerState, mediaViewerState } from "./lib/mediaViewer";
 import { createOverlayLock } from "./lib/overlayScrollLock";
+import {
+  applyPan,
+  applyPinch,
+  distance,
+  IDENTITY,
+  MIN_SCALE,
+  type Point,
+  type Size,
+  type Transform,
+  toggleZoom,
+} from "./lib/pinchZoom";
 import { maybeEscapePwaClick } from "./lib/platform";
 
 // In-app media viewer modal — media-link cluster (2026-06-11).
@@ -45,6 +56,139 @@ import { maybeEscapePwaClick } from "./lib/platform";
 // needs no a11y lint suppressions.
 
 type MediaLoadStatus = "loading" | "ready" | "failed";
+
+// Max gap (ms, event-timeStamp domain) between two single-finger taps for a
+// double-tap zoom toggle. 300ms is the platform double-tap convention.
+const DOUBLE_TAP_MS = 300;
+
+const touchPoint = (t: Touch): Point => ({ x: t.clientX, y: t.clientY });
+
+// Pinch-to-zoom + pan for the modal image (#213). The browser's native pinch is
+// dead app-wide (iOS-1 viewport lock — maximum-scale=1, user-scalable=no; no
+// per-element opt-out), so the gesture is synthesized here and applied as a CSS
+// `transform` to THIS <img> only. Because the transform is element-scoped and
+// every touchmove is preventDefault'd, the zoom/pan is confined to the viewer —
+// no page zoom, no body-scroll bleed.
+//
+// Touch listeners are bound element-level via a ref + addEventListener with
+// touchmove `{ passive: false }` (bindSwipe precedent, ComposeBox): Solid
+// DELEGATES touch events to a passive document listener, so a JSX onTouchMove's
+// preventDefault would silently no-op (DESIGN_NOTES 2026-06-24 / 2026-07-12).
+// The pure geometry lives in lib/pinchZoom.ts; this owns only the DOM wiring +
+// gesture state.
+const ZoomableImage: Component<{ href: string; onLoad: () => void; onError: () => void }> = (
+  props,
+) => {
+  const [transform, setTransform] = createSignal<Transform>(IDENTITY);
+
+  // Non-reactive gesture state, mutated across the touchstart→move→end span.
+  let gestureStart: Transform = IDENTITY; // transform when the current gesture began
+  let startDistance = 0; // two-finger pinch baseline (0 = not pinching)
+  let startPan: Point | null = null; // one-finger pan baseline (screen coords)
+  let lastTapAt = 0; // event-timeStamp of the previous single-finger tap
+
+  // Confinement box = the image's own fit-to-viewer client rect. A CSS
+  // transform doesn't change layout size, so clientWidth/Height stay the fit
+  // dimensions regardless of the current scale.
+  const viewportOf = (el: HTMLElement): Size => ({
+    width: el.clientWidth,
+    height: el.clientHeight,
+  });
+
+  const onTouchStart = (e: TouchEvent): void => {
+    gestureStart = transform();
+    if (e.touches.length >= 2) {
+      const a = e.touches[0];
+      const b = e.touches[1];
+      if (a && b) startDistance = distance(touchPoint(a), touchPoint(b));
+      startPan = null;
+      return;
+    }
+    const t0 = e.touches[0];
+    if (!t0) return;
+    startDistance = 0;
+    // Double-tap toggles fit⇄2x. Second tap within the window → toggle and
+    // arm nothing (don't treat the toggle tap as a pan start).
+    if (e.timeStamp - lastTapAt < DOUBLE_TAP_MS) {
+      setTransform(toggleZoom(transform()));
+      lastTapAt = 0;
+      startPan = null;
+      return;
+    }
+    lastTapAt = e.timeStamp;
+    startPan = touchPoint(t0);
+  };
+
+  const onTouchMove = (e: TouchEvent): void => {
+    const el = e.currentTarget as HTMLImageElement;
+    // Belt-and-braces confinement: own the gesture, never let it reach the page.
+    if (e.cancelable) e.preventDefault();
+    const vp = viewportOf(el);
+    if (e.touches.length >= 2 && startDistance > 0) {
+      const a = e.touches[0];
+      const b = e.touches[1];
+      if (a && b) {
+        setTransform(
+          applyPinch(gestureStart, startDistance, distance(touchPoint(a), touchPoint(b)), vp),
+        );
+      }
+      return;
+    }
+    // Single-finger pan only when zoomed in (an un-zoomed image can't pan).
+    if (startPan && gestureStart.scale > MIN_SCALE) {
+      const t0 = e.touches[0];
+      if (t0) {
+        const delta = { x: t0.clientX - startPan.x, y: t0.clientY - startPan.y };
+        setTransform(applyPan(gestureStart, delta, vp));
+      }
+    }
+  };
+
+  const onTouchEnd = (e: TouchEvent): void => {
+    // Lifting one finger of a pinch leaves one touch: rebase the pan gesture on
+    // the survivor so pan continues seamlessly. All fingers up → clear state.
+    if (e.touches.length === 1) {
+      const t0 = e.touches[0];
+      if (t0) {
+        gestureStart = transform();
+        startPan = touchPoint(t0);
+        startDistance = 0;
+      }
+      return;
+    }
+    if (e.touches.length === 0) {
+      startPan = null;
+      startDistance = 0;
+    }
+  };
+
+  const bindZoom = (el: HTMLImageElement): void => {
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    onCleanup(() => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+    });
+  };
+
+  const styleFor = (t: Transform): { transform: string } => ({
+    transform: `translate(${t.tx}px, ${t.ty}px) scale(${t.scale})`,
+  });
+
+  return (
+    <img
+      ref={bindZoom}
+      class="media-viewer-media media-viewer-media--zoomable"
+      src={props.href}
+      alt={props.href}
+      style={styleFor(transform())}
+      onLoad={props.onLoad}
+      onError={props.onError}
+    />
+  );
+};
 
 // Body subcomponent so the load status resets per open: the keyed
 // <Show> remounts it for every new viewer state, giving each open a
@@ -83,13 +227,7 @@ const MediaViewerBody: Component<{ state: MediaViewerState }> = (props) => {
         fallback={
           <Switch>
             <Match when={props.state.kind === "image"}>
-              <img
-                class="media-viewer-media"
-                src={props.state.href}
-                alt={props.state.href}
-                onLoad={ready}
-                onError={failed}
-              />
+              <ZoomableImage href={props.state.href} onLoad={ready} onError={failed} />
             </Match>
             <Match when={props.state.kind === "video"}>
               {/* playsinline: without it iOS hands the element to the
