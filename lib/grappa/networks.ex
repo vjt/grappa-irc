@@ -427,6 +427,36 @@ defmodule Grappa.Networks do
   end
 
   @doc """
+  #211 phase 6 — visitor twin of `configured_nick_index/1`. Returns
+  `%{slug => {network_id, configured_nick}}` for every network a VISITOR
+  holds a credential on.
+
+  Made necessary by the multi-network visitor (phase 4c accretion): the
+  own-nick seed for `Grappa.Push.BadgeCount` + `/me` unread-counts is
+  now per-credential (was the single `visitor.network_slug`/
+  `visitor.nick` scalar the wire dropped this phase). Same shape + same
+  off-Session CONFIGURED-nick semantics as the user index: a single
+  joined credentials⋈networks query, `WHERE visitor_id ==` (subject-
+  blind-safe — never a user credential). Accepted staleness after a
+  `/nick` until reconnect rewrites the credential, exactly as the user
+  path.
+  """
+  @spec configured_visitor_nick_index(Ecto.UUID.t()) :: %{String.t() => {integer(), String.t()}}
+  def configured_visitor_nick_index(visitor_id) when is_binary(visitor_id) do
+    query =
+      from(c in Credential,
+        join: n in Network,
+        on: n.id == c.network_id,
+        where: c.visitor_id == ^visitor_id,
+        select: {n.slug, c.network_id, c.nick}
+      )
+
+    query
+    |> Repo.all()
+    |> Map.new(fn {slug, network_id, nick} -> {slug, {network_id, nick}} end)
+  end
+
+  @doc """
   Every network row, ordered by `slug` ascending. Operator-facing —
   the M-5 admin console (`GET /admin/networks`) materializes the
   full table. Networks are operator-curated infra (low cardinality),
@@ -517,24 +547,32 @@ defmodule Grappa.Networks do
   def home_data_for_user(%User{id: user_id} = user) do
     user
     |> Grappa.Networks.Credentials.list_credentials_for_user()
-    |> Enum.map(fn cred -> {cred, resolve_network_nick(user_id, cred)} end)
+    |> Enum.map(fn cred -> {cred, resolve_network_nick({:user, user_id}, cred)} end)
     |> Wire.home_data()
   end
 
   @doc """
-  Resolves the live IRC nick for a `(user_id, credential)` pair. Asks
+  Resolves the live IRC nick for a `(subject, credential)` pair. Asks
   the running `Session.Server` for its current nick — which may
   differ from `cred.nick` after NickServ ghost/regain or an explicit
   `/nick`. Falls back to the credential's configured nick when the
   session is parked, failed, or not yet bootstrapped.
 
-  Single-sourced for `GET /networks` (`NetworksController.index/2`)
-  and `home_data_for_user/1` so a future divergence (e.g. visitor
-  parity for live-nick) is one edit.
+  #211 phase 6 — subject-polymorphic (ruling A R1: "visitors as equal
+  to users as possible"). Takes a `Session.subject()` tuple so BOTH the
+  user `GET /networks` branch (`{:user, id}`) and the new visitor branch
+  (`{:visitor, id}`) resolve the live-vs-configured nick through ONE
+  reader — a NickServ ghost/regain nick reaches cic's DM topic for a
+  visitor exactly as it does for a user (the `networks.ex:508` note
+  anticipated "visitor parity for live-nick is one edit").
+
+  Single-sourced for `GET /networks` (`NetworksController.index/2`),
+  `home_data_for_user/1`, `home_data_for_visitor/1`, and
+  `broadcast_state_change/4`.
   """
-  @spec resolve_network_nick(Ecto.UUID.t(), Credential.t()) :: String.t()
-  def resolve_network_nick(user_id, %Credential{} = cred) do
-    case Session.current_nick({:user, user_id}, cred.network_id) do
+  @spec resolve_network_nick(Session.subject(), Credential.t()) :: String.t()
+  def resolve_network_nick(subject, %Credential{} = cred) do
+    case Session.current_nick(subject, cred.network_id) do
       {:ok, nick} -> nick
       {:error, :no_session} -> cred.nick
     end
@@ -824,7 +862,7 @@ defmodule Grappa.Networks do
          reason
        ) do
     topic = Topic.user(user_name)
-    nick = resolve_network_nick(user_id, cred)
+    nick = resolve_network_nick({:user, user_id}, cred)
 
     # REV-J M15: pre-fix this co-emitted two events per transition —
     # the wider `connection_state_changed` and a narrow

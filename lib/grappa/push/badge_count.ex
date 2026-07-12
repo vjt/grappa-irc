@@ -48,11 +48,17 @@ defmodule Grappa.Push.BadgeCount do
   declares its OWN `top_level?: true` boundary (same pattern as
   `Grappa.Visitors.Reaper` / `Grappa.Uploads.Reaper`). It CANNOT live in
   the `Grappa.Push` context boundary: it deps `Networks` / `ReadCursor` /
-  `Visitors`, all of which transitively reach `Session`, and `Session`
+  `Scrollback`, which transitively reach `Session`, and `Session`
   deps `Push` — so folding these into Push would close the cycle
   `Push → Networks → Session → Push`. Keeping BadgeCount in its own
   boundary that depends DOWN onto Push (for `Triggers.should_notify?/4`)
   inverts cleanly: nothing in the lower layers references BadgeCount.
+
+  #211 phase 6 — the visitor own-nick seed moved off `Grappa.Visitors`
+  (the singular `visitor.network_slug`/`visitor.nick` scalar) onto
+  `Networks.configured_visitor_nick_index/1` (per-credential, multi-
+  network). So this module no longer deps `Grappa.Visitors` at all — the
+  per-network CONFIGURED nick for BOTH subjects comes from `Networks`.
 
   Door #1 (the push-payload badge) is the one caller that lives BELOW
   this layer (`Session → Push.Triggers`). It reaches `count/1` through a
@@ -72,11 +78,10 @@ defmodule Grappa.Push.BadgeCount do
       Grappa.ReadCursor,
       Grappa.Scrollback,
       Grappa.Subject,
-      Grappa.UserSettings,
-      Grappa.Visitors
+      Grappa.UserSettings
     ]
 
-  alias Grappa.{Networks, ReadCursor, Scrollback, Subject, UserSettings, Visitors}
+  alias Grappa.{Networks, ReadCursor, Scrollback, Subject, UserSettings}
   alias Grappa.Push.Triggers
 
   # Badge tops out at 99 — past that "99+" is the universal UI idiom and
@@ -190,23 +195,15 @@ defmodule Grappa.Push.BadgeCount do
 
     * Users: one joined credentials⋈networks query
       (`Networks.configured_nick_index/1`).
-    * Visitors: the single `(network_slug, nick)` the visitor row
-      carries, resolved to a network_id via the slug index (empty map
-      when the visitor or its network is gone).
+    * Visitors: the per-network CONFIGURED nick from each attached
+      credential (`Networks.configured_visitor_nick_index/1`) — #211
+      phase 6 made visitors multi-network, so the own-nick seed is now
+      keyed per-credential (was the single `visitor.network_slug`/
+      `visitor.nick` scalar), matching the user path shape.
   """
   @spec configured_nick_windows(Subject.t()) :: %{String.t() => {integer(), String.t()}}
   def configured_nick_windows({:user, user_id}), do: Networks.configured_nick_index(user_id)
 
-  def configured_nick_windows({:visitor, visitor_id}) do
-    case Visitors.get(visitor_id) do
-      nil ->
-        %{}
-
-      visitor ->
-        case Map.fetch(Networks.network_id_by_slug_index(), visitor.network_slug) do
-          {:ok, network_id} -> %{visitor.network_slug => {network_id, visitor.nick}}
-          :error -> %{}
-        end
-    end
-  end
+  def configured_nick_windows({:visitor, visitor_id}),
+    do: Networks.configured_visitor_nick_index(visitor_id)
 end

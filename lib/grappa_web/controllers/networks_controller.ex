@@ -4,21 +4,20 @@ defmodule GrappaWeb.NetworksController do
   `PATCH /networks/:network_id` — T32 connection_state transitions.
 
   Cicchetto (Phase 3 PWA) calls GET on app boot to render the
-  network → channel tree. Two subject branches:
+  network → channel tree. Two subject branches, both list-shaped since
+  #211 phase 6:
 
     * **user** — `Credentials.list_credentials_for_user/1` returns
       every credential row the user has bound. Per-user iso is
       load-bearing: a user only sees networks they have a credential
       on.
-    * **visitor** — visitors are pinned to one network at row
-      creation (`visitor.network_slug`). Returns the single matching
-      network row. The slug invariant is enforced by `Bootstrap` at
-      boot (a `GRAPPA_VISITOR_NETWORK` rotation hard-errors with
-      operator instructions to reap orphans), so the lookup never
-      returns `:not_found` in production — but the controller
-      collapses to the empty list rather than crashing the request
-      to keep the wire shape uniform under the pathological
-      orphan-row case.
+    * **visitor** — `Credentials.list_visitor_credentials/1` returns
+      one row per attached network (multi-network since phase 4c
+      accretion). The visitor twin of the user branch (ruling A):
+      per-network live-nick + the (now-real) `connection_state`. The
+      pre-phase-6 singular `visitor.network_slug` → `[single network]`
+      branch is retired — the scalar is dropped from the wire this
+      phase (the column at phase 7).
 
   PATCH is user-only — `Credential` rows are per-(user, network)
   bindings; visitors have no `Credential` to transition. The
@@ -42,9 +41,10 @@ defmodule GrappaWeb.NetworksController do
   must not dep `Admission` to avoid a cycle, and the orchestrator's
   own top-level boundary deps both freely.
 
-  Wire shape lives in `Grappa.Networks.Wire.network_to_json/1` (GET)
-  and `Grappa.Networks.Wire.credential_to_json/1` (PATCH). The view
-  layer (`NetworksJSON`) is a thin delegator.
+  Wire shapes live in `Grappa.Networks.Wire` — `network_with_nick_to_json/3`
+  (user GET row), `visitor_network_to_json/3` (visitor GET row), and
+  `credential_to_json/1` (PATCH). The view layer (`NetworksJSON`) is a
+  thin delegator.
   """
   use GrappaWeb, :controller
 
@@ -78,19 +78,30 @@ defmodule GrappaWeb.NetworksController do
         # value; T32 fields come straight off the credential row of record.
         network_triples =
           Enum.map(credentials, fn cred ->
-            {cred.network, Networks.resolve_network_nick(user.id, cred), cred}
+            {cred.network, Networks.resolve_network_nick({:user, user.id}, cred), cred}
           end)
 
         render(conn, :index, networks: {:user, network_triples})
 
       {:visitor, visitor} ->
-        networks =
-          case Networks.get_network_by_slug(visitor.network_slug) do
-            {:ok, network} -> [network]
-            {:error, :not_found} -> []
-          end
+        # #211 phase 6 — list-shaped visitor branch (ruling A). A visitor
+        # is multi-network now (phase 4c accretion): return ONE row per
+        # attached network — the visitor twin of the user branch, via the
+        # 4c reader `Credentials.list_visitor_credentials/1` (`WHERE
+        # visitor_id ==`, `:network` preloaded, subject-blind-safe). Each
+        # row carries the live-nick-with-fallback + the credential's
+        # `connection_state` (ruling D: visitors carry a real
+        # connection_state now). Replaces the pre-phase-6 singular
+        # `visitor.network_slug` → `[single network]` branch (the scalar
+        # is dropped from the wire this phase, the column at phase 7).
+        credentials = Credentials.list_visitor_credentials(visitor.id)
 
-        render(conn, :index, networks: {:visitor, networks})
+        network_triples =
+          Enum.map(credentials, fn cred ->
+            {cred.network, Networks.resolve_network_nick({:visitor, visitor.id}, cred), cred}
+          end)
+
+        render(conn, :index, networks: {:visitor, network_triples})
     end
   end
 

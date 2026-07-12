@@ -103,7 +103,9 @@ defmodule GrappaWeb.ShareTokenControllerTest do
       assert body["subject"]["kind"] == "visitor"
       assert body["subject"]["id"] == visitor.id
       assert body["subject"]["nick"] == visitor.nick
-      assert body["subject"]["network_slug"] == visitor.network_slug
+      # #211 phase 6 — the singular subject `network_slug` is off the wire
+      # (visitors are multi-network; per-network attachment on GET /networks).
+      refute Map.has_key?(body["subject"], "network_slug")
     end
 
     test "consumed token authenticates as the SAME visitor (multi-device share)", %{

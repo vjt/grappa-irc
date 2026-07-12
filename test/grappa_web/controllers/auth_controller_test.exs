@@ -166,7 +166,11 @@ defmodule GrappaWeb.AuthControllerTest do
       assert is_binary(body["token"])
       assert body["subject"]["kind"] == "visitor"
       assert body["subject"]["nick"] == "vjt"
-      assert body["subject"]["network_slug"] == "azzurra"
+      # #211 phase 6 — the singular subject `network_slug` is DROPPED from
+      # the login wire (visitors are multi-network; per-network attachment
+      # lives on GET /networks). The DB column still exists (dual-written
+      # for the login lookup below until phase 7).
+      refute Map.has_key?(body["subject"], "network_slug")
 
       v = Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra")
       stop_visitor_session(v.id, network.id)

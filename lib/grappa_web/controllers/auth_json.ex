@@ -25,7 +25,9 @@ defmodule GrappaWeb.AuthJSON do
               kind: String.t(),
               id: Ecto.UUID.t(),
               nick: String.t(),
-              network_slug: String.t()
+              ident: String.t() | nil,
+              realname: String.t() | nil,
+              registered: boolean()
             }
 
   @doc "Renders the `:login` action — `{token, subject}`."

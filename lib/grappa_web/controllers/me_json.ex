@@ -98,7 +98,6 @@ defmodule GrappaWeb.MeJSON do
               kind: String.t(),
               id: Ecto.UUID.t(),
               nick: String.t(),
-              network_slug: String.t(),
               expires_at: DateTime.t() | nil,
               registered: boolean(),
               connected: boolean(),

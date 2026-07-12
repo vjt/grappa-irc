@@ -46,6 +46,9 @@ const postJoinMock = vi.fn<
 >(() => Promise.resolve());
 const windowStateMock = vi.fn<() => Record<string, string>>(() => ({}));
 const userMock = vi.fn<() => unknown>(() => null);
+// #211 phase 6 — visitorSlug() now derives from the list-shaped
+// networks() store (the singular me.network_slug is gone). Mock it.
+const networksMock = vi.fn<() => unknown[]>(() => []);
 
 vi.mock("../lib/home", () => ({
   homeData: () => homeDataMock(),
@@ -77,7 +80,7 @@ vi.mock("../lib/api", () => {
   };
 });
 
-vi.mock("../lib/networks", () => ({ user: () => userMock() }));
+vi.mock("../lib/networks", () => ({ user: () => userMock(), networks: () => networksMock() }));
 // channelKey is a pure fn — use the real one (mock at boundaries, not
 // pure helpers) so the joined-state key shape matches production exactly.
 vi.mock("../lib/windowState", () => ({ windowStateByChannel: () => windowStateMock() }));
@@ -111,6 +114,7 @@ describe("HomePane", () => {
     postJoinMock.mockResolvedValue(undefined);
     windowStateMock.mockReturnValue({});
     userMock.mockReturnValue(null);
+    networksMock.mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -174,8 +178,9 @@ describe("HomePane", () => {
         kind: "visitor",
         id: "v1",
         nick: "guest",
-        network_slug: "azzurra",
       });
+      // #211 phase 6 — visitorSlug() reads the list-shaped networks() store.
+      networksMock.mockReturnValue([{ kind: "visitor", slug: "azzurra", nick: "guest" }]);
       getFeaturedMock.mockResolvedValue([{ name: "#welcome", description: null }]);
       render(() => <HomePane />);
 
@@ -205,8 +210,8 @@ describe("HomePane", () => {
         kind: "visitor",
         id: "v1",
         nick: "guest",
-        network_slug: "azzurra",
       });
+      networksMock.mockReturnValue([{ kind: "visitor", slug: "azzurra", nick: "guest" }]);
       render(() => <HomePane />);
 
       const browseBtn = screen.getByRole("button", { name: /browse channels/i });

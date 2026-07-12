@@ -108,7 +108,6 @@ describe("auth signal store", () => {
           kind: "visitor",
           id: "v1",
           nick: "vjt",
-          network_slug: "azzurra",
         }),
       );
       const auth = await import("../lib/auth");
@@ -117,8 +116,25 @@ describe("auth signal store", () => {
         kind: "visitor",
         id: "v1",
         nick: "vjt",
-        network_slug: "azzurra",
       });
+    });
+
+    // #211 phase 6 — a visitor subject persisted WITHOUT network_slug
+    // (post-drop, or a pre-drop subject after the field vanished) MUST
+    // still validate. Guarding it would logout-loop every returning
+    // visitor. The scalar is gone from the subject contract entirely.
+    it("returns valid visitor subject even with a stray network_slug (ignored)", async () => {
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "visitor", id: "v1", nick: "vjt", network_slug: "azzurra" }),
+      );
+      const auth = await import("../lib/auth");
+      const s = auth.getSubject();
+      // isValidSubject narrows on {id, nick} only — a stray legacy field
+      // rides through untouched (JSON.parse keeps it) but validation
+      // ignores it.
+      expect(s?.kind).toBe("visitor");
+      expect(s?.id).toBe("v1");
     });
 
     it("returns null + clears key on tampered user (missing fields)", async () => {
@@ -128,10 +144,10 @@ describe("auth signal store", () => {
       expect(localStorage.getItem("grappa-subject")).toBeNull();
     });
 
-    it("returns null + clears key on tampered visitor (missing network_slug)", async () => {
+    it("returns null + clears key on tampered visitor (missing nick)", async () => {
       localStorage.setItem(
         "grappa-subject",
-        JSON.stringify({ kind: "visitor", id: "v1", nick: "vjt" }),
+        JSON.stringify({ kind: "visitor", id: "v1" }),
       );
       const auth = await import("../lib/auth");
       expect(auth.getSubject()).toBeNull();

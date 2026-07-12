@@ -401,6 +401,10 @@ describe("ownNickForNetwork (cic H3 fix + bucket F H4 type split)", () => {
     kind: "visitor",
     id: 1,
     slug: "azzurra",
+    nick: "guest42",
+    connection_state: "connected",
+    connection_state_reason: null,
+    connection_state_changed_at: null,
     inserted_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };
@@ -408,6 +412,10 @@ describe("ownNickForNetwork (cic H3 fix + bucket F H4 type split)", () => {
     kind: "visitor",
     id: 2,
     slug: "ircnet",
+    nick: "guest42-alt",
+    connection_state: "parked",
+    connection_state_reason: null,
+    connection_state_changed_at: null,
     inserted_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };
@@ -423,7 +431,6 @@ describe("ownNickForNetwork (cic H3 fix + bucket F H4 type split)", () => {
     kind: "visitor",
     id: "v1",
     nick: "guest42",
-    network_slug: "azzurra",
     expires_at: "2026-12-31T00:00:00Z",
   };
 
@@ -432,24 +439,23 @@ describe("ownNickForNetwork (cic H3 fix + bucket F H4 type split)", () => {
     // Crucially NOT "vjt" (the account name).
   });
 
-  it("user + VisitorNetwork → returns null + logs (kind mismatch contract violation)", () => {
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(api.ownNickForNetwork(azzurraVisitor, userMe)).toBeNull();
-    expect(errSpy).toHaveBeenCalledTimes(1);
-    expect(errSpy.mock.calls[0]?.[0]).toContain("azzurra");
-    expect(errSpy.mock.calls[0]?.[0]).toContain("cic H4");
-    errSpy.mockRestore();
+  // #211 phase 6 — the visitor row converged onto the user twin (carries
+  // its own per-network nick). `ownNickForNetwork` is now subject-agnostic
+  // AND per-network: it returns `net.nick` for BOTH kinds. A visitor is
+  // multi-network now, so there's no "kind mismatch" and no singular-slug
+  // match — every attached network's own-nick is the row's nick.
+  it("user + VisitorNetwork → returns net.nick (subject-agnostic, phase 6)", () => {
+    expect(api.ownNickForNetwork(azzurraVisitor, userMe)).toBe("guest42");
   });
 
-  it("visitor + matching network_slug → returns visitor.nick", () => {
+  it("visitor + attached network → returns that network's per-network nick", () => {
     expect(api.ownNickForNetwork(azzurraVisitor, visitorMe)).toBe("guest42");
   });
 
-  it("visitor + non-matching network → returns null (no credential)", () => {
-    expect(api.ownNickForNetwork(ircnetVisitor, visitorMe)).toBeNull();
-    // Visitors have ONE network only — the one they logged into. Any
-    // other Network.t() in their networks() list is a server bug, but
-    // we tolerate it as null rather than throwing.
+  it("visitor + a DIFFERENT attached network → returns that network's own nick", () => {
+    // Multi-network visitor (phase 6): each attached network carries its
+    // own per-network nick, resolved from the row — not a singular slug.
+    expect(api.ownNickForNetwork(ircnetVisitor, visitorMe)).toBe("guest42-alt");
   });
 
   it("null me → returns null", () => {
@@ -485,7 +491,7 @@ describe("tagNetwork (bucket F H4)", () => {
     updated_at: "2026-01-01T00:00:00Z",
   };
 
-  it("kind=visitor → returns VisitorNetwork (bare; ignores user-only fields)", () => {
+  it("kind=visitor + complete raw → returns VisitorNetwork twin (nick + connection_state, phase 6)", () => {
     const out = api.tagNetwork({ ...rawComplete, kind: "visitor" });
     expect(out).not.toBeNull();
     expect(out?.kind).toBe("visitor");
@@ -493,9 +499,21 @@ describe("tagNetwork (bucket F H4)", () => {
       kind: "visitor",
       id: 7,
       slug: "azzurra",
+      nick: "grappa",
+      connection_state: "connected",
+      connection_state_reason: null,
+      connection_state_changed_at: null,
       inserted_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     });
+  });
+
+  it("kind=visitor + missing nick → returns null + logs (phase 6: both kinds carry nick)", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(api.tagNetwork({ ...rawBare, kind: "visitor" })).toBeNull();
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls[0]?.[0]).toContain("guest-net");
+    errSpy.mockRestore();
   });
 
   it("kind=user + complete raw → returns UserNetwork", () => {

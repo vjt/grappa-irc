@@ -992,7 +992,28 @@ defmodule Grappa.NetworksTest do
         |> Credentials.list_credentials_for_user()
         |> hd()
 
-      assert Networks.resolve_network_nick(user.id, cred) == "vjt-cred"
+      assert Networks.resolve_network_nick({:user, user.id}, cred) == "vjt-cred"
+    end
+
+    test "visitor subject resolves the credential nick when no live session (phase 6 parity)" do
+      net = network_fixture()
+
+      {:ok, visitor} =
+        %{
+          nick: "vjt-vis",
+          network_slug: net.slug,
+          expires_at: DateTime.add(DateTime.utc_now(), 48, :hour)
+        }
+        |> Grappa.Visitors.Visitor.create_changeset()
+        |> Repo.insert()
+
+      {:ok, cred} =
+        Credentials.upsert_visitor_credential(visitor.id, net.id, %{
+          nick: "vjt-vis",
+          auth_method: :none
+        })
+
+      assert Networks.resolve_network_nick({:visitor, visitor.id}, cred) == "vjt-vis"
     end
   end
 

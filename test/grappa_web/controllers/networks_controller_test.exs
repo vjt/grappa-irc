@@ -7,19 +7,22 @@ defmodule GrappaWeb.NetworksControllerTest do
   network → channel tree. User branch:
   `Grappa.Networks.Credentials.list_credentials_for_user/1` gates on
   credential ownership — a user sees only networks they bind to.
-  Visitor branch: returns the single network the visitor is row-pinned
-  to (`visitor.network_slug` resolved via `Networks.get_network_by_slug/1`).
-  Two operators on the same deployment do NOT see each other's
-  networks; a visitor sees exactly one.
+  Visitor branch (#211 phase 6 — list-shaped):
+  `Grappa.Networks.Credentials.list_visitor_credentials/1` returns one
+  row per attached network (multi-network since accretion), the visitor
+  twin of the user branch. Two operators on the same deployment do NOT
+  see each other's networks; a visitor sees only its attached set.
 
   PATCH is user-only (credentials are user→network bindings; visitors
   have no Credential row to transition). Authz is handled by the
   `ResolveNetwork` plug — a user patching another user's network slug
   collapses to 404 so credential-existence is not leaked.
 
-  Wire shape comes from `Grappa.Networks.Wire.network_to_json/1`
-  (GET) and `Grappa.Networks.Wire.credential_to_json/1` (PATCH —
-  returns the updated credential including connection_state fields).
+  Wire shapes come from `Grappa.Networks.Wire` —
+  `network_with_nick_to_json/3` (user GET row),
+  `visitor_network_to_json/3` (visitor GET row), and
+  `credential_to_json/1` (PATCH — returns the updated credential
+  including connection_state fields).
 
   `async: false` for the same unique-index race reason as
   `messages_controller_test.exs`: per-test inserts of `networks` rows
@@ -190,10 +193,11 @@ defmodule GrappaWeb.NetworksControllerTest do
   end
 
   describe "GET /networks — visitor subject" do
-    test "returns the single bound network for the visitor", %{conn: conn} do
+    test "returns the visitor's attached network row (list-shaped, phase 6)", %{conn: conn} do
       slug = "azzurra-vis-#{u()}"
       {:ok, network} = Networks.find_or_create_network(%{slug: slug})
-      {_, session} = visitor_and_session(network_slug: slug)
+      visitor = visitor_with_credential_fixture(network_slug: slug, nick: "vjt-vis")
+      session = visitor_session_fixture(visitor)
 
       conn =
         conn
@@ -203,12 +207,16 @@ defmodule GrappaWeb.NetworksControllerTest do
       body = json_response(conn, 200)
       assert is_list(body)
       assert length(body) == 1
-      assert hd(body)["slug"] == network.slug
-      assert hd(body)["id"] == network.id
-      # HIGH-24 (no-silent-drops B6.9a 2026-05-14): explicit kind
-      # discriminator on the wire so cic doesn't have to join against
-      # /me to tag the network shape.
-      assert hd(body)["kind"] == "visitor"
+      row = hd(body)
+      assert row["slug"] == network.slug
+      assert row["id"] == network.id
+      # #211 phase 6 — the visitor twin of the user row: kind discriminator
+      # + per-network nick + the (now-real) connection_state (ruling A/D).
+      assert row["kind"] == "visitor"
+      assert row["nick"] == "vjt-vis"
+      # Credential defaults to :connected (the schema default) — visitors
+      # carry a real connection_state now.
+      assert row["connection_state"] == "connected"
     end
 
     test "does not include other visitors' networks (per-visitor iso)", %{conn: conn} do
@@ -217,8 +225,9 @@ defmodule GrappaWeb.NetworksControllerTest do
       {:ok, _} = Networks.find_or_create_network(%{slug: vjt_slug})
       {:ok, _} = Networks.find_or_create_network(%{slug: alice_slug})
 
-      {_, session} = visitor_and_session(network_slug: vjt_slug)
-      _ = visitor_fixture(network_slug: alice_slug)
+      visitor = visitor_with_credential_fixture(network_slug: vjt_slug)
+      session = visitor_session_fixture(visitor)
+      _ = visitor_with_credential_fixture(network_slug: alice_slug)
 
       conn =
         conn

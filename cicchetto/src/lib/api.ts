@@ -76,7 +76,13 @@ export type Subject =
   // a localStorage subject persisted BEFORE this field landed still
   // validates (treated as not-registered until the next login refreshes
   // it); fresh logins always carry it.
-  | { kind: "visitor"; id: string; nick: string; network_slug: string; registered?: boolean };
+  //
+  // #211 phase 6 — `network_slug` DROPPED. A visitor is multi-network
+  // now (accretion + autoconnect); per-network attachment lives on the
+  // GET /networks rows, not the singular subject scalar. Mirrors the
+  // server-side `Grappa.Visitors.Wire` drop + the `isValidSubject`
+  // relaxation in auth.ts.
+  | { kind: "visitor"; id: string; nick: string; registered?: boolean };
 
 export type LoginResponse = {
   token: string;
@@ -205,7 +211,10 @@ export type MeResponse =
       // unset). cic's SettingsDrawer identity editor reads + writes these.
       ident?: string | null;
       realname?: string | null;
-      network_slug: string;
+      // #211 phase 6 — `network_slug` DROPPED. A visitor is multi-network
+      // now; per-network attachment (slug + nick + connection_state)
+      // lives on the GET /networks rows, not the singular /me scalar.
+      // Mirrors the server-side `Grappa.Visitors.Wire` drop.
       // S16 — mirror the server contract: `me_json.ex` renders
       // `DateTime.t() | nil` (generated `VisitorsWireT.expires_at:
       // string | null`). NickServ-registered visitors carry
@@ -260,42 +269,28 @@ export function displayNick(me: MeResponse): string {
 // running as on this network". Single source for the wire-vs-account
 // disambiguation.
 //
-// Resolution rules (post-bucket-F H4 type-split):
-//   * visitor me + matching network_slug → `me.nick` (the visitor IS
-//     the IRC nick — visitors have one network only).
-//   * visitor me + other network         → `null` (visitors have no
-//     credential row on networks they didn't log into).
-//   * user me + UserNetwork              → `net.nick` (the per-credential
-//     configured IRC nick, kept live by the `own_nick_changed`
-//     user-topic event).
-//   * user me + VisitorNetwork           → `null` (subject/network kind
-//     mismatch — a visitor-shaped network row in a user's network list
-//     is a server contract violation that the boundary fetcher in
-//     `lib/networks.ts` should have rejected. We log + return null so
-//     downstream callers skip the join rather than crash.)
-//   * null me                            → `null`
+// #211 phase 6 — resolution is now subject-agnostic AND per-network: the
+// nick comes from the `Network` ROW (`net.nick`), which BOTH subjects
+// carry (the visitor row converged onto the user twin, ruling A). A
+// visitor is multi-network now, so the pre-phase-6 `me.network_slug ===
+// net.slug ? me.nick : null` singular match is retired — the answer is
+// simply the per-network row's nick for both kinds. `me` is still taken
+// (kept for the null-guard + call-site symmetry) but the nick no longer
+// depends on the subject scalar.
+//
+// Resolution rules:
+//   * null me      → `null` (not logged in).
+//   * any network  → `net.nick` (the per-network IRC nick, kept live by
+//     the `own_nick_changed` user-topic event + refetched on
+//     connection_state changes).
 //
 // Use everywhere a per-network "own nick" comparison is made: the
 // channels-loop self-JOIN/PART detection, the query-windows-loop
 // own-nick skip, the DM-listener loop subscription topic, the
 // ScrollbackPane self-highlight + mention-match.
-//
-// Pre-bucket-F the type was a single `Network` shape with all
-// user-only fields optional, and the bottom branch checked
-// `net.nick !== undefined && net.nick !== ""`. The discriminated
-// union enforces this at the type system: `net.nick` is unreachable
-// on `VisitorNetwork`, so the kind-mismatch branch is structurally
-// distinct and the type narrowing is the documentation.
 export function ownNickForNetwork(net: Network, me: MeResponse | null | undefined): string | null {
   if (me == null) return null;
-  if (me.kind === "visitor") {
-    return me.network_slug === net.slug ? me.nick : null;
-  }
-  if (net.kind === "user") return net.nick;
-  console.error(
-    `ownNickForNetwork: user subject but Network.kind=visitor for slug=${net.slug} — server contract violation (a visitor-shaped network row landed in a user's network list, which the boundary fetcher in lib/networks.ts should have rejected). Falling through to null; caller will skip topic join. See codebase review 2026-05-12 cic H4.`,
-  );
-  return null;
+  return net.nick;
 }
 
 // Mirror of `Grappa.Networks.Wire.network_json/0` (visitor subject) +
@@ -353,6 +348,20 @@ export type VisitorNetwork = {
   kind: "visitor";
   id: number;
   slug: string;
+  // #211 phase 6 — the visitor row is now the TWIN of UserNetwork
+  // (ruling A: "visitors as equal to users as possible"). A visitor is
+  // multi-network (accretion + autoconnect), so `GET /networks` returns
+  // one row per attached network carrying the per-network live-nick
+  // (cic's `ownNickForNetwork` / DM-topic subscription resolves it here,
+  // no longer from the retired singular `me.network_slug`) AND the
+  // (now-real) `connection_state` (ruling D: visitor credentials carry a
+  // real connection_state — park/reconnect via PATCH /networks/:id like
+  // users, persistent across reboot). Only `kind` differs from
+  // UserNetwork.
+  nick: string;
+  connection_state: ConnectionState;
+  connection_state_reason: string | null;
+  connection_state_changed_at: string | null;
   inserted_at: string;
   updated_at: string;
 };
@@ -389,43 +398,34 @@ export type RawNetwork = {
 // `Network` discriminated by the server-set `kind` field. Called in
 // `lib/networks.ts`'s networks resource.
 //
-// On user subjects we assert nick + connection_state are present
-// (server contract); a missing nick is logged + the row is dropped
-// (returns null) so the caller filters before binding into the
-// reactive store. Pre-fix the missing-nick branch leaked through to
-// every `ownNickForNetwork` callsite which checked + logged
-// individually.
-//
-// HIGH-24 (no-silent-drops B6.9a 2026-05-14): when `raw.kind` is
-// absent (legacy fixture / older deployment), infer the discriminator
-// from user-shape fields — a non-empty `nick` tags `user`, otherwise
-// `visitor`. This is the rolling-deployment fallback; once every
-// server emits `kind` explicitly the inference can be removed.
+// #211 phase 6 — BOTH subjects now carry nick + connection_state (the
+// visitor row converged onto the user twin, ruling A). So the field
+// validation is subject-agnostic: a missing nick / connection_state is
+// a server contract violation for EITHER kind and the row is dropped
+// (returns null) so the caller filters before binding into the reactive
+// store. `kind` comes straight off the wire (server emits it
+// explicitly, no-silent-drops B6.9a HIGH-24); the pre-phase-6 nick-based
+// inference fallback is retired — a visitor row now HAS a nick, so
+// "nick present ⇒ user" no longer holds.
 export function tagNetwork(raw: RawNetwork): Network | null {
-  const kind = raw.kind ?? (raw.nick !== undefined && raw.nick !== "" ? "user" : "visitor");
-  if (kind === "visitor") {
-    return {
-      kind: "visitor",
-      id: raw.id,
-      slug: raw.slug,
-      inserted_at: raw.inserted_at,
-      updated_at: raw.updated_at,
-    };
-  }
+  // Default a missing `kind` to "user" only for the rare legacy fixture
+  // that predates the explicit discriminator; production always emits it.
+  const kind = raw.kind ?? "user";
+
   if (raw.nick === undefined || raw.nick === "") {
     console.error(
-      `tagNetwork: user subject but RawNetwork.nick missing for slug=${raw.slug} — server contract violation (network_with_nick_to_json should have populated it). Dropping the row from the typed networks list. See codebase review 2026-05-12 cic H4.`,
+      `tagNetwork: ${kind} subject but RawNetwork.nick missing for slug=${raw.slug} — server contract violation (network_with_nick_to_json / visitor_network_to_json should have populated it). Dropping the row from the typed networks list. See codebase review 2026-05-12 cic H4.`,
     );
     return null;
   }
   if (raw.connection_state === undefined) {
     console.error(
-      `tagNetwork: user subject but RawNetwork.connection_state missing for slug=${raw.slug} — server contract violation. Dropping the row from the typed networks list.`,
+      `tagNetwork: ${kind} subject but RawNetwork.connection_state missing for slug=${raw.slug} — server contract violation. Dropping the row from the typed networks list.`,
     );
     return null;
   }
   return {
-    kind: "user",
+    kind,
     id: raw.id,
     slug: raw.slug,
     nick: raw.nick,

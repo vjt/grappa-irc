@@ -104,7 +104,9 @@ defmodule GrappaWeb.MeControllerTest do
       assert body["kind"] == "visitor"
       assert body["id"] == visitor.id
       assert body["nick"] == "vjt"
-      assert body["network_slug"] == "azzurra"
+      # #211 phase 6 — singular subject `network_slug` DROPPED from /me
+      # (visitors are multi-network; per-network status on GET /networks).
+      refute Map.has_key?(body, "network_slug")
       # #152 — visitor /me carries ident + realname (nil until set) so
       # cic's SettingsDrawer can render the current identity.
       assert body["ident"] == nil
@@ -618,7 +620,7 @@ defmodule GrappaWeb.MeControllerTest do
         |> Grappa.Networks.Credentials.list_credentials_for_user()
         |> hd()
 
-      nick = Grappa.Networks.resolve_network_nick(user.id, cred)
+      nick = Grappa.Networks.resolve_network_nick({:user, user.id}, cred)
 
       event =
         Grappa.Networks.Wire.connection_state_changed_event(

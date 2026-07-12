@@ -35,13 +35,19 @@ defmodule Grappa.Visitors.Wire do
   `:expires_at`, `AuthJSON` didn't. The drift was undocumented; this
   module makes the divergence EXPLICIT through two functions:
 
-    * `visitor_to_json/1` — full profile shape `{id, nick,
-      network_slug, expires_at}`. Used by `MeJSON` so the SPA can
+    * `visitor_to_json/1` — full profile shape `{id, nick, ident,
+      realname, expires_at}`. Used by `MeJSON` so the SPA can
       render the visitor's session-end countdown.
     * `visitor_to_credential_json/1` — minimal credential-exchange
-      shape `{id, nick, network_slug}`. Used by `AuthJSON` post-login
+      shape `{id, nick, ident, realname}`. Used by `AuthJSON` post-login
       where the SPA already has the bearer token TTL via
       `accounts_sessions.expires_at` on a separate door.
+
+  #211 phase 6 — both shapes DROPPED `network_slug`: a visitor is
+  multi-network now, so per-network attachment lives on the
+  `GET /networks` rows, not the singular subject scalar. The column
+  still exists (dual-written for the login row-lookup until phase 7);
+  it is just no longer on the client contract.
 
   Same {full, credential} pair pattern as `Grappa.Accounts.Wire`.
   """
@@ -53,7 +59,6 @@ defmodule Grappa.Visitors.Wire do
           nick: String.t(),
           ident: String.t() | nil,
           realname: String.t() | nil,
-          network_slug: String.t(),
           registered: boolean()
         }
 
@@ -62,15 +67,22 @@ defmodule Grappa.Visitors.Wire do
           nick: String.t(),
           ident: String.t() | nil,
           realname: String.t() | nil,
-          network_slug: String.t(),
           expires_at: DateTime.t() | nil,
           registered: boolean()
         }
 
   @doc """
   Renders a `Visitors.Visitor` row to its credential-exchange JSON
-  shape — `{id, nick, ident, realname, network_slug, registered}`. Used by
+  shape — `{id, nick, ident, realname, registered}`. Used by
   `AuthJSON.login/1`.
+
+  #211 phase 6 — `network_slug` DROPPED from the wire. A visitor is
+  multi-network now (phase 4c accretion); per-network attachment lives
+  on the `GET /networks` rows (`Networks.Wire.visitor_network_to_json/3`),
+  NOT the singular subject scalar. The visitor row's `network_slug`
+  column still exists (dual-written for the login row-lookup until phase
+  7 drops it), but it is no longer EXPOSED on the client contract — the
+  expand→contract wire cutover ahead of the phase-7 column drop.
 
   Excludes `:password_encrypted` (the post-Cloak-load plaintext
   upstream secret) explicitly. If you're tempted to add that field,
@@ -84,16 +96,20 @@ defmodule Grappa.Visitors.Wire do
       nick: v.nick,
       ident: v.ident,
       realname: v.realname,
-      network_slug: v.network_slug,
       registered: registered?(v)
     }
   end
 
   @doc """
   Renders a `Visitors.Visitor` row to its full profile JSON shape —
-  `{id, nick, ident, realname, network_slug, expires_at, registered}`.
-  Used by `MeJSON.show/1` for the SPA's session-end countdown + the
-  #152 SettingsDrawer identity editor.
+  `{id, nick, ident, realname, expires_at, registered}`. Used by
+  `MeJSON.show/1` for the SPA's session-end countdown + the #152
+  SettingsDrawer identity editor.
+
+  #211 phase 6 — `network_slug` DROPPED (see
+  `visitor_to_credential_json/1`). Per-network status now lives on the
+  `GET /networks` rows, so the identity-wide `/me` profile carries only
+  identity fields.
 
   Excludes `:password_encrypted` explicitly (same rationale as
   `visitor_to_credential_json/1`). Excludes `:ip` (operator-audit
@@ -107,7 +123,6 @@ defmodule Grappa.Visitors.Wire do
       nick: v.nick,
       ident: v.ident,
       realname: v.realname,
-      network_slug: v.network_slug,
       expires_at: v.expires_at,
       registered: registered?(v)
     }

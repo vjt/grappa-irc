@@ -57,7 +57,6 @@ describe("home.ts (UX-4 bucket B)", () => {
       kind: "visitor",
       id: "v1",
       nick: "vjt",
-      network_slug: "azzurra",
       expires_at: "2026-05-18T12:00:00Z",
       home_data: null,
     });

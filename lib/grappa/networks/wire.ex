@@ -44,21 +44,15 @@ defmodule Grappa.Networks.Wire do
           updated_at: String.t()
         }
 
-  @type network_json :: %{
-          kind: :visitor,
-          id: integer(),
-          slug: String.t(),
-          inserted_at: String.t(),
-          updated_at: String.t()
-        }
-
   @typedoc """
-  Wire shape for `GET /networks` when the caller has a `Credential` row —
-  extends `network_json` with `:nick` (the per-network configured IRC nick)
-  AND the T32 connection-state fields (`:connection_state`,
+  Wire shape for `GET /networks` when the caller has a USER `Credential`
+  row — carries `:nick` (the per-network configured IRC nick) AND the
+  T32 connection-state fields (`:connection_state`,
   `:connection_state_reason`, `:connection_state_changed_at`) so cic can
   derive the per-network + cascading per-channel greyed treatment from a
-  single `GET /networks` payload.
+  single `GET /networks` payload. The visitor twin is
+  `visitor_network_with_nick_json` (#211 phase 6 — same shape, `:kind`
+  is `:visitor`).
 
   Cicchetto uses `:nick` to identify the own-nick topic (`channel:<nick>`)
   for DM subscription and for the own-nick skip in the query-windows loop.
@@ -76,6 +70,35 @@ defmodule Grappa.Networks.Wire do
   """
   @type network_with_nick_json :: %{
           kind: :user,
+          id: integer(),
+          slug: String.t(),
+          nick: String.t(),
+          connection_state: Credential.connection_state(),
+          connection_state_reason: String.t() | nil,
+          connection_state_changed_at: String.t() | nil,
+          inserted_at: String.t(),
+          updated_at: String.t()
+        }
+
+  @typedoc """
+  #211 phase 6 — the VISITOR twin of `network_with_nick_json`. A visitor
+  is multi-network now (phase 4c accretion), so `GET /networks` returns
+  one row per attached network — the visitor analogue of the user
+  branch (ruling A: "visitors as equal to users as possible").
+
+  Structurally identical to `network_with_nick_json` except the `:kind`
+  discriminator is `:visitor`. Carries the per-network `:nick` (from the
+  credential, live-nick-with-fallback via `resolve_network_nick/2` — the
+  SAME reason the user row carries it: cic's `ownNickForNetwork` /
+  DM-topic subscription resolves per-network nick from this, NOT the
+  retired singular `me.network_slug`) AND the REAL `connection_state`
+  fields (ruling D: the `network_credentials.connection_state` column
+  already existed for visitor credentials, just unused — phase 6 uses it
+  so a visitor parks/reconnects each network via the same
+  `PATCH /networks/:id` users do, persisting across reboot).
+  """
+  @type visitor_network_with_nick_json :: %{
+          kind: :visitor,
           id: integer(),
           slug: String.t(),
           nick: String.t(),
@@ -212,24 +235,6 @@ defmodule Grappa.Networks.Wire do
   end
 
   @doc """
-  Renders a `Networks.Network` row to its public JSON shape. The
-  `:servers` and `:credentials` associations are intentionally
-  excluded — separate endpoints surface those (and the credentials
-  list would otherwise risk per-row password leakage even though
-  this module's other function refuses to render it).
-  """
-  @spec network_to_json(Network.t()) :: network_json()
-  def network_to_json(%Network{} = n) do
-    %{
-      kind: :visitor,
-      id: n.id,
-      slug: n.slug,
-      inserted_at: DateTime.to_iso8601(n.inserted_at),
-      updated_at: DateTime.to_iso8601(n.updated_at)
-    }
-  end
-
-  @doc """
   Renders a `Networks.Network` + the credential's nick + T32
   connection-state fields to the extended `network_with_nick_json` shape
   used by `GET /networks` for user subjects.
@@ -249,6 +254,42 @@ defmodule Grappa.Networks.Wire do
       when is_binary(nick) and nick != "" do
     %{
       kind: :user,
+      id: n.id,
+      slug: n.slug,
+      nick: nick,
+      connection_state: cred.connection_state,
+      connection_state_reason: cred.connection_state_reason,
+      connection_state_changed_at: WireTime.iso8601_or_nil(cred.connection_state_changed_at),
+      inserted_at: DateTime.to_iso8601(n.inserted_at),
+      updated_at: DateTime.to_iso8601(n.updated_at)
+    }
+  end
+
+  @doc """
+  #211 phase 6 — the VISITOR twin of `network_with_nick_to_json/3`.
+  Renders a `Networks.Network` + the visitor credential's live-nick +
+  the credential's `connection_state` fields to the
+  `visitor_network_with_nick_json` shape used by `GET /networks` for
+  visitor subjects.
+
+  Same threading as the user branch: the caller
+  (`GrappaWeb.NetworksController.index`) already holds the visitor's
+  `Credential` (from `Credentials.list_visitor_credentials/1`) and
+  passes `{network, nick, credential}` triples. `nick` may be the LIVE
+  IRC nick from the running Session.Server (BUG1-FIX parity:
+  `resolve_network_nick/2` with the visitor subject), which can differ
+  from `cred.nick` after NickServ ghost/regain; the `connection_state`
+  fields come straight off the credential row of record (ruling D:
+  visitors now carry a real `connection_state`). Only the `:kind`
+  discriminator differs from the user twin (`:visitor` vs `:user`) so
+  cic resolves the correct subject-scoped nick.
+  """
+  @spec visitor_network_to_json(Network.t(), String.t(), Credential.t()) ::
+          visitor_network_with_nick_json()
+  def visitor_network_to_json(%Network{} = n, nick, %Credential{} = cred)
+      when is_binary(nick) and nick != "" do
+    %{
+      kind: :visitor,
       id: n.id,
       slug: n.slug,
       nick: nick,

@@ -4,7 +4,7 @@ import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { homeData } from "./lib/home";
-import { user } from "./lib/networks";
+import { networks, user } from "./lib/networks";
 import { setSelectedChannel } from "./lib/selection";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
@@ -171,11 +171,20 @@ const HomePaneVisitor: Component = () => {
   );
 };
 
-// Visitors have no `home_data` (it's nil) — their single network's slug
-// lives on the raw /me visitor shape (`user()`), used to fetch featured.
+// Visitors are multi-network since #211 phase 6 — the singular
+// `me.network_slug` scalar is gone from the wire. This bridges the
+// pre-unification HomePaneVisitor: it returns the visitor's FIRST
+// attached network slug from the list-shaped `networks()` store (the
+// featured/browse sections here are for the single-network landing;
+// task-4 unification replaces this whole branch with the data-driven
+// networks list shared with users). `null` when the visitor has no
+// attached network yet (autoconnect still in flight).
 function visitorSlug(): string | null {
   const m = user();
-  return m && m.kind === "visitor" ? m.network_slug : null;
+  if (!m || m.kind !== "visitor") return null;
+  const nets = networks();
+  const first = nets && nets.length > 0 ? nets[0] : undefined;
+  return first ? first.slug : null;
 }
 
 // UX-5 BR row sub-component. Per-row local error signal so each

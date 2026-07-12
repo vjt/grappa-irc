@@ -4,13 +4,17 @@ defmodule GrappaWeb.NetworksJSON do
   network → JSON shape to `Grappa.Networks.Wire` so the serializer rules
   live in one module — see `Grappa.Networks.Wire` moduledoc.
 
-  `GET /networks` returns two shapes depending on the caller's subject:
-  - User: `network_with_nick_json` — includes the per-network IRC nick from
-    the credential. Cicchetto needs this to subscribe to the correct DM
-    topic (`channel:<nick>`) and to correctly skip own-nick in the
-    query-windows loop. Without it, when `user.name` matches a query
-    window's `targetNick`, the join was incorrectly skipped.
-  - Visitor: `network_json` — no credential row, nick is absent.
+  `GET /networks` returns per-network rows for BOTH subjects (#211 phase
+  6 — ruling A, "visitors as equal to users as possible"):
+  - User: `network_with_nick_json` (`kind: :user`) — per-network IRC nick
+    from the credential + T32 connection-state fields.
+  - Visitor: `visitor_network_with_nick_json` (`kind: :visitor`) — the
+    twin shape. A visitor is multi-network now (phase 4c accretion), so
+    it returns one row per attached network with the per-network nick +
+    the (now-real) `connection_state`. Cicchetto needs `:nick` to
+    subscribe to the correct DM topic (`channel:<nick>`) and to skip
+    own-nick in the query-windows loop — resolved per-network here, no
+    longer from the retired singular `me.network_slug`.
   """
   alias Grappa.Networks.{Credential, Network, Wire}
 
@@ -19,21 +23,26 @@ defmodule GrappaWeb.NetworksJSON do
 
   Accepts a tagged tuple from the controller:
   `{:user, [{Network.t(), String.t(), Credential.t()}]}` for user
-  subjects (includes per-credential nick + T32 connection-state fields)
-  or `{:visitor, [Network.t()]}` for visitor subjects (nick + T32 fields
-  omitted — no credential row).
+  subjects OR `{:visitor, [{Network.t(), String.t(), Credential.t()}]}`
+  for visitor subjects — both are `{network, nick, credential}` triples
+  carrying the per-credential live-nick + T32 connection-state fields;
+  only the `:kind` discriminator differs on the wire.
   """
   @spec index(%{
-          networks: {:user, [{Network.t(), String.t(), Credential.t()}]} | {:visitor, [Network.t()]}
-        }) :: [Wire.network_with_nick_json()] | [Wire.network_json()]
+          networks:
+            {:user, [{Network.t(), String.t(), Credential.t()}]}
+            | {:visitor, [{Network.t(), String.t(), Credential.t()}]}
+        }) :: [Wire.network_with_nick_json()] | [Wire.visitor_network_with_nick_json()]
   def index(%{networks: {:user, network_triples}}) do
     Enum.map(network_triples, fn {network, nick, cred} ->
       Wire.network_with_nick_to_json(network, nick, cred)
     end)
   end
 
-  def index(%{networks: {:visitor, networks}}) do
-    Enum.map(networks, &Wire.network_to_json/1)
+  def index(%{networks: {:visitor, network_triples}}) do
+    Enum.map(network_triples, fn {network, nick, cred} ->
+      Wire.visitor_network_to_json(network, nick, cred)
+    end)
   end
 
   @doc """

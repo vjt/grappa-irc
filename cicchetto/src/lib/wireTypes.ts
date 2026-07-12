@@ -397,16 +397,20 @@ export type NetworksWireCredentialJson = {
   updated_at: string;
 };
 
-export type NetworksWireNetworkJson = {
-  kind: "visitor";
+export type NetworksWireNetworkWithNickJson = {
+  kind: "user";
   id: number;
   slug: string;
+  nick: string;
+  connection_state: NetworksCredentialConnectionState;
+  connection_state_reason: string | null;
+  connection_state_changed_at: string | null;
   inserted_at: string;
   updated_at: string;
 };
 
-export type NetworksWireNetworkWithNickJson = {
-  kind: "user";
+export type NetworksWireVisitorNetworkWithNickJson = {
+  kind: "visitor";
   id: number;
   slug: string;
   nick: string;
@@ -447,7 +451,9 @@ export type NetworksWireConnectionStateEvent = {
   network: NetworksWireHomeNetworkRow;
 };
 
-export type WireNetworksEvent = NetworksWireNetworkJson | NetworksWireNetworkWithNickJson;
+export type WireNetworksEvent =
+  | NetworksWireNetworkWithNickJson
+  | NetworksWireVisitorNetworkWithNickJson;
 
 // === Grappa.QueryWindows.Wire ===
 
@@ -839,7 +845,6 @@ export type VisitorsWireCredentialJson = {
   nick: string;
   ident: string | null;
   realname: string | null;
-  network_slug: string;
   registered: boolean;
 };
 
@@ -848,7 +853,6 @@ export type VisitorsWireT = {
   nick: string;
   ident: string | null;
   realname: string | null;
-  network_slug: string;
   expires_at: string | null;
   registered: boolean;
 };

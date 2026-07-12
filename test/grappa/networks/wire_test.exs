@@ -168,21 +168,57 @@ defmodule Grappa.Networks.WireTest do
     end
   end
 
-  describe "network_to_json/1" do
-    test "renders the public network shape", %{network: network} do
-      json = Wire.network_to_json(network)
+  describe "visitor_network_to_json/3 (#211 phase 6 — visitor GET /networks row)" do
+    test "renders the visitor twin shape (kind: :visitor, nick, connection_state)",
+         %{network: network} do
+      cred = %Credential{
+        network: network,
+        nick: "vjt",
+        connection_state: :connected,
+        connection_state_reason: nil,
+        connection_state_changed_at: DateTime.truncate(DateTime.utc_now(), :second)
+      }
 
+      json = Wire.visitor_network_to_json(network, "vjt-live", cred)
+
+      assert json.kind == :visitor
       assert json.id == network.id
       assert json.slug == network.slug
+      # nick is the caller-passed live-nick, NOT necessarily cred.nick.
+      assert json.nick == "vjt-live"
+      assert json.connection_state == :connected
+      assert json.connection_state_reason == nil
+      assert is_binary(json.connection_state_changed_at)
       # Timestamps land as ISO-8601 strings on the wire (bnd-A11).
       assert is_binary(json.inserted_at)
       assert is_binary(json.updated_at)
-      assert {:ok, _, 0} = DateTime.from_iso8601(json.inserted_at)
-      assert {:ok, _, 0} = DateTime.from_iso8601(json.updated_at)
+    end
+
+    test "carries a parked credential's reason + state (persistent park, ruling D)",
+         %{network: network} do
+      cred = %Credential{
+        network: network,
+        nick: "vjt",
+        connection_state: :parked,
+        connection_state_reason: "user-disconnect",
+        connection_state_changed_at: DateTime.truncate(DateTime.utc_now(), :second)
+      }
+
+      json = Wire.visitor_network_to_json(network, "vjt", cred)
+
+      assert json.connection_state == :parked
+      assert json.connection_state_reason == "user-disconnect"
     end
 
     test "is Jason-encodable", %{network: network} do
-      assert is_binary(Jason.encode!(Wire.network_to_json(network)))
+      cred = %Credential{
+        network: network,
+        nick: "vjt",
+        connection_state: :connected,
+        connection_state_changed_at: DateTime.truncate(DateTime.utc_now(), :second)
+      }
+
+      assert is_binary(Jason.encode!(Wire.visitor_network_to_json(network, "vjt", cred)))
     end
   end
 

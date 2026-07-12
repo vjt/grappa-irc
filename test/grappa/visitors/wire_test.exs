@@ -35,7 +35,7 @@ defmodule Grappa.Visitors.WireTest do
   end
 
   describe "visitor_to_credential_json/1" do
-    test "renders the credential-exchange shape (id, nick, ident, realname, network_slug, registered)" do
+    test "renders the credential-exchange shape (id, nick, ident, realname, registered)" do
       v = build_visitor(ident: "grp", realname: "Real Name")
       json = Wire.visitor_to_credential_json(v)
 
@@ -44,9 +44,18 @@ defmodule Grappa.Visitors.WireTest do
                nick: "vjt",
                ident: "grp",
                realname: "Real Name",
-               network_slug: "azzurra",
                registered: false
              }
+    end
+
+    # #211 phase 6 — the singular subject `network_slug` is DROPPED from
+    # the wire (visitors are multi-network now; per-network attachment
+    # lives on the GET /networks rows). The column still exists on the
+    # row (dual-written for the login lookup until phase 7) — this guards
+    # that it never leaks back onto the client contract.
+    test "EXCLUDES :network_slug (phase 6 wire drop)" do
+      v = build_visitor(network_slug: "azzurra")
+      refute Map.has_key?(Wire.visitor_to_credential_json(v), :network_slug)
     end
 
     test "registered mirrors password_encrypted presence (#126 cic detach/disconnect gate)" do
@@ -77,7 +86,7 @@ defmodule Grappa.Visitors.WireTest do
   end
 
   describe "visitor_to_json/1" do
-    test "renders the full profile shape (id, nick, ident, realname, network_slug, expires_at, registered)" do
+    test "renders the full profile shape (id, nick, ident, realname, expires_at, registered)" do
       v = build_visitor(ident: "grp", realname: "Real Name")
       json = Wire.visitor_to_json(v)
 
@@ -86,10 +95,16 @@ defmodule Grappa.Visitors.WireTest do
                nick: "vjt",
                ident: "grp",
                realname: "Real Name",
-               network_slug: "azzurra",
                expires_at: v.expires_at,
                registered: false
              }
+    end
+
+    # #211 phase 6 — see the credential-json twin: network_slug is off the
+    # wire (multi-network visitor; per-network status on GET /networks).
+    test "EXCLUDES :network_slug (phase 6 wire drop)" do
+      v = build_visitor(network_slug: "azzurra")
+      refute Map.has_key?(Wire.visitor_to_json(v), :network_slug)
     end
 
     test "ident + realname are nil when unset (defaults not baked into the wire)" do

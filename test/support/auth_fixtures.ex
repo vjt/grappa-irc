@@ -270,6 +270,27 @@ defmodule Grappa.AuthFixtures do
     insert_visitor(attrs_map, expired?(expires_at))
   end
 
+  @doc """
+  #211 phase 6 — a visitor row PLUS its per-network Credential, the
+  production-realistic shape (`find_or_provision_anon` write-throughs
+  the credential). The list-shaped `GET /networks` visitor branch +
+  `list_visitor_credentials`-based readers depend on the credential
+  existing, so tests exercising those use THIS fixture rather than the
+  bare `visitor_fixture/1` (which many credential-lifecycle tests use
+  precisely because they want a visitor with NO credential to set up
+  their own).
+
+  The `network_slug` MUST resolve to a real `networks` row (pass a slug
+  you created) — `reconcile_credential/1` no-ops on an orphan slug, so a
+  bad slug silently yields no credential. Returns the `%Visitor{}`.
+  """
+  @spec visitor_with_credential_fixture(keyword()) :: Visitor.t()
+  def visitor_with_credential_fixture(attrs \\ []) do
+    visitor = visitor_fixture(attrs)
+    :ok = Visitors.reconcile_credential(visitor)
+    visitor
+  end
+
   defp expired?(%DateTime{} = expires_at),
     do: DateTime.compare(expires_at, DateTime.utc_now()) != :gt
 
