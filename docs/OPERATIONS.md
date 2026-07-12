@@ -509,6 +509,95 @@ scope to grappa — it would ban legit HTTP basic-auth challenge 401s on
 "any 401 on grappa" banning, stand up a **dedicated** jail tailing
 only `irc.openssl.it-access.log`, never touch the shared filter.
 
+## Emergency DB rollback (cold + irreversible migrations)
+
+Some migrations are **irreversible** — a native `DROP COLUMN` (e.g. #211
+phase 7 `20260712130000_drop_visitor_scalar_identity_columns`) destroys
+data that `ecto.rollback` cannot reconstruct. That migration's `down/0`
+re-adds the columns NULLable and best-effort restores nick/ident/realname
+from each visitor's representative credential, but `password_encrypted`
+comes back NULL and the pre-drop row values are gone. **`ecto.rollback`
+is NOT a recovery path for an irreversible migration — the recovery path
+is restore-from-backup.** Rehearse this BEFORE deploying any such
+migration; the backup + dry-run gate below is mandatory for the cold
+window.
+
+### Pre-deploy gate (do NOT cold-deploy an irreversible migration without these)
+
+1. **Fresh backup.** Take a consistent sqlite `.backup` of the live prod
+   DB (a `cp` of a WAL-mode DB under a live writer is NOT consistent):
+   ```sh
+   ssh root@m42 "jexec grappa su -l grappa -c \
+     'sqlite3 /home/grappa/grappa/runtime/grappa_prod.db \
+        \".backup /home/grappa/grappa/runtime/grappa_prod.db.predeploy-$(date -u +%Y%m%d-%H%M%S)\"'"
+   ```
+   Keep the path — it is the rollback source. (`GRAPPA_ENCRYPTION_KEY`
+   is NOT in the DB; a restored DB needs the SAME key still set in
+   `grappa.env`, per `feedback_cloak_key_required_for_db_portability`.)
+2. **Dry-run the migration against an ISOLATED copy of that backup**
+   (never the shared dev/test DB — a stray `DROP COLUMN` there poisons
+   every checkout). Copy the backup to a scratch dir OUTSIDE any repo
+   tree, run `MIX_ENV=prod DATABASE_PATH=<copy> mix ecto.migrate` in a
+   one-shot container with dummy prod env vars, and verify: all
+   migrations exit-0, `PRAGMA integrity_check` = ok, retained-table row
+   counts unchanged, the irreversible step's post-schema is as intended,
+   `PRAGMA foreign_key_check` introduces **no new** violations vs the
+   pre-migrate copy (pre-existing historical orphans are fine — compare
+   counts), NickServ ciphertext is byte-identical (raw copy, not
+   re-encrypted), and a **second** run on a fresh copy is deterministic +
+   `ecto.migrate` re-run is a no-op (idempotent). Baseline captured
+   2026-07-12 for the phase-7 dry-run: `messages=243417 visitors=27
+   network_credentials=1→28 (1 user + 27 backfilled) networks=2 users=1`.
+
+### Rollback procedure (if a cold deploy goes wrong)
+
+The rollback for an irreversible migration is **restore the pre-deploy
+backup**, NOT `ecto.rollback`. It reuses the existing swap rail
+`infra/freebsd/jail_import_db.sh` (refuses while the service is alive,
+backs up the current DB, removes WAL/shm sidecars FIRST — the corruption
+trap per `feedback_sqlite_wal_import_rules` — installs atomically,
+integrity-checks). It is fast (~30s: stop BEAM, swap the file, start).
+
+```sh
+# 1. STOP the live node (blocks until the BEAM exits + epmd releases the
+#    name — grappa_stop is synchronous since defect #9, 2026-06-11).
+ssh root@m42 "sudo bastille cmd grappa service grappa stop"
+
+# 2. Stage the pre-deploy backup at the rail's expected jail-side path.
+#    (Both files are already inside the jail root — this is an in-jail cp.)
+ssh root@m42 "sudo cp \
+  /usr/local/bastille/jails/grappa/root/home/grappa/grappa/runtime/grappa_prod.db.predeploy-<STAMP> \
+  /usr/local/bastille/jails/grappa/root/tmp/grappa_prod.db"
+
+# 3. Import — the rail backs up the (migrated) current DB, rm's WAL/shm,
+#    installs the backup, and prints integrity_check + schema_migrations
+#    head (MUST read the PRE-deploy version, e.g. 20260709120100 for the
+#    phase-7 rollback — proof the DROP-COLUMN migrations are gone).
+ssh root@m42 "sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_import_db.sh"
+
+# 4. Roll the CODE back too — a restored pre-migration DB under
+#    post-migration code reads dropped columns and crashes. Deploy the
+#    last-known-good SHA (the pre-phase-7 prod tip was 9758397b). From a
+#    checkout at that SHA on origin/main:
+scripts/deploy-m42.sh --force-cold
+
+# 5. START + verify.
+ssh root@m42 "sudo bastille cmd grappa service grappa start"
+ssh m42 "sudo bastille cmd grappa curl -fsS http://127.0.0.1:4000/healthz"
+# Confirm the restored baseline (phase-7 example):
+ssh root@m42 "jexec grappa su -l grappa -c \
+  'sqlite3 /home/grappa/grappa/runtime/grappa_prod.db \
+     \"SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM visitors), (SELECT COUNT(*) FROM users);\"'"
+# expect: 243417|27|1  (the pre-deploy baseline)
+```
+
+**Sequencing note.** Steps 3 (DB) and 4 (code) MUST both happen — a
+restored pre-migration DB under new code (or a new DB under old code) is
+a mismatched pair. If you rolled the DB back, you MUST roll the code to
+the matching pre-migration SHA and cold-deploy it before starting. The
+`schema_migrations` head printed in step 3 is the authoritative check
+that the DB and the target code SHA agree on the migration set.
+
 ## CSP / security headers (nginx-added, NOT Phoenix)
 
 The Content-Security-Policy + sibling security headers
