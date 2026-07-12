@@ -365,6 +365,30 @@ defmodule Grappa.Visitors.LoginTest do
       assert {:ok, _} = Accounts.authenticate(new_token)
     end
 
+    test "#211 phase 6 — re-login of a PARKED anchor reconciles connection_state → :connected",
+         %{server: server, network: network, visitor: visitor} do
+      # Park the anchor credential (a prior per-network /disconnect).
+      {:ok, cred} = Credentials.get_visitor_credential(visitor.id, network.id)
+
+      {:ok, _} =
+        cred
+        |> Ecto.Changeset.change(connection_state: :parked, connection_state_reason: "prior")
+        |> Repo.update()
+
+      # Re-login on the parked anchor → login spawns the session (identity
+      # proof). The DB row MUST reconcile to :connected — else it desyncs
+      # (live session + :parked row) and the next reboot's Bootstrap
+      # parked-skip would silently drop the just-established session.
+      task = Task.async(fn -> Login.login(login_input(%{password: "s3cret"}), []) end)
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+      assert {:ok, _} = Task.await(task, 10_000)
+
+      assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
+      {:ok, reloaded} = Credentials.get_visitor_credential(visitor.id, network.id)
+      assert reloaded.connection_state == :connected
+    end
+
     test "matching password WITH a live session → attach: same pid, prior tokens kept, no respawn (#117)",
          %{server: server, network: network, visitor: visitor} do
       # First login spawns the live session for this identity.

@@ -405,21 +405,17 @@ defmodule GrappaWeb.NetworksController do
   # Visitor primary-network dual-write (see the `identity/2` moduledoc):
   # keep the visitor-row scalar identity in sync with the credential on
   # the PRIMARY network so `find_or_provision_anon`'s login-lookup
-  # `(fold(nick), network_slug)` still resolves. Reuses the existing
-  # `Visitors` verbs (`update_nick/2` + `update_identity/2`) which persist
-  # the row + sync-through; their own reconnect side effect is harmless
-  # (idempotent with the credential already written). No-op for users (no
-  # scalar) and for a visitor's NON-primary (accreted) network.
+  # `(fold(nick), network_slug)` still resolves. Persist-ONLY (no bounce,
+  # no credential re-sync) via `Visitors.persist_identity_scalar/2` —
+  # `update_credential_identity` already wrote the credential (the
+  # read-of-record) and `live_apply_identity` owns the SINGLE authoritative
+  # bounce, so routing through `Visitors.update_identity/2` (which
+  # reconnects + re-syncs the credential) would double-bounce the session.
+  # No-op for users (no scalar) and for a visitor's NON-primary network.
   @spec maybe_dual_write_visitor_scalar(GrappaWeb.Subject.t(), Grappa.Networks.Network.t(), map()) ::
           :ok
   defp maybe_dual_write_visitor_scalar({:visitor, %Visitor{network_slug: slug} = visitor}, %{slug: slug}, attrs) do
-    # Primary network — the row scalar is the login-lookup key here.
-    _ = if Map.has_key?(attrs, :nick), do: Visitors.update_nick(visitor.id, attrs.nick)
-
-    ident_realname = Map.take(attrs, [:ident, :realname])
-    _ = if ident_realname != %{}, do: Visitors.update_identity(visitor, ident_realname)
-
-    :ok
+    :ok = Visitors.persist_identity_scalar(visitor, attrs)
   end
 
   defp maybe_dual_write_visitor_scalar(_, _, _), do: :ok

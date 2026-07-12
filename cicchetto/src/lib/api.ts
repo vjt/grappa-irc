@@ -1406,7 +1406,10 @@ export type IdentityResponse = {
   nick: string;
   ident: string | null;
   realname: string | null;
-  network_slug: string;
+  // #211 phase 6 — `network_slug` DROPPED from the visitor wire (the
+  // `PATCH /me/identity` response delegates to `VisitorsWire.visitor_to_json`,
+  // which no longer emits it). `connected` still rides this identity-wide
+  // response (the /me/identity door keeps it until phase 7's convergence).
   expires_at: string | null;
   registered: boolean;
   connected: boolean;

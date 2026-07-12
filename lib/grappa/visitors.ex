@@ -306,6 +306,33 @@ defmodule Grappa.Visitors do
   def reconcile_credential(%Visitor{} = visitor), do: sync_credential(visitor)
 
   @doc """
+  #211 phase 6 — reconcile a visitor's `(visitor_id, network_id)`
+  credential to `:connected` after login synchronously spawned its
+  session. Login spawns the ANCHOR network via the raw
+  `Session.start_session` path (identity proof), which does NOT touch
+  `connection_state` — so a visitor who previously PARKED the anchor and
+  then re-logs in would land a LIVE session while the DB row stayed
+  `:parked` (a DB/live desync, and the next reboot's Bootstrap
+  parked-skip would silently drop the just-established session). Logging
+  in via the anchor IS a deliberate "bring me back on" — so flip it
+  `:connected`. Idempotent (`Networks.connect/1` no-ops on an
+  already-`:connected` row); `:parked | :failed → :connected` transitions
+  + broadcasts. Best-effort — a missing credential (should not happen
+  post-provision) is a no-op.
+  """
+  @spec mark_anchor_connected(Visitor.t(), pos_integer()) :: :ok
+  def mark_anchor_connected(%Visitor{id: id}, network_id) when is_integer(network_id) do
+    case Credentials.get_visitor_credential(id, network_id) do
+      {:ok, cred} ->
+        {:ok, _} = Networks.connect(cred)
+        :ok
+
+      {:error, :not_found} ->
+        :ok
+    end
+  end
+
+  @doc """
   Atomically write a NickServ password (encrypted at rest by Cloak)
   and clear `expires_at` to NULL. Called from `Grappa.Session.Server`
   on either trigger: the +r MODE observation that confirmed the
@@ -1146,6 +1173,55 @@ defmodule Grappa.Visitors do
 
       {:error, _} = err ->
         err
+    end
+  end
+
+  @doc """
+  #211 phase 6 — persist ONLY the visitor-row scalar identity fields
+  (`nick` / `ident` / `realname`) — no credential sync, NO reconnect. The
+  per-network identity editor (`PATCH /networks/:id/identity`) already
+  wrote the `(subject, network)` credential AND owns the single
+  authoritative live-apply bounce (`NetworksController.live_apply_identity`).
+  This keeps the visitor-row scalar in sync for the PRIMARY network only
+  so `find_or_provision_anon`'s login-lookup `(fold(nick), network_slug)`
+  still resolves — WITHOUT the double-bounce routing through
+  `update_identity/2` (which reconnects + re-syncs the credential) would
+  cause.
+
+  Validated via the same `Visitor.nick_changeset/2` (nick, folded-unique
+  guard) + `Visitor.identity_changeset/2` (ident/realname) the
+  identity-wide path uses. Best-effort: the credential is the
+  read-of-record; the scalar is a phase-7-transitional login-lookup
+  mirror, so a validation/stale failure here returns `:ok` (the web
+  caller doesn't surface it).
+  """
+  @spec persist_identity_scalar(Visitor.t(), map()) :: :ok
+  def persist_identity_scalar(%Visitor{} = visitor, attrs) when is_map(attrs) do
+    with {:ok, v1} <- persist_scalar_nick(visitor, attrs),
+         {:ok, _} <- persist_scalar_ident_realname(v1, attrs) do
+      :ok
+    else
+      _ -> :ok
+    end
+  end
+
+  @spec persist_scalar_nick(Visitor.t(), map()) ::
+          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  defp persist_scalar_nick(visitor, %{nick: nick}) when is_binary(nick) do
+    visitor |> Visitor.nick_changeset(nick) |> persist_identity()
+  end
+
+  defp persist_scalar_nick(visitor, _), do: {:ok, visitor}
+
+  @spec persist_scalar_ident_realname(Visitor.t(), map()) ::
+          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  defp persist_scalar_ident_realname(visitor, attrs) do
+    identity = Map.take(attrs, [:ident, :realname])
+
+    if identity == %{} do
+      {:ok, visitor}
+    else
+      visitor |> Visitor.identity_changeset(identity) |> persist_identity()
     end
   end
 

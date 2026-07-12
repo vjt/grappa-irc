@@ -28,9 +28,14 @@
 
 import type { Browser, Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test";
-import { composeSend, selectChannel, waitForUserTopicReady } from "../fixtures/cicchettoPage";
+import { selectChannel, waitForUserTopicReady } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
-import { adminDeleteVisitor, GRAPPA_BASE_URL, mintVisitor } from "../fixtures/grappaApi";
+import {
+  adminDeleteVisitor,
+  GRAPPA_BASE_URL,
+  joinChannel,
+  mintVisitor,
+} from "../fixtures/grappaApi";
 import { getSeededAdmin } from "../fixtures/seedData";
 
 // Two full connect chains + a peer round-trip on each network — well
@@ -132,15 +137,12 @@ test("issue #211 phase 6 — fresh visitor AUTO-CONNECTS both azzurra + azzurra2
     // Deep end-to-end proof on the ASYNC-autoconnected network (azzurra2 —
     // "azzurra2" is not a prefix-substring of any other seeded slug, so
     // the selectChannel helper's hasText filter is unambiguous here; a
-    // bare "azzurra" would also match "azzurra2"). JOIN → own nick in
-    // members → a peer PRIVMSG lands: the async autoconnect produced a
-    // fully-live session, not just a DB row.
-    await selectChannel(page, "azzurra2", "Server", { awaitWsReady: false });
-    await expect(
-      page.locator('[data-testid="scrollback-line"][data-kind="notice"]').first(),
-    ).toBeVisible({ timeout: 30_000 });
-
-    await composeSend(page, `/join ${channel}`);
+    // bare "azzurra" would also match "azzurra2"). JOIN (via REST — the
+    // deterministic path; the compose box on the async-accreted network
+    // races the per-network WS) → focus → own nick in members → a peer
+    // PRIVMSG lands: the async autoconnect produced a fully-live session,
+    // not just a DB row.
+    await joinChannel(visitor.token, "azzurra2", channel);
     await selectChannel(page, "azzurra2", channel, { ownNick: visitor.nick });
 
     const membersPane = page.locator(".shell-members .members-pane");

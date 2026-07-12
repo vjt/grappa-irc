@@ -437,19 +437,24 @@ defmodule Grappa.Bootstrap do
   @spec spawn_visitor_credential(Visitor.t(), Credential.t(), Result.t()) :: Result.t()
   defp spawn_visitor_credential(
          %Visitor{id: visitor_id},
-         %Credential{connection_state: :parked, network: %Network{} = network},
+         %Credential{connection_state: state, network: %Network{} = network},
          acc
-       ) do
+       )
+       when state in [:parked, :failed] do
     # #211 phase 6 (ruling D) — persistent visitor park across reboot.
     # A visitor who /disconnected network A parked its credential; on a
     # bouncer reboot Bootstrap must NOT respawn it (vjt: "visitor per
     # network disconnect persists after reboot, yes, of course cazzo").
-    # Mirrors the user path (`list_credentials_for_all_users/0` filters
-    # `connection_state == :connected`); the visitor path enumerates ALL
-    # credentials (TTL identity lifecycle is orthogonal to per-network
-    # session state), so the skip is per-credential here. Brought back
-    # via `PATCH /networks/:id {connected}`.
-    Logger.info("bootstrap: skipping parked visitor credential",
+    # Mirrors the user path (`list_credentials_for_all_users/0` filters to
+    # `:connected`, i.e. skips BOTH :parked and :failed); the visitor path
+    # enumerates ALL credentials (TTL identity lifecycle is orthogonal to
+    # per-network session state), so the skip is per-credential here.
+    # `:failed` is included for symmetry with the user path — visitor
+    # credentials don't reach it today (the visitor terminal-failure axis
+    # is Reaper/TTL on the identity row), but a future `:failed`-for-
+    # visitors change must not silently diverge. Brought back via
+    # `PATCH /networks/:id {connected}`.
+    Logger.info("bootstrap: skipping #{state} visitor credential",
       visitor_id: visitor_id,
       network: network.slug
     )

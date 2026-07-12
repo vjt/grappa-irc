@@ -537,6 +537,14 @@ defmodule Grappa.Visitors.Login do
     # no-ops and the resolved plan stays intact.
     with {:ok, _} <- spawn_and_await(visitor, network, nil, timeouts) do
       :ok = NetworkCircuit.record_success(network.id)
+      # #211 phase 6 — reconcile the anchor credential to :connected. A
+      # registered visitor who PARKED this network then re-logs in lands a
+      # live session via the raw spawn above (which doesn't touch
+      # connection_state); leaving the DB row :parked would desync the
+      # /networks view AND let the next reboot's Bootstrap parked-skip
+      # silently drop the session. Logging in via the anchor IS "bring me
+      # back on". Idempotent on an already-:connected row.
+      :ok = Visitors.mark_anchor_connected(visitor, network.id)
       issue_token(visitor, input)
     end
   end
