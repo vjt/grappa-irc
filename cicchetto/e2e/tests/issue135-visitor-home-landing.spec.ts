@@ -1,28 +1,21 @@
 // Issue #135 (P0) — visitor home pane = welcome + featured + directory link.
 //
-// What this spec proves, end-to-end, as a VISITOR landing on the home
-// pane (the auto-selected window on cold load for every identity):
-//   1. The static welcome / orientation copy renders (a stable phrase the
-//      HomePane.test.tsx unit also pins — keep them in sync).
-//   2. The featured-channels list renders for the visitor's single
-//      network (operator-seeded via the admin REST path, mirroring
-//      featured-channels.spec.ts, so this asserts the real #85 display
-//      surface, not a stub).
-//   3. The NEW wiring: clicking "📇 Browse channels" deep-links into the
-//      #84 DirectoryPane ($list window). Pre-#135 the visitor pane had no
-//      such affordance — the `home-visitor-browse` control does not exist,
-//      so this step is RED before the HomePane change and green after.
+// #211 phase 6 — the visitor home is now the SAME data-driven component as
+// the user's (ruling A): welcome copy for visitors + per-network rows
+// (each connected network renders its featured list + a "📇 Browse
+// channels" button). The pre-phase-6 static `home-visitor-browse` control
+// is gone — browse is now the per-network ConnectedRow button. This spec
+// tracks that.
 //
-// The directory link mirrors ConnectedRow.onBrowse EXACTLY (a kind:"list"
-// selection), so the DirectoryPane mount is the same one channel-
-// directory.spec.ts exercises — we assert its immediate `.directory-search`
-// box (renders outside the LIST-data <Show>, so no async round-trip).
+// What this proves, end-to-end, as a VISITOR landing on the home pane:
+//   1. The welcome / orientation copy renders (shared with the unit).
+//   2. The featured-channels list renders for the visitor's network
+//      (operator-seeded via the admin REST path — the real #85 surface).
+//   3. Clicking the network row's "📇 Browse channels" deep-links into the
+//      #84 DirectoryPane ($list window).
 //
-// Seeding: featured channels are added to the visitor's network via the
-// admin REST path and removed in `finally`. The network id is resolved by
-// slug from GET /admin/networks (the e2e seeder is single-network, id 1,
-// but resolving by slug keeps this robust to seed changes). A unique
-// channel name per run avoids cross-run / cross-spec bleed.
+// Seeding: featured channels added via the admin REST path, removed in
+// `finally`. Network id resolved by slug from GET /admin/networks.
 
 import { test, expect } from "../fixtures/test";
 import { adminDeleteVisitor, GRAPPA_BASE_URL, mintVisitor } from "../fixtures/grappaApi";
@@ -89,7 +82,6 @@ test("issue #135 — visitor home shows welcome + featured + a directory link", 
       kind: "visitor",
       id: visitor.id,
       nick: visitor.nick,
-      network_slug: visitor.network_slug,
     };
 
     // Seed the visitor bearer + subject so cic boots straight into Shell
@@ -109,14 +101,22 @@ test("issue #135 — visitor home shows welcome + featured + a directory link", 
     await expect(page.getByText(/always-on IRC bouncer/i)).toBeVisible({ timeout: 10_000 });
 
     // (2) Featured-channels list for the visitor's network. The <ul>
-    // testid renders only when the operator-seeded list is non-empty.
+    // testid renders inside the connected network's row (phase 6 — the
+    // per-network ConnectedRow renders FeaturedLinks).
     await expect(page.getByTestId(`home-featured-${visitor.network_slug}`)).toBeVisible({
       timeout: 10_000,
     });
     await expect(page.getByText(FEATURED_NAME)).toBeVisible({ timeout: 10_000 });
 
-    // (3) NEW wiring — the directory link deep-links into DirectoryPane.
-    await page.getByTestId("home-visitor-browse").click();
+    // (3) The network row's "📇 Browse channels" deep-links into
+    // DirectoryPane ($list). Scope to the visitor's network row (there may
+    // be multiple connected networks since phase-6 autoconnect).
+    await page
+      .locator(".home-pane-network-row")
+      .filter({ hasText: visitor.network_slug })
+      .getByRole("button", { name: /browse channels/i })
+      .first()
+      .click();
     await expect(page.locator(".directory-search")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator(".directory-refresh")).toBeVisible({ timeout: 5_000 });
   } finally {
