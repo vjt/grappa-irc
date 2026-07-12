@@ -52,29 +52,13 @@ defmodule Grappa.OperatorTest do
     end
 
     test "is idempotent: visitor exists but no live Session.Server" do
-      visitor = visitor_fixture(network_slug: "azzurra-#{System.unique_integer([:positive])}")
-      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: visitor.network_slug})
+      slug = "azzurra-#{System.unique_integer([:positive])}"
+      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug)
 
       output = capture_io(fn -> assert :ok = Operator.delete_visitor!(visitor.id) end)
 
       assert output =~ "deleted visitor #{visitor.id}"
-      assert Repo.get(Visitor, visitor.id) == nil
-    end
-
-    test "surfaces orphan-network slug on stderr but still deletes the row" do
-      # Visitor row pinned to a slug with no `networks` row — happens when
-      # the operator drops a network from the DB between visitor creation
-      # and recovery. The DB delete still works (no FK, just a string);
-      # there's no live session to terminate. Operator sees the stderr
-      # signal so they know the row was orphaned.
-      visitor = visitor_fixture(network_slug: "orphan-#{System.unique_integer([:positive])}")
-
-      stderr =
-        capture_io(:stderr, fn ->
-          capture_io(fn -> assert :ok = Operator.delete_visitor!(visitor.id) end)
-        end)
-
-      assert stderr =~ "network #{visitor.network_slug} not found"
       assert Repo.get(Visitor, visitor.id) == nil
     end
 
@@ -226,14 +210,15 @@ defmodule Grappa.OperatorTest do
 
       lines = String.split(output, "\n", trim: true)
       [header | rows] = lines
+      # #211 phase 7 — identity-wide columns only; the per-network nick
+      # lives on the credentials table (`list_credentials_text!`).
       assert header =~ "id"
-      assert header =~ "nick"
-      assert header =~ "network_slug"
+      assert header =~ "identified"
       assert header =~ "expires_at"
+      refute header =~ "nick"
+      refute header =~ "network_slug"
 
-      assert Enum.any?(rows, fn row ->
-               row =~ visitor.id and row =~ "alpha" and row =~ slug
-             end)
+      assert Enum.any?(rows, fn row -> row =~ visitor.id end)
     end
   end
 
@@ -456,72 +441,12 @@ defmodule Grappa.OperatorTest do
     end
   end
 
-  describe "Visitors.update_identity/2 live-apply reconnect (#152)" do
-    alias Grappa.Visitors
-
-    test "a live session is bounced (new pid) and the fresh plan carries the new ident" do
-      {_, port} = start_irc_server()
-      {visitor, network} = visitor_with_network(port)
-      old_pid = start_visitor_session_for(visitor, network)
-      old_ref = Process.monitor(old_pid)
-
-      assert Session.whereis({:visitor, visitor.id}, network.id) == old_pid
-
-      assert {:ok, updated} = Visitors.update_identity(visitor, %{ident: "grp", realname: "RN"})
-      assert updated.ident == "grp"
-      assert updated.realname == "RN"
-
-      # The old Session.Server was torn down (graceful QUIT + stop) and a
-      # fresh one respawned — proving the reconnect fired, not a no-op.
-      assert_receive {:DOWN, ^old_ref, :process, ^old_pid, _}, 1_000
-
-      new_pid = Session.whereis({:visitor, visitor.id}, network.id)
-      assert is_pid(new_pid)
-      assert new_pid != old_pid
-      register_reconnect_cleanup(new_pid)
-
-      # The respawn's refresh_plan re-reads the just-persisted row, so the
-      # fresh plan carries the new ident/realname — this is what lands in
-      # the new USER line at re-registration.
-      {:ok, plan} = Grappa.Visitors.SessionPlan.resolve(Grappa.Repo.reload!(visitor))
-      assert plan.ident == "grp"
-      assert plan.realname == "RN"
-    end
-
-    test "no live session → persist only, no spawn" do
-      # No IRC server started + no session spawned for this visitor.
-      {visitor, network} = visitor_with_network(1)
-
-      # No session started for this visitor.
-      assert Session.whereis({:visitor, visitor.id}, network.id) == nil
-
-      assert {:ok, updated} = Visitors.update_identity(visitor, %{ident: "grp"})
-      assert updated.ident == "grp"
-      # Still no session — persist path didn't spawn one.
-      assert Session.whereis({:visitor, visitor.id}, network.id) == nil
-    end
-
-    test "a no-change update does NOT bounce a live session" do
-      {_, port} = start_irc_server()
-      # Seed the visitor already carrying the identity we'll re-send.
-      {visitor, network} = visitor_with_network(port)
-      {:ok, seeded} = Visitors.update_identity(visitor, %{ident: "grp", realname: "RN"})
-
-      pid = start_visitor_session_for(seeded, network)
-      assert Session.whereis({:visitor, seeded.id}, network.id) == pid
-
-      # Re-send the SAME values → zero changeset changes → the live session
-      # must NOT be torn down (a reconnect drops + rejoins every channel;
-      # firing it for a no-op is a gratuitous disruption).
-      assert {:ok, _} = Visitors.update_identity(seeded, %{ident: "grp", realname: "RN"})
-      assert Session.whereis({:visitor, seeded.id}, network.id) == pid
-      assert Process.alive?(pid)
-    end
-
-    defp register_reconnect_cleanup(pid) do
-      on_exit(fn ->
-        _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
-      end)
-    end
-  end
+  # #211 phase 7 — the `Visitors.update_identity/2` live-apply-reconnect
+  # describe block was DELETED: `Visitors.update_identity/2` is a REMOVED
+  # function. Visitor identity editing moved onto the per-network door
+  # `PATCH /networks/:id/identity` (`NetworksController.identity`,
+  # subject-agnostic → `Credentials.update_credential_identity/2`), which
+  # owns its own live-apply bounce via the web-layer
+  # `SpawnOrchestrator.reconnect/5`. That surface is exercised in the
+  # networks controller test, not here.
 end

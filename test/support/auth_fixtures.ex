@@ -207,14 +207,15 @@ defmodule Grappa.AuthFixtures do
 
   @doc """
   Visitor-side counterpart to `start_session_for/2`. Resolves the
-  visitor's plan via `Grappa.Visitors.SessionPlan.resolve/1` and
-  spawns the `Session.Server` under the singleton supervisor.
-  Visitor's `network_slug` MUST match `network.slug`; the
-  `visitor_with_network/2` helper does both in one call.
+  visitor's plan via `Grappa.Visitors.SessionPlan.resolve/2` (network-
+  explicit — #211 phase 7, the visitor is multi-network) and spawns the
+  `Session.Server` under the singleton supervisor. The visitor must hold a
+  credential on `network` (the `visitor_with_network/2` helper provisions
+  both in one call).
   """
   @spec start_visitor_session_for(Visitor.t(), Network.t()) :: pid()
   def start_visitor_session_for(%Visitor{} = visitor, %Network{} = network) do
-    {:ok, plan} = VisitorSessionPlan.resolve(visitor)
+    {:ok, plan} = VisitorSessionPlan.resolve(visitor, network)
     {:ok, pid} = Grappa.Session.start_session({:visitor, visitor.id}, network.id, plan)
     register_session_cleanup(pid)
     pid
@@ -268,9 +269,19 @@ defmodule Grappa.AuthFixtures do
   end
 
   @doc """
-  Inserts a `%Visitor{}` directly via `Visitor.create_changeset/1` —
-  exercises the canonical-validator path so a malformed nick/slug
-  default would surface here rather than in the test that uses it.
+  Inserts a bare `%Visitor{}` identity/TTL row. #211 phase 7 — the visitor
+  row no longer carries nick/network_slug/identity; those live on the
+  per-network credential. So this fixture inserts the bare row (expires_at
+  + ip) and, when the `:network_slug` attr resolves to a real `networks`
+  row, ALSO inserts the anon `(visitor_id, network)` credential carrying
+  `:nick` — the production-realistic shape
+  (`find_or_provision_anon/3` creates both atomically). A `:network_slug`
+  that does NOT resolve yields a credential-less bare row (for tests that
+  want to set up their own credential).
+
+  Accepted attrs: `:nick` (credential nick, default generated),
+  `:network_slug` (credential FK target, default `"azzurra"`),
+  `:expires_at` (row TTL), `:ip` (row audit).
   """
   @spec visitor_fixture(keyword()) :: Visitor.t()
   def visitor_fixture(attrs \\ []) do
@@ -278,39 +289,45 @@ defmodule Grappa.AuthFixtures do
     network_slug = Keyword.get(attrs, :network_slug, "azzurra")
     expires_at = Keyword.get(attrs, :expires_at, DateTime.add(DateTime.utc_now(), 48, :hour))
     ip = Keyword.get(attrs, :ip)
-    attrs_map = %{nick: nick, network_slug: network_slug, expires_at: expires_at, ip: ip}
 
     # B5.4 M-pers-3: `Visitor.create_changeset/1` rejects past
     # `expires_at` (correct production rule — a row born expired is no
     # row). The reaper / bootstrap-skip / expired-session-revoke tests
     # explicitly want an already-expired row in the DB to verify the
-    # reaping behaviour. Bypass the changeset for those by going
-    # through the schemaless `Ecto.Changeset.change/2` path which
-    # skips the `validate_change` rules. Production code never goes
-    # this route — only the fixture does, and only for tests that
-    # explicitly pass a past `:expires_at`.
-    insert_visitor(attrs_map, expired?(expires_at))
+    # reaping behaviour. Bypass the changeset for those via the
+    # schemaless `Ecto.Changeset.change/2` path.
+    visitor = insert_visitor(%{expires_at: expires_at, ip: ip}, expired?(expires_at))
+
+    # Provision the anon credential when the slug resolves — mirrors the
+    # atomic (row + credential) shape production always creates.
+    case Networks.get_network_by_slug(network_slug) do
+      {:ok, %Network{id: network_id}} ->
+        {:ok, _} =
+          Credentials.upsert_visitor_credential(visitor.id, network_id, %{
+            nick: nick,
+            sasl_user: nick,
+            auth_method: :none
+          })
+
+      {:error, :not_found} ->
+        :ok
+    end
+
+    visitor
   end
 
   @doc """
-  #211 phase 6 — a visitor row PLUS its per-network Credential, the
-  production-realistic shape (`find_or_provision_anon` write-throughs
-  the credential). The list-shaped `GET /networks` visitor branch +
-  `list_visitor_credentials`-based readers depend on the credential
-  existing, so tests exercising those use THIS fixture rather than the
-  bare `visitor_fixture/1` (which many credential-lifecycle tests use
-  precisely because they want a visitor with NO credential to set up
-  their own).
-
-  The `network_slug` MUST resolve to a real `networks` row (pass a slug
-  you created) — `reconcile_credential/1` no-ops on an orphan slug, so a
-  bad slug silently yields no credential. Returns the `%Visitor{}`.
+  #211 phase 7 — alias of `visitor_fixture/1`: a visitor row is ALWAYS a
+  bare identity/TTL row plus per-network credentials (there is no
+  identity-bearing visitor without a credential), so this fixture and
+  `visitor_fixture/1` now produce the same shape. Kept as a distinct name
+  so call sites that emphasize "with credential" stay self-documenting.
+  The `:network_slug` MUST resolve to a real `networks` row for the
+  credential to land.
   """
   @spec visitor_with_credential_fixture(keyword()) :: Visitor.t()
   def visitor_with_credential_fixture(attrs \\ []) do
-    visitor = visitor_fixture(attrs)
-    :ok = Visitors.reconcile_credential(visitor)
-    visitor
+    visitor_fixture(attrs)
   end
 
   defp expired?(%DateTime{} = expires_at),
@@ -327,27 +344,17 @@ defmodule Grappa.AuthFixtures do
   end
 
   @doc """
-  Appends `name` to the visitor's `last_joined_channels` snapshot
-  and returns the updated `%Visitor{}`. Mirrors the user-side
-  `Networks.Credential.last_joined_channels` write path. Used by
-  ChannelsController visitor-branch tests + visitor SessionPlan tests.
-
-  Prepends (rather than appends) because the snapshot is a set —
-  `Session.Server` iterates `Map.keys(state.members)`, and the
-  REST surface sorts alphabetically before rendering.
+  Appends `name` to the visitor's PER-NETWORK `last_joined_channels`
+  snapshot (on the credential) and returns the reloaded `%Visitor{}`.
+  #211 phase 7 — the rejoin list lives on the `(visitor_id, network_id)`
+  credential; resolves the visitor's network via the `:network_slug` the
+  fixture created the credential with. Used by ChannelsController
+  visitor-branch tests + visitor SessionPlan tests.
   """
-  @spec visitor_channel_fixture(Visitor.t(), String.t()) :: Visitor.t()
-  def visitor_channel_fixture(%Visitor{} = visitor, name) when is_binary(name) do
-    # #211 phase 4c — a visitor's rejoin list is PER-NETWORK on the
-    # credential now (not the single `visitors.last_joined_channels`
-    # scalar). Resolve the visitor's network + write through the
-    # network-explicit `update_last_joined_channels/3` so tests exercise
-    # the real per-network path. `resolve_credential/2` self-heals a
-    # missing credential from the visitor row (a `visitor_fixture`-inserted
-    # visitor bypasses `find_or_provision_anon`, so it has no credential
-    # yet) — mirrors what a real login/spawn does before the first snapshot.
-    {:ok, network} = Networks.get_network_by_slug(visitor.network_slug)
-    {:ok, _} = Visitors.resolve_credential(visitor, network.id)
+  @spec visitor_channel_fixture(Visitor.t(), String.t(), String.t()) :: Visitor.t()
+  def visitor_channel_fixture(%Visitor{} = visitor, network_slug, name)
+      when is_binary(network_slug) and is_binary(name) do
+    {:ok, network} = Networks.get_network_by_slug(network_slug)
     existing = Visitors.list_autojoin_channels(visitor, network.id)
     :ok = Visitors.update_last_joined_channels(visitor.id, network.id, [name | existing])
     Repo.get!(Visitor, visitor.id)

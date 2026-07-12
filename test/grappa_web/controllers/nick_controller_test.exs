@@ -15,8 +15,7 @@ defmodule GrappaWeb.NickControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, Repo}
-  alias Grappa.Visitors.Visitor
+  alias Grappa.IRCServer
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -115,7 +114,8 @@ defmodule GrappaWeb.NickControllerTest do
     # backs anon-collision detection at login time.
     test "visitor subject — 202 + nick line upstream + DB nick rotated on echo", %{conn: _conn} do
       {server, port} = start_server()
-      {visitor, network} = visitor_with_network(port, nick: "v9-#{System.unique_integer([:positive])}")
+      old_nick = "v9-#{System.unique_integer([:positive])}"
+      {visitor, network} = visitor_with_network(port, nick: old_nick)
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
       :ok = await_handshake(server)
@@ -135,17 +135,18 @@ defmodule GrappaWeb.NickControllerTest do
 
       # Simulate upstream NICK self-echo. The Session.Server's EventRouter
       # routes :nick on state.nick == old_nick, the visitor-side effect
-      # rotates `visitors.nick` via the injected `visitor_nick_persister`
-      # callback (mirror of `visitor_committer` for +r MODE).
-      :ok = IRCServer.feed(server, ":#{visitor.nick}!u@h NICK #{new_nick}\r\n")
+      # rotates the PER-NETWORK credential nick via the injected
+      # `visitor_nick_persister` callback (#211 phase 7 — the nick lives on
+      # the `(visitor_id, network_id)` credential, not the visitor row).
+      :ok = IRCServer.feed(server, ":#{old_nick}!u@h NICK #{new_nick}\r\n")
 
       # Wait for the EventRouter delegate path to land — the per-channel
       # broadcast + DB write happen synchronously inside the Server's
       # handle_info reduction. Polling keeps the test honest under
       # mailbox latency.
       assert_eventually(fn ->
-        case Repo.get(Visitor, visitor.id) do
-          %Visitor{nick: ^new_nick, id: id} when id == visitor.id -> true
+        case Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id) do
+          {:ok, %{nick: ^new_nick}} -> true
           _ -> false
         end
       end)
@@ -156,7 +157,8 @@ defmodule GrappaWeb.NickControllerTest do
     test "visitor subject — 409 nick_in_use when another visitor row holds the target nick on the same network",
          %{conn: _conn} do
       {server, port} = start_server()
-      {visitor, network} = visitor_with_network(port, nick: "v9a-#{System.unique_integer([:positive])}")
+      old_nick = "v9a-#{System.unique_integer([:positive])}"
+      {visitor, network} = visitor_with_network(port, nick: old_nick)
       session = visitor_session_fixture(visitor)
 
       # Squat the target nick with ANOTHER visitor row on the same
@@ -186,9 +188,11 @@ defmodule GrappaWeb.NickControllerTest do
       Process.sleep(50)
       assert nick_lines_count(server) == pre_nick_count
 
-      # DB unchanged.
-      assert %Visitor{nick: nick} = Repo.get(Visitor, visitor.id)
-      assert nick == visitor.nick
+      # DB unchanged — the per-network credential nick stays the original.
+      assert {:ok, %{nick: nick}} =
+               Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
+
+      assert nick == old_nick
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

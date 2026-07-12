@@ -165,14 +165,15 @@ defmodule GrappaWeb.AuthControllerTest do
 
       assert is_binary(body["token"])
       assert body["subject"]["kind"] == "visitor"
-      assert body["subject"]["nick"] == "vjt"
-      # #211 phase 6 — the singular subject `network_slug` is DROPPED from
-      # the login wire (visitors are multi-network; per-network attachment
-      # lives on GET /networks). The DB column still exists (dual-written
-      # for the login lookup below until phase 7).
+      # #211 phase 7 — the login subject wire is {id, registered, kind};
+      # nick DROPPED (visitors are multi-network; per-network nick on GET
+      # /networks). A fresh anon visitor is not registered.
+      refute Map.has_key?(body["subject"], "nick")
+      assert body["subject"]["registered"] == false
+      # #211 phase 6 — the singular subject `network_slug` is off the wire too.
       refute Map.has_key?(body["subject"], "network_slug")
 
-      v = Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra")
+      v = Visitors.resolve_identity_by_nick("vjt", network.id)
       stop_visitor_session(v.id, network.id)
     end
 
@@ -202,9 +203,9 @@ defmodule GrappaWeb.AuthControllerTest do
       body = json_response(result, 200)
 
       assert body["subject"]["kind"] == "visitor"
-      assert body["subject"]["nick"] == "vjt"
-
-      v = Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra")
+      # #211 phase 7 — nick is off the login subject wire; assert the
+      # trimmed nick landed on the credential via the identity resolver.
+      v = Visitors.resolve_identity_by_nick("vjt", network.id)
       assert v
       stop_visitor_session(v.id, network.id)
     end
@@ -341,11 +342,13 @@ defmodule GrappaWeb.AuthControllerTest do
 
     test "upstream unreachable → 502 upstream_unreachable", %{conn: conn} do
       port = pick_unused_port()
-      setup_visitor_network(port)
+      {network, _} = setup_visitor_network(port)
 
       conn = post(conn, "/auth/login", %{"identifier" => "vjt"})
       assert json_response(conn, 502)["error"] == "upstream_unreachable"
-      assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
+      # #211 phase 7 — no identity provisioned: the credential-first resolver
+      # returns nil (no visitor credential holds the nick on this network).
+      assert is_nil(Visitors.resolve_identity_by_nick("vjt", network.id))
     end
 
     test "nick already in use → 409 nick_in_use (#40)", %{conn: conn} do
@@ -363,12 +366,12 @@ defmodule GrappaWeb.AuthControllerTest do
       end
 
       {_, port} = start_server(nick_in_use_handler)
-      setup_visitor_network(port)
+      {network, _} = setup_visitor_network(port)
 
       conn = post(conn, "/auth/login", %{"identifier" => "vjt"})
 
       assert json_response(conn, 409)["error"] == "nick_in_use"
-      assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
+      assert is_nil(Visitors.resolve_identity_by_nick("vjt", network.id))
     end
 
     test "anon collision (no bearer) → 409 anon_collision + Retry-After",
@@ -605,7 +608,7 @@ defmodule GrappaWeb.AuthControllerTest do
       feed_001(server, "vjt")
 
       {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
-      {:ok, _} = Visitors.commit_password(visitor.id, "s3cret")
+      {:ok, _} = Visitors.commit_password(visitor.id, network.id, "s3cret")
 
       pid = Grappa.Session.whereis({:visitor, visitor.id}, network.id)
       assert is_pid(pid)
@@ -625,9 +628,11 @@ defmodule GrappaWeb.AuthControllerTest do
       assert Grappa.Session.whereis({:visitor, visitor.id}, network.id) == pid
 
       # Registered visitor's row stays — privacy promise: data persists
-      # past detach, gated on next-login password match.
-      assert %Visitor{password_encrypted: pwd} = Repo.get(Visitor, visitor.id)
-      assert is_binary(pwd)
+      # past detach, gated on next-login password match. #211 phase 7 —
+      # registration is DERIVED from the credential (the secret lives there
+      # now, not on the dropped `visitors.password_encrypted` scalar).
+      assert %Visitor{} = Repo.get(Visitor, visitor.id)
+      assert Grappa.Networks.Credentials.visitor_registered?(visitor.id)
     end
 
     test "user logout (DETACH) keeps the Session.Server up + connection_state stays :connected (#126 bug #1+#2)",

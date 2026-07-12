@@ -147,12 +147,15 @@ defmodule GrappaWeb.MembersControllerTest do
       {visitor, network} = visitor_with_network(port)
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
+      # #211 phase 7 — the visitor nick lives on the credential now.
+      {:ok, cred} = Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
+      nick = cred.nick
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
 
-      IRCServer.feed(server, ":#{visitor.nick}!u@h JOIN :#test\r\n")
-      IRCServer.feed(server, ":irc 353 #{visitor.nick} = #test :@#{visitor.nick} +alice\r\n")
-      IRCServer.feed(server, ":irc 366 #{visitor.nick} #test :End\r\n")
+      IRCServer.feed(server, ":#{nick}!u@h JOIN :#test\r\n")
+      IRCServer.feed(server, ":irc 353 #{nick} = #test :@#{nick} +alice\r\n")
+      IRCServer.feed(server, ":irc 366 #{nick} #test :End\r\n")
       IRCServer.feed(server, "PING :flush\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
@@ -163,7 +166,7 @@ defmodule GrappaWeb.MembersControllerTest do
 
       body = json_response(conn, 200)
       nicks = Enum.map(body["members"], & &1["nick"])
-      assert visitor.nick in nicks
+      assert nick in nicks
       assert "alice" in nicks
 
       :ok = GenServer.stop(pid, :normal, 1_000)

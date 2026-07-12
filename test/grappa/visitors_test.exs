@@ -10,40 +10,61 @@ defmodule Grappa.VisitorsTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, Visitors}
+  alias Grappa.{Accounts, Networks, Visitors}
   alias Grappa.Accounts.Session
+  alias Grappa.Networks.Credentials
   alias Grappa.Session.Backoff
   alias Grappa.Visitors.Visitor
 
   @network "azzurra"
   @ttl_anon 48 * 3600
 
+  # #211 phase 7 — `find_or_provision_anon/3` resolves the network by slug
+  # to bind the anon credential, so the slug MUST have a `networks` row.
+  # Every test uses the shared @network slug; create it once per test.
+  setup do
+    {:ok, network} = Networks.find_or_create_network(%{slug: @network})
+    %{network: network}
+  end
+
+  # #211 phase 7 — the identity nick lives on the visitor's representative
+  # credential now (the row has no nick). Test helper mirroring what the
+  # admin/label surfaces read.
+  defp nick_of(%Visitor{id: id}) do
+    {:ok, cred} = Credentials.representative_visitor_credential(id)
+    cred.nick
+  end
+
+  defp password_of(%Visitor{id: id}, network_id) do
+    {:ok, cred} = Credentials.get_visitor_credential(id, network_id)
+    cred.password_encrypted
+  end
+
   describe "find_or_provision_anon/3" do
-    test "creates new anon visitor with 48h expires_at" do
+    test "creates a bare identity row + anon credential with 48h expires_at", %{network: net} do
       assert {:ok, %Visitor{} = v} =
                Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
 
-      assert v.nick == "vjt"
-      assert v.network_slug == @network
-      assert is_nil(v.password_encrypted)
-
+      # nick lives on the credential now, not the row
+      assert nick_of(v) == "vjt"
+      assert is_nil(password_of(v, net.id))
       assert DateTime.diff(v.expires_at, DateTime.utc_now()) in (@ttl_anon - 5)..(@ttl_anon + 5)
     end
 
-    test "returns existing visitor if (nick, network) match" do
+    test "returns existing identity if (nick, network) match" do
       {:ok, v1} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
       {:ok, v2} = Visitors.find_or_provision_anon("vjt", @network, "5.6.7.8")
       assert v1.id == v2.id
     end
 
-    test "reattaches a different-case reconnect to the SAME row (rfc1459 #121)" do
-      # The bug: a case-sensitive lookup spawned a SECOND visitor on
-      # `Mezmerize` -> `mezmerize`, blocking the nick on the orphan.
-      # rfc1459 folding collapses both to one identity.
+    test "reattaches a different-case reconnect to the SAME identity (rfc1459 #121)" do
+      # rfc1459 folding collapses `Mezmerize`/`mezmerize` to one identity —
+      # credential-first resolution (phase 4c) keys on the folded credential
+      # nick, so the second login resolves the first's visitor.
       {:ok, v1} = Visitors.find_or_provision_anon("Mezmerize", @network, "1.2.3.4")
       {:ok, v2} = Visitors.find_or_provision_anon("mezmerize", @network, "5.6.7.8")
       assert v2.id == v1.id
-      assert v1.nick == "Mezmerize", "display case of the first-provisioned row is preserved"
+      assert nick_of(v1) == "Mezmerize", "display case of the first-provisioned credential is preserved"
     end
 
     test "folds the four rfc1459 national chars [ ] \\ ~ (bahamut casemapping)" do
@@ -52,11 +73,12 @@ defmodule Grappa.VisitorsTest do
       assert v2.id == v1.id
     end
 
+    test "returns {:error, :network_unconfigured} when the slug has no networks row" do
+      assert {:error, :network_unconfigured} =
+               Visitors.find_or_provision_anon("vjt", "no-such-net", "1.2.3.4")
+    end
+
     test "refreshes :ip on subsequent login when client address changed" do
-      # Pre-fix: ip was set ONLY at row creation; long-lived NickServ-
-      # identified visitors surfaced their birth IP indefinitely. Now
-      # an existing-row hit with a different :ip refreshes the column
-      # so the admin audit value tracks the holder's current address.
       {:ok, v1} = Visitors.find_or_provision_anon("vjt-ipa", @network, "1.2.3.4")
       assert v1.ip == "1.2.3.4"
 
@@ -66,7 +88,6 @@ defmodule Grappa.VisitorsTest do
     end
 
     test "leaves :ip unchanged when same address re-logs in (no-op write)" do
-      # Hot path — same client polling: avoid an UPDATE per login.
       {:ok, v1} = Visitors.find_or_provision_anon("vjt-ipb", @network, "1.2.3.4")
       {:ok, v2} = Visitors.find_or_provision_anon("vjt-ipb", @network, "1.2.3.4")
       assert v2.id == v1.id
@@ -75,9 +96,6 @@ defmodule Grappa.VisitorsTest do
     end
 
     test "supplying nil :ip does NOT clobber a row that already has a real IP" do
-      # Refresh semantics: "I have a fresher value," not "forget what
-      # you knew." A future internal/mix-task path with no remote_ip
-      # mustn't blank out the audit column.
       {:ok, v1} = Visitors.find_or_provision_anon("vjt-ipc", @network, "1.2.3.4")
       {:ok, v2} = Visitors.find_or_provision_anon("vjt-ipc", @network, nil)
       assert v2.id == v1.id
@@ -85,192 +103,123 @@ defmodule Grappa.VisitorsTest do
     end
   end
 
-  describe "rfc1459 folded unique index (#121, race second-line-of-defense)" do
-    test "a folded-collision insert returns {:error, changeset}, not a raise" do
-      # find_or_provision_anon's get_by is the fast path; the named
-      # `(rfc1459-fold(nick), network_slug)` unique expression index is
-      # the second line of defense for a true insert race. This pins
-      # that `unique_constraint(:nick, name: ...)` is wired to the right
-      # index name — a mismatch would let the second insert RAISE
-      # Ecto.ConstraintError instead of returning a changeset error.
-      future = DateTime.add(DateTime.utc_now(), 3600, :second)
-      base = %{network_slug: @network, expires_at: future, ip: "1.2.3.4"}
-
-      assert {:ok, _} =
-               base
-               |> Map.put(:nick, "Mezmerize")
-               |> Visitor.create_changeset()
-               |> Repo.insert()
-
-      assert {:error, cs} =
-               base
-               |> Map.put(:nick, "mezmerize")
-               |> Visitor.create_changeset()
-               |> Repo.insert()
-
-      refute cs.valid?
-      assert {"has already been taken", _} = cs.errors[:nick]
-    end
-  end
-
-  describe "commit_password/2" do
-    test "atomically writes password + clears expires_at (NickServ-identified = ∞)" do
+  describe "commit_password/3 (#211 phase 7 — per-network credential)" do
+    test "writes the password onto the credential + registers the identity (derived)", %{
+      network: net
+    } do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
-      refute is_nil(v.expires_at)
+      refute Credentials.visitor_registered?(v.id)
 
-      assert {:ok, committed} = Visitors.commit_password(v.id, "s3cret")
-      # Cloak's EncryptedBinary roundtrips dump/load symmetrically, so the
-      # in-memory value after Repo.update is the plaintext "s3cret". The
-      # encryption-at-rest property is verified end-to-end by the
-      # `Grappa.EncryptedBinary` property test (`dump` produces varying
-      # ciphertext that `load` round-trips). We assert here only that the
-      # function persisted the value the caller passed in.
-      assert committed.password_encrypted == "s3cret"
-      # V7: identified rows have no expiry. Reaper's IS-NOT-NULL guard
-      # (V5) skips them; only operator `Visitors.delete/1` removes them.
-      assert is_nil(committed.expires_at)
+      assert {:ok, cred} = Visitors.commit_password(v.id, net.id, "s3cret")
+      # Cloak roundtrips symmetrically — the in-memory value is the plaintext.
+      assert cred.password_encrypted == "s3cret"
+
+      # #211 phase 7 — registration is DERIVED from the credentials (a
+      # committed NickServ secret), NOT a cleared `expires_at`. commit does
+      # NOT touch the visitor row's TTL anymore.
+      assert Credentials.visitor_registered?(v.id)
     end
 
-    test "returns {:error, :not_found} for unknown visitor_id" do
+    test "returns {:error, :not_found} for an unknown (visitor, network)", %{network: net} do
       assert {:error, :not_found} =
-               Visitors.commit_password(Ecto.UUID.generate(), "s3cret")
+               Visitors.commit_password(Ecto.UUID.generate(), net.id, "s3cret")
     end
 
-    test "returns {:error, :not_found} when row is concurrently deleted between lookup and update (H14)" do
-      # The lookup-then-update gap can race a concurrent
-      # `Visitors.delete/1` (operator-initiated purge), `purge_if_anon/1`
-      # (session revoke), or Reaper sweep. Pre-H14 the update raised
-      # `Ecto.StaleEntryError` instead of returning the spec'd
-      # `{:error, :not_found}`, surfacing as a 500 in the web layer.
-      #
-      # Deterministic race synthesis: fetch the visitor (warm the
-      # struct, simulating Repo.get/2's return), delete the row directly
-      # via Repo (the concurrent delete), then call commit_password/2 —
-      # its internal Repo.get/2 now returns nil → {:error, :not_found}.
-      #
-      # NOTE: this test covers the GET-returns-nil branch (cheap to
-      # synthesize). The narrower window — Repo.get succeeds, then
-      # delete fires, then Repo.update sees a vanished row — is what
-      # actually raises StaleEntryError in production. Unit-asserting
-      # the rescue clause directly via a synthesized stale struct
-      # complements the integration coverage above.
+    test "returns {:error, :not_found} when the credential is concurrently deleted (H14)", %{
+      network: net
+    } do
       {:ok, v} = Visitors.find_or_provision_anon("vjt-h14", @network, "1.2.3.4")
       {:ok, _} = Grappa.Repo.delete(v)
 
-      assert {:error, :not_found} = Visitors.commit_password(v.id, "s3cret")
-    end
-
-    test "rescue maps Ecto.StaleEntryError to {:error, :not_found} (H14 narrow window)" do
-      # Direct unit assertion on the rescue clause: build a struct
-      # pinned to a UUID that has never been inserted, build the
-      # changeset by hand (mirrors what commit_password/2 does internally
-      # post-Repo.get), and confirm the rescue path returns the typed
-      # error. This pins the narrow race window — Repo.get/2 succeeded,
-      # then a peer deleted between lookup and Repo.update — without
-      # needing to coordinate two processes against the sqlite
-      # single-writer lock.
-      stale_visitor = %Visitor{
-        id: Ecto.UUID.generate(),
-        nick: "vjt-stale",
-        network_slug: @network,
-        expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
-      }
-
-      assert_raise Ecto.StaleEntryError, fn ->
-        stale_visitor
-        |> Visitor.commit_password_changeset("s3cret", nil)
-        |> Grappa.Repo.update()
-      end
+      # CASCADE dropped the credential too → not_found.
+      assert {:error, :not_found} = Visitors.commit_password(v.id, net.id, "s3cret")
     end
   end
 
-  # #131 — in-session SET PASSWD commit verb. Identity-gated, unlike the
-  # +r-promotion `commit_password/2`: it must NEVER promote an unidentified
-  # anon visitor to permanent (services reject SET PASSWD for an
-  # unidentified nick, and an optimistic commit carries no +r proof).
-  describe "rotate_password/2" do
-    test "rotates an already-identified visitor's password; expires_at stays NULL" do
+  # #131 — in-session SET PASSWD commit verb. Identity-gated PER-NETWORK:
+  # it must NEVER promote an anon credential (services reject SET PASSWD for
+  # an unidentified nick, and an optimistic commit carries no +r proof).
+  describe "rotate_password/3" do
+    test "rotates an already-identified credential's password (stays registered)", %{
+      network: net
+    } do
       {:ok, anon} = Visitors.find_or_provision_anon("vjt-rot", @network, "1.2.3.4")
-      {:ok, identified} = Visitors.commit_password(anon.id, "oldpass")
-      assert is_nil(identified.expires_at)
+      {:ok, _} = Visitors.commit_password(anon.id, net.id, "oldpass")
+      assert Credentials.visitor_registered?(anon.id)
 
-      assert {:ok, rotated} = Visitors.rotate_password(anon.id, "newpass")
+      assert {:ok, rotated} = Visitors.rotate_password(anon.id, net.id, "newpass")
       assert rotated.password_encrypted == "newpass"
-      # Still permanent — rotation is idempotent on expires_at.
-      assert is_nil(rotated.expires_at)
+      assert Credentials.visitor_registered?(anon.id)
     end
 
-    test "rotates a rest-of-line password with spaces verbatim" do
+    test "rotates a rest-of-line password with spaces verbatim", %{network: net} do
       {:ok, anon} = Visitors.find_or_provision_anon("vjt-rot-sp", @network, "1.2.3.4")
-      {:ok, _} = Visitors.commit_password(anon.id, "oldpass")
+      {:ok, _} = Visitors.commit_password(anon.id, net.id, "oldpass")
 
-      assert {:ok, rotated} = Visitors.rotate_password(anon.id, "my new pass phrase")
+      assert {:ok, rotated} = Visitors.rotate_password(anon.id, net.id, "my new pass phrase")
       assert rotated.password_encrypted == "my new pass phrase"
     end
 
-    test "{:error, :not_identified} for an anon row — NEVER promotes it to permanent" do
+    test "{:error, :not_identified} for an anon credential — NEVER promotes it", %{network: net} do
       {:ok, anon} = Visitors.find_or_provision_anon("vjt-anon", @network, "1.2.3.4")
       refute is_nil(anon.expires_at)
-      assert is_nil(anon.password_encrypted)
+      assert is_nil(password_of(anon, net.id))
 
-      assert {:error, :not_identified} = Visitors.rotate_password(anon.id, "newpass")
+      assert {:error, :not_identified} = Visitors.rotate_password(anon.id, net.id, "newpass")
 
-      # The anon row is untouched — still ephemeral, still password-less.
-      # Without the gate this would have pinned it permanent + un-reapable.
-      reloaded = Grappa.Repo.reload!(anon)
-      assert is_nil(reloaded.password_encrypted)
-      refute is_nil(reloaded.expires_at)
+      # Untouched: anon credential + still-ephemeral identity.
+      assert is_nil(password_of(anon, net.id))
+      refute is_nil(Repo.reload!(anon).expires_at)
     end
 
-    test "{:error, :not_found} for an unknown visitor_id" do
-      assert {:error, :not_found} = Visitors.rotate_password(Ecto.UUID.generate(), "newpass")
+    test "{:error, :not_found} for an unknown (visitor, network)", %{network: net} do
+      assert {:error, :not_found} =
+               Visitors.rotate_password(Ecto.UUID.generate(), net.id, "newpass")
     end
 
-    test "{:error, :not_found} when an identified row is concurrently deleted (H14)" do
+    test "{:error, :not_found} when the credential is concurrently deleted (H14)", %{network: net} do
       {:ok, anon} = Visitors.find_or_provision_anon("vjt-rot-h14", @network, "1.2.3.4")
-      {:ok, _} = Visitors.commit_password(anon.id, "oldpass")
+      {:ok, _} = Visitors.commit_password(anon.id, net.id, "oldpass")
       {:ok, _} = Grappa.Repo.delete(anon)
 
-      assert {:error, :not_found} = Visitors.rotate_password(anon.id, "newpass")
+      assert {:error, :not_found} = Visitors.rotate_password(anon.id, net.id, "newpass")
     end
   end
 
-  describe "update_nick/2 concurrent-delete race (H14)" do
-    test "returns {:error, :not_found} when row is concurrently deleted" do
+  describe "update_nick/3 (#211 phase 7 — per-network credential)" do
+    test "rotates the credential nick", %{network: net} do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-nick", @network, "1.2.3.4")
+
+      assert {:ok, cred} = Visitors.update_nick(v.id, net.id, "vjt-renamed")
+      assert cred.nick == "vjt-renamed"
+      assert nick_of(v) == "vjt-renamed"
+    end
+
+    test "returns {:error, :not_found} when the credential is gone", %{network: net} do
       {:ok, v} = Visitors.find_or_provision_anon("vjt-h14b", @network, "1.2.3.4")
       {:ok, _} = Grappa.Repo.delete(v)
 
-      assert {:error, :not_found} = Visitors.update_nick(v.id, "vjt-renamed")
+      assert {:error, :not_found} = Visitors.update_nick(v.id, net.id, "vjt-renamed")
     end
   end
 
-  describe "update_identity/2 persist-only path (#152, no live session)" do
-    test "persists ident + realname and returns {:ok, visitor} when no session is live" do
-      {:ok, v} = Visitors.find_or_provision_anon("vjt-ident", @network, "1.2.3.4")
+  describe "nick_in_use?/3 (per-network credential folded lookup)" do
+    test "true when a DIFFERENT visitor holds the folded nick on the network", %{network: net} do
+      {:ok, _} = Visitors.find_or_provision_anon("Taken", @network, "1.2.3.4")
+      {:ok, other} = Visitors.find_or_provision_anon("other", @network, "5.6.7.8")
 
-      assert {:ok, updated} = Visitors.update_identity(v, %{ident: "grp", realname: "Real Name"})
-      assert updated.ident == "grp"
-      assert updated.realname == "Real Name"
-
-      reloaded = Grappa.Repo.reload!(v)
-      assert reloaded.ident == "grp"
-      assert reloaded.realname == "Real Name"
+      # rfc1459-folded: `taken` collides with `Taken`.
+      assert Visitors.nick_in_use?(other.id, "taken", net.id)
     end
 
-    test "strips a leading tilde from ident before persisting (anti-spoof)" do
-      {:ok, v} = Visitors.find_or_provision_anon("vjt-ident-tilde", @network, "1.2.3.4")
-
-      assert {:ok, updated} = Visitors.update_identity(v, %{ident: "~grp"})
-      assert updated.ident == "grp"
+    test "false when only the visitor itself holds the nick (idempotent rename)", %{network: net} do
+      {:ok, v} = Visitors.find_or_provision_anon("Self", @network, "1.2.3.4")
+      refute Visitors.nick_in_use?(v.id, "self", net.id)
     end
 
-    test "returns {:error, changeset} on an invalid ident (no persist)" do
-      {:ok, v} = Visitors.find_or_provision_anon("vjt-ident-bad", @network, "1.2.3.4")
-
-      assert {:error, %Ecto.Changeset{}} =
-               Visitors.update_identity(v, %{ident: String.duplicate("a", 11)})
-
-      assert Grappa.Repo.reload!(v).ident == nil
+    test "false when the slot is free", %{network: net} do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-free", @network, "1.2.3.4")
+      refute Visitors.nick_in_use?(v.id, "nobody-here", net.id)
     end
   end
 
@@ -278,9 +227,7 @@ defmodule Grappa.VisitorsTest do
     test "bumps expires_at if ≥1h since last bump (delta to fresh target ≥ cadence)" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
 
-      # Push expires_at backward by >1h relative to a fresh now+48h target
       one_hour_ago = DateTime.add(DateTime.utc_now(), @ttl_anon - 3601, :second)
-
       query = from(x in Visitor, where: x.id == ^v.id)
       Repo.update_all(query, set: [expires_at: one_hour_ago])
 
@@ -308,22 +255,19 @@ defmodule Grappa.VisitorsTest do
       Repo.update_all(query, set: [expires_at: past])
 
       assert {:error, :expired} = Visitors.touch(v.id)
-
-      reloaded = Repo.reload!(v)
-      assert DateTime.compare(reloaded.expires_at, past) == :eq
+      assert DateTime.compare(Repo.reload!(v).expires_at, past) == :eq
     end
 
-    test "NickServ-identified visitor (expires_at = nil) → no-op {:ok, visitor}" do
-      # V7: identified visitors don't expire. touch/1 short-circuits without
-      # writing to the DB. This pins the production-change semantics: anon
-      # = 48h sliding TTL; identified = ∞.
+    test "registered visitor (derived) → no-op {:ok, visitor}, TTL untouched", %{network: net} do
       {:ok, anon} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
-      {:ok, identified} = Visitors.commit_password(anon.id, "s3cret")
-      assert is_nil(identified.expires_at)
+      {:ok, _} = Visitors.commit_password(anon.id, net.id, "s3cret")
+      assert Credentials.visitor_registered?(anon.id)
+      # #211 phase 7 — commit does NOT clear expires_at; registration is
+      # derived from the credential, so touch no-ops via the derived check.
+      before = Repo.reload!(anon).expires_at
 
-      assert {:ok, %Visitor{expires_at: nil}} = Visitors.touch(identified.id)
-      reloaded = Repo.reload!(identified)
-      assert is_nil(reloaded.expires_at)
+      assert {:ok, %Visitor{}} = Visitors.touch(anon.id)
+      assert Repo.reload!(anon).expires_at == before
     end
   end
 
@@ -389,27 +333,28 @@ defmodule Grappa.VisitorsTest do
     end
   end
 
-  describe "list_all_with_live_state/0 (M-4 admin console)" do
-    # async: false guard at the module level keeps the registry scan deterministic.
-    test "returns {visitor, nil} for visitor with no live session" do
+  describe "list_all_with_live_state/0 (M-4 admin console — per-network)" do
+    test "returns {visitor, [{credential, nil}]} for a visitor with no live session" do
       {:ok, v} = Visitors.find_or_provision_anon("solo", @network, "1.2.3.4")
-      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: @network})
 
       results = Visitors.list_all_with_live_state()
 
-      assert {%Visitor{} = found, nil} =
+      assert {%Visitor{} = found, per_network} =
                Enum.find(results, fn {row, _} -> row.id == v.id end)
 
       assert found.id == v.id
+      # one credential (the anon @network one), no live pid → nil live state
+      assert [{%Grappa.Networks.Credential{}, nil}] = per_network
     end
 
-    test "returns {visitor, nil} when network_slug has no networks row (orphan)" do
+    test "returns {visitor, []} for a credential-less identity" do
+      # A bare row with no credential (fixture with an unresolved slug).
       orphan_slug = "orphan-#{System.unique_integer([:positive])}"
-      v = Grappa.AuthFixtures.visitor_fixture(network_slug: orphan_slug, nick: "orph")
+      v = visitor_fixture(network_slug: orphan_slug, nick: "orph")
 
       results = Visitors.list_all_with_live_state()
 
-      assert {%Visitor{}, nil} =
+      assert {%Visitor{}, []} =
                Enum.find(results, fn {row, _} -> row.id == v.id end)
     end
   end
@@ -428,36 +373,20 @@ defmodule Grappa.VisitorsTest do
       assert {:error, :not_found} = Visitors.delete(Ecto.UUID.generate())
     end
 
-    # S11: delete/1 is the reap + admin choke point — evicting the row must
-    # also evict the subject's Backoff ETS entries, or they orphan for the
-    # node lifetime (the destroyed UUID never logs in again).
     test "evicts the subject's Backoff entries" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt-bo", @network, "1.2.3.4")
       :ok = Backoff.record_failure({:visitor, v.id}, 1)
       assert Backoff.failure_count({:visitor, v.id}, 1) == 1
 
       assert :ok = Visitors.delete(v.id)
-
       assert Backoff.failure_count({:visitor, v.id}, 1) == 0
     end
   end
 
-  # CP24 bucket E lifecycle/S1: visitor sessions had no equivalent of
-  # the user-side `credential_failer` callback that
-  # `Networks.SessionPlan` injects. K-line / permanent-SASL on a
-  # visitor exited the `Session.Server` silently, leaving the visitor
-  # row with `expires_at` still in the future — so `Bootstrap` would
-  # cheerfully respawn it on the next app start (and the next, and
-  # the next…). No operator signal for permanently-rejected
-  # visitors. `Visitors.mark_failed/2` expires the row immediately
-  # (Reaper sweeps it within 60s; Bootstrap stops respawning
-  # because `list_active/0` filters on `expires_at > now()`) +
-  # emits a structured Logger error so the operator dashboard
-  # surfaces the rejection.
   describe "mark_failed/2 (lifecycle/S1)" do
     test "expires the visitor immediately so Bootstrap stops respawning" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt-fail", @network, "1.2.3.4")
-      assert v in Visitors.list_active()
+      assert Enum.any?(Visitors.list_active(), &(&1.id == v.id))
 
       assert :ok = Visitors.mark_failed(v.id, "k-lined: 'no spam'")
 
@@ -491,11 +420,7 @@ defmodule Grappa.VisitorsTest do
     end
   end
 
-  # #87 + #211 phase 4c — visitor-side per-network "dismiss channel"
-  # (`remove_autojoin_channel/3`). The visitor's rejoin list lives PER
-  # NETWORK on the `(visitor_id, network_id)` credential, so leaving a
-  # channel drops it from THAT network's credential or the row keeps
-  # surfacing in GET /channels.
+  # #87 + #211 phase 4c — visitor-side per-network "dismiss channel".
   describe "remove_autojoin_channel/3 (per-network)" do
     test "drops the channel from the visitor's per-network rejoin list, keeps the rest" do
       {_, network} = visitor_with_network(6667)
@@ -529,8 +454,10 @@ defmodule Grappa.VisitorsTest do
 
     test "{:error, :not_found} when the credential is gone" do
       {_, network} = visitor_with_network(6667)
-      # A visitor with no credential on this network (no provision/accretion).
-      visitor = visitor_fixture(nick: "nocreds", network_slug: network.slug)
+      # A bare visitor with no credential on THIS network.
+      other_slug = "other-#{System.unique_integer([:positive])}"
+      {:ok, _} = Networks.find_or_create_network(%{slug: other_slug})
+      visitor = visitor_fixture(nick: "nocreds", network_slug: other_slug)
 
       assert {:error, :not_found} =
                Visitors.remove_autojoin_channel(visitor, network.id, "#one")
@@ -542,47 +469,40 @@ defmodule Grappa.VisitorsTest do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
       {:ok, session} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua", [])
 
-      assert is_nil(v.password_encrypted)
+      refute is_nil(v.expires_at)
       assert :ok = Visitors.purge_if_anon(v.id)
 
       assert is_nil(Repo.get(Visitor, v.id))
       assert is_nil(Repo.get(Session, session.id))
     end
 
-    test "registered visitor → no-op (row preserved)" do
+    test "registered visitor → no-op (row preserved)", %{network: net} do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
-      {:ok, registered} = Visitors.commit_password(v.id, "s3cret")
+      {:ok, _} = Visitors.commit_password(v.id, net.id, "s3cret")
       {:ok, session} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua", [])
 
-      refute is_nil(registered.password_encrypted)
+      assert Credentials.visitor_registered?(v.id)
       assert :ok = Visitors.purge_if_anon(v.id)
 
       assert %Visitor{} = Repo.get(Visitor, v.id)
       assert %Session{} = Repo.get(Session, session.id)
     end
 
-    # S11: the login case-1 failure branch purges the just-provisioned anon
-    # via this path — the delete must evict the subject's Backoff entries too
-    # (a crash-before-001 mid-provision seeds them).
     test "anon delete evicts the subject's Backoff entries" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt-bo2", @network, "1.2.3.4")
       :ok = Backoff.record_failure({:visitor, v.id}, 1)
       assert Backoff.failure_count({:visitor, v.id}, 1) == 1
 
       assert :ok = Visitors.purge_if_anon(v.id)
-
       assert Backoff.failure_count({:visitor, v.id}, 1) == 0
     end
 
-    # S11: a registered visitor is NOT destroyed (row preserved, identity
-    # persists) — its backoff history must survive the no-op purge.
-    test "registered no-op purge leaves Backoff entries intact" do
+    test "registered no-op purge leaves Backoff entries intact", %{network: net} do
       {:ok, v} = Visitors.find_or_provision_anon("vjt-bo3", @network, "1.2.3.4")
-      {:ok, _} = Visitors.commit_password(v.id, "s3cret")
+      {:ok, _} = Visitors.commit_password(v.id, net.id, "s3cret")
       :ok = Backoff.record_failure({:visitor, v.id}, 1)
 
       assert :ok = Visitors.purge_if_anon(v.id)
-
       assert Backoff.failure_count({:visitor, v.id}, 1) == 1
     end
 

@@ -755,8 +755,8 @@ defmodule GrappaWeb.ChannelsControllerTest do
     test "GET index returns visitor's autojoin channels (no session)",
          %{conn: _conn} do
       {visitor, network} = visitor_with_network(7301)
-      _ = visitor_channel_fixture(visitor, "#italia")
-      _ = visitor_channel_fixture(visitor, "#azzurra")
+      _ = visitor_channel_fixture(visitor, network.slug, "#italia")
+      _ = visitor_channel_fixture(visitor, network.slug, "#azzurra")
       session = visitor_session_fixture(visitor)
 
       conn =
@@ -840,14 +840,16 @@ defmodule GrappaWeb.ChannelsControllerTest do
          %{conn: _conn} do
       {server, port} = start_server()
       {visitor, network} = visitor_with_network(port)
-      _ = visitor_channel_fixture(visitor, "#italia")
+      _ = visitor_channel_fixture(visitor, network.slug, "#italia")
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
       :ok = await_handshake(server)
 
       # Seed live membership synchronously (dodges the self-JOIN echo race).
+      {:ok, cred} = Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
+
       :sys.replace_state(pid, fn s ->
-        %{s | members: Map.put(s.members, "#italia", %{visitor.nick => []})}
+        %{s | members: Map.put(s.members, "#italia", %{cred.nick => []})}
       end)
 
       conn =
@@ -884,7 +886,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
          %{conn: _conn} do
       {server, port} = start_server()
       {visitor, network} = visitor_with_network(port)
-      _ = visitor_channel_fixture(visitor, "#italia")
+      _ = visitor_channel_fixture(visitor, network.slug, "#italia")
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
       :ok = await_handshake(server)

@@ -54,6 +54,14 @@ defmodule Grappa.Visitors.LoginTest do
     IRCServer.feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
   end
 
+  # #211 phase 7 — identity (nick/ident/realname/password) lives on the
+  # `(visitor_id, network_id)` credential now, not the visitor row. Test
+  # helpers to read it back.
+  defp cred(visitor_id, network_id) do
+    {:ok, c} = Credentials.get_visitor_credential(visitor_id, network_id)
+    c
+  end
+
   defp await_handshake(server) do
     {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
     :ok
@@ -102,9 +110,8 @@ defmodule Grappa.Visitors.LoginTest do
       feed_001(server, "vjt")
 
       assert {:ok, %{visitor: %Visitor{} = v, token: token}} = Task.await(task, 10_000)
-      assert v.nick == "vjt"
-      assert v.network_slug == "azzurra"
-      assert is_nil(v.password_encrypted)
+      assert cred(v.id, network.id).nick == "vjt"
+      assert is_nil(cred(v.id, network.id).password_encrypted)
       assert is_binary(token)
 
       assert {:ok, %AccountsSession{visitor_id: vid}} = Accounts.authenticate(token)
@@ -133,8 +140,8 @@ defmodule Grappa.Visitors.LoginTest do
       feed_001(server, "vjt")
 
       assert {:ok, %{visitor: %Visitor{} = v}} = Task.await(task, 10_000)
-      assert v.ident == "grp"
-      assert v.realname == "Real Name"
+      assert cred(v.id, network.id).ident == "grp"
+      assert cred(v.id, network.id).realname == "Real Name"
 
       stop_visitor_session(v.id, network.id)
     end
@@ -151,8 +158,8 @@ defmodule Grappa.Visitors.LoginTest do
       assert {:error, :malformed_ident} =
                Login.login(login_input(%{nick: "orphan152", ident: "way-too-long"}), [])
 
-      # No row survives for the nick — a corrected retry starts clean.
-      assert Visitors.get_by_nick_and_network("orphan152", network.slug) == nil
+      # No identity survives for the nick — a corrected retry starts clean.
+      assert Visitors.resolve_identity_by_nick("orphan152", network.id) == nil
     end
 
     test "fresh-nick login with a password identifies via :nickserv_identify at 001" do
@@ -180,16 +187,15 @@ defmodule Grappa.Visitors.LoginTest do
       assert String.starts_with?(identify_line, "PRIVMSG NickServ :IDENTIFY ")
 
       assert {:ok, %{visitor: %Visitor{} = v, token: token}} = Task.await(task, 10_000)
-      assert v.nick == "vjt"
+      assert cred(v.id, network.id).nick == "vjt"
       assert is_binary(token)
 
       # No +r MODE arrives from the fake, so `commit_password` never fires:
-      # the row stays anon (password_encrypted nil, TTL still set) until
-      # services confirm the nick is protected. The login password is used
-      # to IDENTIFY but is NOT persisted speculatively.
-      row = Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra")
-      assert is_nil(row.password_encrypted)
-      refute is_nil(row.expires_at)
+      # the credential stays anon (password_encrypted nil, identity TTL still
+      # set) until services confirm the nick is protected. The login password
+      # is used to IDENTIFY but is NOT persisted speculatively.
+      assert is_nil(cred(v.id, network.id).password_encrypted)
+      refute is_nil(Repo.reload!(v).expires_at)
 
       stop_visitor_session(v.id, network.id)
     end
@@ -204,7 +210,7 @@ defmodule Grappa.Visitors.LoginTest do
       feed_001(server, "vjt")
 
       assert {:ok, %{visitor: %Visitor{} = v, token: token}} = Task.await(task, 10_000)
-      assert v.nick == "vjt"
+      assert cred(v.id, network.id).nick == "vjt"
       assert is_binary(token)
 
       # Boundary mirror of the non-empty wire test: an EMPTY login password
@@ -228,24 +234,23 @@ defmodule Grappa.Visitors.LoginTest do
       assert identify_count == 0,
              "expected no IDENTIFY on the wire for an empty password, got #{identify_count}"
 
-      # The row stays anon (empty password is never committed).
-      row = Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra")
-      assert is_nil(row.password_encrypted)
+      # The credential stays anon (empty password is never committed).
+      assert is_nil(cred(v.id, network.id).password_encrypted)
 
       stop_visitor_session(v.id, network.id)
     end
 
     test "connect refused → {:error, :upstream_unreachable}, anon row purged" do
       port = pick_unused_port()
-      {_, _} = setup_visitor_network(port)
+      {network, _} = setup_visitor_network(port)
 
       assert {:error, :upstream_unreachable} = Login.login(login_input(), [])
-      assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
+      assert Visitors.resolve_identity_by_nick("vjt", network.id) == nil
     end
 
     test "no 001 within budget → {:error, :welcome_timeout}, session torn down + anon row purged" do
       {_, port} = start_server()
-      {_, _} = setup_visitor_network(port)
+      {network, _} = setup_visitor_network(port)
 
       # U-2 (UD7): timeout split into :connect_timeout (TCP/TLS) +
       # :welcome_timeout (post-NICK/USER 001) + :probe_timeout (outer
@@ -254,12 +259,12 @@ defmodule Grappa.Visitors.LoginTest do
       assert {:error, :welcome_timeout} =
                Login.login(login_input(), login_welcome_timeout_ms: 200)
 
-      assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
+      assert Visitors.resolve_identity_by_nick("vjt", network.id) == nil
     end
 
     test "433 nick-in-use during registration → {:error, :nick_in_use}, anon row purged" do
       {server, port} = start_server()
-      {_, _} = setup_visitor_network(port)
+      {network, _} = setup_visitor_network(port)
 
       task = Task.async(fn -> Login.login(login_input(), []) end)
 
@@ -273,7 +278,7 @@ defmodule Grappa.Visitors.LoginTest do
       IRCServer.feed(server, ":irc.test.org 433 * vjt :Nickname is already in use\r\n")
 
       assert {:error, :nick_in_use} = Task.await(task, 10_000)
-      assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
+      assert Visitors.resolve_identity_by_nick("vjt", network.id) == nil
     end
 
     test "no SessionPlan server row → {:error, :no_server}, anon row purged" do
@@ -283,10 +288,8 @@ defmodule Grappa.Visitors.LoginTest do
       {:ok, network} =
         Grappa.Networks.create_network(%{slug: "azzurra", visitor_enabled: true})
 
-      _ = network
-
       assert {:error, :no_server} = Login.login(login_input(), [])
-      assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
+      assert Visitors.resolve_identity_by_nick("vjt", network.id) == nil
     end
   end
 
@@ -296,11 +299,11 @@ defmodule Grappa.Visitors.LoginTest do
       {network, _} = setup_visitor_network(port)
 
       {:ok, anon} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
-      {:ok, registered} = Visitors.commit_password(anon.id, "s3cret")
+      {:ok, _} = Visitors.commit_password(anon.id, network.id, "s3cret")
 
-      on_exit(fn -> stop_visitor_session(registered.id, network.id) end)
+      on_exit(fn -> stop_visitor_session(anon.id, network.id) end)
 
-      {:ok, server: server, network: network, visitor: registered}
+      {:ok, server: server, network: network, visitor: anon}
     end
 
     test "missing password → {:error, :password_required}" do
@@ -418,16 +421,13 @@ defmodule Grappa.Visitors.LoginTest do
     end
   end
 
-  # #211 phase 4a — the auth-gate read-cutover. The registered/anon
-  # discriminator AND the password compare must read the visitor's
-  # `(visitor_id, network_id)` **Credential** secret (the phase-3
-  # read-of-record for session identity, now also the read-of-record for
-  # AUTH), not the `visitors.password_encrypted` scalar (phase-7 drops it).
-  # These tests DIVERGE the two stores (mutate the credential directly,
-  # bypassing the write-through) so the read source is observable — a test
-  # that only asserts the happy path where both agree cannot prove which
-  # store the gate reads.
-  describe "case dispatch reads the Credential secret (phase-4a cutover)" do
+  # #211 phase 7 — the auth-gate reads the visitor's `(visitor_id,
+  # network_id)` **Credential** secret; the `visitors.password_encrypted`
+  # scalar is GONE (the phase-4a transitional divergence tests, which
+  # diverged the two stores to prove which one the gate read, are retired —
+  # there is only one store now). This pins that a credential-borne secret
+  # drives case-2 (registered) dispatch.
+  describe "case dispatch reads the Credential secret (#211 phase 7)" do
     setup do
       {_, port} = start_server()
       {network, _} = setup_visitor_network(port)
@@ -438,57 +438,17 @@ defmodule Grappa.Visitors.LoginTest do
       {:ok, network: network, visitor: anon}
     end
 
-    test "credential has a secret but the visitor scalar is nil → case 2 (registered), compares the CREDENTIAL secret",
+    test "a credential secret drives case-2 (registered) dispatch — wrong password mismatches",
          %{network: network, visitor: anon} do
-      # Diverge: credential gets a secret; the visitor row scalar stays nil.
-      {:ok, _} =
-        Credentials.upsert_visitor_credential(anon.id, network.id, %{
-          nick: anon.nick,
-          sasl_user: anon.nick,
-          auth_method: :nickserv_identify,
-          password: "credpass"
-        })
+      # Commit a secret onto the credential (the only identity store now).
+      {:ok, %Credential{password_encrypted: "credpass"}} =
+        Visitors.commit_password(anon.id, network.id, "credpass")
 
-      # Confirm the divergence is real (guards against a write-through that
-      # silently re-synced the scalar and made the test tautological).
-      assert %Visitor{password_encrypted: nil} = Repo.get!(Visitor, anon.id)
-
-      assert {:ok, %Credential{password_encrypted: "credpass"}} =
-               Credentials.get_visitor_credential(anon.id, network.id)
-
-      # Pre-cutover: the visitor scalar is nil → case 3 → {:error, :anon_collision}.
-      # Post-cutover: the credential has a secret → case 2 → password gate;
-      # a wrong password compared against the CREDENTIAL secret →
-      # {:error, :password_mismatch}. No token supplied, so an anon (case 3)
-      # branch could ONLY return :anon_collision — the mismatch proves BOTH
-      # that dispatch chose case 2 from the credential AND that the compare
-      # read the credential secret.
+      # No token supplied: an anon (case-3) branch could ONLY return
+      # :anon_collision. A :password_mismatch proves dispatch chose case-2
+      # from the credential AND the compare read the credential secret.
       assert {:error, :password_mismatch} =
                Login.login(login_input(%{password: "wrongpass"}), [])
-    end
-
-    test "credential has no secret but the visitor scalar is set → case 3 (anon), NOT the scalar",
-         %{network: network, visitor: anon} do
-      # Reverse divergence: promote the visitor SCALAR only (write straight
-      # through the schema changeset so the write-through choke point does not
-      # fire and re-sync the credential).
-      {:ok, _} =
-        anon
-        |> Visitor.commit_password_changeset("scalarpass", nil)
-        |> Repo.update()
-
-      # Credential still anon (auth_method :none, no secret).
-      assert {:ok, %Credential{password_encrypted: nil}} =
-               Credentials.get_visitor_credential(anon.id, network.id)
-
-      assert %Visitor{password_encrypted: "scalarpass"} = Repo.get!(Visitor, anon.id)
-
-      # Post-cutover the gate reads the CREDENTIAL (no secret) → case 3 anon →
-      # a login with the SCALAR password but no bearer token is an
-      # {:error, :anon_collision}. Pre-cutover it would read the scalar → case 2
-      # → the matching "scalarpass" would attach/respawn ({:ok, _}).
-      assert {:error, :anon_collision} =
-               Login.login(login_input(%{password: "scalarpass"}), [])
     end
   end
 

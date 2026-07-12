@@ -423,7 +423,7 @@ defmodule GrappaWeb.MessagesControllerTest do
           channel: "#sniffo",
           server_time: 1,
           kind: :privmsg,
-          sender: visitor.nick,
+          sender: "mine-sender",
           body: "mine"
         })
 
@@ -434,7 +434,7 @@ defmodule GrappaWeb.MessagesControllerTest do
           channel: "#sniffo",
           server_time: 2,
           kind: :privmsg,
-          sender: other_visitor.nick,
+          sender: "other-sender",
           body: "not-mine"
         })
 

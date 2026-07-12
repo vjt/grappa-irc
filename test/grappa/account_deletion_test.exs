@@ -23,6 +23,7 @@ defmodule Grappa.AccountDeletionTest do
 
   alias Grappa.{AccountDeletion, Accounts, AdmissionStateHelpers, Scrollback, Session}
   alias Grappa.Accounts.User
+  alias Grappa.Networks.Credentials
   alias Grappa.Scrollback.Message
   alias Grappa.Visitors
   alias Grappa.Visitors.Visitor
@@ -44,11 +45,13 @@ defmodule Grappa.AccountDeletionTest do
     :ok
   end
 
-  # A registered visitor = `password_encrypted` non-nil (Cloak-encrypted
-  # via `commit_password/2`, mirroring the +r promotion).
+  # A registered visitor = identified on some network. #211 phase 7 —
+  # `commit_password/3` writes the per-network secret + flips the credential's
+  # `auth_method` to `:nickserv_identify`; registration is DERIVED from that
+  # (`Credentials.visitor_registered?/1`), NOT a `visitors.expires_at`-nil flag.
   defp registered_visitor(port) do
     {visitor, network} = visitor_with_network(port)
-    {:ok, _} = Visitors.commit_password(visitor.id, "s3cret")
+    {:ok, _} = Visitors.commit_password(visitor.id, network.id, "s3cret")
     {Repo.get!(Visitor, visitor.id), network}
   end
 
@@ -136,7 +139,10 @@ defmodule Grappa.AccountDeletionTest do
 
     test "anon visitor: forbidden, the row is PRESERVED (quit-only; mirrors require_registered_visitor)" do
       visitor = visitor_fixture(network_slug: "azzurra-#{System.unique_integer([:positive])}")
-      assert is_nil(visitor.password_encrypted)
+      # #211 phase 7 — anon ⟺ NOT registered (registration is DERIVED from
+      # the credentials: holds ≥1 committed NickServ secret). An anon
+      # visitor holds only anon (`auth_method: :none`) credentials.
+      refute Credentials.visitor_registered?(visitor.id)
 
       assert {:error, :forbidden} = AccountDeletion.delete_account({:visitor, visitor})
       assert %Visitor{} = Repo.get(Visitor, visitor.id)
@@ -151,8 +157,10 @@ defmodule Grappa.AccountDeletionTest do
       # for a registered identity — the row survives.
       {survivor, _} = registered_visitor(port)
       :ok = Visitors.purge_if_anon(survivor.id)
-      assert %Visitor{password_encrypted: pwd} = Repo.get(Visitor, survivor.id)
-      assert is_binary(pwd)
+      # #211 phase 7 — registered ⟺ Credentials.visitor_registered?/1 (the
+      # row survived the anon-only purge because it holds a NickServ cred).
+      assert %Visitor{} = Repo.get(Visitor, survivor.id)
+      assert Credentials.visitor_registered?(survivor.id)
 
       # delete_account on an equivalent registered visitor WIPES the row.
       {doomed, _} = registered_visitor(port)

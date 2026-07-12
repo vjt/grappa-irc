@@ -44,7 +44,7 @@ defmodule Grappa.Migrations.SeedVisitorAutoconnectTest do
 
     {:ok, _} =
       Credentials.upsert_visitor_credential(visitor.id, net.id, %{
-        nick: visitor.nick,
+        nick: "seed",
         auth_method: :none
       })
 
@@ -62,7 +62,7 @@ defmodule Grappa.Migrations.SeedVisitorAutoconnectTest do
 
     {:ok, _} =
       Credentials.upsert_visitor_credential(visitor.id, network.id, %{
-        nick: visitor.nick,
+        nick: "seed",
         auth_method: :none
       })
 
@@ -98,7 +98,7 @@ defmodule Grappa.Migrations.SeedVisitorAutoconnectTest do
 
     {:ok, _} =
       Credentials.upsert_visitor_credential(visitor.id, net.id, %{
-        nick: visitor.nick,
+        nick: "seed",
         auth_method: :none
       })
 
@@ -114,7 +114,7 @@ defmodule Grappa.Migrations.SeedVisitorAutoconnectTest do
 
     {:ok, _} =
       Credentials.upsert_visitor_credential(visitor.id, net.id, %{
-        nick: visitor.nick,
+        nick: "seed",
         auth_method: :none
       })
 

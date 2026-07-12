@@ -1,7 +1,7 @@
 defmodule Grappa.Networks.CredentialXorTest do
   @moduledoc """
   #211 phase 1 — DB-level verification of the `network_credentials`
-  subject-XOR promotion + the visitor→Credential backfill.
+  subject-XOR promotion.
 
   Complements the schema-changeset tests in
   `Grappa.Networks.CredentialTest` (which cover the Elixir-layer
@@ -16,25 +16,37 @@ defmodule Grappa.Networks.CredentialXorTest do
     * a visitor credential persists + reloads with its Cloak-encrypted
       password intact.
 
-  It also exercises the backfill SQL end-to-end against seeded
-  old-shape visitor rows (the migration ran once at suite setup; the
-  test re-runs the same idempotent INSERT and asserts correctness +
-  no-op-on-rerun).
+  #211 phase 7 — the `visitor_fixture` now auto-provisions a
+  `(visitor, network)` credential when its `:network_slug` resolves. These
+  DB-substrate tests insert their OWN credential rows (raw SQL / changeset),
+  so they need a BARE visitor with NO auto-credential — `bare_visitor/0`
+  inserts a visitor whose slug does not resolve. The phase-1
+  `visitor → Credential` backfill describe was DELETED with phase 7: it ran
+  the migration's INSERT...SELECT reading the now-dropped `visitors` identity
+  scalars (`v.nick`, `v.password_encrypted`, `v.network_slug`, …), which no
+  longer exist on the final schema.
   """
   use Grappa.DataCase, async: true
 
   import Grappa.AuthFixtures
 
   alias Grappa.Networks.Credential
-  alias Grappa.{Repo, Visitors}
+  alias Grappa.Repo
 
   @ts "2026-07-11T12:00:00.000000Z"
+
+  # A BARE visitor row (no auto-credential): pass a slug that does not
+  # resolve to a networks row, so `visitor_fixture/1` skips the credential
+  # insert. #211 phase 7 — the visitor row is a pure identity/TTL row.
+  defp bare_visitor do
+    visitor_fixture(network_slug: "unbound-#{System.unique_integer([:positive])}")
+  end
 
   describe "subject XOR CHECK at the DB (defense-in-depth)" do
     setup do
       user = user_fixture()
       network = network_fixture()
-      visitor = visitor_fixture(network_slug: network.slug)
+      visitor = bare_visitor()
       %{user: user, network: network, visitor: visitor}
     end
 
@@ -77,7 +89,7 @@ defmodule Grappa.Networks.CredentialXorTest do
     setup do
       user = user_fixture()
       network = network_fixture()
-      visitor = visitor_fixture(network_slug: network.slug)
+      visitor = bare_visitor()
       %{user: user, network: network, visitor: visitor}
     end
 
@@ -131,17 +143,14 @@ defmodule Grappa.Networks.CredentialXorTest do
 
   # #211 phase 4b — the credential-side folded-nick partial unique index
   # `(fold(nick), network_id) WHERE visitor_id IS NOT NULL`. This is the
-  # per-network identity guard for VISITOR credentials, mirroring the
-  # `visitors` table's `(fold(nick), network_slug)` folded-unique index
-  # (GH #121) onto the Credential so phase 4c can resolve identity
-  # credential-first + accretion can guard cross-network nick collisions,
-  # and phase 7 can drop the visitors-table index. Additive — the
-  # visitors-table index stays until phase 7.
+  # per-network identity guard for VISITOR credentials (GH #121) — phase 7
+  # dropped the visitors-table twin, so this is now the sole folded-nick
+  # uniqueness guard for visitor identities.
   describe "visitor folded-nick uniqueness (phase-4b, GH #121)" do
     setup do
       network = network_fixture()
-      v1 = visitor_fixture(network_slug: network.slug, nick: "one")
-      v2 = visitor_fixture(network_slug: network.slug, nick: "two")
+      v1 = bare_visitor()
+      v2 = bare_visitor()
       %{network: network, v1: v1, v2: v2}
     end
 
@@ -268,7 +277,7 @@ defmodule Grappa.Networks.CredentialXorTest do
   describe "visitor credential Cloak round-trip" do
     test "password_encrypted persists + reloads as plaintext via the vault" do
       network = network_fixture()
-      visitor = visitor_fixture(network_slug: network.slug)
+      visitor = bare_visitor()
 
       {:ok, inserted} =
         %Credential{}
@@ -286,139 +295,6 @@ defmodule Grappa.Networks.CredentialXorTest do
       assert Credential.upstream_password(reloaded) == "hunter2"
       assert reloaded.id == inserted.id
       refute is_nil(reloaded.id)
-    end
-  end
-
-  describe "backfill: visitor -> synthetic Credential" do
-    # Runs the migration's exact INSERT SQL against seeded old-shape
-    # visitors, then asserts the derived Credential + idempotency. The
-    # SQL is duplicated here rather than imported (migrations stay
-    # self-contained per repo convention) — keep it byte-aligned with
-    # `20260711125000_backfill_visitor_credentials.exs`.
-    @backfill_sql """
-    INSERT INTO network_credentials
-      (visitor_id, user_id, network_id, nick, ident, realname, sasl_user,
-       password_encrypted, auth_method, autojoin_channels, last_joined_channels,
-       connection_state, inserted_at, updated_at)
-    SELECT
-      v.id, NULL, n.id, v.nick, v.ident, v.realname, v.nick,
-      v.password_encrypted,
-      CASE WHEN v.password_encrypted IS NOT NULL THEN 'nickserv_identify' ELSE 'none' END,
-      '[]', COALESCE(v.last_joined_channels, '[]'), 'connected',
-      v.inserted_at, v.updated_at
-    FROM visitors v
-    JOIN networks n ON n.slug = v.network_slug
-    WHERE NOT EXISTS (
-      SELECT 1 FROM network_credentials nc
-      WHERE nc.visitor_id = v.id AND nc.network_id = n.id
-    )
-    """
-
-    test "anon visitor -> one auth_method=:none credential" do
-      network = network_fixture()
-      visitor = visitor_fixture(network_slug: network.slug, nick: "anon1")
-
-      Repo.query!(@backfill_sql, [])
-
-      cred = Repo.get_by!(Credential, visitor_id: visitor.id, network_id: network.id)
-      assert cred.nick == "anon1"
-      assert cred.auth_method == :none
-      assert cred.sasl_user == "anon1"
-      assert cred.connection_state == :connected
-      assert is_nil(cred.user_id)
-      assert is_nil(Credential.upstream_password(cred))
-    end
-
-    test "NickServ-identified visitor -> :nickserv_identify + ciphertext byte-fidelity" do
-      network = network_fixture()
-      visitor = visitor_fixture(network_slug: network.slug, nick: "identd1")
-      {:ok, _} = Visitors.commit_password(visitor.id, "s3cret-pw")
-
-      # #211 phase 3 — `commit_password/2` now write-throughs a Credential
-      # (re-encrypting via the changeset → a fresh AES-GCM IV). This test
-      # exercises the PHASE-1 migration's RAW byte-copy in isolation, which
-      # requires the migration's precondition: a visitor with NO credential
-      # yet. Clear the write-through credential so `@backfill_sql`'s
-      # `WHERE NOT EXISTS` actually performs the copy under test.
-      visitor_creds = from(c in Credential, where: not is_nil(c.visitor_id))
-      Repo.delete_all(visitor_creds)
-
-      # Grab the raw stored ciphertext BEFORE the backfill copies it.
-      # binary_id is stored as a TEXT UUID string in sqlite (same as the
-      # existing check_constraints_test raw inserts), so pass v.id directly.
-      %{rows: [[visitor_ct]]} =
-        Repo.query!("SELECT password_encrypted FROM visitors WHERE id = ?", [visitor.id])
-
-      Repo.query!(@backfill_sql, [])
-
-      %{rows: [[cred_ct]]} =
-        Repo.query!(
-          "SELECT password_encrypted FROM network_credentials WHERE visitor_id = ? AND network_id = ?",
-          [visitor.id, network.id]
-        )
-
-      # Raw ciphertext bytes are byte-identical (no decrypt/re-encrypt).
-      assert cred_ct == visitor_ct
-      refute is_nil(cred_ct)
-
-      cred = Repo.get_by!(Credential, visitor_id: visitor.id, network_id: network.id)
-      assert cred.auth_method == :nickserv_identify
-      # And the same vault decrypts the copied bytes back to plaintext.
-      assert Credential.upstream_password(cred) == "s3cret-pw"
-    end
-
-    test "last_joined_channels carries onto the credential" do
-      network = network_fixture()
-      visitor = visitor_fixture(network_slug: network.slug, nick: "joiner")
-
-      # This exercises the PHASE-1 backfill SQL, which copies the visitor
-      # SCALAR `last_joined_channels` -> the credential. #211 phase 4c moved
-      # the live channel writes onto the credential (the scalar is
-      # write-dead), so populate the scalar DIRECTLY here — the backfill is
-      # historical (already ran in prod) and legitimately reads the scalar.
-      {:ok, _} =
-        visitor
-        |> Grappa.Visitors.Visitor.last_joined_channels_changeset(["#grappa"])
-        |> Repo.update()
-
-      # Clear any write-through Credential so the phase-1 migration under
-      # test performs the insert (see the byte-fidelity test for rationale).
-      visitor_creds = from(c in Credential, where: not is_nil(c.visitor_id))
-      Repo.delete_all(visitor_creds)
-
-      Repo.query!(@backfill_sql, [])
-
-      cred = Repo.get_by!(Credential, visitor_id: visitor.id, network_id: network.id)
-      assert "#grappa" in cred.last_joined_channels
-    end
-
-    test "is idempotent — re-running creates no duplicate" do
-      network = network_fixture()
-      visitor = visitor_fixture(network_slug: network.slug, nick: "once")
-
-      Repo.query!(@backfill_sql, [])
-      Repo.query!(@backfill_sql, [])
-      Repo.query!(@backfill_sql, [])
-
-      query = from(c in Credential, where: c.visitor_id == ^visitor.id and c.network_id == ^network.id)
-      count = Repo.aggregate(query, :count, :id)
-
-      assert count == 1
-    end
-
-    test "orphan-slug visitor is skipped, not crashed, and left untouched" do
-      # A visitor whose network_slug has no networks row. The JOIN drops
-      # it — no credential, no error, visitor row intact.
-      visitor = visitor_fixture(network_slug: "nonexistent-net", nick: "orphan")
-
-      assert {:ok, _} = Repo.query(@backfill_sql, [])
-
-      query = from(c in Credential, where: c.visitor_id == ^visitor.id)
-      count = Repo.aggregate(query, :count, :id)
-
-      assert count == 0
-      # Visitor row survives unchanged.
-      assert Repo.get(Visitors.Visitor, visitor.id).nick == "orphan"
     end
   end
 end

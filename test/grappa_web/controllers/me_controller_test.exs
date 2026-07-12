@@ -103,14 +103,15 @@ defmodule GrappaWeb.MeControllerTest do
       body = json_response(conn, 200)
       assert body["kind"] == "visitor"
       assert body["id"] == visitor.id
-      assert body["nick"] == "vjt"
+      # #211 phase 7 — nick/ident/realname DROPPED from the /me subject (a
+      # visitor is multi-network; per-network identity lives on GET
+      # /networks). The subject wire is {id, expires_at, registered}.
+      refute Map.has_key?(body, "nick")
+      refute Map.has_key?(body, "ident")
+      refute Map.has_key?(body, "realname")
       # #211 phase 6 — singular subject `network_slug` DROPPED from /me
       # (visitors are multi-network; per-network status on GET /networks).
       refute Map.has_key?(body, "network_slug")
-      # #152 — visitor /me carries ident + realname (nil until set) so
-      # cic's SettingsDrawer can render the current identity.
-      assert body["ident"] == nil
-      assert body["realname"] == nil
       assert is_binary(body["expires_at"])
       # CP29 R-3: read_cursors envelope present for visitors too.
       assert body["read_cursors"] == %{}
@@ -689,8 +690,8 @@ defmodule GrappaWeb.MeControllerTest do
       # registered visitor's row (asserted in auth_controller_test); the
       # self-delete door is the ONLY one that wipes it. Port 6667 has no
       # listener — no session is spawned (controller-contract test).
-      {base, _} = visitor_with_network(6667)
-      {:ok, _} = Visitors.commit_password(base.id, "s3cret")
+      {base, network} = visitor_with_network(6667)
+      {:ok, _} = Visitors.commit_password(base.id, network.id, "s3cret")
       visitor = Repo.get!(Visitor, base.id)
       session = visitor_session_fixture(visitor)
 
@@ -705,7 +706,8 @@ defmodule GrappaWeb.MeControllerTest do
 
     test "anon visitor → 403 (quit-only; no persistent identity to delete)", %{conn: conn} do
       {visitor, session} = visitor_and_session()
-      assert is_nil(Repo.get!(Visitor, visitor.id).password_encrypted)
+      # #211 phase 7 — anon ⟺ NOT registered (derived from the credentials).
+      refute Grappa.Networks.Credentials.visitor_registered?(visitor.id)
 
       conn
       |> put_bearer(session.id)
@@ -723,55 +725,10 @@ defmodule GrappaWeb.MeControllerTest do
     end
   end
 
-  describe "PATCH /me/identity — visitor subject (#152)" do
-    test "200 + persists ident + realname, strips leading tilde", %{conn: conn} do
-      {visitor, session} = visitor_and_session(nick: "vjt", network_slug: "azzurra")
-
-      conn =
-        conn
-        |> put_bearer(session.id)
-        |> put_req_header("content-type", "application/json")
-        |> patch("/me/identity", Jason.encode!(%{ident: "~grp", realname: "Real Name"}))
-
-      body = json_response(conn, 200)
-      assert body["kind"] == "visitor"
-      assert body["ident"] == "grp"
-      assert body["realname"] == "Real Name"
-
-      reload = Grappa.Repo.get!(Grappa.Visitors.Visitor, visitor.id)
-      assert reload.ident == "grp"
-      assert reload.realname == "Real Name"
-    end
-
-    test "422 on invalid ident (over-length)", %{conn: conn} do
-      {_, session} = visitor_and_session(nick: "vjt", network_slug: "azzurra")
-
-      conn =
-        conn
-        |> put_bearer(session.id)
-        |> put_req_header("content-type", "application/json")
-        |> patch("/me/identity", Jason.encode!(%{ident: "way-too-long-ident"}))
-
-      assert json_response(conn, 422)
-    end
-
-    test "403 for a user subject (visitor-only door)", %{conn: conn} do
-      {_, session} = user_and_session()
-
-      conn =
-        conn
-        |> put_bearer(session.id)
-        |> put_req_header("content-type", "application/json")
-        |> patch("/me/identity", Jason.encode!(%{ident: "grp"}))
-
-      assert json_response(conn, 403)
-    end
-
-    test "401 without Bearer", %{conn: conn} do
-      conn
-      |> put_req_header("content-type", "application/json")
-      |> patch("/me/identity", Jason.encode!(%{ident: "grp"}))
-      |> json_response(401)
-    end
-  end
+  # #211 phase 7 — the `PATCH /me/identity` describe block was DELETED:
+  # the route + `MeJSON.identity` are RETIRED. Visitor identity editing
+  # moved onto the per-network door `PATCH /networks/:id/identity`
+  # (`NetworksController.identity`, subject-agnostic →
+  # `Credentials.update_credential_identity/2`), exercised in the networks
+  # controller test.
 end

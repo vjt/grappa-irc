@@ -169,22 +169,27 @@ defmodule GrappaWeb.Admin.VisitorsControllerTest do
 
       row = Enum.find(body["visitors"], &(&1["id"] == visitor.id))
       assert row != nil
-      assert row["nick"] == visitor.nick
-      assert row["network_slug"] == network.slug
-      assert is_map(row["live_state"])
-      assert row["live_state"]["alive"] == true
+      # #211 phase 7 — nick/connection_state/live_state live per-network in
+      # the `networks` list (a visitor is multi-network now).
+      assert [net] = row["networks"]
+      {:ok, cred} = Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
+      assert net["nick"] == cred.nick
+      assert net["network_slug"] == network.slug
+      assert is_map(net["live_state"])
+      assert net["live_state"]["alive"] == true
     end
 
     test "200 + live_state: null for visitor row with no Session.Server (U-0 honesty signal)", %{
       conn: conn
     } do
+      slug = "azzurra-#{System.unique_integer([:positive])}"
+      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: slug})
+
       visitor =
         visitor_fixture(
-          network_slug: "azzurra-#{System.unique_integer([:positive])}",
+          network_slug: slug,
           nick: "ghost-#{System.unique_integer([:positive])}"
         )
-
-      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: visitor.network_slug})
 
       session = admin_session()
 
@@ -197,7 +202,9 @@ defmodule GrappaWeb.Admin.VisitorsControllerTest do
       row = Enum.find(body["visitors"], &(&1["id"] == visitor.id))
 
       assert row != nil
-      assert row["live_state"] == nil
+      assert [net] = row["networks"]
+      assert net["live_state"] == nil
+      refute Map.has_key?(net, "password_encrypted")
       refute Map.has_key?(row, "password_encrypted")
     end
   end

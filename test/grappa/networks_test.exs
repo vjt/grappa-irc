@@ -986,18 +986,16 @@ defmodule Grappa.NetworksTest do
       # appear in available; a NON-enabled network never appears at all.
       _ = network_fixture()
 
+      nick = "vjt-#{u()}"
+
       {:ok, visitor} =
-        %{
-          nick: "vjt-#{u()}",
-          network_slug: attached.slug,
-          expires_at: DateTime.add(DateTime.utc_now(), 48, :hour)
-        }
+        %{expires_at: DateTime.add(DateTime.utc_now(), 48, :hour)}
         |> Visitor.create_changeset()
         |> Repo.insert()
 
       {:ok, _} =
         Credentials.upsert_visitor_credential(visitor.id, attached.id, %{
-          nick: visitor.nick,
+          nick: nick,
           auth_method: :none
         })
 

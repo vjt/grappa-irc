@@ -38,6 +38,7 @@ defmodule Grappa.Visitors.ReaperTest do
   describe "sweep/0" do
     test "deletes expired visitors and leaves live ones alone" do
       slug = "azzurra-#{System.unique_integer([:positive])}"
+      _ = network_fixture(slug: slug)
       {:ok, alive} = Visitors.find_or_provision_anon("alive", slug, nil)
       {:ok, dead} = Visitors.find_or_provision_anon("dead", slug, nil)
       expire(dead)
@@ -75,15 +76,23 @@ defmodule Grappa.Visitors.ReaperTest do
                )
     end
 
-    test "NULL expires_at row (NickServ-identified) survives sweep — IS-NOT-NULL guard" do
-      # V7: identified visitors carry expires_at = NULL and persist forever.
-      # `Visitors.list_expired/0`'s IS-NOT-NULL guard (V5) keeps them out
-      # of the sweep set; without it the Reaper would delete every
-      # identified visitor on the first tick post-V7.
+    test "registered visitor (holds a NickServ credential) survives sweep — derived-registration guard" do
+      # #211 phase 7 — registration is DERIVED from the credentials
+      # (`Credentials.visitor_registered?/1` — holds ≥1 committed NickServ
+      # secret). `commit_password/3` does NOT clear `expires_at` anymore, so
+      # a registered visitor keeps its anon-shaped TTL; `list_expired/0`
+      # excludes it via `v.id NOT IN (registered credential visitor_ids)`.
+      # Without that guard the Reaper would delete every registered visitor.
       slug = "azzurra-#{System.unique_integer([:positive])}"
+      network = network_fixture(slug: slug)
       {:ok, anon} = Visitors.find_or_provision_anon("identified", slug, nil)
-      {:ok, identified} = Visitors.commit_password(anon.id, "s3cret")
-      assert is_nil(identified.expires_at)
+      {:ok, _} = Visitors.commit_password(anon.id, network.id, "s3cret")
+      identified = Repo.reload(anon)
+      assert Grappa.Networks.Credentials.visitor_registered?(identified.id)
+      # Force its TTL into the past — a registered visitor must survive the
+      # sweep DESPITE an elapsed expires_at (registration, not the TTL, is
+      # the reap discriminator now).
+      expire(identified)
 
       assert {:ok, 0} = Reaper.sweep()
       assert Repo.reload(identified)
@@ -132,6 +141,7 @@ defmodule Grappa.Visitors.ReaperTest do
   describe "GenServer tick" do
     test "scheduled tick fires sweep" do
       slug = "azzurra-#{System.unique_integer([:positive])}"
+      _ = network_fixture(slug: slug)
       {:ok, dead} = Visitors.find_or_provision_anon("dead", slug, nil)
       expire(dead)
 

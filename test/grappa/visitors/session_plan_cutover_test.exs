@@ -1,14 +1,14 @@
 defmodule Grappa.Visitors.SessionPlanCutoverTest do
   @moduledoc """
-  #211 phase 3 — proves `Grappa.Visitors.SessionPlan.resolve/1` reads
+  #211 phase 3/7 — proves `Grappa.Visitors.SessionPlan.resolve/2` reads
   the visitor's `(visitor_id, network_id)` **Credential** for identity,
-  not the raw `%Visitor{}` columns. The out-of-band credential mutation
-  below would be invisible pre-cutover (resolver read the visitor row);
-  post-cutover the plan reflects the Credential.
+  not the raw `%Visitor{}` columns (which no longer exist post-phase-7).
+  The out-of-band credential mutation below would be invisible pre-cutover
+  (resolver read the visitor row); post-cutover the plan reflects the
+  Credential.
 
   The behavior-neutral characterization lock stays in
-  `session_plan_test.exs` (unchanged) — those assertions still pass
-  because the write-through keeps the Credential == the visitor row.
+  `session_plan_test.exs` (unchanged).
   """
   use Grappa.DataCase, async: false
 
@@ -18,12 +18,12 @@ defmodule Grappa.Visitors.SessionPlanCutoverTest do
   alias Grappa.Visitors
   alias Grappa.Visitors.SessionPlan
 
-  test "resolve/1 reads identity from the Credential, not the visitor row" do
+  test "resolve/2 reads identity from the Credential, not the visitor row" do
     {_, network} = visitor_with_network(6667)
     {:ok, visitor} = Visitors.find_or_provision_anon("orig", network.slug, "1.2.3.4")
 
-    # Divergence the pre-cutover resolver could never see: mutate ONLY
-    # the credential, leave the visitor row's nick/ident alone.
+    # Divergence the pre-cutover resolver could never see: mutate the
+    # credential's identity fields.
     {:ok, _} =
       Credentials.upsert_visitor_credential(visitor.id, network.id, %{
         nick: "crednick",
@@ -32,7 +32,7 @@ defmodule Grappa.Visitors.SessionPlanCutoverTest do
         auth_method: :none
       })
 
-    assert {:ok, opts} = SessionPlan.resolve(visitor)
+    assert {:ok, opts} = SessionPlan.resolve(visitor, network)
     assert opts.nick == "crednick"
     assert opts.ident == "credident"
     assert opts.realname == "Cred Real"
@@ -40,28 +40,25 @@ defmodule Grappa.Visitors.SessionPlanCutoverTest do
     assert opts.subject_label == "visitor:" <> visitor.id
   end
 
-  test "resolve/1 self-heals a missing credential from the visitor row" do
+  test "resolve/2 returns :network_unconfigured when the visitor holds no credential" do
     {_, network} = visitor_with_network(6667)
-    {:ok, visitor} = Visitors.find_or_provision_anon("healme", network.slug, "1.2.3.4")
+    {:ok, visitor} = Visitors.find_or_provision_anon("nocred", network.slug, "1.2.3.4")
 
-    # Simulate drift: the credential vanished (a logged sync failure, a
-    # pre-phase-3 visitor that never got reconciled). resolve must not
-    # crash — it re-derives the credential from the visitor row.
+    # #211 phase 7 — the credential IS the identity source of truth now;
+    # there is nothing to self-heal from the (pure identity/TTL) visitor
+    # row. A missing credential is a genuine `:network_unconfigured`.
     query = from(c in Grappa.Networks.Credential, where: c.visitor_id == ^visitor.id)
     Repo.delete_all(query)
 
-    assert {:ok, opts} = SessionPlan.resolve(visitor)
-    assert opts.nick == "healme"
-    # And the credential now exists again (self-healed).
-    assert {:ok, _} = Credentials.get_visitor_credential(visitor.id, network.id)
+    assert {:error, :network_unconfigured} = SessionPlan.resolve(visitor, network)
   end
 
   test "registered visitor: plan carries nickserv_identify + password from the Credential" do
     {_, network} = visitor_with_network(6667)
     {:ok, visitor} = Visitors.find_or_provision_anon("reg", network.slug, "1.2.3.4")
-    {:ok, _} = Visitors.commit_password(visitor.id, "pw123")
+    {:ok, _} = Visitors.commit_password(visitor.id, network.id, "pw123")
 
-    assert {:ok, opts} = SessionPlan.resolve(visitor)
+    assert {:ok, opts} = SessionPlan.resolve(visitor, network)
     assert opts.auth_method == :nickserv_identify
     assert opts.password == "pw123"
   end

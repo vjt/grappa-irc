@@ -120,7 +120,11 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
       row = Enum.find(body["sessions"], &(&1["subject_id"] == visitor.id))
       assert row != nil
       assert row["subject_kind"] == "visitor"
-      assert row["subject_label"] == visitor.nick
+      # #211 phase 7 — the visitor subject_label is the representative
+      # (lowest-network_id) credential nick, resolved via
+      # `representative_nicks_by_visitor_ids/1`.
+      {:ok, cred} = Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
+      assert row["subject_label"] == cred.nick
       assert row["network_id"] == network.id
       assert is_map(row["live_state"])
       assert row["live_state"]["alive"] == true

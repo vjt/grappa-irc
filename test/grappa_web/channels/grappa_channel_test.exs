@@ -147,12 +147,21 @@ defmodule GrappaWeb.GrappaChannelTest do
         network_slug: slug
       )
 
-    {:ok, plan} = VisitorSessionPlan.resolve(visitor)
+    {:ok, plan} = VisitorSessionPlan.resolve(visitor, network)
     {:ok, _} = Session.start_session({:visitor, visitor.id}, network.id, plan)
 
     on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
 
     {visitor, network}
+  end
+
+  # #211 phase 7 — the visitor nick lives on its per-network credential now
+  # (the `visitors.nick` scalar is dropped). Resolve the representative
+  # (identity-anchor) credential's nick for tests that need to interpolate
+  # the visitor's own nick into fed IRC lines.
+  defp visitor_nick(visitor) do
+    {:ok, cred} = Credentials.representative_visitor_credential(visitor.id)
+    cred.nick
   end
 
   defp await_handshake(server) do
@@ -421,18 +430,18 @@ defmodule GrappaWeb.GrappaChannelTest do
         irc_server,
         {:visitor, visitor.id},
         network.id,
-        visitor.nick,
+        visitor_nick(visitor),
         "#snap"
       )
 
       IRCServer.feed(
         irc_server,
-        ":irc.test.org 353 #{visitor.nick} = #snap :@op_a +voice_a plain_b\r\n"
+        ":irc.test.org 353 #{visitor_nick(visitor)} = #snap :@op_a +voice_a plain_b\r\n"
       )
 
       IRCServer.feed(
         irc_server,
-        ":irc.test.org 366 #{visitor.nick} #snap :End of /NAMES list\r\n"
+        ":irc.test.org 366 #{visitor_nick(visitor)} #snap :End of /NAMES list\r\n"
       )
 
       flush_server(irc_server)
@@ -1201,7 +1210,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(server)
-      IRCServer.feed(server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
 
       visitor_name = "visitor:#{visitor.id}"
       topic = Topic.user(visitor_name)
@@ -1305,7 +1314,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(server)
-      IRCServer.feed(server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
 
       visitor_name = "visitor:#{visitor.id}"
       topic = Topic.user(visitor_name)
@@ -1371,7 +1380,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(server)
-      IRCServer.feed(server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
 
       visitor_name = "visitor:#{visitor.id}"
       topic = Topic.user(visitor_name)
@@ -1496,7 +1505,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(server)
-      IRCServer.feed(server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
 
       visitor_name = "visitor:#{visitor.id}"
       topic = Topic.user(visitor_name)
@@ -1635,7 +1644,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(irc_server)
-      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
       visitor_name = "visitor:#{visitor.id}"
@@ -1664,7 +1673,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(irc_server)
-      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
       visitor_name = "visitor:#{visitor.id}"
@@ -1722,7 +1731,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(irc_server)
-      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
       visitor_name = "visitor:#{visitor.id}"
@@ -1780,7 +1789,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(irc_server)
-      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
       visitor_name = "visitor:#{visitor.id}"
@@ -1806,7 +1815,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(irc_server)
-      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
       visitor_name = "visitor:#{visitor.id}"
@@ -1880,7 +1889,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(irc_server)
-      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
       visitor_name = "visitor:#{visitor.id}"
@@ -1935,7 +1944,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(irc_server)
-      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
       visitor_name = "visitor:#{visitor.id}"
@@ -1978,7 +1987,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         {irc_server, port} = start_irc_server()
         {visitor, network} = setup_visitor_and_network_with_session(port)
         :ok = await_handshake(irc_server)
-        IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+        IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
         flush_server(irc_server)
 
         visitor_name = "visitor:#{visitor.id}"
@@ -2035,7 +2044,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         {irc_server, port} = start_irc_server()
         {visitor, network} = setup_visitor_and_network_with_session(port)
         :ok = await_handshake(irc_server)
-        IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+        IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
         flush_server(irc_server)
 
         visitor_name = "visitor:#{visitor.id}"

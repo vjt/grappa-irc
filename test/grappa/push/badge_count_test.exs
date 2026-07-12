@@ -302,11 +302,12 @@ defmodule Grappa.Push.BadgeCountTest do
   # Visitor subject
   # ---------------------------------------------------------------------------
 
-  test "visitor subject counts via visitor.nick (off-Session)" do
+  test "visitor subject counts via the visitor's per-network nick (off-Session)" do
     network = AuthFixtures.network_fixture()
+    nick = "ann-#{uniq()}"
 
     {:ok, visitor} =
-      Grappa.Visitors.find_or_provision_anon("ann-#{uniq()}", network.slug, "127.0.0.1")
+      Grappa.Visitors.find_or_provision_anon(nick, network.slug, "127.0.0.1")
 
     subject = {:visitor, visitor.id}
     set_prefs(subject, channel_messages_all: false, channel_mentions: true)
@@ -316,7 +317,7 @@ defmodule Grappa.Push.BadgeCountTest do
     insert_visitor(visitor, network, "#chan",
       st: 2,
       sender: "bob",
-      body: "yo #{visitor.nick} ping"
+      body: "yo #{nick} ping"
     )
 
     insert_visitor(visitor, network, "#chan", st: 3, sender: "carol", body: "noise")

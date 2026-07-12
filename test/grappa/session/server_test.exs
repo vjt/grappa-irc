@@ -66,6 +66,23 @@ defmodule Grappa.Session.ServerTest do
     :ok
   end
 
+  # #211 phase 7 — the visitor nick lives on its per-network credential now
+  # (the `visitors.nick` scalar is dropped). Resolve the representative
+  # (identity-anchor) credential's nick for +r MODE lines that must carry
+  # the visitor's own nick.
+  defp visitor_nick(visitor) do
+    {:ok, cred} = Credentials.representative_visitor_credential(visitor.id)
+    cred.nick
+  end
+
+  # #211 phase 7 — the visitor password lives on its `(visitor_id,
+  # network_id)` credential now. Read it via the credential rather than the
+  # dropped `visitors.password_encrypted` scalar.
+  defp visitor_password(visitor, network) do
+    {:ok, cred} = Credentials.get_visitor_credential(visitor.id, network.id)
+    cred.password_encrypted
+  end
+
   describe "DB-driven init (sub-task 2g)" do
     test "threads credential password + auth_method to IRC.Client (server_pass branch)" do
       {server, port} = start_server()
@@ -3380,7 +3397,7 @@ defmodule Grappa.Session.ServerTest do
 
       mode_msg = %Message{
         command: :mode,
-        params: [visitor.nick, "+r"],
+        params: [visitor_nick(visitor), "+r"],
         prefix: {:server, "irc.example.test"},
         tags: %{}
       }
@@ -3391,12 +3408,12 @@ defmodule Grappa.Session.ServerTest do
       assert is_nil(state.pending_auth)
       assert is_nil(state.pending_auth_timer)
 
-      reloaded = Repo.reload!(visitor)
-      assert reloaded.password_encrypted != nil
-
-      # V7: NickServ-identified visitors persist forever — commit_password
-      # writes expires_at = NULL. Reaper's IS-NOT-NULL guard skips them.
-      assert is_nil(reloaded.expires_at)
+      # #211 phase 7 — the secret lands on the credential; registration is
+      # DERIVED from it (`visitor_registered?`). commit_password/3 does NOT
+      # clear `expires_at` anymore — the Reaper excludes registered
+      # identities via the derived predicate, not a nil TTL.
+      assert visitor_password(visitor, network) != nil
+      assert Credentials.visitor_registered?(visitor.id)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3423,7 +3440,7 @@ defmodule Grappa.Session.ServerTest do
 
       mode_msg = %Message{
         command: :mode,
-        params: [visitor.nick, "+r"],
+        params: [visitor_nick(visitor), "+r"],
         prefix: {:server, "irc.example.test"},
         tags: %{}
       }
@@ -3434,9 +3451,8 @@ defmodule Grappa.Session.ServerTest do
       assert is_nil(state.pending_auth)
       assert is_nil(state.pending_auth_timer)
 
-      reloaded = Repo.reload!(visitor)
-      assert reloaded.password_encrypted != nil
-      assert is_nil(reloaded.expires_at)
+      assert visitor_password(visitor, network) != nil
+      assert Credentials.visitor_registered?(visitor.id)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3455,8 +3471,7 @@ defmodule Grappa.Session.ServerTest do
       state = :sys.get_state(pid)
       assert is_nil(state.pending_auth)
 
-      reloaded = Repo.reload!(visitor)
-      assert is_nil(reloaded.password_encrypted)
+      assert is_nil(visitor_password(visitor, network))
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3470,7 +3485,7 @@ defmodule Grappa.Session.ServerTest do
 
       mode_msg = %Message{
         command: :mode,
-        params: [visitor.nick, "+r"],
+        params: [visitor_nick(visitor), "+r"],
         prefix: {:server, "irc.example.test"},
         tags: %{}
       }
@@ -3478,8 +3493,7 @@ defmodule Grappa.Session.ServerTest do
       send(pid, {:irc, mode_msg})
       _ = :sys.get_state(pid)
 
-      reloaded = Repo.reload!(visitor)
-      assert is_nil(reloaded.password_encrypted)
+      assert is_nil(visitor_password(visitor, network))
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3576,7 +3590,7 @@ defmodule Grappa.Session.ServerTest do
 
       mode_msg = %Message{
         command: :mode,
-        params: [visitor.nick, "+r"],
+        params: [visitor_nick(visitor), "+r"],
         prefix: {:server, "irc.example.test"},
         tags: %{}
       }
@@ -3586,10 +3600,10 @@ defmodule Grappa.Session.ServerTest do
       state = :sys.get_state(pid)
       assert is_nil(state.pending_registration_secret)
 
-      reloaded = Repo.reload!(visitor)
-      assert reloaded.password_encrypted == "regpass"
-      # V7: NickServ-identified visitors persist forever (expires_at NULL).
-      assert is_nil(reloaded.expires_at)
+      assert visitor_password(visitor, network) == "regpass"
+      # #211 phase 7 — registration is DERIVED from the credential;
+      # commit_password/3 does not clear the visitor's `expires_at`.
+      assert Credentials.visitor_registered?(visitor.id)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3617,7 +3631,7 @@ defmodule Grappa.Session.ServerTest do
       # /ns AUTH <code> lands minutes-to-hours later → services set +r.
       mode_msg = %Message{
         command: :mode,
-        params: [visitor.nick, "+r"],
+        params: [visitor_nick(visitor), "+r"],
         prefix: {:server, "irc.example.test"},
         tags: %{}
       }
@@ -3625,9 +3639,8 @@ defmodule Grappa.Session.ServerTest do
       send(pid, {:irc, mode_msg})
       _ = :sys.get_state(pid)
 
-      reloaded = Repo.reload!(visitor)
-      assert reloaded.password_encrypted == "regpass"
-      assert is_nil(reloaded.expires_at)
+      assert visitor_password(visitor, network) == "regpass"
+      assert Credentials.visitor_registered?(visitor.id)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3649,7 +3662,7 @@ defmodule Grappa.Session.ServerTest do
 
       mode_msg = %Message{
         command: :mode,
-        params: [visitor.nick, "+r"],
+        params: [visitor_nick(visitor), "+r"],
         prefix: {:server, "irc.example.test"},
         tags: %{}
       }
@@ -3661,9 +3674,8 @@ defmodule Grappa.Session.ServerTest do
       assert is_nil(cleared.pending_auth_timer)
       assert is_nil(cleared.pending_registration_secret)
 
-      reloaded = Repo.reload!(visitor)
       # Register wins — the committed cleartext is the REGISTER secret.
-      assert reloaded.password_encrypted == "regpass"
+      assert visitor_password(visitor, network) == "regpass"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3685,7 +3697,7 @@ defmodule Grappa.Session.ServerTest do
 
       mode_msg = %Message{
         command: :mode,
-        params: [visitor.nick, "+r"],
+        params: [visitor_nick(visitor), "+r"],
         prefix: {:server, "irc.example.test"},
         tags: %{}
       }
@@ -3696,9 +3708,8 @@ defmodule Grappa.Session.ServerTest do
       assert is_nil(cleared.pending_auth)
       assert is_nil(cleared.pending_registration_secret)
 
-      reloaded = Repo.reload!(visitor)
-      assert reloaded.password_encrypted == "s3cret"
-      assert is_nil(reloaded.expires_at)
+      assert visitor_password(visitor, network) == "s3cret"
+      assert Credentials.visitor_registered?(visitor.id)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3724,9 +3735,11 @@ defmodule Grappa.Session.ServerTest do
       # ephemeral — no unconfirmed secret leaks to the DB.
       :ok = GenServer.stop(pid, :normal, 1_000)
 
-      reloaded = Repo.reload!(visitor)
-      assert is_nil(reloaded.password_encrypted)
-      refute is_nil(reloaded.expires_at)
+      # No secret ever committed → the credential stays anon and the
+      # identity is NOT registered; the ephemeral TTL row survives untouched.
+      assert is_nil(visitor_password(visitor, network))
+      refute Credentials.visitor_registered?(visitor.id)
+      refute is_nil(Repo.reload!(visitor).expires_at)
     end
   end
 
@@ -3797,7 +3810,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       # The visitor is ALREADY NickServ-identified (permanent, has a
       # password) — the only state in which SET PASSWD is meaningful.
-      {:ok, _} = Grappa.Visitors.commit_password(visitor.id, "oldpass")
+      {:ok, _} = Grappa.Visitors.commit_password(visitor.id, network.id, "oldpass")
       pid = start_visitor_session_for(visitor, network)
       :ok = await_handshake(server)
 
@@ -3813,10 +3826,10 @@ defmodule Grappa.Session.ServerTest do
       assert is_nil(state.pending_auth)
       assert is_nil(state.pending_registration_secret)
 
-      reloaded = Repo.reload!(visitor)
-      assert reloaded.password_encrypted == "newpass"
-      # rotate_password/2 keeps the already-NULL expiry NULL (idempotent).
-      assert is_nil(reloaded.expires_at)
+      # rotate_password/3 rewrites the credential secret; the identity stays
+      # registered (derived from the credential).
+      assert visitor_password(visitor, network) == "newpass"
+      assert Credentials.visitor_registered?(visitor.id)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3839,12 +3852,12 @@ defmodule Grappa.Session.ServerTest do
 
       _ = :sys.get_state(pid)
 
-      # rotate_password/2 refuses an anon row: the throwaway visitor is NOT
-      # promoted to permanent and stays reapable (services would have
-      # rejected the SET PASSWD anyway — there's no account to change).
-      reloaded = Repo.reload!(visitor)
-      assert is_nil(reloaded.password_encrypted)
-      refute is_nil(reloaded.expires_at)
+      # rotate_password/3 refuses an anon credential: the throwaway visitor
+      # is NOT promoted (stays unregistered + reapable — services would have
+      # rejected the SET PASSWD anyway, there's no account to change).
+      assert is_nil(visitor_password(visitor, network))
+      refute Credentials.visitor_registered?(visitor.id)
+      refute is_nil(Repo.reload!(visitor).expires_at)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3885,7 +3898,7 @@ defmodule Grappa.Session.ServerTest do
 
       {server, port} = start_server(rfc_handler)
       {anon_visitor, network} = visitor_with_network(port, nick: nick)
-      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, "s3cret")
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
       registered_visitor = Grappa.Repo.reload!(anon_visitor)
 
       pid = start_visitor_session_for(registered_visitor, network)
@@ -4784,7 +4797,7 @@ defmodule Grappa.Session.ServerTest do
 
       {server, port} = start_server(ghost_handler(nick))
       {anon_visitor, network} = visitor_with_network(port, nick: nick)
-      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, "s3cret")
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
       registered_visitor = Grappa.Repo.reload!(anon_visitor)
 
       pid = start_visitor_session_for(registered_visitor, network)
@@ -4844,7 +4857,7 @@ defmodule Grappa.Session.ServerTest do
 
       {server, port} = start_server(ghost_handler(nick))
       {anon_visitor, network} = visitor_with_network(port, nick: nick)
-      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, "s3cret")
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
       registered_visitor = Grappa.Repo.reload!(anon_visitor)
 
       pid = start_visitor_session_for(registered_visitor, network)
@@ -4892,7 +4905,7 @@ defmodule Grappa.Session.ServerTest do
 
       {server, port} = start_server(ghost_handler(nick))
       {anon_visitor, network} = visitor_with_network(port, nick: nick)
-      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, "s3cret")
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
       registered_visitor = Grappa.Repo.reload!(anon_visitor)
 
       pid = start_visitor_session_for(registered_visitor, network)
@@ -4914,7 +4927,7 @@ defmodule Grappa.Session.ServerTest do
 
       {server, port} = start_server(ghost_handler(nick))
       {anon_visitor, network} = visitor_with_network(port, nick: nick)
-      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, "s3cret")
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
       registered_visitor = Grappa.Repo.reload!(anon_visitor)
 
       pid = start_visitor_session_for(registered_visitor, network)

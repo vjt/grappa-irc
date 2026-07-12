@@ -50,6 +50,9 @@ defmodule Grappa.Push.SenderTest do
 
   defp visitor_fixture do
     nick = "sender-visitor-#{System.unique_integer([:positive])}"
+    # #211 phase 7 — provision binds an anon credential, so the network
+    # must exist first.
+    {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: "libera"})
     {:ok, v} = Visitors.find_or_provision_anon(nick, "libera", "127.0.0.1")
     v
   end

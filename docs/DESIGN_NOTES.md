@@ -18609,3 +18609,124 @@ scalar drops + the write-through goes per-credential).
 **Deploy class: COLD** (expand migration + read/write cutovers; hot path
 skips `ecto.migrate`). Rides the end-of-crank window. Design comment:
 issue #211 comment 4949196440.
+
+## 2026-07-12 — #211 phase 7 (L2 epic): THE CONTRACT — visitor row → pure identity/TTL
+
+The final phase of the #211 L2 epic (visitors ≡ users). The contract half
+of expand→contract: phase 4 made the visitor multi-network on the server,
+phase 6 moved the wire+cic onto the credential-list model; phase 7 DROPS
+the now-unused `visitors.*` per-network scalar columns. After phase 7 the
+`%Visitor{}` row is a PURE identity/TTL row — `{id, expires_at, ip,
+timestamps}` — and ALL per-network identity (nick/ident/realname/password/
+auth_method) lives ONLY on `network_credentials`. **COLD + IRREVERSIBLE**
+(the column drop). NO standalone deploy — rides the end-of-crank window,
+gated on a fresh prod backup + dry-runs. Design comment: issue #211
+comment 4949196440; vjt rulings this session (below).
+
+### The drop surface
+Columns dropped from `visitors`: `network_slug, nick, ident, realname,
+password_encrypted, last_joined_channels`. Index dropped:
+`visitors_nick_folded_network_slug_index`. Kept: surrogate `id` (every
+`visitor_id` FK points at it), `expires_at`, `ip`, timestamps.
+
+### Migration technique — native DROP COLUMN, NOT the phase-1 table-recreate
+The dispatch (and phase-6 plan) called for the phase-1 table-recreate
+(rename-aside + CREATE + INSERT…SELECT + DROP + rename). That technique is
+UNSAFE for `visitors`: it is a PARENT table with SEVEN inbound FKs
+(`network_credentials`, `messages`, `accounts_sessions`, `read_cursors`,
+`query_windows`, `push_subscriptions`, `user_settings`), and SQLite ≥3.25
+AUTO-REWRITES every child FK's `REFERENCES visitors` → `REFERENCES
+visitors_old` the instant the parent is renamed. After the final `DROP
+TABLE visitors_old` all seven children carry DANGLING FKs (the first
+`INSERT INTO network_credentials` fails with `no such table:
+visitors_old`). The phase-1 recreate was safe ONLY because
+`network_credentials` had zero inbound FKs. The expression-index fragility
+the recreate was meant to dodge is fully handled by dropping that index
+FIRST, then issuing native `ALTER TABLE … DROP COLUMN` (SQLite ≥3.35, via
+ecto_sqlite3): no rename = no child-FK rewrite = FK web stays consistent.
+Migration `20260712130000`. (Challenge-the-spec: the spec's technique
+inherited an assumption that didn't hold for a parent table.)
+
+### registered/permanence is DERIVED from the credentials (vjt ruling)
+The subtle correctness win of this phase. "Is this visitor registered
+(permanent)?" is DERIVED — `Credentials.visitor_registered?/1` = holds ≥1
+credential with a committed NickServ secret (`password_encrypted IS NOT
+NULL`) on ANY network — NOT a stored flag. `commit_password/3` no longer
+clears `visitors.expires_at`; the row's TTL is purely the anon sliding
+clock, and the registered-subquery overrides it wherever "permanent"
+matters. This kills a drift class the CLAUDE.md "don't duplicate state,
+derive it" rule forbids: with a stored `expires_at`-nil flag, unbinding the
+last NickServ credential would leave a permanent+un-reapable row with no
+proof of registration. Derived, that can never happen — unbind the last
+registered credential and the identity is anon again, automatically. The
+DERIVED predicate is composed into `list_active/0`, `list_expired/0`
+(Reaper excludes registered), `count_active_for_ip/1`, `touch/1`,
+`purge_if_anon/1`, `AccountDeletion`, `auth_controller` logout teardown,
+the `Visitors.Wire` `registered` field, and the admin `identified` field —
+all one source of truth, no flag to drift. (Legacy pre-phase-7 permanent
+rows carry `expires_at IS NULL` AND ≥1 NickServ credential, so both the
+nil-guard and the derived check keep them alive.)
+
+### Per-network +r closes F4
+The `+r` MODE observer, the `SET PASSWD` rotator, and the NICK self-echo
+persister all commit to the CREDENTIAL for the network the session was
+spawned on: the `Grappa.Visitors.SessionPlan` closures capture `network.id`
+and delegate to the network-explicit `commit_password/3` / `rotate_password/3`
+/ `update_nick/3` (which write `Credentials.commit_visitor_password/3` etc.,
+also flipping `auth_method` to `:nickserv_identify`). `Session.Server`'s
+callback arity (2) is UNCHANGED — the closures inject `network.id`, so the
+Session boundary never learned about the per-network split. A `+r` on
+network A commits A's secret; identifying on B later commits B's own. This
+closes the phase-4c-flagged F4 gap (per-network nick/password).
+
+### The login-provision pivot (already credential-first since 4c)
+The dispatch feared "login provision-by-nick → credential lookup" was a
+hard fork. It wasn't: phase 4c already cut `Login.lookup_visitor` to
+`Visitors.resolve_identity_by_nick/2` (credential-first `(fold(nick),
+network_id)`), and phase 4b already built the credential-side folded-nick
+UNIQUE index (`network_credentials_visitor_folded_nick_network_id_index`).
+Phase 7 just made provision create a BARE visitor row + anon credential
+atomically (transaction, so a raced folded-nick collision rolls back the
+row) and dropped the visitors-table folded index (the credential twin is
+the guard now). The `get_by_nick_and_network/2` row lookup + the
+`auth_controller` collision path moved to `resolve_identity_by_nick/2` /
+`collision_expires_at/2` (network_id-keyed).
+
+### Subject wire slimmed + editor converged (vjt rulings)
+The visitor `/me` + auth-login SUBJECT wire dropped `nick`/`ident`/
+`realname` — a multi-network visitor has no ONE identity-wide nick; it
+carries `{id, expires_at, registered}` only. Per-network identity lives on
+the `GET /networks` rows, which GAINED `ident`+`realname` (the wire change
+phase-6 deferred to "the phase-7 convergence", now unblocking the
+per-network editor for BOTH subjects). `PATCH /me/identity` +
+`MeJSON.identity` + `Visitors.update_identity` RETIRED — visitor identity
+editing moves onto the subject-agnostic per-network door
+`PATCH /networks/:id/identity`. cic `displayNick(visitor)` resolves from
+the anchor network row; `isValidSubject` dropped the nick guard.
+
+### Retired
+`Visitors.{update_identity,persist_identity_scalar,get_by_nick_and_network,
+reconcile_credential,reap_by_network_slug}`; `Visitor.{commit_password,
+identity,nick,last_joined_channels}_changeset` + `last_joined_channels_max`;
+`NetworksController.maybe_dual_write_visitor_scalar`; `MeController.update_identity`
++ `visitor_connected?`; `Bootstrap.validate_visitor_networks!` (FK
+`ON DELETE RESTRICT` makes the orphan structurally impossible); the
+`mix grappa.reap_visitors --network` task (its only purpose was unblocking
+the retired orphan-slug boot raise). `admin_events` `visitor_deleted`/
+`visitor_reaped` dropped `network_slug`. Admin `GET /admin/visitors`
+reshaped to an identity-wide envelope + per-network `networks` list; admin
+session labels + operator delete/reap events use the representative
+(lowest-network_id) credential nick.
+
+### Latent multi-network bugs fixed in passing
+`account_deletion` + `reaper` + `operator` `stop_visitor_session` resolved
+ONE network from the singular `network_slug` — they now enumerate ALL the
+visitor's credentials (the retired scalar only ever stopped the primary
+session). `Admission.count_subjects_for_ip_on_network` visitor clause
+joined `visitors.network_slug`; now joins `network_credentials`
+(mirror of the user clause).
+
+**Deploy class: COLD + IRREVERSIBLE** (native DROP COLUMN; hot path skips
+`ecto.migrate`). Preconditions: fresh prod DB backup + multiple prod-DB
+dry-runs of the migration against a copy + explicit go. The L2 epic
+(visitors ≡ users) is COMPLETE after this deploy.

@@ -102,7 +102,12 @@ defmodule GrappaWeb.ShareTokenControllerTest do
       assert body["token"] != ""
       assert body["subject"]["kind"] == "visitor"
       assert body["subject"]["id"] == visitor.id
-      assert body["subject"]["nick"] == visitor.nick
+      # #211 phase 7 — the subject wire (visitor_to_credential_json) is
+      # `{id, registered}`; nick DROPPED (visitors are multi-network, nick
+      # lives per-network on GET /networks). `registered` is the derived
+      # permanence flag (anon → false).
+      assert body["subject"]["registered"] == false
+      refute Map.has_key?(body["subject"], "nick")
       # #211 phase 6 — the singular subject `network_slug` is off the wire
       # (visitors are multi-network; per-network attachment on GET /networks).
       refute Map.has_key?(body["subject"], "network_slug")

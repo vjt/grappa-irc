@@ -25,10 +25,11 @@ defmodule Grappa.Networks.Credentials.UpsertVisitorCredentialTest do
     test "returns the visitor's credential scoped by visitor_id" do
       {visitor, network} = visitor_with_network(6667)
 
-      # Backfill-equivalent: create the credential via the upsert.
+      # #211 phase 7 — `visitor_with_network/2` already provisioned the anon
+      # credential; refresh its nick to a known value via the upsert.
       {:ok, _} =
         Credentials.upsert_visitor_credential(visitor.id, network.id, %{
-          nick: visitor.nick,
+          nick: "scoped-nick",
           auth_method: :none
         })
 
@@ -38,15 +39,15 @@ defmodule Grappa.Networks.Credentials.UpsertVisitorCredentialTest do
       assert cred.visitor_id == visitor.id
       assert is_nil(cred.user_id)
       assert cred.network_id == network.id
-      assert cred.nick == visitor.nick
+      assert cred.nick == "scoped-nick"
     end
 
     test "returns {:error, :not_found} when no visitor credential exists" do
-      # A bare visitor row (no write-through credential) — `visitor_fixture`
-      # does NOT provision one (only `visitor_with_credential_fixture`
-      # does), so `get_visitor_credential` misses.
+      # A bare visitor row with a credential on a DIFFERENT network, so the
+      # lookup on `network` misses.
       network = network_fixture()
-      visitor = visitor_fixture(network_slug: network.slug)
+      other = network_fixture()
+      visitor = visitor_fixture(network_slug: other.slug)
 
       assert {:error, :not_found} =
                Credentials.get_visitor_credential(visitor.id, network.id)
@@ -56,7 +57,8 @@ defmodule Grappa.Networks.Credentials.UpsertVisitorCredentialTest do
       user = user_fixture()
       network = network_fixture()
       _ = credential_fixture(user, network, %{nick: "usernick"})
-      visitor = visitor_fixture(network_slug: network.slug)
+      other = network_fixture()
+      visitor = visitor_fixture(network_slug: other.slug)
 
       # A visitor-scoped read must not surface the user's credential on
       # the same network — the whole point of the subject-scoped reader.

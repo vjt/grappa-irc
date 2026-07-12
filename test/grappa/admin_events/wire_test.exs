@@ -73,10 +73,10 @@ defmodule Grappa.AdminEvents.WireTest do
     end
   end
 
-  describe "visitor_deleted/5" do
+  describe "visitor_deleted/4" do
     test "renders with actor" do
       event =
-        Wire.visitor_deleted("v-uuid", "S`grappa", "azzurra", "u-uuid", "vjt")
+        Wire.visitor_deleted("v-uuid", "S`grappa", "u-uuid", "vjt")
 
       assert event.kind == :visitor_deleted
       assert event.visitor_id == "v-uuid"
@@ -86,15 +86,15 @@ defmodule Grappa.AdminEvents.WireTest do
     end
 
     test "renders with nil actor (system path)" do
-      event = Wire.visitor_deleted("v-uuid", "S`grappa", "azzurra", nil, nil)
+      event = Wire.visitor_deleted("v-uuid", "S`grappa", nil, nil)
       assert event.actor_user_id == nil
       assert event.actor_user_name == nil
     end
   end
 
-  describe "visitor_reaped/3 + reaper_swept/1" do
+  describe "visitor_reaped/2 + reaper_swept/1" do
     test "visitor_reaped" do
-      event = Wire.visitor_reaped("v-uuid", "nick", "azzurra")
+      event = Wire.visitor_reaped("v-uuid", "nick")
       assert event.kind == :visitor_reaped
     end
 

@@ -1,14 +1,13 @@
 defmodule Grappa.Visitors.CredentialWriteThroughTest do
   @moduledoc """
-  #211 phase 3 — every visitor identity mutation MUST also maintain the
-  visitor's `(visitor_id, network_id)` Credential, because the read path
-  (`Grappa.Visitors.SessionPlan.resolve/1`) now resolves from the
-  Credential. This is vjt's mandatory write-path requirement: new /
-  changed visitors get correct creds going forward, mooting the phase-1
-  dormant-drift concern.
+  #211 phase 3/7 — every visitor identity mutation writes to the visitor's
+  `(visitor_id, network_id)` Credential, because the Credential IS the
+  identity source of truth (the read path
+  `Grappa.Visitors.SessionPlan.resolve/2` resolves from it, and the visitor
+  row is a pure identity/TTL row post-phase-7).
 
-  Proves a NEW visitor created post-cutover gets a correct Credential
-  with NO separate backfill run (the provision itself writes it).
+  Proves a NEW visitor created post-cutover gets a correct Credential with
+  NO separate backfill run (the provision itself writes it).
   """
   use Grappa.DataCase, async: false
 
@@ -35,12 +34,12 @@ defmodule Grappa.Visitors.CredentialWriteThroughTest do
     end
   end
 
-  describe "commit_password/2" do
+  describe "commit_password/3" do
     test "promotes the Credential to nickserv_identify with the password" do
       {_, network} = visitor_with_network(6667)
       {:ok, visitor} = Visitors.find_or_provision_anon("pwvis", network.slug, "1.2.3.4")
 
-      {:ok, _} = Visitors.commit_password(visitor.id, "topsecret")
+      {:ok, _} = Visitors.commit_password(visitor.id, network.id, "topsecret")
 
       assert {:ok, cred} = read(visitor, network)
       assert cred.auth_method == :nickserv_identify
@@ -48,13 +47,13 @@ defmodule Grappa.Visitors.CredentialWriteThroughTest do
     end
   end
 
-  describe "rotate_password/2" do
+  describe "rotate_password/3" do
     test "rotates the Credential password for an already-registered visitor" do
       {_, network} = visitor_with_network(6667)
       {:ok, visitor} = Visitors.find_or_provision_anon("rotvis", network.slug, "1.2.3.4")
-      {:ok, _} = Visitors.commit_password(visitor.id, "first")
+      {:ok, _} = Visitors.commit_password(visitor.id, network.id, "first")
 
-      {:ok, _} = Visitors.rotate_password(visitor.id, "second")
+      {:ok, _} = Visitors.rotate_password(visitor.id, network.id, "second")
 
       assert {:ok, cred} = read(visitor, network)
       assert cred.auth_method == :nickserv_identify
@@ -62,25 +61,28 @@ defmodule Grappa.Visitors.CredentialWriteThroughTest do
     end
   end
 
-  describe "update_nick/2" do
+  describe "update_nick/3" do
     test "rotates the Credential nick" do
       {_, network} = visitor_with_network(6667)
       {:ok, visitor} = Visitors.find_or_provision_anon("oldn", network.slug, "1.2.3.4")
 
-      {:ok, _} = Visitors.update_nick(visitor.id, "newn")
+      {:ok, _} = Visitors.update_nick(visitor.id, network.id, "newn")
 
       assert {:ok, cred} = read(visitor, network)
       assert cred.nick == "newn"
-      assert cred.sasl_user == "newn"
+      # #211 phase 7 — update_nick routes through the narrow
+      # identity_changeset (nick only); sasl_user is NOT re-derived.
+      assert cred.sasl_user == "oldn"
     end
   end
 
-  describe "update_identity/2" do
-    test "writes ident + realname onto the Credential BEFORE any reconnect" do
+  describe "Credentials.update_credential_identity/2 (per-network identity edit)" do
+    test "writes ident + realname onto the Credential" do
       {_, network} = visitor_with_network(6667)
       {:ok, visitor} = Visitors.find_or_provision_anon("idvis", network.slug, "1.2.3.4")
+      {:ok, cred} = read(visitor, network)
 
-      {:ok, _} = Visitors.update_identity(visitor, %{ident: "myident", realname: "My Real"})
+      {:ok, _} = Credentials.update_credential_identity(cred, %{ident: "myident", realname: "My Real"})
 
       assert {:ok, cred} = read(visitor, network)
       assert cred.ident == "myident"
@@ -124,14 +126,15 @@ defmodule Grappa.Visitors.CredentialWriteThroughTest do
     test "network A and network B channel sets do NOT clobber each other" do
       {_, net_a} = visitor_with_network(6667)
       {:ok, visitor} = Visitors.find_or_provision_anon("multichan", net_a.slug, "1.2.3.4")
+      {:ok, rep} = Credentials.representative_visitor_credential(visitor.id)
 
       # Accrete B: a second credential on the SAME visitor identity.
       {net_b, _} = network_with_server(port: 6668, slug: "beta-chan", visitor_enabled: true)
 
       {:ok, _} =
         Credentials.upsert_visitor_credential(visitor.id, net_b.id, %{
-          nick: visitor.nick,
-          sasl_user: visitor.nick,
+          nick: rep.nick,
+          sasl_user: rep.nick,
           auth_method: :none
         })
 
@@ -155,27 +158,17 @@ defmodule Grappa.Visitors.CredentialWriteThroughTest do
       assert Visitors.list_autojoin_channels(visitor, net_b.id) == []
     end
 
-    test "an identity nick-change sync does NOT clobber per-network channel sets" do
+    test "a per-network nick-change does NOT clobber that network's channel set" do
       {_, net_a} = visitor_with_network(6667)
       {:ok, visitor} = Visitors.find_or_provision_anon("syncvis", net_a.slug, "1.2.3.4")
       :ok = Visitors.update_last_joined_channels(visitor.id, net_a.id, ["#kept"])
 
-      # An identity mutation fires sync_credential/1 — which must NOT reset
-      # the credential's per-network channel list back to the visitor scalar
-      # (credential_attrs no longer carries last_joined_channels).
-      {:ok, _} = Visitors.update_nick(visitor.id, "syncvis2")
+      # A nick mutation on the credential must NOT reset the credential's
+      # per-network channel list (identity edits touch only nick/ident/
+      # realname via the narrow identity_changeset).
+      {:ok, _} = Visitors.update_nick(visitor.id, net_a.id, "syncvis2")
 
       assert Visitors.list_autojoin_channels(visitor, net_a.id) == ["#kept"]
-    end
-  end
-
-  describe "orphan network slug" do
-    test "mutation succeeds without crashing when the slug has no network" do
-      # Visitor pinned to a slug with no networks row — credential write is
-      # skipped (logged), the visitor mutation itself still succeeds.
-      visitor = visitor_fixture(nick: "orphanvis", network_slug: "ghost-net")
-
-      assert {:ok, _} = Visitors.update_nick(visitor.id, "orphan2")
     end
   end
 end

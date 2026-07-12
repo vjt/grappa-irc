@@ -69,9 +69,11 @@ defmodule Grappa.Visitors.AutoconnectTest do
 
     # The visitor previously attached + PARKED network B (a deliberate
     # per-network disconnect).
+    {:ok, rep} = Credentials.representative_visitor_credential(visitor.id)
+
     {:ok, cred_b} =
       Credentials.upsert_visitor_credential(visitor.id, net_b.id, %{
-        nick: visitor.nick,
+        nick: rep.nick,
         auth_method: :none
       })
 

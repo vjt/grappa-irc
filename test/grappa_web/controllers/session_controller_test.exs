@@ -23,6 +23,7 @@ defmodule GrappaWeb.SessionControllerTest do
 
   alias Grappa.AdmissionStateHelpers
   alias Grappa.{IRCServer, Repo, Visitors}
+  alias Grappa.Networks.Credentials
   alias Grappa.Visitors.Visitor
 
   setup do
@@ -52,12 +53,13 @@ defmodule GrappaWeb.SessionControllerTest do
     :ok
   end
 
-  # A registered visitor = `password_encrypted` non-nil. `commit_password/2`
-  # writes the Cloak-encrypted column directly (mirrors the +r promotion),
-  # so the fixture visitor reads back as a persistent identity.
+  # A registered visitor = identified on some network. #211 phase 7 —
+  # `commit_password/3` writes the per-network Cloak-encrypted secret AND
+  # clears the visitor's `expires_at` (the permanent/registered marker), so
+  # the fixture visitor reads back as a persistent identity.
   defp registered_visitor(port) do
     {visitor, network} = visitor_with_network(port)
-    {:ok, _} = Visitors.commit_password(visitor.id, "s3cret")
+    {:ok, _} = Visitors.commit_password(visitor.id, network.id, "s3cret")
     {Repo.get!(Visitor, visitor.id), network}
   end
 
@@ -87,15 +89,18 @@ defmodule GrappaWeb.SessionControllerTest do
       {:ok, user_line} =
         IRCServer.wait_for_line(server_b, &String.starts_with?(&1, "NICK"), 5_000)
 
-      assert user_line == "NICK #{visitor.nick}\r\n"
+      {:ok, cred_a_nick} =
+        Credentials.get_visitor_credential(visitor.id, network_a.id)
+
+      assert user_line == "NICK #{cred_a_nick.nick}\r\n"
       assert is_pid(Grappa.Session.whereis({:visitor, visitor.id}, network_b.id))
 
       # ONE synthetic identity, TWO credentials — the row was NOT duplicated.
       assert {:ok, cred_a} =
-               Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network_a.id)
+               Credentials.get_visitor_credential(visitor.id, network_a.id)
 
       assert {:ok, cred_b} =
-               Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network_b.id)
+               Credentials.get_visitor_credential(visitor.id, network_b.id)
 
       assert cred_a.visitor_id == visitor.id
       assert cred_b.visitor_id == visitor.id
@@ -170,7 +175,8 @@ defmodule GrappaWeb.SessionControllerTest do
       {server_a, port_a} = start_server()
       # An anon visitor (no committed password) live on network A.
       {visitor, network_a} = visitor_with_network(port_a)
-      assert is_nil(Repo.get!(Visitor, visitor.id).password_encrypted)
+      # #211 phase 7 — anon ⟺ NOT registered (derived from the credentials).
+      refute Credentials.visitor_registered?(visitor.id)
       _ = start_visitor_session_for(visitor, network_a)
       :ok = await_handshake(server_a)
 

@@ -34,7 +34,7 @@ defmodule Grappa.Migrations.SeedVisitorEnabledTest do
     {visitor, network} = visitor_with_network(6667)
     # visitor_with_network → provision write-through created a visitor
     # credential; but the fixture network is not visitor_enabled.
-    {:ok, _} = Credentials.upsert_visitor_credential(visitor.id, network.id, %{nick: visitor.nick, auth_method: :none})
+    {:ok, _} = Credentials.upsert_visitor_credential(visitor.id, network.id, %{nick: "seed", auth_method: :none})
     refute reload(network.slug).visitor_enabled
 
     Repo.query!(@seed_sql, [])
@@ -63,7 +63,7 @@ defmodule Grappa.Migrations.SeedVisitorEnabledTest do
 
   test "is idempotent — a second run is a no-op" do
     {visitor, network} = visitor_with_network(6667)
-    {:ok, _} = Credentials.upsert_visitor_credential(visitor.id, network.id, %{nick: visitor.nick, auth_method: :none})
+    {:ok, _} = Credentials.upsert_visitor_credential(visitor.id, network.id, %{nick: "seed", auth_method: :none})
 
     Repo.query!(@seed_sql, [])
     Repo.query!(@seed_sql, [])
@@ -73,7 +73,7 @@ defmodule Grappa.Migrations.SeedVisitorEnabledTest do
 
   test "down reverses the derived set" do
     {visitor, network} = visitor_with_network(6667)
-    {:ok, _} = Credentials.upsert_visitor_credential(visitor.id, network.id, %{nick: visitor.nick, auth_method: :none})
+    {:ok, _} = Credentials.upsert_visitor_credential(visitor.id, network.id, %{nick: "seed", auth_method: :none})
 
     Repo.query!(@seed_sql, [])
     assert reload(network.slug).visitor_enabled
