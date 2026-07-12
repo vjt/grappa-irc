@@ -2,25 +2,27 @@
 //
 // vjt (caps his): "ALL OF THIS MUST FUCKING BE TESTED END TO END BY
 // STARTING TWO FUCKING AZZURRA TESTNETS IN PARALLEL AND TESTING ALL THE
-// FUCKING CASES!" — the seeder (compose.yaml) flags TWO visitor_enabled +
-// visitor_autoconnect networks (azzurra + azzurra2, same bahamut-test
-// leaf) plus a THIRD visitor_enabled-but-not-autoconnect network
-// (azzurra3, the on-demand AVAILABLE tier). This spec drives the
-// multi-network visitor matrix through the real testnet:
+// FUCKING CASES!" — the seeder (compose.yaml) provisions THREE
+// visitor_enabled networks on the same bahamut-test leaf: azzurra
+// (autoconnect), azzurra2 + azzurra3 (NOT autoconnect by default, so the
+// shared suite's per-visitor connection count stays at one — the single
+// test leaf's per-IP clone limit can't absorb every visitor spec opening
+// N upstreams). This spec drives the multi-network visitor matrix:
 //
-//   * fresh visitor login AUTO-CONNECTS BOTH autoconnect networks
-//     (both live, own nick in members on BOTH, live PRIVMSG on BOTH);
-//   * per-network DISCONNECT (park) azzurra → azzurra greyed, azzurra2
-//     stays live; per-network RECONNECT azzurra → live again;
-//   * anon visitor one-tap CONNECTS the available (non-autoconnect)
-//     azzurra3 from the home page → live.
+//   * autoconnect test — flips azzurra2 → visitor_autoconnect in its OWN
+//     setup, then a fresh visitor login AUTO-CONNECTS BOTH azzurra +
+//     azzurra2 (both live, own nick in members on BOTH, live PRIVMSG on
+//     BOTH), restoring the flag in finally;
+//   * per-network DISCONNECT (park) azzurra (after accreting azzurra2) →
+//     azzurra parked, azzurra2 stays live; RECONNECT azzurra → live;
+//   * a visitor one-tap CONNECTS the available azzurra3 from the home-
+//     page available_networks tier (accretion).
 //
 // The reboot-persistence case ("park A → reboot container → A still
 // parked") + the per-network-identity peer-witness case are covered by
-// the server-side test suite (bootstrap_test "PARKED visitor credential
-// is NOT respawned"; networks_controller_test identity) — a container
-// reboot is out of the Playwright harness's control; the DONE comment
-// notes the split.
+// the server-side suite (bootstrap_test "PARKED visitor credential is NOT
+// respawned"; networks_controller_test identity) — a container reboot is
+// outside the Playwright harness.
 //
 // Runs on chromium desktop (members pane renders directly).
 
@@ -34,6 +36,22 @@ import { getSeededAdmin } from "../fixtures/seedData";
 // Two full connect chains + a peer round-trip on each network — well
 // past the default; give it plenty of testnet-latency headroom.
 test.setTimeout(120_000);
+
+// Flip a network's visitor_autoconnect flag via the admin PATCH. The
+// matrix's autoconnect test enables azzurra2 in its OWN setup (NOT the
+// shared seed — that would double every visitor spec's upstream
+// connection count and exhaust the single test leaf's per-IP clone
+// limit). Restored in finally.
+async function setAutoconnect(adminToken: string, slug: string, on: boolean): Promise<void> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/admin/networks/${slug}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ visitor_autoconnect: on }),
+  });
+  if (!res.ok) {
+    throw new Error(`setAutoconnect: ${slug}=${on} → ${res.status} ${await res.text()}`);
+  }
+}
 
 async function bootVisitor(
   browser: Browser,
@@ -80,19 +98,27 @@ test("issue #211 phase 6 — fresh visitor AUTO-CONNECTS both azzurra + azzurra2
   const admin = getSeededAdmin();
   const stamp = Date.now();
   const channel = `#p6-${stamp}`;
-  const visitor = await mintVisitor(`p6auto-${stamp}`);
 
-  // The anchor (sync) network is azzurra (first by id); azzurra2 attaches
-  // async. Both are visitor_autoconnect in the seed.
-  const nets = await waitForNetworks(visitor.token, 2);
-  const slugs = nets.map((n) => n.slug).sort();
-  expect(slugs).toContain("azzurra");
-  expect(slugs).toContain("azzurra2");
-
-  const { ctx, page } = await bootVisitor(browser, visitor);
+  // Enable azzurra2 autoconnect for THIS test only (the shared seed keeps
+  // it off — see the seeder comment). Mint AFTER the flip so login
+  // auto-connects both azzurra (anchor, sync) + azzurra2 (async).
+  await setAutoconnect(admin.token, "azzurra2", true);
+  let visitor: Awaited<ReturnType<typeof mintVisitor>> | null = null;
+  let ctx: Awaited<ReturnType<Browser["newContext"]>> | null = null;
   const peers: IrcPeer[] = [];
 
   try {
+    visitor = await mintVisitor(`p6auto-${stamp}`);
+
+    // Both autoconnect networks attach (azzurra sync, azzurra2 async).
+    const nets = await waitForNetworks(visitor.token, 2);
+    const slugs = nets.map((n) => n.slug);
+    expect(slugs).toContain("azzurra");
+    expect(slugs).toContain("azzurra2");
+
+    const booted = await bootVisitor(browser, visitor);
+    ctx = booted.ctx;
+    const page = booted.page;
     await waitForUserTopicReady(page, `visitor:${visitor.id}`);
 
     // Prove BOTH networks are live end-to-end: JOIN the same channel on
@@ -111,7 +137,7 @@ test("issue #211 phase 6 — fresh visitor AUTO-CONNECTS both azzurra + azzurra2
         timeout: 15_000,
       });
 
-      const peer = await IrcPeer.connect({ nick: `pp6-${slug}-${stamp % 100000}` });
+      const peer = await IrcPeer.connect({ nick: `pp6${slug.slice(-1)}-${stamp % 100000}` });
       peers.push(peer);
       await peer.join(channel);
       const wireMsg = `p6-${slug}-${stamp}`;
@@ -122,8 +148,9 @@ test("issue #211 phase 6 — fresh visitor AUTO-CONNECTS both azzurra + azzurra2
     }
   } finally {
     for (const peer of peers) await peer.disconnect("e2e cleanup").catch(() => {});
-    await ctx.close();
-    await adminDeleteVisitor(admin.token, visitor.id).catch(() => {});
+    if (ctx) await ctx.close();
+    if (visitor) await adminDeleteVisitor(admin.token, visitor.id).catch(() => {});
+    await setAutoconnect(admin.token, "azzurra2", false).catch(() => {});
   }
 });
 
@@ -133,6 +160,15 @@ test("issue #211 phase 6 — per-network park azzurra keeps azzurra2 live; recon
   const visitor = await mintVisitor(`p6park-${stamp}`);
 
   try {
+    // Default seed autoconnects only azzurra; accrete azzurra2 so there
+    // are two live networks to prove per-network park isolation.
+    await waitForNetworks(visitor.token, 1);
+    const addRes = await fetch(`${GRAPPA_BASE_URL}/session/networks`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${visitor.token}` },
+      body: JSON.stringify({ network: "azzurra2" }),
+    });
+    expect(addRes.status).toBe(204);
     await waitForNetworks(visitor.token, 2);
 
     // Park azzurra via the subject-agnostic PATCH /networks/:id (ruling D).
@@ -174,7 +210,7 @@ test("issue #211 phase 6 — visitor one-tap connects the AVAILABLE (non-autocon
   const visitor = await mintVisitor(`p6avail-${stamp}`);
 
   try {
-    await waitForNetworks(visitor.token, 2);
+    await waitForNetworks(visitor.token, 1);
 
     // azzurra3 is visitor_enabled but NOT autoconnect → not attached at
     // login. It appears in /me's home_data.available_networks.
@@ -194,8 +230,8 @@ test("issue #211 phase 6 — visitor one-tap connects the AVAILABLE (non-autocon
     });
     expect(addRes.status).toBe(204);
 
-    // azzurra3 now attached + connected.
-    const rows = await waitForNetworks(visitor.token, 3);
+    // azzurra3 now attached (azzurra anchor + azzurra3 = 2 networks).
+    const rows = await waitForNetworks(visitor.token, 2);
     expect(rows.map((r) => r.slug)).toContain("azzurra3");
   } finally {
     await adminDeleteVisitor(admin.token, visitor.id).catch(() => {});
