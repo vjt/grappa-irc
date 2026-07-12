@@ -1,6 +1,6 @@
 // Tiny URL linkifier — vendored to avoid pulling linkify-it (>10kB
 // minified) for one regex. Detects http/https/ftp + bare-domain
-// (`www.something`) shapes common in IRC.
+// (`www.something`, `host.tld/path`) shapes common in IRC.
 //
 // Returns an ordered list of segments — text + url alternating.
 // Empty input → single empty text segment.
@@ -8,6 +8,16 @@
 // ## Regex shape + trade-offs
 //
 // - Schemes covered: http://, https://, ftp:// (+ bare www.).
+// - Bare scheme-less domains (GH #212): a `host.tld/path` shape with a
+//   REQUIRED slash after an alphabetic TLD (`github.com/vjt/grappa`).
+//   The slash-after-TLD is the deliberate false-positive guard — bare
+//   `example.com` with no path is NOT linkified (too many hits in chat
+//   prose), nor are version strings (`1.2.3`), nor `node.js` (no
+//   slash). The TLD label must be ≥2 ASCII letters, so a numeric last
+//   label (`1.2/3`) is rejected. Consequence we accept: a filename-ish
+//   `report.txt/section` DOES match (`.txt` is a valid TLD shape) —
+//   rare in practice, and widening the guard to a real-TLD allowlist
+//   isn't worth the bytes.
 // - URL chars stop at whitespace or terminal punctuation (`.`, `,`,
 //   `;`, `:`, `!`, `?`, closing `)`, `]`, `}`, `>`) so a sentence
 //   like "see https://example.com." doesn't include the trailing
@@ -16,17 +26,22 @@
 // - Parens balance: if a URL contains `(` and `)` in equal counts
 //   (common for Wikipedia links), trailing `)` is preserved; if
 //   unbalanced (a closing paren around the URL), it's stripped.
-// - Bare-domain (`www.foo.com`) gets `https://` prepended at href
-//   time so the link works even though the source text omits the
-//   scheme.
-// - IDN: pass-through (the regex matches non-ASCII via \S, and the
-//   browser handles punycode at navigation time).
+// - Bare-domain (`www.foo.com`, `host.tld/path`) gets `https://`
+//   prepended at href time so the link works even though the source
+//   text omits the scheme. A scheme-qualified URL is left untouched,
+//   so the leading scheme alternative wins and a bare-domain match
+//   never fires inside an already-matched `https://…`.
+// - IDN: pass-through (the scheme/www alternatives match non-ASCII via
+//   \S, and the browser handles punycode at navigation time). The
+//   bare-domain alternative is ASCII-anchored on the host/TLD, so a
+//   scheme-less non-ASCII host needs an explicit scheme to linkify.
 //
 // ## Test coverage
 //
 // Pinned by linkify.test.ts:
-// - positive: http/https/ftp/www-bare
-// - negative: trailing-`.`/`,`/`)` exclusion, sentence boundaries
+// - positive: http/https/ftp/www-bare + bare host.tld/path (#212)
+// - negative: trailing-`.`/`,`/`)` exclusion, sentence boundaries,
+//   bare-domain false-positive guards (no-path, versions, node.js)
 // - balanced parens, IDN pass-through
 //
 // ## Why a separate file
@@ -39,15 +54,21 @@ export type LinkifySegment =
   | { type: "text"; value: string }
   | { type: "url"; value: string; href: string };
 
-// Match either a fully-qualified URL (scheme://) or a bare-domain
-// starting with www. Stop on whitespace; trailing punctuation is
-// stripped after the match.
+// Match a fully-qualified URL (scheme://), a bare www. domain, or a
+// scheme-less `host.tld/path` (GH #212). Stop on whitespace; trailing
+// punctuation is stripped after the match.
 //
 // `[^\s]+?` would be nicer but matches too greedily — we want to
 // match URL-shaped chars then strip terminal punctuation in a
 // post-pass. Using `\S+` here + `stripTrailingPunctuation` keeps
 // the regex simple and the cleanup explicit.
-const URL_REGEX = /(?:https?:\/\/|ftp:\/\/|www\.)\S+/gi;
+//
+// The bare-domain alternative requires ≥1 label + an alpha TLD (≥2
+// letters) + a slash before consuming the rest with `\S*` — the slash
+// is what disambiguates a URL from ordinary prose (see moduledoc).
+// The scheme/www alternative is listed FIRST so a scheme-qualified URL
+// is matched whole and the bare-domain branch never fires inside it.
+const URL_REGEX = /(?:https?:\/\/|ftp:\/\/|www\.)\S+|(?:[a-z0-9-]+\.)+[a-z]{2,}\/\S*/gi;
 
 const TRAILING_PUNCT_RE = /[.,;:!?)\]}>]+$/;
 
@@ -75,10 +96,12 @@ function stripTrailingPunctuation(url: string): { url: string; trailing: string 
 }
 
 function toHref(matched: string): string {
-  // Bare-domain (`www.example.com`) → prepend https:// so the link
-  // works. Fully-qualified URLs pass through.
-  if (/^www\./i.test(matched)) return `https://${matched}`;
-  return matched;
+  // Scheme-qualified URLs (http/https/ftp) pass through untouched.
+  // Everything else the regex admits is a bare domain (`www.foo.com`
+  // or `host.tld/path`) → prepend https:// so the link works even
+  // though the source text omits the scheme.
+  if (/^(?:https?|ftp):\/\//i.test(matched)) return matched;
+  return `https://${matched}`;
 }
 
 export function linkify(input: string): LinkifySegment[] {

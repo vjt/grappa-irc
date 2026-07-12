@@ -19033,3 +19033,53 @@ Touch/TouchEvent constructors, webkit's are unreliable); (2) CSS CONTRACT
 real webkit target. The pinch/pan PHYSICS (does it feel right on a real iPhone?)
 is a device call — vjt dogfoods post-ship; the e2es guard the wiring + CSS, not
 the momentum. Client-only, no wire/migration/server change.
+
+## 2026-07-12 — #212: linkify scheme-less `host.tld/path` bare domains
+
+**Problem.** cic only linkified URLs carrying an explicit scheme (`https://`,
+`ftp://`) or the bare `www.` prefix. A user on #it-opers pasted
+`github.com/vjt/grappa-irc/issues/113` and it rendered as plain text — the
+sender had to re-paste with `https://` for it to be clickable.
+
+**The anchor is a slash-after-TLD, and that guard is the whole design.** The
+naive fix — linkify any `word.word` — floods chat prose with false links:
+version strings (`1.2.3`), abbreviations (`e.g.`), library names (`node.js`),
+bare mentions (`example.com`). The single discriminator that separates a URL
+from prose in practice is **a path**: real links people expect to click carry
+one (`github.com/vjt/…`). So the new regex alternative requires ≥1 label + an
+**alphabetic** TLD (`[a-z]{2,}`) + a **required `/`** before consuming the rest
+with `\S*`:
+
+```
+/(?:https?:\/\/|ftp:\/\/|www\.)\S+|(?:[a-z0-9-]+\.)+[a-z]{2,}\/\S*/gi
+```
+
+Consequences of keeping the guard cheap (all deliberate, all pinned by tests):
+- bare `example.com` with NO path is NOT linkified (too many prose hits) — a
+  scheme or a path is required;
+- `1.2.3` and `1.2/3` are rejected because the last label before the slash must
+  be ≥2 **letters** (numeric TLD → no match);
+- `node.js` is rejected (no slash);
+- a filename-ish `report.txt/section` DOES match (`.txt` is a valid TLD shape).
+  Widening the guard to a real-TLD allowlist would fix this but costs bytes for
+  a case that's rare in chat — we accept the false positive rather than ship a
+  TLD table. The linkifier exists precisely to AVOID pulling `linkify-it`.
+
+**The scheme alternative is listed FIRST so a qualified URL wins whole** — the
+alternation short-circuits, so the bare-domain branch never fires inside an
+already-matched `https://github.com/…`. `toHref` inverted its test accordingly:
+it now prepends `https://` to everything the regex admits UNLESS the match is
+already `http(s)://`/`ftp://` (was: prepend only to `www.`). One place still
+builds the href, so the media-link classifier and the iOS-standalone escape both
+receive a scheme-qualified href for a bare-domain match with no change on their
+side — a scheme-less `grappa.example/files/shot.png` classifies as image and
+opens the #213 viewer, pinned by a linkify×mediaLink integration test.
+
+**IDN caveat.** The scheme/`www.` alternatives match non-ASCII via `\S`, but the
+bare-domain alternative is ASCII-anchored on the host+TLD (`[a-z0-9-]`,
+`[a-z]{2,}`), so a scheme-less non-ASCII host still needs an explicit scheme to
+linkify. Acceptable — the reported case is ASCII, and widening the host class
+risks matching more prose. Client-only, no wire/migration/server change. Tests:
+`linkify.test.ts` (+ bare-domain positives, false-positive guards, media
+classify) and `b4-linkify-url-anchor-wrap.spec.ts` (bare `host.tld/path` renders
+a clickable `https://`-prefixed anchor, RED-proven by stashing the fix).

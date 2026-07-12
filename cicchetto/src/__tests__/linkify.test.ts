@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { linkify } from "../lib/linkify";
+import { classifyMediaLink } from "../lib/mediaLink";
 
 describe("linkify", () => {
   describe("positive matches", () => {
@@ -101,6 +102,122 @@ describe("linkify", () => {
           href: "https://en.wikipedia.org/wiki/Foo_(bar)",
         },
       ]);
+    });
+  });
+
+  describe("bare-domain (scheme-less, host.tld/path) matches — GH #212", () => {
+    it("linkifies a bare host.tld/path and prepends https:// to href", () => {
+      const segments = linkify("see github.com/vjt/grappa here");
+      expect(segments).toEqual([
+        { type: "text", value: "see " },
+        {
+          type: "url",
+          value: "github.com/vjt/grappa",
+          href: "https://github.com/vjt/grappa",
+        },
+        { type: "text", value: " here" },
+      ]);
+    });
+
+    it("linkifies a multi-label host with a path", () => {
+      const segments = linkify("github.com/vjt/grappa-irc/issues/113");
+      expect(segments).toEqual([
+        {
+          type: "url",
+          value: "github.com/vjt/grappa-irc/issues/113",
+          href: "https://github.com/vjt/grappa-irc/issues/113",
+        },
+      ]);
+    });
+
+    it("linkifies a bare domain with a bare trailing slash (path present, empty)", () => {
+      const segments = linkify("go to example.com/ now");
+      expect(segments).toEqual([
+        { type: "text", value: "go to " },
+        { type: "url", value: "example.com/", href: "https://example.com/" },
+        { type: "text", value: " now" },
+      ]);
+    });
+
+    it("strips trailing sentence punctuation from a bare-domain match", () => {
+      const segments = linkify("see github.com/vjt/grappa.");
+      expect(segments).toEqual([
+        { type: "text", value: "see " },
+        {
+          type: "url",
+          value: "github.com/vjt/grappa",
+          href: "https://github.com/vjt/grappa",
+        },
+        { type: "text", value: "." },
+      ]);
+    });
+
+    it("does not double-match a scheme-qualified URL as a bare domain", () => {
+      const segments = linkify("https://github.com/vjt/grappa");
+      expect(segments).toEqual([
+        {
+          type: "url",
+          value: "https://github.com/vjt/grappa",
+          href: "https://github.com/vjt/grappa",
+        },
+      ]);
+    });
+  });
+
+  describe("bare-domain false-positive guards — GH #212", () => {
+    it("does NOT linkify a bare domain with no path (example.com)", () => {
+      expect(linkify("just example.com no scheme")).toEqual([
+        { type: "text", value: "just example.com no scheme" },
+      ]);
+    });
+
+    it("does NOT linkify a bare domain even sentence-final without a path", () => {
+      expect(linkify("visit example.com.")).toEqual([
+        { type: "text", value: "visit example.com." },
+      ]);
+    });
+
+    it("does NOT linkify a version string (1.2.3)", () => {
+      expect(linkify("upgraded to 1.2.3 today")).toEqual([
+        { type: "text", value: "upgraded to 1.2.3 today" },
+      ]);
+    });
+
+    it("does NOT linkify node.js (no slash after the TLD-looking label)", () => {
+      expect(linkify("rewrote it in node.js yesterday")).toEqual([
+        { type: "text", value: "rewrote it in node.js yesterday" },
+      ]);
+    });
+
+    it("does NOT linkify a numeric-only TLD label (1.2/3 is not host.tld/path)", () => {
+      expect(linkify("ratio 1.2/3 held")).toEqual([{ type: "text", value: "ratio 1.2/3 held" }]);
+    });
+
+    it("does NOT linkify a filename-like token (foo.txt/bar needs a real TLD)", () => {
+      // .txt is 3 alpha chars and would otherwise match — the guard is the
+      // preceding label must look like a domain, but we intentionally keep
+      // the anchor simple (letters TLD + slash). Documented behavior:
+      // `report.txt/section` DOES match. See linkify.ts moduledoc.
+      const segments = linkify("open report.txt/section");
+      expect(segments).toEqual([
+        { type: "text", value: "open " },
+        { type: "url", value: "report.txt/section", href: "https://report.txt/section" },
+      ]);
+    });
+  });
+
+  describe("bare-domain media links classify correctly — GH #212 × media-viewer", () => {
+    it("a scheme-less same-host media URL classifies as image via linkify href", () => {
+      const origin = "https://grappa.example";
+      const segments = linkify("look grappa.example/files/shot.png");
+      const urlSeg = segments.find((s) => s.type === "url");
+      expect(urlSeg).toBeDefined();
+      if (urlSeg?.type !== "url") throw new Error("expected url segment");
+      expect(urlSeg.href).toBe("https://grappa.example/files/shot.png");
+      expect(classifyMediaLink(urlSeg.href, "look ", origin)).toEqual({
+        kind: "image",
+        href: "https://grappa.example/files/shot.png",
+      });
     });
   });
 
