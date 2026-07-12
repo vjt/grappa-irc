@@ -149,8 +149,8 @@ defmodule Grappa.Bootstrap do
 
   use Task, restart: :transient
 
-  alias Grappa.{Networks, Session, Visitors}
   alias Grappa.Networks.{Credential, Credentials, Network, Servers, SessionPlan}
+  alias Grappa.{Session, Visitors}
   alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
   alias Grappa.Visitors.Visitor
 
@@ -205,12 +205,18 @@ defmodule Grappa.Bootstrap do
     credentials = Credentials.list_credentials_for_all_users()
     visitors = Visitors.list_active()
 
-    # Hard-fail config invariants run BEFORE any spawn so a bad operator
+    # Hard-fail config invariant runs BEFORE any spawn so a bad operator
     # config halts the supervisor instead of degrading silently. See
-    # moduledoc "Hard-fail config invariants" — both raises are
-    # operator-facing and tell them how to recover.
-    validate_visitor_networks!(visitors)
-    validate_credential_servers!(credentials, visitors)
+    # moduledoc "Hard-fail config invariants" — the raise is
+    # operator-facing and tells them how to recover.
+    #
+    # #211 phase 7 — `validate_visitor_networks!/1` was RETIRED: a visitor's
+    # networks come from its `network_credentials` (FK `ON DELETE RESTRICT`
+    # to `networks`), so an orphan "visitor pinned to a dropped network"
+    # is structurally impossible — the DB FK is the guard. The
+    # server-existence invariant below still covers visitor networks (via
+    # their credentials, folded into `cred_networks`).
+    validate_credential_servers!(credentials)
 
     # Subtract every configured fixed source from the effective visitor
     # pool BEFORE spawning, so no visitor session can pick/0 a dedicated
@@ -219,18 +225,6 @@ defmodule Grappa.Bootstrap do
     # installed the raw env pool; this refines it to the effective pool
     # while no session has spawned yet.
     exclude_fixed_sources_from_pool()
-
-    # #211 phase 3 — reconcile every active visitor's Credential BEFORE
-    # spawning visitor sessions: the read path (`Visitors.SessionPlan`)
-    # resolves visitor identity from the Credential, so it must be
-    # current at boot. Self-healing (refresh existing + create missing)
-    # via the SAME idempotent upsert the per-mutation write-through uses,
-    # bulk-applied — catches drift from the phase-1-backfill→phase-3
-    # window. After phase 3 the write-through keeps them current, so every
-    # subsequent boot-reconcile is a no-op. Runs AFTER the invariant
-    # gates (a validated network exists for each active visitor) and
-    # BEFORE `spawn_visitors/1` (which resolves through the Credential).
-    reconcile_visitor_credentials(visitors)
 
     user_stats =
       case credentials do
@@ -245,24 +239,6 @@ defmodule Grappa.Bootstrap do
     visitor_stats = spawn_visitors(visitors)
 
     {:ok, sum_results(user_stats, visitor_stats)}
-  end
-
-  # #211 phase 3 — bulk visitor→Credential reconcile. Delegates each row
-  # to `Grappa.Visitors.reconcile_credential/1` (the context owns
-  # translating a `%Visitor{}` into credential attrs + the orphan-slug
-  # skip); Bootstrap only drives the enumeration. Idempotent + best
-  # effort per row — a single failed reconcile logs and does not abort
-  # the others or the boot (the visitor invariant gate already ran).
-  @spec reconcile_visitor_credentials([Visitor.t()]) :: :ok
-  defp reconcile_visitor_credentials(visitors) do
-    reconciled = Enum.count(visitors, &(Visitors.reconcile_credential(&1) == :ok))
-
-    Logger.info("bootstrap visitor credential reconcile",
-      visitors: length(visitors),
-      spawned: reconciled
-    )
-
-    :ok
   end
 
   # Refines the effective OutboundV6Pool = raw - fixed sources before any
@@ -414,17 +390,16 @@ defmodule Grappa.Bootstrap do
 
   @spec spawn_visitor(Visitor.t(), Result.t()) :: Result.t()
   defp spawn_visitor(%Visitor{id: visitor_id} = visitor, acc) do
-    # #211 phase 4c — a visitor's credentials can span MULTIPLE networks
-    # (accretion). Respawn ONE Session.Server per credential so a reboot
-    # restores ALL of the identity's networks, not just the primary
-    # `network_slug`. `reconcile_credential/1` ran earlier in `run/0`, so a
-    # fresh/drifted visitor already has its credential(s); an identity with
-    # none (should not happen post-reconcile) contributes nothing.
+    # #211 phase 4c/7 — a visitor's credentials can span MULTIPLE networks
+    # (accretion), and identity lives per-network on the credential now.
+    # Respawn ONE Session.Server per credential so a reboot restores ALL of
+    # the identity's networks. An identity with no credentials (a fresh row
+    # whose atomic provision half-committed, or an operator-mangled DB)
+    # contributes nothing.
     case Credentials.list_visitor_credentials(visitor_id) do
       [] ->
         Logger.warning("bootstrap visitor has no credentials — skipped",
-          visitor_id: visitor_id,
-          network: visitor.network_slug
+          visitor_id: visitor_id
         )
 
         acc
@@ -625,46 +600,12 @@ defmodule Grappa.Bootstrap do
     %{acc | network_failed: acc.network_failed + 1}
   end
 
-  # W7 invariant: every active visitor's `network_slug` must resolve
-  # to a `Networks.Network` row at boot. Visitor sessions trust the
-  # slug → network resolution to succeed at runtime
-  # (`Visitors.Login` + `Visitors.SessionPlan` both depend on it), so
-  # if the operator drops a network from the DB while visitor rows
-  # still point at it, those visitors are orphaned. The choice between
-  # silent reap (lose user data on a config typo) and explicit
-  # operator intervention (require a deliberate cleanup or restore)
-  # is intentionally biased toward the latter — better to refuse to
-  # boot loudly than to drop scrollback on a misconfiguration.
-  @spec validate_visitor_networks!([Visitor.t()]) :: :ok
-  defp validate_visitor_networks!(visitors) do
-    orphans =
-      visitors
-      |> Enum.map(& &1.network_slug)
-      |> Enum.uniq()
-      |> Enum.reject(fn slug ->
-        match?({:ok, _}, Networks.get_network_by_slug(slug))
-      end)
-
-    case orphans do
-      [] ->
-        :ok
-
-      slugs ->
-        msg =
-          "visitor rows pinned to network(s) not in current config: " <>
-            "#{inspect(slugs)}. Either restore the network in DB or run: " <>
-            Enum.map_join(slugs, " ; ", &"mix grappa.reap_visitors --network=#{&1}")
-
-        raise RuntimeError, msg
-    end
-  end
-
-  # Servers-bound invariant: every distinct network referenced by a
-  # bound credential or active visitor must have at least one enabled
-  # server in `network_servers`. A network without a usable server is
-  # silently broken in BOTH directions:
+  # Servers-bound invariant: every distinct network referenced by a bound
+  # user credential OR an active visitor's credential must have at least one
+  # enabled server in `network_servers`. A network without a usable server
+  # is silently broken in BOTH directions:
   #
-  #   - Bootstrap's per-row `SessionPlan.resolve/1` returns
+  #   - Bootstrap's per-row `SessionPlan.resolve` returns
   #     `{:error, :no_server}` and bumps the `failed` counter, but the
   #     supervision tree comes up healthy and the operator only sees
   #     it via grep.
@@ -674,37 +615,25 @@ defmodule Grappa.Bootstrap do
   #     reason to `{:error, :internal}` → opaque 500. Cicchetto users
   #     see a generic error with no actionable signal.
   #
-  # The fix at the controller would still leave the bouncer in a
-  # half-configured state. The honest signal is to refuse to boot and
-  # point the operator at `mix grappa.add_server`. Mirrors the W7
-  # visitor-network bias.
+  # The honest signal is to refuse to boot and point the operator at
+  # `mix grappa.add_server`.
   #
-  # Bucket H — lifecycle/S2 unification: pre-fix this ran
-  # `Servers.list_servers/1` per credential-network AND
-  # `SessionPlan.resolve/1` re-fetched the same list per row — two
-  # passes over the same Servers data. Post-fix
-  # `list_credentials_for_all_users/0` preloads `network: :servers`,
-  # so this validator reads the in-memory association (zero queries)
-  # and SessionPlan.resolve's `Repo.preload` is a no-op on the
-  # already-loaded assoc. One in-memory walk feeds both verbs.
-  # Visitors still trigger one `get_network_by_slug/1` lookup per
-  # distinct slug — visitor rows don't ride a credential preload, so
-  # the in-memory consolidation only covers the credential side.
-  @spec validate_credential_servers!([Credential.t()], [Visitor.t()]) :: :ok
-  defp validate_credential_servers!(credentials, visitors) do
+  # #211 phase 7 — visitor networks now come from `network_credentials`
+  # (identity is per-network on the credential; the `visitors.network_slug`
+  # scalar is dropped). `list_credentials_for_all_users/0` returns only
+  # USER credentials, so this folds in each active visitor's credential
+  # networks (preloaded `network: :servers` by
+  # `list_visitor_credentials/1`) alongside the user side. One in-memory
+  # walk over the union feeds the check.
+  @spec validate_credential_servers!([Credential.t()]) :: :ok
+  defp validate_credential_servers!(credentials) do
     cred_networks =
       Enum.map(credentials, fn %Credential{network: %Network{} = n} -> n end)
 
     visitor_networks =
-      visitors
-      |> Enum.map(& &1.network_slug)
-      |> Enum.uniq()
-      |> Enum.flat_map(fn slug ->
-        case Networks.get_network_with_servers_by_slug(slug) do
-          {:ok, %Network{} = n} -> [n]
-          {:error, :not_found} -> []
-        end
-      end)
+      Visitors.list_active()
+      |> Enum.flat_map(fn %Visitor{id: id} -> Credentials.list_visitor_credentials(id) end)
+      |> Enum.map(fn %Credential{network: %Network{} = n} -> n end)
 
     serverless =
       (cred_networks ++ visitor_networks)

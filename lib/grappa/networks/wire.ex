@@ -73,6 +73,8 @@ defmodule Grappa.Networks.Wire do
           id: integer(),
           slug: String.t(),
           nick: String.t(),
+          ident: String.t() | nil,
+          realname: String.t() | nil,
           connection_state: Credential.connection_state(),
           connection_state_reason: String.t() | nil,
           connection_state_changed_at: String.t() | nil,
@@ -96,12 +98,24 @@ defmodule Grappa.Networks.Wire do
   already existed for visitor credentials, just unused — phase 6 uses it
   so a visitor parks/reconnects each network via the same
   `PATCH /networks/:id` users do, persisting across reboot).
+  ## #211 phase 7 — per-network identity fields
+
+  Both `network_with_nick_json` and its visitor twin now carry the
+  credential's `:ident` + `:realname` (nullable) so cic's per-network
+  identity editor (`PATCH /networks/:id/identity`) can seed its inputs for
+  BOTH subjects from the `GET /networks` rows — the wire change the phase-6
+  visitor editor deferred to "the phase-7 convergence". `:nick` is the
+  live-nick-with-fallback (may differ from `cred.nick` after NickServ
+  ghost/regain); `:ident`/`:realname` are always credential-row-of-record
+  (no live divergence — they're set once at USER registration).
   """
   @type visitor_network_with_nick_json :: %{
           kind: :visitor,
           id: integer(),
           slug: String.t(),
           nick: String.t(),
+          ident: String.t() | nil,
+          realname: String.t() | nil,
           connection_state: Credential.connection_state(),
           connection_state_reason: String.t() | nil,
           connection_state_changed_at: String.t() | nil,
@@ -273,6 +287,8 @@ defmodule Grappa.Networks.Wire do
       id: n.id,
       slug: n.slug,
       nick: nick,
+      ident: cred.ident,
+      realname: cred.realname,
       connection_state: cred.connection_state,
       connection_state_reason: cred.connection_state_reason,
       connection_state_changed_at: WireTime.iso8601_or_nil(cred.connection_state_changed_at),
@@ -309,6 +325,8 @@ defmodule Grappa.Networks.Wire do
       id: n.id,
       slug: n.slug,
       nick: nick,
+      ident: cred.ident,
+      realname: cred.realname,
       connection_state: cred.connection_state,
       connection_state_reason: cred.connection_state_reason,
       connection_state_changed_at: WireTime.iso8601_or_nil(cred.connection_state_changed_at),

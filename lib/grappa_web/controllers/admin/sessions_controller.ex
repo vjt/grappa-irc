@@ -52,8 +52,9 @@ defmodule GrappaWeb.Admin.SessionsController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, LiveIntrospection, Operator, Session, Visitors}
+  alias Grappa.{Accounts, LiveIntrospection, Operator, Session}
   alias Grappa.LiveIntrospection.AdminWire
+  alias Grappa.Networks.Credentials
   alias GrappaWeb.Admin.AuthPlug
 
   @doc """
@@ -76,7 +77,10 @@ defmodule GrappaWeb.Admin.SessionsController do
     entries = LiveIntrospection.list_sessions()
     {user_ids, visitor_ids} = partition_subject_ids(entries)
     users = Accounts.get_users_by_ids(user_ids)
-    visitors = Visitors.get_by_ids(visitor_ids)
+    # #211 phase 7 — the visitor nick lives per-network on the credential
+    # now, so resolve the session label from the representative (identity-
+    # anchor) credential nick per visitor, batched (one query, no N+1).
+    visitor_nicks = Credentials.representative_nicks_by_visitor_ids(visitor_ids)
     # MAX(accounts_sessions.last_seen_at) per subject. Two batched
     # queries (one per subject_kind, same shape as the labels lookup)
     # so the controller's DB cost stays O(1) regardless of session
@@ -89,7 +93,7 @@ defmodule GrappaWeb.Admin.SessionsController do
       Enum.map(entries, fn entry ->
         AdminWire.session_to_admin_json(
           entry,
-          resolve_label(entry, users, visitors),
+          resolve_label(entry, users, visitor_nicks),
           resolve_last_seen(entry, user_last_seen, visitor_last_seen)
         )
       end)
@@ -120,11 +124,8 @@ defmodule GrappaWeb.Admin.SessionsController do
     end
   end
 
-  defp resolve_label(%{subject: {:visitor, id}}, _, visitors) do
-    case Map.get(visitors, id) do
-      %Visitors.Visitor{nick: nick} -> nick
-      nil -> nil
-    end
+  defp resolve_label(%{subject: {:visitor, id}}, _, visitor_nicks) do
+    Map.get(visitor_nicks, id)
   end
 
   defp resolve_last_seen(%{subject: {:user, id}}, user_last_seen, _),

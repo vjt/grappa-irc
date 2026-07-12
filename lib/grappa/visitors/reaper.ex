@@ -47,8 +47,9 @@ defmodule Grappa.Visitors.Reaper do
 
   use GenServer
 
-  alias Grappa.{AdminEvents, Networks, Session, Visitors}
+  alias Grappa.{AdminEvents, Session, Visitors}
   alias Grappa.AdminEvents.Wire, as: AdminWire
+  alias Grappa.Networks.{Credential, Credentials}
 
   require Logger
 
@@ -80,12 +81,17 @@ defmodule Grappa.Visitors.Reaper do
 
     deleted =
       Enum.reduce(expired, 0, fn v, acc ->
+        # #211 phase 7 — capture the representative (anchor) nick BEFORE the
+        # delete: the identity nick lives per-network on the credentials,
+        # which CASCADE with the visitor row, so it can't be read after.
+        reaped_nick = reaped_nick(v)
+
         case reap_visitor(v) do
           :ok ->
             # M-11: per-row reap event for the admin events stream.
             # Emitted ONLY on successful delete — a failed delete logs
             # but doesn't fire a misleading "reaped" signal.
-            :ok = AdminEvents.record(AdminWire.visitor_reaped(v.id, v.nick, v.network_slug))
+            :ok = AdminEvents.record(AdminWire.visitor_reaped(v.id, reaped_nick))
             acc + 1
 
           {:error, reason} ->
@@ -101,6 +107,17 @@ defmodule Grappa.Visitors.Reaper do
     {:ok, deleted}
   end
 
+  # Representative (identity-anchor) nick for the reap event label, read
+  # before the delete cascades the credentials. `nil` for a credential-less
+  # identity.
+  @spec reaped_nick(Visitors.Visitor.t()) :: String.t() | nil
+  defp reaped_nick(%Visitors.Visitor{id: id}) do
+    case Credentials.representative_visitor_credential(id) do
+      {:ok, %Credential{nick: nick}} -> nick
+      {:error, :not_found} -> nil
+    end
+  end
+
   @spec reap_visitor(Visitors.Visitor.t()) :: :ok | {:error, :not_found}
   defp reap_visitor(v) do
     with :ok <- stop_visitor_session(v),
@@ -109,25 +126,18 @@ defmodule Grappa.Visitors.Reaper do
     end
   end
 
+  # #211 phase 7 — a visitor is multi-network; stop EVERY attached network's
+  # session before the delete cascades the credential rows. Idempotent per
+  # network (`stop_session/3` no-ops without a live pid); empty list (no
+  # credentials) → nothing to stop. The retired `visitors.network_slug`
+  # scalar only ever resolved the primary session.
   @spec stop_visitor_session(Visitors.Visitor.t()) :: :ok
-  defp stop_visitor_session(%Visitors.Visitor{id: id, network_slug: slug}) do
-    case Networks.get_network_by_slug(slug) do
-      {:ok, network} ->
-        :ok = Session.stop_session({:visitor, id}, network.id, "visitor session expired")
-
-      {:error, :not_found} ->
-        # Same orphan-network shape as Operator.delete_visitor/1: no
-        # network row means no viable live session can be resolved from
-        # the visitor row, but the DB delete still reaches the promised
-        # post-condition via CASCADE. Keep this informational, not an
-        # error, so one stale slug does not poison the whole sweep.
-        Logger.warning("reaper visitor network missing; deleting row without session stop",
-          visitor_id: id,
-          network: slug
-        )
-
-        :ok
+  defp stop_visitor_session(%Visitors.Visitor{id: id}) do
+    for %Credential{network_id: network_id} <- Credentials.list_visitor_credentials(id) do
+      :ok = Session.stop_session({:visitor, id}, network_id, "visitor session expired")
     end
+
+    :ok
   end
 
   @impl GenServer

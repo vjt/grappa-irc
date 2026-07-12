@@ -52,11 +52,6 @@ defmodule Grappa.Admission do
   use Boundary,
     top_level?: true,
     deps: [Grappa.Accounts, Grappa.Networks, Grappa.RateLimit, Grappa.Repo],
-    # Grappa.Visitors.Visitor is referenced only for SQL join predicates
-    # (schema-only access). A proper dep would create a
-    # Visitors ↔ Admission cycle (Login calls check_capacity). Same
-    # pattern as Grappa.Accounts's dirty_xref on Visitors.Visitor.
-    dirty_xrefs: [Grappa.Visitors.Visitor],
     exports: [Captcha, Config, NetworkCircuit, NetworkCircuit.AdminWire, Telemetry]
 
   import Ecto.Query
@@ -65,7 +60,6 @@ defmodule Grappa.Admission do
   alias Grappa.Admission.{Captcha, NetworkCircuit, Telemetry}
   alias Grappa.Networks.{Credential, Network}
   alias Grappa.Repo
-  alias Grappa.Visitors.Visitor
 
   @type flow ::
           :login_fresh
@@ -396,16 +390,19 @@ defmodule Grappa.Admission do
   # `max_per_ip = 1` (the default). The two clauses stay disjoint so an
   # exclusion in one cannot leak into the other; see the "cross-clause
   # disjointness" test in `admission_test.exs`.
+  # #211 phase 7 — a visitor is bound to a network via its
+  # `(visitor_id, network_id)` CREDENTIAL now (the `visitors.network_slug`
+  # scalar is dropped), so the network-binding join goes through
+  # `network_credentials` — structurally the mirror of the `:user` clause
+  # below (which already joins credentials). Counts DISTINCT visitor
+  # sessions on this IP whose identity holds a credential on `network_id`.
   defp count_subjects_for_ip_on_network(source_ip, network_id, :visitor, requesting_subject) do
-    %Network{slug: slug} = Repo.get!(Network, network_id)
-
     visitor_count_q =
       from(s in AccountSession,
-        join: v in Visitor,
-        on: v.id == s.visitor_id,
+        join: c in Credential,
+        on: c.visitor_id == s.visitor_id and c.network_id == ^network_id,
         where:
           s.ip == ^source_ip and
-            v.network_slug == ^slug and
             is_nil(s.revoked_at),
         select: count(s.visitor_id, :distinct)
       )

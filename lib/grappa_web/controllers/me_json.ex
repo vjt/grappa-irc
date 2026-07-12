@@ -12,19 +12,16 @@ defmodule GrappaWeb.MeJSON do
       entry off the `me` envelope without a second round-trip to
       `GET /admin/me`. `home_data` (UX-4 bucket B) carries the
       networks list cic's HomePane renders.
-    * visitor → `{kind: "visitor", id, nick, ident, realname,
-      expires_at, registered, read_cursors, unread_counts, badge_count,
-      home_data}` — delegates to
-      `Grappa.Visitors.Wire.visitor_to_json/1` so the
-      `:password_encrypted` allowlist lives in one place (and the
-      derived `:registered` = password present rides in from there). See
-      `Grappa.Visitors.Wire` moduledoc for the full leak-defense
-      rationale. #211 phase 6 — `network_slug` + the singular `connected`
-      scalar are DROPPED: a visitor is multi-network now, so per-network
-      live status lives on the `GET /networks` rows' `connection_state`
-      (ruling A/D). `home_data` is now POPULATED for visitors too (ruling
-      A — the user + visitor home pages are the SAME data-driven
-      component) via `Networks.home_data_for_visitor/1`.
+    * visitor → `{kind: "visitor", id, expires_at, registered,
+      read_cursors, unread_counts, badge_count, home_data}` — delegates to
+      `Grappa.Visitors.Wire.visitor_to_json/1`. #211 phase 7 —
+      nick/ident/realname are DROPPED from the subject: a visitor is
+      multi-network, so per-network identity (nick) lives on the
+      `GET /networks` rows, not the identity-wide subject. `registered` is
+      the derived permanence flag (`expires_at == nil`); see
+      `Grappa.Visitors.Wire` moduledoc. `home_data` is POPULATED for
+      visitors (ruling A — the user + visitor home pages are the SAME
+      data-driven component) via `Networks.home_data_for_visitor/1`.
 
   ## read_cursors envelope (CP29 R-3)
 
@@ -100,7 +97,6 @@ defmodule GrappaWeb.MeJSON do
           | %{
               kind: String.t(),
               id: Ecto.UUID.t(),
-              nick: String.t(),
               expires_at: DateTime.t() | nil,
               registered: boolean(),
               read_cursors: read_cursors(),
@@ -120,6 +116,7 @@ defmodule GrappaWeb.MeJSON do
           }
           | %{
               visitor: Visitor.t(),
+              registered: boolean(),
               read_cursors: read_cursors(),
               unread_counts: unread_counts(),
               badge_count: non_neg_integer(),
@@ -145,38 +142,23 @@ defmodule GrappaWeb.MeJSON do
 
   def show(%{
         visitor: %Visitor{} = visitor,
+        registered: registered,
         read_cursors: cursors,
         unread_counts: unread_counts,
         badge_count: badge_count,
         home_data: home_data
       })
-      when is_map(home_data) do
+      when is_boolean(registered) and is_map(home_data) do
     visitor
-    |> VisitorsWire.visitor_to_json()
+    |> VisitorsWire.visitor_to_json(registered)
     |> Map.put(:kind, "visitor")
     |> Map.put(:read_cursors, cursors)
     |> Map.put(:unread_counts, unread_counts)
     |> Map.put(:badge_count, badge_count)
     # #211 phase 6 (ruling A) — visitors now carry a POPULATED `home_data`
     # (was `nil`): the user + visitor home pages are the SAME data-driven
-    # component. `:registered` rides in from `visitor_to_json/1`.
+    # component. `:registered` (derived from credentials) rides in via
+    # `visitor_to_json/2`.
     |> Map.put(:home_data, home_data)
-  end
-
-  @doc """
-  #152 — response for `PATCH /me/identity`. The updated visitor profile
-  (via `VisitorsWire.visitor_to_json/1`, so ident/realname/registered
-  ride the same allowlist as `GET /me`) plus the `connected` flag so cic
-  can reflect the post-reconnect live state. No cursors/badge/home_data
-  envelope — this is an identity mutation response, not a full profile
-  reload.
-  """
-  @spec identity(%{visitor: Visitor.t(), connected: boolean()}) :: map()
-  def identity(%{visitor: %Visitor{} = visitor, connected: connected})
-      when is_boolean(connected) do
-    visitor
-    |> VisitorsWire.visitor_to_json()
-    |> Map.put(:kind, "visitor")
-    |> Map.put(:connected, connected)
   end
 end

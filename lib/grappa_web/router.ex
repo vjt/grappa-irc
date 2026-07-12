@@ -209,12 +209,6 @@ defmodule GrappaWeb.Router do
 
     get "/me", MeController, :show
 
-    # #152 — visitor self-service IRC identity (ident + realname), live-
-    # applied via internal reconnect. Visitor-only (users 403 in the
-    # controller; registered-user self-service is a deferred follow-on).
-    # Rides the existing `/me` nginx allowlist entry.
-    patch "/me/identity", MeController, :update_identity
-
     # #157 — self-service account deletion: an explicit, IRREVERSIBLE
     # total wipe of the caller's OWN account + all state. Subject-routed
     # (user / visitor) in `Grappa.AccountDeletion`; admins + anon visitors

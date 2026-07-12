@@ -39,8 +39,8 @@ defmodule GrappaWeb.Admin.VisitorsController do
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _) do
     rows =
-      for {v, live} <- Visitors.list_all_with_live_state(),
-          do: AdminWire.visitor_to_admin_json(v, live)
+      for {v, per_network} <- Visitors.list_all_with_live_state(),
+          do: AdminWire.visitor_to_admin_json(v, per_network)
 
     json(conn, %{visitors: rows})
   end

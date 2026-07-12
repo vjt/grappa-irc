@@ -208,25 +208,33 @@ defmodule GrappaWeb.AuthController do
   end
 
   # #126 — detach is the ABSENCE of teardown. `DELETE /auth/logout` for a
-  # PERSISTENT identity (a registered user OR a NickServ-identified
-  # visitor, `password_encrypted` non-nil) revokes the web session +
-  # closes the socket but leaves the server-side `Session.Server` +
-  # upstream IRC connection UP (bouncer-style). Only the ANON visitor
-  # keeps the W11 co-terminus teardown (stop + purge): an anon row has no
-  # persistent identity to come back to, so its session dies with its
-  # last `accounts_sessions` row. This single scoping fixes BOTH #126
-  # bugs — detach no longer tears the user's upstream down (bug #1), and
-  # with no teardown there is no DB-vs-live `connection_state` desync
-  # (bug #2). Tear-down-and-leave ("quit") is a SEPARATE verb composed by
-  # the client: user = park-all networks + detach; registered visitor =
-  # park-all networks (`PATCH /networks/:id {parked}`) + detach (#211
-  # phase 6 — the `POST /session/disconnect` verb is retired); ephemeral
-  # visitor = this very anon branch (an ephemeral's "quit" IS detach — it
-  # stops + purges).
+  # PERSISTENT identity (a registered user OR a NickServ-identified,
+  # permanent visitor) revokes the web session + closes the socket but
+  # leaves the server-side `Session.Server` + upstream IRC connection UP
+  # (bouncer-style). Only the ANON visitor keeps the W11 co-terminus
+  # teardown (stop + purge): an anon row has no persistent identity to come
+  # back to, so its session dies with its last `accounts_sessions` row.
+  # This single scoping fixes BOTH #126 bugs — detach no longer tears the
+  # user's upstream down (bug #1), and with no teardown there is no
+  # DB-vs-live `connection_state` desync (bug #2). Tear-down-and-leave
+  # ("quit") is a SEPARATE verb composed by the client: user = park-all
+  # networks + detach; registered visitor = park-all networks
+  # (`PATCH /networks/:id {parked}`) + detach (#211 phase 6 — the
+  # `POST /session/disconnect` verb is retired); ephemeral visitor = this
+  # very anon branch (an ephemeral's "quit" IS detach — it stops + purges).
+  #
+  # #211 phase 7 — anon is DERIVED from the credentials now (anon = holds
+  # NO NickServ credential), NOT the retired `visitors.password_encrypted`
+  # scalar NOR a `visitors.expires_at`-nil flag. Only the anon visitor
+  # keeps the W11 co-terminus teardown.
   @spec maybe_terminate_sessions(GrappaWeb.Subject.t() | nil) :: :ok
-  defp maybe_terminate_sessions({:visitor, %Visitor{password_encrypted: nil} = visitor}) do
-    :ok = stop_visitor_session(visitor)
-    :ok = Visitors.purge_if_anon(visitor.id)
+  defp maybe_terminate_sessions({:visitor, %Visitor{} = visitor}) do
+    unless Networks.Credentials.visitor_registered?(visitor.id) do
+      :ok = stop_visitor_session(visitor)
+      :ok = Visitors.purge_if_anon(visitor.id)
+    end
+
+    :ok
   end
 
   defp maybe_terminate_sessions(_), do: :ok
@@ -407,17 +415,19 @@ defmodule GrappaWeb.AuthController do
   # to the FallbackController via the `{:anon_collision, retry_after}`
   # tuple shape mirroring `{:network_circuit_open, retry_after}`.
   #
-  # #211 phase 3 — the target network slug is resolved from the request's
+  # #211 phase 3 — the target network is resolved from the request's
   # optional `network` param (falling back to the sole `visitor_enabled`
-  # network) via the SAME runtime allowlist readers `Login` uses, rather
-  # than the retired compile-time `:visitor_network` constant. If the
-  # slug can't be resolved (ambiguous / none enabled) the collision hint
-  # falls back to the ceiling — the collision itself already surfaced.
+  # network) via the SAME runtime allowlist readers `Login` uses. #211
+  # phase 7 — the collision holder's TTL is read credential-first
+  # (`Visitors.collision_expires_at/2`, keyed on network_id) since the
+  # `visitors.(nick, network_slug)` row lookup is gone. If the network
+  # can't be resolved (ambiguous / none enabled) or no identity holds the
+  # nick, the hint falls back to the ceiling — the collision itself already
+  # surfaced.
   @spec anon_collision_retry_after(String.t(), String.t() | nil) :: non_neg_integer()
   defp anon_collision_retry_after(nick, network) do
-    with {:ok, slug} <- collision_network_slug(network),
-         %Visitor{expires_at: expires_at} <-
-           Visitors.get_by_nick_and_network(nick, slug) do
+    with {:ok, %Networks.Network{id: network_id}} <- collision_network(network),
+         %DateTime{} = expires_at <- Visitors.collision_expires_at(nick, network_id) do
       expires_at
       |> DateTime.diff(DateTime.utc_now())
       |> max(1)
@@ -427,12 +437,18 @@ defmodule GrappaWeb.AuthController do
     end
   end
 
-  @spec collision_network_slug(String.t() | nil) :: {:ok, String.t()} | :error
-  defp collision_network_slug(slug) when is_binary(slug) and slug != "", do: {:ok, slug}
+  @spec collision_network(String.t() | nil) ::
+          {:ok, Networks.Network.t()} | :error
+  defp collision_network(slug) when is_binary(slug) and slug != "" do
+    case Networks.get_network_by_slug(slug) do
+      {:ok, %Networks.Network{} = network} -> {:ok, network}
+      {:error, :not_found} -> :error
+    end
+  end
 
-  defp collision_network_slug(_) do
+  defp collision_network(_) do
     case Networks.list_visitor_enabled() do
-      [%Networks.Network{slug: slug}] -> {:ok, slug}
+      [%Networks.Network{} = network] -> {:ok, network}
       _ -> :error
     end
   end

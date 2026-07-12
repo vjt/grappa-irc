@@ -46,6 +46,7 @@ defmodule GrappaWeb.ShareTokenController do
 
   alias Grappa.{Accounts, Visitors}
   alias Grappa.Accounts.User
+  alias Grappa.Networks.Credentials
   alias Grappa.Visitors.{ShareTokens, Visitor}
   alias Grappa.Visitors.Wire, as: VisitorsWire
   alias GrappaWeb.RemoteIP
@@ -148,7 +149,7 @@ defmodule GrappaWeb.ShareTokenController do
         token: session.id,
         subject:
           visitor
-          |> VisitorsWire.visitor_to_credential_json()
+          |> VisitorsWire.visitor_to_credential_json(Credentials.visitor_registered?(visitor.id))
           |> Map.put(:kind, "visitor")
       })
     else

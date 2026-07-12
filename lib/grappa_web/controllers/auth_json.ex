@@ -6,16 +6,19 @@ defmodule GrappaWeb.AuthJSON do
 
       %{token, subject: %{kind: "user" | "visitor", id, ...}}
 
-  Both subject variants delegate to their Wire module — user via
-  `Grappa.Accounts.Wire.user_to_credential_json/1`, visitor via
-  `Grappa.Visitors.Wire.visitor_to_credential_json/1` — so the
-  redact-protected field allowlists (`:password_hash` for User,
-  `:password_encrypted` for Visitor) live in one place per context.
+  The user variant delegates to `Grappa.Accounts.Wire.user_to_credential_json/1`.
+  The visitor variant delegates to
+  `Grappa.Visitors.Wire.visitor_to_credential_json/2`; #211 phase 7 the
+  visitor subject is `{id, registered}` (nick/ident/realname moved to the
+  per-network `GET /networks` rows). `registered` is DERIVED from the
+  credentials — resolved here via `Networks.Credentials.visitor_registered?/1`
+  at render time (a single derivation point, no flag to drift).
 
   Login is a credential-exchange surface, not a profile lookup.
   Clients that want the full profile call `GET /me` after login.
   """
   alias Grappa.Accounts.{User, Wire}
+  alias Grappa.Networks.Credentials
   alias Grappa.Visitors.Visitor
   alias Grappa.Visitors.Wire, as: VisitorsWire
 
@@ -24,9 +27,6 @@ defmodule GrappaWeb.AuthJSON do
           | %{
               kind: String.t(),
               id: Ecto.UUID.t(),
-              nick: String.t(),
-              ident: String.t() | nil,
-              realname: String.t() | nil,
               registered: boolean()
             }
 
@@ -43,7 +43,7 @@ defmodule GrappaWeb.AuthJSON do
   def login(%{token: token, subject: {:visitor, %Visitor{} = v}}) do
     subject =
       v
-      |> VisitorsWire.visitor_to_credential_json()
+      |> VisitorsWire.visitor_to_credential_json(Credentials.visitor_registered?(v.id))
       |> Map.put(:kind, "visitor")
 
     %{token: token, subject: subject}

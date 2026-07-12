@@ -3,51 +3,36 @@ defmodule Grappa.Visitors.Wire do
   Single source of truth for the public JSON wire shape of
   `Grappa.Visitors.Visitor` rows.
 
-  ## Why this module exists (CRITICAL — read before adding fields)
+  ## #211 phase 7 — the visitor row is a pure identity/TTL row
 
-  `Visitor.password_encrypted` is a `Grappa.EncryptedBinary` Cloak
-  column whose `:load` callback decrypts the AES-GCM ciphertext on
-  read. After `Repo.get`, the field IN MEMORY carries the **plaintext
-  upstream NickServ password** captured by `Grappa.Session.Server` on
-  +r MODE observation (see `Grappa.Visitors.commit_password/2`). The
-  field name describes the on-disk representation, not the post-load
-  value. The `redact: true` on the schema field protects `inspect/1`
-  and Logger output, but NOT `Jason.encode!/1`, which walks struct
-  fields directly.
+  A visitor is MULTI-network now, and its per-network identity
+  (nick/ident/realname/password) lives on the `network_credentials` rows,
+  NOT on the visitor row. So the visitor SUBJECT wire carries only the
+  identity-wide fields the row still owns: `{id, expires_at, registered}`.
+  Per-network nick + connection state live on the `GET /networks` rows
+  (`Grappa.Networks.Wire.visitor_network_to_json/3`); cic resolves "my nick
+  on network X" from there (`ownNickForNetwork`), never from the subject.
 
-  Without an explicit allowlist serializer, the first naive
-  `json(conn, visitor)` leaks the upstream NickServ password to the
-  client. This module is the only sanctioned door from
-  `Visitors.Visitor` rows to JSON. Adding a field to the wire = one
-  edit here. Removing one = a breaking change visible at this single
-  site.
+  `registered` is DERIVED from the credentials (≥1 credential holding a
+  committed NickServ secret), NOT a stored `visitors.expires_at`-nil flag
+  (which would drift the moment a credential is unbound). Because the
+  derivation needs a DB read, the caller passes the boolean in — the two
+  renderers take `(visitor, registered)` rather than computing it from the
+  struct. Identifying on any network makes the identity registered;
+  unbinding the last registered credential makes it anon again,
+  automatically. This exposes only the FACT of registration, never any
+  secret.
 
-  Sibling Wire modules with the same redact-protection rationale:
-  `Grappa.Networks.Wire` (the canonical reference for this pattern;
-  Networks.Credential has the same `password_encrypted` Cloak
-  column), `Grappa.Accounts.Wire` (User.password_hash + virtual
-  :password defense).
+  This module is the only sanctioned door from `Visitors.Visitor` rows to
+  JSON. Adding a field = one edit here.
 
-  ## Pre-extraction (CP16 B2)
+  ## Two shapes (pre-extraction CP16 B2)
 
-  `MeJSON.show(%{visitor: ...})` and `AuthJSON.login(%{subject:
-  {:visitor, _}})` both inlined the wire shape — `MeJSON` included
-  `:expires_at`, `AuthJSON` didn't. The drift was undocumented; this
-  module makes the divergence EXPLICIT through two functions:
-
-    * `visitor_to_json/1` — full profile shape `{id, nick, ident,
-      realname, expires_at}`. Used by `MeJSON` so the SPA can
-      render the visitor's session-end countdown.
-    * `visitor_to_credential_json/1` — minimal credential-exchange
-      shape `{id, nick, ident, realname}`. Used by `AuthJSON` post-login
-      where the SPA already has the bearer token TTL via
-      `accounts_sessions.expires_at` on a separate door.
-
-  #211 phase 6 — both shapes DROPPED `network_slug`: a visitor is
-  multi-network now, so per-network attachment lives on the
-  `GET /networks` rows, not the singular subject scalar. The column
-  still exists (dual-written for the login row-lookup until phase 7);
-  it is just no longer on the client contract.
+    * `visitor_to_json/2` — full profile `{id, expires_at, registered}`.
+      Used by `MeJSON` so the SPA can render the session-end countdown.
+    * `visitor_to_credential_json/2` — minimal `{id, registered}`. Used by
+      `AuthJSON` post-login where the SPA already has the bearer token TTL
+      via `accounts_sessions.expires_at` on a separate door.
 
   Same {full, credential} pair pattern as `Grappa.Accounts.Wire`.
   """
@@ -56,86 +41,41 @@ defmodule Grappa.Visitors.Wire do
 
   @type credential_json :: %{
           id: Ecto.UUID.t(),
-          nick: String.t(),
-          ident: String.t() | nil,
-          realname: String.t() | nil,
           registered: boolean()
         }
 
   @type t :: %{
           id: Ecto.UUID.t(),
-          nick: String.t(),
-          ident: String.t() | nil,
-          realname: String.t() | nil,
           expires_at: DateTime.t() | nil,
           registered: boolean()
         }
 
   @doc """
   Renders a `Visitors.Visitor` row to its credential-exchange JSON
-  shape — `{id, nick, ident, realname, registered}`. Used by
-  `AuthJSON.login/1`.
-
-  #211 phase 6 — `network_slug` DROPPED from the wire. A visitor is
-  multi-network now (phase 4c accretion); per-network attachment lives
-  on the `GET /networks` rows (`Networks.Wire.visitor_network_to_json/3`),
-  NOT the singular subject scalar. The visitor row's `network_slug`
-  column still exists (dual-written for the login row-lookup until phase
-  7 drops it), but it is no longer EXPOSED on the client contract — the
-  expand→contract wire cutover ahead of the phase-7 column drop.
-
-  Excludes `:password_encrypted` (the post-Cloak-load plaintext
-  upstream secret) explicitly. If you're tempted to add that field,
-  stop and re-read the moduledoc. `:registered` exposes only the
-  PRESENCE of the secret (see `registered?/1`), never the secret.
+  shape — `{id, registered}`. Used by `AuthJSON.login/1`. `registered` is
+  the DERIVED permanence flag (see moduledoc) — the caller resolves it via
+  `Grappa.Networks.Credentials.visitor_registered?/1` and passes it in.
   """
-  @spec visitor_to_credential_json(Visitor.t()) :: credential_json()
-  def visitor_to_credential_json(%Visitor{} = v) do
+  @spec visitor_to_credential_json(Visitor.t(), boolean()) :: credential_json()
+  def visitor_to_credential_json(%Visitor{} = v, registered) when is_boolean(registered) do
     %{
       id: v.id,
-      nick: v.nick,
-      ident: v.ident,
-      realname: v.realname,
-      registered: registered?(v)
+      registered: registered
     }
   end
 
   @doc """
   Renders a `Visitors.Visitor` row to its full profile JSON shape —
-  `{id, nick, ident, realname, expires_at, registered}`. Used by
-  `MeJSON.show/1` for the SPA's session-end countdown + the #152
-  SettingsDrawer identity editor.
-
-  #211 phase 6 — `network_slug` DROPPED (see
-  `visitor_to_credential_json/1`). Per-network status now lives on the
-  `GET /networks` rows, so the identity-wide `/me` profile carries only
-  identity fields.
-
-  Excludes `:password_encrypted` explicitly (same rationale as
-  `visitor_to_credential_json/1`). Excludes `:ip` (operator-audit
-  field, not for the wire) + `:inserted_at` + `:updated_at` (not
-  part of the documented wire contract).
+  `{id, expires_at, registered}`. Used by `MeJSON.show/1` for the SPA's
+  session-end countdown. `registered` is the DERIVED permanence flag (see
+  moduledoc), passed in by the caller.
   """
-  @spec visitor_to_json(Visitor.t()) :: t()
-  def visitor_to_json(%Visitor{} = v) do
+  @spec visitor_to_json(Visitor.t(), boolean()) :: t()
+  def visitor_to_json(%Visitor{} = v, registered) when is_boolean(registered) do
     %{
       id: v.id,
-      nick: v.nick,
-      ident: v.ident,
-      realname: v.realname,
       expires_at: v.expires_at,
-      registered: registered?(v)
+      registered: registered
     }
   end
-
-  # #126 — a "registered" visitor is a NickServ-IDENTIFIED visitor: one
-  # that committed a NickServ password (`password_encrypted` non-nil ⟺
-  # permanent, `expires_at == nil`). This derived boolean is the cic gate
-  # for the persistent-identity verbs (detach + disconnect/reconnect);
-  # ephemeral/anon visitors (`password_encrypted == nil`) get only quit.
-  # Exposes the PRESENCE of the secret, never the secret — the moduledoc
-  # leak-defense invariant is unchanged.
-  @spec registered?(Visitor.t()) :: boolean()
-  defp registered?(%Visitor{password_encrypted: nil}), do: false
-  defp registered?(%Visitor{password_encrypted: _}), do: true
 end

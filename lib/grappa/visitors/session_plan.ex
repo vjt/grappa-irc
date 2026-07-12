@@ -1,9 +1,15 @@
 defmodule Grappa.Visitors.SessionPlan do
   @moduledoc """
-  Mirror of `Grappa.Networks.SessionPlan` for visitor-row input.
-  Resolves a `%Visitor{}` + the matching network's lowest-priority
+  Mirror of `Grappa.Networks.SessionPlan` for visitor input.
+  Resolves a `%Visitor{}` + an explicit `%Network{}`'s lowest-priority
   enabled server into the primitive `t:Grappa.Session.start_opts/0`
   map for `Grappa.Session.start_session/3`.
+
+  #211 phase 7 — identity (nick/ident/realname/password/auth_method) lives
+  PER-NETWORK on the `(visitor_id, network_id)` Credential; the visitor
+  row is a pure identity/TTL row. So resolution is credential-first + always
+  network-explicit (`resolve/2` — there is no `resolve/1`), and the plan's
+  identity fields come from the credential, not the visitor scalars.
 
   Visitor-specific shape:
 
@@ -11,12 +17,13 @@ defmodule Grappa.Visitors.SessionPlan do
     * `subject_label = "visitor:" <> visitor.id` (Q1=a — UUID stable
       across NickServ rename, no collision with user.name since `:`
       is invalid in user names)
-    * `sasl_user = visitor.nick` (Q2=c — populated even though SASL
+    * `sasl_user = credential.nick` (Q2=c — populated even though SASL
       never fires for visitors; visitor `auth_method` is always
       `:none | :nickserv_identify`)
-    * `auth_method = :none` if `password_encrypted` is nil (anon)
+    * `auth_method = :none` if the credential's `password_encrypted` is nil
+      (anon on this network)
     * `auth_method = :nickserv_identify` + plaintext password from
-      EncryptedBinary roundtrip if registered
+      EncryptedBinary roundtrip if identified on this network
 
   Used by `Grappa.Bootstrap` (visitor respawn at boot, Task 19) and
   `Grappa.Visitors.Login` (synchronous login probe-connect, Task 9).
@@ -32,37 +39,18 @@ defmodule Grappa.Visitors.SessionPlan do
   alias Grappa.Visitors.Visitor
 
   @doc """
-  Resolve a `%Visitor{}` row into the primitive `Session.start_opts/0`
-  plan. Looks up the matching `Networks.Network` by slug, picks the
-  lowest-priority enabled server, and threads the visitor's identity
-  fields (subject, subject_label, nick, sasl_user, auth_method,
-  password) into the plan.
+  #211 phase 4c/7 — resolve a `%Visitor{}` for an EXPLICIT `%Network{}`
+  (login / accretion / per-network reconnect / Bootstrap). A visitor's
+  identity + credentials are per-network now (the `visitors.network_slug`
+  scalar is gone), so EVERY resolve is network-explicit — there is no
+  singular-network `resolve/1` anymore. A visitor whose credentials span
+  networks resolves the RIGHT one from the passed `%Network{}`.
 
-  Returns `{:error, :network_unconfigured}` if the slug doesn't have
-  a `Network` row, or `{:error, :no_server}` if the network has no
-  enabled server endpoints.
-  """
-  @spec resolve(Visitor.t()) ::
-          {:ok, Session.start_opts()} | {:error, :network_unconfigured | :no_server}
-  def resolve(%Visitor{} = visitor) do
-    with {:ok, network} <- fetch_network(visitor.network_slug) do
-      resolve(visitor, network)
-    end
-  end
-
-  @doc """
-  #211 phase 4c — resolve a `%Visitor{}` for an EXPLICIT `%Network{}`
-  (accretion / per-network reconnect). `resolve/1` delegates here with the
-  visitor's pinned `network_slug`; a multi-network caller passes the target
-  network directly so a visitor whose credentials span networks resolves
-  the RIGHT one — not always the primary `network_slug` (which phase 7
-  drops).
-
-  Same shape as `resolve/1`: resolve the visitor's `(visitor_id,
-  network_id)` Credential (self-healing), pick the lowest-priority enabled
-  server, build the plan. `{:error, :no_server}` when the network has no
-  enabled endpoints; `{:error, :network_unconfigured}` when the credential
-  can't be built.
+  Resolves the visitor's `(visitor_id, network_id)` Credential (the
+  identity source of truth), picks the lowest-priority enabled server, and
+  builds the plan. `{:error, :no_server}` when the network has no enabled
+  endpoints; `{:error, :network_unconfigured}` when the visitor holds no
+  credential on this network.
   """
   @spec resolve(Visitor.t(), Networks.Network.t()) ::
           {:ok, Session.start_opts()} | {:error, :network_unconfigured | :no_server}
@@ -113,20 +101,11 @@ defmodule Grappa.Visitors.SessionPlan do
 
   def with_login_identify(plan, _), do: plan
 
-  defp fetch_network(slug) do
-    case Networks.get_network_by_slug(slug) do
-      {:ok, network} -> {:ok, network}
-      {:error, :not_found} -> {:error, :network_unconfigured}
-    end
-  end
-
-  # #211 phase 3 — resolve the visitor's `(visitor_id, network_id)`
-  # Credential (self-healing a missing one from the visitor row). The
-  # read-cutover means visitor identity now comes from the Credential,
-  # not the raw `%Visitor{}` columns. A credential that can't be built
-  # (should not happen for a well-formed visitor) collapses to
-  # `:network_unconfigured` — the same "subject no longer viable" surface
-  # the `refresh_plan` closure ends the respawn loop on.
+  # #211 phase 7 — resolve the visitor's `(visitor_id, network_id)`
+  # Credential (the identity source of truth — the visitor row is a pure
+  # identity/TTL row now, nothing to self-heal from). A missing credential
+  # collapses to `:network_unconfigured` — the same "subject no longer
+  # viable" surface the `refresh_plan` closure ends the respawn loop on.
   defp fetch_credential(%Visitor{} = visitor, network) do
     case Visitors.resolve_credential(visitor, network.id) do
       {:ok, %Credential{} = cred} -> {:ok, cred}
@@ -153,24 +132,34 @@ defmodule Grappa.Visitors.SessionPlan do
       # cannot statically alias Grappa.Visitors (closes a Boundary
       # cycle — Visitors deps Session via Login). Every visitor plan
       # carries the commit-callback so the +r-MODE-observed effect
-      # path can reach commit_password/2 without a module reference
-      # in the Session boundary.
-      visitor_committer: &Grappa.Visitors.commit_password/2,
-      # #131: visitor-side SET PASSWD committer. NOT `commit_password/2`
+      # path can reach commit_password/3 without a module reference in the
+      # Session boundary. #211 phase 7 — the password lives PER-NETWORK on
+      # the credential now, so the closure captures THIS session's
+      # `network.id` and presents the arity-2 shape Session.Server expects.
+      visitor_committer: fn visitor_id, password ->
+        Grappa.Visitors.commit_password(visitor_id, network.id, password)
+      end,
+      # #131: visitor-side SET PASSWD committer. NOT `commit_password/3`
       # (that one promotes anon→permanent, correct only behind the +r
-      # identity proof) — `rotate_password/2` is identity-gated so an
+      # identity proof) — `rotate_password/3` is identity-gated so an
       # optimistic on-send commit of a SET PASSWD from an unidentified anon
-      # visitor (which services would reject) can't pin the row permanent.
-      # Parallel to the user-side `Networks.SessionPlan.credential_committer`.
-      visitor_password_rotator: &Grappa.Visitors.rotate_password/2,
+      # visitor (which services would reject) can't pin the credential
+      # permanent. Parallel to the user-side
+      # `Networks.SessionPlan.credential_committer`. #211 phase 7 —
+      # per-network on the credential; captures `network.id`.
+      visitor_password_rotator: fn visitor_id, password ->
+        Grappa.Visitors.rotate_password(visitor_id, network.id, password)
+      end,
       # V9 (visitor-parity cluster, 2026-05-15): mirror of
       # `visitor_committer` for the upstream NICK self-echo. Server's
-      # `apply_effects/2` invokes this on `{:visitor_nick_changed, new}`
-      # to rotate `visitors.nick` after EventRouter confirms the
-      # rename was accepted (state.nick == old_nick path). Same opaque
-      # function-ref indirection — Visitors deps Session via Login,
-      # so a static alias would close a Boundary cycle.
-      visitor_nick_persister: &Grappa.Visitors.update_nick/2,
+      # `apply_effects/2` invokes this on `{:visitor_nick_changed, new}` to
+      # rotate the visitor's nick after EventRouter confirms the rename was
+      # accepted (state.nick == old_nick path). #211 phase 7 — the nick
+      # lives PER-NETWORK on the credential now, so the closure captures
+      # `network.id` and presents the arity-2 shape Session.Server expects.
+      visitor_nick_persister: fn visitor_id, new_nick ->
+        Grappa.Visitors.update_nick(visitor_id, network.id, new_nick)
+      end,
       # CP24 bucket E lifecycle/S1: visitor-side equivalent of the
       # user-side `Networks.SessionPlan.credential_failer` callback.
       # K-line / permanent-SASL on the visitor session calls this
@@ -217,7 +206,7 @@ defmodule Grappa.Visitors.SessionPlan do
       # `{:error, :not_found}` subsumes the prior `subject_row_present?`
       # fail-fast (visitor row reaped / operator-deleted between spawn
       # and restart) AND the `:network_unconfigured` / `:no_server`
-      # cases that `resolve/1` itself returns when the surrounding
+      # cases that `resolve/2` itself returns when the surrounding
       # config went away: in all three the subject is no longer
       # viable, so `Server.init/1` returns `:ignore` and the
       # supervisor drops the child permanently. Operator manually

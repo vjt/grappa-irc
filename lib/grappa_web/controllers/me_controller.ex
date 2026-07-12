@@ -23,9 +23,9 @@ defmodule GrappaWeb.MeController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{AccountDeletion, Networks, ReadCursor, Scrollback, Session, Visitors}
+  alias Grappa.{AccountDeletion, Networks, ReadCursor, Scrollback}
+  alias Grappa.Networks.Credentials
   alias Grappa.Push.BadgeCount
-  alias Grappa.Visitors.Visitor
   alias GrappaWeb.UserSocket
 
   @doc """
@@ -140,6 +140,8 @@ defmodule GrappaWeb.MeController do
 
         render(conn, :show,
           visitor: visitor,
+          # #211 phase 7 — registration is DERIVED from the credentials.
+          registered: Credentials.visitor_registered?(visitor.id),
           read_cursors: cursors,
           unread_counts: unread_counts,
           badge_count: BadgeCount.count(subject),
@@ -148,67 +150,6 @@ defmodule GrappaWeb.MeController do
 
       _ ->
         {:error, :unauthorized}
-    end
-  end
-
-  @doc """
-  `PATCH /me/identity` — #152 visitor self-service IRC identity
-  (`ident` + `realname`), live-applied via internal reconnect.
-
-  Visitor-only: a user subject gets 403 (registered-user self-service
-  is a deferred follow-on; users' identity is operator-set via
-  `/admin/credentials`). Delegates to `Visitors.update_identity/2`,
-  which validates + persists (tilde-strip + shape guard on ident,
-  CR/LF/NUL guard on realname) and, if a live session exists, reconnects
-  the upstream so the new ident/realname re-register. Returns 200 with
-  the updated visitor identity; 422 on validation failure (via
-  FallbackController's changeset clause); 403 for a user subject; 401
-  without a Bearer.
-
-  Body: `{ident?: string, realname?: string}` — both optional; an
-  omitted field is left unchanged.
-  """
-  @spec update_identity(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :forbidden | :not_found | :unauthorized | Ecto.Changeset.t()}
-  def update_identity(conn, params) do
-    case conn.assigns[:current_subject] do
-      {:visitor, %Visitor{} = visitor} ->
-        attrs = identity_attrs(params)
-
-        with {:ok, updated} <- Visitors.update_identity(visitor, attrs) do
-          render(conn, :identity, visitor: updated, connected: visitor_connected?(updated))
-        end
-
-      {:user, _} ->
-        {:error, :forbidden}
-
-      _ ->
-        {:error, :unauthorized}
-    end
-  end
-
-  # Whitelist the two identity fields from the request body. A key the
-  # caller OMITS is left out so `identity_changeset/2` leaves that field
-  # unchanged (no clobber-to-nil). A key present with `""` is PASSED
-  # THROUGH on purpose — the settings editor is the canonical edit
-  # surface, so `""` is a deliberate "clear to default" (Ecto's cast maps
-  # "" → nil → the SessionPlan effective_* fallback applies). This is the
-  # OPPOSITE of `Grappa.Visitors.Login.login_identity_attrs/1`, which
-  # DROPS `""` (a blank login-Advanced field means "don't set", never
-  # "clear"). Do NOT "deduplicate" the two helpers into one — the empty-
-  # string semantics are load-bearing and deliberately divergent. String
-  # keys → atom keys for the changeset cast.
-  @spec identity_attrs(map()) :: %{optional(:ident) => term(), optional(:realname) => term()}
-  defp identity_attrs(params) do
-    %{}
-    |> maybe_put(params, "ident", :ident)
-    |> maybe_put(params, "realname", :realname)
-  end
-
-  defp maybe_put(acc, params, string_key, atom_key) do
-    case Map.fetch(params, string_key) do
-      {:ok, value} -> Map.put(acc, atom_key, value)
-      :error -> acc
     end
   end
 
@@ -247,25 +188,6 @@ defmodule GrappaWeb.MeController do
     with :ok <- AccountDeletion.delete_account(subject) do
       :ok = UserSocket.disconnect_subject(subject)
       send_resp(conn, :no_content, "")
-    end
-  end
-
-  # #126 — a visitor's live upstream status is whereis-derived: visitors
-  # have NO `connection_state` column (that's a user-only credential
-  # field), so the registry IS the source of truth. `Session.whereis/2`
-  # is a cheap `Registry.lookup` (NOT a `GenServer.call`), so it preserves
-  # this controller's no-blocking-Session-call intent (see moduledoc)
-  # while giving cic the flag that drives the SettingsDrawer disconnect ⇄
-  # reconnect toggle. An orphaned visitor whose network row was deleted
-  # resolves to `false` — there is no live pid either way.
-  @spec visitor_connected?(Visitor.t()) :: boolean()
-  defp visitor_connected?(%Visitor{network_slug: slug, id: id}) do
-    case Networks.get_network_by_slug(slug) do
-      {:ok, %Networks.Network{id: network_id}} ->
-        Session.whereis({:visitor, id}, network_id) != nil
-
-      {:error, :not_found} ->
-        false
     end
   end
 

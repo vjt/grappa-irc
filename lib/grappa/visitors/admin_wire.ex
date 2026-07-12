@@ -12,39 +12,26 @@ defmodule Grappa.Visitors.AdminWire do
   needs those fields PLUS the live BEAM state join — they don't
   belong on the public wire.
 
-  Splitting AdminWire from Wire keeps the public Wire's allowlist
-  contract tight: a future cic feature that wants visitor IP for some
-  reason would be a deliberate edit to Wire, not a side-effect of
-  reusing the admin shape. Same pattern as
-  `Grappa.Networks.Wire` ↔ (future) `Grappa.Networks.AdminWire`.
+  ## #211 phase 7 — multi-network shape
+
+  A visitor is multi-network now, and its per-network identity (nick) lives
+  on the `network_credentials` rows, not the visitor row. So the admin
+  shape is an identity-wide envelope (`id`, `expires_at`, `identified`,
+  `ip`, `inserted_at`) with a `:networks` list — one entry per credential
+  carrying that network's `slug`, `nick`, `connection_state`, and the live
+  BEAM `live_state` join (`nil` = the U-0 honesty signal: DB intent exists,
+  BEAM doesn't). A visitor with no credentials yields `networks: []`.
 
   ## Defensive field exclusion (CRITICAL)
 
-  `:password_encrypted` is NEVER in the rendered map. Cloak decrypts
-  on read — naive `Jason.encode!/1` would leak the upstream NickServ
-  password. Same defense Wire's moduledoc documents at length.
-  Adding fields to this shape = edit one site (this module) with
+  No credential secret (`:password_encrypted`) or `:auth_method` is ever in
+  the rendered map — only the per-network `nick`/`connection_state` the
+  operator needs. Adding fields = edit one site (this module) with
   explicit per-field projection.
-
-  ## Shape note vs MD2 plan example
-
-  MD2 shows visitors wrapped under a `db_state: {...}` key alongside
-  `live_state: {...}`. The actual wire flattens visitor fields to
-  the top level — the visitor schema IS the DB intent, so a
-  separate `db_state` wrapper would be empty ceremony. The
-  `live_state: nil` U-0 honesty signal still surfaces at the same
-  field name; nothing operational is lost in the flattening.
-
-  ## Live-state join shape
-
-  Caller (`Grappa.Visitors.list_all_with_live_state/0`) attaches the
-  `Grappa.LiveIntrospection.SessionEntry` (or `nil` when no live
-  pid). `live_state: nil` IS the U-0 honesty signal — the admin
-  console renders that prominently so the operator sees "DB intent
-  exists, BEAM doesn't."
   """
 
   alias Grappa.LiveIntrospection.SessionEntry
+  alias Grappa.Networks.{Credential, Network}
   alias Grappa.Visitors.Visitor
 
   @type live_state_json :: %{
@@ -56,32 +43,54 @@ defmodule Grappa.Visitors.AdminWire do
           introspection_degraded: [SessionEntry.degraded_field()]
         }
 
+  @type network_json :: %{
+          network_slug: String.t(),
+          nick: String.t(),
+          connection_state: Credential.connection_state(),
+          live_state: live_state_json() | nil
+        }
+
   @type t :: %{
           id: Ecto.UUID.t(),
-          nick: String.t(),
-          network_slug: String.t(),
           expires_at: DateTime.t() | nil,
           identified: boolean(),
           ip: String.t() | nil,
           inserted_at: DateTime.t(),
-          live_state: live_state_json() | nil
+          networks: [network_json()]
         }
 
   @doc """
-  Render a visitor row + optional live state to the admin JSON
-  shape. `live` is `nil` when no `Session.Server` is registered for
-  `{:visitor, v.id} × network.id` — the U-0 honesty signal.
+  Render a visitor row + its per-network credentials-with-live-state to
+  the admin JSON shape. `per_network` is the `[{credential, live}]` list
+  from `Grappa.Visitors.list_all_with_live_state/0`; each `live` is `nil`
+  when no `Session.Server` is registered for `{:visitor, v.id} ×
+  credential.network_id` — the U-0 honesty signal.
   """
-  @spec visitor_to_admin_json(Visitor.t(), SessionEntry.t() | nil) :: t()
-  def visitor_to_admin_json(%Visitor{} = v, live) do
+  @spec visitor_to_admin_json(
+          Visitor.t(),
+          [{Credential.t(), SessionEntry.t() | nil}]
+        ) :: t()
+  def visitor_to_admin_json(%Visitor{} = v, per_network) when is_list(per_network) do
     %{
       id: v.id,
-      nick: v.nick,
-      network_slug: v.network_slug,
       expires_at: v.expires_at,
-      identified: is_nil(v.expires_at),
+      # #211 phase 7 — "identified/registered" is DERIVED from the
+      # credentials (any network holds a committed NickServ secret), not a
+      # `visitors.expires_at`-nil flag. The per_network list is already
+      # loaded, so derive it in-memory here — no extra query.
+      identified: Enum.any?(per_network, fn {cred, _} -> cred.password_encrypted != nil end),
       ip: v.ip,
       inserted_at: v.inserted_at,
+      networks: Enum.map(per_network, &network_entry/1)
+    }
+  end
+
+  @spec network_entry({Credential.t(), SessionEntry.t() | nil}) :: network_json()
+  defp network_entry({%Credential{network: %Network{slug: slug}} = cred, live}) do
+    %{
+      network_slug: slug,
+      nick: cred.nick,
+      connection_state: cred.connection_state,
       live_state: live_state_to_json(live)
     }
   end

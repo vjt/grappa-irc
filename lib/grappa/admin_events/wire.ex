@@ -102,7 +102,6 @@ defmodule Grappa.AdminEvents.Wire do
           kind: :visitor_deleted,
           visitor_id: String.t(),
           visitor_nick: String.t() | nil,
-          network_slug: String.t() | nil,
           actor_user_id: String.t() | nil,
           actor_user_name: String.t() | nil,
           at: String.t()
@@ -112,7 +111,6 @@ defmodule Grappa.AdminEvents.Wire do
           kind: :visitor_reaped,
           visitor_id: String.t(),
           visitor_nick: String.t() | nil,
-          network_slug: String.t() | nil,
           at: String.t()
         }
 
@@ -427,19 +425,16 @@ defmodule Grappa.AdminEvents.Wire do
           String.t(),
           String.t() | nil,
           String.t() | nil,
-          String.t() | nil,
           String.t() | nil
         ) :: visitor_deleted_event()
-  def visitor_deleted(visitor_id, visitor_nick, network_slug, actor_user_id, actor_user_name)
-      when is_binary(visitor_id) and (is_binary(visitor_nick) or is_nil(visitor_nick)) and
-             (is_binary(network_slug) or is_nil(network_slug)) do
+  def visitor_deleted(visitor_id, visitor_nick, actor_user_id, actor_user_name)
+      when is_binary(visitor_id) and (is_binary(visitor_nick) or is_nil(visitor_nick)) do
     :ok = validate_actor(actor_user_id, actor_user_name)
 
     %{
       kind: :visitor_deleted,
       visitor_id: visitor_id,
       visitor_nick: visitor_nick,
-      network_slug: network_slug,
       actor_user_id: actor_user_id,
       actor_user_name: actor_user_name,
       at: now()
@@ -447,15 +442,13 @@ defmodule Grappa.AdminEvents.Wire do
   end
 
   @doc false
-  @spec visitor_reaped(String.t(), String.t() | nil, String.t() | nil) :: visitor_reaped_event()
-  def visitor_reaped(visitor_id, visitor_nick, network_slug)
-      when is_binary(visitor_id) and (is_binary(visitor_nick) or is_nil(visitor_nick)) and
-             (is_binary(network_slug) or is_nil(network_slug)) do
+  @spec visitor_reaped(String.t(), String.t() | nil) :: visitor_reaped_event()
+  def visitor_reaped(visitor_id, visitor_nick)
+      when is_binary(visitor_id) and (is_binary(visitor_nick) or is_nil(visitor_nick)) do
     %{
       kind: :visitor_reaped,
       visitor_id: visitor_id,
       visitor_nick: visitor_nick,
-      network_slug: network_slug,
       at: now()
     }
   end

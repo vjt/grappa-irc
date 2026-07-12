@@ -93,7 +93,7 @@ defmodule Grappa.Visitors.Login do
   alias Grappa.{Accounts, Networks, Session, Visitors}
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.Auth.IdentifierClassifier
-  alias Grappa.Networks.Credential
+  alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.Session.Backoff
   alias Grappa.Visitors.{SessionPlan, Visitor}
 
@@ -418,32 +418,39 @@ defmodule Grappa.Visitors.Login do
     end
   end
 
-  # #152 — persist the login-Advanced ident/realname onto the freshly
-  # provisioned anon row BEFORE the spawn, so the plan resolver reads
-  # them and the FIRST USER line at registration carries the identity
-  # (no reconnect needed at initial login). Reuses the schema's
-  # `identity_changeset/2` (tilde-strip + shape guard) via
-  # `Visitors.update_identity/2` — but this is a NOT-yet-live row, so
-  # that call takes the persist-only branch (no session to reconnect).
-  # A bad ident surfaces as `:malformed_ident` so the login 400s (the
-  # caller purges the fresh row on this error, same as a spawn failure).
-  # No-op when neither field is set (guest / plain login).
-  @spec apply_login_identity(Visitor.t(), input()) ::
-          {:ok, Visitor.t()} | {:error, :malformed_ident | :upstream_unreachable}
-  defp apply_login_identity(visitor, input) do
+  # #152 — apply the login-Advanced ident/realname onto the freshly
+  # provisioned visitor's `(visitor_id, network_id)` Credential BEFORE the
+  # spawn, so the plan resolver reads them and the FIRST USER line at
+  # registration carries the identity (no reconnect needed at initial
+  # login). #211 phase 7 — identity is per-network on the credential now
+  # (the `visitors.ident`/`realname` scalars are gone), so this writes the
+  # credential via `Credentials.update_credential_identity/2` (tilde-strip
+  # + shape guard). A bad ident surfaces as `:malformed_ident` so the login
+  # 400s (the caller purges the fresh row on this error, same as a spawn
+  # failure). No-op when neither field is set (guest / plain login).
+  @spec apply_login_identity(Visitor.t(), Networks.Network.t(), input()) ::
+          :ok | {:error, :malformed_ident | :upstream_unreachable}
+  defp apply_login_identity(visitor, network, input) do
     identity = login_identity_attrs(input)
 
     if identity == %{} do
-      {:ok, visitor}
+      :ok
     else
-      case Visitors.update_identity(visitor, identity) do
-        {:ok, updated} -> {:ok, updated}
-        {:error, %Ecto.Changeset{}} -> {:error, :malformed_ident}
-        # A concurrent delete of the just-provisioned row (services
-        # enforce-rename race, operator delete) is NOT a bad ident — map
-        # it to the same surface the spawn `:ignore` path uses so the user
-        # isn't told to fix a well-formed ident.
-        {:error, :not_found} -> {:error, :upstream_unreachable}
+      with {:ok, cred} <- Visitors.resolve_credential(visitor, network.id),
+           {:ok, _} <- Credentials.update_credential_identity(cred, identity) do
+        :ok
+      else
+        # A bad ident value → the login 400s (the caller purges the fresh
+        # row on this error, same as a spawn failure).
+        {:error, %Ecto.Changeset{}} ->
+          {:error, :malformed_ident}
+
+        # A concurrent unbind of the just-provisioned credential (or a
+        # missing one) is NOT a bad ident — map it to the same surface the
+        # spawn `:ignore` path uses so the user isn't told to fix a
+        # well-formed ident.
+        {:error, :not_found} ->
+          {:error, :upstream_unreachable}
       end
     end
   end
@@ -499,7 +506,7 @@ defmodule Grappa.Visitors.Login do
     # that purges the just-provisioned anon row — otherwise a bad
     # login-Advanced ident leaves the row squatting the nick until the TTL
     # reaper. Persist BEFORE spawn so the first USER carries the identity.
-    with {:ok, visitor} <- apply_login_identity(visitor, input),
+    with :ok <- apply_login_identity(visitor, network, input),
          {:ok, _} <- spawn_and_await(visitor, network, input.password, timeouts) do
       issue_token(visitor, input)
     end
@@ -555,7 +562,7 @@ defmodule Grappa.Visitors.Login do
   end
 
   defp spawn_and_await(visitor, network, login_password, timeouts) do
-    case SessionPlan.resolve(visitor) do
+    case SessionPlan.resolve(visitor, network) do
       {:ok, plan} ->
         # Fresh-visitor first-login IDENTIFY policy (case 1 only — case 2
         # passes `login_password: nil`, case 3 doesn't respawn). A fresh

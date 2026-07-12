@@ -318,6 +318,156 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  #211 phase 7 — commit a NickServ password onto the visitor's
+  `(visitor_id, network_id)` Credential (encrypted at rest by Cloak). The
+  per-network home for the visitor secret now that the
+  `visitors.password_encrypted` scalar is dropped. Shared by both the +r
+  observation (`Grappa.Visitors.commit_password/3`) and the #131 optimistic
+  `SET PASSWD` (`rotate_password/3`).
+
+  Routes through the narrow `Credential.password_changeset/2` so only
+  `password_encrypted` is touched. `{:error, :not_found}` on a missing
+  credential OR a concurrent unbind (H14 stale-struct race), mirroring the
+  user-side `commit_password/3`.
+  """
+  @spec commit_visitor_password(Ecto.UUID.t(), pos_integer(), String.t()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def commit_visitor_password(visitor_id, network_id, password)
+      when is_binary(visitor_id) and is_integer(network_id) and is_binary(password) and
+             password != "" do
+    case get_visitor_credential(visitor_id, network_id) do
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:ok, %Credential{} = cred} ->
+        try do
+          # #211 phase 7 — committing a password IS identifying via NickServ,
+          # so flip `auth_method` to `:nickserv_identify` alongside the
+          # secret (the pre-phase-7 `credential_attrs` write-through did the
+          # same when it saw a non-nil password). An anon credential
+          # (`auth_method: :none`) becomes an identifying one; an
+          # already-identifying credential is idempotent.
+          cred
+          |> Credential.password_changeset(password)
+          |> Ecto.Changeset.put_change(:auth_method, :nickserv_identify)
+          |> Repo.update()
+        rescue
+          Ecto.StaleEntryError -> {:error, :not_found}
+        end
+    end
+  end
+
+  @doc """
+  #211 phase 7 — rotate the visitor's nick on its `(visitor_id,
+  network_id)` Credential after upstream confirmed the NICK self-echo (V9).
+  The per-network home for the visitor nick now that the `visitors.nick`
+  scalar is dropped.
+
+  Routes through the narrow `Credential.identity_changeset/2` (nick only —
+  the folded-nick partial unique index, phase 4b, catches a concurrent
+  cross-visitor collision as a changeset error). `{:error, :not_found}` on
+  a missing credential OR a concurrent unbind (H14 stale-struct race).
+  """
+  @spec update_visitor_credential_nick(Ecto.UUID.t(), pos_integer(), String.t()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def update_visitor_credential_nick(visitor_id, network_id, new_nick)
+      when is_binary(visitor_id) and is_integer(network_id) and is_binary(new_nick) do
+    case get_visitor_credential(visitor_id, network_id) do
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:ok, %Credential{} = cred} ->
+        try do
+          cred |> Credential.identity_changeset(%{nick: new_nick}) |> Repo.update()
+        rescue
+          Ecto.StaleEntryError -> {:error, :not_found}
+        end
+    end
+  end
+
+  @doc """
+  #211 phase 7 — the visitor's REPRESENTATIVE identity credential: the
+  lowest-`network_id` credential the identity holds (the "identity anchor").
+  Since the visitor row no longer carries identity scalars, a caller that
+  needs the identity's canonical nick/ident/realname without a specific
+  network (accretion seed, admin/label display, the slimmed subject wire)
+  reads it from this anchor credential.
+
+  Deterministic (min `network_id`) so the anchor is stable across reboots
+  and matches the `list_visitor_credentials/1` ordering. `{:error,
+  :not_found}` when the identity holds no credential (a fresh row the boot
+  reconcile hasn't touched — should not happen post-provision).
+  """
+  @spec representative_visitor_credential(Ecto.UUID.t()) ::
+          {:ok, Credential.t()} | {:error, :not_found}
+  def representative_visitor_credential(visitor_id) when is_binary(visitor_id) do
+    query =
+      from(c in Credential,
+        where: c.visitor_id == ^visitor_id,
+        order_by: [asc: c.network_id],
+        limit: 1
+      )
+
+    case Repo.one(query) do
+      %Credential{} = c -> {:ok, c}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  #211 phase 7 — batched representative-nick lookup:
+  `[visitor_id] → %{visitor_id => nick}`. One query regardless of input
+  size, for admin listings that resolve N visitor session labels without
+  an N+1. The nick is the representative (lowest-`network_id`) credential's
+  nick per visitor — the same identity-anchor
+  `representative_visitor_credential/1` returns. Visitors with no
+  credential are absent from the map (caller maps to the `nil` U-0 honesty
+  label). Mirror of `Grappa.Accounts`'s batched id→label lookups.
+  """
+  @spec representative_nicks_by_visitor_ids([Ecto.UUID.t()]) :: %{Ecto.UUID.t() => String.t()}
+  def representative_nicks_by_visitor_ids([]), do: %{}
+
+  def representative_nicks_by_visitor_ids(visitor_ids) when is_list(visitor_ids) do
+    # Per visitor, pick the lowest-network_id credential's nick via a
+    # correlated MIN subquery — one round-trip, one row per visitor that
+    # holds ≥1 credential.
+    query =
+      from(c in Credential,
+        where:
+          c.visitor_id in ^visitor_ids and
+            c.network_id ==
+              fragment(
+                "(SELECT MIN(c2.network_id) FROM network_credentials c2 WHERE c2.visitor_id = ?)",
+                c.visitor_id
+              ),
+        select: {c.visitor_id, c.nick}
+      )
+
+    query |> Repo.all() |> Map.new()
+  end
+
+  @doc """
+  #211 phase 7 — is the visitor identity REGISTERED? True iff it holds at
+  least one credential carrying a committed NickServ secret
+  (`password_encrypted IS NOT NULL`) on ANY network. This is the DERIVED
+  permanence flag — the source of truth is the credentials themselves, NOT
+  a parallel `visitors.expires_at`-nil flag (which would drift the moment a
+  credential is unbound). Identifying on any network makes the identity
+  registered; unbinding the last registered credential makes it anon again,
+  automatically.
+  """
+  @spec visitor_registered?(Ecto.UUID.t()) :: boolean()
+  def visitor_registered?(visitor_id) when is_binary(visitor_id) do
+    query =
+      from(c in Credential,
+        where: c.visitor_id == ^visitor_id and not is_nil(c.password_encrypted),
+        limit: 1
+      )
+
+    Repo.exists?(query)
+  end
+
+  @doc """
   #211 phase 6 — per-network IDENTITY edit on a `(subject, network)`
   credential (`nick` + `ident` + `realname`). Backs
   `PATCH /networks/:network_id/identity` for BOTH subjects (ruling E).

@@ -70,7 +70,7 @@ defmodule Grappa.Operator do
   alias Grappa.AdminEvents.Wire, as: AdminWire
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.LiveIntrospection.SessionEntry
-  alias Grappa.Networks.Credentials
+  alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.Visitors.Visitor
 
   require Logger
@@ -218,28 +218,36 @@ defmodule Grappa.Operator do
   @spec emit_visitor_deleted(Visitor.t(), actor()) :: :ok
   defp emit_visitor_deleted(%Visitor{} = v, actor) do
     {actor_id, actor_name} = unpack_actor(actor)
-    AdminEvents.record(AdminWire.visitor_deleted(v.id, v.nick, v.network_slug, actor_id, actor_name))
+    AdminEvents.record(AdminWire.visitor_deleted(v.id, visitor_nick(v), actor_id, actor_name))
   end
 
-  defp stop_visitor_session(%Visitor{id: id, network_slug: slug}) do
-    case Networks.get_network_by_slug(slug) do
-      {:ok, network} ->
-        :ok = Session.stop_session({:visitor, id}, network.id, "visitor deleted by admin")
+  # #211 phase 7 — the visitor's display nick lives per-network on the
+  # credential now (the `visitors.nick` scalar is dropped). For an
+  # identity-wide label (delete event, operator log) use the representative
+  # (identity-anchor) credential's nick; `nil` when the identity holds no
+  # credential (a fresh/mangled row).
+  @spec visitor_nick(Visitor.t()) :: String.t() | nil
+  defp visitor_nick(%Visitor{id: id}) do
+    case Credentials.representative_visitor_credential(id) do
+      {:ok, %Credential{nick: nick}} -> nick
+      {:error, :not_found} -> nil
+    end
+  end
 
-      {:error, :not_found} ->
-        # Visitor row pinned to a network that no longer exists. The DB
-        # delete still works (CASCADE wipes dependents); there's no
-        # live session to terminate because spawn requires the network
-        # row to resolve. Surface via stderr so the operator knows the
-        # row was orphaned.
-        IO.puts(:stderr, "network #{slug} not found, no session to stop")
+  # #211 phase 7 — a visitor is multi-network; its nick lives per-network on
+  # the credential. Stop EVERY attached network's session (the retired
+  # `visitors.network_slug` scalar only ever resolved the primary one).
+  # Idempotent per network (`stop_session/3` no-ops without a live pid).
+  defp stop_visitor_session(%Visitor{id: id}) do
+    for %Credential{network_id: network_id} <- Credentials.list_visitor_credentials(id) do
+      :ok = Session.stop_session({:visitor, id}, network_id, "visitor deleted by admin")
     end
 
     :ok
   end
 
   defp log_delete_outcome(id, visitor, :ok) do
-    IO.puts("deleted visitor #{id} (#{visitor.nick}@#{visitor.network_slug})")
+    IO.puts("deleted visitor #{id} (#{visitor_nick(visitor)})")
     :ok
   end
 
@@ -550,8 +558,10 @@ defmodule Grappa.Operator do
   @doc """
   Print active visitors (anon TTL not yet elapsed + identified
   never-expires rows) as a tab-separated table: header + one row per
-  visitor. Columns: id, nick, network_slug, expires_at, identified,
-  inserted_at.
+  visitor. #211 phase 7 — identity-wide columns only (id, expires_at,
+  identified, ip, inserted_at); the per-network nick lives on the
+  credentials table (`list_credentials_text!`) now that a visitor is
+  multi-network.
   """
   @spec list_visitors_text!() :: :ok
   def list_visitors_text! do
@@ -562,10 +572,9 @@ defmodule Grappa.Operator do
 
       row = [
         v.id,
-        v.nick,
-        v.network_slug,
         format_datetime(v.expires_at),
         identified,
+        v.ip || "",
         format_datetime(v.inserted_at)
       ]
 
@@ -644,7 +653,7 @@ defmodule Grappa.Operator do
   ## Column headers
 
   defp visitor_columns,
-    do: ["id", "nick", "network_slug", "expires_at", "identified", "inserted_at"]
+    do: ["id", "expires_at", "identified", "ip", "inserted_at"]
 
   defp credential_columns,
     do: ["user_id", "network_slug", "nick", "state", "connection_state_reason"]

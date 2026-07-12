@@ -67,70 +67,57 @@ defmodule Grappa.Visitors do
   import Ecto.Query
 
   alias Grappa.{Admission, Networks, Repo, Session, SpawnOrchestrator}
-  alias Grappa.IRC.Identifier
   alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.Visitors.{SessionPlan, Visitor}
 
-  # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment).
-  require Identifier
   require Logger
 
   @anon_ttl_seconds 48 * 3600
   @touch_cadence_seconds 3600
 
   @doc """
-  Find an existing anon visitor by `(nick, network_slug)`, or create
-  a fresh one. The fresh row carries `expires_at = now + 48h` and
-  `password_encrypted = nil`.
+  Find an existing visitor identity by `(nick, network)`, or provision
+  a fresh anon one. The fresh identity is a BARE `%Visitor{}` row
+  (`expires_at = now + 48h`, `ip`) plus an anon `(visitor_id, network)`
+  Credential carrying the identity (`nick`, `auth_method: :none`).
 
-  `ip` is recorded on creation for the per-IP cap (W3) and for
-  operator audit. `nil` is acceptable when the caller has no IP
-  (mix-task driven provisioning, future internal flows).
+  #211 phase 7 — the visitor row no longer carries `nick`/`network_slug`;
+  identity lives ONLY on the credential. So provision resolves the network
+  by slug (needed for the credential FK), resolves an EXISTING identity
+  credential-first (`resolve_identity_by_nick/2`, the phase-4c reader), and
+  on a miss creates the bare row + anon credential atomically (a credential
+  folded-nick collision rolls back the bare row so no orphan identity is
+  left behind).
 
-  When an existing row is found and the supplied `ip` differs from
-  what's persisted, the row's `:ip` is refreshed via
-  `ip_changeset/2` so the admin audit value tracks the holder's
-  current address. Pre-fix a long-lived NickServ-identified visitor
-  surfaced the row's birth IP indefinitely (often the nginx docker-
-  bridge address baked in before the `RemoteIpFromProxy` plug
-  landed). `nil` supplied with a row carrying a real IP does NOT
-  overwrite — refresh is "I have a fresher value," not "forget what
-  you knew."
+  `ip` is recorded on creation for the per-IP cap (W3) and for operator
+  audit. `nil` is acceptable when the caller has no IP (mix-task driven
+  provisioning, future internal flows).
+
+  When an existing identity is found and the supplied `ip` differs from
+  what's persisted, the row's `:ip` is refreshed via `ip_changeset/2` so
+  the admin audit value tracks the holder's current address. `nil`
+  supplied with a row carrying a real IP does NOT overwrite — refresh is
+  "I have a fresher value," not "forget what you knew."
+
+  `{:error, :network_unconfigured}` when the slug has no `Networks.Network`
+  row (a credential can't be bound); `{:error, Ecto.Changeset.t()}` when
+  the bare-row insert or anon-credential insert is rejected (e.g. a raced
+  folded-nick collision).
   """
   @spec find_or_provision_anon(String.t(), String.t(), String.t() | nil) ::
-          {:ok, Visitor.t()} | {:error, Ecto.Changeset.t()}
+          {:ok, Visitor.t()} | {:error, :network_unconfigured | Ecto.Changeset.t()}
   def find_or_provision_anon(nick, network_slug, ip)
       when is_binary(nick) and is_binary(network_slug) do
-    result =
-      case Repo.one(by_folded_nick(nick, network_slug)) do
-        %Visitor{} = existing -> maybe_refresh_ip(existing, ip)
-        nil -> create_anon(nick, network_slug, ip)
-      end
+    case Networks.get_network_by_slug(network_slug) do
+      {:ok, %Networks.Network{id: network_id}} ->
+        case resolve_identity_by_nick(nick, network_id) do
+          %Visitor{} = existing -> maybe_refresh_ip(existing, ip)
+          nil -> create_anon(nick, network_id, ip)
+        end
 
-    # #211 phase 3 — the read path resolves a visitor session from its
-    # Credential, so provision MUST also write/refresh that Credential.
-    # This is what makes a NEW visitor get a correct Credential with no
-    # separate backfill run (vjt's write-path requirement — moots the
-    # phase-1 dormant-drift concern). Idempotent for the found-existing
-    # branch.
-    with {:ok, visitor} <- result do
-      :ok = sync_credential(visitor)
-      {:ok, visitor}
+      {:error, :not_found} ->
+        {:error, :network_unconfigured}
     end
-  end
-
-  # Case-insensitive (rfc1459) visitor lookup query (GH #121). Folds the
-  # `nick` column and the supplied `nick` through the SAME casemapper so
-  # `Mezmerize`/`mezmerize`/`nick[1]`/`nick{1}` resolve to one row. The
-  # `Identifier.nick_fold/1` fragment matches the folded unique
-  # expression index, so this stays index-eligible.
-  @spec by_folded_nick(String.t(), String.t()) :: Ecto.Query.t()
-  defp by_folded_nick(nick, network_slug) do
-    folded = Identifier.canonical_nick(nick)
-
-    from(v in Visitor,
-      where: Identifier.nick_fold(v.nick) == ^folded and v.network_slug == ^network_slug
-    )
   end
 
   defp maybe_refresh_ip(%Visitor{ip: same} = visitor, same), do: {:ok, visitor}
@@ -142,168 +129,49 @@ defmodule Grappa.Visitors do
     |> Repo.update()
   end
 
-  defp create_anon(nick, network_slug, ip) do
+  # #211 phase 7 — a fresh visitor identity is a BARE row (TTL + audit ip)
+  # plus an anon `(visitor_id, network)` Credential that OWNS the identity
+  # (nick / ident / realname / auth_method). Wrapped in a transaction so a
+  # credential folded-nick collision (a concurrent provision of the same
+  # nick winning the race after our `resolve_identity_by_nick/2` saw none)
+  # rolls back the bare row — no orphan identity-less visitor is left
+  # behind. The `(visitor_id, network_id)` + folded-nick partial unique
+  # indexes (phase 4b) are the collision guards.
+  @spec create_anon(String.t(), pos_integer(), String.t() | nil) ::
+          {:ok, Visitor.t()} | {:error, Ecto.Changeset.t()}
+  defp create_anon(nick, network_id, ip) do
     expires_at = DateTime.add(DateTime.utc_now(), @anon_ttl_seconds, :second)
 
-    %{nick: nick, network_slug: network_slug, expires_at: expires_at, ip: ip}
-    |> Visitor.create_changeset()
-    |> Repo.insert()
+    Repo.transaction(fn ->
+      with {:ok, visitor} <-
+             %{expires_at: expires_at, ip: ip} |> Visitor.create_changeset() |> Repo.insert(),
+           {:ok, _} <-
+             Credentials.upsert_visitor_credential(visitor.id, network_id, %{
+               nick: nick,
+               sasl_user: nick,
+               auth_method: :none
+             }) do
+        visitor
+      else
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
   end
-
-  # #211 phase 3 — the visitor→Credential write-through choke point.
-  # Called after EVERY visitor identity mutation so the Credential the
-  # read path (`Visitors.SessionPlan.resolve/1`) resolves from stays
-  # current. Delegates the actual upsert to the ONE shared verb
-  # `Networks.Credentials.upsert_visitor_credential/3` (reused by the
-  # `Grappa.Bootstrap` bulk reconcile) — passing PRIMITIVES built from
-  # the visitor row so `Grappa.Networks` needs no `Grappa.Visitors` dep
-  # (the FK stays a dirty_xref). This context OWNS translating a
-  # `%Visitor{}` into per-`(subject, network)` credential attrs.
-  #
-  # Best-effort by design: a visitor pinned to a slug with no `networks`
-  # row (orphan — the boot-time `Bootstrap.validate_visitor_networks!`
-  # is the loud guard) skips the write and returns `:ok`, so a visitor
-  # mutation never crashes on a config the operator already broke. A
-  # changeset failure is logged, not surfaced — the visitor mutation
-  # already committed; the credential is a derived mirror the next
-  # mutation / the boot reconcile re-applies.
-  @spec sync_credential(Visitor.t()) :: :ok
-  defp sync_credential(%Visitor{network_slug: slug} = visitor) do
-    case Networks.get_network_by_slug(slug) do
-      {:ok, %Networks.Network{id: network_id}} ->
-        case Credentials.upsert_visitor_credential(
-               visitor.id,
-               network_id,
-               credential_attrs(visitor)
-             ) do
-          {:ok, _} ->
-            :ok
-
-          {:error, changeset} ->
-            Logger.warning("visitor credential sync failed (visitor mutation still applied)",
-              visitor_id: visitor.id,
-              network: slug,
-              error: inspect(changeset.errors)
-            )
-
-            :ok
-        end
-
-      {:error, :not_found} ->
-        # Orphan slug — no network to bind the credential to. The
-        # boot-time invariant is the loud signal; the mutation itself
-        # must not crash on an operator-broken config.
-        :ok
-    end
-  end
-
-  # Flatten a `%Visitor{}` into the per-`(subject, network)` credential
-  # attrs. Mirrors the phase-1 backfill mapping (the runtime SoT for
-  # visitor→credential field derivation): `sasl_user` = nick,
-  # `auth_method` = `:nickserv_identify` iff a committed password exists
-  # else `:none`, `password` (virtual, re-encrypted by the changeset)
-  # only when set, `last_joined_channels` mirrored. `expires_at`/`ip`
-  # stay on the visitor identity row (TTL/audit, not per-network creds).
-  # Flatten a `%Visitor{}` into the per-`(subject, network)` credential
-  # IDENTITY attrs. #211 phase 4c: `last_joined_channels` is DELIBERATELY
-  # excluded — it is now owned PER-NETWORK by the credential (written by
-  # `Session.Server`'s `last_joined_persister` via
-  # `update_last_joined_channels/3`), NOT derived from the single
-  # `visitors.last_joined_channels` scalar. Including it here would make an
-  # identity mutation (nick/ident/password change → `sync_credential/1`)
-  # clobber a live session's per-network channel snapshot back to the
-  # stale scalar. `upsert_visitor_credential/3`'s changeset only casts the
-  # keys present, so omitting the field leaves the credential's channel
-  # list untouched on sync; a freshly-created credential defaults to `[]`
-  # (schema default) until the session persists its first snapshot.
-  @spec credential_attrs(Visitor.t()) :: map()
-  defp credential_attrs(%Visitor{password_encrypted: nil} = v) do
-    %{
-      nick: v.nick,
-      ident: v.ident,
-      realname: v.realname,
-      sasl_user: v.nick,
-      auth_method: :none
-    }
-  end
-
-  defp credential_attrs(%Visitor{password_encrypted: pw} = v) when is_binary(pw) do
-    %{
-      nick: v.nick,
-      ident: v.ident,
-      realname: v.realname,
-      sasl_user: v.nick,
-      auth_method: :nickserv_identify,
-      # `password_encrypted` carries plaintext in memory post-Cloak-load;
-      # route it through the virtual `:password` so the credential
-      # changeset re-encrypts under the same vault.
-      password: pw
-    }
-  end
-
-  # Thread the credential write-through onto a mutation that returns the
-  # `{:ok, %Visitor{}}` / `{:error, _}` shape: sync on success (the
-  # visitor row is the fresh source), pass errors through untouched.
-  @spec sync_credential_on_ok({:ok, Visitor.t()} | {:error, term()}) ::
-          {:ok, Visitor.t()} | {:error, term()}
-  defp sync_credential_on_ok({:ok, %Visitor{} = visitor} = ok) do
-    :ok = sync_credential(visitor)
-    ok
-  end
-
-  defp sync_credential_on_ok({:error, _} = err), do: err
 
   @doc """
-  #211 phase 3 — resolve the visitor's `(visitor_id, network_id)`
-  Credential, self-healing a missing one from the visitor row.
-
-  The visitor read-cutover (`Grappa.Visitors.SessionPlan.resolve/1`)
-  reads identity from the Credential. This verb is the single reader for
-  that path: it returns the existing Credential, or — if none exists
-  (drift from a logged `sync_credential/1` failure, or a pre-phase-3
-  visitor the boot reconcile hasn't yet touched) — it CREATES it from
-  the visitor row via the same shared upsert, so resolve never crashes
-  on a missing credential and the row self-heals on first use.
-
-  `{:error, :not_found}` only when the credential can't be built (the
-  changeset rejects the derived attrs — should not happen for a
-  well-formed visitor row); the resolver maps that to
-  `:network_unconfigured`-class handling.
+  #211 phase 7 — resolve the visitor's `(visitor_id, network_id)`
+  Credential. The credential IS the identity source of truth (the visitor
+  row is a pure identity/TTL row now), so there is nothing to self-heal
+  from — a missing credential is a genuine `{:error, :not_found}` (the
+  caller maps it to `:network_unconfigured`-class handling). Provision
+  (`find_or_provision_anon/3`) + accretion (`accrete_network/3`) are the
+  only credential creators.
   """
   @spec resolve_credential(Visitor.t(), pos_integer()) ::
           {:ok, Credential.t()} | {:error, :not_found}
-  def resolve_credential(%Visitor{} = visitor, network_id) when is_integer(network_id) do
-    case Credentials.get_visitor_credential(visitor.id, network_id) do
-      {:ok, cred} ->
-        {:ok, cred}
-
-      {:error, :not_found} ->
-        case Credentials.upsert_visitor_credential(
-               visitor.id,
-               network_id,
-               credential_attrs(visitor)
-             ) do
-          {:ok, cred} -> {:ok, cred}
-          {:error, _} -> {:error, :not_found}
-        end
-    end
+  def resolve_credential(%Visitor{id: id}, network_id) when is_integer(network_id) do
+    Credentials.get_visitor_credential(id, network_id)
   end
-
-  @doc """
-  #211 phase 3 — reconcile a single visitor's Credential to match its
-  row (create-or-refresh). Public entry point for the `Grappa.Bootstrap`
-  bulk boot reconcile: the context owns translating a `%Visitor{}` into
-  per-`(subject, network)` credential attrs + the orphan-slug skip, so
-  Bootstrap just drives the enumeration.
-
-  Same idempotent operation as the per-mutation write-through
-  (delegates to the shared `sync_credential/1` choke point). Returns
-  `:ok` on success OR on a non-fatal skip (orphan slug, logged
-  changeset error) — a bad row never aborts the boot; the boot-time
-  `Bootstrap.validate_visitor_networks!` gate is the loud orphan signal.
-  """
-  @spec reconcile_credential(Visitor.t()) :: :ok
-  def reconcile_credential(%Visitor{} = visitor), do: sync_credential(visitor)
 
   @doc """
   #211 phase 6 — reconcile a visitor's `(visitor_id, network_id)`
@@ -333,103 +201,88 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  Atomically write a NickServ password (encrypted at rest by Cloak)
-  and clear `expires_at` to NULL. Called from `Grappa.Session.Server`
-  on either trigger: the +r MODE observation that confirmed the
-  visitor's nick is identified (IDENTIFY/REGISTER rendezvous), or the
-  #131 optimistic on-send commit of an in-session `SET PASSWD` (a
-  password change emits no +r, so the host commits when the well-formed
-  line leaves the wire).
+  Atomically write a NickServ password onto the visitor's
+  `(visitor_id, network_id)` Credential (encrypted at rest by Cloak).
+  Called from `Grappa.Session.Server` on either trigger: the +r MODE
+  observation that confirmed the visitor's nick is identified
+  (IDENTIFY/REGISTER rendezvous), or the #131 optimistic on-send commit of
+  an in-session `SET PASSWD`.
 
-  V7: identified visitors persist forever — only operator-driven
-  `delete/1` removes them. Reaper's IS-NOT-NULL guard in
-  `list_expired/0` skips NULL rows.
+  #211 phase 7 — the password lives PER-NETWORK on the credential now (the
+  `visitors.password_encrypted` scalar is dropped). The `Session.Server`
+  callback captures its network in the `Grappa.Visitors.SessionPlan`
+  closure, so this is network-explicit. Registration is DERIVED from the
+  credentials (`Credentials.visitor_registered?/1` — ≥1 credential with a
+  committed secret), NOT a parallel `visitors.expires_at`-nil flag: so
+  committing a password does NOT touch the visitor row at all. The Reaper's
+  `list_expired/0` excludes registered identities directly (see there);
+  identifying on ANY network makes the identity permanent, and unbinding
+  the last registered credential makes it anon again — automatically, with
+  no flag to drift.
   """
-  @spec commit_password(Ecto.UUID.t(), String.t()) ::
-          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
-  def commit_password(visitor_id, password)
-      when is_binary(visitor_id) and is_binary(password) and password != "" do
-    case Repo.get(Visitor, visitor_id) do
-      nil ->
-        {:error, :not_found}
-
-      visitor ->
-        # H14 (REV-D 2026-05-22): lookup-then-update races on concurrent
-        # delete — between the Repo.get above and Repo.update below, a
-        # peer caller (operator delete, Reaper sweep, anon visitor logout)
-        # may purge the row. Pre-fix the update would raise
-        # `Ecto.StaleEntryError` (caller spec'd `{:error, :not_found}`,
-        # so the raise was a silent contract violation: 500 in the web
-        # layer instead of a typed result). Map back to the documented
-        # return shape so callers handle the concurrent-delete case the
-        # same way as the initial Repo.get/2 miss.
-        result =
-          try do
-            visitor
-            |> Visitor.commit_password_changeset(password, nil)
-            |> Repo.update()
-          rescue
-            Ecto.StaleEntryError -> {:error, :not_found}
-          end
-
-        sync_credential_on_ok(result)
-    end
+  @spec commit_password(Ecto.UUID.t(), pos_integer(), String.t()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def commit_password(visitor_id, network_id, password)
+      when is_binary(visitor_id) and is_integer(network_id) and is_binary(password) and
+             password != "" do
+    Credentials.commit_visitor_password(visitor_id, network_id, password)
   end
 
   @doc """
-  #131 — rotate an ALREADY-identified visitor's NickServ password from an
-  in-session `SET PASSWD` (optimistic commit-on-send).
+  #131 — rotate an ALREADY-identified visitor's NickServ password on the
+  `(visitor_id, network_id)` Credential from an in-session `SET PASSWD`
+  (optimistic commit-on-send).
 
-  Distinct from `commit_password/2`, which is the `+r`-gated promotion verb:
-  `+r` PROVES the nick is identified, so it may safely promote an anon row
-  to permanent (`expires_at = NULL`). A `SET PASSWD` carries NO such proof —
-  services reject it unless the nick is already registered/identified — so
-  an optimistic commit MUST NOT promote. This function is therefore
-  IDENTITY-GATED: it rotates the password only for a row that is ALREADY
-  identified (`password_encrypted` set ⟺ permanent), and is a no-op
-  (`{:error, :not_identified}`) for an anon row. Without the gate, an anon
-  visitor typing `/ns set passwd x` (which services would reject) would be
-  silently pinned permanent + un-reapable carrying a junk password — the
-  exact promotion the `+r` gate exists to prevent.
+  Distinct from `commit_password/3`, which is the `+r`-gated promotion
+  verb: `+r` PROVES the nick is identified, so it may safely promote the
+  identity to permanent (`expires_at = NULL`). A `SET PASSWD` carries NO
+  such proof — services reject it unless the nick is already
+  registered/identified — so an optimistic commit MUST NOT promote. This
+  function is therefore IDENTITY-GATED PER-NETWORK: it rotates the password
+  only for a credential that is ALREADY identified on this network
+  (`password_encrypted` set), and is a no-op (`{:error, :not_identified}`)
+  for an anon credential. Without the gate, an anon visitor typing
+  `/ns set passwd x` (which services would reject) would silently pin a
+  junk password onto the credential.
 
-  Reuses `commit_password/2`'s underlying write (`commit_password_changeset`
-  with `expires_at = nil`, idempotent on an already-permanent row) and the
-  same H14 concurrent-delete guard.
+  #211 phase 7 — password + identify-state are per-network on the
+  credential now, so the gate reads the credential (not the retired
+  `visitors.password_encrypted` scalar). Does NOT touch `expires_at` (an
+  already-identified visitor is already permanent).
   """
-  @spec rotate_password(Ecto.UUID.t(), String.t()) ::
-          {:ok, Visitor.t()} | {:error, :not_found | :not_identified | Ecto.Changeset.t()}
-  def rotate_password(visitor_id, password)
-      when is_binary(visitor_id) and is_binary(password) and password != "" do
-    case Repo.get(Visitor, visitor_id) do
-      nil ->
+  @spec rotate_password(Ecto.UUID.t(), pos_integer(), String.t()) ::
+          {:ok, Credential.t()} | {:error, :not_found | :not_identified | Ecto.Changeset.t()}
+  def rotate_password(visitor_id, network_id, password)
+      when is_binary(visitor_id) and is_integer(network_id) and is_binary(password) and
+             password != "" do
+    case Credentials.get_visitor_credential(visitor_id, network_id) do
+      {:error, :not_found} ->
         {:error, :not_found}
 
-      # Anon row (never +r-identified): SET PASSWD can't apply at the
-      # service, and an optimistic commit must not promote → skip.
-      %Visitor{password_encrypted: nil} ->
+      # Anon credential (never identified on this network): SET PASSWD can't
+      # apply at the service, and an optimistic commit must not promote.
+      {:ok, %Credential{password_encrypted: nil}} ->
         {:error, :not_identified}
 
-      %Visitor{} = visitor ->
-        result =
-          try do
-            visitor
-            |> Visitor.commit_password_changeset(password, nil)
-            |> Repo.update()
-          rescue
-            Ecto.StaleEntryError -> {:error, :not_found}
-          end
-
-        sync_credential_on_ok(result)
+      {:ok, %Credential{}} ->
+        Credentials.commit_visitor_password(visitor_id, network_id, password)
     end
   end
 
   @doc """
   Slide `expires_at` forward on user-initiated REST/WS verbs. Anon
-  visitors slide to now + 48h; NickServ-identified visitors
-  (`password_encrypted` set + `expires_at IS NULL`) are no-ops —
-  they don't expire. No-op if the resulting bump on an anon row would
-  extend by less than 1h (`@touch_cadence_seconds`) — keeps the
-  per-request DB-write cost negligible under sustained traffic.
+  visitors slide to now + 48h; REGISTERED visitors (hold ≥1 NickServ
+  credential) are no-ops — they don't expire. No-op if the resulting bump
+  on an anon row would extend by less than 1h (`@touch_cadence_seconds`) —
+  keeps the per-request DB-write cost negligible under sustained traffic.
+
+  #211 phase 7 — registration is DERIVED from the credentials
+  (`Credentials.visitor_registered?/1`), not a `visitors.expires_at`-nil
+  flag. `commit_password/3` no longer clears `expires_at`, so a
+  post-phase-7 registered visitor still carries an anon-shaped TTL value —
+  the registered check (not the nil check) is what makes touch a no-op for
+  it. A legacy pre-phase-7 permanent row (`expires_at IS NULL`) short-
+  circuits first.
   """
   @spec touch(Ecto.UUID.t()) ::
           {:ok, Visitor.t()} | {:error, :not_found | :expired}
@@ -439,24 +292,34 @@ defmodule Grappa.Visitors do
         {:error, :not_found}
 
       %Visitor{expires_at: nil} = visitor ->
-        # V7: identified visitor — no expiry, no-op.
+        # Legacy pre-phase-7 permanent row — no expiry, no-op.
         {:ok, visitor}
 
       %Visitor{expires_at: exp} = visitor ->
-        # Without this gate, `maybe_bump/1` would slide an EXPIRED row
-        # 48h into the future on the next REST/WS verb — silently
-        # resurrecting a visitor the Reaper hadn't yet purged. The
-        # Reaper (Task 22) remains the deletion verb; `touch/1`'s job
-        # is to gate read access.
-        if DateTime.compare(exp, DateTime.utc_now()) == :gt do
-          maybe_bump(visitor)
-        else
-          {:error, :expired}
+        cond do
+          # Registered (derived) — never expires; no TTL bump.
+          Credentials.visitor_registered?(visitor.id) ->
+            {:ok, visitor}
+
+          # Anon + still-live — slide the TTL (cadence-gated).
+          DateTime.compare(exp, DateTime.utc_now()) == :gt ->
+            maybe_bump(visitor)
+
+          # Anon + already elapsed — gate read access; the Reaper deletes.
+          # Without this gate `maybe_bump/1` would resurrect an expired row
+          # 48h into the future on the next REST/WS verb.
+          true ->
+            {:error, :expired}
         end
     end
   end
 
-  defp maybe_bump(%Visitor{password_encrypted: nil} = visitor) do
+  # #211 phase 7 — reached only from `touch/1` AFTER the `expires_at: nil`
+  # (permanent/registered) branch, so the row here is always anon
+  # (non-nil `expires_at`). The prior `password_encrypted: nil` guard was
+  # a redundant second check on the same "is this anon" question — the TTL
+  # axis is the single discriminator now.
+  defp maybe_bump(%Visitor{} = visitor) do
     target = DateTime.add(DateTime.utc_now(), @anon_ttl_seconds, :second)
 
     if DateTime.diff(target, visitor.expires_at, :second) >= @touch_cadence_seconds do
@@ -489,12 +352,12 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  Count visitors active for the given `ip`. A visitor is "active" if
-  either `expires_at IS NULL` (V7 NickServ-identified — never expires)
-  or `expires_at > now()` (anon, sliding 48h TTL not yet elapsed).
-  Per-IP cap (W3, default 5) enforcement primitive — composed by the
-  Login orchestrator (Task 9) before calling
-  `find_or_provision_anon/3`.
+  Count visitors active for the given `ip`. A visitor is "active" if it is
+  REGISTERED (holds ≥1 NickServ credential — derived, never expires) OR
+  anon-but-not-yet-elapsed (`expires_at > now()`). Legacy pre-phase-7
+  registered rows carry `expires_at IS NULL` and are also active. Per-IP
+  cap (W3) enforcement primitive — composed by the Login orchestrator
+  before `find_or_provision_anon/3`.
   """
   @spec count_active_for_ip(String.t()) :: non_neg_integer()
   def count_active_for_ip(ip) when is_binary(ip) do
@@ -502,24 +365,52 @@ defmodule Grappa.Visitors do
 
     query =
       from(v in Visitor,
-        where: v.ip == ^ip and (is_nil(v.expires_at) or v.expires_at > ^now)
+        where:
+          v.ip == ^ip and
+            (is_nil(v.expires_at) or v.expires_at > ^now or
+               v.id in subquery(registered_ids_subquery()))
       )
 
     Repo.aggregate(query, :count, :id)
   end
 
   @doc """
-  All active visitors — `expires_at IS NULL` (V7 identified) or
-  `expires_at > now()` (anon, not yet elapsed). Used by
+  All active visitors — REGISTERED (holds ≥1 NickServ credential; derived,
+  never expires) OR anon-but-not-yet-elapsed (`expires_at > now()`) OR
+  legacy-permanent (`expires_at IS NULL`, pre-phase-7 rows). Used by
   `Grappa.Bootstrap` to enumerate sessions to respawn at app start.
-  Identified visitors must always respawn; otherwise an operator
-  bounce silently destroys their session presence.
+  Registered identities must always respawn; otherwise an operator bounce
+  silently destroys their session presence.
+
+  #211 phase 7 — registration is DERIVED from the credentials (the
+  `registered_ids_subquery/0` EXISTS), not a `visitors.expires_at`-nil flag
+  (which would drift on credential unbind). `commit_password/3` no longer
+  clears `expires_at`, so a post-phase-7 registered visitor keeps its anon
+  TTL value — but the registered-subquery keeps it active regardless.
   """
   @spec list_active() :: [Visitor.t()]
   def list_active do
     now = DateTime.utc_now()
-    query = from(v in Visitor, where: is_nil(v.expires_at) or v.expires_at > ^now)
+
+    query =
+      from(v in Visitor,
+        where:
+          is_nil(v.expires_at) or v.expires_at > ^now or
+            v.id in subquery(registered_ids_subquery())
+      )
+
     Repo.all(query)
+  end
+
+  # #211 phase 7 — the DERIVED registration predicate: visitor_ids holding
+  # ≥1 credential with a committed NickServ secret. The single source of
+  # truth for "is this identity permanent", replacing the retired
+  # `visitors.expires_at`-nil flag. Composed into `list_active/0`,
+  # `list_expired/0`, and `count_active_for_ip/1` so all three axes agree
+  # by construction (no parallel flag to drift).
+  @spec registered_ids_subquery() :: Ecto.Query.t()
+  defp registered_ids_subquery do
+    from(c in Credential, where: not is_nil(c.password_encrypted), select: c.visitor_id)
   end
 
   @doc """
@@ -536,65 +427,68 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  Every visitor row joined to its live `Grappa.Session.Server`
-  introspection, or `nil` when no pid is registered for
-  `{:visitor, v.id} × network.id`. The `nil` IS the U-0 honesty
-  signal — admin console renders it prominently so the operator
-  sees "DB intent exists, BEAM doesn't" rather than a quietly
+  Every visitor row joined to its per-network credentials + live
+  `Grappa.Session.Server` introspection.
+
+  #211 phase 7 — a visitor is MULTI-network (accretion), and identity
+  (nick) lives per-network on the credential, not on the row. So this
+  returns one entry per visitor carrying its credential list, each
+  credential paired with its live introspection (or `nil` when no pid is
+  registered for `{:visitor, v.id} × credential.network_id`). The `nil` IS
+  the U-0 honesty signal — admin console renders it prominently so the
+  operator sees "DB intent exists, BEAM doesn't" rather than a quietly
   empty row.
 
-  One DB roundtrip for the visitor list + one for the
-  `slug → network_id` index; N registry lookups (one per
-  visitor) at O(1) each. Each lookup also fetches
-  `joined_channels` via a `GenServer.call` with a 250ms-per-pid
-  timeout — worst-case latency is `O(N × 250ms)` when every
-  pid is stuck, gracefully degraded to `live_state` with
-  `joined_channels: nil` + `introspection_degraded: [:joined_channels]`.
-  Orphan visitors (network_slug not in `networks`) get `nil` live
-  state with no live-lookup attempted.
+  A visitor with NO credentials (a fresh row the boot reconcile hasn't
+  touched) yields an empty per-network list — surfaced so the operator
+  sees the credential-less identity rather than it vanishing.
 
-  ## Wire shape note
-
-  Returns a flat `{visitor, live_state}` tuple — the visitor row's
-  fields are NOT wrapped under a `db_state` key (cf. MD2 example). The flatter
-  shape was chosen for simpler cic rendering; the visitor schema
-  IS the DB intent, no additional wrapper needed.
+  One DB roundtrip for the visitor list + one per visitor for its
+  credentials; N registry lookups (one per credential) at O(1) each. Each
+  lookup also fetches `joined_channels` via a `GenServer.call` with a
+  250ms-per-pid timeout — worst-case latency is `O(N × 250ms)` when every
+  pid is stuck, gracefully degraded.
   """
   @spec list_all_with_live_state() ::
-          [{Visitor.t(), Grappa.LiveIntrospection.SessionEntry.t() | nil}]
+          [
+            {Visitor.t(), [{Credential.t(), Grappa.LiveIntrospection.SessionEntry.t() | nil}]}
+          ]
   def list_all_with_live_state do
-    index = Grappa.Networks.network_id_by_slug_index()
-
     for v <- list_all() do
-      live =
-        case Map.fetch(index, v.network_slug) do
-          {:ok, network_id} ->
-            Grappa.LiveIntrospection.lookup_session({:visitor, v.id}, network_id)
-
-          :error ->
-            nil
+      per_network =
+        for cred <- Credentials.list_visitor_credentials(v.id) do
+          live = Grappa.LiveIntrospection.lookup_session({:visitor, v.id}, cred.network_id)
+          {cred, live}
         end
 
-      {v, live}
+      {v, per_network}
     end
   end
 
   @doc """
-  All visitors with `expires_at <= now()`. Used by
-  `Grappa.Visitors.Reaper` to enumerate rows due for deletion.
+  All ANON visitors past their TTL — `expires_at <= now()` AND NOT
+  registered. Used by `Grappa.Visitors.Reaper` to enumerate rows due for
+  deletion.
 
-  The `expires_at IS NOT NULL` guard is essential post-V7: NickServ-
-  identified visitors carry `expires_at = NULL` to mark "never
-  expires" — without this guard, the Reaper would delete every
-  identified visitor on the first tick. The V5 commit
-  (6ef59a0) added the guard pre-staging V7's column-flip migration;
-  the V7 migration (`20260515111331_visitors_expires_at_nullable`)
-  flipped the column to nullable, completing the design.
+  #211 phase 7 — registration is DERIVED from the credentials, so the
+  reap-exclusion is `v.id NOT IN (visitor_ids holding a NickServ
+  credential)` rather than the retired `expires_at IS NULL` flag. A visitor
+  who identified on any network is excluded from expiry regardless of its
+  `expires_at` value (which `commit_password/3` no longer clears). The
+  `expires_at IS NOT NULL` guard is retained: a legacy pre-phase-7
+  permanent row carries `expires_at = NULL` and must never be swept.
   """
   @spec list_expired() :: [Visitor.t()]
   def list_expired do
     now = DateTime.utc_now()
-    query = from(v in Visitor, where: not is_nil(v.expires_at) and v.expires_at <= ^now)
+
+    query =
+      from(v in Visitor,
+        where:
+          not is_nil(v.expires_at) and v.expires_at <= ^now and
+            v.id not in subquery(registered_ids_subquery())
+      )
+
     Repo.all(query)
   end
 
@@ -630,7 +524,6 @@ defmodule Grappa.Visitors do
 
         Logger.error("visitor permanently rejected — expiring row",
           user: "visitor:" <> visitor.id,
-          network: visitor.network_slug,
           reason: inspect(reason)
         )
 
@@ -704,21 +597,22 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  Bulk-delete every visitor row pinned to `network_slug`. Returns
-  `{:ok, count}` with the deleted-row count. Operator path —
-  surfaces through `mix grappa.reap_visitors --network=<slug>` to
-  unblock the `Grappa.Bootstrap` W7 hard-error path (Task 20) when
-  the operator has intentionally dropped a network from the DB.
+  #211 phase 7 — the `Retry-After` hint on an `:anon_collision`: resolve
+  the visitor identity that currently holds `nick` on `network_id`
+  (credential-first, the same reader login uses) and return its
+  `expires_at`, or `nil` when no identity holds the nick (no hint to give).
 
-  CASCADE: the `visitor_id` FKs on `messages`,
-  and `accounts_sessions` all carry `ON DELETE CASCADE`; the bulk
-  delete fires those at the DB layer in a single transaction.
+  Replaces the pre-phase-7 `get_by_nick_and_network/2` row lookup (which
+  queried the dropped `visitors.network_slug` scalar). Used by
+  `GrappaWeb.AuthController` without exposing `Repo` to the web boundary.
   """
-  @spec reap_by_network_slug(String.t()) :: {:ok, non_neg_integer()}
-  def reap_by_network_slug(slug) when is_binary(slug) do
-    query = from(v in Visitor, where: v.network_slug == ^slug)
-    {count, _} = Repo.delete_all(query)
-    {:ok, count}
+  @spec collision_expires_at(String.t(), pos_integer()) :: DateTime.t() | nil
+  def collision_expires_at(nick, network_id)
+      when is_binary(nick) and is_integer(network_id) do
+    case resolve_identity_by_nick(nick, network_id) do
+      %Visitor{expires_at: expires_at} -> expires_at
+      nil -> nil
+    end
   end
 
   @doc """
@@ -784,30 +678,17 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  Lookup a visitor by `(nick, network_slug)`. Returns the row or `nil`.
-  Used by `GrappaWeb.AuthController` to compute the `Retry-After` hint
-  on `:anon_collision` responses without exposing `Repo` to the web
-  boundary.
-  """
-  @spec get_by_nick_and_network(String.t(), String.t()) :: Visitor.t() | nil
-  def get_by_nick_and_network(nick, network_slug)
-      when is_binary(nick) and is_binary(network_slug) do
-    Repo.one(by_folded_nick(nick, network_slug))
-  end
-
-  @doc """
   #211 phase 4c — credential-first VISITOR identity resolution: which
   synthetic visitor identity owns `nick` (rfc1459-folded) on `network_id`?
 
   Resolves via the visitor's `(fold(nick), network_id)` **Credential**
   (`Credentials.fetch_visitor_credential_by_nick/2`) → its `visitor_id` →
-  the `%Visitor{}` row. This is the phase-7-ready replacement for the
-  `get_by_nick_and_network/2` row lookup (which queries the
-  `visitors.network_slug` scalar dropped at phase 7): identity is keyed on
-  the Credential, so a visitor whose credentials span multiple networks
-  resolves to ONE identity from any of them. Returns the `%Visitor{}` or
-  `nil` (no credential holds the nick on the network → the caller
-  provisions).
+  the `%Visitor{}` row. #211 phase 7 — this is now the ONLY visitor
+  identity reader (the `visitors.nick`/`network_slug` scalar row lookup is
+  gone): identity is keyed on the Credential, so a visitor whose
+  credentials span multiple networks resolves to ONE identity from any of
+  them. Returns the `%Visitor{}` or `nil` (no credential holds the nick on
+  the network → the caller provisions).
 
   A credential whose `visitor_id` FK is dangling (the visitor row was
   reaped between the credential read and the visitor load — should not
@@ -828,61 +709,51 @@ defmodule Grappa.Visitors do
 
   @doc """
   Visitor-side NICK rename pre-check (V9). Returns `true` if a
-  DIFFERENT visitor row already holds `target_nick` on
-  `network_slug`; the caller surfaces that as 409 nick_in_use BEFORE
-  sending NICK upstream. False if the slot is free, or if the only
-  occupant IS the visitor itself (idempotent rename to current nick).
+  DIFFERENT visitor identity already holds `target_nick` on `network_id`;
+  the caller surfaces that as 409 nick_in_use BEFORE sending NICK
+  upstream. False if the slot is free, or if the only occupant IS the
+  visitor itself (idempotent rename to current nick).
+
+  #211 phase 7 — folded lookup on the `(fold(nick), network_id)`
+  credential (the same reader login uses), NOT the retired
+  `visitors.(nick, network_slug)` row index.
   """
-  @spec nick_in_use?(Ecto.UUID.t(), String.t(), String.t()) :: boolean()
-  def nick_in_use?(visitor_id, target_nick, network_slug)
-      when is_binary(visitor_id) and is_binary(target_nick) and is_binary(network_slug) do
-    case Repo.one(by_folded_nick(target_nick, network_slug)) do
-      nil -> false
-      %Visitor{id: ^visitor_id} -> false
-      %Visitor{} -> true
+  @spec nick_in_use?(Ecto.UUID.t(), String.t(), pos_integer()) :: boolean()
+  def nick_in_use?(visitor_id, target_nick, network_id)
+      when is_binary(visitor_id) and is_binary(target_nick) and is_integer(network_id) do
+    case Credentials.fetch_visitor_credential_by_nick(target_nick, network_id) do
+      {:error, :not_found} -> false
+      {:ok, %Credential{visitor_id: ^visitor_id}} -> false
+      {:ok, %Credential{}} -> true
     end
   end
 
   @doc """
-  Rotate `visitor.nick` after upstream confirmed the rename via NICK
-  self-echo (V9, visitor-parity cluster, 2026-05-15). Called from
+  Rotate a visitor's nick on its `(visitor_id, network_id)` Credential
+  after upstream confirmed the rename via NICK self-echo (V9,
+  visitor-parity cluster, 2026-05-15). Called from
   `Grappa.Session.Server`'s `apply_effects/2` (private) on the
   `{:visitor_nick_changed, new_nick}` effect emitted by EventRouter
   when `state.subject == {:visitor, _}` and `old_nick == state.nick`.
 
-  The `(nick, network_slug)` UNIQUE constraint catches concurrent
-  collisions (two visitors racing for the same nick on the same
-  network) — the controller-boundary `nick_in_use?/3` pre-check is the
-  fast path; this function is the second line of defense for the
-  near-zero-probability race.
+  #211 phase 7 — the nick lives PER-NETWORK on the credential now (the
+  `visitors.nick` scalar is dropped). The `Session.Server` callback
+  captures its network in the `Grappa.Visitors.SessionPlan` closure, so
+  this is network-explicit. The credential-side folded-nick UNIQUE index
+  (phase 4b) catches concurrent collisions (two visitors racing for the
+  same nick on the same network) — the controller-boundary
+  `nick_in_use?/3` pre-check is the fast path; this is the second line of
+  defense for the near-zero-probability race.
 
   `{:error, :not_found}` on a reaped row (terminal — Reaper got the
-  row between `send_nick` and the upstream echo). Logged + dropped at
-  the call site.
+  credential between `send_nick` and the upstream echo). Logged + dropped
+  at the call site.
   """
-  @spec update_nick(Ecto.UUID.t(), String.t()) ::
-          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
-  def update_nick(visitor_id, new_nick)
-      when is_binary(visitor_id) and is_binary(new_nick) do
-    case Repo.get(Visitor, visitor_id) do
-      nil ->
-        {:error, :not_found}
-
-      visitor ->
-        # H14 (REV-D 2026-05-22): same concurrent-delete race as
-        # commit_password/2 — map StaleEntryError to the spec'd
-        # `{:error, :not_found}` return.
-        result =
-          try do
-            visitor
-            |> Visitor.nick_changeset(new_nick)
-            |> Repo.update()
-          rescue
-            Ecto.StaleEntryError -> {:error, :not_found}
-          end
-
-        sync_credential_on_ok(result)
-    end
+  @spec update_nick(Ecto.UUID.t(), pos_integer(), String.t()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def update_nick(visitor_id, network_id, new_nick)
+      when is_binary(visitor_id) and is_integer(network_id) and is_binary(new_nick) do
+    Credentials.update_visitor_credential_nick(visitor_id, network_id, new_nick)
   end
 
   # #211 phase 6 — the #126 `disconnect_session/2` + `reconnect_session/3`
@@ -890,26 +761,21 @@ defmodule Grappa.Visitors do
   # /session/{disconnect,reconnect}` routes. Visitors now park/reconnect
   # each network via the subject-agnostic `PATCH /networks/:network_id`
   # (`Networks.disconnect/2` / `connect/1` + the controller's
+  # #211 phase 6 — the #126 `disconnect_session/2` + `reconnect_session/3`
+  # public verbs were REMOVED with the retired `POST
+  # /session/{disconnect,reconnect}` routes. Visitors now park/reconnect
+  # each network via the subject-agnostic `PATCH /networks/:network_id`
+  # (`Networks.disconnect/2` / `connect/1` + the controller's
   # `orchestrate_spawn`), exactly as users do — teardown is
-  # `Session.stop_session/3` (the shared core those verbs already
-  # wrapped). `resolve_visitor_plan/1` stays — the #152 identity
-  # live-apply (`maybe_reconnect_after_identity/1`) still uses it.
-  @spec resolve_visitor_plan(Visitor.t()) ::
-          {:ok, Session.start_opts()} | {:error, :resolve_failed}
-  defp resolve_visitor_plan(%Visitor{} = visitor) do
-    case SessionPlan.resolve(visitor) do
-      {:ok, _} = ok ->
-        ok
-
-      {:error, reason} ->
-        Logger.warning("visitor reconnect: session plan resolve failed",
-          visitor_id: visitor.id,
-          error: inspect(reason)
-        )
-
-        {:error, :resolve_failed}
-    end
-  end
+  # `Session.stop_session/3` (the shared core those verbs already wrapped).
+  # #211 phase 7 — the visitor-only `PATCH /me/identity` live-apply
+  # (`update_identity/2` + `maybe_reconnect_after_identity/1` +
+  # `resolve_visitor_plan/1`) was RETIRED: visitor identity editing moved
+  # onto the per-network door `PATCH /networks/:id/identity`
+  # (`NetworksController.identity`, subject-agnostic), which owns its own
+  # live-apply bounce via the web-layer `SpawnOrchestrator.reconnect/5`
+  # wrapper. `SessionPlan.resolve/2` (network-explicit) is the only
+  # resolver now.
 
   @doc """
   #211 phase 4c — ACCRETION: attach an ADDITIONAL network to an
@@ -1076,22 +942,35 @@ defmodule Grappa.Visitors do
   # Attach the accreted credential: the identity's nick/ident/realname on
   # the new network, ANON (`auth_method: :none`) — B is a fresh upstream
   # the visitor has not yet identified on. Goes through the SAME shared
-  # `upsert_visitor_credential/3` choke point as the write-through +
-  # reconcile (one write path). The credential-side folded-nick unique
-  # index (phase 4b) guards a cross-visitor nick collision on B → surfaces
-  # as a changeset error, mapped to `:already_attached`-class handling by
-  # the caller's `{:error, _}` propagation.
+  # `upsert_visitor_credential/3` choke point as provision + reconcile (one
+  # write path). The credential-side folded-nick unique index (phase 4b)
+  # guards a cross-visitor nick collision on B → surfaces as a changeset
+  # error, mapped to `:already_attached`-class handling by the caller's
+  # `{:error, _}` propagation.
+  #
+  # #211 phase 7 — the identity's nick/ident/realname live on the
+  # credential now (the `visitors.nick` scalar is dropped), so seed B from
+  # a REPRESENTATIVE existing credential (the visitor is authenticated on
+  # ≥1 network to reach accretion, so one always exists). No representative
+  # → `:no_identity` (should not happen post-auth) surfaces as a
+  # `:resolve_failed`-class abort via the caller's `with`.
   @spec attach_credential(Visitor.t(), Networks.Network.t()) ::
-          {:ok, Credential.t()} | {:error, Ecto.Changeset.t()}
-  defp attach_credential(%Visitor{} = visitor, %Networks.Network{id: network_id}) do
-    Credentials.upsert_visitor_credential(visitor.id, network_id, %{
-      nick: visitor.nick,
-      ident: visitor.ident,
-      realname: visitor.realname,
-      sasl_user: visitor.nick,
-      auth_method: :none,
-      last_joined_channels: []
-    })
+          {:ok, Credential.t()} | {:error, :no_identity | Ecto.Changeset.t()}
+  defp attach_credential(%Visitor{id: id}, %Networks.Network{id: network_id}) do
+    case Credentials.representative_visitor_credential(id) do
+      {:ok, %Credential{nick: nick, ident: ident, realname: realname}} ->
+        Credentials.upsert_visitor_credential(id, network_id, %{
+          nick: nick,
+          ident: ident,
+          realname: realname,
+          sasl_user: nick,
+          auth_method: :none,
+          last_joined_channels: []
+        })
+
+      {:error, :not_found} ->
+        {:error, :no_identity}
+    end
   end
 
   @spec resolve_accreted_plan(Visitor.t(), Networks.Network.t()) ::
@@ -1113,218 +992,27 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  #152 — set a visitor's user-settable IRC identity (`ident` +
-  `realname`) and LIVE-APPLY it.
+  Anon-only co-terminus delete (W11). If the visitor exists and is anon
+  (holds NO NickServ credential), delete the row — CASCADE wipes the
+  associated accounts_sessions, network_credentials and messages in a
+  single transaction. Registered visitor (≥1 NickServ credential): no-op,
+  the identity persists across logouts. Missing row: no-op (idempotent
+  under concurrent deletion).
 
-  ident/realname are carried only by the USER command, sent once at IRC
-  registration; there is no live verb to change them (a second `USER` is
-  rejected 462 ERR_ALREADYREGISTRED). So applying to a live session means
-  re-registering the upstream connection: this is the visitor half of the
-  #126 disconnect ⇄ reconnect seam, reused exactly (per #152 design + vjt
-  ruling A — two thin per-subject wrappers over the shared cores).
+  #211 phase 7 — the anon-vs-registered discriminator is DERIVED from the
+  credentials (`Credentials.visitor_registered?/1`), NOT the retired
+  `visitors.password_encrypted` scalar NOR a `visitors.expires_at`-nil flag.
+  `commit_password/3` no longer clears `expires_at` (registration is
+  derived, not stored), so a post-phase-7 registered visitor still carries
+  an anon-shaped TTL value — the credential check, not the `expires_at`
+  shape, is what protects it from the anon co-terminus delete. A legacy
+  pre-phase-7 permanent row (`expires_at IS NULL`) also has ≥1 NickServ
+  credential (phase-1 backfill), so it too is protected.
 
-  Sequence:
-
-    1. Validate + persist via `Visitor.identity_changeset/2` (tilde-strip
-       + shape guard on ident, CR/LF/NUL guard on realname). A bad value
-       returns `{:error, changeset}` and NOTHING is persisted or bounced.
-    2. If a live `Session.Server` is registered for the visitor, reconnect
-       it: `Session.stop_session/3` (graceful QUIT) → `SpawnOrchestrator.spawn/4`.
-       `Server.init/1`'s `refresh_plan` re-reads the just-persisted row, so
-       the new ident/realname land in the fresh USER line for free — no new
-       Session.Server state, no new teardown. Scrollback + last_joined
-       survive (DB-backed); 001 re-JOINs from autojoin.
-    3. If no live session (parked / orphaned network / never connected),
-       persist only — the next spawn reads the new values from the row.
-
-  Returns `{:ok, visitor}` (the persisted row) on success — the reconnect
-  is a side effect, and its admission/spawn failures are logged, not
-  surfaced (the identity IS saved; the bounce is best-effort, mirroring
-  how a cap-blocked reconnect leaves the row updated). Returns
-  `{:error, changeset}` on validation failure and `{:error, :not_found}`
-  if the row was concurrently deleted.
-  """
-  @spec update_identity(Visitor.t(), map()) ::
-          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
-  def update_identity(%Visitor{} = visitor, attrs) when is_map(attrs) do
-    changeset = Visitor.identity_changeset(visitor, attrs)
-    # A no-change PATCH (empty body, or re-applying the current values)
-    # must NOT bounce the live session — a reconnect drops + rejoins every
-    # channel, so firing it for a no-op is a gratuitous disruption. Gate
-    # the reconnect on the changeset actually carrying :ident/:realname
-    # changes; Repo.update still runs (idempotent {:ok, _}) so the caller
-    # contract is unchanged.
-    changed? = changeset.changes != %{}
-
-    case persist_identity(changeset) do
-      {:ok, updated} ->
-        # #211 phase 3 — write the ident/realname through to the
-        # Credential BEFORE the reconnect: the reconnect re-resolves the
-        # plan from the Credential (post-cutover), so the fresh USER line
-        # only carries the new identity if the Credential is current.
-        :ok = sync_credential(updated)
-
-        # The reconnect is a side effect OUTSIDE the persist rescue below:
-        # the identity is already committed, and maybe_reconnect_after_identity
-        # swallows its own admission/spawn failures — a StaleEntryError from
-        # the persist must NOT be conflated with a reconnect outcome.
-        if changed?, do: maybe_reconnect_after_identity(updated)
-        {:ok, updated}
-
-      {:error, _} = err ->
-        err
-    end
-  end
-
-  @doc """
-  #211 phase 6 — persist ONLY the visitor-row scalar identity fields
-  (`nick` / `ident` / `realname`) — no credential sync, NO reconnect. The
-  per-network identity editor (`PATCH /networks/:id/identity`) already
-  wrote the `(subject, network)` credential AND owns the single
-  authoritative live-apply bounce (`NetworksController.live_apply_identity`).
-  This keeps the visitor-row scalar in sync for the PRIMARY network only
-  so `find_or_provision_anon`'s login-lookup `(fold(nick), network_slug)`
-  still resolves — WITHOUT the double-bounce routing through
-  `update_identity/2` (which reconnects + re-syncs the credential) would
-  cause.
-
-  Validated via the same `Visitor.nick_changeset/2` (nick, folded-unique
-  guard) + `Visitor.identity_changeset/2` (ident/realname) the
-  identity-wide path uses. Best-effort: the credential is the
-  read-of-record; the scalar is a phase-7-transitional login-lookup
-  mirror, so a validation/stale failure here returns `:ok` (the web
-  caller doesn't surface it).
-  """
-  @spec persist_identity_scalar(Visitor.t(), map()) :: :ok
-  def persist_identity_scalar(%Visitor{} = visitor, attrs) when is_map(attrs) do
-    with {:ok, v1} <- persist_scalar_nick(visitor, attrs),
-         {:ok, _} <- persist_scalar_ident_realname(v1, attrs) do
-      :ok
-    else
-      _ -> :ok
-    end
-  end
-
-  @spec persist_scalar_nick(Visitor.t(), map()) ::
-          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
-  defp persist_scalar_nick(visitor, %{nick: nick}) when is_binary(nick) do
-    visitor |> Visitor.nick_changeset(nick) |> persist_identity()
-  end
-
-  defp persist_scalar_nick(visitor, _), do: {:ok, visitor}
-
-  @spec persist_scalar_ident_realname(Visitor.t(), map()) ::
-          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
-  defp persist_scalar_ident_realname(visitor, attrs) do
-    identity = Map.take(attrs, [:ident, :realname])
-
-    if identity == %{} do
-      {:ok, visitor}
-    else
-      visitor |> Visitor.identity_changeset(identity) |> persist_identity()
-    end
-  end
-
-  # Persist the identity changeset, mapping a concurrent-delete stale-struct
-  # race to {:error, :not_found} (mirrors rotate_password/2's H14 handling).
-  # Scoped so ONLY Repo.update is under the rescue — the reconnect side
-  # effect in the caller stays outside it.
-  @spec persist_identity(Ecto.Changeset.t()) ::
-          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
-  defp persist_identity(changeset) do
-    Repo.update(changeset)
-  rescue
-    Ecto.StaleEntryError -> {:error, :not_found}
-  end
-
-  # Reconnect the live upstream so the new ident/realname re-register.
-  # No-op (returns :ok) when the network is orphaned, no session is
-  # live, or the plan can't be resolved — the persist already happened,
-  # and the next spawn reads the row. Failures are logged, never
-  # surfaced: the identity is saved regardless of whether the bounce
-  # succeeded.
-  #
-  # #211 phase 5 (F6): the stop-then-spawn is the SHARED
-  # `SpawnOrchestrator.reconnect/5` BOUNCE verb (was an inline
-  # `stop_session/3` + `reconnect_session/3` here). The `whereis` guard
-  # is load-bearing — it keeps this to an ALREADY-LIVE session (the
-  # #152 semantic), so a persist-only update never spawns a session that
-  # wasn't there. Plan resolution stays in the visitor context (the
-  # orchestrator takes a pre-resolved plan); resolving before the stop
-  # (vs the pre-phase-5 stop-then-resolve) means a pathological
-  # resolve failure now leaves the working session ALIVE instead of
-  # torn-down — strictly safer, and the identity is persisted either way.
-  @spec maybe_reconnect_after_identity(Visitor.t()) :: :ok
-  defp maybe_reconnect_after_identity(%Visitor{id: id} = visitor) do
-    with {:ok, %Networks.Network{id: network_id}} <-
-           Networks.get_network_by_slug(visitor.network_slug),
-         pid when is_pid(pid) <- Session.whereis({:visitor, id}, network_id),
-         {:ok, plan} <- resolve_visitor_plan(visitor) do
-      case SpawnOrchestrator.reconnect(
-             {:visitor, id},
-             network_id,
-             plan,
-             identity_capacity_input(visitor, network_id),
-             "applying identity change"
-           ) do
-        {:ok, _, _} ->
-          :ok
-
-        {:ok, :ignored} ->
-          # The visitor row vanished between the whereis check and the
-          # respawn (a concurrent delete/reap). Not a failure — the row
-          # is legitimately gone — but log at :info so the "identity
-          # change bounced but nothing came back up" no-op is observable
-          # (CLAUDE.md log-honesty; :warning would over-state a benign
-          # race as an error).
-          Logger.info("visitor identity change: row gone mid-reconnect (no respawn)",
-            visitor_id: id
-          )
-
-          :ok
-
-        {:error, reason} ->
-          Logger.warning("visitor identity change: reconnect failed (identity persisted)",
-            visitor_id: id,
-            error: inspect(reason)
-          )
-
-          :ok
-      end
-    else
-      # Orphaned network row, no live session, or unresolvable plan —
-      # nothing to reconnect.
-      _ -> :ok
-    end
-  end
-
-  # Mirror of `GrappaWeb.SessionController.capacity_input/3` for the
-  # visitor reconnect flow. `requesting_subject` is the visitor itself so
-  # the per-IP cap's self-exclusion keeps the visitor's own live browser
-  # session from counting against the cap on this reconnect respawn.
-  # `source_ip` is the visitor's stored login IP (the same value login
-  # writes to accounts_sessions.ip).
-  @spec identity_capacity_input(Visitor.t(), integer()) :: Admission.capacity_input()
-  defp identity_capacity_input(%Visitor{id: id, ip: ip}, network_id) do
-    %{
-      network_id: network_id,
-      source_ip: ip,
-      flow: :visitor_reconnect,
-      requesting_subject: {:visitor, id}
-    }
-  end
-
-  @doc """
-  Anon-only co-terminus delete (W11). If the visitor exists and
-  `password_encrypted` is nil, delete the row — CASCADE wipes the
-  associated accounts_sessions and messages in a single transaction. Registered visitor (`password_encrypted` set):
-  no-op, the NickServ-password identity persists across logouts.
-  Missing row: no-op (idempotent under concurrent deletion).
-
-  Called from every accounts_sessions deletion site. Anon visitors'
-  data dies with their session row; registered visitors' data
-  persists past session death and is gated on the next login by the
-  `Visitors.Login` password match.
+  Called from every accounts_sessions deletion site. Anon visitors' data
+  dies with their session row; registered visitors' data persists past
+  session death and is gated on the next login by the `Visitors.Login`
+  per-network credential password match.
   """
   @spec purge_if_anon(Ecto.UUID.t()) :: :ok
   def purge_if_anon(visitor_id) when is_binary(visitor_id) do
@@ -1332,17 +1020,18 @@ defmodule Grappa.Visitors do
       nil ->
         :ok
 
-      %Visitor{password_encrypted: nil} = visitor ->
-        {:ok, _} = Repo.delete(visitor)
-        # S11 — the anon subject is destroyed here (login case-1 failure /
-        # preempt); evict its Backoff entries so the retired UUID leaves no
-        # orphan. The registered clause below is a no-op: the identity
-        # persists, so its backoff history must survive.
-        :ok = Session.Backoff.forget({:visitor, visitor.id})
-        :ok
-
-      %Visitor{} ->
-        :ok
+      %Visitor{} = visitor ->
+        if Credentials.visitor_registered?(visitor.id) do
+          # Registered — identity persists; its backoff history must survive.
+          :ok
+        else
+          {:ok, _} = Repo.delete(visitor)
+          # S11 — the anon subject is destroyed here (login case-1 failure /
+          # preempt); evict its Backoff entries so the retired UUID leaves
+          # no orphan.
+          :ok = Session.Backoff.forget({:visitor, visitor.id})
+          :ok
+        end
     end
   end
 end

@@ -71,10 +71,10 @@ defmodule GrappaWeb.NickController do
           |> json(%{ok: true})
         end
 
-      {:visitor, %Visitor{id: visitor_id} = visitor} ->
+      {:visitor, %Visitor{id: visitor_id}} ->
         network = conn.assigns.network
 
-        with :ok <- check_visitor_nick(visitor, nick),
+        with :ok <- check_visitor_nick(visitor_id, network.id, nick),
              :ok <- Session.send_nick({:visitor, visitor_id}, network.id, nick) do
           conn
           |> put_status(:accepted)
@@ -89,15 +89,17 @@ defmodule GrappaWeb.NickController do
   # at the controller before the upstream NICK frame goes out. Mirrors
   # the visitor login boundary's `Identifier.valid_nick?/1` shape so
   # the failure modes a visitor sees on /nick match what they saw on
-  # initial login.
-  @spec check_visitor_nick(Visitor.t(), String.t()) ::
+  # initial login. #211 phase 7 — the collision check is per-network on
+  # the credential (`nick_in_use?/3` keyed on network_id), not the retired
+  # `visitors.(nick, network_slug)` row index.
+  @spec check_visitor_nick(Ecto.UUID.t(), pos_integer(), String.t()) ::
           :ok | {:error, :malformed_nick | :nick_in_use}
-  defp check_visitor_nick(%Visitor{id: visitor_id, network_slug: slug}, nick) do
+  defp check_visitor_nick(visitor_id, network_id, nick) do
     cond do
       not Grappa.IRC.Identifier.valid_nick?(nick) ->
         {:error, :malformed_nick}
 
-      Visitors.nick_in_use?(visitor_id, nick, slug) ->
+      Visitors.nick_in_use?(visitor_id, nick, network_id) ->
         {:error, :nick_in_use}
 
       true ->

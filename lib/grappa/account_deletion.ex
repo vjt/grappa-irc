@@ -20,7 +20,7 @@ defmodule Grappa.AccountDeletion do
       the last-admin lockout guard.
     * `{:user, %User{is_admin: false}}` → stop ALL the user's live
       `Session.Server`s (one per bound network), THEN `Accounts.delete_user/1`.
-    * `{:visitor, %Visitor{password_encrypted: nil}}` → `{:error, :forbidden}`.
+    * anon visitor (holds NO NickServ credential) → `{:error, :forbidden}`.
       An anon visitor has no persistent identity to delete — its only
       teardown verb is `quit` (`DELETE /auth/logout`'s anon branch already
       stops + purges). Mirrors `SessionController.require_registered_visitor/1`:
@@ -51,12 +51,10 @@ defmodule Grappa.AccountDeletion do
     top_level?: true,
     deps: [Grappa.Accounts, Grappa.Networks, Grappa.Session, Grappa.Visitors]
 
-  alias Grappa.{Accounts, Networks, Session, Visitors}
+  alias Grappa.{Accounts, Session, Visitors}
   alias Grappa.Accounts.User
   alias Grappa.Networks.Credentials
   alias Grappa.Visitors.Visitor
-
-  require Logger
 
   # Upstream QUIT line for the teardown-before-wipe stop. Static literal
   # (no CR/LF/NUL) so `Session.stop_session/3`'s pre-QUIT never returns
@@ -100,11 +98,19 @@ defmodule Grappa.AccountDeletion do
     end
   end
 
-  def delete_account({:visitor, %Visitor{password_encrypted: nil}}), do: {:error, :forbidden}
-
+  # #211 phase 7 — anon-vs-registered is DERIVED from the credentials now
+  # (registered = holds ≥1 NickServ credential), NOT the retired
+  # `visitors.password_encrypted` scalar NOR a `visitors.expires_at`-nil
+  # flag. An anon visitor is not offered self-delete → forbidden; a
+  # registered visitor may self-delete (the ONLY door that destroys the
+  # persistent identity).
   def delete_account({:visitor, %Visitor{} = visitor}) do
-    :ok = stop_visitor_session(visitor)
-    Visitors.delete(visitor.id)
+    if Credentials.visitor_registered?(visitor.id) do
+      :ok = stop_visitor_session(visitor)
+      Visitors.delete(visitor.id)
+    else
+      {:error, :forbidden}
+    end
   end
 
   # Stop every live Session.Server the user owns (one per bound network)
@@ -121,22 +127,20 @@ defmodule Grappa.AccountDeletion do
     :ok
   end
 
-  # Resolve the visitor's single network → stop its session. An orphaned
-  # visitor (network row deleted out from under it) has no live session to
-  # stop; `Visitors.delete/1` still cascades the row's dependents.
+  # #211 phase 7 — a visitor is multi-network (accretion), so account
+  # deletion must stop EVERY attached network's session before the CASCADE
+  # drops the credential rows. Enumerate the visitor's credentials
+  # (`WHERE visitor_id ==`, subject-blind-safe) — the retired
+  # `visitors.network_slug` scalar only ever resolved the primary session.
+  # Idempotent per network (`stop_session/3` no-ops without a live pid);
+  # empty list (no credentials) → nothing to stop. `Visitors.delete/1`
+  # still cascades the row's dependents afterward.
   @spec stop_visitor_session(Visitor.t()) :: :ok
-  defp stop_visitor_session(%Visitor{id: id, network_slug: slug}) do
-    case Networks.get_network_by_slug(slug) do
-      {:ok, %Networks.Network{id: network_id}} ->
-        Session.stop_session({:visitor, id}, network_id, @quit_reason)
-
-      {:error, :not_found} ->
-        Logger.warning("account-delete: visitor network not found, no session to stop",
-          visitor_id: id,
-          network: slug
-        )
-
-        :ok
+  defp stop_visitor_session(%Visitor{id: visitor_id}) do
+    for credential <- Credentials.list_visitor_credentials(visitor_id) do
+      :ok = Session.stop_session({:visitor, visitor_id}, credential.network_id, @quit_reason)
     end
+
+    :ok
   end
 end
