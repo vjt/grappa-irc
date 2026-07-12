@@ -23,7 +23,6 @@ const subjectHolder = vi.hoisted(() => ({
         kind: "visitor";
         id: string;
         nick: string;
-        network_slug: string;
         registered?: boolean;
       }
     | null,
@@ -34,15 +33,13 @@ vi.mock("../lib/auth", () => ({
   getSubject: () => subjectHolder.current,
 }));
 
-// #126 — the drawer routes detach/disconnect/reconnect/quit through
-// lib/lifecycle. The lifecycle module is NOT mocked here (so the
-// existing detach→logout / quit→quitAll wiring assertions still hold via
-// the underlying auth/quit mocks); lifecycle's own per-subject routing
-// has dedicated coverage in lib/lifecycle.test.ts. We DO mock the api
-// session verbs so a disconnect/reconnect click doesn't hit the network.
+// #126 — the drawer routes detach/quit through lib/lifecycle. The
+// lifecycle module is NOT mocked here (so the existing detach→logout /
+// quit→quitAll wiring assertions still hold via the underlying auth/quit
+// mocks); lifecycle's own per-subject routing has dedicated coverage in
+// lib/lifecycle.test.ts. We mock the api verbs the drawer touches
+// (updateIdentity) so a click doesn't hit the network.
 vi.mock("../lib/api", () => ({
-  disconnectSession: vi.fn().mockResolvedValue(undefined),
-  reconnectSession: vi.fn().mockResolvedValue(undefined),
   // #152 — the identity editor PATCHes /me/identity via lib/lifecycle's
   // updateIdentity, which calls api.updateIdentity. Stub so the click
   // doesn't hit the network + the call is observable.
@@ -52,10 +49,8 @@ vi.mock("../lib/api", () => ({
     nick: "vjt",
     ident: "grp",
     realname: "Real Name",
-    network_slug: "azzurra",
     expires_at: null,
     registered: true,
-    connected: true,
   }),
   // The drawer imports ApiError for the identity-save catch (instanceof
   // narrowing). A minimal class stand-in keeps the import resolvable.
@@ -87,12 +82,10 @@ const meHolder = vi.hoisted(() => ({
         kind: "visitor";
         id: string;
         nick: string;
-        network_slug: string;
         expires_at: string;
         ident?: string | null;
         realname?: string | null;
         registered?: boolean;
-        connected?: boolean;
       }
     | null,
 }));
@@ -332,7 +325,6 @@ describe("SettingsDrawer (visitor subject)", () => {
       kind: "visitor",
       id: "v1",
       nick: "anon-vjt",
-      network_slug: "azzurra",
     };
   });
 
@@ -397,7 +389,6 @@ describe("SettingsDrawer (M-7 admin console entry)", () => {
       kind: "visitor",
       id: "v1",
       nick: "anon-vjt",
-      network_slug: "azzurra",
       expires_at: "2026-05-17T00:00:00Z",
     };
     wrap(true);
@@ -582,7 +573,6 @@ describe("SettingsDrawer (share session — visitor only)", () => {
       kind: "visitor",
       id: "v1",
       nick: "alice",
-      network_slug: "azzurra",
     };
     wrap(true);
     expect(screen.getByTestId("share-session-entry")).toBeInTheDocument();
@@ -599,7 +589,6 @@ describe("SettingsDrawer (share session — visitor only)", () => {
       kind: "visitor",
       id: "v1",
       nick: "alice",
-      network_slug: "azzurra",
     };
     wrap(true);
     // Closed by default — modal stub absent.
@@ -673,7 +662,7 @@ describe("SettingsDrawer (issue #43 — detach + quit for a user)", () => {
     // #126 — an ephemeral (non-registered) visitor has no persistent
     // identity, so the persistent-identity verbs are withheld; quit is
     // the only (universal) verb. registered omitted = not registered.
-    subjectHolder.current = { kind: "visitor", id: "v1", nick: "guest", network_slug: "libera" };
+    subjectHolder.current = { kind: "visitor", id: "v1", nick: "guest" };
     wrap(true);
     expect(screen.getByTestId("quit-irc-btn")).toBeInTheDocument();
     expect(screen.queryByTestId("detach-btn")).toBeNull();
@@ -694,80 +683,26 @@ describe("SettingsDrawer (#126 — registered-visitor lifecycle verbs)", () => {
       kind: "visitor",
       id: "v1",
       nick: "vjt",
-      network_slug: "azzurra",
       registered: true,
     };
   });
 
-  it("connected → detach + disconnect + quit (no reconnect, no 'log out')", () => {
+  it("#211 phase 6 — detach + quit, NO disconnect/reconnect toggle", () => {
     meHolder.current = {
       kind: "visitor",
       id: "v1",
       nick: "vjt",
-      network_slug: "azzurra",
       expires_at: "2099-01-01T00:00:00Z",
       registered: true,
-      connected: true,
     };
     wrap(true);
     expect(screen.getByTestId("detach-btn")).toHaveTextContent(/^detach$/i);
-    expect(screen.getByTestId("disconnect-btn")).toHaveTextContent(/^disconnect$/i);
     expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/^quit$/i);
+    // The disconnect ⇄ reconnect toggle is RETIRED — per-network
+    // park/reconnect lives on the home page now (ruling D).
+    expect(screen.queryByTestId("disconnect-btn")).toBeNull();
     expect(screen.queryByTestId("reconnect-btn")).toBeNull();
     expect(screen.queryByText(/^log out$/i)).toBeNull();
-  });
-
-  it("disconnected → detach + reconnect + quit (no disconnect)", () => {
-    meHolder.current = {
-      kind: "visitor",
-      id: "v1",
-      nick: "vjt",
-      network_slug: "azzurra",
-      expires_at: "2099-01-01T00:00:00Z",
-      registered: true,
-      connected: false,
-    };
-    wrap(true);
-    expect(screen.getByTestId("detach-btn")).toBeInTheDocument();
-    expect(screen.getByTestId("reconnect-btn")).toHaveTextContent(/^reconnect$/i);
-    expect(screen.getByTestId("quit-irc-btn")).toBeInTheDocument();
-    expect(screen.queryByTestId("disconnect-btn")).toBeNull();
-  });
-
-  it("clicking disconnect calls api.disconnectSession", async () => {
-    const api = await import("../lib/api");
-    meHolder.current = {
-      kind: "visitor",
-      id: "v1",
-      nick: "vjt",
-      network_slug: "azzurra",
-      expires_at: "2099-01-01T00:00:00Z",
-      registered: true,
-      connected: true,
-    };
-    wrap(true);
-    fireEvent.click(screen.getByTestId("disconnect-btn"));
-    await waitFor(() => {
-      expect(api.disconnectSession).toHaveBeenCalledWith("test-bearer");
-    });
-  });
-
-  it("clicking reconnect calls api.reconnectSession", async () => {
-    const api = await import("../lib/api");
-    meHolder.current = {
-      kind: "visitor",
-      id: "v1",
-      nick: "vjt",
-      network_slug: "azzurra",
-      expires_at: "2099-01-01T00:00:00Z",
-      registered: true,
-      connected: false,
-    };
-    wrap(true);
-    fireEvent.click(screen.getByTestId("reconnect-btn"));
-    await waitFor(() => {
-      expect(api.reconnectSession).toHaveBeenCalledWith("test-bearer");
-    });
   });
 
   it("#152 — identity editor seeds from /me, two-tap apply calls api.updateIdentity", async () => {
@@ -776,12 +711,10 @@ describe("SettingsDrawer (#126 — registered-visitor lifecycle verbs)", () => {
       kind: "visitor",
       id: "v1",
       nick: "vjt",
-      network_slug: "azzurra",
       expires_at: "2099-01-01T00:00:00Z",
       ident: "grp",
       realname: "Seed Name",
       registered: true,
-      connected: true,
     };
     wrap(true);
 
@@ -850,7 +783,6 @@ describe("SettingsDrawer delete-account gating (#157)", () => {
       kind: "visitor",
       id: "v1",
       nick: "vjt",
-      network_slug: "azzurra",
       expires_at: "2026-06-30T00:00:00Z",
       registered: true,
     };
@@ -863,7 +795,6 @@ describe("SettingsDrawer delete-account gating (#157)", () => {
       kind: "visitor",
       id: "v2",
       nick: "guest",
-      network_slug: "azzurra",
       expires_at: "2026-06-30T00:00:00Z",
       registered: false,
     };

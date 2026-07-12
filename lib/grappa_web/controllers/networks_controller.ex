@@ -19,11 +19,13 @@ defmodule GrappaWeb.NetworksController do
       branch is retired — the scalar is dropped from the wire this
       phase (the column at phase 7).
 
-  PATCH is user-only — `Credential` rows are per-(user, network)
-  bindings; visitors have no `Credential` to transition. The
-  `ResolveNetwork` plug provides the ownership check: a user patching
-  another user's network slug gets a uniform 404 from the plug so
-  credential existence is not leaked.
+  PATCH is subject-agnostic since #211 phase 6 (ruling D): BOTH users
+  and visitors park/reconnect a network through it — visitors carry a
+  real `connection_state` now, so the visitor `POST /session/{disconnect,
+  reconnect}` pair is RETIRED in favor of this one verb. The
+  `ResolveNetwork` plug provides the ownership check for either subject:
+  a caller patching a network they hold no credential on gets a uniform
+  404 from the plug so credential existence is not leaked.
 
   ## T32 connection_state transitions
 
@@ -52,6 +54,7 @@ defmodule GrappaWeb.NetworksController do
   alias Grappa.IRC.Identifier
   alias Grappa.{Networks, Session}
   alias Grappa.Networks.{Credential, Credentials, SessionPlan}
+  alias Grappa.Visitors.Visitor
 
   require Logger
 
@@ -110,17 +113,26 @@ defmodule GrappaWeb.NetworksController do
 
   Accepts `{connection_state: "parked" | "connected", reason: string|nil}`.
   `:failed` is server-set only — returns 400 to the caller.
-  User subject only — visitors have no `Credential` row to transition.
+
+  #211 phase 6 — subject-agnostic (ruling D): BOTH users and visitors
+  park/reconnect a network through this ONE verb. The `ResolveNetwork`
+  plug already gated ownership (user → credential, visitor → credential),
+  so `conn.assigns.network` is the caller's own network and
+  `conn.assigns.current_subject` names who. The visitor
+  disconnect/reconnect `POST /session/{disconnect,reconnect}` pair is
+  RETIRED in favor of this — visitors are now equal to users on the
+  connection-state surface.
   """
   @spec update(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
           | {:error, :bad_request | :forbidden | :not_found | :not_connected}
   def update(conn, params) do
-    with {:ok, subject_user} <- require_user_subject(conn),
-         {:ok, target_state} <- parse_connection_state(params),
+    with {:ok, target_state} <- parse_connection_state(params),
          {:ok, reason} <- parse_reason(params),
-         {:ok, credential} <- fetch_credential(subject_user, conn.assigns.network),
-         {:ok, updated_cred} <- apply_transition(conn, subject_user, credential, target_state, reason) do
+         {:ok, credential} <-
+           fetch_credential(conn.assigns.current_subject, conn.assigns.network),
+         {:ok, updated_cred} <-
+           apply_transition(conn, conn.assigns.current_subject, credential, target_state, reason) do
       render(conn, :update, credential: updated_cred)
     end
   end
@@ -128,14 +140,6 @@ defmodule GrappaWeb.NetworksController do
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
-
-  @spec require_user_subject(Plug.Conn.t()) ::
-          {:ok, User.t()} | {:error, :forbidden}
-  defp require_user_subject(%{assigns: %{current_subject: {:user, %User{} = user}}}),
-    do: {:ok, user}
-
-  defp require_user_subject(_),
-    do: {:error, :forbidden}
 
   # Only `:connected` and `:parked` are user-settable. `:failed` is
   # server-set only (k-line / permanent SASL — S1.4 lenient triggers);
@@ -159,14 +163,25 @@ defmodule GrappaWeb.NetworksController do
 
   defp parse_reason(_), do: {:ok, nil}
 
-  @spec fetch_credential(User.t(), Grappa.Networks.Network.t()) ::
+  # #211 phase 6 — subject-agnostic credential fetch. Both branches are
+  # `WHERE <subject>_id ==` (subject-blind-safe): a user can't reach a
+  # visitor credential and vice versa. `ResolveNetwork` already asserted
+  # the caller owns a credential on this network, so a miss here is a
+  # concurrent unbind, not an authz probe.
+  @spec fetch_credential(GrappaWeb.Subject.t(), Grappa.Networks.Network.t()) ::
           {:ok, Credential.t()} | {:error, :not_found}
-  defp fetch_credential(user, network), do: Credentials.get_credential(user, network)
+  defp fetch_credential({:user, %User{} = user}, network),
+    do: Credentials.get_credential(user, network)
 
-  # Dispatch to the right context fn based on the target state.
+  defp fetch_credential({:visitor, %Visitor{id: vid}}, %{id: nid}),
+    do: Credentials.get_visitor_credential(vid, nid)
+
+  # Dispatch to the right context fn based on the target state. Both
+  # transitions are subject-agnostic since phase 6 — `Networks.disconnect/2`
+  # + `Networks.connect/1` derive the subject from the credential's XOR FK.
   @spec apply_transition(
           Plug.Conn.t(),
-          User.t(),
+          GrappaWeb.Subject.t(),
           Credential.t(),
           Credential.connection_state(),
           String.t() | nil
@@ -175,7 +190,7 @@ defmodule GrappaWeb.NetworksController do
     Networks.disconnect(credential, reason || "user-disconnect")
   end
 
-  defp apply_transition(conn, user, credential, :connected, _) do
+  defp apply_transition(conn, subject, credential, :connected, _) do
     # U-0 stop-swallow fix (2026-05-16): spawn FIRST against the
     # parked credential, THEN commit the DB transition to `:connected`
     # only on spawn success. Pre-U-0, `Networks.connect/1` committed
@@ -194,26 +209,29 @@ defmodule GrappaWeb.NetworksController do
     # idempotent broadcast). No orphan process, no DB drift. Cic
     # tolerates the duplicate broadcast since `connection_state_changed`
     # is idempotent at the wire-edge.
-    with {:ok, plan} <- resolve_plan(credential, user),
-         {:ok, _} <- orchestrate_spawn(conn, user, credential, plan),
+    with {:ok, plan} <- resolve_plan(subject, credential, conn.assigns.network),
+         {:ok, _} <- orchestrate_spawn(conn, subject, credential, plan),
          {:ok, updated_cred} <- Networks.connect(credential) do
       {:ok, updated_cred}
     end
   end
 
-  # Resolve a `SessionPlan` from the credential. Returns a typed error
-  # (`:resolve_failed`) on plan-resolution failure so the controller
-  # can surface it via FallbackController rather than swallowing.
-  @spec resolve_plan(Credential.t(), User.t()) ::
+  # Resolve a `SessionPlan` from the credential. Subject-polymorphic:
+  # the user resolver reads `Accounts.get_user!`, the visitor resolver
+  # reads the `%Visitor{}` identity — routing a visitor through the user
+  # resolver would crash on `Accounts.get_user!(nil)` (the phase-1
+  # subject-blind-reader class). Returns a typed `:resolve_failed` on
+  # failure so the controller surfaces it via FallbackController.
+  @spec resolve_plan(GrappaWeb.Subject.t(), Credential.t(), Grappa.Networks.Network.t()) ::
           {:ok, Session.start_opts()} | {:error, :resolve_failed}
-  defp resolve_plan(credential, user) do
+  defp resolve_plan({:user, %User{id: user_id}}, credential, _) do
     case SessionPlan.resolve(credential) do
       {:ok, _} = ok ->
         ok
 
       {:error, reason} ->
         Logger.warning("PATCH /connect: session plan resolve failed",
-          user: user.id,
+          user: user_id,
           error: inspect(reason)
         )
 
@@ -221,19 +239,42 @@ defmodule GrappaWeb.NetworksController do
     end
   end
 
-  # Call the orchestrator with the cred's network_id + computed plan
-  # + capacity inputs. Returns the orchestrator's typed error atom
-  # verbatim (`:user_cap_exceeded` / `:ip_cap_exceeded` /
-  # `{:network_circuit_open, _}` / `{:start_failed, _}` / etc.) so
-  # FallbackController's existing T31 clauses pick up the 503 mapping
-  # unchanged. U-2: this surface is always a user-flow
-  # (`:patch_network_connect`), so the NETWORK-TOTAL cap atom is always
-  # `:user_cap_exceeded`, never `:visitor_cap_exceeded` (the #171 per-IP
-  # cap is a subject-kind-agnostic tag).
-  @spec orchestrate_spawn(Plug.Conn.t(), User.t(), Credential.t(), Session.start_opts()) ::
-          {:ok, pid()} | {:error, term()}
-  defp orchestrate_spawn(conn, %User{id: user_id} = user, credential, plan) do
+  defp resolve_plan({:visitor, %Visitor{} = visitor}, _, network) do
+    # The visitor resolver is network-explicit (phase 4c) — a
+    # multi-network visitor resolves the RIGHT network's plan, not the
+    # (retired) singular `network_slug`. The `ResolveNetwork` plug
+    # assigned `conn.assigns.network`.
+    case Grappa.Visitors.SessionPlan.resolve(visitor, network) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} ->
+        Logger.warning("PATCH /connect: visitor session plan resolve failed",
+          visitor_id: visitor.id,
+          error: inspect(reason)
+        )
+
+        {:error, :resolve_failed}
+    end
+  end
+
+  # Call the orchestrator with the cred's network_id + computed plan +
+  # capacity inputs. Subject-polymorphic (phase 6): the flow discriminant
+  # is `:patch_network_connect` for users, `:visitor_reconnect` for
+  # visitors (so the #171 per-IP cap tags the right subject_kind); the
+  # `requesting_subject` self-exclusion keeps the caller's own live
+  # browser session from counting against the cap on the respawn. Returns
+  # the orchestrator's typed error atom verbatim so FallbackController's
+  # existing T31 clauses pick up the 503 mapping unchanged.
+  @spec orchestrate_spawn(
+          Plug.Conn.t(),
+          GrappaWeb.Subject.t(),
+          Credential.t(),
+          Session.start_opts()
+        ) :: {:ok, pid()} | {:error, term()}
+  defp orchestrate_spawn(conn, subject, credential, plan) do
     network_id = credential.network_id
+    session_subject = to_session_subject(subject)
 
     capacity_input = %{
       network_id: network_id,
@@ -242,17 +283,15 @@ defmodule GrappaWeb.NetworksController do
       # formatter user login stores in accounts_sessions.ip, or the per-IP
       # count would silently miss the stored rows.
       source_ip: GrappaWeb.RemoteIP.format(conn),
-      flow: :patch_network_connect,
-      # UX-5 bucket BC (2026-05-19): the requesting user IS the subject
+      flow: connect_flow(subject),
+      # UX-5 bucket BC (2026-05-19): the requesting subject IS the subject
       # the spawn is for. Self-exclusion in the per-IP cap keeps it from
-      # counting vjt's own active browser accounts_session against him on
-      # the T32 park → /connect respawn path. Without it, `max_per_ip = 1`
-      # (the default) would always 503 the first PATCH /connect from any
-      # logged-in user whose browser already holds a session on that IP.
-      requesting_subject: {:user, user_id}
+      # counting the caller's own active browser accounts_session against
+      # them on the T32 park → /connect respawn path.
+      requesting_subject: session_subject
     }
 
-    case Grappa.SpawnOrchestrator.spawn({:user, user_id}, network_id, plan, capacity_input) do
+    case Grappa.SpawnOrchestrator.spawn(session_subject, network_id, plan, capacity_input) do
       {:ok, :spawned, pid} ->
         {:ok, pid}
 
@@ -262,25 +301,35 @@ defmodule GrappaWeb.NetworksController do
       {:ok, :ignored} ->
         # `Session.Server.init/1` short-circuited because the
         # credential row was unbound between this controller's
-        # admission check and the spawn. The most likely cause is a
-        # racing `DELETE /admin/credentials/:user_id/:network_id`.
-        # Surface as :not_found so the operator sees the same
-        # `404` they'd see from `Credentials.get_credential/2`
-        # returning `:not_found` upstream.
-        Logger.warning("PATCH /connect: subject row gone mid-spawn",
-          user: user.id,
+        # admission check and the spawn. Surface as :not_found so the
+        # operator sees the same `404` a missing credential would give.
+        Logger.warning(
+          "PATCH /connect: subject row gone mid-spawn #{inspect(session_subject)}",
           network_id: network_id
         )
 
         {:error, :not_found}
 
       {:error, reason} = err ->
-        Logger.warning("PATCH /connect: session spawn rejected",
-          user: user.id,
+        Logger.warning(
+          "PATCH /connect: session spawn rejected #{inspect(session_subject)}",
+          network_id: network_id,
           error: inspect(reason)
         )
 
         err
     end
   end
+
+  @spec to_session_subject(GrappaWeb.Subject.t()) :: Session.subject()
+  defp to_session_subject({:user, %User{id: id}}), do: {:user, id}
+  defp to_session_subject({:visitor, %Visitor{id: id}}), do: {:visitor, id}
+
+  # U-2: the network-total cap atom is subject-keyed via the flow. A
+  # user connect is `:patch_network_connect`; a visitor connect reuses
+  # the `:visitor_reconnect` flow (subject_kind :visitor) so the cap +
+  # circuit gate the right pool.
+  @spec connect_flow(GrappaWeb.Subject.t()) :: Grappa.Admission.flow()
+  defp connect_flow({:user, _}), do: :patch_network_connect
+  defp connect_flow({:visitor, _}), do: :visitor_reconnect
 end

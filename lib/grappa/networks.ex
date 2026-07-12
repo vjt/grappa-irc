@@ -618,16 +618,20 @@ defmodule Grappa.Networks do
 
   `:parked | :failed → :connected`. Clears the prior `reason` (the
   user reconnecting overrides the prior parked/failed cause). Emits
-  `{:connection_state_changed, event}` on
-  `Topic.network(user_name, network_slug)`.
+  `{:connection_state_changed, event}` on `Topic.user(subject_label)`.
+
+  #211 phase 6 — subject-polymorphic (ruling D: visitors carry a real
+  `connection_state` now, park/reconnect via the SAME PATCH users do).
+  The credential's XOR FK (`user_id` / `visitor_id`) drives the subject;
+  the broadcast fans out on the subject's own user-rooted topic.
   """
   @spec connect(Credential.t()) :: {:ok, Credential.t()}
   def connect(%Credential{connection_state: :connected} = cred) do
-    {:ok, preload_user_and_network(cred)}
+    {:ok, preload_subject_and_network(cred)}
   end
 
   def connect(%Credential{connection_state: from} = cred) when from in [:parked, :failed] do
-    cred = preload_user_and_network(cred)
+    cred = preload_subject_and_network(cred)
     updated = transition!(cred, :connected, nil)
     broadcast_state_change(updated, from, :connected, nil)
     {:ok, updated}
@@ -662,8 +666,8 @@ defmodule Grappa.Networks do
           {:ok, Credential.t()} | {:error, :not_connected}
   def disconnect(%Credential{connection_state: :connected} = cred, reason)
       when is_binary(reason) do
-    cred = preload_user_and_network(cred)
-    subject = {:user, cred.user_id}
+    cred = preload_subject_and_network(cred)
+    subject = subject_of(cred)
 
     _ = best_effort_quit(subject, cred.network_id, reason)
     :ok = Session.stop_session(subject, cred.network_id)
@@ -704,8 +708,8 @@ defmodule Grappa.Networks do
 
   def mark_failed(%Credential{connection_state: :connected} = cred, reason)
       when is_binary(reason) do
-    cred = preload_user_and_network(cred)
-    subject = {:user, cred.user_id}
+    cred = preload_subject_and_network(cred)
+    subject = subject_of(cred)
 
     :ok = Session.stop_session(subject, cred.network_id, reason)
 
@@ -810,14 +814,37 @@ defmodule Grappa.Networks do
     :ok
   end
 
-  @spec preload_user_and_network(Credential.t()) :: Credential.t()
-  defp preload_user_and_network(%Credential{} = cred) do
+  # #211 phase 6 — the subject a credential belongs to, from its XOR FK.
+  # `connect/1` / `disconnect/2` are subject-polymorphic now (visitors
+  # carry a real connection_state, ruling D), so the session
+  # spawn/stop key + the broadcast topic derive from whichever FK is set.
+  @spec subject_of(Credential.t()) :: Session.subject()
+  defp subject_of(%Credential{user_id: uid}) when is_binary(uid), do: {:user, uid}
+  defp subject_of(%Credential{visitor_id: vid}) when is_binary(vid), do: {:visitor, vid}
+
+  # The user-rooted PubSub topic segment for a credential's subject —
+  # `user.name` for users, `"visitor:" <> visitor_id` for visitors
+  # (the SAME label `Session`/`UserSocket`/`Visitors.SessionPlan` use).
+  # A visitor needs no `%Visitor{}` load — the id alone builds the label.
+  @spec subject_label_of(Credential.t()) :: String.t()
+  defp subject_label_of(%Credential{user: %User{name: name}}), do: name
+  defp subject_label_of(%Credential{visitor_id: vid}) when is_binary(vid), do: "visitor:" <> vid
+
+  # Preload the network (both subjects) + the User struct (user
+  # credentials only — a visitor credential needs no struct load; its
+  # topic label + subject tuple come from the `visitor_id` FK directly,
+  # keeping `Networks` off a `Grappa.Visitors` dep, the dirty_xref).
+  @spec preload_subject_and_network(Credential.t()) :: Credential.t()
+  defp preload_subject_and_network(%Credential{} = cred) do
     cred
     |> maybe_preload_user()
     |> maybe_preload_network()
   end
 
   defp maybe_preload_user(%Credential{user: %User{}} = cred), do: cred
+  # Visitor credential (user_id IS NULL) — nothing to preload; the
+  # visitor_id FK is all the broadcast + subject derivation need.
+  defp maybe_preload_user(%Credential{user_id: nil} = cred), do: cred
 
   defp maybe_preload_user(%Credential{user_id: uid} = cred) do
     %Credential{cred | user: Accounts.get_user!(uid)}
@@ -855,14 +882,16 @@ defmodule Grappa.Networks do
           Credential.connection_state(),
           String.t() | nil
         ) :: :ok
-  defp broadcast_state_change(
-         %Credential{user: %User{id: user_id, name: user_name}} = cred,
-         from,
-         to,
-         reason
-       ) do
-    topic = Topic.user(user_name)
-    nick = resolve_network_nick({:user, user_id}, cred)
+  defp broadcast_state_change(%Credential{} = cred, from, to, reason) do
+    # #211 phase 6 — subject-polymorphic. Topic = the subject's own
+    # user-rooted segment (`user.name` / `"visitor:" <> id`); the nick is
+    # the per-subject live-nick-with-fallback. Both derive from the
+    # credential's XOR FK, so a visitor park/reconnect fans out on its
+    # own topic exactly as a user's does. cic's `userTopic.ts`
+    # `connection_state_changed` handler acts only on `payload.network`
+    # (patchHomeNetwork + refetchNetworks) — subject-agnostic.
+    topic = Topic.user(subject_label_of(cred))
+    nick = resolve_network_nick(subject_of(cred), cred)
 
     # REV-J M15: pre-fix this co-emitted two events per transition —
     # the wider `connection_state_changed` and a narrow

@@ -193,18 +193,18 @@ defmodule GrappaWeb.Router do
 
     delete "/auth/logout", AuthController, :logout
 
-    # #126 — visitor session-disposition: the disconnect ⇄ reconnect verb
-    # pair (drop the upstream IRC connection but KEEP the cic/web session
-    # open). Registered-visitor-only (gated in the controller; users
-    # disconnect per-network via PATCH /networks/:network_id). The nginx
-    # allowlist carries `/session/` on both the :80 and :443 blocks.
-    post "/session/disconnect", SessionController, :disconnect
-    post "/session/reconnect", SessionController, :reconnect
-
     # #211 phase 4c — visitor multi-network ACCRETION: attach an additional
     # visitor_enabled network to the authenticated identity + spawn it.
-    # Registered-visitor-only (gated in the controller). Rides the existing
-    # `/session/` nginx allowlist entry (both :80 and :443) — no proxy change.
+    # Phase 6 (ruling C) relaxed the gate to any visitor (anon OR
+    # registered) — the home-page "connect available network" affordance
+    # drives it, still bounded by the visitor_enabled allowlist + per-IP
+    # cap. Rides the existing `/session/` nginx allowlist entry (both :80
+    # and :443) — no proxy change.
+    #
+    # #211 phase 6 — the #126 `POST /session/{disconnect,reconnect}` pair
+    # is RETIRED. Visitors carry a real per-network connection_state now
+    # (ruling D), so they park/reconnect via `PATCH /networks/:network_id`
+    # like users; global disconnect-all is client-composed park-all.
     post "/session/networks", SessionController, :add_network
 
     get "/me", MeController, :show

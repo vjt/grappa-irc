@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// #126 — canonical lifecycle verb routing (detach / disconnect /
-// reconnect / quit). This is the wiring gate: which server call(s) each
-// verb fires, per subject kind. The SettingsDrawer test owns the
-// per-subject RENDERING gate; this owns the per-subject BEHAVIOUR.
+// #126 + #211 phase 6 — canonical lifecycle verb routing (detach / quit).
+// This is the wiring gate: which server call(s) each verb fires, per
+// subject kind. The SettingsDrawer test owns the per-subject RENDERING
+// gate; this owns the per-subject BEHAVIOUR.
+//
+// Phase 6 — the visitor `disconnect`/`reconnect` lifecycle verbs are
+// RETIRED. Per-network park/reconnect moved to the home page (`patchNetwork`
+// / the shared `PATCH /networks/:id`); global disconnect is `quit`
+// (client-composed park-all via `quitAll`), for BOTH subjects.
 
 const subjectHolder = vi.hoisted(() => ({
   current: null as
     | { kind: "user"; id: string; name: string }
-    | { kind: "visitor"; id: string; nick: string; network_slug: string; registered?: boolean }
+    | { kind: "visitor"; id: string; nick: string; registered?: boolean }
     | null,
 }));
 
@@ -20,9 +25,8 @@ vi.mock("./auth", () => ({
 }));
 
 vi.mock("./api", () => ({
-  disconnectSession: vi.fn().mockResolvedValue(undefined),
-  reconnectSession: vi.fn().mockResolvedValue(undefined),
   deleteAccount: vi.fn().mockResolvedValue(undefined),
+  updateIdentity: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./quit", () => ({
@@ -33,7 +37,7 @@ vi.mock("./networks", () => ({
   refetchUser: vi.fn(),
 }));
 
-import { deleteAccount, detach, disconnect, quit, reconnect } from "./lifecycle";
+import { deleteAccount, detach, quit } from "./lifecycle";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -43,85 +47,58 @@ beforeEach(() => {
 describe("detach", () => {
   it("revokes the web session via logout (bouncer stays up)", async () => {
     const auth = await import("./auth");
-    const api = await import("./api");
+    const quitMod = await import("./quit");
     subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
 
     await detach();
 
     expect(auth.logout).toHaveBeenCalled();
-    // detach is the ABSENCE of teardown — never drops the upstream.
-    expect(api.disconnectSession).not.toHaveBeenCalled();
+    // detach is the ABSENCE of teardown — never parks.
+    expect(quitMod.quitAll).not.toHaveBeenCalled();
   });
 });
 
 describe("quit", () => {
   it("user → parks all networks then detaches (quitAll)", async () => {
     const quitMod = await import("./quit");
-    const api = await import("./api");
     subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
 
     await quit();
 
     expect(quitMod.quitAll).toHaveBeenCalled();
-    expect(api.disconnectSession).not.toHaveBeenCalled();
   });
 
-  it("registered visitor → drops the upstream (disconnectSession) THEN detaches", async () => {
-    const api = await import("./api");
-    const auth = await import("./auth");
+  it("registered visitor → ALSO parks all networks then detaches (phase 6 park-all)", async () => {
+    const quitMod = await import("./quit");
     subjectHolder.current = {
       kind: "visitor",
       id: "v1",
       nick: "vjt",
-      network_slug: "azzurra",
       registered: true,
     };
 
     await quit();
 
-    expect(api.disconnectSession).toHaveBeenCalledWith("test-bearer");
-    expect(auth.logout).toHaveBeenCalled();
+    // Phase 6: a registered visitor's global disconnect IS the same
+    // client-composed park-all a user's is — persists across reboot.
+    expect(quitMod.quitAll).toHaveBeenCalled();
   });
 
   it("ephemeral visitor → detaches only (logout's anon branch stops + purges server-side)", async () => {
-    const api = await import("./api");
+    const quitMod = await import("./quit");
     const auth = await import("./auth");
     subjectHolder.current = {
       kind: "visitor",
       id: "v2",
       nick: "guest",
-      network_slug: "azzurra",
       registered: false,
     };
 
     await quit();
 
-    // No client-side disconnect: an ephemeral visitor is never offered
-    // the disconnect endpoint (it would 403). logout purges it server-side.
-    expect(api.disconnectSession).not.toHaveBeenCalled();
+    // No park-all: an anon visitor's row is purged by logout server-side.
+    expect(quitMod.quitAll).not.toHaveBeenCalled();
     expect(auth.logout).toHaveBeenCalled();
-  });
-});
-
-describe("disconnect / reconnect (registered visitor)", () => {
-  it("disconnect drops the upstream then refetches /me (connected flips)", async () => {
-    const api = await import("./api");
-    const networks = await import("./networks");
-
-    await disconnect();
-
-    expect(api.disconnectSession).toHaveBeenCalledWith("test-bearer");
-    expect(networks.refetchUser).toHaveBeenCalled();
-  });
-
-  it("reconnect respawns the upstream then refetches /me", async () => {
-    const api = await import("./api");
-    const networks = await import("./networks");
-
-    await reconnect();
-
-    expect(api.reconnectSession).toHaveBeenCalledWith("test-bearer");
-    expect(networks.refetchUser).toHaveBeenCalled();
   });
 });
 
@@ -137,22 +114,19 @@ describe("deleteAccount (#157)", () => {
     expect(auth.clearLocalAuth).toHaveBeenCalled();
   });
 
-  it("is DISTINCT from quit — never parks / disconnects / logs out", async () => {
-    const api = await import("./api");
+  it("is DISTINCT from quit — never parks / logs out", async () => {
     const auth = await import("./auth");
     const quitMod = await import("./quit");
     subjectHolder.current = {
       kind: "visitor",
       id: "v1",
       nick: "vjt",
-      network_slug: "azzurra",
       registered: true,
     };
 
     await deleteAccount();
 
     expect(quitMod.quitAll).not.toHaveBeenCalled();
-    expect(api.disconnectSession).not.toHaveBeenCalled();
     expect(auth.logout).not.toHaveBeenCalled();
   });
 

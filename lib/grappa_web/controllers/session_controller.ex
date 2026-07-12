@@ -1,95 +1,55 @@
 defmodule GrappaWeb.SessionController do
   @moduledoc """
-  #126 — visitor session-disposition surface: the `disconnect` ⇄
-  `reconnect` verb pair (drop the upstream IRC connection but KEEP the
-  cic/web session open; reconnect restores it).
+  Visitor multi-network ACCRETION surface (#211 phase 4c + phase 6).
 
-    * `POST /session/disconnect` — tear the upstream down via the shared
-      `Visitors.disconnect_session/2` (→ `Session.stop_session/3`). The
-      visitor row + scrollback + the bearer survive.
-    * `POST /session/reconnect` — respawn the upstream via the shared
-      `Visitors.reconnect_session/3` (→ `SpawnOrchestrator.spawn/4`).
+    * `POST /session/networks` — attach an ADDITIONAL `visitor_enabled`
+      network to the authenticated visitor identity + spawn its upstream
+      session. The identity stays ONE `%Visitor{}` spanning both
+      networks (NOT a new visitor row).
 
-  ## Subject scoping (persistent-identity-only)
+  ## #211 phase 6 — the disconnect ⇄ reconnect pair is RETIRED
 
-  Both verbs are gated to a **registered (NickServ-identified) visitor**
-  (`password_encrypted` non-nil) via `require_registered_visitor/1`.
-  Everyone else gets 403:
+  The `#126` `POST /session/{disconnect,reconnect}` verbs are GONE.
+  Visitors now carry a real per-network `connection_state` (ruling D),
+  so they park/reconnect each network through the SAME
+  `PATCH /networks/:network_id {connection_state}` users do — visitors
+  are equal to users on the connection-state surface. A global
+  disconnect-all is composed client-side (park each attached network),
+  mirroring the user `quit.ts` quit-all. The singular
+  `resolve_network_id/1` scalar reader died with the retired verbs.
 
-    * a **user** disconnects/reconnects PER NETWORK through the existing
-      `PATCH /networks/:network_id {connection_state}` surface — the
-      whole-session verb here would be ambiguous across their many
-      networks;
-    * an **anon visitor** has no persistent identity to come back to, so
-      its only teardown verb is `quit` (= `DELETE /auth/logout`, which
-      stops + purges in its anon branch).
+  ## Accretion is anon-allowed (ruling C, follow-up 2)
 
-  This mirrors `NetworksController`'s `require_user_subject/1` gate from
-  the other side: there, visitors are rejected; here, users + anon
-  visitors are. Server-side defense-in-depth — cic also gates the
-  buttons by subject kind, but the boundary refuses regardless.
-
-  Quit for a registered visitor is NOT a verb here: the client composes
-  it from `disconnect` (this controller) + `detach` (`DELETE
-  /auth/logout`). One teardown core, every door.
+  `POST /session/networks` is gated by `require_visitor/1` — ANY visitor
+  (anon or registered) may one-tap connect an available network from the
+  home page (still bounded by the `visitor_enabled` allowlist + the #171
+  per-IP cap inside `accrete_network/3`). Pre-phase-6 this was
+  registered-visitor-only; ruling C relaxes it: "always reduce the
+  friction for visitors to get on irc."
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Networks, Visitors}
+  alias Grappa.Visitors
   alias Grappa.Visitors.Visitor
 
   @doc """
-  `POST /session/disconnect` — registered visitor only. Drops the
-  upstream IRC connection, keeps the row + web session. 204 on success;
-  403 for any non-registered-visitor subject.
-  """
-  @spec disconnect(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :forbidden | :not_found}
-  def disconnect(conn, _) do
-    with {:ok, visitor} <- require_registered_visitor(conn),
-         {:ok, network_id} <- resolve_network_id(visitor) do
-      :ok = Visitors.disconnect_session(visitor, network_id)
-      send_resp(conn, :no_content, "")
-    end
-  end
+  `POST /session/networks` — visitor only (anon OR registered). #211
+  phase 4c ACCRETION, phase-6-relaxed: attach an ADDITIONAL
+  `visitor_enabled` network to the authenticated visitor identity and
+  spawn its upstream session. Body: `{"network": "<slug>"}`.
 
-  @doc """
-  `POST /session/reconnect` — registered visitor only. Respawns the
-  upstream IRC session. 204 on success; 403 for any non-registered
-  -visitor subject; the admission / spawn failure atoms flow through
-  `FallbackController` (503 cap/circuit, 502 upstream, etc.).
-  """
-  @spec reconnect(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :forbidden | :not_found | :resolve_failed | term()}
-  def reconnect(conn, _) do
-    with {:ok, visitor} <- require_registered_visitor(conn),
-         {:ok, network_id} <- resolve_network_id(visitor),
-         {:ok, _} <-
-           Visitors.reconnect_session(visitor, network_id, capacity_input(conn, visitor, network_id)) do
-      send_resp(conn, :no_content, "")
-    end
-  end
-
-  @doc """
-  `POST /session/networks` — registered visitor only. #211 phase 4c
-  ACCRETION: attach an ADDITIONAL `visitor_enabled` network to the
-  authenticated visitor identity and spawn its upstream session. The
-  identity stays ONE `%Visitor{}` spanning both networks (NOT a new
-  visitor row). Body: `{"network": "<slug>"}`.
-
-  204 on success; 400 if the `network` param is missing/blank; 403 for any
-  non-registered-visitor subject; the accretion / admission / spawn error
+  204 on success; 400 if the `network` param is missing/blank; 403 for a
+  non-visitor (user) subject; the accretion / admission / spawn error
   atoms flow through `FallbackController` (403 network_not_visitor_enabled,
   409 already_attached, 503 cap/circuit, 502 upstream, etc.).
 
-  The cic network picker (phase 6) drives this; the server verb ships now
-  (mirrors the phase-3 scoping — server capability first, cic UI later).
+  The cic home-page "connect available network" affordance drives this.
   """
   @spec add_network(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
           | {:error, :forbidden | :bad_request | :network_not_visitor_enabled | term()}
   def add_network(conn, %{"network" => slug}) when is_binary(slug) and slug != "" do
-    with {:ok, visitor} <- require_registered_visitor(conn),
+    with {:ok, visitor} <- require_visitor(conn),
          {:ok, _} <-
            Visitors.accrete_network(visitor, slug, GrappaWeb.RemoteIP.format(conn)) do
       send_resp(conn, :no_content, "")
@@ -102,45 +62,16 @@ defmodule GrappaWeb.SessionController do
   # Private helpers
   # ---------------------------------------------------------------------------
 
-  # Pattern-match the nil (anon) case FIRST → forbidden, so the
-  # registered clause needs no negated `is_nil` guard (a bare
-  # `%Visitor{}` after the nil clause is necessarily NickServ-identified).
-  @spec require_registered_visitor(Plug.Conn.t()) :: {:ok, Visitor.t()} | {:error, :forbidden}
-  defp require_registered_visitor(%{
-         assigns: %{current_subject: {:visitor, %Visitor{password_encrypted: nil}}}
-       }),
-       do: {:error, :forbidden}
+  # #211 phase 6 — accretion is anon-allowed (ruling C follow-up 2): any
+  # visitor subject passes. A USER subject gets 403 — users bind networks
+  # via the operator credential surface, not this visitor accretion door.
+  # The `visitor_enabled` allowlist + per-IP cap inside `accrete_network/3`
+  # remain the abuse gate. (Retired: the pre-phase-6
+  # `require_registered_visitor/1` gate, which the disconnect/reconnect
+  # pair also used before those verbs were removed.)
+  @spec require_visitor(Plug.Conn.t()) :: {:ok, Visitor.t()} | {:error, :forbidden}
+  defp require_visitor(%{assigns: %{current_subject: {:visitor, %Visitor{} = visitor}}}),
+    do: {:ok, visitor}
 
-  defp require_registered_visitor(%{
-         assigns: %{current_subject: {:visitor, %Visitor{} = visitor}}
-       }),
-       do: {:ok, visitor}
-
-  defp require_registered_visitor(_), do: {:error, :forbidden}
-
-  @spec resolve_network_id(Visitor.t()) :: {:ok, integer()} | {:error, :not_found}
-  defp resolve_network_id(%Visitor{network_slug: slug}) do
-    case Networks.get_network_by_slug(slug) do
-      {:ok, %Networks.Network{id: id}} -> {:ok, id}
-      {:error, :not_found} -> {:error, :not_found}
-    end
-  end
-
-  # Mirror of `NetworksController.orchestrate_spawn/4`'s capacity_input,
-  # with the visitor-flow discriminant. `requesting_subject` is the
-  # visitor itself so the per-IP cap's self-exclusion keeps the visitor's
-  # own live browser session from counting against the cap on the
-  # reconnect respawn (same rationale as the user PATCH /connect).
-  @spec capacity_input(Plug.Conn.t(), Visitor.t(), integer()) :: Grappa.Admission.capacity_input()
-  defp capacity_input(conn, %Visitor{id: id}, network_id) do
-    %{
-      network_id: network_id,
-      # #171: per-IP clone cap — raw conn, so format through the canonical
-      # `RemoteIP.format/1` (the same value login writes to
-      # accounts_sessions.ip), mirroring `orchestrate_spawn/4`.
-      source_ip: GrappaWeb.RemoteIP.format(conn),
-      flow: :visitor_reconnect,
-      requesting_subject: {:visitor, id}
-    }
-  end
+  defp require_visitor(_), do: {:error, :forbidden}
 end

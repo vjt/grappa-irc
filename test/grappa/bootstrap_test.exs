@@ -417,6 +417,46 @@ defmodule Grappa.BootstrapTest do
       assert is_pid(Session.whereis({:visitor, visitor.id}, net_b.id))
     end
 
+    test "#211 phase 6 — a PARKED visitor credential is NOT respawned (persistent park, ruling D)" do
+      # A multi-network visitor: network A connected, network B PARKED
+      # (the visitor /disconnected B before the reboot). Bootstrap must
+      # restore A but SKIP B — visitor per-network disconnect persists
+      # across reboot (vjt: "of course cazzo").
+      {_, port_a} = start_server()
+      {visitor, net_a} = visitor_with_network(port_a)
+
+      {_, port_b} = start_server()
+      {net_b, _} = network_with_server(port: port_b, slug: "beta", visitor_enabled: true)
+
+      {:ok, cred_b} =
+        Grappa.Networks.Credentials.upsert_visitor_credential(visitor.id, net_b.id, %{
+          nick: visitor.nick,
+          sasl_user: visitor.nick,
+          auth_method: :none
+        })
+
+      # Park B's credential (what `PATCH /networks/B {parked}` persists).
+      {:ok, _} =
+        cred_b
+        |> Ecto.Changeset.change(connection_state: :parked, connection_state_reason: "user-disconnect")
+        |> Repo.update()
+
+      on_exit(fn ->
+        stop_visitor_session(visitor.id, net_a.id)
+        stop_visitor_session(visitor.id, net_b.id)
+      end)
+
+      Logger.put_module_level(Grappa.Bootstrap, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+      log = capture_log(fn -> assert {:ok, %Result{}} = Bootstrap.run() end)
+
+      # A came back; B stayed parked (NOT respawned).
+      assert is_pid(Session.whereis({:visitor, visitor.id}, net_a.id))
+      assert is_nil(Session.whereis({:visitor, visitor.id}, net_b.id))
+      assert log =~ "skipping parked visitor credential"
+    end
+
     test "expired visitor row is skipped (list_active filters)" do
       past = DateTime.add(DateTime.utc_now(), -1, :hour)
       visitor = visitor_fixture(expires_at: past)
@@ -445,20 +485,10 @@ defmodule Grappa.BootstrapTest do
     # termination on the boot after the visitor backfill.
     test "backfilled visitor credential is NOT spawned via the user path (no crash)" do
       {_, port} = start_server()
+      # `visitor_with_network` already provisions the visitor's per-network
+      # credential (the phase-3 write-through) — the same shape the phase-1
+      # backfill migration produced. No manual insert needed.
       {visitor, network} = visitor_with_network(port)
-
-      # Simulate the phase-1 backfill: a visitor Credential on the same
-      # network, mirroring `20260711125000_backfill_visitor_credentials`.
-      {:ok, _} =
-        %Grappa.Networks.Credential{}
-        |> Grappa.Networks.Credential.changeset(%{
-          visitor_id: visitor.id,
-          network_id: network.id,
-          nick: visitor.nick,
-          auth_method: :none,
-          connection_state: :connected
-        })
-        |> Repo.insert()
 
       on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
 
@@ -473,20 +503,10 @@ defmodule Grappa.BootstrapTest do
 
     test "list_credentials_for_all_users/0 excludes visitor credentials" do
       {_, port} = start_server()
+      # `visitor_with_network` provisions the visitor's credential.
       {visitor, network} = visitor_with_network(port)
       user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       {:ok, _} = Credentials.bind_credential(user, network, %{nick: "vjt", auth_method: :none})
-
-      {:ok, _} =
-        %Grappa.Networks.Credential{}
-        |> Grappa.Networks.Credential.changeset(%{
-          visitor_id: visitor.id,
-          network_id: network.id,
-          nick: visitor.nick,
-          auth_method: :none,
-          connection_state: :connected
-        })
-        |> Repo.insert()
 
       on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
 

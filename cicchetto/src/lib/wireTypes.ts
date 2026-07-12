@@ -441,7 +441,7 @@ export type NetworksWireHomeData = {
 
 export type NetworksWireConnectionStateEvent = {
   kind: string;
-  user_id: string;
+  user_id: string | null;
   network_id: number;
   network_slug: string;
   from: NetworksCredentialConnectionState;

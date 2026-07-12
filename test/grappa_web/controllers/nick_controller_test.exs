@@ -196,7 +196,7 @@ defmodule GrappaWeb.NickControllerTest do
     test "visitor subject — 400 malformed_nick rejected at the boundary", %{conn: _conn} do
       slug = "az-nick-vmalformed-#{System.unique_integer([:positive])}"
       {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: slug})
-      {_, session} = visitor_and_session(network_slug: slug)
+      {_, session} = visitor_and_session_with_credential(network_slug: slug)
 
       conn =
         Phoenix.ConnTest.build_conn()

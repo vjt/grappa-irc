@@ -1,26 +1,28 @@
 defmodule GrappaWeb.SessionControllerTest do
   @moduledoc """
-  #126 — visitor session-disposition surface: `POST /session/disconnect`
-  ⇄ `POST /session/reconnect`. The 4th verb (drop the upstream IRC
-  connection but KEEP the cic/web session open) for the registered
-  (NickServ-identified) visitor.
+  #211 phase 4c + phase 6 — visitor multi-network ACCRETION surface:
+  `POST /session/networks`. Attach an additional `visitor_enabled`
+  network to the authenticated visitor identity + spawn its upstream.
 
-  Disconnect reuses the shared teardown core (`Session.stop_session/3`);
-  reconnect reuses the shared respawn core (`SpawnOrchestrator.spawn/4`)
-  — the same seam #152's reconnect-with-new-ident will reuse. Neither is
-  offered to a user (they have the per-network `PATCH /networks/:slug`
-  surface) nor to an anon visitor (no persistent identity) — both get
-  403.
+  Phase 6 (ruling C follow-up 2) relaxed the gate to ANY visitor (anon
+  OR registered) — the home-page "connect available network" affordance
+  drives it, still bounded by the `visitor_enabled` allowlist + the #171
+  per-IP cap. A USER subject gets 403 (users bind via the operator
+  credential surface).
 
-  `async: false` because the visitor describe spawns Session.Server
-  under the singleton supervisor (same constraint as auth_controller_test).
+  The #126 `POST /session/{disconnect,reconnect}` pair is RETIRED —
+  visitors park/reconnect each network via the subject-agnostic
+  `PATCH /networks/:network_id` (covered in networks_controller_test).
+
+  `async: false` because accretion spawns Session.Server under the
+  singleton supervisor (same constraint as auth_controller_test).
   """
   use GrappaWeb.ConnCase, async: false
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, IRCServer, Repo, Visitors}
   alias Grappa.AdmissionStateHelpers
+  alias Grappa.{IRCServer, Repo, Visitors}
   alias Grappa.Visitors.Visitor
 
   setup do
@@ -57,115 +59,6 @@ defmodule GrappaWeb.SessionControllerTest do
     {visitor, network} = visitor_with_network(port)
     {:ok, _} = Visitors.commit_password(visitor.id, "s3cret")
     {Repo.get!(Visitor, visitor.id), network}
-  end
-
-  describe "POST /session/disconnect" do
-    test "registered visitor — stops the session, KEEPS the row + web/auth session",
-         %{conn: conn} do
-      {server, port} = start_server()
-      {visitor, network} = registered_visitor(port)
-
-      _ = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
-      assert is_pid(Grappa.Session.whereis({:visitor, visitor.id}, network.id))
-
-      session = visitor_session_fixture(visitor)
-
-      conn
-      |> put_bearer(session.id)
-      |> post("/session/disconnect")
-      |> response(204)
-
-      # Upstream dropped …
-      assert is_nil(Grappa.Session.whereis({:visitor, visitor.id}, network.id))
-      # … but the row + scrollback survive (persistent identity) …
-      assert %Visitor{password_encrypted: pwd} = Repo.get(Visitor, visitor.id)
-      assert is_binary(pwd)
-      # … and the web/auth session stays OPEN (disconnect ≠ detach).
-      assert {:ok, _} = Accounts.authenticate(session.id)
-
-      # /me reflects the dropped upstream via the whereis-derived flag
-      # (drives the cic drawer's disconnect→reconnect toggle).
-      me =
-        build_conn()
-        |> put_bearer(session.id)
-        |> get("/me")
-        |> json_response(200)
-
-      assert me["connected"] == false
-      assert me["registered"] == true
-    end
-
-    test "user subject → 403 (users disconnect per-network via PATCH /networks)",
-         %{conn: conn} do
-      {_, session} = user_and_session()
-
-      conn
-      |> put_bearer(session.id)
-      |> post("/session/disconnect")
-      |> json_response(403)
-    end
-
-    test "anon visitor → 403 (no persistent identity; ephemeral gets only quit)",
-         %{conn: conn} do
-      {visitor, session} = visitor_and_session()
-      assert is_nil(Repo.get!(Visitor, visitor.id).password_encrypted)
-
-      conn
-      |> put_bearer(session.id)
-      |> post("/session/disconnect")
-      |> json_response(403)
-    end
-  end
-
-  describe "POST /session/reconnect" do
-    test "registered visitor — respawns the upstream session", %{conn: conn} do
-      {server, port} = start_server()
-      {visitor, network} = registered_visitor(port)
-
-      # No live session yet (disconnected state).
-      assert is_nil(Grappa.Session.whereis({:visitor, visitor.id}, network.id))
-
-      session = visitor_session_fixture(visitor)
-      on_exit(fn -> Grappa.Session.stop_session({:visitor, visitor.id}, network.id) end)
-
-      conn
-      |> put_bearer(session.id)
-      |> post("/session/reconnect")
-      |> response(204)
-
-      # The respawned Session.Server connects to the fake + registers.
-      :ok = await_handshake(server)
-      assert is_pid(Grappa.Session.whereis({:visitor, visitor.id}, network.id))
-
-      # /me now reflects the live upstream (drawer flips back to disconnect).
-      me =
-        build_conn()
-        |> put_bearer(session.id)
-        |> get("/me")
-        |> json_response(200)
-
-      assert me["connected"] == true
-    end
-
-    test "user subject → 403", %{conn: conn} do
-      {_, session} = user_and_session()
-
-      conn
-      |> put_bearer(session.id)
-      |> post("/session/reconnect")
-      |> json_response(403)
-    end
-
-    test "anon visitor → 403", %{conn: conn} do
-      {visitor, session} = visitor_and_session()
-      assert is_nil(Repo.get!(Visitor, visitor.id).password_encrypted)
-
-      conn
-      |> put_bearer(session.id)
-      |> post("/session/reconnect")
-      |> json_response(403)
-    end
   end
 
   describe "POST /session/networks (#211 phase 4c — accretion)" do
@@ -268,14 +161,32 @@ defmodule GrappaWeb.SessionControllerTest do
       |> json_response(403)
     end
 
-    test "anon visitor → 403", %{conn: conn} do
-      {visitor, session} = visitor_and_session()
+    # #211 phase 6 — accretion is anon-allowed now (ruling C follow-up 2:
+    # "always reduce the friction for visitors to get on irc"). An ANON
+    # visitor one-taps an available network from the home page. Still
+    # bounded by the visitor_enabled allowlist (+ per-IP cap) inside
+    # accrete_network/3.
+    test "anon visitor accretes an available network → 204", %{conn: conn} do
+      {server_a, port_a} = start_server()
+      # An anon visitor (no committed password) live on network A.
+      {visitor, network_a} = visitor_with_network(port_a)
       assert is_nil(Repo.get!(Visitor, visitor.id).password_encrypted)
+      _ = start_visitor_session_for(visitor, network_a)
+      :ok = await_handshake(server_a)
+
+      {server_b, port_b} = start_server()
+      {network_b, _} = network_with_server(port: port_b, slug: "beta", visitor_enabled: true)
+      on_exit(fn -> Grappa.Session.stop_session({:visitor, visitor.id}, network_b.id) end)
+
+      session = visitor_session_fixture(visitor)
 
       conn
       |> put_bearer(session.id)
       |> post("/session/networks", %{"network" => "beta"})
-      |> json_response(403)
+      |> response(204)
+
+      {:ok, _} = IRCServer.wait_for_line(server_b, &String.starts_with?(&1, "NICK"), 5_000)
+      assert is_pid(Grappa.Session.whereis({:visitor, visitor.id}, network_b.id))
     end
   end
 end

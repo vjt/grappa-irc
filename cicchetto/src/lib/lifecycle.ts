@@ -1,8 +1,6 @@
 import {
   deleteAccount as apiDeleteAccount,
   updateIdentity as apiUpdateIdentity,
-  disconnectSession,
-  reconnectSession,
 } from "./api";
 import { clearLocalAuth, getSubject, logout, token } from "./auth";
 import { refetchUser } from "./networks";
@@ -11,16 +9,20 @@ import { quitAll } from "./quit";
 // #126 — the canonical session-lifecycle vocabulary, subject-routed in
 // ONE place. "logout" is RETIRED as a user-facing verb: `detach` IS the
 // web logout for a persistent identity, and an ephemeral visitor's
-// "quit" is what used to be called logout. The four verbs map onto the
+// "quit" is what used to be called logout. The verbs map onto the
 // (web client × upstream IRC) state matrix:
 //
 //   web UP   + upstream UP   = normal
-//   web UP   + upstream DOWN = disconnect ⇄ reconnect
+//   web UP   + upstream DOWN = per-network park/reconnect (home page)
 //   web DOWN + upstream UP   = detach
 //   web DOWN + upstream DOWN = quit
 //
-// detach + disconnect/reconnect are persistent-identity-only (user +
-// registered/NickServ visitor); quit is universal. See GH #126.
+// #211 phase 6 — per-network disconnect/reconnect is NO LONGER a
+// lifecycle verb: BOTH subjects park/reconnect each network via
+// `PATCH /networks/:id {connection_state}` on the home page (ruling D).
+// The visitor-only `disconnect`/`reconnect` lifecycle verbs (+ their
+// `POST /session/{disconnect,reconnect}` server calls) are RETIRED.
+// `detach` + `quit` remain. See GH #126.
 
 /**
  * detach — leave cicchetto but KEEP the bouncer (server-side
@@ -36,15 +38,16 @@ export async function detach(): Promise<void> {
  * quit — close cicchetto AND tear down the live IRC session. Universal,
  * but the teardown path differs by subject:
  *
- *   * user → park ALL networks then detach (`quitAll`, the existing
- *     park-all + logout composite; also driven by the `/quit` compose
- *     verb + the sidebar server-window ×).
- *   * registered visitor → drop the upstream (`POST /session/disconnect`)
- *     then detach. The row + scrollback PERSIST (privacy promise) — the
- *     server's `purge_if_anon` no-ops a registered visitor.
- *   * ephemeral visitor → detach only: `DELETE /auth/logout`'s anon
- *     branch stops the session AND purges the row server-side (exactly
- *     what "logout" did before #126).
+ *   * user → park ALL networks then detach (`quitAll`).
+ *   * registered visitor → #211 phase 6: ALSO park ALL networks then
+ *     detach (`quitAll`). Visitors carry a real per-network
+ *     `connection_state` now, so the global disconnect is the SAME
+ *     client-composed park-all users use (the `POST /session/disconnect`
+ *     verb is retired). The parks persist across reboot (Bootstrap skips
+ *     parked visitor credentials); the row + scrollback survive detach
+ *     (`purge_if_anon` no-ops a registered visitor).
+ *   * ephemeral (anon) visitor → detach only: `DELETE /auth/logout`'s
+ *     anon branch stops the session(s) AND purges the row server-side.
  */
 export async function quit(): Promise<void> {
   const subject = getSubject();
@@ -55,56 +58,22 @@ export async function quit(): Promise<void> {
   }
 
   if (subject?.kind === "visitor" && subject.registered === true) {
-    const t = token();
-    if (t !== null) {
-      // Best-effort: the user wants OUT regardless. A failed upstream
-      // drop just leaves the bouncer up; the detach below still revokes
-      // the web session.
-      try {
-        await disconnectSession(t);
-      } catch {
-        // intentional — see above.
-      }
-    }
+    // Registered visitor: park-all persists across reboot, then detach
+    // (which preserves the identity). Same nuclear path as a user's quit.
+    await quitAll(null);
+    return;
   }
 
-  // ephemeral visitor (and the registered visitor after the drop above):
-  // detach revokes the web session; for an anon row it also stops +
-  // purges server-side.
+  // ephemeral (anon) visitor: detach only — the anon branch of
+  // `DELETE /auth/logout` stops every attached session + purges the row.
   await logout();
-}
-
-/**
- * disconnect — drop the upstream IRC connection but KEEP the cicchetto/web
- * session open. Registered (NickServ) visitor only (cic-gated; a user
- * disconnects per-network via the `/disconnect <slug>` compose verb).
- * Refetches `/me` so the whereis-derived `connected` flag flips the
- * SettingsDrawer to its reconnect face (visitors have no
- * `connection_state_changed` broadcast).
- */
-export async function disconnect(): Promise<void> {
-  const t = token();
-  if (t === null) return;
-  await disconnectSession(t);
-  refetchUser();
-}
-
-/**
- * reconnect — restore the upstream IRC connection dropped by `disconnect`.
- * Registered visitor only. Refetches `/me` (connected → true).
- */
-export async function reconnect(): Promise<void> {
-  const t = token();
-  if (t === null) return;
-  await reconnectSession(t);
-  refetchUser();
 }
 
 /**
  * updateIdentity — #152 set the visitor's IRC ident + realname,
  * live-applied via internal reconnect. Registered/anon visitor only
  * (the server 403s users). Refetches `/me` so the SettingsDrawer
- * reflects the persisted values + the post-reconnect `connected` flag.
+ * reflects the persisted values.
  *
  * Errors PROPAGATE (unlike quit/logout): a 422 (bad ident) must surface
  * so the drawer can render the inline validation message instead of

@@ -272,7 +272,11 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // before. One logical event, one wire payload, one broadcast.
       const net = r.network;
       if (
-        typeof r.user_id !== "string" ||
+        // #211 phase 6 — user_id is nullable now (a VISITOR credential
+        // has visitor_id set, user_id null — the XOR FK). cic acts on
+        // `payload.network` only (patchHomeNetwork + refetchNetworks), so
+        // user_id is diagnostic; accept string OR null.
+        !(typeof r.user_id === "string" || r.user_id === null) ||
         typeof r.network_id !== "number" ||
         typeof r.network_slug !== "string" ||
         !isConnectionState(r.from) ||

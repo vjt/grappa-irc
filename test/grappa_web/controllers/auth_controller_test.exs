@@ -767,7 +767,7 @@ defmodule GrappaWeb.AuthControllerTest do
       assert topic == "user_socket:visitor:#{visitor.id}"
     end
 
-    test "visitor logout when network row deleted mid-session logs warning + 204",
+    test "visitor logout when network/credential removed mid-session still 204s + purges",
          %{conn: conn} do
       {server, port} = start_server()
       {network, _} = setup_visitor_network(port)
@@ -802,22 +802,20 @@ defmodule GrappaWeb.AuthControllerTest do
       # #211 phase 3 — the visitor now has a Credential (write-through)
       # whose network_id FK is ON DELETE RESTRICT, so drop it first to
       # simulate the operator having fully removed the network binding
-      # before the network row itself. (Pre-cutover the visitor carried no
-      # credential, so the network delete was unconstrained.)
+      # before the network row itself.
       {:ok, cred} = Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
       Repo.delete!(cred)
 
       Repo.delete!(network)
 
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          conn
-          |> put_bearer(token)
-          |> delete("/auth/logout")
-          |> response(204)
-        end)
-
-      assert log =~ "visitor logout but network not found"
+      # #211 phase 6 — `stop_visitor_session/1` now iterates the visitor's
+      # credentials (no singular network_slug lookup): with the credential
+      # gone the list is empty, so there's nothing to stop — the logout
+      # still 204s cleanly and W11 still purges the anon row.
+      conn
+      |> put_bearer(token)
+      |> delete("/auth/logout")
+      |> response(204)
 
       # W11 still applies — anon visitor row purged regardless of network state.
       assert is_nil(Repo.get(Visitor, visitor.id))

@@ -124,12 +124,11 @@ defmodule GrappaWeb.MeControllerTest do
       # nil vs %{networks: [...]} is how cic dispatches
       # HomePaneVisitor vs HomePaneRegistered.
       assert body["home_data"] == nil
-      # #126: visitor /me carries the whereis-derived `connected` flag
-      # (drives the SettingsDrawer disconnect ⇄ reconnect toggle) + the
-      # `registered` flag (= password_encrypted present; the cic
-      # detach/disconnect gate). A fresh anon visitor has neither a live
-      # session nor a NickServ identity.
-      assert body["connected"] == false
+      # #211 phase 6 — the singular `connected` scalar is DROPPED from /me
+      # (per-network live status is on the GET /networks rows now). The
+      # `registered` flag stays (= password_encrypted present; the cic
+      # detach gate). A fresh anon visitor has no NickServ identity.
+      refute Map.has_key?(body, "connected")
       assert body["registered"] == false
       refute Map.has_key?(body, "name")
       refute Map.has_key?(body, "inserted_at")

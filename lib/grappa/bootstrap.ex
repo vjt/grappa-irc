@@ -436,6 +436,28 @@ defmodule Grappa.Bootstrap do
 
   @spec spawn_visitor_credential(Visitor.t(), Credential.t(), Result.t()) :: Result.t()
   defp spawn_visitor_credential(
+         %Visitor{id: visitor_id},
+         %Credential{connection_state: :parked, network: %Network{} = network},
+         acc
+       ) do
+    # #211 phase 6 (ruling D) — persistent visitor park across reboot.
+    # A visitor who /disconnected network A parked its credential; on a
+    # bouncer reboot Bootstrap must NOT respawn it (vjt: "visitor per
+    # network disconnect persists after reboot, yes, of course cazzo").
+    # Mirrors the user path (`list_credentials_for_all_users/0` filters
+    # `connection_state == :connected`); the visitor path enumerates ALL
+    # credentials (TTL identity lifecycle is orthogonal to per-network
+    # session state), so the skip is per-credential here. Brought back
+    # via `PATCH /networks/:id {connected}`.
+    Logger.info("bootstrap: skipping parked visitor credential",
+      visitor_id: visitor_id,
+      network: network.slug
+    )
+
+    acc
+  end
+
+  defp spawn_visitor_credential(
          %Visitor{id: visitor_id} = visitor,
          %Credential{network: %Network{} = network},
          acc

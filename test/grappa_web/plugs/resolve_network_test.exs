@@ -1,16 +1,18 @@
 defmodule GrappaWeb.Plugs.ResolveNetworkTest do
   @moduledoc """
   C2 — `Plugs.ResolveNetwork` branches on `:current_subject` to allow
-  visitor sessions through the per-network iso boundary. Visitors are
-  bound to one network at row-creation; the plug asserts the URL slug
-  matches `visitor.network_slug` and otherwise collapses to the same
-  uniform 404 the user-side credential mismatch produces (no leak of
-  network-existence to a probing visitor).
+  visitor sessions through the per-network iso boundary. #211 phase 6 —
+  the visitor branch mirrors the user branch: a credential-presence
+  check (`get_visitor_credential/2`), NOT the retired singular
+  `visitor.network_slug` slug-equality. A visitor can open ANY network
+  it holds a credential on (multi-network accretion); a network it holds
+  no credential on collapses to the same uniform 404 the user-side
+  credential miss produces (no leak of network-existence).
 
   Pre-C2 the plug unconditionally read `conn.assigns.current_user` and
   KeyError-crashed on visitor sessions — surfacing as a 500 stack
-  trace. This test pins the new wire surface (visitor + correct slug
-  passes, visitor + wrong slug 404s).
+  trace. This test pins the wire surface (visitor + owned network
+  passes, visitor + unowned network 404s).
 
   M-web-1 (B6.2): the loaded subject struct lives inside the
   `:current_subject` tagged tuple — no parallel `:current_user` /
@@ -33,8 +35,8 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
   end
 
   describe "visitor subject" do
-    test "matching slug → assigns :network", %{conn: conn, network: network} do
-      visitor = visitor_fixture(nick: "vjt", network_slug: "azzurra")
+    test "owned network (has credential) → assigns :network", %{conn: conn, network: network} do
+      visitor = visitor_with_credential_fixture(nick: "vjt", network_slug: "azzurra")
 
       result =
         conn
@@ -46,9 +48,12 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
       assert result.assigns.network.id == network.id
     end
 
-    test "mismatched slug → 404 + halt (uniform with credential miss)",
-         %{conn: conn} do
-      visitor = visitor_fixture(nick: "vjt", network_slug: "azzurra")
+    test "network exists but visitor holds NO credential → 404 + halt", %{conn: conn} do
+      # Phase 6: this replaces the pre-phase-6 "mismatched slug" case —
+      # the guard is credential presence now, not slug-equality. A
+      # visitor with a credential on `azzurra` reaching `ircnet` (which it
+      # has no credential on) collapses to the uniform 404.
+      visitor = visitor_with_credential_fixture(nick: "vjt", network_slug: "azzurra")
       {:ok, _} = Networks.find_or_create_network(%{slug: "ircnet"})
 
       result =
@@ -62,7 +67,7 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
     end
 
     test "unknown slug → 404 + halt", %{conn: conn} do
-      visitor = visitor_fixture(nick: "vjt", network_slug: "azzurra")
+      visitor = visitor_with_credential_fixture(nick: "vjt", network_slug: "azzurra")
 
       result =
         conn

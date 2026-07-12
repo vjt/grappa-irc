@@ -109,6 +109,21 @@ defmodule Grappa.AuthFixtures do
   end
 
   @doc """
+  #211 phase 6 — `visitor_and_session/1` PLUS the visitor's per-network
+  Credential (production-realistic). Use this for the visitor-facing
+  `/networks/:id/...` routes that now go through `ResolveNetwork` →
+  `get_visitor_credential/2` — a bare `visitor_and_session/1` visitor has
+  no credential and 404s at the plug. The `network_slug` MUST resolve to
+  a real `networks` row.
+  """
+  @spec visitor_and_session_with_credential(keyword()) :: {Visitor.t(), Session.t()}
+  def visitor_and_session_with_credential(attrs \\ []) do
+    visitor = visitor_with_credential_fixture(attrs)
+    session = visitor_session_fixture(visitor)
+    {visitor, session}
+  end
+
+  @doc """
   Total `sessions` row count. Used by login tests to assert the
   failure paths do NOT mint a session row, without leaking a raw
   `Repo.aggregate/3` call into the test body.
@@ -239,8 +254,15 @@ defmodule Grappa.AuthFixtures do
     slug = "azzurra-#{System.unique_integer([:positive])}"
     {network, _} = network_with_server(port: port, slug: slug)
 
+    # #211 phase 6 — provision the visitor's per-network credential (the
+    # network exists, so `reconcile_credential/1` writes it). Every
+    # visitor-live-session test path (session spawn, ResolveNetwork,
+    # per-network read/write) now reads `list_visitor_credentials` /
+    # `get_visitor_credential`, so the fixture must match production shape.
     visitor =
-      visitor_fixture(Keyword.merge([nick: "v#{System.unique_integer([:positive])}", network_slug: slug], attrs))
+      visitor_with_credential_fixture(
+        Keyword.merge([nick: "v#{System.unique_integer([:positive])}", network_slug: slug], attrs)
+      )
 
     {visitor, network}
   end

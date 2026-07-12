@@ -858,65 +858,15 @@ defmodule Grappa.Visitors do
     end
   end
 
-  @doc """
-  #126 — visitor `disconnect`: drop the upstream IRC connection but KEEP
-  the visitor row + scrollback + the web/auth session (the teardown half
-  of the disconnect ⇄ reconnect verb pair). Delegates to the SAME shared
-  teardown core (`Session.stop_session/3`) that `Networks.disconnect/2`
-  uses for users and that the #152 identity live-apply bounces through
-  (via `SpawnOrchestrator.reconnect/5` since #211 phase 5). Idempotent —
-  returns `:ok` whether or not a live session was registered.
-
-  Persistent-identity surface: the caller (`GrappaWeb.SessionController`)
-  gates this to registered (NickServ-identified) visitors; an anon
-  visitor's only teardown verb is `quit` (= logout, which stops + purges).
-  """
-  @spec disconnect_session(Visitor.t(), integer()) :: :ok
-  def disconnect_session(%Visitor{id: id}, network_id) when is_integer(network_id) do
-    Session.stop_session({:visitor, id}, network_id, "disconnected")
-  end
-
-  @doc """
-  #126 — visitor `reconnect`: respawn the upstream IRC session for a
-  visitor whose connection was previously dropped (the `reconnect` half
-  of disconnect ⇄ reconnect). Resolves the visitor's `SessionPlan` and
-  runs the shared admission → `Backoff.reset` → spawn dance via
-  `Grappa.SpawnOrchestrator.spawn/4` — the SAME respawn core
-  `NetworksController` drives for a user `:connected` transition.
-
-  This is a CONNECT-intent verb (teardown is the separate `POST
-  /session/disconnect` → `disconnect_session/2`), so it uses `spawn/4`
-  (idempotent-keep on an already-live session), NOT the phase-5
-  `SpawnOrchestrator.reconnect/5` BOUNCE verb — which is reserved for the
-  #152 identity live-apply that must drop + respawn a live session to
-  re-register the once-only USER line (#211 phase 5, R1 ruling).
-
-  `capacity_input` is built by the caller (the `flow: :visitor_reconnect`
-  discriminant + `client_id` + `requesting_subject`), mirroring
-  `NetworksController.orchestrate_spawn/4`.
-
-  Returns `{:ok, pid}` on a fresh spawn OR an idempotent
-  `:already_started` (a concurrent reconnect, or a session that never
-  actually dropped). `{:error, :resolve_failed}` when the plan can't be
-  built (orphaned network/servers). `{:error, _}` for an admission
-  rejection (`:visitor_cap_exceeded` / `{:network_circuit_open, _}`) or a
-  `{:start_failed, _}` (upstream connect refused at `init/1`, or
-  `:ignore` because the row vanished mid-flight).
-  """
-  @spec reconnect_session(Visitor.t(), integer(), Admission.capacity_input()) ::
-          {:ok, pid()} | {:error, :resolve_failed | term()}
-  def reconnect_session(%Visitor{id: id} = visitor, network_id, capacity_input)
-      when is_integer(network_id) and is_map(capacity_input) do
-    with {:ok, plan} <- resolve_visitor_plan(visitor) do
-      case SpawnOrchestrator.spawn({:visitor, id}, network_id, plan, capacity_input) do
-        {:ok, :spawned, pid} -> {:ok, pid}
-        {:ok, :already_started, pid} -> {:ok, pid}
-        {:ok, :ignored} -> {:error, {:start_failed, :ignore}}
-        {:error, _} = err -> err
-      end
-    end
-  end
-
+  # #211 phase 6 — the #126 `disconnect_session/2` + `reconnect_session/3`
+  # public verbs were REMOVED with the retired `POST
+  # /session/{disconnect,reconnect}` routes. Visitors now park/reconnect
+  # each network via the subject-agnostic `PATCH /networks/:network_id`
+  # (`Networks.disconnect/2` / `connect/1` + the controller's
+  # `orchestrate_spawn`), exactly as users do — teardown is
+  # `Session.stop_session/3` (the shared core those verbs already
+  # wrapped). `resolve_visitor_plan/1` stays — the #152 identity
+  # live-apply (`maybe_reconnect_after_identity/1`) still uses it.
   @spec resolve_visitor_plan(Visitor.t()) ::
           {:ok, Session.start_opts()} | {:error, :resolve_failed}
   defp resolve_visitor_plan(%Visitor{} = visitor) do

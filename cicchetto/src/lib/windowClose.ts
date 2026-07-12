@@ -3,7 +3,6 @@ import { getSubject, token } from "./auth";
 import { channelKey } from "./channelKey";
 import { requestConfirm } from "./confirmDialog";
 import { closeQueryWindowState } from "./queryWindows";
-import { quitAll } from "./quit";
 import { setParted } from "./windowState";
 
 // Shared close-window helpers. Two call sites today: Sidebar × on
@@ -43,15 +42,17 @@ export function closeQueryWindow(networkId: number, targetNick: string): void {
   closeQueryWindowState(networkId, targetNick);
 }
 
-// UX-4 bucket D — close the server window for a network. Visitor
-// branches to quitAll (nuclear: park-all + logout; Bucket D — visitor:
-// equivalent to /quit). Registered
-// user PATCHes the one network to :parked; the user-topic
-// `connection_state_changed` event then drives the cic side:
-// networkBySlug refetches → the parked-cascade in Sidebar dims the
-// network's rows, and the selection redirect in selection.ts shifts
-// focus to home when the currently-selected window belongs to the
-// parked network.
+// UX-4 bucket D — close the server window for a network by PARKING it.
+// #211 phase 6 — subject-agnostic: BOTH users and visitors PATCH the one
+// network to `:parked` (ruling D — visitors carry a real per-network
+// connection_state now, so a network-header × parks THAT network, not a
+// nuclear quit-all). The user-topic `connection_state_changed` event
+// then drives the cic side: networkBySlug refetches → the parked-cascade
+// in Sidebar dims the network's rows, and the selection redirect in
+// selection.ts shifts focus to home when the currently-selected window
+// belongs to the parked network. A visitor's park PERSISTS across reboot
+// (Bootstrap skips parked visitor credentials); a global disconnect-all
+// is the separate `quit` verb.
 //
 // Selection redirect intentionally lives in selection.ts (not here) so
 // the same redirect fires on /disconnect typed in the compose box AND
@@ -64,11 +65,7 @@ export function closeQueryWindow(networkId: number, targetNick: string): void {
 // so operators have one grep-key for all park-path failures.
 //
 // Subject-undefined (post-logout race / poisoned localStorage that the
-// auth.ts narrower cleared) takes the safe path: no-op + warn. Pre-fix
-// the bare `subject?.kind === "visitor"` check fell through to the
-// registered PATCH, which 403s for a token whose subject is a visitor
-// — silent 4xx (`feedback_no_silent_drops_closed`). When in doubt,
-// log and bail rather than fire a request that can't succeed.
+// auth.ts narrower cleared) takes the safe path: no-op + warn.
 export function disconnectNetwork(networkSlug: string): void {
   const t = token();
   if (!t) return;
@@ -77,10 +74,6 @@ export function disconnectNetwork(networkSlug: string): void {
     console.warn(
       `[/disconnect] no subject in localStorage for slug=${networkSlug}; skipping (token-without-subject race)`,
     );
-    return;
-  }
-  if (subject.kind === "visitor") {
-    void quitAll(null);
     return;
   }
   void patchNetwork(t, networkSlug, { connection_state: "parked" }).catch((err) => {
@@ -102,9 +95,8 @@ export function confirmLeaveChannel(networkSlug: string, channelName: string): v
   });
 }
 
-// #195 — confirm-gated network disconnect. The × on a network-header row is
-// the most destructive close (visitor → quitAll = park-all + logout;
-// registered → park the one network), so it too gets an explicit
+// #195 — confirm-gated network disconnect. The × on a network-header row
+// parks that ONE network (both subjects, phase 6), so it gets an explicit
 // "Disconnect from <slug>?" modal before firing disconnectNetwork.
 export function confirmDisconnectNetwork(networkSlug: string): void {
   requestConfirm({

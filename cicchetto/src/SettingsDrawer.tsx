@@ -14,7 +14,7 @@ import { ApiError, displayNick } from "./lib/api";
 import { getSubject, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { friendlyApiError } from "./lib/friendlyApiError";
-import { detach, disconnect, quit, reconnect, updateIdentity } from "./lib/lifecycle";
+import { detach, quit, updateIdentity } from "./lib/lifecycle";
 import { isAdmin, user } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
@@ -96,14 +96,6 @@ const SettingsDrawer: Component<Props> = (props) => {
   // detach is offered to every persistent identity (user + NickServ
   // visitor); ephemeral visitors + the loading null-subject get only quit.
   const showDetach = (): boolean => isUser() || isRegisteredVisitor();
-  // Live-upstream state for the disconnect ⇄ reconnect toggle. Read from
-  // the reactive `/me` resource (whereis-derived `connected`), NOT the
-  // static localStorage subject — `disconnect`/`reconnect` flip it and
-  // refetch /me so the button face follows. Visitor-only field.
-  const visitorConnected = (): boolean => {
-    const u = user();
-    return u?.kind === "visitor" && u.connected === true;
-  };
   // "quit IRC" is destructive (parks every network, bouncer offline), so
   // it arms via the shared two-tap InlineConfirmButton. Parent owns the
   // armed flag per that component's contract.
@@ -167,17 +159,10 @@ const SettingsDrawer: Component<Props> = (props) => {
     navigate("/login", { replace: true });
   };
 
-  // #126 — disconnect ⇄ reconnect: drop / restore the upstream IRC
-  // connection while STAYING in cic (no navigate). Registered visitor
-  // only. The verb refetches /me so `visitorConnected()` flips the
-  // button face.
-  const onDisconnect = async () => {
-    await disconnect();
-  };
-
-  const onReconnect = async () => {
-    await reconnect();
-  };
+  // #211 phase 6 — the #126 disconnect ⇄ reconnect handlers are RETIRED
+  // (per-network park/reconnect moved to the home page; global disconnect
+  // is `quit`). The `visitorConnected()` accessor (read the singular /me
+  // `connected` scalar) went with them — the scalar is dropped from /me.
 
   // #152 — visitor identity editor (ident + realname), live-applied via
   // PATCH /me/identity → internal reconnect. Visitor-only. The text
@@ -856,37 +841,10 @@ const SettingsDrawer: Component<Props> = (props) => {
           </button>
         </Show>
 
-        {/* disconnect ⇄ reconnect — registered (NickServ) visitor only.
-            The button face follows the whereis-derived `connected` flag
-            from /me; the verb refetches /me so it flips. */}
-        <Show when={isRegisteredVisitor()}>
-          <Show
-            when={visitorConnected()}
-            fallback={
-              <button
-                type="button"
-                class="logout"
-                data-testid="reconnect-btn"
-                onClick={() => {
-                  void onReconnect();
-                }}
-              >
-                reconnect
-              </button>
-            }
-          >
-            <button
-              type="button"
-              class="logout"
-              data-testid="disconnect-btn"
-              onClick={() => {
-                void onDisconnect();
-              }}
-            >
-              disconnect
-            </button>
-          </Show>
-        </Show>
+        {/* #211 phase 6 — the visitor disconnect ⇄ reconnect toggle is
+            RETIRED. Per-network park/reconnect now lives on the HOME PAGE
+            for both subjects (ruling D); global disconnect is `quit`
+            (park-all). */}
 
         {/* quit — universal destructive teardown, two-tap armed. */}
         <InlineConfirmButton

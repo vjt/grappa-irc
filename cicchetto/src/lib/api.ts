@@ -223,12 +223,14 @@ export type MeResponse =
       // sibling `AdminVisitor.expires_at: string | null`.
       expires_at: string | null;
       // #126 — `registered` = NickServ identity present (the detach /
-      // disconnect gate); `connected` = whereis-derived live upstream
-      // (drives the SettingsDrawer disconnect ⇄ reconnect toggle). Both
-      // optional so test mocks predating the fields don't need touching;
-      // production /me always emits them.
+      // disconnect gate). Optional so test mocks predating the field
+      // don't need touching; production /me always emits it.
+      //
+      // #211 phase 6 — the singular `connected` scalar is DROPPED. A
+      // visitor is multi-network now; per-network live status lives on
+      // the GET /networks rows' `connection_state` (ruling A/D). Mirrors
+      // the server-side MeJSON drop.
       registered?: boolean;
-      connected?: boolean;
       read_cursors?: ReadCursorsEnvelope;
       // Bucket C (2026-06-01) — visitors get the same envelope shape;
       // empty `{}` for a fresh visitor (no cursors yet).
@@ -835,7 +837,9 @@ export type WireUserEvent =
     }
   | {
       kind: "connection_state_changed";
-      user_id: string;
+      // #211 phase 6 — nullable: a VISITOR credential's transition
+      // carries user_id: null (visitor_id set instead — the XOR FK).
+      user_id: string | null;
       network_id: number;
       network_slug: string;
       from: ConnectionState;
@@ -1739,27 +1743,11 @@ export async function deleteAccount(token: string): Promise<void> {
   if (!res.ok) throw await readError(res);
 }
 
-// #126 — visitor `disconnect`: drop the upstream IRC connection but KEEP
-// the cic/web session open. Registered-visitor-only server-side (403
-// otherwise). 204 on success.
-export async function disconnectSession(token: string): Promise<void> {
-  const res = await fetch("/session/disconnect", {
-    method: "POST",
-    headers: buildHeaders(token),
-  });
-  if (!res.ok) throw await readError(res);
-}
-
-// #126 — visitor `reconnect`: respawn the upstream IRC session dropped by
-// `disconnectSession`. Registered-visitor-only server-side. 204 on
-// success; admission/spawn failures surface as the usual error envelopes.
-export async function reconnectSession(token: string): Promise<void> {
-  const res = await fetch("/session/reconnect", {
-    method: "POST",
-    headers: buildHeaders(token),
-  });
-  if (!res.ok) throw await readError(res);
-}
+// #211 phase 6 — the #126 `disconnectSession` / `reconnectSession`
+// (`POST /session/{disconnect,reconnect}`) client verbs are RETIRED.
+// Visitors carry a real per-network `connection_state` now, so they
+// park/reconnect each network via `patchNetwork(t, slug, {...})` like
+// users; global disconnect is the client-composed park-all in `quit.ts`.
 
 export async function listNetworks(token: string): Promise<RawNetwork[]> {
   const res = await fetch("/networks", {

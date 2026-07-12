@@ -190,7 +190,7 @@ defmodule Grappa.Networks.Wire do
   """
   @type connection_state_event :: %{
           kind: String.t(),
-          user_id: String.t(),
+          user_id: String.t() | nil,
           network_id: integer(),
           network_slug: String.t(),
           from: Credential.connection_state(),
@@ -327,6 +327,11 @@ defmodule Grappa.Networks.Wire do
   Cic's `userTopic.ts` consumes the payload directly; the fields
   match what cic's discriminated `WireUserEvent` arm declares
   (CP16 B5).
+
+  #211 phase 6 — subject-polymorphic. `user_id` is nil for a VISITOR
+  credential (the XOR FK — `visitor_id` is set instead); cic's handler
+  acts on `payload.network` only, so the id is diagnostic, not
+  load-bearing. The `at`/`network` fields are subject-agnostic.
   """
   @spec connection_state_changed_event(
           Credential.t(),

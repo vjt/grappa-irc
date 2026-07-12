@@ -413,7 +413,7 @@ defmodule GrappaWeb.MessagesControllerTest do
       slug = "azzurra-vis-msg-#{System.unique_integer([:positive])}"
       {:ok, network} = Networks.find_or_create_network(%{slug: slug})
 
-      {visitor, session} = visitor_and_session(network_slug: slug)
+      {visitor, session} = visitor_and_session_with_credential(network_slug: slug)
       other_visitor = visitor_fixture(network_slug: slug)
 
       {:ok, _} =
@@ -452,7 +452,7 @@ defmodule GrappaWeb.MessagesControllerTest do
          %{conn: _conn} do
       slug = "azzurra-iso-#{System.unique_integer([:positive])}"
       {:ok, _} = Networks.find_or_create_network(%{slug: slug})
-      {_, session} = visitor_and_session(network_slug: slug)
+      {_, session} = visitor_and_session_with_credential(network_slug: slug)
 
       other_slug = "other-#{System.unique_integer([:positive])}"
       {:ok, _} = Networks.find_or_create_network(%{slug: other_slug})

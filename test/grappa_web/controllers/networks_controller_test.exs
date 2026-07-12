@@ -36,8 +36,8 @@ defmodule GrappaWeb.NetworksControllerTest do
   import Grappa.AuthFixtures
 
   alias Grappa.Admission.NetworkCircuit
-  alias Grappa.{AdmissionStateHelpers, IRCServer, Networks, Repo}
-  alias Grappa.Networks.Credential
+  alias Grappa.{AdmissionStateHelpers, IRCServer, Networks, Repo, Session}
+  alias Grappa.Networks.{Credential, Credentials}
 
   # U-0 — admission state must start known-empty between tests.
   # The U-0 cap-exceeded + circuit-open tests deliberately drive the
@@ -290,6 +290,61 @@ defmodule GrappaWeb.NetworksControllerTest do
         |> patch("/networks/#{slug}", %{connection_state: "parked", reason: "again"})
 
       assert json_response(conn, 400)["error"] == "not_connected"
+    end
+  end
+
+  describe "PATCH /networks/:network_id — visitor subject (#211 phase 6, ruling D)" do
+    test "visitor parks a connected network → 200 + :parked (subject-agnostic)", %{conn: conn} do
+      slug = "net-vis-park-#{u()}"
+      # Park spawns nothing, so the server port need not be live.
+      {network, _} = network_with_server(port: 9_999, slug: slug, visitor_enabled: true)
+      visitor = visitor_with_credential_fixture(network_slug: slug, nick: "vpark-#{u()}")
+      session = visitor_session_fixture(visitor)
+
+      # Seed the visitor's credential as :connected (the default) — park it.
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/networks/#{slug}", %{connection_state: "parked", reason: "visitor-disconnect"})
+
+      body = json_response(conn, 200)
+      assert body["connection_state"] == "parked"
+      assert body["connection_state_reason"] == "visitor-disconnect"
+
+      # The VISITOR credential row persisted (subject-blind — WHERE visitor_id ==).
+      {:ok, cred} = Credentials.get_visitor_credential(visitor.id, network.id)
+      assert cred.connection_state == :parked
+    end
+
+    test "visitor reconnects a parked network → 200 + :connected, spawns session", %{conn: conn} do
+      slug = "net-vis-connect-#{u()}"
+      {:ok, irc_server} = IRCServer.start_link(fn state, _ -> {:reply, nil, state} end)
+      port = IRCServer.port(irc_server)
+      {network, _} = network_with_server(port: port, slug: slug, visitor_enabled: true)
+      visitor = visitor_with_credential_fixture(network_slug: slug, nick: "vconn-#{u()}")
+      session = visitor_session_fixture(visitor)
+
+      # Park the visitor's credential first (so :connected is a valid transition).
+      {:ok, cred} = Credentials.get_visitor_credential(visitor.id, network.id)
+      seed_state(cred, :parked, "prior")
+
+      on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/networks/#{slug}", %{connection_state: "connected"})
+
+      body = json_response(conn, 200)
+      assert body["connection_state"] == "connected"
+
+      # Session.Server spawned for the VISITOR subject.
+      assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
+
+      {:ok, reload} = Credentials.get_visitor_credential(visitor.id, network.id)
+      assert reload.connection_state == :connected
     end
   end
 

@@ -16,11 +16,14 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
       `:no_credential` discriminator is preserved in the operator log
       (W7) so credential-drift incidents stay greppable, symmetric with
       the visitor-branch's `:wrong_network`.
-    * **Visitor** — slug-equality check against the loaded
-      `%Visitor{}`'s `network_slug` (visitors are bound to one network
-      at row-creation; W11). A mismatched slug collapses to the same
-      uniform 404 — same no-leak posture as the user-side credential
-      miss.
+    * **Visitor** — credential lookup against the loaded `%Visitor{}`,
+      mirroring the user branch (#211 phase 6). A visitor is
+      multi-network now (accretion), so the pre-phase-6 slug-equality
+      check against the singular `visitor.network_slug` — which 404'd
+      EVERY accreted network B on the wire — is retired. Failure modes
+      (unknown slug → `:not_found`; slug exists but no visitor credential
+      for `(visitor, network)` → `:no_credential`) collapse to the same
+      uniform 404 — same no-leak posture as the user branch.
 
   On success, assigns `:network` (the schema struct) to the conn so
   the action can use the integer FK without re-resolving.
@@ -58,11 +61,12 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
         # Mirrors `Plugs.Authn`'s `authn_failure` posture for the
         # network-iso boundary.
         #
-        # W7: the user-branch internal discriminator (`:no_credential`
-        # for "network exists but not bound to this user") is logged so
-        # operators can distinguish credential drift from probing,
-        # symmetric with the visitor-branch's `:wrong_network`. Wire
-        # stays uniform 404 — no oracle leak (CP10 S14 design intent).
+        # W7: the internal discriminator (`:no_credential` for "network
+        # exists but not bound to this subject") is logged so operators
+        # can distinguish credential drift from probing. Wire stays
+        # uniform 404 — no oracle leak (CP10 S14 design intent). Both
+        # subjects share the `:no_credential` discriminator since #211
+        # phase 6 (the visitor branch's `:wrong_network` is retired).
         Logger.info("network resolve rejected", reason: reason)
 
         conn
@@ -72,7 +76,7 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
   end
 
   @typep resolve_error ::
-           :not_found | :no_credential | :wrong_network
+           :not_found | :no_credential
 
   @spec resolve(GrappaWeb.Subject.t(), String.t()) ::
           {:ok, Grappa.Networks.Network.t()} | {:error, resolve_error()}
@@ -89,11 +93,22 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
     end
   end
 
-  defp resolve({:visitor, %Visitor{network_slug: vslug}}, slug) do
+  defp resolve({:visitor, %Visitor{id: id}}, slug) do
     case Networks.get_network_by_slug(slug) do
-      {:ok, network} when network.slug == vslug -> {:ok, network}
-      {:ok, _} -> {:error, :wrong_network}
-      {:error, :not_found} -> {:error, :not_found}
+      {:ok, network} ->
+        # #211 phase 6 — subject-scoped credential presence check, the
+        # mirror of the user branch. `get_visitor_credential/2` is
+        # `WHERE visitor_id ==` (subject-blind-safe): a visitor can never
+        # resolve onto another subject's network. An accreted network B
+        # (phase 4c) now opens over REST — pre-phase-6 the singular
+        # `network_slug` slug-equality 404'd it here.
+        case Credentials.get_visitor_credential(id, network.id) do
+          {:ok, _} -> {:ok, network}
+          {:error, :not_found} -> {:error, :no_credential}
+        end
+
+      {:error, :not_found} ->
+        {:error, :not_found}
     end
   end
 end

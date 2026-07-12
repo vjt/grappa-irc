@@ -219,8 +219,10 @@ defmodule GrappaWeb.AuthController do
   # with no teardown there is no DB-vs-live `connection_state` desync
   # (bug #2). Tear-down-and-leave ("quit") is a SEPARATE verb composed by
   # the client: user = park-all networks + detach; registered visitor =
-  # `POST /session/disconnect` + detach; ephemeral visitor = this very
-  # anon branch (an ephemeral's "quit" IS detach — it stops + purges).
+  # park-all networks (`PATCH /networks/:id {parked}`) + detach (#211
+  # phase 6 — the `POST /session/disconnect` verb is retired); ephemeral
+  # visitor = this very anon branch (an ephemeral's "quit" IS detach — it
+  # stops + purges).
   @spec maybe_terminate_sessions(GrappaWeb.Subject.t() | nil) :: :ok
   defp maybe_terminate_sessions({:visitor, %Visitor{password_encrypted: nil} = visitor}) do
     :ok = stop_visitor_session(visitor)
@@ -242,20 +244,19 @@ defmodule GrappaWeb.AuthController do
 
   defp maybe_disconnect_socket(_), do: :ok
 
+  # #211 phase 6 — an anon visitor is multi-network now (accretion), so
+  # its co-terminus quit must stop EVERY attached network's session, not
+  # just the (retired) singular `network_slug`. Iterate the visitor's
+  # credentials (`WHERE visitor_id ==`, subject-blind-safe) and stop each
+  # live session. `purge_if_anon/1` (the caller) then CASCADE-wipes the
+  # rows. Empty list (no credentials) → nothing to stop.
   @spec stop_visitor_session(Visitor.t()) :: :ok
-  defp stop_visitor_session(%Visitor{} = visitor) do
-    case Networks.get_network_by_slug(visitor.network_slug) do
-      {:ok, %Networks.Network{id: network_id}} ->
-        :ok = Session.stop_session({:visitor, visitor.id}, network_id, "logged out")
-
-      {:error, :not_found} ->
-        Logger.warning("visitor logout but network not found",
-          visitor_id: visitor.id,
-          network: visitor.network_slug
-        )
-
-        :ok
-    end
+  defp stop_visitor_session(%Visitor{id: visitor_id}) do
+    visitor_id
+    |> Networks.Credentials.list_visitor_credentials()
+    |> Enum.each(fn cred ->
+      :ok = Session.stop_session({:visitor, visitor_id}, cred.network_id, "logged out")
+    end)
   end
 
   defp mode1_login(_, _, nil), do: {:error, :invalid_credentials}

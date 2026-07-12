@@ -15,7 +15,7 @@ defmodule Grappa.Networks.VisitorAutoconnectTest do
   describe "list_visitor_autoconnect/0" do
     test "returns only visitor_autoconnect networks, ordered by slug" do
       # visitor_enabled but NOT autoconnect — available, not auto-dialed.
-      {:ok, _avail} = Networks.create_network(%{slug: "avail", visitor_enabled: true})
+      {:ok, _} = Networks.create_network(%{slug: "avail", visitor_enabled: true})
       # plain network — neither.
       _ = network_fixture(slug: "plain")
 
@@ -30,7 +30,7 @@ defmodule Grappa.Networks.VisitorAutoconnectTest do
     end
 
     test "returns [] when no network is visitor_autoconnect" do
-      {:ok, _avail} = Networks.create_network(%{slug: "avail", visitor_enabled: true})
+      {:ok, _} = Networks.create_network(%{slug: "avail", visitor_enabled: true})
       assert Networks.list_visitor_autoconnect() == []
     end
   end
