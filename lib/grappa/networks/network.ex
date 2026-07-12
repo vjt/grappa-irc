@@ -32,6 +32,7 @@ defmodule Grappa.Networks.Network do
           id: integer() | nil,
           slug: String.t() | nil,
           visitor_enabled: boolean() | nil,
+          visitor_autoconnect: boolean() | nil,
           max_concurrent_visitor_sessions: non_neg_integer() | nil,
           max_concurrent_user_sessions: non_neg_integer() | nil,
           max_per_ip: non_neg_integer() | nil,
@@ -53,6 +54,20 @@ defmodule Grappa.Networks.Network do
     # 2026-07-11). Schema default mirrors the DB column default so
     # `Repo.insert/2` returns a struct matching the persisted row.
     field :visitor_enabled, :boolean, default: false
+    # #211 phase 6 — the SUBSET of `visitor_enabled` a visitor
+    # auto-connects at login (ruling C: "NO picker, NO extra login
+    # step"). `visitor_enabled` = "visitors ALLOWED" (the AVAILABLE tier,
+    # shown on home for on-demand one-tap connect); `visitor_autoconnect`
+    # = the subset auto-dialed at login (multi-network, zero friction).
+    # A strict subset at the admin-intent level (login + home readers AND
+    # it with `visitor_enabled`); the columns are independent booleans
+    # (no DB CHECK — a network toggled `visitor_enabled=false` while
+    # still `visitor_autoconnect=true` is a benign no-op filtered at read
+    # time). Default `false`; the continuity seed
+    # (`20260712120100`) flips it true for networks that today
+    # auto-connect visitors, preserving pre-phase-6 single-network
+    # behavior.
+    field :visitor_autoconnect, :boolean, default: false
     # U-1 split: visitor + user caps independently. Visitor cap inherits
     # the historic `max_concurrent_sessions` value via migration rename;
     # user cap defaults to 3 at both the DB level (column DEFAULT 3) and
@@ -94,6 +109,7 @@ defmodule Grappa.Networks.Network do
     |> cast(attrs, [
       :slug,
       :visitor_enabled,
+      :visitor_autoconnect,
       :max_concurrent_visitor_sessions,
       :max_concurrent_user_sessions,
       :max_per_ip

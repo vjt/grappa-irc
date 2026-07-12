@@ -257,6 +257,7 @@ defmodule GrappaWeb.Admin.NetworksController do
   defp settings_attrs(params) do
     allowed = [
       "visitor_enabled",
+      "visitor_autoconnect",
       "max_concurrent_visitor_sessions",
       "max_concurrent_user_sessions",
       "max_per_ip"

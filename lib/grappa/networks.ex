@@ -199,6 +199,29 @@ defmodule Grappa.Networks do
   end
 
   @doc """
+  #211 phase 6 — every network flagged `visitor_autoconnect = true`,
+  ordered by slug. The SUBSET of the visitor allowlist that login
+  auto-connects (ruling C: "NO picker, NO extra login step"). A visitor
+  logging in gets a Session.Server on EACH of these (multi-network from
+  first login, zero friction); the wider `visitor_enabled` set is the
+  AVAILABLE tier shown on the home page for on-demand connect.
+
+  Ordered by slug for a deterministic auto-connect order (the anchor
+  network — the sync identity proof — is the first; the rest spawn
+  async). Reads the flag AND'd with `visitor_enabled` at the login/home
+  layer, not here — this reader returns the raw autoconnect set;
+  callers that need the strict subset intersect with
+  `list_visitor_enabled/0` (the seed guarantees the invariant at rest,
+  and a stale `visitor_autoconnect=true` on a disabled network is a
+  benign no-op the login filter drops).
+  """
+  @spec list_visitor_autoconnect() :: [Network.t()]
+  def list_visitor_autoconnect do
+    query = from(n in Network, where: n.visitor_autoconnect == true, order_by: [asc: n.slug])
+    Repo.all(query)
+  end
+
+  @doc """
   #211 phase 3 — the visitor-attach allowlist gate. Resolves `slug` to a
   network only when it is `visitor_enabled`.
 
@@ -465,6 +488,7 @@ defmodule Grappa.Networks do
   # at the changeset boundary unconditionally.
   @spec update_network_settings(Network.t(), %{
           optional(:visitor_enabled) => boolean(),
+          optional(:visitor_autoconnect) => boolean(),
           optional(:max_concurrent_visitor_sessions) => non_neg_integer() | nil,
           optional(:max_concurrent_user_sessions) => non_neg_integer() | nil,
           optional(:max_per_ip) => non_neg_integer() | nil

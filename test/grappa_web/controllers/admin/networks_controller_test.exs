@@ -368,6 +368,49 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       row = Enum.find(rows, &(&1["slug"] == slug))
       assert row["visitor_enabled"] == true
     end
+
+    # #211 phase 6 — the `visitor_autoconnect` subset toggle rides the
+    # SAME PATCH surface as `visitor_enabled` (no new route, no nginx
+    # change). Admin flags which visitor_enabled networks a visitor
+    # auto-connects at login.
+    test "200 + toggles visitor_autoconnect on, surfaced on the row + reader", %{conn: conn} do
+      slug = "p-vac-#{System.unique_integer([:positive])}"
+      {:ok, _} = Networks.create_network(%{slug: slug, visitor_enabled: true})
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/admin/networks/#{slug}", Jason.encode!(%{visitor_autoconnect: true}))
+
+      body = json_response(conn, 200)
+      assert body["slug"] == slug
+      assert body["visitor_autoconnect"] == true
+
+      {:ok, reload} = Networks.get_network_by_slug(slug)
+      assert reload.visitor_autoconnect == true
+      assert Enum.any?(Networks.list_visitor_autoconnect(), &(&1.slug == slug))
+    end
+
+    test "GET /admin/networks rows carry visitor_autoconnect", %{conn: conn} do
+      slug = "p-vac-get-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        Networks.create_network(%{slug: slug, visitor_enabled: true, visitor_autoconnect: true})
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/networks")
+
+      rows = json_response(conn, 200)["networks"]
+      row = Enum.find(rows, &(&1["slug"] == slug))
+      assert row["visitor_autoconnect"] == true
+    end
   end
 
   describe "POST /admin/networks — admin-panel bucket 1" do

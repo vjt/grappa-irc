@@ -17,6 +17,8 @@ defmodule Grappa.Networks.AdminWireTest do
       net = %Network{
         id: 42,
         slug: "azzurra",
+        visitor_enabled: true,
+        visitor_autoconnect: true,
         max_concurrent_visitor_sessions: 10,
         max_concurrent_user_sessions: 5,
         max_per_ip: 2,
@@ -27,6 +29,8 @@ defmodule Grappa.Networks.AdminWireTest do
       assert %{
                id: 42,
                slug: "azzurra",
+               visitor_enabled: true,
+               visitor_autoconnect: true,
                max_concurrent_visitor_sessions: 10,
                max_concurrent_user_sessions: 5,
                max_per_ip: 2,

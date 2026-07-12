@@ -35,6 +35,7 @@ defmodule Grappa.Networks.AdminWire do
           id: integer(),
           slug: String.t(),
           visitor_enabled: boolean(),
+          visitor_autoconnect: boolean(),
           max_concurrent_visitor_sessions: non_neg_integer() | nil,
           max_concurrent_user_sessions: non_neg_integer() | nil,
           max_per_ip: non_neg_integer() | nil,
@@ -56,6 +57,11 @@ defmodule Grappa.Networks.AdminWire do
       # via `PATCH /admin/networks/:slug`. Operator console reads it to
       # render + toggle which networks accept visitor attachment.
       visitor_enabled: net.visitor_enabled,
+      # #211 phase 6 — the SUBSET of `visitor_enabled` auto-connected at
+      # login. Admin toggles it alongside `visitor_enabled` on the same
+      # PATCH; the operator console renders which networks a visitor gets
+      # for free on login vs on-demand.
+      visitor_autoconnect: net.visitor_autoconnect,
       max_concurrent_visitor_sessions: net.max_concurrent_visitor_sessions,
       max_concurrent_user_sessions: net.max_concurrent_user_sessions,
       max_per_ip: net.max_per_ip,
