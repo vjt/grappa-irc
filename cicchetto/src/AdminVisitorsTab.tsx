@@ -8,6 +8,7 @@ import {
   adminListVisitors,
 } from "./lib/api";
 import { token } from "./lib/auth";
+import { connectionStateEmoji } from "./lib/connectionStateEmoji";
 
 // M-cluster M-8 — Visitors admin tab. Fetches GET /admin/visitors
 // (M-4 endpoint, live) and renders one row per visitor with an
@@ -166,9 +167,7 @@ const AdminVisitorsTab: Component = () => {
                               <LiveBadge live={net.live_state} />
                               <span class="admin-visitor-network-nick">{net.nick}</span>
                               <span class="admin-visitor-network-slug">{net.network_slug}</span>
-                              <span class="admin-visitor-network-state">
-                                {net.connection_state}
-                              </span>
+                              <NetworkStateEmoji state={net.connection_state} />
                             </li>
                           )}
                         </For>
@@ -232,6 +231,30 @@ const LiveBadge: Component<{ live: AdminVisitorNetwork["live_state"] }> = (props
   return (
     <span class="live-badge alive" role="status" aria-label={`alive on ${count} channels`}>
       ● {count} chan
+    </span>
+  );
+};
+
+// ADMIN-LAYOUT-FIX (2026-07-12) — the DB-canonical connection_state
+// glyph. SEPARATE truth from LiveBadge above: this reflects
+// `net.connection_state` (Networks.Credential, the DB intent), NOT the
+// live pid. Per CLAUDE.md "DB state and live state are separate sources
+// of truth" both render in the cell. The word (`title` + `aria-label`)
+// is the a11y text AND the vitest seam; the glyph map lives in the pure
+// connectionStateEmoji.ts so an unexpected value degrades to ⚪, never
+// throws.
+const NetworkStateEmoji: Component<{ state: AdminVisitorNetwork["connection_state"] }> = (
+  props,
+) => {
+  const emoji = () => connectionStateEmoji(props.state);
+  return (
+    <span
+      class="admin-visitor-network-state"
+      role="img"
+      title={emoji().label}
+      aria-label={emoji().label}
+    >
+      {emoji().glyph}
     </span>
   );
 };

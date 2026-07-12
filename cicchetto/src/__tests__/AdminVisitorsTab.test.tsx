@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AdminVisitor } from "../lib/api";
+import type { AdminVisitor, ConnectionState } from "../lib/api";
+import { connectionStateEmoji } from "../lib/connectionStateEmoji";
 
 vi.mock("../lib/auth", () => ({
   token: () => "test-bearer",
@@ -161,6 +162,12 @@ const REGISTERED_WITH_TTL: AdminVisitor = {
 beforeEach(() => {
   vi.clearAllMocks();
 });
+
+// ADMIN-LAYOUT-FIX — first (only) network on the ALIVE fixture, narrowed
+// once so the per-network-cell tests below don't repeat the
+// noUncheckedIndexedAccess guard on `.networks[0]`.
+const ALIVE_NET = ALIVE.networks[0];
+if (ALIVE_NET === undefined) throw new Error("ALIVE fixture must carry one network");
 
 describe("AdminVisitorsTab", () => {
   it("renders one row per visitor after the onMount fetch resolves", async () => {
@@ -340,5 +347,91 @@ describe("AdminVisitorsTab", () => {
     // the hint inside the banner copy.
     expect(screen.getByTestId("admin-visitors-error").textContent).toContain("refresh to retry");
     expect(screen.getByTestId("admin-visitors-refresh")).toBeInTheDocument();
+  });
+
+  // ADMIN-LAYOUT-FIX (2026-07-12) — the #211-phase-7 cutover left the
+  // per-network cell glued (`pelucheazzurraconnected`, screenshot in
+  // priv/admin-fuckup.png) because nick/slug/state render as adjacent
+  // unstyled spans AND the state was raw text. What each seam covers:
+  // (a) nick + slug live in DISTINCT class-tagged spans — the DOM
+  //     CONTRACT the CSS separator hooks onto (`.slug::before "·"`). The
+  //     glue itself was purely visual (jsdom is CSS-blind), so this test
+  //     guards the structure, NOT the visible separator; the actual CSS
+  //     regression lock is admin-visitors-layout.spec.ts in the e2e. If
+  //     the spans were ever merged into one node the separator would have
+  //     nothing to attach to — that's what this catches.
+  // (b) the state renders the connectionStateEmoji GLYPH with the word as
+  //     its aria-label/title — asserted via the label word, NOT the
+  //     codepoint (a11y hook + robust seam), with the LiveBadge `● N chan`
+  //     STILL present alongside it (two truths, two columns).
+  describe("ADMIN-LAYOUT-FIX per-network cell", () => {
+    it("renders nick and slug as distinct class-tagged spans (the separator's DOM contract)", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListVisitors).mockResolvedValue([ALIVE]);
+
+      render(() => <AdminVisitorsTab />);
+
+      const cell = await screen.findByTestId(
+        `admin-visitor-network-${ALIVE.id}-${ALIVE_NET.network_slug}`,
+      );
+      const nick = cell.querySelector(".admin-visitor-network-nick");
+      const slug = cell.querySelector(".admin-visitor-network-slug");
+      expect(nick).not.toBeNull();
+      expect(slug).not.toBeNull();
+      expect(nick?.textContent).toBe("alice");
+      expect(slug?.textContent).toBe("azzurra");
+      // They are SEPARATE DOM nodes — not concatenated into one text run.
+      expect(nick).not.toBe(slug);
+    });
+
+    it("renders the connection-state EMOJI (via its aria-label word) alongside the still-present LiveBadge", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListVisitors).mockResolvedValue([ALIVE]);
+
+      render(() => <AdminVisitorsTab />);
+
+      // ALIVE.connection_state === "connected" → the label word is the
+      // seam (assert the word the production map emits, not the glyph).
+      const expected = connectionStateEmoji(ALIVE_NET.connection_state);
+      const stateEl = await screen.findByLabelText(expected.label, { exact: true });
+      expect(stateEl.textContent).toContain(expected.glyph);
+      // The raw state string must NOT leak as text anymore.
+      const cell = screen.getByTestId(
+        `admin-visitor-network-${ALIVE.id}-${ALIVE_NET.network_slug}`,
+      );
+      expect(cell.querySelector(".admin-visitor-network-state")?.textContent).not.toContain(
+        "connected",
+      );
+      // Two truths, two columns: the LiveBadge live-pid signal survives.
+      expect(screen.getByLabelText(/alive on 2 channels/i)).toBeInTheDocument();
+    });
+
+    it("maps each connection_state to its own emoji label", async () => {
+      const states: ConnectionState[] = ["connected", "parked", "failed"];
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListVisitors).mockResolvedValue(
+        states.map((state, i) => ({
+          id: `00000000-0000-0000-0000-00000000010${i}`,
+          expires_at: "2099-01-01T00:00:00Z",
+          identified: false,
+          ip: null,
+          inserted_at: "2026-07-12T00:00:00Z",
+          networks: [
+            { network_slug: "azzurra", nick: `n${i}`, connection_state: state, live_state: null },
+          ],
+        })),
+      );
+
+      render(() => <AdminVisitorsTab />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("admin-visitors-table")).toBeInTheDocument();
+      });
+      for (const state of states) {
+        const { label, glyph } = connectionStateEmoji(state);
+        const el = screen.getByLabelText(label, { exact: true });
+        expect(el.textContent).toContain(glyph);
+      }
+    });
   });
 });

@@ -19083,3 +19083,65 @@ risks matching more prose. Client-only, no wire/migration/server change. Tests:
 `linkify.test.ts` (+ bare-domain positives, false-positive guards, media
 classify) and `b4-linkify-url-anchor-wrap.spec.ts` (bare `host.tld/path` renders
 a clickable `https://`-prefixed anchor, RED-proven by stashing the fix).
+
+---
+
+## 2026-07-12 — admin Visitors tab: per-network cell CSS + connection-state emoji (ADMIN-LAYOUT-FIX)
+
+vjt reported a layout mess in the admin console Visitors tab (screenshot,
+untracked `priv/admin-fuckup.png`): each visitor's per-network line read as one
+glued run — `pelucheazzurraconnected` — instead of `nick · slug · state`.
+
+**Root cause = a #211-phase-7 cutover drift.** When the visitor row went
+multi-network (`project_211_phase7_deployed`), the per-network render changed
+from a flat `{nick, slug, live_state}` cell to a `<ul class="admin-visitor-
+networks">` of `<li>` lines, each holding `<LiveBadge>` + three adjacent
+`<span>`s (`.admin-visitor-network-{nick,slug,state}`). **No CSS was ever
+shipped for that `<ul>` or those spans.** So the browser applied its UA default:
+disc bullets + ~40px left indent on the list, and the three inline spans
+rendered edge-to-edge with no gap. jsdom is blind to this (it renders no default
+list chrome and asserts nothing about visual spacing), so the vitest suite was
+green the whole time — a textbook `feedback_cicchetto_browser_smoke` gap. The
+fix is pure CSS in `themes/default.css`: `list-style: none` + flex column on the
+`<ul>`, a flex row with `gap` on each `<li>`, and a `·` separator as a
+`::before` on `.admin-visitor-network-slug` (matching the table header's
+documented `networks (state · nick)` intent).
+
+**vjt design requirement (same task): the connection-state renders as an EMOJI,
+not the raw word.** The DB-canonical closed set is
+`Grappa.Networks.Credential.connection_state()` = `:connected | :parked |
+:failed` (credential.ex:86), encoded over JSON as the string discriminator, plus
+`null` (no live/absent row → the U-0 honesty neutral). Per CLAUDE.md "closed-set
+→ typed map, reject unknown at the boundary", this is a new pure module
+`cicchetto/src/lib/connectionStateEmoji.ts` (gemello of `timeFormat.ts` #217 /
+the `EMOJI_KIND` map in `mediaLink.ts`): a `Record<ConnectionState,
+{glyph,label}>` with an explicit `⚪`/"unknown" fallback so `null` or any
+future-server value degrades VISIBLY, never throws. Glyphs: 🟢 connected · ⏸️
+parked · 🔴 failed · ⚪ unknown. The `<NetworkStateEmoji>` component renders the
+glyph with the word as `title` + `aria-label` — the a11y text AND the vitest
+seam (assert the label word, not the codepoint). **This is a SEPARATE truth from
+the `LiveBadge` `● N chan`**: the emoji reflects `net.connection_state` (DB
+intent), the badge reflects `net.live_state` (live pid), per CLAUDE.md "DB state
+and live state are separate sources of truth". Both render in the cell; the
+emoji does not derive from or replace the badge.
+
+**"Challenge the spec" finding — the reported second defect did not exist.** The
+task brief read the png's far-LEFT column of `✕` glyphs as per-row Delete
+buttons overflowing to the row border. Evidence-first investigation (per CLAUDE.md
+"debug with data first, NEVER guess") via real-browser screenshots at
+393/1162/1280/1700px showed the Delete button renders as right-aligned TEXT
+"Delete" inside its last-column cell at EVERY width — and the pre-existing
+`m8-admin-visitors-delete.spec.ts` (green in CI) already asserts `/delete/i`
+text, so the button is not a `✕` at all. The far-left `✕` are the SIDEBAR's own
+channel / archive `×` buttons (`Sidebar.tsx`, `idleLabel="×"`) peeking from
+behind the overlaid admin pane in that particular crop — a screenshot artifact,
+not a visitors-tab bug. No code change was made for it; the layout e2e keeps a
+cheap delete-button-box regression guard anyway.
+
+Client-only (cic bundle) — no wire, migration, server, or config change. Tests:
+`connectionStateEmoji.test.ts` (pure table: each state → glyph+label, null +
+unrecognised → ⚪ fallback), added cases in `AdminVisitorsTab.test.tsx`
+(nick/slug distinct nodes, emoji aria-label present + LiveBadge coexists, per-
+state label map), and `admin-visitors-layout.spec.ts` (browser-truth: no list
+bullet, emoji painted, `·` separator, delete-button box contained — RED-provable
+by stashing the CSS).

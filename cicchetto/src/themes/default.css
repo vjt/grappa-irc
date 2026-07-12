@@ -2682,6 +2682,45 @@ html.resize-dragging * {
   font-size: 0.75rem;
 }
 
+/* ADMIN-LAYOUT-FIX (2026-07-12) — the #211-phase-7 visitor→multi-network
+   cutover changed the per-network cell to a `<ul>` of `<li>` lines but
+   never shipped CSS for it, so the browser applied default disc bullets +
+   ~40px left indent AND the nick/slug/state spans rendered edge-to-edge
+   (`pelucheazzurraconnected`, priv/admin-fuckup.png). Kill the list
+   chrome and lay each line out as a flex row so the LiveBadge, nick,
+   slug + state-emoji are visually separated; the `·` between nick and
+   slug matches the header's documented "networks (state · nick)"
+   intent. */
+.admin-visitor-networks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.admin-visitor-networks li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* `·` separator between the nick and the network slug (the two adjacent
+   text spans). The LiveBadge + state-emoji are distinct glyphs already
+   spaced by the flex gap, so only the slug carries the dot. */
+.admin-visitor-network-slug::before {
+  content: "·";
+  color: var(--muted);
+}
+
+/* The DB-canonical connection-state glyph (NetworkStateEmoji). Normalise
+   the emoji baseline so 🟢/⏸️/🔴/⚪ sit in line with the mono text. */
+.admin-visitor-network-state {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
 .live-badge {
   display: inline-block;
   padding: 0.1rem 0.4rem;
