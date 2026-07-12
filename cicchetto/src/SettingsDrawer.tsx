@@ -26,6 +26,7 @@ import {
   type PushDeviceSummary,
 } from "./lib/push";
 import { getTheme, setTheme, type ThemePref } from "./lib/theme";
+import { getTimeFormat, setTimeFormat, type TimeFormatKey } from "./lib/timeFormat";
 import { activeHost } from "./lib/uploadHost";
 import {
   loadUploadTtlSeconds,
@@ -67,6 +68,7 @@ const SettingsDrawer: Component<Props> = (props) => {
   const navigate = useNavigate();
   const [pref, setPref] = createSignal<ThemePref>(getTheme());
   const [size, setSize] = createSignal<FontSizeKey>(getFontSize());
+  const [timeFmt, setTimeFmt] = createSignal<TimeFormatKey>(getTimeFormat());
 
   const [prefs, setPrefs] = createSignal<NotificationPrefs>(DEFAULT_NOTIFICATION_PREFS);
   const [devices, setDevices] = createSignal<PushDeviceSummary[]>([]);
@@ -141,6 +143,12 @@ const SettingsDrawer: Component<Props> = (props) => {
     const value = (e.currentTarget as HTMLInputElement).value as FontSizeKey;
     setSize(value);
     setFontSize(value);
+  };
+
+  const onTimeFormatChange = (e: Event) => {
+    const value = (e.currentTarget as HTMLInputElement).value as TimeFormatKey;
+    setTimeFmt(value);
+    setTimeFormat(value);
   };
 
   // #126 — detach: leave cic, KEEP the bouncer up. Persistent identities
@@ -757,6 +765,35 @@ const SettingsDrawer: Component<Props> = (props) => {
               data-testid="font-size-XXL"
             />
             XXL
+          </label>
+        </fieldset>
+
+        {/* #217 — message timestamp format. Closed-set (with/without
+            seconds), client-only, persisted in localStorage. Mirrors the
+            text-size radio-group pattern. */}
+        <fieldset class="time-format-fieldset">
+          <legend>timestamp format</legend>
+          <label>
+            <input
+              type="radio"
+              name="time-format"
+              value="hms"
+              checked={timeFmt() === "hms"}
+              onChange={onTimeFormatChange}
+              data-testid="time-format-hms"
+            />
+            with seconds (HH:MM:SS)
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="time-format"
+              value="hm"
+              checked={timeFmt() === "hm"}
+              onChange={onTimeFormatChange}
+              data-testid="time-format-hm"
+            />
+            no seconds (HH:MM)
           </label>
         </fieldset>
 

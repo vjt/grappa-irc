@@ -34,6 +34,7 @@ import {
   scrollbackByChannel,
 } from "./lib/scrollback";
 import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
+import { formatTimestamp } from "./lib/timeFormat";
 import { SERVER_WINDOW_NAME, type WindowKind } from "./lib/windowKinds";
 import { MircBody } from "./MircText";
 import NickText from "./NickText";
@@ -171,15 +172,14 @@ export function resetAutoFocusedJoinsForTest(): void {
   autoFocusedJoins.clear();
 }
 
-// Message-row timestamp: local HH:MM (no seconds — #208 recovers gutter
-// space; minute resolution is enough for scrollback). Exported as a test
-// seam so the format is guarded without rendering the whole pane.
-export const formatTime = (epochMs: number): string => {
-  const d = new Date(epochMs);
-  const hh = d.getHours().toString().padStart(2, "0");
-  const mm = d.getMinutes().toString().padStart(2, "0");
-  return `${hh}:${mm}`;
-};
+// Message-row timestamp. #208 dropped seconds to recover gutter space;
+// #217 makes the format user-configurable (Settings → timestamp format),
+// defaulting to WITH seconds. The format lives in lib/timeFormat.ts as a
+// closed-set key backed by a Solid signal — calling `formatTimestamp` here
+// tracks that signal, so every rendered row re-formats live when the
+// operator switches format. Kept as an exported thin wrapper so the format
+// is guarded via the module seam without rendering the whole pane.
+export const formatTime = (epochMs: number): string => formatTimestamp(epochMs);
 
 // Format epoch-ms as a human-readable date label (e.g. "Saturday, May 3")
 // in the user's local timezone. Used for day-separator rows (C7.1).

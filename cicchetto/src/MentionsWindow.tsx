@@ -1,5 +1,6 @@
 import { type Component, createMemo, For, Show } from "solid-js";
 import { matchesWatchlist } from "./lib/mentionMatch";
+import { formatTimestamp } from "./lib/timeFormat";
 import { MircBody } from "./MircText";
 import NickText from "./NickText";
 
@@ -91,14 +92,12 @@ const formatIso = (iso: string): string => {
   }
 };
 
-// Format epoch-ms as local HH:MM:SS.
-const formatMs = (ms: number): string => {
-  const d = new Date(ms);
-  const hh = d.getHours().toString().padStart(2, "0");
-  const mm = d.getMinutes().toString().padStart(2, "0");
-  const ss = d.getSeconds().toString().padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
-};
+// Message-row timestamp: shared with scrollback via lib/timeFormat so the
+// operator's configured format (#217) applies uniformly to every message
+// row. Was a local HH:MM:SS formatter — routed through the shared helper
+// to end the scrollback-vs-mentions format drift (implement once, reuse
+// everywhere).
+const formatMs = (ms: number): string => formatTimestamp(ms);
 
 const MentionsWindow: Component<Props> = (props) => {
   // Memoized so the single pass over the messages feeds both the header

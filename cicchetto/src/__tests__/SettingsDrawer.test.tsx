@@ -16,6 +16,11 @@ vi.mock("../lib/fontSize", () => ({
   setFontSize: vi.fn(),
 }));
 
+vi.mock("../lib/timeFormat", () => ({
+  getTimeFormat: vi.fn(() => "hms"),
+  setTimeFormat: vi.fn(),
+}));
+
 const subjectHolder = vi.hoisted(() => ({
   current: null as
     | { kind: "user"; id: string; name: string }
@@ -228,6 +233,24 @@ describe("SettingsDrawer", () => {
     wrap(true);
     fireEvent.click(screen.getByLabelText(/mirc light/i));
     expect(theme.setTheme).toHaveBeenCalledWith("mirc-light");
+  });
+
+  it("renders the #217 timestamp-format radios (default with-seconds checked)", () => {
+    wrap(true);
+    const hms = screen.getByTestId("time-format-hms") as HTMLInputElement;
+    const hm = screen.getByTestId("time-format-hm") as HTMLInputElement;
+    expect(hms).toBeInTheDocument();
+    expect(hm).toBeInTheDocument();
+    // getTimeFormat mock returns "hms" → the with-seconds radio is checked.
+    expect(hms.checked).toBe(true);
+    expect(hm.checked).toBe(false);
+  });
+
+  it("picking a timestamp format fires setTimeFormat", async () => {
+    const timeFormat = await import("../lib/timeFormat");
+    wrap(true);
+    fireEvent.click(screen.getByTestId("time-format-hm"));
+    expect(timeFormat.setTimeFormat).toHaveBeenCalledWith("hm");
   });
 
   it("null subject (loading) shows quit alone (no 'log out', no detach); two-tap detaches", async () => {

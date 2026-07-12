@@ -18932,3 +18932,46 @@ visualViewport change fires, deterministically reproducible on desktop Chrome
 feedback_playwright_webkit_not_ios_scroll, but the authority is window-level).
 RED pre-fix: `scrollTop` snaps to ~tail (1830 vs mid ~910) during the resize
 and stays there on close. GREEN: held at the reader's position through both.
+
+## 2026-07-12 — #217: user-configurable message-timestamp format (closed-set keys, not strftime)
+
+The message-row timestamp format is now an operator preference (Settings →
+"timestamp format"), defaulting to WITH seconds (`HH:MM:SS`) per the request.
+This supersedes #208, which had fixed the format at `HH:MM` to recover gutter
+space — #208's economy is now the operator's choice, not a hardcode.
+
+**Spec challenge — closed-set keys, not a strftime string.** The issue proposed
+a "strftime-style pattern" persisted as a format string. That is exactly the
+untyped-string-for-a-closed-set anti-pattern CLAUDE.md bans. The real user need
+is one axis (seconds / no seconds), so the setting is a two-key union
+(`"hms" | "hm"`), which is both the typed shape AND the 10x-simpler one (no
+strftime engine to write, parse, or sanitize). New formats (12-hour, etc.) land
+as an additional key + one arm in the formatter, never a parsed pattern. Told
+vjt via the orchestrator; no pushback.
+
+**One formatter, both message-row sites.** `lib/timeFormat.ts` owns the format:
+a closed-set key, localStorage-persisted, backed by a module-singleton Solid
+signal (createRoot, mirroring theme.ts's isMobile). The signal is the deviation
+from theme.ts / fontSize.ts — those apply their effect as a boot-time DOM write
+(dataset / CSS var) so a plain localStorage read suffices, but a timestamp
+format is consumed at RENDER time; a bare `getItem` inside the render path
+would not re-run on change. Reading the signal inside the row renderers makes
+the format re-render live the instant the operator flips the radio — no reload.
+`ScrollbackPane.formatTime` (kept as an exported test seam) and
+`MentionsWindow.formatMs` both delegate to it; pre-#217 those were two hand-
+rolled formatters that had already DRIFTED (scrollback `HH:MM`, mentions
+`HH:MM:SS`), so routing both through the shared helper also fixed that
+inconsistency (implement once, reuse everywhere). Day-separator dates
+(`formatDateLabel`), WHOIS signon, and audio-player transport times are NOT
+message-row times and stay untouched.
+
+Client-only, no wire/migration/server change — the format is a display
+preference in the `feedback_no_localized_strings_server_side` family (same as
+theme + font-size, which also persist client-side only). No CSS gutter change
+needed: `.scrollback-time` is auto-width inline, so seconds just widen the cell.
+The stale #208-era `scrollbackTime.test.ts` (which pinned "never emits seconds")
+was rewritten to the new contract rather than left asserting superseded
+behavior. e2e (`issue217-timestamp-format.spec.ts`) drives the real journey:
+default is seconds → open Settings → the with-seconds radio is checked → switch
+to no-seconds → the OPEN scrollback re-renders live → reload → the choice
+persists.
