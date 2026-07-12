@@ -435,8 +435,13 @@ export type NetworksWireHomeNetworkRow = {
   connection_state_changed_at: string | null;
 };
 
+export type NetworksWireAvailableNetworkRow = {
+  slug: string;
+};
+
 export type NetworksWireHomeData = {
   networks: NetworksWireHomeNetworkRow[];
+  available_networks: NetworksWireAvailableNetworkRow[];
 };
 
 export type NetworksWireConnectionStateEvent = {

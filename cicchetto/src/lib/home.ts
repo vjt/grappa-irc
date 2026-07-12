@@ -2,34 +2,33 @@ import { createMemo, createRoot, createSignal } from "solid-js";
 import type { HomeData, HomeNetworkRow, MeResponse } from "./api";
 import { user } from "./networks";
 
-// UX-4 bucket B — HomePane data signal.
+// UX-4 bucket B / #211 phase 6 — HomePane data signal.
 //
 // Two consumers:
 //   * cold-load — `user()` (the /me resource) carries `home_data` on
-//     login. The `homeDataFromMe` memo projects it out so HomePane reads
+//     login. The `homeData` memo projects it out so HomePane reads
 //     a single reactive signal rather than reaching into the
 //     subject envelope discriminator at every render.
 //   * live updates — `userTopic.ts` dispatches the
-//     `home_network_state_changed` typed event into
-//     `patchHomeNetwork`, which mutates the live override signal
-//     in-place. The memo prefers the live override when present
-//     (last-write-wins) so a stale /me cache cannot overwrite a
-//     subsequent broadcast.
+//     `connection_state_changed` typed event into `patchHomeNetwork`,
+//     which mutates the live override signal in-place. The memo prefers
+//     the live override when present (last-write-wins) so a stale /me
+//     cache cannot overwrite a subsequent broadcast.
 //
 // Identity-scoped — when `user()` flips (logout → null, login → new
 // envelope) the live override resets. Mirror of the same
 // "createRoot at module load" pattern used by `networks.ts`,
 // `readCursor.ts`, `adminEvents.ts`.
 //
-// Discriminator:
-//   * `user() === null`                            → `null`     (logged out)
-//   * `user().kind === "visitor"`                  → `null`     (visitor home = cic-only help)
-//   * `user().kind === "user" && home_data unset`  → `null`     (legacy /me predating bucket B; ignore)
-//   * `user().kind === "user" && home_data set`    → `HomeData` (registered home)
+// #211 phase 6 (ruling A) — BOTH subjects carry `home_data` now (the
+// user + visitor home pages are the SAME data-driven component). The
+// only null case is logged-out or a legacy /me predating the field:
+//   * `user() === null`             → `null`     (logged out)
+//   * `user().home_data` unset      → `null`     (legacy /me; ignore)
+//   * `user().home_data` set        → `HomeData` (both subjects)
 //
-// HomePane branches on the result: `null` → render `HomePaneVisitor`
-// when the user is a visitor, render nothing if logged out;
-// non-null → render `HomePaneRegistered`.
+// HomePane renders `HomePaneRegistered` off the non-null result for
+// either subject; `null` renders nothing (logged out / loading).
 
 const exports = createRoot(() => {
   // Live overrides keyed by slug. Patches from typed events land here;
@@ -57,17 +56,18 @@ const exports = createRoot(() => {
       queueMicrotask(() => setOverrides({}));
     }
     if (!m) return null;
-    if (m.kind === "visitor") return null;
+    // #211 phase 6 — both subjects carry home_data; no per-kind branch.
     if (!m.home_data) return null;
     const live = overrides();
     if (Object.keys(live).length === 0) return m.home_data;
     // Overlay live patches on the envelope rows by slug. Unknown slugs
     // (broadcast for a network not in the cold-load envelope — e.g.
-    // bound mid-session in a future bucket) are dropped: a future bucket
-    // can append on a `credential_bound` event; today's contract is
-    // "patch only what's already in /me".
+    // accreted mid-session) are dropped here; the `connection_state_changed`
+    // handler also `refetchNetworks()`/refetches /me so a new row lands on
+    // the next envelope. `available_networks` rides through unchanged (live
+    // patches only touch attached-network rows).
     const merged = m.home_data.networks.map((row) => live[row.slug] ?? row);
-    return { networks: merged };
+    return { networks: merged, available_networks: m.home_data.available_networks };
   });
 
   const patchHomeNetwork = (row: HomeNetworkRow): void => {

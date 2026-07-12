@@ -29,6 +29,7 @@ defmodule Grappa.NetworksTest do
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers, SessionPlan}
   alias Grappa.PubSub.Topic
+  alias Grappa.Visitors.Visitor
 
   defp user_fixture(name \\ nil) do
     name = name || "vjt-#{System.unique_integer([:positive])}"
@@ -917,10 +918,12 @@ defmodule Grappa.NetworksTest do
     end
   end
 
-  describe "home_data_for_user/1 (UX-4 B)" do
-    test "renders %{networks: []} for a user with zero credentials" do
+  describe "home_data_for_user/1 (UX-4 B / #211 phase 6)" do
+    test "renders empty networks + empty available for a user with zero credentials" do
       user = user_fixture()
-      assert Networks.home_data_for_user(user) == %{networks: []}
+      # Users get an EMPTY available_networks — they bind via the operator
+      # surface, not the visitor on-demand-connect tier (ruling C).
+      assert Networks.home_data_for_user(user) == %{networks: [], available_networks: []}
     end
 
     test "renders one row per credential, alpha by slug (matches list_credentials_for_user)" do
@@ -975,6 +978,58 @@ defmodule Grappa.NetworksTest do
     end
   end
 
+  describe "home_data_for_visitor/1 (#211 phase 6 — ruling A)" do
+    test "networks = attached credentials; available = visitor_enabled MINUS attached" do
+      {:ok, attached} = Networks.create_network(%{slug: "att-#{u()}", visitor_enabled: true})
+      {:ok, avail} = Networks.create_network(%{slug: "av-#{u()}", visitor_enabled: true})
+      # A visitor_enabled network the visitor IS attached to must NOT
+      # appear in available; a NON-enabled network never appears at all.
+      _ = network_fixture()
+
+      {:ok, visitor} =
+        %{
+          nick: "vjt-#{u()}",
+          network_slug: attached.slug,
+          expires_at: DateTime.add(DateTime.utc_now(), 48, :hour)
+        }
+        |> Visitor.create_changeset()
+        |> Repo.insert()
+
+      {:ok, _} =
+        Credentials.upsert_visitor_credential(visitor.id, attached.id, %{
+          nick: visitor.nick,
+          auth_method: :none
+        })
+
+      %{networks: rows, available_networks: available} =
+        Networks.home_data_for_visitor(visitor.id)
+
+      assert Enum.map(rows, & &1.slug) == [attached.slug]
+      assert Enum.map(available, & &1.slug) == [avail.slug]
+    end
+
+    test "empty networks + all visitor_enabled available for a visitor with no credentials" do
+      {:ok, en} = Networks.create_network(%{slug: "en-#{u()}", visitor_enabled: true})
+
+      {:ok, visitor} =
+        %{
+          nick: "vjt-#{u()}",
+          network_slug: en.slug,
+          expires_at: DateTime.add(DateTime.utc_now(), 48, :hour)
+        }
+        |> Visitor.create_changeset()
+        |> Repo.insert()
+
+      %{networks: rows, available_networks: available} =
+        Networks.home_data_for_visitor(visitor.id)
+
+      assert rows == []
+      assert Enum.any?(available, &(&1.slug == en.slug))
+    end
+  end
+
+  defp u, do: System.unique_integer([:positive])
+
   describe "resolve_network_nick/2 (UX-4 B promotion from controller)" do
     test "falls back to cred.nick when there's no live Session.Server" do
       user = user_fixture()
@@ -1004,7 +1059,7 @@ defmodule Grappa.NetworksTest do
           network_slug: net.slug,
           expires_at: DateTime.add(DateTime.utc_now(), 48, :hour)
         }
-        |> Grappa.Visitors.Visitor.create_changeset()
+        |> Visitor.create_changeset()
         |> Repo.insert()
 
       {:ok, cred} =

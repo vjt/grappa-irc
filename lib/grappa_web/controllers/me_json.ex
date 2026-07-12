@@ -14,7 +14,7 @@ defmodule GrappaWeb.MeJSON do
       networks list cic's HomePane renders.
     * visitor → `{kind: "visitor", id, nick, ident, realname,
       expires_at, registered, read_cursors, unread_counts, badge_count,
-      home_data: nil}` — delegates to
+      home_data}` — delegates to
       `Grappa.Visitors.Wire.visitor_to_json/1` so the
       `:password_encrypted` allowlist lives in one place (and the
       derived `:registered` = password present rides in from there). See
@@ -22,8 +22,9 @@ defmodule GrappaWeb.MeJSON do
       rationale. #211 phase 6 — `network_slug` + the singular `connected`
       scalar are DROPPED: a visitor is multi-network now, so per-network
       live status lives on the `GET /networks` rows' `connection_state`
-      (ruling A/D). `home_data` stays `nil` for visitors THIS commit;
-      the home-convergence sub-commit populates it.
+      (ruling A/D). `home_data` is now POPULATED for visitors too (ruling
+      A — the user + visitor home pages are the SAME data-driven
+      component) via `Networks.home_data_for_visitor/1`.
 
   ## read_cursors envelope (CP29 R-3)
 
@@ -55,11 +56,13 @@ defmodule GrappaWeb.MeJSON do
 
   ## home_data envelope (UX-4 bucket B)
 
-  Either `%{networks: [home_network_row, ...]}` (user) or `nil`
-  (visitor). Per-row shape matches the `connection_state_changed`
-  typed event payload's `:network` key exactly (REV-J M15 fold),
-  so cic patches `home_data.networks` slots in-place from live
-  updates without re-fetching `GET /me`.
+  `%{networks: [home_network_row, ...], available_networks: [...]}` for
+  BOTH subjects (#211 phase 6, ruling A — the user + visitor home pages
+  are the SAME data-driven component). Per-row shape matches the
+  `connection_state_changed` typed event payload's `:network` key exactly
+  (REV-J M15 fold), so cic patches `home_data.networks` slots in-place
+  from live updates without re-fetching `GET /me`. `available_networks`
+  is the visitor on-demand-connect tier (empty for users).
   """
   alias Grappa.Accounts.{User, Wire}
   alias Grappa.Networks.Wire, as: NetworksWire
@@ -103,7 +106,7 @@ defmodule GrappaWeb.MeJSON do
               read_cursors: read_cursors(),
               unread_counts: unread_counts(),
               badge_count: non_neg_integer(),
-              home_data: nil
+              home_data: NetworksWire.home_data()
             }
 
   @doc "Renders the `:show` action — discriminated union per subject kind."
@@ -120,7 +123,7 @@ defmodule GrappaWeb.MeJSON do
               read_cursors: read_cursors(),
               unread_counts: unread_counts(),
               badge_count: non_neg_integer(),
-              home_data: nil
+              home_data: NetworksWire.home_data()
             }
         ) :: me_json()
   def show(%{
@@ -145,19 +148,19 @@ defmodule GrappaWeb.MeJSON do
         read_cursors: cursors,
         unread_counts: unread_counts,
         badge_count: badge_count,
-        home_data: nil
-      }) do
+        home_data: home_data
+      })
+      when is_map(home_data) do
     visitor
     |> VisitorsWire.visitor_to_json()
     |> Map.put(:kind, "visitor")
     |> Map.put(:read_cursors, cursors)
     |> Map.put(:unread_counts, unread_counts)
     |> Map.put(:badge_count, badge_count)
-    # #211 phase 6 — the singular `connected` scalar is DROPPED from /me
-    # (per-network live status lives on the GET /networks rows'
-    # connection_state now, ruling A/D). `:registered` rides in from
-    # `VisitorsWire.visitor_to_json/1` (= password_encrypted present).
-    |> Map.put(:home_data, nil)
+    # #211 phase 6 (ruling A) — visitors now carry a POPULATED `home_data`
+    # (was `nil`): the user + visitor home pages are the SAME data-driven
+    # component. `:registered` rides in from `visitor_to_json/1`.
+    |> Map.put(:home_data, home_data)
   end
 
   @doc """

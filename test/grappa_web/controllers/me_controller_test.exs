@@ -46,7 +46,7 @@ defmodule GrappaWeb.MeControllerTest do
       # UX-4 bucket B: home_data envelope. Fresh user with zero
       # credentials → empty networks list (NOT nil — nil is the
       # visitor signal).
-      assert body["home_data"] == %{"networks" => []}
+      assert body["home_data"] == %{"networks" => [], "available_networks" => []}
       refute Map.has_key?(body, "password_hash")
       refute Map.has_key?(body, "password")
       refute Map.has_key?(body, "nick")
@@ -119,11 +119,13 @@ defmodule GrappaWeb.MeControllerTest do
       assert body["unread_counts"] == %{}
       # PWA badge door #2 (2026-06-21): 0 for a fresh visitor.
       assert body["badge_count"] == 0
-      # UX-4 bucket B: visitors get `home_data: nil` — visitor home is
-      # cic-only help text (no server roundtrip). The discriminator
-      # nil vs %{networks: [...]} is how cic dispatches
-      # HomePaneVisitor vs HomePaneRegistered.
-      assert body["home_data"] == nil
+      # #211 phase 6 (ruling A) — visitors carry a POPULATED home_data
+      # now (was nil): the user + visitor home pages are the SAME
+      # data-driven component. This fresh visitor has no attached network
+      # credential (bare fixture) and no visitor_enabled network exists in
+      # this test, so both lists are empty — but the KEY is present (the
+      # discriminator moved to `kind`, not home_data presence).
+      assert body["home_data"] == %{"networks" => [], "available_networks" => []}
       # #211 phase 6 — the singular `connected` scalar is DROPPED from /me
       # (per-network live status is on the GET /networks rows now). The
       # `registered` flag stays (= password_encrypted present; the cic

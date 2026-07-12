@@ -52,19 +52,12 @@ describe("home.ts (UX-4 bucket B)", () => {
     expect(homeData()).toBeNull();
   });
 
-  it("homeData() returns null for visitor subjects", () => {
-    setUserAccessor({
-      kind: "visitor",
-      id: "v1",
-      nick: "vjt",
-      expires_at: "2026-05-18T12:00:00Z",
-      home_data: null,
-    });
-    // Read once — defer reading via the next microtask isn't required
-    // because the memo recomputes on next access when its tracked
-    // signal has flipped.
-    expect(homeData()).toBeNull();
-  });
+  // #211 phase 6 (ruling A) — visitors carry a populated home_data now
+  // (was null); the memo projects it identically to a user's. The actual
+  // projection is asserted in HomePane.test.tsx (rendering in a Solid
+  // reactive root) — this file's cross-scope mocked accessor doesn't
+  // track memo flips reliably in vitest (see moduledoc), so the
+  // per-subject projection lives there, not here.
 
   it("patchHomeNetwork() is idempotent for unknown slugs (no throw)", () => {
     // Behavioral invariant: patches for slugs not in the envelope

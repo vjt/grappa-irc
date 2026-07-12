@@ -160,11 +160,22 @@ export type HomeNetworkRow = {
   connection_state_changed_at: string | null;
 };
 
-// UX-4 bucket B — `home_data` envelope. Nested under `:networks` (NOT
-// flat) so future home cards (`home_data.pinned`,
-// `home_data.mentions_summary`, etc.) land as sibling keys without
-// touching every caller.
-export type HomeData = { networks: HomeNetworkRow[] };
+// #211 phase 6 — a network AVAILABLE for a visitor to connect on-demand
+// (`visitor_enabled − attached`). Rendered on the shared home page's
+// "available to connect" section (ruling C). Users get an empty list.
+// Mirror of server-side `Grappa.Networks.Wire.available_network_row/0`.
+export type AvailableNetworkRow = { slug: string };
+
+// UX-4 bucket B / #211 phase 6 — `home_data` envelope. Populated for
+// BOTH subjects now (ruling A — the user + visitor home pages are the
+// SAME data-driven component). `networks` = attached; `available_networks`
+// = the visitor on-demand-connect tier (empty for users). Nested (NOT
+// flat) so future home cards land as sibling keys without touching every
+// caller.
+export type HomeData = {
+  networks: HomeNetworkRow[];
+  available_networks: AvailableNetworkRow[];
+};
 
 export type MeResponse =
   | {
@@ -238,12 +249,12 @@ export type MeResponse =
       // PWA icon badge door #2 (2026-06-21) — visitors get the same
       // scalar; seeds the badge signal at login.
       badge_count?: number;
-      // UX-4 bucket B — visitor home is cic-only help text by design.
-      // Server's `MeJSON.show/1` visitor clause sets `home_data: nil`
-      // unconditionally. Optional + literal-null narrows the
-      // discriminator: presence-with-`null` is the visitor signal,
-      // presence-with-`{networks: [...]}` is the registered signal.
-      home_data?: null;
+      // #211 phase 6 (ruling A) — visitors now carry a POPULATED
+      // `home_data` (was literal-`null`): the user + visitor home pages
+      // are the SAME data-driven component. Optional so test mocks
+      // predating the field don't need touching; production /me always
+      // emits it. The union discriminates on `kind`, not this field.
+      home_data?: HomeData;
     };
 
 // Display-nick for a `MeResponse` — `user.name` for users,
@@ -2051,6 +2062,21 @@ export async function patchNetwork(
   });
   if (!res.ok) throw await readError(res);
   return (await res.json()) as CredentialJson;
+}
+
+// #211 phase 4c/6 — visitor multi-network ACCRETION: attach + spawn an
+// additional `visitor_enabled` network onto the authenticated visitor
+// identity (`POST /session/networks`). Any visitor (anon OR registered)
+// may call it (ruling C). The home page's "available to connect" section
+// drives this; 204 on success. Errors (403 not-enabled, 409
+// already-attached, 503 cap/circuit) surface via the usual envelope.
+export async function addNetwork(token: string, networkSlug: string): Promise<void> {
+  const res = await fetch("/session/networks", {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ network: networkSlug }),
+  });
+  if (!res.ok) throw await readError(res);
 }
 
 // ----- Admin-panel buckets 2-5 — REST CRUD wrappers -------------------

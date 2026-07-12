@@ -1,10 +1,17 @@
 import { type Component, createResource, createSignal, For, Show } from "solid-js";
-import { ApiError, getFeaturedChannels, patchNetwork, postJoin } from "./lib/api";
+import {
+  addNetwork,
+  ApiError,
+  type AvailableNetworkRow,
+  getFeaturedChannels,
+  patchNetwork,
+  postJoin,
+} from "./lib/api";
 import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { homeData } from "./lib/home";
-import { networks, user } from "./lib/networks";
+import { refetchNetworks, refetchUser, user } from "./lib/networks";
 import { setSelectedChannel } from "./lib/selection";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
@@ -88,14 +95,18 @@ const FeaturedLinks: Component<{ slug: string; heading?: string }> = (props) => 
   );
 };
 
-// UX-4 bucket B — first-class `:home` window pinned ABOVE all
-// networks. Two branches off `homeData()`:
+// UX-4 bucket B / #211 phase 6 — first-class `:home` window pinned ABOVE
+// all networks. ONE data-driven component for BOTH subjects now (ruling
+// A: "the user + visitor home pages are the SAME"). Off `homeData()`
+// (populated for both since phase 6):
 //
-//   * registered user (homeData() !== null) → networks list with
-//     click-to-connect on parked rows + click-to-jump on connected
-//     rows. NO compose box (home is a view, not a chat).
-//   * visitor / logged-out (homeData() === null) → HomePaneVisitor:
-//     welcome + featured + directory link (#135 landing page).
+//   * networks list — one row per attached network with click-to-jump
+//     (connected) / [Reconnect] chip (parked/failed). NO compose box
+//     (home is a view, not a chat).
+//   * available-to-connect section (visitors only — `available_networks`
+//     is empty for users) — one-tap connect an on-demand
+//     `visitor_enabled` network via `POST /session/networks`.
+//   * welcome copy (visitors only) — orientation for a guest session.
 //
 // Help-text + button labels live entirely in this file per the
 // no-localized-strings-server-side rule. The server-side envelope
@@ -106,85 +117,97 @@ const FeaturedLinks: Component<{ slug: string; heading?: string }> = (props) => 
 //     "go to network" shortcut; mirrors the existing Sidebar server-
 //     row selection contract.
 //   * :parked / :failed row → explicit [Reconnect] chip (UX-5 BR,
-//     2026-05-19). Pre-BR the WHOLE row was clickable to /connect
-//     but the affordance was invisible (looked like a label) and
-//     errors silently `console.warn`'d (violation of
-//     feedback_silent_retry_anti_pattern). Post-BR a typed chip
-//     surfaces the action + inline `friendlyApiError` text on
-//     failure. Server-side admission (UX-5 BC) ensures the chip
-//     doesn't 503 on T32 park → reconnect under default cap.
+//     2026-05-19) — a typed chip surfaces the action + inline
+//     `friendlyApiError` text on failure (feedback_silent_retry_anti_pattern).
 
-// #135 — visitor landing page: three stacked sections, top→bottom:
-//   1. static welcome + orientation copy (operator-editable per-network
-//      welcome is #136, out of scope — this stays a cic-side string);
-//   2. featured channels (#85's FeaturedLinks, titled for this layout);
-//   3. a "Browse channels" link into the full #84 directory ($list pane).
-//
-// The directory link mirrors ConnectedRow.onBrowse EXACTLY (a kind:"list"
-// selection deep-link), using the visitor's single network slug — not a
-// new navigation path. Sections 2+3 are gated on `visitorSlug()`: a
-// visitor always has one network, but the guard keeps a null slug from
-// dispatching a `$list` selection with no network.
-const HomePaneVisitor: Component = () => {
-  const onBrowse = (): void => {
-    const slug = visitorSlug();
-    if (!slug) return;
-    setSelectedChannel({ networkSlug: slug, channelName: LIST_WINDOW_NAME, kind: "list" });
+// #211 phase 6 — visitor welcome + orientation copy (guest sessions are
+// ephemeral). Rendered above the networks list ONLY for visitor subjects
+// (users get straight to their networks). Static cic-side string
+// (operator-editable per-network welcome is #136, out of scope).
+const HomeVisitorWelcome: Component = () => (
+  <section class="home-pane-section home-pane-welcome" data-testid="home-visitor-welcome">
+    <h2 class="home-pane-title">Welcome to Grappa</h2>
+    <p>
+      Grappa is an always-on IRC bouncer. Pick a channel and start talking — while your session
+      stays open the bouncer keeps you connected, so you can close this tab and reopen it right where
+      you left off.
+    </p>
+    <p class="muted">
+      You're here as a guest. A visitor session is ephemeral: when it expires, its scrollback goes
+      with it — nothing is kept for a guest nick.
+    </p>
+  </section>
+);
+
+// #211 phase 6 (ruling C) — "available to connect" section: the
+// `visitor_enabled` networks the visitor hasn't attached yet. One-tap
+// connect POSTs to `/session/networks` (accretion) → the network spawns
+// + appears in the networks list on the next /me/networks refetch. Empty
+// for users (`available_networks` is `[]`), so the whole section is gated
+// on a non-empty list.
+const AvailableNetworks: Component<{ available: AvailableNetworkRow[] }> = (props) => {
+  const [error, setError] = createSignal<string | null>(null);
+  const [connecting, setConnecting] = createSignal<string | null>(null);
+
+  const onConnect = async (slug: string): Promise<void> => {
+    const t = token();
+    if (!t) return;
+    setError(null);
+    setConnecting(slug);
+    try {
+      await addNetwork(t, slug);
+      // The server spawns + the connection_state_changed / networks
+      // refetch surfaces the new row; this section drops it once /me
+      // reflects the attach. No optimistic local mutation (cic never
+      // originates state).
+      refetchUser();
+      refetchNetworks();
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? `${slug}: ${friendlyApiError(err)}` : `${slug}: connect failed`,
+      );
+    } finally {
+      setConnecting(null);
+    }
   };
 
   return (
-    <div class="home-pane home-pane-visitor">
-      <section class="home-pane-section home-pane-welcome" data-testid="home-visitor-welcome">
-        <h2 class="home-pane-title">Welcome to Grappa</h2>
-        <p>
-          Grappa is an always-on IRC bouncer. Pick a channel and start talking — while your session
-          stays open the bouncer keeps you connected, so you can close this tab and reopen it right
-          where you left off.
-        </p>
-        <p class="muted">
-          You're here as a guest. A visitor session is ephemeral: when it expires, its scrollback
-          goes with it — nothing is kept for a guest nick. New here? Start with a featured channel
-          below, or browse the full directory.
-        </p>
+    <Show when={props.available.length > 0}>
+      <section class="home-pane-section home-pane-available-section" data-testid="home-available">
+        <h3 class="home-pane-section-title">Available to connect</h3>
+        <ul class="home-pane-available">
+          <For each={props.available}>
+            {(net) => (
+              <li class="home-pane-available-item">
+                <button
+                  type="button"
+                  class="home-pane-available-connect"
+                  disabled={connecting() === net.slug}
+                  data-testid={`home-available-connect-${net.slug}`}
+                  onClick={() => void onConnect(net.slug)}
+                >
+                  {connecting() === net.slug ? `Connecting ${net.slug}…` : `+ ${net.slug}`}
+                </button>
+              </li>
+            )}
+          </For>
+          <Show when={error()}>
+            <li class="home-pane-available-error" role="alert">
+              {error()}
+            </li>
+          </Show>
+        </ul>
       </section>
-
-      <Show when={visitorSlug()}>
-        {(slug) => (
-          <>
-            <section class="home-pane-section home-pane-featured-section">
-              <FeaturedLinks slug={slug()} heading="Featured channels" />
-            </section>
-            <section class="home-pane-section home-pane-directory-section">
-              <button
-                type="button"
-                class="home-pane-network-browse home-pane-directory-link"
-                onClick={onBrowse}
-                data-testid="home-visitor-browse"
-              >
-                📇 Browse channels
-              </button>
-            </section>
-          </>
-        )}
-      </Show>
-    </div>
+    </Show>
   );
 };
 
-// Visitors are multi-network since #211 phase 6 — the singular
-// `me.network_slug` scalar is gone from the wire. This bridges the
-// pre-unification HomePaneVisitor: it returns the visitor's FIRST
-// attached network slug from the list-shaped `networks()` store (the
-// featured/browse sections here are for the single-network landing;
-// task-4 unification replaces this whole branch with the data-driven
-// networks list shared with users). `null` when the visitor has no
-// attached network yet (autoconnect still in flight).
-function visitorSlug(): string | null {
+// Is the current subject a visitor? Drives the visitor-only welcome copy
+// + the available-networks section (users get neither). Reads the /me
+// resource, not the static subject, so a mid-session refetch is honoured.
+function isVisitorSubject(): boolean {
   const m = user();
-  if (!m || m.kind !== "visitor") return null;
-  const nets = networks();
-  const first = nets && nets.length > 0 ? nets[0] : undefined;
-  return first ? first.slug : null;
+  return m?.kind === "visitor";
 }
 
 // UX-5 BR row sub-component. Per-row local error signal so each
@@ -296,20 +319,38 @@ const DisconnectedRow: Component<{ row: HomeRow }> = (props) => {
   );
 };
 
-const HomePaneRegistered: Component = () => {
-  // homeData() is non-null in this branch — TS narrowing relies on
-  // the parent <Show when={homeData()}>.
+// The unified home body — renders for BOTH subjects off `homeData()`
+// (populated for both since phase 6). `homeData()` is non-null here (the
+// top-level `HomePane` gates on it). Visitor extras (welcome copy +
+// available-to-connect) are gated on `isVisitorSubject()`; the networks
+// list + reconnect/jump rows are identical for both subjects.
+const HomePaneBody: Component = () => {
   const rows = () => homeData()?.networks ?? [];
+  const available = () => homeData()?.available_networks ?? [];
+  const visitor = () => isVisitorSubject();
 
   return (
     <div class="home-pane home-pane-registered">
+      <Show when={visitor()}>
+        <HomeVisitorWelcome />
+      </Show>
+
       <h2 class="home-pane-title">Networks</h2>
       <Show
         when={rows().length > 0}
         fallback={
           <p class="muted">
-            No networks bound. Ask the operator to bind one via <code>bin/grappa bind-network</code>
-            .
+            <Show
+              when={visitor()}
+              fallback={
+                <>
+                  No networks bound. Ask the operator to bind one via{" "}
+                  <code>bin/grappa bind-network</code>.
+                </>
+              }
+            >
+              Connecting… pick a network below to get started.
+            </Show>
           </p>
         }
       >
@@ -325,14 +366,18 @@ const HomePaneRegistered: Component = () => {
           </For>
         </ul>
       </Show>
+
+      <AvailableNetworks available={available()} />
     </div>
   );
 };
 
 const HomePane: Component = () => {
+  // #211 phase 6 — ONE component for both subjects; the fallback is only
+  // the logged-out / loading state (homeData() null before /me lands).
   return (
-    <Show when={homeData()} fallback={<HomePaneVisitor />}>
-      <HomePaneRegistered />
+    <Show when={homeData()} fallback={<div class="home-pane home-pane-loading" />}>
+      <HomePaneBody />
     </Show>
   );
 };

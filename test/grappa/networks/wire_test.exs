@@ -445,8 +445,8 @@ defmodule Grappa.Networks.WireTest do
     end
   end
 
-  describe "home_data/1 (UX-4 B)" do
-    test "renders %{networks: [...]} from a list of (cred, nick) pairs",
+  describe "home_data/2 (UX-4 B / #211 phase 6)" do
+    test "renders networks + available_networks from (cred, nick) pairs + slugs",
          %{user: user, network: network} do
       {:ok, _} =
         Credentials.bind_credential(user, network, %{
@@ -456,15 +456,16 @@ defmodule Grappa.Networks.WireTest do
 
       cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
 
-      envelope = Wire.home_data([{cred, "vjt-live"}])
+      envelope = Wire.home_data([{cred, "vjt-live"}], ["libera"])
 
-      assert %{networks: [row]} = envelope
+      assert %{networks: [row], available_networks: [avail]} = envelope
       assert row.slug == network.slug
       assert row.nick == "vjt-live"
+      assert avail == %{slug: "libera"}
     end
 
-    test "renders %{networks: []} for an empty list (user with no credentials)" do
-      assert Wire.home_data([]) == %{networks: []}
+    test "renders empty networks + empty available for empty inputs" do
+      assert Wire.home_data([], []) == %{networks: [], available_networks: []}
     end
   end
 end

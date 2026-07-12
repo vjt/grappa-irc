@@ -5,10 +5,11 @@ defmodule GrappaWeb.MeController do
 
     * user    → `{kind: "user", id, name, inserted_at, home_data}`
     * visitor → `{kind: "visitor", id, nick, ident, realname,
-      expires_at, registered, home_data: nil}` (#126 — `registered` =
+      expires_at, registered, home_data}` (#126 — `registered` =
       NickServ identity present). #211 phase 6 — `network_slug` + the
       singular `connected` scalar are DROPPED (visitors are multi-network;
-      per-network live status is on the `GET /networks` rows).
+      per-network live status is on the `GET /networks` rows); `home_data`
+      is populated for visitors too (ruling A).
 
   Lives behind `:authn`; missing / invalid / revoked / expired Bearer
   all collapse to a uniform 401 via `GrappaWeb.Plugs.Authn`.
@@ -98,14 +99,15 @@ defmodule GrappaWeb.MeController do
 
   ## home_data envelope (UX-4 bucket B)
 
-  The response carries `home_data: %{networks: [...]} | nil`. For
-  user subjects it lists every credential's `(slug, nick,
-  connection_state, ...)` so cic's HomePane can render the networks
-  pane without a second REST round-trip; the per-row live nick is
-  resolved via `Networks.resolve_network_nick/2` (same lookup
-  `GET /networks` uses). For visitor subjects it is `nil` outright —
-  visitor home is cic-only help text by design (no server roundtrip,
-  per the no-localized-strings-server-side rule).
+  The response carries `home_data: %{networks: [...],
+  available_networks: [...]}` for BOTH subjects (#211 phase 6, ruling A —
+  the user + visitor home pages are the SAME data-driven component). It
+  lists every credential's `(slug, nick, connection_state, ...)` so cic's
+  HomePane renders the networks pane without a second REST round-trip;
+  the per-row live nick is resolved via `Networks.resolve_network_nick/2`
+  (same lookup `GET /networks` uses). `available_networks` is the visitor
+  on-demand-connect tier (`visitor_enabled − attached`; empty for users).
+  Built via `Networks.home_data_for_{user,visitor}/1`.
 
   Live updates land via the `connection_state_changed` typed event
   on `Topic.user/1` (REV-J M15 folded the prior
@@ -134,13 +136,14 @@ defmodule GrappaWeb.MeController do
         subject = {:visitor, visitor.id}
         cursors = ReadCursor.bulk_for_subject(subject)
         unread_counts = build_unread_counts(subject, cursors)
+        home_data = Networks.home_data_for_visitor(visitor.id)
 
         render(conn, :show,
           visitor: visitor,
           read_cursors: cursors,
           unread_counts: unread_counts,
           badge_count: BadgeCount.count(subject),
-          home_data: nil
+          home_data: home_data
         )
 
       _ ->

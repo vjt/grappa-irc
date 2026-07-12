@@ -530,25 +530,62 @@ defmodule Grappa.Networks do
   end
 
   @doc """
-  UX-4 bucket B: builds the `home_data` envelope returned from
-  `GET /me` for a user subject. Nested
-  `%{networks: [home_network_row, ...]}` per
-  `Networks.Wire.home_data/1`.
+  UX-4 bucket B / #211 phase 6: builds the `home_data` envelope returned
+  from `GET /me` for a USER subject. Nested
+  `%{networks: [...], available_networks: []}` per
+  `Networks.Wire.home_data/2`.
 
-  Per-row nick is resolved live via `resolve_network_nick/2` (live
-  IRC nick from the running Session.Server, falling back to
-  `cred.nick` on `:no_session`). Same resolution rule the
-  `GET /networks` controller uses — single source.
+  Per-row nick is resolved live via `resolve_network_nick/2`. Users get
+  an EMPTY `available_networks` — they bind networks via the operator
+  credential surface, not the visitor on-demand-connect tier (ruling C).
 
-  Visitors do not call this — `MeJSON.show/1` sets
-  `home_data: nil` directly for visitor subjects.
+  #211 phase 6 — visitors now ALSO get a populated `home_data` (via
+  `home_data_for_visitor/1`); the two home pages are the SAME
+  data-driven component (ruling A).
   """
   @spec home_data_for_user(User.t()) :: Wire.home_data()
   def home_data_for_user(%User{id: user_id} = user) do
-    user
-    |> Grappa.Networks.Credentials.list_credentials_for_user()
-    |> Enum.map(fn cred -> {cred, resolve_network_nick({:user, user_id}, cred)} end)
-    |> Wire.home_data()
+    pairs =
+      user
+      |> Grappa.Networks.Credentials.list_credentials_for_user()
+      |> Enum.map(fn cred -> {cred, resolve_network_nick({:user, user_id}, cred)} end)
+
+    Wire.home_data(pairs, [])
+  end
+
+  @doc """
+  #211 phase 6 (ruling A): the VISITOR twin of `home_data_for_user/1`.
+  Builds the `home_data` envelope for a visitor subject so the user +
+  visitor home pages render from the SAME data-driven component.
+
+    * `networks` — one `home_network_row` per attached network
+      (`list_visitor_credentials/1`), live-nick + the (now-real)
+      `connection_state`. The visitor twin of the user rows.
+    * `available_networks` — the on-demand-connect tier: every
+      `visitor_enabled` network MINUS the ones already attached (ruling
+      C: "home page shows connected + available"). A visitor one-taps one
+      to `POST /session/networks` (accretion).
+
+  Subject-scoped (`WHERE visitor_id ==`) — never surfaces another
+  subject's credential.
+  """
+  @spec home_data_for_visitor(Ecto.UUID.t()) :: Wire.home_data()
+  def home_data_for_visitor(visitor_id) when is_binary(visitor_id) do
+    credentials = Grappa.Networks.Credentials.list_visitor_credentials(visitor_id)
+
+    pairs =
+      Enum.map(credentials, fn cred ->
+        {cred, resolve_network_nick({:visitor, visitor_id}, cred)}
+      end)
+
+    attached_slugs = MapSet.new(credentials, fn cred -> cred.network.slug end)
+
+    available_slugs =
+      list_visitor_enabled()
+      |> Enum.map(& &1.slug)
+      |> Enum.reject(&MapSet.member?(attached_slugs, &1))
+
+    Wire.home_data(pairs, available_slugs)
   end
 
   @doc """

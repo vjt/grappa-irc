@@ -29,12 +29,19 @@ type HomeNetworkRowLocal = {
   connection_state_reason: string | null;
   connection_state_changed_at: string | null;
 };
-type HomeDataLocal = { networks: HomeNetworkRowLocal[] };
+type HomeDataLocal = {
+  networks: HomeNetworkRowLocal[];
+  available_networks: { slug: string }[];
+};
 
 const homeDataMock = vi.fn<() => HomeDataLocal | null>(() => null);
 const patchNetworkMock = vi.fn<(t: string, slug: string, body: unknown) => Promise<void>>(() =>
   Promise.resolve(),
 );
+// #211 phase 6 — the available-networks section one-taps accretion.
+const addNetworkMock = vi.fn<(t: string, slug: string) => Promise<void>>(() => Promise.resolve());
+const refetchUserMock = vi.fn<() => void>();
+const refetchNetworksMock = vi.fn<() => void>();
 const setSelectedChannelMock = vi.fn<(sel: unknown) => void>();
 const tokenMock = vi.fn<() => string | null>(() => "test-token");
 // #85 — featured channels: per-network fetch on home display + join/open.
@@ -73,6 +80,7 @@ vi.mock("../lib/api", () => {
   }
   return {
     patchNetwork: (t: string, slug: string, body: unknown) => patchNetworkMock(t, slug, body),
+    addNetwork: (t: string, slug: string) => addNetworkMock(t, slug),
     getFeaturedChannels: (t: string, slug: string) => getFeaturedMock(t, slug),
     postJoin: (t: string, slug: string, name: string, key: string | null) =>
       postJoinMock(t, slug, name, key),
@@ -80,7 +88,12 @@ vi.mock("../lib/api", () => {
   };
 });
 
-vi.mock("../lib/networks", () => ({ user: () => userMock(), networks: () => networksMock() }));
+vi.mock("../lib/networks", () => ({
+  user: () => userMock(),
+  networks: () => networksMock(),
+  refetchUser: () => refetchUserMock(),
+  refetchNetworks: () => refetchNetworksMock(),
+}));
 // channelKey is a pure fn — use the real one (mock at boundaries, not
 // pure helpers) so the joined-state key shape matches production exactly.
 vi.mock("../lib/windowState", () => ({ windowStateByChannel: () => windowStateMock() }));
@@ -131,6 +144,7 @@ describe("HomePane", () => {
         connection_state_changed_at: null,
       },
     ],
+    available_networks: [],
   });
 
   describe("#85 featured channels", () => {
@@ -172,15 +186,11 @@ describe("HomePane", () => {
       expect(postJoinMock).not.toHaveBeenCalled();
     });
 
-    it("visitor home renders featured for its single network", async () => {
-      homeDataMock.mockReturnValue(null);
-      userMock.mockReturnValue({
-        kind: "visitor",
-        id: "v1",
-        nick: "guest",
-      });
-      // #211 phase 6 — visitorSlug() reads the list-shaped networks() store.
-      networksMock.mockReturnValue([{ kind: "visitor", slug: "azzurra", nick: "guest" }]);
+    it("visitor home renders featured for a connected network (via ConnectedRow)", async () => {
+      // #211 phase 6 — the visitor home is the SAME data-driven component
+      // as the user's: a connected network row renders FeaturedLinks.
+      userMock.mockReturnValue({ kind: "visitor", id: "v1", nick: "guest" });
+      homeDataMock.mockReturnValue(connectedNetworks("azzurra"));
       getFeaturedMock.mockResolvedValue([{ name: "#welcome", description: null }]);
       render(() => <HomePane />);
 
@@ -189,60 +199,65 @@ describe("HomePane", () => {
     });
   });
 
-  describe("visitor branch (homeData() === null)", () => {
-    it("renders HomePaneVisitor with the welcome + orientation copy (#135)", () => {
-      homeDataMock.mockReturnValue(null);
+  describe("visitor branch (#211 phase 6 — unified home)", () => {
+    const visitorHome = (available: { slug: string }[]): HomeDataLocal => ({
+      networks: [
+        {
+          slug: "azzurra",
+          nick: "guest",
+          connection_state: "connected",
+          connection_state_reason: null,
+          connection_state_changed_at: null,
+        },
+      ],
+      available_networks: available,
+    });
+
+    it("renders the welcome + orientation copy for a visitor subject (#135)", () => {
+      userMock.mockReturnValue({ kind: "visitor", id: "v1", nick: "guest" });
+      homeDataMock.mockReturnValue(visitorHome([]));
       render(() => <HomePane />);
 
-      // Stable phrases the #135 visitor-home e2e also pins — keep them in
-      // sync if the copy is refreshed (grep e2e for the old string).
+      // Stable phrases the #135 visitor-home e2e also pins.
       expect(screen.getByText(/Welcome to Grappa/i)).toBeInTheDocument();
       expect(screen.getByText(/always-on IRC bouncer/i)).toBeInTheDocument();
     });
 
-    it("shows a 'Browse channels' directory link that opens the $list window (#135)", () => {
-      // The visitor pane gains the directory affordance it lacked: it
-      // mirrors ConnectedRow.onBrowse — a kind:"list" selection deep-link
-      // into the #84 DirectoryPane, using the visitor's single network
-      // slug. No REST call; pure selection dispatch.
-      homeDataMock.mockReturnValue(null);
-      userMock.mockReturnValue({
-        kind: "visitor",
-        id: "v1",
-        nick: "guest",
-      });
-      networksMock.mockReturnValue([{ kind: "visitor", slug: "azzurra", nick: "guest" }]);
+    it("does NOT render the welcome copy for a USER subject", () => {
+      userMock.mockReturnValue({ kind: "user", id: "u1", name: "vjt" });
+      homeDataMock.mockReturnValue(connectedNetworks("azzurra"));
       render(() => <HomePane />);
 
-      const browseBtn = screen.getByRole("button", { name: /browse channels/i });
-      fireEvent.click(browseBtn);
+      expect(screen.queryByText(/Welcome to Grappa/i)).toBeNull();
+    });
 
-      expect(setSelectedChannelMock).toHaveBeenCalledWith({
-        networkSlug: "azzurra",
-        channelName: LIST_WINDOW_NAME,
-        kind: "list",
-      });
-      // Browse is a UI shortcut — no REST call.
+    it("shows available-to-connect networks; click one-taps accretion (POST /session/networks)", async () => {
+      userMock.mockReturnValue({ kind: "visitor", id: "v1", nick: "guest" });
+      homeDataMock.mockReturnValue(visitorHome([{ slug: "libera" }]));
+      render(() => <HomePane />);
+
+      const connectBtn = screen.getByTestId("home-available-connect-libera");
+      fireEvent.click(connectBtn);
+
+      await waitFor(() => expect(addNetworkMock).toHaveBeenCalledWith("test-token", "libera"));
+      // Accretion is NOT a park/connect PATCH.
       expect(patchNetworkMock).not.toHaveBeenCalled();
     });
 
-    it("does NOT show the directory link when the visitor has no network slug", () => {
-      // visitorSlug() is null (user() unresolved / not a visitor) → the
-      // featured + directory sections are gated off; only the welcome copy
-      // shows. Guards against a null-slug $list selection.
-      homeDataMock.mockReturnValue(null);
-      userMock.mockReturnValue(null);
+    it("hides the available section when there are no available networks", () => {
+      userMock.mockReturnValue({ kind: "visitor", id: "v1", nick: "guest" });
+      homeDataMock.mockReturnValue(visitorHome([]));
       render(() => <HomePane />);
 
-      expect(screen.queryByRole("button", { name: /browse channels/i })).toBeNull();
+      expect(screen.queryByTestId("home-available")).toBeNull();
     });
 
     it("does NOT render any compose / input affordance (KISS, no-input outright)", () => {
-      homeDataMock.mockReturnValue(null);
+      userMock.mockReturnValue({ kind: "visitor", id: "v1", nick: "guest" });
+      homeDataMock.mockReturnValue(visitorHome([]));
       const { container } = render(() => <HomePane />);
 
-      // No textarea, no input field, no compose-box. Visitor home is
-      // read-only per the spec's KISS pick.
+      // No textarea, no input field, no compose-box. Home is read-only.
       expect(container.querySelector("textarea")).toBeNull();
       expect(container.querySelector("input")).toBeNull();
       expect(container.querySelector(".compose-box")).toBeNull();
@@ -267,6 +282,7 @@ describe("HomePane", () => {
           connection_state_changed_at: "2026-05-18T09:00:00Z",
         },
       ],
+      available_networks: [],
     };
 
     it("renders one row per network with slug + nick + state", () => {
@@ -284,7 +300,7 @@ describe("HomePane", () => {
     });
 
     it("renders 'No networks bound' fallback when array is empty", () => {
-      homeDataMock.mockReturnValue({ networks: [] });
+      homeDataMock.mockReturnValue({ networks: [], available_networks: [] });
       render(() => <HomePane />);
 
       expect(screen.getByText(/No networks bound/i)).toBeInTheDocument();
@@ -347,6 +363,7 @@ describe("HomePane", () => {
             connection_state_changed_at: "2026-05-19T10:00:00Z",
           },
         ],
+        available_networks: [],
       };
       homeDataMock.mockReturnValue(FAILED_NET);
       render(() => <HomePane />);
@@ -375,6 +392,7 @@ describe("HomePane", () => {
             connection_state_changed_at: "2026-05-18T10:00:00Z",
           },
         ],
+        available_networks: [],
       };
       homeDataMock.mockReturnValue(CONNECTED_ONLY);
       render(() => <HomePane />);

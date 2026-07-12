@@ -134,8 +134,8 @@ defmodule Grappa.Networks.Wire do
 
   Identical shape used in two places:
 
-    * `home_data/1` envelope (returned from `GET /me` for user
-      subjects, nested under `home_data.networks`).
+    * `home_data/2` envelope (returned from `GET /me` for BOTH
+      subjects since #211 phase 6, nested under `home_data.networks`).
     * `connection_state_changed_event/5`'s `:network` field
       (per-row patch on every credential `connection_state` transition,
       so cic can patch the matching slot in-place without a `GET /me`
@@ -156,15 +156,31 @@ defmodule Grappa.Networks.Wire do
         }
 
   @typedoc """
-  UX-4 bucket B: home envelope nested under `MeJSON.show/1`'s
-  `:home_data` key for user subjects. Visitors get `nil` outright
-  (visitor home is cic-only help text — no server roundtrip).
-
-  Nested under `:networks` (not flat) so future home cards
-  (`home_data.pinned`, `home_data.mentions_summary`, etc.) land as
-  sibling keys without touching every caller.
+  #211 phase 6: a network AVAILABLE for a visitor to connect on-demand —
+  `visitor_enabled` MINUS the visitor's already-attached set. Rendered on
+  the (now-shared) home page's "available to connect" section (ruling C:
+  "home page shows connected + available"). Users get an empty list
+  (they bind via the operator surface, not self-service). Just the slug —
+  the connect action POSTs it to `/session/networks`.
   """
-  @type home_data :: %{networks: [home_network_row()]}
+  @type available_network_row :: %{slug: String.t()}
+
+  @typedoc """
+  UX-4 bucket B / #211 phase 6: home envelope nested under
+  `MeJSON.show/1`'s `:home_data` key. Populated for BOTH subjects now
+  (ruling A — the user + visitor home pages are the SAME data-driven
+  component). `networks` = the subject's attached networks (per-network
+  nick + connection_state); `available_networks` = the on-demand-connect
+  tier (visitor: `visitor_enabled − attached`; user: `[]`).
+
+  Nested (not flat) so future home cards (`home_data.pinned`,
+  `home_data.mentions_summary`, etc.) land as sibling keys without
+  touching every caller.
+  """
+  @type home_data :: %{
+          networks: [home_network_row()],
+          available_networks: [available_network_row()]
+        }
 
   @typedoc """
   Wire payload for `kind: "connection_state_changed"` broadcast on
@@ -367,7 +383,7 @@ defmodule Grappa.Networks.Wire do
   back to `cred.nick` on `:no_session`). The `:network` association
   MUST be preloaded — pattern match fails loudly otherwise.
 
-  Shared by `home_data/1` (envelope) and
+  Shared by `home_data/2` (envelope) and
   `connection_state_changed_event/5`'s `:network` field (typed
   broadcast — REV-J M15 folded the prior
   `home_network_state_changed_event/2` arm into the consolidated
@@ -386,17 +402,21 @@ defmodule Grappa.Networks.Wire do
   end
 
   @doc """
-  Renders the `home_data` envelope for a user subject — list of
-  `(credential, live_nick)` pairs to the nested `%{networks: [...]}`
-  shape. Caller composes the pairs via
-  `Networks.home_data_for_user/1`.
+  Renders the `home_data` envelope — the attached-network
+  `(credential, live_nick)` pairs + the `available_networks` slugs — to
+  the nested `%{networks: [...], available_networks: [...]}` shape.
 
-  Visitor home is cic-only help text (no server roundtrip) — the
-  `MeJSON` clause for visitors sets `home_data: nil` directly without
-  calling this function.
+  #211 phase 6 (ruling A): populated for BOTH subjects (the user +
+  visitor home pages are the SAME data-driven component). Callers compose
+  the inputs via `Networks.home_data_for_user/1` (available = `[]`) /
+  `Networks.home_data_for_visitor/1` (available = `visitor_enabled −
+  attached`).
   """
-  @spec home_data([{Credential.t(), String.t()}]) :: home_data()
-  def home_data(pairs) when is_list(pairs) do
-    %{networks: Enum.map(pairs, fn {cred, nick} -> home_network_row(cred, nick) end)}
+  @spec home_data([{Credential.t(), String.t()}], [String.t()]) :: home_data()
+  def home_data(pairs, available_slugs) when is_list(pairs) and is_list(available_slugs) do
+    %{
+      networks: Enum.map(pairs, fn {cred, nick} -> home_network_row(cred, nick) end),
+      available_networks: Enum.map(available_slugs, fn slug -> %{slug: slug} end)
+    }
   end
 end
