@@ -577,8 +577,13 @@ ssh root@m42 "sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_im
 
 # 4. Roll the CODE back too — a restored pre-migration DB under
 #    post-migration code reads dropped columns and crashes. Deploy the
-#    last-known-good SHA (the pre-phase-7 prod tip was 9758397b). From a
-#    checkout at that SHA on origin/main:
+#    last-known-good SHA: the ACTUAL pre-phase-7 prod tip was 3b6c95c3
+#    (`fix(#210)`), verified live at deploy time as the jail's HEAD +
+#    runtime/last-deployed-sha — NOT 9758397 (deploy #100, an earlier
+#    base that predates #210 and other landed fixes; rolling there would
+#    silently drop that code). There are 0 migrations between 9758397 and
+#    3b6c95c3, so both run the pre-phase-7 schema, but 3b6c95c3 is the
+#    correct code tip. From a checkout at that SHA:
 scripts/deploy-m42.sh --force-cold
 
 # 5. START + verify.
@@ -588,7 +593,11 @@ ssh m42 "sudo bastille cmd grappa curl -fsS http://127.0.0.1:4000/healthz"
 ssh root@m42 "jexec grappa su -l grappa -c \
   'sqlite3 /home/grappa/grappa/runtime/grappa_prod.db \
      \"SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM visitors), (SELECT COUNT(*) FROM users);\"'"
-# expect: 243417|27|1  (the pre-deploy baseline)
+# expect: the row counts of WHICHEVER backup you restored — match them
+#   against that backup file BEFORE starting (counts drift as prod runs;
+#   the phase-7 deploy took a fresh predeploy-20260712-153204 backup at
+#   242545|26|1, distinct from the earlier 13:53 dry-run baseline of
+#   243417|27|1 — always verify against the specific backup you swapped in).
 ```
 
 **Sequencing note.** Steps 3 (DB) and 4 (code) MUST both happen — a
