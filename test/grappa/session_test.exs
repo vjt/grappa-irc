@@ -164,4 +164,43 @@ defmodule Grappa.SessionTest do
                Session.list_channels({:user, @user_id}, @network_id)
     end
   end
+
+  # #211 phase 6 — `call_session/4` must treat a callee that DIES during
+  # the call as `:no_session`, not propagate the callee's exit to the
+  # caller. Pre-fix only `:exit, {:timeout, _}` was caught; a session
+  # crashing mid-call (a visitor's 2nd-network session hitting a 433 nick
+  # collision on a shared leaf, `{:client_exit, {:nick_rejected, _}}`)
+  # propagated the exit → `GET /networks` 500'd via
+  # `resolve_network_nick`'s `current_nick` call. A dead session looks
+  # like "no session" to callers.
+  describe "call_session callee-death handling (current_nick)" do
+    test "a session that EXITS during the call surfaces as {:error, :no_session}" do
+      # A throwaway process registered under the exact session key that
+      # exits (abnormally) the instant it's called — the deterministic
+      # stand-in for a Session.Server crashing mid-`GenServer.call`.
+      net_id = System.unique_integer([:positive])
+      subject = {:visitor, "11111111-2222-3333-4444-555555555555"}
+      key = Grappa.Session.Server.registry_key(subject, net_id)
+      test_pid = self()
+
+      {:ok, _} =
+        Task.start(fn ->
+          {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
+          send(test_pid, :registered)
+
+          receive do
+            {:"$gen_call", _, {:current_nick}} ->
+              # Die WITHOUT replying — the caller's GenServer.call gets the
+              # callee's :DOWN → an :exit the fix must catch.
+              exit({:client_exit, {:nick_rejected, 433, "collision"}})
+          after
+            5_000 -> :ok
+          end
+        end)
+
+      assert_receive :registered, 1_000
+
+      assert {:error, :no_session} = Session.current_nick(subject, net_id)
+    end
+  end
 end

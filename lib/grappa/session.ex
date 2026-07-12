@@ -1268,7 +1268,21 @@ defmodule Grappa.Session do
         try do
           GenServer.call(pid, request, timeout_ms)
         catch
-          :exit, {:timeout, _} -> {:error, :timeout}
+          :exit, {:timeout, _} ->
+            {:error, :timeout}
+
+          # #211 phase 6 — the callee Session.Server died DURING the call
+          # (crash / `:normal` shutdown / already-gone between `whereis`
+          # and `GenServer.call`). Without this clause the callee's exit
+          # reason propagated to the CALLER — a visitor whose 2nd-network
+          # session is mid-crash (e.g. a 433 nick collision on a shared
+          # test leaf) 500'd `GET /networks` via `resolve_network_nick`'s
+          # `current_nick` call. A dead session looks like "no session" to
+          # callers, not a crash. `:noproc` (registry slot freed),
+          # `:normal`/`:shutdown` (clean stop), and any wrapped crash
+          # reason (`{:client_exit, _}`, etc.) all collapse to no_session.
+          :exit, _ ->
+            {:error, :no_session}
         end
     end
   end
