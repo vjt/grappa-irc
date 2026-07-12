@@ -18443,3 +18443,169 @@ PRIVMSG after a SettingsDrawer identity apply → `PATCH /me/identity` →
 
 **Deploy class: COLD** (rides the end-of-crank window; NO standalone
 deploy). Design comment: issue #211 comment 4948892801.
+
+## 2026-07-12 — #211 phase 6 (L2 epic): web/wire/cic — visitors ≡ users on the whole surface
+
+The largest phase: make visitors equal to users across web/wire/cic.
+Six sub-commits (C1 → A+B → D+§1 → home → autoconnect → E) + the F e2e
+matrix. **COLD** (one small expand migration `networks.visitor_autoconnect`;
+the visitor-COLUMN drop stays phase 7). NO standalone deploy. vjt ruled
+all 11 forks in issue #211 comment 4949196440 (the CONSOLIDATED design).
+
+### The core tension it resolves
+Phase 4 made the visitor MULTI-network on the server (N credentials on
+one `%Visitor{}`), but the WIRE + cic still assumed a visitor is
+SINGLE-network. Phase 6 is the wire+cic half of expand→contract: every
+reader of the singular `visitors.network_slug` scalar moves to the
+credential-list model, so phase 7's column-drop is mechanical.
+
+### Ruling A — visitors converge onto the user row (list-shaped /networks)
+`GET /networks` visitor branch → `Credentials.list_visitor_credentials/1`
+(one row per attached network), the twin of the user branch. New
+`Networks.Wire.visitor_network_to_json/3` (kind: :visitor, per-network
+live-nick + connection_state) — structurally identical to
+`network_with_nick_to_json/3` bar the discriminator. The bare
+`network_to_json/1` + `network_json` type were REMOVED (dead — the visitor
+row converged onto the twin). `resolve_network_nick/2` generalized to a
+`Session.subject()` tuple (was `user_id`) — one live-nick-with-fallback
+reader for both subjects. cic's `VisitorNetwork` converged onto the
+`UserNetwork` twin; `ownNickForNetwork` resolves per-network from `net.nick`
+for both kinds (was the singular `me.network_slug` match).
+
+### Ruling B — drop network_slug from the visitor WIRE
+`Visitors.Wire.{visitor_to_json,visitor_to_credential_json}` +
+`AuthJSON.subject_wire` + `MeJSON` visitor type all dropped `network_slug`;
+the singular `/me` `connected` scalar dropped too (per-network status lives
+on `/networks` rows now). wireTypes regenerated (drift gate). cic lockstep:
+`auth.ts` `isValidSubject` dropped the network_slug guard (else every
+persisted visitor subject fails validation → logout loop); the subject +
+MeResponse types dropped it. The visitor-row COLUMN stays (dual-written,
+dropped phase 7); only the WIRE stopped exposing it — expand→contract, the
+column drop is independent of the wire drop.
+
+### Ruling D — visitors carry a REAL connection_state (the epic override)
+**Epic role-boundary OVERRIDE (recorded, not asked):** the epic body said
+"visitor TTL/Reaper vs user connection_state — two distinct verbs, DON'T
+merge." vjt overrode it: visitors get `connection_state` (the
+`network_credentials.connection_state` column already existed for visitor
+credentials, just unused). The "distinct verbs / derive-don't-duplicate"
+concern still holds — `expires_at` (identity lifetime, whole visitor) and
+`connection_state` (per-network session state) are INDEPENDENT AXES, both
+live, neither derived from the other. So:
+- `Networks.connect/1` + `disconnect/2` + `broadcast_state_change` +
+  preload are subject-polymorphic (`subject_of/1` + `subject_label_of/1`
+  derive from the credential's XOR FK). The `connection_state_changed`
+  broadcast fans out on the subject's own user-rooted topic; its `user_id`
+  field is nullable now (nil for a visitor credential — cic acts on
+  `payload.network` only). `mark_failed/2` stays user-only (visitor
+  terminal failure is the orthogonal Reaper/TTL axis).
+- `PATCH /networks/:network_id` (`NetworksController.update`) is
+  subject-agnostic (dropped `require_user_subject`); resolves the plan
+  per subject (user → `Networks.SessionPlan`, visitor →
+  `Visitors.SessionPlan.resolve/2`).
+- **Persistent visitor park across reboot** (vjt: "of course cazzo"):
+  `Bootstrap.spawn_visitor_credential` skips `connection_state == :parked`
+  per credential. A visitor who disconnected network A stays parked after
+  a bouncer reboot — mirrors the user path
+  (`list_credentials_for_all_users/0` filters `:connected`).
+
+### §1 headline — the ResolveNetwork visitor cutover (accretion was half-dead)
+`GrappaWeb.Plugs.ResolveNetwork`'s visitor branch gated EVERY
+`/networks/:id/...` route on slug-equality with the singular
+`visitor.network_slug` — so a phase-4c-accreted visitor could NOT open
+network B's channels over REST (404 at the plug). Cut over to
+`Credentials.get_visitor_credential/2` (subject-scoped, subject-blind-safe),
+the mirror of the user branch. Not a fork — a mandatory cutover the six
+pieces missed; without it the 4c server capability was half-dead on the wire.
+
+### Ruling C — NO picker, NO extra login step (visitor_autoconnect)
+Admin flags networks `visitor_autoconnect` (a SEPARATE new boolean column,
+a SUBSET of `visitor_enabled`): `visitor_enabled` = "visitors allowed" (the
+AVAILABLE tier, shown on home for on-demand connect); `visitor_autoconnect`
+= the subset auto-dialed at login. One small EXPAND migration
+(`20260712120000`) + a derive-from-reality continuity seed
+(`20260712120100` — flip autoconnect=true where visitor_enabled AND
+already has visitor credentials, preserving today's single-network
+auto-connect). Login stays SYNCHRONOUS on ONE anchor network (the identity
+proof, exactly as before); `Login.maybe_autoconnect/3` then fires
+`Visitors.autoconnect/3` ASYNC under `Grappa.TaskSupervisor` for the
+remaining autoconnect set. `autoconnect/3` reuses `accrete_network/3` per
+network, so the semantics fall out: new network → attach+spawn; live
+(anchor / re-login) → `:already_attached` skip; PARKED → `:already_attached`
+skip (parked stays parked across re-login). With one autoconnect network
+(today) it's byte-identical to before. Anon accretion allowed (ruling C
+follow-up 2): `POST /session/networks` relaxed `require_registered_visitor`
+→ `require_visitor`; the `visitor_enabled` allowlist + per-IP cap stay the
+abuse gate.
+
+### Retired: POST /session/{disconnect,reconnect} (ruling C follow-up 3)
+The #126 disconnect⇄reconnect verb pair is GONE (routes + actions +
+`resolve_network_id/1` + `Visitors.{disconnect,reconnect}_session`).
+Visitors park/reconnect each network via the subject-agnostic
+`PATCH /networks/:id` like users; global disconnect = client-composed
+park-all (`quit.ts` `quitAll` now parks BOTH subjects — the
+`require_user_subject` 403 filter that forced `kind === "user"` is gone).
+cic: `disconnect`/`reconnect` lifecycle verbs + `disconnectSession`/
+`reconnectSession` api verbs retired; SettingsDrawer disconnect/reconnect
+toggle removed; `me.connected` dropped.
+
+### Home convergence (ruling A) — ONE HomePane
+`Networks.home_data_for_visitor/1` (twin of `home_data_for_user/1`);
+`MeJSON` visitor branch populates `home_data` (was `nil`). `home_data`
+gained an `available_networks` sibling (visitor: `visitor_enabled −
+attached`; user: `[]`) — `Wire.home_data/2`. cic collapsed the two
+HomePane branches into ONE data-driven `HomePaneBody`: visitor-only welcome
+copy + an `AvailableNetworks` section (one-tap accretion via the new
+`api.addNetwork` → `POST /session/networks`); the networks list +
+reconnect/jump rows are subject-identical. The `HomePaneVisitor` static
+branch + `visitorSlug` bridge were removed.
+
+### Ruling E — per-network identity editor (subsumes original #211)
+`PATCH /networks/:network_id/identity {nick?, ident?, realname?}` —
+subject-agnostic, writes the `(subject, network)` credential via
+`Credential.identity_changeset/2` (nick/ident/realname only; folded-nick
+unique-index constraints). Live-apply bounces the LIVE session via
+`SpawnOrchestrator.reconnect/5` through a WEB-LAYER wrapper
+(`NetworksController.live_apply_identity` — resolves the plan in the
+controller, NEVER the Networks context: that closes the
+`Networks → SpawnOrchestrator → Admission → Networks` Boundary cycle,
+per the #152 note). Visitor primary-network dual-write: when the edited
+network is the visitor's primary `network_slug`, the visitor-row scalar
+identity is synced (login-lookup consistency until phase 7). **Scoping
+decision:** the cic USER editor UI is deferred — the user credential's
+ident/realname aren't yet on a cic-readable wire shape to seed the editor
+(exposing them is a wire change best done with the phase-7 convergence);
+the server capability + `api.updateNetworkIdentity` verb ship now, the
+visitor editor keeps `PATCH /me/identity` (identity-wide, primary network).
+`/me/identity` + the per-network door converge when the visitor scalar
+drops (phase 7).
+
+### Ruling F — two-parallel-azzurra-testnet e2e matrix
+The e2e seeder gained azzurra2 (visitor_enabled + visitor_autoconnect) +
+azzurra3 (visitor_enabled, NOT autoconnect), same bahamut-test leaf. The
+second NETWORK row (not a second ircd) is what the multi-network matrix
+exercises. `issue211-phase6-matrix.spec.ts`: fresh visitor auto-connects
+BOTH; per-network park keeps the other live + reconnect restores; one-tap
+connect the available azzurra3. `mintVisitor` resolves the anchor slug
+from the list-shaped `GET /networks` (the subject wire dropped
+network_slug). Reboot-persistence + per-network-identity-peer-witness are
+covered server-side (a container reboot is outside the Playwright harness).
+
+### Phase-7 reader enumeration (the DROP surface)
+Still on the wire/web/cic/server path, to drop at phase 7:
+`visitors.{network_slug,nick,ident,realname,password_encrypted,last_joined_channels}`
++ the `visitors_nick_folded_network_slug_index`. Server-internal
+`network_slug` readers: `Visitors.find_or_provision_anon`/`by_folded_nick`
++ `get_by_nick_and_network` (case-1 login provision lookup — the reason the
+per-network identity editor dual-writes the visitor scalar on the primary
+network), `auth_controller.collision_network_slug`, `visitors.ex` admin
+`list_all_with_live_state`/`mark_failed` log/`reap_by_network_slug`,
+`bootstrap.validate_visitor_networks!`, `admission` visitor cap,
+`reaper`, `identifier`, `visitors/admin_wire` (operator console — separate
+wire). The `+r commit_password` write-through still targets the PRIMARY
+network_slug credential (F4 per-network password closes at phase 7 when the
+scalar drops + the write-through goes per-credential).
+
+**Deploy class: COLD** (expand migration + read/write cutovers; hot path
+skips `ecto.migrate`). Rides the end-of-crank window. Design comment:
+issue #211 comment 4949196440.

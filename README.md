@@ -158,7 +158,7 @@ Operators get a 4-tab admin pane in cicchetto, gated on `User.is_admin` (REST `/
 
 - **Visitors** — list visitor sessions; delete to free cap slots.
 - **Sessions** — every live `Session.Server` (user + visitor) with DB `connection_state` and live pid shown side by side; per-row disconnect (park) / terminate.
-- **Networks** — per-network cap editor + live counters, plus reset-circuit and force-reap. `PATCH /admin/networks/:slug` also flips the per-network **`visitor_enabled`** allowlist flag: visitors may attach only visitor-enabled networks, toggled live with no restart (the runtime replacement for the old compile-time visitor-network pin).
+- **Networks** — per-network cap editor + live counters, plus reset-circuit and force-reap. `PATCH /admin/networks/:slug` flips the per-network **`visitor_enabled`** allowlist flag (visitors may attach only visitor-enabled networks, toggled live with no restart — the runtime replacement for the old compile-time visitor-network pin) AND **`visitor_autoconnect`** (the subset a visitor auto-connects at login: zero-friction multi-network from first login, no picker; `visitor_enabled`-but-not-autoconnect networks are offered on the home page for on-demand one-tap connect).
 - **Events** — real-time admin-event tail over the `grappa:admin:events` topic.
 
 The admin UI's Promote button needs an existing admin, so bootstrap the **first** admin with `--admin` on `create-user`:
@@ -171,7 +171,7 @@ After that, promote/demote everyone else from the **Admin → Users** tab. (To p
 
 ## REST + events surface
 
-REST carries resources (id-addressed); state changes push over Channels. The main families: `POST /auth/login` + `/auth/logout`; `/me` (plus `PATCH /me/identity` — a visitor sets its IRC ident + realname, live-applied via an internal reconnect); `/networks` (CRUD, plus `PATCH` to flip `connection_state` between `connected`/`parked`); `/networks/:id/channels` (join / part / topic); `/channels/:id/messages` (paginated `GET`, `POST` to send); `/channels/:id/members`; `/channels/:id/read-cursor`; `/networks/:id/archive`; `/settings`; `/uploads`; `/push/subscriptions`; and `WS /socket/websocket`. The router (`lib/grappa_web/router.ex`) is the source of truth; a published OpenAPI schema is a pre-PUBLIC-OPEN deliverable.
+REST carries resources (id-addressed); state changes push over Channels. The main families: `POST /auth/login` + `/auth/logout`; `/me`; `/networks` (CRUD, plus `PATCH` to flip `connection_state` between `connected`/`parked` — subject-agnostic: users AND visitors park/reconnect each network the same way; `PATCH /networks/:id/identity` sets per-network IRC nick/ident/realname, live-applied via an internal reconnect); `POST /session/networks` (a visitor one-tap-connects an additional `visitor_enabled` network — accretion); `/networks/:id/channels` (join / part / topic); `/channels/:id/messages` (paginated `GET`, `POST` to send); `/channels/:id/members`; `/channels/:id/read-cursor`; `/networks/:id/archive`; `/settings`; `/uploads`; `/push/subscriptions`; and `WS /socket/websocket`. The router (`lib/grappa_web/router.ex`) is the source of truth; a published OpenAPI schema is a pre-PUBLIC-OPEN deliverable.
 
 Events are typed JSON (`message`, `join`, `part`, `quit`, `nick`, `mode`, `topic`, `notice`, window-state transitions, mentions bundle…) on **user-rooted** Channel topics:
 
@@ -216,7 +216,7 @@ Per-window UI behavior — channel header, query/DM focus rule, archive section,
 
 ## Scope
 
-**In scope:** text chat on IRC (channels, queries, notices, CTCP ACTION); multi-network per user; persistent paginated scrollback; NickServ auth bridging; media sharing — images, video, and files uploaded to and hosted by grappa, surfaced on IRC as a plain link (📸/🎬/📄), opened in cicchetto's in-app image/video viewer, with client-side video transcode before upload; a PWA that works on phones without an app-store detour; self-hosting for individuals and small groups.
+**In scope:** text chat on IRC (channels, queries, notices, CTCP ACTION); multi-network per user AND per visitor (visitors auto-connect the admin-flagged set at login + one-tap-connect more from the home page, park/reconnect each network independently, persistent across reboot); persistent paginated scrollback; NickServ auth bridging; media sharing — images, video, and files uploaded to and hosted by grappa, surfaced on IRC as a plain link (📸/🎬/📄), opened in cicchetto's in-app image/video viewer, with client-side video transcode before upload; a PWA that works on phones without an app-store detour; self-hosting for individuals and small groups.
 
 **Out of scope:** IRC-native file transfer (DCC — sharing is HTTP upload to grappa, not peer-to-peer); real-time voice / video calls and audio messages; inline auto-rendering of media in scrollback (media is a click-to-view link, never an autoplay/preview card); hosted multi-tenant SaaS (self-hosted only); push notification servers (PWA push only if the browser provides it).
 
