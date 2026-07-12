@@ -1273,6 +1273,15 @@ const ScrollbackPane: Component<Props> = (props) => {
   // needed, and toggling `activating` on every rows change would itself flicker.
   const scrollToActivation = (mode: "marker-or-tail" | "tail-only", withHide: boolean): void => {
     if (!listRef) return;
+    // #219 — while a media-viewer overlay covers the pane, its scroll position is
+    // frozen by the #196 capture/restore below (`viewerScrollSnapshot` is held
+    // non-null for the whole open→close-settle window). No activation authority
+    // may move a COVERED pane: on mobile a fullscreen modal changes the
+    // visualViewport, firing the onMount `resize` listener → scrollToActivation(
+    // "tail-only") → a tail snap that strands the reader far from where they were
+    // (jump-to-bottom, the #219 report). Bail while the snapshot is held; the
+    // #196 effect owns restoration on the open edge and on close.
+    if (viewerScrollSnapshot !== null) return;
     // #130 — hide the container synchronously NOW (pre-paint) so the
     // browser never paints the new content at the OLD preserved scrollTop
     // before the deferred scroll below corrects it. Revealed in every exit
@@ -1690,6 +1699,13 @@ const ScrollbackPane: Component<Props> = (props) => {
       () => rows()?.length ?? 0,
       () => {
         if (!listRef) return;
+        // #219 — a media viewer covering the pane freezes its scroll (see the
+        // #196 capture/restore + the scrollToActivation guard). A message
+        // arriving WHILE the viewer is up must not tail-follow the covered pane
+        // out from under the reader; the #196 effect restores their held
+        // position on close. `viewerScrollSnapshot` is non-null for the whole
+        // open→close-settle window.
+        if (viewerScrollSnapshot !== null) return;
         // #168 completion / 307 race fix — while a channel activation is
         // latched AND a rendered unread divider EXISTS, EVERY rows recreation
         // (post-switch catch-up refresh, late read-cursor hydration inserting

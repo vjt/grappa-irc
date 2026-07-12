@@ -18888,3 +18888,47 @@ the card. Reduced-motion freezes all three layers (the media query lists
 `.login-matrix, ::before, ::after`); the frozen grids + glow remain a
 still matrix backdrop. The pseudo-elements inherit `pointer-events:none`
 so the whole backdrop is transparent to the login scroll gesture.
+
+## 2026-07-12 — #219: hold scrollback position for the WHOLE media-overlay lifetime, not just its open edge
+
+The media-viewer overlay (image/video, `openMediaViewer`) is the "link
+overlay" in the report. #196 (2026-06-11) already snapshots + restores the
+scrollback `scrollTop` on the overlay's open/close EDGE (`viewerScrollSnapshot`
++ a rAF×2 re-assert). But #196 is a one-shot: it does NOT hold the position
+against an activation authority that fires LATER, while the overlay is still
+up. #219 is that residual — the pane jumps to the BOTTOM (not #196's
+scroll-to-top) mid-overlay.
+
+Root cause: the overlay COVERS the pane (fullscreen fixed modal), and while it
+is up two authorities can still move the pane underneath. (1) On mobile,
+opening a fullscreen modal changes the visualViewport → fires the onMount
+`resize` listener → `scrollToActivation("tail-only")` → a tail snap. (2) A
+message arriving while the viewer is up runs the length-effect's `atBottom`
+tail-follow. Either strands the reader at the tail when they close. #196's
+single rAF×2 has long since run.
+
+The fix does NOT fight each authority with more restores — it GATES them at the
+source: while `viewerScrollSnapshot !== null` (the exact window #196 already
+holds open — set on open, cleared in the close rAF×2), both `scrollToActivation`
+and the length-effect early-return. A covered pane is frozen; #196 owns the one
+restore, on close. One gate key, no new signal, no reactive churn (plain-`let`
+read, imperative). General rule: **no scroll authority may move a pane that a
+fullscreen overlay is covering — freeze it for the overlay's whole lifetime, not
+just the transition edge.**
+
+Audio (`playAudio` → docked mini-player) is deliberately OUT of scope: it is
+non-modal and does not cover the pane — the reader still sees + scrolls the
+scrollback while audio plays, and gating it would break the legitimate
+channel-switch-while-playing scroll. It was not reproduced; no speculative
+change. (The audio path IS an in-flow flex sibling whose mount reflows
+`.scrollback` — if a jump is ever reported there, the fix is a separate
+targeted one, not this gate.)
+
+e2e (`issue219-overlay-scroll-hold.spec.ts`) mirrors the #196 harness (seeded
+#bofh, deterministic mid-list scroll, anchor's own `.click()`) but drives the
+window-level `resize` WHILE the viewer is open — the same authority the mobile
+visualViewport change fires, deterministically reproducible on desktop Chrome
+(the real iOS path can't be emulated per
+feedback_playwright_webkit_not_ios_scroll, but the authority is window-level).
+RED pre-fix: `scrollTop` snaps to ~tail (1830 vs mid ~910) during the resize
+and stays there on close. GREEN: held at the reader's position through both.
