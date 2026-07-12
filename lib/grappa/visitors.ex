@@ -945,6 +945,64 @@ defmodule Grappa.Visitors do
     end
   end
 
+  @doc """
+  #211 phase 6 (ruling C) — AUTO-CONNECT the visitor's `visitor_autoconnect`
+  set. Called ASYNC after a successful login (the sync anchor network is
+  already live); attaches + spawns each autoconnect network the identity
+  isn't already on. Zero-friction multi-network from first login, no
+  picker, no extra login step.
+
+  Reuses `accrete_network/3` per network, so the semantics fall out for
+  free:
+
+    * network with NO credential → attach + spawn (new autoconnect net);
+    * network with a LIVE credential (the anchor, or a re-login
+      reconnect) → `:already_attached` → skipped (idempotent);
+    * network with a PARKED credential → `:already_attached` → skipped →
+      **parked networks stay parked** across a re-login (ruling D
+      persistence — autoconnect never un-parks a deliberate disconnect).
+
+  Best-effort per network: a single network's failure (cap, circuit,
+  upstream) is logged + skipped, never aborting the rest — a partial
+  autoconnect is better than none. The `:already_attached` skip is a
+  normal outcome, not logged as an error. Returns `:ok` unconditionally
+  (fire-and-forget; the caller runs it in a supervised Task).
+
+  `source_ip` threads the login IP for the per-IP cap (each spawn is a
+  fresh `:login_fresh` dial). `anchor_id` is the network login already
+  connected synchronously — excluded so it isn't redundantly re-accreted
+  (it would `:already_attached` anyway, but skipping is cheaper + quieter).
+  """
+  @spec autoconnect(Visitor.t(), pos_integer(), String.t() | nil) :: :ok
+  def autoconnect(%Visitor{} = visitor, anchor_id, source_ip)
+      when is_integer(anchor_id) and (is_binary(source_ip) or is_nil(source_ip)) do
+    Networks.list_visitor_autoconnect()
+    |> Enum.reject(fn net -> net.id == anchor_id or not net.visitor_enabled end)
+    |> Enum.each(fn net -> autoconnect_one(visitor, net, source_ip) end)
+  end
+
+  @spec autoconnect_one(Visitor.t(), Networks.Network.t(), String.t() | nil) :: :ok
+  defp autoconnect_one(%Visitor{} = visitor, %Networks.Network{slug: slug}, source_ip) do
+    case accrete_network(visitor, slug, source_ip) do
+      {:ok, _} ->
+        :ok
+
+      {:error, :already_attached} ->
+        # Normal: the anchor, a re-login reconnect, or a PARKED network
+        # the visitor deliberately disconnected — autoconnect leaves it be.
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("visitor autoconnect: network skipped",
+          visitor_id: visitor.id,
+          network: slug,
+          error: inspect(reason)
+        )
+
+        :ok
+    end
+  end
+
   # Accretion dials a NEW upstream, so it uses the `:login_fresh` flow (a
   # genuinely new connection, gated by the network-total + circuit caps) —
   # NOT `:visitor_reconnect` (which is for restoring a dropped session).

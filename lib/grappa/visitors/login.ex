@@ -217,8 +217,31 @@ defmodule Grappa.Visitors.Login do
       input.nick
       |> lookup_visitor(network)
       |> dispatch(input, network, timeouts)
+      |> maybe_autoconnect(network, input)
     end
   end
+
+  # #211 phase 6 (ruling C) — after a SUCCESSFUL login on the anchor
+  # network (identity proof + fast bearer return, exactly as before), fan
+  # out the REMAINING `visitor_autoconnect` networks ASYNCHRONOUSLY so the
+  # visitor lands multi-network with zero friction + no picker. Fire-and-
+  # forget under `Grappa.TaskSupervisor` (`:temporary` restart — a failed
+  # autoconnect must not restart-loop): the bearer is already returned;
+  # each network renders in cic as its window-state settles. With exactly
+  # ONE autoconnect network (today's reality) this is a no-op (the anchor
+  # IS that network, excluded by `autoconnect/3`), so login is byte-
+  # identical to before. Login errors pass through untouched (no spawn).
+  @spec maybe_autoconnect({:ok, result()} | {:error, login_error()}, Networks.Network.t(), input()) ::
+          {:ok, result()} | {:error, login_error()}
+  defp maybe_autoconnect({:ok, %{visitor: %Visitor{} = visitor}} = ok, anchor, input) do
+    Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
+      Visitors.autoconnect(visitor, anchor.id, input.ip)
+    end)
+
+    ok
+  end
+
+  defp maybe_autoconnect({:error, _} = err, _, _), do: err
 
   defp validate_nick(nick) do
     case IdentifierClassifier.classify(nick) do
@@ -251,11 +274,26 @@ defmodule Grappa.Visitors.Login do
     end
   end
 
+  # #211 phase 6 (ruling C) — no explicit slug (today's cic — NO picker):
+  # pick the ANCHOR from the `visitor_autoconnect` set (the network login
+  # synchronously identity-proves on; the REST spawn async post-login via
+  # `Visitors.autoconnect/2`). First by slug for a deterministic anchor.
+  # Falls back to the pre-phase-6 sole-`visitor_enabled` rule when NO
+  # network is flagged autoconnect (a deployment that hasn't opted any in
+  # — the continuity seed flags the existing single network, so post-seed
+  # prod always has ≥1). With exactly one autoconnect network (today's
+  # reality) the anchor IS that network — byte-identical to before.
   defp resolve_visitor_network(_) do
-    case Networks.list_visitor_enabled() do
-      [%Networks.Network{} = only] -> {:ok, only}
-      [] -> {:error, :network_unconfigured}
-      [_ | _] -> {:error, :network_ambiguous}
+    case Enum.filter(Networks.list_visitor_autoconnect(), & &1.visitor_enabled) do
+      [anchor | _] ->
+        {:ok, anchor}
+
+      [] ->
+        case Networks.list_visitor_enabled() do
+          [%Networks.Network{} = only] -> {:ok, only}
+          [] -> {:error, :network_unconfigured}
+          [_ | _] -> {:error, :network_ambiguous}
+        end
     end
   end
 

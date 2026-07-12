@@ -57,12 +57,26 @@ defmodule Grappa.Visitors.LoginNetworkSelectionTest do
     end
   end
 
-  describe "default-to-sole-enabled (no network param — today's cic)" do
-    test "more than one visitor_enabled network with no slug → :network_ambiguous" do
+  describe "default-to-anchor (no network param — today's cic, #211 phase 6)" do
+    test "more than one visitor_enabled network, NONE autoconnect, no slug → :network_ambiguous" do
+      # Neither is flagged autoconnect → no anchor to pick → the
+      # pre-phase-6 sole-enabled fallback fires → ambiguous.
       {:ok, _} = Networks.create_network(%{slug: "aaa", visitor_enabled: true})
       {:ok, _} = Networks.create_network(%{slug: "bbb", visitor_enabled: true})
 
       assert {:error, :network_ambiguous} = Login.login(login_input(), [])
+    end
+
+    test "#211 phase 6 — multiple visitor_enabled with an autoconnect anchor resolves (no ambiguity)" do
+      # The anchor is picked from the visitor_autoconnect set (first by
+      # slug), so multiple enabled networks no longer 400 without a slug —
+      # login proceeds to the anchor (:no_server proves it resolved).
+      {:ok, _} = Networks.create_network(%{slug: "zzz", visitor_enabled: true})
+
+      {:ok, _} =
+        Networks.create_network(%{slug: "anchor", visitor_enabled: true, visitor_autoconnect: true})
+
+      assert {:error, :no_server} = Login.login(login_input(), [])
     end
 
     test "sole visitor_enabled network with no slug resolves it (reaches :no_server, no IRC fake)" do
