@@ -3,16 +3,24 @@
 // vjt (caps his): "ALL OF THIS MUST FUCKING BE TESTED END TO END BY
 // STARTING TWO FUCKING AZZURRA TESTNETS IN PARALLEL AND TESTING ALL THE
 // FUCKING CASES!" — the seeder (compose.yaml) provisions THREE
-// visitor_enabled networks on the same bahamut-test leaf: azzurra
-// (autoconnect), azzurra2 + azzurra3 (NOT autoconnect by default, so the
-// shared suite's per-visitor connection count stays at one — the single
-// test leaf's per-IP clone limit can't absorb every visitor spec opening
-// N upstreams). This spec drives the multi-network visitor matrix:
+// visitor_enabled networks: azzurra (autoconnect, on the bahamut-test
+// leaf) + azzurra3 (NOT autoconnect, also bahamut-test), and azzurra2
+// (NOT autoconnect by default) which since #211 phase 7 points at a
+// SEPARATE standalone ircd `bahamut-test2` with its own nick namespace.
+// azzurra2 + azzurra3 stay non-autoconnect in the shared seed so the
+// per-visitor connection count stays at one (the leaf's per-IP clone
+// limit can't absorb every visitor spec opening N upstreams). This spec
+// drives the multi-network visitor matrix:
 //
 //   * autoconnect test — flips azzurra2 → visitor_autoconnect in its OWN
 //     setup, then a fresh visitor login AUTO-CONNECTS BOTH azzurra +
-//     azzurra2 (both live, own nick in members on BOTH, live PRIVMSG on
-//     BOTH), restoring the flag in finally;
+//     azzurra2 (both attached + connected); the deep live end-to-end
+//     chain (JOIN → own nick in members → peer PRIVMSG) runs on the
+//     anchor here, restoring the flag in finally. The BOTH-networks-live
+//     end-to-end proof (own nick in members + live PRIVMSG on EACH,
+//     across a real WS reconnect) lives in the dedicated
+//     issue211-phase7-multinet-reconnect spec, which uses the separate
+//     bahamut-test2 ircd so the two upstreams don't contend a nick;
 //   * per-network DISCONNECT (park) azzurra (after accreting azzurra2) →
 //     azzurra parked, azzurra2 stays live; RECONNECT azzurra → live;
 //   * a visitor one-tap CONNECTS the available azzurra3 from the home-
@@ -138,16 +146,17 @@ test("issue #211 phase 6 — fresh visitor AUTO-CONNECTS the visitor_autoconnect
     // in members → a peer PRIVMSG lands. The anchor is the network login
     // synchronously identity-proved on, so it holds the visitor's nick.
     //
-    // NOTE the test-topology limit: azzurra + azzurra2 point at the SAME
-    // bahamut-test leaf here, so azzurra2's autoconnect session dials the
-    // SAME ircd with the SAME nick → 433 NICKNAMEINUSE, its live upstream
-    // can't co-exist. That is a single-leaf artifact, NOT a product
-    // limitation — in production the two networks are distinct ircds with
-    // independent nick namespaces. The DB-level both-attached +
-    // both-connected assertion above IS the autoconnect-fan-out proof;
-    // the live end-to-end chain runs on the anchor (the network whose
-    // nick is uncontested). azzurra2's per-network REST reachability +
-    // park/reconnect are proven in the sibling tests below.
+    // Scope note: this test asserts the autoconnect FAN-OUT (both networks
+    // attached + connection_state connected, checked above) and runs the
+    // deep live chain on the anchor only. azzurra2 now lives on a SEPARATE
+    // ircd (bahamut-test2, #211 phase 7) with an independent nick
+    // namespace, so a genuine both-networks-live end-to-end proof (own
+    // nick in members + live PRIVMSG on EACH, across a real WS reconnect)
+    // is possible and is covered by the dedicated
+    // issue211-phase7-multinet-reconnect spec. Keeping this test
+    // anchor-only avoids opening a second live upstream in the shared
+    // suite (per-IP clone-limit budget); the fan-out assertion above is
+    // the autoconnect proof, the sibling spec is the both-live proof.
     await joinChannel(visitor.token, "azzurra", channel);
     await selectChannel(page, "azzurra", channel, { ownNick: visitor.nick });
 
