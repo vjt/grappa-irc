@@ -2,6 +2,8 @@
 
 > An always-on IRC bouncer with a REST-first API and a browser PWA that looks like irssi.
 
+**Live instance → [irc.sindro.me](https://irc.sindro.me)** — open it in any browser, or install it to a phone home screen (visitors need no password).
+
 ![grappa-irc cover](assets/cover.jpg)
 
 ## What
@@ -19,7 +21,7 @@ Two components in one monorepo:
   <img src="assets/cicchetto-grappa-live.png" alt="cicchetto live in #grappa" width="32%">
 </p>
 
-<p align="center"><em>cicchetto on a phone — login (visitors need no password), then irssi-shape channels. <a href="https://sindro.me/posts/2026-06-19-grappa-irc-on-my-phone/">grappa-irc on my phone →</a></em></p>
+<p align="center"><em>cicchetto on a phone — login (visitors need no password), then irssi-shape channels. Try it live at <a href="https://irc.sindro.me">irc.sindro.me</a> · <a href="https://sindro.me/posts/2026-06-19-grappa-irc-on-my-phone/">grappa-irc on my phone →</a></em></p>
 
 ### Two facades, one store
 
@@ -222,7 +224,7 @@ Per-window UI behavior — channel header, query/DM focus rule, archive section,
 
 ## Status & roadmap
 
-Pre-alpha, late stage. Phases 1–3 (server skeleton, multi-user auth, client skeleton) and most of Phase 4 (irssi-shape UI) have shipped and run in production — a FreeBSD bastille jail on `m42`, live for `it-opers` people since 2026-05-27. Phase 5 hardening is in flight.
+Pre-alpha, late stage. Phases 1–3 (server skeleton, multi-user auth, client skeleton) and most of Phase 4 (irssi-shape UI) have shipped and run in production — a FreeBSD bastille jail on `m42`, live at [`irc.sindro.me`](https://irc.sindro.me) for `it-opers` people since 2026-05-27. Phase 5 hardening is in flight.
 
 The road to **PUBLIC OPEN** (self-hostable by anyone, not just a single operator) is a sequence of clusters, each shipped to the live operator before the next begins:
 
