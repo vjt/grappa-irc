@@ -70,6 +70,62 @@ services:
   leaf-v6:
     ports: !override []
 
+  # #211 phase 7 — a SECOND, SEPARATE IRC network: a standalone bahamut
+  # ircd with its OWN nick namespace (NOT linked to the azzurra hub). This
+  # is what makes "one visitor on TWO networks" a REAL two-network test
+  # rather than the same leaf twice: azzurra points at `bahamut-test` (the
+  # azzurra hub's leaf), azzurra2 points HERE at `bahamut-test2`. Because
+  # the two ircds share no S2S link, they have INDEPENDENT nick namespaces
+  # — the SAME nick can register live on BOTH simultaneously with no 433,
+  # so the shared-leaf autokill trap (nick collision → 433 respawn flood →
+  # bahamut bans the source IP network-wide) never fires.
+  #
+  # Role `hub` (the only role that opens a client listener without needing
+  # an upstream to dial). Its peer C/N lines point at IPs that don't exist
+  # on this bridge, and the S2S classes have connfreq 0 (no autoconnect),
+  # so it boots isolated and just serves clients on 6667. Reuses the
+  # submodule's bahamut image (built by the `include`d infra compose) via
+  # the same build context; reuses hub.pem + the shared cloak key (cert
+  # hostname is never verified — grappa dials it `--no-tls`).
+  bahamut-test2:
+    build:
+      context: ./infra/bahamut
+      args:
+        BAHAMUT_REF: ${BAHAMUT_REF:-refs/pull/26/head}
+    container_name: azzurra2-standalone
+    hostname: hub2.azzurra2.chat
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+    environment:
+      SERVER_ROLE: hub
+      SERVER_NAME: hub2.azzurra2.chat
+      SERVER_DESC: "Grappa e2e second network (standalone)"
+      SERVICES_PASSWORD: ${SERVICES_PASSWORD:-testlink}
+      LEAF_PASSWORD: ${LEAF_PASSWORD:-testleaf}
+      OPER_NICK: ${OPER_NICK:-testoper}
+      OPER_PASS: ${OPER_PASS:-testoperpass}
+      LISTEN_PORT: 6667
+      LISTEN_SSL_PORT: 6697
+      LINK_PORT_V4: 7000
+      LINK_PORT_V6: 7001
+      # Peer IPs that never appear on the grappa-e2e bridge → no S2S link
+      # ever forms (class 50 connfreq is 0 anyway). Standalone by design.
+      SERVICES_IP: 10.255.255.1
+      LEAF4_IP: 10.255.255.2
+      LEAF6_IP: 10.255.255.3
+    volumes:
+      - ./infra/certs:/etc/bahamut/certs:ro
+    networks:
+      grappa-e2e:
+        aliases: [bahamut-test2]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6667'"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 30
+
   # One-shot seeder. Boots the schema (ecto.migrate) and writes the
   # baseline (one user `vjt` + one bahamut-test bind w/ autojoin
   # `["#bofh"]`) into the e2e_runtime sqlite DB BEFORE grappa-test
@@ -201,21 +257,23 @@ services:
         # explicitly and restore to 100 (issue171 spec, u-4).
         mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra", visitor_enabled: true, visitor_autoconnect: true, max_concurrent_visitor_sessions: 100, max_per_ip: 100})'
         mix grappa.add_server --network azzurra --server bahamut-test:6667 --no-tls
-        # #211 phase 6 — a SECOND visitor_enabled network (azzurra2) + a
-        # THIRD (azzurra3), both on the SAME bahamut-test leaf, for the
-        # "two parallel azzurra testnets" matrix. Both are visitor_enabled
-        # but NOT visitor_autoconnect BY DEFAULT: making them autoconnect in
-        # the SHARED seed would double every visitor spec's upstream
-        # connection count and exhaust the single test leaf's per-IP clone
-        # limit (all containers share one source IP → 502
-        # upstream_unreachable). The phase-6 matrix spec
-        # (issue211-phase6-matrix) flips azzurra2 → visitor_autoconnect in
-        # its OWN setup (admin PATCH), so the multi-network autoconnect cost
-        # is isolated to that spec. Default visitor = ONE connection
-        # (azzurra), exactly as pre-phase-6 — zero blast radius on the rest
-        # of the suite.
+        # #211 phase 6/7 — a SECOND visitor_enabled network (azzurra2) + a
+        # THIRD (azzurra3). azzurra2 points at `bahamut-test2` — a SEPARATE
+        # standalone ircd with its OWN nick namespace (#211 phase 7), so a
+        # visitor can hold a LIVE session on azzurra AND azzurra2
+        # simultaneously under the same or different nick with NO 433 /
+        # no shared-leaf autokill. azzurra3 stays on the shared
+        # `bahamut-test` leaf (the phase-6 matrix uses it for accretion
+        # only, never live-simultaneous with azzurra). Both are
+        # visitor_enabled but NOT visitor_autoconnect BY DEFAULT: making
+        # them autoconnect in the SHARED seed would multiply every visitor
+        # spec's upstream connection count. The phase-6 matrix spec flips
+        # azzurra2 → visitor_autoconnect in its OWN setup (admin PATCH), so
+        # the multi-network autoconnect cost is isolated to that spec.
+        # Default visitor = ONE connection (azzurra) — zero blast radius on
+        # the rest of the suite.
         mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra2", visitor_enabled: true, visitor_autoconnect: false, max_concurrent_visitor_sessions: 100, max_per_ip: 100})'
-        mix grappa.add_server --network azzurra2 --server bahamut-test:6667 --no-tls
+        mix grappa.add_server --network azzurra2 --server bahamut-test2:6667 --no-tls
         mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra3", visitor_enabled: true, visitor_autoconnect: false, max_concurrent_visitor_sessions: 100, max_per_ip: 100})'
         mix grappa.add_server --network azzurra3 --server bahamut-test:6667 --no-tls
     networks:
@@ -235,6 +293,10 @@ services:
     working_dir: /app
     depends_on:
       hub:
+        condition: service_healthy
+      # #211 phase 7 — the second standalone ircd must be up before
+      # Bootstrap spawns the azzurra2 credential's upstream session.
+      bahamut-test2:
         condition: service_healthy
       # NOTE: deliberately NO `depends_on grappa-e2e-seeder
       # service_completed_successfully` here. With the dep declared,

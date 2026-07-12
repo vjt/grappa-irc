@@ -18767,3 +18767,67 @@ visitor; now derives via `Credentials.visitor_registered?/1`), and the
 `Visitor` + `MeJSON` moduledocs still asserted the retired
 `commit_password clears expires_at` / `registered = is_nil(expires_at)`
 model.
+
+### Post-merge re-review + multi-network reconnect coverage (2026-07-12)
+
+Before the (deferred, COLD + IRREVERSIBLE) deploy of the whole
+undeployed set (`9758397..fe130e52`), a second adversarial pass ran on
+the FINAL MERGED state — six partitioned reviewers (migration chain,
+server data-model core, boot/lifecycle/admin, web/wire/controllers,
+cic + session, and #152/#200/#210 + test corpus). Verdict: the pre-merge
+CRITICAL (Reaper `NOT IN`-NULL poisoning) and HIGH (cic admin-event
+narrower drift) fixes are confirmed present on main; ZERO new
+CRITICAL/HIGH/MEDIUM. The only survivors were phase-7 cutover drift the
+per-phase reviews missed, all now fixed: one functional (admin-only)
+`AdminVisitorsTab.renderExpires` still keyed the "indefinite (NickServ)"
+display off the RETIRED `expires_at === null` model — since phase 7
+stopped clearing `expires_at` on `commit_password/3`, a registered
+visitor now carries `identified: true` AND a sliding future
+`expires_at`, so the operator saw a bogus countdown for a visitor the
+Reaper never touches; now keyed off the derived `v.identified`
+(regression-locked by a vitest case). The rest were stale
+doc/comments re-asserting the dropped-scalar model (`bootstrap.ex` W7
+invariant, `nick_controller.ex` `(nick, network_slug)` UNIQUE,
+`login.ex` dual-write, two test moduledocs). General rule reinforced: a
+multi-phase epic's per-phase reviews miss cross-phase drift; a single
+on-final-state pass over the whole undeployed diff is the gate that
+catches "the display still lives in the pre-cutover world."
+
+**Multi-network reconnect e2e (coverage gap closed).** The reconnect
+corpus proved single-network real-WS-drop recovery
+(`message-replay-on-reconnect`), per-network park→reconnect via a
+deliberate `connection_state` PATCH (`issue211-phase6-matrix`, DB-state
+only), and multi-network accretion (`issue211-phase3-multinet-visitor`)
+— but NOT the multi-network generalisation of the first: ONE subject on
+TWO networks surviving a real cic↔grappa WS drop and reappearing LIVE on
+BOTH. New spec `issue211-phase7-multinet-reconnect` closes it.
+
+Closing it required a REAL second network in the e2e stack. Pre-existing
+azzurra + azzurra2 + azzurra3 all pointed at the SAME `bahamut-test` leaf
+(one hub, one nick namespace) — that is the same network three times, not
+two networks. Trying to run two live upstreams for one visitor there is a
+trap: `attach_credential` copies the anchor nick, the 2nd upstream dials
+the SAME ircd with the SAME nick → 433 → the `:transient` respawn loop
+retries → bahamut's anti-flood AUTOKILLS the whole source docker IP; the
+k-line lands on EVERY session, and for a visitor `mark_failed/2` EXPIRES
+the entire visitor row → the subject is purged mid-test (verified via
+`KEEP_STACK=1` + `docker logs grappa-e2e-grappa`; the runner log doesn't
+carry the container's k-line/`authn_failure` lines). A distinct-nick
+park→rename→connect dance doesn't help — it still floods enough dials to
+trip the autokill before the rename settles.
+
+The fix: a standalone second ircd. `cicchetto/e2e/compose.yaml` gained a
+`bahamut-test2` service (bahamut role `hub`, no S2S link → independent nick
+namespace, peer C/N lines point at non-existent IPs so it boots isolated
+and just serves clients on 6667), and the seeder now points azzurra2 at
+`bahamut-test2:6667` (azzurra + azzurra3 stay on `bahamut-test`). One
+visitor now holds a LIVE session on azzurra AND azzurra2 with ZERO 433,
+and the spec edits azzurra2's nick via the phase-7 `PATCH
+/networks/:id/identity` door on the live session (SpawnOrchestrator bounce)
+to prove per-`(subject, network)` identity end-to-end. It then drops the
+cic socket while peers speak on BOTH networks (the azzurra2 peer dials
+`bahamut-test2` via the new `IrcPeer.connect({host})` override) and asserts
+each network's gap PRIVMSG backfills + own nick returns to members + a
+fresh live PRIVMSG round-trips. cic's channels-loop subscribes every joined
+channel across both networks, so the socket-open
+`refreshScrollback`-per-`joined`-key effect heals both in one resume.

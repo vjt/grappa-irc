@@ -95,7 +95,7 @@ case "$cmd" in
         # the azzurra-testnet bahamut images are independent and would
         # otherwise stay cached on whatever `infra/bahamut/*.tmpl` was
         # COPY'd at last build.
-        docker compose up --build --wait hub leaf-v4 leaf-v6 services grappa-test nginx-test
+        docker compose up --build --wait hub leaf-v4 leaf-v6 services bahamut-test2 grappa-test nginx-test
         echo
         echo "testnet up. ports: nginx=http://nginx-test, irc=bahamut-test:6667 (in-network only)"
         echo "tear down: scripts/testnet.sh down"

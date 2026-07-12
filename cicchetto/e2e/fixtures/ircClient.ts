@@ -43,7 +43,7 @@ export class IrcPeer {
     this.nick = nick;
   }
 
-  static async connect(opts: { nick: string; gecos?: string }): Promise<IrcPeer> {
+  static async connect(opts: { nick: string; gecos?: string; host?: string }): Promise<IrcPeer> {
     const client = new Client();
     const peer = new IrcPeer(client, opts.nick);
 
@@ -67,7 +67,11 @@ export class IrcPeer {
     const registered = once(client, "registered", REGISTER_TIMEOUT_MS, `register ${opts.nick}`);
 
     client.connect({
-      host: HOST,
+      // Default target is the azzurra leaf (`bahamut-test`); callers can
+      // override `host` to reach a SEPARATE ircd (e.g. the #211 phase-7
+      // second-network standalone `bahamut-test2`), so a peer can speak
+      // on the same channel-name on the OTHER network's namespace.
+      host: opts.host ?? HOST,
       port: PORT,
       nick: opts.nick,
       username: opts.nick,
