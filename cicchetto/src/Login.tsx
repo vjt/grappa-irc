@@ -263,126 +263,133 @@ const Login: Component = () => {
     <main class="login">
       {/* Matrix-rain backdrop — pure CSS app chrome behind the card. Dim,
           reduced-motion-safe (freezes to a static grid). Not scrollback
-          media, so the IRC-text-only invariant is untouched. */}
+          media, so the IRC-text-only invariant is untouched. Sits OUTSIDE
+          `.login-scroll` so it stays pinned to the viewport while the card
+          scrolls (the Advanced disclosure can grow taller than a short
+          viewport — see `.login-scroll` in default.css). */}
       <div class="login-matrix" aria-hidden="true" />
 
-      <Show
-        when={connecting()}
-        fallback={
-          <form class="login-form" onSubmit={onSubmit}>
-            <Brand />
-            <label for="login-identifier">Nick or email</label>
-            <input
-              ref={(el) => {
-                nickInput = el;
-              }}
-              id="login-identifier"
-              type="text"
-              autocomplete="username"
-              autocapitalize="none"
-              autocorrect="off"
-              spellcheck={false}
-              value={identifier()}
-              onInput={(e) => setIdentifier(e.currentTarget.value)}
-              required
-            />
+      {/* Scroll container: keeps the whole card (esp. Connect + the Advanced
+          fields) reachable when it overflows a short viewport. */}
+      <div class="login-scroll">
+        <Show
+          when={connecting()}
+          fallback={
+            <form class="login-form" onSubmit={onSubmit}>
+              <Brand />
+              <label for="login-identifier">Nick or email</label>
+              <input
+                ref={(el) => {
+                  nickInput = el;
+                }}
+                id="login-identifier"
+                type="text"
+                autocomplete="username"
+                autocapitalize="none"
+                autocorrect="off"
+                spellcheck={false}
+                value={identifier()}
+                onInput={(e) => setIdentifier(e.currentTarget.value)}
+                required
+              />
 
-            {/* Advanced toggle sits BETWEEN the nick input and Connect
+              {/* Advanced toggle sits BETWEEN the nick input and Connect
                 (vjt layout fix). Real button + aria-expanded + conditional
                 render (not display:none) so a11y + tests see the truth. */}
-            <button
-              type="button"
-              class="login-advanced-toggle"
-              aria-expanded={advanced() ? "true" : "false"}
-              aria-controls="login-advanced"
-              onClick={() => setAdvanced((v) => !v)}
-            >
-              {advanced() ? "▾ Advanced" : "▸ Advanced"}
-            </button>
-            <Show when={advanced()}>
-              <div id="login-advanced" class="login-advanced">
-                <label for="login-password">Password</label>
-                <input
-                  id="login-password"
-                  type="password"
-                  autocomplete="current-password"
-                  value={password()}
-                  onInput={(e) => setPassword(e.currentTarget.value)}
-                />
-                <p class="login-advanced-hint">
-                  Leave blank to join as a guest. Enter your account password to log into a
-                  registered account.
-                </p>
+              <button
+                type="button"
+                class="login-advanced-toggle"
+                aria-expanded={advanced() ? "true" : "false"}
+                aria-controls="login-advanced"
+                onClick={() => setAdvanced((v) => !v)}
+              >
+                {advanced() ? "▾ Advanced" : "▸ Advanced"}
+              </button>
+              <Show when={advanced()}>
+                <div id="login-advanced" class="login-advanced">
+                  <label for="login-password">Password</label>
+                  <input
+                    id="login-password"
+                    type="password"
+                    autocomplete="current-password"
+                    value={password()}
+                    onInput={(e) => setPassword(e.currentTarget.value)}
+                  />
+                  <p class="login-advanced-hint">
+                    Leave blank to join as a guest. Enter your account password to log into a
+                    registered account.
+                  </p>
 
-                {/* #152 — realname + ident, optional. Blank = server
+                  {/* #152 — realname + ident, optional. Blank = server
                     defaults (nick for ident, "Grappa Visitor" for
                     realname). ident is the `user` slot of nick!user@host. */}
-                <label for="login-realname">Real name</label>
-                <input
-                  id="login-realname"
-                  type="text"
-                  autocomplete="off"
-                  autocapitalize="none"
-                  autocorrect="off"
-                  spellcheck={false}
-                  value={realname()}
-                  onInput={(e) => setRealname(e.currentTarget.value)}
-                />
+                  <label for="login-realname">Real name</label>
+                  <input
+                    id="login-realname"
+                    type="text"
+                    autocomplete="off"
+                    autocapitalize="none"
+                    autocorrect="off"
+                    spellcheck={false}
+                    value={realname()}
+                    onInput={(e) => setRealname(e.currentTarget.value)}
+                  />
 
-                <label for="login-ident">Ident</label>
-                <input
-                  id="login-ident"
-                  type="text"
-                  autocomplete="off"
-                  autocapitalize="none"
-                  autocorrect="off"
-                  spellcheck={false}
-                  value={ident()}
-                  onInput={(e) => setIdent(e.currentTarget.value)}
-                />
-                <p class="login-advanced-hint">
-                  Real name and ident are optional and shown to other users. Leave blank to use the
-                  defaults.
-                </p>
-              </div>
-            </Show>
+                  <label for="login-ident">Ident</label>
+                  <input
+                    id="login-ident"
+                    type="text"
+                    autocomplete="off"
+                    autocapitalize="none"
+                    autocorrect="off"
+                    spellcheck={false}
+                    value={ident()}
+                    onInput={(e) => setIdent(e.currentTarget.value)}
+                  />
+                  <p class="login-advanced-hint">
+                    Real name and ident are optional and shown to other users. Leave blank to use
+                    the defaults.
+                  </p>
+                </div>
+              </Show>
 
-            <button type="submit" class="login-connect" disabled={connecting()}>
-              Connect
-            </button>
+              <button type="submit" class="login-connect" disabled={connecting()}>
+                Connect
+              </button>
 
-            <Show when={captcha()} keyed>
-              {(c) => (
-                <CaptchaMount
-                  challenge={c}
-                  onSolve={handleCaptchaSolve}
-                  onMountFailure={handleCaptchaMountFailure}
-                />
-              )}
-            </Show>
-            <Show when={error()}>
-              {(msg) => (
-                <p role="alert" class="login-error">
-                  {msg()}
-                </p>
-              )}
-            </Show>
-          </form>
-        }
-      >
-        {/* Connecting view — replaces the form in place. Spinner + rotating
-            cosmetic reassurance copy (NOT real server phases). */}
-        <div
-          class="login-connecting"
-          data-testid="login-connecting"
-          role="status"
-          aria-live="polite"
+              <Show when={captcha()} keyed>
+                {(c) => (
+                  <CaptchaMount
+                    challenge={c}
+                    onSolve={handleCaptchaSolve}
+                    onMountFailure={handleCaptchaMountFailure}
+                  />
+                )}
+              </Show>
+              <Show when={error()}>
+                {(msg) => (
+                  <p role="alert" class="login-error">
+                    {msg()}
+                  </p>
+                )}
+              </Show>
+            </form>
+          }
         >
-          <Brand />
-          <div class="login-spinner" aria-hidden="true" />
-          <p class="login-connecting-msg">{CONNECTING_MESSAGES[msgIndex()]}</p>
-        </div>
-      </Show>
+          {/* Connecting view — replaces the form in place. Spinner + rotating
+            cosmetic reassurance copy (NOT real server phases). */}
+          <div
+            class="login-connecting"
+            data-testid="login-connecting"
+            role="status"
+            aria-live="polite"
+          >
+            <Brand />
+            <div class="login-spinner" aria-hidden="true" />
+            <p class="login-connecting-msg">{CONNECTING_MESSAGES[msgIndex()]}</p>
+          </div>
+        </Show>
+      </div>
     </main>
   );
 };

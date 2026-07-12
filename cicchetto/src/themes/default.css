@@ -279,37 +279,105 @@ html.overlay-open #root > div {
 /* Login (unchanged from pre-P4-1) */
 
 .login {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* UX-3 UNDEC: same trap as the old `#root { min-height: 100vh }` —
-     `100vh` resolves to iOS Safari's LAYOUT viewport (URL-bar-hidden)
-     and overflows <body>/#root (visual viewport), re-opening the
-     touch-drag-scrolls-chrome class of bug on the login screen. Bind
-     to the parent (#root, height: 100%) instead. */
-  min-height: 100%;
-  padding: 1rem;
+  /* Fixed-size positioning frame for the matrix backdrop. It does NOT
+     scroll — `.login-scroll` inside it is the scroll container — so the
+     `.login-matrix` (position:absolute; inset:0) child stays PINNED to the
+     viewport behind the card instead of scrolling away with the form.
+     UX-3 UNDEC: bind to the parent (#root, height: 100%), NOT `100vh` —
+     `100vh` resolves to iOS Safari's LAYOUT viewport (URL-bar-hidden) and
+     overflows <body>/#root (visual viewport), re-opening the
+     touch-drag-scrolls-chrome class of bug. `height` (not `min-height`) so
+     the frame is a definite box the inner scroller can size against. */
   position: relative;
+  height: 100%;
   overflow: hidden;
 }
 
-/* #204 — Matrix-rain backdrop. Pure CSS app chrome behind the card: a
-   repeating dim vertical-glyph gradient drifting downward. No canvas / RAF
-   loop (cheap, no teardown, e2e-stable). Sits behind the card via z-index;
-   the card + connecting view are position:relative to stack above it.
-   Reduced-motion freezes the drift (see the media query below). */
+/* Scroll container for the login card. #204-followup: when the Advanced
+   disclosure is open the form grows taller than a short viewport (mobile /
+   short desktop). The old `.login` clipped that overflow with NO scrollable
+   ancestor, so the Connect button + password/realname/ident inputs became
+   UNREACHABLE — no wheel/touch gesture could reach them. This wrapper owns
+   the scroll so the whole card is reachable, while `.login` keeps clipping
+   so the matrix stays pinned and the DOCUMENT never overflows (the iOS
+   drag-chrome guard). `overscroll-behavior: contain` stops a scroll at the
+   card edge from chaining to <html> (which is overflow:hidden anyway). The
+   card is centered with `margin: auto` on the child (see .login-form /
+   .login-connecting), NOT `justify-content: center` — centered flex clips
+   the TOP of an overflowing child, which would re-hide the fields we are
+   trying to make reachable. */
+.login-scroll {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1rem;
+}
+
+/* #204 + login-emphasis — Matrix-rain backdrop, LAYERED-DEPTH variant (vjt
+   2026-07-12: "emphasize the EXISTING matrix aesthetic"). Still pure CSS: no
+   canvas / RAF loop (cheap, no teardown, e2e-stable) — the invariant the
+   original single-gradient version was chosen for is preserved. Depth comes
+   from THREE drift layers at different speeds (parallax: far/mid/near via the
+   element + ::before + ::after) plus a static accent glow bloom behind the
+   card. Sits behind the card via z-index; the card + connecting view are
+   position:relative to stack above it. Reduced-motion freezes ALL three
+   drifts (see the media query below). pointer-events + inheritance: the base
+   element sets pointer-events:none and the pseudo-elements inherit it, so the
+   whole backdrop is transparent to wheel/touch (login scroll gesture is
+   unaffected). */
 .login-matrix {
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
+  overflow: hidden;
+  background-image: /* FAR drift layer — slow, sparse, dim (depth: farthest back). */
+      repeating-linear-gradient(
+        0deg,
+        color-mix(in srgb, var(--accent) 9%, transparent) 0px,
+        color-mix(in srgb, var(--accent) 9%, transparent) 2px,
+        transparent 2px,
+        transparent 16px
+      ),
+      /* Static accent glow bloom behind the card — the "glow" half of the
+       vjt pick. Not animated (its background-position is held in the far
+       keyframes). */
+      radial-gradient(
+        65% 55% at 50% 42%,
+        color-mix(in srgb, var(--accent) 14%, transparent),
+        transparent 72%
+      );
+  background-size:
+    100% 340px,
+    100% 100%;
+  background-repeat: repeat, no-repeat;
+  opacity: 0.6;
+  animation: login-matrix-fall-far 11s linear infinite;
+}
+
+.login-matrix::before,
+.login-matrix::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+/* MID drift layer — medium speed + density, plus the faint vertical
+   "rain column" texture (the 90deg gradient the original carried). */
+.login-matrix::before {
   background-image:
     repeating-linear-gradient(
       0deg,
-      color-mix(in srgb, var(--accent) 14%, transparent) 0px,
-      color-mix(in srgb, var(--accent) 14%, transparent) 2px,
+      color-mix(in srgb, var(--accent) 13%, transparent) 0px,
+      color-mix(in srgb, var(--accent) 13%, transparent) 2px,
       transparent 2px,
-      transparent 10px
+      transparent 11px
     ),
     repeating-linear-gradient(
       90deg,
@@ -319,13 +387,27 @@ html.overlay-open #root > div {
       transparent 14px
     );
   background-size:
-    100% 220px,
+    100% 240px,
     100% 100%;
-  opacity: 0.5;
-  animation: login-matrix-fall 6s linear infinite;
+  animation: login-matrix-fall-mid 7s linear infinite;
 }
 
-@keyframes login-matrix-fall {
+/* NEAR drift layer — fast, dense, brightest (depth: closest / foreground). */
+.login-matrix::after {
+  background-image: repeating-linear-gradient(
+    0deg,
+    color-mix(in srgb, var(--accent) 20%, transparent) 0px,
+    color-mix(in srgb, var(--accent) 20%, transparent) 3px,
+    transparent 3px,
+    transparent 13px
+  );
+  background-size: 100% 170px;
+  animation: login-matrix-fall-near 4.2s linear infinite;
+}
+
+/* Each layer travels exactly one tile height per loop → seamless. Distinct
+   durations over distinct tile sizes give the parallax depth. */
+@keyframes login-matrix-fall-far {
   from {
     background-position:
       0 0,
@@ -333,8 +415,30 @@ html.overlay-open #root > div {
   }
   to {
     background-position:
-      0 220px,
+      0 340px,
       0 0;
+  }
+}
+
+@keyframes login-matrix-fall-mid {
+  from {
+    background-position:
+      0 0,
+      0 0;
+  }
+  to {
+    background-position:
+      0 240px,
+      0 0;
+  }
+}
+
+@keyframes login-matrix-fall-near {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 170px;
   }
 }
 
@@ -349,6 +453,10 @@ html.overlay-open #root > div {
   background: var(--bg);
   position: relative;
   z-index: 1;
+  /* Center vertically inside .login-scroll when there's room; auto margins
+     collapse to 0 when the card overflows, so the TOP stays reachable (unlike
+     justify-content:center, which clips the top of an overflowing child). */
+  margin: auto;
 }
 
 /* #204 — big "IRC" hero wordmark + small "cicchetto" sub-wordmark. vjt: IRC
@@ -466,6 +574,9 @@ html.overlay-open #root > div {
   background: var(--bg);
   position: relative;
   z-index: 1;
+  /* Same centering contract as .login-form — auto margins center when there's
+     room, collapse under overflow so nothing is clipped. */
+  margin: auto;
 }
 
 .login-spinner {
@@ -490,10 +601,13 @@ html.overlay-open #root > div {
   text-align: center;
 }
 
-/* Reduced-motion: freeze the matrix drift + spinner rotation. The spinner
-   stays as a static ring (still a clear "busy" affordance). */
+/* Reduced-motion: freeze ALL THREE matrix drift layers + spinner rotation.
+   The static glow bloom + frozen grids remain (a still "matrix" backdrop);
+   the spinner stays as a static ring (still a clear "busy" affordance). */
 @media (prefers-reduced-motion: reduce) {
   .login-matrix,
+  .login-matrix::before,
+  .login-matrix::after,
   .login-spinner {
     animation: none;
   }

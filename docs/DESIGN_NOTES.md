@@ -18831,3 +18831,60 @@ each network's gap PRIVMSG backfills + own nick returns to members + a
 fresh live PRIVMSG round-trips. cic's channels-loop subscribes every joined
 channel across both networks, so the socket-open
 `refreshScrollback`-per-`joined`-key effect heals both in one resume.
+
+## 2026-07-12 — login card: scroll reachability + matrix-depth emphasis
+
+Two independent cic-only changes to the `/login` surface (no server, no
+wire, no issue — direct vjt asks).
+
+**The scroll bug (fixed).** `.login` was `display:flex;
+align-items:center; justify-content:center; min-height:100%;
+overflow:hidden`. When the Advanced disclosure is open the `.login-form`
+grows to ~643px; on a short viewport (mobile / short desktop) it
+overflows 480px. Because the container was vertically centered AND clipped
+overflow with NO scrollable ancestor, both ends of the form spilled
+outside the viewport and Connect + password/realname/ident became
+UNREACHABLE — no wheel/touch gesture could reach them (measured: after a
+real 2000px wheel Connect stayed at y=593 in a 480px viewport). The
+`overflow:hidden` was deliberate — it's the iOS document-drag-chrome guard
+(same family as the `#root { height:100% }` / `html,body{overflow:hidden}`
+pins; a bare `100vh` or a scrollable document re-opens the
+touch-drag-scrolls-app-chrome class of bug that cost 8 iterations in
+UX-6-D). So the fix could NOT just delete the clip.
+
+The fix splits the two jobs onto two elements: `.login` stays the
+fixed-size (`height:100%`) positioning frame that clips (matrix stays
+pinned, document never overflows), and a NEW inner `.login-scroll`
+(`overflow-y:auto; overscroll-behavior:contain; height:100%`) owns the
+scroll so the whole card is reachable. Critically the card is centered
+with `margin:auto` on `.login-form` / `.login-connecting`, NOT
+`justify-content:center` on the flex parent — **centered flex clips the
+TOP of an overflowing child** (the scroll can't reach above the start),
+whereas `auto` margins center when there's room and collapse to 0 under
+overflow so both ends stay reachable. `overscroll-behavior:contain` keeps
+a scroll at the card edge from chaining to `<html>` (itself
+overflow:hidden). General rule for any full-viewport centered-and-clipped
+surface: **the clip frame and the scroll container must be different
+elements, and centering an overflowable child uses `margin:auto`, never
+`justify-content:center`.**
+
+Test honesty gotcha worth keeping: the first e2e used
+`locator.scrollIntoViewIfNeeded()` and PASSED on the broken code —
+programmatic `scrollTop` bypasses `overflow:hidden`, which a real user's
+wheel/touch cannot. A reachability test for a clipped layout MUST drive
+the gesture the operator actually has (`page.mouse.wheel` + `expect.poll`
+until the target enters the viewport), or it green-washes the bug. See
+`login-advanced-scroll-reachability.spec.ts`.
+
+**Matrix emphasis (vjt pick: "layered depth + glow").** The `.login-matrix`
+backdrop was one animated `repeating-linear-gradient` pair. vjt asked to
+emphasize the EXISTING aesthetic; the chosen direction keeps it PURE CSS
+(no canvas/RAF — preserving the e2e-stability + no-teardown invariant the
+original was chosen for) and adds depth via THREE drift layers at distinct
+speeds/tile-sizes (parallax: `.login-matrix` far 11s, `::before` mid 7s,
+`::after` near 4.2s — each travels exactly one tile height per loop for a
+seamless repeat) plus a static `radial-gradient` accent glow bloom behind
+the card. Reduced-motion freezes all three layers (the media query lists
+`.login-matrix, ::before, ::after`); the frozen grids + glow remain a
+still matrix backdrop. The pseudo-elements inherit `pointer-events:none`
+so the whole backdrop is transparent to the login scroll gesture.
