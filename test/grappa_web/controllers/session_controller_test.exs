@@ -54,9 +54,12 @@ defmodule GrappaWeb.SessionControllerTest do
   end
 
   # A registered visitor = identified on some network. #211 phase 7 —
-  # `commit_password/3` writes the per-network Cloak-encrypted secret AND
-  # clears the visitor's `expires_at` (the permanent/registered marker), so
-  # the fixture visitor reads back as a persistent identity.
+  # `commit_password/3` writes the per-network Cloak-encrypted secret on
+  # the `(visitor, network)` credential; "registered/permanent" is DERIVED
+  # from that (`Credentials.visitor_registered?/1`), NOT a stored
+  # `expires_at`-nil flag. Phase 7 STOPPED clearing `expires_at` on commit
+  # (the row keeps its anon sliding TTL; the derived registered-subquery
+  # overrides reaping wherever "permanent" matters).
   defp registered_visitor(port) do
     {visitor, network} = visitor_with_network(port)
     {:ok, _} = Visitors.commit_password(visitor.id, network.id, "s3cret")

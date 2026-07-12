@@ -126,6 +126,38 @@ const NICKSERV_IDENTIFIED: AdminVisitor = {
   ],
 };
 
+// #211 phase 7 — a registered visitor under the NEW model: `identified:
+// true` (derived from the credentials) BUT `expires_at` is a non-null
+// sliding future value, because `commit_password/3` no longer clears
+// `expires_at` (DESIGN_NOTES 2026-07-12). The row must STILL read as
+// "indefinite (NickServ)" — the Reaper excludes registered visitors via
+// the derived NOT-IN subquery, so showing a countdown here would be a
+// lie. This is the regression-lock for the pre-cold-deploy fix: keying
+// `renderExpires` off `expires_at === null` (the retired model) would
+// wrongly render a countdown for this shape.
+const REGISTERED_WITH_TTL: AdminVisitor = {
+  id: "00000000-0000-0000-0000-000000000005",
+  expires_at: "2099-01-01T00:00:00Z",
+  identified: true,
+  ip: "13.14.15.16",
+  inserted_at: "2026-07-12T00:00:00Z",
+  networks: [
+    {
+      network_slug: "azzurra",
+      nick: "RegdGrappa",
+      connection_state: "connected",
+      live_state: {
+        alive: true,
+        pid_inspect: "#PID<0.777.0>",
+        mailbox_len: 0,
+        memory_bytes: 100_000,
+        joined_channels: ["#italia"],
+        introspection_degraded: [],
+      },
+    },
+  ],
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -169,6 +201,25 @@ describe("AdminVisitorsTab", () => {
 
     const row = await screen.findByTestId(`admin-visitor-row-${NICKSERV_IDENTIFIED.id}`);
     expect(row.textContent).toContain("indefinite (NickServ)");
+  });
+
+  it("renders 'indefinite (NickServ)' for a phase-7 registered visitor with a non-null sliding expires_at", async () => {
+    // #211 phase 7 — commit_password/3 stopped clearing expires_at, so a
+    // registered visitor carries `identified: true` AND a future
+    // expires_at. renderExpires MUST trust the derived `identified`, not
+    // `expires_at === null`, or the operator sees a bogus countdown for a
+    // visitor the Reaper will never touch. Regression-lock for the
+    // pre-cold-deploy fix.
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListVisitors).mockResolvedValue([REGISTERED_WITH_TTL]);
+
+    render(() => <AdminVisitorsTab />);
+
+    const row = await screen.findByTestId(`admin-visitor-row-${REGISTERED_WITH_TTL.id}`);
+    expect(row.textContent).toContain("indefinite (NickServ)");
+    // The bug this locks out: a countdown ("in 47h") for a registered
+    // visitor. Assert NO relative-future string leaked into the row.
+    expect(row.textContent).not.toMatch(/in \d+[smhd]/);
   });
 
   it("renders relative future time when expires_at is set (sanity vs bucket D)", async () => {

@@ -236,22 +236,23 @@ const LiveBadge: Component<{ live: AdminVisitorNetwork["live_state"] }> = (props
   );
 };
 
-// expires_at presentation. `expires_at === null` means the visitor
-// committed a NickServ password (server-side `commit_password/2`
-// observed +r MODE on the nick and atomically cleared the column —
-// V7 semantics in `visitor.ex` moduledoc). NickServ-identified
-// visitors persist forever, so the indefinite-expiration display
-// gets a parenthetical "(NickServ)" so the operator can tell
-// "indefinite because identified" from "indefinite because of a bug"
-// at a glance — Bucket D / pre-fix the bare "indefinite" string left
-// the WHY invisible.
-//
-// Server-side `identified === is_nil(expires_at)` (admin_wire.ex:84)
-// — strictly redundant with the null check, so cic keys off
-// `expires_at === null` only and the identified field is not
-// consumed.
+// expires_at presentation. #211 phase 7 — "registered/permanent" is
+// DERIVED from the credentials, NOT `is_nil(expires_at)`. The server's
+// `identified` field (admin_wire.ex:81) is
+// `Enum.any?(per_network, fn {cred, _} -> cred.password_encrypted != nil end)`
+// — a visitor who committed a NickServ password on ANY network. Phase 7
+// STOPPED clearing `expires_at` on commit_password/3 (DESIGN_NOTES
+// 2026-07-12), so a registered visitor now carries an anon-shaped
+// sliding `expires_at` AND `identified: true`. Keying the display off
+// `expires_at === null` would tell the operator a registered visitor is
+// counting down to reaping (it isn't — the Reaper excludes registered
+// via the derived NOT-IN subquery). So trust `v.identified` first; the
+// legacy `expires_at IS NULL` case only fires for pre-phase-7 permanent
+// rows. The "(NickServ)" parenthetical is the Bucket-D honesty cue:
+// "indefinite because identified" vs "indefinite because of a bug".
 function renderExpires(v: AdminVisitor): string {
-  if (v.expires_at === null) return "indefinite (NickServ)";
+  if (v.identified) return "indefinite (NickServ)";
+  if (v.expires_at === null) return "indefinite (legacy)";
   const diffMs = new Date(v.expires_at).getTime() - Date.now();
   if (diffMs <= 0) return "expired";
   return formatRelativeFuture(diffMs);

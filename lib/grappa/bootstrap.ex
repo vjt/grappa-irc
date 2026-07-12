@@ -38,33 +38,37 @@ defmodule Grappa.Bootstrap do
   user) increment one of the typed failure counters and continue with
   the next session; one bad row does not block the others.
 
-  ## Hard-fail config invariants — refuse to boot on misconfig
+  ## Hard-fail config invariant — refuse to boot on misconfig
 
-  Two pre-spawn invariants are enforced by `raise RuntimeError` so a
+  One pre-spawn invariant is enforced by `raise RuntimeError` so a
   bad operator config halts the supervisor instead of silently
   degrading:
 
-    * **W7** — every active visitor's `network_slug` must resolve to a
-      `Networks.Network` row. A visitor pinned to a slug the operator
-      has dropped is an orphan; `Visitors.Login` + `Visitors.SessionPlan`
-      both trust the slug → network resolution at runtime.
     * **Servers-bound invariant** — every distinct network referenced
       by a `Networks.Credential` (mode-1 admin) OR an active `Visitor`
-      (visitor mode) must have at least one enabled server in
-      `network_servers`. Without it, `SessionPlan.resolve/1` returns
-      `{:error, :no_server}` per row at spawn time AND every subsequent
-      `POST /auth/login` / cicchetto reconnect for that network surfaces
-      as an opaque 500 (the controller's catch-all maps unknown reasons
-      to `:internal`). The bouncer is unusable for that network in
-      either direction; the only honest signal is to refuse to boot
-      and tell the operator how to recover (`mix grappa.add_server`).
+      (visitor mode, via its credentials) must have at least one enabled
+      server in `network_servers`. Without it, `SessionPlan.resolve/1`
+      returns `{:error, :no_server}` per row at spawn time AND every
+      subsequent `POST /auth/login` / cicchetto reconnect for that
+      network surfaces as an opaque 500 (the controller's catch-all maps
+      unknown reasons to `:internal`). The bouncer is unusable for that
+      network in either direction; the only honest signal is to refuse
+      to boot and tell the operator how to recover
+      (`mix grappa.add_server`).
 
-  Both invariants run BEFORE the spawn loops so a misconfig surfaces
-  on the very first boot attempt, not after the supervisor has been up
-  long enough for the first user to hit login. This is the SAME bias as
-  CLAUDE.md "errors are loud, not silent" + the W7 visitor-orphan
-  decision: "better to refuse to boot loudly than to drop scrollback
-  on a misconfiguration."
+  This runs BEFORE the spawn loops so a misconfig surfaces on the very
+  first boot attempt, not after the supervisor has been up long enough
+  for the first user to hit login. This is the SAME bias as CLAUDE.md
+  "errors are loud, not silent": "better to refuse to boot loudly than
+  to drop scrollback on a misconfiguration."
+
+  (#211 phase 7 — the former **W7 visitor-orphan invariant**
+  `validate_visitor_networks!/1` is RETIRED. It required every active
+  visitor's `network_slug` to resolve to a `Networks.Network`; that
+  scalar column is dropped, per-network identity now lives on
+  `network_credentials`, and the credential's `network_id` FK is
+  `ON DELETE RESTRICT` — an orphaned visitor network is structurally
+  impossible, so there is nothing left to validate at boot.)
 
   Per-row best-effort failure modes (below) handle conditions that are
   legitimately transient or per-row (cap exceeded, upstream connect

@@ -352,14 +352,13 @@ defmodule Grappa.Visitors.Login do
   # discriminator AND the password gate read the visitor's
   # `(visitor_id, network_id)` **Credential** secret — the phase-3
   # read-of-record for session identity, now also the read-of-record for
-  # AUTH — NOT the `visitors.password_encrypted` scalar (phase 7 drops the
-  # scalar; reading the Credential here makes that a pure column-drop, not
-  # an auth-logic change). `Visitors.resolve_credential/2` is the
-  # self-healing reader (mirrors `Visitors.SessionPlan`): a drifted
+  # AUTH — NOT a `visitors.password_encrypted` scalar (#211 phase 7 DROPPED
+  # that scalar; the Credential is the sole store). `Visitors.resolve_credential/2`
+  # is the self-healing reader (mirrors `Visitors.SessionPlan`): a drifted
   # credential is rebuilt from the visitor row before the compare, so the
-  # compared bytes are the visitor's current secret. Behavior-neutral today
-  # — phase-3 dual-write keeps `visitor.password_encrypted ==
-  # credential.password_encrypted`.
+  # compared bytes are the visitor's current secret. The per-network
+  # Credential is the single source of truth — there is no scalar left to
+  # keep in sync (the phase-3 dual-write is retired with the column).
   defp dispatch(%Visitor{} = visitor, input, network, timeouts) do
     case Visitors.resolve_credential(visitor, network.id) do
       {:ok, %Credential{password_encrypted: pwd}} when is_binary(pwd) ->

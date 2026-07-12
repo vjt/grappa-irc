@@ -12,15 +12,16 @@ defmodule GrappaWeb.NickController do
   the visitor branch now accepts BOTH branches and dispatches through
   per-subject infrastructure.
 
-  Visitor branch carries one extra step: a `(target_nick, network_slug)`
+  Visitor branch carries one extra step: a `(target_nick, network_id)`
   pre-check via `Visitors.nick_in_use?/3` BEFORE the upstream NICK
-  frame is sent. If another visitor row already holds the target nick
+  frame is sent. If another visitor already holds the target nick
   on the same network, the controller returns 409 `nick_in_use` and
   no NICK frame reaches upstream. The check is fast-path; the
-  `(nick, network_slug)` UNIQUE on `visitors` is the second line of
-  defense that catches the near-zero-probability concurrent-rename
-  race at the EventRouter persist site (logged + dropped per
-  `Visitors.update_nick/2`).
+  credential-side folded-nick UNIQUE
+  (`network_credentials_visitor_folded_nick_network_id_index`, keyed on
+  `(fold(nick), network_id)`) is the second line of defense that catches
+  the near-zero-probability concurrent-rename race at the EventRouter
+  persist site (logged + dropped per `Visitors.update_nick/3`).
 
   Once the upstream confirms by echoing `:<old> NICK <new>`,
   `Grappa.Session.EventRouter` emits a `{:visitor_nick_changed, new}`
@@ -31,9 +32,11 @@ defmodule GrappaWeb.NickController do
   operator-driven.
 
   Iso boundary: `Plugs.ResolveNetwork` collapses unknown-slug /
-  not-your-network to 404 BEFORE this action runs (visitor branch
-  asserts `network.slug == visitor.network_slug` per W11). The
-  `:no_session` tag from `Session.send_nick/3` collapses to the same
+  not-your-network to 404 BEFORE this action runs (both subjects: the
+  plug does a subject-scoped credential-presence check, so a caller with
+  no credential on the network 404s — #211 phase 7, the retired W11
+  `visitor.network_slug` assertion is gone with that dropped column).
+  The `:no_session` tag from `Session.send_nick/3` collapses to the same
   404 wire body via `FallbackController` (S14 oracle close).
   `:invalid_line` (CRLF/NUL byte) collapses to 400 — same envelope
   as for user subjects.

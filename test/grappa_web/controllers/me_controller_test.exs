@@ -2,10 +2,13 @@ defmodule GrappaWeb.MeControllerTest do
   @moduledoc """
   `GET /me` returns the authenticated subject's public profile as a
   discriminated union — `{kind: "user", id, name, inserted_at}` for
-  user sessions, `{kind: "visitor", id, nick, network_slug, expires_at}`
-  for visitor sessions (Task 30 — mirrors `AuthJSON.subject_wire` +
-  per-kind timestamp). The route lives behind the `:authn` pipeline so
-  the authentication failure modes (no Bearer, revoked, expired) all
+  user sessions, `{kind: "visitor", id, expires_at, registered}`
+  for visitor sessions (#211 phase 7 — the visitor SUBJECT wire dropped
+  `nick`/`network_slug`: a multi-network visitor has no ONE identity-wide
+  nick, so per-network identity lives on the `GET /networks` rows, and
+  `registered` is DERIVED from the credentials). Mirrors
+  `AuthJSON.subject_wire`. The route lives behind the `:authn` pipeline
+  so the authentication failure modes (no Bearer, revoked, expired) all
   collapse to a uniform 401 here.
 
   `async: true` — sandbox per test, no shared state.
