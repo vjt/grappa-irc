@@ -199,8 +199,22 @@ services:
         # visitor on the shared IP would 503 `too_many_sessions`,
         # regressing unrelated specs. Specs that need a tight cap set it
         # explicitly and restore to 100 (issue171 spec, u-4).
-        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra", visitor_enabled: true, max_concurrent_visitor_sessions: 100, max_per_ip: 100})'
+        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra", visitor_enabled: true, visitor_autoconnect: true, max_concurrent_visitor_sessions: 100, max_per_ip: 100})'
         mix grappa.add_server --network azzurra --server bahamut-test:6667 --no-tls
+        # #211 phase 6 — a SECOND visitor_enabled + visitor_autoconnect
+        # network (the "two parallel azzurra testnets" matrix). Points at
+        # the SAME bahamut-test leaf (no second ircd needed — the second
+        # NETWORK row is what the multi-network visitor autoconnect + per-
+        # network identity matrix exercises). A fresh visitor login
+        # auto-connects BOTH azzurra + azzurra2.
+        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra2", visitor_enabled: true, visitor_autoconnect: true, max_concurrent_visitor_sessions: 100, max_per_ip: 100})'
+        mix grappa.add_server --network azzurra2 --server bahamut-test:6667 --no-tls
+        # #211 phase 6 — a THIRD network: visitor_enabled but NOT
+        # autoconnect (the AVAILABLE tier). A visitor does NOT auto-connect
+        # it at login; the home page offers it for on-demand one-tap
+        # connect (the anon-accretion matrix case).
+        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra3", visitor_enabled: true, visitor_autoconnect: false, max_concurrent_visitor_sessions: 100, max_per_ip: 100})'
+        mix grappa.add_server --network azzurra3 --server bahamut-test:6667 --no-tls
     networks:
       grappa-e2e: {}
 

@@ -79,15 +79,32 @@ export async function mintVisitor(nick: string): Promise<MintedVisitor> {
   }
   const body = (await response.json()) as {
     token: string;
-    subject: { kind: "visitor"; id: string; nick: string; network_slug: string };
+    subject: { kind: "visitor"; id: string; nick: string };
   };
   if (body.subject.kind !== "visitor") {
     throw new Error(`grappaApi.mintVisitor: expected visitor subject, got ${body.subject.kind}`);
   }
+  // #211 phase 6 — the singular subject `network_slug` is off the login
+  // wire (visitors are multi-network). Resolve the anchor network from
+  // the list-shaped GET /networks (the network login synchronously
+  // connected) so specs still have a slug to drive channel selection.
+  const netsRes = await fetch(`${GRAPPA_BASE_URL}/networks`, {
+    headers: { authorization: `Bearer ${body.token}` },
+  });
+  if (!netsRes.ok) {
+    throw new Error(
+      `grappaApi.mintVisitor: GET /networks → ${netsRes.status} ${await netsRes.text()}`,
+    );
+  }
+  const nets = (await netsRes.json()) as Array<{ slug: string }>;
+  const anchor = nets[0];
+  if (!anchor) {
+    throw new Error(`grappaApi.mintVisitor: ${nick} has no attached network after login`);
+  }
   return {
     id: body.subject.id,
     nick: body.subject.nick,
-    network_slug: body.subject.network_slug,
+    network_slug: anchor.slug,
     token: body.token,
   };
 }
