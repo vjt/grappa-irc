@@ -343,6 +343,57 @@ describe("DirectoryPane", () => {
     });
   });
 
+  // #220 — a /list row's topic can carry a link. Tapping the LINK just
+  // browses (opens the URL); it must NOT join/open the channel. Tapping
+  // the rest of the row still activates it. The link anchor uses the
+  // "link-wins" policy → stopPropagation keeps the row's onActivate from
+  // firing when the anchor is clicked.
+  describe("link in a topic does not join the row (#220)", () => {
+    const LINKED: DirectoryPage = {
+      ...FRESH_PAGE,
+      entries: [
+        { name: "#linky", topic: "docs at https://example.com/x", user_count: 1, featured: false },
+      ],
+      total: 1,
+    };
+
+    it("clicking a link inside the row topic does NOT postJoin (browses, no join)", async () => {
+      directoryPageMock.mockReturnValue(LINKED);
+      windowStateByChannelMock.mockReturnValue({});
+      const { container } = render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      const link = container.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link).not.toBeNull();
+      expect(link.href).toBe("https://example.com/x");
+
+      // Real bubbling click, as the browser dispatches it. If the anchor
+      // failed to stopPropagation, the click would reach the row button's
+      // onActivate → postJoin.
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+      link.dispatchEvent(ev);
+
+      await new Promise((r) => setTimeout(r, 0));
+      expect(postJoinMock).not.toHaveBeenCalled();
+      expect(setSelectedChannelMock).not.toHaveBeenCalled();
+      // The link is free to navigate — nothing prevents its default.
+      expect(ev.defaultPrevented).toBe(false);
+    });
+
+    it("clicking the row body (not the link) still joins", async () => {
+      directoryPageMock.mockReturnValue(LINKED);
+      windowStateByChannelMock.mockReturnValue({});
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      // The channel-name span is part of the row button, away from the link.
+      const name = screen.getByText("#linky");
+      fireEvent.click(name);
+
+      await waitFor(() => {
+        expect(postJoinMock).toHaveBeenCalledWith("test-token", SLUG, "#linky", null);
+      });
+    });
+  });
+
   describe("refresh button", () => {
     it("calls triggerRefresh(slug) on click", async () => {
       directoryPageMock.mockReturnValue(FRESH_PAGE);

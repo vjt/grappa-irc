@@ -165,6 +165,57 @@ describe("TopicBar", () => {
     });
   });
 
+  // #220 — the topic bar ALWAYS opens the modal first; a tap on the bar
+  // NEVER navigates a link directly. The strip's MircBody uses the
+  // "surface-wins" policy: an anchor click suppresses navigation and
+  // bubbles to the strip's onClick (openModal). Links are then handled
+  // INSIDE the modal, whose MircBody renders at the default "navigate".
+  describe("link in topic bar defers to modal (#220)", () => {
+    const LINKED = {
+      "freenode #italia": {
+        text: "docs at https://example.com/x",
+        set_by: "vjt",
+        set_at: null,
+      },
+    };
+
+    it("clicking a link in the topic strip opens the modal and does NOT navigate", () => {
+      mockTopicByChannel.mockReturnValue(LINKED);
+      const { container } = render(() => <TopicBar {...baseProps()} />);
+
+      // The strip is the topic-bar-topic button; the anchor is inside it.
+      const strip = container.querySelector(".topic-bar-topic") as HTMLElement;
+      const link = strip.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link).not.toBeNull();
+
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+      link.dispatchEvent(ev);
+
+      // The bar suppresses the link's own navigation …
+      expect(ev.defaultPrevented).toBe(true);
+      // … and the surface action wins: the modal opens.
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+
+    it("the modal renders the link at the default navigate policy (link is clickable inside)", () => {
+      mockTopicByChannel.mockReturnValue(LINKED);
+      render(() => <TopicBar {...baseProps()} />);
+
+      // Open the modal by clicking the strip text.
+      fireEvent.click(screen.getByText(/docs at/i));
+      const dialog = screen.getByRole("dialog");
+      const modalLink = dialog.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(modalLink).not.toBeNull();
+      expect(modalLink.href).toBe("https://example.com/x");
+
+      // Inside the modal, the link navigates normally (default policy) —
+      // nothing prevents its default.
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+      modalLink.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+    });
+  });
+
   describe("mode-string display (C3.1)", () => {
     it("shows compact mode string when modes are cached", () => {
       mockModesByChannel.mockReturnValue({

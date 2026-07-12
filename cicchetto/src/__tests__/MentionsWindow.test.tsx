@@ -240,4 +240,38 @@ describe("MentionsWindow", () => {
     fireEvent.click(screen.getByTestId("mentions-close"));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  // #220 — a mention body is another tappable surface wrapping MircBody:
+  // tapping a LINK in the body must just browse (open the URL), NOT jump
+  // to the source message (onMentionClicked). Same "link-wins" policy as
+  // the /list directory row. Without it, a mention like "see
+  // https://x/y" double-fires: browse AND jump.
+  it("clicking a link inside a mention body does NOT invoke onMentionClicked (#220)", () => {
+    const onClicked = vi.fn<(args: MentionClickedArgs) => void>();
+    const bundle = makeBundle({
+      messages: [{ ...MSG0, body: "docs at https://example.com/x here" }],
+    });
+
+    const { container } = render(() => (
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={onClicked}
+        onClose={vi.fn()}
+      />
+    ));
+
+    const link = container.querySelector(".scrollback-link") as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    expect(link.href).toBe("https://example.com/x");
+
+    // Real bubbling click on the anchor. If it failed to stopPropagation,
+    // it would reach the row button's onMentionClicked.
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    link.dispatchEvent(ev);
+
+    expect(onClicked).not.toHaveBeenCalled();
+    // The link is free to navigate — nothing prevents its default.
+    expect(ev.defaultPrevented).toBe(false);
+  });
 });

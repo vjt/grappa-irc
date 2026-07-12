@@ -121,7 +121,10 @@ const DirectoryRow: Component<DirectoryRowProps> = (props) => {
         <Show when={props.entry.topic}>
           {(topic) => (
             <span class="directory-row-topic muted">
-              <MircBody body={topic()} />
+              {/* #220 — a topic link browses; it must NOT join the row.
+                  "link-wins" makes the anchor stopPropagation so this
+                  row button's onActivate never fires on a link tap. */}
+              <MircBody body={topic()} linkPolicy="link-wins" />
             </span>
           )}
         </Show>

@@ -177,7 +177,13 @@ const MentionsWindow: Component<Props> = (props) => {
                         &gt;
                       </span>
                       <span class="mentions-row-body">
-                        <MircBody body={row.body ?? ""} />
+                        {/* #220 — a link in the body just browses; it must
+                            NOT jump to the source (the row's
+                            onMentionClicked). Same "link-wins" policy as
+                            the /list directory row: the anchor
+                            stopPropagation so this row button never fires
+                            on a link tap. */}
+                        <MircBody body={row.body ?? ""} linkPolicy="link-wins" />
                       </span>
                     </button>
                   );

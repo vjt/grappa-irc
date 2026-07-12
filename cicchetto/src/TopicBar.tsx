@@ -109,7 +109,11 @@ const TopicBar: Component<Props> = (props) => {
         title={topicTitle()}
       >
         <Show when={topicText() !== null} fallback={"(no topic set)"}>
-          <MircBody body={topicText() ?? ""} />
+          {/* #220 — the bar ALWAYS opens the modal first; a tap NEVER
+              navigates a link directly. "surface-wins" suppresses the
+              anchor's navigation and lets the click bubble to openModal.
+              Links are handled inside the modal (default "navigate"). */}
+          <MircBody body={topicText() ?? ""} linkPolicy="surface-wins" />
         </Show>
       </button>
       {/* Compact mode string — only rendered when modes are non-empty */}

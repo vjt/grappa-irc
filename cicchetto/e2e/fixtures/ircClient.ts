@@ -25,6 +25,7 @@ const PART_TIMEOUT_MS = 5_000;
 const NICK_TIMEOUT_MS = 5_000;
 const MODE_TIMEOUT_MS = 5_000;
 const KICK_TIMEOUT_MS = 5_000;
+const TOPIC_TIMEOUT_MS = 5_000;
 const OPER_TIMEOUT_MS = 5_000;
 const NICKSERV_TIMEOUT_MS = 5_000;
 const AWAY_TIMEOUT_MS = 5_000;
@@ -230,6 +231,29 @@ export class IrcPeer {
     );
     this.client.mode(channel, rawModes, extraArg);
     await modeEcho;
+  }
+
+  // Set a channel topic. Resolves once upstream echoes the `topic`
+  // event for the target channel carrying the new text. The peer must
+  // be able to set the topic — on a freshly-created channel the creator
+  // is chanop (+o), which satisfies the default `+t` (topic-lock) mode.
+  // Used by #220 to seed a URL-bearing LIST topic on an unjoined channel
+  // so the /list row's link routing can be exercised.
+  //
+  // NB: pass the raw text — `client.raw(array)` adds the IRC
+  // trailing-param `:` itself; a manual leading colon would be stored
+  // literally (the double-colon `TOPIC #c ::text` trap).
+  async topic(channel: string, text: string): Promise<void> {
+    const topicSet = onceMatching(
+      this.client,
+      "topic",
+      (event: { channel: string; topic: string }) =>
+        event.channel === channel && event.topic === text,
+      TOPIC_TIMEOUT_MS,
+      `topic ${channel}`,
+    );
+    this.client.raw(["TOPIC", channel, text]);
+    await topicSet;
   }
 
   // KICK a target nick from a channel with a reason. Resolves once

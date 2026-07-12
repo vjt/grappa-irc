@@ -19145,3 +19145,88 @@ unrecognised → ⚪ fallback), added cases in `AdminVisitorsTab.test.tsx`
 state label map), and `admin-visitors-layout.spec.ts` (browser-truth: no list
 bullet, emoji painted, `·` separator, delete-button box contained — RED-provable
 by stashing the CSS).
+
+## 2026-07-13 — #220: per-surface link-vs-surface event routing (cicchetto)
+
+**The bug (P0).** A linkified URL inside a tappable surface double-fired: a
+single tap both performed the surface action AND browsed the link. cic's shared
+mIRC renderer `MircBody` (`cicchetto/src/MircText.tsx`) emits URLs as real
+`<a href target="_blank">` anchors. THREE surfaces wrap `MircBody` inside a
+`<button>`: the `/list` directory row (`DirectoryPane.tsx`, button `onClick`
+joins/opens the channel), the topic bar strip (`TopicBar.tsx`, button `onClick`
+opens the topic modal), and the mentions-while-away row (`MentionsWindow.tsx`,
+button `onClick` jumps to the source message). Nothing called `stopPropagation`,
+so a tap on the anchor navigated AND bubbled to the wrapping button —
+join-on-mistap (the P0 harm) on `/list`, navigate-away-instead-of-modal on the
+bar, and browse-plus-jump on a mention. (The issue named the first two; the
+mentions row is the same class — found in code review, fixed here per "fix root
+causes, not examples".)
+
+**The two policies** (this is the crux — not one shared flag):
+- **`/list` rows + mentions rows → link wins.** Tapping a LINK just browses; it
+  must NOT fire the surface action (join / jump). Tapping the rest of the row
+  still fires it.
+- **Topic bar → surface wins.** A tap ALWAYS opens the topic modal first; the
+  bar NEVER navigates a link directly. Links are handled INSIDE the modal.
+
+**The fix — reuse the verb, not the noun (CLAUDE.md design discipline).** The
+MECHANISM (anchor-level event routing) is shared; the POLICY is per-surface. So
+a single closed-set knob on the shared renderer, NOT a copy-paste of two local
+handlers and NOT a boolean (three states, closed-set-atom precedent per
+`timeFormat.ts` / `connectionStateEmoji.ts`):
+
+```
+export type LinkPolicy = "navigate" | "link-wins" | "surface-wins";
+MircBody: { body: string; linkPolicy?: LinkPolicy }   // default "navigate"
+```
+
+- `"navigate"` (default): the anchor navigates, the click is free to bubble.
+  Pre-#220 behavior — the genuine config default, correct for all 20+
+  non-tappable-surface `MircBody` sites (scrollback bodies, whois/who cards,
+  server-reply modal, …). Those sites stay a bare anchor with NO click handler
+  when there's no media/escape work — zero behavior change.
+- `"link-wins"` (DirectoryPane row topic + MentionsWindow row body): the anchor
+  `stopPropagation()`s after its media/escape side-effects so the wrapping row
+  handler (`onActivate` / `onMentionClicked`) never fires; the link still
+  browses. Runs regardless of modifier clicks (cmd-click opens a tab, still no
+  surface action).
+- `"surface-wins"` (TopicBar strip only — NOT the modal body): the anchor
+  `preventDefault()`s its own navigation and lets the click bubble to the bar's
+  `openModal`. The modal's own `MircBody` renders at the default `"navigate"`,
+  so the link is a working anchor once the modal is open.
+
+**How cic's linkified anchors actually dispatch (the #213/#219 gotcha, RE-checked
+here).** These are `click` events, and Solid's event delegation still calls each
+element's handler while walking the composed path, honoring
+`e.cancelBubble`/`stopPropagation` — so `stopPropagation()` inside the delegated
+anchor handler DOES stop the click before it reaches the wrapping button, and
+this is observable in jsdom via a bubbling dispatch (the media-link suite already
+relied on this). This is UNLIKE the #213/#219 lesson, which was about TOUCH
+gestures: Solid routes `touchmove` to a PASSIVE document listener, so JSX
+`onTouchMove` `preventDefault` no-ops and needs element-level `{passive:false}`
+binding. Click routing has no such passive trap — no element-level binding
+needed here. That's also why the e2e is chromium-only (no `@webkit`): click
+propagation/preventDefault behave identically across engines; only touch
+dispatch differs.
+
+**Tests.** `MircText.test.tsx` pins the three-policy mechanism directly (bubbling
+dispatch on the anchor + a spy on a wrapping `<button>`). Surface-wiring cases in
+`DirectoryPane.test.tsx` (link tap → no `postJoin`; row-body tap → `postJoin`)
+and `TopicBar.test.tsx` (strip link tap → modal opens + `defaultPrevented`;
+modal link stays default-navigate). `issue220-link-double-fire.spec.ts` is the
+authoritative real-tap e2e: `/list` link tap opens a (stubbed) popup but does NOT
+add the channel to the sidebar, row-body tap joins; topic-bar link tap opens the
+modal with NO popup, modal link is a working `target=_blank` anchor. RED-proven
+by reverting the two surface wirings (keeping the `MircText` type so the bundle
+still compiles) — both e2e then fail for the right reasons (list joined; bar
+navigated).
+
+**Fixture note.** Added `IrcPeer.topic(channel, text)` (raw `TOPIC` + await the
+`topic` echo). Pass the RAW text — `client.raw([...])` adds the IRC
+trailing-param `:` itself; a manual leading colon lands literally as the
+double-colon `TOPIC #c ::text` trap (found via `E2E_PEER_DEBUG=1` wire trace).
+The channel creator auto-ops (`+o`), which beats the default `+t` topic-lock —
+no `/oper` bypass needed for a freshly-created channel.
+
+Client-only (cic bundle + e2e fixture) — no wire, migration, server, or config
+change. Rides the hot `--cic` bundle.
