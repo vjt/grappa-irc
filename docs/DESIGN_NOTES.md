@@ -19604,3 +19604,90 @@ unit test renders the component directly, unaffected by the ScrollbackPane gate)
 
 **Hot vs COLD.** HOT — pure-client render change, zero lib/ touched, no wire
 type, no Session.Server state-shape change. Rides `--cic`.
+
+## 2026-07-13 — #222: hide join/part/quit/nick-change on large channels by default, per-channel opt-in to re-show (cicchetto)
+
+**The ask (vjt, channel feature request).** On large channels the
+join/part/quit (and nick-change) signalling is pure noise and drowns real
+conversation. cic suppresses those rows **client-side** by default once a
+channel is "large"; a **per-channel toggle** re-shows them for that channel;
+the choice **persists across reconnect/session**. grappa STILL delivers the
+events over the wire — cic decides whether to RENDER. The author flagged the
+size-default × manual-override precedence as "going to be tough."
+
+**Client-only, no wire/server change.** grappa already sends J/P/Q/NICK and cic
+already rendered them; this is a render-time FILTER + a per-channel pref store.
+Mirrors the #217 timeFormat precedent + `feedback_no_localized_strings_server_side`
+(cic owns UI/display prefs client-side — no server userSettings, no wire change).
+
+**The four defaults (all resolvable from the issue text — no product fork).**
+
+1. **"Large" = member-count cutoff, `LARGE_CHANNEL_THRESHOLD = 50`.** ONE named
+   typed constant (`lib/presenceFilter.ts`), one-line tune — not a product fork.
+   50+ member channels drown in J/P/Q; smaller channels keep them.
+2. **Toggle scope = per-channel CLIENT preference** (this user, this channel),
+   localStorage — NOT a server/shared channel-level setting.
+3. **NICK changes ARE in the suppression set.** Same noise class as J/P/Q.
+4. **Persistence = localStorage** keyed by `channelKey` (folds case, so `#Chan`
+   and `#chan` share one pref — the channel-fold invariant).
+
+**The precedence rule (the "tough" part) is a TRI-STATE, not a boolean.** The
+per-channel pref is a closed set `"show" | "hide" | unset` (key absent). A bare
+boolean can't express "no explicit choice — follow the live size default", and
+would lose the auto-hide-on-growth behaviour. `resolvePresenceVisible(pref,
+memberCount)`: `show → true`, `hide → false`, `unset → memberCount <
+THRESHOLD`. Explicit choice WINS; unset follows the live member count — a
+channel that grows past 50 auto-hides, one below shows, and any explicit toggle
+pins it regardless of size. This is the whole feature.
+
+**Render-layer filter, NOT a store drop.** The filter lives in ScrollbackPane's
+`rows()` memo (`~:947`) — suppression is purely VISUAL. The message store
+(`scrollback.ts`) stays intact so unread-counting, the read-cursor divider, and
+own-JOIN auto-focus (`shouldAutoFocusOnOwnJoin`, which reads `messages()` NOT
+`rows()`) keep working. Reading BOTH the pref signal (`channelPresenceVisible`)
+AND `membersByChannel()` count INSIDE the memo makes it reactive to the toggle
+AND to membership crossing the threshold. Default path (small channel, unset
+pref) leaves `msgs === allMsgs` untouched — existing behaviour + tests unchanged.
+
+**Narrow suppression set — NOT `PRESENCE_KINDS`.** `SUPPRESSED_PRESENCE_KINDS =
+{join, part, quit, nick_change}`. ScrollbackPane's existing `PRESENCE_KINDS`
+ALSO holds `mode/topic/kick/server_event` — those are NOT noise and MUST stay
+visible; reusing it would be a bug. The new narrow set is defined in
+`lib/presenceFilter.ts` and is the single source of truth for "what counts as
+J/P/Q noise".
+
+**Own presence suppressed uniformly.** When hidden, ALL four kinds go —
+including the operator's OWN join/part. Simpler + matches "signalling is
+noise", and the read-cursor divider already excludes own-presence from unread
+counts (`isOwnPresenceEvent`) so nothing downstream breaks. Consequence
+surfaced in e2e: with presence hidden, the own-nick JOIN line the `selectChannel`
+fixture normally gates on is ALSO hidden, so the post-reload re-focus uses
+`awaitWsReady: false` + the persisted PRIVMSG row as the scrollback-ready
+signal instead.
+
+**UI placement.** A `data-testid="presence-toggle"` `<button>` (👁 shown / 🙈
+hidden) in **TopicBar** — the channel-scoped surface that already hosts the
+channel name, topic, mode-string, and members hamburger. It flips the CURRENTLY
+EFFECTIVE visibility and always writes an EXPLICIT pref, so one tap pins the
+channel regardless of member count. Visible on both desktop and mobile (the
+noise it hides matters most on small viewports); `.presence-hidden` gets the
+accent colour so a filtered channel is visible at a glance. A `<button>` not a
+`<span>` — a static element with onClick trips biome's
+`noStaticElementInteractions` (#220 lesson) and loses keyboard access.
+
+**Tests.** vitest `src/__tests__/presenceFilter.test.ts` (17 cases) is the
+authoritative size-default + precedence proof: boundary (49 shown / 50 hidden
+with unset pref), precedence truth table (pin wins over size BOTH ways),
+corrupt-JSON tolerance, `channelKey` case-fold, module-reload re-seed. The
+size-default MATH is NOT exercised in e2e — 50 real peers from one IP risks
+bahamut flood/autokill (`feedback_e2e_multinet_live_needs_distinct_nicks`) and
+there is no window-exposed member-count seam in the e2e harness. e2e
+`issue222-presence-filter.spec.ts` owns the interactive path: one real peer
+joins+parts #bofh (small channel → shown by default), toggle ON → J/P vanish
+while the PRIVMSG row REMAINS (narrow set), reload → still hidden (persistence),
+toggle OFF → rows reappear. RED proof: pre-filter code has no toggle + no
+filter, so the toggle-hide step fails. vitest baseline 2581 → **2598**.
+
+**Hot vs COLD.** HOT — pure-client render change, zero lib/ touched, no wire
+type, no Session.Server state-shape change. Rides `--cic`.
+
