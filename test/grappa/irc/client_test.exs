@@ -357,6 +357,23 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_umode(client, "vjt", "+i\r\nQUIT")
     end
 
+    test "send_umode_query/2 emits bare MODE nick query framing (#229)" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_umode_query(client, "vjt")
+
+      assert {:ok, "MODE vjt\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE vjt\r\n"), 1_000)
+    end
+
+    test "send_umode_query/2 rejects malformed nick with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_umode_query(client, "bad nick")
+    end
+
     test "send_names/2 emits NAMES #chan framing" do
       {server, port} = start_server()
       client = start_client(port)

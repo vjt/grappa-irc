@@ -683,6 +683,27 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
+  Sends `MODE <nick>\\r\\n` — the bare user-mode QUERY form (no sign, no
+  mode letters). Elicits 221 RPL_UMODEIS from the upstream, which
+  `Grappa.Session.Server` folds into its per-session `umodes` set and
+  broadcasts to cic. ircds do NOT report the user's own umode set
+  unsolicited at registration (only mode CHANGES echo back), so
+  `Session.Server` issues this query in the 001 RPL_WELCOME arm (#229)
+  to make umodes visible from the moment of connect.
+
+  Validates the nick syntax with `{:error, :invalid_line}` on rejection.
+  Umode twin of `send_channel_modes/2` (bare `MODE #chan`) — the
+  per-user analogue of #216's channel-mode-on-join query.
+  """
+  @spec send_umode_query(pid(), String.t()) :: send_result()
+  def send_umode_query(client, nick) do
+    if Identifier.valid_nick?(nick),
+      do: send_line(client, "MODE #{nick}\r\n"),
+      else: reject_invalid_line(:umode_query)
+  end
+
+  @doc """
+
   Sends `TOPIC <channel> :\\r\\n` — empty trailing parameter clears
   the channel topic per RFC 2812 §3.2.4 (irssi `/topic -delete`
   convention). Validates channel syntax with `{:error, :invalid_line}`
@@ -771,6 +792,7 @@ defmodule Grappa.IRC.Client do
            | :invite
            | :banlist
            | :umode
+           | :umode_query
            | :topic_clear
            | :whois
            | :whowas
