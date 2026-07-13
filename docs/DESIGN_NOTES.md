@@ -19549,3 +19549,58 @@ tap entry) rides the hot `--cic` deploy.
 
 **Scope.** The "all modals close on ESC" line in the #229 issue body was split
 out to its own issue #232 (a cross-cutting a11y invariant) — NOT done here.
+
+## 2026-07-13 — #231: /lusers card routes to the CURRENT window, not always $server
+
+**Bug.** `/lusers` surfaced its network-stats card ONLY in the `$server`
+window, regardless of where the operator issued it. Every other lookup
+affordance (WHOIS / WHOWAS) mounts in the current window; LUSERS was the odd
+one out — issue it from a channel and nothing appeared until you switched to
+`$server`.
+
+**Root cause (one gate).** `LusersCard` is a pinned overlay card
+(`.scrollback-overlay`), same family as `WhoisCard` / `WhowasCard`, NOT a true
+modal. Its siblings mount UNCONDITIONALLY and self-null when no bundle exists
+(`<Show when={snapshot()} keyed>` inside the card). LUSERS alone was wrapped in
+`<Show when={props.kind === "server"}>` in `ScrollbackPane.tsx` — so the card
+only rendered when the ACTIVE window happened to be the `$server` window.
+
+**Fix (pure-client, one edit).** Delete the `kind === "server"` Show-wrapper;
+mount `<LusersCard networkSlug={...}/>` bare, mirroring WhoisCard/WhowasCard.
+Only ONE `ScrollbackPane` is mounted at a time (the active window — Shell.tsx's
+mobile/desktop branches are viewport-gated, never both), and the store keys by
+networkSlug (last-write-wins). So an ungated card renders in whatever single
+pane is active = the current window. This is exactly the WhoisCard mechanism.
+No server change, no new wire event → rides the `--cic` HOT deploy.
+
+**Subtleties honored (NOT bugs, documented so they're not surprises):**
+
+1. **Welcome-time auto-emit renders in the active window.** The server
+   auto-emits LUSERS on connect-welcome. With the gate removed the connect-time
+   snapshot renders in whatever window is active at connect (last-write-wins) —
+   acceptable and matches the "current window" ask. A future "welcome-emit stays
+   quiet / only manual /lusers shows a card" would be a SEPARATE issue; not
+   scope-crept here.
+
+2. **network-scoped, not window-scoped.** The store keys by networkSlug, so the
+   SAME snapshot shows in EVERY scrollback window of that network (switch #a→#b
+   on the same net → card persists). This MIRRORS WhoisCard exactly
+   (network-scoped last-write-wins mounting in the active pane) — it IS the
+   established card pattern. The issue asked for "current window not ALWAYS
+   server"; ungating achieves that. Per-window keying would be a boundary change
+   + scope-creep (design-discipline #6) — not done.
+
+3. **Card only on kindHasScrollback windows.** ScrollbackPane mounts for
+   channel / query / server kinds; home / list / mentions render other panes
+   (no ScrollbackPane, no ComposeBox to issue /lusers from). Correct + no change.
+
+**Test.** The old `p0d-lusers-card-server-window.spec.ts` asserted the buggy
+server-window-only contract — renamed to `issue231-lusers-current-window.spec.ts`
+and rewritten to focus a CHANNEL window (#bofh), issue `/lusers` from there, and
+assert the card paints in that channel pane's `.scrollback-overlay`. Verified
+RED against the still-gated code (card element not found in the channel window)
+then GREEN after the ungate. vitest baseline unchanged (2581 — the LusersCard
+unit test renders the component directly, unaffected by the ScrollbackPane gate).
+
+**Hot vs COLD.** HOT — pure-client render change, zero lib/ touched, no wire
+type, no Session.Server state-shape change. Rides `--cic`.

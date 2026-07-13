@@ -2110,12 +2110,14 @@ const ScrollbackPane: Component<Props> = (props) => {
         <Show when={props.kind === "query"}>
           <PeerAwayBanner networkSlug={props.networkSlug} peer={props.channelName} />
         </Show>
-        {/* P-0d — LUSERS card. Mount only on the $server window for the
-            network. Snapshot replaces last-write-wins on every /lusers
-            (manual or welcome-time auto-emit). */}
-        <Show when={props.kind === "server"}>
-          <LusersCard networkSlug={props.networkSlug} />
-        </Show>
+        {/* P-0d / #231 — LUSERS card. Mounts on every window kind (mirror
+            WhoisCard / WhowasCard); the card itself short-circuits to null
+            when no bundle is present. Only one ScrollbackPane is mounted at
+            a time, so this renders in the CURRENT window — issuing /lusers
+            from any scrollback window surfaces the card there, not always
+            $server. Snapshot replaces last-write-wins per network on every
+            /lusers (manual or welcome-time auto-emit). */}
+        <LusersCard networkSlug={props.networkSlug} />
       </div>
       <div
         ref={listRef}

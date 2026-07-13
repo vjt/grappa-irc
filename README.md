@@ -200,7 +200,7 @@ Typed in cicchetto's compose box, parsed client-side, dispatched to REST or IRC.
 | `/query <nick>` · `/q <nick>` | Open a query window without sending |
 | `/whois <nick>` · `/whowas <nick>` | WHOIS / WHOWAS; reply renders as an inline card |
 | `/who <#chan>` · `/names <#chan>` | WHO / NAMES; scrollback rows or a members refresh |
-| `/lusers` | Network-stats card pinned in `$server` |
+| `/lusers` | Network-stats card pinned in the current window |
 | `/op` `/deop` `/voice` `/devoice` `<nick>…` | Channel `MODE ±o` / `±v` (chunked per ISUPPORT `MODES=`) |
 | `/kick <nick> [reason]` | KICK on the active channel |
 | `/ban <nick-or-mask>` · `/unban <mask>` | `MODE +b` / `-b` (bare nick → mask via WHOIS cache) |

@@ -624,7 +624,7 @@ export function pushWho(networkId: number, channel: string): void {
 // the user-level channel; server emits the 7-numeric bundle which
 // EventRouter folds and 266 RPL_GLOBALUSERS flushes into a typed
 // :lusers_bundle wire event on Topic.user/1. cic dispatches in
-// userTopic.ts and renders the LusersCard in the $server window.
+// userTopic.ts and renders the LusersCard in the current window (#231).
 export function pushLusers(networkId: number): void {
   if (_userChannel === null) return;
   _userChannel.push("lusers", { network_id: networkId });

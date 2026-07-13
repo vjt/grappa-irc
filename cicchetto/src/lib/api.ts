@@ -956,7 +956,7 @@ export type WireUserEvent =
       // P-0d — LUSERS bundle ephemeral. Fires on connect-welcome AND
       // on operator-issued /lusers; cic last-write-wins replaces the
       // per-network snapshot in lusersBundle.ts and renders the
-      // LusersCard pinned at the top of the $server window.
+      // LusersCard pinned at the top of the current window (#231).
       kind: "lusers_bundle";
       network: string;
       total_users: number | null;

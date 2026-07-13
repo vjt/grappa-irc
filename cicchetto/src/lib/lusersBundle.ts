@@ -14,8 +14,8 @@ import { identityScopedStore } from "./identityScopedStore";
 // token rotation.
 //
 // One snapshot per network is enough — LUSERS is network state, not
-// per-channel state. The card renders pinned at the top of the
-// $server window scrollback.
+// per-channel state. The card renders pinned at the top of the current
+// scrollback window (mirrors WhoisCard/WhowasCard) — #231.
 
 export type LusersSnapshot = {
   total_users: number | null;

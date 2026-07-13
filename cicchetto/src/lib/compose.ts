@@ -719,7 +719,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         // P-0d — /lusers. Bare verb, no args. Pushes on user-level channel;
         // server emits the 7-numeric LUSERS bundle. cic dispatches the
         // typed `:lusers_bundle` wire event in userTopic.ts and renders
-        // the LusersCard pinned at the top of the $server window.
+        // the LusersCard pinned at the top of the current window (#231).
         case "lusers": {
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/lusers: network not found" };

@@ -4641,9 +4641,9 @@ html.resize-dragging * {
   color: var(--accent);
 }
 
-/* P-0d — LUSERS card. Pinned at the top of the $server window when a
-   snapshot exists. Visual mirrors `.whois-card` (border-left accent,
-   dim panel) — same family of structured single-entity cards. */
+/* P-0d — LUSERS card. Pinned at the top of the current window when a
+   snapshot exists (#231). Visual mirrors `.whois-card` (border-left
+   accent, dim panel) — same family of structured single-entity cards. */
 .lusers-card {
   margin: 0.25rem 0.5rem 0.5rem 0.5rem;
   padding: 0.5rem 0.75rem;

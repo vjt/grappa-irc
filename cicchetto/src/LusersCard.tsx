@@ -7,8 +7,10 @@ import { dismissLusersCard, lusersBundleByNetwork } from "./lib/lusersBundle";
 // integer fields only — cic owns the human-readable rendering per
 // `feedback_no_localized_strings_server_side`.
 //
-// Mount: pinned at the top of the $server window scrollback for
-// (networkSlug). Short-circuits to null when no snapshot exists.
+// Mount: pinned at the top of the CURRENT scrollback window (whichever
+// window kind is active — channel, query, or $server) for (networkSlug),
+// mirroring WhoisCard / WhowasCard. Short-circuits to null when no
+// snapshot exists (#231).
 //
 // Lifecycle: ephemeral, last-write-wins per network. Auto-emitted on
 // connect-welcome AND on operator-issued /lusers; the most recent
