@@ -204,6 +204,44 @@ defmodule Grappa.ReadCursorTest do
       assert %Cursor{last_read_message_id: ^m2_id} =
                ReadCursor.get({:user, user.id}, net.id, "#x")
     end
+
+    test "a NULL'd cursor (ON DELETE SET NULL purge) still advances on the next set (#233)" do
+      # `read_cursors.last_read_message_id` is `REFERENCES messages(id)
+      # ON DELETE SET NULL` — the user-facing archive-delete path
+      # (`Scrollback.delete_for_channel/3`) bulk-deletes messages and
+      # leaves the cursor row alive with `last_read_message_id = NULL`
+      # (the migration explicitly designs for recovery on the next set).
+      # The monotonic clamp MUST NOT strand that row: in Elixir term
+      # order a number sorts BEFORE any atom, so `message_id <= nil` is
+      # `true` for every id — a naive `<= current` guard would treat
+      # every future POST as a no-op and freeze the cursor at NULL
+      # forever (and hand the controller a nil id that crashes
+      # `broadcast_set/5`'s `is_integer` guard → 500). The guard is
+      # `is_integer(current) and message_id <= current`, so a NULL cursor
+      # falls through to the update clause and recovers.
+      user = user_fixture()
+      net = network_fixture()
+      m1 = insert_message(%{user_id: user.id}, net.id, "#x", 1)
+
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "#x", m1.id)
+
+      # Purge the channel's messages → FK nilifies the cursor row.
+      {:ok, _} = Grappa.Scrollback.delete_for_channel({:user, user.id}, net.id, "#x")
+
+      assert %Cursor{last_read_message_id: nil} =
+               ReadCursor.get({:user, user.id}, net.id, "#x")
+
+      # A fresh message + valid set must ADVANCE the NULL'd cursor, not
+      # clamp it to NULL.
+      m2 = insert_message(%{user_id: user.id}, net.id, "#x", 2)
+      m2_id = m2.id
+
+      assert {:ok, %Cursor{last_read_message_id: ^m2_id}} =
+               ReadCursor.set({:user, user.id}, net.id, "#x", m2.id)
+
+      assert %Cursor{last_read_message_id: ^m2_id} =
+               ReadCursor.get({:user, user.id}, net.id, "#x")
+    end
   end
 
   # ---------------------------------------------------------------------------

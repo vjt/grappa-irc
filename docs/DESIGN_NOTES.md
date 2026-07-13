@@ -19878,15 +19878,31 @@ couple taps) the POST carries the true newest id and it sticks.
 **Fix — monotonic clamp in `do_set/4` (advance-only).** Write ONLY when
 `message_id > current.last_read_message_id`; a POST at OR below the stored cursor
 is a no-op returning the EXISTING (higher) cursor unchanged. One guarded clause
-(`%Cursor{last_read_message_id: current} = cursor when message_id <= current ->
-{:ok, cursor}`) SUBSUMES the old equal-id no-op (equal is just the `<=`
-boundary). `nil` still inserts. This kills the jump-back regardless of the
-client race. Read-then-compare (not atomic `Repo.update_all(where: … < ^id)`) is
-the low-risk default: SQLite is single-writer so writes serialize, the code was
-already get-then-update, and read-then-compare returns the `%Cursor{}` struct
-cleanly so `set/4`'s `{:ok, Cursor.t()}` contract + the controller render are
-preserved. A concurrent-POST TOCTOU could in principle let two advances race,
-but both would advance (never regress) and the higher wins — acceptable.
+(`%Cursor{last_read_message_id: current} = cursor when is_integer(current) and
+message_id <= current -> {:ok, cursor}`) SUBSUMES the old equal-id no-op (equal
+is just the `<=` boundary). `nil` still inserts. This kills the jump-back
+regardless of the client race. Read-then-compare (not atomic
+`Repo.update_all(where: … < ^id)`) is the low-risk default: SQLite is
+single-writer so writes serialize, the code was already get-then-update, and
+read-then-compare returns the `%Cursor{}` struct cleanly so `set/4`'s
+`{:ok, Cursor.t()}` contract + the controller render are preserved. A
+concurrent-POST TOCTOU could in principle let two advances race, but both would
+advance (never regress) and the higher wins — acceptable.
+
+**`is_integer(current)` in the guard is LOAD-BEARING (code-review catch).** The
+first cut was a bare `when message_id <= current`. But `last_read_message_id` is
+`REFERENCES messages(id) ON DELETE SET NULL`, and the user-facing archive-delete
+path (`Scrollback.delete_for_channel/3` / `delete_for_dm/3`) bulk-`delete_all`s
+messages, leaving the cursor row ALIVE with `last_read_message_id = NULL` (the
+`create_read_cursors` migration explicitly designs for recovery-on-next-set). In
+Elixir term order a **number sorts before any atom**, so `message_id <= nil` is
+`true` for EVERY id — a naive guard would treat every future POST against a
+NULL'd cursor as a no-op, freezing it at NULL forever AND handing the controller
+a `nil` id that crashes `broadcast_set/5`'s `is_integer` guard (→ 500). Guarding
+`is_integer(current) and message_id <= current` lets a NULL cursor fall through
+to the update clause and recover — the migration's intended behaviour. Regression
+test: nil the cursor via the real `delete_for_channel/3` purge, then assert the
+next `set/4` advances instead of sticking at NULL.
 
 **No controller change.** `read_cursor_controller.ex` renders
 `cursor.last_read_message_id` from whatever `set/4` returns; on a stale (lower)

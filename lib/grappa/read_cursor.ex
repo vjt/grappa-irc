@@ -23,6 +23,12 @@ defmodule Grappa.ReadCursor do
   explicit path that bypasses the monotonic guard, added THEN with its
   caller (YAGNI — do not relax this guard to `<` to pre-empt it).
 
+  A cursor whose `last_read_message_id` was NULL'd by an
+  `ON DELETE SET NULL` message purge (`Scrollback.delete_for_channel/3`)
+  is NOT frozen by the clamp — the guard only fires for an integer
+  current cursor, so the next `set/4` advances the NULL'd row and
+  recovers it (the migration's designed behaviour).
+
   Surfaces consuming the cursor:
 
     * cic in-pane unread-marker: rows with `id > cursor` are unread.
@@ -271,7 +277,19 @@ defmodule Grappa.ReadCursor do
       # every view back ~2s later (see moduledoc "Monotonic advance").
       # Deliberate mark-as-unread has no caller today; when built it gets
       # its OWN explicit backward path — do NOT relax this to `<`.
-      %Cursor{last_read_message_id: current} = cursor when message_id <= current ->
+      #
+      # `is_integer(current)` is load-bearing, NOT decoration:
+      # `last_read_message_id` is `ON DELETE SET NULL`, so an archive
+      # purge (`Scrollback.delete_for_channel/3`) can leave the row alive
+      # with `current == nil`. In Elixir term order a number sorts BEFORE
+      # any atom, so `message_id <= nil` is `true` for EVERY id — without
+      # the `is_integer` guard a NULL'd cursor would clamp every future
+      # POST and freeze at NULL forever (and hand the controller a nil id
+      # that crashes `broadcast_set/5`). Guarding on `is_integer` lets a
+      # NULL cursor fall through to the update clause and recover — the
+      # migration's designed behaviour.
+      %Cursor{last_read_message_id: current} = cursor
+      when is_integer(current) and message_id <= current ->
         {:ok, cursor}
 
       %Cursor{} = cursor ->
