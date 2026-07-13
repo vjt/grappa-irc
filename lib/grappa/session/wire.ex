@@ -58,7 +58,7 @@ defmodule Grappa.Session.Wire do
   """
 
   alias Grappa.Scrollback.Message
-  alias Grappa.Session.EventRouter
+  alias Grappa.Session.{EventRouter, ISupport}
 
   @typedoc """
   The closed set of event kinds emitted by Session. Useful when
@@ -68,6 +68,7 @@ defmodule Grappa.Session.Wire do
   @type wire_event_kind ::
           :channels_changed
           | :own_nick_changed
+          | :isupport_changed
           | :topic_changed
           | :channel_modes_changed
           | :channel_created
@@ -98,6 +99,26 @@ defmodule Grappa.Session.Wire do
           kind: :own_nick_changed,
           network_id: integer(),
           nick: String.t()
+        }
+
+  @typedoc """
+  Wire projection of `Grappa.Session.ISupport.t/0` (#216). Per-network
+  channel-mode capability set the cic `/mode` modal drives its available
+  toggles from. The four CHANMODES classes are carried as FLAT top-level
+  `chanmodes_a..d` string lists (not a nested object) — every other wire
+  payload is flat, and the codegen emits flat maps in a shape biome
+  reflows; keeping it flat sidesteps that formatter tug-of-war. PREFIX
+  stays a letter→sigil map. Rides `Topic.user/1` (ISUPPORT is
+  per (subject, network), not per-channel).
+  """
+  @type isupport_changed_payload :: %{
+          kind: :isupport_changed,
+          network_id: integer(),
+          chanmodes_a: [String.t()],
+          chanmodes_b: [String.t()],
+          chanmodes_c: [String.t()],
+          chanmodes_d: [String.t()],
+          prefix: %{String.t() => String.t()}
         }
 
   @typedoc """
@@ -519,6 +540,28 @@ defmodule Grappa.Session.Wire do
   @spec own_nick_changed(integer(), String.t()) :: own_nick_changed_payload()
   def own_nick_changed(network_id, nick) when is_integer(network_id) and is_binary(nick) do
     %{kind: :own_nick_changed, network_id: network_id, nick: nick}
+  end
+
+  @doc """
+  Per-network ISUPPORT channel-mode capability set (#216). Projects
+  `Grappa.Session.ISupport.t/0` to a JSON-encodable payload: the four
+  CHANMODES MapSet classes become sorted lists, PREFIX stays a
+  letter→sigil map. Carries `:network_id` (not slug) and rides
+  `Topic.user/1` — the same rationale as `own_nick_changed/2` (per
+  (subject, network) state on a non-network-scoped user topic).
+  """
+  @spec isupport_changed(integer(), ISupport.t()) :: isupport_changed_payload()
+  def isupport_changed(network_id, %{chanmodes: cm, prefix: prefix})
+      when is_integer(network_id) do
+    %{
+      kind: :isupport_changed,
+      network_id: network_id,
+      chanmodes_a: Enum.sort(cm.a),
+      chanmodes_b: Enum.sort(cm.b),
+      chanmodes_c: Enum.sort(cm.c),
+      chanmodes_d: Enum.sort(cm.d),
+      prefix: prefix
+    }
   end
 
   @doc """

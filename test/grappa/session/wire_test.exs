@@ -21,7 +21,7 @@ defmodule Grappa.Session.WireTest do
   use ExUnit.Case, async: true
 
   alias Grappa.Scrollback.Message
-  alias Grappa.Session.Wire
+  alias Grappa.Session.{ISupport, Wire}
 
   describe "channels_changed/0" do
     test "returns the discriminator-only payload" do
@@ -36,6 +36,31 @@ defmodule Grappa.Session.WireTest do
                network_id: 7,
                nick: "vjt-grappa"
              }
+    end
+  end
+
+  describe "isupport_changed/2" do
+    test "projects ISupport.t() to a JSON-encodable payload (MapSets → sorted lists)" do
+      isupport =
+        ISupport.merge_isupport(
+          ["s", "CHANMODES=beI,k,l,imnpst", "PREFIX=(ohv)@%+"],
+          ISupport.default()
+        )
+
+      payload = Wire.isupport_changed(7, isupport)
+
+      assert payload.kind == :isupport_changed
+      assert payload.network_id == 7
+      assert payload.chanmodes_a == ["I", "b", "e"]
+      assert payload.chanmodes_b == ["k"]
+      assert payload.chanmodes_c == ["l"]
+      assert Enum.sort(payload.chanmodes_d) == ["i", "m", "n", "p", "s", "t"]
+      assert payload.prefix == %{"o" => "@", "h" => "%", "v" => "+"}
+    end
+
+    test "the payload is JSON-encodable (no MapSet leaks)" do
+      payload = Wire.isupport_changed(1, ISupport.default())
+      assert {:ok, _} = Jason.encode(payload)
     end
   end
 

@@ -293,6 +293,38 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert "t" in modes
     end
 
+    test "after-join snapshot: pushes the network's ISUPPORT capability set (#216)" do
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+
+      welcome_session_on_channel(irc_server, "#snap")
+
+      # Advertise a non-default CHANMODES/PREFIX so we can tell the pushed
+      # snapshot came from the live session, not cic's built-in default.
+      IRCServer.feed(
+        irc_server,
+        ":irc.test.org 005 grappa-snap CHANMODES=beI,k,l,imnpst PREFIX=(qaohv)~&@%+ :are supported\r\n"
+      )
+
+      flush_server(irc_server)
+
+      topic = Topic.channel(user.name, network.slug, "#snap")
+
+      {:ok, _, _} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{
+        kind: :isupport_changed,
+        network_id: net_id,
+        prefix: prefix
+      })
+
+      assert net_id == network.id
+      assert prefix["q"] == "~"
+    end
+
     test "after-join snapshot: no push when no session is running for channel" do
       user_name = "ch-nosession-#{System.unique_integer([:positive])}"
       net_slug = "nosession-net-#{System.unique_integer([:positive])}"

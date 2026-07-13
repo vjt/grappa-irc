@@ -863,6 +863,23 @@ defmodule Grappa.Session do
     call_session(subject, network_id, {:get_channel_modes, Identifier.canonical_channel(channel)})
   end
 
+  @doc """
+  Returns the per-network ISUPPORT channel-mode capability table (#216).
+
+  Serves the in-memory `Grappa.Session.ISupport.t()` — the CHANMODES +
+  PREFIX capability set parsed from 005 RPL_ISUPPORT (or the bahamut
+  default when the upstream omitted the tokens). Returns `{:ok, isupport}`
+  or `{:error, :no_session}` when no session is registered for
+  `(subject, network_id)`. Used by the channel's cold-WS-subscribe
+  snapshot to seed the cic `/mode` modal's available toggles.
+  """
+  @spec get_isupport(subject(), integer()) ::
+          {:ok, Grappa.Session.ISupport.t()} | {:error, :no_session}
+  def get_isupport(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, :get_isupport)
+  end
+
   @typedoc """
   CP15 B3 — snapshot-ready window-state payload returned by
   `get_window_state/3`. Byte-identical to the event-time broadcast cic

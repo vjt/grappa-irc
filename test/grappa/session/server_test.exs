@@ -32,7 +32,7 @@ defmodule Grappa.Session.ServerTest do
   alias Grappa.IRC.Message
   alias Grappa.{IRCServer, PubSub.Topic, Repo, Scrollback, Session, WSPresence}
   alias Grappa.Networks.{Credentials, SessionPlan}
-  alias Grappa.Session.{AwayState, Backoff, GhostRecovery, Server, WindowState}
+  alias Grappa.Session.{AwayState, Backoff, GhostRecovery, ISupport, Server, WindowState}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -1834,6 +1834,76 @@ defmodule Grappa.Session.ServerTest do
       # window_state unchanged — still :joined for #test from the self-JOIN.
       state = :sys.get_state(pid)
       assert WindowState.state_of(state.window_state, "#test") == :joined
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  describe "#216 — ISUPPORT CHANMODES/PREFIX capability table" do
+    test "005 with CHANMODES + PREFIX stores the isupport table + broadcasts on Topic.user" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 005 grappa-test CHANMODES=beI,k,l,imnpst PREFIX=(qaohv)~&@%+ :are supported\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :isupport_changed,
+                         network_id: net_id,
+                         prefix: prefix,
+                         chanmodes: %{c: c_modes}
+                       }
+                     },
+                     1_000
+
+      assert net_id == network.id
+      # New founder/admin prefixes from PREFIX=(qaohv)~&@%+.
+      assert prefix["q"] == "~"
+      assert prefix["a"] == "&"
+      assert prefix["o"] == "@"
+      assert c_modes == ["l"]
+
+      # get_isupport facade returns the stored table.
+      assert {:ok, isupport} = Session.get_isupport({:user, user.id}, network.id)
+      assert ISupport.user_prefix(isupport, "q") == {:ok, "~"}
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "get_isupport returns the bahamut default before any 005 (always-succeeds)" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert {:ok, isupport} = Session.get_isupport({:user, user.id}, network.id)
+      assert isupport == ISupport.default()
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

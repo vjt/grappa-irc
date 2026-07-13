@@ -1074,6 +1074,7 @@ defmodule GrappaWeb.GrappaChannel do
          {:ok, %Network{} = network} <- Networks.get_network_by_slug(network_slug) do
       push_topic_if_cached(subject, network, channel, socket)
       push_modes_if_cached(subject, network, channel, socket)
+      push_isupport_if_live(subject, network, socket)
       push_members_if_seeded(subject, network, channel, socket)
       push_window_state_if_known(subject, network, channel, socket)
     else
@@ -1115,6 +1116,26 @@ defmodule GrappaWeb.GrappaChannel do
     case Session.get_channel_modes(subject, network.id, channel) do
       {:ok, entry} ->
         push(socket, "event", SessionWire.channel_modes_changed(network.slug, channel, entry))
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  # #216: seed the cic `/mode` modal's available toggles with the
+  # network's ISUPPORT (CHANMODES + PREFIX) capability set. Rides the
+  # per-channel after-join snapshot (network already resolved) — cic keys
+  # `isupportByNetwork` on the network id, so seeding on any channel join
+  # covers every channel window on that network. The live edge is the 005
+  # `isupport_changed` broadcast; this closes the always-on-session race
+  # where every 005 fired long before the client subscribed. `get_isupport`
+  # only misses on `{:error, :no_session}` (parked/failed) — cic falls
+  # back to its own bahamut default until a session is live.
+  @spec push_isupport_if_live(Session.subject(), Network.t(), Phoenix.Socket.t()) :: :ok
+  defp push_isupport_if_live(subject, %Network{} = network, socket) do
+    case Session.get_isupport(subject, network.id) do
+      {:ok, isupport} ->
+        push(socket, "event", SessionWire.isupport_changed(network.id, isupport))
 
       {:error, _} ->
         :ok

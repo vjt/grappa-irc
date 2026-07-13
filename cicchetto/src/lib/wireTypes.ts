@@ -546,6 +546,7 @@ export type ServerSettingsWireChangedPayload = {
 export type SessionWireWireEventKind =
   | "channels_changed"
   | "own_nick_changed"
+  | "isupport_changed"
   | "topic_changed"
   | "channel_modes_changed"
   | "channel_created"
@@ -578,6 +579,16 @@ export type SessionWireOwnNickChangedPayload = {
   kind: "own_nick_changed";
   network_id: number;
   nick: string;
+};
+
+export type SessionWireIsupportChangedPayload = {
+  kind: "isupport_changed";
+  network_id: number;
+  chanmodes_a: string[];
+  chanmodes_b: string[];
+  chanmodes_c: string[];
+  chanmodes_d: string[];
+  prefix: Record<string, string>;
 };
 
 export type SessionWireTopicEntryWire = {
@@ -821,6 +832,7 @@ export type SessionWireConnectionProgressPayload = {
 export type WireSessionEvent =
   | SessionWireChannelsChangedPayload
   | SessionWireOwnNickChangedPayload
+  | SessionWireIsupportChangedPayload
   | SessionWireTopicChangedPayload
   | SessionWireChannelModesChangedPayload
   | SessionWireChannelCreatedPayload

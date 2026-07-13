@@ -90,6 +90,7 @@ defmodule Grappa.Session.Server do
     Backoff,
     EventRouter,
     GhostRecovery,
+    ISupport,
     ModeChunker,
     NSInterceptor,
     NumericRouter,
@@ -496,6 +497,16 @@ defmodule Grappa.Session.Server do
           # Sibling shape to `modes_per_chunk` — bounded integer on
           # state, not a generic ISUPPORT map.
           linelen: pos_integer(),
+          # #216: per-network channel-mode capability table parsed from
+          # 005 RPL_ISUPPORT `CHANMODES=` + `PREFIX=`. Unlike modes_per_chunk
+          # / linelen (bounded ints consumed only server-side), this one is
+          # ALSO broadcast to cic (the `/mode` modal drives its available
+          # toggles from it) AND read by EventRouter's MODE-string walkers
+          # (single source of truth for per-user vs channel modes + param
+          # arity — replaces the former hardcoded event_router constants).
+          # Defaults to `ISupport.default/0` (bahamut/Azzurra values) until
+          # a 005 with the tokens arrives. See `Grappa.Session.ISupport`.
+          isupport: ISupport.t(),
           # C2 — per-target WHOIS accumulator. Keyed by lowercased target
           # nick. Entry shape (all fields optional except target_display):
           # `%{target_display, user, host, realname, server, server_info,
@@ -738,6 +749,8 @@ defmodule Grappa.Session.Server do
       last_command_window: nil,
       modes_per_chunk: 3,
       linelen: 512,
+      # #216: default channel-mode capability table until 005 arrives.
+      isupport: ISupport.default(),
       # C2 — pending WHOIS accumulators keyed by lowercased target nick.
       # Set up on `:send_whois` (the operator issued /whois); 311/312/313/
       # 317/319 fold into the entry; 318 emits `{:whois_bundle, ...}` and
@@ -1509,6 +1522,13 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  # #216: returns the per-network ISUPPORT capability table. Always
+  # succeeds with at least the bahamut default (init seeds it) — no
+  # `:no_modes`-style miss. Public via `Grappa.Session.get_isupport/2`.
+  def handle_call(:get_isupport, _, state) do
+    {:reply, {:ok, state.isupport}, state}
+  end
+
   # CP15 B3 + cluster #6: returns the snapshot-ready window-state
   # payload for `channel`. Single source of truth for the snapshot
   # projection lives on `WindowState.to_wire/3` — same Wire verbs the
@@ -2117,13 +2137,30 @@ defmodule Grappa.Session.Server do
   # most one per 005 line; idempotent values — use the first advertised
   # and ignore later ones to avoid a misbehaving server downgrading us
   # mid-session).
+  #
+  # #216: ALSO fold CHANMODES= + PREFIX= into the per-network
+  # `isupport` capability table. When it changes, broadcast the typed
+  # `isupport_changed` payload on `Topic.user/1` so the cic `/mode`
+  # modal can drive its available toggles from the network's real
+  # capability set (and the EventRouter MODE walkers read the same
+  # table off state). A 005 arrives in several lines during registration;
+  # broadcasting only on an actual change keeps the fan-out minimal.
   def handle_info(
         {:irc, %Message{command: {:numeric, 5}} = msg},
         state
       ) do
     modes_per_chunk = extract_modes_isupport(msg.params, state.modes_per_chunk)
     linelen = extract_linelen_isupport(msg.params, state.linelen)
-    {:noreply, %{state | modes_per_chunk: modes_per_chunk, linelen: linelen}}
+    isupport = ISupport.merge_isupport(msg.params, state.isupport)
+
+    if isupport != state.isupport do
+      broadcast_window_state(
+        state,
+        SessionWire.isupport_changed(state.network_id, isupport)
+      )
+    end
+
+    {:noreply, %{state | modes_per_chunk: modes_per_chunk, linelen: linelen, isupport: isupport}}
   end
 
   # Channel directory (#84) C3 — capture the streamed LIST reply while a

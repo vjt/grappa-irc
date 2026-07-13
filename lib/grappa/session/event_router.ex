@@ -59,13 +59,19 @@ defmodule Grappa.Session.EventRouter do
   Q2-pinned: NICK + QUIT are server-level events that fan out to one
   scrollback row per channel where the nick was in `state.members`.
 
-  ## Mode prefix table (Q-non-blocking)
+  ## Mode prefix + CHANMODES tables (per-network, #216)
 
-  Hard-coded `(ov)@+` default per RFC 2812 + most networks. PREFIX
-  ISUPPORT-driven negotiation deferred to Phase 5; the table is a
-  compile-time constant in this module. When Phase 5 lands per-network
-  PREFIX, this constant migrates to per-Session-state config; the
-  in-memory shape (`[String.t()]` list of mode chars) does not change.
+  The per-user PREFIX table (mode letter → sigil) and the CHANMODES
+  param-arity classification that drive MODE-string parsing live in
+  `Grappa.Session.ISupport`, parsed from 005 RPL_ISUPPORT per network and
+  threaded onto `Session.Server` state. The two recursive walkers
+  (`walk_modes/5` for the member map, `walk_channel_modes/5` for the
+  channel_modes cache) read them via `ISupport.user_prefix/2` +
+  `ISupport.takes_param?/3`. `ISupport.default/0` seeds the pre-005
+  bahamut/Azzurra values, so a pure router state without an `:isupport`
+  key (unit tests) parses identically to the former hardcoded constants.
+  Pre-#216 both tables were compile-time constants here ("deferred to
+  Phase 5"); #216 is that lift.
 
   ## Topic numerics (Q-non-blocking)
 
@@ -84,6 +90,7 @@ defmodule Grappa.Session.EventRouter do
 
   alias Grappa.IRC.{CTCP, Identifier, Message}
   alias Grappa.{Scrollback, Session}
+  alias Grappa.Session.ISupport
 
   @typedoc """
   The Session.Server state subset this module reads + mutates. The
@@ -599,16 +606,17 @@ defmodule Grappa.Session.EventRouter do
       {:cont, state, [self_server_persist | r_effects]}
     else
       sender = Message.sender_nick(msg)
-      members = apply_mode_string(state.members, target, modes, args)
+      isupport = Map.get(state, :isupport, ISupport.default())
+      members = apply_mode_string(state.members, target, modes, args, isupport)
 
-      # S2.3: split the mode string — per-user modes (matching
-      # @user_mode_prefixes) update state.members (above); channel-level
+      # S2.3: split the mode string — per-user modes (matching the ISUPPORT
+      # PREFIX table) update state.members (above); channel-level
       # modes update channel_modes cache. Walk once, produce two effects:
       # members delta (done above) + channel_modes delta (done here). One
       # channel_modes_changed broadcast per MODE event if the cache changed.
       chan_key = normalize_channel(target)
       existing_entry = Map.get(Map.get(state, :channel_modes, %{}), chan_key, empty_mode_entry())
-      new_entry = apply_channel_mode_string(existing_entry, modes, args)
+      new_entry = apply_channel_mode_string(existing_entry, modes, args, isupport)
 
       channel_modes =
         Map.put(Map.get(state, :channel_modes, %{}), chan_key, new_entry)
@@ -913,7 +921,8 @@ defmodule Grappa.Session.EventRouter do
        )
        when is_binary(channel) and is_binary(mode_str) do
     chan_key = normalize_channel(channel)
-    entry = parse_mode_snapshot(mode_str, mode_args)
+    isupport = Map.get(state, :isupport, ISupport.default())
+    entry = parse_mode_snapshot(mode_str, mode_args, isupport)
     channel_modes = Map.put(Map.get(state, :channel_modes, %{}), chan_key, entry)
     {:cont, %{state | channel_modes: channel_modes}, [{:channel_modes_changed, channel, entry}]}
   end
@@ -2075,60 +2084,53 @@ defmodule Grappa.Session.EventRouter do
     end)
   end
 
-  # User-mode prefix table (Q-non-blocking pin): hard-coded `(ohv)@%+`
-  # default per RFC 2812 + ISUPPORT PREFIX=(ohv)@%+ as advertised by
-  # Bahamut / InspIRCd / UnrealIRCd. PREFIX ISUPPORT-driven negotiation
-  # deferred to Phase 5; the table is a compile-time constant here.
-  #
-  # UX-4 bucket J (2026-05-19): added `h => %` for halfops. The tier
-  # rank used by cic for MembersPane sort order is op > halfop > voice
-  # > plain — derived from `Map.values/1` order at the consumer, not
-  # encoded as a rank field here (cic owns the sort, server owns the
-  # per-member modes list).
-  @user_mode_prefixes %{"o" => "@", "h" => "%", "v" => "+"}
+  # #216: the per-user PREFIX table and the CHANMODES param-arity table
+  # that classify a MODE string used to be hardcoded compile-time
+  # constants here (`@user_mode_prefixes`, `@channel_modes_with_param`),
+  # flagged "deferred to Phase 5". They now live in
+  # `Grappa.Session.ISupport`: parsed from 005 RPL_ISUPPORT per network,
+  # threaded onto `Session.Server` state, and read by the two walkers via
+  # `ISupport.user_prefix/2` + `ISupport.takes_param?/3`. `ISupport.default/0`
+  # carries the exact former constant values, so a pure router state
+  # without an `:isupport` key (unit tests) behaves identically to before.
 
-  # Channel modes that consume a parameter when being set (+).
-  # RFC 2811 type A (list: b/e/I), type B (always-param: k) and type C
-  # (+param-only: l). Type D flag modes (n, t, m, s, i, p, r, …) take
-  # no argument. CHANMODES ISUPPORT-driven table deferred to Phase 5;
-  # until then this compile-time MapSet covers the common case.
-  @channel_modes_with_param MapSet.new(["b", "e", "I", "k", "l"])
-
-  @spec apply_mode_string(members(), String.t(), String.t(), [String.t()]) :: members()
-  defp apply_mode_string(members, channel, mode_string, args) do
+  @spec apply_mode_string(members(), String.t(), String.t(), [String.t()], ISupport.t()) ::
+          members()
+  defp apply_mode_string(members, channel, mode_string, args, isupport) do
     case Map.get(members, channel) do
       nil ->
         members
 
       ch_members ->
-        ch_members = walk_modes(ch_members, mode_string, args, :add)
+        ch_members = walk_modes(ch_members, mode_string, args, :add, isupport)
         Map.put(members, channel, ch_members)
     end
   end
 
-  defp walk_modes(ch_members, "", _, _), do: ch_members
-  defp walk_modes(ch_members, "+" <> rest, args, _), do: walk_modes(ch_members, rest, args, :add)
+  defp walk_modes(ch_members, "", _, _, _), do: ch_members
 
-  defp walk_modes(ch_members, "-" <> rest, args, _),
-    do: walk_modes(ch_members, rest, args, :remove)
+  defp walk_modes(ch_members, "+" <> rest, args, _, isupport),
+    do: walk_modes(ch_members, rest, args, :add, isupport)
 
-  defp walk_modes(ch_members, <<mode::binary-size(1), rest::binary>>, args, direction) do
-    case Map.fetch(@user_mode_prefixes, mode) do
+  defp walk_modes(ch_members, "-" <> rest, args, _, isupport),
+    do: walk_modes(ch_members, rest, args, :remove, isupport)
+
+  defp walk_modes(ch_members, <<mode::binary-size(1), rest::binary>>, args, direction, isupport) do
+    case ISupport.user_prefix(isupport, mode) do
       {:ok, prefix} ->
         {target, remaining_args} = pop_arg(args)
         ch_members = update_member_mode(ch_members, target, prefix, direction)
-        walk_modes(ch_members, rest, remaining_args, direction)
+        walk_modes(ch_members, rest, remaining_args, direction, isupport)
 
       :error ->
-        # Channel-level mode (e.g. `+b ban_mask`); consumes one arg if it
-        # takes one, none otherwise. Without a per-mode arg-taking table
-        # we conservatively consume one arg if any remain — matches
-        # Bahamut/InspIRCd behaviour for the most common channel modes
-        # (k, l, b, e, I); the over-consume case is rare and only loses
-        # us one inferred arg in a multi-mode line, never affects member
-        # state.
-        {_, remaining_args} = pop_arg(args)
-        walk_modes(ch_members, rest, remaining_args, direction)
+        # Channel-level mode (e.g. `+b ban_mask`); consumes one arg iff the
+        # per-network ISUPPORT CHANMODES classification says it takes one on
+        # this sign (#216). Flag modes (n, t, m, s, …) and type-C removals
+        # (`-l`) take no arg — consuming one would misalign the arg list for
+        # a subsequent per-user or param mode.
+        takes_param = ISupport.takes_param?(isupport, mode, direction)
+        {_, remaining_args} = if takes_param, do: pop_arg(args), else: {nil, args}
+        walk_modes(ch_members, rest, remaining_args, direction, isupport)
     end
   end
 
@@ -2331,51 +2333,53 @@ defmodule Grappa.Session.EventRouter do
   # into a channel_mode_entry. Replaces any existing entry entirely (used by
   # 324 RPL_CHANNELMODEIS — the server-authoritative snapshot).
   # The sign must be '+' for a snapshot; we skip any leading '+'.
-  @spec parse_mode_snapshot(String.t(), [String.t()]) :: channel_mode_entry()
-  defp parse_mode_snapshot(mode_str, args) do
+  @spec parse_mode_snapshot(String.t(), [String.t()], ISupport.t()) :: channel_mode_entry()
+  defp parse_mode_snapshot(mode_str, args, isupport) do
     # Strip leading '+' if present; snapshot is always additive
     stripped = String.trim_leading(mode_str, "+")
-    walk_channel_modes(empty_mode_entry(), "+" <> stripped, args, :add)
+    walk_channel_modes(empty_mode_entry(), "+" <> stripped, args, :add, isupport)
   end
 
   # Apply a +/- delta mode string to an existing channel_mode_entry.
-  # Reuses the same sticky-sign recursive pattern as walk_modes/4 for members.
-  # Per-user modes (matching @user_mode_prefixes) are skipped — they update
-  # state.members, not channel_modes. A per-user mode still consumes its arg.
-  @spec apply_channel_mode_string(channel_mode_entry(), String.t(), [String.t()]) ::
+  # Reuses the same sticky-sign recursive pattern as walk_modes/5 for members.
+  # Per-user modes (matching the ISUPPORT PREFIX table) are skipped — they
+  # update state.members, not channel_modes. A per-user mode still consumes
+  # its arg.
+  @spec apply_channel_mode_string(channel_mode_entry(), String.t(), [String.t()], ISupport.t()) ::
           channel_mode_entry()
-  defp apply_channel_mode_string(entry, mode_string, args) do
-    walk_channel_modes(entry, mode_string, args, :add)
+  defp apply_channel_mode_string(entry, mode_string, args, isupport) do
+    walk_channel_modes(entry, mode_string, args, :add, isupport)
   end
 
-  # walk_channel_modes: same sticky-sign recursive pattern as walk_modes/4,
+  # walk_channel_modes: same sticky-sign recursive pattern as walk_modes/5,
   # but operates on a channel_mode_entry() instead of a members map.
-  # Per-user modes (o, v) consume their arg but are NOT added to the entry.
-  defp walk_channel_modes(entry, "", _, _), do: entry
+  # Per-user modes (o, v, …) consume their arg but are NOT added to the entry.
+  defp walk_channel_modes(entry, "", _, _, _), do: entry
 
-  defp walk_channel_modes(entry, "+" <> rest, args, _),
-    do: walk_channel_modes(entry, rest, args, :add)
+  defp walk_channel_modes(entry, "+" <> rest, args, _, isupport),
+    do: walk_channel_modes(entry, rest, args, :add, isupport)
 
-  defp walk_channel_modes(entry, "-" <> rest, args, _),
-    do: walk_channel_modes(entry, rest, args, :remove)
+  defp walk_channel_modes(entry, "-" <> rest, args, _, isupport),
+    do: walk_channel_modes(entry, rest, args, :remove, isupport)
 
-  defp walk_channel_modes(entry, <<mode::binary-size(1), rest::binary>>, args, direction) do
-    case Map.fetch(@user_mode_prefixes, mode) do
+  defp walk_channel_modes(entry, <<mode::binary-size(1), rest::binary>>, args, direction, isupport) do
+    case ISupport.user_prefix(isupport, mode) do
       {:ok, _} ->
         # Per-user mode: consumes one arg (the target nick) but does NOT
-        # update channel_modes — it updates state.members (done in walk_modes/4).
+        # update channel_modes — it updates state.members (done in walk_modes/5).
         {_, remaining} = pop_arg(args)
-        walk_channel_modes(entry, rest, remaining, direction)
+        walk_channel_modes(entry, rest, remaining, direction, isupport)
 
       :error ->
-        # Channel-level mode. Only consume an arg if the mode is in the
-        # @channel_modes_with_param table. Flag modes (n, t, m, s, …) have
+        # Channel-level mode. Consume an arg iff the per-network ISUPPORT
+        # CHANMODES classification says the mode takes one on this sign
+        # (#216). Flag modes (n, t, m, s, …) and type-C removals (`-l`) have
         # no arg — consuming one would misalign the arg list for subsequent
-        # param-modes like k or l.
-        takes_param = MapSet.member?(@channel_modes_with_param, mode)
+        # param modes like k or l.
+        takes_param = ISupport.takes_param?(isupport, mode, direction)
         {arg, remaining} = if takes_param, do: pop_arg(args), else: {nil, args}
         entry = toggle_channel_mode(entry, mode, arg, direction)
-        walk_channel_modes(entry, rest, remaining, direction)
+        walk_channel_modes(entry, rest, remaining, direction, isupport)
     end
   end
 

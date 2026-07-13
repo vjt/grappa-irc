@@ -12,7 +12,7 @@ defmodule Grappa.Session.EventRouterTest do
   use ExUnit.Case, async: true
 
   alias Grappa.IRC.Message
-  alias Grappa.Session.EventRouter
+  alias Grappa.Session.{EventRouter, ISupport}
 
   @user_id "00000000-0000-0000-0000-000000000001"
   @subject {:user, @user_id}
@@ -1413,6 +1413,56 @@ defmodule Grappa.Session.EventRouterTest do
                {:channel_modes_changed, "#italia", _} -> true
                _ -> false
              end)
+    end
+
+    test "membership modes come from state.isupport PREFIX, not a hardcoded table" do
+      # #216 total-consistency: the walkers classify per the per-network
+      # ISUPPORT table on state, not a compile-time constant. A network
+      # that advertises founder/admin prefixes (PREFIX=(qaohv)~&@%+) must
+      # render `+q` as `~` on the member — the old hardcoded (ohv)@%+
+      # table would have mis-classified `q` as a channel-level mode and
+      # left the member untouched.
+      isupport =
+        ISupport.merge_isupport(
+          ["s", "PREFIX=(qaohv)~&@%+", "CHANMODES=beI,k,l,imnpst"],
+          ISupport.default()
+        )
+
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"alice" => []}},
+          isupport: isupport
+        })
+
+      m = msg(:mode, ["#italia", "+q", "alice"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
+      assert new_state.members["#italia"]["alice"] == ["~"]
+    end
+
+    test "channel-mode param arity comes from state.isupport CHANMODES (type-C -l consumes no arg)" do
+      # #216: `-l` (type C) takes NO argument; a following param mode's
+      # arg must not be swallowed. With ISUPPORT-driven classification the
+      # walker knows `l` is type C. `MODE #c -l+k secret` → -l (no arg),
+      # +k consumes "secret". A sign-insensitive over-consume would eat
+      # "secret" on -l and leave +k param-less.
+      isupport = ISupport.default()
+
+      state =
+        base_state(%{
+          members: %{"#c" => %{}},
+          channel_modes: %{"#c" => %{modes: ["l"], params: %{"l" => "42"}}},
+          isupport: isupport
+        })
+
+      m = msg(:mode, ["#c", "-l+k", "secret"], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
+      entry = new_state.channel_modes["#c"]
+
+      refute "l" in entry.modes
+      assert "k" in entry.modes
+      assert entry.params["k"] == "secret"
     end
 
     test "MODE on user's own nick persists a $server confirmation row (#154b)" do
