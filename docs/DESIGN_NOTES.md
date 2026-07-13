@@ -20468,6 +20468,114 @@ side and silently breaks NDP.
 
 ---
 
+## 2026-07-14 — #223: auth-session housekeeping GC (Accounts.Reaper) — bound unbounded `sessions` growth
+
+**The report.** One long-lived prod user had 39 `sessions` rows with
+`revoked_at IS NULL`, oldest ~2 months. Every web login / WS reconnect INSERTs
+a row; nothing ever pruned them → unbounded per-user table growth + polluted
+"active sessions" enumeration. Issue floated three directions (idle-expiry TTL /
+supersede-on-reconnect / periodic reaper).
+
+**Spec challenge FIRST (CLAUDE.md: domain knowledge vs the spec).** The issue
+claimed "a two-month-old session can still authenticate a WebSocket."
+**Verified in code @ d2fcaed1 that this is FALSE.** `Accounts.authenticate/1`
+→ `check_idle/1` already returns `{:error, :expired}` for any row whose
+`last_seen_at` is older than `@idle_timeout_seconds` (7 days), and EVERY auth
+path routes through it: REST `Plugs.Authn` (`authn.ex:68`), WS `UserSocket`
+(`user_socket.ex:127`), and `Visitors.Login` (`login.ex:528`). Grepped for any
+`Repo.get(Session, …)` that bypasses the gate — none outside `authenticate/1`
+itself and the admission COUNT queries (which already filter `revoked_at`). So a
+stale row is ALREADY un-authenticatable at read-time. **#223 is NOT a live
+security bypass — it is the missing housekeeping cron the code already foresaw**
+(`session.ex:33` "the Phase 5 cron does the actual GC"; the
+`create_sessions` migration's `last_seen_at` index comment: "supports the Phase
+5 housekeeping cron that purges idle-expired rows in bulk"). It collapses to a
+growth/hygiene fix: materialize the idle policy in the DB and reclaim space.
+(Prod's 39 rows live on m42; the spec-challenge is code-level and authoritative
+regardless — the dev container was down, but no data query can override the fact
+that every read path gates idle at 7d.)
+
+**Table is `sessions`, not `accounts_sessions`.** The schema is
+`schema "sessions"` (`accounts/session.ex:57`) and the create migration is
+`create table(:sessions)`. The `Visitors.Reaper` moduledoc calls it
+`accounts_sessions` in prose — that comment is WRONG (cosmetic; left untouched,
+out of scope). No new migration: the `sessions(last_seen_at)` index already
+exists (added in `20260426000001_create_sessions` precisely for this cron), and
+`visitor_id`/`user_id` are indexed too — the sweep predicate is covered.
+
+**Design — reuse the VERB, not the NOUN (CLAUDE.md rule 6).** New sibling
+`Grappa.Accounts.Reaper` at `lib/grappa/accounts/reaper.ex`, mirroring the
+`Uploads.Reaper` / `Visitors.Reaper` SHAPE (`:permanent` GenServer, `sweep/0`,
+`:interval_ms` opt default 60s, tick-schedules-BEFORE-sweep). Its `sweep/0`
+delegates to a new Accounts context verb `Accounts.delete_expired_sessions/0`
+(returns `{:ok, count}`) that does ONE set-based
+`Repo.delete_all(where: not is_nil(user_id) and last_seen_at < now - TTL)`.
+Considered folding the sweep into `Visitors.Reaper` (the literal suggestion):
+**rejected as a boundary violation** — that would make a visitor-domain process
+depend on `Grappa.Accounts` and reap two unrelated domains through one tick, the
+"shared data model" trap the rule warns against. `Uploads.Reaper` exists
+precisely because uploads are a separate domain; auth sessions are a THIRD.
+Boundary `deps: [Grappa.Accounts]`, `top_level?: true` (mirrors the siblings).
+
+**TTL = the EXISTING `@idle_timeout_seconds` (7d), single source.** The GC
+threshold IS the auth idle gate — the reaper materializes EXACTLY the policy
+`authenticate/1` already enforces, so the two can never drift. vjt chose 7d
+(= auth TTL) over a more generous 30d margin: a row is deleted the moment it
+becomes un-authenticatable. The "sliding vs absolute" open question was already
+answered by the existing model — `last_seen_at` is a sliding timer bumped on
+every use (cadence-capped 60s), so a stale timestamp is proof-of-non-use; any
+reuse would have refreshed it out of the window.
+
+**DELETE, not soft-revoke — and `revoked_at` is NOT in the predicate.** Soft-
+revoke alone does NOT bound growth (revoked rows stay forever); the issue's
+headline symptom is GROWTH, so the sweep physically DELETEs. `last_seen_at` is
+the sole liveness signal: a revoked row is dead regardless, so the predicate
+keys on idle age, not revocation state — an already-soft-revoked stale row is
+GC'd too. No audit-trail arm: these are expired bearer tokens, nothing
+operator-actionable.
+
+**Visitor sessions are OUT OF SCOPE — `user_id IS NOT NULL` guard.** A visitor's
+`sessions` rows are removed by `Visitors.Reaper` via
+`sessions.visitor_id ON DELETE CASCADE` when the visitor row itself expires. The
+Accounts sweep must NOT double-own that lifecycle, so it scopes to user rows
+only. This is the "distinguish sessions in use vs not" concern raised in
+review: the answer is that reusability and `last_seen_at` freshness are the same
+thing — reaping a stale row can never hit a reusable one (any use refreshes the
+timestamp out of the window before the sweep would touch it).
+
+**Supersede-on-reconnect: NOT built.** The issue's 2nd direction (revoke the
+prior session for the same `client_id` on new-session-create) is a separate
+additive mechanism. The reaper alone bounds growth, so it's out of scope
+(CLAUDE.md "add X means add X").
+
+**No AdminEvent (deliberate divergence from the siblings).** `Visitors.Reaper`
+and `Uploads.Reaper` emit admin events, but `AdminEvents.Wire.event_kind` is a
+CLOSED, cic-mirrored wire contract — adding `sessions_reaped` would force a cic
+wire-type change (server-only ticket, out of scope) and session GC has nothing
+operator-actionable to surface. Instead `delete_expired_sessions/0` logs once at
+`:info` (`affected: N`) on a productive sweep, suppressed on count=0 to avoid
+1440 idle lines/day under the 60s cadence (same suppression pattern the siblings
+use for their summary event).
+
+**Hot vs COLD → COLD.** New supervised child in `application.ex` = supervision-
+tree change; hot-reload does not add supervised children safely. No migration
+added (index pre-exists), so COLD is driven purely by the new child. Placed
+after Endpoint alongside the other two reapers (after Repo — queries `sessions`;
+after Endpoint — auth surface up before the sweep removes rows).
+
+**Tests.** `accounts_test.exs` "delete_expired_sessions/0" describe (7 cases):
+stale user row deleted + `authenticate/1` → `:not_found`; fresh row survives;
+exactly-at-boundary survives (strict `<`); visitor session untouched
+(cascade-domain guard); already-revoked stale row still deleted (last_seen-
+driven); idempotent (2nd sweep = 0); mixed-population count correctness. New
+`accounts/reaper_test.exs` (3 cases, `async: false` for shared-sandbox like the
+sibling reaper tests): `sweep/0` deletes + counts, `{:ok, 0}` when empty, and
+the scheduled-tick path fires the sweep (`interval_ms: 50` + `Sandbox.allow`).
+Full `scripts/check.sh` green: 8 doctests, 40 properties, 3387 tests, 0
+failures; Dialyzer 0 errors; Credo/Sobelow clean.
+
+---
+
 ## 2026-07-15 — #246 (P0): outbound split budget must reserve the worst-case RELAYED source prefix
 
 **The silent data-loss bug.** `Grappa.IRC.LineSplit.split_privmsg_body/3`

@@ -763,6 +763,15 @@ don't hardcode hostnames there.
   Phase 5 hardening adds prod with auth).
 - **Telemetry**: events emitted via `:telemetry`; metrics aggregated
   via `Telemetry.Metrics`. Phase 5 adds Prometheus exporter.
+- **Session GC (#223)**: `Grappa.Accounts.Reaper` sweeps every 60s and
+  physically deletes USER `sessions` rows idle past the 7-day auth
+  window (the same TTL `authenticate/1` gates on — a swept row was
+  already un-authenticatable). A productive sweep logs
+  `expired sessions reaped affected=N`; an idle sweep is silent. No
+  operator verb — the sweep is autonomous and needs none (unlike
+  `reap-visitors`, session GC has nothing operator-actionable). Visitor
+  sessions are NOT swept here — they CASCADE from the visitor row via
+  `Visitors.Reaper`.
 
 ## Pending operator follow-ups
 
