@@ -1,7 +1,7 @@
 import { type Component, For, Show } from "solid-js";
 import { ownNickForNetwork } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
-import { type AvailableMode, availableModes } from "./lib/channelModes";
+import { type AvailableMode, availableModes, editorSigils } from "./lib/channelModes";
 import { modesByChannel } from "./lib/channelTopic";
 import { isupportForNetwork } from "./lib/isupport";
 import { membersByChannel } from "./lib/members";
@@ -77,7 +77,8 @@ const ModeModal: Component = () => {
   const canEdit = (): boolean => {
     const t = target();
     const k = key();
-    if (!t || !k) return false;
+    const id = networkId();
+    if (!t || !k || id === undefined) return false;
     const net = networkBySlug(t.networkSlug);
     const me = user();
     if (!net || !me) return false;
@@ -85,7 +86,11 @@ const ModeModal: Component = () => {
     if (!nick) return false;
     const entry = (membersByChannel()[k] ?? []).find((m) => nickEquals(m.nick, nick));
     const modes = entry?.modes ?? [];
-    return modes.includes("@") || modes.includes("%");
+    // Edit gate = op-or-higher (+ halfop), derived from the network's
+    // ISUPPORT PREFIX ranking so founder/admin sigils on PREFIX-rich
+    // networks aren't wrongly locked out (see editorSigils/1).
+    const editors = editorSigils(isupportForNetwork(id));
+    return modes.some((m) => editors.has(m));
   };
 
   const isActive = (letter: string): boolean => currentModes().includes(letter);

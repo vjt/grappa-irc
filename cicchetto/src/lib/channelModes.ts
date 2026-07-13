@@ -88,3 +88,40 @@ export function availableModes(isupport: IsupportEntry): AvailableMode[] {
     })
     .sort((x, y) => x.label.localeCompare(y.label));
 }
+
+/**
+ * The set of membership sigils that grant channel-mode EDITING on a
+ * network, derived from its ISUPPORT PREFIX. Editing is allowed for
+ * halfop (`%`) and everything that outranks op (`@`) — founder (`~`),
+ * admin/protected (`&`), op — but NOT voice (`+`) or plain.
+ *
+ * PREFIX is advertised highest-rank-first (e.g. `(qaohv)~&@%+`), so the
+ * editor set is every sigil at index ≤ the op sigil's index, PLUS the
+ * halfop sigil. Deriving from the network's own order (instead of a
+ * hardcoded `@`/`%`) means a founder/admin who does NOT also hold `@`
+ * still gets an editable modal on networks that separate those roles —
+ * the very PREFIX-rich networks this feature adds support for. The ircd
+ * remains the real authority (it rejects an unauthorized MODE); a
+ * slightly-permissive gate only avoids wrongly greying out a legit
+ * founder.
+ */
+export function editorSigils(isupport: IsupportEntry): Set<string> {
+  const sigils = Object.values(isupport.prefix);
+  const opIdx = sigils.indexOf("@");
+  const out = new Set<string>();
+  if (opIdx === -1) {
+    // No op sigil advertised (non-standard) — fall back to the classic
+    // op/halfop pair so the gate never opens to everyone.
+    out.add("@");
+    out.add("%");
+    return out;
+  }
+  // Everything at or above op rank (index ≤ opIdx in the high-first list).
+  for (let i = 0; i <= opIdx; i++) {
+    const s = sigils[i];
+    if (s !== undefined) out.add(s);
+  }
+  // Halfop, if the network has one, also edits.
+  if (isupport.prefix.h !== undefined) out.add(isupport.prefix.h);
+  return out;
+}

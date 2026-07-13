@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 // derivation that folds a network's ISUPPORT capability set into a
 // display list for the /mode modal.
 
-import { availableModes, modeDescription } from "../lib/channelModes";
+import { availableModes, editorSigils, modeDescription } from "../lib/channelModes";
 import { DEFAULT_ISUPPORT, type IsupportEntry } from "../lib/isupport";
 
 describe("channelModes description table", () => {
@@ -76,5 +76,38 @@ describe("availableModes", () => {
     const z = modes.find((m) => m.letter === "Z");
     expect(z).toBeDefined();
     expect(z?.takesParam).toBe(false);
+  });
+});
+
+describe("editorSigils", () => {
+  it("bahamut default → op + halfop edit (not voice)", () => {
+    const e = editorSigils(DEFAULT_ISUPPORT);
+    expect(e.has("@")).toBe(true);
+    expect(e.has("%")).toBe(true);
+    expect(e.has("+")).toBe(false);
+  });
+
+  it("founder/admin prefixes rank above op → they edit too", () => {
+    // PREFIX=(qaohv)~&@%+ — founder ~, admin &, op @, halfop %, voice +.
+    const isupport: IsupportEntry = {
+      chanmodes: { a: [], b: [], c: [], d: ["n", "t"] },
+      prefix: { q: "~", a: "&", o: "@", h: "%", v: "+" },
+    };
+    const e = editorSigils(isupport);
+    expect(e.has("~")).toBe(true); // founder
+    expect(e.has("&")).toBe(true); // admin
+    expect(e.has("@")).toBe(true); // op
+    expect(e.has("%")).toBe(true); // halfop
+    expect(e.has("+")).toBe(false); // voice cannot edit
+  });
+
+  it("falls back to op/halfop when no op sigil is advertised", () => {
+    const isupport: IsupportEntry = {
+      chanmodes: { a: [], b: [], c: [], d: [] },
+      prefix: { v: "+" },
+    };
+    const e = editorSigils(isupport);
+    expect(e.has("@")).toBe(true);
+    expect(e.has("%")).toBe(true);
   });
 });

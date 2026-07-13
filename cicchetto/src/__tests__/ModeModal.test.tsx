@@ -118,6 +118,22 @@ describe("ModeModal", () => {
     expect(socketMock.pushChannelMode).toHaveBeenCalledWith(1, "#bofh", "+s", []);
   });
 
+  it("a founder (~) on a PREFIX-rich network can edit even without @", () => {
+    // PREFIX=(qaohv)~&@%+ — a founder who does NOT also hold @ must still
+    // get an editable modal (editorSigils ranks ~ above op). #216 review.
+    seedIsupport(1, {
+      chanmodes: DEFAULT_ISUPPORT.chanmodes,
+      prefix: { q: "~", a: "&", o: "@", h: "%", v: "+" },
+    });
+    mockModes[KEY] = { modes: [], params: {} };
+    mockMembers[KEY] = [{ nick: "vjt-grappa", modes: ["~"] }];
+    openModeModal("bahamut", "#bofh");
+
+    const { getByLabelText } = render(() => <ModeModal />);
+    fireEvent.click(getByLabelText(/secret/i));
+    expect(socketMock.pushChannelMode).toHaveBeenCalledWith(1, "#bofh", "+s", []);
+  });
+
   it("a non-op sees read-only toggles and cannot send a mode change", () => {
     mockModes[KEY] = { modes: ["n"], params: {} };
     mockMembers[KEY] = [{ nick: "vjt-grappa", modes: [] }];
