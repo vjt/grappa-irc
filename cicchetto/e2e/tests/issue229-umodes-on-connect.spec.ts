@@ -76,7 +76,12 @@ test("#229 — own umodes are visible from connect (cold-snapshot after reload),
     await expect(modal).toBeHidden({ timeout: 2_000 });
   } finally {
     // Restore the seeded vjt's umode set for sibling specs on the shared
-    // session (the reload path can't re-run this; do it best-effort here).
+    // session. `/umode` is per-session (no channel needed) but composeSend
+    // needs SOME window with a compose box — re-select the autojoin channel
+    // explicitly rather than trusting the post-reload restored selection.
+    await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { awaitWsReady: false }).catch(
+      () => {},
+    );
     await composeSend(page, "/umode -i").catch(() => {});
   }
 });

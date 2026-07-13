@@ -703,7 +703,6 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
-
   Sends `TOPIC <channel> :\\r\\n` — empty trailing parameter clears
   the channel topic per RFC 2812 §3.2.4 (irssi `/topic -delete`
   convention). Validates channel syntax with `{:error, :invalid_line}`

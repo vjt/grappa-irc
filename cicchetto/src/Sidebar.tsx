@@ -392,8 +392,12 @@ const Sidebar: Component<Props> = () => {
                     point alongside `/umode` and `/mode <ownnick>`. A
                     <button> not a <span> (keyboard-reachable, no
                     noStaticElementInteractions — #220 lesson). Rendered
-                    only when the session reports at least one umode; a
-                    parked/pre-connect session (empty set) shows nothing. */}
+                    when the store holds at least one umode for this network.
+                    Like the isupport store, umodesByNetwork is last-write-
+                    wins and NOT cleared on park/disconnect — a network that
+                    was live keeps its stale indicator on the greyed row
+                    until the next connect's 221/cold-snapshot re-seeds it
+                    (a never-connected network shows nothing). */}
                   <Show when={umodeIndicator(network.id).length > 0}>
                     <button
                       type="button"
