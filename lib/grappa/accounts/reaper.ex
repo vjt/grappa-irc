@@ -94,12 +94,12 @@ defmodule Grappa.Accounts.Reaper do
     # Visitors.Reaper REV-J M9). A bulk delete_all is cheap, but keeping
     # the shape identical across the three reapers avoids surprise.
     schedule_tick(state.interval_ms)
-    {:ok, n} = sweep()
 
-    # `delete_expired_sessions/0` already logs every sweep (including
-    # count=0). The reaper stays quiet here to avoid a second line —
-    # the context function is the single logging site.
-    _ = n
+    # `delete_expired_sessions/0` logs productive sweeps (count > 0) and
+    # deliberately suppresses count=0 to avoid 1440 idle lines/day under
+    # the 60s cadence. The reaper stays quiet here so the context
+    # function is the single logging site (no double-line).
+    {:ok, _} = sweep()
 
     {:noreply, state}
   end

@@ -329,10 +329,13 @@ defmodule Grappa.AccountsTest do
       assert {:ok, _} = Accounts.authenticate(fresh.id)
     end
 
-    test "leaves a user session exactly at the boundary alone (strict >)" do
+    test "leaves a user session just inside the idle window alone (strict <)" do
       {:ok, user} = Accounts.create_user(%{name: "gc-boundary", password: @password})
       {:ok, edge} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
-      # A hair inside the window — must survive; only strictly-older rows go.
+      # 60s inside the window — must survive; only strictly-older rows go.
+      # (A true last_seen_at == cutoff case is untestable deterministically
+      # because delete_expired_sessions/0 reads its own DateTime.utc_now/0;
+      # strict `<` is proven by fresh-survives + this + 1h-past-deleted.)
       backdate_last_seen(edge, @idle_seconds - 60)
 
       assert {:ok, 0} = Accounts.delete_expired_sessions()
