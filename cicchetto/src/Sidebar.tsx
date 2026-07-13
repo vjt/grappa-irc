@@ -11,6 +11,8 @@ import { channelsBySlug, isAdmin, networkBySlug, networks } from "./lib/networks
 import { openQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { reconnectingByNetwork } from "./lib/reconnectingStatus";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
+import { openUmodeModal } from "./lib/umodeModal";
+import { umodesForNetwork } from "./lib/umodes";
 import { closeQueryWindow, confirmDisconnectNetwork, confirmLeaveChannel } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import {
@@ -180,6 +182,15 @@ const Sidebar: Component<Props> = () => {
 
   const handleClick = (slug: string, name: string, kind: WindowKind) => {
     setSelectedChannel({ networkSlug: slug, channelName: name, kind });
+  };
+
+  // #229 — compact umode string for the network-header indicator, e.g.
+  // "+iS". Empty when the session reports no umodes (parked / pre-connect /
+  // genuinely no umodes) so the indicator hides. Reads the reactive
+  // umodesForNetwork store — updates live on 221 / self-MODE echoes.
+  const umodeIndicator = (networkId: number): string => {
+    const modes = umodesForNetwork(networkId);
+    return modes.length > 0 ? `+${modes.join("")}` : "";
   };
 
   // #195 — the × on a channel row opens an explicit "leave #channel?" confirm
@@ -375,6 +386,25 @@ const Sidebar: Component<Props> = () => {
                       );
                     })()}
                   </button>
+                  {/* #229 — umode indicator + tap target. Shows the
+                    operator's own umodes compactly (e.g. "+iS") and opens
+                    the umode viewer/editor modal on tap — the tap entry
+                    point alongside `/umode` and `/mode <ownnick>`. A
+                    <button> not a <span> (keyboard-reachable, no
+                    noStaticElementInteractions — #220 lesson). Rendered
+                    only when the session reports at least one umode; a
+                    parked/pre-connect session (empty set) shows nothing. */}
+                  <Show when={umodeIndicator(network.id).length > 0}>
+                    <button
+                      type="button"
+                      class="sidebar-umode-indicator"
+                      title={`user modes: ${umodeIndicator(network.id)}`}
+                      aria-label={`view your user modes on ${network.slug}`}
+                      onClick={() => openUmodeModal(network.slug)}
+                    >
+                      {umodeIndicator(network.id)}
+                    </button>
+                  </Show>
                   {/* UX-4 bucket D — × button on the network-header row
                     closes the server window which == /disconnect for
                     registered users (one network parked → selection

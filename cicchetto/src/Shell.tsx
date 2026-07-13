@@ -67,6 +67,7 @@ import SettingsDrawer from "./SettingsDrawer";
 import ShellChrome from "./ShellChrome";
 import Sidebar from "./Sidebar";
 import TopicBar from "./TopicBar";
+import UmodeModal from "./UmodeModal";
 import WhoModal from "./WhoModal";
 
 // Three-pane responsive shell. Composition root for Sidebar / TopicBar /
@@ -561,6 +562,7 @@ const Shell: Component = () => {
           <NamesModal />
           <WhoModal />
           <ModeModal />
+          <UmodeModal />
           <ServerReplyModal />
           <ConfirmModal />
           <aside class="shell-sidebar">
@@ -736,6 +738,7 @@ const Shell: Component = () => {
         <MediaViewerModal />
         <NamesModal />
         <WhoModal />
+        <UmodeModal />
         <ModeModal />
         <ServerReplyModal />
         <ConfirmModal />

@@ -19,6 +19,7 @@ import { membersByChannel } from "./members";
 import { splitMessageLines } from "./messageLines";
 import { openModeModal } from "./modeModal";
 import { networkBySlug, networkIdBySlug, user } from "./networks";
+import { nickEquals } from "./nickEquals";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { quitAll } from "./quit";
 import { sendMessage as sendPrivmsg } from "./scrollback";
@@ -54,6 +55,7 @@ import {
   pushWhois,
   pushWhowas,
 } from "./socket";
+import { openUmodeModal } from "./umodeModal";
 import { closeQueryWindow } from "./windowClose";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "./windowKinds";
 
@@ -593,6 +595,34 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           await pushChannelUmode(networkId, cmd.modes);
           result = { ok: true };
           break;
+        }
+        case "umode-view": {
+          // #229 — bare /umode: open the umode viewer/editor modal for the
+          // active window's network. Umodes are per-session (no channel
+          // context needed), so any window kind can open it.
+          openUmodeModal(networkSlug);
+          result = { ok: true };
+          break;
+        }
+        case "umode-target-view": {
+          // #229 — /mode <nick> with no mode args. Open the umode modal
+          // ONLY when the target resolves to the operator's OWN nick (the
+          // modal edits your own umodes; there's no viewer for another
+          // user's). Resolve via ownNickForNetwork (visitor → me.nick;
+          // user → per-credential net.nick) — the same canonical resolver
+          // /whois self-default uses; nickEquals for rfc1459-insensitive
+          // compare (#121). A non-self target is a friendly error rather
+          // than a phantom modal.
+          const net = networkBySlug(networkSlug);
+          const own = net ? ownNickForNetwork(net, user()) : null;
+          if (own && nickEquals(cmd.target, own)) {
+            openUmodeModal(networkSlug);
+            result = { ok: true };
+            break;
+          }
+          return {
+            error: `/mode ${cmd.target}: viewing another user's modes isn't supported — use /mode <#channel> for a channel, or /mode ${own ?? "<yournick>"} for your own user modes`,
+          };
         }
         case "mode": {
           // /mode <#chan> <modes> [params] — execute directly, raw

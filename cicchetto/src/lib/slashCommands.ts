@@ -94,6 +94,13 @@ export type SlashCommand =
   | { kind: "banlist" }
   | { kind: "invite"; nick: string; channel: string | null }
   | { kind: "umode"; modes: string }
+  // #229 — no-mode-args umode forms open the umode viewer/editor modal.
+  // Bare `/umode` and `/mode <ownnick>` (a non-channel target with no mode
+  // args) both emit `umode-view`; compose.ts opens the modal (and, for the
+  // `/mode <target>` route, only when the target resolves to the operator's
+  // OWN nick — the modal edits your own umodes, not another user's). Any
+  // `/umode <modes>` or `/mode <ownnick> <modes>` stays an execute verb.
+  | { kind: "umode-view" }
   | { kind: "mode"; target: string; modes: string; params: string[] }
   // #216 — no-mode-args /mode forms open the viewer/editor modal instead
   // of executing. `mode-view` = open the modal for `channel` (explicit
@@ -103,6 +110,7 @@ export type SlashCommand =
   // form WITH both a channel and modes stays `mode` (execute directly).
   | { kind: "mode-view"; channel: string | null }
   | { kind: "mode-apply-current"; modes: string; params: string[] }
+  | { kind: "umode-target-view"; target: string }
   | { kind: "who"; target: string | null }
   | { kind: "names"; target: string | null }
   | { kind: "list"; pattern: string | null }
@@ -359,8 +367,11 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     return { kind: "invite", nick, channel: channel ?? null };
   },
 
-  umode: (verb, rest) => {
-    if (rest === "") return err(verb, "/umode requires mode string (e.g. +i)");
+  umode: (_verb, rest) => {
+    // #229 — bare `/umode` opens the umode viewer/editor modal (mirror of
+    // bare `/mode` opening the channel-mode modal). `/umode <modes>` still
+    // executes the change directly (mode-args present → apply).
+    if (rest === "") return { kind: "umode-view" };
     return { kind: "umode", modes: rest };
   },
 
@@ -409,11 +420,16 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     }
 
     // First token is neither a channel sigil nor a mode string — treat it
-    // as an explicit target (a nick, for user-MODE via /mode) and require
-    // modes to execute; a lone nick with no modes opens no modal (there
-    // is no per-nick mode viewer), so surface a friendly error.
+    // as an explicit target nick. #229: `/mode <nick>` with NO mode args
+    // opens the UMODE viewer/editor modal — but only when the target is the
+    // operator's OWN nick (the modal edits your own umodes; there is no
+    // per-other-user umode viewer). The parser stays pure, so it emits
+    // `umode-target-view` carrying the target; compose.ts resolves it
+    // against the operator's own nick and errors on a mismatch (mirror of
+    // #216's mode-view resolving the current channel). `/mode <nick> <modes>`
+    // still executes the user-MODE change directly.
     const [modes, ...params] = restToks;
-    if (!modes) return err("mode", "/mode <#channel> to view modes, or /mode <target> <modes>");
+    if (!modes) return { kind: "umode-target-view", target: first };
     return { kind: "mode", target: first, modes, params };
   },
 

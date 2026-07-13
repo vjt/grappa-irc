@@ -539,8 +539,10 @@ describe("parseSlash — channel ops verbs", () => {
     expect(parseSlash("/umode +i")).toEqual({ kind: "umode", modes: "+i" });
   });
 
-  it("/umode missing modes → error", () => {
-    expect(parseSlash("/umode")).toMatchObject({ kind: "error", verb: "umode" });
+  // #229 — bare /umode opens the umode viewer/editor modal (was an error
+  // pre-#229). Mirror of bare /mode opening the channel-mode modal.
+  it("/umode (bare) → umode-view (open the umode modal)", () => {
+    expect(parseSlash("/umode")).toEqual({ kind: "umode-view" });
   });
 
   it("/mode <target> <modes>", () => {
@@ -558,6 +560,25 @@ describe("parseSlash — channel ops verbs", () => {
       target: "#sniffo",
       modes: "+o-v",
       params: ["alice", "rofl"],
+    });
+  });
+
+  // #229 — /mode <nick> with NO mode args opens the umode modal (was an
+  // error pre-#229). The parser stays pure and emits the target;
+  // compose.ts resolves it against the operator's own nick.
+  it("/mode <nick> (no modes) → umode-target-view carrying the target", () => {
+    expect(parseSlash("/mode vjt-grappa")).toEqual({
+      kind: "umode-target-view",
+      target: "vjt-grappa",
+    });
+  });
+
+  it("/mode <nick> <modes> still executes a user-MODE change directly", () => {
+    expect(parseSlash("/mode vjt-grappa +i")).toEqual({
+      kind: "mode",
+      target: "vjt-grappa",
+      modes: "+i",
+      params: [],
     });
   });
 

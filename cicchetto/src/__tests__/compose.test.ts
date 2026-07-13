@@ -175,6 +175,21 @@ vi.mock("../lib/modeModal", () => ({
   modeModalState: vi.fn(() => null),
 }));
 
+// #229 — /umode viewer/editor modal store. compose.ts opens it for bare
+// /umode and /mode <ownnick>.
+vi.mock("../lib/umodeModal", () => ({
+  openUmodeModal: vi.fn(),
+  closeUmodeModal: vi.fn(),
+  umodeModalState: vi.fn(() => null),
+}));
+
+// #229 — nickEquals is used by the /mode <ownnick> self-nick gate. Real
+// impl is pinned in nickEquals.test.ts; here a boundary stub (rfc1459-ish
+// case-insensitive compare is enough for the dispatch tests).
+vi.mock("../lib/nickEquals", () => ({
+  nickEquals: (a: string, b: string) => a.toLowerCase() === b.toLowerCase(),
+}));
+
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
@@ -1358,6 +1373,79 @@ describe("compose submit — /umode and /mode (no channel context required)", ()
 
     expect(socket.pushChannelMode).toHaveBeenCalledWith(1, "#a", "+s", []);
     expect(modeModal.openModeModal).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #229 — bare /umode opens the umode viewer/editor modal for the active
+  // window's network. No channel context required (umodes are per-session).
+  it("bare /umode opens the umode modal for the network", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const umodeModal = await import("../lib/umodeModal");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/umode");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(umodeModal.openUmodeModal).toHaveBeenCalledWith("freenode");
+    expect(socket.pushChannelUmode).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #229 — /mode <ownnick> (no modes) opens the umode modal when the target
+  // resolves to the operator's own nick.
+  it("/mode <ownnick> opens the umode modal when target is the own nick", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const networks = await import("../lib/networks");
+    const umodeModal = await import("../lib/umodeModal");
+    const compose = await import("../lib/compose");
+    // user() must resolve non-null and ownNickForNetwork must return the
+    // target nick for the self-gate to open the modal. The user() mock is
+    // typed `() => null`; the self-gate only needs a truthy value it hands
+    // to the (mocked) ownNickForNetwork, so cast a minimal stub.
+    vi.mocked(networks.user).mockReturnValue({ kind: "user", name: "vjt" } as never);
+    vi.mocked(api.ownNickForNetwork).mockReturnValue("vjt-grappa");
+
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/mode vjt-grappa");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(umodeModal.openUmodeModal).toHaveBeenCalledWith("freenode");
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #229 — /mode <othernick> (no modes) is a friendly error, NOT a modal —
+  // there's no viewer for another user's umodes.
+  it("/mode <othernick> errors (no other-user umode viewer)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const networks = await import("../lib/networks");
+    const umodeModal = await import("../lib/umodeModal");
+    const compose = await import("../lib/compose");
+    vi.mocked(networks.user).mockReturnValue({ kind: "user", name: "vjt" } as never);
+    vi.mocked(api.ownNickForNetwork).mockReturnValue("vjt-grappa");
+
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/mode someone-else");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(umodeModal.openUmodeModal).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ error: expect.stringContaining("someone-else") });
+  });
+
+  // #229 — /mode <nick> <modes> still executes a user-MODE change, no modal.
+  it("/mode <nick> <modes> executes directly (no umode modal)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const umodeModal = await import("../lib/umodeModal");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/mode vjt-grappa +i");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelMode).toHaveBeenCalledWith(1, "vjt-grappa", "+i", []);
+    expect(umodeModal.openUmodeModal).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: true });
   });
 });
