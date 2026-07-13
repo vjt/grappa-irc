@@ -1868,7 +1868,7 @@ defmodule Grappa.Session.ServerTest do
                          kind: :isupport_changed,
                          network_id: net_id,
                          prefix: prefix,
-                         chanmodes: %{c: c_modes}
+                         chanmodes_c: c_modes
                        }
                      },
                      1_000
