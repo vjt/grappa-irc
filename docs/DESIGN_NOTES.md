@@ -19297,3 +19297,99 @@ works (at the tail with no overlay, an inbound peer message scrolls to bottom).
 
 Client-only (cic bundle + e2e) — no wire, migration, server, or config change.
 Rides the hot `--cic` bundle.
+
+## 2026-07-13 — #216: channel modes visible on join + /mode viewer/editor modal (SHAPE 2 + full ISUPPORT)
+
+**The P0 (root cause).** In-channel the chanmode indicator was blank; only
+after a mid-session `/mode #chan +s` did `+s` appear next to the topic. ircds
+do NOT send `324 RPL_CHANNELMODEIS` unsolicited on JOIN (unlike the `332`/`333`
+topic numerics), and grappa never issued the bare `MODE #chan` query that
+elicits it — so the initial mode set was never fetched. The whole
+324→`channel_modes` cache→broadcast→cold-snapshot→cic pipeline already existed;
+the ONLY missing link was that query. **Fix:** `Client.send_channel_modes/2`
+(bare `MODE #chan`, sibling to `send_banlist/2`'s `MODE #chan b`) called from
+the `{:joined, channel}` apply-effects arm. Every join path — autojoin, `/join`,
+NickServ-driven, invite-rejoin — funnels through the self-JOIN echo, so one call
+covers them all; a dead-socket send is non-fatal via `maybe_log_send_failure/2`
+(a cosmetic mode query must never crash the session). This makes #216 a SERVER
+change (hot-reloadable, but a server deploy — NOT just `--cic`).
+
+**Full ISUPPORT plumbing (vjt's decision over the cic-static-table option).**
+The `/mode` modal's available toggles must come from the network's real
+capability set — `005 RPL_ISUPPORT` `CHANMODES=` + `PREFIX=` — not a hardcoded
+guess. Those were compile-time constants in `EventRouter`
+(`@user_mode_prefixes`, `@channel_modes_with_param`), flagged "deferred to
+Phase 5". This is that lift:
+- New pure `Grappa.Session.ISupport` module: `default/0` (the exact former
+  constant values — bahamut/Azzurra), `merge_isupport/2` (folds CHANMODES/PREFIX
+  off a 005 param list; malformed tokens ignored so a misbehaving server can't
+  corrupt classification), `takes_param?/3` (RFC-2811 type A/B always, type C on
+  `+` only, type D never — the `-l`-consumes-no-arg correctness point),
+  `user_prefix/2`. Classes are plain lists, not MapSets (dialyzer
+  `contract_with_opaque` fights an opaque type embedded in a literal-returning
+  spec; the sets are <20 single chars so `in` is trivially cheap and the shape
+  is directly JSON-encodable).
+- **Total-consistency (no two sources of truth):** EventRouter's two MODE-string
+  walkers (`walk_modes/5` for the member map, `walk_channel_modes/5` for the
+  channel_modes cache) now read the table off `state.isupport` via
+  `ISupport.user_prefix/2` + `ISupport.takes_param?/3`; the two `@`-constants are
+  DELETED. A pure router state without an `:isupport` key (unit tests) falls back
+  to `ISupport.default/0`, so pre-#216 parsing is byte-identical.
+- `Session.Server` holds one `ISupport.t()` per session (init = `default/0`),
+  folds CHANMODES/PREFIX in the 005 handler, and broadcasts the typed
+  `isupport_changed` payload on `Topic.user/1` when it changes (sibling to
+  `own_nick_changed`). `Session.get_isupport/2` facade + a cold-WS-subscribe
+  snapshot (`push_isupport_if_live`, riding the per-channel after-join push)
+  close the always-on-session race where every 005 fired before any client
+  subscribed.
+- **Wire payload is FLAT** (`chanmodes_a..d` top-level string lists, not a nested
+  object): the wire-type codegen emits nested maps in an indentation biome
+  reflows, so the two check.sh gates (`gen_wire_types --check` + `bun run check`)
+  disagree on a nested shape; every other wire payload is flat anyway.
+
+**cic side.** `lib/isupport.ts` (`isupportByNetwork` store keyed by network id +
+`DEFAULT_ISUPPORT` mirror + `isupportForNetwork/1` fallback) seeded by the
+`isupport_changed` event; `lib/channelModes.ts` (the static mode-description
+table — UI copy that MUST live in cic per the no-localized-strings rule; ISUPPORT
+supplies letters + param-arity, cic supplies meaning — plus `availableModes/1`
+which EXCLUDES PREFIX membership modes and type-A list modes, neither of which is
+a boolean toggle).
+
+**The modal.** `ModeModal.tsx` (gemello of WhoModal/NamesModal): available
+toggles ← `availableModes(isupportForNetwork(id))`, current modes ←
+`modesByChannel` (from the join-time 324), edit gate ← own-nick's `@`/`%` in
+`membersByChannel` (the exact `ownModes` derivation MembersPane uses — no
+parallel state; a non-op sees read-only toggles). Toggling pushes the same
+`mode` WS verb `/mode #chan +s` uses (one feature, one code path): active→`-x`,
+inactive→`+x`. Registers `createOverlayLock` so ScrollbackPane freezes while the
+modal covers it (the new-covering-modal-must-push-overlay-refcount contract from
+#219-general). Retro chunky toggle buttons with an inset double-frame on the
+active ("engaged switch") state — restrained, no skeuomorphic bevels/gradients.
+
+**Three entry points** (vjt spec), dispatched by argument shape in the
+slashCommands parser: `/mode #chan` (channel, no mode args) → `mode-view` modal;
+bare `/mode` → `mode-view` for the current channel; tap the `.topic-bar-modes`
+indicator (now a `<button>`, keyboard-reachable — the #220
+noStaticElementInteractions lesson). `/mode` WITH mode args still executes
+directly (no modal): `/mode #chan +s` → `mode`, `/mode +s` → `mode-apply-current`
+(current channel). Param modes (k/l) show their value read-only in this MVP — a
+value SET still works via the explicit `/mode #chan +k secret` command, which
+bypasses the modal.
+
+**Deploy implication.** SHAPE 2 touches the server (`:joined` arm + 005 handler
++ wire) → this bundle needs a SERVER deploy (auto-hot, zero session drop), NOT
+just `deploy-m42.sh --cic`. A hot reload's MODE-on-join fires only for channels
+joined AFTER the reload; already-joined live channels populate on the next
+join/reconnect — acceptable for a cosmetic P1.
+
+**Tests.** Server: `isupport_test.exs` (parse + default + type-C sign
+sensitivity), `event_router_test.exs` (walkers read state.isupport, `-l` consumes
+no arg), `server_test.exs` (MODE-on-join query + 324→cache→broadcast, 005 stores
++ broadcasts isupport, get_isupport default), `wire_test.exs` (flat JSON-encodable
+payload), `grappa_channel_test.exs` (cold-snapshot). cic: `isupport.test.ts`,
+`channelModes.test.ts`, `modeModal.test.ts`, `ModeModal.test.tsx`,
+`userTopic.test.ts` (narrow + dispatch), `slashCommands.test.ts` (the parser
+split), `compose.test.ts` (the three mode kinds). E2e
+`issue216-channel-modes-on-join.spec.ts` is authoritative: a peer sets `+t`
+BEFORE vjt joins so the indicator can ONLY be populated by the join-time query —
+verified RED (query disabled → indicator never appears) then GREEN.

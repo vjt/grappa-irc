@@ -207,7 +207,8 @@ Typed in cicchetto's compose box, parsed client-side, dispatched to REST or IRC.
 | `/banlist` | List channel bans inline |
 | `/invite <nick> [#chan]` | INVITE (active channel by default) |
 | `/umode <modes>` | Set own user modes |
-| `/mode <target> <modes> [args]` | Raw `MODE` pass-through (escape hatch) |
+| `/mode <#chan> <modes> [args]` | Apply channel `MODE` directly (e.g. `/mode #c +k key`) |
+| `/mode [#chan]` | With NO mode args: open the mode viewer/editor modal (retro toggle buttons; chanop-gated editing; available modes from the network's ISUPPORT). Bare `/mode` targets the current channel; tapping the mode indicator next to the topic opens it too |
 | `/away [reason]` | Set away; bare `/away` clears explicit away |
 | `/watch add\|del\|list <pattern>` | Watchlist / highlight (alias `/highlight`) |
 | `/connect <network>` | Unpark + respawn a network |
