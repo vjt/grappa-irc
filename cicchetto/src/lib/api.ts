@@ -842,6 +842,23 @@ export type WireUserEvent =
   | { kind: "away_confirmed"; network: string; state: "present" | "away" }
   | { kind: "own_nick_changed"; network_id: number; nick: string }
   | {
+      // #216 — per-network ISUPPORT channel-mode capability set, parsed
+      // from 005 RPL_ISUPPORT CHANMODES= + PREFIX= server-side. The
+      // `/mode` modal drives its available toggles from this. Rides
+      // `Topic.user/1` (per-network, not per-channel) and is cold-
+      // snapshotted on the per-channel after-join push. userTopic.ts
+      // dispatches into `seedIsupport(network_id, ...)`. The four
+      // CHANMODES classes are flat top-level fields (wire payloads are
+      // flat; the codegen/biome formatters disagree on nested objects).
+      kind: "isupport_changed";
+      network_id: number;
+      chanmodes_a: string[];
+      chanmodes_b: string[];
+      chanmodes_c: string[];
+      chanmodes_d: string[];
+      prefix: Record<string, string>;
+    }
+  | {
       // CP17 — server-driven `:pending` window-state origination.
       // Server's `record_in_flight_join/2` emits this on `Topic.user/1`
       // (NOT per-channel — chicken-and-egg: cic only joins the

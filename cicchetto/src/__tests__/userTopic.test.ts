@@ -120,6 +120,10 @@ vi.mock("../lib/channelDirectory", () => ({
   onDirectoryFailed: vi.fn(),
 }));
 
+vi.mock("../lib/isupport", () => ({
+  seedIsupport: vi.fn(),
+}));
+
 // #100 — builds a valid connection_state_changed payload (the narrower
 // requires the full set of top-level + nested `network` fields).
 function connectionStateChanged(slug: string, to: "connected" | "parked" | "failed") {
@@ -259,6 +263,56 @@ describe("userTopic", () => {
       expect(networks.mutateNetworkNick).toHaveBeenCalledTimes(2);
       expect(networks.mutateNetworkNick).toHaveBeenNthCalledWith(1, 1, "grappa-1");
       expect(networks.mutateNetworkNick).toHaveBeenNthCalledWith(2, 1, "grappa-2");
+    });
+  });
+
+  // #216 — isupport_changed seeds the per-network capability store.
+  describe("isupport_changed event (#216)", () => {
+    it("calls seedIsupport with the narrowed capability table", async () => {
+      const isupport = await import("../lib/isupport");
+      channelMock.fireEvent({
+        kind: "isupport_changed",
+        network_id: 7,
+        chanmodes_a: ["b", "e", "I"],
+        chanmodes_b: ["k"],
+        chanmodes_c: ["l"],
+        chanmodes_d: ["n", "t", "s"],
+        prefix: { q: "~", o: "@", v: "+" },
+      });
+      expect(isupport.seedIsupport).toHaveBeenCalledWith(7, {
+        chanmodes: { a: ["b", "e", "I"], b: ["k"], c: ["l"], d: ["n", "t", "s"] },
+        prefix: { q: "~", o: "@", v: "+" },
+      });
+    });
+
+    it("drops isupport_changed with a non-number network_id (narrower rejects)", async () => {
+      const isupport = await import("../lib/isupport");
+      vi.mocked(isupport.seedIsupport).mockClear();
+      channelMock.fireEvent({
+        kind: "isupport_changed",
+        network_id: "seven",
+        chanmodes_a: [],
+        chanmodes_b: [],
+        chanmodes_c: [],
+        chanmodes_d: [],
+        prefix: {},
+      });
+      expect(isupport.seedIsupport).not.toHaveBeenCalled();
+    });
+
+    it("drops isupport_changed with a malformed chanmodes class (narrower rejects)", async () => {
+      const isupport = await import("../lib/isupport");
+      vi.mocked(isupport.seedIsupport).mockClear();
+      channelMock.fireEvent({
+        kind: "isupport_changed",
+        network_id: 7,
+        chanmodes_a: [],
+        chanmodes_b: [],
+        chanmodes_c: [],
+        chanmodes_d: [1, 2, 3],
+        prefix: {},
+      });
+      expect(isupport.seedIsupport).not.toHaveBeenCalled();
     });
   });
 

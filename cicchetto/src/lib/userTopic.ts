@@ -14,6 +14,7 @@ import { onDirectoryComplete, onDirectoryFailed, onDirectoryProgress } from "./c
 import { channelKey } from "./channelKey";
 import { patchHomeNetwork } from "./home";
 import { appendInviteAck } from "./inviteAck";
+import { seedIsupport } from "./isupport";
 import { setLusersBundle } from "./lusersBundle";
 import { clearMentionsBundle, setMentionsBundle } from "./mentionsWindow";
 import { setNamesReply } from "./namesModal";
@@ -191,6 +192,22 @@ function narrowWindowsMap(raw: unknown): Record<string, QueryWindowEntry[]> | nu
   return out;
 }
 
+// #216 — narrows a string[] (used for the four CHANMODES classes).
+function narrowStringArray(raw: unknown): string[] | null {
+  return narrowArray(raw, (el) => (typeof el === "string" ? el : null));
+}
+
+// #216 — narrows a Record<string, string> (the PREFIX letter→sigil map).
+function narrowStringRecord(raw: unknown): Record<string, string> | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const out: Record<string, string> = {};
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof val !== "string") return null;
+    out[key] = val;
+  }
+  return out;
+}
+
 // Codebase audit cic M1 — runtime narrowing for WireUserEvent. The
 // `WireUserEvent` discriminated union is a TypeScript-side contract;
 // it cannot enforce shape at runtime. A malformed server push (kind
@@ -246,6 +263,29 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
     case "own_nick_changed":
       if (typeof r.network_id !== "number" || typeof r.nick !== "string") return null;
       return { kind: "own_nick_changed", network_id: r.network_id, nick: r.nick };
+    case "isupport_changed": {
+      // #216 — validate the CHANMODES/PREFIX capability shape at the WS
+      // edge before it reaches seedIsupport (same boundary hardening as
+      // every other arm). A malformed payload drops + logs rather than
+      // corrupting the isupportByNetwork store. The four CHANMODES
+      // classes are flat top-level fields on the wire.
+      if (typeof r.network_id !== "number") return null;
+      const a = narrowStringArray(r.chanmodes_a);
+      const b = narrowStringArray(r.chanmodes_b);
+      const c = narrowStringArray(r.chanmodes_c);
+      const d = narrowStringArray(r.chanmodes_d);
+      const prefix = narrowStringRecord(r.prefix);
+      if (a === null || b === null || c === null || d === null || prefix === null) return null;
+      return {
+        kind: "isupport_changed",
+        network_id: r.network_id,
+        chanmodes_a: a,
+        chanmodes_b: b,
+        chanmodes_c: c,
+        chanmodes_d: d,
+        prefix,
+      };
+    }
     case "window_pending":
       if (typeof r.network !== "string" || typeof r.channel !== "string" || r.state !== "pending")
         return null;
@@ -700,6 +740,22 @@ createRoot(() => {
           // createEffect will re-run and subscribe to the new own-nick
           // topic on the next tick.
           mutateNetworkNick(payload.network_id, payload.nick);
+          return;
+
+        case "isupport_changed":
+          // #216 — seed the per-network capability table the /mode modal
+          // reads. Live edge (005 mid-session) + cold snapshot (per-channel
+          // after-join) both flow here; last-write-wins idempotent. Fold
+          // the flat wire fields into the nested store shape.
+          seedIsupport(payload.network_id, {
+            chanmodes: {
+              a: payload.chanmodes_a,
+              b: payload.chanmodes_b,
+              c: payload.chanmodes_c,
+              d: payload.chanmodes_d,
+            },
+            prefix: payload.prefix,
+          });
           return;
 
         case "connection_state_changed":
