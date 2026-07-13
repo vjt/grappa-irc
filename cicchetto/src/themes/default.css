@@ -1145,6 +1145,32 @@ html.resize-dragging * {
   display: none; /* desktop: hidden; mobile media query un-hides */
 }
 
+/* #222 — per-channel presence-filter toggle (hide/show join/part/quit).
+   Sits inline in the topic bar; visible on both desktop and mobile (the
+   noise it hides matters most on small mobile viewports). Muted by default;
+   the `.presence-hidden` state (rows currently suppressed) gets the accent
+   so the operator can see at a glance the channel is filtered. */
+.topic-bar-presence-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 0.25rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+}
+
+.topic-bar-presence-toggle:hover {
+  color: var(--fg);
+}
+
+.topic-bar-presence-toggle.presence-hidden {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .topic-bar-channel {
   font-weight: bold;
   color: var(--accent);

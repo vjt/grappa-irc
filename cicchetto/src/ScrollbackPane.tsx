@@ -24,6 +24,7 @@ import { nickEquals } from "./lib/nickEquals";
 import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { overlayCount } from "./lib/overlayScrollLock";
 import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
+import { channelPresenceVisible, SUPPRESSED_PRESENCE_KINDS } from "./lib/presenceFilter";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
 import {
@@ -944,7 +945,22 @@ const ScrollbackPane: Component<Props> = (props) => {
   //   focus session from spawning a fresh marker — they're live-read by
   //   definition.
   const rows = createMemo((): Row[] => {
-    const msgs = messages() ?? [];
+    const allMsgs = messages() ?? [];
+    // #222 — render-layer presence filter. On a "large" channel the
+    // join/part/quit/nick_change rows are pure noise; suppress them by
+    // default, with a per-channel pref that WINS over the size default.
+    // Reading BOTH the pref signal (via channelPresenceVisible) AND the
+    // live member count inside this memo makes the filter reactive to the
+    // toggle AND to membership crossing the threshold. Filter at the
+    // RENDER layer only — the message store stays intact so unread-count,
+    // the read-cursor divider, and own-JOIN auto-focus (all read
+    // messages(), not rows()) keep working. Narrow set: mode/topic/kick/
+    // server_event are NOT noise and are never dropped.
+    const memberCount = (membersByChannel()[key()] ?? []).length;
+    const presenceVisible = channelPresenceVisible(key(), memberCount);
+    const msgs = presenceVisible
+      ? allMsgs
+      : allMsgs.filter((m) => !SUPPRESSED_PRESENCE_KINDS.has(m.kind));
     // 2026-06-01: invite-ack rows for the $server window only. Mirrors
     // the previous `<Show when={props.kind === "server"}>` gate on
     // the now-deleted sibling render. Flatten across all target-channel
