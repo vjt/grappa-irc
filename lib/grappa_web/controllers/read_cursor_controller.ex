@@ -8,8 +8,10 @@ defmodule GrappaWeb.ReadCursorController do
   body `{"message_id": <int>}`. Returns 200
   `{"last_read_message_id": <int>}`.
 
-  Last-write-wins; the controller is a thin parse + dispatch +
-  broadcast layer over `Grappa.ReadCursor.set/4`.
+  Monotonic advance-only; the controller is a thin parse + dispatch +
+  broadcast layer over `Grappa.ReadCursor.set/4`. A stale (lower) POST
+  is clamped by the context and re-affirms the current (higher) cursor,
+  so the broadcast below carries the correct id (see #233).
 
   ## Cross-device broadcast — V4 visitor-parity (2026-05-15)
 
@@ -50,7 +52,8 @@ defmodule GrappaWeb.ReadCursorController do
   @doc """
   `POST /networks/:network_id/channels/:channel_id/read-cursor` — set
   the operator's cursor on `(subject, network.id, channel)` to
-  `message_id`. Last-write-wins via `ReadCursor.set/4`.
+  `message_id`. Monotonic advance-only via `ReadCursor.set/4` (a lower
+  id is clamped to the current cursor).
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request | :invalid_message | Ecto.Changeset.t()}

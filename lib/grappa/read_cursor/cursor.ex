@@ -23,10 +23,11 @@ defmodule Grappa.ReadCursor.Cursor do
 
   ## Direction
 
-  `last_read_message_id` is set last-write-wins by
-  `Grappa.ReadCursor.set/4`. The changeset enforces the FK + subject
-  XOR + non-negative id; direction is a context concern, not a
-  column-level invariant.
+  `last_read_message_id` is advanced monotonically by
+  `Grappa.ReadCursor.set/4` (a lower id is clamped to the current
+  cursor — #233). The changeset enforces the FK + subject XOR +
+  non-negative id; the advance-only direction is a context concern, not
+  a column-level invariant.
   """
 
   use Ecto.Schema

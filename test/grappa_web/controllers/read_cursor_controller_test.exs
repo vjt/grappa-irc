@@ -4,8 +4,8 @@ defmodule GrappaWeb.ReadCursorControllerTest do
   cursor write surface.
 
   Coverage:
-    * happy path: insert + same-id no-op + last-write-wins on lower id
-      and higher id.
+    * happy path: insert + same-id no-op + monotonic advance on higher
+      id + clamp-to-current on a stale lower id (#233).
     * 422 when message_id doesn't belong to (subject, network, channel).
     * 400 on malformed payload (missing message_id, non-integer,
       non-positive, malformed channel).
@@ -80,8 +80,14 @@ defmodule GrappaWeb.ReadCursorControllerTest do
       assert json_response(conn, 200) == %{"last_read_message_id" => m2.id}
     end
 
-    test "moves backward when message_id is lower than the existing cursor (operator settled higher up)",
+    test "clamps a stale lower message_id to the current cursor (#233 monotonic — re-affirms higher id)",
          %{conn: conn, user: user, network: network} do
+      # #233: a stale scroll-to-bottom POST carrying a LOWER id (the
+      # currently-loaded page bottom, arriving during a slow message-page
+      # load) must NOT regress the cursor. The controller returns the
+      # current (higher) id, so its `read_cursor_set` broadcast re-affirms
+      # the correct position instead of snapping every device's view back
+      # to the old read marker. Pre-fix this returned m1 (the bug).
       m1 = insert_message(user, network, "#sniffo", 1)
       m2 = insert_message(user, network, "#sniffo", 2)
 
@@ -95,7 +101,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
           "message_id" => m1.id
         })
 
-      assert json_response(conn, 200) == %{"last_read_message_id" => m1.id}
+      assert json_response(conn, 200) == %{"last_read_message_id" => m2.id}
     end
   end
 

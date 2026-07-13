@@ -4,13 +4,24 @@ defmodule Grappa.ReadCursor do
 
   ## Semantics
 
-  The cursor is "the row the operator is currently looking at". cic
-  POSTs `set/4` on every settle event — focus-leave, browser-blur,
-  future scroll-settle. Last-write-wins; direction is not enforced.
-  Moving backwards is a legitimate operation: the operator scrolled up
-  to re-read context, settled there. Cross-device fan-out via
-  `broadcast_set/4` keeps every open device aligned on the same
-  position.
+  The cursor is "the newest row the operator has read". cic POSTs
+  `set/4` on every settle event — focus-leave, browser-blur,
+  scroll-settle, scroll-to-bottom tap. The write is **monotonic
+  (advance-only)**: a POST carrying an id at or below the stored cursor
+  is a no-op that returns the existing (higher) cursor unchanged. A
+  lower id is never a deliberate backward move — it is a stale POST
+  racing a slow message-page load (see #233 / DESIGN_NOTES 2026-07-14),
+  and writing it backward would fan a `read_cursor_set` broadcast that
+  snaps every device's view back to the old read marker. cic is already
+  forward-only locally; the server is the single authoritative regressor,
+  so the clamp lives here. Cross-device fan-out via `broadcast_set/4`
+  keeps every open device aligned on the same position.
+
+  **Deliberate mark-as-unread** (the one legitimate backward move) has
+  no caller today — no cic surface, no REST verb. It is intentionally
+  NOT supported through `set/4`: when the feature ships it gets its OWN
+  explicit path that bypasses the monotonic guard, added THEN with its
+  caller (YAGNI — do not relax this guard to `<` to pre-empt it).
 
   Surfaces consuming the cursor:
 
@@ -113,13 +124,16 @@ defmodule Grappa.ReadCursor do
   @doc """
   Sets the cursor for `(subject, network_id, channel)` to `message_id`.
 
-  Last-write-wins. The cursor represents "the row the operator is
-  currently looking at" — cic POSTs on every settle (focus-leave,
-  browser-blur, future scroll-settle). Direction is not enforced;
-  moving backwards is a legitimate operation (operator scrolled up to
-  re-read context, settled there). Cross-device fan-out via
-  `broadcast_set/4` keeps every open device aligned on the same
-  position.
+  **Monotonic (advance-only).** The cursor represents "the newest row
+  the operator has read"; cic POSTs on every settle (focus-leave,
+  browser-blur, scroll-settle, scroll-to-bottom tap). A POST whose
+  `message_id` is at or below the current cursor is a no-op and returns
+  the existing (higher) cursor unchanged — never a backward write. A
+  lower id is a stale POST racing a slow message-page load (#233), not
+  a deliberate move; writing it backward regressed the cursor and the
+  `broadcast_set/4` fan-out snapped every device's view to the old read
+  marker. Deliberate mark-as-unread has no caller today and, when built,
+  gets its own explicit backward path (see moduledoc).
 
   Validation:
 
@@ -128,8 +142,9 @@ defmodule Grappa.ReadCursor do
       `{:error, :invalid_message}`.
     * Subject XOR enforced by changeset.
 
-  Returns `{:ok, %Cursor{}}` on insert / update; the returned struct
-  always reflects the post-call state. `{:error, _}` on validation
+  Returns `{:ok, %Cursor{}}` on insert / advance / clamped no-op; the
+  returned struct always reflects the post-call state (on a stale lower
+  POST that is the current, higher cursor). `{:error, _}` on validation
   failure (`:invalid_message` for FK / iso violation,
   `Ecto.Changeset.t()` for changeset-level errors).
 
@@ -244,7 +259,19 @@ defmodule Grappa.ReadCursor do
           {:ok, Cursor.t()} | {:error, Ecto.Changeset.t()}
   defp do_set(subject, network_id, channel, message_id) do
     case get(subject, network_id, channel) do
-      %Cursor{last_read_message_id: ^message_id} = cursor ->
+      # Monotonic clamp (#233): `set/4` is advance-only. Any id at or
+      # below the stored cursor is a no-op that returns the EXISTING
+      # (higher-or-equal) cursor unchanged — this subsumes the old
+      # equal-id no-op (equal is just the `<=` boundary) AND rejects the
+      # stale/lower POST that used to regress the cursor. A stale lower
+      # id arrives when cic taps scroll-to-bottom during a ~1.5s
+      # message-page load and the currently-loaded bottom (near the old
+      # read marker) POSTs before the newest page lands; last-write-wins
+      # wrote it backward and the `read_cursor_set` broadcast snapped
+      # every view back ~2s later (see moduledoc "Monotonic advance").
+      # Deliberate mark-as-unread has no caller today; when built it gets
+      # its OWN explicit backward path — do NOT relax this to `<`.
+      %Cursor{last_read_message_id: current} = cursor when message_id <= current ->
         {:ok, cursor}
 
       %Cursor{} = cursor ->

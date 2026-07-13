@@ -7,8 +7,8 @@ defmodule Grappa.ReadCursorTest do
 
     * `get/3` returns nil when no cursor exists, the row when it does.
     * `set/4` insert path (no prior cursor).
-    * `set/4` last-write-wins: same-id no-ops, lower-id moves backward,
-      higher-id moves forward.
+    * `set/4` monotonic advance: same-id no-ops, lower-id is a no-op
+      (cursor stays at the higher id, #233), higher-id moves forward.
     * `set/4` rejects `:invalid_message` when the message_id doesn't
       belong to (subject, network, channel) — wrong network, wrong
       channel, wrong subject, or absent row.
@@ -146,7 +146,7 @@ defmodule Grappa.ReadCursorTest do
     end
   end
 
-  describe "set/4 — last-write-wins" do
+  describe "set/4 — monotonic advance" do
     test "setting to a higher id updates the cursor" do
       user = user_fixture()
       net = network_fixture()
@@ -176,17 +176,33 @@ defmodule Grappa.ReadCursorTest do
         ReadCursor.set({:user, user.id}, net.id, "#x", msg.id)
     end
 
-    test "setting to a lower id moves the cursor backward (operator scrolled up + settled)" do
+    test "setting to a lower id is a no-op — cursor stays at the higher id (#233 monotonic)" do
+      # #233: `set/4` is advance-only. A stale (lower) POST — e.g. the
+      # currently-loaded page bottom arriving during a ~1.5s message-page
+      # load while the operator taps scroll-to-bottom — MUST NOT regress
+      # the cursor. Pre-fix `do_set/4` was last-write-wins and wrote the
+      # lower id, whose `read_cursor_set` broadcast snapped every cic view
+      # back to the old read marker ~2s later. The clamp returns the
+      # EXISTING (higher) cursor unchanged, so the stale POST re-affirms
+      # the correct position instead of regressing it. Deliberate
+      # mark-as-unread (the one legitimate backward move) has no caller
+      # today and, when built, gets its OWN explicit path — see the
+      # `Grappa.ReadCursor` moduledoc + DESIGN_NOTES 2026-07-14.
       user = user_fixture()
       net = network_fixture()
       m1 = insert_message(%{user_id: user.id}, net.id, "#x", 1)
       m2 = insert_message(%{user_id: user.id}, net.id, "#x", 2)
-      m1_id = m1.id
+      m2_id = m2.id
 
       {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "#x", m2.id)
 
-      {:ok, %Cursor{last_read_message_id: ^m1_id}} =
+      # Stale lower POST returns the current higher cursor, no write.
+      {:ok, %Cursor{last_read_message_id: ^m2_id}} =
         ReadCursor.set({:user, user.id}, net.id, "#x", m1.id)
+
+      # And the stored row is unchanged — the guard did not persist m1.
+      assert %Cursor{last_read_message_id: ^m2_id} =
+               ReadCursor.get({:user, user.id}, net.id, "#x")
     end
   end
 
