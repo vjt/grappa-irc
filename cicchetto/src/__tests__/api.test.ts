@@ -159,6 +159,18 @@ describe("WireChannelEvent canonical union (H3)", () => {
     },
     {
       event: {
+        kind: "isupport_changed",
+        network_id: 1,
+        chanmodes_a: ["b", "e", "I"],
+        chanmodes_b: ["k"],
+        chanmodes_c: ["l"],
+        chanmodes_d: ["n", "t", "s"],
+        prefix: { o: "@", h: "%", v: "+" },
+      },
+      expectedKind: "isupport_changed",
+    },
+    {
+      event: {
         kind: "channel_created",
         network: "azzurra",
         channel: "#italia",
@@ -220,6 +232,7 @@ describe("WireChannelEvent canonical union (H3)", () => {
         case "message":
         case "topic_changed":
         case "channel_modes_changed":
+        case "isupport_changed":
         case "channel_created":
         case "members_seeded":
         case "joined":

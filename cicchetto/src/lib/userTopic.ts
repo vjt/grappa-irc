@@ -32,7 +32,13 @@ import { setWhoisBundle } from "./whoisCard";
 import { setWhoReply } from "./whoModal";
 import { setWhowasBundle } from "./whowasCard";
 import { setFailed, setInvited, setJoined, setKicked, setPending } from "./windowState";
-import { isMessageKind, narrowMembers, narrowWhoUsers, narrowWindowStateEvent } from "./wireNarrow";
+import {
+  isMessageKind,
+  narrowIsupportChanged,
+  narrowMembers,
+  narrowWhoUsers,
+  narrowWindowStateEvent,
+} from "./wireNarrow";
 import type { ServerSettingsWireUploadView } from "./wireTypes";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
@@ -192,22 +198,6 @@ function narrowWindowsMap(raw: unknown): Record<string, QueryWindowEntry[]> | nu
   return out;
 }
 
-// #216 — narrows a string[] (used for the four CHANMODES classes).
-function narrowStringArray(raw: unknown): string[] | null {
-  return narrowArray(raw, (el) => (typeof el === "string" ? el : null));
-}
-
-// #216 — narrows a Record<string, string> (the PREFIX letter→sigil map).
-function narrowStringRecord(raw: unknown): Record<string, string> | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const out: Record<string, string> = {};
-  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof val !== "string") return null;
-    out[key] = val;
-  }
-  return out;
-}
-
 // Codebase audit cic M1 — runtime narrowing for WireUserEvent. The
 // `WireUserEvent` discriminated union is a TypeScript-side contract;
 // it cannot enforce shape at runtime. A malformed server push (kind
@@ -263,29 +253,12 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
     case "own_nick_changed":
       if (typeof r.network_id !== "number" || typeof r.nick !== "string") return null;
       return { kind: "own_nick_changed", network_id: r.network_id, nick: r.nick };
-    case "isupport_changed": {
-      // #216 — validate the CHANMODES/PREFIX capability shape at the WS
-      // edge before it reaches seedIsupport (same boundary hardening as
-      // every other arm). A malformed payload drops + logs rather than
-      // corrupting the isupportByNetwork store. The four CHANMODES
-      // classes are flat top-level fields on the wire.
-      if (typeof r.network_id !== "number") return null;
-      const a = narrowStringArray(r.chanmodes_a);
-      const b = narrowStringArray(r.chanmodes_b);
-      const c = narrowStringArray(r.chanmodes_c);
-      const d = narrowStringArray(r.chanmodes_d);
-      const prefix = narrowStringRecord(r.prefix);
-      if (a === null || b === null || c === null || d === null || prefix === null) return null;
-      return {
-        kind: "isupport_changed",
-        network_id: r.network_id,
-        chanmodes_a: a,
-        chanmodes_b: b,
-        chanmodes_c: c,
-        chanmodes_d: d,
-        prefix,
-      };
-    }
+    case "isupport_changed":
+      // #216 — dual-topic event: this is the LIVE 005 edge on the user
+      // topic (the per-channel cold-snapshot goes through the identical
+      // `narrowIsupportChanged` in wireNarrow.ts). Shared narrower so the
+      // flat CHANMODES/PREFIX shape is validated in exactly one place.
+      return narrowIsupportChanged(r);
     case "window_pending":
       if (typeof r.network !== "string" || typeof r.channel !== "string" || r.state !== "pending")
         return null;

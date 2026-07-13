@@ -133,6 +133,51 @@ function narrowModesEntry(raw: unknown): ModesEntry | null {
   };
 }
 
+// #216 — a `string[]` (an ISUPPORT CHANMODES class or the like).
+function narrowStringArray(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  for (const el of raw) {
+    if (typeof el !== "string") return null;
+  }
+  return raw as string[];
+}
+
+// #216 — a `Record<string, string>` (the ISUPPORT PREFIX letter→sigil map).
+function narrowStringRecord(raw: unknown): Record<string, string> | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const out: Record<string, string> = {};
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof val !== "string") return null;
+    out[key] = val;
+  }
+  return out;
+}
+
+// #216 — narrows the flat `isupport_changed` payload. Shared by the
+// per-channel narrower (cold-WS-subscribe snapshot) AND the user-topic
+// narrower (live 005 edge) — the event is dual-topic (see `WireChannelEvent`
+// in api.ts). Returns the fully-typed union member or null on any mismatch.
+export function narrowIsupportChanged(
+  r: Record<string, unknown>,
+): Extract<WireChannelEvent, { kind: "isupport_changed" }> | null {
+  if (typeof r.network_id !== "number") return null;
+  const a = narrowStringArray(r.chanmodes_a);
+  const b = narrowStringArray(r.chanmodes_b);
+  const c = narrowStringArray(r.chanmodes_c);
+  const d = narrowStringArray(r.chanmodes_d);
+  const prefix = narrowStringRecord(r.prefix);
+  if (a === null || b === null || c === null || d === null || prefix === null) return null;
+  return {
+    kind: "isupport_changed",
+    network_id: r.network_id,
+    chanmodes_a: a,
+    chanmodes_b: b,
+    chanmodes_c: c,
+    chanmodes_d: d,
+    prefix,
+  };
+}
+
 export function narrowMembers(raw: unknown): MemberEntry[] | null {
   if (!Array.isArray(raw)) return null;
   const out: MemberEntry[] = [];
@@ -311,6 +356,11 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
       if (modes === null) return null;
       return { kind: "channel_modes_changed", network: r.network, channel: r.channel, modes };
     }
+    case "isupport_changed":
+      // #216 — dual-topic event; the per-channel cold-snapshot pushes it
+      // here, the live 005 edge on the user topic. Same flat shape both
+      // ways (shared narrower).
+      return narrowIsupportChanged(r);
     // UX-5 BJ (2026-05-19) — recognized-but-ignored. JoinBanner was the
     // only consumer; killed in BJ. Server still emits per-channel on
     // every 329 RPL_CREATIONTIME. Narrow + route to a no-op `case` in

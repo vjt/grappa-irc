@@ -7,6 +7,7 @@ import { playBeep } from "./beep";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { seedModes, seedTopic } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
+import { seedIsupport } from "./isupport";
 import { applyPresenceEvent, seedMembers } from "./members";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
@@ -352,6 +353,22 @@ createRoot(() => {
         case "channel_modes_changed":
           seedModes(key, payload.modes);
           return;
+        case "isupport_changed":
+          // #216 — per-network ISUPPORT capability set. Rides the
+          // per-channel cold-WS-subscribe snapshot (the always-on-session
+          // path: the live 005 fired long before this client subscribed).
+          // Seed the same store userTopic.ts's live arm feeds — keyed by
+          // network id, last-write-wins idempotent.
+          seedIsupport(payload.network_id, {
+            chanmodes: {
+              a: payload.chanmodes_a,
+              b: payload.chanmodes_b,
+              c: payload.chanmodes_c,
+              d: payload.chanmodes_d,
+            },
+            prefix: payload.prefix,
+          });
+          return;
         // UX-5 BJ (2026-05-19) — recognized-but-ignored. JoinBanner was
         // the only consumer; killed in BJ. Server still emits per-channel
         // on every 329 RPL_CREATIONTIME. Explicit no-op keeps the
@@ -502,6 +519,7 @@ createRoot(() => {
       switch (payload.kind) {
         case "topic_changed":
         case "channel_modes_changed":
+        case "isupport_changed":
         case "channel_created":
         case "members_seeded":
         case "joined":

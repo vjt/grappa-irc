@@ -187,6 +187,42 @@ describe("narrowChannelEvent (bucket G H4+U3)", () => {
     });
   });
 
+  // #216 — isupport_changed is a DUAL-topic event: the per-channel
+  // cold-WS-subscribe snapshot pushes it on the channel socket, so
+  // narrowChannelEvent MUST recognize it (a regression here silently
+  // drops the always-on-session capability seed → the /mode modal falls
+  // back to the default table forever). Shared shape with userTopic's
+  // live-005 arm (both call narrowIsupportChanged).
+  describe("kind: isupport_changed (dual-topic; cold-snapshot path)", () => {
+    const valid = {
+      kind: "isupport_changed",
+      network_id: 1,
+      chanmodes_a: ["b", "e", "I"],
+      chanmodes_b: ["k"],
+      chanmodes_c: ["l"],
+      chanmodes_d: ["n", "t", "s"],
+      prefix: { o: "@", h: "%", v: "+" },
+    };
+
+    it("narrows a complete envelope on the channel topic", () => {
+      const out = narrowChannelEvent(valid);
+      expect(out?.kind).toBe("isupport_changed");
+      expect(out).toMatchObject({ network_id: 1, chanmodes_b: ["k"] });
+    });
+
+    it("rejects a non-number network_id", () => {
+      expect(narrowChannelEvent({ ...valid, network_id: "one" })).toBeNull();
+    });
+
+    it("rejects a CHANMODES class containing a non-string", () => {
+      expect(narrowChannelEvent({ ...valid, chanmodes_d: ["n", 42] })).toBeNull();
+    });
+
+    it("rejects a prefix map with a non-string sigil", () => {
+      expect(narrowChannelEvent({ ...valid, prefix: { o: 1 } })).toBeNull();
+    });
+  });
+
   // UX-5 BJ (2026-05-19) — JoinBanner was killed but the narrower keeps
   // recognizing `channel_created` as a recognized-but-ignored arm so the
   // per-JOIN server emission doesn't log via the default-null path. See

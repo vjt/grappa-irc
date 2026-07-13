@@ -605,6 +605,25 @@ export type WireChannelEvent =
   | { kind: "message"; message: ScrollbackMessage }
   | { kind: "topic_changed"; network: string; channel: string; topic: TopicEntry }
   | { kind: "channel_modes_changed"; network: string; channel: string; modes: ModesEntry }
+  // #216 — per-network ISUPPORT capability set. This is a USER-topic event
+  // (like own_nick_changed); the live 005 edge broadcasts it on
+  // `Topic.user/1` (handled in userTopic.ts). It ALSO rides the per-channel
+  // cold-WS-subscribe snapshot (push_isupport_if_live in
+  // push_channel_snapshot) because the network is already resolved there —
+  // so the SAME kind must narrow on BOTH topics (mirrors how joined/kicked/
+  // members_seeded are dual-declared). subscribe.ts dispatches it into
+  // `seedIsupport` exactly like userTopic.ts. Same flat wire shape both
+  // ways; last-write-wins idempotent, so a per-channel snapshot arriving
+  // after the live user-topic event is safe.
+  | {
+      kind: "isupport_changed";
+      network_id: number;
+      chanmodes_a: string[];
+      chanmodes_b: string[];
+      chanmodes_c: string[];
+      chanmodes_d: string[];
+      prefix: Record<string, string>;
+    }
   // UX-5 BJ (2026-05-19) — recognized-but-ignored. Pre-BJ the JoinBanner
   // consumed this via `seedChannelCreated` for the "Channel was created
   // on …" line. BJ killed the banner; the server still emits the 329
