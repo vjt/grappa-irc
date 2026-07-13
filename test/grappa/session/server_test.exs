@@ -1967,6 +1967,187 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "#229 — umode viewer (own user modes visible from connect)" do
+    test "001 RPL_WELCOME emits a bare MODE <nick> umode query (#229)" do
+      # #229: ircds don't report the user's own umode set unsolicited at
+      # registration (only mode CHANGES echo back), so grappa never learned
+      # the umodes it connected with. The 001 welcome arm now issues a bare
+      # `MODE <own_nick>` query to elicit 221 RPL_UMODEIS — the per-session
+      # analogue of #216's `MODE #chan` join-time query. Umodes are
+      # per-session (emitted ONCE at registration), so this rides the
+      # numeric-1 handler, not the per-channel :joined arm.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert {:ok, "MODE grappa-test\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE grappa-test\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "221 RPL_UMODEIS stores the umode set + broadcasts umode_changed on Topic.user" do
+      # 221 is the reply to the bare `MODE <selfnick>` query. Parse the
+      # umode string, store on the per-session `umodes` field, broadcast the
+      # typed `umode_changed` payload on Topic.user (umodes are per
+      # (subject, network), like own_nick_changed / isupport_changed).
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Upstream answers the umode query with the current set.
+      IRCServer.feed(server, ":irc.test.org 221 grappa-test +iwS\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :umode_changed,
+                         network_id: net_id,
+                         modes: modes
+                       }
+                     },
+                     1_000
+
+      assert net_id == network.id
+      # +iwS parsed into a sorted letter set (sign stripped).
+      assert modes == ["S", "i", "w"]
+
+      # get_umodes facade returns the stored set.
+      assert {:ok, ["S", "i", "w"]} = Session.get_umodes({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "get_umodes returns [] before any 221 (always-succeeds)" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert {:ok, []} = Session.get_umodes({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "self-MODE echo folds a +/- delta into the umode set + broadcasts (#229)" do
+      # The existing self-MODE branch (#154b) surfaces the echo as a $server
+      # row; #229 ALSO folds the delta into the queryable umode set so the
+      # modal reflects a mid-session `/umode +x` (and services-set +r/+a at
+      # IDENTIFY, which flow through the same branch). Reuse the verb (the
+      # existing self-mode branch), add the noun (stored state).
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Seed the base set via 221, then apply a mid-session delta.
+      IRCServer.feed(server, ":irc.test.org 221 grappa-test +i\r\n")
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :umode_changed, modes: ["i"]}}, 1_000
+
+      # Own-nick MODE echo: add +w, drop +i.
+      IRCServer.feed(server, ":grappa-test!u@h MODE grappa-test :-i+w\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :umode_changed, modes: ["w"]}
+                     },
+                     1_000
+
+      assert {:ok, ["w"]} = Session.get_umodes({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "hot-reload safety: a live proc whose state predates the :umodes field survives" do
+      # Same hazard as #216's :isupport field — a plain hot module reload
+      # does NOT rewrite live process state, so an always-on Session.Server
+      # spawned before :umodes existed keeps its old keyless map. get_umodes
+      # (reached on the user-topic after-join cold snapshot) and the 221 /
+      # self-MODE write paths must tolerate the absent key (Map.get default +
+      # Map.put, never `%{state | umodes: ...}`) so the sessions don't
+      # crash-wave on the next WS reconnect / umode event.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Simulate the stale-proc shape: strip :umodes from the live state.
+      _ = :sys.replace_state(pid, fn state -> Map.delete(state, :umodes) end)
+
+      # Read path (user-topic after-join snapshot): default, not KeyError.
+      assert {:ok, []} = Session.get_umodes({:user, user.id}, network.id)
+
+      # Write path (221 handler): a fresh 221 on a stale proc must fold in
+      # + broadcast without KeyError on the absent key.
+      IRCServer.feed(server, ":irc.test.org 221 grappa-test +iw\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :umode_changed, modes: ["i", "w"]}
+                     },
+                     1_000
+
+      # Same pid — the stale proc never crashed/respawned (no session drop).
+      assert Process.alive?(pid)
+      assert Session.whereis({:user, user.id}, network.id) == pid
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "CP15 B2 — in_flight_joins map" do
     test "Session.Server starts with empty in_flight_joins map" do
       {_, port} = start_server()

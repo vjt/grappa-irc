@@ -507,6 +507,14 @@ defmodule Grappa.Session.Server do
           # Defaults to `ISupport.default/0` (bahamut/Azzurra values) until
           # a 005 with the tokens arrives. See `Grappa.Session.ISupport`.
           isupport: ISupport.t(),
+          # #229: per-session USER-mode set (the operator's own umodes on
+          # this network) — a sorted list of single-letter strings. Seeded
+          # by the 221 RPL_UMODEIS reply to the bare `MODE <selfnick>` query
+          # grappa issues at 001, and folded on every self-MODE echo. Unlike
+          # channel_modes (per-channel), umodes are per-session; broadcast to
+          # cic as `umode_changed` on Topic.user for the `/mode <nick>` modal.
+          # Defaults to `[]` until the 221 arrives.
+          umodes: [String.t()],
           # C2 — per-target WHOIS accumulator. Keyed by lowercased target
           # nick. Entry shape (all fields optional except target_display):
           # `%{target_display, user, host, realname, server, server_info,
@@ -751,6 +759,8 @@ defmodule Grappa.Session.Server do
       linelen: 512,
       # #216: default channel-mode capability table until 005 arrives.
       isupport: ISupport.default(),
+      # #229: empty umode set until the 221 RPL_UMODEIS reply arrives.
+      umodes: [],
       # C2 — pending WHOIS accumulators keyed by lowercased target nick.
       # Set up on `:send_whois` (the operator issued /whois); 311/312/313/
       # 317/319 fold into the entry; 318 emits `{:whois_bundle, ...}` and
@@ -1533,6 +1543,16 @@ defmodule Grappa.Session.Server do
     {:reply, {:ok, Map.get(state, :isupport, ISupport.default())}, state}
   end
 
+  # #229: returns the per-session umode set. Always succeeds ([] before the
+  # 221 arrives). `Map.get` default (not `state.umodes`) so a live proc
+  # whose state predates the :umodes field — a plain hot module reload does
+  # NOT rewrite process state — returns [] instead of KeyError-crashing the
+  # :transient proc on the next user-topic after-join snapshot (which
+  # reaches here). See #229 umode hot-reload safety test.
+  def handle_call(:get_umodes, _, state) do
+    {:reply, {:ok, Map.get(state, :umodes, [])}, state}
+  end
+
   # CP15 B3 + cluster #6: returns the snapshot-ready window-state
   # payload for `channel`. Single source of truth for the snapshot
   # projection lives on `WindowState.to_wire/3` — same Wire verbs the
@@ -1949,6 +1969,23 @@ defmodule Grappa.Session.Server do
     # timer above (which paces the Backoff-ladder RESET, 60s) — the badge
     # flips the instant we're connected, not after the stability window.
     broadcast_connection_progress(state, :connected)
+
+    # #229: query the operator's OWN umode set at registration. ircds don't
+    # report umodes unsolicited (only mode CHANGES echo back), so without
+    # this the /mode <nick> modal stays blank until a mid-session change.
+    # The bare `MODE <own_nick>` query elicits 221 RPL_UMODEIS, which
+    # EventRouter folds into `umodes` → broadcast → cic renders from connect.
+    # Umodes are per-session (emitted ONCE at registration), so this rides
+    # the numeric-1 arm — NOT the per-channel :joined arm the #216 channel-
+    # mode query uses. Use `welcomed_nick` (the server-authoritative
+    # registered nick), not the pre-reconciliation `state.nick`.
+    # `maybe_log_send_failure/2` keeps a dead-socket send non-fatal — a
+    # cosmetic umode query must never crash the session (mirror of the
+    # #216 channel_modes_query handling).
+    maybe_log_send_failure(
+      "umode_query",
+      Client.send_umode_query(state.client, welcomed_nick)
+    )
 
     delegate(msg, %{state | connection_stable_timer: stable_timer})
   end
@@ -3061,6 +3098,21 @@ defmodule Grappa.Session.Server do
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
         SessionWire.channel_modes_changed(state.network_slug, channel, entry)
+      )
+
+    apply_effects(rest, state)
+  end
+
+  # #229 — per-session umode set changed (221 RPL_UMODEIS snapshot OR a
+  # self-MODE echo delta, both from EventRouter). Broadcast on Topic.user
+  # (umodes are per (subject, network), not per-channel — same carrier as
+  # own_nick_changed / isupport_changed). `state.umodes` was already
+  # updated by EventRouter (Map.put); this arm just fans out the payload.
+  defp apply_effects([{:umode_changed, modes} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.umode_changed(state.network_id, modes)
       )
 
     apply_effects(rest, state)
