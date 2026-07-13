@@ -210,6 +210,16 @@ vi.mock("../lib/auth", () => ({
   token: () => "test-token",
 }));
 
+import type { ChannelKey } from "../lib/channelKey";
+// #222 — the REAL presence-filter module (not mocked). Its per-channel pref
+// signal drives the rows() render filter; these imports let the wiring test
+// seed/clear explicit prefs. `channelKey` is mocked above to `${slug} ${name}`
+// so the keys below match what ScrollbackPane's `key()` produces.
+import {
+  clearChannelPresencePref,
+  LARGE_CHANNEL_THRESHOLD,
+  setChannelPresencePref,
+} from "../lib/presenceFilter";
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
 import ScrollbackPane, { resetAutoFocusedJoinsForTest } from "../ScrollbackPane";
 
@@ -3175,6 +3185,86 @@ describe("ScrollbackPane", () => {
       // ...and the overlay must NOT wrap the scroll list — that separation
       // is what keeps the reader's scroll position stable when a card mounts.
       expect(overlay).not.toContainElement(list);
+    });
+  });
+
+  // #222 — presence-filter WIRING through rows(). The pure precedence math
+  // (49 shown / 50 hidden + the truth table) is proven in
+  // presenceFilter.test.ts; THIS block proves ScrollbackPane's rows() memo
+  // actually feeds the LIVE membersByChannel() count into the filter (the
+  // review-flagged hole: a hard-coded `channelPresenceVisible(key(), 0)`
+  // would pass every pure test yet silently break auto-hide). The e2e can't
+  // cover this — 50 real peers from one IP risks bahamut autokill — so the
+  // component test seeding members past the threshold is the authoritative
+  // size-default-wiring witness.
+  describe("#222 presence filter — rows() size-default wiring", () => {
+    // one privmsg + one join for #pf on network n. The join is the
+    // suppressible row; the privmsg is the survivor.
+    const pfFixture: ScrollbackMessage[] = [
+      {
+        id: 1,
+        network: "n",
+        channel: "#pf",
+        server_time: 1,
+        kind: "privmsg",
+        sender: "alice",
+        body: "real content",
+        meta: {},
+      },
+      {
+        id: 2,
+        network: "n",
+        channel: "#pf",
+        server_time: 2,
+        kind: "join",
+        sender: "bob",
+        body: null,
+        meta: {},
+      },
+    ];
+    const pfKey = "n #pf" as ChannelKey; // matches the mocked channelKey shape
+    const membersOfSize = (size: number): Record<string, { nick: string; modes: string[] }[]> => ({
+      [pfKey]: Array.from({ length: size }, (_, i) => ({ nick: `m${i}`, modes: [] })),
+    });
+
+    beforeEach(() => {
+      clearChannelPresencePref(pfKey);
+      setScrollback({ [pfKey]: pfFixture });
+    });
+
+    afterEach(() => {
+      clearChannelPresencePref(pfKey);
+    });
+
+    it("SMALL channel (below threshold), unset pref → join row rendered", () => {
+      mockMembersByChannel.mockReturnValue(membersOfSize(LARGE_CHANNEL_THRESHOLD - 1));
+      render(() => <ScrollbackPane networkSlug="n" channelName="#pf" kind="channel" />);
+      expect(screen.getByText("real content")).toBeInTheDocument();
+      expect(document.querySelector('[data-kind="join"]')).not.toBeNull();
+    });
+
+    it("LARGE channel (at threshold), unset pref → join row auto-hidden, privmsg stays", () => {
+      // Proves rows() reads the LIVE count: only the member count differs
+      // from the passing case above, and only the join row disappears.
+      mockMembersByChannel.mockReturnValue(membersOfSize(LARGE_CHANNEL_THRESHOLD));
+      render(() => <ScrollbackPane networkSlug="n" channelName="#pf" kind="channel" />);
+      expect(screen.getByText("real content")).toBeInTheDocument();
+      expect(document.querySelector('[data-kind="join"]')).toBeNull();
+    });
+
+    it("explicit 'show' pref pins the join row visible even on a LARGE channel", () => {
+      mockMembersByChannel.mockReturnValue(membersOfSize(LARGE_CHANNEL_THRESHOLD * 10));
+      setChannelPresencePref(pfKey, "show");
+      render(() => <ScrollbackPane networkSlug="n" channelName="#pf" kind="channel" />);
+      expect(document.querySelector('[data-kind="join"]')).not.toBeNull();
+    });
+
+    it("explicit 'hide' pref hides the join row even on a SMALL channel", () => {
+      mockMembersByChannel.mockReturnValue(membersOfSize(2));
+      setChannelPresencePref(pfKey, "hide");
+      render(() => <ScrollbackPane networkSlug="n" channelName="#pf" kind="channel" />);
+      expect(screen.getByText("real content")).toBeInTheDocument();
+      expect(document.querySelector('[data-kind="join"]')).toBeNull();
     });
   });
 });

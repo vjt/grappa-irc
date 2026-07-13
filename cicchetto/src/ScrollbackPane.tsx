@@ -956,6 +956,16 @@ const ScrollbackPane: Component<Props> = (props) => {
     // the read-cursor divider, and own-JOIN auto-focus (all read
     // messages(), not rows()) keep working. Narrow set: mode/topic/kick/
     // server_event are NOT noise and are never dropped.
+    //
+    // Deliberate consequence: everything below (day separators, the
+    // unread-marker count + placement) derives from the FILTERED `msgs`,
+    // so on a suppressed channel the in-pane divider counts only the rows
+    // the operator can actually SEE. That's the correct in-pane behaviour
+    // (a divider above a hidden join row would be a phantom); it diverges
+    // from the sidebar events-unread badge, which still counts presence
+    // events off the unfiltered store (selection.ts) — the badge is a
+    // "something happened" signal, the divider is a "where you were
+    // reading" signal, and they legitimately measure different things.
     const memberCount = (membersByChannel()[key()] ?? []).length;
     const presenceVisible = channelPresenceVisible(key(), memberCount);
     const msgs = presenceVisible

@@ -116,7 +116,14 @@ export function setChannelPresencePref(key: ChannelKey, pref: PresencePref): voi
   });
 }
 
-// Back to follow-the-size-default: remove the explicit pin entirely.
+// Back to follow-the-size-default: remove the explicit pin entirely. This is
+// the tri-state's API-completing "return to unset" operation (set/get/clear
+// over the three states show/hide/unset). No UI affordance wires it today —
+// the toggle is binary show↔hide per the #222 spec — but it is unit-tested and
+// is the reset seam the ScrollbackPane wiring test uses between cases (same
+// role as `clearReadCursors` / `seedFromTest` elsewhere). Kept deliberately so
+// a future "reset to auto" affordance has a first-class verb instead of
+// reaching into localStorage.
 export function clearChannelPresencePref(key: ChannelKey): void {
   setPrefs((prev) => {
     if (!(key in prev)) return prev;

@@ -19686,7 +19686,20 @@ there is no window-exposed member-count seam in the e2e harness. e2e
 joins+parts #bofh (small channel → shown by default), toggle ON → J/P vanish
 while the PRIVMSG row REMAINS (narrow set), reload → still hidden (persistence),
 toggle OFF → rows reappear. RED proof: pre-filter code has no toggle + no
-filter, so the toggle-hide step fails. vitest baseline 2581 → **2598**.
+filter, so the toggle-hide step fails. vitest baseline 2581 → **2602** (the
+presenceFilter module tests + the ScrollbackPane rows() size-default wiring
+tests that prove the LIVE member count reaches the filter — the pure math is in
+presenceFilter.test.ts, the wiring in ScrollbackPane.test.tsx).
+
+**Known minor edges (accepted, not fixed).** (a) Before `members_seeded`
+lands, `membersByChannel()[key]` is absent → `memberCount = 0`, so a large
+channel with an UNSET pref briefly shows J/P/Q until the snapshot arrives, then
+auto-hides. Self-correcting and an explicit pref overrides it entirely. (b) The
+in-pane unread-marker count/placement derive from the FILTERED rows (a divider
+above a hidden join would be a phantom); this legitimately diverges from the
+sidebar events-unread badge, which still counts presence off the unfiltered
+store — the badge is a "something happened" signal, the divider a "where you
+were reading" one.
 
 **Hot vs COLD.** HOT — pure-client render change, zero lib/ touched, no wire
 type, no Session.Server state-shape change. Rides `--cic`.

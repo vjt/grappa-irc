@@ -180,9 +180,7 @@ const TopicBar: Component<Props> = (props) => {
             ? "Hide join/part/quit for this channel"
             : "Show join/part/quit for this channel"
         }
-        aria-label={
-          presenceShown() ? "hide join/part/quit signalling" : "show join/part/quit signalling"
-        }
+        aria-label="filter join/part/quit signalling"
         onClick={togglePresence}
       >
         {presenceShown() ? "👁" : "🙈"}
