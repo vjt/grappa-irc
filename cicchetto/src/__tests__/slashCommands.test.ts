@@ -561,12 +561,31 @@ describe("parseSlash — channel ops verbs", () => {
     });
   });
 
-  it("/mode missing target → error", () => {
-    expect(parseSlash("/mode")).toMatchObject({ kind: "error", verb: "mode" });
+  // #216 — no-mode-args forms open the viewer/editor modal instead of
+  // executing. The modal only opens when there are NO mode arguments;
+  // any `/mode ... +x` form executes directly (above).
+  it("/mode (bare) → mode-view for the current channel (null)", () => {
+    expect(parseSlash("/mode")).toEqual({ kind: "mode-view", channel: null });
   });
 
-  it("/mode missing modes → error", () => {
-    expect(parseSlash("/mode #sniffo")).toMatchObject({ kind: "error", verb: "mode" });
+  it("/mode #chan (channel, no modes) → mode-view for that channel", () => {
+    expect(parseSlash("/mode #sniffo")).toEqual({ kind: "mode-view", channel: "#sniffo" });
+  });
+
+  it("/mode +s (bare modes, no channel) → apply to current channel", () => {
+    expect(parseSlash("/mode +s")).toEqual({
+      kind: "mode-apply-current",
+      modes: "+s",
+      params: [],
+    });
+  });
+
+  it("/mode -l+k secret (bare modes with params) → apply to current channel", () => {
+    expect(parseSlash("/mode -l+k secret")).toEqual({
+      kind: "mode-apply-current",
+      modes: "-l+k",
+      params: ["secret"],
+    });
   });
 });
 

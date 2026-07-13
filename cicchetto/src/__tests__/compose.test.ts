@@ -167,6 +167,14 @@ vi.mock("../lib/channelDirectory", () => ({
   onDirectoryFailed: vi.fn().mockResolvedValue(undefined),
 }));
 
+// #216 — /mode viewer/editor modal store. compose.ts opens it for the
+// no-mode-args forms.
+vi.mock("../lib/modeModal", () => ({
+  openModeModal: vi.fn(),
+  closeModeModal: vi.fn(),
+  modeModalState: vi.fn(() => null),
+}));
+
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
@@ -1308,6 +1316,48 @@ describe("compose submit — /umode and /mode (no channel context required)", ()
     const result = await compose.submit(k, "freenode", "#a");
 
     expect(socket.pushChannelMode).toHaveBeenCalledWith(1, "#sniffo", "+o-v", ["alice", "rofl"]);
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #216 — no-mode-args forms open the modal instead of executing.
+  it("/mode #chan (no modes) opens the modal, sends no mode event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const modeModal = await import("../lib/modeModal");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/mode #sniffo");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(modeModal.openModeModal).toHaveBeenCalledWith("freenode", "#sniffo");
+    expect(socket.pushChannelMode).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("bare /mode opens the modal for the current channel window", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const modeModal = await import("../lib/modeModal");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/mode");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    // selectedChannel mock resolves to #a — the current channel window.
+    expect(modeModal.openModeModal).toHaveBeenCalledWith("freenode", "#a");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/mode +s (bare modes) applies to the current channel, no modal", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const modeModal = await import("../lib/modeModal");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/mode +s");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelMode).toHaveBeenCalledWith(1, "#a", "+s", []);
+    expect(modeModal.openModeModal).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: true });
   });
 });

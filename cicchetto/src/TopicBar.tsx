@@ -2,6 +2,7 @@ import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { compactModeString, modesByChannel, topicByChannel } from "./lib/channelTopic";
 import { mircPlainText } from "./lib/mircFormat";
+import { openModeModal } from "./lib/modeModal";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import { windowIsJoined } from "./lib/windowState";
 import { MircBody } from "./MircText";
@@ -128,11 +129,22 @@ const TopicBar: Component<Props> = (props) => {
           <MircBody body={topicText() ?? ""} linkPolicy="surface-wins" />
         </Show>
       </button>
-      {/* Compact mode string — only rendered when modes are non-empty */}
+      {/* Compact mode string — only rendered when modes are non-empty.
+          #216: tapping it opens the /mode viewer/editor modal for this
+          channel (the third entry point, alongside `/mode #chan` and
+          bare `/mode`). A <button> not a <span> — a static element with
+          onClick trips biome's noStaticElementInteractions (#220 lesson)
+          and loses keyboard access. */}
       <Show when={modeStr().length > 0}>
-        <span class="topic-bar-modes" title={modesEntry()?.modes.join(", ") ?? ""}>
+        <button
+          type="button"
+          class="topic-bar-modes"
+          title={modesEntry()?.modes.join(", ") ?? ""}
+          aria-label="view channel modes"
+          onClick={() => openModeModal(props.networkSlug, props.channelName)}
+        >
           {modeStr()}
-        </span>
+        </button>
       </Show>
       {/* Members hamburger only when actively joined. Parked / failed
           / kicked channels have stale or absent member lists; the

@@ -95,6 +95,14 @@ export type SlashCommand =
   | { kind: "invite"; nick: string; channel: string | null }
   | { kind: "umode"; modes: string }
   | { kind: "mode"; target: string; modes: string; params: string[] }
+  // #216 — no-mode-args /mode forms open the viewer/editor modal instead
+  // of executing. `mode-view` = open the modal for `channel` (explicit
+  // `/mode #chan`) or the current channel (`null` from bare `/mode`).
+  // `mode-apply-current` = `/mode +s` (a mode string but no channel
+  // token) applies to the current channel — compose.ts resolves it. Any
+  // form WITH both a channel and modes stays `mode` (execute directly).
+  | { kind: "mode-view"; channel: string | null }
+  | { kind: "mode-apply-current"; modes: string; params: string[] }
   | { kind: "who"; target: string | null }
   | { kind: "names"; target: string | null }
   | { kind: "list"; pattern: string | null }
@@ -356,13 +364,57 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     return { kind: "umode", modes: rest };
   },
 
-  mode: (verb, rest) => {
-    // Codebase audit type-A9 — destructure both required slots; tsc
-    // narrows from the explicit `if (!target || !modes)` guard.
-    const [target, modes, ...params] = tokens(rest);
-    if (!target) return err(verb, "/mode requires a target");
-    if (!modes) return err(verb, "/mode requires target and mode string");
-    return { kind: "mode", target, modes, params };
+  mode: (_verb, rest) => {
+    // #216 — dispatch by argument shape. The rule (vjt): mode-args
+    // present → execute directly (no modal); NO mode-args → open the
+    // viewer/editor modal.
+    //
+    //   /mode                 → mode-view {channel: null}   (current chan)
+    //   /mode #chan           → mode-view {channel: "#chan"}
+    //   /mode #chan +s [args] → mode (execute — channel + modes)
+    //   /mode +s [args]       → mode-apply-current (current chan + modes)
+    //
+    // A token is a CHANNEL when it carries an RFC channel sigil [#&+!];
+    // a MODE string starts with +/-. Note `+` is BOTH a channel sigil
+    // and a mode sign — disambiguate: a lone leading `+`/`-` followed by
+    // mode letters (no further sigil) is a mode string, whereas `+chan`
+    // is a (rare) channel. We treat a first token matching /^[+-]/ that
+    // is NOT a bare `+`/`&`/`!`/`#`-prefixed channel-shaped name as a
+    // mode string. In practice mode strings look like `+s`, `-l+k`,
+    // `+o-v`; `+`-sigil channels are near-extinct — but a token like
+    // `+foo` with no mode-sign letters after a sign is ambiguous. We
+    // resolve conservatively: `-`-led is always modes; `+`-led is modes
+    // (the common case) — a `+chan` channel must be addressed via the
+    // explicit two-token form `/mode +chan +s`.
+    const toks = tokens(rest);
+    const [first, ...restToks] = toks;
+
+    // Bare /mode → view current channel.
+    if (!first) return { kind: "mode-view", channel: null };
+
+    const isModeString = /^[+-]/.test(first);
+    const isChannel = /^[#&!]/.test(first);
+
+    if (isModeString) {
+      // /mode +s [params] → apply to the current channel.
+      return { kind: "mode-apply-current", modes: first, params: restToks };
+    }
+
+    if (isChannel) {
+      const [modes, ...params] = restToks;
+      // /mode #chan (no modes) → open the modal for that channel.
+      if (!modes) return { kind: "mode-view", channel: first };
+      // /mode #chan +s [params] → execute directly.
+      return { kind: "mode", target: first, modes, params };
+    }
+
+    // First token is neither a channel sigil nor a mode string — treat it
+    // as an explicit target (a nick, for user-MODE via /mode) and require
+    // modes to execute; a lone nick with no modes opens no modal (there
+    // is no per-nick mode viewer), so surface a friendly error.
+    const [modes, ...params] = restToks;
+    if (!modes) return err("mode", "/mode <#channel> to view modes, or /mode <target> <modes>");
+    return { kind: "mode", target: first, modes, params };
   },
 
   who: (_verb, rest) => {

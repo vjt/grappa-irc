@@ -57,6 +57,7 @@ import { isActiveChannelJoined } from "./lib/windowState";
 import MediaViewerModal from "./MediaViewerModal";
 import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
+import ModeModal from "./ModeModal";
 import NamesModal from "./NamesModal";
 import PrivacyModal from "./PrivacyModal";
 import ResizeHandle from "./ResizeHandle";
@@ -559,6 +560,7 @@ const Shell: Component = () => {
           <MediaViewerModal />
           <NamesModal />
           <WhoModal />
+          <ModeModal />
           <ServerReplyModal />
           <ConfirmModal />
           <aside class="shell-sidebar">
@@ -734,6 +736,7 @@ const Shell: Component = () => {
         <MediaViewerModal />
         <NamesModal />
         <WhoModal />
+        <ModeModal />
         <ServerReplyModal />
         <ConfirmModal />
         <Show when={membersOpen()}>

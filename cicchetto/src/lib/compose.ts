@@ -17,6 +17,7 @@ import { friendlyChannelError } from "./friendlyChannelError";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
 import { splitMessageLines } from "./messageLines";
+import { openModeModal } from "./modeModal";
 import { networkBySlug, networkIdBySlug, user } from "./networks";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { quitAll } from "./quit";
@@ -594,10 +595,35 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           break;
         }
         case "mode": {
-          // /mode — raw verbatim, target explicit in args. No channel required.
+          // /mode <#chan> <modes> [params] — execute directly, raw
+          // verbatim, target explicit in args. No modal, no channel-window
+          // requirement (#216: mode-args present → apply).
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/mode: network not found" };
           await pushChannelMode(networkId, cmd.target, cmd.modes, cmd.params);
+          result = { ok: true };
+          break;
+        }
+        case "mode-view": {
+          // #216 — no mode-args: open the viewer/editor modal. Explicit
+          // `/mode #chan` targets that channel; bare `/mode` targets the
+          // current channel window (error if not in one — the same
+          // resolver every channel-scoped verb uses).
+          const ch = cmd.channel ?? getActiveChannel();
+          if (!ch) return { error: "/mode requires a channel — switch to one or use /mode #chan" };
+          openModeModal(networkSlug, ch);
+          result = { ok: true };
+          break;
+        }
+        case "mode-apply-current": {
+          // #216 — `/mode +s` (mode string, no channel token) applies to
+          // the current channel. Mode-args present → execute directly, no
+          // modal; requires a channel window.
+          const chanOrErr = requireChannel("mode");
+          if (typeof chanOrErr !== "string") return chanOrErr;
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/mode: network not found" };
+          await pushChannelMode(networkId, chanOrErr, cmd.modes, cmd.params);
           result = { ok: true };
           break;
         }
