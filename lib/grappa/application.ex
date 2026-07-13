@@ -16,6 +16,7 @@ defmodule Grappa.Application do
       Grappa.Uploads,
       Grappa.Uploads.Reaper,
       Grappa.Vault,
+      Grappa.Accounts.Reaper,
       Grappa.Visitors.Reaper,
       Grappa.Visitors.ShareTokens,
       Grappa.WSPresence,
@@ -188,7 +189,20 @@ defmodule Grappa.Application do
         # at THIS boot-time boundary — the controller + Reaper read
         # from `:persistent_term` thereafter (CLAUDE.md
         # "Application.{put,get}_env: boot-time only").
-        {Grappa.Uploads.Reaper, storage_root: uploads_storage_root()}
+        {Grappa.Uploads.Reaper, storage_root: uploads_storage_root()},
+
+        # #223: auth-session housekeeping GC. Sibling of Visitors.Reaper
+        # / Uploads.Reaper — a THIRD domain (Accounts) gets its OWN
+        # periodic sweep rather than folding into an unrelated reaper
+        # (CLAUDE.md rule 6 — reuse the verb, not the noun). Same
+        # ordering rationale: after Repo (it queries `sessions`) and
+        # after Endpoint (so the auth surface is up before the sweep
+        # removes idle-expired rows). Bulk `delete_all` over USER
+        # sessions past the 7-day idle window that `authenticate/1`
+        # already rejects; visitor sessions are out of scope (they
+        # CASCADE from the visitor row via Visitors.Reaper). Default
+        # 60s interval >> boot, so the first sweep waits anyway.
+        Grappa.Accounts.Reaper
 
         # Bootstrap is appended LAST below: it depends on Registry +
         # SessionSupervisor existing so it can spawn sessions. Conditional
