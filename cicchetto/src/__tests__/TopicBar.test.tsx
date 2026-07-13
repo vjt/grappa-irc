@@ -27,6 +27,7 @@ vi.mock("../lib/channelTopic", () => ({
   seedModes: vi.fn(),
 }));
 
+import { overlayCount, __resetForTest as resetOverlayLock } from "../lib/overlayScrollLock";
 import TopicBar from "../TopicBar";
 
 const baseProps = () => ({
@@ -162,6 +163,39 @@ describe("TopicBar", () => {
       expect(screen.getByRole("dialog")).toBeInTheDocument();
       fireEvent.click(screen.getByLabelText(/close topic/i));
       expect(screen.queryByRole("dialog")).toBeNull();
+    });
+  });
+
+  // #219-general — the topic modal COVERS the ScrollbackPane (fixed
+  // full-viewport backdrop, .topic-modal-backdrop) but was the one covering
+  // surface that did NOT register with the shared overlay refcount, so the
+  // pane's freeze gate never engaged while it was up. Registering it via
+  // createOverlayLock closes that gap: opening bumps overlayCount, closing
+  // drains it — driving ScrollbackPane's freeze/thaw like every other modal.
+  describe("#219-general — topic modal registers the overlay scroll-lock", () => {
+    beforeEach(() => {
+      resetOverlayLock();
+    });
+
+    // createOverlayLock defers the push a microtask (it querySelector's the
+    // modal element after Solid commits the <Show>); flush before asserting.
+    const flushMicrotask = (): Promise<void> =>
+      new Promise((r) => queueMicrotask(() => r(undefined)));
+
+    it("opening the topic modal bumps overlayCount; closing drains it", async () => {
+      mockTopicByChannel.mockReturnValue({
+        "freenode #italia": { text: "A topic", set_by: "vjt", set_at: null },
+      });
+      render(() => <TopicBar {...baseProps()} />);
+      expect(overlayCount()).toBe(0);
+
+      fireEvent.click(screen.getByText("A topic"));
+      await flushMicrotask();
+      expect(overlayCount()).toBe(1);
+
+      fireEvent.click(screen.getByLabelText(/close topic/i));
+      await flushMicrotask();
+      expect(overlayCount()).toBe(0);
     });
   });
 

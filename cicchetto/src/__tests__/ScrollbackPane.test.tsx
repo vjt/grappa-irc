@@ -4,6 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage, WhoisBundle } from "../lib/api";
 import { activeAudio, closeAudio } from "../lib/audioPlayer";
 import { closeMediaViewer, mediaViewerState } from "../lib/mediaViewer";
+import {
+  popOverlay,
+  pushOverlay,
+  __resetForTest as resetOverlayLock,
+} from "../lib/overlayScrollLock";
 
 // Review fix (2026-06-11): same-host NON-media links delegate plain
 // clicks to the shared iOS-standalone escape handler. The handler's
@@ -2864,7 +2869,139 @@ describe("ScrollbackPane", () => {
     });
   });
 
-  // #133 — WHOIS / WHOWAS / LUSERS / peer-away are top-pinned ephemeral
+  // #219-general — ANY covering overlay (not just the media viewer) must
+  // freeze the pane's scroll for its whole lifetime. #219 gated the freeze
+  // on the media-viewer snapshot only; the generalization keys it on the
+  // shared overlay refcount (`overlayScrollLock.overlayCount()`), which
+  // every covering modal/drawer already pushes into (the media viewer is
+  // just one participant). A resize while an overlay is open — the exact
+  // authority a mobile fullscreen modal fires via visualViewport — must
+  // NOT snap the pane to the tail.
+  //
+  // jsdom has no layout, so we assert via the tail `scrollIntoView` the
+  // resize→scrollToActivation("tail-only") path calls when NOT frozen.
+  // Pre-fix (media-only gate) a plain overlay push does not freeze → the
+  // tail scrollIntoView fires. Post-fix it is suppressed while the
+  // refcount is non-zero, and resumes once the overlay closes.
+  describe("#219-general — covering overlay freezes the pane (any overlay, not just media)", () => {
+    let scrollIntoViewSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      resetOverlayLock();
+      scrollIntoViewSpy = vi.fn();
+      // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
+      (Element.prototype as any).scrollIntoView = scrollIntoViewSpy;
+    });
+
+    afterEach(() => {
+      resetOverlayLock();
+    });
+
+    const seedRows = (): void => {
+      setScrollback({
+        "freenode #grappa": Array.from({ length: 20 }, (_, i) => ({
+          id: i + 1,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: i + 1,
+          kind: "privmsg" as const,
+          sender: "alice",
+          body: `row ${i + 1}`,
+          meta: {},
+        })),
+      });
+    };
+
+    // rAF drain — scrollToActivation schedules the tail scrollIntoView
+    // inside a double-rAF (geometry-after-layout idiom).
+    const flushRaf = async (): Promise<void> => {
+      await new Promise((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => r(undefined))),
+      );
+    };
+
+    it("a resize with NO overlay open snaps to the tail (baseline — the authority fires)", async () => {
+      seedRows();
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      await flushRaf();
+      scrollIntoViewSpy.mockClear();
+
+      window.dispatchEvent(new Event("resize"));
+      await flushRaf();
+
+      // No overlay → not frozen → the tail-snap authority scrolls.
+      expect(scrollIntoViewSpy).toHaveBeenCalled();
+    });
+
+    it("a resize WHILE a covering overlay is open does NOT snap to the tail (frozen)", async () => {
+      seedRows();
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      await flushRaf();
+
+      // Open a covering overlay via the shared refcount (any modal does
+      // this — Confirm/Names/Who/Archive/DeleteAccount/TopicBar). No media
+      // viewer involved: this is the case #219's media-only gate missed.
+      pushOverlay(null);
+      await flushRaf();
+      scrollIntoViewSpy.mockClear();
+
+      window.dispatchEvent(new Event("resize"));
+      await flushRaf();
+
+      // Covered pane is frozen → the tail-snap authority is gated out.
+      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+    });
+
+    it("after the overlay closes, the pane resumes normal activation (thaw)", async () => {
+      seedRows();
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      await flushRaf();
+
+      pushOverlay(null);
+      await flushRaf();
+      popOverlay(null);
+      await flushRaf();
+      scrollIntoViewSpy.mockClear();
+
+      window.dispatchEvent(new Event("resize"));
+      await flushRaf();
+
+      // Overlay gone → freeze lifted → the authority scrolls again.
+      expect(scrollIntoViewSpy).toHaveBeenCalled();
+    });
+
+    // Regression (review PLAUSIBLE): a rapid close→reopen of a covering
+    // overlay (refcount 1→0→1) — one modal closing as another opens in the
+    // same tick, e.g. /names dismissed by a nick-click that opens a query
+    // that itself surfaces a modal — must NOT leave the pane thawed while an
+    // overlay is still up. The close transition's snapshot-clear must not
+    // null the snapshot the reopen transition just re-armed. After the
+    // dust settles with the refcount back at 1, a resize must still be frozen.
+    it("a rapid close→reopen (refcount 1→0→1) keeps the pane frozen (snapshot not stale-cleared)", async () => {
+      seedRows();
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      await flushRaf();
+
+      // First overlay up.
+      pushOverlay(null);
+      await flushRaf();
+
+      // Close then immediately reopen — the two transitions' effects + rAFs
+      // interleave. Refcount ends at 1 (an overlay IS open).
+      popOverlay(null);
+      pushOverlay(null);
+      await flushRaf();
+      await flushRaf();
+      scrollIntoViewSpy.mockClear();
+
+      // An overlay is still open → the pane must be frozen.
+      window.dispatchEvent(new Event("resize"));
+      await flushRaf();
+
+      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+    });
+  });
+
   // affordances. Rendered as flex siblings BEFORE `.scrollback` they
   // shrink the scroll list when they mount, shifting the reader's anchor
   // and losing their place in the channel buffer. The fix moves the whole

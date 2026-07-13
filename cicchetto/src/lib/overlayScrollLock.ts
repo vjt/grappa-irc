@@ -45,11 +45,19 @@
 // clears refcount + class + detaches the listener so vitest order
 // doesn't leak state across tests.
 
-import { createEffect, onCleanup } from "solid-js";
+import { createEffect, createSignal, onCleanup } from "solid-js";
 
 const CLASS_NAME = "overlay-open";
 
-let count = 0;
+// #219-general — the refcount is backed by a Solid signal so `overlayCount()`
+// is a TRACKED source. ScrollbackPane derives its "a covering overlay is open"
+// freeze predicate from it (see the overlay-scroll snapshot effect there); a
+// plain-`let` read would let that memo go stale when an overlay opens/closes
+// and the pane would never freeze/thaw. The signal is module-scope (not owned
+// by any component) — same lifetime as the old `let count`; the getter reads
+// it, the mutators set it. iOS touch-lock semantics are unchanged (the class +
+// listener side-effects still key off the same numeric value).
+const [count, setCount] = createSignal(0);
 let listenerAttached = false;
 
 function root(): HTMLElement | null {
@@ -60,7 +68,7 @@ function root(): HTMLElement | null {
 function applyClass(): void {
   const el = root();
   if (el === null) return;
-  if (count > 0) {
+  if (count() > 0) {
     el.classList.add(CLASS_NAME);
   } else {
     el.classList.remove(CLASS_NAME);
@@ -114,7 +122,7 @@ function detachListener(): void {
  * refactor can drop the parameter.
  */
 export function pushOverlay(_target: HTMLElement | null): void {
-  count += 1;
+  setCount(count() + 1);
   applyClass();
   attachListener();
 }
@@ -124,14 +132,18 @@ export function pushOverlay(_target: HTMLElement | null): void {
  * Detaches the touchmove listener when the refcount drops to zero.
  */
 export function popOverlay(_target: HTMLElement | null): void {
-  count = Math.max(0, count - 1);
+  setCount(Math.max(0, count() - 1));
   applyClass();
-  if (count === 0) detachListener();
+  if (count() === 0) detachListener();
 }
 
-/** Current refcount — exposed for vitest assertions. */
+/**
+ * Current refcount — a TRACKED Solid source. Reading it inside a memo /
+ * effect subscribes to overlay open/close transitions (#219-general).
+ * Also exposed for vitest assertions.
+ */
 export function overlayCount(): number {
-  return count;
+  return count();
 }
 
 /** Whether the document-level touchmove listener is currently attached. */
@@ -141,7 +153,7 @@ export function isListenerAttached(): boolean {
 
 /** Test reset — clears refcount, DOM class, and detaches listener. */
 export function __resetForTest(): void {
-  count = 0;
+  setCount(0);
   const el = root();
   if (el !== null) el.classList.remove(CLASS_NAME);
   detachListener();

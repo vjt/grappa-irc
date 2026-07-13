@@ -16,13 +16,13 @@ import { token } from "./lib/auth";
 import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
-import { mediaViewerState } from "./lib/mediaViewer";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { networks, user } from "./lib/networks";
 import { senderPrefix, snapshotSenderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
 import { isOperatorActionEcho } from "./lib/operatorActionEcho";
+import { overlayCount } from "./lib/overlayScrollLock";
 import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
@@ -732,11 +732,24 @@ const ScrollbackPane: Component<Props> = (props) => {
   // UP (scrollTop decreased → leave the tail) from a programmatic content-
   // grow above the viewport (scrollTop unchanged → keep following).
   let lastScrollTop = 0;
-  // #196 — scrollTop snapshot captured when the media-viewer overlay opens,
-  // re-asserted across the overlay's open/close so the preview never strands
-  // the reader (see the effect near the activation block below). Plain let —
-  // pure mutation, no Solid reactivity.
-  let viewerScrollSnapshot: number | null = null;
+  // #196 / #219-general — scrollTop snapshot captured when ANY covering
+  // overlay opens, re-asserted across the overlay's open/close so a covered
+  // pane never strands the reader (see the effect near the activation block
+  // below). #196 introduced this for the media viewer; #219-general widens the
+  // trigger from the media-viewer signal to the shared overlay refcount
+  // (`overlayCount()`) — every covering modal/drawer already pushes into it,
+  // so a single derived predicate ("a covering overlay is open") drives the
+  // freeze instead of one flag per modal. Plain let — pure mutation, no Solid
+  // reactivity; the reactive edge is the `overlayCount() > 0` memo in the
+  // effect below.
+  let overlayScrollSnapshot: number | null = null;
+  // #219-general — the channel key the overlay snapshot was captured on. The
+  // pane instance survives channel↔query switches (shared non-keyed Match), so
+  // a covering modal that switches the window on close (nick-click in /names,
+  // /who) must not restore the leaving channel's offset onto the arriving one.
+  // Both the freeze gate and the restore require this === key(); a switched-to
+  // window activates normally. `null` when no overlay snapshot is held.
+  let overlaySnapshotKey: string | null = null;
   const [atBottom, setAtBottom] = createSignal(true);
   // UX-3 Z3 R4: actual-overflow gate for the `pan-y → chrome reveal`
   // trap. Recomputed on every layout-affecting signal (messages,
@@ -833,6 +846,17 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   const key = () => channelKey(props.networkSlug, props.channelName);
   const messages = () => scrollbackByChannel()[key()];
+  // #219-general — "is THIS pane frozen under a covering overlay?" A snapshot
+  // is held (non-null) for the overlay's whole open→close-settle window, and
+  // it belongs to the channel it was captured on. Both scroll authorities
+  // (scrollToActivation + the length-effect) bail on this so no authority
+  // moves a covered pane; the overlay-snapshot effect owns the single restore.
+  // Key-scoped so a window switched-to WHILE an overlay is up (nick-click in
+  // /names or /who opens a query + dismisses the modal) is not frozen — it
+  // activates normally. Plain-`let` reads, no reactivity (called imperatively
+  // from inside the authorities).
+  const isOverlayFrozen = (): boolean =>
+    overlayScrollSnapshot !== null && overlaySnapshotKey === key();
   // Per-network IRC nick for self-highlight + JOIN-banner + ownModes —
   // single-source via `ownNickForNetwork(net, me)` so account-name vs
   // IRC-nick drift cannot misfire highlights or own-action detection.
@@ -1168,30 +1192,69 @@ const ScrollbackPane: Component<Props> = (props) => {
     });
   });
 
-  // #196 — preserve the reader's scroll position across the media-viewer
-  // overlay (image/video/audio preview). Opening the preview was dropping the
-  // scrollback list's scrollTop, stranding the reader far from where they
-  // were ("re-reading old messages as if new"). ScrollbackPane owns the scroll
-  // container and is the single scroll authority — the fixed overlay can't
-  // reach `listRef` — so the capture/restore lives here, keyed on the
-  // overlay's open/close EDGE (`defer: true` skips the initial mount). Snapshot
-  // the position when the overlay opens; re-assert it across the next two
-  // frames (matching `scrollToActivation`'s rAF×2 — any perturbation lands
-  // after the overlay's layout commits) and again on close, so NEITHER
-  // transition yanks the viewport. Restoring the operator's own captured
-  // position can never move them anywhere they weren't already.
+  // #196 / #219-general — preserve the reader's scroll position across ANY
+  // covering overlay (media viewer, /names, /who, confirm, archive, delete,
+  // server-reply, privacy, topic modal, side drawers — every surface that
+  // pushes the shared `overlayScrollLock` refcount). #196 introduced this for
+  // the media viewer keyed on `mediaViewerState`; #219-general widens the
+  // trigger to `overlayCount() > 0` so a SINGLE derived predicate ("a covering
+  // overlay is open") owns the freeze — no per-modal flag to keep in sync
+  // (derive, don't duplicate). Opening the overlay was dropping / tail-snapping
+  // the scrollback's scrollTop (a fullscreen modal shrinks the mobile
+  // visualViewport → the onMount `resize` listener → scrollToActivation →
+  // tail snap; a message arriving under the overlay ran the length-effect's
+  // tail-follow). ScrollbackPane owns the scroll container and is the single
+  // scroll authority — the fixed overlay can't reach `listRef` — so the
+  // capture/restore lives here, keyed on the refcount's 0↔n edge (`defer: true`
+  // skips the initial mount). Snapshot the position when the first overlay
+  // opens; re-assert it across the next two frames (matching
+  // `scrollToActivation`'s rAF×2 — any perturbation lands after the overlay's
+  // layout commits) and again on close, so NEITHER transition yanks the
+  // viewport.
+  //
+  // KEY-GUARD (#219-general): #196's media viewer never switched channels, so
+  // its restore was always safe. A covering MODAL can switch the window on
+  // close — clicking a nick in /names or /who opens a query AND dismisses the
+  // modal in one gesture. The ScrollbackPane instance persists across
+  // channel↔query (Shell bundles them in one non-keyed Match), so a blind
+  // restore would write the OLD channel's scrollTop onto the switched-to
+  // window. Pin the snapshot to the channel key it was captured on:
+  // `overlaySnapshotKey`. The gate (scrollToActivation + length-effect) and
+  // this restore both require `overlaySnapshotKey === key()`, so a window
+  // switched-to while an overlay is up activates normally and is never
+  // corrupted by the leaving channel's held offset.
   createEffect(
     on(
-      () => mediaViewerState() !== null,
+      () => overlayCount() > 0,
       (open) => {
         if (!listRef) return;
-        if (open) viewerScrollSnapshot = listRef.scrollTop;
-        const target = viewerScrollSnapshot;
+        if (open) {
+          overlayScrollSnapshot = listRef.scrollTop;
+          overlaySnapshotKey = key();
+        }
+        const target = overlayScrollSnapshot;
+        const snapKey = overlaySnapshotKey;
         if (target === null) return;
         requestAnimationFrame(() =>
           requestAnimationFrame(() => {
-            if (listRef && listRef.scrollTop !== target) listRef.scrollTop = target;
-            if (!open) viewerScrollSnapshot = null;
+            // Only restore onto the SAME window the snapshot was taken on —
+            // a mid-overlay channel switch (nick-click in /names or /who)
+            // owns its own activation; do not stamp the old offset onto it.
+            if (listRef && snapKey === key() && listRef.scrollTop !== target) {
+              listRef.scrollTop = target;
+            }
+            // Clear ONLY when no overlay is open NOW — not on the captured
+            // `open` boolean. A rapid close→reopen (refcount 1→0→1 in one
+            // frame batch — one modal closing as another opens) schedules
+            // this close-run's rAF BEFORE the reopen-run's; keying the clear
+            // on the stale `open=false` would null the snapshot the reopen
+            // just re-armed, thawing the pane while an overlay is still up
+            // (review PLAUSIBLE finding). `overlayCount() === 0` is the live
+            // truth: clear only when the last overlay is genuinely gone.
+            if (overlayCount() === 0) {
+              overlayScrollSnapshot = null;
+              overlaySnapshotKey = null;
+            }
           }),
         );
       },
@@ -1273,15 +1336,17 @@ const ScrollbackPane: Component<Props> = (props) => {
   // needed, and toggling `activating` on every rows change would itself flicker.
   const scrollToActivation = (mode: "marker-or-tail" | "tail-only", withHide: boolean): void => {
     if (!listRef) return;
-    // #219 — while a media-viewer overlay covers the pane, its scroll position is
-    // frozen by the #196 capture/restore below (`viewerScrollSnapshot` is held
-    // non-null for the whole open→close-settle window). No activation authority
+    // #219 / #219-general — while a covering overlay is up, the pane's scroll is
+    // frozen by the overlay-snapshot capture/restore below (`isOverlayFrozen()`
+    // is true for the whole open→close-settle window). No activation authority
     // may move a COVERED pane: on mobile a fullscreen modal changes the
     // visualViewport, firing the onMount `resize` listener → scrollToActivation(
     // "tail-only") → a tail snap that strands the reader far from where they were
-    // (jump-to-bottom, the #219 report). Bail while the snapshot is held; the
-    // #196 effect owns restoration on the open edge and on close.
-    if (viewerScrollSnapshot !== null) return;
+    // (jump-to-bottom, the #219 report). #219 gated on the media viewer only;
+    // #219-general keys off the shared overlay refcount so EVERY covering modal /
+    // drawer freezes the pane. Bail while frozen; the overlay-snapshot effect
+    // owns restoration on the open edge and on close.
+    if (isOverlayFrozen()) return;
     // #130 — hide the container synchronously NOW (pre-paint) so the
     // browser never paints the new content at the OLD preserved scrollTop
     // before the deferred scroll below corrects it. Revealed in every exit
@@ -1699,13 +1764,15 @@ const ScrollbackPane: Component<Props> = (props) => {
       () => rows()?.length ?? 0,
       () => {
         if (!listRef) return;
-        // #219 — a media viewer covering the pane freezes its scroll (see the
-        // #196 capture/restore + the scrollToActivation guard). A message
-        // arriving WHILE the viewer is up must not tail-follow the covered pane
-        // out from under the reader; the #196 effect restores their held
-        // position on close. `viewerScrollSnapshot` is non-null for the whole
-        // open→close-settle window.
-        if (viewerScrollSnapshot !== null) return;
+        // #219 / #219-general — a covering overlay freezes the pane's scroll
+        // (see the overlay-snapshot capture/restore + the scrollToActivation
+        // guard). A message arriving WHILE an overlay is up must not tail-follow
+        // the covered pane out from under the reader (#168 message-follow is
+        // correct ONLY when no overlay covers the pane); the overlay-snapshot
+        // effect restores their held position on close. `isOverlayFrozen()` is
+        // true for the whole open→close-settle window, scoped to this window's
+        // key.
+        if (isOverlayFrozen()) return;
         // #168 completion / 307 race fix — while a channel activation is
         // latched AND a rendered unread divider EXISTS, EVERY rows recreation
         // (post-switch catch-up refresh, late read-cursor hydration inserting

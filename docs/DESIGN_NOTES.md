@@ -19230,3 +19230,70 @@ no `/oper` bypass needed for a freshly-created channel.
 
 Client-only (cic bundle + e2e fixture) — no wire, migration, server, or config
 change. Rides the hot `--cic` bundle.
+
+## 2026-07-13 — #219-general: freeze scrollback position across EVERY covering overlay, not just the media viewer
+
+#219 (2026-07-12) held the scrollback position across the media-viewer overlay
+by gating both scroll authorities (`scrollToActivation` + the length-effect) on
+the media-specific `viewerScrollSnapshot`. vjt then generalized the invariant:
+ANY UI interaction that covers the pane — opening OR closing a modal/overlay —
+must NOT move the reader's scroll position. Message-follow (#168 tail-follow
+when a NEW message arrives while already at the tail, and the jump-to-bottom on
+SEND) is EXPLICITLY untouched — that is the user following the conversation, not
+UI chrome moving the pane.
+
+**Root cause is identical to #219, just wider.** A covering modal opening on
+mobile shrinks the `visualViewport` → fires the onMount `resize` listener →
+`scrollToActivation("tail-only")` → tail snap under the covered pane; a message
+arriving under the overlay runs the length-effect's `atBottom` tail-follow.
+#219 only closed this for the media viewer.
+
+**The fix generalizes the KEY, not the mechanism.** There is already a central
+"an overlay is open" source: `lib/overlayScrollLock.ts`'s refcount, which EVERY
+covering modal + drawer already pushes into (via `createOverlayLock` or manual
+`pushOverlay`/`popOverlay` — Media/Names/Who/Archive/Confirm/DeleteAccount/
+ServerReply/Privacy/ShareSession + the members/admin/settings drawers). The
+media viewer is just one participant, so keying the freeze on `overlayCount() >
+0` SUBSUMES #219 — no per-modal flag (derive, don't duplicate). Three changes:
+
+1. `overlayScrollLock.ts` — back the refcount with a Solid signal so
+   `overlayCount()` is a TRACKED source. A plain-`let` read would let the freeze
+   memo go stale when an overlay opens/closes. API + iOS touch-lock semantics
+   unchanged; the existing 12 tests still pass.
+2. `ScrollbackPane.tsx` — `viewerScrollSnapshot` → `overlayScrollSnapshot`; the
+   #196 capture/restore effect retriggers from `mediaViewerState()` to
+   `overlayCount() > 0`. Both gates route through one `isOverlayFrozen()`
+   predicate.
+3. `TopicBar.tsx` — the topic modal covers the pane but was the ONE covering
+   surface not registered with the refcount; wire it via `createOverlayLock`.
+
+**KEY-GUARD (the #219→general delta that is NOT a mechanical rename).** #196's
+media viewer never switched channels, so its restore was always safe. A covering
+MODAL can switch the window on close — clicking a nick in /names or /who opens a
+query AND dismisses the modal in one gesture. The ScrollbackPane instance
+persists across channel↔query (Shell bundles them in one non-keyed Match), so a
+blind restore would stamp the LEAVING channel's `scrollTop` onto the switched-to
+window. The snapshot is pinned to the channel key it was captured on
+(`overlaySnapshotKey`); `isOverlayFrozen()` and the restore both require
+`overlaySnapshotKey === key()`, so a window switched-to while an overlay is up
+activates normally and is never corrupted.
+
+**Link clicks were already safe** (verified, not re-gated per "fix root causes
+not examples"): plain links are `target=_blank` (new tab, no in-pane scroll);
+same-origin media links open the media viewer (now covered by the same gate);
+same-host non-media links go through `maybeEscapePwaClick` (iOS x-safari handoff
+/ no-op). No link-click path moves the pane on its own.
+
+**Tests.** Unit: `overlayScrollLock.test.ts` pins reactivity (a memo over
+`overlayCount()` recomputes on push/pop); `ScrollbackPane.test.tsx` pins the
+generalized freeze (a resize with NO overlay snaps to tail; a resize WHILE a
+covering overlay is open does NOT; after close it resumes — driven via
+`pushOverlay`/`popOverlay`, no media viewer); `TopicBar.test.tsx` pins the
+topic-modal refcount registration. E2e
+`issue219-general-overlay-scroll-hold.spec.ts` is authoritative: a resize while
+the /names modal (a covering NON-media modal) is open holds the mid-list offset,
+and the offset survives close; a regression guard proves message-follow still
+works (at the tail with no overlay, an inbound peer message scrolls to bottom).
+
+Client-only (cic bundle + e2e) — no wire, migration, server, or config change.
+Rides the hot `--cic` bundle.

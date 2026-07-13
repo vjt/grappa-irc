@@ -2,6 +2,7 @@ import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { compactModeString, modesByChannel, topicByChannel } from "./lib/channelTopic";
 import { mircPlainText } from "./lib/mircFormat";
+import { createOverlayLock } from "./lib/overlayScrollLock";
 import { windowIsJoined } from "./lib/windowState";
 import { MircBody } from "./MircText";
 
@@ -75,6 +76,17 @@ const TopicBar: Component<Props> = (props) => {
 
   const openModal = () => setModalState("open");
   const closeModal = () => setModalState("closed");
+
+  // #219-general — the topic modal covers the ScrollbackPane (fixed
+  // full-viewport `.topic-modal-backdrop`). Register it with the shared
+  // overlay refcount so ScrollbackPane's freeze gate engages while it is up,
+  // like every other covering modal (Names/Who/Confirm/Archive/…). Without
+  // this, opening the topic modal on mobile shrinks the visualViewport →
+  // ScrollbackPane's resize authority → tail-snap under the covered pane.
+  // The lock scroller is the modal element (matches the createOverlayLock
+  // contract for iOS touch-lock; the freeze that matters here is the
+  // refcount, which drives the pane's overlay-snapshot effect).
+  createOverlayLock(() => modalState() === "open", ".topic-modal");
 
   const formatSetAt = (setAt: string | null): string => {
     if (!setAt) return "(unknown time)";

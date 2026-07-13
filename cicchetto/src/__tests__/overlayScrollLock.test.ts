@@ -17,6 +17,7 @@
 //      - target with overflow:auto but content NOT taller than
 //        container → STILL preventDefault (no actual scroll capability)
 
+import { createMemo, createRoot } from "solid-js";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   __resetForTest,
@@ -114,6 +115,28 @@ describe("overlayScrollLock refcount + class", () => {
     expect(overlayCount()).toBe(1);
     popOverlay(null);
     expect(overlayCount()).toBe(0);
+  });
+
+  // #219-general — the freeze gate in ScrollbackPane derives "a covering
+  // overlay is open" from `overlayCount()`. That derive point must be
+  // REACTIVE: a plain-`let` read behind the function would let a Solid
+  // memo/effect that reads `overlayCount()` go stale when an overlay
+  // opens/closes, so the pane would never re-evaluate its freeze. Assert
+  // the count is a tracked source: a createMemo over it recomputes on
+  // push and pop.
+  test("overlayCount is reactive — a memo over it recomputes on push/pop", () => {
+    createRoot((dispose) => {
+      const observed: number[] = [];
+      const derived = createMemo(() => overlayCount());
+      // Prime: memos are lazy — first read registers the dependency.
+      observed.push(derived());
+      pushOverlay(null);
+      observed.push(derived());
+      popOverlay(null);
+      observed.push(derived());
+      dispose();
+      expect(observed).toEqual([0, 1, 0]);
+    });
   });
 });
 
