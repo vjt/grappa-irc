@@ -28,6 +28,7 @@ import { selectedChannel, setSelectedChannel } from "./selection";
 import { setServerReply } from "./serverReplyModal";
 import { applyServerSettings } from "./serverSettings";
 import { joinUser } from "./socket";
+import { seedUmodes } from "./umodes";
 import { setWhoisBundle } from "./whoisCard";
 import { setWhoReply } from "./whoModal";
 import { setWhowasBundle } from "./whowasCard";
@@ -253,6 +254,15 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
     case "own_nick_changed":
       if (typeof r.network_id !== "number" || typeof r.nick !== "string") return null;
       return { kind: "own_nick_changed", network_id: r.network_id, nick: r.nick };
+    case "umode_changed": {
+      // #229 — per-session umode set. User-topic-only (unlike isupport's
+      // dual-topic snapshot), so narrowed inline here. `modes` must be a
+      // string[] (sorted umode letters, sign stripped); any non-string
+      // element drops the whole payload.
+      if (typeof r.network_id !== "number" || !Array.isArray(r.modes)) return null;
+      if (!r.modes.every((m) => typeof m === "string")) return null;
+      return { kind: "umode_changed", network_id: r.network_id, modes: r.modes as string[] };
+    }
     case "isupport_changed":
       // #216 — dual-topic event: this is the LIVE 005 edge on the user
       // topic (the per-channel cold-snapshot goes through the identical
@@ -729,6 +739,14 @@ createRoot(() => {
             },
             prefix: payload.prefix,
           });
+          return;
+
+        case "umode_changed":
+          // #229 — seed the per-network umode set the /mode <nick> modal
+          // reads. Live edge (221 RPL_UMODEIS + self-MODE echoes) + cold
+          // snapshot (user-topic after-join) both flow here; last-write-wins
+          // idempotent.
+          seedUmodes(payload.network_id, payload.modes);
           return;
 
         case "connection_state_changed":

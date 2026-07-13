@@ -124,6 +124,10 @@ vi.mock("../lib/isupport", () => ({
   seedIsupport: vi.fn(),
 }));
 
+vi.mock("../lib/umodes", () => ({
+  seedUmodes: vi.fn(),
+}));
+
 // #100 — builds a valid connection_state_changed payload (the narrower
 // requires the full set of top-level + nested `network` fields).
 function connectionStateChanged(slug: string, to: "connected" | "parked" | "failed") {
@@ -313,6 +317,47 @@ describe("userTopic", () => {
         prefix: {},
       });
       expect(isupport.seedIsupport).not.toHaveBeenCalled();
+    });
+  });
+
+  // #229 — umode_changed seeds the per-network umode store.
+  describe("umode_changed event (#229)", () => {
+    it("calls seedUmodes with the narrowed letter list", async () => {
+      const umodes = await import("../lib/umodes");
+      channelMock.fireEvent({
+        kind: "umode_changed",
+        network_id: 7,
+        modes: ["S", "i", "w"],
+      });
+      expect(umodes.seedUmodes).toHaveBeenCalledWith(7, ["S", "i", "w"]);
+    });
+
+    it("accepts an empty umode list (all modes cleared)", async () => {
+      const umodes = await import("../lib/umodes");
+      vi.mocked(umodes.seedUmodes).mockClear();
+      channelMock.fireEvent({ kind: "umode_changed", network_id: 7, modes: [] });
+      expect(umodes.seedUmodes).toHaveBeenCalledWith(7, []);
+    });
+
+    it("drops umode_changed with a non-number network_id (narrower rejects)", async () => {
+      const umodes = await import("../lib/umodes");
+      vi.mocked(umodes.seedUmodes).mockClear();
+      channelMock.fireEvent({ kind: "umode_changed", network_id: "seven", modes: ["i"] });
+      expect(umodes.seedUmodes).not.toHaveBeenCalled();
+    });
+
+    it("drops umode_changed whose modes contain a non-string (narrower rejects)", async () => {
+      const umodes = await import("../lib/umodes");
+      vi.mocked(umodes.seedUmodes).mockClear();
+      channelMock.fireEvent({ kind: "umode_changed", network_id: 7, modes: ["i", 42] });
+      expect(umodes.seedUmodes).not.toHaveBeenCalled();
+    });
+
+    it("drops umode_changed with a non-array modes (narrower rejects)", async () => {
+      const umodes = await import("../lib/umodes");
+      vi.mocked(umodes.seedUmodes).mockClear();
+      channelMock.fireEvent({ kind: "umode_changed", network_id: 7, modes: "iwS" });
+      expect(umodes.seedUmodes).not.toHaveBeenCalled();
     });
   });
 

@@ -861,6 +861,19 @@ export type WireUserEvent =
   | { kind: "away_confirmed"; network: string; state: "present" | "away" }
   | { kind: "own_nick_changed"; network_id: number; nick: string }
   | {
+      // #229 — per-session USER-mode set, parsed from 221 RPL_UMODEIS +
+      // self-MODE echoes server-side. The `/mode <nick>` / `/umode` modal
+      // marks which umodes are active from this. Rides `Topic.user/1`
+      // (per-session, not per-channel) and is cold-snapshotted on the
+      // user-topic after-join push (unlike isupport's per-channel snapshot
+      // — umodes are reachable with zero channels). userTopic.ts dispatches
+      // into `seedUmodes(network_id, modes)`. `modes` is the sorted letter
+      // list (sign stripped — a umode is set or not).
+      kind: "umode_changed";
+      network_id: number;
+      modes: string[];
+    }
+  | {
       // #216 — per-network ISUPPORT channel-mode capability set, parsed
       // from 005 RPL_ISUPPORT CHANMODES= + PREFIX= server-side. The
       // `/mode` modal drives its available toggles from this. Rides
