@@ -19478,3 +19478,74 @@ the server still holds 150 older rows; a REAL Chromium `mouse.wheel(0, -600)`
 must grow the row count past the initial page. Verified RED (fix stashed → row
 count stuck at 50 after the wheel) then GREEN. cic-only → rides the hot
 `deploy-m42.sh --cic` (no server change, no cold window).
+
+---
+
+## 2026-07-13 — #229 umode viewer/editor modal (1:1 mirror of #216)
+
+**What.** `/mode <nick>` / `/umode` (and a tap on a network-header umode
+indicator) open a modal showing the operator's OWN user modes as retro toggle
+buttons, editable. Umodes are populated FROM CONNECT, not only after a
+mid-session change. The direct follow-on to #216's channel-mode modal — vjt
+asked for "stesso e identico comportamento" for umodes.
+
+**Why the whole #216 pipeline transposed cleanly, and where umodes diverge.**
+#216 already proved the architecture (query-at-event → numeric-fold → typed
+wire event → broadcast → cold-snapshot → cic store + modal + tap entry). #229
+mirrors each piece for umodes; the VERIFIED divergences from channel modes:
+
+1. **Emit point is 001 RPL_WELCOME, not the per-channel `:joined` arm.**
+   Umodes are per-session (emitted ONCE at registration), not per-channel.
+   `Client.send_umode_query/2` (bare `MODE <nick>`, the umode twin of #216's
+   `send_channel_modes/2`) fires from the numeric-1 handler using the
+   server-authoritative `welcomed_nick`, non-fatal via
+   `maybe_log_send_failure/2`. ircds don't report own umodes unsolicited (only
+   CHANGES echo), so the query is what elicits the set.
+
+2. **221 RPL_UMODEIS was UNPARSED (zero prior hits).** New EventRouter clause
+   parses it (a full authoritative snapshot → REPLACE the set, from an empty
+   base — like 324 for channel modes). Delegated in NumericRouter so the scan
+   path doesn't persist it as a `$server` `:notice` leaking the raw "+iwS"
+   token (same disease as the 324/332/333 family).
+
+3. **Reuse the existing self-MODE branch, add the noun.** The user-MODE-on-own-
+   nick branch (#154b) already surfaced the echo as a `$server` row; #229 folds
+   the +/- delta into the queryable `umodes` set INSIDE that branch (a
+   mid-session `/umode +x` and the services-set +r/+a at IDENTIFY both flow
+   through it) — no parallel detector (CLAUDE.md design-discipline #6). New
+   `apply_umode_string/2` is a flag-only +/- walker (umodes take no params, no
+   channel), far simpler than #216's `walk_channel_modes/5`.
+
+4. **Cold-snapshot rides the USER topic, not per-channel.** #216's isupport
+   snapshot rides the per-channel after-join push — acceptable because isupport
+   has a bahamut DEFAULT fallback. Umodes have NO default and are reachable with
+   ZERO channels, so the snapshot MUST ride the user-topic after_join, fanning
+   out one `umode_changed` push per bound network (new subject-generic
+   `Credentials.list_networks_for_subject/1`). The e2e witness (set `+i`,
+   RELOAD → the reloaded session has no live echo, only the cold-snapshot can
+   repopulate the set) proves this path — verified RED (snapshot stashed → blank
+   after reload) then GREEN.
+
+5. **cic: sibling UmodeModal, NOT a param'd ModeModal.** The data sources fork
+   completely — no ISUPPORT toggle set (umodes have no availability source;
+   `umodeModes.ts` static table IS the available set), no channel, no edit-gate
+   (you always own your umodes), no params. A shared-data-model-with-a-type-flag
+   would be a boundary violation (design-discipline #6); the sibling REUSES the
+   verb (the `.mode-modal-*` CSS machine, the overlayScrollLock pattern, the
+   store shape). Server/services-managed umodes (o/r/a/A/S) render read-only —
+   the umode twin of #216's param-modes-read-only decision. `/mode <nick>` opens
+   the modal ONLY when the target resolves to the operator's own nick
+   (ownNickForNetwork + nickEquals); another user's is a friendly error (no
+   viewer for someone else's umodes).
+
+**Hot vs COLD.** COLD — the new `:umodes` Session.Server state-map field trips
+the deploy preflight `state_shape` check exactly like #216's `:isupport` (SoT:
+`lib/grappa/hot_reload/long_lived_modules.ex` → Session.Server). All read sites
+`Map.get(state, :umodes, [])`, all writes `Map.put` (never `%{state | ...}`) for
+the hot-reload-safety invariant regardless — guarded by a `:sys.replace_state`-
+strips-the-field test asserting the proc survives (same pid, no respawn). The
+server part batches into an attended cold window; the cic part (modal, store,
+tap entry) rides the hot `--cic` deploy.
+
+**Scope.** The "all modals close on ESC" line in the #229 issue body was split
+out to its own issue #232 (a cross-cutting a11y invariant) — NOT done here.
