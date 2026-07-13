@@ -19853,3 +19853,80 @@ WHO round-trip.
   a `--cic` bundle deploy too.
 - **CI / solanum-node change:** NO prod deploy — it is testnet/CI infra,
   never runs in prod (prod is the m42 jail).
+
+## 2026-07-14 — #233 read cursor is monotonic (advance-only); kills the scroll-to-bottom jump-back
+
+**Symptom (live client).** Tap the scroll-to-bottom button in a buffer with
+unread above → view jumps to the bottom, then ~2s later snaps back UP to the old
+read marker. A couple more taps eventually make it stick.
+
+**Root cause (confirmed in source, not hypothesis).** `Grappa.ReadCursor.do_set/4`
+(`lib/grappa/read_cursor.ex`) was **last-write-wins**: its only special case was
+an *identical* id (no-op); any *different* id — including a **lower** one — was
+written unconditionally. The regressing sequence: cic taps scroll-to-bottom
+while the newest message page is still loading (`GET …/channels/<chan>/messages`
+measured at `Sent 200 in 1578ms`); a read-cursor POST fires carrying the
+**currently-loaded bottom** (a LOWER `last_read_message_id`, near the old
+marker); `do_set` writes it backward; `ReadCursor.broadcast_set` fans a
+`read_cursor_set` on the per-channel topic ~1–2s later; **every** cic instance
+(including the originator) applies it last-write-wins and snaps the view back.
+cic is already forward-only *locally* (`cicchetto/src/lib/readCursor.ts`) and
+relies on the server echo to land any backward move — so the **server was the
+single authoritative regressor**. Once the newest page has loaded (after a
+couple taps) the POST carries the true newest id and it sticks.
+
+**Fix — monotonic clamp in `do_set/4` (advance-only).** Write ONLY when
+`message_id > current.last_read_message_id`; a POST at OR below the stored cursor
+is a no-op returning the EXISTING (higher) cursor unchanged. One guarded clause
+(`%Cursor{last_read_message_id: current} = cursor when message_id <= current ->
+{:ok, cursor}`) SUBSUMES the old equal-id no-op (equal is just the `<=`
+boundary). `nil` still inserts. This kills the jump-back regardless of the
+client race. Read-then-compare (not atomic `Repo.update_all(where: … < ^id)`) is
+the low-risk default: SQLite is single-writer so writes serialize, the code was
+already get-then-update, and read-then-compare returns the `%Cursor{}` struct
+cleanly so `set/4`'s `{:ok, Cursor.t()}` contract + the controller render are
+preserved. A concurrent-POST TOCTOU could in principle let two advances race,
+but both would advance (never regress) and the higher wins — acceptable.
+
+**No controller change.** `read_cursor_controller.ex` renders
+`cursor.last_read_message_id` from whatever `set/4` returns; on a stale (lower)
+POST that is now the CURRENT (higher) id, so the broadcast **re-affirms** the
+correct position instead of regressing it. `badge_count = BadgeCount.count(subject)`
+still computes fine. Only the moduledoc/`@doc` prose changed (they described
+last-write-wins + "moving backwards is legitimate" — now lies).
+
+**Escape hatch — deliberate mark-as-unread is intentionally NOT built (YAGNI).**
+The orchestrator directive floated "keep explicit mark-as-unread as the escape
+hatch (the one legitimate backward move)." Verified @ d2fcaed1: **no
+mark-as-unread feature exists** — `set/4` → `do_set/4` is the ONLY cursor write
+path; `git grep -rniE "mark.?unread|mark_unread|reset_to" lib/ cicchetto/src/`
+returns nothing. Building a `mark_unread/4` now would be speculative public API
+with zero callers — trips CLAUDE.md "add X means add X" / "will this exist in two
+weeks?". **Decision: DEFAULT — monotonic-only, no reserved API.** A future
+mark-as-unread adds its OWN explicit path that bypasses the guard, THEN, when it
+has a caller. Documented in the `ReadCursor` moduledoc "Semantics" so no one
+"fixes" the guard away — do NOT relax `<=` to `<` to pre-empt it. No picker
+popped: the default is confidently CLAUDE.md-faithful; flagged in the report so
+orch/vjt can still request the reserved API.
+
+**Two tests asserted the bug — deleted + inverted (never-assert-buggy-behavior).**
+(a) `test/grappa/read_cursor_test.exs` — the `describe "set/4 — last-write-wins"`
+block became a lie (renamed `"set/4 — monotonic advance"`); the test "setting to
+a lower id moves the cursor backward (operator scrolled up + settled)" ASSERTED
+the exact regression (POST m2 then m1, expect m1) — **deleted + replaced** with
+the RED monotonic test (POST m2 then m1 → cursor STAYS m2, and the stored row is
+verified unchanged). (b) `test/grappa_web/controllers/read_cursor_controller_test.exs`
+had the twin at the HTTP layer ("moves backward when message_id is lower…") —
+inverted to "clamps a stale lower message_id to the current cursor". The
+higher-advances + equal-no-op tests stay green (kept). RED proof: pre-fix both
+lower-id tests failed (wrote/returned the lower id); post-fix green.
+
+**Deploy: HOT.** Pure logic change to a single private function; no new
+supervised child, no migration, no config, no wire-type change, no Session.Server
+state-shape change — hot-reload recompiles the module in place. (Contrast #223
+which was COLD for a new child.)
+
+**Secondary/out of scope.** cic could ALSO persist the *true newest* id only
+after the newest page loads (belt-and-suspenders on the client). Not needed for
+the fix — the server clamp is sufficient and authoritative — tracked as a
+possible follow-up, not part of #233.
