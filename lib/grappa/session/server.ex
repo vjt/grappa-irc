@@ -1523,10 +1523,14 @@ defmodule Grappa.Session.Server do
   end
 
   # #216: returns the per-network ISUPPORT capability table. Always
-  # succeeds with at least the bahamut default (init seeds it) — no
-  # `:no_modes`-style miss. Public via `Grappa.Session.get_isupport/2`.
+  # succeeds with at least the bahamut default. `Map.get` (not `state.isupport`)
+  # so a live proc whose state predates the :isupport field — a plain hot
+  # module reload does NOT run code_change/2 nor rewrite process state —
+  # returns the default instead of KeyError-crashing the :transient proc on
+  # the next per-channel WS after-join snapshot (which reaches here). See
+  # ISupport hot-reload safety test + CLAUDE.md hot-load-reads-absent-field.
   def handle_call(:get_isupport, _, state) do
-    {:reply, {:ok, state.isupport}, state}
+    {:reply, {:ok, Map.get(state, :isupport, ISupport.default())}, state}
   end
 
   # CP15 B3 + cluster #6: returns the snapshot-ready window-state
@@ -2151,16 +2155,25 @@ defmodule Grappa.Session.Server do
       ) do
     modes_per_chunk = extract_modes_isupport(msg.params, state.modes_per_chunk)
     linelen = extract_linelen_isupport(msg.params, state.linelen)
-    isupport = ISupport.merge_isupport(msg.params, state.isupport)
 
-    if isupport != state.isupport do
+    # `Map.get` default (not `state.isupport`) + `Map.put` write (not a
+    # `%{state | isupport: ...}` update, which KeyErrors when the key is
+    # absent) so a live proc whose state predates the :isupport field —
+    # a plain hot reload does NOT rewrite process state — folds the new
+    # capabilities in and self-heals instead of crashing. See #216
+    # hot-reload safety test.
+    prev_isupport = Map.get(state, :isupport, ISupport.default())
+    isupport = ISupport.merge_isupport(msg.params, prev_isupport)
+
+    if isupport != prev_isupport do
       broadcast_window_state(
         state,
         SessionWire.isupport_changed(state.network_id, isupport)
       )
     end
 
-    {:noreply, %{state | modes_per_chunk: modes_per_chunk, linelen: linelen, isupport: isupport}}
+    state = %{state | modes_per_chunk: modes_per_chunk, linelen: linelen}
+    {:noreply, Map.put(state, :isupport, isupport)}
   end
 
   # Channel directory (#84) C3 — capture the streamed LIST reply while a

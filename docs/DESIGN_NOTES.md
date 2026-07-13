@@ -19382,6 +19382,27 @@ just `deploy-m42.sh --cic`. A hot reload's MODE-on-join fires only for channels
 joined AFTER the reload; already-joined live channels populate on the next
 join/reconnect — acceptable for a cosmetic P1.
 
+**Hot-reload field-add hazard (fixed before deploy).** #216 adds a NEW
+`Session.Server` state-map field `:isupport`. A plain `deploy-m42.sh` auto-hot
+is a module reload — it does NOT run `code_change/2` (and a plain `Code.reload`
+wouldn't call it even if one existed) and does NOT rewrite live process state,
+so the ~29 always-on `Session.Server` procs keep their OLD keyless map after the
+reload. Every per-channel WS after-join snapshot reaches `handle_call(:get_isupport)`
+(via `push_isupport_if_live`), and the 005 handler reads/writes the field too —
+a bare `state.isupport` read OR a `%{state | isupport: …}` update KeyErrors on
+the stale map, crashing the `:transient` proc → respawn = IRC reconnect = a
+session DROP. cic reconnects its WS routinely, so this would be a rolling
+crash-wave, NOT the claimed zero-drop (orchestrator caught this pre-deploy). Fix
+(CLAUDE.md hot-load-reads-absent-field): all four server.ex access sites use
+`Map.get(state, :isupport, ISupport.default())` for reads and `Map.put/3` for
+the 005 write (never the `%{state | …}` update form, which requires the key to
+pre-exist) — a stale proc returns/merges from the default until it re-registers,
+so the deploy is genuinely zero-drop HOT. EventRouter's two walker reads were
+already `Map.get`-guarded from the start. Guarded by the "hot-reload safety"
+test in `server_test.exs`, which strips `:isupport` via `:sys.replace_state` to
+reproduce the post-reload stale-proc shape and asserts the proc survives (same
+pid, no respawn) across both a `get_isupport` read and a fresh 005.
+
 **Tests.** Server: `isupport_test.exs` (parse + default + type-C sign
 sensitivity), `event_router_test.exs` (walkers read state.isupport, `-l` consumes
 no arg), `server_test.exs` (MODE-on-join query + 324→cache→broadcast, 005 stores

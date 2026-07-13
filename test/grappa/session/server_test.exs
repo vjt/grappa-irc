@@ -1907,6 +1907,64 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    test "hot-reload safety: a live proc whose state predates the :isupport field survives" do
+      # A plain hot module reload (deploy-m42.sh auto-hot) does NOT run
+      # code_change/2 and does NOT rewrite live process state, so a
+      # Session.Server that was spawned BEFORE the :isupport field existed
+      # keeps its old keyless map after the reload. `get_isupport` and the
+      # 005 handler must tolerate the absent key (Map.get default + a
+      # map-PUT, not a `%{state | ...}` update which KeyErrors on an absent
+      # key) so the always-on sessions don't crash-wave on the next WS
+      # reconnect / 005. We reproduce the stale struct with
+      # `:sys.replace_state` deleting the key, exactly as a pre-field proc
+      # would look post-reload.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Simulate the stale-proc shape: strip :isupport from the live state.
+      # (`:sys.replace_state` returns the NEW state, not `:ok`.)
+      _ = :sys.replace_state(pid, fn state -> Map.delete(state, :isupport) end)
+
+      # Read path (reached on EVERY per-channel WS after-join snapshot):
+      # must return the default, NOT KeyError-crash the :transient proc.
+      assert {:ok, isupport} = Session.get_isupport({:user, user.id}, network.id)
+      assert isupport == ISupport.default()
+
+      # Write path (005 handler): a fresh 005 on a stale proc must fold in
+      # the new capabilities and broadcast, without KeyError on the absent
+      # key. The proc stays alive (same pid) throughout.
+      IRCServer.feed(
+        server,
+        ":irc.test.org 005 grappa-test CHANMODES=beI,k,l,imnpst PREFIX=(qaohv)~&@%+ :are supported\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :isupport_changed, prefix: prefix}
+                     },
+                     1_000
+
+      assert prefix["q"] == "~"
+      # Same pid — the stale proc never crashed/respawned (no session drop).
+      assert Process.alive?(pid)
+      assert Session.whereis({:user, user.id}, network.id) == pid
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   describe "CP15 B2 — in_flight_joins map" do
