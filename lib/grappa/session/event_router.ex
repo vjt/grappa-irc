@@ -191,6 +191,7 @@ defmodule Grappa.Session.EventRouter do
           | {:invited, channel :: String.t()}
           | {:lusers_bundle, accum :: map()}
           | {:whowas_bundle, target :: String.t(), accum :: map()}
+          | {:umode_changed, modes :: [String.t()]}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -603,7 +604,21 @@ defmodule Grappa.Session.EventRouter do
           _ -> []
         end
 
-      {:cont, state, [self_server_persist | r_effects]}
+      # #229: fold the delta into the queryable per-session umode set so the
+      # /mode <nick> modal reflects mid-session changes (an explicit
+      # `/umode +x`, the services-set +r/+a at IDENTIFY — both flow through
+      # THIS branch). Reuse the verb (this existing self-mode branch), add
+      # the noun (stored state) — no parallel detector. `Map.get` default +
+      # `Map.put` (never `%{state | umodes: ...}`) so a hot-reloaded proc
+      # whose state predates the :umodes field self-heals rather than
+      # KeyError-crashing (mirror of #216's :isupport hot-safety). Emit
+      # `:umode_changed` only on an actual change to keep fan-out minimal.
+      prev_umodes = Map.get(state, :umodes, [])
+      next_umodes = apply_umode_string(prev_umodes, modes)
+      umode_effects = if next_umodes != prev_umodes, do: [{:umode_changed, next_umodes}], else: []
+      state = Map.put(state, :umodes, next_umodes)
+
+      {:cont, state, [self_server_persist | r_effects] ++ umode_effects}
     else
       sender = Message.sender_nick(msg)
       isupport = Map.get(state, :isupport, ISupport.default())
@@ -925,6 +940,26 @@ defmodule Grappa.Session.EventRouter do
     entry = parse_mode_snapshot(mode_str, mode_args, isupport)
     channel_modes = Map.put(Map.get(state, :channel_modes, %{}), chan_key, entry)
     {:cont, %{state | channel_modes: channel_modes}, [{:channel_modes_changed, channel, entry}]}
+  end
+
+  # 221 RPL_UMODEIS (#229): the reply to a bare `MODE <selfnick>` query —
+  # the operator's own current user-mode set. Format:
+  # `:server 221 <own_nick> <mode_str>` (e.g. "+iwS"). This is the umode
+  # analogue of 324 RPL_CHANNELMODEIS: a full authoritative snapshot, so
+  # it REPLACES the per-session `umodes` set (parse from an empty base).
+  # `Map.get` default + `Map.put` (never `%{state | umodes: ...}`) for the
+  # #216 hot-reload-safety contract. Emit `:umode_changed` only on a real
+  # change to keep fan-out minimal. Umodes are per-session (no channel), so
+  # `apply_umode_string/2` folds the +/- string into a sorted letter list.
+  defp do_route(
+         %Message{command: {:numeric, 221}, params: [_, mode_str | _]},
+         state
+       )
+       when is_binary(mode_str) do
+    prev_umodes = Map.get(state, :umodes, [])
+    next_umodes = apply_umode_string([], mode_str)
+    effects = if next_umodes != prev_umodes, do: [{:umode_changed, next_umodes}], else: []
+    {:cont, Map.put(state, :umodes, next_umodes), effects}
   end
 
   # 366 RPL_ENDOFNAMES is the end-of-NAMES marker. Each preceding 353
@@ -2328,6 +2363,32 @@ defmodule Grappa.Session.EventRouter do
   # (e.g. when a MODE arrives before 324 RPL_CHANNELMODEIS).
   @spec empty_mode_entry() :: channel_mode_entry()
   defp empty_mode_entry, do: %{modes: [], params: %{}}
+
+  # #229 — apply a +/- USER-mode delta string to a sorted letter set.
+  # Umodes are flag-only (no params, no channel) so this is far simpler
+  # than the channel walk_channel_modes/5: sticky-sign recursion, `+`
+  # inserts a letter, `-` removes it, result kept sorted + deduped for a
+  # stable wire shape. Used by BOTH the 221 RPL_UMODEIS snapshot (from an
+  # empty base = replace) and the self-MODE echo (from the current set =
+  # delta). A snapshot from an ircd starts with `+`; a mid-session echo
+  # may mix signs (`-i+w`).
+  @spec apply_umode_string([String.t()], String.t()) :: [String.t()]
+  defp apply_umode_string(modes, mode_string) when is_list(modes) and is_binary(mode_string) do
+    modes
+    |> MapSet.new()
+    |> walk_umodes(mode_string, :add)
+    |> Enum.sort()
+  end
+
+  defp walk_umodes(set, "", _), do: set
+  defp walk_umodes(set, "+" <> rest, _), do: walk_umodes(set, rest, :add)
+  defp walk_umodes(set, "-" <> rest, _), do: walk_umodes(set, rest, :remove)
+
+  defp walk_umodes(set, <<letter::binary-size(1), rest::binary>>, :add),
+    do: walk_umodes(MapSet.put(set, letter), rest, :add)
+
+  defp walk_umodes(set, <<letter::binary-size(1), rest::binary>>, :remove),
+    do: walk_umodes(MapSet.delete(set, letter), rest, :remove)
 
   # Parse a full mode snapshot string (e.g. "+nt" or "+ntk") plus arg list
   # into a channel_mode_entry. Replaces any existing entry entirely (used by

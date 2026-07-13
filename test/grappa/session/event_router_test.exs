@@ -1474,30 +1474,45 @@ defmodule Grappa.Session.EventRouterTest do
       # transition as a `:mode` row on the synthetic "$server" window so
       # the operator sees confirmation of their own mode change (pre-fix
       # this branch dropped the echo entirely, so `/umode +i` and the
-      # services-pushed +a produced zero feedback). State is unchanged —
-      # a user-mode is not a channel-state mutation.
+      # services-pushed +a produced zero feedback). #229: it ALSO folds
+      # the delta into the queryable per-session umode set and emits
+      # `{:umode_changed, ["i"]}` so the /mode <nick> modal reflects it.
       state = base_state(%{nick: "vjt"})
       m = msg(:mode, ["vjt", "+i"], {:nick, "vjt", "u", "h"})
 
-      assert {:cont, ^state, [{:persist, :mode, attrs}]} = EventRouter.route(m, state)
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == ["i"]
+
+      persist = Enum.find(effects, &match?({:persist, :mode, _}, &1))
+      assert {:persist, :mode, attrs} = persist
       assert attrs.channel == "$server"
       assert attrs.sender == "vjt"
       assert attrs.body == nil
       assert attrs.meta.modes == "+i"
       assert attrs.meta.args == []
+
+      # #229 — umode fold + broadcast effect.
+      assert {:umode_changed, ["i"]} in effects
     end
 
     test "own-nick MODE echo is GENERAL — any mode string, any setter (#154b)" do
       # The confirmation row is not special-cased to a mode letter: it
       # fires for the CONNECT burst (+iS/+ixS), the services +a, +r at
       # IDENTIFY, etc. Here a services server pushes +ixS on the own nick.
+      # #229: the umode set folds the whole string (sorted).
       state = base_state(%{nick: "vjt"})
       m = msg(:mode, ["vjt", "+ixS"], {:server, "services.azzurra.chat"})
 
-      assert {:cont, ^state, [{:persist, :mode, attrs}]} = EventRouter.route(m, state)
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == ["S", "i", "x"]
+
+      persist = Enum.find(effects, &match?({:persist, :mode, _}, &1))
+      assert {:persist, :mode, attrs} = persist
       assert attrs.channel == "$server"
       assert attrs.sender == "services.azzurra.chat"
       assert attrs.meta.modes == "+ixS"
+
+      assert {:umode_changed, ["S", "i", "x"]} in effects
     end
   end
 
@@ -1528,7 +1543,10 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      # #229: state.umodes now folds the +r delta, so the pre-#229
+      # `^state` (unchanged) pin no longer holds — the +r OBSERVATION
+      # effect is this test's subject, asserted via membership.
+      assert {:cont, _, effects} = EventRouter.route(m, state)
       assert {:visitor_r_observed, "s3cret"} in effects
     end
 
@@ -1542,7 +1560,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert {:cont, _, effects} = EventRouter.route(m, state)
       refute Enum.any?(effects, &match?({:visitor_r_observed, _}, &1))
     end
 
@@ -1556,7 +1574,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+i"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert {:cont, _, effects} = EventRouter.route(m, state)
       refute Enum.any?(effects, &match?({:visitor_r_observed, _}, &1))
     end
 
@@ -1570,7 +1588,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+ir"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert {:cont, _, effects} = EventRouter.route(m, state)
       assert {:visitor_r_observed, "s3cret"} in effects
     end
 
@@ -1584,7 +1602,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+i-r"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert {:cont, _, effects} = EventRouter.route(m, state)
       refute Enum.any?(effects, &match?({:visitor_r_observed, _}, &1))
     end
 
@@ -1621,7 +1639,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert {:cont, _, effects} = EventRouter.route(m, state)
       assert {:visitor_r_observed, "regpass"} in effects
     end
 
@@ -1638,8 +1656,41 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
 
-      assert {:cont, ^state, effects} = EventRouter.route(m, state)
+      assert {:cont, _, effects} = EventRouter.route(m, state)
       assert {:visitor_r_observed, "regpass"} in effects
+    end
+  end
+
+  describe "route/2 — 221 RPL_UMODEIS (#229)" do
+    test "221 replaces the umode set with the parsed snapshot + emits :umode_changed" do
+      # 221 is the authoritative reply to the bare `MODE <selfnick>` query;
+      # like 324 for channel modes, it REPLACES the set (parse from empty).
+      state = base_state(%{nick: "vjt", umodes: ["z"]})
+      m = msg({:numeric, 221}, ["vjt", "+iwS"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == ["S", "i", "w"]
+      assert {:umode_changed, ["S", "i", "w"]} in effects
+    end
+
+    test "221 with an unchanged set emits no effect (idempotent snapshot)" do
+      state = base_state(%{nick: "vjt", umodes: ["i", "w"]})
+      m = msg({:numeric, 221}, ["vjt", "+iw"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == ["i", "w"]
+      refute Enum.any?(effects, &match?({:umode_changed, _}, &1))
+    end
+
+    test "221 on a state predating the :umodes field folds from [] (hot-safe)" do
+      # A hot-reloaded proc's state map lacks :umodes; Map.get default []
+      # must let the 221 fold in without KeyError (mirror of #216 :isupport).
+      state = Map.delete(base_state(), :umodes)
+      m = msg({:numeric, 221}, ["vjt", "+i"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == ["i"]
+      assert {:umode_changed, ["i"]} in effects
     end
   end
 

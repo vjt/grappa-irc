@@ -186,6 +186,17 @@ defmodule Grappa.Session.NumericRouter do
   # Delegated numerics: already handled by dedicated EventRouter/Server
   # handlers. `:delegated` short-circuits the matrix; the caller defers.
   @delegated_numerics MapSet.new([
+                        # #229 — 221 RPL_UMODEIS. Reply to the bare
+                        # `MODE <selfnick>` umode query grappa issues at 001
+                        # RPL_WELCOME. EventRouter's 221 clause parses the
+                        # umode string into the per-session `umodes` set and
+                        # emits {:umode_changed, modes}; Session.Server
+                        # broadcasts it on Topic.user. Without delegation the
+                        # param-derived scan would persist it as a bare
+                        # `:notice` row on $server (leaking the raw "+iwS"
+                        # token as scrollback noise) — same disease as the
+                        # 324/332/333 channel-state numerics below.
+                        221,
                         # WHOIS replies (311–319)
                         311,
                         312,
