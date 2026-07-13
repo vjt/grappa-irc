@@ -1021,9 +1021,39 @@ defmodule GrappaWeb.GrappaChannel do
     push_server_settings(socket)
 
     case resolve_subject(user_name) do
-      {:ok, subject} -> push_query_windows_list(subject, socket)
-      :error -> :ok
+      {:ok, subject} ->
+        push_query_windows_list(subject, socket)
+        push_umodes_if_live(subject, socket)
+
+      :error ->
+        :ok
     end
+  end
+
+  # #229: seed the cic `/mode <nick>` modal's umode set on the user-topic
+  # cold-WS-subscribe. Unlike #216's isupport (which rides the per-channel
+  # after-join snapshot), umodes are per-session and reachable with ZERO
+  # channels, so this fans out one `umode_changed` push per bound network
+  # on the user topic — the same carrier the live 221 broadcast uses. The
+  # live edge is the 221 RPL_UMODEIS broadcast; this closes the always-on-
+  # session race where the 221 fired long before the client subscribed.
+  # `get_umodes` only misses on `{:error, :no_session}` (parked/failed) —
+  # cic keeps its empty default until a session is live. A best-effort
+  # snapshot: a broadcast/resolve failure for one network must not disturb
+  # the others (each push is independent).
+  @spec push_umodes_if_live(Session.subject(), Phoenix.Socket.t()) :: :ok
+  defp push_umodes_if_live(subject, socket) do
+    for %Network{} = network <- Networks.Credentials.list_networks_for_subject(subject) do
+      case Session.get_umodes(subject, network.id) do
+        {:ok, modes} ->
+          push(socket, "event", SessionWire.umode_changed(network.id, modes))
+
+        {:error, _} ->
+          :ok
+      end
+    end
+
+    :ok
   end
 
   # CP23 S4 B4 — push the deployed cic bundle hash on user-topic join so

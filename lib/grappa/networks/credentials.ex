@@ -798,6 +798,30 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  Returns the `[Network.t()]` bound to a `subject` — user OR visitor —
+  with `:network` preloaded. Subject-generic wrapper over the two
+  subject-scoped credential readers (`WHERE user_id ==` /
+  `WHERE visitor_id ==`), so a caller that only needs the network set
+  (e.g. #229's per-session umode cold-snapshot, which fans out one push
+  per bound network on the user topic) doesn't branch on subject shape
+  itself. Returns `[]` for an unknown/empty subject.
+  """
+  @spec list_networks_for_subject(Grappa.Session.subject()) :: [Network.t()]
+  def list_networks_for_subject({:user, user_id}) when is_binary(user_id) do
+    query = from(c in Credential, where: c.user_id == ^user_id, preload: [:network])
+
+    query
+    |> Repo.all()
+    |> Enum.map(& &1.network)
+  end
+
+  def list_networks_for_subject({:visitor, visitor_id}) when is_binary(visitor_id) do
+    visitor_id
+    |> list_visitor_credentials()
+    |> Enum.map(& &1.network)
+  end
+
+  @doc """
   Returns every credential whose `connection_state == :connected`,
   with `:network` preloaded.
 

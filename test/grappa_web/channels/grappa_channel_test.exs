@@ -828,6 +828,34 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert "alice" in nicks
     end
 
+    test "after-join snapshot: pushes the session's umodes on the user topic (#229)" do
+      # #229 cold-WS-subscribe race: umodes are per-session (reachable with
+      # ZERO channels), so — unlike #216's per-channel isupport snapshot —
+      # the umode snapshot rides the USER-topic after_join. cic reconnects
+      # its WS long after the 221 RPL_UMODEIS fired, so without this the
+      # /mode <nick> modal would stay blank until a mid-session change.
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+
+      welcome_session_on_channel(irc_server, "#snap")
+
+      # The upstream reports the connect-time umode set (answering the
+      # welcome-time bare MODE query).
+      IRCServer.feed(irc_server, ":irc.test.org 221 grappa-snap +iwS\r\n")
+      flush_server(irc_server)
+
+      topic = Topic.user(user.name)
+
+      {:ok, _, _} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{kind: :umode_changed, network_id: net_id, modes: modes})
+      assert net_id == network.id
+      assert modes == ["S", "i", "w"]
+    end
+
     # CP23 S4 B4 — bundle_hash push on user-topic join.
     #
     # The `Grappa.Cic.Bundle` reader live-reads `runtime/cicchetto-dist/
