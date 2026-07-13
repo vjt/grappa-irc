@@ -316,6 +316,23 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_banlist(client, "no-prefix")
     end
 
+    test "send_channel_modes/2 emits bare MODE #chan query framing" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_channel_modes(client, "#sniffo")
+
+      assert {:ok, "MODE #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #sniffo\r\n"), 1_000)
+    end
+
+    test "send_channel_modes/2 rejects malformed channel with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_channel_modes(client, "no-prefix")
+    end
+
     test "send_umode/3 emits MODE nick modes framing" do
       {server, port} = start_server()
       client = start_client(port)

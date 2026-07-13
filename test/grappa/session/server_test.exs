@@ -1704,6 +1704,96 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "self-JOIN echo emits a bare MODE <channel> query (#216 P0)" do
+      # #216: ircds don't send 324 RPL_CHANNELMODEIS unsolicited on JOIN,
+      # so the TopicBar mode indicator stayed blank until a mid-session
+      # MODE change. The :joined apply-effects arm now issues a bare
+      # `MODE #chan` query on every self-JOIN so the 324 arrives and
+      # populates the channel_modes cache → broadcast → cic renders modes
+      # from the moment of join. Every join path (autojoin, /join,
+      # NickServ-driven, invite-rejoin) funnels through the self-JOIN echo,
+      # so this one arm covers them all.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+
+      assert {:ok, "MODE #test\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "self-JOIN → 324 RPL_CHANNELMODEIS populates channel_modes cache + broadcasts (#216)" do
+      # #216 end-to-end at the server layer: the MODE-on-join query
+      # elicits a 324, EventRouter folds it into channel_modes, and the
+      # {:channel_modes_changed} effect broadcasts on the per-channel
+      # topic. Guards the full P0 pipeline (query → cache → broadcast).
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel(user.name, network.slug, "#test")
+        )
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE #test\r\n"), 1_000)
+
+      # Upstream answers the query with the channel's current modes.
+      IRCServer.feed(server, ":irc.test.org 324 grappa-test #test +nt\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :channel_modes_changed,
+                         channel: "#test",
+                         modes: %{modes: mode_list, params: %{}}
+                       }
+                     },
+                     1_000
+
+      assert Enum.sort(mode_list) == ["n", "t"]
+
+      assert {:ok, %{modes: cached_modes}} =
+               Session.get_channel_modes({:user, user.id}, network.id, "#test")
+
+      assert Enum.sort(cached_modes) == ["n", "t"]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "other-user JOIN does NOT broadcast :joined (regression)" do
       # Only self-JOIN promotes window state. Other-user JOINs land in
       # scrollback as :persist :join rows and broadcast the row itself

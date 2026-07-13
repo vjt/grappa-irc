@@ -555,6 +555,27 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
+  Sends `MODE <channel>\\r\\n` — the bare channel-mode QUERY form (no
+  sign, no mode letters, no `b` argument). Elicits 324 RPL_CHANNELMODEIS
+  (+ 329 RPL_CREATIONTIME) from the upstream, which EventRouter folds
+  into the `channel_modes` cache and broadcasts to cic. ircds do NOT
+  send 324 unsolicited on JOIN (unlike the 332/333 topic numerics), so
+  `Grappa.Session.Server` issues this query in its `:joined` apply-effects
+  arm (#216) to make channel modes visible from the moment of join.
+
+  Validates the channel syntax with `{:error, :invalid_line}` on
+  rejection. Sibling to `send_banlist/2` — same `MODE <channel> …` verb,
+  the only difference is the absent trailing `b` (query-all-modes vs
+  query-banlist).
+  """
+  @spec send_channel_modes(pid(), String.t()) :: send_result()
+  def send_channel_modes(client, channel) do
+    if Identifier.valid_channel?(channel),
+      do: send_line(client, "MODE #{channel}\r\n"),
+      else: reject_invalid_line(:channel_modes)
+  end
+
+  @doc """
   Sends `WHOIS [<server>] <nick>\\r\\n`.
 
   `server` is the optional RFC 2812 §3.6.2 target-server the query routes

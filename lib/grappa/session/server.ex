@@ -3125,6 +3125,22 @@ defmodule Grappa.Session.Server do
   defp apply_effects([{:joined, channel} | rest], state) do
     broadcast_window_state(state, SessionWire.joined(state.network_slug, channel))
 
+    # #216: query the channel's current modes at join. ircds do NOT send
+    # 324 RPL_CHANNELMODEIS unsolicited on JOIN (unlike the 332/333 topic
+    # numerics), so without this the TopicBar mode indicator stays blank
+    # until a mid-session MODE change. The bare `MODE #chan` query elicits
+    # the 324, which EventRouter folds into channel_modes → broadcast →
+    # cic renders modes from the moment of join. Every join path (autojoin,
+    # /join, NickServ-driven, invite-rejoin) funnels through this self-JOIN
+    # echo arm, so the query covers them all with one call.
+    # `maybe_log_send_failure/2` keeps a dead-socket send non-fatal, matching
+    # the away/topic send-failure handling — a failed mode query is cosmetic,
+    # never a reason to crash the session.
+    maybe_log_send_failure(
+      "channel_modes_query",
+      Client.send_channel_modes(state.client, channel)
+    )
+
     # In-flight-JOIN tracker stays here — it's not part of WindowState
     # (different lifetime: TTL-swept, not state-driven). Stripped on
     # successful echo to keep the failure-numeric correlation map
