@@ -69,6 +69,7 @@ defmodule Grappa.Session.Wire do
           :channels_changed
           | :own_nick_changed
           | :isupport_changed
+          | :umode_changed
           | :topic_changed
           | :channel_modes_changed
           | :channel_created
@@ -119,6 +120,22 @@ defmodule Grappa.Session.Wire do
           chanmodes_c: [String.t()],
           chanmodes_d: [String.t()],
           prefix: %{String.t() => String.t()}
+        }
+
+  @typedoc """
+  Per-session USER-mode set (#229). The operator's own umodes on this
+  network, as a sorted list of single-letter strings (sign stripped —
+  a umode is either set or not). The cic `/mode <nick>` / `/umode` modal
+  renders one toggle per KNOWN umode letter (the description table lives
+  cic-side per `feedback_no_localized_strings_server_side`) and shows
+  which are active from this set. Carries `:network_id` (not slug) and
+  rides `Topic.user/1` — umodes are per (subject, network), the same
+  carrier rationale as `own_nick_changed/2` + `isupport_changed/2`.
+  """
+  @type umode_changed_payload :: %{
+          kind: :umode_changed,
+          network_id: integer(),
+          modes: [String.t()]
         }
 
   @typedoc """
@@ -562,6 +579,19 @@ defmodule Grappa.Session.Wire do
       chanmodes_d: Enum.sort(cm.d),
       prefix: prefix
     }
+  end
+
+  @doc """
+  Per-session USER-mode set (#229). `modes` is the sorted letter list the
+  operator holds on their own nick (sign stripped). Carries `:network_id`
+  (not slug) and rides `Topic.user/1` — per (subject, network) state on a
+  non-network-scoped user topic, the same carrier as `own_nick_changed/2`
+  + `isupport_changed/2`.
+  """
+  @spec umode_changed(integer(), [String.t()]) :: umode_changed_payload()
+  def umode_changed(network_id, modes)
+      when is_integer(network_id) and is_list(modes) do
+    %{kind: :umode_changed, network_id: network_id, modes: modes}
   end
 
   @doc """

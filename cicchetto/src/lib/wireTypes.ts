@@ -547,6 +547,7 @@ export type SessionWireWireEventKind =
   | "channels_changed"
   | "own_nick_changed"
   | "isupport_changed"
+  | "umode_changed"
   | "topic_changed"
   | "channel_modes_changed"
   | "channel_created"
@@ -589,6 +590,12 @@ export type SessionWireIsupportChangedPayload = {
   chanmodes_c: string[];
   chanmodes_d: string[];
   prefix: Record<string, string>;
+};
+
+export type SessionWireUmodeChangedPayload = {
+  kind: "umode_changed";
+  network_id: number;
+  modes: string[];
 };
 
 export type SessionWireTopicEntryWire = {
@@ -833,6 +840,7 @@ export type WireSessionEvent =
   | SessionWireChannelsChangedPayload
   | SessionWireOwnNickChangedPayload
   | SessionWireIsupportChangedPayload
+  | SessionWireUmodeChangedPayload
   | SessionWireTopicChangedPayload
   | SessionWireChannelModesChangedPayload
   | SessionWireChannelCreatedPayload
