@@ -295,4 +295,89 @@ defmodule Grappa.AccountsTest do
                Accounts.delete_user(%User{id: Ecto.UUID.generate()})
     end
   end
+
+  describe "delete_expired_sessions/0 (#223 housekeeping GC)" do
+    # The idle policy `authenticate/1` already enforces at read-time
+    # (`{:error, :expired}` for `last_seen_at` older than 7 days). The
+    # reaper materializes that policy in the DB by physically removing
+    # the dead rows, bounding the unbounded `sessions` growth reported in
+    # #223. Threshold reuses the SAME `@idle_timeout_seconds` (7d) that
+    # gates authentication — single source of truth, no drift.
+    @idle_seconds 7 * 24 * 3600
+
+    defp backdate_last_seen(%{id: id}, seconds_ago) do
+      when_seen = DateTime.add(DateTime.utc_now(), -seconds_ago, :second)
+      query = from(s in Grappa.Accounts.Session, where: s.id == ^id)
+      {1, _} = Repo.update_all(query, set: [last_seen_at: when_seen])
+      when_seen
+    end
+
+    test "deletes a user session idle past the 7-day window" do
+      {:ok, user} = Accounts.create_user(%{name: "gc-stale", password: @password})
+      {:ok, stale} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+      backdate_last_seen(stale, @idle_seconds + 3600)
+
+      assert {:ok, 1} = Accounts.delete_expired_sessions()
+      assert {:error, :not_found} = Accounts.authenticate(stale.id)
+    end
+
+    test "leaves a fresh user session alone" do
+      {:ok, user} = Accounts.create_user(%{name: "gc-fresh", password: @password})
+      {:ok, fresh} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+
+      assert {:ok, 0} = Accounts.delete_expired_sessions()
+      assert {:ok, _} = Accounts.authenticate(fresh.id)
+    end
+
+    test "leaves a user session exactly at the boundary alone (strict >)" do
+      {:ok, user} = Accounts.create_user(%{name: "gc-boundary", password: @password})
+      {:ok, edge} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+      # A hair inside the window — must survive; only strictly-older rows go.
+      backdate_last_seen(edge, @idle_seconds - 60)
+
+      assert {:ok, 0} = Accounts.delete_expired_sessions()
+      assert {:ok, _} = Accounts.authenticate(edge.id)
+    end
+
+    test "does NOT touch visitor sessions — their lifecycle is the visitor Reaper's cascade" do
+      visitor = Grappa.AuthFixtures.visitor_fixture()
+      {:ok, stale} = Accounts.create_session({:visitor, visitor.id}, "127.0.0.1", "ua", [])
+      backdate_last_seen(stale, @idle_seconds + 3600)
+
+      assert {:ok, 0} = Accounts.delete_expired_sessions()
+      # Row is untouched — an idle visitor session is reaped only when the
+      # visitor row itself expires (ON DELETE CASCADE), never by this GC.
+      assert Repo.get(Grappa.Accounts.Session, stale.id)
+    end
+
+    test "deletes a stale row even when already soft-revoked (GC is last_seen-driven, not revoked-driven)" do
+      {:ok, user} = Accounts.create_user(%{name: "gc-revoked", password: @password})
+      {:ok, stale} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+      :ok = Accounts.revoke_session(stale.id)
+      backdate_last_seen(stale, @idle_seconds + 3600)
+
+      assert {:ok, 1} = Accounts.delete_expired_sessions()
+      assert Repo.get(Grappa.Accounts.Session, stale.id) == nil
+    end
+
+    test "is idempotent — a second sweep deletes zero" do
+      {:ok, user} = Accounts.create_user(%{name: "gc-idem", password: @password})
+      {:ok, stale} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+      backdate_last_seen(stale, @idle_seconds + 3600)
+
+      assert {:ok, 1} = Accounts.delete_expired_sessions()
+      assert {:ok, 0} = Accounts.delete_expired_sessions()
+    end
+
+    test "counts only the rows it removed across a mixed population" do
+      {:ok, user} = Accounts.create_user(%{name: "gc-mixed", password: @password})
+      {:ok, s1} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+      {:ok, s2} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+      {:ok, _} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+      backdate_last_seen(s1, @idle_seconds + 3600)
+      backdate_last_seen(s2, @idle_seconds + 7200)
+
+      assert {:ok, 2} = Accounts.delete_expired_sessions()
+    end
+  end
 end

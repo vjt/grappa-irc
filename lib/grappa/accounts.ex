@@ -496,6 +496,57 @@ defmodule Grappa.Accounts do
     :ok
   end
 
+  @doc """
+  Physically deletes every USER session whose `last_seen_at` is older
+  than the idle window (`@idle_timeout_seconds`, 7d) — the #223
+  housekeeping GC that bounds unbounded `sessions` growth.
+
+  This materializes in the DB the exact policy `authenticate/1` already
+  enforces at read-time: a row idle past the window returns
+  `{:error, :expired}` and can never authenticate again (every auth path
+  — REST `Plugs.Authn`, WS `UserSocket`, `Visitors.Login` — routes
+  through `authenticate/1`). Deleting such a row therefore removes only
+  material that is already un-reusable; the threshold reuses the SAME
+  `@idle_timeout_seconds` so the GC and the auth gate can never drift.
+
+  `revoked_at` is NOT part of the predicate: a revoked row is dead
+  regardless, and `last_seen_at` is the single liveness signal (bumped
+  on every use, cadence-capped at 60s). Any use would refresh it out of
+  the window, so a stale timestamp is proof-of-non-use.
+
+  Scoped to `user_id IS NOT NULL` on purpose. Visitor sessions are NOT
+  swept here — a visitor's `sessions` rows are removed by
+  `Grappa.Visitors.Reaper` via the `sessions.visitor_id ON DELETE
+  CASCADE` FK when the visitor row itself expires. Sweeping them here
+  would double-own the visitor lifecycle across two domains.
+
+  Idempotent — a second call finds no candidate rows and deletes zero.
+  Returns `{:ok, count}` with the number of rows removed; the count
+  rides the audit log so a no-op sweep stays distinguishable from a
+  productive one.
+  """
+  @spec delete_expired_sessions() :: {:ok, non_neg_integer()}
+  def delete_expired_sessions do
+    cutoff = DateTime.add(DateTime.utc_now(), -@idle_timeout_seconds, :second)
+
+    query =
+      from(s in Session,
+        where: not is_nil(s.user_id) and s.last_seen_at < ^cutoff
+      )
+
+    {deleted, _} = Repo.delete_all(query)
+
+    # Suppressed on count=0: the reaper calls this every 60s, so an
+    # unconditional line would flood the log with 1440 idle "reaped 0"
+    # entries/day. A productive sweep logs once so the lifecycle stays
+    # greppable — same suppression the sibling reapers use for their
+    # AdminEvents summary. (CLAUDE.md log-honesty: the line states what
+    # was observed — N rows past the idle window — not merely "ran".)
+    if deleted > 0, do: Logger.info("expired sessions reaped", affected: deleted)
+
+    {:ok, deleted}
+  end
+
   defp check_idle(session) do
     now = DateTime.utc_now()
     idle = DateTime.diff(now, session.last_seen_at, :second)
