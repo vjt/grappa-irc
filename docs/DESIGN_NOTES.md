@@ -19414,3 +19414,67 @@ split), `compose.test.ts` (the three mode kinds). E2e
 `issue216-channel-modes-on-join.spec.ts` is authoritative: a peer sets `+t`
 BEFORE vjt joins so the indicator can ONLY be populated by the join-time query —
 verified RED (query disabled → indicator never appears) then GREEN.
+
+## 2026-07-13 — #230: wheel-up loads older scrollback when content underfills
+
+**Bug (P0 desktop).** On a channel whose loaded window is SHORTER than the
+messages container, the operator could not wheel UP to page in older history.
+Root cause: `.scrollback` (`overflow-y: scroll`) only emits a native `scroll`
+event when it is actually scrollable (`scrollHeight > clientHeight`). When
+content underfills, a mouse wheel produces NO native `scroll` event, so
+`ScrollbackPane.onScroll` never fires — and the CP14-B2 scroll-to-top
+`loadMore` trigger lives INSIDE `onScroll`. The pre-#230 `onWheel` handler only
+stamped the BUGHUNT-2 real-input marker (`setLastInputEventAtMs`); it never
+triggered `loadMore`. So on a short channel the operator was stuck with no path
+to older scrollback. Same FAMILY as the #216-adjacent login-scroll fix
+(`1a7149b`): a container that only owns-scroll when content overflows strands
+reachability when it doesn't.
+
+**Fix.** `onWheel` now reacts to a wheel-UP (`deltaY < 0`) **on an underfilled
+pane** (`scrollHeight <= clientHeight`) by firing the SAME top-of-buffer
+`loadMore` the `onScroll` block uses. Both call sites delegate to a shared
+`maybeLoadOlder()` closure (CLAUDE.md implement-once) holding the
+`scrollTop <= LOAD_MORE_THRESHOLD_PX` gate + the loadMore call + the
+`newScrollHeight - oldScrollHeight + oldScrollTop` prepend-position
+preservation. The gate is trivially satisfied on underfill (scrollTop is 0).
+`loadMore` idempotency (per-key in-flight Set + exhausted-page forward-latch in
+`lib/scrollback.ts`) makes the extra fire-and-forget call safe — no new guard.
+The `setLastInputEventAtMs` marker-stamp is preserved (the settle gate is not
+regressed).
+
+**The underfill gate is load-bearing, not an optimization (review catch).** The
+wheel path fires ONLY when the pane can't natively scroll. On an OVERFLOWING
+pane the browser emits a native `scroll` event, so `onScroll` already owns
+loadMore — with the CORRECT post-scroll geometry for the restore. `wheel` fires
+one tick BEFORE the native scroll is applied, so a wheel-path loadMore on an
+overflowing pane would capture a STALE pre-scroll `scrollTop`, win the in-flight
+race against onScroll's call, and restore to the wrong anchor — jerking the
+viewport ~wheel-delta px and partially undoing the operator's scroll. Gating on
+`scrollHeight > clientHeight` keeps `onScroll` the single scroll-restore
+authority whenever the pane overflows; the wheel is purely the underfill rescue.
+
+**No `preventDefault` (deliberate).** `.scrollback` is the SOLE scroll
+container: every ancestor (`.scrollback-pane` / `.shell-main` / `.shell`) is
+`overflow: visible`, `html/body` are `overflow: hidden` + `overscroll-behavior:
+none`, and `.scrollback` itself sets `overscroll-behavior: contain`. An
+unconsumed wheel-up on an underfilled pane therefore has nothing to
+chain-scroll, so there is no page-scroll to suppress — a plain
+passive/delegated JSX `onWheel` is correct. (Had a scrollable ancestor
+existed, a JSX `onWheel` could NOT `preventDefault` — Solid routes wheel through
+a passive document-level delegated listener — and the handler would have to move
+to an element-level `addEventListener("wheel", …, { passive: false })` via the
+ref, the pattern `overlayScrollLock.ts` uses for `touchmove`. It doesn't, so it
+doesn't.)
+
+**Tests.** Unit (`ScrollbackPane.test.tsx`): wheel-UP on a non-overflowing pane
+(jsdom has no layout → scrollHeight == clientHeight == 0, the exact underfill
+geometry) calls `loadMore`; wheel-DOWN does not (direction gate); wheel-UP on an
+OVERFLOWING pane (geometry forced via `defineProperty`) does NOT call `loadMore`
+(the anchor-jerk guard — onScroll owns that path). E2e
+`issue230-wheel-underfill-loadmore.spec.ts` is authoritative: a TALL 800×2000
+viewport makes the ~50-row tail load underfill the container (asserted:
+`scrollHeight - clientHeight <= 0`, the anti-vacuous-green precondition) while
+the server still holds 150 older rows; a REAL Chromium `mouse.wheel(0, -600)`
+must grow the row count past the initial page. Verified RED (fix stashed → row
+count stuck at 50 after the wheel) then GREEN. cic-only → rides the hot
+`deploy-m42.sh --cic` (no server change, no cold window).

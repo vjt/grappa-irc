@@ -1877,8 +1877,76 @@ const ScrollbackPane: Component<Props> = (props) => {
     setLastInputEventAtMs(Date.now());
   };
 
-  const onWheel = (): void => {
+  // #230 — load older history when the operator is at/near the top of the
+  // buffer, preserving their on-screen position across the prepend. Shared
+  // by BOTH `onScroll` (native scroll-to-top) and `onWheel` (the underfill
+  // rescue below) so the loadMore call + scroll-position math live in ONE
+  // place (CLAUDE.md implement-once). The `scrollTop <= threshold` gate is
+  // trivially satisfied when content underfills (scrollTop is 0), which is
+  // exactly the #230 case. `loadMore` is idempotent under burst (per-key
+  // in-flight Set) and forward-latched on empty pages (exhausted Set), so
+  // fire-and-forget is safe — no guard needed here.
+  //
+  // Scroll-position preservation: REST returns older rows that get PREPENDED
+  // to the merged list. Without restoration, the user's viewport would either
+  // jump to the new top (scrollTop=0 stays pinned) — where they were already
+  // looking — or stay numerically pinned to scrollTop=N relative to the OLD
+  // scrollHeight, which is now a different position relative to the new
+  // content. We capture (scrollHeight, scrollTop) BEFORE the await, then after
+  // merge restore as `newScrollHeight - oldScrollHeight + oldScrollTop` so the
+  // rows the user was looking at remain in the same on-screen position. DOM
+  // mutation lives here in the component; lib/scrollback.ts stays DOM-free.
+  const maybeLoadOlder = (): void => {
+    if (!listRef) return;
+    if (listRef.scrollTop > LOAD_MORE_THRESHOLD_PX) return;
+    // See the length-effect for how an active marker activation is kept from
+    // yanking this (it re-asserts ONLY when a marker exists; a no-marker latch
+    // falls through to the atBottom-follow, which preserves here because the
+    // operator scrolled UP).
+    const oldScrollHeight = listRef.scrollHeight;
+    const oldScrollTop = listRef.scrollTop;
+    void loadMoreScrollback(props.networkSlug, props.channelName).then(() => {
+      if (!listRef) return;
+      const newScrollHeight = listRef.scrollHeight;
+      if (newScrollHeight === oldScrollHeight) return;
+      listRef.scrollTop = newScrollHeight - oldScrollHeight + oldScrollTop;
+    });
+  };
+
+  const onWheel = (e: WheelEvent): void => {
     setLastInputEventAtMs(Date.now());
+    // #230 — rescue the wheel ONLY when the content underfills the container.
+    // When the loaded window is shorter than the viewport, `.scrollback` is
+    // not natively scrollable (scrollHeight <= clientHeight), so a mouse wheel
+    // produces NO native `scroll` event → `onScroll` never fires → `loadMore`
+    // never triggers and the operator is stuck with no way to page up into
+    // older scrollback. A wheel-UP (deltaY < 0) on that underfilled pane fires
+    // the SAME top-of-buffer loadMore the onScroll block uses (via
+    // `maybeLoadOlder`).
+    //
+    // The `scrollHeight <= clientHeight` guard is load-bearing, not just an
+    // optimization: on an OVERFLOWING pane the browser DOES emit a native
+    // `scroll` event, so `onScroll` already owns loadMore — with the CORRECT
+    // post-scroll geometry for the scroll-position restore. `wheel` fires one
+    // tick BEFORE the native scroll is applied, so a wheel-path loadMore would
+    // capture a STALE pre-scroll `scrollTop`, then win the in-flight race and
+    // restore to the wrong anchor (jerking the viewport ~wheel-delta px). So
+    // the wheel path stays OUT whenever the pane can natively scroll; onScroll
+    // is the single authority there.
+    //
+    // No preventDefault: `.scrollback` is the SOLE scroll container — every
+    // ancestor (.scrollback-pane / .shell-main / .shell) is overflow:visible,
+    // html/body are overflow:hidden + overscroll-behavior:none, and
+    // `.scrollback` itself sets overscroll-behavior:contain — so an unconsumed
+    // wheel-up on an underfilled pane has nothing to chain-scroll. (If a
+    // scrollable ancestor is ever introduced, this must move to an
+    // element-level {passive:false} listener to preventDefault — a JSX
+    // onWheel is passive/delegated and cannot; cf. overlayScrollLock.ts.)
+    if (!listRef) return;
+    const nativelyScrollable = listRef.scrollHeight > listRef.clientHeight;
+    if (e.deltaY < 0 && !nativelyScrollable) {
+      maybeLoadOlder();
+    }
   };
 
   const onTouchMove = (): void => {
@@ -1930,36 +1998,11 @@ const ScrollbackPane: Component<Props> = (props) => {
       visibleTailSnapshot.set(key(), tailNow);
     }
 
-    // CP14 B2: scroll-up triggers loadMore. The verb is idempotent
-    // under burst (per-key in-flight Set) and forward-latched on
-    // empty pages (exhausted Set), so we don't need our own guard
-    // here — fire-and-forget on every scroll event within threshold.
-    //
-    // Scroll-position preservation: REST returns older rows that get
-    // PREPENDED to the merged list. Without restoration, the user's
-    // viewport would either jump to the new top (scrollTop=0 stays
-    // pinned) — where they were already looking — or stay numerically
-    // pinned to scrollTop=N relative to the OLD scrollHeight, which
-    // is now a different position relative to the new content. We
-    // capture (scrollHeight, scrollTop) BEFORE the await, then after
-    // merge restore as `newScrollHeight - oldScrollHeight + oldScrollTop`
-    // so the rows the user was looking at remain in the same on-
-    // screen position. DOM mutation lives here in the component;
-    // lib/scrollback.ts stays DOM-free.
-    if (listRef.scrollTop <= LOAD_MORE_THRESHOLD_PX) {
-      // Scroll-position preservation on prepend — see the length-effect for how
-      // an active marker activation is kept from yanking this (it re-asserts
-      // ONLY when a marker exists; a no-marker latch falls through to the
-      // atBottom-follow, which preserves here because the operator scrolled UP).
-      const oldScrollHeight = listRef.scrollHeight;
-      const oldScrollTop = listRef.scrollTop;
-      void loadMoreScrollback(props.networkSlug, props.channelName).then(() => {
-        if (!listRef) return;
-        const newScrollHeight = listRef.scrollHeight;
-        if (newScrollHeight === oldScrollHeight) return;
-        listRef.scrollTop = newScrollHeight - oldScrollHeight + oldScrollTop;
-      });
-    }
+    // CP14 B2: scroll-up triggers loadMore. Delegated to the shared
+    // `maybeLoadOlder` closure (also used by the #230 wheel-underfill path)
+    // — the top-of-buffer gate + loadMore call + scroll-position preservation
+    // on prepend all live there (CLAUDE.md implement-once).
+    maybeLoadOlder();
 
     // #161: scroll-to-bottom triggers forward-paging — the mirror image of
     // the scroll-to-top loadMore above. After #156's anchored fetch a

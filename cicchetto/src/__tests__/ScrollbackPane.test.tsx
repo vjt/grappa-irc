@@ -9,6 +9,9 @@ import {
   pushOverlay,
   __resetForTest as resetOverlayLock,
 } from "../lib/overlayScrollLock";
+// #230 — the mocked `loadMore` (see vi.mock("../lib/scrollback")) so the
+// wheel-up-on-underfill trigger can be asserted directly.
+import { loadMore } from "../lib/scrollback";
 
 // Review fix (2026-06-11): same-host NON-media links delegate plain
 // clicks to the shared iOS-standalone escape handler. The handler's
@@ -2869,7 +2872,127 @@ describe("ScrollbackPane", () => {
     });
   });
 
-  // #219-general — ANY covering overlay (not just the media viewer) must
+  // #230 — wheel-up loads older history even when the content UNDERFILLS
+  // the container. When the loaded window is SHORTER than the viewport,
+  // `.scrollback` is not natively scrollable (scrollHeight <= clientHeight),
+  // so a mouse wheel produces NO native `scroll` event → `onScroll` never
+  // fires → `loadMore` never triggers → the operator is stuck with no way
+  // to page up into older scrollback. The fix reacts to the wheel event
+  // itself: a wheel-UP (deltaY < 0) while at/near the top fires the SAME
+  // `loadMore` the onScroll block uses. jsdom has no layout, so
+  // scrollHeight == clientHeight == scrollTop == 0 — the exact underfill
+  // geometry we need (not natively scrollable, scrollTop already at the
+  // top). RED pre-fix: onWheel only stamped the input marker, loadMore
+  // stayed uncalled. GREEN post-fix: the wheel-up path calls loadMore.
+  describe("#230 — wheel-up triggers loadMore when content underfills", () => {
+    it("wheel-UP on a non-overflowing pane calls loadMore", async () => {
+      // A short buffer (few rows) — cic has loaded these but the server
+      // may hold older history. In jsdom the pane never natively scrolls.
+      const rows: ScrollbackMessage[] = Array.from({ length: 3 }, (_, i) => ({
+        id: i + 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: i + 1,
+        kind: "privmsg",
+        sender: "alice",
+        body: `row ${i + 1}`,
+        meta: {},
+      }));
+      setScrollback({ "freenode #grappa": rows });
+
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const list = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      expect(list).not.toBeNull();
+      if (!list) throw new Error("scrollback DOM not found");
+
+      // Sanity: the pane underfills (jsdom: all geometry is 0), so no
+      // native scroll event can ever fire from a wheel. This is the trap.
+      expect(list.scrollHeight).toBeLessThanOrEqual(list.clientHeight);
+
+      // Wheel UP over the underfilled pane. onScroll never runs (nothing
+      // scrolls); only the wheel path can rescue the operator.
+      list.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+
+      await waitFor(() => expect(loadMore).toHaveBeenCalledWith("freenode", "#grappa"));
+    });
+
+    it("wheel-DOWN on a non-overflowing pane does NOT call loadMore", async () => {
+      // Guard the direction gate: only wheel-UP pages older history.
+      const rows: ScrollbackMessage[] = Array.from({ length: 3 }, (_, i) => ({
+        id: i + 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: i + 1,
+        kind: "privmsg",
+        sender: "alice",
+        body: `row ${i + 1}`,
+        meta: {},
+      }));
+      setScrollback({ "freenode #grappa": rows });
+
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const list = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      if (!list) throw new Error("scrollback DOM not found");
+
+      list.dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true }));
+
+      // Small settle window; loadMore must stay uncalled.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(loadMore).not.toHaveBeenCalled();
+    });
+
+    it("wheel-UP on an OVERFLOWING pane does NOT call loadMore (onScroll owns that path)", async () => {
+      // Review fix (#230): the wheel rescue must fire ONLY when the pane is
+      // NOT natively scrollable (underfill). On an overflowing pane a
+      // wheel-UP produces a native `scroll` event, so `onScroll` already
+      // owns loadMore — with the CORRECT post-scroll geometry for the
+      // scroll-position restore. If `onWheel` also fired loadMore, it would
+      // run one tick EARLIER than the native scroll and capture a STALE
+      // pre-scroll `scrollTop`; its post-fetch `.then` would then win the
+      // in-flight race and restore to the wrong anchor, landing the viewport
+      // ~wheel-delta px lower — partially undoing the operator's scroll. So
+      // the wheel path must stay OUT when the pane can natively scroll.
+      //
+      // jsdom has no layout (all geometry reads 0), so we force the
+      // overflowing shape via defineProperty: scrollHeight > clientHeight.
+      const rows: ScrollbackMessage[] = Array.from({ length: 3 }, (_, i) => ({
+        id: i + 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: i + 1,
+        kind: "privmsg",
+        sender: "alice",
+        body: `row ${i + 1}`,
+        meta: {},
+      }));
+      setScrollback({ "freenode #grappa": rows });
+
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const list = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      if (!list) throw new Error("scrollback DOM not found");
+
+      // Force the natively-scrollable shape: content taller than the
+      // container, operator near (but not at) the top.
+      Object.defineProperty(list, "scrollHeight", { value: 5000, configurable: true });
+      Object.defineProperty(list, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(list, "scrollTop", { value: 30, writable: true, configurable: true });
+
+      list.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+
+      // Settle window; the wheel path must NOT fire loadMore — the native
+      // `scroll` event (dispatched by the browser, not simulated here) is
+      // what drives loadMore on an overflowing pane.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(loadMore).not.toHaveBeenCalled();
+    });
+  });
+
   // freeze the pane's scroll for its whole lifetime. #219 gated the freeze
   // on the media-viewer snapshot only; the generalization keys it on the
   // shared overlay refcount (`overlayScrollLock.overlayCount()`), which
