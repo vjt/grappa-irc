@@ -2660,6 +2660,8 @@ defmodule Grappa.Session.EventRouter do
   # `%{numeric: code, text: trailing}` — the wire shape cic renders verbatim
   # (server emits no localized string; the trailing IS the upstream text,
   # which for these codes is inherently free-form and network-defined).
+  # Prepends for O(1) fold (mirror of who_fold/replies); the wire projection
+  # `SessionWire.whois_bundle/3` reverses so cic sees arrival order.
   @spec whois_extra_line_fold(state(), String.t(), 1..999, String.t()) :: state()
   defp whois_extra_line_fold(state, target, code, text)
        when is_binary(target) and is_integer(code) and is_binary(text) do
@@ -2672,7 +2674,7 @@ defmodule Grappa.Session.EventRouter do
 
       {:ok, accum} ->
         existing = Map.get(accum, :extra_lines, [])
-        merged = Map.put(accum, :extra_lines, existing ++ [%{numeric: code, text: text}])
+        merged = Map.put(accum, :extra_lines, [%{numeric: code, text: text} | existing])
         %{state | whois_pending: Map.put(pending, nick_key, merged)}
     end
   end

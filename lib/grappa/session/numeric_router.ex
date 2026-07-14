@@ -506,7 +506,7 @@ defmodule Grappa.Session.NumericRouter do
   # of a WHOIS in flight. Any other param shape (empty, own-nick-only,
   # channel-shaped) yields false → normal param scan.
   @spec whois_leg?([term()], MapSet.t(String.t())) :: boolean()
-  defp whois_leg?([_own, target | _], whois_targets) when is_binary(target),
+  defp whois_leg?([_, target | _], whois_targets) when is_binary(target),
     do: MapSet.member?(whois_targets, Identifier.canonical_nick(target))
 
   defp whois_leg?(_, _), do: false

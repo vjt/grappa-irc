@@ -12,7 +12,7 @@ defmodule Grappa.Session.EventRouterTest do
   use ExUnit.Case, async: true
 
   alias Grappa.IRC.Message
-  alias Grappa.Session.{EventRouter, ISupport}
+  alias Grappa.Session.{EventRouter, ISupport, Wire}
 
   @user_id "00000000-0000-0000-0000-000000000001"
   @subject {:user, @user_id}
@@ -1736,7 +1736,7 @@ defmodule Grappa.Session.EventRouterTest do
       state = base_state(%{nick: "libera-user", umodes: []})
       m = msg({:numeric, 221}, ["libera-user", "+iZQD"], {:server, "irc.libera.chat"})
 
-      assert {:cont, new_state, _effects} = EventRouter.route(m, state)
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
       # Result is a sorted set — advertised order does not change the outcome.
       assert new_state.umodes == ["D", "Q", "Z", "i"]
     end
@@ -2900,7 +2900,7 @@ defmodule Grappa.Session.EventRouterTest do
       end_msg = msg({:numeric, 318}, ["vjt", "alice", "End of /WHOIS list"])
       {:cont, _, [{:whois_bundle, target, accum}]} = EventRouter.route(end_msg, final_state)
 
-      payload = Grappa.Session.Wire.whois_bundle("test-net", target, accum)
+      payload = Wire.whois_bundle("test-net", target, accum)
 
       assert payload.kind == :whois_bundle
       assert payload.using_ssl == true
@@ -2925,7 +2925,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "wire payload defaults all P-0a booleans to false when accum is empty" do
-      payload = Grappa.Session.Wire.whois_bundle("test-net", "ghost", %{})
+      payload = Wire.whois_bundle("test-net", "ghost", %{})
 
       assert payload.using_ssl == false
       assert payload.is_registered == false
@@ -3096,7 +3096,7 @@ defmodule Grappa.Session.EventRouterTest do
              ]
     end
 
-    test "multiple unknown numerics accumulate in extra_lines in arrival order" do
+    test "multiple unknown numerics surface in extra_lines in arrival order (via the bundle)" do
       state = whois_pending_state("alice")
 
       {:cont, s1, []} =
@@ -3111,7 +3111,15 @@ defmodule Grappa.Session.EventRouterTest do
           s1
         )
 
-      assert s2.whois_pending["alice"][:extra_lines] == [
+      # Assert the OBSERVABLE order cic sees — the accumulator prepends LIFO
+      # for O(1) fold, and SessionWire.whois_bundle/3 reverses on emit. Drain
+      # the bundle at 318 and check the wire payload is in arrival order.
+      m318 = msg({:numeric, 318}, ["vjt", "alice", "End of /WHOIS list"], {:server, "irc.libera.chat"})
+      {:cont, _, [{:whois_bundle, "alice", accum}]} = EventRouter.route(m318, s2)
+
+      payload = Wire.whois_bundle("libera", "alice", accum)
+
+      assert payload.extra_lines == [
                %{numeric: 617, text: "first line"},
                %{numeric: 618, text: "second line"}
              ]

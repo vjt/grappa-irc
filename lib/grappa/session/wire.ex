@@ -1029,9 +1029,15 @@ defmodule Grappa.Session.Wire do
       account: Map.get(accum, :account),
       secure: Map.get(accum, :secure, false),
       certfp: Map.get(accum, :certfp),
-      extra_lines: Map.get(accum, :extra_lines)
+      # #221 — extra_lines are prepended LIFO by whois_extra_line_fold for
+      # O(1) fold; reverse here so cic sees them in arrival (wire) order.
+      extra_lines: reverse_extra_lines(Map.get(accum, :extra_lines))
     }
   end
+
+  @spec reverse_extra_lines([whois_extra_line()] | nil) :: [whois_extra_line()] | nil
+  defp reverse_extra_lines(nil), do: nil
+  defp reverse_extra_lines(lines) when is_list(lines), do: Enum.reverse(lines)
 
   @doc """
   P-0b — standalone 301 RPL_AWAY. Broadcast on `Topic.user/1`
