@@ -68,6 +68,18 @@ not "format ✓ credo ✓ dialyzer ✓" hand-waving.
 
 ## Architecture: why the scripts exist
 
+**NEVER run `docker`, `docker run`, `docker exec`, or `docker compose`
+directly — on the host or from an agent.** The agent-security-guardrails
+hook prompts on EVERY raw docker invocation, which wedges an unattended
+session indefinitely (a ~55-minute stall while vjt was away, 2026-07-14).
+ALWAYS go through an allowlisted `scripts/*.sh` wrapper
+(`scripts/test.sh`, `scripts/check.sh`, `scripts/bun.sh`,
+`scripts/integration.sh`, `scripts/testnet.sh`, `scripts/db.sh`,
+`scripts/mix.sh`, …) — never the raw command. If no wrapper covers what
+you need, add one (or extend an existing script); do not reach for raw
+docker "just this once." This is a hard rule: the wrappers are the ONLY
+sanctioned door to the container runtime.
+
 The container IS the runtime. **Never run `mix` or `bun` on the host.**
 Every script is a thin wrapper around `docker compose run --rm <svc>
 <task>` that:
@@ -105,11 +117,12 @@ both gates while the **e2e `cicchetto-build-test`** (clean `oven/bun:1`,
 no warm cache) fails the whole suite with `error TS####`. The authoritative
 cic type gate is therefore the e2e build, not a worktree `bun run build`.
 To get the honest answer locally without the full e2e: `find cicchetto
--name '*.tsbuildinfo' -delete` then re-run `bun run build`, OR replicate
-the e2e build directly —
-`docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/cicchetto:/app"
--v /tmp/dist:/app/dist -w /app oven/bun:1 sh -c "bun install --frozen-lockfile && bun run build"`
-(mount a throwaway writable `/app/dist` or vite's PWA step hits EACCES).
+-name '*.tsbuildinfo' -delete` then re-run `scripts/bun.sh run build`. For
+the clean-cache truth, run the full e2e (`scripts/integration.sh`) — its
+`cicchetto-build-test` stage is the warm-cache-free build. Do NOT hand-roll
+a raw `docker run oven/bun:1 …` to replicate it (that trips the docker
+guardrail above); the e2e stage already IS that clean build, through the
+wrapper.
 
 Bash 4+ required (`declare -ag` shebangs to `#!/usr/bin/env bash` so
 PATH picks Homebrew bash 5 on macOS). `brew install bash` if missing.
