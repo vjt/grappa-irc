@@ -149,7 +149,7 @@ bin/grappa bind-network --user vjt --network azzurra \
 ```
 
 - `--auth`: `auto | sasl | server_pass | nickserv_identify | none`.
-- `--source <IPv4|IPv6>` (on `add-server`) pins a dedicated outbound IP, excluded from the visitor pool at boot.
+- `--source <IPv4|IPv6>` (on `add-server`) pins a per-network fallback outbound IP; a per-subject vhost pin/selection (admin panel → Vhosts tab, #228) overrides it. The auto-rotation pool is DB-driven (curated `in_pool` vhosts), no env var.
 - `bin/grappa set-network-caps --network azzurra --max-visitor-sessions N --max-user-sessions N` sets independent visitor/user admission caps (omit for unlimited; visitor saturation never blocks operator login).
 
 Re-run `scripts/deploy.sh` and Bootstrap picks up the binding on boot — or attach via `remote-shell` and drive the spawn orchestrator directly for no downtime.

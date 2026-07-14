@@ -76,33 +76,63 @@ that survives a schema field rename.
 outbound TCP source address for **that server entry** (one
 `network_servers` row). Must be a strict literal IPv4 or IPv6 address
 (no hostname, no CIDR); stored canonical. NULL = kernel default / the
-`GRAPPA_OUTBOUND_V6_POOL` rotation. Full design:
-`docs/DESIGN_NOTES.md` (2026-06-03 entry) + the 2026-06-04 prod
-deployment entry.
+DB-driven vhost rotation pool. Full design: `docs/DESIGN_NOTES.md`
+(2026-06-03 entry) + the 2026-06-04 prod deployment entry.
+
+This is now the **per-network FALLBACK** source. #228 (2026-07-14) added
+a per-SUBJECT layer ABOVE it (vhost pin / self-selection) — see "Vhost
+(source-bind) selection" below. Resolution precedence per connect:
+**pin > selection∩allowed (random) > `--source` fallback > pool/kernel.**
 
 Operational facts that bite:
 
 - **Source is per-server, and the picker chooses ONE server per
-  network** (`Servers.pick_server!/1` → lowest priority). So two
-  subjects (e.g. an operator and the visitor pool) cannot get
-  different sources on the **same** network — they need **separate
-  `networks` rows** even if they point at the same IRC host:port.
-  Visitors are compile-pinned to `:visitor_network`
-  (`config/config.exs`), so the operator's dedicated-source network is
-  the one that moves to a new slug.
+  network** (`Servers.pick_server!/1` → lowest priority). Pre-#228 this
+  meant two subjects could not get different sources on the **same**
+  network. #228 lifts that: a per-subject pin/selection now overrides
+  the per-server source, so a dedicated-source-per-user no longer needs
+  a separate `networks` row — grant/pin the vhost instead.
 - **No `update-server` verb.** To set/change `source_address` on an
   existing server, `remove-server` then `add-server --source` (or the
   AdminPane server-edit form).
-- **A `--source` that overlaps `GRAPPA_OUTBOUND_V6_POOL`** is excluded
-  from the visitor pool at boot (`OutboundV6Pool.apply_exclusions/1`);
-  the task prints a notice. The exclusion is recomputed only at
-  Bootstrap, so an overlapping add to a running node leaves the pool
-  until the next restart.
-- **The bind is per-server, not per-subject.** Any session that
-  resolves a `source_address`-pinned server uses that IP — visitor or
-  user alike. Keeping visitors off a dedicated-source network is the
-  operator's config responsibility (point `:visitor_network` at a
-  pool-only network).
+- **The `--source` fallback only applies when the subject has no pin
+  and no active selection.** A vhost pin/selection wins.
+
+### Vhost (source-bind) selection — per subject (#228)
+
+`--source` pins one address per **server**; #228 adds a per-**subject**
+layer managed entirely through the admin panel + user settings (no env
+var). Model:
+
+- **Universe.** The candidate addresses are the host's bound addresses
+  (`:inet.getifaddrs/0`, loopback + link-local filtered). In the m42
+  bastille jail this is exactly the jail's assigned `/128`s.
+- **`vhosts` table.** Curated inventory. `in_pool` = member of the
+  auto-rotation pool (this REPLACES the `GRAPPA_OUTBOUND_V6_POOL` env
+  var — the env var is GONE, the pool is DB-driven). `generally_available`
+  = any subject may self-select.
+- **`vhost_grants` table.** Per-subject grants. A `pinned` grant is an
+  admin-forced fixed bind (one per subject, not user-changeable — e.g.
+  an oper O:line host). A non-pinned grant is a curated-availability
+  grant the subject may self-select. Visitor grants CASCADE on reap.
+- **User self-selection** persists in `user_settings` (`vhost_selection`
+  key); authz-clamped to the allowed set (generally-available ∪ granted)
+  server-side, so a revoked grant can't leak a stale pick.
+- **Admin surface:** AdminPane → **Vhosts** tab (`/admin/vhosts` +
+  `/admin/vhosts/:id/grants`). Curate inventory, toggle in_pool /
+  generally_available, grant/pin/revoke per subject.
+- **User surface:** Settings drawer → **source address (vhost)**
+  widget (`/me/settings/vhost`). Native multi-select, In-pool /
+  Out-of-pool optgroups, limited to the subject's allowed set. A pin
+  renders read-only.
+- **Live-apply:** a vhost change takes effect on the subject's **next
+  (re)connect** — it re-resolves the plan via `refresh_plan`. Changing a
+  vhost does NOT auto-bounce a live session (it's a preference; the
+  operator/user reconnects when ready).
+- **Pool safety net (spec §3):** the effective rotation pool = `in_pool`
+  vhosts MINUS every per-server `--source` fixed address, so an
+  auto-allocated session can never pick a dedicated address. Recomputed
+  at Bootstrap AND on any admin inventory edit (hot).
 
 ### Upstream TLS trust store (`--tls`, #89)
 

@@ -99,11 +99,6 @@ services:
       # so the existing host volume covers it). Override only if
       # disk-policy requires a separate volume.
       UPLOADS_STORAGE_ROOT: ${UPLOADS_STORAGE_ROOT:-/app/runtime/uploads}
-      # Outbound v6 source-address pool — CSV of IPv6 addresses bound
-      # on the host/jail. When set, IRC.Client picks a random entry
-      # per upstream connect so each peer sees a rotating rDNS
-      # identity. Empty (default) = kernel-default source selection.
-      GRAPPA_OUTBOUND_V6_POOL: ${GRAPPA_OUTBOUND_V6_POOL:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
       interval: 5s

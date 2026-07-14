@@ -20387,6 +20387,87 @@ remained green throughout.
 
 ---
 
+## 2026-07-14 — #228 per-subject vhost (source-bind) selection
+
+**What shipped.** A per-SUBJECT layer above the existing per-server
+source-bind. A subject (user OR visitor, post-#211) can be admin-pinned to
+a fixed outbound source address or self-select from an allowed set. Extends
+the #211-era `network_servers.source_address` machinery — the connect path
+(`Grappa.IRC.Client.source_bind/2` + the AAAA/ifaddr/force-`:inet` dance) is
+**byte-for-byte unchanged**; only the *value* that resolves into the plan
+changed. `Grappa.Networks.SessionPlan.base_plan/7` now sets
+`source_address: Grappa.Vhosts.effective_source(subject, server.source_address)`
+— the one place both the user and visitor resolvers flatten a credential.
+
+**Resolution precedence (per connect).** pin > selection∩allowed (random,
+spec "random per connection") > `server.source_address` (the per-network
+fixed fallback) > `nil` → the rotation pool / kernel default. Re-resolved on
+every `Session.Server.init/1` via the `refresh_plan` closure, so a live vhost
+change takes effect on the subject's **next (re)connect** — no auto-bounce
+(it's a preference, not an operator disconnect). Selection is authz-clamped to
+the allowed set at write AND re-clamped at read, so a revoked grant can't leak
+a stale pick.
+
+**Model (DB-driven, ZERO env var — vjt reshape 2026-07-14).** The spec's
+first draft enumerated the out-of-pool slice via a *new* env var (which would
+have forced a COLD deploy). vjt's better shape: the candidate universe is the
+host's bound addresses (`Grappa.Net.HostAddresses` via `:inet.getifaddrs/0`,
+loopback + link-local filtered — in the m42 jail this is exactly the jail's
+assigned `/128`s), and the DB curates everything. Two new tables:
+`vhosts` (address + `in_pool` + `generally_available`; `in_pool` REPLACES the
+`GRAPPA_OUTBOUND_V6_POOL` env var — the rotation pool is now DB-driven) and
+`vhost_grants` (subject-XOR FK, `pinned` flag; visitor grants CASCADE on reap,
+so #211 reaper release is automatic — no separate lifecycle). User selection
+persists in `user_settings` (`vhost_selection` key — reuses the JSON store).
+Shared `Grappa.Net.IpLiteral` extracts the strict-literal + `:inet.ntoa/1`
+canonicalization so `Vhost` and `Server` validate through ONE helper.
+
+**`OutboundV6Pool` is now a thin persistent_term cache.** `pick/0` stays
+lock-free (so `Grappa.IRC` deps only `OutboundV6Pool`, never `Vhosts` — that
+would close a cycle: `IRC → OutboundV6Pool → Vhosts → UserSettings → IRC`).
+The DB→persistent_term sync is pushed IN via `apply_pool/1` from callers that
+already dep `Vhosts` (`Bootstrap` at boot, the admin controller on any
+inventory edit). Effective pool = `in_pool` vhosts MINUS every per-server
+`--source` fixed address (spec §3 safety net: an auto-allocated session can
+never pick a dedicated address; canonical-string set-difference so `::9000`
+vs `0:0:..:9000` can't slip past).
+
+**Surfaces.** Admin: `/admin/vhosts` (+ `/admin/vhosts/:id/grants`) behind
+`:admin_authn`, cic AdminPane → Vhosts tab. User: `/me/settings/vhost` behind
+`:api,:authn` (both subjects), cic Settings drawer multi-select with In-pool /
+Out-of-pool optgroups limited to the allowed set; a pin renders read-only.
+`forbidden_vhost` is a distinct 403 tag (selection outside the allowed set).
+nginx: one shared snippet (`infra/snippets/locations-api.conf`) gained
+`vhosts` in the admin alternation; `/me/settings/vhost` rides the existing
+`/me` allowlist.
+
+**Deploy: HOT.** Removing the env var killed the only COLD trigger. No new
+config key (`compile_env`), no new supervised child, no `Session.Server`
+state-shape field, no wire-type codegen change (`AdminWire` is hand-authored
+in `api.ts`, like `Networks.AdminWire`). Two migrations (create tables +
+seed the current `GRAPPA_OUTBOUND_V6_POOL` value as `in_pool` vhosts so prod
+behavior is byte-identical at deploy) — a migration alone rides the hot path;
+the pinned prod account needs no seed (its `network_servers.source_address`
+is still the `effective_source` fallback).
+
+**⚠️ Cross-layer drift flagged (NOT fixed — deliberate).** The FreeBSD m42
+jail runs a SEPARATE operator daemon, `infra/freebsd/ndp_keepalive.pl`, that
+reads `GRAPPA_OUTBOUND_V6_POOL` from `grappa.env` to keep the pool `/128`s'
+NDP neighbour-cache entries warm (persistent `ping -6 -S <src>` per address).
+The bouncer no longer reads that env var, but the daemon still does. Removing
+the env var from `grappa.env` would leave the NDP keepalive with nothing to
+ping. **Left the FreeBSD infra untouched** — the env var stays in
+`infra/freebsd/grappa.env.example` + the rc.d daemon as the NDP-keepalive
+source of truth. Follow-up (out of #228 scope): either teach the NDP daemon
+to read the pool from the DB (an admin endpoint or a generated env fragment),
+or accept that the operator maintains the keepalive list separately from the
+bouncer's `in_pool` curation. Until then the two lists can drift — an operator
+adding an `in_pool` vhost via the panel must ALSO add it to `grappa.env` for
+NDP keepalive. Documented so no one "cleans up" the env var from the FreeBSD
+side and silently breaks NDP.
+
+---
+
 ## 2026-07-15 — #246 (P0): outbound split budget must reserve the worst-case RELAYED source prefix
 
 **The silent data-loss bug.** `Grappa.IRC.LineSplit.split_privmsg_body/3`
