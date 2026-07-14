@@ -21,6 +21,16 @@ defmodule GrappaWeb.UserSettingsJSON do
           upload_ttl_seconds: pos_integer() | nil
         }
 
+  @typedoc "One allowed vhost in the self-service view (#228)."
+  @type vhost_option :: %{address: String.t(), in_pool: boolean()}
+
+  @typedoc "Wire shape for the vhost self-service view (#228)."
+  @type vhost_response :: %{
+          available: [vhost_option()],
+          selection: [String.t()],
+          pinned: String.t() | nil
+        }
+
   @doc "Renders the `:notification_prefs` action — GET/PUT 200 response shape."
   @spec notification_prefs(%{prefs: UserSettings.notification_prefs()}) ::
           notification_prefs_response()
@@ -38,5 +48,12 @@ defmodule GrappaWeb.UserSettingsJSON do
           upload_ttl_seconds_response()
   def upload_ttl_seconds(%{seconds: seconds}) do
     %{upload_ttl_seconds: seconds}
+  end
+
+  @doc "Renders the `:vhost` action — GET/PUT 200 response shape (#228)."
+  @spec vhost(%{available: [vhost_option()], selection: [String.t()], pinned: String.t() | nil}) ::
+          vhost_response()
+  def vhost(%{available: available, selection: selection, pinned: pinned}) do
+    %{available: available, selection: selection, pinned: pinned}
   end
 end

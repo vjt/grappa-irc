@@ -45,7 +45,7 @@ defmodule GrappaWeb.UserSettingsController do
 
   use GrappaWeb, :controller
 
-  alias Grappa.{Subject, UserSettings}
+  alias Grappa.{Subject, UserSettings, Vhosts}
 
   @doc """
   `GET /me/settings/notification-prefs` — return the authenticated
@@ -119,4 +119,52 @@ defmodule GrappaWeb.UserSettingsController do
   end
 
   def update_upload_ttl_seconds(_, _), do: {:error, :bad_request}
+
+  @doc """
+  `GET /me/settings/vhost` — the subject's vhost self-service view (#228):
+  the allowed set (generally-available ∪ granted-to-subject, each marked
+  `in_pool`), the current selection, and the pinned address (`null` when
+  none / not pinned). A pin is admin-forced — the UI greys the selector
+  when `pinned` is set.
+  """
+  @spec show_vhost(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def show_vhost(conn, _) do
+    subject = Subject.from_assigns(conn.assigns)
+    render(conn, :vhost, vhost_view(subject))
+  end
+
+  @doc """
+  `PUT /me/settings/vhost` — persist the subject's vhost selection. Body:
+  `{"selection": ["<addr>", ...]}`. Each address MUST be in the subject's
+  allowed set — `403 forbidden_vhost` otherwise (authz at the boundary,
+  not just the UI). 200 with the refreshed view on success.
+  """
+  @spec update_vhost(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request | :forbidden_vhost | Ecto.Changeset.t()}
+  def update_vhost(conn, %{"selection" => selection}) when is_list(selection) do
+    subject = Subject.from_assigns(conn.assigns)
+
+    with {:ok, _} <- Vhosts.set_selection(subject, selection) do
+      render(conn, :vhost, vhost_view(subject))
+    end
+  end
+
+  def update_vhost(_, _), do: {:error, :bad_request}
+
+  # Builds the render assigns for the vhost view — allowed set (with
+  # in_pool marking), current selection, pinned address.
+  defp vhost_view(subject) do
+    available =
+      subject
+      |> Vhosts.allowed_vhosts()
+      |> Enum.map(fn v -> %{address: v.address, in_pool: v.in_pool} end)
+
+    pinned =
+      case Vhosts.pinned_vhost(subject) do
+        %Vhosts.Vhost{address: address} -> address
+        nil -> nil
+      end
+
+    %{available: available, selection: Vhosts.get_selection(subject), pinned: pinned}
+  end
 end

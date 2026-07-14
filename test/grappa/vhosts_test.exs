@@ -14,7 +14,7 @@ defmodule Grappa.VhostsTest do
   # (0..0xffff) so the strict-literal changeset always accepts it.
   defp addr do
     n = Bitwise.band(System.unique_integer([:positive]), 0xFFFF)
-    "2001:db8::" <> Integer.to_string(n, 16)
+    "2001:db8::" <> String.downcase(Integer.to_string(n, 16))
   end
 
   describe "create_vhost/1" do

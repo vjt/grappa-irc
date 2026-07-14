@@ -46,7 +46,7 @@ defmodule Grappa.Vhosts do
       Grappa.UserSettings
     ],
     dirty_xrefs: [Grappa.Visitors.Visitor],
-    exports: [Vhost, Grant]
+    exports: [Vhost, Grant, AdminWire]
 
   import Ecto.Query
 
@@ -193,6 +193,24 @@ defmodule Grappa.Vhosts do
   @spec list_grants_for_subject(Subject.t()) :: [Grant.t()]
   def list_grants_for_subject({_, _} = subject) do
     subject |> grants_for_subject_query() |> Repo.all()
+  end
+
+  @doc "Every grant in the system, newest first. Admin index surface."
+  @spec list_grants() :: [Grant.t()]
+  def list_grants do
+    Repo.all(from(g in Grant, order_by: [desc: g.id]))
+  end
+
+  @doc """
+  Fetches a grant by id, or `{:error, :not_found}`. Admin
+  revoke/unpin surface.
+  """
+  @spec get_grant_by_id(integer()) :: {:ok, Grant.t()} | {:error, :not_found}
+  def get_grant_by_id(id) when is_integer(id) do
+    case Repo.get(Grant, id) do
+      %Grant{} = g -> {:ok, g}
+      nil -> {:error, :not_found}
+    end
   end
 
   @doc "The subject's pinned vhost, or `nil` when none is pinned."
@@ -353,4 +371,3 @@ defmodule Grappa.Vhosts do
     Repo.all(from(v in Vhost, where: v.in_pool == true, select: v.address))
   end
 end
-

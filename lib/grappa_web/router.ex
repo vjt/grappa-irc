@@ -151,6 +151,14 @@ defmodule GrappaWeb.Router do
     put "/settings", SettingsController, :update
     get "/uploads", UploadsController, :index
     delete "/uploads/:id", UploadsController, :delete
+
+    # #228 — vhost (source-bind) inventory + per-subject grants.
+    get "/vhosts", VhostsController, :index
+    post "/vhosts", VhostsController, :create
+    patch "/vhosts/:id", VhostsController, :update
+    delete "/vhosts/:id", VhostsController, :delete
+    post "/vhosts/:id/grants", VhostsController, :grant
+    delete "/vhosts/grants/:grant_id", VhostsController, :revoke
   end
 
   # E2E-ROBUSTNESS bucket D — test-only subject reset surface.
@@ -232,6 +240,13 @@ defmodule GrappaWeb.Router do
     # `Grappa.UserSettings.{get,put}_upload_ttl_seconds`.
     get "/me/settings/upload-ttl-seconds", UserSettingsController, :show_upload_ttl_seconds
     put "/me/settings/upload-ttl-seconds", UserSettingsController, :update_upload_ttl_seconds
+
+    # #228 — per-subject vhost (source-bind) self-selection. GET returns
+    # the allowed set (generally-available ∪ granted) + current selection
+    # + pin; PUT persists a selection authz-clamped to the allowed set.
+    # Rides the existing `/me` nginx allowlist (no proxy change).
+    get "/me/settings/vhost", UserSettingsController, :show_vhost
+    put "/me/settings/vhost", UserSettingsController, :update_vhost
 
     # Visitor session-sharing mint — visitor-only (users get 403).
     # Returns a short-TTL Phoenix-signed token + ISO8601 expires_at.

@@ -40,6 +40,7 @@ defmodule GrappaWeb.FallbackController do
           {:error,
            :bad_request
            | :forbidden
+           | :forbidden_vhost
            | :not_found
            | :no_session
            | :not_connected
@@ -202,6 +203,15 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:forbidden)
     |> json(%{error: "forbidden"})
+  end
+
+  # #228 — a vhost selection outside the subject's allowed set. Distinct
+  # 403 tag from the bare `:forbidden` (admin-gate) so cic can surface a
+  # precise "that vhost isn't available to you" message.
+  def call(conn, {:error, :forbidden_vhost}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "forbidden_vhost"})
   end
 
   # S14 oracle close: `:no_session` collapses to the same wire body as
