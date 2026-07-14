@@ -2,7 +2,7 @@ defmodule Grappa.IRC.LineSplitTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias Grappa.IRC.LineSplit
+  alias Grappa.IRC.{CTCP, LineSplit}
 
   # #246 — worst-case source prefix the RELAYING server prepends to our
   # outbound line before fanning it out to other channel members:
@@ -151,7 +151,16 @@ defmodule Grappa.IRC.LineSplitTest do
   describe "property: relay-safe, lossless, codepoint-whole splitting" do
     property "reconstructs byte-identical, every fragment relay-safe + valid UTF-8" do
       check all(
-              body <- string(:utf8, min_length: 1, max_length: 800),
+              # Plain (non-CTCP) bodies only: a CTCP ACTION re-wraps its
+              # `\x01ACTION …\x01` envelope on EVERY fragment, so its
+              # fragments don't concatenate back to the input — that path
+              # has its own byte-identical (inner) unit test above. Filtering
+              # via the production predicate keeps the byte-identical
+              # reconstruction assertion below airtight (a random :utf8 body
+              # would hit the CTCP branch only ~never, but never is not
+              # "impossible").
+              body <-
+                filter(string(:utf8, min_length: 1, max_length: 800), &(not CTCP.action?(&1))),
               linelen <- integer(200..600)
             ) do
         target = "#test"

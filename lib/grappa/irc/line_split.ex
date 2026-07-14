@@ -40,14 +40,19 @@ defmodule Grappa.IRC.LineSplit do
     * ident ≤ 10 — `Grappa.IRC.Identifier` `@ident_regex` ceiling
       (common ircd `USERLEN`); the server's `~` no-identd prefix is
       counted within `USERLEN`, so 10 bounds the on-wire ident.
-    * host  ≤ 63 — the common ircd `HOSTLEN` (bahamut / InspIRCd /
-      UnrealIRCd). Covers hostnames, hex/vhost cloaks, and bracketed
-      IPv6 literals (max `[` + 45 + `]` = 47). Not advertised by
-      bahamut in 005, so a fixed worst case is the correct posture;
-      a network with `HOSTLEN` > 63 would need this bumped (would
-      merely over-fragment, never lose bytes — over-reserve is safe,
-      under-reserve is the bug). RFC 2812 does not bound the host, so
-      the ceiling is the deployed-ircd norm, documented here.
+    * host  ≤ 63 — the `HOSTLEN` of the ircds grappa targets (bahamut
+      on Azzurra, solanum on Libera). Covers hostnames, hex/vhost
+      cloaks, and bracketed IPv6 literals (max `[` + 45 + `]` = 47).
+      Not advertised in 005, so a fixed worst case is the posture.
+      This is a DEPLOYED-ircd ceiling, NOT a universal one: a network
+      with `HOSTLEN` > 63 (e.g. InspIRCd's default `maxhost=64`)
+      under-reserves the prefix and RE-OPENS this exact silent
+      truncation data loss (smaller — ~`HOSTLEN − 63` bytes per
+      boundary). Over-reserve is safe, under-reserve is the bug: so
+      `@max_host_bytes` MUST be raised before pointing grappa at any
+      ircd with a larger `HOSTLEN`. RFC 2812 does not bound the host;
+      the RFC/DNS ceiling would be 253, chosen against here only to
+      avoid tripling fragmentation on the networks grappa runs on.
 
   Over-reserving costs a few extra fragments on long messages only
   (short messages stay on the `[body]` fast path); under-reserving

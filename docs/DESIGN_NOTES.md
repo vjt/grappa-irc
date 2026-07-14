@@ -20435,12 +20435,18 @@ Worst-case ceilings, all documented protocol maxima (not magic numbers):
   bahamut `NICKLEN=30`); grappa's own nick can never register longer.
 * **ident ≤ 10** — `Identifier` `@ident_regex` ceiling (common ircd
   `USERLEN`); the server's `~` no-identd prefix counts within `USERLEN`.
-* **host ≤ 63** — the common ircd `HOSTLEN` (bahamut/InspIRCd/Unreal);
-  covers hostnames, hex/vhost cloaks, and bracketed IPv6 literals
-  (`[` + 45 + `]` = 47). Bahamut does not advertise `HOSTLEN` in 005, so a
-  fixed worst case is the correct posture; a network with `HOSTLEN` > 63
-  would merely over-fragment (never lose bytes). RFC 2812 does not bound
-  the host, so the ceiling is the deployed-ircd norm.
+* **host ≤ 63** — the `HOSTLEN` of the ircds grappa targets (bahamut on
+  Azzurra, solanum on Libera); covers hostnames, hex/vhost cloaks, and
+  bracketed IPv6 literals (`[` + 45 + `]` = 47). Not advertised in 005, so
+  a fixed worst case is the posture. This is a DEPLOYED-ircd ceiling, not a
+  universal one: a network with `HOSTLEN` > 63 (e.g. InspIRCd's default
+  `maxhost=64`) under-reserves the prefix and RE-OPENS this exact silent
+  data loss (~`HOSTLEN − 63` bytes/boundary), so `@max_host_bytes` MUST be
+  raised before targeting such an ircd — over-reserve is safe, under-reserve
+  is the bug. RFC 2812 does not bound the host; the RFC/DNS ceiling of 253
+  is declined here only to avoid tripling fragmentation on grappa's
+  networks. Also note the `ident ≤ 10` bound assumes the server counts its
+  `~` no-identd prefix WITHIN `USERLEN` (true on bahamut/solanum).
 
 `:` `!` `@` + trailing space = 4 fixed sigil bytes → `@source_prefix_reserve
 = 1 + 30 + 1 + 10 + 1 + 63 + 1 = 107`. **Over-reserving costs a few extra
