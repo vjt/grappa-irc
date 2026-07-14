@@ -24,7 +24,11 @@ import { nickEquals } from "./lib/nickEquals";
 import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { overlayCount } from "./lib/overlayScrollLock";
 import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
-import { channelPresenceVisible, SUPPRESSED_PRESENCE_KINDS } from "./lib/presenceFilter";
+import {
+  channelPresenceVisible,
+  presenceRowVisible,
+  trailingHiddenAdvanceTarget,
+} from "./lib/presenceFilter";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
 import {
@@ -125,6 +129,13 @@ const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 // the resulting scroll event don't trigger a write before the user
 // has actually moved.
 const SCROLL_SETTLE_DEBOUNCE_MS = 500;
+
+// #239 — debounce for the trailing-hidden cursor advance (Facet B). Coalesces
+// join/part storms (netsplits on a large / presence-hidden channel) to a single
+// forward cursor POST once arrivals quiesce. Same magnitude as the scroll-settle
+// debounce; the badge is suppressed while focused so the operator never sees the
+// delay, and the DOM settle paths stay eager.
+const PRESENCE_CURSOR_SETTLE_MS = 500;
 
 // BUGHUNT-2: input-event-recency window for the scroll-settle gate.
 // onScroll only arms the settle timer if a real operator input event
@@ -957,20 +968,20 @@ const ScrollbackPane: Component<Props> = (props) => {
     // messages(), not rows()) keep working. Narrow set: mode/topic/kick/
     // server_event are NOT noise and are never dropped.
     //
-    // Deliberate consequence: everything below (day separators, the
-    // unread-marker count + placement) derives from the FILTERED `msgs`,
-    // so on a suppressed channel the in-pane divider counts only the rows
-    // the operator can actually SEE. That's the correct in-pane behaviour
-    // (a divider above a hidden join row would be a phantom); it diverges
-    // from the sidebar events-unread badge, which still counts presence
-    // events off the unfiltered store (selection.ts) — the badge is a
-    // "something happened" signal, the divider is a "where you were
-    // reading" signal, and they legitimately measure different things.
+    // Consequence: everything below (day separators, the unread-marker count
+    // + placement) derives from the FILTERED `msgs`, so on a suppressed
+    // channel the in-pane divider counts only the rows the operator can
+    // actually SEE (a divider above a hidden join row would be a phantom).
+    //
+    // #239 — the sidebar/bottom-bar unread badge now counts through the SAME
+    // predicate (selection.ts `perChannelUnread` → `presenceRowVisible`). Pre-
+    // #239 the badge counted presence events off the UNFILTERED store while
+    // the pane dropped them, so a trailing run of hidden control rows left the
+    // badge stuck > 0 with no way to read it clear. The badge and the pane
+    // must agree on which rows "count" — reconcile to one predicate, never a
+    // forked filter (CLAUDE.md "one feature, one code path").
     const memberCount = (membersByChannel()[key()] ?? []).length;
-    const presenceVisible = channelPresenceVisible(key(), memberCount);
-    const msgs = presenceVisible
-      ? allMsgs
-      : allMsgs.filter((m) => !SUPPRESSED_PRESENCE_KINDS.has(m.kind));
+    const msgs = allMsgs.filter((m) => presenceRowVisible(key(), memberCount, m.kind));
     // 2026-06-01: invite-ack rows for the $server window only. Mirrors
     // the previous `<Show when={props.kind === "server"}>` gate on
     // the now-deleted sibling render. Flatten across all target-channel
@@ -1703,6 +1714,68 @@ const ScrollbackPane: Component<Props> = (props) => {
       setCursorIfAdvances(props.networkSlug, props.channelName, id);
     }),
   );
+
+  // #239 — advance the server read-cursor over the TRAILING run of hidden
+  // control messages while this window is DISPLAYED. The #222 presence filter
+  // hides join/part/quit/nick_change; those rows have NO DOM node, so the
+  // DOM-geometry settle paths above (scroll-settle / leave / blur / unmount)
+  // can only ever advance the cursor to the last RENDERED row. A trailing run
+  // of hidden control messages past the cursor therefore never receives a
+  // settle event → `last_read_message_id` stays stuck below them → the server-
+  // owned unread count (join-reply / `/me` seed, cross-device, reload) never
+  // clears even though the operator has seen everything they CAN see. Facet A
+  // (selection.ts) already keeps the LOCAL badge honest; this closes the
+  // server-owned-cursor gap so it stays cleared cross-device and after reload.
+  //
+  // Reconcile to the ONE shared predicate: only when this channel is HIDING
+  // presence AND the tab is visible (the operator is actually looking) do we
+  // walk the store from the live cursor and advance over the trailing hidden
+  // run — to the tail if the whole post-cursor tail is hidden, otherwise up to
+  // just before the first VISIBLE unread (`trailingHiddenAdvanceTarget`), so a
+  // real visible unread keeps its badge + divider. Read state stays server-
+  // owned: this supplies the read-position signal the hidden tail cannot settle
+  // on its own, through the existing forward-only `setCursorIfAdvances` path
+  // (#233 monotonic clamp preserved). The in-pane divider reads the FROZEN
+  // `markerCursorId`, so advancing the live cursor here never yanks it.
+  //
+  // No mark-as-unread escape hatch exists in cic today; when one lands it MUST
+  // suppress this auto-advance (issue #239 interaction) — flagged, not built.
+  //
+  // Debounced: coalesce join/part storms (netsplits) to a single forward POST
+  // once arrivals quiesce. The timer is cleared+reset on EVERY re-run (key
+  // switch / pref flip / tab hide) BEFORE the early-return guards, because the
+  // fire callback reads `key()`/`props` at fire time — a stale schedule must
+  // never fire against a switched-to window.
+  let presenceCursorSettleTimer: number | undefined;
+  createEffect(() => {
+    const msgs = messages();
+    const memberCount = (membersByChannel()[key()] ?? []).length;
+    const presenceVisible = channelPresenceVisible(key(), memberCount);
+    const visible = isDocumentVisible();
+    if (presenceCursorSettleTimer !== undefined) {
+      window.clearTimeout(presenceCursorSettleTimer);
+      presenceCursorSettleTimer = undefined;
+    }
+    // Nothing hidden on this channel, or the operator isn't looking: the DOM
+    // settle paths already own the cursor — there is no trailing-hidden gap.
+    if (presenceVisible || !visible) return;
+    if (!msgs || msgs.length === 0) return;
+    presenceCursorSettleTimer = window.setTimeout(() => {
+      const rowsNow = messages();
+      if (!rowsNow || rowsNow.length === 0) return;
+      const mc = (membersByChannel()[key()] ?? []).length;
+      const cursorNow = getReadCursor(props.networkSlug, props.channelName) ?? 0;
+      const target = trailingHiddenAdvanceTarget(rowsNow, cursorNow, (kind) =>
+        presenceRowVisible(key(), mc, kind),
+      );
+      setCursorIfAdvances(props.networkSlug, props.channelName, target);
+    }, PRESENCE_CURSOR_SETTLE_MS);
+  });
+  onCleanup(() => {
+    if (presenceCursorSettleTimer !== undefined) {
+      window.clearTimeout(presenceCursorSettleTimer);
+    }
+  });
 
   // CP29 R-4: cold-mount + delayed-REST settle. The key-change effect
   // above runs with `defer: true` (skips the initial mount) and only

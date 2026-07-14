@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ScrollbackMessage } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
 
 // #222 — hide join/part/quit/nick-change signalling on large channels by
@@ -154,6 +155,122 @@ describe("presenceFilter module", () => {
       expect(channelPresenceVisible(key(), 3)).toBe(false);
       setChannelPresencePref(key(), "show");
       expect(channelPresenceVisible(key(), 999)).toBe(true);
+    });
+  });
+
+  // #239 — the ONE shared "is this row visible under the channel's presence
+  // filter?" predicate. BOTH the render filter (ScrollbackPane.rows) AND the
+  // unread-count derivation (selection.ts perChannelUnread) route through it,
+  // so a hidden control row can never inflate a badge the operator cannot
+  // clear. Reconcile-to-one-predicate — no forked filter.
+  describe("presenceRowVisible() — the shared visible predicate (#239)", () => {
+    it("content kinds are always visible, even when the channel hides presence", async () => {
+      const { presenceRowVisible, setChannelPresencePref } = await import("../lib/presenceFilter");
+      setChannelPresencePref(key(), "hide");
+      expect(presenceRowVisible(key(), 999, "privmsg")).toBe(true);
+      expect(presenceRowVisible(key(), 999, "notice")).toBe(true);
+      expect(presenceRowVisible(key(), 999, "action")).toBe(true);
+    });
+
+    it("non-suppressed event kinds (mode/topic/kick/server_event) stay visible when hiding", async () => {
+      const { presenceRowVisible, setChannelPresencePref } = await import("../lib/presenceFilter");
+      setChannelPresencePref(key(), "hide");
+      expect(presenceRowVisible(key(), 999, "mode")).toBe(true);
+      expect(presenceRowVisible(key(), 999, "topic")).toBe(true);
+      expect(presenceRowVisible(key(), 999, "kick")).toBe(true);
+      expect(presenceRowVisible(key(), 999, "server_event")).toBe(true);
+    });
+
+    it("suppressed kinds hidden when the channel hides presence, visible otherwise", async () => {
+      const { presenceRowVisible, setChannelPresencePref, clearChannelPresencePref } = await import(
+        "../lib/presenceFilter"
+      );
+      // Small channel, pref unset → follow-size default → visible.
+      expect(presenceRowVisible(key(), 3, "join")).toBe(true);
+      // Large channel, pref unset → hidden by the size default.
+      expect(presenceRowVisible(key(), 80, "join")).toBe(false);
+      // Explicit hide on a tiny channel → hidden.
+      setChannelPresencePref(key(), "hide");
+      expect(presenceRowVisible(key(), 3, "part")).toBe(false);
+      // Explicit show on a huge channel → visible.
+      setChannelPresencePref(key(), "show");
+      expect(presenceRowVisible(key(), 999, "quit")).toBe(true);
+      clearChannelPresencePref(key());
+    });
+  });
+
+  // #239 — the read-cursor advance target that skips the TRAILING run of
+  // hidden control messages on window display WITHOUT marking any visible
+  // unread read. Pure (predicate injected) so it is unit-testable without
+  // DOM/timers; the ScrollbackPane effect injects `presenceRowVisible`.
+  describe("trailingHiddenAdvanceTarget() — skip the trailing hidden run (#239)", () => {
+    type Row = { id: number; kind: ScrollbackMessage["kind"] };
+    const hidden = new Set<ScrollbackMessage["kind"]>(["join", "part", "quit", "nick_change"]);
+    const isVisible = (kind: ScrollbackMessage["kind"]): boolean => !hidden.has(kind);
+
+    it("returns the cursor unchanged when nothing is past it", async () => {
+      const { trailingHiddenAdvanceTarget } = await import("../lib/presenceFilter");
+      const rows: Row[] = [
+        { id: 1, kind: "privmsg" },
+        { id: 2, kind: "join" },
+      ];
+      expect(trailingHiddenAdvanceTarget(rows, 2, isVisible)).toBe(2);
+    });
+
+    it("advances to the tail when the whole post-cursor tail is hidden", async () => {
+      const { trailingHiddenAdvanceTarget } = await import("../lib/presenceFilter");
+      const rows: Row[] = [
+        { id: 1, kind: "privmsg" },
+        { id: 2, kind: "join" },
+        { id: 3, kind: "part" },
+      ];
+      // cursor at 1 — id2/id3 are a hidden trailing run → advance to 3.
+      expect(trailingHiddenAdvanceTarget(rows, 1, isVisible)).toBe(3);
+    });
+
+    it("stops before the first visible unread (never marks it read)", async () => {
+      const { trailingHiddenAdvanceTarget } = await import("../lib/presenceFilter");
+      const rows: Row[] = [
+        { id: 10, kind: "join" }, // hidden, past cursor
+        { id: 11, kind: "privmsg" }, // first visible unread
+        { id: 12, kind: "part" }, // trailing hidden AFTER the visible unread
+      ];
+      // cursor 9: skip the hidden id10, STOP before the visible id11.
+      expect(trailingHiddenAdvanceTarget(rows, 9, isVisible)).toBe(10);
+    });
+
+    it("does not advance when the first row past the cursor is visible", async () => {
+      const { trailingHiddenAdvanceTarget } = await import("../lib/presenceFilter");
+      const rows: Row[] = [
+        { id: 5, kind: "privmsg" },
+        { id: 6, kind: "join" },
+      ];
+      expect(trailingHiddenAdvanceTarget(rows, 4, isVisible)).toBe(4);
+    });
+
+    it("is forward-only in effect — a stale row below the cursor is ignored", async () => {
+      const { trailingHiddenAdvanceTarget } = await import("../lib/presenceFilter");
+      const rows: Row[] = [
+        { id: 1, kind: "join" }, // below cursor — skipped by the id guard
+        { id: 2, kind: "part" }, // below cursor — skipped
+        { id: 3, kind: "join" }, // hidden, past cursor
+      ];
+      expect(trailingHiddenAdvanceTarget(rows, 2, isVisible)).toBe(3);
+    });
+
+    it("is order-independent — never advances past a visible unread even when array order diverges from id order", async () => {
+      const { trailingHiddenAdvanceTarget } = await import("../lib/presenceFilter");
+      // The store sorts by [server_time asc, id asc], so a visible privmsg with
+      // an EARLIER server_time but a LOWER id can appear AFTER a hidden row with
+      // a HIGHER id in the array. Advancing to the hidden id (10) would mark the
+      // visible unread (id 5) read though the operator never saw it. The target
+      // must respect id order, not array order → stop below the LOWEST visible
+      // unread id (5) → nothing hidden below it → no advance.
+      const rows: Row[] = [
+        { id: 10, kind: "join" }, // hidden, appears first (earlier server_time)
+        { id: 5, kind: "privmsg" }, // visible unread, LOWER id, appears later
+      ];
+      expect(trailingHiddenAdvanceTarget(rows, 4, isVisible)).toBe(4);
     });
   });
 });

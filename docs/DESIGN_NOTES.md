@@ -20085,3 +20085,87 @@ onActivate; jsdom is blind to the CSS layout + selected marker).
 **Deploy: --cic bundle only, HOT.** Client-only (cic focus wiring); no `.ex`
 touched, no wire-type / schema / supervised-child change. `deploy-m42.sh --cic`
 builds + broadcasts a new bundle hash to live user-topics; no BEAM restart.
+
+---
+
+## 2026-07-14 — #239 (P0): hidden control messages left the unread counter stuck
+
+**The bug (regression from #222).** #222 added a render-layer presence filter:
+on a large / pref-hidden channel cic suppresses `join/part/quit/nick_change`
+from the scrollback pane (the message STORE stays intact — filter is
+render-only). But the unread-count derivation
+(`selection.ts` `perChannelUnread`) counted EVERY stored row past the cursor,
+split by `isContentKind`. So a hidden control message inflated the sidebar /
+bottom-bar **events badge** — and because the row never renders, no settle
+event (scroll / leave / blur) advances the read cursor over it, so the count
+could never be cleared by reading. The operator opened the window, saw nothing
+new, and the badge stayed stuck > 0 with no way to clear it. The count and the
+pane disagreed about which rows "count".
+
+**The seam.** Two predicates diverged: the pane's `rows()` filter
+(`SUPPRESSED_PRESENCE_KINDS` + `channelPresenceVisible`) vs the count
+derivation (kind-split over the unfiltered store). The pre-fix `rows()` comment
+even documented the divergence as intentional ("the badge is a 'something
+happened' signal … they legitimately measure different things") — that
+rationale was the bug, and is now corrected in the code comment.
+
+**The fix — reconcile to ONE shared predicate (CLAUDE.md "one feature, one code
+path"), two facets:**
+
+- **Facet A — count over VISIBLE rows.** `perChannelUnread` now skips rows the
+  presence filter hides, via the single shared predicate
+  `presenceFilter.presenceRowVisible(key, memberCount, kind)` — the SAME
+  predicate `ScrollbackPane.rows()` now filters through (reconciled from the
+  old inline `!SUPPRESSED_PRESENCE_KINDS.has(...)`). The badge and the pane can
+  no longer disagree. This fixes the LOCAL badge immediately in every case.
+
+- **Facet B — advance the server-owned cursor over the trailing hidden run on
+  display.** A debounced `ScrollbackPane` effect: while the channel is HIDING
+  presence AND the tab is visible, it walks the store from the live cursor and
+  advances over the trailing run of hidden control messages —
+  `presenceFilter.trailingHiddenAdvanceTarget` returns the tail id when the
+  whole post-cursor tail is hidden, otherwise the id just before the first
+  VISIBLE unread (so a real visible unread keeps its badge + divider). Forward-
+  only via the existing `setCursorIfAdvances` path. This closes the
+  server-owned-cursor gap so the count stays cleared cross-device and after
+  reload (the server / join-reply / `/me` seed computes over stored ids, which
+  don't know cic's client-only filter — only advancing the cursor makes the
+  server agree).
+
+**Why the read-state-server-owned invariant stays intact.** cic does NOT
+compute or own the count locally — it derives the badge from
+`(scrollbackByChannel, readCursors, serverSeedCounts)` as before, and Facet B
+supplies the read-position signal the hidden tail cannot settle on its own
+through the ONE existing server-owned cursor path (`setCursorIfAdvances` →
+`setReadCursor` POST, forward-only). No parallel client-side count state
+machine, no removal/fork of the server cursor.
+
+**Interactions respected.** #233 monotonic clamp: Facet B only ever *advances*
+(forward-only) → compatible. In-pane divider freeze contract: the divider reads
+the FROZEN `markerCursorId`, never the live cursor, so Facet B's live-cursor
+advance never yanks it; and Facet B stops before the first visible unread, so a
+real unread's divider survives. Debounce coalesces netsplit join/part storms to
+a single forward POST once arrivals quiesce (the DOM settle paths stay eager);
+the timer is cleared+reset before the early-return guards so a stale schedule
+never fires against a switched-to window. The seed branch of `perChannelUnread`
+is left server-approximate (the server can't know the client filter); Facet B
+is what makes the server seed correct once the cursor advances.
+
+**Mark-as-unread escape hatch:** no such feature exists in cic today, so the
+issue's "don't auto-advance over an explicitly-marked-unread window" is a
+future concern — flagged in the Facet B comment, NOT built (no phantom
+mechanism).
+
+**Test that encoded the old behavior:** none. `selection.test.ts`'s "memo
+splits scrollback rows by content vs presence kind" seeds a SMALL channel
+(presence visible), so join/part still count — it stayed valid and green. New
+coverage: `presenceFilter.test.ts` (`presenceRowVisible` + pure
+`trailingHiddenAdvanceTarget` truth table), `selection.test.ts` (hidden
+join/part excluded when hiding; still counted when shown — the filter, not a
+blanket drop), and the `issue239-hidden-msg-unread.spec.ts` e2e (hidden join
+does NOT bump the events badge while a visible privmsg DOES; reading clears it).
+
+**Deploy: --cic bundle only, HOT.** Client-only — only cic TS touched
+(`selection.ts`, `presenceFilter.ts`, `ScrollbackPane.tsx` + tests); NO `.ex`,
+no wire-type / schema / supervised-child change. `deploy-m42.sh --cic` builds +
+broadcasts a new bundle hash to live user-topics; no BEAM restart.

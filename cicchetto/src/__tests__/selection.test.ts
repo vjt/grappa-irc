@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ScrollbackMessage } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
 
 // Boundary: mock REST (`lib/api`). Selection effects reach into
@@ -322,6 +323,83 @@ describe("selection store", () => {
       expect(selection.messagesUnread()[channelKey("freenode", "#cic")]).toBeUndefined();
       expect(selection.eventsUnread()[channelKey("freenode", "#cic")]).toBe(2);
       expect(selection.messagesUnread()[channelKey("oftc", "#bnc")]).toBe(9);
+    });
+  });
+
+  // #239 — hidden/control messages must NOT leave the unread counter stuck.
+  // Regression from #222: the render-layer presence filter hides
+  // join/part/quit/nick_change on large / pref-hidden channels, but the
+  // count derivation counted every stored row → hidden control rows inflated
+  // the events badge the operator could never clear (they never render, so no
+  // settle event advances the cursor over them). The count and the pane MUST
+  // reconcile to the ONE shared presence predicate (presenceRowVisible):
+  // count over VISIBLE rows only. Explicit "hide" pin stands in for a large
+  // channel so we don't seed 50 members (flood/autokill risk in the e2e; the
+  // size-default math lives in presenceFilter.test.ts).
+  describe("presence-filter-hidden rows excluded from the badge (#239)", () => {
+    it("hidden join/part do NOT count toward eventsUnread when the channel hides presence", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const presenceFilter = await import("../lib/presenceFilter");
+      const key = channelKey("freenode", "#big");
+      presenceFilter.setChannelPresencePref(key, "hide");
+
+      const rows: Array<[ScrollbackMessage["kind"], number]> = [
+        ["privmsg", 1], // visible content
+        ["join", 2], // hidden by the presence filter
+        ["part", 3], // hidden by the presence filter
+        ["mode", 4], // NOT in the narrow noise set → visible event
+      ];
+      for (const [kind, id] of rows) {
+        scrollback.appendToScrollback(key, {
+          id,
+          network: "freenode",
+          channel: "#big",
+          server_time: id,
+          kind,
+          sender: "u",
+          body: kind === "privmsg" ? "x" : "",
+          meta: {},
+        });
+      }
+
+      // Facet A: the hidden join/part are excluded; the visible privmsg
+      // (message) and the visible mode (event) still count.
+      expect(selection.messagesUnread()[key]).toBe(1); // privmsg
+      expect(selection.eventsUnread()[key]).toBe(1); // mode only — join/part hidden
+      expect(selection.unreadCounts()[key]).toBe(2);
+    });
+
+    it("counts join/part again when presence is explicitly SHOWN (filter, not a blanket drop)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const presenceFilter = await import("../lib/presenceFilter");
+      const key = channelKey("freenode", "#big2");
+      presenceFilter.setChannelPresencePref(key, "show");
+
+      const rows: Array<[ScrollbackMessage["kind"], number]> = [
+        ["join", 1],
+        ["part", 2],
+        ["mode", 3],
+      ];
+      for (const [kind, id] of rows) {
+        scrollback.appendToScrollback(key, {
+          id,
+          network: "freenode",
+          channel: "#big2",
+          server_time: id,
+          kind,
+          sender: "u",
+          body: "",
+          meta: {},
+        });
+      }
+
+      // "show" pin re-exposes the presence rows — proving the exclusion is
+      // the shared filter predicate, not a hardcoded drop of presence kinds.
+      expect(selection.eventsUnread()[key]).toBe(3);
     });
   });
 

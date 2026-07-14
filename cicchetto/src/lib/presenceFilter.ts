@@ -153,3 +153,61 @@ export function resolvePresenceVisible(
 export function channelPresenceVisible(key: ChannelKey, memberCount: number): boolean {
   return resolvePresenceVisible(prefs()[key], memberCount);
 }
+
+// #239 — the SINGLE "is this row visible under the channel's presence filter?"
+// predicate. BOTH the render filter (ScrollbackPane's `rows()` memo) AND the
+// unread-count derivation (selection.ts `perChannelUnread`) route through it,
+// so a hidden control row can never inflate a badge the operator cannot clear
+// (the count and the pane must agree on which rows "count" — CLAUDE.md "one
+// feature, one code path"). A row is visible unless the channel is suppressing
+// presence AND the row is one of the NARROW noise kinds. Reads the reactive
+// pref signal (via `channelPresenceVisible`) ONLY for a suppressed kind, so the
+// consumer memo/effect re-runs on toggle / membership-threshold changes exactly
+// when a suppressed row is present. Never fold a second copy of this rule.
+export function presenceRowVisible(
+  key: ChannelKey,
+  memberCount: number,
+  kind: ScrollbackMessage["kind"],
+): boolean {
+  if (!SUPPRESSED_PRESENCE_KINDS.has(kind)) return true;
+  return channelPresenceVisible(key, memberCount);
+}
+
+// #239 — the read-cursor advance target that skips the TRAILING run of hidden
+// control messages on window display, WITHOUT marking any VISIBLE unread read.
+// The presence filter hides join/part/quit/nick_change; the DOM-geometry settle
+// paths (scroll / leave / blur) only ever reach the last RENDERED row, so a
+// trailing run of hidden control messages past the cursor never gets a settle
+// event and `last_read_message_id` stays stuck below them — the stuck badge.
+//
+// Order-INDEPENDENT: works on `msgs` in any order (the store sorts by
+// [server_time asc, id asc], NOT by id — a delayed/batched or clock-skewed row
+// can carry an earlier server_time yet a higher id, so array order can diverge
+// from id order). We reason purely in id space: the target is the highest
+// HIDDEN unread id that is strictly BELOW the lowest VISIBLE unread id (the
+// ceiling we must never cross — advancing to/past it would mark real content
+// read the operator never saw). When the whole post-cursor tail is hidden there
+// is no ceiling, so the target is the tail id. Returns `cursor` when nothing is
+// skippable, so the caller's forward-only `setCursorIfAdvances` (#233 monotonic
+// clamp) makes it a no-op. Pure (predicate injected) — unit-testable without
+// DOM/timers; the caller injects `presenceRowVisible(key, memberCount, kind)`.
+export function trailingHiddenAdvanceTarget(
+  msgs: readonly { readonly id: number; readonly kind: ScrollbackMessage["kind"] }[],
+  cursor: number,
+  isVisible: (kind: ScrollbackMessage["kind"]) => boolean,
+): number {
+  // Lowest-id VISIBLE unread — the ceiling. +Infinity when the whole
+  // post-cursor tail is hidden (no visible unread to protect).
+  let ceiling = Number.POSITIVE_INFINITY;
+  for (const m of msgs) {
+    if (m.id > cursor && isVisible(m.kind) && m.id < ceiling) ceiling = m.id;
+  }
+  // Highest HIDDEN unread id strictly below the ceiling — the skippable run.
+  let target = cursor;
+  for (const m of msgs) {
+    if (m.id > cursor && !isVisible(m.kind) && m.id < ceiling && m.id > target) {
+      target = m.id;
+    }
+  }
+  return target;
+}

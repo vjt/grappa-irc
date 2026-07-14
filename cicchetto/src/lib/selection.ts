@@ -5,9 +5,11 @@ import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { isDocumentVisible } from "./documentVisibility";
 import { identityScopedStore } from "./identityScopedStore";
 import { saveLastFocused } from "./lastFocusedChannel";
+import { membersByChannel } from "./members";
 import { clearMentionsForKey } from "./mentions";
 import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
 import { channelsBySlug, networkBySlug, networks, user } from "./networks";
+import { presenceRowVisible } from "./presenceFilter";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { getReadCursor, readCursors, setReadCursor } from "./readCursor";
 import {
@@ -364,6 +366,11 @@ const exports = identityScopedStore((onIdentityChange) => {
     const sb = scrollbackByChannel();
     const cursors = readCursors();
     const seeds = serverSeedCounts();
+    // #239 — the badge must count over VISIBLE rows only. `membersByChannel`
+    // feeds the presence-filter member-count default; reading it here makes
+    // the memo re-run when membership crosses the large-channel threshold, in
+    // lock-step with `presenceRowVisible`'s pref-signal dependency below.
+    const members = membersByChannel();
 
     const result: Record<ChannelKey, Computed> = {};
 
@@ -387,11 +394,17 @@ const exports = identityScopedStore((onIdentityChange) => {
       if (decoded === null) continue;
       const cursorMapKey = `${decoded.slug} ${decoded.name}`;
       const cursor = cursors[cursorMapKey] ?? 0;
+      const memberCount = (members[key] ?? []).length;
 
       let msgs = 0;
       let evts = 0;
       for (const row of rows) {
         if (row.id <= cursor) continue;
+        // #239 — skip rows the presence filter hides for this channel: the
+        // pane never renders them, so counting them would leave a badge the
+        // operator can never clear by reading. Same predicate the pane's
+        // `rows()` filter uses (reconcile-to-one, not a forked filter).
+        if (!presenceRowVisible(key, memberCount, row.kind)) continue;
         if (isContentKind(row.kind)) msgs++;
         else evts++;
       }
