@@ -20240,3 +20240,65 @@ its tests + the new e2e spec; NO `.ex`, no wire-type / schema /
 supervised-child change. `deploy-m42.sh --cic` builds + broadcasts a new bundle
 hash; no BEAM restart. **Do NOT ship on automated gates alone — HALT for a
 real-iPhone dogfood first** (webkit can't confirm the physics).
+
+## 2026-07-14 — the `integration` suite was red because #233 hardened the cursor, not because of #222
+
+**Symptom.** The `integration` (chromium Playwright e2e) workflow had been red
+since ~#222 and shipped past ~6 times. A handoff attributed it to #222 (the
+render-layer presence filter). That was WRONG — a 30-second sanity check
+disproves it: the #222 filter only fires on a channel with ≥
+`LARGE_CHANNEL_THRESHOLD` (50) members, and the seeded e2e `#bofh` has ~3. On a
+3-member channel `presenceRowVisible` is a no-op, so #222 cannot change any
+`#bofh` divider/cursor/scroll assertion. Directions over code: the failing
+specs are all `#bofh`, so the filter was never the cause.
+
+**Real root cause: #233.** `ReadCursor.set/4` became monotonic (advance-only) —
+a POST at or below the current cursor is clamped, never written backward. That
+is CORRECT for production (cic is forward-only; the server is the single
+authoritative regressor of a stale scroll-to-bottom POST). But every e2e
+cursor/divider/scroll spec PLANTS a mid-page (backward) cursor to stage an
+unread-divider scenario, and pre-#233 they did it through the last-write-wins
+`POST /read-cursor`. After #233 a backward seed is silently clamped to whatever
+tail a prior spec left → no divider → deterministic red. #233 inverted two
+UNIT tests but never touched the e2e seeding path; its CI was already ignored
+red, so the new e2e breakage rode in unnoticed. The four deterministic
+failures: `cursor-forward-only:switch-away`, `issue168` ×2,
+`unread-divider-beyond-window`.
+
+**Resolution — restore the test capability WITHOUT weakening production.**
+`ReadCursor.force_set/4` (insert-or-update, no clamp; still validates
+`message_belongs?`) behind a TEST-ONLY `POST .../read-cursor/force`
+(`GrappaWeb.TestReadCursorController`), compile-gated to dev/test exactly like
+`TestResetSubjectController` — module + route absent from the prod release. The
+production `/read-cursor` stays advance-only; `set/4` is untouched. `do_set/4`
+and `force_write/4` share one `upsert_cursor/5` — the ONLY difference is the
+clamp guard, so the write lives once. The force controller broadcasts the
+forced id via `broadcast_set/5` because cic adopts a backward move ONLY through
+its authoritative `read_cursor_set` WS echo (`applyReadCursorSet` is
+unconditional) — a mid-session seed (`cursor-forward-only`) would otherwise
+never reach the live client. **Do NOT relax `set/4` to `<`, and do NOT wire
+`force_set` into any production controller** — deliberate mark-as-unread, when
+it ships, still gets its own explicit surface with a real caller.
+
+**Invariant clarification (what #233 legitimately changed).** The read cursor
+is now "the newest row the operator has read", advance-only server-side. E2E
+seeding of a BACKWARD cursor is no longer a production-endpoint operation — it
+is a test-only force. Every spec that force-seeds a mid-page cursor MUST restore
+`#bofh` to the tail in `afterAll`/`afterEach` (restore is a FORWARD move, still
+served by the production endpoint) — the `feedback_cascade_poisoner_pattern`
+rule now bites harder because the seed actually LANDS (pre-#233 a dropped
+backward seed accidentally left `#bofh` at the tail; `scroll-on-window-switch`
+relied on that and needed a restore added).
+
+**Residual — a pre-existing chronic flake pool, NOT #222/#233.** After the fix
+the four #233 specs are green across two consecutive full runs, but the suite
+still flaps a ROTATING 2-3 failures/run drawn from
+`{b0-invite, marker-target-window, archive-desktop-only, slash-commands-bundle,
+issue188-mentions}` — never the same set twice (run1≠run2≠run3), several at
+positions BEFORE any changed spec, and two (`b0-invite`, `marker-target`) fail
+on the untouched baseline. Rotating set across runs = test-order pollution /
+environmental flake, per `feedback_recurring_e2e_not_flake` — not a
+deterministic regression and out of scope for the #233 fix. Failure shapes are
+timing/delivery races (IrcPeer message delivery, `getComputedStyle` DOM
+staleness), plausibly aggravated by the #221 testnet topology change
+(solanum leaf). Characterising + stabilising that pool is separate work.
