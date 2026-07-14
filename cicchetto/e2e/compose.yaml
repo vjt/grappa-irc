@@ -480,9 +480,12 @@ services:
       # bahamut-test alias.
       E2E_IRC_HOST: bahamut-test
       E2E_IRC_PORT: "6667"
-      # Verbose IRC peer wire-trace. Off by default; flip to "1" for
-      # debugging registration / nick collision / throttle issues.
-      E2E_PEER_DEBUG: "0"
+      # Verbose IRC peer wire-trace. Off by default; export
+      # `E2E_PEER_DEBUG=1` on the host before scripts/integration.sh to
+      # surface every RPL_*/ERR_*/NOTICE + socket-close per peer — the
+      # seam for debugging registration / nick collision / throttle
+      # issues without editing this file each time.
+      E2E_PEER_DEBUG: "${E2E_PEER_DEBUG:-0}"
       # Push notifications cluster B5 (2026-05-14) — base URL the
       # push-trigger specs use for both (a) constructing the fake
       # PushSubscription endpoint cic registers and (b) polling
