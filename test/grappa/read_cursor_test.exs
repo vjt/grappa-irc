@@ -501,6 +501,61 @@ defmodule Grappa.ReadCursorTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # force_set/4 — test-support backward seed
+  # ---------------------------------------------------------------------------
+
+  describe "force_set/4 — test-support backward seed" do
+    test "writes a LOWER id, bypassing the monotonic clamp set/4 enforces (#233)" do
+      # #233 made `set/4` advance-only. The e2e cursor/divider specs
+      # must plant a BACKWARD (mid-page) cursor to stage an
+      # unread-divider scenario, which `set/4` correctly refuses.
+      # `force_set/4` is the test-only backward-seed path (its sole
+      # caller is the compile-gated `GrappaWeb.TestReadCursorController`)
+      # — it writes any belonging id unconditionally so the seed lands.
+      # This is NOT the production mark-as-unread path (still unbuilt).
+      user = user_fixture()
+      net = network_fixture()
+      m1 = insert_message(%{user_id: user.id}, net.id, "#x", 1)
+      m2 = insert_message(%{user_id: user.id}, net.id, "#x", 2)
+      m1_id = m1.id
+
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "#x", m2.id)
+
+      # `set/4` clamps this backward move; `force_set/4` writes it.
+      assert {:ok, %Cursor{last_read_message_id: ^m1_id}} =
+               ReadCursor.force_set({:user, user.id}, net.id, "#x", m1.id)
+
+      assert %Cursor{last_read_message_id: ^m1_id} =
+               ReadCursor.get({:user, user.id}, net.id, "#x")
+    end
+
+    test "inserts when no cursor exists yet" do
+      user = user_fixture()
+      net = network_fixture()
+      msg = insert_message(%{user_id: user.id}, net.id, "#x", 1)
+      msg_id = msg.id
+
+      assert {:ok, %Cursor{last_read_message_id: ^msg_id}} =
+               ReadCursor.force_set({:user, user.id}, net.id, "#x", msg.id)
+
+      assert %Cursor{last_read_message_id: ^msg_id} =
+               ReadCursor.get({:user, user.id}, net.id, "#x")
+    end
+
+    test "rejects an id that does not belong to (subject, network, channel)" do
+      user = user_fixture()
+      net = network_fixture()
+      other_net = network_fixture()
+      # Message lives on a DIFFERENT network — the belongs-check must fail
+      # so a forced cursor can never reference a foreign row.
+      msg = insert_message(%{user_id: user.id}, other_net.id, "#x", 1)
+
+      assert {:error, :invalid_message} =
+               ReadCursor.force_set({:user, user.id}, net.id, "#x", msg.id)
+    end
+  end
+
   # S12 (2026-07-08 codebase review) — `read_cursors.last_read_message_id`
   # is `REFERENCES messages(id) ON DELETE SET NULL`. When a `messages`
   # row is deleted (the `Scrollback.delete_for_channel/3` /

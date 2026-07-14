@@ -77,6 +77,7 @@ defmodule Grappa.ReadCursor do
 
   import Ecto.Query
 
+  alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
   alias Grappa.ReadCursor.{Cursor, Wire}
@@ -119,7 +120,7 @@ defmodule Grappa.ReadCursor do
     # UX-4 bucket A — canonicalise channel at the read boundary so a
     # cic-side `#Chan` lookup hits the canonical `#chan` cursor row.
     # Sigil-aware; nick-shape DM windows pass through unchanged.
-    channel = Grappa.IRC.Identifier.canonical_channel(channel)
+    channel = Identifier.canonical_channel(channel)
 
     Cursor
     |> subject_filter(subject)
@@ -166,7 +167,7 @@ defmodule Grappa.ReadCursor do
     # UX-4 bucket A — canonicalise once at the entry boundary so every
     # downstream call (`message_belongs?/4` validator + `do_set/4`
     # → `get/3` + `Cursor.changeset/2`) observes the canonical key.
-    channel = Grappa.IRC.Identifier.canonical_channel(channel)
+    channel = Identifier.canonical_channel(channel)
 
     if message_belongs?(subject, network_id, channel, message_id) do
       do_set(subject, network_id, channel, message_id)
@@ -257,6 +258,45 @@ defmodule Grappa.ReadCursor do
     :ok
   end
 
+  @doc """
+  Test-support: force the cursor for `(subject, network_id, channel)` to
+  `message_id`, **bypassing the monotonic advance-only clamp** of `set/4`.
+
+  Intended for `GrappaWeb.TestReadCursorController` (compile-gated to
+  dev/test) ONLY. The e2e cursor/divider specs must plant a BACKWARD
+  (mid-page) cursor to stage an unread-divider scenario, which `set/4`
+  correctly refuses after #233 made the write advance-only. Before #233
+  those specs seeded via the last-write-wins `POST /read-cursor`; the
+  hardening dropped that capability, so this restores it for tests
+  WITHOUT relaxing the production endpoint (which still routes through
+  `set/4`). Mirrors the `clear_all_for_user/1` test-support precedent:
+  the function ships in the prod release but has no production caller.
+
+  This is NOT the production "deliberate mark-as-unread" path — that
+  still gets its OWN explicit surface when a real caller ships (see the
+  moduledoc). Do not wire this into any production controller.
+
+  Still validates `message_belongs?` — a forced cursor must reference a
+  real row in the target `(subject, network_id, channel)` window, so a
+  typo'd seed is a loud `{:error, :invalid_message}`, not a dangling
+  cursor. No broadcast here — the caller fans out via `broadcast_set/5`
+  exactly as `set/4`'s controller does, so cic adopts the backward move
+  through its authoritative `read_cursor_set` WS path.
+  """
+  @spec force_set(subject(), integer(), String.t(), integer()) ::
+          {:ok, Cursor.t()} | {:error, :invalid_message | Ecto.Changeset.t()}
+  def force_set(subject, network_id, channel, message_id)
+      when is_integer(network_id) and is_binary(channel) and channel != "" and
+             is_integer(message_id) and message_id > 0 do
+    channel = Identifier.canonical_channel(channel)
+
+    if message_belongs?(subject, network_id, channel, message_id) do
+      force_write(subject, network_id, channel, message_id)
+    else
+      {:error, :invalid_message}
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
@@ -292,23 +332,45 @@ defmodule Grappa.ReadCursor do
       when is_integer(current) and message_id <= current ->
         {:ok, cursor}
 
-      %Cursor{} = cursor ->
-        cursor
-        |> Cursor.changeset(%{last_read_message_id: message_id})
-        |> Repo.update()
-
-      nil ->
-        attrs =
-          Map.merge(subject_attrs(subject), %{
-            network_id: network_id,
-            channel: channel,
-            last_read_message_id: message_id
-          })
-
-        %Cursor{}
-        |> Cursor.changeset(attrs)
-        |> Repo.insert()
+      existing ->
+        upsert_cursor(existing, subject, network_id, channel, message_id)
     end
+  end
+
+  # Test-support unconditional write for `force_set/4` — insert-or-update
+  # with NO monotonic clamp (that clamp is `do_set/4`'s production
+  # correctness contract, #233). Delegates to the shared `upsert_cursor/5`.
+  @spec force_write(subject(), integer(), String.t(), integer()) ::
+          {:ok, Cursor.t()} | {:error, Ecto.Changeset.t()}
+  defp force_write(subject, network_id, channel, message_id) do
+    upsert_cursor(get(subject, network_id, channel), subject, network_id, channel, message_id)
+  end
+
+  # Raw insert-or-update of the cursor row — NO monotonic clamp. `existing`
+  # is the pre-fetched `Cursor` row (or `nil`). Shared by `do_set/4` (which
+  # applies its advance-only clamp FIRST, then falls through here) and the
+  # test-only `force_set/4` (which skips the clamp). The clamp is the ONLY
+  # difference between the two write paths, so the write itself lives here
+  # once (CLAUDE.md "implement once, reuse everywhere").
+  @spec upsert_cursor(Cursor.t() | nil, subject(), integer(), String.t(), integer()) ::
+          {:ok, Cursor.t()} | {:error, Ecto.Changeset.t()}
+  defp upsert_cursor(%Cursor{} = cursor, _, _, _, message_id) do
+    cursor
+    |> Cursor.changeset(%{last_read_message_id: message_id})
+    |> Repo.update()
+  end
+
+  defp upsert_cursor(nil, subject, network_id, channel, message_id) do
+    attrs =
+      Map.merge(subject_attrs(subject), %{
+        network_id: network_id,
+        channel: channel,
+        last_read_message_id: message_id
+      })
+
+    %Cursor{}
+    |> Cursor.changeset(attrs)
+    |> Repo.insert()
   end
 
   @spec message_belongs?(subject(), integer(), String.t(), pos_integer()) :: boolean()

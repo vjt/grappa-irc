@@ -306,4 +306,24 @@ defmodule GrappaWeb.Router do
 
     post "/nick", NickController, :create
   end
+
+  # Test-only FORCE read-cursor surface. Compile-gated to dev/test Mix
+  # env — the prod release literally does not contain the route (the
+  # if-block returns nil at compile time so Phoenix's router macro never
+  # registers it), same pattern as the reset-subject surface above.
+  #
+  # #233 made the production `POST .../read-cursor` advance-only. The e2e
+  # cursor/divider/scroll specs must plant a mid-page (backward) cursor
+  # to stage an unread-divider scenario, which `set/4` now correctly
+  # refuses — so this sibling routes through `ReadCursor.force_set/4`
+  # (bypasses the monotonic clamp) via `TestReadCursorController`. Same
+  # `[:api, :authn, :resolve_network]` pipeline as the real route so the
+  # specs keep seeding with the seeded user's own token.
+  if Mix.env() in [:dev, :test] do
+    scope "/networks/:network_id", GrappaWeb do
+      pipe_through [:api, :authn, :resolve_network]
+
+      post "/channels/:channel_id/read-cursor/force", TestReadCursorController, :force
+    end
+  end
 end
