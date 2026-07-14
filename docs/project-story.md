@@ -4272,3 +4272,60 @@ cascade — surface only where the real wires cross, so the integration gate is 
 a formality, it is the part of the suite that thinks of what you didn't. And when
 asked whether a security control keys on the right identity, the answer is a file
 and a line, never a recollection.*
+
+## The ircd we could just ask (#221, libera-solanum)
+
+Three bugs came in from a live Libera.Chat upstream: WHOIS replies rendering
+wrong, on-connect usermodes "not handled", and `/who <mask>` returning nothing at
+all. The tempting move was to read the observed traffic, guess the numeric shapes,
+and patch. But Libera runs **solanum**, and solanum is open source — so every
+question that looked like a design decision ("what does 330 carry? which usermode
+letters? what channel field does a mask WHO get?") had an authoritative answer in a
+git tree I could clone. It was 01:30 and vjt was asleep; the source was the oracle,
+not a picker. Clone, grep `include/numeric.h` and `modules/m_whois.c`, and the
+"design" dissolved into transcription.
+
+Gap by gap the source rewrote the ticket. WHOIS: grappa's numeric router delegated
+only bahamut's codes, so solanum's 330/338/671/276/320 fell through to a param scan
+that misrouted each one to a phantom query window named after the WHOIS target —
+the "mis-parsed" symptom was really a mis-*route*. And solanum, unlike bahamut,
+puts the account name and the real host in *middle* params, not a localized
+trailing string, so the folds needed no template parsing at all. The fix wasn't
+five new clauses; it was one: teach the router that any numeric arriving during an
+in-flight WHOIS belongs to that WHOIS, so next year's solanum numeric lands in the
+card with zero code change. Fix the class, not the instances.
+
+Usermodes was the honest surprise. The ticket said "don't hardcode bahamut's
+letters" — but the parser, landed in #229, already didn't. It walked the `+/-`
+string letter by letter into a sorted set with no allowlist and no ordering
+assumption. The RED test I wrote to reproduce the bug went green on the first run,
+which under TDD is a red flag — except here it was the answer: there was no bug,
+and the test now stands as the proof that a future refactor can't reintroduce one.
+The most disciplined change is sometimes the one you don't make; the discipline is
+proving it, not asserting it.
+
+`/who <mask>` was two breaks wearing one symptom. The mask never left the bouncer —
+the outbound helper gated on "is this a channel?" and a mask isn't. And even if it
+had, the reply wouldn't have correlated: solanum stamps the 352 channel field as
+`"*"` for a mask (m_who.c, line 507, `msptr ? chname : "*"`) while the 315
+terminator echoes the mask itself, so grappa's channel-keyed accumulator filed the
+rows under `"*"` and drained under the mask — a silent miss. Two independent
+grappa-side defects, invisible until you read what the ircd actually sends.
+
+Then the part that turned reading into knowing. Adding a solanum node to CI meant
+the tests would run against the real ircd — but I almost shipped a node that
+compiled and didn't boot. Building the image is not running it. The first boot
+fataled on a missing `libltdl` (solanum dlopen's its modules), the second on
+bahamut-style operator flags solanum splits into a `privset`, the third on an
+envsubst default I set but never exported, so the server description rendered empty.
+Only when the log finally said "Server Ready" and a raw socket got back `001` did
+the node exist. And the WHOIS I fired at it came back in exactly the shape the
+source had promised — the loop closed: the ircd I'd been reading all night was now
+the ircd answering my client.
+
+*Law: when the system you integrate against is open source, its source is the spec —
+read it before you guess, and cite file-and-line, because "the parser should match
+the ircd" is only true with the receipt. A bug reported as mis-parsing is often
+mis-routing; a numeric you don't recognize is a class to handle, not a case to
+enumerate. And a build that succeeds is not a program that runs — the node doesn't
+exist until it says Ready and a socket agrees.*
