@@ -796,6 +796,24 @@ createRoot(() => {
         const phx = joinChannel(userName, net.slug, qw.targetNick, (reply) => {
           applyJoinReplyAndSeed(net.slug, qw.targetNick, reply);
           void refreshScrollback(net.slug, qw.targetNick);
+          // e2e seam: stamp `${slug}/${targetNick}` on window after the
+          // query-window phx.join() ack. The server broadcasts the
+          // operator's OWN outbound `/msg <target>` echo on THIS
+          // (slug, target) topic (see loop header) — so a spec that
+          // opens a DM via /query and immediately composeSends an own
+          // line races this subscribe: the echo fastlanes past the
+          // not-yet-joined socket and the on-join refreshScrollback
+          // already ran, so the own line never renders (marker-target
+          // T2, ~2/4 in suite). Unlike the channels loop, a query
+          // window has NO self-JOIN DOM line a test can latch onto
+          // pre-event — same gap the DM-listener seam
+          // (`__cic_queryWindowReady`'s sibling below) closes for the
+          // own-nick topic. Production never reads the property.
+          if (typeof window !== "undefined") {
+            const w = window as Window & { __cic_queryWindowReady?: Set<string> };
+            if (!w.__cic_queryWindowReady) w.__cic_queryWindowReady = new Set();
+            w.__cic_queryWindowReady.add(`${net.slug}/${qw.targetNick}`);
+          }
         });
         // Query-window handler: ownNick is perNetOwnNick so BUG5b (own-nick
         // presence suppression) works for query topics too. BUG4/BUG5a
@@ -856,10 +874,12 @@ createRoot(() => {
         // peer-arrives-before-cic-subscribed race (silent broadcast
         // drop) that flaked the ux-6-l e2e ~20% in suite. Production
         // never reads the property; same seam shape as
-        // `socket.ts:__cic_dropSocketForTests`. Mirrored in the
-        // channels-loop / query-window / $server loops would be
-        // overkill — only the DM-listener path has no other live
-        // DOM signal a test can latch onto pre-event.
+        // `socket.ts:__cic_dropSocketForTests`. The query-window loop
+        // has the SAME no-pre-event-DOM-signal gap (its outbound-echo
+        // topic, no self-JOIN line) and carries its own
+        // `__cic_queryWindowReady` seam (above); the channels-loop
+        // ($server + real channels) still doesn't need one — the
+        // self-JOIN scrollback line is its live pre-event signal.
         if (typeof window !== "undefined") {
           const w = window as Window & { __cic_dmListenerReady?: Set<string> };
           if (!w.__cic_dmListenerReady) w.__cic_dmListenerReady = new Set();

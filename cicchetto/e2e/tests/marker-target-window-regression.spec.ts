@@ -24,7 +24,13 @@
 // This spec is the only line of defense.
 
 import { expect, test } from "../fixtures/test";
-import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import {
+  composeSend,
+  loginAs,
+  selectChannel,
+  waitForDmListenerReady,
+  waitForQueryWindowReady,
+} from "../fixtures/cicchettoPage";
 import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -64,12 +70,23 @@ test("focused-window send+reply does NOT spawn unread marker", async ({ page }) 
   try {
     // Open the DM by typing /query — the window gains focus.
     await composeSend(page, `/query ${PEER_NICK}`);
+    // Gate the own send on the query-window subscription: the server
+    // broadcasts the own `/msg` echo on the (slug, peer) topic, and a
+    // send before that phx.join ack fastlanes past the socket → the
+    // own line never renders (the ~2/4 suite flake). No self-JOIN line
+    // exists for a DM to selectChannel-await, hence the seam.
+    await waitForQueryWindowReady(page, NETWORK_SLUG, PEER_NICK);
     // Send an own-PRIVMSG in the focused DM.
     await composeSend(page, own);
     // Wait for own-msg to land in the scrollback.
     await expect(
       page.locator('[data-testid="scrollback-line"]', { hasText: own }),
     ).toBeVisible({ timeout: 5_000 });
+    // Gate the inbound peer reply on the DM-listener (own-nick topic)
+    // subscription — peer→own DMs persist channel=ownNick and fan out
+    // there; an early privmsg would fastlane past the unsubscribed
+    // socket and never render.
+    await waitForDmListenerReady(page, NETWORK_SLUG);
     // Peer replies on the same DM topic.
     peer.privmsg(NETWORK_NICK, reply);
     // Wait for the reply to land.
@@ -96,10 +113,14 @@ test("switching to tall window after focused send scrolls target to bottom", asy
     // Set up the bug pre-condition: a DM with own-msg + peer-reply
     // (this is the path that leaks markerRef on the source window).
     await composeSend(page, `/query ${PEER_NICK}`);
+    // Gate own send on the query-window subscription (own echo topic);
+    // gate the peer reply on the DM-listener (own-nick topic) — see T1.
+    await waitForQueryWindowReady(page, NETWORK_SLUG, PEER_NICK);
     await composeSend(page, own);
     await expect(
       page.locator('[data-testid="scrollback-line"]', { hasText: own }),
     ).toBeVisible({ timeout: 5_000 });
+    await waitForDmListenerReady(page, NETWORK_SLUG);
     peer.privmsg(NETWORK_NICK, reply);
     await expect(
       page.locator('[data-testid="scrollback-line"]', { hasText: reply }),

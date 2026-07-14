@@ -384,6 +384,37 @@ export async function waitForDmListenerReady(page: Page, networkSlug: string): P
   );
 }
 
+// Wait until cic's query-window loop has subscribed to a SPECIFIC DM
+// peer's per-channel topic (`phx.join()` ack landed for
+// `grappa:user:{u}/network:{slug}/channel:{targetNick}`). Pure test
+// seam: subscribe.ts stamps `__cic_queryWindowReady` (a Set of
+// `${slug}/${targetNick}`) in the query-window join `onJoinOk`.
+// Production never reads it.
+//
+// Why: the server broadcasts the operator's OWN outbound `/msg
+// <peer>` echo on the (slug, peer) topic. A spec that opens a DM via
+// `/query <peer>` then IMMEDIATELY composeSends an own line races the
+// query-window subscribe — the echo fastlanes past the not-yet-joined
+// socket AND the on-join refreshScrollback already ran, so the own
+// line never renders. Unlike a channel, a query window has NO
+// self-JOIN line to `selectChannel`-await; this seam is the
+// pre-event signal (marker-target-window T1/T2).
+export async function waitForQueryWindowReady(
+  page: Page,
+  networkSlug: string,
+  targetNick: string,
+): Promise<void> {
+  await page.waitForFunction(
+    (key) => {
+      const set = (window as unknown as { __cic_queryWindowReady?: Set<string> })
+        .__cic_queryWindowReady;
+      return set?.has(key) === true;
+    },
+    `${networkSlug}/${targetNick}`,
+    { timeout: 5_000 },
+  );
+}
+
 // Wait until cic's user-topic Channel has joined (Phoenix `phx.join()`
 // `ok` ack landed for `grappa:user:{userName}`). Pure test seam:
 // userTopic.ts stamps `__cic_userTopicReady` (a `Set<userName>`) in the
