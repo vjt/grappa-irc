@@ -398,10 +398,6 @@ defmodule Grappa.UserSettings do
     {:error, cs}
   end
 
-  @spec validate_upload_ttl_seconds(term(), Subject.t()) ::
-          :ok | {:error, Ecto.Changeset.t()}
-  defp validate_upload_ttl_seconds(nil, _), do: :ok
-
   # ---------------------------------------------------------------------------
   # vhost_selection accessors (#228)
   # ---------------------------------------------------------------------------

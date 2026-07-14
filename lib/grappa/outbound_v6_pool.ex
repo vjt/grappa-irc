@@ -64,7 +64,7 @@ defmodule Grappa.OutboundV6Pool do
   """
   @spec apply_pool([String.t() | :inet.ip6_address()]) :: :ok
   def apply_pool(addresses) when is_list(addresses) do
-    pool = addresses |> Enum.flat_map(&to_v6_tuple/1)
+    pool = Enum.flat_map(addresses, &to_v6_tuple/1)
     :persistent_term.put(@key, pool)
     :ok
   end

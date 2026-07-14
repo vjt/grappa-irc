@@ -22,13 +22,29 @@ defmodule Grappa.Repo.Migrations.SeedVhostPoolFromEnv do
   """
   use Ecto.Migration
 
+  require Logger
+
   def up do
     now = DateTime.utc_now() |> DateTime.to_iso8601()
+    addresses = "GRAPPA_OUTBOUND_V6_POOL" |> System.get_env() |> parse_csv()
 
-    "GRAPPA_OUTBOUND_V6_POOL"
-    |> System.get_env()
-    |> parse_csv()
-    |> Enum.each(fn address ->
+    # Log-honesty + deploy-safety: if the env var is unset at migrate time
+    # (e.g. a mis-ordered deploy that dropped it before ecto.migrate ran),
+    # the rotation pool would silently seed EMPTY — outbound rDNS
+    # identities lost until re-curated. Make that loud rather than silent.
+    case System.get_env("GRAPPA_OUTBOUND_V6_POOL") do
+      nil ->
+        Logger.warning(
+          "seed_vhost_pool_from_env: GRAPPA_OUTBOUND_V6_POOL is UNSET — seeding 0 in_pool " <>
+            "vhosts. If this deploy expected a rotation pool, the env var was dropped before " <>
+            "ecto.migrate ran; curate in_pool vhosts via the admin panel."
+        )
+
+      _ ->
+        Logger.info("seed_vhost_pool_from_env: seeding #{length(addresses)} in_pool vhost(s)")
+    end
+
+    Enum.each(addresses, fn address ->
       execute("""
       INSERT OR IGNORE INTO vhosts (address, in_pool, generally_available, inserted_at, updated_at)
       VALUES ('#{address}', 1, 0, '#{now}', '#{now}')
@@ -42,6 +58,12 @@ defmodule Grappa.Repo.Migrations.SeedVhostPoolFromEnv do
   # strict v6 literals, canonicalized to the stored form. Invalid entries
   # are skipped (a data migration must not crash the deploy over a stale
   # env typo — the schema changeset guards the admin write path).
+  #
+  # SQL-injection safe BY CONSTRUCTION: `canonical_v6/1` runs every entry
+  # through :inet.parse_ipv6strict_address + :inet.ntoa, so only canonical
+  # hex/colon literals reach the interpolated string — a quote or any
+  # non-literal byte fails the strict parse and is dropped. Do NOT loosen
+  # the parse without switching to a parameterized insert.
   defp parse_csv(nil), do: []
   defp parse_csv(""), do: []
 

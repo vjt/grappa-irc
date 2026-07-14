@@ -259,8 +259,7 @@ defmodule Grappa.Bootstrap do
   @spec apply_outbound_pool() :: :ok
   defp apply_outbound_pool do
     pool = Grappa.Vhosts.pool_addresses()
-    fixed = MapSet.new(Servers.list_source_addresses())
-    effective = Enum.reject(pool, &MapSet.member?(fixed, &1))
+    effective = Grappa.Vhosts.effective_pool(Servers.list_source_addresses())
     :ok = Grappa.OutboundV6Pool.apply_pool(effective)
 
     excluded = length(pool) - length(effective)

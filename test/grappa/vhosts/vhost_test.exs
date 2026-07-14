@@ -68,6 +68,6 @@ defmodule Grappa.Vhosts.VhostTest do
   end
 
   defp errors_on(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, _opts} -> msg end)
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, _} -> msg end)
   end
 end

@@ -29,7 +29,7 @@ defmodule GrappaWeb.Admin.VhostsController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, OutboundV6Pool, Vhosts, Visitors}
+  alias Grappa.{Accounts, Vhosts, Visitors}
   alias Grappa.Vhosts.AdminWire
   alias GrappaWeb.Validation
 
@@ -39,7 +39,7 @@ defmodule GrappaWeb.Admin.VhostsController do
   from. `200 OK`.
   """
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def index(conn, _params) do
+  def index(conn, _) do
     vhosts = Enum.map(Vhosts.list_vhosts(), &AdminWire.vhost_to_admin_json/1)
     grants = Enum.map(Vhosts.list_grants(), &AdminWire.grant_to_admin_json/1)
 
@@ -105,7 +105,9 @@ defmodule GrappaWeb.Admin.VhostsController do
          {:ok, subject} <- resolve_subject(params),
          pinned = params["pinned"] == true,
          {:ok, grant} <- do_grant(vhost, subject, pinned) do
-      json(conn |> put_status(:created), AdminWire.grant_to_admin_json(grant))
+      conn
+      |> put_status(:created)
+      |> json(AdminWire.grant_to_admin_json(grant))
     end
   end
 
@@ -165,12 +167,9 @@ defmodule GrappaWeb.Admin.VhostsController do
 
   # Re-apply the effective pool (in_pool vhosts minus per-server fixed
   # sources) after an inventory change so a hot edit takes effect on the
-  # next connect. Mirror of Bootstrap.apply_outbound_pool/0's subtraction.
+  # next connect. Single-sourced in Vhosts.resync_pool/1; the fixed
+  # sources come from Networks (which GrappaWeb deps).
   defp resync_pool do
-    fixed = MapSet.new(Grappa.Networks.Servers.list_source_addresses())
-
-    Vhosts.pool_addresses()
-    |> Enum.reject(&MapSet.member?(fixed, &1))
-    |> OutboundV6Pool.apply_pool()
+    Vhosts.resync_pool(Grappa.Networks.Servers.list_source_addresses())
   end
 end

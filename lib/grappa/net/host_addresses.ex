@@ -34,7 +34,7 @@ defmodule Grappa.Net.HostAddresses do
     case :inet.getifaddrs() do
       {:ok, ifaddrs} ->
         ifaddrs
-        |> Enum.flat_map(fn {_ifname, opts} -> Keyword.get_values(opts, :addr) end)
+        |> Enum.flat_map(fn {_, opts} -> Keyword.get_values(opts, :addr) end)
         |> Enum.filter(&egressable?/1)
         |> Enum.map(&to_string(:inet.ntoa(&1)))
         |> Enum.uniq()

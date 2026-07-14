@@ -45,7 +45,7 @@ defmodule Grappa.VhostsTest do
     test "lists all vhosts ordered by address" do
       {:ok, _} = Vhosts.create_vhost(%{address: "192.0.2.2"})
       {:ok, _} = Vhosts.create_vhost(%{address: "192.0.2.1"})
-      addrs = Vhosts.list_vhosts() |> Enum.map(& &1.address)
+      addrs = Enum.map(Vhosts.list_vhosts(), & &1.address)
       assert "192.0.2.1" in addrs
       assert "192.0.2.2" in addrs
     end
@@ -109,7 +109,7 @@ defmodule Grappa.VhostsTest do
       {:ok, _} = Vhosts.pin_vhost(v2, {:user, user.id})
       assert Vhosts.pinned_vhost({:user, user.id}).id == v2.id
       # Only one pin remains.
-      pins = Vhosts.list_grants_for_subject({:user, user.id}) |> Enum.filter(& &1.pinned)
+      pins = Enum.filter(Vhosts.list_grants_for_subject({:user, user.id}), & &1.pinned)
       assert length(pins) == 1
     end
   end
@@ -118,9 +118,9 @@ defmodule Grappa.VhostsTest do
     test "includes generally-available vhosts" do
       user = user_fixture()
       {:ok, ga} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
-      {:ok, _priv} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
+      {:ok, _} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
 
-      allowed = Vhosts.allowed_vhosts({:user, user.id}) |> Enum.map(& &1.id)
+      allowed = Enum.map(Vhosts.allowed_vhosts({:user, user.id}), & &1.id)
       assert ga.id in allowed
     end
 
@@ -129,7 +129,7 @@ defmodule Grappa.VhostsTest do
       {:ok, granted} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
       {:ok, _} = Vhosts.grant_vhost(granted, {:user, user.id}, pinned: false)
 
-      allowed = Vhosts.allowed_vhosts({:user, user.id}) |> Enum.map(& &1.id)
+      allowed = Enum.map(Vhosts.allowed_vhosts({:user, user.id}), & &1.id)
       assert granted.id in allowed
     end
 
@@ -139,7 +139,7 @@ defmodule Grappa.VhostsTest do
       {:ok, priv} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
       {:ok, _} = Vhosts.grant_vhost(priv, {:user, other.id}, pinned: false)
 
-      allowed = Vhosts.allowed_vhosts({:user, user.id}) |> Enum.map(& &1.id)
+      allowed = Enum.map(Vhosts.allowed_vhosts({:user, user.id}), & &1.id)
       refute priv.id in allowed
     end
   end
@@ -232,6 +232,29 @@ defmodule Grappa.VhostsTest do
       pool = Vhosts.pool_addresses()
       refute out.address in pool
       assert Enum.all?(pool, &is_binary/1)
+    end
+  end
+
+  describe "effective_pool/1 — in_pool minus fixed sources (spec §3)" do
+    test "subtracts a per-server fixed source that overlaps the pool" do
+      {:ok, a} = Vhosts.create_vhost(%{address: addr(), in_pool: true})
+      {:ok, b} = Vhosts.create_vhost(%{address: addr(), in_pool: true})
+
+      effective = Vhosts.effective_pool([a.address])
+      refute a.address in effective
+      assert b.address in effective
+    end
+
+    test "a fixed source not in the pool leaves it unchanged" do
+      {:ok, a} = Vhosts.create_vhost(%{address: addr(), in_pool: true})
+
+      effective = Vhosts.effective_pool(["2001:db8:ffff::1"])
+      assert a.address in effective
+    end
+
+    test "an empty fixed-source list is the full in_pool set" do
+      {:ok, a} = Vhosts.create_vhost(%{address: addr(), in_pool: true})
+      assert a.address in Vhosts.effective_pool([])
     end
   end
 end

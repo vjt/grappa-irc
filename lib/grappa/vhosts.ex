@@ -60,7 +60,8 @@ defmodule Grappa.Vhosts do
   @doc "Every vhost row, ordered by address."
   @spec list_vhosts() :: [Vhost.t()]
   def list_vhosts do
-    Repo.all(from(v in Vhost, order_by: [asc: v.address]))
+    query = from(v in Vhost, order_by: [asc: v.address])
+    Repo.all(query)
   end
 
   @doc """
@@ -134,10 +135,9 @@ defmodule Grappa.Vhosts do
           {:ok, Grant.t()} | {:error, :already_exists | Ecto.Changeset.t()}
   def grant_vhost(%Vhost{id: vhost_id}, {_, _} = subject, opts) when is_list(opts) do
     attrs =
-      %{vhost_id: vhost_id, pinned: Keyword.get(opts, :pinned, false)}
-      |> Subject.put_subject_id(subject)
+      Subject.put_subject_id(%{vhost_id: vhost_id, pinned: Keyword.get(opts, :pinned, false)}, subject)
 
-    case %Grant{} |> Grant.changeset(attrs) |> Repo.insert() do
+    case Repo.insert(Grant.changeset(%Grant{}, attrs)) do
       {:ok, grant} -> {:ok, grant}
       {:error, %Ecto.Changeset{errors: errors} = cs} -> classify_grant_error(errors, cs)
     end
@@ -182,11 +182,8 @@ defmodule Grappa.Vhosts do
   end
 
   defp grant_row(vhost_id, subject, pinned) do
-    attrs =
-      %{vhost_id: vhost_id, pinned: pinned}
-      |> Subject.put_subject_id(subject)
-
-    %Grant{} |> Grant.changeset(attrs) |> Repo.insert()
+    attrs = Subject.put_subject_id(%{vhost_id: vhost_id, pinned: pinned}, subject)
+    Repo.insert(Grant.changeset(%Grant{}, attrs))
   end
 
   @doc "Every grant for `subject` (both pinned + curated-availability)."
@@ -198,7 +195,8 @@ defmodule Grappa.Vhosts do
   @doc "Every grant in the system, newest first. Admin index surface."
   @spec list_grants() :: [Grant.t()]
   def list_grants do
-    Repo.all(from(g in Grant, order_by: [desc: g.id]))
+    query = from(g in Grant, order_by: [desc: g.id])
+    Repo.all(query)
   end
 
   @doc """
@@ -228,13 +226,14 @@ defmodule Grappa.Vhosts do
   end
 
   defp get_grant(vhost_id, subject) do
-    from(g in Grant, where: g.vhost_id == ^vhost_id)
+    Grant
+    |> where([g], g.vhost_id == ^vhost_id)
     |> Subject.subject_where(subject)
     |> Repo.one()
   end
 
   defp grants_for_subject_query(subject) do
-    Grant |> Subject.subject_where(subject)
+    Subject.subject_where(Grant, subject)
   end
 
   @vhost_grants_user_index "vhost_grants_vhost_id_user_id_index"
@@ -284,7 +283,7 @@ defmodule Grappa.Vhosts do
   """
   @spec get_selection(Subject.t()) :: [String.t()]
   def get_selection({_, _} = subject) do
-    allowed = allowed_vhosts(subject) |> MapSet.new(& &1.address)
+    allowed = MapSet.new(allowed_vhosts(subject), & &1.address)
 
     subject
     |> raw_selection()
@@ -300,7 +299,7 @@ defmodule Grappa.Vhosts do
   @spec set_selection(Subject.t(), [String.t()]) ::
           {:ok, [String.t()]} | {:error, :forbidden_vhost | Ecto.Changeset.t()}
   def set_selection({_, _} = subject, addresses) when is_list(addresses) do
-    allowed = allowed_vhosts(subject) |> MapSet.new(& &1.address)
+    allowed = MapSet.new(allowed_vhosts(subject), & &1.address)
     requested = Enum.uniq(addresses)
 
     if Enum.all?(requested, &MapSet.member?(allowed, &1)) do
@@ -368,6 +367,37 @@ defmodule Grappa.Vhosts do
   """
   @spec pool_addresses() :: [String.t()]
   def pool_addresses do
-    Repo.all(from(v in Vhost, where: v.in_pool == true, select: v.address))
+    query = from(v in Vhost, where: v.in_pool == true, select: v.address)
+    Repo.all(query)
+  end
+
+  @doc """
+  The EFFECTIVE rotation pool = `in_pool` vhosts MINUS `fixed_sources`
+  (the per-server `network_servers.source_address` set). Spec §3 safety
+  net: an auto-allocated session must never `pick/0` a dedicated source.
+  Single source of truth for the subtraction — Bootstrap + the admin
+  controllers all install `OutboundV6Pool.apply_pool(effective_pool(...))`.
+
+  `fixed_sources` is passed IN (not read here) so `Vhosts` stays off a
+  `Grappa.Networks` dep — the caller (which already deps Networks) reads
+  `Servers.list_source_addresses/0`. Set-difference on canonical strings
+  (both stores canonicalize via `Grappa.Net.IpLiteral`).
+  """
+  @spec effective_pool([String.t()]) :: [String.t()]
+  def effective_pool(fixed_sources) when is_list(fixed_sources) do
+    fixed = MapSet.new(fixed_sources)
+    Enum.reject(pool_addresses(), &MapSet.member?(fixed, &1))
+  end
+
+  @doc """
+  Installs the effective rotation pool into `Grappa.OutboundV6Pool`
+  (`effective_pool/1` → `apply_pool/1`). Call after any inventory OR
+  per-server-source change so a hot edit takes effect on the next
+  connect without a restart. `fixed_sources` is passed IN by the caller
+  (which deps `Grappa.Networks`) — keeps `Vhosts` off a Networks dep.
+  """
+  @spec resync_pool([String.t()]) :: :ok
+  def resync_pool(fixed_sources) when is_list(fixed_sources) do
+    Grappa.OutboundV6Pool.apply_pool(effective_pool(fixed_sources))
   end
 end

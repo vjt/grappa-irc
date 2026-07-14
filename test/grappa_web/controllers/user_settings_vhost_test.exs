@@ -29,7 +29,7 @@ defmodule GrappaWeb.UserSettingsVhostTest do
       {:ok, ga} = Vhosts.create_vhost(%{address: addr(), generally_available: true, in_pool: true})
       {:ok, granted} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
       {:ok, _} = Vhosts.grant_vhost(granted, {:user, user.id}, pinned: false)
-      {:ok, _hidden} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
+      {:ok, _} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
 
       conn = conn |> put_bearer(session.id) |> get("/me/settings/vhost")
       body = json_response(conn, 200)
@@ -62,7 +62,7 @@ defmodule GrappaWeb.UserSettingsVhostTest do
 
   describe "PUT /me/settings/vhost" do
     test "persists an allowed selection", %{conn: conn} do
-      {_user, session} = user_and_session()
+      {_, session} = user_and_session()
       {:ok, ga} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
 
       conn = conn |> put_bearer(session.id) |> put("/me/settings/vhost", %{selection: [ga.address]})
@@ -71,7 +71,7 @@ defmodule GrappaWeb.UserSettingsVhostTest do
     end
 
     test "rejects a selection outside the allowed set with 403", %{conn: conn} do
-      {_user, session} = user_and_session()
+      {_, session} = user_and_session()
       {:ok, forbidden} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
 
       conn = conn |> put_bearer(session.id) |> put("/me/settings/vhost", %{selection: [forbidden.address]})
@@ -79,7 +79,7 @@ defmodule GrappaWeb.UserSettingsVhostTest do
     end
 
     test "rejects a non-list selection with 400", %{conn: conn} do
-      {_user, session} = user_and_session()
+      {_, session} = user_and_session()
       conn = conn |> put_bearer(session.id) |> put("/me/settings/vhost", %{selection: "nope"})
       assert json_response(conn, 400)["error"] == "bad_request"
     end

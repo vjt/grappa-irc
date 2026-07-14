@@ -29,7 +29,7 @@ defmodule GrappaWeb.Admin.ServersController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{AdminEvents, Admission, Networks}
+  alias Grappa.{AdminEvents, Admission, Networks, Vhosts}
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias Grappa.Networks.Servers
   alias Grappa.Networks.Servers.AdminWire, as: ServerWire
@@ -68,6 +68,7 @@ defmodule GrappaWeb.Admin.ServersController do
          {:ok, attrs} <- server_attrs(params, ["host", "port", "tls", "priority", "enabled"]),
          {:ok, server} <- Servers.add_server(net, attrs) do
       :ok = emit_server_event(:added, net, server, conn)
+      :ok = resync_outbound_pool()
 
       conn
       |> put_status(:created)
@@ -90,6 +91,7 @@ defmodule GrappaWeb.Admin.ServersController do
          {:ok, attrs} <- server_attrs(params, ["host", "port", "tls", "priority", "enabled"]),
          {:ok, updated} <- Servers.update_server(server, attrs) do
       :ok = emit_server_event(:updated, net, updated, conn)
+      :ok = resync_outbound_pool()
       json(conn, ServerWire.server_to_admin_json(updated))
     end
   end
@@ -108,6 +110,7 @@ defmodule GrappaWeb.Admin.ServersController do
          {:ok, server} <- Servers.get_server(net, parsed_sid),
          :ok <- Servers.delete_server(server) do
       :ok = emit_server_removed(net, server, conn)
+      :ok = resync_outbound_pool()
       counts = Admission.live_counts_for_network(parsed_nid)
       json(conn, %{network_session_count: counts.visitors + counts.users})
     end
@@ -189,5 +192,15 @@ defmodule GrappaWeb.Admin.ServersController do
     else
       {:error, :bad_request}
     end
+  end
+
+  # #228 — a server's source_address is subtracted from the outbound
+  # rotation pool (spec §3: no auto-allocated session may pick a
+  # dedicated source). Adding/editing/removing a server can change that
+  # subtraction, so re-install the effective pool after the mutation —
+  # otherwise a newly-added --source that overlaps an in_pool vhost stays
+  # pickable until the next reboot / vhost-inventory edit.
+  defp resync_outbound_pool do
+    Vhosts.resync_pool(Servers.list_source_addresses())
   end
 end
