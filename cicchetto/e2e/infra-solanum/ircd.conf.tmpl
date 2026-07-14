@@ -1,0 +1,90 @@
+/*
+ * #221 — solanum ircd conf for the grappa e2e testnet (azzurra2 upstream).
+ *
+ * A STANDALONE, plaintext, single-node solanum. It is what Libera.Chat
+ * runs, so integration tests exercise grappa's parser against the real
+ * WHOIS numeric set / usermode table / WHO-mask behaviour, not a bahamut
+ * mock. grappa dials it `--no-tls`, so no TLS listener / cert is wired
+ * (mirror of the standalone bahamut-test2 it replaces).
+ *
+ * envsubst-expanded by entrypoint.sh — only ${SERVER_NAME}, ${SERVER_SID},
+ * ${SERVER_DESC}, ${OPER_NICK}, ${OPER_PASS} are substituted; every other
+ * `$` (there are none of note) is left alone.
+ *
+ * Limits are deliberately permissive: the whole Playwright suite drives
+ * many connections through ONE source IP (runner → grappa → this node),
+ * so number_per_ip / max_number are raised far above solanum's stock
+ * defaults (number_per_ip=10, throttle_count=4) to avoid throttling /
+ * "too many connections from your host" flaking unrelated specs — the
+ * same headroom the bahamut node and the azzurra visitor caps use.
+ */
+
+serverinfo {
+	name = "${SERVER_NAME}";
+	sid = "${SERVER_SID}";
+	description = "${SERVER_DESC}";
+	network_name = "azzurra2";
+};
+
+admin {
+	name = "grappa e2e";
+	description = "grappa e2e solanum node";
+	email = "root@localhost";
+};
+
+class "users" {
+	ping_time = 5 minutes;
+	number_per_ident = 400;
+	number_per_ip = 400;
+	number_per_ip_global = 800;
+	cidr_ipv4_bitlen = 24;
+	cidr_ipv6_bitlen = 64;
+	number_per_cidr = 800;
+	max_number = 2000;
+	sendq = 400 kbytes;
+};
+
+listen {
+	host = "0.0.0.0";
+	port = 6667;
+};
+
+/* Permissive auth: any host, no password, high per-ip cap. exceed_limit
+ * lets the single-source-IP runner blow past the class cap defensively. */
+auth {
+	user = "*@*";
+	class = "users";
+	flags = exceed_limit, flood_exempt;
+};
+
+/* A shared oper for parity with the bahamut node's O-lines (some specs
+ * /oper to exercise oper-only surfaces). ~encrypted = plaintext password
+ * (throwaway testnet). */
+operator "${OPER_NICK}" {
+	user = "*@*";
+	password = "${OPER_PASS}";
+	flags = kill, remote, kline, unkline, nick_changes,
+		die, rehash, admin, xline, operwall, oper_spy, ~encrypted;
+};
+
+general {
+	default_floodcount = 100;
+	throttle_count = 100;
+	throttle_duration = 1;
+	anti_nick_flood = no;
+	client_flood_max_lines = 100;
+	default_ident_timeout = 5;
+	disable_auth = yes;
+};
+
+channel {
+	use_invex = yes;
+	use_except = yes;
+	use_knock = yes;
+	knock_delay = 1 minute;
+	max_chans_per_user = 50;
+	default_split_user_count = 0;
+	default_split_server_count = 0;
+	no_create_on_split = no;
+	no_join_on_split = no;
+};

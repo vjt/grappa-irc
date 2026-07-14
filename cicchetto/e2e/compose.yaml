@@ -70,61 +70,50 @@ services:
   leaf-v6:
     ports: !override []
 
-  # #211 phase 7 — a SECOND, SEPARATE IRC network: a standalone bahamut
+  # #211 phase 7 / #221 — a SECOND, SEPARATE IRC network: a standalone
   # ircd with its OWN nick namespace (NOT linked to the azzurra hub). This
   # is what makes "one visitor on TWO networks" a REAL two-network test
   # rather than the same leaf twice: azzurra points at `bahamut-test` (the
-  # azzurra hub's leaf), azzurra2 points HERE at `bahamut-test2`. Because
-  # the two ircds share no S2S link, they have INDEPENDENT nick namespaces
-  # — the SAME nick can register live on BOTH simultaneously with no 433,
-  # so the shared-leaf autokill trap (nick collision → 433 respawn flood →
-  # bahamut bans the source IP network-wide) never fires.
+  # azzurra hub's leaf), azzurra2 points HERE. Because the two ircds share
+  # no S2S link, they have INDEPENDENT nick namespaces — the SAME nick can
+  # register live on BOTH simultaneously with no 433, so the shared-leaf
+  # autokill trap (nick collision → 433 respawn flood → autokill) never
+  # fires.
   #
-  # Role `hub` (the only role that opens a client listener without needing
-  # an upstream to dial). Its peer C/N lines point at IPs that don't exist
-  # on this bridge, and the S2S classes have connfreq 0 (no autoconnect),
-  # so it boots isolated and just serves clients on 6667. Reuses the
-  # submodule's bahamut image (built by the `include`d infra compose) via
-  # the same build context; reuses hub.pem + the shared cloak key (cert
-  # hostname is never verified — grappa dials it `--no-tls`).
-  bahamut-test2:
+  # #221 — this node runs SOLANUM (github.com/solanum-ircd/solanum), the
+  # ircd Libera.Chat runs, IN PLACE of the second bahamut. It gives the
+  # integration suite a real Libera-shaped upstream so grappa's parser is
+  # exercised against the actual WHOIS numeric set, on-connect usermodes,
+  # and WHO-mask round-trip that #221 fixes — not a bahamut mock. It is
+  # standalone (no S2S), plaintext-only (grappa dials `--no-tls`), and
+  # keeps the `bahamut-test2` network alias so the azzurra2 seed +
+  # multi-network specs resolve the same hostname (zero blast radius on
+  # the #211 phase-6/7 specs — only the ircd behind the name changed).
+  solanum-test2:
     build:
-      context: ./infra/bahamut
+      context: ./infra-solanum
       args:
-        BAHAMUT_REF: ${BAHAMUT_REF:-refs/pull/26/head}
-    container_name: azzurra2-standalone
-    hostname: hub2.azzurra2.chat
-    depends_on:
-      cert-init:
-        condition: service_completed_successfully
+        SOLANUM_REF: ${SOLANUM_REF:-main}
+    container_name: azzurra2-solanum
+    hostname: solanum2.azzurra2.chat
     environment:
-      SERVER_ROLE: hub
-      SERVER_NAME: hub2.azzurra2.chat
-      SERVER_DESC: "Grappa e2e second network (standalone)"
-      SERVICES_PASSWORD: ${SERVICES_PASSWORD:-testlink}
-      LEAF_PASSWORD: ${LEAF_PASSWORD:-testleaf}
+      SERVER_NAME: solanum2.azzurra2.chat
+      SERVER_SID: "2SO"
+      SERVER_DESC: "Grappa e2e second network (solanum, standalone)"
       OPER_NICK: ${OPER_NICK:-testoper}
       OPER_PASS: ${OPER_PASS:-testoperpass}
-      LISTEN_PORT: 6667
-      LISTEN_SSL_PORT: 6697
-      LINK_PORT_V4: 7000
-      LINK_PORT_V6: 7001
-      # Peer IPs that never appear on the grappa-e2e bridge → no S2S link
-      # ever forms (class 50 connfreq is 0 anyway). Standalone by design.
-      SERVICES_IP: 10.255.255.1
-      LEAF4_IP: 10.255.255.2
-      LEAF6_IP: 10.255.255.3
-    volumes:
-      - ./infra/certs:/etc/bahamut/certs:ro
     networks:
       grappa-e2e:
-        aliases: [bahamut-test2]
+        # Keep the `bahamut-test2` alias (#221): the azzurra2 seed + the
+        # #211 multi-network specs point at this name. Only the ircd behind
+        # it changed (bahamut → solanum), not the network topology.
+        aliases: [solanum-test2, bahamut-test2]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6667'"]
       interval: 5s
       timeout: 3s
-      start_period: 10s
-      retries: 30
+      start_period: 15s
+      retries: 40
 
   # One-shot seeder. Boots the schema (ecto.migrate) and writes the
   # baseline (one user `vjt` + one bahamut-test bind w/ autojoin
@@ -262,7 +251,10 @@ services:
         # standalone ircd with its OWN nick namespace (#211 phase 7), so a
         # visitor can hold a LIVE session on azzurra AND azzurra2
         # simultaneously under the same or different nick with NO 433 /
-        # no shared-leaf autokill. azzurra3 stays on the shared
+        # no shared-leaf autokill. #221: that ircd is now SOLANUM (the
+        # `bahamut-test2` alias is retained on the solanum-test2 service, so
+        # this add_server line is unchanged — only the ircd behind the name
+        # switched from bahamut to solanum). azzurra3 stays on the shared
         # `bahamut-test` leaf (the phase-6 matrix uses it for accretion
         # only, never live-simultaneous with azzurra). Both are
         # visitor_enabled but NOT visitor_autoconnect BY DEFAULT: making
@@ -294,9 +286,10 @@ services:
     depends_on:
       hub:
         condition: service_healthy
-      # #211 phase 7 — the second standalone ircd must be up before
-      # Bootstrap spawns the azzurra2 credential's upstream session.
-      bahamut-test2:
+      # #211 phase 7 / #221 — the second standalone ircd (now solanum) must
+      # be up before Bootstrap spawns the azzurra2 credential's upstream
+      # session.
+      solanum-test2:
         condition: service_healthy
       # NOTE: deliberately NO `depends_on grappa-e2e-seeder
       # service_completed_successfully` here. With the dep declared,
