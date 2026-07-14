@@ -111,6 +111,20 @@ test("desktop — sidebar archive rows inherit the canonical monospace style", a
   // serif because the ul lacked the gating class.
   const archivedBtn = archiveSection.locator("button.sidebar-window-btn", { hasText: CHANNEL });
   await expect(archivedBtn).toHaveCount(1, { timeout: 5_000 });
-  const fontFamily = await archivedBtn.evaluate((el) => getComputedStyle(el).fontFamily);
-  expect(fontFamily.toLowerCase()).toMatch(/mono/);
+  // The sidebar archive list re-renders on any window-state WS event
+  // (an intervening spec's JOIN/PART broadcast), replacing the button
+  // node. A one-shot `.evaluate(getComputedStyle)` can grab the node
+  // mid-swap — after it detaches, `getComputedStyle` on a disconnected
+  // element resolves `fontFamily` to "" (the flake). Poll + re-query
+  // each tick so a transient detach is retried; the contract asserted
+  // (monospace stack) is unchanged.
+  await expect
+    .poll(
+      async () =>
+        (
+          await archivedBtn.evaluate((el) => getComputedStyle(el).fontFamily).catch(() => "")
+        ).toLowerCase(),
+      { timeout: 5_000, message: "archive row font-family should resolve to monospace" },
+    )
+    .toMatch(/mono/);
 });
