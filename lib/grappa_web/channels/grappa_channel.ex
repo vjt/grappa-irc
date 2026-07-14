@@ -711,7 +711,11 @@ defmodule GrappaWeb.GrappaChannel do
       when is_integer(network_id) and is_binary(channel) do
     dispatch_subject_verb(
       socket,
-      fn -> validate_args(channel: channel) end,
+      # #221 — WHO accepts a channel OR a host/nick mask (RFC 2812 §3.6.1),
+      # so the arg is validated as a single wire token (:who_target), not a
+      # channel. The map key stays `"channel"` for wire back-compat with cic
+      # (pushWho still sends `{network_id, channel}`); the value may be a mask.
+      fn -> validate_args(who_target: channel) end,
       fn subject -> Session.send_who(subject, network_id, channel) end
     )
   end
@@ -1249,6 +1253,7 @@ defmodule GrappaWeb.GrappaChannel do
            | {:nick, String.t()}
            | {:nicks, [String.t()]}
            | {:mask, String.t()}
+           | {:who_target, String.t()}
            | {:line, String.t()}
            | {:oper_token, String.t()}
            | {:server, String.t()}
@@ -1281,6 +1286,17 @@ defmodule GrappaWeb.GrappaChannel do
 
   defp validate_args([{:mask, value} | rest]) do
     if Identifier.safe_line_token?(value) and value != "",
+      do: validate_args(rest),
+      else: {:error, :invalid_mask}
+  end
+
+  # #221 — /who target: a channel OR a host/nick mask (RFC 2812 §3.6.1).
+  # Gated as a single wire token (`safe_oper_token?/1`: non-empty, no
+  # whitespace/CRLF/NUL) to mirror `Client.send_who/2` — a space would
+  # splice extra WHO slots, CRLF would inject a command. `:invalid_mask` is
+  # the surfaced error class (a WHO target is a mask-or-channel).
+  defp validate_args([{:who_target, value} | rest]) do
+    if Identifier.safe_oper_token?(value),
       do: validate_args(rest),
       else: {:error, :invalid_mask}
   end

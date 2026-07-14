@@ -1174,27 +1174,27 @@ defmodule Grappa.Session do
   end
 
   @doc """
-  Sends `WHO <channel>` upstream and primes the per-target accumulator
-  in `state.who_pending` so EventRouter folds 352 RPL_WHOREPLY rows
-  into a bundle. The bundle is persisted as N+1 `:notice` scrollback
-  rows when 315 RPL_ENDOFWHO arrives — one row per WHO reply plus one
-  terminator row, routed to the WHO target channel if joined,
-  otherwise the synthetic `$server` window.
+  Sends `WHO <target>` upstream and primes the per-target accumulator in
+  `state.who_pending` so EventRouter folds 352 RPL_WHOREPLY rows into a
+  bundle, drained into ONE ephemeral `{:who_reply, target, users}` event
+  when 315 RPL_ENDOFWHO arrives. `<target>` is a channel OR a host/nick
+  mask (#221, RFC 2812 §3.6.1).
 
-  Per CP22 cluster B (channel-client-polish #14): rows are persisted
-  in scrollback (NOT ephemeral) and replay on next page load. Wire
-  payload carries structured `meta.who = {nick, modes, user, host,
-  server, hops, realname}` so cic renders irssi-shape tabular without
-  re-parsing IRC.
+  A channel target is case-folded via `canonical_channel/1` (so `#Chan` and
+  `#chan` share one accumulator key, matching the channel-fold invariant).
+  A mask is NOT a channel, so `canonical_channel/1` is a no-op on it and the
+  raw mask is the accumulator key — the 315 terminator echoes the same mask,
+  and EventRouter's who_fold correlates mask-reply rows (whose 352 channel
+  field solanum sets to `"*"`) via its single-in-flight-WHO fallback.
 
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
-  if the channel syntax is rejected by `Grappa.IRC.Client.send_who/2`.
+  if the target syntax is rejected by `Grappa.IRC.Client.send_who/2`.
   """
   @spec send_who(subject(), integer(), String.t()) ::
           :ok | {:error, :no_session | :invalid_line | send_transport_error()}
-  def send_who(subject, network_id, channel)
-      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    call_session(subject, network_id, {:send_who, Identifier.canonical_channel(channel)})
+  def send_who(subject, network_id, target)
+      when is_subject(subject) and is_integer(network_id) and is_binary(target) do
+    call_session(subject, network_id, {:send_who, Identifier.canonical_channel(target)})
   end
 
   @doc """

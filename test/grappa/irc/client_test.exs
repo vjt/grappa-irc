@@ -391,6 +391,48 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_names(client, "no-prefix")
     end
 
+    # #221 — /who <mask>. WHO accepts a channel OR a host/nick mask (RFC 2812
+    # §3.6.1). Pre-#221 send_who gated on valid_channel?, so a mask was
+    # rejected outbound and never reached upstream — the first break in the
+    # "total silence" chain. The gate is now safe_oper_token? (single wire
+    # token, no whitespace/CRLF/NUL) so a mask forwards but injection can't.
+    test "send_who/2 emits WHO #chan framing (channel target)" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_who(client, "#sniffo")
+
+      assert {:ok, "WHO #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "WHO #sniffo\r\n"), 1_000)
+    end
+
+    test "send_who/2 emits WHO framing for a host mask (#221)" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_who(client, "*!*@*.libera.chat")
+
+      assert {:ok, "WHO *!*@*.libera.chat\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "WHO *!*@*.libera.chat\r\n"), 1_000)
+    end
+
+    test "send_who/2 rejects a whitespace-splicing mask with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      # A space would splice extra WHO wire slots; CRLF would inject a
+      # follow-up command. Both rejected by the single-token gate.
+      assert {:error, :invalid_line} = Client.send_who(client, "*!*@x y")
+      assert {:error, :invalid_line} = Client.send_who(client, "#chan\r\nQUIT")
+    end
+
+    test "send_who/2 rejects an empty target with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_who(client, "")
+    end
+
     test "send_topic_clear/2 emits TOPIC #chan : framing (empty trailing param)" do
       {server, port} = start_server()
       client = start_client(port)

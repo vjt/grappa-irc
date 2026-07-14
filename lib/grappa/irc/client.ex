@@ -623,21 +623,28 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
-  Sends `WHO <channel>\\r\\n`. Validates channel syntax with
-  `{:error, :invalid_line}` on rejection. The single-target form is
-  the ergonomic call shape — RFC 2812 §3.6.1 allows a server-side
-  mask + an `o` flag, both out of MVP scope.
+  Sends `WHO <target>\\r\\n` where `<target>` is a channel OR a host/nick
+  mask (RFC 2812 §3.6.1). Returns `{:error, :invalid_line}` on rejection.
+
+  #221: the gate is `safe_oper_token?/1` (a single wire token — non-empty,
+  no whitespace/CRLF/NUL), NOT `valid_channel?/1`. A masked `/who *!*@host`
+  is a legitimate query; the pre-#221 channel-only gate rejected it outbound
+  so it never reached upstream — the first break in the `/who <mask>` "total
+  silence" chain. The single-token gate still blocks a space (which would
+  splice extra WHO wire slots) and CRLF (command injection).
 
   Numerics 352 RPL_WHOREPLY (one per matching user) + 315 RPL_ENDOFWHO
   (terminator) reply with the WHO list. EventRouter folds each 352 into
   `state.who_pending` (also upserting `userhost_cache`) and, on 315, drains
   the accumulator into ONE ephemeral `{:who_reply, target, users}` effect
   (#169) — broadcast on the user topic for cic's WhoModal, never persisted.
+  For a mask WHO, solanum sets the 352 channel field to `"*"`; EventRouter's
+  who_fold correlates via the single-in-flight-WHO fallback.
   """
   @spec send_who(pid(), String.t()) :: send_result()
-  def send_who(client, channel) do
-    if Identifier.valid_channel?(channel),
-      do: send_line(client, "WHO #{channel}\r\n"),
+  def send_who(client, target) do
+    if Identifier.safe_oper_token?(target),
+      do: send_line(client, "WHO #{target}\r\n"),
       else: reject_invalid_line(:who)
   end
 

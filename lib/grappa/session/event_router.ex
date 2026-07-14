@@ -2845,27 +2845,42 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # CP22 cluster B — fold one 352 RPL_WHOREPLY row into the per-target WHO
-  # accumulator at `state.who_pending[channel_lower].replies`. Skips folding
-  # when no entry exists (the operator never issued a /who for this channel
-  # — an unsolicited 352 is not actionable for the bundle, though the
-  # userhost_cache update in the 352 route still fires upstream of this).
-  # Prepends to :replies for O(1) fold — the 315 RPL_ENDOFWHO route reverses
-  # before emitting so consumers see server wire order (ops first, voices,
-  # then plain users).
+  # CP22 cluster B / #221 — fold one 352 RPL_WHOREPLY row into the WHO
+  # accumulator. Correlation strategy (in priority order):
+  #
+  #   1. Exact channel-key match: the per-row channel (downcased) IS a
+  #      pending WHO key → fold there. This is the channel-WHO path and
+  #      keeps concurrent channel WHOs correctly separated by key.
+  #   2. Single-in-flight fallback (#221): the per-row channel does NOT
+  #      match any key AND exactly one WHO is pending → fold into it. This
+  #      is the MASK-WHO path: solanum sets the 352 channel field to "*"
+  #      for a mask/global WHO (modules/m_who.c:507), which never matches
+  #      the mask key the WHO was primed under. WHO is mailbox-serialized
+  #      and cic shows one modal at a time, so "exactly one pending" is the
+  #      real invariant; folding there restores correlation the "*" broke.
+  #   3. Otherwise → no fold (unsolicited 352, or ambiguous "*" row with
+  #      multiple concurrent WHOs — drop rather than guess). The
+  #      userhost_cache upsert in the 352 route still fired upstream.
   @spec who_fold(state(), String.t(), map()) :: state()
   defp who_fold(state, channel, reply) when is_binary(channel) and is_map(reply) do
     pending = Map.get(state, :who_pending, %{})
     chan_key = String.downcase(channel)
 
-    case Map.fetch(pending, chan_key) do
-      :error ->
-        state
+    fold_key =
+      cond do
+        Map.has_key?(pending, chan_key) -> chan_key
+        map_size(pending) == 1 -> pending |> Map.keys() |> hd()
+        true -> nil
+      end
 
+    case fold_key && Map.fetch(pending, fold_key) do
       {:ok, accum} ->
         replies = Map.get(accum, :replies, [])
         merged = Map.put(accum, :replies, [reply | replies])
-        %{state | who_pending: Map.put(pending, chan_key, merged)}
+        %{state | who_pending: Map.put(pending, fold_key, merged)}
+
+      _ ->
+        state
     end
   end
 

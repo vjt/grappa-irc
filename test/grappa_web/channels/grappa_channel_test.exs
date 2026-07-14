@@ -1605,6 +1605,40 @@ defmodule GrappaWeb.GrappaChannelTest do
       {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "WHO #snap\r\n"), 1_000)
     end
 
+    # #221 — /who <mask> bridge: a host/nick mask is a legitimate WHO target
+    # (RFC 2812 §3.6.1), NOT just a channel. Pre-#221 the channel handler
+    # validated `:channel`, so a mask bounced with invalid_channel and never
+    # reached upstream. Now validated as `:who_target` (single wire token).
+    test "who: sends WHO <mask> upstream for a host mask", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "who", %{
+          "network_id" => network.id,
+          "channel" => "*!*@*.libera.chat"
+        })
+
+      assert_reply(ref, :ok)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(irc_server, &(&1 == "WHO *!*@*.libera.chat\r\n"), 1_000)
+    end
+
+    test "who: rejects a whitespace-splicing target with invalid_mask", %{
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "who", %{
+          "network_id" => network.id,
+          "channel" => "*!*@x y"
+        })
+
+      assert_reply(ref, :error, %{error: "invalid_mask"})
+    end
+
     # CP22 cluster B (channel-client-polish #14) — /names bridge: cic
     # pushes `"names"` with %{network_id, channel}; channel relays to
     # Session.send_names/3, which primes names_pending + emits NAMES
@@ -2100,7 +2134,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         assert_reply(ref, :error, %{error: "no_session"})
       end
 
-      test "visitor socket: #{@verb} with malformed channel returns invalid_channel" do
+      test "visitor socket: #{@verb} with malformed channel returns a validation error" do
         {irc_server, port} = start_irc_server()
         {visitor, network} = setup_visitor_and_network_with_session(port)
         :ok = await_handshake(irc_server)
@@ -2121,7 +2155,12 @@ defmodule GrappaWeb.GrappaChannelTest do
             "channel" => "#bad\r\nQUIT"
           })
 
-        assert_reply(ref, :error, %{error: "invalid_channel"})
+        # #221 — WHO validates its target as a channel-OR-mask single wire
+        # token (`:who_target` → `:invalid_mask`); names/banlist stay
+        # channel-only (`:invalid_channel`). The CRLF is rejected either way
+        # — the point is the malformed target never reaches upstream.
+        expected_error = if @verb == "who", do: "invalid_mask", else: "invalid_channel"
+        assert_reply(ref, :error, %{error: ^expected_error})
       end
     end
   end

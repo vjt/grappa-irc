@@ -6650,6 +6650,69 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    # #221 — /who <mask> END-TO-END. The bug: a masked WHO produced TOTAL
+    # SILENCE (no 352, no 315, nothing in cic). Two independent breaks —
+    # (1) the outbound WHO was channel-gated so the mask never left, and
+    # (2) solanum sets the 352 channel field to "*" for a mask (m_who.c:507)
+    # while 315 echoes the mask, so the channel-keyed fold couldn't
+    # correlate. This drives the full round-trip through the real
+    # Session.Server + IRCServer fake and asserts the who_reply broadcast.
+    test "/who <mask> forwards upstream and broadcasts the who_reply (352 channel='*')",
+         %{server: server, user: user, network: network, pid: pid} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      mask = "*!*@*.libera.chat"
+
+      assert :ok = Session.send_who({:user, user.id}, network.id, mask)
+
+      # Break (1): the mask actually leaves the bouncer.
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "WHO #{mask}\r\n"), 1_000)
+
+      # solanum mask reply: 352 channel field is "*", 315 echoes the mask.
+      IRCServer.feed(
+        server,
+        ":irc.libera.chat 352 grappa-test * au ah irc.libera.chat alice H :0 Alice\r\n"
+      )
+
+      IRCServer.feed(server, ":irc.libera.chat 315 grappa-test #{mask} :End of /WHO list\r\n")
+
+      # Break (2): the "*"-channel row still correlates to the mask bundle.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :who_reply, target: ^mask, users: users}
+                     },
+                     1_500
+
+      assert [%{nick: "alice", channel: "*"}] = users
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #221 — a mask matching nobody must STILL surface an empty modal (315
+    # always arrives per solanum m_who.c:294), not silence. This is the
+    # difference between "no results" and the reported "no feedback at all".
+    test "/who <mask> with zero matches still broadcasts an empty who_reply",
+         %{server: server, user: user, network: network, pid: pid} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      mask = "*!*@nonexistent.example"
+
+      assert :ok = Session.send_who({:user, user.id}, network.id, mask)
+      _ = IRCServer.wait_for_line(server, &(&1 == "WHO #{mask}\r\n"), 1_000)
+
+      # No 352 — just the terminator (zero-match case).
+      IRCServer.feed(server, ":irc.libera.chat 315 grappa-test #{mask} :End of /WHO list\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :who_reply, target: ^mask, users: []}
+                     },
+                     1_500
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   # ---------------------------------------------------------------------------

@@ -3693,6 +3693,99 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  # #221 — /who <mask> correlation. solanum emits 352 RPL_WHOREPLY with the
+  # channel field set to "*" for a mask/global WHO (modules/m_who.c:507 —
+  # `msptr ? chname : "*"`), while 315 RPL_ENDOFWHO echoes the ORIGINAL mask
+  # argument (include/messages.h NUMERIC_STR_315). Pre-#221 who_fold keyed
+  # the accumulator on the per-row channel, so a mask WHO folded every row
+  # into who_pending["*"] but 315 drained who_pending[<mask>] — a key
+  # mismatch that dropped the whole reply (the "total silence" symptom).
+  # Fix: fold into the SINGLE in-flight WHO accumulator (WHO is
+  # mailbox-serialized, one modal at a time) so per-row channel "*" no
+  # longer breaks correlation; 315 drains by the echoed target.
+  describe "#221 — /who <mask> correlation (352 channel='*')" do
+    test "352 with channel='*' folds into the single in-flight WHO accumulator" do
+      # Primed by a mask WHO (server.ex :send_who keys by the sent target).
+      state =
+        base_state(%{
+          who_pending: %{"*!*@*.libera.chat" => %{target_display: "*!*@*.libera.chat", replies: []}}
+        })
+
+      # solanum mask reply: channel field is "*", NOT the mask.
+      m =
+        msg(
+          {:numeric, 352},
+          ["vjt", "*", "alice_u", "alice.host", "irc.libera.chat", "alice", "H", "0 Alice"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      [reply] = new_state.who_pending["*!*@*.libera.chat"][:replies]
+      assert reply.nick == "alice"
+      # The per-row channel "*" is preserved on the row (display), but did
+      # NOT fork a bogus who_pending["*"] accumulator.
+      assert reply.channel == "*"
+      refute Map.has_key?(new_state.who_pending, "*")
+    end
+
+    test "315 echoing the mask drains the accumulator into one who_reply" do
+      state =
+        base_state(%{
+          who_pending: %{
+            "*!*@*.libera.chat" => %{
+              target_display: "*!*@*.libera.chat",
+              replies: [
+                %{
+                  nick: "alice",
+                  user: "u",
+                  host: "h",
+                  server: "s",
+                  modes: "H",
+                  hops: 0,
+                  realname: "Alice",
+                  channel: "*"
+                }
+              ]
+            }
+          }
+        })
+
+      m =
+        msg(
+          {:numeric, 315},
+          ["vjt", "*!*@*.libera.chat", "End of /WHO list"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, [{:who_reply, target, users}]} = EventRouter.route(m, state)
+      assert new_state.who_pending == %{}
+      assert target == "*!*@*.libera.chat"
+      assert Enum.map(users, & &1.nick) == ["alice"]
+    end
+
+    test "a zero-match mask WHO still drains an EMPTY who_reply (315 always arrives)" do
+      # solanum m_who.c always emits 315 even on zero matches (m_who.c:294),
+      # so a mask that matches nobody must still surface an empty modal — NOT
+      # silence. This is the core of the bug: the user gets feedback.
+      state =
+        base_state(%{
+          who_pending: %{"*!*@nonexistent" => %{target_display: "*!*@nonexistent", replies: []}}
+        })
+
+      m =
+        msg(
+          {:numeric, 315},
+          ["vjt", "*!*@nonexistent", "End of /WHO list"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, [{:who_reply, target, users}]} = EventRouter.route(m, state)
+      assert new_state.who_pending == %{}
+      assert target == "*!*@nonexistent"
+      assert users == []
+    end
+  end
+
   # #140 — /names roster aggregation. 353 RPL_NAMREPLY tokens append to
   # state.names_pending[channel_lower].names; 366 RPL_ENDOFNAMES drains
   # the entry into ONE {:names_reply, channel, [{nick, modes}]} effect
