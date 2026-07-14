@@ -19733,11 +19733,15 @@ connection") leaked into a phantom DM window named after the WHOIS target.
 1. *Typed folds* (`EventRouter`) for the known solanum codes, folded into
    the same `whois_pending` accumulator as the P-0a set. A key structural
    difference from bahamut: solanum puts data in **middle params** where
-   bahamut used localized trailing text, so 330 (account) and 338
-   (actually-host/ip) need NO template parsing — they read `params[2]` /
-   `params[3]` directly. 671 → `secure: true` (boolean; the cipher string
-   in the trailing is display-only, cic localizes). 276 → `certfp` (tail
-   token of the trailing). 320 → free-form, folded into `extra_lines`.
+   bahamut used localized trailing text, so 330 (account, `params[2]`) and
+   338 (the client IP in `params[2]` → `actually_ip`; the trailing "actually
+   using host" is a fixed English label we IGNORE, never fold) need NO
+   template parsing. NB solanum's 338 carries the IP only (one middle
+   param) — it is a DIFFERENT numeric from Azzurra's 378 RPL_WHOISACTUALLY
+   (host+ip in a localized trailing); solanum's own 378 is RPL_WHOISHOST,
+   which grappa does not fold. 671 → `secure: true` (boolean; the cipher
+   string in the trailing is display-only, cic localizes). 276 → `certfp`
+   (tail token of the trailing). 320 → free-form, folded into `extra_lines`.
 
 2. *Generic future-proofing* (the root-cause fix, per CLAUDE.md "fix root
    causes, not examples"). `NumericRouter.route/2` now reads a

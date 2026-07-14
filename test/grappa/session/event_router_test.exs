@@ -3022,33 +3022,41 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.whois_pending["alice"][:certfp] == "deadbeefcafef00d"
     end
 
-    test "338 RPL_WHOISACTUALLY (solanum) folds host from the middle param" do
+    test "338 RPL_WHOISACTUALLY (solanum) folds the IP from the middle param" do
+      # solanum @ a4998b5: NUMERIC_STR_338 = "%s %s :actually using host",
+      # emitted with (target, sockhost) at modules/m_whois.c:365/429 — the
+      # MIDDLE param is the client IP; the trailing is the fixed English
+      # label. (Azzurra's 378 packs host+ip into a localized trailing; that
+      # is a DIFFERENT numeric — solanum's 378 is RPL_WHOISHOST.)
       state = whois_pending_state("alice")
 
       m =
         msg(
           {:numeric, 338},
-          ["vjt", "alice", "real-host.example.net", "actually using host"],
+          ["vjt", "alice", "203.0.113.7", "actually using host"],
           {:server, "irc.libera.chat"}
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:actually_host] == "real-host.example.net"
+      assert new_state.whois_pending["alice"][:actually_ip] == "203.0.113.7"
+      # The localized "actually using host" trailing must NOT leak into any
+      # field (feedback_no_localized_strings_server_side).
+      refute new_state.whois_pending["alice"][:actually_host] == "actually using host"
+      refute new_state.whois_pending["alice"][:actually_ip] == "actually using host"
     end
 
-    test "338 RPL_WHOISACTUALLY (solanum) folds host + ip from two middle params" do
-      state = whois_pending_state("alice")
+    test "338 with no whois_pending entry is silently ignored (no fold)" do
+      state = base_state(%{whois_pending: %{}})
 
       m =
         msg(
           {:numeric, 338},
-          ["vjt", "alice", "real-host.example.net", "203.0.113.7", "actually using host"],
+          ["vjt", "ghost", "203.0.113.7", "actually using host"],
           {:server, "irc.libera.chat"}
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:actually_host] == "real-host.example.net"
-      assert new_state.whois_pending["alice"][:actually_ip] == "203.0.113.7"
+      assert new_state.whois_pending == %{}
     end
 
     test "320 RPL_WHOISSPECIAL folds the free-form line into extra_lines" do

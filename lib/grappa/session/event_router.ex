@@ -1325,26 +1325,25 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # 338 RPL_WHOISACTUALLY (solanum): `:server 338 own_nick target host [ip]
-  # :actually using host`. modules/m_whois.c:365. UNLIKE Azzurra's 378
-  # (which packs host+ip into a localized trailing template parsed by
-  # `parse_whois_actually_trailing/1`), solanum puts the host in the MIDDLE
-  # param and, when the viewer may see it, the IP in a second middle param.
-  # Fold whichever middle params are present.
+  # 338 RPL_WHOISACTUALLY (solanum): `:server 338 own_nick target <ip>
+  # :actually using host`. solanum @ a4998b5 — NUMERIC_STR_338 =
+  # "%s %s :actually using host", emitted with (target, sockhost) at
+  # modules/m_whois.c:365 and :429. The SINGLE middle param is the client
+  # IP (target_p->sockhost); the trailing is the fixed English label and is
+  # ignored (feedback_no_localized_strings_server_side — never fold it).
+  #
+  # This is DISTINCT from Azzurra's 378 RPL_WHOISACTUALLY, which packs
+  # host+ip into a localized trailing template parsed by
+  # `parse_whois_actually_trailing/1` (the 378 clause above). solanum's own
+  # 378 is RPL_WHOISHOST ("is connecting from *@<host> <ip>") — a different
+  # numeric grappa does not fold (its 378 clause targets the Azzurra
+  # template and no-ops on the solanum shape, which is harmless).
   defp do_route(
-         %Message{command: {:numeric, 338}, params: [_, target, host, ip | _]},
+         %Message{command: {:numeric, 338}, params: [_, target, ip | _]},
          state
        )
-       when is_binary(target) and is_binary(host) and is_binary(ip) do
-    {:cont, whois_fold(state, target, %{actually_host: host, actually_ip: ip}), []}
-  end
-
-  defp do_route(
-         %Message{command: {:numeric, 338}, params: [_, target, host | _]},
-         state
-       )
-       when is_binary(target) and is_binary(host) do
-    {:cont, whois_fold(state, target, %{actually_host: host}), []}
+       when is_binary(target) and is_binary(ip) do
+    {:cont, whois_fold(state, target, %{actually_ip: ip}), []}
   end
 
   # 320 RPL_WHOISSPECIAL: `:server 320 own_nick target :<free-form line>`.
