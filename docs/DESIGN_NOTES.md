@@ -20302,3 +20302,85 @@ deterministic regression and out of scope for the #233 fix. Failure shapes are
 timing/delivery races (IrcPeer message delivery, `getComputedStyle` DOM
 staleness), plausibly aggravated by the #221 testnet topology change
 (solanum leaf). Characterising + stabilising that pool is separate work.
+
+### 2026-07-15 — chronic e2e flake pool: root-caused + stabilised
+
+The residual pool above turned out NOT to be one phenomenon. Each flake
+had a distinct, individually-diagnosable root cause — five real fixes, no
+masking, no `test.skip`, no arbitrary sleeps. The suite is now
+`0 failed` across THREE consecutive full chromium runs (`282 passed`
+each). Nothing here touched production behaviour except one
+production-inert test seam (below).
+
+**Method note — partial-grep pollution is a real trap.** Running a subset
+of these specs via `--grep`/`--repeat-each` INTRODUCED failures that never
+occur in the full suite: `cp14-b2` fell over because grouped specs mutate
+the shared `#bofh` read cursor/scrollback it doesn't restore, and
+`issue188` inverted its `#m188` JOIN order because stale `#m188` self-JOIN
+rows (uncleaned across iterations) let `selectChannel`'s awaitWsReady
+false-pass. Both PASS in full-suite order. Verify a flake fix against the
+FULL suite, not a hand-picked grep (per `feedback_recurring_e2e_not_flake`
+/ `feedback_e2e_real_login_poisons_shared_stack`).
+
+Per-flake root cause + fix:
+
+* **cp14-b2 (scroll-up loadMore snap-to-bottom).** The helper drove
+  scroll-to-top with a synthetic `el.scrollTop=0; dispatchEvent("scroll")`.
+  That fires `onScroll` (so loadMore ran) but NEVER `onWheel`, so
+  `lastInputEventAtMs` is never stamped and the #168
+  `markerActivationPending` latch stays armed — the length-effect
+  re-asserts marker-or-tail on the prepend and snaps to the tail. Fixed by
+  driving a REAL `page.mouse.wheel` (mirrors the post-BUGHUNT-2
+  cursor-forward-only helpers): a real wheel stamps the input-event gate →
+  clears the latch → deterministic atBottom=false preserve. Test-only.
+
+* **archive-desktop-only (getComputedStyle "").** A one-shot
+  `.evaluate(getComputedStyle)` caught the archive-row button mid-swap
+  (the sidebar archive list re-renders on any window-state WS event);
+  `getComputedStyle` on a detached node returns `fontFamily === ""`.
+  Fixed with `expect.poll` that re-queries + re-reads each tick (catch →
+  ""). Assertion unchanged. Test-only.
+
+* **b0-invite (invite-ack never visible).** Identical to the reliably-green
+  `p0e-invite-ack` sibling EXCEPT it waited only 5s for the invite-ack row
+  vs the sibling's 10s ("absorbs the WS round-trip latency"). The full
+  round-trip (composeSend → upstream INVITE → 341 → user-topic broadcast →
+  cic row) regularly exceeds 5s under load. Ceiling matched to the proven
+  sibling — a wait-for-condition, not a sleep. Test-only.
+
+* **issue188 (away-mentions "0/1 messages in 0/1 channels").** The mention
+  bodies were CONSTANTS and `#m188` is not in the seeded autojoin set, so
+  `_vjtReset` (truncates only #bofh) left prior-iteration `ping in m188`
+  rows. The `scrollbackLine(...).first()` wait matched a STALE row and
+  false-passed WITHOUT the fresh message having persisted → the unaway
+  aggregation raced and under-counted. Fixed with a per-invocation `runId`
+  suffix so every render-wait genuinely gates on the message it asserts.
+  Test-only.
+
+* **marker-target (own DM line never renders).** The server broadcasts the
+  operator's own outbound `/msg` echo on the (slug, peer) query-window
+  topic, which cic joins asynchronously; a `composeSend` fired before that
+  `phx.join` ack fastlanes past the not-yet-joined socket AND the on-join
+  `refreshScrollback` already ran, so the own line is missed by both.
+  Unlike a channel, a query window has NO self-JOIN scrollback line to
+  `selectChannel`-await. Fixed with a NEW production-inert
+  `__cic_queryWindowReady` test seam in `subscribe.ts`'s query-window
+  `onJoinOk` (mirroring `__cic_dmListenerReady`; corrects that seam's stale
+  "overkill" note — query windows DO lack a pre-event DOM signal) + a
+  `waitForQueryWindowReady` helper; the inbound peer reply is gated on
+  `waitForDmListenerReady`. This is the ONLY change touching cic `src/`
+  (deploy: `--cic`, but the seam only stamps `window.*` and is never read
+  in production). No `.ex` touched.
+
+* **slash-commands /q (textarea retained "/q").** A pollution victim
+  (passed 40/40 isolated + green across all three consecutive full runs).
+  Bare `/q` early-returns `{error}` — retaining the draft — when
+  `selectedChannel().kind !== "query"` at submit; the close-window picker
+  is `wasLive`-guarded against stealing a fresh query selection, and no
+  other selection-steal path was found, so the trigger stayed unpinned. No
+  code change; monitored — recurs → capture the full-suite artifact.
+
+The #221 solanum-leaf topology was NOT the cause of any of these (the
+CASEMAPPING=ascii leaf handled every peer round-trip cleanly in the
+wire traces). The #233 test-only force-cursor fix + its four specs
+remained green throughout.
