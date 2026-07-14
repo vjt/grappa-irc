@@ -20576,6 +20576,79 @@ failures; Dialyzer 0 errors; Credo/Sobelow clean.
 
 ---
 
+## 2026-07-14 — #196 REOPEN: image-preview overlay loses scrollTop when a message arrives mid-overlay (desktop)
+
+**Symptom (reopen).** Desktop dogfood: scroll up to read backlog, open an inline
+image's preview overlay, close it → the message list jumps ("re-reading old
+messages as if new"). #196's original fix (14daadce) + #219-general's shared
+`overlayCount()` freeze were supposed to hold the position; they held the
+*quiet-channel* case (the shipped `issue196-preview-scroll-preserve` e2e opens +
+closes on a fully-read #bofh and passes) but NOT the live-channel case.
+
+**The hole the existing machinery missed.** The original #196 commit admitted
+"the exact desktop perturbation could not be pinned by static reading" and
+shipped a mechanism-agnostic capture/restore: snapshot `listRef.scrollTop` on the
+overlay's `overlayCount()` 0→1 edge, re-assert it on the 1→0 (close) edge via
+rAF×2. That restore is an ABSOLUTE-pixel value asserted ONLY on the close edge.
+The perturbation it never pinned: **a message arriving while the overlay is
+open.** A rows() mutation (routine in a live channel) makes the ref-keyed
+`<For>` recreate the list DOM, resetting `scrollTop` to 0; the length-effect
+that would re-establish position BAILED on `isOverlayFrozen()`, so the covered
+pane sat at the top for the overlay's whole lifetime and only the single
+close-edge restore recovered it. When the scrollTop=0 artifact spuriously fired
+`maybeLoadOlder` (prepend), the absolute-pixel snapshot went stale and the
+restore landed on the wrong content — the observed jump. (Confirmed with an
+instrumented e2e: `viewer-visible scrollTop=3694` → peer message → `scrollTop=0`
+for the whole open window, recovered only ~2 frames after close.)
+
+**Root-cause fix — reuse the existing freeze discipline, no parallel path**
+(`cicchetto/src/ScrollbackPane.tsx`):
+1. **Length-effect re-asserts instead of bailing while frozen.** On a rows()
+   change under a covering overlay, RE-ASSERT the held `overlayScrollSnapshot`
+   — synchronously (this createEffect runs *after* the `<For>` reconciliation,
+   so scrollTop is already 0; a snapshot is an absolute offset, no post-layout
+   scrollHeight read needed → no transient-0 frame for a reader to catch), then
+   again across rAF×2 as belt-and-braces. So the reader's position survives
+   EVERY rows recreation for the overlay's whole lifetime, not just the close
+   edge. (Bailing outright was the bug; tail-follow while frozen was already —
+   correctly — forbidden by #219.)
+2. **onScroll skips all side-effects while frozen.** Every scroll event under a
+   covering overlay is an artifact of the `<For>` recreation, not operator
+   intent (the modal + backdrop cover the pane; the reader cannot scroll it).
+   Gating onScroll blocks the spurious `atBottom` flip, the
+   loadMore/loadNewer whose prepend would stale the snapshot, the bogus
+   visible-tail capture, and the cursor advance.
+
+Both reuse the existing `isOverlayFrozen()` predicate + `overlayScrollSnapshot`
++ the `overlayCount()` refcount — no forked scroll-preserve path
+(feedback_new_covering_modal_must_push_overlay_refcount).
+
+**Why the existing e2e didn't catch it + new coverage.** The shipped preserve
+spec never mutates rows() while the overlay is open (quiet #bofh, synthetic
+`el.click`), so nothing perturbed the scroll — a hollow-green for the live case.
+New sibling `issue196-preview-scroll-live-arrival.spec.ts` (desktop chromium):
+scroll up with a visible mid-list image, open via a REAL click, a peer line
+arrives WHILE the overlay is open, assert the list is held both while open and
+after close. Verified RED pre-fix (`during` collapses to ~0, delta 3694) and
+GREEN post-fix; both #196 specs stable at `--repeat-each 5` (10/10). The new
+spec SCROLLS UP, so its scroll-settle advances the shared #bofh cursor mid-page
+— it restores the cursor to the tail in `afterEach` (NOT afterAll: under
+`--repeat-each` the sibling preserve spec interleaves between repeats and would
+otherwise inherit an unread marker → cold-mount marker-jump flake;
+feedback_cascade_poisoner_pattern).
+
+**Non-overlay scroll/cursor specs unaffected.** The change is gated entirely on
+`isOverlayFrozen()` (a covering overlay open), so specs with no overlay
+(cursor-forward-only, issue168, cp14-b2, scroll-on-window-switch) are inert to
+it — verified: the identical failures appear on baseline under the same abnormal
+partial-grep ordering (shared-#bofh test-order pollution, not this change).
+
+**Deploy: --cic bundle only, HOT.** Client-only — only `ScrollbackPane.tsx` +
+the new e2e; NO `.ex`, no wire/schema/supervised-child change. `deploy-m42.sh
+--cic` rebuilds + broadcasts the bundle hash; no BEAM restart.
+
+---
+
 ## 2026-07-15 — #246 (P0): outbound split budget must reserve the worst-case RELAYED source prefix
 
 **The silent data-loss bug.** `Grappa.IRC.LineSplit.split_privmsg_body/3`

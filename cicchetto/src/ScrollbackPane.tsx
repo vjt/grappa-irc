@@ -1963,15 +1963,49 @@ const ScrollbackPane: Component<Props> = (props) => {
       () => rows()?.length ?? 0,
       () => {
         if (!listRef) return;
-        // #219 / #219-general — a covering overlay freezes the pane's scroll
-        // (see the overlay-snapshot capture/restore + the scrollToActivation
-        // guard). A message arriving WHILE an overlay is up must not tail-follow
-        // the covered pane out from under the reader (#168 message-follow is
-        // correct ONLY when no overlay covers the pane); the overlay-snapshot
-        // effect restores their held position on close. `isOverlayFrozen()` is
-        // true for the whole open→close-settle window, scoped to this window's
-        // key.
-        if (isOverlayFrozen()) return;
+        // #219 / #219-general / #196(reopen) — a covering overlay freezes the
+        // pane's scroll (see the overlay-snapshot capture/restore + the
+        // scrollToActivation guard). A message arriving WHILE an overlay is up
+        // must not tail-follow the covered pane out from under the reader (#168
+        // message-follow is correct ONLY when no overlay covers the pane).
+        //
+        // #196 reopen: bailing outright is NOT enough. This rows() change is the
+        // very message arrival that triggered the effect; the ref-keyed <For>
+        // has just RECREATED the list DOM, resetting scrollTop to 0. Bailing
+        // leaves the covered pane stranded at the top for the overlay's whole
+        // lifetime, and the single close-edge restore then lands wrong when the
+        // scrollTop=0 artifact spuriously prepended older rows (onScroll gate
+        // below now blocks that) — "re-reading old messages as if new", the
+        // reopened desktop regression the quiet-channel e2e never saw. RE-ASSERT
+        // the held snapshot instead (rAF×2, matching the overlay-snapshot
+        // restore's frame budget so it lands after the <For> commit), so the
+        // reader's position survives EVERY rows recreation while frozen, not
+        // just the close edge. Re-check `isOverlayFrozen()` inside the rAF — the
+        // overlay may have closed in the interim, in which case the close-edge
+        // restore owns it.
+        if (isOverlayFrozen()) {
+          // This createEffect runs AFTER the ref-keyed <For> has reconciled, so
+          // scrollTop has ALREADY been reset to 0 by the DOM recreation. Re-assert
+          // the held snapshot SYNCHRONOUSLY (no transient-0 frame for a reader to
+          // catch) — the snapshot is an absolute offset, so no post-layout
+          // scrollHeight read is needed — then AGAIN across rAF×2 as belt-and-
+          // braces for any late layout shift (matching the overlay-snapshot
+          // restore's frame budget). Re-check `isOverlayFrozen()` in the rAF: the
+          // overlay may have closed, in which case the close restore owns it.
+          const snapNow = overlayScrollSnapshot;
+          if (snapNow !== null && listRef.scrollTop !== snapNow) {
+            listRef.scrollTop = snapNow;
+          }
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              const snap = overlayScrollSnapshot;
+              if (listRef && isOverlayFrozen() && snap !== null) {
+                listRef.scrollTop = snap;
+              }
+            }),
+          );
+          return;
+        }
         // #168 completion / 307 race fix — while a channel activation is
         // latched AND a rendered unread divider EXISTS, EVERY rows recreation
         // (post-switch catch-up refresh, late read-cursor hydration inserting
@@ -2116,6 +2150,12 @@ const ScrollbackPane: Component<Props> = (props) => {
   };
 
   const onWheel = (e: WheelEvent): void => {
+    // #196 (reopen) — mirror the onScroll frozen-gate: while a covering overlay
+    // freezes the pane, any wheel is an artifact / cannot be operator intent (the
+    // modal + backdrop cover the pane). Skipping it keeps the #230 underfill
+    // rescue from firing a spurious `maybeLoadOlder` that would stale the freeze
+    // snapshot. Same predicate, same reason as onScroll — total consistency.
+    if (isOverlayFrozen()) return;
     setLastInputEventAtMs(Date.now());
     // #230 — rescue the wheel ONLY when the content underfills the container.
     // When the loaded window is shorter than the viewport, `.scrollback` is
@@ -2169,6 +2209,17 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   const onScroll = () => {
     if (!listRef) return;
+    // #196 (reopen) — while a covering overlay freezes the pane, EVERY scroll
+    // event is an artifact of the ref-keyed <For> recreating the list DOM on a
+    // rows() change (a message arriving under the overlay resets scrollTop to
+    // 0), NOT operator intent: the modal + backdrop cover the pane, so the
+    // reader cannot scroll it. Acting on these artifacts flips `atBottom`,
+    // spuriously fires loadMore/loadNewer (whose prepend would STALE the
+    // absolute-pixel freeze snapshot → wrong close-edge restore), snapshots a
+    // bogus visible-tail, and advances the read cursor. Skip all of it; the
+    // length-effect re-assert + the overlay-snapshot close restore own the
+    // reader's position for the overlay's whole lifetime.
+    if (isOverlayFrozen()) return;
     const st = listRef.scrollTop;
     const distance = listRef.scrollHeight - st - listRef.clientHeight;
     // #168 — the follow authority (`atBottom`) flips FALSE only on an
