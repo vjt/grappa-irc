@@ -1728,6 +1728,122 @@ export async function adminPatchNetworkCaps(
   return (await res.json()) as AdminNetwork;
 }
 
+// #228 — admin vhost (source-bind) CRUD + per-subject grants. Mirror of
+// `GrappaWeb.Admin.VhostsController` GET/POST/PATCH/DELETE `/admin/vhosts`
+// (+ the nested `/admin/vhosts/:id/grants` + `/admin/vhosts/grants/:grant_id`
+// routes). Shapes match `Grappa.Vhosts.AdminWire.t()` server-side.
+//
+// A vhost is a host-bindable source address the operator makes available.
+// `in_pool` = eligible for the round-robin "pool" a subject can multi-select;
+// `generally_available` = offered to EVERY subject (vs. reachable only via an
+// explicit grant). A grant binds a vhost to one subject (`pinned` forces the
+// subject's selection — the user widget goes read-only). `host_candidates`
+// are the host's bindable IP literals (loopback/link-local pre-filtered) the
+// admin picks from when creating a vhost.
+export type AdminVhost = {
+  id: number;
+  address: string;
+  in_pool: boolean;
+  generally_available: boolean;
+  inserted_at: string;
+  updated_at: string;
+};
+
+export type AdminVhostGrant = {
+  id: number;
+  vhost_id: number;
+  subject_type: "user" | "visitor";
+  subject_id: string;
+  pinned: boolean;
+};
+
+export type AdminVhostsResponse = {
+  vhosts: AdminVhost[];
+  grants: AdminVhostGrant[];
+  host_candidates: string[];
+};
+
+export type AdminVhostCreate = {
+  address: string;
+  in_pool?: boolean;
+  generally_available?: boolean;
+};
+
+export type AdminVhostPatch = {
+  address?: string;
+  in_pool?: boolean;
+  generally_available?: boolean;
+};
+
+export type AdminVhostGrantCreate = {
+  subject_type: "user" | "visitor";
+  subject_id: string;
+  pinned?: boolean;
+};
+
+// Returns the whole envelope — the caller needs vhosts + grants +
+// host_candidates together (grants filter by vhost_id client-side; the
+// create form's address `<select>` is populated from host_candidates).
+export async function adminListVhosts(token: string): Promise<AdminVhostsResponse> {
+  const res = await fetch("/admin/vhosts", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminVhostsResponse;
+}
+
+export async function adminCreateVhost(token: string, body: AdminVhostCreate): Promise<AdminVhost> {
+  const res = await fetch("/admin/vhosts", {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminVhost;
+}
+
+export async function adminPatchVhost(
+  token: string,
+  id: number,
+  body: AdminVhostPatch,
+): Promise<AdminVhost> {
+  const res = await fetch(`/admin/vhosts/${encodeURIComponent(String(id))}`, {
+    method: "PATCH",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminVhost;
+}
+
+export async function adminDeleteVhost(token: string, id: number): Promise<void> {
+  const res = await fetch(`/admin/vhosts/${encodeURIComponent(String(id))}`, {
+    method: "DELETE",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+export async function adminGrantVhost(
+  token: string,
+  id: number,
+  body: AdminVhostGrantCreate,
+): Promise<AdminVhostGrant> {
+  const res = await fetch(`/admin/vhosts/${encodeURIComponent(String(id))}/grants`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminVhostGrant;
+}
+
+export async function adminRevokeVhostGrant(token: string, grantId: number): Promise<void> {
+  const res = await fetch(`/admin/vhosts/grants/${encodeURIComponent(String(grantId))}`, {
+    method: "DELETE",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
 // 202 Accepted envelope: `{swept_count: number, swept_at: ISO8601}`.
 // Cic surfaces `swept_count` in a transient success line; nothing else
 // in the wire shape drives UI state today.

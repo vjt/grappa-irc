@@ -129,3 +129,67 @@ export async function putUploadTtlSeconds(
   const body = (await res.json()) as UploadTtlResponse;
   return body.upload_ttl_seconds;
 }
+
+// ---------------------------------------------------------------------------
+// vhost (source-bind) selection — #228.
+//
+// The server owns the set of vhosts a subject is allowed to bind to and
+// the subject's current selection. `available` is the allow-set (each
+// carries `in_pool` so the widget can group pool vs. non-pool); `selection`
+// is the subject's chosen addresses; `pinned` is non-null when an admin has
+// FORCED the selection (grant `pinned: true`) — the widget renders read-only
+// and greyed in that case.
+//
+// cic submits the raw selected addresses on every change (no diff
+// semantics, mirroring the notification-prefs full-PUT convention). The
+// 4xx envelope carries `error: "forbidden_vhost"` (a selected address
+// isn't allowed) or `error: "bad_request"` (selection wasn't a list) —
+// same body-parse-for-error-code dance as `putUploadTtlSeconds`.
+// ---------------------------------------------------------------------------
+
+export type VhostOption = {
+  address: string;
+  in_pool: boolean;
+};
+
+export type VhostSettingsView = {
+  available: VhostOption[];
+  selection: string[];
+  pinned: string | null;
+};
+
+export async function getVhostSettings(token: string): Promise<VhostSettingsView> {
+  const res = await fetch("/me/settings/vhost", {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, res.statusText || "vhost_get_failed");
+  }
+  return (await res.json()) as VhostSettingsView;
+}
+
+export async function putVhostSelection(
+  token: string,
+  selection: string[],
+): Promise<VhostSettingsView> {
+  const res = await fetch("/me/settings/vhost", {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ selection }),
+  });
+  if (!res.ok) {
+    let info: Record<string, unknown> = {};
+    let code = res.statusText || "vhost_put_failed";
+    try {
+      info = (await res.json()) as Record<string, unknown>;
+      if (typeof info.error === "string") code = info.error;
+    } catch {
+      /* fallthrough — code stays as statusText */
+    }
+    throw new ApiError(res.status, code, info);
+  }
+  return (await res.json()) as VhostSettingsView;
+}

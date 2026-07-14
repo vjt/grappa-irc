@@ -37,8 +37,11 @@ import { deviceClassIcon, parseUserAgent } from "./lib/userAgent";
 import {
   DEFAULT_NOTIFICATION_PREFS,
   getNotificationPrefs,
+  getVhostSettings,
   type NotificationPrefs,
   putNotificationPrefs,
+  putVhostSelection,
+  type VhostSettingsView,
 } from "./lib/userSettings";
 import ShareSessionModal from "./ShareSessionModal";
 
@@ -81,6 +84,12 @@ const SettingsDrawer: Component<Props> = (props) => {
   // cache on drawer mount, saveUploadTtlSeconds round-trips on
   // change. `null` = "use the active host's defaultTtl".
   const [uploadTtlSavingError, setUploadTtlSavingError] = createSignal<string | null>(null);
+  // #228 — source-bind (vhost) selection. Server owns the allow-set +
+  // current selection + admin pin. `null` view = not-yet-loaded (the
+  // widget stays hidden until the first GET lands). A non-null `pinned`
+  // means the admin forced the selection — the widget goes read-only.
+  const [vhostView, setVhostView] = createSignal<VhostSettingsView | null>(null);
+  const [vhostError, setVhostError] = createSignal<string | null>(null);
   // Visitor session-sharing modal open state. Hidden for user
   // subjects entirely (users have passwords, no need to share).
   const [shareOpen, setShareOpen] = createSignal(false);
@@ -308,6 +317,9 @@ const SettingsDrawer: Component<Props> = (props) => {
       // fieldset's `<select>` reflects the server value before the
       // first user interaction.
       void loadUploadTtlSeconds(t);
+      // #228 — load the source-bind (vhost) view so the widget reflects
+      // the server's allow-set + current selection + admin pin.
+      void loadVhostSettings(t);
     }
   });
 
@@ -482,6 +494,48 @@ const SettingsDrawer: Component<Props> = (props) => {
     if (d == null) return "";
     return host.ttlOptions.find((o) => o.value === d)?.label ?? d;
   };
+
+  // #228 — load the vhost view. Swallow errors into the error signal (the
+  // widget renders only when the view is non-null, so a failed load simply
+  // keeps the section hidden — same informational-load posture as
+  // refreshDevices, but surfaced inline for diagnostics).
+  const loadVhostSettings = async (t: string): Promise<void> => {
+    try {
+      const view = await getVhostSettings(t);
+      setVhostView(view);
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "load_failed";
+      setVhostError(code);
+    }
+  };
+
+  // #228 — `<select multiple>` change handler. Reads every selected
+  // option value and PUTs the full selection (server owns validation:
+  // a `forbidden_vhost` / `bad_request` code surfaces inline). Admin-pinned
+  // views never reach here — the select is disabled in that case.
+  const onVhostChange = async (e: Event) => {
+    const t = token();
+    if (t === null) return;
+    const select = e.currentTarget as HTMLSelectElement;
+    const selection = Array.from(select.selectedOptions).map((o) => o.value);
+    setVhostError(null);
+    try {
+      const view = await putVhostSelection(t, selection);
+      setVhostView(view);
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "save_failed";
+      setVhostError(code);
+    }
+  };
+
+  // #228 — partition the allow-set into pool vs. non-pool for the two
+  // `<optgroup>`s. Derived from the current view; empty arrays render an
+  // empty group (the `<Show>` on the fieldset already gates on a non-null
+  // view, so at least one option exists by the time this runs).
+  const vhostInPool = (): VhostSettingsView["available"] =>
+    (vhostView()?.available ?? []).filter((o) => o.in_pool);
+  const vhostOutOfPool = (): VhostSettingsView["available"] =>
+    (vhostView()?.available ?? []).filter((o) => !o.in_pool);
 
   return (
     <>
@@ -704,6 +758,67 @@ const SettingsDrawer: Component<Props> = (props) => {
             <Show when={uploadTtlSavingError() !== null}>
               <p class="upload-ttl-error" role="alert" data-testid="upload-ttl-error">
                 {uploadTtlSavingError()}
+              </p>
+            </Show>
+          </fieldset>
+        </Show>
+
+        {/* #228 — source address (vhost) selection. Renders only once the
+            server view has loaded (non-null). When `pinned` is non-null the
+            admin has FORCED the selection: show the pinned address as
+            read-only text and disable the multi-select. Otherwise a native
+            `<select multiple>` groups the allow-set into "In pool" / "Out of
+            pool" `<optgroup>`s; every change PUTs the full selection. */}
+        <Show when={vhostView() !== null}>
+          <fieldset class="vhost-fieldset">
+            <legend>source address (vhost)</legend>
+            <Show
+              when={vhostView()?.pinned == null}
+              fallback={
+                <p class="vhost-pinned" data-testid="vhost-pinned">
+                  Pinned by admin: {vhostView()?.pinned}
+                </p>
+              }
+            >
+              <label>
+                bind from:
+                <select
+                  multiple
+                  data-testid="vhost-select"
+                  onChange={(e) => {
+                    void onVhostChange(e);
+                  }}
+                >
+                  <optgroup label="In pool">
+                    <For each={vhostInPool()}>
+                      {(opt) => (
+                        <option
+                          value={opt.address}
+                          selected={(vhostView()?.selection ?? []).includes(opt.address)}
+                        >
+                          {opt.address}
+                        </option>
+                      )}
+                    </For>
+                  </optgroup>
+                  <optgroup label="Out of pool">
+                    <For each={vhostOutOfPool()}>
+                      {(opt) => (
+                        <option
+                          value={opt.address}
+                          selected={(vhostView()?.selection ?? []).includes(opt.address)}
+                        >
+                          {opt.address}
+                        </option>
+                      )}
+                    </For>
+                  </optgroup>
+                </select>
+              </label>
+            </Show>
+            <Show when={vhostError() !== null}>
+              <p class="vhost-error" role="alert" data-testid="vhost-error">
+                {vhostError()}
               </p>
             </Show>
           </fieldset>

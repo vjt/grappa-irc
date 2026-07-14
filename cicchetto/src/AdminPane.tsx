@@ -6,6 +6,7 @@ import AdminNetworksTab from "./AdminNetworksTab";
 import AdminSessionsTab from "./AdminSessionsTab";
 import AdminSettingsTab from "./AdminSettingsTab";
 import AdminUsersTab from "./AdminUsersTab";
+import AdminVhostsTab from "./AdminVhostsTab";
 import AdminVisitorsTab from "./AdminVisitorsTab";
 import { startAdminEventsSubscription, uninstallAdminEvents } from "./lib/adminEvents";
 
@@ -45,6 +46,7 @@ type TabKey =
   | "visitors"
   | "sessions"
   | "networks"
+  | "vhosts"
   | "users"
   | "credentials"
   | "events"
@@ -119,6 +121,18 @@ const AdminPane: Component<Props> = (props) => {
           onClick={() => setCurrentTab("networks")}
         >
           Networks
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="admin-tab"
+          aria-selected={isActive("vhosts")}
+          aria-controls="admin-tab-vhosts"
+          id="admin-tab-vhosts-handle"
+          data-testid="admin-tab-vhosts"
+          onClick={() => setCurrentTab("vhosts")}
+        >
+          Vhosts
         </button>
         <button
           type="button"
@@ -209,6 +223,16 @@ const AdminPane: Component<Props> = (props) => {
           class="admin-tab-panel"
         >
           <AdminNetworksTab />
+        </div>
+      </Show>
+      <Show when={isActive("vhosts")}>
+        <div
+          role="tabpanel"
+          id="admin-tab-vhosts"
+          aria-labelledby="admin-tab-vhosts-handle"
+          class="admin-tab-panel"
+        >
+          <AdminVhostsTab />
         </div>
       </Show>
       <Show when={isActive("users")}>
