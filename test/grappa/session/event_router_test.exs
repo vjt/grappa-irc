@@ -2939,6 +2939,11 @@ defmodule Grappa.Session.EventRouterTest do
       assert payload.away_message == nil
       assert payload.actually_host == nil
       assert payload.actually_ip == nil
+      # #221 — solanum fields default absent on an empty (bahamut) bundle.
+      assert payload.account == nil
+      assert payload.secure == false
+      assert payload.secure_cipher == nil
+      assert payload.certfp == nil
     end
   end
 
@@ -2994,18 +2999,46 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.whois_pending == %{}
     end
 
-    test "671 RPL_WHOISSECURE folds secure: true" do
+    test "671 RPL_WHOISSECURE folds secure: true + captures the bracketed TLS cipher" do
+      # solanum m_whois.c:341 + librb/src/openssl.c:652 — the trailing is
+      # `is using a secure connection [<version>, <cipher>]`, the bracketed
+      # payload being `rb_ssl_get_cipher`'s "%s, %s" (version, cipher) which
+      # solanum appends via rb_snprintf_append(cbuf, ..., " [%s]", ...) when
+      # the whois'd client is local + cipher visible. The cipher string is
+      # STRUCTURED display data (not a localized English template), so we
+      # capture it into `secure_cipher` for the TLS-protocol modal field —
+      # the fixed "is using a secure connection" prefix is dropped
+      # (feedback_no_localized_strings_server_side).
       state = whois_pending_state("alice")
 
       m =
         msg(
           {:numeric, 671},
-          ["vjt", "alice", "is using a secure connection (TLSv1.3, TLS_AES_256_GCM_SHA384)"],
+          ["vjt", "alice", "is using a secure connection [TLSv1.3, TLS_AES_256_GCM_SHA384]"],
           {:server, "irc.libera.chat"}
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
       assert new_state.whois_pending["alice"][:secure] == true
+      assert new_state.whois_pending["alice"][:secure_cipher] == "TLSv1.3, TLS_AES_256_GCM_SHA384"
+    end
+
+    test "671 RPL_WHOISSECURE with no bracketed cipher still folds secure: true (nil cipher)" do
+      # cipher payload is oper/self-gated (m_whois.c:338) — a non-oper WHOIS
+      # of another user gets the bare "is using a secure connection" with no
+      # brackets. secure MUST still be true; secure_cipher stays absent.
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 671},
+          ["vjt", "alice", "is using a secure connection"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:secure] == true
+      refute Map.has_key?(new_state.whois_pending["alice"], :secure_cipher)
     end
 
     test "276 RPL_WHOISCERTFP folds certfp from the trailing tail token" do
@@ -3074,6 +3107,46 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.whois_pending["alice"][:extra_lines] == [
                %{numeric: 320, text: "is a Libera.Chat volunteer staff member"}
              ]
+    end
+
+    test "318 bundle carries account/secure/secure_cipher/certfp through to the wire payload" do
+      # #221 reopened — the regression proof at the server boundary: a
+      # solanum WHOIS of an account-logged-in + TLS user must surface all
+      # four solanum-specific fields in the emitted wire bundle, not just
+      # suppress the raw lines. Feeds the real solanum numeric shapes
+      # (330 middle-param account, 671 bracketed cipher, 276 certfp) and
+      # asserts the wire payload cic receives.
+      state = whois_pending_state("alice")
+
+      msgs = [
+        msg({:numeric, 330}, ["vjt", "alice", "AliceAccount", "is logged in as"], {:server, "irc.libera.chat"}),
+        msg(
+          {:numeric, 671},
+          ["vjt", "alice", "is using a secure connection [TLSv1.3, TLS_AES_256_GCM_SHA384]"],
+          {:server, "irc.libera.chat"}
+        ),
+        msg(
+          {:numeric, 276},
+          ["vjt", "alice", "has client certificate fingerprint deadbeefcafef00d"],
+          {:server, "irc.libera.chat"}
+        )
+      ]
+
+      final_state =
+        Enum.reduce(msgs, state, fn m, s ->
+          {:cont, s2, []} = EventRouter.route(m, s)
+          s2
+        end)
+
+      end_msg = msg({:numeric, 318}, ["vjt", "alice", "End of /WHOIS list"], {:server, "irc.libera.chat"})
+
+      {:cont, _, [{:whois_bundle, target, accum}]} = EventRouter.route(end_msg, final_state)
+      payload = Wire.whois_bundle("libera", target, accum)
+
+      assert payload.account == "AliceAccount"
+      assert payload.secure == true
+      assert payload.secure_cipher == "TLSv1.3, TLS_AES_256_GCM_SHA384"
+      assert payload.certfp == "deadbeefcafef00d"
     end
   end
 

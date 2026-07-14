@@ -391,6 +391,7 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         // #221 — solanum WHOIS-leg fields.
         (r.account !== null && typeof r.account !== "string") ||
         typeof r.secure !== "boolean" ||
+        (r.secure_cipher !== null && typeof r.secure_cipher !== "string") ||
         (r.certfp !== null && typeof r.certfp !== "string")
       )
         return null;
@@ -434,6 +435,7 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         // #221 — solanum WHOIS-leg fields.
         account: r.account as string | null,
         secure: r.secure,
+        secure_cipher: r.secure_cipher as string | null,
         certfp: r.certfp as string | null,
         extra_lines: extraLines,
       };

@@ -610,6 +610,7 @@ defmodule Grappa.Session.WireTest do
                # the corresponding numeric did not fire).
                account: nil,
                secure: false,
+               secure_cipher: nil,
                certfp: nil,
                extra_lines: nil
              }
@@ -647,6 +648,7 @@ defmodule Grappa.Session.WireTest do
                # #221 defaults
                account: nil,
                secure: false,
+               secure_cipher: nil,
                certfp: nil,
                extra_lines: nil
              }
@@ -656,6 +658,7 @@ defmodule Grappa.Session.WireTest do
       accum = %{
         account: "AliceAccount",
         secure: true,
+        secure_cipher: "TLSv1.3, TLS_AES_256_GCM_SHA384",
         certfp: "deadbeefcafef00d",
         actually_host: "real-host.example.net",
         actually_ip: "203.0.113.7",
@@ -666,6 +669,7 @@ defmodule Grappa.Session.WireTest do
 
       assert payload.account == "AliceAccount"
       assert payload.secure == true
+      assert payload.secure_cipher == "TLSv1.3, TLS_AES_256_GCM_SHA384"
       assert payload.certfp == "deadbeefcafef00d"
       assert payload.actually_host == "real-host.example.net"
       assert payload.actually_ip == "203.0.113.7"

@@ -60,8 +60,14 @@ const collectTags = (b: WhoisBundle): TagChip[] => {
   if (b.is_agent) tags.push({ label: "services agent", cssMod: "agent" });
   if (b.is_helper) tags.push({ label: "helper", cssMod: "helper" });
   if (b.is_chanop) tags.push({ label: "chanop", cssMod: "chanop" });
-  if (b.is_registered) tags.push({ label: "registered", cssMod: "registered" });
-  if (b.using_ssl) tags.push({ label: "SSL", cssMod: "ssl" });
+  // #221 — "registered" fires for bahamut (307 → is_registered) AND solanum
+  // (330 → account present). "SSL" fires for bahamut (275 → using_ssl) AND
+  // solanum (671 → secure). The two ircds signal the same fact via different
+  // numerics; the badge must read BOTH sources or a Libera user's modal
+  // looks anonymous + insecure (the reopened-#221 regression).
+  if (b.is_registered || b.account !== null)
+    tags.push({ label: "registered", cssMod: "registered" });
+  if (b.using_ssl || b.secure) tags.push({ label: "SSL", cssMod: "ssl" });
   if (b.is_java) tags.push({ label: "java", cssMod: "java" });
   return tags;
 };
@@ -90,7 +96,11 @@ const WhoisCard: Component<Props> = (props) => {
       b.is_java ||
       b.umodes !== null ||
       b.away_message !== null ||
-      b.actually_host !== null
+      b.actually_host !== null ||
+      // #221 — solanum-specific fields also count as "has data".
+      b.account !== null ||
+      b.secure ||
+      b.certfp !== null
     );
   };
 
@@ -127,6 +137,33 @@ const WhoisCard: Component<Props> = (props) => {
                 <dt>userhost</dt>
                 <dd>
                   {b().user}@{b().host}
+                </dd>
+              </Show>
+              {/* #221 — solanum account name (330 RPL_WHOISLOGGEDIN). The
+                  "registered" badge above signals identity is confirmed; this
+                  row shows WHICH services account. Predicate is `!== null` to
+                  match collectTags's badge gate — a badge with no matching
+                  row (or vice-versa) would be an inconsistency. */}
+              <Show when={b().account !== null}>
+                <dt>account</dt>
+                <dd class="whois-card-account">
+                  <MircBody body={b().account ?? ""} />
+                </dd>
+              </Show>
+              {/* #221 — TLS protocol string (671 RPL_WHOISSECURE bracketed
+                  payload). The "SSL" badge signals TLS; this row shows the
+                  version + cipher when the server exposed it. */}
+              <Show when={b().secure_cipher}>
+                <dt>secure</dt>
+                <dd class="whois-card-secure-cipher">
+                  <MircBody body={b().secure_cipher ?? ""} />
+                </dd>
+              </Show>
+              {/* #221 — client cert fingerprint (276 RPL_WHOISCERTFP). */}
+              <Show when={b().certfp}>
+                <dt>cert</dt>
+                <dd class="whois-card-certfp">
+                  <MircBody body={b().certfp ?? ""} />
                 </dd>
               </Show>
               <Show when={b().realname}>

@@ -19854,6 +19854,92 @@ WHO round-trip.
 - **CI / solanum-node change:** NO prod deploy — it is testnet/CI infra,
   never runs in prod (prod is the m42 jail).
 
+## 2026-07-14 — #221 REOPENED: WHOIS account/secure badges never reached the modal (cic render debt) + 671 cipher captured
+
+**Symptom (live Libera/solanum upstream).** WHOIS of an account-logged-in +
+TLS user: the raw 330/671 lines correctly no longer leak into the server
+window (the gap-(a) fold shipped), BUT the modal showed no "registered"
+badge, no SSL badge, no account name, no TLS-protocol string — the info
+that was at least visible as raw lines pre-fix was now silently dropped. A
+registered + secure user looked anonymous + insecure.
+
+**Root cause — drop point was cic `WhoisCard.tsx`, NOT the parser.** Traced
+end-to-end (parser → numeric_router → event_router → Session.Wire → cic
+api.ts → userTopic narrower → whoisCard store → WhoisCard render):
+
+1. Server side was CORRECT. `EventRouter` folds 330 → `account`, 671 →
+   `secure`, 276 → `certfp`; `Wire.whois_bundle/3` carries all three; the
+   cic narrower + store receive them. The prior #221 note admitted the
+   gap explicitly: *"Rendering the new fields in the card is out of MVP …
+   a polish cluster can render them."* That debt WAS the regression.
+2. `WhoisCard.tsx` `collectTags` badged "registered" off `is_registered`
+   (307 RPL_WHOISREGNICK — **bahamut-only**) and "SSL" off `using_ssl`
+   (275 RPL_USINGSSL — **bahamut-only**). solanum signals the SAME facts
+   via **different numerics**: 330 → `account`, 671 → `secure`. So on a
+   Libera upstream neither badge fired. The card also had NO `<dl>` row
+   for `account` / `secure_cipher` / `certfp` at all.
+
+**Fix (at the drop point, not downstream).**
+
+- `collectTags`: "registered" now fires on `is_registered || account !==
+  null`; "SSL" on `using_ssl || secure`. Both ircds' numerics map to one
+  badge — bahamut path unchanged, solanum path lit. `hasFields()` counts
+  the solanum fields too.
+- New `<dl>` rows render `account` (330), the TLS-protocol string (671),
+  and `certfp` (276) via the shared `MircBody` path (control-byte safe).
+
+**671 TLS-protocol string was ALSO discarded server-side (item 4).** The
+671 handler folded `%{secure: true}` and threw away the trailing. solanum
+(`modules/m_whois.c:341` + `librb/src/openssl.c:652`) appends a bracketed
+`[<version>, <cipher>]` — `rb_ssl_get_cipher`'s `"%s, %s"` — when the
+whois'd client is local and the cipher is oper/self-visible. New
+`parse_secure_cipher_trailing/1` (end-anchored `\[([^\]]+)\]\s*$`) captures
+it into a new **`secure_cipher`** field on `whois_pending` → `Wire` →
+`wireTypes.ts` (regen) → `api.ts` → narrower → modal `secure` row. The
+fixed English prefix is dropped (`feedback_no_localized_strings_server_side`);
+a bare trailing (non-oper WHOIS of another user) folds `secure: true` only,
+`secure_cipher` absent.
+
+**Tests that encoded the bug (inverted per never-assert-buggy-behavior).**
+The 671 unit test used the WRONG trailing shape (parens, not solanum's
+brackets) and asserted ONLY `secure: true` — it captured suppression, not
+the payload. Rewritten to feed solanum's bracket format and assert the
+cipher is captured; a sibling test locks the bare-trailing (nil cipher)
+case. `WhoisCard.test.tsx`'s `baseBundle` carried `account`/`secure`/
+`certfp` but NO test asserted they RENDER — added a `#221 solanum fields`
+describe (registered-from-account, SSL-from-secure, account/secure_cipher/
+certfp rows, the full combined solanum card). Also fixed PRE-EXISTING
+breakage: `userTopic.test.ts`'s whois `baseBundle` omitted the #221 fields
+the narrower already required (3 tests dropped-then-failed on base too —
+cic vitest is not in `check.sh`, so it slipped past); made the mock a
+realistic bundle + added a `secure_cipher` narrow round-trip test.
+
+**E2E (real browser, solanum-shaped).** Per the gap-(a) constraint the
+plaintext CI solanum node has no TLS + no services, so it cannot emit
+330/671/276 naturally. `issue221-whois-badges.spec.ts` drives a REAL
+`/whois` (a real server-emitted `whois_bundle` frame on the user topic)
+and uses Playwright `routeWebSocket` to augment THAT frame's payload with
+the four solanum fields — the exact JSON a real 330/671/276 would produce.
+Everything downstream is production code exercised for real: Phoenix v2 WS
+decode → `narrowUserEvent` (proves it accepts `secure_cipher`, unlike the
+vitest's direct `setWhoisBundle`) → store → `WhoisCard` render → live DOM;
+asserts the registered + SSL badges, the account name + TLS-protocol rows,
+and that the raw 330/671 English is NOT in the server window. Only the four
+field VALUES the node physically cannot produce are injected; framing,
+decode, narrow, store and render are all real. 3/3 iso-rerun stable.
+
+### Deploy classification
+
+- **671 cipher capture (`event_router.ex` + `wire.ex`):** HOT — pure code,
+  `whois_pending` is Map.get-defaulted GenServer state (hot-safe), no new
+  child, no migration. Confirmed against `Grappa.Deploy.Preflight` (field
+  add inside a GenServer accumulator + a Wire projection field = no
+  supervision/schema change → HOT).
+- **Wire-type + cic changes (`wireTypes.ts` regen, `api.ts`, `userTopic.ts`,
+  `WhoisCard.tsx`):** a `--cic` bundle deploy too.
+- Net: **HOT server reload + `--cic` bundle** (same shape as the original
+  #221 classification). No COLD, no migration, no testnet-infra prod deploy.
+
 ## 2026-07-14 — #233 read cursor is monotonic (advance-only); kills the scroll-to-bottom jump-back
 
 **Symptom (live client).** Tap the scroll-to-bottom button in a buffer with

@@ -756,11 +756,14 @@ export type WhoisBundle = {
   // rendering per `feedback_no_localized_strings_server_side`.
   //   account     — 330 RPL_WHOISLOGGEDIN account name (null = not identified)
   //   secure      — 671 RPL_WHOISSECURE (connected over TLS)
+  //   secure_cipher — 671 bracketed `[<version>, <cipher>]` TLS-protocol
+  //                 string (null when the requester can't see it)
   //   certfp      — 276 RPL_WHOISCERTFP client cert fingerprint (null = none)
   //   extra_lines — 320 RPL_WHOISSPECIAL + any unhandled WHOIS-leg numeric,
   //                 relayed verbatim in arrival order (the future-proof slot).
   account: string | null;
   secure: boolean;
+  secure_cipher: string | null;
   certfp: string | null;
   extra_lines: WhoisExtraLine[] | null;
 };

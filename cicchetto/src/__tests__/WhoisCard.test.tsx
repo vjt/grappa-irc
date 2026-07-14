@@ -35,6 +35,7 @@ const baseBundle: WhoisBundle = {
   actually_ip: null,
   account: null,
   secure: false,
+  secure_cipher: null,
   certfp: null,
   extra_lines: null,
 };
@@ -177,5 +178,88 @@ describe("WhoisCard P-0a flags", () => {
     expect(card.textContent).toContain("+iZ");
     expect(card.textContent).toContain("AFK");
     expect(card.textContent).toContain("secure.host");
+  });
+});
+
+// #221 (reopened) — solanum/Libera WHOIS badges + fields. The regression:
+// solanum signals "is registered" via 330 RPL_WHOISLOGGEDIN (→ `account`)
+// and "is secure" via 671 RPL_WHOISSECURE (→ `secure` + `secure_cipher`),
+// whereas bahamut used 307 (→ `is_registered`) and 275 (→ `using_ssl`). The
+// card badged ONLY the bahamut fields, so a registered + TLS Libera user's
+// modal looked anonymous + insecure. The account name + TLS-protocol string
+// + certfp were never rendered at all. These lock the fix: a badge/field
+// keyed off the solanum fields, without regressing the bahamut path.
+describe("WhoisCard #221 solanum fields", () => {
+  afterEach(() => {
+    dismissWhoisCard("azzurra");
+  });
+
+  it("renders 'registered' badge from account (330) even when is_registered is false", () => {
+    // solanum: account present, is_registered false (no 307 emitted).
+    setWhoisBundle("azzurra", { ...baseBundle, account: "AliceAccount", is_registered: false });
+    render(() => <WhoisCard networkSlug="azzurra" />);
+    expect(screen.getByText("registered")).toBeInTheDocument();
+  });
+
+  it("renders 'SSL' badge from secure (671) even when using_ssl is false", () => {
+    // solanum: secure true, using_ssl false (no 275 emitted).
+    setWhoisBundle("azzurra", { ...baseBundle, secure: true, using_ssl: false });
+    render(() => <WhoisCard networkSlug="azzurra" />);
+    expect(screen.getByText("SSL")).toBeInTheDocument();
+  });
+
+  it("renders the account name in a dedicated row when account is set", () => {
+    setWhoisBundle("azzurra", { ...baseBundle, account: "AliceAccount" });
+    render(() => <WhoisCard networkSlug="azzurra" />);
+    expect(screen.getByText("account")).toBeInTheDocument();
+    const card = screen.getByTestId("whois-card");
+    expect(card.textContent).toContain("AliceAccount");
+  });
+
+  it("renders the TLS protocol string from secure_cipher when present", () => {
+    setWhoisBundle("azzurra", {
+      ...baseBundle,
+      secure: true,
+      secure_cipher: "TLSv1.3, TLS_AES_256_GCM_SHA384",
+    });
+    render(() => <WhoisCard networkSlug="azzurra" />);
+    expect(screen.getByText("secure")).toBeInTheDocument();
+    const card = screen.getByTestId("whois-card");
+    expect(card.textContent).toContain("TLSv1.3, TLS_AES_256_GCM_SHA384");
+  });
+
+  it("renders the certfp fingerprint row when certfp is set", () => {
+    setWhoisBundle("azzurra", { ...baseBundle, certfp: "deadbeefcafef00d" });
+    render(() => <WhoisCard networkSlug="azzurra" />);
+    expect(screen.getByText("cert")).toBeInTheDocument();
+    const card = screen.getByTestId("whois-card");
+    expect(card.textContent).toContain("deadbeefcafef00d");
+  });
+
+  it("renders registered badge + account name + SSL badge + TLS proto together for a solanum user", () => {
+    // The full reopened-#221 bug scenario in one card: registered + TLS
+    // Libera user must NOT look anonymous + insecure.
+    setWhoisBundle("azzurra", {
+      ...baseBundle,
+      account: "AliceAccount",
+      secure: true,
+      secure_cipher: "TLSv1.3, TLS_AES_256_GCM_SHA384",
+      is_registered: false,
+      using_ssl: false,
+    });
+    render(() => <WhoisCard networkSlug="azzurra" />);
+    const card = screen.getByTestId("whois-card");
+    expect(card.textContent).toContain("registered");
+    expect(card.textContent).toContain("SSL");
+    expect(card.textContent).toContain("AliceAccount");
+    expect(card.textContent).toContain("TLSv1.3, TLS_AES_256_GCM_SHA384");
+  });
+
+  it("does NOT render a 'registered' badge or account row when account is null and is_registered false", () => {
+    setWhoisBundle("azzurra", baseBundle);
+    render(() => <WhoisCard networkSlug="azzurra" />);
+    const card = screen.getByTestId("whois-card");
+    expect(card.textContent).not.toContain("registered");
+    expect(card.textContent).not.toContain("account");
   });
 });

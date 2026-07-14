@@ -774,6 +774,7 @@ export type SessionWireWhoisBundlePayload = {
   actually_ip: string | null;
   account: string | null;
   secure: boolean;
+  secure_cipher: string | null;
   certfp: string | null;
   extra_lines: SessionWireWhoisExtraLine[] | null;
 };

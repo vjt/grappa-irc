@@ -3168,6 +3168,7 @@ describe("ScrollbackPane", () => {
       actually_ip: null,
       account: null,
       secure: false,
+      secure_cipher: null,
       certfp: null,
       extra_lines: null,
     };

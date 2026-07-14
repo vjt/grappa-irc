@@ -1299,14 +1299,29 @@ defmodule Grappa.Session.EventRouter do
   end
 
   # 671 RPL_WHOISSECURE: `:server 671 own_nick target :is using a secure
-  # connection [cipher]`. modules/m_whois.c:341 (form_str "%s :%s"). Boolean
-  # flag; the cipher string in the trailing is display-only, cic localizes.
+  # connection [<version>, <cipher>]`. modules/m_whois.c:341 (form_str
+  # "%s :%s"). The trailing carries a boolean signal ("is using a secure
+  # connection") plus — when the whois'd client is local and the cipher is
+  # visible (m_whois.c:337-339, oper/self-gated) — a bracketed
+  # `[<version>, <cipher>]` payload built by rb_ssl_get_cipher's "%s, %s"
+  # (librb/src/openssl.c:652). `secure: true` is the flag; the bracketed
+  # payload (STRUCTURED display data — a TLS version/cipher tuple, not a
+  # localized English template) is captured into `secure_cipher` for the
+  # modal's TLS-protocol field. The fixed English prefix is dropped
+  # (feedback_no_localized_strings_server_side); a bare trailing with no
+  # brackets folds `secure: true` only.
   defp do_route(
-         %Message{command: {:numeric, 671}, params: [_, target | _]},
+         %Message{command: {:numeric, 671}, params: [_, target | rest]},
          state
        )
        when is_binary(target) do
-    {:cont, whois_fold(state, target, %{secure: true}), []}
+    fold =
+      case parse_secure_cipher_trailing(whois_trailing(rest)) do
+        nil -> %{secure: true}
+        cipher -> %{secure: true, secure_cipher: cipher}
+      end
+
+    {:cont, whois_fold(state, target, fold), []}
   end
 
   # 276 RPL_WHOISCERTFP: `:server 276 own_nick target :has client
@@ -2835,6 +2850,30 @@ defmodule Grappa.Session.EventRouter do
       nil -> nil
       "" -> nil
       fp -> fp
+    end
+  end
+
+  # #221 — 671 RPL_WHOISSECURE cipher extractor. solanum appends a bracketed
+  # `[<version>, <cipher>]` to the trailing when the cipher is visible
+  # (m_whois.c:339 `rb_snprintf_append(cbuf, ..., " [%s]", cipher_string)`,
+  # the payload being rb_ssl_get_cipher's "%s, %s" — openssl.c:652). Capture
+  # what is inside the trailing `[...]` suffix; nil when there is no
+  # bracketed payload (a non-oper WHOIS of another user gets the bare
+  # label). Anchored to end-of-string so the brackets can only be the
+  # suffix solanum emits, never an earlier stray token.
+  @spec parse_secure_cipher_trailing(String.t() | nil) :: String.t() | nil
+  defp parse_secure_cipher_trailing(nil), do: nil
+
+  defp parse_secure_cipher_trailing(text) when is_binary(text) do
+    case Regex.run(~r/\[([^\]]+)\]\s*$/, text) do
+      [_, cipher] ->
+        case String.trim(cipher) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
     end
   end
 

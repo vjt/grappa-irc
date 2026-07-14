@@ -1089,6 +1089,16 @@ describe("userTopic", () => {
       away_message: null,
       actually_host: null,
       actually_ip: null,
+      // #221 — solanum WHOIS-leg fields are REQUIRED by narrowUserEvent
+      // (account/certfp nullable-string, secure boolean, secure_cipher
+      // nullable-string). A realistic whois_bundle always carries them; a
+      // mock missing them is dropped by the narrower (this predated the
+      // fields being required — pre-existing test breakage fixed alongside
+      // #221's secure_cipher add).
+      account: null,
+      secure: false,
+      secure_cipher: null,
+      certfp: null,
     };
 
     it("accepts well-formed channels array", async () => {
@@ -1128,6 +1138,33 @@ describe("userTopic", () => {
         "azzurra",
         expect.objectContaining({ channels: [] }),
       );
+    });
+
+    it("#221 — narrows account/secure/secure_cipher/certfp through to the bundle", async () => {
+      const wc = await import("../lib/whoisCard");
+      channelMock.fireEvent({
+        ...baseBundle,
+        channels: null,
+        account: "AliceAccount",
+        secure: true,
+        secure_cipher: "TLSv1.3, TLS_AES_256_GCM_SHA384",
+        certfp: "deadbeefcafef00d",
+      });
+      expect(wc.setWhoisBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({
+          account: "AliceAccount",
+          secure: true,
+          secure_cipher: "TLSv1.3, TLS_AES_256_GCM_SHA384",
+          certfp: "deadbeefcafef00d",
+        }),
+      );
+    });
+
+    it("#221 — drops bundle when secure_cipher is a non-string non-null value", async () => {
+      const wc = await import("../lib/whoisCard");
+      channelMock.fireEvent({ ...baseBundle, channels: null, secure_cipher: 42 });
+      expect(wc.setWhoisBundle).not.toHaveBeenCalled();
     });
   });
 

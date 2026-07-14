@@ -410,6 +410,8 @@ defmodule Grappa.Session.Wire do
           # account     — 330 RPL_WHOISLOGGEDIN: NickServ/services account
           #               the target is logged in as (nil = not identified).
           # secure      — 671 RPL_WHOISSECURE: connected over TLS.
+          # secure_cipher — 671 bracketed `[<version>, <cipher>]` payload
+          #               (nil when the requester can't see it / bare label).
           # certfp      — 276 RPL_WHOISCERTFP: client cert fingerprint (nil
           #               = none / not visible to the requester).
           # extra_lines — 320 RPL_WHOISSPECIAL + ANY unhandled WHOIS-leg
@@ -419,6 +421,7 @@ defmodule Grappa.Session.Wire do
           #               numeric appears here with no server code change.
           account: String.t() | nil,
           secure: boolean(),
+          secure_cipher: String.t() | nil,
           certfp: String.t() | nil,
           extra_lines: [whois_extra_line()] | nil
         }
@@ -1028,6 +1031,7 @@ defmodule Grappa.Session.Wire do
       # marshals unchanged.
       account: Map.get(accum, :account),
       secure: Map.get(accum, :secure, false),
+      secure_cipher: Map.get(accum, :secure_cipher),
       certfp: Map.get(accum, :certfp),
       # #221 — extra_lines are prepended LIFO by whois_extra_line_fold for
       # O(1) fold; reverse here so cic sees them in arrival (wire) order.
