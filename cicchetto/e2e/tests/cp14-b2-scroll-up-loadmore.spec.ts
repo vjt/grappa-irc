@@ -53,18 +53,29 @@ async function scrollbackGeometry(
   });
 }
 
-// Programmatically scroll the scrollback to the given scrollTop and
-// fire a synthetic `scroll` event so the Solid handler runs. Setting
-// scrollTop alone DOES fire `scroll` in real browsers, but the test
-// harness can race the dispatch — explicit dispatchEvent is belt+
-// braces.
-async function scrollScrollbackTo(page: Page, scrollTop: number): Promise<void> {
-  await page.evaluate((t) => {
-    const el = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
-    if (!el) throw new Error("scrollback container not found");
-    el.scrollTop = t;
-    el.dispatchEvent(new Event("scroll"));
-  }, scrollTop);
+// Scroll the scrollback to the top with a REAL wheel gesture (mirrors
+// cursor-forward-only.spec.ts::scrollByPx / issue168 helpers).
+//
+// A synthetic `el.scrollTop = 0; dispatchEvent(new Event("scroll"))`
+// fires `onScroll` (so loadMore DOES trigger — it's called
+// unconditionally there) but NEVER fires `onWheel`, so
+// `lastInputEventAtMs` is never stamped. That leaves the #168
+// `markerActivationPending` latch armed: when the loadMore prepend
+// recreates the ref-keyed <For> rows, the length-effect re-asserts
+// "marker-or-tail" (or the stale-`lastScrollTop` atBottom race keeps
+// atBottom=true) and SNAPS the pane to the tail — the flake
+// (distanceFromBottom≈7). A real WheelEvent stamps
+// `lastInputEventAtMs` → clears the latch → the length-effect falls
+// through to the atBottom=false preserve path, and the wheel is a
+// genuine monotonic scroll DECREASE so atBottom flips false
+// deterministically. One big wheel-up clamps scrollTop to 0, well
+// within LOAD_MORE_THRESHOLD_PX, so onScroll owns loadMore with the
+// correct post-scroll geometry.
+async function wheelScrollbackToTop(page: Page): Promise<void> {
+  const box = await page.locator('[data-testid="scrollback"]').boundingBox();
+  if (!box) throw new Error("scrollback bounding box null");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, -100_000);
 }
 
 test.describe("CP14 B2 — scroll-up triggers loadMore (no end-of-history bounce)", () => {
@@ -88,7 +99,7 @@ test.describe("CP14 B2 — scroll-up triggers loadMore (no end-of-history bounce
     expect(g0.scrollHeight).toBeGreaterThan(g0.clientHeight);
 
     // Scroll to the top — well within LOAD_MORE_THRESHOLD_PX.
-    await scrollScrollbackTo(page, 0);
+    await wheelScrollbackToTop(page);
 
     // The fetch is async; poll for the row count to grow past the
     // initial REST page. With 200 seeded rows and PAGE_SIZE=50, one
@@ -136,7 +147,7 @@ test.describe("CP14 B2 — scroll-up triggers loadMore (no end-of-history bounce
     for (let round = 0; round < 10; round++) {
       const before = await scrollbackLines(page).count();
       if (before >= 200) break;
-      await scrollScrollbackTo(page, 0);
+      await wheelScrollbackToTop(page);
       try {
         await expect
           .poll(async () => await scrollbackLines(page).count(), { timeout: 5_000 })
