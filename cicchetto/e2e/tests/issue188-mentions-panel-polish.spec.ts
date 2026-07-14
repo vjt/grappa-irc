@@ -36,14 +36,30 @@ const CHANNEL_A = AUTOJOIN_CHANNELS[0]; // "#bofh" — already joined at login
 const CHANNEL_B = "#m188"; // fresh channel this operator joins
 const AWAY_REASON = "lunch break";
 // Bodies mention the operator's nick at a word boundary so the server's
-// mention aggregation (own-nick regex) matches them.
-const BODY_A = `${NETWORK_NICK} ping in bofh`;
-const BODY_B = `${NETWORK_NICK} ping in m188`;
+// mention aggregation (own-nick regex) matches them. A per-invocation
+// `runId` suffix is LOAD-BEARING, not cosmetic: `#m188` is NOT in the
+// seeded autojoin set, so the wrapped `test` fixture's `_vjtReset`
+// (which truncates + reseeds only AUTOJOIN_CHANNELS = #bofh) leaves
+// prior-iteration `ping in m188` rows in #m188's scrollback. With a
+// constant body, the `scrollbackLine(...).first()` wait below would
+// match a STALE row and false-pass WITHOUT the fresh BODY_B having
+// persisted — so the unaway aggregation races and under-counts (the
+// self-poisoning "1 message in 1 channel" / "0 messages" flake seen
+// under --repeat-each). A fresh runId per test invocation makes each
+// wait a true "the FRESH mention landed" precondition.
+const mentionBody = (where: string, runId: string): string =>
+  `${NETWORK_NICK} ping in ${where} ${runId}`;
 
 test("#188 — away mentions panel: grouped restyle, open-button, close-x, clear-on-away", async ({
   page,
 }) => {
   const vjt = getSeededVjt();
+  // Per-invocation unique suffix — see `mentionBody` comment: guards the
+  // scrollback-render waits below against matching a stale prior-iteration
+  // `#m188` row (which _vjtReset does not truncate).
+  const runId = crypto.randomUUID().slice(0, 8);
+  const bodyA = mentionBody("bofh", runId);
+  const bodyB = mentionBody("m188", runId);
   await loginAs(page, vjt);
 
   // Join both channels (subscribed + confirmed via the self-JOIN line).
@@ -64,14 +80,14 @@ test("#188 — away mentions panel: grouped restyle, open-button, close-x, clear
     // A-then-B makes the aggregated bundle deterministic (server_time ASC),
     // so the groups render #bofh then #m188.
     await selectChannel(page, NETWORK_SLUG, CHANNEL_A, { awaitWsReady: false });
-    peer.privmsg(CHANNEL_A, BODY_A);
-    await expect(scrollbackLine(page, "privmsg", "ping in bofh").first()).toBeVisible({
+    peer.privmsg(CHANNEL_A, bodyA);
+    await expect(scrollbackLine(page, "privmsg", `ping in bofh ${runId}`).first()).toBeVisible({
       timeout: 10_000,
     });
 
     await selectChannel(page, NETWORK_SLUG, CHANNEL_B, { awaitWsReady: false });
-    peer.privmsg(CHANNEL_B, BODY_B);
-    await expect(scrollbackLine(page, "privmsg", "ping in m188").first()).toBeVisible({
+    peer.privmsg(CHANNEL_B, bodyB);
+    await expect(scrollbackLine(page, "privmsg", `ping in m188 ${runId}`).first()).toBeVisible({
       timeout: 10_000,
     });
 
@@ -108,7 +124,7 @@ test("#188 — away mentions panel: grouped restyle, open-button, close-x, clear
       .first();
     await bofhRow.click();
     await expect(panel).toHaveCount(0);
-    await expect(scrollbackLine(page, "privmsg", "ping in bofh").first()).toBeVisible();
+    await expect(scrollbackLine(page, "privmsg", `ping in bofh ${runId}`).first()).toBeVisible();
 
     // Open-button next to the cog re-opens the panel (item 6). It surfaces
     // only because a bundle still exists for this network.
