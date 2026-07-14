@@ -43,3 +43,9 @@ docs/
 cicchetto/e2e/nginx-certs/
 cicchetto/e2e/test-results/
 cicchetto/e2e/playwright-report/
+
+# Nested git worktrees are never part of any image build context and can
+# carry their OWN root-owned e2e artifacts (e.g. .worktrees/196-e2e-robust/
+# cicchetto/e2e/nginx-certs/nginx.key) at a depth the root-anchored excludes
+# above miss — a non-root local build dies tarring them. Drop the whole tree.
+.worktrees/

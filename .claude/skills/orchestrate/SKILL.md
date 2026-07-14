@@ -95,11 +95,15 @@ are ephemeral): sibling = "grappa-worker", orchestrator = "grappa-orch", ircbot 
 
 ### Permanent rules (apply to EVERY run — do NOT re-paste into the handoff)
 
-- **Announce to #grappa** (not #it-opers). Every prod ship AND every `--cic` bundle
-  deploy (even hygiene — users get a BundleRefreshBanner, tell them why) → one line via
-  the ircbot pane ("vjt-claude"), its own voice, no vjt-highlight for routine. The bot may
-  decline "nothing to add" → re-brief explicitly as an unposted ship announce so it posts.
-  See memory [[feedback_announce_ships_to_grappa]].
+- **Announce to #grappa on BOTH Azzurra AND Libera** (new 2026-07-14; not #it-opers). Every
+  prod ship AND every `--cic` bundle deploy (even hygiene — users get a BundleRefreshBanner,
+  tell them why) → one line to #grappa on each network via the ircbot pane ("vjt-claude"), its
+  own voice, no vjt-highlight for routine. The bot owns both net connections (2 monitors). The
+  bot may decline "nothing to add" → re-brief explicitly as an unposted ship announce so it
+  posts. See memory [[feedback_announce_ships_to_grappa]].
+- **Batch ALL cold-classified issues into ONE cold window** (reinforced 2026-07-14): don't fire
+  a cold deploy for one issue while another cold issue is close behind — hold + ship them
+  together to minimize restarts. Prefer designing features HOT. See [[feedback_minimize_cold_deploys]].
 - **Every new feature needs a REAL e2e** that asserts the user-visible outcome (not a
   hollow green spec). **A red `integration`/e2e CI job BLOCKS** — never build/ship on red;
   `gh run list` to find where it went red, fix/bump-to-front, green it. cic `ci` job is
