@@ -229,7 +229,17 @@ defmodule Grappa.MentionsTest do
     property "in-memory word-boundary filter matches Elixir Regex (no silent filtering bug)",
              %{user: u, network: net} do
       check all(
-              bodies <- list_of(string(:printable, min_length: 1, max_length: 50), max_length: 10),
+              # Blank-after-trim bodies (e.g. a lone " ") can't exist in
+              # production — Scrollback.Message's `validate_required(:body)`
+              # rejects them, so `insert!/1` would MatchError on the {:error,
+              # changeset}. Filter them out: the word-boundary property only
+              # concerns bodies a real message could carry. (Pre-existing
+              # seed-dependent flake, unrelated to #246.)
+              bodies <-
+                list_of(
+                  filter(string(:printable, min_length: 1, max_length: 50), &(String.trim(&1) != "")),
+                  max_length: 10
+                ),
               patterns <-
                 list_of(string(:alphanumeric, min_length: 2, max_length: 10),
                   max_length: 3
