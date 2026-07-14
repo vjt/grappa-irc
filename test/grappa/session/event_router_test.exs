@@ -1514,6 +1514,26 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:umode_changed, ["S", "i", "x"]} in effects
     end
+
+    # #221 — the on-connect self-MODE echo (solanum ircd/s_user.c:1382
+    # `:nick MODE nick :+modes`) parses solanum's usermode letters with no
+    # bahamut-letter assumption. Characterization: a Libera connect burst
+    # sets +Zi (secure + invisible) on the own nick. GREEN with no
+    # production change — the generic walker already handles any letter.
+    test "#221 solanum on-connect self-MODE (+Zi) folds generically" do
+      state = base_state(%{nick: "libera-user"})
+      m = msg(:mode, ["libera-user", "+Zi"], {:server, "irc.libera.chat"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == ["Z", "i"]
+
+      persist = Enum.find(effects, &match?({:persist, :mode, _}, &1))
+      assert {:persist, :mode, attrs} = persist
+      assert attrs.channel == "$server"
+      assert attrs.meta.modes == "+Zi"
+
+      assert {:umode_changed, ["Z", "i"]} in effects
+    end
   end
 
   describe "route/2 — :mode user-MODE-on-own-nick +r observation (Task 15)" do
@@ -1691,6 +1711,34 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, new_state, effects} = EventRouter.route(m, state)
       assert new_state.umodes == ["i"]
       assert {:umode_changed, ["i"]} in effects
+    end
+
+    # #221 — the on-connect usermode parse is letter-AGNOSTIC. solanum
+    # (Libera.Chat) advertises a DIFFERENT usermode set than bahamut —
+    # ircd/s_user.c:61 user_modes[256] registers D/Q/S/Z/a/i/o/s/w/z plus
+    # extension-registered letters. These characterization tests prove the
+    # generic walker (apply_umode_string/2) folds solanum's letters with no
+    # bahamut-letter assumption and no ordering dependence. No production
+    # change was needed for gap (b) — this locks that in.
+    test "221 folds solanum-specific umode letters (D/Q/Z/i) generically" do
+      state = base_state(%{nick: "libera-user", umodes: []})
+      # A plausible Libera on-connect umode snapshot: +DQZi (deaf, no-forward,
+      # secure/TLS, invisible) — none of which are in bahamut's +iwxs set.
+      m = msg({:numeric, 221}, ["libera-user", "+DQZi"], {:server, "irc.libera.chat"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      # Sorted letter list; every letter preserved regardless of the ircd.
+      assert new_state.umodes == ["D", "Q", "Z", "i"]
+      assert {:umode_changed, ["D", "Q", "Z", "i"]} in effects
+    end
+
+    test "221 parse is order-agnostic (same set, different advertised order)" do
+      state = base_state(%{nick: "libera-user", umodes: []})
+      m = msg({:numeric, 221}, ["libera-user", "+iZQD"], {:server, "irc.libera.chat"})
+
+      assert {:cont, new_state, _effects} = EventRouter.route(m, state)
+      # Result is a sorted set — advertised order does not change the outcome.
+      assert new_state.umodes == ["D", "Q", "Z", "i"]
     end
   end
 
