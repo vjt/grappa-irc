@@ -32,8 +32,14 @@ RUN meson setup build --optimization 2 --prefix=/usr/local/solanum \
  && meson install -C build
 
 FROM debian:trixie-slim
+# netbase provides /etc/services — solanum's authd resolves its nameserver
+# via getaddrinfo(ns, "domain", …) (reslib.c:232), looking up the "domain"
+# service (port 53) in /etc/services. Without it EVERY nameserver is
+# rejected → authd dies "no name servers" → non-loopback client
+# registration stalls. libltdl7: solanum dlopen's its modules via libltdl.
+# gosu: entrypoint drops root→ircd after repairing resolv.conf.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libsqlite3-0 libssl3 libltdl7 gettext-base \
+    libsqlite3-0 libssl3 libltdl7 gettext-base gosu netbase \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/solanum /usr/local/solanum
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -42,7 +48,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
  && useradd -r -s /usr/sbin/nologin -d /usr/local/solanum ircd \
  && mkdir -p /usr/local/solanum/etc /usr/local/solanum/logs \
  && chown -R ircd: /usr/local/solanum /etc/solanum
-USER ircd
+# Entrypoint starts as ROOT (to repair resolv.conf for authd — see
+# entrypoint.sh) then drops to the unprivileged ircd user via gosu before
+# exec'ing solanum (which refuses to run as root). No USER directive.
 WORKDIR /usr/local/solanum
 EXPOSE 6667
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

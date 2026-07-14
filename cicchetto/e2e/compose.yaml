@@ -102,6 +102,17 @@ services:
       SERVER_DESC: "Grappa e2e second network (solanum, standalone)"
       OPER_NICK: ${OPER_NICK:-testoper}
       OPER_PASS: ${OPER_PASS:-testoperpass}
+    # #221 — solanum's authd resolver reads /etc/resolv.conf once at boot
+    # and DIES ("DNS: no name servers") if it can't parse a usable
+    # nameserver; a dead authd stalls EVERY non-loopback client
+    # registration (a network peer gets zero bytes back). Docker's default
+    # resolv.conf adds `options ndots:0`, which authd's minimal parser
+    # chokes on. Pin a clean nameserver (docker's embedded resolver) with
+    # NO options so authd stays alive and clients register promptly —
+    # rDNS still fails gracefully per-connection, which is fine.
+    dns:
+      - 1.1.1.1
+    dns_opt: []
     networks:
       grappa-e2e:
         # Keep the `bahamut-test2` alias (#221): the azzurra2 seed + the
