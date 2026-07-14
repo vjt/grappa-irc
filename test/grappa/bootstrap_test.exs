@@ -716,25 +716,20 @@ defmodule Grappa.BootstrapTest do
     end
   end
 
-  describe "outbound pool exclusion" do
+  describe "outbound pool (DB-driven, #228)" do
     setup do
-      prior = Application.get_env(:grappa, :outbound_v6_pool, [])
-
-      on_exit(fn ->
-        Application.put_env(:grappa, :outbound_v6_pool, prior)
-        :ok = Grappa.OutboundV6Pool.boot()
-      end)
-
-      Application.put_env(:grappa, :outbound_v6_pool, [
-        {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x9000}
-      ])
-
-      :ok = Grappa.OutboundV6Pool.boot()
+      on_exit(fn -> :ok = Grappa.OutboundV6Pool.apply_pool([]) end)
+      :ok
     end
 
-    test "subtracts a configured fixed source that overlaps the pool, with an honest log" do
+    test "installs in_pool vhosts minus overlapping fixed sources, honest log" do
       vjt = user_fixture(name: "pool-#{System.unique_integer([:positive])}")
       {_, port} = start_server()
+
+      # Two in_pool vhosts; one of them is ALSO a per-server fixed source
+      # → must be excluded from the effective rotation pool (spec §3).
+      {:ok, _} = Grappa.Vhosts.create_vhost(%{address: "2a03:4000:2:33c::9000", in_pool: true})
+      {:ok, _} = Grappa.Vhosts.create_vhost(%{address: "2a03:4000:2:33c::442", in_pool: true})
 
       slug = "pool-#{System.unique_integer([:positive])}"
       {:ok, network} = Networks.find_or_create_network(%{slug: slug})
@@ -761,17 +756,21 @@ defmodule Grappa.BootstrapTest do
 
       log = capture_log(fn -> assert {:ok, %Result{}} = Bootstrap.run() end)
 
-      # Excluded from the effective pool — pick can no longer return it.
-      assert Grappa.OutboundV6Pool.effective_pool() == []
+      # The overlapping fixed source is gone; only the non-fixed member survives.
+      assert Grappa.OutboundV6Pool.current_pool() == [
+               {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x442}
+             ]
+
       assert log =~ "outbound pool"
+      assert log =~ "2 in_pool vhosts"
       assert log =~ "1 excluded"
     end
 
-    test "a dedicated source not in the pool is reported as not-in-pool, pool unchanged" do
-      # source_address that is NOT a member of the configured pool (the
-      # setup pool is 2a03:4000:2:33c::9000) — the normal dedicated-IP case.
+    test "in_pool vhosts with no overlapping fixed source install as-is" do
       vjt = user_fixture(name: "pool-#{System.unique_integer([:positive])}")
       {_, port} = start_server()
+
+      {:ok, _} = Grappa.Vhosts.create_vhost(%{address: "2a03:4000:2:33c::9000", in_pool: true})
 
       slug = "pool-#{System.unique_integer([:positive])}"
       {:ok, network} = Networks.find_or_create_network(%{slug: slug})
@@ -781,6 +780,7 @@ defmodule Grappa.BootstrapTest do
           host: "127.0.0.1",
           port: port,
           tls: false,
+          # A dedicated source that is NOT in the pool — pool unchanged.
           source_address: "2001:db8::1"
         })
 
@@ -798,13 +798,12 @@ defmodule Grappa.BootstrapTest do
 
       log = capture_log(fn -> assert {:ok, %Result{}} = Bootstrap.run() end)
 
-      # pool keeps its single member (nothing overlapped → nothing removed)
-      assert Grappa.OutboundV6Pool.effective_pool() == [
+      assert Grappa.OutboundV6Pool.current_pool() == [
                {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x9000}
              ]
 
+      assert log =~ "1 in_pool vhosts"
       assert log =~ "0 excluded"
-      assert log =~ "1 dedicated, not in pool"
     end
   end
 

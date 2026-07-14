@@ -1137,10 +1137,11 @@ defmodule Grappa.IRC.Client do
 
   # Outbound v6 source-address selection.
   #
-  # If `GRAPPA_OUTBOUND_V6_POOL` is configured + the upstream host
-  # has an AAAA record, pick a random pool entry and bind it as
-  # `ifaddr` on a v6 socket. Otherwise fall through to v4 with
-  # kernel-default source selection.
+  # If the DB-driven rotation pool (`Grappa.OutboundV6Pool`, curated via
+  # the `in_pool` vhosts — #228) is non-empty + the upstream host has an
+  # AAAA record, pick a random pool entry and bind it as `ifaddr` on a v6
+  # socket. Otherwise fall through to v4 with kernel-default source
+  # selection.
   #
   # Pre-resolving + selecting the address family BEFORE the connect
   # call is mandatory: passing a v6 `ifaddr` to `:gen_tcp.connect/4`

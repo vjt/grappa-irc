@@ -22,9 +22,8 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
 
   `--source <ip>` pins the outbound source address for this server.
   Must be a strict literal IPv4 or IPv6 address (no hostname, no CIDR).
-  An informational notice is printed when the address is also in
-  `GRAPPA_OUTBOUND_V6_POOL` (it will be excluded from the visitor pool
-  at boot — see `Grappa.OutboundV6Pool`).
+  This is the per-network FALLBACK source; a per-subject vhost pin or
+  selection (#228, admin panel) overrides it. See `Grappa.Vhosts`.
 
   Valid `--auth` values: `auto | sasl | server_pass | nickserv_identify
   | none`. S29 H10: `--auth` lost its silent `auto` default — operator
@@ -103,12 +102,11 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
            source_address: Keyword.get(opts, :source)
          }) do
       {:ok, _} ->
-        Output.maybe_notice_source_in_pool(Keyword.get(opts, :source))
+        :ok
 
       {:error, :already_exists} ->
         # Pre-existing row keeps its prior source_address; the --source
-        # given here was NOT persisted, so no pool notice (it would imply
-        # a write that did not happen). Matches add_server.
+        # given here was NOT persisted. Matches add_server.
         :ok
 
       {:error, cs} ->

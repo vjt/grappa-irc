@@ -203,7 +203,14 @@ defmodule Grappa.Networks.SessionPlan do
       host: server.host,
       port: server.port,
       tls: server.tls,
-      source_address: server.source_address
+      # #228 — resolve the source-bind through the per-subject vhost layer
+      # (pin / selection), falling back to the per-server fixed source
+      # (`server.source_address`, or nil → the DB-driven rotation pool /
+      # kernel default). The connect path in `Grappa.IRC.Client` is
+      # UNCHANGED — this only chooses WHICH value it binds. Re-resolved on
+      # every `Session.Server.init/1` via `refresh_plan`, so a live vhost
+      # change takes effect on the next (re)connect.
+      source_address: Grappa.Vhosts.effective_source(subject, server.source_address)
     }
   end
 

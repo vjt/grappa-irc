@@ -49,6 +49,7 @@ defmodule Grappa.Networks do
       Grappa.Scrollback,
       Grappa.Session,
       Grappa.Vault,
+      Grappa.Vhosts,
       Grappa.Wire.Time
     ],
     # `Visitors.Visitor` is referenced by `Networks.Credential` (the

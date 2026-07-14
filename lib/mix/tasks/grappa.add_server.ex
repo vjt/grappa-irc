@@ -20,9 +20,8 @@ defmodule Mix.Tasks.Grappa.AddServer do
 
   `--source <ip>` pins the outbound source address for this server.
   Must be a strict literal IPv4 or IPv6 address (no hostname, no CIDR).
-  An informational notice is printed when the address is also in
-  `GRAPPA_OUTBOUND_V6_POOL` (it will be excluded from the visitor pool
-  at boot — see `Grappa.OutboundV6Pool`).
+  This is the per-network FALLBACK source; a per-subject vhost pin or
+  selection (#228, admin panel) overrides it. See `Grappa.Vhosts`.
 
   ## TLS default — port-sniffed
 
@@ -81,7 +80,6 @@ defmodule Mix.Tasks.Grappa.AddServer do
     case Servers.add_server(network, attrs) do
       {:ok, _} ->
         IO.puts("added server #{host}:#{port} to #{slug}")
-        Output.maybe_notice_source_in_pool(Keyword.get(opts, :source))
 
       {:error, :already_exists} ->
         IO.puts("server #{host}:#{port} already on #{slug}; no-op")

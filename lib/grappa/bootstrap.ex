@@ -148,6 +148,7 @@ defmodule Grappa.Bootstrap do
       Grappa.OutboundV6Pool,
       Grappa.Session,
       Grappa.SpawnOrchestrator,
+      Grappa.Vhosts,
       Grappa.Visitors
     ]
 
@@ -222,13 +223,14 @@ defmodule Grappa.Bootstrap do
     # their credentials, folded into `cred_networks`).
     validate_credential_servers!(credentials)
 
-    # Subtract every configured fixed source from the effective visitor
-    # pool BEFORE spawning, so no visitor session can pick/0 a dedicated
-    # oper IP (spec §3). Subtract-never-assert: overlap is silently
-    # excluded, never a boot failure. Two-phase: Application.start
-    # installed the raw env pool; this refines it to the effective pool
-    # while no session has spawned yet.
-    exclude_fixed_sources_from_pool()
+    # Install the outbound v6 rotation pool from the DB-curated `in_pool`
+    # vhosts, MINUS every configured per-server fixed source, BEFORE any
+    # session spawns — so no auto-allocated session can pick/0 a dedicated
+    # oper IP (spec §3 safety net, preserved). Subtract-never-assert:
+    # overlap is silently excluded, never a boot failure. #228 (vjt
+    # 2026-07-14) — the pool source is now the DB, not the
+    # GRAPPA_OUTBOUND_V6_POOL env var.
+    apply_outbound_pool()
 
     user_stats =
       case credentials do
@@ -245,37 +247,30 @@ defmodule Grappa.Bootstrap do
     {:ok, sum_results(user_stats, visitor_stats)}
   end
 
-  # Refines the effective OutboundV6Pool = raw - fixed sources before any
-  # session spawns. `apply_exclusions/1` is idempotent + subtract-never-
-  # assert (overlap is silently dropped, a v4 source against the v6 pool
-  # is a no-op), so this never fails the boot. Honest log states what we
-  # OBSERVED: configured / excluded / effective counts in the message
-  # string (no new Logger metadata-allowlist keys).
-  @spec exclude_fixed_sources_from_pool() :: :ok
-  defp exclude_fixed_sources_from_pool do
-    sources = Servers.list_source_addresses()
-    raw = Grappa.OutboundV6Pool.raw_pool()
-    :ok = Grappa.OutboundV6Pool.apply_exclusions(sources)
-    effective = Grappa.OutboundV6Pool.effective_pool()
+  # Installs the effective outbound v6 pool = DB-curated `in_pool` vhosts
+  # MINUS per-server fixed sources, before any session spawns. #228 (vjt
+  # 2026-07-14) — pool is DB-driven (`Vhosts.pool_addresses/0`), no env
+  # var. The fixed-source subtraction is the spec §3 safety net: a
+  # dedicated per-network source_address must never leak into the
+  # auto-rotation pool. String set-difference on canonical literals (both
+  # stores canonicalize via `Grappa.Net.IpLiteral`), so `::9000` vs
+  # `0:0:..:9000` can't slip past. `apply_pool/1` keeps only v6 entries.
+  # Honest log states what we OBSERVED (pool / excluded / effective).
+  @spec apply_outbound_pool() :: :ok
+  defp apply_outbound_pool do
+    pool = Grappa.Vhosts.pool_addresses()
+    fixed = MapSet.new(Servers.list_source_addresses())
+    effective = Enum.reject(pool, &MapSet.member?(fixed, &1))
+    :ok = Grappa.OutboundV6Pool.apply_pool(effective)
 
-    # `excluded` = pool members actually removed (raw − effective).
-    # A configured source that was NOT in the pool is a dedicated IP that
-    # never overlapped the visitor pool — the normal, correct case — not
-    # an exclusion. Report it separately so the line is honest (CLAUDE.md
-    # log-honesty: state what was OBSERVED) instead of "0 excluded as
-    # fixed sources [ip]" reading like a contradiction.
-    excluded = length(raw) - length(effective)
-    not_in_pool = length(sources) - excluded
-
-    detail = if not_in_pool > 0, do: " (#{not_in_pool} dedicated, not in pool — OK)", else: ""
+    excluded = length(pool) - length(effective)
 
     msg =
-      "outbound pool: #{length(raw)} configured, #{excluded} excluded as fixed " <>
-        "sources #{inspect(sources)}#{detail}, #{length(effective)} effective"
+      "outbound pool: #{length(pool)} in_pool vhosts, #{excluded} excluded as fixed " <>
+        "sources, #{length(effective)} effective"
 
-    # Quiet on deployments not using the feature (no pool, no sources):
-    # an all-zero line every boot is noise, not signal.
-    if raw == [] and sources == [], do: Logger.debug(msg), else: Logger.info(msg)
+    # Quiet on deployments not using the feature (no pool at all).
+    if pool == [], do: Logger.debug(msg), else: Logger.info(msg)
 
     :ok
   end

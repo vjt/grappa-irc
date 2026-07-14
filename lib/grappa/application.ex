@@ -49,12 +49,10 @@ defmodule Grappa.Application do
     # guaranteed by the time `Application.start/2` is invoked.
     :ok = Grappa.Push.boot()
 
-    # Outbound v6 source-address pool. Read GRAPPA_OUTBOUND_V6_POOL
-    # (parsed in `config/runtime.exs`) and pin to `:persistent_term`
-    # for lock-free random pick at `IRC.Client.do_connect` time.
-    # Empty pool = kernel-default source selection (no behavior
-    # change). Mirrors the `Uploads.boot/1` + `Push.boot/0` boundary
-    # pattern.
+    # Outbound v6 source-address pool. Initialize an EMPTY pool at boot;
+    # `Grappa.Bootstrap` installs the DB-curated `in_pool` vhosts via
+    # `apply_pool/1` before spawning any session (#228 — DB-driven, no
+    # env var). Empty pool = kernel-default source selection.
     :ok = Grappa.OutboundV6Pool.boot()
 
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
