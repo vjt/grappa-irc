@@ -5,7 +5,7 @@
 **Date:** 2026-05-14
 **Scope:** `Dockerfile`, `compose.yaml` + override.example + oneshot, `bin/start.sh`, `scripts/*.sh` (20 files), `scripts/_lib.sh`, `infra/nginx.conf` + `infra/snippets/*`, `lib/grappa/hot_reload/long_lived_modules.ex`, `.dockerignore`, `mix.exs` release-relevant config, `.github/workflows/{ci,integration}.yml`, `.env.example`.
 
-Porco dio, the substrate has tightened materially since 2026-05-12. The previously-tracked `compose.prod.override.yaml` is gone, `runtime/{cicchetto-dist,bun-cache}/.gitkeep` are baked in, the `.env.example` Turnstile key is genuinely placeholder. What remains are silent-drop hazards that align almost perfectly with this cluster's name: the deploy classifier has three categories of change that pass HOT preflight but cannot actually be hot-reloaded — and one of them is a known cluster-killer.
+The substrate has tightened materially since 2026-05-12. The previously-tracked `compose.prod.override.yaml` is gone, `runtime/{cicchetto-dist,bun-cache}/.gitkeep` are baked in, the `.env.example` Turnstile key is genuinely placeholder. What remains are silent-drop hazards that align almost perfectly with this cluster's name: the deploy classifier has three categories of change that pass HOT preflight but cannot actually be hot-reloaded — and one of them is a known cluster-killer.
 
 ## Severity counts
 
@@ -381,4 +381,4 @@ The cluster is named "no-silent-drops" — and the deploy classifier has THREE s
 - The deploy `--force-cold` escape hatch (M5) needs its audit-trail story figured out before public open.
 
 ### Overall verdict
-Substrate is healthy. The 4 HIGH findings are all in `scripts/deploy.sh`'s preflight — fixing them is a single PR. The trajectory risks are all "land scaffolding now while it's cheap" rather than active bugs. Porco dio, fix the silent drops.
+Substrate is healthy. The 4 HIGH findings are all in `scripts/deploy.sh`'s preflight — fixing them is a single PR. The trajectory risks are all "land scaffolding now while it's cheap" rather than active bugs. Fix the silent drops.

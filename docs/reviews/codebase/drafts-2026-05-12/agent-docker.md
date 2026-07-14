@@ -3,7 +3,7 @@
 **Scope:** Dockerfile + compose.yaml (+ override.example, oneshot, prod.override) + scripts/*.sh + infra/nginx.conf + .env.example + .dockerignore + .github/workflows/
 **Date:** 2026-05-12
 
-Porco dio, after CP23's collapse the substrate is genuinely tight — single-stage, single compose, single boot path. Almost all findings here are simplification nibbles or drift-against-gospel debt, not structural rot. The two real bugs are (1) `deploy.sh` preflight regex misses two long-lived GenServers and (2) a stale committed `compose.prod.override.yaml` file that contradicts the gospel.
+After CP23's collapse the substrate is genuinely tight — single-stage, single compose, single boot path. Almost all findings here are simplification nibbles or drift-against-gospel debt, not structural rot. The two real bugs are (1) `deploy.sh` preflight regex misses two long-lived GenServers and (2) a stale committed `compose.prod.override.yaml` file that contradicts the gospel.
 
 ## CRITICAL
 
@@ -178,6 +178,6 @@ Site keys are public (designed to be embedded in HTML), so this is not a secret.
 3. The substrate is genuinely simpler post-CP23 — most findings are nibbles, not structural. The remaining "could be simpler" wins are merging single-purpose scripts into `mix.sh`-dispatched subcommands and inlining `compose.oneshot.yaml`.
 
 **Top 3 simplification opportunities:**
-1. Delete `compose.prod.override.yaml` (S1) + LABEL dead-code (S2) + `dist/` from .dockerignore (S6) + stale comments — porco dio, just rip the dead wood.
+1. Delete `compose.prod.override.yaml` (S1) + LABEL dead-code (S2) + `dist/` from .dockerignore (S6) + stale comments — just rip the dead wood.
 2. Bake `.gitkeep` files for `runtime/cicchetto-dist` and `runtime/bun-cache` (S7) so a fresh clone works without operator running pre-deploy mkdir.
 3. Consolidate the `credo.sh` / `dialyzer.sh` / `format.sh` / `test.sh` / `check.sh` quartet into `mix.sh <subcmd>` dispatching (S5) — 4 fewer files in `scripts/`. Counter-argument: tab-completion + discoverability via `ls scripts/`. Gospel says "scripts are the only way to run things"; one-script-per-task IS the discoverability pattern. Probably leave as-is, mention only.

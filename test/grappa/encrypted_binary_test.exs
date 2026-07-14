@@ -21,7 +21,7 @@ defmodule Grappa.EncryptedBinaryTest do
   end
 
   test "ciphertext varies for the same plaintext (IV randomisation)" do
-    plaintext = "porco dio"
+    plaintext = "hello world"
     assert {:ok, c1} = EncryptedBinary.dump(plaintext)
     assert {:ok, c2} = EncryptedBinary.dump(plaintext)
     refute c1 == c2

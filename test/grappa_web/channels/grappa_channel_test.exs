@@ -2466,10 +2466,10 @@ defmodule GrappaWeb.GrappaChannelTest do
       ref_list = push(visitor_socket, "watchlist", %{"action" => "list"})
       assert_reply(ref_list, :ok, %{patterns: []})
 
-      ref_add = push(visitor_socket, "watchlist", %{"action" => "add", "pattern" => "porcodio"})
-      assert_reply(ref_add, :ok, %{patterns: ["porcodio"]})
+      ref_add = push(visitor_socket, "watchlist", %{"action" => "add", "pattern" => "testnick"})
+      assert_reply(ref_add, :ok, %{patterns: ["testnick"]})
 
-      ref_del = push(visitor_socket, "watchlist", %{"action" => "del", "pattern" => "porcodio"})
+      ref_del = push(visitor_socket, "watchlist", %{"action" => "del", "pattern" => "testnick"})
       assert_reply(ref_del, :ok, %{patterns: []})
     end
   end

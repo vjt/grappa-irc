@@ -226,10 +226,10 @@ describe("parseSlash — /topic (context-aware, #23)", () => {
   });
 
   it("/topic #chan <text> → set {channel: '#chan', text}", () => {
-    expect(parseSlash("/topic #sniffo porco dio")).toEqual({
+    expect(parseSlash("/topic #sniffo hello world")).toEqual({
       kind: "topic-set",
       channel: "#sniffo",
-      text: "porco dio",
+      text: "hello world",
     });
   });
 
@@ -249,10 +249,10 @@ describe("parseSlash — /topic (context-aware, #23)", () => {
   });
 
   it("/topic body that happens to start with a non-channel char stays current-channel set", () => {
-    expect(parseSlash("/topic cristo cane")).toEqual({
+    expect(parseSlash("/topic foo bar")).toEqual({
       kind: "topic-set",
       channel: null,
-      text: "cristo cane",
+      text: "foo bar",
     });
   });
 

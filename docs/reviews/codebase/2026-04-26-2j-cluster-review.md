@@ -47,7 +47,7 @@ is in the wrong file. There is no error anywhere in the chain to point
 them at the cause — it's the most operator-hostile failure mode
 imaginable.
 
-**Madonna porca.** This is the single bug worth cursing about in this
+This is the single bug worth cursing about in this
 cluster: every word of the new operator quickstart is structurally
 unrunnable post-deploy.
 
@@ -541,7 +541,7 @@ before the duplicated registry-key shape diverges in a subtle way.
    documented as known.
 
 The CRITICAL findings are the only things blocking 2j from being
-declared complete in good faith. **Porco dio**, the operator UX is
+declared complete in good faith. The operator UX is
 the one place where "looks plausible, doesn't actually work" is the
 worst possible failure mode — and right now both the README and the
 deployed shape conspire to land the operator's data in the wrong DB

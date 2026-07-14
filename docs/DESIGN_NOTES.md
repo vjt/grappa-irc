@@ -4961,7 +4961,7 @@ tests). Then B2 INVITE-CTA integration smoke failed —
 allowlist (a `Set<MessageKind>`) was missing `"server_event"`. The
 narrower silently dropped every server_event row at the WS edge —
 a textbook silent-drop bug in code shipped to close silent-drop
-bugs. Madonna porca.
+bugs.
 
 Mitigation: `wireNarrow.test.ts` gains an exhaustiveness pin —
 loop over all 11 MessageKind values, assert each is accepted by
@@ -11815,7 +11815,7 @@ prod — ALL IRC sessions dropped — because the diff touched
 `Dockerfile`. The jail never reads the Dockerfile: its substrate is
 `mix release` + rc(8), and the jail-side equivalent of that diff
 (`pkg install`) had already been done by hand. Second needless
-restart in one day ("TOO MANY COLD DEPLOYS PORCO DIO"). On an
+restart in one day ("TOO MANY COLD DEPLOYS"). On an
 always-on bouncer every cold deploy is incident-grade, so a
 false-COLD is not "30s of downtime", it's every user's IRC session.
 

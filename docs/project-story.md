@@ -1449,7 +1449,7 @@ The session opened on a finished story — CP19's T32 parked-window
 cluster had landed yesterday, the smartlog was clean, no work pulled
 me forward. Then the user typed: "bug: when messaging a non-existing
 user the incoming server message no such nick/channel alow triggers a
-unread messages porco dio marker. see it live now".
+unread messages marker. see it live now".
 
 The "see it live now" was the load-bearing phrase. The bug was on
 production. The user's browser tab was open. CDP gave me the
@@ -1457,7 +1457,7 @@ screenshot in two commands: there it was, in the `vjt-on-grappa-irc`
 DM window, between the operator's outbound `<grappa> test` and the
 inbound `-raccooncity.azzurra.chat- No such nick/channel` reply, a
 `── 1 unread message ──` marker rendered against the operator's own
-mistake. Madonna porca.
+mistake.
 
 The trace was fast. CP13 had already done the architectural work:
 NumericRouter resolves 401 ERR_NOSUCHNICK to `{:query, ghost}`,
@@ -1821,7 +1821,7 @@ per-channel events. It validates incoming payloads against a
 discriminated union is compile-time only; the runtime allowlist
 is a separate moving part. B6.11 added `"server_event"` to the
 TypeScript `MessageKind` union, to the schema `@kinds`, to
-EventRouter, to the cic dispatcher, to vitest. Madonna porca, I
+EventRouter, to the cic dispatcher, to vitest. I
 missed the runtime allowlist. Vitest still passed (the unit tests
 constructed messages bypassing the narrower). The B2 INVITE-CTA
 integration smoke caught it: `.scrollback-invite-join` never
@@ -1942,7 +1942,7 @@ V9 was supposed to be a HOT deploy. `Session.Server`'s
 `@type t :: %{...}` got the new `visitor_nick_persister` field —
 per `feedback_deploy_sh_preflight_field_addition_gap` the
 `scripts/deploy.sh` AST oracle SHOULD have caught it and demanded
-COLD. Madonna porca, the AST oracle never ran. The deploy operator
+COLD. The AST oracle never ran. The deploy operator
 had done `git merge --ff-only` BEFORE invoking
 `scripts/deploy.sh`. The deploy's `git pull --ff-only` returned
 "Already up to date", so the preflight diff base
@@ -1993,7 +1993,7 @@ difference is whether your data outlives your browser tab.
 Twelve days earlier, on 2026-05-03, vjt had said it offhand —
 "image upload would be nice." It went on the post-cluster arc list
 under `project_image_upload` and waited. Same-day as the CP32
-visitor-parity cluster closed, the time came. Porco dio, three
+visitor-parity cluster closed, the time came. Three
 buckets in ninety minutes — that's the cluster.
 
 The brainstorm v1 was wrong. Claude proposed inline thumbnails in
@@ -2053,7 +2053,7 @@ The CSP gate was the surprise. The litterbox upload endpoint is
 nginx CSP `connect-src` got `https://litterbox.catbox.moe` and
 the I-CSP commit shipped, COLD-deployed because nginx doesn't
 reload on the hot path. Then the e2e test hit the upload and
-failed at the response read. Madonna porca, the response URL is
+failed at the response read. The response URL is
 on `https://litter.catbox.moe/<random>.png` — note the dropped
 `box`. Two hosts. The request goes to one, the response URL is
 served from the other. Both must be in `connect-src`. Captured
@@ -2079,7 +2079,7 @@ interface for free.
 
 I-3 is the docs sweep — README subsection, DESIGN_NOTES entry,
 this episode, and the CLAUDE.md rule itself: **"IRC stays text
-only."** A10 in the brainstorm. vjt explicit: "yes porco dio
+only."** A10 in the brainstorm. vjt explicit: "yes,
 codify that in claude.md, as that is already in readme.md." That
 rule is the cluster's most important artifact. Future-Claude six
 months from now will propose inline thumbnails again unless the
@@ -2167,7 +2167,7 @@ rows; the "TTL knob" would only shorten the existing 48h to 24h
 observation from an even earlier session. Per CLAUDE.md's
 "Challenge the spec" rule — and per the project_image_cluster's
 S47 lesson "the spec is not the directions" — I flagged the
-finding back. vjt: "descope then porco dio." Three deliverables
+finding back. vjt: "descope then." Three deliverables
 not shipped; the ones that DID ship are smaller and tighter.
 
 The pre-cluster work caught a separate flake: T-2 fix CI was red
