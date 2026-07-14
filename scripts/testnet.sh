@@ -94,8 +94,11 @@ case "$cmd" in
         # edits — the seeder's `--build` only rebuilds the grappa image,
         # the azzurra-testnet bahamut images are independent and would
         # otherwise stay cached on whatever `infra/bahamut/*.tmpl` was
-        # COPY'd at last build.
-        docker compose up --build --wait hub leaf-v4 leaf-v6 services bahamut-test2 grappa-test nginx-test
+        # COPY'd at last build. #221: `solanum-test2` is the standalone
+        # second-network ircd (solanum, replacing the old bahamut-test2 —
+        # it keeps the `bahamut-test2` network alias, but the compose
+        # SERVICE name is solanum-test2).
+        docker compose up --build --wait hub leaf-v4 leaf-v6 services solanum-test2 grappa-test nginx-test
         echo
         echo "testnet up. ports: nginx=http://nginx-test, irc=bahamut-test:6667 (in-network only)"
         echo "tear down: scripts/testnet.sh down"
