@@ -972,7 +972,8 @@ defmodule Grappa.Session.ServerTest do
 
     # BUGHUNT-1 A — server-side PRIVMSG auto-split.
     #
-    # Body bigger than the per-frame budget (linelen - envelope) is
+    # Body bigger than the per-frame budget (linelen minus the relayed-
+    # frame overhead, incl. the worst-case source prefix — #246) is
     # split into N grappa-IRC.LineSplit fragments; each fragment
     # becomes its own upstream PRIVMSG + its own Scrollback row +
     # its own per-channel PubSub broadcast. The HTTP reply returns
@@ -995,16 +996,20 @@ defmodule Grappa.Session.ServerTest do
       :ok = await_handshake(server)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
-      # Force a small linelen so fragmentation is deterministic on
-      # any IRC server (the testnet ircds don't advertise LINELEN, so
-      # default 512 would fast-path `[body]` for any reasonable body).
-      # `:sys.replace_state` is safe here: session is idle between
-      # handshake and the next send_privmsg call.
-      :sys.replace_state(pid, fn state -> %{state | linelen: 80} end)
+      # Force linelen so fragmentation is deterministic on any IRC server
+      # (the testnet ircds don't advertise LINELEN). The body budget
+      # reserves the worst-case relayed `:nick!user@host ` source prefix
+      # the server prepends when it fans the line out (#246), so size the
+      # body off the REAL overhead — call the production formula, never a
+      # magic number — to guarantee ≥ 2 fragments. `:sys.replace_state`
+      # is safe here: the session is idle between handshake and the next
+      # send_privmsg call.
+      linelen = 512
+      :sys.replace_state(pid, fn state -> %{state | linelen: linelen} end)
 
-      # 200-byte body, linelen 80, envelope overhead 14 → budget 66
-      # → at least 4 fragments.
-      body = String.duplicate("x", 200)
+      budget = linelen - Grappa.IRC.LineSplit.relay_frame_overhead("#sniffo")
+      # A body spanning three full budgets → a deterministic ≥ 3 fragments.
+      body = String.duplicate("x", budget * 3)
 
       assert {:ok, last_msg} =
                Session.send_privmsg({:user, user.id}, network.id, "#sniffo", body)
@@ -1027,7 +1032,7 @@ defmodule Grappa.Session.ServerTest do
       assert length(privmsgs) >= 2
 
       for line <- privmsgs do
-        assert byte_size(line) <= 80
+        assert byte_size(line) <= linelen
       end
 
       # Scrollback persisted N rows; joined in arrival order = original body.

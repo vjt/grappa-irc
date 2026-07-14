@@ -493,9 +493,12 @@ defmodule Grappa.Session.Server do
           # split. Defaults to 512 per RFC 2812 when upstream omits
           # LINELEN= from 005 RPL_ISUPPORT (Bahamut/InspIRCd/UnrealIRCd
           # commonly do). Used by `Grappa.IRC.LineSplit` to compute the
-          # body budget = `linelen - byte_size("PRIVMSG <target> :\r\n")`.
-          # Sibling shape to `modes_per_chunk` — bounded integer on
-          # state, not a generic ISUPPORT map.
+          # body budget = `linelen - LineSplit.relay_frame_overhead(target)`,
+          # which reserves the worst-case relayed `:nick!user@host ` source
+          # prefix the server prepends (#246), not just the client-side
+          # `PRIVMSG <target> :\r\n` framing. Sibling shape to
+          # `modes_per_chunk` — bounded integer on state, not a generic
+          # ISUPPORT map.
           linelen: pos_integer(),
           # #216: per-network channel-mode capability table parsed from
           # 005 RPL_ISUPPORT `CHANMODES=` + `PREFIX=`. Unlike modes_per_chunk
@@ -2424,7 +2427,9 @@ defmodule Grappa.Session.Server do
   # Existing behavior — persist scrollback row, broadcast on per-channel
   # PubSub topic, send the wire line. Reply carries the persisted row.
   # BUGHUNT-1 A: a body larger than the wire-frame budget (LINELEN -
-  # envelope overhead) is auto-split into N fragments via
+  # relayed-frame overhead, incl. the worst-case `:nick!user@host `
+  # source prefix the server prepends — #246) is auto-split into N
+  # fragments via
   # `Grappa.IRC.LineSplit.split_privmsg_body/3`; each fragment becomes
   # its OWN persist_event + broadcast + Client.send_privmsg, matching
   # what every other IRC client renders (and what other channel members

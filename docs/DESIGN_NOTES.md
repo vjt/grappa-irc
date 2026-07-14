@@ -20384,3 +20384,104 @@ The #221 solanum-leaf topology was NOT the cause of any of these (the
 CASEMAPPING=ascii leaf handled every peer round-trip cleanly in the
 wire traces). The #233 test-only force-cursor fix + its four specs
 remained green throughout.
+
+---
+
+## 2026-07-15 — #246 (P0): outbound split budget must reserve the worst-case RELAYED source prefix
+
+**The silent data-loss bug.** `Grappa.IRC.LineSplit.split_privmsg_body/3`
+splits a long PRIVMSG/NOTICE body into ≤ `LINELEN` wire frames. It budgeted
+the body against only the CLIENT-side framing:
+
+```
+overhead = byte_size("PRIVMSG <target> :") + byte_size("\r\n")   # WRONG
+budget   = linelen - overhead
+```
+
+A client's own outbound line carries **no source prefix**. But the server,
+when it fans that line out to the OTHER channel members, prepends the
+originator's identity and re-frames as:
+
+```
+:nick!user@host PRIVMSG <target> :<body>\r\n
+```
+
+That RELAYED line — not grappa's prefix-less client line — is what the
+server holds against `LINELEN`. So a fragment ≤ 512 on grappa's wire
+overran 512 once relayed → the server truncated the tail at the wire limit
+→ grappa's NEXT fragment resumed past the (pre-truncation) offset → a
+**silent hole of ~(source-prefix length) bytes at every split boundary.**
+Invisible on grappa's own echo (no prefix there); only recipients saw the
+corruption, and the mid-token cut read as continuous. Repro (issue #246):
+a 600-byte body lost 26 bytes — part 2 resumed at payload offset 493
+instead of 468 (= 512 − 44 relayed overhead).
+
+**The fix — reserve the WORST-CASE relayed framing, not the live prefix.**
+`host`/cloak length can grow between messages (a rebind, an oper cloak, an
+IPv6 vs reverse-DNS host), so budgeting against the current `state.nick` /
+userhost would under-reserve the instant it grows. Instead a new pure
+`LineSplit.relay_frame_overhead/1` reserves a fixed worst case:
+
+```
+budget = linelen
+       − (":" + nick + "!" + ident + "@" + host + " ")   # source prefix, worst case
+       − byte_size("PRIVMSG <target> :")                  # command + target
+       − 2                                                # CRLF
+```
+
+Worst-case ceilings, all documented protocol maxima (not magic numbers):
+
+* **nick ≤ 30** — `Grappa.IRC.Identifier` `@nick_regex` ceiling (Azzurra/
+  bahamut `NICKLEN=30`); grappa's own nick can never register longer.
+* **ident ≤ 10** — `Identifier` `@ident_regex` ceiling (common ircd
+  `USERLEN`); the server's `~` no-identd prefix counts within `USERLEN`.
+* **host ≤ 63** — the common ircd `HOSTLEN` (bahamut/InspIRCd/Unreal);
+  covers hostnames, hex/vhost cloaks, and bracketed IPv6 literals
+  (`[` + 45 + `]` = 47). Bahamut does not advertise `HOSTLEN` in 005, so a
+  fixed worst case is the correct posture; a network with `HOSTLEN` > 63
+  would merely over-fragment (never lose bytes). RFC 2812 does not bound
+  the host, so the ceiling is the deployed-ircd norm.
+
+`:` `!` `@` + trailing space = 4 fixed sigil bytes → `@source_prefix_reserve
+= 1 + 30 + 1 + 10 + 1 + 63 + 1 = 107`. **Over-reserving costs a few extra
+fragments on long messages only (short messages stay on the `[body]`
+fast path); under-reserving loses data. For a silent-data-loss bug,
+worst-case is the only safe budget.** Where a per-network tightening is
+ever wanted, `NICKLEN`/`HOSTLEN` from 005 ISUPPORT could feed
+`relay_frame_overhead/1` — but the fixed worst case is always safe and
+avoids threading identity state into a pure splitter, so it was NOT added.
+
+**UTF-8 boundary.** The issue flagged codepoint-bisection as a secondary
+risk. The splitter already splits on `String.graphemes/1` and keeps whole
+grapheme clusters (an oversize single grapheme is emitted intact, never
+bisected), so this was ALREADY correct — the new StreamData property just
+locks it in as a regression guard (`String.valid?/1` on every fragment).
+CTCP `\x01ACTION …\x01` fragments keep the envelope per fragment as before.
+
+**Tests.** RED-first: a headline repro builds the CONCRETE worst-case
+relayed wire frame from the documented ceilings (independent of the
+production formula, so it catches an off-by-one) and asserts each fragment
+≤ 512 + byte-identical reconstruction — it failed pre-fix at 619 > 512. A
+StreamData property proves, for any UTF-8 payload: (a) byte-identical
+reconstruction, (b) every fragment relay-safe, (c) whole codepoints. The
+`server_test` split integration test was reworked off `relay_frame_overhead/1`
+(the old `linelen: 80` trick under-budgets once the 107-byte prefix is
+reserved). **Invariant for future outbound framing: reserve the worst-case
+RELAYED frame (server-prepended source prefix included), never just the
+client-side line.**
+
+_Deploy: COLD — `lib/` framing-math change, not hot-reload-safe. Server-only;
+no cic bundle change._
+
+### Drive-by: a pre-existing mentions property flake (unrelated to #246)
+
+The full `check.sh` run surfaced a seed-dependent failure in
+`Grappa.MentionsTest`'s `aggregate_mentions/6` property: its body generator
+`string(:printable, min_length: 1)` occasionally emits a lone `" "`, which
+`Scrollback.Message`'s `validate_required(:body)` rejects (blank after
+trim) → the `insert!/1` helper MatchErrors on `{:error, changeset}`.
+StreamData biases toward small values early, so `" "` appears within a few
+runs — a real latent flake, but 100% independent of the #246 diff (nothing
+here imports `LineSplit`). Fixed at the root in its OWN commit: the
+generator now filters blank-after-trim bodies, which can't exist in
+production anyway. Kept separate from the #246 logical change.
