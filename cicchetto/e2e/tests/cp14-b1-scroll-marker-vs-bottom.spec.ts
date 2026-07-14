@@ -62,7 +62,7 @@ import {
   scrollbackLines,
   selectChannel,
 } from "../fixtures/cicchettoPage";
-import { restoreReadCursorToTail } from "../fixtures/grappaApi";
+import { restoreReadCursorToTail, setReadCursorToId } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
@@ -134,18 +134,12 @@ async function fetchScrollbackPage(
 // `loginAs` triggers cic boot.
 async function seedCursor(page: Page, channel: string, messageId: number): Promise<void> {
   const vjt = getSeededVjt();
-  const url = `http://grappa-test:4000/networks/${encodeURIComponent(NETWORK_SLUG)}/channels/${encodeURIComponent(channel)}/read-cursor`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${vjt.token}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ message_id: messageId }),
-  });
-  if (!res.ok) {
-    throw new Error(`seedCursor: ${res.status} ${await res.text()}`);
-  }
+  // Delegates to the shared `setReadCursorToId` (test-only force endpoint,
+  // `ReadCursor.force_set/4`) so the mid-page seed lands regardless of
+  // prior cursor state — the production endpoint is advance-only since
+  // #233 and would clamp a backward seed to whatever tail a prior spec
+  // left behind (order-dependent flake).
+  await setReadCursorToId(vjt.token, NETWORK_SLUG, channel, messageId);
   // `page` retained as a parameter for symmetry with the prior helper
   // shape; not currently used (server is the source of truth post-R-4).
   void page;

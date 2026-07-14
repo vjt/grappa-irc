@@ -37,7 +37,7 @@
 import { expect, test } from "../fixtures/test";
 import { type Page } from "@playwright/test";
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
-import { restoreReadCursorToTail } from "../fixtures/grappaApi";
+import { restoreReadCursorToTail, setReadCursorToId } from "../fixtures/grappaApi";
 import {
   AUTOJOIN_CHANNELS,
   getSeededVjt,
@@ -84,22 +84,15 @@ async function fetchScrollbackPage(
   return (await res.json()) as Array<{ id: number }>;
 }
 
-// Pre-seed the SERVER-side read cursor for `(NETWORK_SLUG, channel)`
-// at the given message id via the same endpoint cic's cursor-advance
-// path uses. Backed by `ReadCursor.set/4` (last-write-wins), so this
-// OVERRIDES any prior cursor regardless of value — necessary because
-// cic's mount-time POST may already have landed at store-tail by the
-// time this fires.
+// Pre-seed the SERVER-side read cursor for `(NETWORK_SLUG, channel)` at
+// the given message id. Delegates to the shared `setReadCursorToId`,
+// which hits the TEST-ONLY force endpoint (`ReadCursor.force_set/4`) so
+// it OVERRIDES any prior cursor regardless of value — necessary because
+// cic's mount-time POST may already have landed at store-tail, and the
+// production endpoint has been advance-only since #233 (a backward seed
+// through it would be silently clamped).
 async function seedCursor(token: string, channel: string, messageId: number): Promise<void> {
-  const url = `${GRAPPA_TEST_BASE}/networks/${encodeURIComponent(NETWORK_SLUG)}/channels/${encodeURIComponent(channel)}/read-cursor`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ message_id: messageId }),
-  });
-  if (!res.ok) {
-    throw new Error(`seedCursor: ${res.status} ${await res.text()}`);
-  }
+  await setReadCursorToId(token, NETWORK_SLUG, channel, messageId);
 }
 
 async function visibleTailId(page: Page): Promise<number | null> {

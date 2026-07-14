@@ -85,6 +85,7 @@ import {
   selectChannel,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
+import { restoreReadCursorToTail, setReadCursorToId } from "../fixtures/grappaApi";
 import {
   AUTOJOIN_CHANNELS,
   getSeededVjt,
@@ -129,18 +130,11 @@ async function scrollbackGeometry(
 // no longer worked. Same shape cp14-b1 uses.
 async function seedCursor(page: Page, channel: string, messageId: number): Promise<void> {
   const vjt = getSeededVjt();
-  const url = `http://grappa-test:4000/networks/${encodeURIComponent(NETWORK_SLUG)}/channels/${encodeURIComponent(channel)}/read-cursor`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${vjt.token}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ message_id: messageId }),
-  });
-  if (!res.ok) {
-    throw new Error(`seedCursor: ${res.status} ${await res.text()}`);
-  }
+  // Delegates to the shared `setReadCursorToId` (test-only force endpoint,
+  // `ReadCursor.force_set/4`) so a mid-page seed lands regardless of prior
+  // cursor state — the production endpoint is advance-only since #233 and
+  // would clamp a backward seed (order-dependent flake).
+  await setReadCursorToId(vjt.token, NETWORK_SLUG, channel, messageId);
   void page;
 }
 
@@ -167,6 +161,21 @@ async function fetchScrollbackPage(
 
 test.describe("scroll-on-window-switch — re-selecting a window snaps correctly", () => {
   test.use({ viewport: { width: 800, height: 300 } });
+
+  // BUGHUNT-3 cascade rule (feedback_cascade_poisoner_pattern): scenarios
+  // 2-4 seed a MID-PAGE #bofh cursor. Since #233 the seed goes through the
+  // force endpoint, so it actually lands (pre-#233 a backward seed was
+  // silently dropped and this spec accidentally left #bofh at the tail).
+  // Without this restore the last scenario's mid-page cursor would leak to
+  // whatever spec runs next → phantom unread divider → scroll/marker
+  // assertions flip downstream. Restore to the tail so the channel reads
+  // fully-read for the next spec (the tail is a FORWARD move, still served
+  // by the production advance-only cursor).
+  test.afterAll(async () => {
+    if (!CHANNEL) return;
+    const vjt = getSeededVjt();
+    await restoreReadCursorToTail(vjt.token, NETWORK_SLUG, CHANNEL);
+  });
 
   test("channel → empty query → channel-back: scroll lands at bottom-or-marker on return", async ({
     page,

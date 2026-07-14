@@ -45,7 +45,7 @@ import {
   scrollbackLines,
   selectChannel,
 } from "../fixtures/cicchettoPage";
-import { restoreReadCursorToTail } from "../fixtures/grappaApi";
+import { restoreReadCursorToTail, setReadCursorToId } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
@@ -90,15 +90,14 @@ async function fetchScrollbackPage(
 
 // Seed the SERVER-side read cursor at the given message id (server-owned
 // post-CP29 R-1..R-4; cic hydrates from the `/me` envelope on cold load).
+// Delegates to the shared `setReadCursorToId`, which hits the TEST-ONLY
+// force endpoint (`ReadCursor.force_set/4`) — the production endpoint is
+// advance-only since #233, so a mid-page (backward) seed through it would
+// be clamped to the tail a prior spec left behind and no divider would
+// render.
 async function seedCursor(channel: string, messageId: number): Promise<void> {
   const vjt = getSeededVjt();
-  const url = `http://grappa-test:4000/networks/${encodeURIComponent(NETWORK_SLUG)}/channels/${encodeURIComponent(channel)}/read-cursor`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${vjt.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ message_id: messageId }),
-  });
-  if (!res.ok) throw new Error(`seedCursor: ${res.status} ${await res.text()}`);
+  await setReadCursorToId(vjt.token, NETWORK_SLUG, channel, messageId);
 }
 
 test.describe("issue #168 — send pins to bottom, never jumps to the unread marker", () => {

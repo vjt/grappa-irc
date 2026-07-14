@@ -155,14 +155,24 @@ export async function restoreReadCursorToTail(
   }
 }
 
-// #156 — set the seeded user's read cursor on `(networkSlug, channel)`
-// to a SPECIFIC message id (vs `restoreReadCursorToTail`, which always
-// targets the newest row). Used by the unread-divider-beyond-window spec
-// to plant an EARLY cursor so the unread count far exceeds the initial
-// scrollback window. The server's `ReadCursor.set/4` is last-write-wins
-// and accepts a backward move, so this can rewind a cursor a prior spec
-// left at the tail. Caller restores via `restoreReadCursorToTail` in
-// afterAll (BUGHUNT-3 cascade rule).
+// #156 / #233 — FORCE the seeded user's read cursor on `(networkSlug,
+// channel)` to a SPECIFIC message id (vs `restoreReadCursorToTail`,
+// which always targets the newest row). Used by every cursor / divider
+// / scroll spec to plant a mid-page (usually BACKWARD) cursor so an
+// unread-divider scenario materialises on focus.
+//
+// #233 made the production `POST .../read-cursor` advance-only: a lower
+// id is clamped to the current cursor and NEVER written backward. That
+// broke this helper's original last-write-wins seeding (a prior spec
+// leaves the cursor at the tail; a backward seed was silently dropped →
+// no divider → red suite). It now hits the TEST-ONLY
+// `.../read-cursor/force` endpoint (compile-gated to dev/test,
+// `ReadCursor.force_set/4`) which bypasses the monotonic clamp while the
+// production endpoint stays correctly advance-only. Broadcasts the
+// forced id so a live cic instance adopts the backward move via its
+// authoritative `read_cursor_set` WS path. Caller restores via
+// `restoreReadCursorToTail` in afterAll (BUGHUNT-3 cascade rule) — the
+// tail is a FORWARD move, so the production endpoint still serves it.
 export async function setReadCursorToId(
   token: string,
   networkSlug: string,
@@ -171,7 +181,7 @@ export async function setReadCursorToId(
 ): Promise<void> {
   const url = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(
     networkSlug,
-  )}/channels/${encodeURIComponent(channel)}/read-cursor`;
+  )}/channels/${encodeURIComponent(channel)}/read-cursor/force`;
   const res = await fetch(url, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -179,7 +189,7 @@ export async function setReadCursorToId(
   });
   if (!res.ok) {
     throw new Error(
-      `setReadCursorToId: POST /read-cursor → ${res.status} ${await res.text()}`,
+      `setReadCursorToId: POST /read-cursor/force → ${res.status} ${await res.text()}`,
     );
   }
 }

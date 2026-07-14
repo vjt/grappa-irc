@@ -49,7 +49,7 @@
 import { expect, test } from "../fixtures/test";
 import { type Page } from "@playwright/test";
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
-import { restoreReadCursorToTail } from "../fixtures/grappaApi";
+import { restoreReadCursorToTail, setReadCursorToId } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
@@ -88,16 +88,13 @@ async function fetchScrollbackPage(
 }
 
 // Seed the SERVER-side read cursor at the given message id (server-owned
-// post-CP29; cic hydrates from the `/me` envelope on cold load).
+// post-CP29; cic hydrates from the `/me` envelope on cold load). Delegates
+// to the shared `setReadCursorToId` (test-only force endpoint) so the seed
+// lands regardless of prior cursor state — the production endpoint is
+// advance-only since #233 and would clamp a backward seed.
 async function seedCursor(channel: string, messageId: number): Promise<void> {
   const vjt = getSeededVjt();
-  const url = `http://grappa-test:4000/networks/${encodeURIComponent(NETWORK_SLUG)}/channels/${encodeURIComponent(channel)}/read-cursor`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${vjt.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ message_id: messageId }),
-  });
-  if (!res.ok) throw new Error(`seedCursor: ${res.status} ${await res.text()}`);
+  await setReadCursorToId(vjt.token, NETWORK_SLUG, channel, messageId);
 }
 
 test.describe("issue #230 — wheel-up loads older history when content underfills", () => {
