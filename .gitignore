@@ -15,6 +15,7 @@ erl_crash.dump
 .elixir_ls/
 /.dialyxir_*
 *.plt
+/tmp
 
 # ── PLT cache (Dialyzer)
 priv/plts/*.plt
