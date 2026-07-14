@@ -36,6 +36,7 @@ defmodule Grappa.UserSettings.Settings do
   | `"highlight_patterns"` | `list(String.t())`                 | `Grappa.UserSettings` (S2.2) |
   | `"notification_prefs"` | `Grappa.UserSettings.notification_prefs()` | `Grappa.UserSettings` (B3) |
   | `"upload_ttl_seconds"` | `pos_integer() \\| nil`           | `Grappa.UserSettings` (UX-4 M) |
+  | `"vhost_selection"`    | `list(String.t())`                  | `Grappa.Vhosts` (#228)       |
 
   ## String-key invariant (IMPORTANT)
 

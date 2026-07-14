@@ -50,6 +50,8 @@ defmodule Grappa.UserSettings do
   |                        |                        | `default_notification_prefs/0`  |
   | `"upload_ttl_seconds"` | `pos_integer() \\| nil`| `get_upload_ttl_seconds/1`,     |
   |                        |                        | `put_upload_ttl_seconds/2`      |
+  | `"vhost_selection"`    | `list(String.t())`     | `get_vhost_selection/1`,        |
+  |                        |                        | `put_vhost_selection/2`         |
 
   ## Boundary
 
@@ -98,6 +100,7 @@ defmodule Grappa.UserSettings do
 
   @notification_prefs_key "notification_prefs"
   @upload_ttl_seconds_key "upload_ttl_seconds"
+  @vhost_selection_key "vhost_selection"
 
   # Upper bound for upload_ttl_seconds: one year. Image hosts (litterbox,
   # 0x0.st) cap at days; nobody legitimately wants a year-long TTL token
@@ -393,6 +396,72 @@ defmodule Grappa.UserSettings do
       )
 
     {:error, cs}
+  end
+
+  @spec validate_upload_ttl_seconds(term(), Subject.t()) ::
+          :ok | {:error, Ecto.Changeset.t()}
+  defp validate_upload_ttl_seconds(nil, _), do: :ok
+
+  # ---------------------------------------------------------------------------
+  # vhost_selection accessors (#228)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Returns the subject's raw vhost self-selection — a list of source-bind
+  address strings. Returns `[]` when no row exists, the key is absent, or
+  the stored value is malformed.
+
+  This is the RAW persisted list; authorization (each address ∈ the
+  subject's allowed set) is enforced by `Grappa.Vhosts` at write, and the
+  allowed-set intersection re-clamp happens on read there. This accessor
+  stores/returns exactly what `Grappa.Vhosts` persists, mirroring the
+  `highlight_patterns` string-list contract.
+  """
+  @spec get_vhost_selection(Subject.t()) :: [String.t()]
+  def get_vhost_selection({_, _} = subject) do
+    case fetch_existing_or_nil(subject) do
+      nil ->
+        []
+
+      %Settings{data: data} ->
+        case data[@vhost_selection_key] do
+          list when is_list(list) -> Enum.filter(list, &is_binary/1)
+          _ -> []
+        end
+    end
+  end
+
+  @doc """
+  Persists the subject's vhost self-selection (list of address strings),
+  preserving other keys in `data` (merge semantics). Validates every
+  element is a non-empty binary; authorization is the caller's
+  (`Grappa.Vhosts`) responsibility.
+  """
+  @spec put_vhost_selection(Subject.t(), [String.t()]) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t()}
+  def put_vhost_selection({_, _} = subject, addresses) when is_list(addresses) do
+    with :ok <- validate_vhost_selection(addresses, subject),
+         {:ok, settings} <- get_or_init(subject) do
+      merged_data = Map.put(settings.data, @vhost_selection_key, addresses)
+      cs = Settings.changeset(settings, %{data: merged_data})
+      Repo.update(cs)
+    end
+  end
+
+  @spec validate_vhost_selection([term()], Subject.t()) :: :ok | {:error, Ecto.Changeset.t()}
+  defp validate_vhost_selection(addresses, subject) do
+    if Enum.all?(addresses, &(is_binary(&1) and byte_size(&1) > 0)) do
+      :ok
+    else
+      attrs = Subject.put_subject_id(%{data: %{}}, subject)
+
+      cs =
+        %Settings{}
+        |> Settings.changeset(attrs)
+        |> Ecto.Changeset.add_error(:data, "vhost_selection elements must be non-empty strings")
+
+      {:error, cs}
+    end
   end
 
   # ---------------------------------------------------------------------------
