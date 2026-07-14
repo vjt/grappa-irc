@@ -199,7 +199,7 @@ Typed in cicchetto's compose box, parsed client-side, dispatched to REST or IRC.
 | `/msg <nick> <text>` | Private message — opens a query window (channel-shaped targets are rejected) |
 | `/query <nick>` · `/q <nick>` | Open a query window without sending |
 | `/whois <nick>` · `/whowas <nick>` | WHOIS / WHOWAS; reply renders as an inline card |
-| `/who <#chan>` · `/names <#chan>` | WHO / NAMES; scrollback rows or a members refresh |
+| `/who <#chan-or-mask>` · `/names <#chan>` | WHO (channel or host/nick mask) / NAMES; WHO opens a modal, NAMES a members refresh |
 | `/lusers` | Network-stats card pinned in the current window |
 | `/op` `/deop` `/voice` `/devoice` `<nick>…` | Channel `MODE ±o` / `±v` (chunked per ISUPPORT `MODES=`) |
 | `/kick <nick> [reason]` | KICK on the active channel |

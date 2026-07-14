@@ -19704,3 +19704,148 @@ were reading" one.
 **Hot vs COLD.** HOT — pure-client render change, zero lib/ touched, no wire
 type, no Session.Server state-shape change. Rides `--cic`.
 
+## 2026-07-14 — #221: Libera/solanum upstream query gaps (WHOIS numerics, on-connect usermodes, /who <mask>) + a real solanum CI node
+
+Multi-network shipped (#211), and Libera.Chat is a real upstream whose
+numeric/usermode surface diverges from the Azzurra bahamut the parser was
+built against. Three query gaps were reported against a live Libera
+upstream. The ircd Libera runs is **solanum**
+(github.com/solanum-ircd/solanum), so the authority for every fix is the
+solanum source (validated against tag `a4998b5`), NOT observed traffic or
+bahamut assumptions. Each fix below cites the solanum file+symbol that
+justifies it.
+
+### Gap (a) — WHOIS numerics mis-parsed / misrouted
+
+**Root cause.** `Grappa.Session.NumericRouter`'s `@delegated_numerics`
+listed only the bahamut/Azzurra WHOIS codes. Solanum's extra WHOIS-leg
+numerics — **330 RPL_WHOISLOGGEDIN** (account, `modules/m_services.c:375`),
+**338 RPL_WHOISACTUALLY** (`modules/m_whois.c:365`), **671 RPL_WHOISSECURE**
+(`m_whois.c:341`), **276 RPL_WHOISCERTFP** (`m_whois.c:345`), **320
+RPL_WHOISSPECIAL** — had no delegation entry, so they fell through to
+`scan_params/2`, whose nick-shaped param scan routed each one to a bogus
+`{:query, <target-nick>}` notice window. That is the "dropped/misrouted"
+symptom: the localized trailing text ("is logged in as", "is using a secure
+connection") leaked into a phantom DM window named after the WHOIS target.
+
+**Fix — two layers.**
+
+1. *Typed folds* (`EventRouter`) for the known solanum codes, folded into
+   the same `whois_pending` accumulator as the P-0a set. A key structural
+   difference from bahamut: solanum puts data in **middle params** where
+   bahamut used localized trailing text, so 330 (account) and 338
+   (actually-host/ip) need NO template parsing — they read `params[2]` /
+   `params[3]` directly. 671 → `secure: true` (boolean; the cipher string
+   in the trailing is display-only, cic localizes). 276 → `certfp` (tail
+   token of the trailing). 320 → free-form, folded into `extra_lines`.
+
+2. *Generic future-proofing* (the root-cause fix, per CLAUDE.md "fix root
+   causes, not examples"). `NumericRouter.route/2` now reads a
+   `whois_targets` set (derived from `whois_pending` keys, passed in via
+   `new_router_state/3`) and returns `:delegated` for ANY numeric whose
+   `params[1]` targets an in-flight WHOIS — so a numeric solanum adds next
+   year folds into the bundle's `extra_lines` with ZERO code change instead
+   of misrouting. `EventRouter`'s generic pass-through clause (immediately
+   before the numeric catch-all) appends `{numeric, text}` to `extra_lines`
+   in arrival order when a bundle is in flight. No pending entry → no fold
+   (unsolicited numerics flow to the catch-all + `$server` notice as before).
+
+**Wire.** `whois_bundle_payload` gains `account` / `secure` / `certfp` /
+`extra_lines` (+ a named `whois_extra_line` type `{numeric, text}`).
+Booleans default false, strings/lists nil, so a bahamut bundle marshals
+unchanged. `extra_lines` is prepended LIFO for O(1) fold;
+`SessionWire.whois_bundle/3` reverses on emit so cic sees arrival order.
+cic touched: `wireTypes.ts` regenerated (`gen_wire_types`), `api.ts`
+`WhoisBundle` + a `WhoisExtraLine` type, and `userTopic.ts`'s narrower
+extended (strict per-element narrowing on `extra_lines`, mirroring
+`channels`). Rendering the new fields in the card is out of MVP — the
+type-passthrough compiles and the data is relayed; a polish cluster can
+render them.
+
+### Gap (b) — on-connect usermodes: already generic, NO change
+
+Investigation against solanum `ircd/s_user.c:61` (`user_modes[256]` =
+D/Q/S/Z/a/i/o/s/w/z + extension-registered) plus `include/client.h`
+(UMODE_* defines) versus the grappa parser: `apply_umode_string/2` +
+`walk_umodes/3` (landed #229) are ALREADY fully letter-agnostic — no
+allowlist, no ordering assumption, sorted-set result. The 221 RPL_UMODEIS
+snapshot path and the on-connect self-MODE echo (solanum `s_user.c:1382`
+`:nick MODE nick :+modes`) both fold solanum's distinct letters correctly.
+**So gap (b) needed no production change.** Characterization tests
+(event_router_test #221) lock this in — if a future refactor reintroduces a
+bahamut-letter assumption, they fail. Honest TDD outcome: RED was expected,
+went GREEN immediately, proving the concern was already handled.
+
+### Gap (c) — `/who <mask>` returned total silence
+
+**Two independent breaks in one chain.**
+
+*Break 1 — outbound gate.* `Client.send_who/2` and the `GrappaChannel`
+"who" handler validated the target as a **channel** (`valid_channel?`), so
+a mask was rejected before it left the bouncer. WHO legitimately accepts a
+channel OR a host/nick mask (RFC 2812 §3.6.1). The gate is now a single
+wire token (`safe_oper_token?` — non-empty, no whitespace/CRLF/NUL): a mask
+forwards, but a space (which would splice extra WHO slots) or CRLF (command
+injection) is still rejected. New `validate_args :who_target` arm surfaces
+`:invalid_mask`. `Session.send_who/3` no longer assumes a channel
+(`canonical_channel/1` is a no-op on a mask, so the raw mask is the
+accumulator key).
+
+*Break 2 — inbound correlation.* solanum sets the 352 RPL_WHOREPLY channel
+field to `"*"` for a mask/global WHO (`modules/m_who.c:507` — `msptr ?
+chname : "*"`) while 315 RPL_ENDOFWHO echoes the ORIGINAL mask
+(`include/messages.h` NUMERIC_STR_315). `who_fold` keyed the accumulator on
+the per-row channel, so a mask WHO folded every row into
+`who_pending["*"]` but 315 drained `who_pending[<mask>]` — a key mismatch
+that dropped the whole reply. `who_fold` now correlates: exact channel-key
+match first (channel WHO, concurrent-safe), else single-in-flight-WHO
+fallback (mask WHO — WHO is mailbox-serialized, one modal at a time). 315
+already drained by the echoed target, so no change there.
+
+Result: a mask WHO forwards, its `"*"`-channel rows correlate, and even a
+zero-match mask surfaces an empty modal (solanum `m_who.c:294` always emits
+315) — feedback, not silence. No wire-type change (reuses the existing
+`who_reply` shape); cic untouched for this gap.
+
+### Gap (d) — a real solanum node in CI
+
+The azzurra2 upstream (the standalone second network from #211 phase 7)
+now runs **solanum** instead of a second bahamut, so integration tests
+exercise the parser against the real Libera-shaped ircd. The node lives in
+the grappa repo at `cicchetto/e2e/infra-solanum/` (NOT the azzurra-testnet
+submodule — solanum is a different upstream with a block-format conf +
+meson/ninja build). Dockerfile clones solanum @ `${SOLANUM_REF:-main}`,
+meson-builds to `/usr/local/solanum`. Build deps beyond the obvious:
+`libltdl-dev` (build) + `libltdl7` (runtime) — solanum dlopen's its modules
+via libltdl; without it `meson setup` fails at `ltdl not found`. The conf
+is standalone + plaintext-only (grappa dials `--no-tls`, so no TLS listener
+/ cert wiring) with deliberately raised connection/flood/throttle limits —
+the whole Playwright suite drives many connections through ONE source IP,
+and solanum's stock defaults (`number_per_ip=10`, `throttle_count=4`) would
+throttle-flake unrelated specs.
+
+`compose.yaml`: the `bahamut-test2` service became `solanum-test2`, but the
+**`bahamut-test2` network alias is retained on it** — so the azzurra2 seed
+(`add_server --server bahamut-test2:6667`) and the #211 phase-6/7
+multi-network specs resolve the same hostname unchanged. Only the ircd
+behind the name switched; zero topology blast radius on the 3 specs that
+reference azzurra2/bahamut-test2.
+
+Coverage: `issue221-who-mask.spec.ts` (mask WHO on the shared fixture — the
+network-agnostic UI proof) + `issue221-solanum-whois.spec.ts` (mask WHO
+against the real solanum node, where 352 channel=`"*"` — the coverage the
+bahamut fixture cannot give). The gap-(a) solanum extras (330/671/276) need
+a TLS peer + services the plaintext CI node lacks, so those folds stay
+unit-proven (event_router_test.exs #221); the node's integration value for
+gap (a) is the numeric ROUTING (delegation, no misroute), exercised by the
+WHO round-trip.
+
+### Deploy classification (per part)
+
+- **Parser / numeric-router / usermode / WHO fixes (lib/):** HOT — pure
+  code, no Session.Server state-shape change (whois_pending/who_pending are
+  GenServer state, Map.get-defaulted, hot-safe), no new supervised child,
+  no migration. The whois_bundle wire-type add + cic narrower/type change →
+  a `--cic` bundle deploy too.
+- **CI / solanum-node change:** NO prod deploy — it is testnet/CI infra,
+  never runs in prod (prod is the m42 jail).

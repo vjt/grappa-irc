@@ -132,6 +132,7 @@ The authoritative source is the comment block at the top of each
 stack (`cicchetto/e2e/compose.yaml`):
 
 * **azzurra-testnet** (git submodule at `cicchetto/e2e/infra/`): hub + leaf-v4 + leaf-v6 + services. Bahamut IRCd + Anope-shape services so CAP/SASL/NickServ behave like real Azzurra.
+* **solanum-test2** (`cicchetto/e2e/infra-solanum/`, #221): a standalone **solanum** ircd — the ircd Libera.Chat runs — backing the second network `azzurra2`. Replaced the second bahamut so integration tests exercise grappa's parser against the real Libera-shaped WHOIS/usermode/WHO-mask surface, not a bahamut mock. Plaintext-only (grappa dials `--no-tls`), standalone (no S2S), built from the solanum tree via meson (pin with `SOLANUM_REF`, default `main`). Keeps the `bahamut-test2` docker-network alias so the azzurra2 seed + the #211 multi-network specs resolve the same hostname unchanged.
 * **grappa-e2e-seeder** (oneshot): runs `mix ecto.migrate` + seeds 3 users (`vjt`, `admin-vjt`, `m9b-test`, `m9b-victim`) + binds them to bahamut-test + seeds 200 scrollback lines on `#bofh`. Idempotent at clean-volume time only — re-seeding a non-fresh volume fails on duplicate user rows.
 * **grappa-test**: the bouncer, dev image, source bind-mounted, points at `bahamut-test:6667`.
 * **cicchetto-build-test** (oneshot): `bun install --frozen-lockfile && bun run build` into bind-mounted `runtime/e2e/cicchetto-dist/`.
