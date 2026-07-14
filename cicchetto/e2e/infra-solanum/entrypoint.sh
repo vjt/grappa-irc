@@ -9,6 +9,12 @@ set -eu
 : "${SERVER_DESC:=grappa e2e solanum node}"
 : "${OPER_NICK:=testoper}"
 : "${OPER_PASS:=testoperpass}"
+# EXPORT so envsubst (a child process) sees the defaulted values — `:=`
+# assigns to the shell var but does NOT export, so an unset-then-defaulted
+# var would render empty in the conf (solanum then fatals on e.g. an empty
+# serverinfo description). compose.yaml passes these as real env vars, but
+# the export keeps a bare `docker run` (no -e) booting too.
+export SERVER_NAME SERVER_SID SERVER_DESC OPER_NICK OPER_PASS
 
 PREFIX=/usr/local/solanum
 ETC="${PREFIX}/etc"

@@ -58,13 +58,22 @@ auth {
 };
 
 /* A shared oper for parity with the bahamut node's O-lines (some specs
- * /oper to exercise oper-only surfaces). ~encrypted = plaintext password
- * (throwaway testnet). */
+ * /oper to exercise oper-only surfaces). solanum splits privileges into a
+ * privset {} (referenced by the operator block) — unlike bahamut's inline
+ * flag list. ~encrypted = plaintext password (throwaway testnet). */
+privset "testoper" {
+	privs = oper:general, oper:privs, oper:testline, oper:kill,
+		oper:operwall, oper:message, oper:kline, oper:unkline,
+		oper:rehash, oper:die, oper:admin, oper:xline,
+		usermode:servnotice, auspex:oper, auspex:hostname,
+		auspex:umodes, auspex:cmodes;
+};
+
 operator "${OPER_NICK}" {
 	user = "*@*";
 	password = "${OPER_PASS}";
-	flags = kill, remote, kline, unkline, nick_changes,
-		die, rehash, admin, xline, operwall, oper_spy, ~encrypted;
+	privset = "testoper";
+	flags = ~encrypted;
 };
 
 general {

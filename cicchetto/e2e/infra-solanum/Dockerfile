@@ -14,7 +14,7 @@ FROM debian:trixie AS build
 ARG SOLANUM_REF=main
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkg-config meson ninja-build \
-    libsqlite3-dev flex bison libssl-dev \
+    libsqlite3-dev flex bison libssl-dev libltdl-dev \
     ca-certificates git \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -33,7 +33,7 @@ RUN meson setup build --optimization 2 --prefix=/usr/local/solanum \
 
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libsqlite3-0 libssl3 gettext-base \
+    libsqlite3-0 libssl3 libltdl7 gettext-base \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/solanum /usr/local/solanum
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
