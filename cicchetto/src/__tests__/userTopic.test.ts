@@ -514,6 +514,35 @@ describe("userTopic", () => {
       expect(ws.setJoined).not.toHaveBeenCalled();
     });
 
+    // #200/#125 invariant, re-asserted for #244: the WS window-state
+    // terminal events NEVER originate selection. #244 makes the DirectoryPane
+    // TAP foreground the joined channel — but focus originates from the user's
+    // tap gesture, NOT from the join COMPLETING. If these WS arms called
+    // setSelectedChannel, an automatic re-join (reconnect auto-rejoin, cross-
+    // device broadcast) would steal focus — the exact regression #244 must
+    // avoid. This guards the boundary.
+    it("`joined` payload does NOT originate selection (auto-rejoin no-steal, #200/#244)", async () => {
+      const sel = await import("../lib/selection");
+      channelMock.fireEvent({
+        kind: "joined",
+        network: "freenode",
+        channel: "#italia",
+        state: "joined",
+      });
+      expect(sel.setSelectedChannel).not.toHaveBeenCalled();
+    });
+
+    it("`window_pending` payload does NOT originate selection (auto-rejoin no-steal, #200/#244)", async () => {
+      const sel = await import("../lib/selection");
+      channelMock.fireEvent({
+        kind: "window_pending",
+        network: "freenode",
+        channel: "#italia",
+        state: "pending",
+      });
+      expect(sel.setSelectedChannel).not.toHaveBeenCalled();
+    });
+
     it("drops `join_failed` payload with non-number numeric (narrowUserEvent rejects)", async () => {
       const ws = await import("../lib/windowState");
       channelMock.fireEvent({

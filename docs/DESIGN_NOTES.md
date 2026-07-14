@@ -20032,3 +20032,56 @@ which was COLD for a new child.)
 after the newest page loads (belt-and-suspenders on the client). Not needed for
 the fix — the server clamp is sufficient and authoritative — tracked as a
 possible follow-up, not part of #233.
+
+---
+
+## 2026-07-14 — #244 (P0): directory /list tap now foregrounds the joined window (amends #125)
+
+**Bug.** Tapping an UNjoined channel row in the directory (`/list` →
+`DirectoryPane`) fired the JOIN but left the operator staring at the previous
+window — the newly-joined channel never came to the foreground. They had to
+hunt for and click the new tab manually. Reported P0 on both desktop and
+mobile.
+
+**Why it was that way (the #125 constraint being amended).** #125
+deliberately made a directory-driven join JOIN-only, no auto-open — the row
+just got badged once the server broadcast `joined`. `DirectoryPane.onActivate`
+(unjoined branch) called `void onJoin()` → `postJoin` ONLY, never
+`setSelectedChannel`. #244 amends that decision **for the user-initiated tap
+only**: you asked for the channel, you land in it (irssi-like).
+
+**The seam + the fix.** `cicchetto/src/DirectoryPane.tsx` `onJoin` — after the
+awaited `postJoin` resolves, call `setSelectedChannel({networkSlug,
+channelName, kind: "channel"})`. This is the SAME verb + shape `compose.ts`
+`/join` uses (L285-309), at the SAME issuing boundary — focus originates from
+the user's tap gesture, NOT from the join COMPLETING. Placed *after* the
+awaited `postJoin` inside the `try`, so a failed join (e.g. `+i` invite-only)
+surfaces its inline error and never foregrounds a phantom window.
+
+**Why the #200/#125 automatic-rejoin-no-steal invariant stays intact.** The
+crux of #244: a completion-driven focus (setSelectedChannel in the WS
+`joined`/`window_pending` arms) would ALSO fire on an AUTOMATIC re-join —
+reconnect auto-rejoin, cross-device / server-originated join broadcast,
+pending→joined transition — re-introducing the exact focus-steal #200 removed.
+The fix originates focus at the tap, so the WS window-state arms
+(`userTopic.ts` `joined`/`window_pending` → `setJoined`/`setPending`;
+`subscribe.ts` self-JOIN, #200) remain pure state mirrors that NEVER originate
+selection. The tap is the ONLY new focus origin. Verified negatively (unit +
+e2e): an out-of-band REST join (same user-topic broadcast path an automatic
+re-join uses) does NOT move the selection.
+
+**Test that encoded the old behavior — inverted (never-assert-buggy-behavior).**
+`DirectoryPane.test.tsx` "tapping an UNjoined row joins it and does NOT open a
+window (#125)" asserted `setSelectedChannel` was NOT called — the now-superseded
+rule for user taps. Replaced with "tapping an UNjoined row joins it AND
+foregrounds its window (#244 amends #125)" + a new "does NOT foreground when
+postJoin fails" (focus only on successful join). `userTopic.test.ts` gained two
+guards re-asserting the invariant: `joined` and `window_pending` payloads do
+NOT originate selection. e2e (`issue244-directory-tap-foreground.spec.ts`):
+desktop foreground-on-tap + desktop no-steal (server-originated join stays put)
++ mobile `@webkit` foreground-on-tap via the BottomBar branch (the shared
+onActivate; jsdom is blind to the CSS layout + selected marker).
+
+**Deploy: --cic bundle only, HOT.** Client-only (cic focus wiring); no `.ex`
+touched, no wire-type / schema / supervised-child change. `deploy-m42.sh --cic`
+builds + broadcasts a new bundle hash to live user-topics; no BEAM restart.

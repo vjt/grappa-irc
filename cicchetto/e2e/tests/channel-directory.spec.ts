@@ -10,7 +10,10 @@
 //   4. Typing in the search box filters results to matching channels
 //      (server-side query re-GET; server returns only matching entries).
 //   5. Clicking a channel's join control adds it to the sidebar AND
-//      shows the "joined" badge in the directory row.
+//      foregrounds its window (#244 — a user-initiated directory tap now
+//      JOINs and selects the new window, amending #125's no-auto-open).
+//      The in-row "joined" badge is unit-covered (DirectoryPane.test.tsx);
+//      it can't be asserted here because the foreground unmounts the pane.
 //
 // Why peer stays connected: bahamut only includes non-empty channels in
 // LIST replies. The peer must remain joined in PEER_CHANNEL for the
@@ -152,17 +155,18 @@ test(
         sidebarWindow(page, NETWORK_SLUG, PEER_CHANNEL),
       ).toHaveCount(1, { timeout: 10_000 });
 
-      // The directory row also shows the "joined" badge once the server
-      // broadcasts the `joined` window state and cic's windowStateByChannel
-      // updates isJoined() for PEER_CHANNEL.
-      const peerRowLi = page
-        .locator(".directory-row")
-        .filter({
-          has: page.locator(".directory-row-name", { hasText: PEER_CHANNEL }),
-        });
-      await expect(peerRowLi.locator(".directory-row-badge")).toBeVisible({
-        timeout: 10_000,
-      });
+      // #244 — a user-initiated directory tap now JOINs *and* foregrounds
+      // the new channel's window (amends #125's original no-auto-open). So
+      // the tap flips selKind() list → channel, unmounting DirectoryPane;
+      // the `.directory-row-badge` (a DirectoryPane-only element) is no
+      // longer observable in a mounted pane. Assert the foreground signal
+      // instead: the newly-joined channel is the SELECTED sidebar window.
+      // The badge itself is unit-covered in DirectoryPane.test.tsx; the
+      // foreground behaviour is the #244 P0 fix, covered end-to-end in
+      // issue244-directory-tap-foreground.spec.ts.
+      await expect(
+        sidebarWindow(page, NETWORK_SLUG, PEER_CHANNEL),
+      ).toHaveClass(/selected/, { timeout: 10_000 });
     } finally {
       await peer.disconnect("e2e channel-directory done");
     }

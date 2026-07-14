@@ -7,7 +7,8 @@ import { channelKey } from "../lib/channelKey";
 //   * mount with undefined page → calls loadDirectory(slug)
 //   * rows from directoryPage render (name + user_count + topic)
 //   * clicking an UNjoined row calls postJoin(token, slug, name, null)
-//     and does NOT open a window (#125)
+//     AND foregrounds its window (#244 amends #125's original no-auto-open)
+//   * postJoin failure surfaces inline + does NOT foreground (#244)
 //   * a row whose channelKey maps to "joined" is tappable-to-open
 //     (setSelectedChannel, NOT disabled) + badged (#125)
 //   * close button calls closeToPreviousWindow(slug) (#125)
@@ -291,7 +292,12 @@ describe("DirectoryPane", () => {
       expect(screen.queryByText("joined")).toBeNull();
     });
 
-    it("tapping an UNjoined row joins it and does NOT open a window (#125)", async () => {
+    // #244 amends #125: a USER-INITIATED tap on an unjoined directory row
+    // now JOINs *and* foregrounds the new channel window (irssi-like: you
+    // asked for it, you land in it). The focus is set at the tap issuing
+    // boundary, mirroring compose.ts `/join` — NOT via the WS join-complete
+    // broadcast (which would also fire on automatic re-joins → focus steal).
+    it("tapping an UNjoined row joins it AND foregrounds its window (#244 amends #125)", async () => {
       directoryPageMock.mockReturnValue(FRESH_PAGE);
       windowStateByChannelMock.mockReturnValue({});
       render(() => <DirectoryPane networkSlug={SLUG} />);
@@ -301,6 +307,33 @@ describe("DirectoryPane", () => {
 
       await waitFor(() => {
         expect(postJoinMock).toHaveBeenCalledWith("test-token", SLUG, "#grappa", null);
+      });
+      // Foreground the tapped channel — same verb + shape compose.ts /join uses.
+      await waitFor(() => {
+        expect(setSelectedChannelMock).toHaveBeenCalledWith({
+          networkSlug: SLUG,
+          channelName: "#grappa",
+          kind: "channel",
+        });
+      });
+    });
+
+    // Focus follows a SUCCESSFUL join only. If postJoin rejects (e.g. +i
+    // channel), the window never opens server-side, so foregrounding a
+    // phantom window would be a lie — mirror compose.ts, where the
+    // setSelectedChannel sits after the awaited postJoin inside the try.
+    it("does NOT foreground when postJoin fails (focus only on successful join) (#244)", async () => {
+      const { ApiError } = await import("../lib/api");
+      postJoinMock.mockRejectedValueOnce(new ApiError(473, "channel is invite-only"));
+      directoryPageMock.mockReturnValue(FRESH_PAGE);
+      windowStateByChannelMock.mockReturnValue({});
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      const joinBtn = screen.getByRole("button", { name: /join #grappa/i });
+      fireEvent.click(joinBtn);
+
+      await waitFor(() => {
+        expect(screen.getByText(/friendly: 473 channel is invite-only/)).toBeInTheDocument();
       });
       expect(setSelectedChannelMock).not.toHaveBeenCalled();
     });

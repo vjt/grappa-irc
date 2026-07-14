@@ -18,9 +18,10 @@ import { MircBody } from "./MircText";
 //
 // Shows a search box, refresh button, a close button (#125), total count,
 // "last refreshed N ago" with a stale CTA, a sort toggle, and a scrollable
-// list of channels. Tapping an UNjoined row JOINs it (no auto-open);
-// tapping an already-joined row OPENS its window (#125, consistent with
-// the HomePane featured-link behaviour from #85). Joined rows carry a
+// list of channels. Tapping an UNjoined row JOINs it AND foregrounds its
+// window (#244, amending #125's original no-auto-open); tapping an already-
+// joined row OPENS its window (#125, consistent with the HomePane
+// featured-link behaviour from #85). Joined rows carry a
 // "joined" badge; featured rows a "featured" label (sorted by user count
 // like everything else, not pinned). Topics render through MircBody (the
 // shared mIRC formatter) — color codes show as styled spans, not raw
@@ -72,15 +73,31 @@ const DirectoryRow: Component<DirectoryRowProps> = (props) => {
       // Server broadcasts window_pending on the user topic → cic's
       // existing dispatch sets the window state. No local pending state
       // needed here — the windowStateByChannel signal drives the badge.
+      //
+      // #244 — foreground the newly-joined channel. Focus originates HERE,
+      // at the user's tap gesture (the issuing boundary), mirroring
+      // compose.ts `/join` — NOT from the WS join-complete broadcast. That
+      // decoupling is the #200/#125 invariant: WS window-state arms
+      // (userTopic.ts `joined`, subscribe.ts self-JOIN) NEVER originate
+      // selection, so an AUTOMATIC re-join (reconnect auto-rejoin, cross-
+      // device broadcast, pending→joined transition) can't steal focus. The
+      // tap is the ONLY new focus origin. After the awaited postJoin so a
+      // failed join (e.g. +i) never foregrounds a phantom window.
+      setSelectedChannel({
+        networkSlug: props.networkSlug,
+        channelName: props.entry.name,
+        kind: "channel",
+      });
     } catch (err) {
       setError(err instanceof ApiError ? friendlyApiError(err) : "join failed");
     }
   };
 
   // #125 — a joined row opens its window (consistent with the HomePane
-  // featured-link behaviour from #85); an unjoined row keeps the existing
-  // JOIN-only behaviour (no auto-open — the row just gets badged once the
-  // server broadcasts `joined`).
+  // featured-link behaviour from #85); an unjoined row JOINs it. #244
+  // amends #125: a user-initiated tap on an unjoined row now JOINs *and*
+  // foregrounds the new window (see onJoin) — irssi-like, you land in the
+  // channel you asked for. Automatic re-joins still never steal focus.
   const onActivate = () => {
     if (isJoined()) {
       setSelectedChannel({
