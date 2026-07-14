@@ -20169,3 +20169,74 @@ does NOT bump the events badge while a visible privmsg DOES; reading clears it).
 (`selection.ts`, `presenceFilter.ts`, `ScrollbackPane.tsx` + tests); NO `.ex`,
 no wire-type / schema / supervised-child change. `deploy-m42.sh --cic` builds +
 broadcasts a new bundle hash to live user-topics; no BEAM restart.
+
+## 2026-07-14 — #230 REOPENED (P0, mobile): touch underfill → no load-older
+
+**The bug (mobile half of #230).** When a channel's loaded scrollback
+UNDERFILLS the viewport (`scrollHeight <= clientHeight`) `.scrollback` is
+`touch-action: none` + non-overflowing, so it is not natively scrollable — a
+gesture produces NO native `scroll` event → `onScroll` never fires → the
+CP14-B2 scroll-to-top `loadMore` never triggers and the operator is stuck with
+no way to page up into older history on a short/low-traffic channel. The
+earlier #230 fix rescued this for the desktop mouse **wheel** (`onWheel`:
+`deltaY < 0 && !nativelyScrollable → maybeLoadOlder`); **mobile is
+touch-driven** (no wheel), so the underfill→load-older trigger had no touch
+path and the bug persisted on iPhone (vjt reopen 2026-07-14).
+
+**The fix — one decision seam, two input paths.** Extracted the pure,
+exported `shouldRescueUnderfillLoadOlder({scrollHeight, clientHeight,
+scrollTop, revealOlderIntent, thresholdPx})` decision. Both input paths funnel
+through it AND through the ONE `maybeLoadOlder` closure (loadMore + the
+prepend scroll-position restore) — implement-once, no forked load-older, no
+second position-restore:
+- **Wheel (desktop, refactored):** `revealOlderIntent = e.deltaY < 0`.
+- **Touch (mobile, new):** `revealOlderIntent = dragDy > 0` — a finger drag
+  DOWN the screen (clientY increases → content scrolls up → older revealed) is
+  the touch analogue of wheel-up. `dragDy = currentY − touchStartY`
+  (touchStartY captured on touchstart).
+
+The `!nativelyScrollable` guard inside the decision is LOAD-BEARING and
+mirrored for both: on an OVERFLOWING pane the browser emits a native `scroll`
+so `onScroll` already owns loadMore with the CORRECT post-scroll geometry; the
+wheel/touch paths fire one tick BEFORE that and would restore to a stale
+anchor. Both stay OUT there.
+
+**Why an element-level `{passive:false}` listener, not a JSX `onTouch*`.**
+SolidJS delegates touch handlers to a PASSIVE document-level listener, so a JSX
+`onTouchMove` can neither reliably own the gesture nor `preventDefault`
+(project_solid_touch_passive_delegation). iOS PWA UIKit can still claim a touch
+as a page-pan even under `touch-action: none` (see `lib/overlayScrollLock`
+moduledoc — CSS-only proved insufficient to stop UIKit). So `touchstart` /
+`touchmove` / `touchend` / `touchcancel` are bound directly on `listRef` in
+`onMount` (torn down in `onCleanup`), with `touchmove` `{passive:false}` and
+`preventDefault` called ONLY when the rescue fires — stopping any residual
+viewport rubber-band during the load-older drag; on the overflowing case the
+decision is false → no preventDefault → native pan-y scroll proceeds. The
+element-level `touchmove` also stamps `lastInputEventAtMs` (the BUGHUNT-2
+settle-gate input signal), the job the removed JSX `onTouchMove` did.
+
+**touch-action audit (underfilled state).** The base `.scrollback` rule is
+already `touch-action: none` (+ `overscroll-behavior: contain`) — UX-3 Z3 R4;
+`.scrollback-overflowing` flips to `pan-y`. `none` is correct for the
+underfilled state: it rejects the iOS chrome-drag AND still lets the JS
+`touchmove` handler see the gesture (touch-action gates default browser
+behavior, not event delivery). No CSS change needed; a `@webkit` e2e now guards
+that contract.
+
+**Why the webkit e2e cannot prove the iOS fix.** Playwright's webkit project
+does NOT reproduce real iOS scroll physics (momentum, rubber-band,
+no-native-scroll-on-underfill) — feedback_playwright_webkit_not_ios_scroll. So
+the CORE proof is the vitest unit tests of the pure decision + the
+element-level touch wiring (jsdom); the e2e guards are, per issue123's
+"one guard per what's provable where": synthetic-touch WIRING → real `loadMore`
+row-growth in **chromium** (deterministic; webkit's TouchEvent constructor is
+unreliable), the direction + overflowing negatives, and the underfilled
+`touch-action: none` CSS contract on **@webkit**. A green webkit e2e is
+wiring/CSS coverage, NOT proof the on-device gesture works — that is a DEVICE
+dogfood call.
+
+**Deploy: --cic bundle only, HOT.** Client-only — only `ScrollbackPane.tsx` +
+its tests + the new e2e spec; NO `.ex`, no wire-type / schema /
+supervised-child change. `deploy-m42.sh --cic` builds + broadcasts a new bundle
+hash; no BEAM restart. **Do NOT ship on automated gates alone — HALT for a
+real-iPhone dogfood first** (webkit can't confirm the physics).

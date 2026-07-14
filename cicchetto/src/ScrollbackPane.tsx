@@ -167,6 +167,40 @@ const SCROLL_KEYS = new Set<string>([
 // cases; this constant only controls when to *try*.
 const LOAD_MORE_THRESHOLD_PX = 200;
 
+// #230 — the pure underfill-rescue DECISION seam, shared by the desktop wheel
+// path and the mobile touch path (implement-once). Both detect an operator
+// intent to reveal OLDER history on a pane that has NO native scroll (content
+// underfills the viewport, so `.scrollback` never emits a `scroll` event and
+// the onScroll → loadMore path never fires). Returns true only when the rescue
+// should page older history:
+//
+//   * `!nativelyScrollable` (scrollHeight <= clientHeight) — LOAD-BEARING. On an
+//     OVERFLOWING pane the browser emits a native `scroll`, so onScroll already
+//     owns loadMore with the CORRECT post-scroll geometry for the position
+//     restore. The wheel/touch paths fire one tick BEFORE that native scroll
+//     lands, so acting there would capture a stale scrollTop and restore to the
+//     wrong anchor. Stay OUT whenever the pane can natively scroll.
+//   * `scrollTop <= thresholdPx` — near the top (trivially true when content
+//     underfills, since scrollTop is pinned at 0; mirrors maybeLoadOlder's gate).
+//   * `revealOlderIntent` — the normalized "operator wants older" signal: a
+//     desktop wheel-UP (deltaY < 0) OR a mobile finger-drag DOWN the screen
+//     (clientY increases → content scrolls up → older revealed).
+//
+// Pure + exported so the mobile-underfill trigger is unit-testable without real
+// iOS scroll physics (Playwright webkit does not reproduce them).
+export function shouldRescueUnderfillLoadOlder(geometry: {
+  scrollHeight: number;
+  clientHeight: number;
+  scrollTop: number;
+  revealOlderIntent: boolean;
+  thresholdPx: number;
+}): boolean {
+  const nativelyScrollable = geometry.scrollHeight > geometry.clientHeight;
+  if (nativelyScrollable) return false;
+  if (geometry.scrollTop > geometry.thresholdPx) return false;
+  return geometry.revealOlderIntent;
+}
+
 // Module-level tracking of which channels have already auto-focused on
 // own-nick JOIN this session. Intentionally not persisted to server or
 // localStorage — ephemeral, per page-load. Pre-BJ this Set ALSO gated
@@ -1220,9 +1254,75 @@ const ScrollbackPane: Component<Props> = (props) => {
     const onResize = () => scrollToActivation("tail-only", true);
     window.addEventListener("resize", onResize);
     window.visualViewport?.addEventListener("resize", onResize);
+
+    // #230 (mobile) — touch counterpart of the desktop wheel underfill rescue.
+    // On iOS an underfilled `.scrollback` is `touch-action: none` +
+    // non-overflowing, so a touch drag emits NO native `scroll` event →
+    // `onScroll` never fires → the operator is stuck with no way to page up into
+    // older history (the wheel rescue has no touch path). A finger drag DOWN the
+    // screen (clientY increases → dy > 0) reveals content ABOVE = older — the
+    // touch analogue of wheel deltaY < 0 — and funnels into the SAME
+    // `shouldRescueUnderfillLoadOlder` decision + `maybeLoadOlder` closure the
+    // wheel path uses (implement-once). The decision's `!nativelyScrollable`
+    // guard keeps the touch path OUT of the overflowing case, where native
+    // pan-y scroll + `onScroll` own loadMore with correct geometry.
+    //
+    // Element-level {passive:false}, NOT a JSX onTouch*: SolidJS delegates touch
+    // handlers to a PASSIVE document listener, so a JSX handler can neither
+    // reliably own the gesture nor `preventDefault`. iOS PWA UIKit can still
+    // claim a touch as a page-pan even under `touch-action: none` (see
+    // lib/overlayScrollLock moduledoc — CSS-only proved insufficient to stop
+    // UIKit), so we bind directly and `preventDefault` ONLY when the rescue
+    // fires, stopping any residual viewport rubber-band during the load-older
+    // drag; on the overflowing case the decision is false → no preventDefault →
+    // native scroll proceeds. This handler also stamps `lastInputEventAtMs` (the
+    // BUGHUNT-2 settle-gate input signal) — the job the removed JSX
+    // `onTouchMove` used to do.
+    let touchStartY: number | null = null;
+    const onTouchStartEl = (e: TouchEvent): void => {
+      touchStartY = e.touches[0]?.clientY ?? null;
+    };
+    const onTouchMoveEl = (e: TouchEvent): void => {
+      setLastInputEventAtMs(Date.now());
+      if (!listRef) return;
+      // Single-finger drag only — a two-finger pinch is not a page-up intent
+      // (touch-action: none already suppresses browser pinch on the underfilled
+      // pane; this keeps a stray first-finger drift from paging history).
+      if (e.touches.length !== 1) return;
+      const currentY = e.touches[0]?.clientY;
+      if (currentY === undefined || touchStartY === null) return;
+      // dy > 0 = finger moved DOWN the screen = content scrolls up = reveal older.
+      const dragDy = currentY - touchStartY;
+      if (
+        shouldRescueUnderfillLoadOlder({
+          scrollHeight: listRef.scrollHeight,
+          clientHeight: listRef.clientHeight,
+          scrollTop: listRef.scrollTop,
+          revealOlderIntent: dragDy > 0,
+          thresholdPx: LOAD_MORE_THRESHOLD_PX,
+        })
+      ) {
+        if (e.cancelable) e.preventDefault();
+        maybeLoadOlder();
+      }
+    };
+    const onTouchEndEl = (): void => {
+      touchStartY = null;
+    };
+    if (listRef) {
+      listRef.addEventListener("touchstart", onTouchStartEl, { passive: true });
+      listRef.addEventListener("touchmove", onTouchMoveEl, { passive: false });
+      listRef.addEventListener("touchend", onTouchEndEl, { passive: true });
+      listRef.addEventListener("touchcancel", onTouchEndEl, { passive: true });
+    }
+
     onCleanup(() => {
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
+      listRef?.removeEventListener("touchstart", onTouchStartEl);
+      listRef?.removeEventListener("touchmove", onTouchMoveEl);
+      listRef?.removeEventListener("touchend", onTouchEndEl);
+      listRef?.removeEventListener("touchcancel", onTouchEndEl);
       if (scrollSettleTimer !== undefined) {
         window.clearTimeout(scrollSettleTimer);
       }
@@ -1967,7 +2067,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   //   * `touchmove` covers iOS-Safari touch-scroll where pointerdown
   //     fires but the scroll lands AFTER pointerup if the drag is
   //     short — pointerdown alone leaves a gap if the operator taps
-  //     and releases on a flung scroll.
+  //     and releases on a flung scroll. NB: touchmove is bound
+  //     element-level {passive:false} in onMount (NOT a JSX handler) so
+  //     it can also drive the #230 mobile underfill rescue; it stamps
+  //     `lastInputEventAtMs` there, same as the other three do here.
   //   * `keydown` covers desktop keyboard scrolling (PageDown / Space /
   //     arrows). Requires the listRef to be focusable (`tabIndex="-1"`
   //     on the element so click-to-focus works without adding a tab-
@@ -2042,14 +2145,20 @@ const ScrollbackPane: Component<Props> = (props) => {
     // element-level {passive:false} listener to preventDefault — a JSX
     // onWheel is passive/delegated and cannot; cf. overlayScrollLock.ts.)
     if (!listRef) return;
-    const nativelyScrollable = listRef.scrollHeight > listRef.clientHeight;
-    if (e.deltaY < 0 && !nativelyScrollable) {
+    // Funnel through the shared decision seam (implement-once) — the same one
+    // the mobile touch path uses. `deltaY < 0` (wheel-UP) is the desktop
+    // "reveal older" intent; the `!nativelyScrollable` + top-gate live inside.
+    if (
+      shouldRescueUnderfillLoadOlder({
+        scrollHeight: listRef.scrollHeight,
+        clientHeight: listRef.clientHeight,
+        scrollTop: listRef.scrollTop,
+        revealOlderIntent: e.deltaY < 0,
+        thresholdPx: LOAD_MORE_THRESHOLD_PX,
+      })
+    ) {
       maybeLoadOlder();
     }
-  };
-
-  const onTouchMove = (): void => {
-    setLastInputEventAtMs(Date.now());
   };
 
   const onKeyDown = (e: KeyboardEvent): void => {
@@ -2231,7 +2340,6 @@ const ScrollbackPane: Component<Props> = (props) => {
         onScroll={onScroll}
         onPointerDown={onPointerDown}
         onWheel={onWheel}
-        onTouchMove={onTouchMove}
         onKeyDown={onKeyDown}
         data-testid="scrollback"
       >

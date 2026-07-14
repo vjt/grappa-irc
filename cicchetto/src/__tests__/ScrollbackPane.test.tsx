@@ -221,7 +221,10 @@ import {
   setChannelPresencePref,
 } from "../lib/presenceFilter";
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
-import ScrollbackPane, { resetAutoFocusedJoinsForTest } from "../ScrollbackPane";
+import ScrollbackPane, {
+  resetAutoFocusedJoinsForTest,
+  shouldRescueUnderfillLoadOlder,
+} from "../ScrollbackPane";
 
 const fixture: ScrollbackMessage[] = [
   {
@@ -2998,6 +3001,175 @@ describe("ScrollbackPane", () => {
       // Settle window; the wheel path must NOT fire loadMore — the native
       // `scroll` event (dispatched by the browser, not simulated here) is
       // what drives loadMore on an overflowing pane.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(loadMore).not.toHaveBeenCalled();
+    });
+  });
+
+  // #230 (mobile) — the pure underfill-rescue DECISION seam. Both the desktop
+  // wheel path and the mobile touch path funnel through this one function
+  // (implement-once); it is the CORE proof because Playwright's webkit project
+  // does NOT reproduce real iOS scroll physics, so the mobile bug lives or dies
+  // on this decision, not on an e2e. `revealOlderIntent` is the normalized
+  // "operator wants older history" signal: wheel deltaY < 0 (desktop) OR a
+  // touch finger-drag DOWN the screen (mobile). The `!nativelyScrollable` guard
+  // keeps the rescue OUT of the overflowing case, where onScroll owns loadMore
+  // with the correct post-scroll geometry.
+  describe("#230 — shouldRescueUnderfillLoadOlder decision seam", () => {
+    it("underfilled pane + reveal-older intent near the top → true", () => {
+      expect(
+        shouldRescueUnderfillLoadOlder({
+          scrollHeight: 400,
+          clientHeight: 800,
+          scrollTop: 0,
+          revealOlderIntent: true,
+          thresholdPx: 200,
+        }),
+      ).toBe(true);
+    });
+
+    it("OVERFLOWING pane + reveal-older intent → false (onScroll owns it)", () => {
+      expect(
+        shouldRescueUnderfillLoadOlder({
+          scrollHeight: 5000,
+          clientHeight: 500,
+          scrollTop: 0,
+          revealOlderIntent: true,
+          thresholdPx: 200,
+        }),
+      ).toBe(false);
+    });
+
+    it("underfilled pane but scrollTop past the top threshold → false", () => {
+      expect(
+        shouldRescueUnderfillLoadOlder({
+          scrollHeight: 400,
+          clientHeight: 800,
+          scrollTop: 250,
+          revealOlderIntent: true,
+          thresholdPx: 200,
+        }),
+      ).toBe(false);
+    });
+
+    it("underfilled pane + NO reveal-older intent (wrong drag direction) → false", () => {
+      expect(
+        shouldRescueUnderfillLoadOlder({
+          scrollHeight: 400,
+          clientHeight: 800,
+          scrollTop: 0,
+          revealOlderIntent: false,
+          thresholdPx: 200,
+        }),
+      ).toBe(false);
+    });
+  });
+
+  // #230 (mobile) — the touch path wiring. On iOS an underfilled `.scrollback`
+  // (touch-action: none, non-overflowing) emits NO native `scroll` on a touch
+  // drag, so `onScroll` never fires and the desktop wheel rescue has no touch
+  // counterpart. A finger drag DOWN the screen (clientY increases → dy > 0)
+  // reveals content ABOVE = older history — the touch analogue of wheel
+  // deltaY < 0 — and must funnel into the SAME `maybeLoadOlder` the wheel path
+  // uses. jsdom has no real TouchEvent/Touch, so these dispatch a synthetic
+  // touch* Event with a hand-attached `touches` list to exercise the
+  // element-level {passive:false} listener bound in onMount. This proves the
+  // WIRING (gesture → decision → loadMore); the on-device iOS physics can only
+  // be confirmed by a real-device dogfood (see the spec header).
+  describe("#230 — touch-drag-down triggers loadMore when content underfills", () => {
+    const shortRows = (): ScrollbackMessage[] =>
+      Array.from({ length: 3 }, (_, i) => ({
+        id: i + 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: i + 1,
+        kind: "privmsg",
+        sender: "alice",
+        body: `row ${i + 1}`,
+        meta: {},
+      }));
+
+    const fireTouch = (el: HTMLElement, type: string, ...clientYs: number[]): void => {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, "touches", {
+        value: clientYs.map((clientY) => ({ clientY })),
+        configurable: true,
+      });
+      el.dispatchEvent(ev);
+    };
+
+    it("finger drag DOWN on an underfilled pane calls loadMore", async () => {
+      setScrollback({ "freenode #grappa": shortRows() });
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const list = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      if (!list) throw new Error("scrollback DOM not found");
+
+      // Underfill precondition (jsdom: all geometry is 0 → not natively
+      // scrollable, scrollTop already at the top).
+      expect(list.scrollHeight).toBeLessThanOrEqual(list.clientHeight);
+
+      // Finger starts high, drags DOWN the screen (clientY 100 → 260): dy > 0
+      // = reveal older. Only the touch path can rescue an underfilled pane.
+      fireTouch(list, "touchstart", 100);
+      fireTouch(list, "touchmove", 260);
+
+      await waitFor(() => expect(loadMore).toHaveBeenCalledWith("freenode", "#grappa"));
+    });
+
+    it("finger drag UP on an underfilled pane does NOT call loadMore", async () => {
+      setScrollback({ "freenode #grappa": shortRows() });
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const list = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      if (!list) throw new Error("scrollback DOM not found");
+
+      // Finger drags UP (clientY 260 → 100): dy < 0 = reveal newer, not older.
+      fireTouch(list, "touchstart", 260);
+      fireTouch(list, "touchmove", 100);
+
+      await new Promise((r) => setTimeout(r, 100));
+      expect(loadMore).not.toHaveBeenCalled();
+    });
+
+    it("finger drag DOWN on an OVERFLOWING pane does NOT call loadMore (onScroll owns it)", async () => {
+      setScrollback({ "freenode #grappa": shortRows() });
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const list = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      if (!list) throw new Error("scrollback DOM not found");
+
+      // Force the natively-scrollable shape (content taller than the container).
+      // A touch drag then produces a native `scroll`, so onScroll owns loadMore
+      // with the correct post-scroll geometry — the touch rescue must stay out.
+      Object.defineProperty(list, "scrollHeight", { value: 5000, configurable: true });
+      Object.defineProperty(list, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(list, "scrollTop", { value: 30, writable: true, configurable: true });
+
+      fireTouch(list, "touchstart", 100);
+      fireTouch(list, "touchmove", 260);
+
+      await new Promise((r) => setTimeout(r, 100));
+      expect(loadMore).not.toHaveBeenCalled();
+    });
+
+    it("two-finger (pinch) touchmove on an underfilled pane does NOT call loadMore", async () => {
+      // The rescue is a SINGLE-finger page-up gesture; a two-finger pinch is not
+      // a load-older intent even if the first finger drifts downward.
+      setScrollback({ "freenode #grappa": shortRows() });
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const list = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      if (!list) throw new Error("scrollback DOM not found");
+
+      // Two active touches, both moving DOWN — a pinch/multi-touch, not a drag.
+      fireTouch(list, "touchstart", 100, 300);
+      fireTouch(list, "touchmove", 260, 460);
+
       await new Promise((r) => setTimeout(r, 100));
       expect(loadMore).not.toHaveBeenCalled();
     });
