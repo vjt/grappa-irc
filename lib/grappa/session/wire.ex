@@ -348,6 +348,20 @@ defmodule Grappa.Session.Wire do
         }
 
   @typedoc """
+  #221 — one free-form / unhandled WHOIS-leg line, relayed verbatim.
+  Carries the source numeric (`numeric`) + the upstream trailing text
+  (`text`). Produced by 320 RPL_WHOISSPECIAL and by the generic
+  unknown-numeric pass-through (any numeric that arrives during a WHOIS
+  bundle without a dedicated typed handler). cic renders the text as-is —
+  these codes are network-defined free-form, so there is no typed field to
+  localize.
+  """
+  @type whois_extra_line :: %{
+          numeric: integer(),
+          text: String.t()
+        }
+
+  @typedoc """
   WHOIS bundle — the aggregated reply to a `/whois <nick>` issued by
   the operator. Fields are populated as the corresponding numerics
   arrive (311/312/313/317/319) and the bundle is broadcast on
@@ -387,7 +401,26 @@ defmodule Grappa.Session.Wire do
           umodes: String.t() | nil,
           away_message: String.t() | nil,
           actually_host: String.t() | nil,
-          actually_ip: String.t() | nil
+          actually_ip: String.t() | nil,
+          # #221 — solanum (Libera.Chat) WHOIS-leg fields. Azzurra's
+          # bahamut never emits the source numerics; solanum does. cic
+          # builds the human strings from these typed values per
+          # `feedback_no_localized_strings_server_side`.
+          #
+          # account     — 330 RPL_WHOISLOGGEDIN: NickServ/services account
+          #               the target is logged in as (nil = not identified).
+          # secure      — 671 RPL_WHOISSECURE: connected over TLS.
+          # certfp      — 276 RPL_WHOISCERTFP: client cert fingerprint (nil
+          #               = none / not visible to the requester).
+          # extra_lines — 320 RPL_WHOISSPECIAL + ANY unhandled WHOIS-leg
+          #               numeric that arrived during the bundle: an ordered
+          #               list of `%{numeric, text}` for verbatim relay. The
+          #               generic future-proofing slot — a new solanum
+          #               numeric appears here with no server code change.
+          account: String.t() | nil,
+          secure: boolean(),
+          certfp: String.t() | nil,
+          extra_lines: [whois_extra_line()] | nil
         }
 
   @typedoc """
@@ -989,7 +1022,14 @@ defmodule Grappa.Session.Wire do
       umodes: Map.get(accum, :umodes),
       away_message: Map.get(accum, :away_message),
       actually_host: Map.get(accum, :actually_host),
-      actually_ip: Map.get(accum, :actually_ip)
+      actually_ip: Map.get(accum, :actually_ip),
+      # #221 — solanum WHOIS-leg fields. Booleans default false, strings /
+      # lists nil, so a bahamut bundle (none of these numerics fired)
+      # marshals unchanged.
+      account: Map.get(accum, :account),
+      secure: Map.get(accum, :secure, false),
+      certfp: Map.get(accum, :certfp),
+      extra_lines: Map.get(accum, :extra_lines)
     }
   end
 

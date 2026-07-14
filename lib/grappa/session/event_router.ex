@@ -1278,6 +1278,91 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
+  # #221 — solanum (Libera.Chat) WHOIS-leg numerics. Azzurra's bahamut
+  # never emits these; solanum does. NumericRouter delegates them (and any
+  # unhandled numeric targeting an in-flight WHOIS) here. Each folds a typed
+  # field into `whois_pending[target_lower]` — per
+  # `feedback_no_localized_strings_server_side`, the server emits structured
+  # data (account name, host, boolean flags, raw fp); cic owns the human
+  # strings. Source citations (solanum @ a4998b5):
+
+  # 330 RPL_WHOISLOGGEDIN: `:server 330 own_nick target account :is logged
+  # in as`. The account name is the MIDDLE param (structured — NO localized
+  # parse needed), emitted by modules/m_services.c:375
+  # (form_str "%s %s :is logged in as").
+  defp do_route(
+         %Message{command: {:numeric, 330}, params: [_, target, account | _]},
+         state
+       )
+       when is_binary(target) and is_binary(account) do
+    {:cont, whois_fold(state, target, %{account: account}), []}
+  end
+
+  # 671 RPL_WHOISSECURE: `:server 671 own_nick target :is using a secure
+  # connection [cipher]`. modules/m_whois.c:341 (form_str "%s :%s"). Boolean
+  # flag; the cipher string in the trailing is display-only, cic localizes.
+  defp do_route(
+         %Message{command: {:numeric, 671}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
+    {:cont, whois_fold(state, target, %{secure: true}), []}
+  end
+
+  # 276 RPL_WHOISCERTFP: `:server 276 own_nick target :has client
+  # certificate fingerprint <fp>`. modules/m_whois.c:345
+  # (form_str "%s :has client certificate fingerprint %s"). The fingerprint
+  # is the last whitespace-delimited token of the trailing; extract it, fold
+  # nothing on an unexpected template.
+  defp do_route(
+         %Message{command: {:numeric, 276}, params: [_, target | rest]},
+         state
+       )
+       when is_binary(target) do
+    case parse_certfp_trailing(whois_trailing(rest)) do
+      nil -> {:cont, state, []}
+      fp -> {:cont, whois_fold(state, target, %{certfp: fp}), []}
+    end
+  end
+
+  # 338 RPL_WHOISACTUALLY (solanum): `:server 338 own_nick target host [ip]
+  # :actually using host`. modules/m_whois.c:365. UNLIKE Azzurra's 378
+  # (which packs host+ip into a localized trailing template parsed by
+  # `parse_whois_actually_trailing/1`), solanum puts the host in the MIDDLE
+  # param and, when the viewer may see it, the IP in a second middle param.
+  # Fold whichever middle params are present.
+  defp do_route(
+         %Message{command: {:numeric, 338}, params: [_, target, host, ip | _]},
+         state
+       )
+       when is_binary(target) and is_binary(host) and is_binary(ip) do
+    {:cont, whois_fold(state, target, %{actually_host: host, actually_ip: ip}), []}
+  end
+
+  defp do_route(
+         %Message{command: {:numeric, 338}, params: [_, target, host | _]},
+         state
+       )
+       when is_binary(target) and is_binary(host) do
+    {:cont, whois_fold(state, target, %{actually_host: host}), []}
+  end
+
+  # 320 RPL_WHOISSPECIAL: `:server 320 own_nick target :<free-form line>`.
+  # modules/m_whois.c (form_str "%s :%s"). No fixed semantics — a network
+  # emits arbitrary staff/bot/status lines. Fold the trailing verbatim into
+  # `extra_lines` for relay; cic renders it as-is. Shares the generic
+  # `extra_lines` accumulator with the unknown-numeric pass-through below.
+  defp do_route(
+         %Message{command: {:numeric, 320}, params: [_, target | rest]},
+         state
+       )
+       when is_binary(target) do
+    case whois_trailing(rest) do
+      nil -> {:cont, state, []}
+      text -> {:cont, whois_extra_line_fold(state, target, 320, text), []}
+    end
+  end
+
   # #169 — 315 RPL_ENDOFWHO: `:server 315 own_nick target :End of /WHO list`.
   # Drains the per-target WHO accumulator into ONE ephemeral
   # `{:who_reply, target_display, users}` effect (mirror of the /names 366
@@ -1741,6 +1826,32 @@ defmodule Grappa.Session.EventRouter do
     {channel, body_to_persist} = route_non_channel_notice(sender, body)
     {state, eff} = build_persist(state, :notice, channel, sender, body_to_persist, %{})
     {:cont, state, [eff]}
+  end
+
+  # #221 — GENERIC unknown-WHOIS-numeric pass-through. NumericRouter marks
+  # any numeric targeting an in-flight WHOIS `:delegated`; a code with no
+  # typed clause above falls to HERE (just before the numeric catch-all, so
+  # every dedicated handler — 315/352/253/… — matches first). If a WHOIS
+  # bundle is in flight for `params[1]`, fold the trailing into `extra_lines`
+  # (arrival order) so a solanum numeric added next year appears in the card
+  # with ZERO code change. No pending entry → no fold (an unsolicited
+  # numeric is not actionable); it flows to the catch-all below and Server
+  # persists it as a plain `$server` notice.
+  defp do_route(
+         %Message{command: {:numeric, code}, params: [_, target | rest]},
+         state
+       )
+       when is_integer(code) and is_binary(target) do
+    pending = Map.get(state, :whois_pending, %{})
+    nick_key = normalize_nick(target)
+
+    case {Map.has_key?(pending, nick_key), whois_trailing(rest)} do
+      {true, text} when is_binary(text) ->
+        {:cont, whois_extra_line_fold(state, target, code, text), []}
+
+      _ ->
+        {:cont, state, []}
+    end
   end
 
   # Numerics that have no dedicated EventRouter clause above must NOT
@@ -2542,6 +2653,30 @@ defmodule Grappa.Session.EventRouter do
     end)
   end
 
+  # #221 — append one unhandled/free-form WHOIS-leg numeric to the
+  # `extra_lines` accumulator (arrival order preserved). Used by 320
+  # RPL_WHOISSPECIAL and the generic unknown-numeric pass-through. Skips
+  # when no whois_pending entry exists (mirror of whois_fold). Each entry is
+  # `%{numeric: code, text: trailing}` — the wire shape cic renders verbatim
+  # (server emits no localized string; the trailing IS the upstream text,
+  # which for these codes is inherently free-form and network-defined).
+  @spec whois_extra_line_fold(state(), String.t(), 1..999, String.t()) :: state()
+  defp whois_extra_line_fold(state, target, code, text)
+       when is_binary(target) and is_integer(code) and is_binary(text) do
+    pending = Map.get(state, :whois_pending, %{})
+    nick_key = normalize_nick(target)
+
+    case Map.fetch(pending, nick_key) do
+      :error ->
+        state
+
+      {:ok, accum} ->
+        existing = Map.get(accum, :extra_lines, [])
+        merged = Map.put(accum, :extra_lines, existing ++ [%{numeric: code, text: text}])
+        %{state | whois_pending: Map.put(pending, nick_key, merged)}
+    end
+  end
+
   # P-0d — fold one or more LUSERS fields into `state.lusers_pending`.
   # The accumulator starts on first 251 (which resets it explicitly);
   # subsequent numerics merge into the existing map (or start a new one
@@ -2683,6 +2818,22 @@ defmodule Grappa.Session.EventRouter do
     case Regex.run(~r/^is connecting from (\S+) \[([^\]]+)\]$/, text) do
       [_, host, ip] -> {host, ip}
       _ -> nil
+    end
+  end
+
+  # #221 — 276 RPL_WHOISCERTFP trailing parser. solanum emits
+  # `"has client certificate fingerprint <fp>"` (modules/m_whois.c:345,
+  # form_str "%s :has client certificate fingerprint %s"). The fingerprint
+  # is the last whitespace-delimited token; extract it. Returns nil on an
+  # empty/malformed trailing (fold nothing rather than surface a garbled fp).
+  @spec parse_certfp_trailing(String.t() | nil) :: String.t() | nil
+  defp parse_certfp_trailing(nil), do: nil
+
+  defp parse_certfp_trailing(text) when is_binary(text) do
+    case text |> String.split(~r/\s+/, trim: true) |> List.last() do
+      nil -> nil
+      "" -> nil
+      fp -> fp
     end
   end
 

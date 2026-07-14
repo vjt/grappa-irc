@@ -4,6 +4,7 @@ import {
   type ConnectionState,
   type MentionsBundleMessage,
   type QueryWindowEntry,
+  type WhoisExtraLine,
   type WireUserEvent,
 } from "./api";
 import { loadArchive } from "./archive";
@@ -145,6 +146,16 @@ function narrowMentionsBundleMessage(raw: unknown): MentionsBundleMessage | null
 // rendering).
 function narrowWhoisChannel(raw: unknown): string | null {
   return typeof raw === "string" ? raw : null;
+}
+
+// #221 — per-entry narrower for the WHOIS `extra_lines` array. Mirror of
+// `Grappa.Session.Wire.whois_extra_line/0` — `{numeric, text}`. A malformed
+// element drops the whole bundle (strict, matching narrowWhoisChannel).
+function narrowWhoisExtraLine(raw: unknown): WhoisExtraLine | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.numeric !== "number" || typeof r.text !== "string") return null;
+  return { numeric: r.numeric, text: r.text };
 }
 
 // S43 — per-entry narrower for `query_windows_list`. Mirror of
@@ -376,13 +387,24 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         (r.umodes !== null && typeof r.umodes !== "string") ||
         (r.away_message !== null && typeof r.away_message !== "string") ||
         (r.actually_host !== null && typeof r.actually_host !== "string") ||
-        (r.actually_ip !== null && typeof r.actually_ip !== "string")
+        (r.actually_ip !== null && typeof r.actually_ip !== "string") ||
+        // #221 — solanum WHOIS-leg fields.
+        (r.account !== null && typeof r.account !== "string") ||
+        typeof r.secure !== "boolean" ||
+        (r.certfp !== null && typeof r.certfp !== "string")
       )
         return null;
       let channels: string[] | null = null;
       if (r.channels !== null) {
         channels = narrowArray(r.channels, narrowWhoisChannel);
         if (channels === null) return null;
+      }
+      // #221 — extra_lines: optional list of {numeric, text}; a malformed
+      // element drops the whole bundle (strict, matching channels above).
+      let extraLines: WhoisExtraLine[] | null = null;
+      if (r.extra_lines !== null && r.extra_lines !== undefined) {
+        extraLines = narrowArray(r.extra_lines, narrowWhoisExtraLine);
+        if (extraLines === null) return null;
       }
       return {
         kind: "whois_bundle",
@@ -409,6 +431,11 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         away_message: r.away_message as string | null,
         actually_host: r.actually_host as string | null,
         actually_ip: r.actually_ip as string | null,
+        // #221 — solanum WHOIS-leg fields.
+        account: r.account as string | null,
+        secure: r.secure,
+        certfp: r.certfp as string | null,
+        extra_lines: extraLines,
       };
     }
     case "names_reply": {

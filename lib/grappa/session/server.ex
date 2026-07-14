@@ -2881,7 +2881,15 @@ defmodule Grappa.Session.Server do
   # `last_command_window` or `open_query_nicks` — the new "scan-then-server"
   # fallback is purely syntactic on params.
   defp build_router_state(state) do
-    NumericRouter.new_router_state(state.nick, state.labels_pending)
+    NumericRouter.new_router_state(
+      state.nick,
+      state.labels_pending,
+      # #221 — derive the in-flight WHOIS target set from whois_pending
+      # (keys are already canonical nicks). Lets NumericRouter delegate an
+      # unhandled WHOIS-leg numeric to EventRouter's generic pass-through
+      # instead of misrouting it to a bogus query window.
+      MapSet.new(Map.keys(Map.get(state, :whois_pending, %{})))
+    )
   end
 
   # Extracts the integer numeric code from a numeric Message.

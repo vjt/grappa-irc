@@ -605,7 +605,13 @@ defmodule Grappa.Session.WireTest do
                umodes: nil,
                away_message: nil,
                actually_host: nil,
-               actually_ip: nil
+               actually_ip: nil,
+               # #221 — solanum WHOIS-leg fields (default nil / false when
+               # the corresponding numeric did not fire).
+               account: nil,
+               secure: false,
+               certfp: nil,
+               extra_lines: nil
              }
     end
 
@@ -637,8 +643,33 @@ defmodule Grappa.Session.WireTest do
                umodes: nil,
                away_message: nil,
                actually_host: nil,
-               actually_ip: nil
+               actually_ip: nil,
+               # #221 defaults
+               account: nil,
+               secure: false,
+               certfp: nil,
+               extra_lines: nil
              }
+    end
+
+    test "#221 — projects solanum fields (account/secure/certfp/actually_ip/extra_lines)" do
+      accum = %{
+        account: "AliceAccount",
+        secure: true,
+        certfp: "deadbeefcafef00d",
+        actually_host: "real-host.example.net",
+        actually_ip: "203.0.113.7",
+        extra_lines: [%{numeric: 320, text: "is a volunteer staff member"}]
+      }
+
+      payload = Wire.whois_bundle("libera", "alice", accum)
+
+      assert payload.account == "AliceAccount"
+      assert payload.secure == true
+      assert payload.certfp == "deadbeefcafef00d"
+      assert payload.actually_host == "real-host.example.net"
+      assert payload.actually_ip == "203.0.113.7"
+      assert payload.extra_lines == [%{numeric: 320, text: "is a volunteer staff member"}]
     end
   end
 

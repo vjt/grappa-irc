@@ -30,7 +30,8 @@ defmodule Grappa.Session.NumericRouterTest do
   defp state(opts \\ []) do
     %{
       own_nick: Keyword.get(opts, :own_nick, "vjt"),
-      labels_pending: Keyword.get(opts, :labels_pending, %{})
+      labels_pending: Keyword.get(opts, :labels_pending, %{}),
+      whois_targets: Keyword.get(opts, :whois_targets, MapSet.new())
     }
   end
 
@@ -265,7 +266,16 @@ defmodule Grappa.Session.NumericRouterTest do
     # and whowas_pending so 312 still routes correctly.
     314,
     369,
-    406
+    406,
+    # #221 — solanum (Libera.Chat) WHOIS-leg numerics. EventRouter folds
+    # them into the whois_pending accumulator (typed 330/338/671/276,
+    # free-form 320, bot 335). Source: solanum include/numeric.h @ a4998b5.
+    276,
+    320,
+    330,
+    335,
+    338,
+    671
   ]
 
   describe "delegated numerics → :delegated" do
@@ -294,6 +304,30 @@ defmodule Grappa.Session.NumericRouterTest do
     test "364 RPL_LINKS is no longer delegated; routes to $server" do
       m = msg(364, ["vjt", "irc.example.com", "*", "0 server description"])
       assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    # #221 — the generic WHOIS-leg guard. An unhandled numeric whose
+    # params[1] target is a WHOIS in flight is delegated (EventRouter folds
+    # it into extra_lines) instead of being misrouted to a bogus
+    # {:query, target} notice window. Future-proofs against solanum
+    # numerics grappa has no typed handler for.
+    test "an unknown numeric targeting an in-flight whois nick is delegated (not misrouted to query)" do
+      m = msg(617, ["vjt", "alice", "some new WHOIS line"])
+      st = state(whois_targets: MapSet.new(["alice"]))
+      assert :delegated = NumericRouter.route(m, st)
+    end
+
+    test "the whois-leg guard folds the target case-insensitively (rfc1459)" do
+      m = msg(617, ["vjt", "ALICE", "some new WHOIS line"])
+      st = state(whois_targets: MapSet.new(["alice"]))
+      assert :delegated = NumericRouter.route(m, st)
+    end
+
+    test "an unknown numeric with NO matching in-flight whois still param-scans (query for the nick)" do
+      # No whois in flight → the nick-shaped param routes to a query window
+      # exactly as before (pre-#221 behaviour preserved for the non-whois case).
+      m = msg(617, ["vjt", "alice", "some line"])
+      assert {:query, "alice"} = NumericRouter.route(m, state(whois_targets: MapSet.new()))
     end
   end
 

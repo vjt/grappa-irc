@@ -3166,6 +3166,10 @@ describe("ScrollbackPane", () => {
       away_message: null,
       actually_host: null,
       actually_ip: null,
+      account: null,
+      secure: false,
+      certfp: null,
+      extra_lines: null,
     };
 
     afterEach(() => {

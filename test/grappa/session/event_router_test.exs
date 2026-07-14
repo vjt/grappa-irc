@@ -2894,6 +2894,196 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  # #221 — Libera/solanum emits a richer WHOIS numeric set than Azzurra's
+  # bahamut. These fold the solanum-specific codes into the same
+  # whois_pending accumulator as the P-0a set. Source: solanum
+  # include/numeric.h + include/messages.h + modules/m_whois.c /
+  # modules/m_services.c (confirmed against tag a4998b5).
+  #
+  #   330 RPL_WHOISLOGGEDIN  "%s %s :is logged in as"  → account in the
+  #                          MIDDLE param (structured, no localized parse),
+  #                          emitted by m_services.c:375.
+  #   671 RPL_WHOISSECURE    "%s :%s"                   → trailing
+  #                          "is using a secure connection [cipher]",
+  #                          m_whois.c:341. Boolean flag; cic localizes.
+  #   276 RPL_WHOISCERTFP    "%s :has client certificate fingerprint %s"
+  #                          → fp is the tail token of the trailing,
+  #                          m_whois.c:345.
+  #   338 RPL_WHOISACTUALLY  "%s %s :actually using host"  → host in the
+  #                          MIDDLE param (solanum puts the host BEFORE the
+  #                          trailing, unlike Azzurra's 378 which packs
+  #                          host+ip into a localized trailing template),
+  #                          m_whois.c:365. 2-arg host-only + 3-arg host+ip
+  #                          shapes both occur.
+  #   320 RPL_WHOISSPECIAL   "%s :%s"                   → free-form line;
+  #                          folds into extra_lines for verbatim relay.
+  describe "#221 — solanum WHOIS-leg numeric folds (330/671/276/338/320)" do
+    test "330 RPL_WHOISLOGGEDIN folds account from the middle param" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 330},
+          ["vjt", "alice", "AliceAccount", "is logged in as"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:account] == "AliceAccount"
+    end
+
+    test "330 with no whois_pending entry is silently ignored (no fold, no notice)" do
+      state = base_state(%{whois_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 330},
+          ["vjt", "ghost", "GhostAccount", "is logged in as"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending == %{}
+    end
+
+    test "671 RPL_WHOISSECURE folds secure: true" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 671},
+          ["vjt", "alice", "is using a secure connection (TLSv1.3, TLS_AES_256_GCM_SHA384)"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:secure] == true
+    end
+
+    test "276 RPL_WHOISCERTFP folds certfp from the trailing tail token" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 276},
+          ["vjt", "alice", "has client certificate fingerprint deadbeefcafef00d"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:certfp] == "deadbeefcafef00d"
+    end
+
+    test "338 RPL_WHOISACTUALLY (solanum) folds host from the middle param" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 338},
+          ["vjt", "alice", "real-host.example.net", "actually using host"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:actually_host] == "real-host.example.net"
+    end
+
+    test "338 RPL_WHOISACTUALLY (solanum) folds host + ip from two middle params" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 338},
+          ["vjt", "alice", "real-host.example.net", "203.0.113.7", "actually using host"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:actually_host] == "real-host.example.net"
+      assert new_state.whois_pending["alice"][:actually_ip] == "203.0.113.7"
+    end
+
+    test "320 RPL_WHOISSPECIAL folds the free-form line into extra_lines" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 320},
+          ["vjt", "alice", "is a Libera.Chat volunteer staff member"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+
+      assert new_state.whois_pending["alice"][:extra_lines] == [
+               %{numeric: 320, text: "is a Libera.Chat volunteer staff member"}
+             ]
+    end
+  end
+
+  # #221 — the GENERIC future-proofing arm. Any numeric that is NOT
+  # explicitly handled but arrives WHILE a WHOIS bundle is in flight for
+  # its target (params[1]) folds its trailing text into `extra_lines`
+  # rather than being misrouted by NumericRouter's param-scan to a bogus
+  # {:query, target} notice window. A new solanum numeric next year needs
+  # ZERO code change to appear in the card. Per CLAUDE.md "fix root causes,
+  # not examples".
+  describe "#221 — generic unknown-WHOIS-numeric pass-through" do
+    test "an unknown numeric targeting an in-flight whois nick folds into extra_lines" do
+      state = whois_pending_state("alice")
+
+      # 617 is not a code grappa handles; pretend a future solanum build
+      # emits it during a WHOIS for alice.
+      m =
+        msg(
+          {:numeric, 617},
+          ["vjt", "alice", "is doing something new and typed nowhere yet"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+
+      assert new_state.whois_pending["alice"][:extra_lines] == [
+               %{numeric: 617, text: "is doing something new and typed nowhere yet"}
+             ]
+    end
+
+    test "multiple unknown numerics accumulate in extra_lines in arrival order" do
+      state = whois_pending_state("alice")
+
+      {:cont, s1, []} =
+        EventRouter.route(
+          msg({:numeric, 617}, ["vjt", "alice", "first line"], {:server, "irc.libera.chat"}),
+          state
+        )
+
+      {:cont, s2, []} =
+        EventRouter.route(
+          msg({:numeric, 618}, ["vjt", "alice", "second line"], {:server, "irc.libera.chat"}),
+          s1
+        )
+
+      assert s2.whois_pending["alice"][:extra_lines] == [
+               %{numeric: 617, text: "first line"},
+               %{numeric: 618, text: "second line"}
+             ]
+    end
+
+    test "an unknown numeric with NO in-flight whois entry does not fold (falls through untouched)" do
+      state = base_state(%{whois_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 617},
+          ["vjt", "nobody", "orphan line"],
+          {:server, "irc.libera.chat"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending == %{}
+    end
+  end
+
   describe "P-0e — 341 RPL_INVITING (invite ack)" do
     test "341 emits typed :invite_ack effect carrying (channel, target_nick)" do
       state = base_state()

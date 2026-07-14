@@ -98,10 +98,20 @@ defmodule Grappa.Session.NumericRouter do
       labeled-response correlations. Bounded by in-flight commands AND a
       lazy `@pending_ttl_ms` sweep in `Session.Server` (S10) — a withheld
       labeled reply can't strand an entry for the process lifetime.
+    * `whois_targets` — the canonical-nick set of WHOIS lookups currently
+      in flight (`MapSet.new(Map.keys(state.whois_pending))`). #221: an
+      unknown numeric that arrives WHILE a WHOIS for its `params[1]` target
+      is in flight is a WHOIS-leg reply grappa does not yet have a typed
+      handler for (a new solanum numeric). Rather than let the param scan
+      misroute it to a bogus `{:query, target}` notice window, we return
+      `:delegated` so EventRouter's generic pass-through folds it into the
+      bundle's `extra_lines`. This is the ROOT-cause fix: a numeric emitted
+      next year needs zero code change to route correctly.
   """
   @type router_state :: %{
           required(:own_nick) => String.t() | nil,
-          required(:labels_pending) => %{String.t() => window_ref()}
+          required(:labels_pending) => %{String.t() => window_ref()},
+          required(:whois_targets) => MapSet.t(String.t())
         }
 
   # ---------------------------------------------------------------------------
@@ -339,7 +349,34 @@ defmodule Grappa.Session.NumericRouter do
                         325,
                         326,
                         339,
-                        378
+                        378,
+                        # #221 — solanum (Libera.Chat) WHOIS-leg numerics.
+                        # Azzurra's bahamut never emits these; solanum does,
+                        # and pre-#221 they fell through to `scan_params/2`,
+                        # which routed each one to a bogus `{:query, target}`
+                        # window (the target nick is params[1], nick-shaped)
+                        # — the "misrouted" symptom in the bug report. Now
+                        # delegated so EventRouter folds them into the
+                        # `whois_pending` accumulator (typed fields for
+                        # 330/338/671/276; free-form 320 + any future code via
+                        # the generic extra_lines catch). Source: solanum
+                        # include/numeric.h @ a4998b5.
+                        #
+                        # 276 RPL_WHOISCERTFP  (cert fingerprint)
+                        # 320 RPL_WHOISSPECIAL (free-form staff/bot line)
+                        # 330 RPL_WHOISLOGGEDIN (account name — m_services.c)
+                        # 335 RPL_WHOISBOT     (bot flag — not in solanum core
+                        #                       but emitted by some networks;
+                        #                       folds via the generic catch)
+                        # 338 RPL_WHOISACTUALLY (solanum host/ip — DISTINCT
+                        #                        param shape from Azzurra's 378)
+                        # 671 RPL_WHOISSECURE  (TLS connection)
+                        276,
+                        320,
+                        330,
+                        335,
+                        338,
+                        671
                       ])
 
   # ---------------------------------------------------------------------------
@@ -354,12 +391,13 @@ defmodule Grappa.Session.NumericRouter do
   return spec, avoiding `call_without_opaque` false-positives at the
   `route/2` call site.
   """
-  @spec new_router_state(String.t() | nil, %{String.t() => window_ref()}) ::
+  @spec new_router_state(String.t() | nil, %{String.t() => window_ref()}, MapSet.t(String.t())) ::
           router_state()
-  def new_router_state(own_nick, labels_pending) do
+  def new_router_state(own_nick, labels_pending, whois_targets) do
     %{
       own_nick: own_nick,
-      labels_pending: labels_pending
+      labels_pending: labels_pending,
+      whois_targets: whois_targets
     }
   end
 
@@ -443,7 +481,35 @@ defmodule Grappa.Session.NumericRouter do
           routing_decision()
   defp route_for_class(:delegated, _, _), do: :delegated
   defp route_for_class(:active, _, _), do: {:server, nil}
-  defp route_for_class(:scan, msg, state), do: scan_params(msg.params, state)
+
+  # #221 — the generic WHOIS-leg guard. A numeric that is neither
+  # explicitly delegated nor deny-listed, but whose `params[1]` target is a
+  # WHOIS currently in flight, is an unhandled WHOIS-leg reply (a solanum
+  # numeric grappa has no typed handler for yet). Delegate it so
+  # EventRouter's generic pass-through folds it into the bundle's
+  # `extra_lines` — WITHOUT this, `scan_params/2` would route it to a bogus
+  # `{:query, target}` notice window (the "misrouted" symptom of #221). The
+  # guard reads `whois_targets` (derived from `state.whois_pending` keys),
+  # so a numeric added to solanum next year routes correctly with zero code
+  # change here. Only the `:scan` class reaches this arm — delegated/active
+  # numerics already resolved above, so a channel-state or STATS numeric is
+  # never captured even if a WHOIS happens to be in flight.
+  defp route_for_class(:scan, %Message{params: params} = msg, state) do
+    if whois_leg?(params, state.whois_targets) do
+      :delegated
+    else
+      scan_params(msg.params, state)
+    end
+  end
+
+  # True iff `params[1]` (the numeric's target slot) is the canonical nick
+  # of a WHOIS in flight. Any other param shape (empty, own-nick-only,
+  # channel-shaped) yields false → normal param scan.
+  @spec whois_leg?([term()], MapSet.t(String.t())) :: boolean()
+  defp whois_leg?([_own, target | _], whois_targets) when is_binary(target),
+    do: MapSet.member?(whois_targets, Identifier.canonical_nick(target))
+
+  defp whois_leg?(_, _), do: false
 
   # Walk the params skipping params[0] (own-nick echo) and the last element
   # (trailing human-readable text). The first channel-prefix param wins; if

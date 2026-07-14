@@ -751,6 +751,27 @@ export type WhoisBundle = {
   away_message: string | null;
   actually_host: string | null;
   actually_ip: string | null;
+  // #221 — solanum (Libera.Chat) WHOIS-leg fields. Azzurra's bahamut
+  // never emits the source numerics; solanum does. cic owns the human
+  // rendering per `feedback_no_localized_strings_server_side`.
+  //   account     — 330 RPL_WHOISLOGGEDIN account name (null = not identified)
+  //   secure      — 671 RPL_WHOISSECURE (connected over TLS)
+  //   certfp      — 276 RPL_WHOISCERTFP client cert fingerprint (null = none)
+  //   extra_lines — 320 RPL_WHOISSPECIAL + any unhandled WHOIS-leg numeric,
+  //                 relayed verbatim in arrival order (the future-proof slot).
+  account: string | null;
+  secure: boolean;
+  certfp: string | null;
+  extra_lines: WhoisExtraLine[] | null;
+};
+
+// #221 — one free-form / unhandled WHOIS-leg line relayed verbatim.
+// Mirrors `Grappa.Session.Wire.whois_extra_line/0`. `numeric` is the
+// source RPL_* code; `text` the upstream trailing (network-defined
+// free-form, so cic renders it as-is — no typed field to localize).
+export type WhoisExtraLine = {
+  numeric: number;
+  text: string;
 };
 
 // #140 — /names roster bundle payload. Mirrors

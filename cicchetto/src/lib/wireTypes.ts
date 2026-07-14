@@ -742,6 +742,11 @@ export type SessionWireMentionsBundlePayload = {
   messages: SessionWireMentionsBundleMessage[];
 };
 
+export type SessionWireWhoisExtraLine = {
+  numeric: number;
+  text: string;
+};
+
 export type SessionWireWhoisBundlePayload = {
   kind: "whois_bundle";
   network: string;
@@ -767,6 +772,10 @@ export type SessionWireWhoisBundlePayload = {
   away_message: string | null;
   actually_host: string | null;
   actually_ip: string | null;
+  account: string | null;
+  secure: boolean;
+  certfp: string | null;
+  extra_lines: SessionWireWhoisExtraLine[] | null;
 };
 
 export type SessionWirePeerAwayPayload = {
