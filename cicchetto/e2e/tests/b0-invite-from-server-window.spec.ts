@@ -68,8 +68,16 @@ test("B0 — /invite from $server window (no channel context) reaches upstream +
     // upstream INVITE → 341 ack → invite-ack row.
     await composeSend(page, `/invite ${PEER_NICK} ${CHANNEL}`);
 
+    // The invite-ack row mounts only after the FULL round-trip:
+    // composeSend → grappa → upstream INVITE → 341 RPL_INVITING →
+    // grappa user-topic broadcast → cic $server row. Under full-suite
+    // load that round-trip regularly exceeds 5s — the original ceiling
+    // here — while the identical sibling p0e-invite-ack.spec.ts:82 uses
+    // 10s ("absorbs the WS round-trip latency") and is reliably green.
+    // This is the SAME wait-for-condition, ceiling-matched to the proven
+    // sibling — the row still resolves the instant it appears.
     const row = page.locator("[data-testid='invite-ack-row']").first();
-    await expect(row).toBeVisible({ timeout: 5_000 });
+    await expect(row).toBeVisible({ timeout: 10_000 });
     await expect(row).toContainText("→");
     await expect(row).toContainText("invited");
     await expect(row).toContainText(PEER_NICK);
