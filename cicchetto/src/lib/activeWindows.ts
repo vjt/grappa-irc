@@ -1,0 +1,171 @@
+import { createMemo, createRoot, untrack } from "solid-js";
+import { type ChannelKey, channelKey } from "./channelKey";
+import { mentionCounts } from "./mentions";
+import { channelsBySlug, networks } from "./networks";
+import { queryWindowsByNetwork } from "./queryWindows";
+import { scrollbackByChannel } from "./scrollback";
+import { selectedChannel, setSelectedChannel, unreadCounts } from "./selection";
+
+// GH #235 — "jump to next active window" (irssi Alt+A).
+//
+// A single derivation that answers "which windows have unread activity,
+// and in what order do we cycle through them?" — reused by the Alt+A
+// keybinding, the on-screen affordance button (BottomBar-right on
+// mobile / sidebar-bottom-left on desktop), AND the pre-existing
+// Ctrl+N / Ctrl+P next/prev-unread verbs. ONE ordering, one code path,
+// every door (CLAUDE.md "reuse the verbs, not the nouns").
+//
+// Prior art it REPLACES: Shell.tsx's inline `nextUnread`/`prevUnread`
+// walked `flatChannels` in SIDEBAR order, EXCLUDED query (DM) windows,
+// and had no priority tiers. #235 requires the opposite — DMs + mentions
+// FIRST, chronological within a tier — so the ordering is extracted here
+// as one pure fn and the two existing verbs re-point at it (a strict
+// upgrade: they now reach DMs and honour tiers too).
+//
+// State is DERIVED, never duplicated (CLAUDE.md): unread activity comes
+// from `selection.unreadCounts`, the mention tier from `mentions`, the
+// query tier from `queryWindowsByNetwork`, and the per-window activity
+// timestamp from the newest local scrollback row id. cic originates no
+// parallel activity store.
+
+export type ActiveWindow = {
+  networkSlug: string;
+  channelName: string;
+  kind: "channel" | "query";
+};
+
+export type OrderInput = {
+  /**
+   * All candidate windows in stable flat (sidebar) order — network
+   * order, then channels then queries within each network. Used both as
+   * the membership universe and as the final tie-break order.
+   */
+  candidates: ActiveWindow[];
+  /** Per-window total unread (messages + events) — the activity gate. */
+  unread: Record<ChannelKey, number>;
+  /** Per-window mention/highlight count — promotes a channel to tier 0. */
+  mentions: Record<ChannelKey, number>;
+  /**
+   * Per-window activity timestamp: the newest local scrollback row id
+   * (monotonic sqlite PK, globally ordered across windows). 0 for a
+   * seed-only window (unread carried over from before this session with
+   * no local rows yet) — correctly the "oldest" activity.
+   */
+  activityId: Record<ChannelKey, number>;
+};
+
+// Pure ordering. Filter to windows with unread activity, then sort:
+//   1. tier — mention/highlight OR query (DM) come first (0), ordinary
+//      channel traffic second (1);
+//   2. activity time ascending — chronological, oldest activity first
+//      (clear your backlog in the order it arrived);
+//   3. flat (sidebar) index — stable tie-break for equal activity ids
+//      (e.g. two seed-only windows).
+export function orderUnreadWindows(input: OrderInput): ActiveWindow[] {
+  const { candidates, unread, mentions, activityId } = input;
+  const ranked = candidates
+    .map((w, flatIndex) => {
+      const key = channelKey(w.networkSlug, w.channelName);
+      const isTierZero = w.kind === "query" || (mentions[key] ?? 0) > 0;
+      return {
+        window: w,
+        unread: unread[key] ?? 0,
+        tier: isTierZero ? 0 : 1,
+        activityId: activityId[key] ?? 0,
+        flatIndex,
+      };
+    })
+    .filter((r) => r.unread > 0);
+
+  ranked.sort((a, b) => {
+    if (a.tier !== b.tier) return a.tier - b.tier;
+    if (a.activityId !== b.activityId) return a.activityId - b.activityId;
+    return a.flatIndex - b.flatIndex;
+  });
+
+  return ranked.map((r) => r.window);
+}
+
+// Flat candidate list mirroring the sidebar/bottom-bar window order:
+// per network, channels then queries. Server / home / admin / list /
+// mentions windows are intentionally excluded — #235 cycles
+// "channel/query" windows only (server status buffers aren't activity
+// windows in the irssi sense).
+function buildCandidates(): ActiveWindow[] {
+  const out: ActiveWindow[] = [];
+  const cbs = channelsBySlug() ?? {};
+  const qwbn = queryWindowsByNetwork();
+  for (const net of networks() ?? []) {
+    for (const ch of cbs[net.slug] ?? []) {
+      out.push({ networkSlug: net.slug, channelName: ch.name, kind: "channel" });
+    }
+    for (const qw of qwbn[net.id] ?? []) {
+      out.push({ networkSlug: net.slug, channelName: qw.targetNick, kind: "query" });
+    }
+  }
+  return out;
+}
+
+// Per-window activity id = newest local scrollback row id. Rows are ASC
+// by (server_time, id), so the last element is the newest. A window with
+// no local rows (seed-only unread) is absent from the map → treated as 0
+// (oldest) by `orderUnreadWindows`.
+function buildActivityIds(): Record<ChannelKey, number> {
+  const out: Record<ChannelKey, number> = {};
+  for (const [rawKey, rows] of Object.entries(scrollbackByChannel())) {
+    const last = rows[rows.length - 1];
+    if (last) out[rawKey as ChannelKey] = last.id;
+  }
+  return out;
+}
+
+// Reactive, memoised ordered list of windows with unread activity.
+// Consumed reactively by the affordance button (visibility + count) and
+// untracked by the jump verbs. Wrapped in createRoot so the memo has an
+// owner (module-singleton, never disposed) — mirrors queryWindows.ts.
+const root = createRoot(() => {
+  const activeWindows = createMemo((): ActiveWindow[] =>
+    orderUnreadWindows({
+      candidates: buildCandidates(),
+      unread: unreadCounts(),
+      mentions: mentionCounts(),
+      activityId: buildActivityIds(),
+    }),
+  );
+  return { activeWindows };
+});
+
+export const activeWindows = root.activeWindows;
+
+export const hasActiveWindows = (): boolean => activeWindows().length > 0;
+
+export const activeWindowCount = (): number => activeWindows().length;
+
+// Advance selection to the next (dir = 1) or previous (dir = -1) window
+// with unread activity, wrapping. Untracked: callers are event handlers
+// (keydown, button click), not reactive scopes — reading the signals
+// here must not subscribe them.
+function stepActiveWindow(dir: 1 | -1): void {
+  const list = untrack(activeWindows);
+  if (list.length === 0) return;
+  const sel = untrack(selectedChannel);
+  const curIdx = sel
+    ? list.findIndex((w) => w.networkSlug === sel.networkSlug && w.channelName === sel.channelName)
+    : -1;
+  // When the current selection isn't in the unread list (not selected,
+  // or just read → dropped out), start so the first step lands on the
+  // first (next) or last (prev) window.
+  const start = curIdx === -1 ? (dir === 1 ? -1 : 0) : curIdx;
+  const nextIdx = (start + dir + list.length) % list.length;
+  const target = list[nextIdx];
+  if (!target) return;
+  setSelectedChannel({
+    networkSlug: target.networkSlug,
+    channelName: target.channelName,
+    kind: target.kind,
+  });
+}
+
+export const jumpToNextActiveWindow = (): void => stepActiveWindow(1);
+
+export const jumpToPrevActiveWindow = (): void => stepActiveWindow(-1);
