@@ -123,7 +123,13 @@ defmodule Grappa.AdminEventsTest do
     setup do
       Repo.delete_all(Event)
       :sys.replace_state(AdminEvents, fn s -> %{s | persist: true, retention: 200} end)
-      on_exit(fn -> :sys.replace_state(AdminEvents, fn s -> %{s | persist: false, buffer: []} end) end)
+
+      on_exit(fn ->
+        # Restore the in-memory-only steady state (incl. retention) so no
+        # later suite sees a leaked persist flag / shrunk retention.
+        :sys.replace_state(AdminEvents, fn s -> %{s | persist: false, buffer: [], retention: 200} end)
+      end)
+
       :ok
     end
 

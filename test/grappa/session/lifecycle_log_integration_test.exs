@@ -134,6 +134,12 @@ defmodule Grappa.Session.LifecycleLogIntegrationTest do
     assert_receive {:session_log, :identified, md}, 1_500
     assert md.event == :identified
 
+    # Losing +r (services -r) drives the :deidentified transition end-to-end
+    # (EventRouter effect → apply_effects → emit).
+    IRCServer.feed(server, ":NickServ MODE grappa-test :-r\r\n")
+    assert_receive {:session_log, :deidentified, lost}, 1_500
+    assert lost.event == :deidentified
+
     :ok = GenServer.stop(pid, :normal, 1_000)
   end
 

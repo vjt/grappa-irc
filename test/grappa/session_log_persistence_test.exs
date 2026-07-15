@@ -76,6 +76,8 @@ defmodule Grappa.SessionLogPersistenceTest do
   end
 
   test "prune keeps only the newest `retention` rows on disk" do
+    prev = :sys.get_state(SessionLog).retention
+    on_exit(fn -> :sys.replace_state(SessionLog, fn s -> %{s | retention: prev} end) end)
     :sys.replace_state(SessionLog, fn s -> %{s | retention: 3} end)
 
     for n <- 1..6, do: SessionLog.emit(:connected, state({:user, "u#{n}"}), [])
