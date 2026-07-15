@@ -20985,3 +20985,83 @@ keeps it a live feature) — no column drop owed there.
 _Deploy: **HOT — server logic + `--cic`** (AdminVhostsTab + SettingsDrawer
 + wire types). No migration in V1; the dead `grant.pinned` column drop is
 deferred to a trailing COLD cleanup migration._
+
+## 2026-07-15 — #237 topic inline on join + change (cic, client-only)
+
+vjt design ruling: **OPT1, app-wide** — print the FULL channel topic INLINE
+in the scrollback, irssi-style, on JOIN (when the channel has a topic) AND
+on every topic change, on EVERY viewport (desktop + mobile), not mobile-
+only. The complaint (P0): the mobile TopicBar strip truncates, so after a
+JOIN the topic is effectively unreadable; irssi surfaces it in the buffer.
+
+**Dependency check (debug-with-data-first, decides deploy class).** How the
+topic reaches cic today, verified against the server:
+
+* **On TOPIC change (mid-session)** — `EventRouter.do_route/2` `:topic`
+  arm (`event_router.ex:738`) ALREADY calls `build_persist(:topic, …)`,
+  writing a real `:topic` **scrollback message row** (monotonic id,
+  `server_time`, sender, body = new topic) AND emitting `:topic_changed`.
+  cic already renders that row inline via `ScrollbackPane`'s `case
+  "topic"` (`* nick changed topic: <body>`). **So the on-change leg needed
+  ZERO new code** — it was already inline. #237's e2e asserts it as a
+  regression guard, not a new feature.
+* **On JOIN** — the topic backfill numerics `332` / `333` / `331`
+  (`event_router.ex:855-895`) emit **only** `{:topic_changed, …}` with NO
+  persist (documented there: 332 rows would spam scrollback on every
+  reconnect/rejoin; the numerics are also in NumericRouter's
+  `@delegated_numerics` so Server's catch-all doesn't double-persist). The
+  event lands in cic's `topicByChannel` store (`channelTopic.ts`) carrying
+  the full text + setter (`set_by`) + time (`set_at`). Only the TopicBar
+  strip consumed it → the gap.
+
+**Decision: `--cic` HOT, client-only.** The topic already arrives as a
+typed event with full text — no server touch, no BEAM restart, no
+migration. The dependency check PASSES.
+
+**Rendering approach: presentational row (option a), NOT a persisted kind.**
+The on-join line is a `TopicRow` in `ScrollbackPane`'s `rows()` memo — the
+same presentational-row mechanism already used for day separators, the
+unread marker, and invite-acks (string `id`, NOT a `ScrollbackMessage`).
+Why NOT persist a join-time `:topic` row server-side (option b): that is a
+server change (→ design fork, out of build-only scope) AND is exactly the
+reconnect-spam the server deliberately avoids. Why the presentational row
+is SAFE for the read-state contract: it is not a `"message"` row, so it
+never enters the `unreadCount` filter (which runs over `msgs`
+`ScrollbackMessage`s) nor the `data-msg-id` cursor walk / ring-cap — **no
+faked scrollback id, no unread/divider/ring-cap corruption**. It carries
+its own `data-testid="topic-join-line"` (NOT `scrollback-line`), so it also
+stays out of `scrollbackLines()` counts.
+
+**Placement + derivation.** The row is derived (pure, unit-tested:
+`channelTopic.topicJoinLine/2` + `topicJoinMeta/1`) from
+`topicByChannel()[key]` and anchored immediately after the operator's LAST
+own-JOIN row in the loaded buffer (channel windows only). Anchoring to the
+last own-join gives exactly ONE line, re-printed against the newest join on
+a part/rejoin cycle — irssi's "topic on join" semantics. Reading
+`topicByChannel()` in the memo makes it reactive: it seeds on the join-time
+332 and updates on a change.
+
+**Format.** An accent+bold `Topic for <#chan>:` label (the status-line
+affordance) then the full topic in readable foreground via the shared
+`MircBody` renderer (mIRC formatting like TopicBar) + optional irssi-style
+`— set by <nick> at <time>` muted suffix when the 333 supplied setter/time.
+The row wraps (unlike the single-line TopicBar strip) so the whole topic is
+readable on a narrow viewport — the point of #237 on mobile. App-wide,
+every viewport (desktop chromium + `@webkit` iPhone e2e both assert it).
+
+**Known, deliberate boundaries (documented, not bugs).**
+* Shows the CURRENT cached topic, not a frozen topic-at-join snapshot — cic
+  holds no per-join topic history. After a mid-session change the join-
+  anchored line reflects the new topic AND the persisted `:topic` change
+  row renders the change event; both correct, mildly redundant.
+* On page RELOAD the line reprints only if the own-JOIN row is in the
+  loaded window (a reload is a re-subscribe, not a new JOIN). Live joins
+  (the #237 case) always have the join row at the tail.
+* On a large presence-suppressed channel the own-JOIN row (and thus the
+  anchored line) is hidden by the render-layer presence filter; the
+  TopicBar still surfaces the topic. Orthogonal explicit operator choice.
+
+_Deploy: **HOT — `--cic` only, client-only.** No server change, no BEAM
+restart, no migration. The on-change inline `:topic` row is pre-existing
+server behavior; #237 adds only the client-side on-join presentational
+line._
