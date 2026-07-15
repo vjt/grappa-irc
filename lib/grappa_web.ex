@@ -38,6 +38,7 @@ defmodule GrappaWeb do
         Grappa.ServerSettings,
         Grappa.ServerSettings.Wire,
         Grappa.Session,
+        Grappa.SessionLog,
         Grappa.SpawnOrchestrator,
         Grappa.Subject,
         Grappa.Uploads,

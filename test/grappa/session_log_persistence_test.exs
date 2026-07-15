@@ -12,8 +12,8 @@ defmodule Grappa.SessionLogPersistenceTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{Repo, SessionLog}
   alias Grappa.PubSub.Topic
+  alias Grappa.{Repo, SessionLog}
   alias Grappa.SessionLog.Event
 
   @handler_id "session-log-persist-test"

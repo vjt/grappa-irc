@@ -29,7 +29,8 @@ defmodule GrappaWeb.Admin.SessionLogController do
   @doc false
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, params) do
-    json(conn, Wire.list_payload(SessionLog.list(parse_limit(params))))
+    entries = SessionLog.list(parse_limit(params))
+    json(conn, Wire.list_payload(entries))
   end
 
   # `?limit` is a defensive clamp — a malformed / out-of-range value falls

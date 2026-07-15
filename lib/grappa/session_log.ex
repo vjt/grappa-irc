@@ -165,7 +165,10 @@ defmodule Grappa.SessionLog do
   """
   @spec list(pos_integer()) :: [Event.t()]
   def list(limit) when is_integer(limit) and limit > 0 do
-    Repo.all(from(e in Event, order_by: [desc: e.id], limit: ^limit))
+    Event
+    |> order_by([e], desc: e.id)
+    |> limit(^limit)
+    |> Repo.all()
   end
 
   @impl GenServer
@@ -193,7 +196,7 @@ defmodule Grappa.SessionLog do
   # — keep it a bare cast so the emit hot path (incl. terminate/2) never
   # blocks on the DB write. The full structured map rides in `metadata`.
   @spec handle_telemetry([atom()], map(), map(), term()) :: :ok
-  def handle_telemetry(_event_name, _measurements, metadata, _) do
+  def handle_telemetry(_, _, metadata, _) do
     GenServer.cast(__MODULE__, {:persist, metadata})
   end
 
@@ -247,11 +250,19 @@ defmodule Grappa.SessionLog do
   @spec prune(pos_integer()) :: :ok
   defp prune(retention) do
     cutoff =
-      Repo.one(from(e in Event, order_by: [desc: e.id], offset: ^(retention - 1), limit: 1, select: e.id))
+      Event
+      |> order_by([e], desc: e.id)
+      |> offset(^(retention - 1))
+      |> limit(1)
+      |> select([e], e.id)
+      |> Repo.one()
 
     case cutoff do
-      nil -> :ok
-      id -> Repo.delete_all(from(e in Event, where: e.id < ^id))
+      nil ->
+        :ok
+
+      id ->
+        Event |> where([e], e.id < ^id) |> Repo.delete_all()
     end
 
     :ok
