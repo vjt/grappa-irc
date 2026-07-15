@@ -21028,14 +21028,28 @@ that the subtle hint FAILED to direct users, so the ⋯ target + arrow are
 now emphasized (accent colour, no opacity dial-down). Deliberate reversal,
 recorded here.
 
+**Test coverage — branch/contract in CI, pixels on device.** Two layers:
+(1) vitest (`InstallSplash.test.tsx`, UA-stubbed jsdom) asserts the
+LOGIC/TEXT/branch. (2) A real-browser Playwright spec
+(`e2e/tests/issue259-install-hint.spec.ts`) asserts the per-platform
+BRANCH via UA emulation across BOTH projects — `webkit-iphone-15` (@webkit)
+= the iOS-Safari branch (corrected ⋯ → More → Share → Add to Home Screen
+step text, the ⋯ glyph's EMPHASIS as a computed `font-weight` contract,
+the arrow element present + ⋯-targeted, and standalone-mode suppressing
+the splash); `chromium` = the Android/Chromium branch (a captured
+`beforeinstallprompt` → native Install button + NO arrow; non-iOS + no
+prompt → graceful-hide menu-hint with no dead button). `beforeinstallprompt`
+is supplied/suppressed deterministically via `addInitScript` (headless
+Chromium does not fire it reliably). Demonstrated real RED (against the
+pre-fix render) → GREEN on both projects.
+
 **DEVICE-VERIFY (held, do NOT close on CI green).** jsdom + Playwright
 reproduce neither Safari's chrome geometry nor the Android native install
-prompt. Unit tests assert the LOGIC/TEXT/branch (⋯ step text, ⋯-targeted
-arrow caption, graceful hide, standalone suppression, Android
-button-and-no-arrow) — NOT pixel position. Still owed on real devices:
-(a) the arrow-to-⋯ positioning on a real iPhone (exact `right`/`bottom`
-offsets are a first cut, tuned on-device); (b) the Android native prompt
-firing. Rides the batched device-verify hold.
+prompt — so the e2e asserts the BRANCH + computed contract, NEVER pixel
+position. Still owed on real devices: (a) the arrow-to-⋯ positioning on a
+real iPhone (exact `right`/`bottom` offsets are a first cut, tuned
+on-device); (b) the Android native prompt firing. Rides the batched
+device-verify hold.
 
 _Deploy: **--cic HOT, client-only. No migration** (single component + CSS
 + tests; server untouched)._
