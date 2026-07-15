@@ -4449,6 +4449,140 @@ html.resize-dragging * {
   color: var(--accent);
 }
 
+/* #252 — vhost settings. Main page carries a nav ROW into a dedicated
+ * sub-page (mobile-friendly tap-select). The sub-page's option buttons
+ * REUSE `.mode-modal-toggle` (bold-primary NAME + muted /128 subline);
+ * these rules add the nav row, sub-page layout, and full-name readability
+ * (refinement 9 — no truncation, room to breathe). Placed after the
+ * mode-modal block so `.vhost-option` overrides win. */
+.settings-nav-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+}
+
+.settings-nav-row:hover {
+  border-color: var(--muted);
+}
+
+.settings-nav-row-chevron {
+  color: var(--muted);
+}
+
+.settings-subpage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.settings-subpage-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.settings-back {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+}
+
+.settings-back:hover {
+  border-color: var(--accent);
+}
+
+.vhost-random-msg {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0.25rem 0;
+}
+
+.vhost-pool-readonly {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.vhost-readonly-item {
+  display: flex;
+  flex-direction: column;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.vhost-readonly-name {
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.vhost-readonly-addr {
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.vhost-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.vhost-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.vhost-section-heading {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.vhost-section-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+/* Multi-line names read top-aligned, and long cloak strings wrap in full
+ * (the /128 is chosen by NAME — refinement 7/9), never clipped. */
+.vhost-option {
+  align-items: start;
+}
+
+.vhost-option .mode-modal-toggle-label {
+  overflow-wrap: anywhere;
+}
+
+.settings-drawer .vhost-error {
+  background: var(--bg);
+  border: 1px solid var(--mode-op);
+  color: var(--mode-op);
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8rem;
+  margin: 0.25rem 0;
+}
+
 /* #127 — /info, /version, /motd modal. Same overlay/panel/header/footer
  * scaffolding as the WHO/NAMES modals (backdrop scrim, keyboard-aware
  * max-height, pinned header/footer, `.server-reply-modal-body` scroller),

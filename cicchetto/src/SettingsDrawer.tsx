@@ -44,6 +44,7 @@ import {
   type VhostSettingsView,
 } from "./lib/userSettings";
 import ShareSessionModal from "./ShareSessionModal";
+import VhostSettingsPage from "./VhostSettingsPage";
 
 // Right-overlay drawer: theme toggle + notifications (push permission +
 // per-trigger prefs + device list) + optional "admin console" entry
@@ -89,6 +90,12 @@ const SettingsDrawer: Component<Props> = (props) => {
   // (the widget stays hidden until the first GET lands).
   const [vhostView, setVhostView] = createSignal<VhostSettingsView | null>(null);
   const [vhostError, setVhostError] = createSignal<string | null>(null);
+  // #252 — settings sub-page navigation. The drawer is a flat page ("main")
+  // that can push into a dedicated sub-page ("vhost"); the pattern mirrors
+  // AdminPane's tab signal and is reusable for future sub-pages. cic never
+  // originates vhost state — the sub-page reads `vhostView` + reports
+  // changes up via the same save-on-change PUT flow.
+  const [settingsPage, setSettingsPage] = createSignal<"main" | "vhost">("main");
   // Visitor session-sharing modal open state. Hidden for user
   // subjects entirely (users have passwords, no need to share).
   const [shareOpen, setShareOpen] = createSignal(false);
@@ -352,6 +359,8 @@ const SettingsDrawer: Component<Props> = (props) => {
     } else if (!o && wasOpen) {
       wasOpen = false;
       popOverlay(drawerEl ?? null);
+      // #252 — a reopened drawer always lands on the main page.
+      setSettingsPage("main");
     }
   });
   onCleanup(() => {
@@ -508,17 +517,16 @@ const SettingsDrawer: Component<Props> = (props) => {
     }
   };
 
-  // #228 — `<select multiple>` change handler. Reads every selected
-  // option value and PUTs the full selection (server owns validation:
-  // a `forbidden_vhost` / `bad_request` code surfaces inline).
-  const onVhostChange = async (e: Event) => {
+  // #252 — save-on-change handler for the vhost sub-page. Same PUT flow as
+  // the retired #228 `<select multiple>` (clear error → PUT the full
+  // selection → update the view → surface a `forbidden_vhost` /
+  // `bad_request` code inline); the sub-page reports the new selection up.
+  const saveVhostSelection = async (addresses: string[]): Promise<void> => {
     const t = token();
     if (t === null) return;
-    const select = e.currentTarget as HTMLSelectElement;
-    const selection = Array.from(select.selectedOptions).map((o) => o.value);
     setVhostError(null);
     try {
-      const view = await putVhostSelection(t, selection);
+      const view = await putVhostSelection(t, addresses);
       setVhostView(view);
     } catch (err) {
       const code = err instanceof ApiError ? err.code : "save_failed";
@@ -526,14 +534,15 @@ const SettingsDrawer: Component<Props> = (props) => {
     }
   };
 
-  // #228 — partition the allow-set into pool vs. non-pool for the two
-  // `<optgroup>`s. Derived from the current view; empty arrays render an
-  // empty group (the `<Show>` on the fieldset already gates on a non-null
-  // view, so at least one option exists by the time this runs).
-  const vhostInPool = (): VhostSettingsView["available"] =>
-    (vhostView()?.available ?? []).filter((o) => o.in_pool);
-  const vhostOutOfPool = (): VhostSettingsView["available"] =>
-    (vhostView()?.available ?? []).filter((o) => !o.in_pool);
+  // #252 — navigate into the vhost sub-page. Re-reads the view on entry so
+  // the resolved rDNS names land (the server resolves cold addresses out
+  // of band after the drawer-open GET, per the non-blocking cache — a
+  // second read on sub-page entry shows the names instead of raw IPs).
+  const enterVhostPage = (): void => {
+    const t = token();
+    if (t !== null) void loadVhostSettings(t);
+    setSettingsPage("vhost");
+  };
 
   return (
     <>
@@ -568,502 +577,487 @@ const SettingsDrawer: Component<Props> = (props) => {
             ×
           </button>
         </header>
-        <fieldset>
-          <legend>theme</legend>
-          <label>
-            <input
-              type="radio"
-              name="theme"
-              value="auto"
-              checked={pref() === "auto"}
-              onChange={onChange}
-            />
-            auto (follow system)
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="theme"
-              value="mirc-light"
-              checked={pref() === "mirc-light"}
-              onChange={onChange}
-            />
-            mIRC light
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="theme"
-              value="irssi-dark"
-              checked={pref() === "irssi-dark"}
-              onChange={onChange}
-            />
-            irssi dark
-          </label>
-        </fieldset>
 
-        <fieldset class="notifications-fieldset">
-          <legend>notifications</legend>
-          <label class="master-toggle">
-            <input
-              type="checkbox"
-              checked={pushEnabled()}
-              onChange={(e) => {
-                void onMasterToggle((e.currentTarget as HTMLInputElement).checked);
-              }}
-              data-testid="push-master-toggle"
-            />
-            enable browser notifications
-          </label>
-          <Show when={pushBanner() !== null}>
-            <p class="push-banner" role="alert" data-testid="push-banner">
-              {pushBanner()}
-            </p>
-          </Show>
+        {/* #252 — main settings page. A `<Show>`-gated sub-page (vhost)
+            renders in its place; the header × stays visible for both. */}
+        <Show when={settingsPage() === "main"}>
+          <fieldset>
+            <legend>theme</legend>
+            <label>
+              <input
+                type="radio"
+                name="theme"
+                value="auto"
+                checked={pref() === "auto"}
+                onChange={onChange}
+              />
+              auto (follow system)
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="theme"
+                value="mirc-light"
+                checked={pref() === "mirc-light"}
+                onChange={onChange}
+              />
+              mIRC light
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="theme"
+                value="irssi-dark"
+                checked={pref() === "irssi-dark"}
+                onChange={onChange}
+              />
+              irssi dark
+            </label>
+          </fieldset>
 
-          <hr />
-
-          <label>
-            <input
-              type="checkbox"
-              checked={prefs().channel_messages_all}
-              disabled={savingPrefs()}
-              onChange={(e) =>
-                togglePref("channel_messages_all", (e.currentTarget as HTMLInputElement).checked)
-              }
-              data-testid="pref-channel-all"
-            />
-            all channel messages
-          </label>
-          <label class="prefs-list">
-            only in channels:
-            <input
-              type="text"
-              value={channelsOnlyText()}
-              disabled={prefs().channel_messages_all || savingPrefs()}
-              placeholder="#sbiffo, #grappa"
-              onInput={(e) => setChannelsOnlyText((e.currentTarget as HTMLInputElement).value)}
-              onBlur={commitChannelsOnly}
-              data-testid="pref-channels-only"
-            />
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={prefs().channel_mentions}
-              disabled={savingPrefs()}
-              onChange={(e) =>
-                togglePref("channel_mentions", (e.currentTarget as HTMLInputElement).checked)
-              }
-              data-testid="pref-channel-mentions"
-            />
-            channel mentions
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={prefs().private_messages_all}
-              disabled={savingPrefs()}
-              onChange={(e) =>
-                togglePref("private_messages_all", (e.currentTarget as HTMLInputElement).checked)
-              }
-              data-testid="pref-private-all"
-            />
-            all private messages
-          </label>
-          <label class="prefs-list">
-            only from nicks:
-            <input
-              type="text"
-              value={nicksOnlyText()}
-              disabled={prefs().private_messages_all || savingPrefs()}
-              placeholder="alice, bob"
-              onInput={(e) => setNicksOnlyText((e.currentTarget as HTMLInputElement).value)}
-              onBlur={commitNicksOnly}
-              data-testid="pref-nicks-only"
-            />
-          </label>
-
-          <Show when={prefsError() !== null}>
-            <p class="prefs-error" role="alert" data-testid="prefs-error">
-              {prefsError()}
-            </p>
-          </Show>
-
-          <Show when={devices().length > 0}>
-            <h3>devices</h3>
-            <ul class="devices-list" data-testid="devices-list">
-              <For each={devices()}>
-                {(d) => {
-                  // UX-4 bucket L (2026-05-19) — replace the raw UA
-                  // string with `{icon} {Browser} on {OS}`. Title
-                  // attribute preserves the full UA so a hover (desktop)
-                  // can still surface the original for debugging /
-                  // device disambiguation across same-browser instances.
-                  const parsed = parseUserAgent(d.user_agent);
-                  return (
-                    <li>
-                      <span class="device-ua" title={d.user_agent ?? "(unknown browser)"}>
-                        <span class="device-ua-icon" aria-hidden="true">
-                          {deviceClassIcon(parsed.deviceClass)}
-                        </span>
-                        <span class="device-ua-name">
-                          {parsed.browser} on {parsed.os}
-                        </span>
-                      </span>
-                      <button
-                        type="button"
-                        class="device-remove"
-                        onClick={() => {
-                          void removeDevice(d.id);
-                        }}
-                      >
-                        remove
-                      </button>
-                    </li>
-                  );
+          <fieldset class="notifications-fieldset">
+            <legend>notifications</legend>
+            <label class="master-toggle">
+              <input
+                type="checkbox"
+                checked={pushEnabled()}
+                onChange={(e) => {
+                  void onMasterToggle((e.currentTarget as HTMLInputElement).checked);
                 }}
-              </For>
-            </ul>
-          </Show>
-        </fieldset>
+                data-testid="push-master-toggle"
+              />
+              enable browser notifications
+            </label>
+            <Show when={pushBanner() !== null}>
+              <p class="push-banner" role="alert" data-testid="push-banner">
+                {pushBanner()}
+              </p>
+            </Show>
 
-        {/* UX-4 bucket M (2026-05-19) — upload retention preference.
+            <hr />
+
+            <label>
+              <input
+                type="checkbox"
+                checked={prefs().channel_messages_all}
+                disabled={savingPrefs()}
+                onChange={(e) =>
+                  togglePref("channel_messages_all", (e.currentTarget as HTMLInputElement).checked)
+                }
+                data-testid="pref-channel-all"
+              />
+              all channel messages
+            </label>
+            <label class="prefs-list">
+              only in channels:
+              <input
+                type="text"
+                value={channelsOnlyText()}
+                disabled={prefs().channel_messages_all || savingPrefs()}
+                placeholder="#sbiffo, #grappa"
+                onInput={(e) => setChannelsOnlyText((e.currentTarget as HTMLInputElement).value)}
+                onBlur={commitChannelsOnly}
+                data-testid="pref-channels-only"
+              />
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={prefs().channel_mentions}
+                disabled={savingPrefs()}
+                onChange={(e) =>
+                  togglePref("channel_mentions", (e.currentTarget as HTMLInputElement).checked)
+                }
+                data-testid="pref-channel-mentions"
+              />
+              channel mentions
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={prefs().private_messages_all}
+                disabled={savingPrefs()}
+                onChange={(e) =>
+                  togglePref("private_messages_all", (e.currentTarget as HTMLInputElement).checked)
+                }
+                data-testid="pref-private-all"
+              />
+              all private messages
+            </label>
+            <label class="prefs-list">
+              only from nicks:
+              <input
+                type="text"
+                value={nicksOnlyText()}
+                disabled={prefs().private_messages_all || savingPrefs()}
+                placeholder="alice, bob"
+                onInput={(e) => setNicksOnlyText((e.currentTarget as HTMLInputElement).value)}
+                onBlur={commitNicksOnly}
+                data-testid="pref-nicks-only"
+              />
+            </label>
+
+            <Show when={prefsError() !== null}>
+              <p class="prefs-error" role="alert" data-testid="prefs-error">
+                {prefsError()}
+              </p>
+            </Show>
+
+            <Show when={devices().length > 0}>
+              <h3>devices</h3>
+              <ul class="devices-list" data-testid="devices-list">
+                <For each={devices()}>
+                  {(d) => {
+                    // UX-4 bucket L (2026-05-19) — replace the raw UA
+                    // string with `{icon} {Browser} on {OS}`. Title
+                    // attribute preserves the full UA so a hover (desktop)
+                    // can still surface the original for debugging /
+                    // device disambiguation across same-browser instances.
+                    const parsed = parseUserAgent(d.user_agent);
+                    return (
+                      <li>
+                        <span class="device-ua" title={d.user_agent ?? "(unknown browser)"}>
+                          <span class="device-ua-icon" aria-hidden="true">
+                            {deviceClassIcon(parsed.deviceClass)}
+                          </span>
+                          <span class="device-ua-name">
+                            {parsed.browser} on {parsed.os}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          class="device-remove"
+                          onClick={() => {
+                            void removeDevice(d.id);
+                          }}
+                        >
+                          remove
+                        </button>
+                      </li>
+                    );
+                  }}
+                </For>
+              </ul>
+            </Show>
+          </fieldset>
+
+          {/* UX-4 bucket M (2026-05-19) — upload retention preference.
             Host-gated: only renders when the active image host exposes
             ttlOptions (litterbox does; a hypothetical imgur-style host
             wouldn't). The `<option value="">` "use site default" entry
             maps to a `null` PUT — clears the preference and falls back
             to `activeHost().defaultTtl`. Server stores integer seconds,
             cic translates to/from the host token at this boundary. */}
-        <Show when={activeHost().ttlOptions.length > 0}>
-          <fieldset class="upload-ttl-fieldset">
-            <legend>upload retention</legend>
-            <label>
-              upload duration:
-              <select
-                data-testid="upload-ttl-select"
-                value={uploadTtlSelectValue()}
-                onChange={(e) => {
-                  void onUploadTtlChange(e);
-                }}
-              >
-                <option value="">use site default ({defaultTtlLabel()})</option>
-                <For each={activeHost().ttlOptions}>
-                  {(opt) => <option value={opt.value}>{opt.label}</option>}
-                </For>
-              </select>
-            </label>
-            <Show when={uploadTtlSavingError() !== null}>
-              <p class="upload-ttl-error" role="alert" data-testid="upload-ttl-error">
-                {uploadTtlSavingError()}
-              </p>
-            </Show>
-          </fieldset>
-        </Show>
-
-        {/* #228, #251 — source address (vhost) selection. Renders only once
-            the server view has loaded (non-null). There is no admin pin
-            anymore (#251) — the user always self-selects: a native
-            `<select multiple>` groups the allow-set into "In pool" / "Out of
-            pool" `<optgroup>`s; every change PUTs the full selection. */}
-        <Show when={vhostView() !== null}>
-          <fieldset class="vhost-fieldset">
-            <legend>source address (vhost)</legend>
-            <label>
-              bind from:
-              <select
-                multiple
-                data-testid="vhost-select"
-                onChange={(e) => {
-                  void onVhostChange(e);
-                }}
-              >
-                <optgroup label="In pool">
-                  <For each={vhostInPool()}>
-                    {(opt) => (
-                      <option
-                        value={opt.address}
-                        selected={(vhostView()?.selection ?? []).includes(opt.address)}
-                      >
-                        {opt.address}
-                      </option>
-                    )}
+          <Show when={activeHost().ttlOptions.length > 0}>
+            <fieldset class="upload-ttl-fieldset">
+              <legend>upload retention</legend>
+              <label>
+                upload duration:
+                <select
+                  data-testid="upload-ttl-select"
+                  value={uploadTtlSelectValue()}
+                  onChange={(e) => {
+                    void onUploadTtlChange(e);
+                  }}
+                >
+                  <option value="">use site default ({defaultTtlLabel()})</option>
+                  <For each={activeHost().ttlOptions}>
+                    {(opt) => <option value={opt.value}>{opt.label}</option>}
                   </For>
-                </optgroup>
-                <optgroup label="Out of pool">
-                  <For each={vhostOutOfPool()}>
-                    {(opt) => (
-                      <option
-                        value={opt.address}
-                        selected={(vhostView()?.selection ?? []).includes(opt.address)}
-                      >
-                        {opt.address}
-                      </option>
-                    )}
-                  </For>
-                </optgroup>
-              </select>
+                </select>
+              </label>
+              <Show when={uploadTtlSavingError() !== null}>
+                <p class="upload-ttl-error" role="alert" data-testid="upload-ttl-error">
+                  {uploadTtlSavingError()}
+                </p>
+              </Show>
+            </fieldset>
+          </Show>
+
+          {/* #252 — source address (vhost). The interim #228 `<select
+            multiple>` is replaced by a dedicated, mobile-friendly SUB-PAGE
+            (tap-select, NAME-primary). This is the nav ROW into it; it
+            renders only once the server view has loaded (non-null). */}
+          <Show when={vhostView() !== null}>
+            <button
+              type="button"
+              class="settings-nav-row"
+              data-testid="vhost-settings-entry"
+              onClick={enterVhostPage}
+            >
+              <span class="settings-nav-row-label">source address (vhost)</span>
+              <span class="settings-nav-row-chevron" aria-hidden="true">
+                ›
+              </span>
+            </button>
+          </Show>
+
+          <fieldset class="font-size-fieldset">
+            <legend>text size</legend>
+            <label>
+              <input
+                type="radio"
+                name="font-size"
+                value="S"
+                checked={size() === "S"}
+                onChange={onFontSizeChange}
+                data-testid="font-size-S"
+              />
+              S
             </label>
-            <Show when={vhostError() !== null}>
-              <p class="vhost-error" role="alert" data-testid="vhost-error">
-                {vhostError()}
-              </p>
-            </Show>
+            <label>
+              <input
+                type="radio"
+                name="font-size"
+                value="M"
+                checked={size() === "M"}
+                onChange={onFontSizeChange}
+                data-testid="font-size-M"
+              />
+              M
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="font-size"
+                value="L"
+                checked={size() === "L"}
+                onChange={onFontSizeChange}
+                data-testid="font-size-L"
+              />
+              L
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="font-size"
+                value="XL"
+                checked={size() === "XL"}
+                onChange={onFontSizeChange}
+                data-testid="font-size-XL"
+              />
+              XL
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="font-size"
+                value="XXL"
+                checked={size() === "XXL"}
+                onChange={onFontSizeChange}
+                data-testid="font-size-XXL"
+              />
+              XXL
+            </label>
           </fieldset>
-        </Show>
 
-        <fieldset class="font-size-fieldset">
-          <legend>text size</legend>
-          <label>
-            <input
-              type="radio"
-              name="font-size"
-              value="S"
-              checked={size() === "S"}
-              onChange={onFontSizeChange}
-              data-testid="font-size-S"
-            />
-            S
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="font-size"
-              value="M"
-              checked={size() === "M"}
-              onChange={onFontSizeChange}
-              data-testid="font-size-M"
-            />
-            M
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="font-size"
-              value="L"
-              checked={size() === "L"}
-              onChange={onFontSizeChange}
-              data-testid="font-size-L"
-            />
-            L
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="font-size"
-              value="XL"
-              checked={size() === "XL"}
-              onChange={onFontSizeChange}
-              data-testid="font-size-XL"
-            />
-            XL
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="font-size"
-              value="XXL"
-              checked={size() === "XXL"}
-              onChange={onFontSizeChange}
-              data-testid="font-size-XXL"
-            />
-            XXL
-          </label>
-        </fieldset>
-
-        {/* #217 — message timestamp format. Closed-set (with/without
+          {/* #217 — message timestamp format. Closed-set (with/without
             seconds), client-only, persisted in localStorage. Mirrors the
             text-size radio-group pattern. */}
-        <fieldset class="time-format-fieldset">
-          <legend>timestamp format</legend>
-          <label>
-            <input
-              type="radio"
-              name="time-format"
-              value="hms"
-              checked={timeFmt() === "hms"}
-              onChange={onTimeFormatChange}
-              data-testid="time-format-hms"
-            />
-            with seconds (HH:MM:SS)
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="time-format"
-              value="hm"
-              checked={timeFmt() === "hm"}
-              onChange={onTimeFormatChange}
-              data-testid="time-format-hm"
-            />
-            no seconds (HH:MM)
-          </label>
-        </fieldset>
+          <fieldset class="time-format-fieldset">
+            <legend>timestamp format</legend>
+            <label>
+              <input
+                type="radio"
+                name="time-format"
+                value="hms"
+                checked={timeFmt() === "hms"}
+                onChange={onTimeFormatChange}
+                data-testid="time-format-hms"
+              />
+              with seconds (HH:MM:SS)
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="time-format"
+                value="hm"
+                checked={timeFmt() === "hm"}
+                onChange={onTimeFormatChange}
+                data-testid="time-format-hm"
+              />
+              no seconds (HH:MM)
+            </label>
+          </fieldset>
 
-        <Show when={isAdmin()}>
-          <button
-            type="button"
-            class="admin-console-entry"
-            onClick={() => {
-              props.onClose();
-              props.onOpenAdmin();
-            }}
-            data-testid="admin-console-entry"
-          >
-            admin console
-          </button>
-        </Show>
+          <Show when={isAdmin()}>
+            <button
+              type="button"
+              class="admin-console-entry"
+              onClick={() => {
+                props.onClose();
+                props.onOpenAdmin();
+              }}
+              data-testid="admin-console-entry"
+            >
+              admin console
+            </button>
+          </Show>
 
-        <Show when={isVisitor()}>
-          {/* #211 phase 7 — per-network visitor identity editor (targets
+          <Show when={isVisitor()}>
+            {/* #211 phase 7 — per-network visitor identity editor (targets
               the anchor network). Saving PATCHes /networks/:slug/identity
               which live-applies via internal reconnect (the session bounces
               + rejoins). The confirm-armed save communicates the reconnect
               cost; a 422 renders inline. */}
-          <div class="settings-identity" data-testid="settings-identity">
-            <label for="settings-nick">Nick</label>
-            <input
-              id="settings-nick"
-              type="text"
-              autocapitalize="none"
-              autocorrect="off"
-              spellcheck={false}
-              value={nickText()}
-              onInput={(e) => setNickText(e.currentTarget.value)}
-            />
+            <div class="settings-identity" data-testid="settings-identity">
+              <label for="settings-nick">Nick</label>
+              <input
+                id="settings-nick"
+                type="text"
+                autocapitalize="none"
+                autocorrect="off"
+                spellcheck={false}
+                value={nickText()}
+                onInput={(e) => setNickText(e.currentTarget.value)}
+              />
 
-            <label for="settings-realname">Real name</label>
-            <input
-              id="settings-realname"
-              type="text"
-              autocapitalize="none"
-              autocorrect="off"
-              spellcheck={false}
-              value={realnameText()}
-              onInput={(e) => setRealnameText(e.currentTarget.value)}
-            />
+              <label for="settings-realname">Real name</label>
+              <input
+                id="settings-realname"
+                type="text"
+                autocapitalize="none"
+                autocorrect="off"
+                spellcheck={false}
+                value={realnameText()}
+                onInput={(e) => setRealnameText(e.currentTarget.value)}
+              />
 
-            <label for="settings-ident">Ident</label>
-            <input
-              id="settings-ident"
-              type="text"
-              autocapitalize="none"
-              autocorrect="off"
-              spellcheck={false}
-              value={identText()}
-              onInput={(e) => setIdentText(e.currentTarget.value)}
-            />
-            <p class="settings-identity-hint">
-              Applying reconnects your session — you'll briefly drop and rejoin your channels.
-            </p>
-
-            <InlineConfirmButton
-              idleLabel={identitySaving() ? "applying…" : "apply identity"}
-              confirmLabel="apply — this reconnects"
-              testId="settings-identity-apply"
-              armed={identityArmed()}
-              onArm={() => setIdentityArmed(true)}
-              onConfirm={() => {
-                void onSaveIdentity();
-              }}
-            />
-
-            <Show when={identityError()}>
-              {(msg) => (
-                <p
-                  role="alert"
-                  class="settings-identity-error"
-                  data-testid="settings-identity-error"
-                >
-                  {msg()}
-                </p>
-              )}
-            </Show>
-            <Show when={identitySaved()}>
-              <p class="settings-identity-ok" data-testid="settings-identity-ok">
-                Identity applied.
+              <label for="settings-ident">Ident</label>
+              <input
+                id="settings-ident"
+                type="text"
+                autocapitalize="none"
+                autocorrect="off"
+                spellcheck={false}
+                value={identText()}
+                onInput={(e) => setIdentText(e.currentTarget.value)}
+              />
+              <p class="settings-identity-hint">
+                Applying reconnects your session — you'll briefly drop and rejoin your channels.
               </p>
-            </Show>
-          </div>
 
-          <button
-            type="button"
-            class="share-session-entry"
-            data-testid="share-session-entry"
-            onClick={() => setShareOpen(true)}
-          >
-            share session
-          </button>
-        </Show>
+              <InlineConfirmButton
+                idleLabel={identitySaving() ? "applying…" : "apply identity"}
+                confirmLabel="apply — this reconnects"
+                testId="settings-identity-apply"
+                armed={identityArmed()}
+                onArm={() => setIdentityArmed(true)}
+                onConfirm={() => {
+                  void onSaveIdentity();
+                }}
+              />
 
-        {/* #126 — canonical session-lifecycle verbs ("log out" retired).
+              <Show when={identityError()}>
+                {(msg) => (
+                  <p
+                    role="alert"
+                    class="settings-identity-error"
+                    data-testid="settings-identity-error"
+                  >
+                    {msg()}
+                  </p>
+                )}
+              </Show>
+              <Show when={identitySaved()}>
+                <p class="settings-identity-ok" data-testid="settings-identity-ok">
+                  Identity applied.
+                </p>
+              </Show>
+            </div>
+
+            <button
+              type="button"
+              class="share-session-entry"
+              data-testid="share-session-entry"
+              onClick={() => setShareOpen(true)}
+            >
+              share session
+            </button>
+          </Show>
+
+          {/* #126 — canonical session-lifecycle verbs ("log out" retired).
             detach (leave cic, KEEP the bouncer) + disconnect ⇄ reconnect
             (drop / restore the upstream, STAY in cic) are
             persistent-identity-only (user + NickServ visitor); quit
             (close cic AND tear down) is universal. An ephemeral visitor +
             the not-yet-loaded null subject get quit alone. */}
-        <Show when={showDetach()}>
-          <button
-            type="button"
-            class="logout"
-            data-testid="detach-btn"
-            onClick={() => {
-              void onDetach();
-            }}
-          >
-            detach
-          </button>
-        </Show>
+          <Show when={showDetach()}>
+            <button
+              type="button"
+              class="logout"
+              data-testid="detach-btn"
+              onClick={() => {
+                void onDetach();
+              }}
+            >
+              detach
+            </button>
+          </Show>
 
-        {/* #211 phase 6 — the visitor disconnect ⇄ reconnect toggle is
+          {/* #211 phase 6 — the visitor disconnect ⇄ reconnect toggle is
             RETIRED. Per-network park/reconnect now lives on the HOME PAGE
             for both subjects (ruling D); global disconnect is `quit`
             (park-all). */}
 
-        {/* quit — universal destructive teardown, two-tap armed. */}
-        <InlineConfirmButton
-          idleLabel="quit"
-          confirmLabel="really quit IRC?"
-          armed={quitArmed()}
-          onArm={() => setQuitArmed(true)}
-          onConfirm={() => {
-            void onQuit();
-          }}
-          testId="quit-irc-btn"
-          extraClass="settings-quit"
-        />
+          {/* quit — universal destructive teardown, two-tap armed. */}
+          <InlineConfirmButton
+            idleLabel="quit"
+            confirmLabel="really quit IRC?"
+            armed={quitArmed()}
+            onArm={() => setQuitArmed(true)}
+            onConfirm={() => {
+              void onQuit();
+            }}
+            testId="quit-irc-btn"
+            extraClass="settings-quit"
+          />
 
-        {/* #157 — delete account: IRREVERSIBLE total wipe, DISTINCT from
+          {/* #157 — delete account: IRREVERSIBLE total wipe, DISTINCT from
             quit. Separate label + separate confirm (a type-your-name modal,
             stronger than quit's two-tap). Offered ONLY to a registered
             non-admin user or a registered visitor; admins + anon visitors
             never see it. */}
-        <Show when={showDeleteAccount()}>
-          <button
-            type="button"
-            class="delete-account-entry"
-            data-testid="delete-account-btn"
-            onClick={() => setDeleteOpen(true)}
-          >
-            delete account
-          </button>
-        </Show>
+          <Show when={showDeleteAccount()}>
+            <button
+              type="button"
+              class="delete-account-entry"
+              data-testid="delete-account-btn"
+              onClick={() => setDeleteOpen(true)}
+            >
+              delete account
+            </button>
+          </Show>
 
-        {/* UX-6 D12 — viewport diagnostics fieldset moved to AdminPane
+          {/* UX-6 D12 — viewport diagnostics fieldset moved to AdminPane
             Debug tab. See AdminDebugTab.tsx. */}
 
-        {/* UX-4 bucket L — bottom "done" button. Same close verb as
+          {/* UX-4 bucket L — bottom "done" button. Same close verb as
             the top × — mobile thumb-reach surface. Sits below logout
             so the scroll position when scroll-to-bottom lands on a
             thumb-friendly close affordance. */}
-        <button
-          type="button"
-          class="settings-drawer-done"
-          data-testid="settings-drawer-done"
-          onClick={props.onClose}
-        >
-          done
-        </button>
+          <button
+            type="button"
+            class="settings-drawer-done"
+            data-testid="settings-drawer-done"
+            onClick={props.onClose}
+          >
+            done
+          </button>
+        </Show>
+
+        {/* #252 — vhost sub-page. Replaces the main page while active; the
+            server owns the allow-set + selection (cic mirrors). */}
+        <Show when={settingsPage() === "vhost"}>
+          <VhostSettingsPage
+            view={vhostView()}
+            error={vhostError()}
+            onSetSelection={(addresses) => {
+              void saveVhostSelection(addresses);
+            }}
+            onBack={() => setSettingsPage("main")}
+          />
+        </Show>
       </aside>
       <ShareSessionModal open={shareOpen()} onClose={() => setShareOpen(false)} />
       <DeleteAccountModal

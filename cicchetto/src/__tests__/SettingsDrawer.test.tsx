@@ -152,6 +152,23 @@ vi.mock("../lib/userSettings", async () => {
     putUploadTtlSeconds: vi
       .fn()
       .mockImplementation((_t: string, seconds: number | null) => Promise.resolve(seconds)),
+    // #252 — the drawer loads the vhost view on mount; stub it so the
+    // "source address (vhost)" nav row renders (the sub-page's own widget
+    // logic is covered in VhostSettingsPage.test.tsx).
+    getVhostSettings: vi.fn().mockResolvedValue({
+      available: [
+        { address: "2001:db8::1", in_pool: true, granted: false, name: "pool-one.cloak" },
+      ],
+      selection: [],
+    }),
+    putVhostSelection: vi.fn().mockImplementation((_t: string, selection: string[]) =>
+      Promise.resolve({
+        available: [
+          { address: "2001:db8::1", in_pool: true, granted: false, name: "pool-one.cloak" },
+        ],
+        selection,
+      }),
+    ),
   };
 });
 
@@ -891,6 +908,56 @@ describe("SettingsDrawer delete-account gating (#157)", () => {
     const stub = screen.getByTestId("delete-account-modal-stub");
     expect(stub).toBeInTheDocument();
     expect(stub).toHaveTextContent("alice");
+  });
+});
+
+// #252 — the vhost settings sub-page nav. The drawer owns the
+// main↔vhost page signal + the load/save wiring; the sub-page widget
+// (bucketing, toggle, tap→PUT, NAME render) is covered in
+// VhostSettingsPage.test.tsx. Here we assert the drawer-level nav.
+describe("SettingsDrawer (#252 — vhost sub-page nav)", () => {
+  it("shows the vhost nav row on the main page once the view loads", async () => {
+    wrap(true);
+    await waitFor(() => {
+      expect(screen.getByTestId("vhost-settings-entry")).toBeInTheDocument();
+    });
+  });
+
+  it("clicking the nav row enters the sub-page and hides the main content", async () => {
+    wrap(true);
+    await waitFor(() => screen.getByTestId("vhost-settings-entry"));
+    fireEvent.click(screen.getByTestId("vhost-settings-entry"));
+    await waitFor(() => {
+      expect(screen.getByTestId("vhost-subpage")).toBeInTheDocument();
+    });
+    // Main-page chrome (a stable settings row) is gone while on the sub-page.
+    expect(screen.queryByTestId("push-master-toggle")).toBeNull();
+  });
+
+  it("the sub-page back button returns to the main page", async () => {
+    wrap(true);
+    await waitFor(() => screen.getByTestId("vhost-settings-entry"));
+    fireEvent.click(screen.getByTestId("vhost-settings-entry"));
+    await waitFor(() => screen.getByTestId("vhost-subpage"));
+    fireEvent.click(screen.getByTestId("vhost-back"));
+    await waitFor(() => {
+      expect(screen.getByTestId("push-master-toggle")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("vhost-subpage")).toBeNull();
+  });
+
+  it("tapping a vhost (customize ON) PUTs the selection through the drawer", async () => {
+    const userSettings = await import("../lib/userSettings");
+    wrap(true);
+    await waitFor(() => screen.getByTestId("vhost-settings-entry"));
+    fireEvent.click(screen.getByTestId("vhost-settings-entry"));
+    await waitFor(() => screen.getByTestId("vhost-subpage"));
+    // Empty selection → customize starts OFF; turn it ON to reveal the sections.
+    fireEvent.click(screen.getByTestId("vhost-customize-toggle"));
+    fireEvent.click(screen.getByTestId("vhost-option-2001:db8::1"));
+    await waitFor(() => {
+      expect(userSettings.putVhostSelection).toHaveBeenCalledWith("test-bearer", ["2001:db8::1"]);
+    });
   });
 });
 
