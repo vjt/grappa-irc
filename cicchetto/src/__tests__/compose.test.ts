@@ -81,6 +81,14 @@ vi.mock("../lib/socket", () => ({
   pushInfo: vi.fn(),
   pushVersion: vi.fn(),
   pushMotd: vi.fn(),
+  // P-0d / #248 — /lusers bridge.
+  pushLusers: vi.fn(),
+}));
+
+// #248 — compose marks a /lusers request solicited so the incoming
+// bundle surfaces the card (the connect-welcome auto-emit does not).
+vi.mock("../lib/lusersBundle", () => ({
+  markLusersRequested: vi.fn(),
 }));
 
 // Mock queryWindows.ts — compose.ts calls openQueryWindowState for /msg /query /q.
@@ -347,6 +355,23 @@ describe("compose submit — slash command dispatch", () => {
     const result = await compose.submit(k, "freenode", "#a");
 
     expect(socket.pushMotd).toHaveBeenCalledWith(1);
+    expect(result).toEqual({ ok: true });
+  });
+
+  // P-0d / #248 — /lusers marks the request solicited BEFORE pushing so
+  // the incoming bundle surfaces the card. Without the mark, the store's
+  // #248 gate drops the bundle (same path the connect-welcome auto-emit
+  // takes) and the operator's explicit /lusers would show nothing.
+  it("/lusers marks the request solicited then pushes LUSERS via pushLusers(networkId)", async () => {
+    const socket = await import("../lib/socket");
+    const lusersBundle = await import("../lib/lusersBundle");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/lusers");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(lusersBundle.markLusersRequested).toHaveBeenCalledWith("freenode");
+    expect(socket.pushLusers).toHaveBeenCalledWith(1);
     expect(result).toEqual({ ok: true });
   });
 

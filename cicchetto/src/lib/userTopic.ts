@@ -16,7 +16,7 @@ import { channelKey } from "./channelKey";
 import { patchHomeNetwork } from "./home";
 import { appendInviteAck } from "./inviteAck";
 import { seedIsupport } from "./isupport";
-import { setLusersBundle } from "./lusersBundle";
+import { applyLusersBundle } from "./lusersBundle";
 import { clearMentionsBundle, setMentionsBundle } from "./mentionsWindow";
 import { setNamesReply } from "./namesModal";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
@@ -914,12 +914,14 @@ createRoot(() => {
           return;
 
         case "lusers_bundle": {
-          // P-0d — LUSERS bundle. Last-write-wins per-network snapshot.
-          // Card renders pinned at the top of the $server window.
-          // No focus change — welcome-time auto-emit shouldn't yank
-          // the operator's window.
+          // P-0d / #248 — LUSERS bundle. Gated on the solicited-request
+          // flag: applyLusersBundle surfaces the card ONLY when the
+          // operator issued /lusers (markLusersRequested), consume-once.
+          // The Bahamut connect-welcome auto-emit is never preceded by a
+          // request → dropped silently, so it no longer floats a covering
+          // card over the message view. No focus change either way.
           const { kind: _omit, network, ...snapshot } = payload;
-          setLusersBundle(network, snapshot);
+          applyLusersBundle(network, snapshot);
           return;
         }
 

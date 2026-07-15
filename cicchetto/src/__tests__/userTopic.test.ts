@@ -83,7 +83,8 @@ vi.mock("../lib/peerAway", () => ({
 }));
 
 vi.mock("../lib/lusersBundle", () => ({
-  setLusersBundle: vi.fn(),
+  applyLusersBundle: vi.fn(),
+  markLusersRequested: vi.fn(),
 }));
 
 vi.mock("../lib/serverReplyModal", () => ({
@@ -756,7 +757,7 @@ describe("userTopic", () => {
   });
 
   describe("lusers_bundle arm (P-0d)", () => {
-    it("calls setLusersBundle with (network, snapshot) — snapshot omits kind + network", async () => {
+    it("calls applyLusersBundle with (network, snapshot) — snapshot omits kind + network", async () => {
       const lb = await import("../lib/lusersBundle");
       channelMock.fireEvent({
         kind: "lusers_bundle",
@@ -774,7 +775,7 @@ describe("userTopic", () => {
         current_global: 1234,
         max_global: 5000,
       });
-      expect(lb.setLusersBundle).toHaveBeenCalledWith("azzurra", {
+      expect(lb.applyLusersBundle).toHaveBeenCalledWith("azzurra", {
         total_users: 1234,
         invisible: 56,
         servers: 3,
@@ -808,19 +809,19 @@ describe("userTopic", () => {
         current_global: null,
         max_global: null,
       });
-      expect(lb.setLusersBundle).toHaveBeenCalledWith(
+      expect(lb.applyLusersBundle).toHaveBeenCalledWith(
         "azzurra",
         expect.objectContaining({ total_users: 42, invisible: null, max_global: null }),
       );
     });
 
-    it("drops payload missing `network` (no setLusersBundle call)", async () => {
+    it("drops payload missing `network` (no applyLusersBundle call)", async () => {
       const lb = await import("../lib/lusersBundle");
       channelMock.fireEvent({
         kind: "lusers_bundle",
         total_users: 42,
       });
-      expect(lb.setLusersBundle).not.toHaveBeenCalled();
+      expect(lb.applyLusersBundle).not.toHaveBeenCalled();
     });
   });
 

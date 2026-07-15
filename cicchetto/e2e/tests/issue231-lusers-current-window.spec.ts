@@ -24,11 +24,12 @@
 // Per `feedback_ux_e2e_mandatory`: every cic UX-touching change ships
 // with a Playwright e2e via scripts/integration.sh.
 //
-// Note: connect-welcome auto-emits LUSERS too, and the store is
-// network-scoped last-write-wins — so a snapshot may already be present
-// when we land on the channel window. The test issues /lusers
-// explicitly to exercise the slash → push → broadcast → render path
-// end-to-end regardless of the welcome-time race.
+// Note: Bahamut auto-emits LUSERS at registration too, but since #248
+// the store gates on a solicited-request flag — the unsolicited
+// connect-welcome burst is dropped, so no snapshot is pre-present when
+// we land on the channel window (see issue248-lusers-no-auto-surface).
+// This test issues /lusers explicitly, which marks the request solicited
+// and exercises the slash → push → broadcast → render path end-to-end.
 
 import { expect, test } from "../fixtures/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";

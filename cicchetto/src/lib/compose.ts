@@ -15,6 +15,7 @@ import type { ChannelKey } from "./channelKey";
 import { friendlyApiError } from "./friendlyApiError";
 import { friendlyChannelError } from "./friendlyChannelError";
 import { identityScopedStore } from "./identityScopedStore";
+import { markLusersRequested } from "./lusersBundle";
 import { membersByChannel } from "./members";
 import { splitMessageLines } from "./messageLines";
 import { openModeModal } from "./modeModal";
@@ -723,6 +724,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "lusers": {
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/lusers: network not found" };
+          // #248 — mark the request solicited BEFORE pushing so the
+          // incoming bundle surfaces the card. The store's gate drops
+          // any unsolicited bundle (the Bahamut connect-welcome
+          // auto-emit), so an operator /lusers that skipped this mark
+          // would show nothing.
+          markLusersRequested(networkSlug);
           pushLusers(networkId);
           result = { ok: true };
           break;

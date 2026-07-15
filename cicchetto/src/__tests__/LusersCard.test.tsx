@@ -1,14 +1,29 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 import LusersCard from "../LusersCard";
-import { dismissLusersCard, setLusersBundle } from "../lib/lusersBundle";
+import {
+  applyLusersBundle,
+  dismissLusersCard,
+  type LusersSnapshot,
+  markLusersRequested,
+} from "../lib/lusersBundle";
 
 // P-0d — LUSERS card component. Render assertions only — wire dispatch
-// is covered by userTopic.test.ts.
+// is covered by userTopic.test.ts; the #248 solicited gate by
+// lusersBundle.test.ts.
 //
 // Test isolation: store accumulates per-network with last-write-wins
 // semantics. Each test uses a unique network slug to avoid cross-test
 // contamination.
+//
+// #248 — a snapshot only surfaces via applyLusersBundle when the network
+// was marked solicited first. `seed` mirrors the operator-/lusers path
+// (markLusersRequested → applyLusersBundle) so these render tests drive
+// the real public store API rather than a raw setter bypass.
+const seed = (networkSlug: string, snapshot: LusersSnapshot): void => {
+  markLusersRequested(networkSlug);
+  applyLusersBundle(networkSlug, snapshot);
+};
 
 const FULL_SNAPSHOT = {
   total_users: 1234,
@@ -32,7 +47,7 @@ describe("LusersCard", () => {
   });
 
   it("renders all 12 fields when present in the snapshot", () => {
-    setLusersBundle("net-full", FULL_SNAPSHOT);
+    seed("net-full", FULL_SNAPSHOT);
     render(() => <LusersCard networkSlug="net-full" />);
     const card = screen.getByTestId("lusers-card");
     expect(card.textContent).toContain("1,234");
@@ -45,14 +60,14 @@ describe("LusersCard", () => {
   });
 
   it("hides unknown row when count is 0 (Bahamut omits in some emit paths)", () => {
-    setLusersBundle("net-no-unknown", { ...FULL_SNAPSHOT, unknown_connections: 0 });
+    seed("net-no-unknown", { ...FULL_SNAPSHOT, unknown_connections: 0 });
     render(() => <LusersCard networkSlug="net-no-unknown" />);
     const card = screen.getByTestId("lusers-card");
     expect(card.textContent).not.toContain("unknown");
   });
 
   it("renders partial snapshot — null fields skip their respective rows", () => {
-    setLusersBundle("net-partial", {
+    seed("net-partial", {
       total_users: 42,
       invisible: null,
       servers: null,
@@ -74,7 +89,7 @@ describe("LusersCard", () => {
   });
 
   it("does not render for a different network", () => {
-    setLusersBundle("net-x", FULL_SNAPSHOT);
+    seed("net-x", FULL_SNAPSHOT);
     const { container } = render(() => <LusersCard networkSlug="net-other" />);
     expect(container.querySelector("[data-testid='lusers-card']")).toBeNull();
   });
@@ -82,13 +97,13 @@ describe("LusersCard", () => {
   // P-0f — close button affordance, mirror of WhoisCard / WhowasCard.
   describe("close button (P-0f)", () => {
     it("renders a close button in the card header", () => {
-      setLusersBundle("net-close-1", FULL_SNAPSHOT);
+      seed("net-close-1", FULL_SNAPSHOT);
       render(() => <LusersCard networkSlug="net-close-1" />);
       expect(screen.getByLabelText("Dismiss LUSERS")).toBeInTheDocument();
     });
 
     it("dismissLusersCard removes the bundle so the card unmounts", () => {
-      setLusersBundle("net-close-2", FULL_SNAPSHOT);
+      seed("net-close-2", FULL_SNAPSHOT);
       const { container } = render(() => <LusersCard networkSlug="net-close-2" />);
       expect(container.querySelector("[data-testid='lusers-card']")).not.toBeNull();
 
@@ -98,8 +113,8 @@ describe("LusersCard", () => {
     });
 
     it("clicking the close button dismisses the card for THIS network only", () => {
-      setLusersBundle("net-close-3a", FULL_SNAPSHOT);
-      setLusersBundle("net-close-3b", FULL_SNAPSHOT);
+      seed("net-close-3a", FULL_SNAPSHOT);
+      seed("net-close-3b", FULL_SNAPSHOT);
       const { container: containerA } = render(() => <LusersCard networkSlug="net-close-3a" />);
       const { container: containerB } = render(() => <LusersCard networkSlug="net-close-3b" />);
 

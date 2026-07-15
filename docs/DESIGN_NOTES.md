@@ -20820,3 +20820,60 @@ hides.
 
 _Deploy: **--cic HOT** — client-only bundle change; no BEAM restart, no
 migration, no supervised child._
+
+## 2026-07-15 — #248 (P0, cic): connect-welcome LUSERS no longer auto-surfaces the card over the message view
+
+**The bug.** On connect, cic auto-opened the LUSERS network-stats card
+floating in the top-pinned scrollback overlay (#133), covering the
+message view. Onboarding users read the covered buffer as "my sent
+messages aren't showing up" until they dismissed the card (chan report).
+
+**Root cause — and why it's client-only.** Bahamut auto-emits its
+7-numeric LUSERS sequence at *registration* (connect-welcome). grappa
+NEVER self-issues LUSERS (`Client.send_lusers` is reachable ONLY via the
+operator `/lusers` path: `grappa_channel "lusers"` → `Session.send_lusers`
+→ `Server :send_lusers`); it just folds whatever LUSERS numerics arrive
+and broadcasts the SAME `{:lusers_bundle, accum}` effect on `Topic.user`
+whether the burst was solicited or the welcome auto-emit. The server
+makes **no window-open / foreground / window_state decision** for LUSERS
+— it only broadcasts a data event. The *surface* decision was purely
+client-side: `userTopic.ts` stored every `lusers_bundle` via
+`setLusersBundle`, and `LusersCard` renders whenever a snapshot exists for
+the network. So the fix is CLIENT-ONLY; no `.ex` change, no server
+re-classification.
+
+**The fix — a per-network solicited-request gate in `lusersBundle.ts`.**
+Because grappa never self-issues LUSERS, *every* solicited bundle is
+preceded by a client `/lusers` (`pushLusers`) and the connect-welcome
+burst never is. That difference is the whole signal:
+  * `markLusersRequested(slug)` — set on `/lusers` in `compose.ts`
+    (before `pushLusers`).
+  * `applyLusersBundle(slug, snap)` — the `userTopic.ts` dispatch now
+    calls this instead of the raw setter. It surfaces the snapshot ONLY
+    when a request is pending (consume-once via `Set.delete`), else drops
+    the bundle silently. The Bahamut connect-welcome auto-emit is
+    unsolicited → dropped → the operator lands on the normal message
+    view. The raw `setLusersBundle` export is removed so the gate can't
+    be bypassed (render tests seed via mark+apply).
+The solicited flags are non-reactive control state cleared on identity
+rotation alongside the snapshot store (no stale flag surfaces a bundle
+post-relogin). Manual `/lusers` is unchanged — it still surfaces the card
+in the current window (#231), which remains the documented refresh verb.
+
+**Why a client-side flag, not a server `solicited:` field.** The client
+is the sole originator of solicited `/lusers`, so it already holds the
+distinction with zero new server state or wire-shape change — lightweight
+over heavyweight, and it keeps the deploy `--cic` HOT.
+
+**Testing.** `lusersBundle.test.ts` pins the gate (unsolicited dropped,
+solicited surfaces, consume-once, per-network isolation, identity-rotation
+clears pending). `userTopic.test.ts` / `compose.test.ts` pin the dispatch
++ compose wiring. A real-browser Playwright spec
+(`issue248-lusers-no-auto-surface.spec.ts`) reproduces the production path
+via the proven park→Reconnect cycle: reconnect re-sends the welcome LUSERS
+to the still-subscribed browser; the spec asserts the card does NOT
+auto-surface on the rejoined channel, then that an operator `/lusers`
+still surfaces it (positive control).
+
+_Deploy: **--cic HOT** — client-only bundle change; no BEAM restart, no
+migration, no supervised child._
