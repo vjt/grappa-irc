@@ -20,8 +20,9 @@ defmodule GrappaWeb.AdminChannelTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{AdminEvents, Repo}
+  alias Grappa.{AdminEvents, Repo, SessionLog}
   alias Grappa.AdminEvents.Wire
+  alias Grappa.PubSub.Topic
   alias GrappaWeb.UserSocket
 
   setup do
@@ -141,6 +142,36 @@ defmodule GrappaWeb.AdminChannelTest do
       :ok = AdminEvents.record(Wire.reaper_swept(11))
 
       assert_push "event", %{kind: :reaper_swept, count: 11}, 500
+    end
+  end
+
+  describe "session_log live push (#215)" do
+    test "a Topic.session_log broadcast lands on the admin socket as session_log_event" do
+      admin = user_fixture(is_admin: true)
+      raw = build_socket(admin.name, {:user, admin.id}, is_admin: true)
+
+      {:ok, _, _} = subscribe_and_join(raw, "grappa:admin:events", %{})
+      assert_push "snapshot", _
+
+      event = %SessionLog.Event{
+        id: 99,
+        session_id: "user:x:7",
+        event: :disconnected,
+        subject_kind: :user,
+        network_id: 7,
+        network_slug: "az",
+        nick: "vjt",
+        reason: ":tcp_closed",
+        clean: false,
+        duration_ms: 3,
+        at: DateTime.utc_now()
+      }
+
+      :ok = Grappa.PubSub.broadcast_event(Topic.session_log(), SessionLog.Wire.entry_payload(event))
+
+      assert_push "session_log_event",
+                  %{kind: "session_log_event", entry: %{session_id: "user:x:7", event: :disconnected}},
+                  500
     end
   end
 
