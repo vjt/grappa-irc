@@ -26,6 +26,7 @@ defmodule GrappaWeb do
         Grappa.IRC,
         Grappa.LiveIntrospection,
         Grappa.Net.HostAddresses,
+        Grappa.Net.PtrCache,
         Grappa.Networks,
         Grappa.Operator,
         Grappa.OutboundV6Pool,

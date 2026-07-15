@@ -40,13 +40,14 @@ defmodule Grappa.Health do
     top_level?: true,
     deps: [
       Grappa.Repo,
-      # The two ETS singletons whose presence the substrate check
-      # verifies. Coupling on each module's public `table_name/0`
-      # API (REV-C reviewer LOW-1) — single-sourced, so renaming the
-      # @table atom in either module surfaces a Health check failure
-      # on next deploy rather than silently diverging here.
+      # The ETS singletons whose presence the substrate check verifies.
+      # Coupling on each module's public `table_name/0` API (REV-C
+      # reviewer LOW-1) — single-sourced, so renaming the @table atom in
+      # any of them surfaces a Health check failure on next deploy rather
+      # than silently diverging here.
       Grappa.Session,
-      Grappa.Admission
+      Grappa.Admission,
+      Grappa.Net.PtrCache
     ]
 
   @persistent_term_key {__MODULE__, :ready}
@@ -153,7 +154,8 @@ defmodule Grappa.Health do
     # deploy rather than silently diverging here).
     required = [
       Grappa.Session.Backoff.table_name(),
-      Grappa.Admission.NetworkCircuit.table_name()
+      Grappa.Admission.NetworkCircuit.table_name(),
+      Grappa.Net.PtrCache.table_name()
     ]
 
     missing = Enum.reject(required, &table_exists?/1)

@@ -151,18 +151,31 @@ defmodule GrappaWeb.UserSettingsController do
   def update_vhost(_, _), do: {:error, :bad_request}
 
   # Builds the render assigns for the vhost view — allowed set (each option
-  # marked in_pool + granted), current selection. `granted` reflects a real
-  # per-subject grant row, NOT allow-set membership (which now also includes
-  # in_pool + generally-available vhosts — #251), so cic V2 can bucket
-  # exclusive (granted) / in-pool / out-of-pool.
+  # marked in_pool + granted + a resolved rDNS name), current selection.
+  # `granted` reflects a real per-subject grant row, NOT allow-set
+  # membership (which now also includes in_pool + generally-available
+  # vhosts — #251), so cic V2 can bucket exclusive (granted) / in-pool /
+  # out-of-pool.
+  #
+  # `name` is the address's reverse-DNS (cloak) string — #252. The DNS is
+  # the source of truth (nothing persisted); `Grappa.Net.PtrCache.names_for/1`
+  # is a LOCK-FREE ETS read that NEVER blocks this response on a resolve. A
+  # cold/expired/no-PTR address reads back as `nil` and falls back to the
+  # raw IP here; the cache resolves it out of band so a later GET shows the
+  # name (cic re-reads the view on entering the vhost sub-page).
   defp vhost_view(subject) do
     granted_ids = MapSet.new(Vhosts.granted_vhost_ids(subject))
+    allowed = Vhosts.allowed_vhosts(subject)
+    names = Grappa.Net.PtrCache.names_for(Enum.map(allowed, & &1.address))
 
     available =
-      subject
-      |> Vhosts.allowed_vhosts()
-      |> Enum.map(fn v ->
-        %{address: v.address, in_pool: v.in_pool, granted: MapSet.member?(granted_ids, v.id)}
+      Enum.map(allowed, fn v ->
+        %{
+          address: v.address,
+          in_pool: v.in_pool,
+          granted: MapSet.member?(granted_ids, v.id),
+          name: names[v.address] || v.address
+        }
       end)
 
     %{available: available, selection: Vhosts.get_selection(subject)}

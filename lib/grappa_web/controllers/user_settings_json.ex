@@ -21,8 +21,21 @@ defmodule GrappaWeb.UserSettingsJSON do
           upload_ttl_seconds: pos_integer() | nil
         }
 
-  @typedoc "One allowed vhost in the self-service view (#228, #251)."
-  @type vhost_option :: %{address: String.t(), in_pool: boolean(), granted: boolean()}
+  @typedoc """
+  One allowed vhost in the self-service view (#228, #251, #252).
+
+  `name` is the address's reverse-DNS (cloak) string — the human label
+  cic renders as the primary choice, with `address` as the muted `/128`
+  subline. Resolved server-side from DNS (the source of truth; never
+  persisted — #252); falls back to the raw `address` when no PTR record
+  exists or the name isn't cached yet, so it is ALWAYS a string.
+  """
+  @type vhost_option :: %{
+          address: String.t(),
+          in_pool: boolean(),
+          granted: boolean(),
+          name: String.t()
+        }
 
   @typedoc "Wire shape for the vhost self-service view (#228, #251)."
   @type vhost_response :: %{

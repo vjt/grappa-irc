@@ -119,6 +119,20 @@ config :grappa, :admission,
   network_circuit_window_ms: 60_000,
   network_circuit_cooldown_ms: 5 * 60_000
 
+# #252 — vhost reverse-DNS (PTR) name cache. `Grappa.Net.PtrCache` caches
+# each source address's cloak name for the record TTL (clamped to
+# [min, max]); the DNS is the source of truth, nothing is persisted. A
+# no-PTR address is negatively cached for `negative_ttl_ms` (stable — not
+# every address has a name); a transient resolver error backs off for the
+# shorter `error_ttl_ms` before retry. Defaults live here so an operator
+# can tune without a code change; `Grappa.Net.PtrCache` reads them via
+# `Application.compile_env/3`.
+config :grappa, :vhost_ptr_cache,
+  min_ttl_ms: 60_000,
+  max_ttl_ms: 24 * 60 * 60_000,
+  negative_ttl_ms: 60 * 60_000,
+  error_ttl_ms: 60_000
+
 # Channel directory (#84) — per-(subject, network) snapshot of an
 # upstream IRC LIST. ttl_ms is the freshness window the REST resource
 # uses to label a snapshot :fresh vs :stale (48h, matching the sliding

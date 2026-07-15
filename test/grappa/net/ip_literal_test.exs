@@ -46,4 +46,25 @@ defmodule Grappa.Net.IpLiteralTest do
       assert :inet6 = IpLiteral.family("2001:db8::1")
     end
   end
+
+  # #252 — the vhost PTR resolver needs the parsed :inet tuple to build the
+  # reverse-lookup name; parsing routes through the same strict rule so a
+  # non-literal that canonicalize/1 rejects is rejected here identically.
+  describe "to_tuple/1" do
+    test "parses a strict IPv4 literal to its :inet tuple" do
+      assert {:ok, {192, 0, 2, 1}} = IpLiteral.to_tuple("192.0.2.1")
+    end
+
+    test "parses a strict IPv6 literal to its :inet6 tuple" do
+      assert {:ok, {0x2001, 0x0DB8, 0, 0, 0, 0, 0, 1}} = IpLiteral.to_tuple("2001:db8::1")
+    end
+
+    test "rejects a hostname" do
+      assert :error = IpLiteral.to_tuple("irc.example.org")
+    end
+
+    test "rejects a zero-padded octet (non-strict)" do
+      assert :error = IpLiteral.to_tuple("192.000.002.001")
+    end
+  end
 end

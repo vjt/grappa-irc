@@ -8,6 +8,7 @@ defmodule Grappa.Application do
       Grappa.AdminEvents,
       Grappa.Bootstrap,
       Grappa.Health,
+      Grappa.Net.PtrCache,
       Grappa.OutboundV6Pool,
       Grappa.PubSub,
       Grappa.Push,
@@ -132,6 +133,15 @@ defmodule Grappa.Application do
         # placed here to sit alongside the other ETS singletons
         # (Backoff, NetworkCircuit) for ordering clarity.
         Grappa.Visitors.ShareTokens,
+        # #252 — vhost reverse-DNS (PTR) name cache. ETS-backed singleton
+        # sibling of Backoff / NetworkCircuit / ShareTokens: must exist
+        # before Endpoint so `UserSettingsController.show_vhost/2`'s
+        # lock-free `names_for/1` read never races a missing table. The
+        # resolver is injected at boot (test wires an offline stub via
+        # `:vhost_ptr_resolver`); dev/prod fall through to the module's
+        # baked-in real `:inet_res` resolver. No SessionSupervisor /
+        # TaskSupervisor dependency — resolves run in its own cast handler.
+        ptr_cache_child(),
         # Task.Supervisor for detached fire-and-forget work that must NOT be
         # linked to the spawning process (S37). `Session.Server`'s terminal-
         # failure handler runs its `credential_failer` callback here: it
@@ -246,6 +256,20 @@ defmodule Grappa.Application do
   # reads from `:persistent_term`.
   defp uploads_storage_root do
     Application.fetch_env!(:grappa, :uploads_storage_root)
+  end
+
+  # #252 — the vhost PTR cache child spec. Boot-time read (the CLAUDE.md
+  # designated boundary for `Application.get_env/2`) of an OPTIONAL
+  # resolver override: when unset (dev/prod) the child spec carries no
+  # `:resolver` opt, so `Grappa.Net.PtrCache` uses its own baked-in real
+  # resolver default; the test env sets an offline stub. Injecting only
+  # the override keeps this module off a Boundary dep on the resolver.
+  @spec ptr_cache_child() :: module() | {module(), keyword()}
+  defp ptr_cache_child do
+    case Application.get_env(:grappa, :vhost_ptr_resolver) do
+      nil -> Grappa.Net.PtrCache
+      resolver -> {Grappa.Net.PtrCache, resolver: resolver}
+    end
   end
 
   # M-11 telemetry-attach gating. False in test env (set in

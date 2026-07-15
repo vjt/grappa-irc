@@ -42,6 +42,27 @@ defmodule Grappa.Net.IpLiteral do
   end
 
   @doc """
+  Parses `value` as a strict IPv4/IPv6 literal and returns the parsed
+  `:inet` tuple, or `:error` for any non-literal.
+
+  The tuple form is what `:inet` reverse-DNS APIs consume — the #252
+  vhost PTR resolver parses the persisted canonical address string back
+  to a tuple before building the `in-addr.arpa` / `ip6.arpa` query name.
+  Routes through the SAME strict-parse rule as `canonicalize/1`, so an
+  input `canonicalize/1` would reject is rejected here identically.
+  """
+  @spec to_tuple(String.t()) :: {:ok, :inet.ip_address()} | :error
+  def to_tuple(value) when is_binary(value) do
+    charlist = String.to_charlist(value)
+
+    case {:inet.parse_ipv4strict_address(charlist), :inet.parse_ipv6strict_address(charlist)} do
+      {{:ok, tuple}, _} -> {:ok, tuple}
+      {_, {:ok, tuple}} -> {:ok, tuple}
+      _ -> :error
+    end
+  end
+
+  @doc """
   Returns the address family (`:inet` / `:inet6`) of a strict IP
   literal. Raises `ArgumentError` on a non-literal — callers hold an
   already-validated literal (persisted through `canonicalize/1`), so a
