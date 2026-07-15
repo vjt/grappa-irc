@@ -85,6 +85,17 @@ export type SelectedChannel = {
   kind: WindowKind;
 } | null;
 
+// Exact-tuple selection equality: two selections are the same iff both are
+// null, or both non-null with identical (slug, name, kind). Any change in
+// slug, name, or kind — and null↔non-null — is a real transition. Single
+// source of truth for BOTH the idempotent setter's short-circuit AND the
+// #243 re-tap predicate (`isActiveSelection`), so the two can never
+// diverge.
+const sameSelection = (a: SelectedChannel, b: SelectedChannel): boolean => {
+  if (a === null || b === null) return a === b;
+  return a.networkSlug === b.networkSlug && a.channelName === b.channelName && a.kind === b.kind;
+};
+
 /**
  * Per-channel seed count pair: `messages` (content kinds) + `events`
  * (presence kinds). Hydrated from the server's join reply (`unread_count`
@@ -142,16 +153,7 @@ const exports = identityScopedStore((onIdentityChange) => {
 
   const setSelectedChannel = (next: SelectedChannel): void => {
     const cur = untrack(selectedChannel);
-    if (cur === null && next === null) return;
-    if (
-      cur !== null &&
-      next !== null &&
-      cur.networkSlug === next.networkSlug &&
-      cur.channelName === next.channelName &&
-      cur.kind === next.kind
-    ) {
-      return;
-    }
+    if (sameSelection(cur, next)) return;
     // Entering a transient overlay — the $list directory pane or the #188
     // mentions panel — from a real window: remember it so
     // closeToPreviousWindow restores the exact window that was focused
@@ -169,6 +171,15 @@ const exports = identityScopedStore((onIdentityChange) => {
     }
     setSelectedChannelRaw(next);
   };
+
+  // #243 — true iff `next` is the window already selected. The exact
+  // negation of the idempotent setter's short-circuit (both route through
+  // `sameSelection`), so a re-tap detection can never drift from the
+  // no-op-transition rule. Untracked: callers are event handlers (a
+  // Sidebar / BottomBar tap), not reactive scopes — reading the selection
+  // signal here must not subscribe them.
+  const isActiveSelection = (next: SelectedChannel): boolean =>
+    sameSelection(untrack(selectedChannel), next);
 
   // Resolve the window to focus when a window closes or a transient
   // overlay is dismissed: most-recently-used live channel/query (MRU) →
@@ -780,6 +791,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     serverSeedCounts,
     selectedChannel,
     setSelectedChannel,
+    isActiveSelection,
     closeToPreviousWindow,
     setServerSeedCount,
     applySeedEnvelope,
@@ -793,6 +805,7 @@ export const eventsUnread = exports.eventsUnread;
 export const serverSeedCounts = exports.serverSeedCounts;
 export const selectedChannel = exports.selectedChannel;
 export const setSelectedChannel = exports.setSelectedChannel;
+export const isActiveSelection = exports.isActiveSelection;
 export const closeToPreviousWindow = exports.closeToPreviousWindow;
 export const setServerSeedCount = exports.setServerSeedCount;
 export const applySeedEnvelope = exports.applySeedEnvelope;

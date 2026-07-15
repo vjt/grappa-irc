@@ -1667,4 +1667,83 @@ describe("selection store", () => {
       expect(selection.messagesUnread()[otherKey]).toBe(3);
     });
   });
+
+  // #243 — re-tap-to-jump predicate. `isActiveSelection(next)` is true iff
+  // `next` is the tuple already selected — the exact negation of the
+  // idempotent setter's short-circuit (both route through the same
+  // `sameSelection` compare, so they can never diverge). The Sidebar /
+  // BottomBar tap handlers use it to tell a re-tap (jump scrollback to
+  // bottom) from a switch (existing behaviour). The e2e proves the scroll;
+  // this pins the equality semantics.
+  describe("isActiveSelection — re-tap predicate (#243)", () => {
+    it("returns true when the tuple matches the current selection exactly", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      expect(
+        selection.isActiveSelection({
+          networkSlug: "freenode",
+          channelName: "#grappa",
+          kind: "channel",
+        }),
+      ).toBe(true);
+    });
+
+    it("returns false when the channel name differs (a switch, not a re-tap)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      expect(
+        selection.isActiveSelection({
+          networkSlug: "freenode",
+          channelName: "#cicchetto",
+          kind: "channel",
+        }),
+      ).toBe(false);
+    });
+
+    it("returns false when the kind differs even if slug + name match", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      expect(
+        selection.isActiveSelection({
+          networkSlug: "freenode",
+          channelName: "#grappa",
+          kind: "query",
+        }),
+      ).toBe(false);
+    });
+
+    it("returns false for any tuple when nothing is selected yet", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      expect(selection.selectedChannel()).toBeNull();
+      expect(
+        selection.isActiveSelection({
+          networkSlug: "freenode",
+          channelName: "#grappa",
+          kind: "channel",
+        }),
+      ).toBe(false);
+    });
+  });
 });

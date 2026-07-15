@@ -137,6 +137,12 @@ vi.mock("../lib/networks", () => ({
 vi.mock("../lib/selection", () => ({
   selectedChannel: () => selectionState.selSig(),
   setSelectedChannel: selectionState.setSelectedChannelMock,
+  // #243 — Shell mounts the REAL Sidebar + BottomBar, whose handleClick now
+  // calls isActiveSelection. A full-replacement mock MUST export every
+  // symbol the children import or a future test that clicks a real row
+  // throws (the #228 gate gap). Default false: no Shell test exercises the
+  // re-tap-to-jump branch.
+  isActiveSelection: () => false,
   unreadCounts: () => ({}),
   messagesUnread: () => ({}),
   eventsUnread: () => ({}),

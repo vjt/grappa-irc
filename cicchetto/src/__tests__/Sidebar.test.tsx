@@ -7,6 +7,12 @@ let mockNetworkConnectionReason: Record<string, string | null | undefined> = {};
 // admin gate on/off. `isAdmin()` in Sidebar drives the new admin row
 // visibility; default false to keep pre-N tests unchanged.
 const adminHolder = vi.hoisted(() => ({ value: false }));
+// #243 — controllable re-tap predicate. The handler fires the scroll-to-
+// bottom command only when isActiveSelection(target) is true; the equality
+// itself is proven in selection.test.ts, so here we drive the branch
+// directly and assert the handler wiring (which branch calls the command,
+// and the tuple it passes to the predicate).
+const isActiveSelectionMock = vi.hoisted(() => vi.fn<(next: unknown) => boolean>());
 
 vi.mock("../lib/networks", () => ({
   networks: () => [
@@ -60,10 +66,18 @@ vi.mock("../lib/networks", () => ({
 vi.mock("../lib/selection", () => ({
   selectedChannel: () => null,
   setSelectedChannel: vi.fn(),
+  isActiveSelection: (next: unknown) => isActiveSelectionMock(next),
   unreadCounts: () => ({ "freenode #bnc": 3 }),
   messagesUnread: () => ({ "freenode #bnc": 3, "freenode $server": 7 }),
   eventsUnread: () => ({ "freenode $server": 2 }),
   applySeedEnvelope: vi.fn(),
+}));
+
+// #243 — the scroll-to-bottom command bridge. Spied so the re-tap wiring
+// tests can assert the handler bumps it (or not).
+vi.mock("../lib/scrollToBottomCommand", () => ({
+  requestScrollToBottom: vi.fn(),
+  scrollToBottomRequest: () => 0,
 }));
 
 vi.mock("../lib/mentions", () => ({
@@ -167,6 +181,7 @@ import * as archiveMod from "../lib/archive";
 import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
 // Capture mocked module references at import time, before any resetModules
 import * as qwMod from "../lib/queryWindows";
+import * as scrollCmd from "../lib/scrollToBottomCommand";
 import * as selMod from "../lib/selection";
 // windowKinds is NOT mocked — import constants from the real module.
 import { LIST_WINDOW_NAME } from "../lib/windowKinds";
@@ -179,6 +194,9 @@ beforeEach(() => {
   mockNetworkConnectionReason = {};
   mockAwayByNetwork = {};
   adminHolder.value = false;
+  // #243 — default "not the active window" so existing click tests (which
+  // just assert setSelectedChannel) never trip the scroll-to-bottom branch.
+  isActiveSelectionMock.mockReturnValue(false);
 });
 
 describe("Sidebar", () => {
@@ -248,6 +266,44 @@ describe("Sidebar", () => {
     });
   });
 
+  // #243 — re-tapping the ALREADY-active sidebar row is an irssi-parity
+  // "jump to latest": it fires the scroll-to-bottom command. A tap that
+  // SWITCHES channels must not (existing behaviour, no scroll authority
+  // perturbation). Equality is proven in selection.test.ts; this pins the
+  // handler wiring.
+  describe("#243 — re-tap active row scrolls scrollback to bottom", () => {
+    it("re-tapping the active channel row fires requestScrollToBottom with the tapped tuple", () => {
+      isActiveSelectionMock.mockReturnValue(true);
+      render(() => <Sidebar />);
+      fireEvent.click(screen.getByText("#italia"));
+      expect(isActiveSelectionMock).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "#italia",
+        kind: "channel",
+      });
+      expect(scrollCmd.requestScrollToBottom).toHaveBeenCalledTimes(1);
+      // Still calls the (idempotent) selection setter — re-tap is a no-op
+      // transition there, so ordering vs the scroll command doesn't matter.
+      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "#italia",
+        kind: "channel",
+      });
+    });
+
+    it("tapping a DIFFERENT (non-active) channel row does NOT fire requestScrollToBottom", () => {
+      isActiveSelectionMock.mockReturnValue(false);
+      render(() => <Sidebar />);
+      fireEvent.click(screen.getByText("#azzurra"));
+      expect(scrollCmd.requestScrollToBottom).not.toHaveBeenCalled();
+      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "#azzurra",
+        kind: "channel",
+      });
+    });
+  });
+
   it("renders 'no networks' fallback when networks list is empty", async () => {
     vi.resetModules();
     vi.doMock("../lib/networks", () => ({
@@ -258,6 +314,7 @@ describe("Sidebar", () => {
     vi.doMock("../lib/selection", () => ({
       selectedChannel: () => null,
       setSelectedChannel: vi.fn(),
+      isActiveSelection: () => false,
       unreadCounts: () => ({}),
       messagesUnread: () => ({}),
       eventsUnread: () => ({}),

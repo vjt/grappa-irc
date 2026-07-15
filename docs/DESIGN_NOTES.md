@@ -20753,3 +20753,70 @@ runs — a real latent flake, but 100% independent of the #246 diff (nothing
 here imports `LineSplit`). Fixed at the root in its OWN commit: the
 generator now filters blank-after-trim bodies, which can't exist in
 production anyway. Kept separate from the #246 logical change.
+
+## 2026-07-15 — #243 (P1, cic): re-tapping the active channel jumps scrollback to bottom
+
+irssi-parity "jump to latest": tapping the channel that is ALREADY the
+active/selected window scrolls that window's message list to the newest
+message. Both surfaces — the desktop left-sidebar row and the mobile
+bottom-bar entry. A tap that SWITCHES windows keeps existing behaviour
+(that path is unchanged); only a re-tap of the currently-focused window is
+the jump.
+
+**The seam.** `Grappa`'s cic side already had every piece — the trick was
+wiring them without a second scroll authority:
+
+  * `Sidebar.handleClick` / `BottomBar.handleClick` are the tap handlers.
+    Both already built the `(slug, name, kind)` target and called the
+    idempotent `setSelectedChannel`. The new branch fires
+    `requestScrollToBottom()` when `isActiveSelection(target)` is true —
+    computed BEFORE the setter (a re-tap is a no-op transition there
+    anyway, so ordering is irrelevant).
+  * `lib/selection.ts` — the re-tap predicate `isActiveSelection/1` is the
+    exact negation of the idempotent setter's short-circuit. Both now
+    route through ONE `sameSelection/2` (exact `(slug,name,kind)` tuple
+    equality, null↔non-null is a transition), so the "is this a re-tap?"
+    test can never drift from the "is this a no-op set?" rule. This is the
+    same equality the setter always used — the compare was extracted, not
+    reinvented.
+  * `lib/scrollToBottomCommand.ts` (NEW) — a monotonic module-singleton
+    nonce is the one-way bridge from the tap handlers to ScrollbackPane.
+    A counter (not a boolean) so back-to-back re-taps each register a
+    distinct transition Solid's `===` would otherwise swallow. Plain (not
+    identity-scoped): a stale value across identity rotation just means "no
+    new request" and can't fire on its own.
+  * `ScrollbackPane.tsx` — the sole subscriber:
+    `createEffect(on(scrollToBottomRequest, () => scrollToBottom(), {
+    defer: true }))`. Reuses the EXISTING instant, layout-aware
+    `scrollToBottom()` the floating button uses — no new scroll path. Only
+    one ScrollbackPane is mounted (Shell bundles channel|query|server into
+    one non-keyed Match), so the command always lands on the active
+    scrollback. `defer: true` skips the value read at mount, so a channel
+    SWITCH (no nonce change) and a stale post-rotation nonce never fire a
+    spurious jump — only a genuine re-tap does.
+
+**Invariants respected.** The #196 image-preview-overlay scrollTop hold +
+the #230 underfill anchor machinery are untouched — this ADDS a discrete
+imperative, it does not perturb `scrollToActivation` / the length-effect /
+the overlay snapshot. Focus/selection still originates only from the user
+gesture (#200/#125 no-steal): the scroll fires from the TAP handler, never
+from a completing WS event; `userTopic.ts` / `subscribe.ts` window-state
+arms are not touched. cic originates no window STATE — this is a pure
+client-side scroll on the already-selected window (no REST, no new WS
+event, no server round-trip). A re-tap on a non-scrollback window
+(home/admin/list/mentions) bumps the nonce harmlessly: ScrollbackPane —
+the only subscriber — isn't mounted there, so the command self-gates
+without a kind check.
+
+**Testing.** jsdom is blind to scroll geometry, so the split mirrors the
+existing scroll specs: vitest pins the seam up to the command nonce
+(`scrollToBottomCommand` monotonicity, `isActiveSelection` equality
+semantics, and the Sidebar/BottomBar handler wiring — which branch bumps
+the command, and the tuple it passes), while a real-browser Playwright
+spec (`issue243-tap-active-scroll-bottom.spec.ts`, desktop + `@webkit`
+mobile) proves nonce → actual scroll: scroll up into history, re-tap the
+active row/tab, assert the pane lands at the bottom and the floating button
+hides.
+
+_Deploy: **--cic HOT** — client-only bundle change; no BEAM restart, no
+migration, no supervised child._

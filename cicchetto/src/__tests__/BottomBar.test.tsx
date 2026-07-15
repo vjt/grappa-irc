@@ -10,6 +10,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // `.sidebar-network-header` row. The chip itself IS the clickable Server-
 // window entry (emoji + slug + badges + disconnect ×).
 
+// #243 — controllable re-tap predicate (see Sidebar.test.tsx for the
+// rationale; mobile mirrors the desktop wiring exactly).
+const isActiveSelectionMock = vi.hoisted(() => vi.fn<(next: unknown) => boolean>());
+
 vi.mock("../lib/networks", () => ({
   networks: () => [
     { id: 1, slug: "freenode", inserted_at: "", updated_at: "" },
@@ -27,10 +31,17 @@ vi.mock("../lib/networks", () => ({
 vi.mock("../lib/selection", () => ({
   selectedChannel: () => null,
   setSelectedChannel: vi.fn(),
+  isActiveSelection: (next: unknown) => isActiveSelectionMock(next),
   unreadCounts: () => ({ "freenode #bnc": 5 }),
   messagesUnread: () => ({ "freenode #bnc": 5, "freenode $server": 4 }),
   eventsUnread: () => ({ "freenode $server": 1 }),
   applySeedEnvelope: vi.fn(),
+}));
+
+// #243 — the scroll-to-bottom command bridge, spied for the re-tap wiring.
+vi.mock("../lib/scrollToBottomCommand", () => ({
+  requestScrollToBottom: vi.fn(),
+  scrollToBottomRequest: () => 0,
 }));
 
 vi.mock("../lib/mentions", () => ({
@@ -70,11 +81,15 @@ vi.mock("../lib/archive", () => ({
 }));
 
 import BottomBar from "../BottomBar";
+import * as scrollCmd from "../lib/scrollToBottomCommand";
 import * as selMod from "../lib/selection";
 import * as windowCloseMod from "../lib/windowClose";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // #243 — default "not the active window" so existing click tests never
+  // trip the scroll-to-bottom branch.
+  isActiveSelectionMock.mockReturnValue(false);
 });
 
 describe("BottomBar", () => {
@@ -178,6 +193,40 @@ describe("BottomBar", () => {
     });
   });
 
+  // #243 — re-tapping the ALREADY-active bottom-bar entry is an irssi-parity
+  // "jump to latest": it fires the scroll-to-bottom command. A tap that
+  // SWITCHES windows must not. Mirrors the desktop Sidebar wiring exactly.
+  describe("#243 — re-tap active tab scrolls scrollback to bottom", () => {
+    it("re-tapping the active channel tab fires requestScrollToBottom with the tapped tuple", () => {
+      isActiveSelectionMock.mockReturnValue(true);
+      render(() => <BottomBar />);
+      fireEvent.click(screen.getByText("#italia"));
+      expect(isActiveSelectionMock).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "#italia",
+        kind: "channel",
+      });
+      expect(scrollCmd.requestScrollToBottom).toHaveBeenCalledTimes(1);
+      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "#italia",
+        kind: "channel",
+      });
+    });
+
+    it("tapping a DIFFERENT (non-active) channel tab does NOT fire requestScrollToBottom", () => {
+      isActiveSelectionMock.mockReturnValue(false);
+      render(() => <BottomBar />);
+      fireEvent.click(screen.getByText("#bnc"));
+      expect(scrollCmd.requestScrollToBottom).not.toHaveBeenCalled();
+      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "#bnc",
+        kind: "channel",
+      });
+    });
+  });
+
   it("selected server window adds 'selected' class to the network-header", async () => {
     vi.resetModules();
     vi.doMock("../lib/networks", () => ({
@@ -191,6 +240,7 @@ describe("BottomBar", () => {
         kind: "server",
       }),
       setSelectedChannel: vi.fn(),
+      isActiveSelection: () => false,
       unreadCounts: () => ({}),
       messagesUnread: () => ({}),
       eventsUnread: () => ({}),
@@ -235,6 +285,7 @@ describe("BottomBar", () => {
         kind: "channel",
       }),
       setSelectedChannel: vi.fn(),
+      isActiveSelection: () => false,
       unreadCounts: () => ({}),
       messagesUnread: () => ({}),
       eventsUnread: () => ({}),

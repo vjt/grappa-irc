@@ -4,7 +4,14 @@ import { channelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
-import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
+import { requestScrollToBottom } from "./lib/scrollToBottomCommand";
+import {
+  eventsUnread,
+  isActiveSelection,
+  messagesUnread,
+  selectedChannel,
+  setSelectedChannel,
+} from "./lib/selection";
 import { closeQueryWindow, confirmDisconnectNetwork, confirmLeaveChannel } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
@@ -50,7 +57,11 @@ const BottomBar: Component<Props> = (props) => {
   };
 
   const handleClick = (slug: string, name: string, kind: WindowKind) => {
-    setSelectedChannel({ networkSlug: slug, channelName: name, kind });
+    const target = { networkSlug: slug, channelName: name, kind };
+    // #243 — mirror Sidebar: re-tapping the ALREADY-active tab jumps the
+    // scrollback to the newest message; a tab SWITCH is unchanged.
+    if (isActiveSelection(target)) requestScrollToBottom();
+    setSelectedChannel(target);
     props.onSelect?.();
   };
 

@@ -10,7 +10,14 @@ import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, isAdmin, networkBySlug, networks } from "./lib/networks";
 import { openQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { reconnectingByNetwork } from "./lib/reconnectingStatus";
-import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
+import { requestScrollToBottom } from "./lib/scrollToBottomCommand";
+import {
+  eventsUnread,
+  isActiveSelection,
+  messagesUnread,
+  selectedChannel,
+  setSelectedChannel,
+} from "./lib/selection";
 import { openUmodeModal } from "./lib/umodeModal";
 import { umodesForNetwork } from "./lib/umodes";
 import { closeQueryWindow, confirmDisconnectNetwork, confirmLeaveChannel } from "./lib/windowClose";
@@ -181,7 +188,15 @@ const Sidebar: Component<Props> = () => {
   };
 
   const handleClick = (slug: string, name: string, kind: WindowKind) => {
-    setSelectedChannel({ networkSlug: slug, channelName: name, kind });
+    const target = { networkSlug: slug, channelName: name, kind };
+    // #243 — re-tapping the ALREADY-active row is a "jump to latest": fire
+    // the scroll-to-bottom command (ScrollbackPane is the only subscriber
+    // and it only mounts for scrollback windows, so this self-gates — a
+    // re-tap on home/admin/list is a harmless no-op). Compute BEFORE the
+    // setter (which is idempotent on a re-tap anyway). A tap that SWITCHES
+    // windows leaves existing behaviour untouched.
+    if (isActiveSelection(target)) requestScrollToBottom();
+    setSelectedChannel(target);
   };
 
   // #229 — compact umode string for the network-header indicator, e.g.

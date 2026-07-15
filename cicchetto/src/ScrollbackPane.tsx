@@ -38,6 +38,7 @@ import {
   refreshScrollback,
   scrollbackByChannel,
 } from "./lib/scrollback";
+import { scrollToBottomRequest } from "./lib/scrollToBottomCommand";
 import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
 import { formatTimestamp } from "./lib/timeFormat";
 import { SERVER_WINDOW_NAME, type WindowKind } from "./lib/windowKinds";
@@ -2342,6 +2343,18 @@ const ScrollbackPane: Component<Props> = (props) => {
     }
     setAtBottom(true);
   };
+
+  // #243 — re-tap "jump to latest". The Sidebar / BottomBar tap handler
+  // bumps `scrollToBottomRequest` when the operator re-taps the window
+  // they're already on; this pane is the sole subscriber and the only one
+  // mounted (Shell bundles channel|query|server into one non-keyed Match),
+  // so the command always lands on the active scrollback. `defer: true`
+  // skips the value read at mount, so a channel SWITCH (no nonce change) or
+  // a stale nonce carried across identity rotation never fires a spurious
+  // jump — only a genuine re-tap does. Reuses the SAME instant, layout-
+  // aware `scrollToBottom()` the floating button uses (no second scroll
+  // authority; the #196/#230 anchor machinery is untouched).
+  createEffect(on(scrollToBottomRequest, () => scrollToBottom(), { defer: true }));
 
   return (
     <div class="scrollback-pane">
