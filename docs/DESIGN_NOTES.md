@@ -20820,3 +20820,85 @@ hides.
 
 _Deploy: **--cic HOT** — client-only bundle change; no BEAM restart, no
 migration, no supervised child._
+
+---
+
+## 2026-07-15 — #215 (P0): structured session-lifecycle logging + two disk-backed admin surfaces (Option B)
+
+**Problem.** The app logs carried only Phoenix web-layer events — zero IRC
+session-lifecycle. A user disconnect (the `H\mob` "Read/Dead Error" that
+prompted #215) left no trace: no connect, nick, reason, or duration, so
+grepping the log for the nick returned nothing. Every disconnect / expiry
+investigation was blind.
+
+**HALF 1 — the single emit path.** `Grappa.SessionLog.emit/3` is the ONE
+path every `Session.Server` lifecycle transition routes through. It fires
+synchronously in the caller's process (reliable even at BEAM shutdown — no
+async hop): a greppable Logger line with structured KV metadata AND a
+`[:grappa, :session, :log, <event>]` telemetry event carrying the full map.
+Events: `:connected` (`:irc_connected`), `:registered` (001), `:identified`
+/`:deidentified` (a new `EventRouter` effect `{:session_identity_changed,
+:acquired | :lost}` detected on the +r bit flip in the own-nick self-MODE
+branch — where BOTH prev+next umode sets are in hand), `:disconnected` (all
+three `terminate/2` clauses, carrying reason + `clean` + `duration_ms`), and
+`:backoff` (the `handle_continue` delay branch, folding its former ad-hoc
+Logger.info into the single path). `started_at` (init) + `connected_at`
+(connect) anchor the duration. `session_id` is the greppable composite
+`<kind>:<uuid>:<network_id>` — the Registry key in string form (NOT the auth
+bearer id, which is a secret).
+
+The pre-existing `emit_lifecycle(:spawned|:terminated)` telemetry feeding
+`AdminEvents` cap-counting is UNTOUCHED — #215 uses its own
+`[:grappa, :session, :log, _]` namespace + sink.
+
+**HALF 2 — expose (vjt DESIGN DECISION = OPTION B).** Two persisted admin
+surfaces, both visible, NOT a merge:
+
+  1. **New session-lifecycle log** — a `Grappa.SessionLog` GenServer sink
+     (sibling to `AdminEvents`) attaches the telemetry, persists each event
+     to `session_log_events` (typed columns — uniform shape), prunes to a
+     bounded on-disk ring (retention 5000), broadcasts on
+     `Topic.session_log/0`. Three doors: `GET /admin/session_log` tail +
+     `AdminChannel` live push (`session_log_event`, foreign-topic subscribe
+     → handle_info, reusing the admin socket) + the cic `AdminSessionLogTab`.
+  2. **Existing Events tab → disk-backed.** `AdminEvents` now mirrors its
+     in-memory ring to a new `admin_events` table (`payload` as JSON `:map`
+     — the events are a heterogeneous ~23-kind union, so a JSON column beats
+     30+ mostly-null typed columns) + reloads on boot, so the tab survives a
+     restart. The in-memory ring stays the live serving source; the DB is
+     durability.
+
+**Impl decisions (noted, no product fork):**
+  * sqlite/Ecto for both stores (codebase idiom; "survive restart" +
+    "browse/tail" = query newest-first by id). No flat file.
+  * No new JSON *console* backend (`JSON DESCOPED` stands): "structured
+    JSON" = the persisted rows served as JSON by the REST door +
+    text-with-metadata-KV Logger lines. The config change was a Logger
+    `:metadata` allowlist extension (session_id/event/duration_ms/clean),
+    exactly as the deploy class implied.
+  * Two SEPARATE stores (session-lifecycle ≠ operator-audit) — shared
+    execution framework (schema/wire/sink/prune patterns), separate data
+    models (reuse the verbs, not the nouns).
+  * Both sinks persist from their singleton pid → a Repo write on a foreign
+    sandbox connection in unrelated tests. Gated by `persist`/`attach_*`
+    flags OFF in test env (mirror of the existing `attach_admin_telemetry`
+    pattern), so zero blast radius; the persistence tests flip them on +
+    `Sandbox.allow/3`.
+  * The AdminEvents JSON round-trip yields a string-keyed reloaded map,
+    byte-identical over the wire to a fresh atom-keyed event and never
+    atom-matched server-side (the ring is opaque, serialized straight to
+    cic).
+
+**Testing.** SessionLog emit contract (telemetry + Logger) + EventRouter +r
+effect (unit); Session.Server connect/register/+r/clean-stop/abnormal-drop/
+backoff drive the real events via the in-process `IRCServer` fake
+(integration); sink persist/list/prune/broadcast; controller auth-gate +
+tail; AdminChannel live push; AdminEvents persist/reload/prune; cic
+sessionLog store + `AdminSessionLogTab` (vitest); and a real-browser
+Playwright spec (`issue215-session-log.spec.ts`) proving the seeded
+session's connect/register events render in the tab (emit → persist → REST
+→ cic render end-to-end).
+
+_Deploy: **COLD** — config Logger allowlist + two new supervised sinks/
+behaviour + two migrations. A cluster+migration combo cannot ride the hot
+path._
