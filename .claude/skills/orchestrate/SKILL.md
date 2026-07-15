@@ -109,6 +109,31 @@ are ephemeral): sibling = "grappa-worker", orchestrator = "grappa-orch", ircbot 
   `gh run list` to find where it went red, fix/bump-to-front, green it. cic `ci` job is
   Elixir-only; `integration` is the real e2e gate. See [[feedback_e2e_mandatory_and_ci_blocks]].
 - **Close-out = `gh issue close N`** (+ announce). Ship+announce alone is NOT done.
+- **`status:*` label discipline (WIP board — grappa-irc #258, mandatory 2026-07-15).** The
+  grappa.chat WIP board renders directly from three mutually-exclusive grappa-irc labels —
+  `status:queued` (accepted, in build queue, not started), `status:cooking` (actively building
+  now), `status:soon` (built/merged, in verify or awaiting a deploy window). The board's two
+  plain-link columns are derived: **backlog = open issues with NO `status:*` label** (shown
+  before Queued), **closed = closed issues** (after Soon) — both exclude `status:*`. The
+  orchestrator OWNS keeping these labels truthful, or the board drifts from reality:
+  - **Enqueue (`→ status:queued`) is done by the ircbot or vjt, NOT you** — that label is how
+    work enters the queue (the ircbot no longer pings you to hand issues over; the label IS the
+    handover). Your first touch is `status:queued → status:cooking` when the worker starts
+    building; at merge-ready/held-for-ship → move to `status:soon`. Move, don't add —
+    mutually exclusive (`gh issue edit N --remove-label status:X --add-label status:Y`).
+  - **On deploy/close → REMOVE the `status:*` label entirely** (a shipped+closed issue leaves
+    the board's Soon column and shows only under the closed link). Removing it is part of the
+    ship/close-out step, alongside `gh issue close` + announce.
+  - A newly-filed backlog issue gets NO `status:*` label (it lives under the backlog link until
+    triaged into the queue). The board is a shared artifact — keep it honest every transition.
+- **Pull the queue at end of each round (2026-07-15).** The `status:queued` label set IS the
+  execution queue — there is no hand-managed list. When the worker is free and nothing is in
+  flight, read the open queued set (`gh issue list --state open --label status:queued --json
+  number,title,labels`) and dispatch the next per the placement rules in
+  `/srv/grappa/docs/ISSUE_PIPELINE.md` (P0 first / never preempt in-flight, then
+  similarity-group, else lowest number), moving it `status:queued → status:cooking`. This
+  REPLACES waiting for an ircbot handover. Only when the queued set is **EMPTY** do you ping
+  vjt "what next?" — don't invent work.
 - **Auto-clearer**: `lib/auto-clear-watch.sh start|status grappa-orch` runs an external
   watchdog that, at ctx≥40% (idle+quiet, 60s debounce), FIRST prompts the orchestrator to
   flush its handoff, WAITS for that flush turn to settle (polls busy→idle, capped at
