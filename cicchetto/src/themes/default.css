@@ -1474,6 +1474,23 @@ html.resize-dragging * {
   padding: 0;
   font: inherit;
   display: inline;
+  /* #250 (2026-07-15): keep the nick INSIDE a drag text-selection on
+     EVERY platform — unconditional, NOT gated behind `html.is-ios`. The
+     nick is an interactive inline <button>; Android's native touch-
+     selection engine skips such an element (nick excluded while
+     timestamp + body stay), and Android never received the iOS-only
+     `.scrollback { user-select: text }` re-enable above. Forcing the
+     button's own `user-select: text` makes its text stay selectable
+     under touch drag while leaving the tap-to-query handler intact.
+     Desktop mouse-selection + iOS (via the .scrollback cascade) already
+     kept it; this only ADDS Android. `.nick-clickable` already lives
+     inside `.scrollback`, which is in keepKeyboard.ts's
+     SELECTABLE_TEXT_SURFACES, so this introduces no new unlisted
+     selectable surface — the iOS long-press keyboard contract is
+     unchanged. Range/Playwright cannot prove the Android behavior (see
+     issue250 spec header); device-verified post-ship. */
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .nick-clickable:hover {

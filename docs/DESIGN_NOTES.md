@@ -20877,3 +20877,66 @@ still surfaces it (positive control).
 
 _Deploy: **--cic HOT** — client-only bundle change; no BEAM restart, no
 migration, no supervised child._
+
+---
+
+## 2026-07-15 — #250 (P0, cic): nick selectable under Android touch drag-selection
+
+Follow-up to #179 (closed in error). On **real Android (Chrome)**, drag-
+selecting a scrollback message starting from the timestamp EXCLUDES the
+author nick; iOS + desktop include it. The platform split IS the whole
+story — this is an **Android-touch-selection** behavior, not universal.
+
+**Root cause.** The author nick renders as `<button class="scrollback-
+sender nick-clickable">` (`ScrollbackPane.tsx` senderSpan) — an
+INTERACTIVE inline element. Android's native touch-selection engine skips
+an interactive `<button>`, so the nick token falls outside the captured
+range while the timestamp + body stay in. Two reasons the other platforms
+don't reproduce: desktop uses mouse-selection (no touch-selection engine,
+button text is captured), and iOS forces the whole row selectable via the
+`html.is-ios .scrollback { user-select: text }` re-enable (Dispatch-1,
+2026-06-11). That re-enable was scoped to `html.is-ios` ONLY — and there
+is no `is-android` class (`lib/platform.ts` only ships `applyIosClass`) —
+so on Android `.nick-clickable` computes to the default `user-select:
+auto` and the interactive button is skipped.
+
+**Fix.** Set `user-select: text` (+ `-webkit-user-select: text`)
+UNCONDITIONALLY on `.nick-clickable` (`themes/default.css`). This is the
+minimal, surgical lever: it makes the button's OWN text stay inside a drag
+selection on every platform while leaving its tap-to-query handler intact,
+and it does NOT touch the iOS `position: fixed` layout-viewport machinery.
+Rejected the broader alternative (add an `html.is-android` class +
+`applyAndroidClass` + extend the `.scrollback` re-enable): desktop proves
+the `.scrollback` container computes `auto` and still selects fine, so the
+container is NOT implicated — only the interactive `<button>` is. Reusing
+the verbs, not the nouns: the 20% that doesn't fit an is-android arm is
+that the culprit is the element's own `user-select`, not a platform-scoped
+container policy.
+
+**keepKeyboard sync.** The Dispatch-1 policy pairs the CSS re-enable with
+`keepKeyboard.ts`'s `SELECTABLE_TEXT_SURFACES` allowlist (a new selectable
+surface on iOS must land in BOTH or the long-press-keeps-keyboard gate
+drifts). No change needed here: `.nick-clickable` already lives inside
+`.scrollback`, which is already in `SELECTABLE_TEXT_SURFACES`, and it is
+NOT in `SELECTABLE_TEXT_EXCLUDE` (`.scrollback-invite-join`). So it was
+ALREADY a duration-gated selectable surface on iOS; the CSS change only
+makes explicit what iOS already inherited. iOS behavior is unchanged.
+
+**Why #179 was closed in error — and why the new spec is honest about it.**
+#179 closed on a `Range`-based Playwright assertion; a DOM `Range`
+serializes the whole node subtree on EVERY engine, so it passes on
+Chromium/desktop WITHOUT ever exercising Android's native touch-selection
+handles — the exact path that fails. A green `Range`/mouse-drag e2e is a
+FALSE NEGATIVE for this bug. The new spec
+(`issue250-android-nick-select.spec.ts`) therefore asserts only the CSS
+computed-style WIRING: on the chromium (NON-`is-ios`) project,
+`.nick-clickable` must compute `user-select: text` — which proves the rule
+is unconditional (fails as inherited `auto` on unfixed code, the RED), with
+a `@webkit` twin as an iOS regression guard (reads the prefixed
+`webkitUserSelect`, the only property WebKit reflects in computed style).
+Its header + this note state plainly: **this does NOT prove the real
+Android fix** — that needs a physical Android device / emulator exercising
+the native selection handles (device-verified post-ship).
+
+_Deploy: **--cic HOT** — client-only bundle change; no BEAM restart, no
+migration, no supervised child._
