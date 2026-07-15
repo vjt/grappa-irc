@@ -135,10 +135,10 @@ export async function putUploadTtlSeconds(
 //
 // The server owns the set of vhosts a subject is allowed to bind to and
 // the subject's current selection. `available` is the allow-set (each
-// carries `in_pool` so the widget can group pool vs. non-pool); `selection`
-// is the subject's chosen addresses; `pinned` is non-null when an admin has
-// FORCED the selection (grant `pinned: true`) — the widget renders read-only
-// and greyed in that case.
+// carries `in_pool` so the widget can group pool vs. non-pool, plus
+// `granted` = an explicit per-subject grant row, for the V2 3-section
+// bucketing — #251); `selection` is the subject's chosen addresses. There
+// is no admin pin anymore (#251) — the user always self-selects.
 //
 // cic submits the raw selected addresses on every change (no diff
 // semantics, mirroring the notification-prefs full-PUT convention). The
@@ -150,12 +150,12 @@ export async function putUploadTtlSeconds(
 export type VhostOption = {
   address: string;
   in_pool: boolean;
+  granted: boolean;
 };
 
 export type VhostSettingsView = {
   available: VhostOption[];
   selection: string[];
-  pinned: string | null;
 };
 
 export async function getVhostSettings(token: string): Promise<VhostSettingsView> {

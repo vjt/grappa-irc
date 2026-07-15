@@ -1736,10 +1736,10 @@ export async function adminPatchNetworkCaps(
 // A vhost is a host-bindable source address the operator makes available.
 // `in_pool` = eligible for the round-robin "pool" a subject can multi-select;
 // `generally_available` = offered to EVERY subject (vs. reachable only via an
-// explicit grant). A grant binds a vhost to one subject (`pinned` forces the
-// subject's selection — the user widget goes read-only). `host_candidates`
-// are the host's bindable IP literals (loopback/link-local pre-filtered) the
-// admin picks from when creating a vhost.
+// explicit grant). A grant makes a vhost self-selectable by one subject —
+// availability-only (#251: the admin hard-pin was removed; the user always
+// decides selection). `host_candidates` are the host's bindable IP literals
+// (loopback/link-local pre-filtered) the admin picks from when creating a vhost.
 export type AdminVhost = {
   id: number;
   address: string;
@@ -1754,7 +1754,6 @@ export type AdminVhostGrant = {
   vhost_id: number;
   subject_type: "user" | "visitor";
   subject_id: string;
-  pinned: boolean;
 };
 
 export type AdminVhostsResponse = {
@@ -1778,7 +1777,6 @@ export type AdminVhostPatch = {
 export type AdminVhostGrantCreate = {
   subject_type: "user" | "visitor";
   subject_id: string;
-  pinned?: boolean;
 };
 
 // Returns the whole envelope — the caller needs vhosts + grants +

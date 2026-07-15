@@ -21,14 +21,13 @@ defmodule GrappaWeb.UserSettingsJSON do
           upload_ttl_seconds: pos_integer() | nil
         }
 
-  @typedoc "One allowed vhost in the self-service view (#228)."
-  @type vhost_option :: %{address: String.t(), in_pool: boolean()}
+  @typedoc "One allowed vhost in the self-service view (#228, #251)."
+  @type vhost_option :: %{address: String.t(), in_pool: boolean(), granted: boolean()}
 
-  @typedoc "Wire shape for the vhost self-service view (#228)."
+  @typedoc "Wire shape for the vhost self-service view (#228, #251)."
   @type vhost_response :: %{
           available: [vhost_option()],
-          selection: [String.t()],
-          pinned: String.t() | nil
+          selection: [String.t()]
         }
 
   @doc "Renders the `:notification_prefs` action — GET/PUT 200 response shape."
@@ -50,10 +49,10 @@ defmodule GrappaWeb.UserSettingsJSON do
     %{upload_ttl_seconds: seconds}
   end
 
-  @doc "Renders the `:vhost` action — GET/PUT 200 response shape (#228)."
-  @spec vhost(%{available: [vhost_option()], selection: [String.t()], pinned: String.t() | nil}) ::
+  @doc "Renders the `:vhost` action — GET/PUT 200 response shape (#228, #251)."
+  @spec vhost(%{available: [vhost_option()], selection: [String.t()]}) ::
           vhost_response()
-  def vhost(%{available: available, selection: selection, pinned: pinned}) do
-    %{available: available, selection: selection, pinned: pinned}
+  def vhost(%{available: available, selection: selection}) do
+    %{available: available, selection: selection}
   end
 end

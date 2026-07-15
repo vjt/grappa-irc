@@ -129,25 +129,8 @@ defmodule GrappaWeb.Admin.VhostsControllerTest do
       assert body["vhost_id"] == v.id
       assert body["subject_type"] == "user"
       assert body["subject_id"] == target.id
-      refute body["pinned"]
-    end
-
-    test "pins a vhost to a user", %{conn: conn} do
-      session = admin_session()
-      {:ok, v} = Vhosts.create_vhost(%{address: addr()})
-      target = user_fixture()
-
-      conn =
-        conn
-        |> put_bearer(session.id)
-        |> post("/admin/vhosts/#{v.id}/grants", %{
-          subject_type: "user",
-          subject_id: target.id,
-          pinned: true
-        })
-
-      assert json_response(conn, 201)["pinned"] == true
-      assert Vhosts.pinned_vhost({:user, target.id}).id == v.id
+      # #251 — a grant is availability-only; no pinned field on the wire.
+      refute Map.has_key?(body, "pinned")
     end
 
     test "404s an unknown subject", %{conn: conn} do
@@ -171,7 +154,7 @@ defmodule GrappaWeb.Admin.VhostsControllerTest do
       session = admin_session()
       {:ok, v} = Vhosts.create_vhost(%{address: addr()})
       target = user_fixture()
-      {:ok, grant} = Vhosts.grant_vhost(v, {:user, target.id}, pinned: false)
+      {:ok, grant} = Vhosts.grant_vhost(v, {:user, target.id})
 
       conn = conn |> put_bearer(session.id) |> delete("/admin/vhosts/grants/#{grant.id}")
       assert response(conn, 204)

@@ -64,57 +64,39 @@ defmodule Grappa.VhostsTest do
     end
   end
 
-  describe "grant_vhost/3 + revoke_grant/1" do
+  describe "grant_vhost/2 + revoke_grant/1" do
     test "grants a vhost to a user subject" do
       user = user_fixture()
       {:ok, v} = Vhosts.create_vhost(%{address: addr()})
-      {:ok, grant} = Vhosts.grant_vhost(v, {:user, user.id}, pinned: false)
+      {:ok, grant} = Vhosts.grant_vhost(v, {:user, user.id})
       assert grant.vhost_id == v.id
       assert grant.user_id == user.id
-      refute grant.pinned
     end
 
     test "grants a vhost to a visitor subject" do
       visitor = visitor_fixture()
       {:ok, v} = Vhosts.create_vhost(%{address: addr()})
-      {:ok, grant} = Vhosts.grant_vhost(v, {:visitor, visitor.id}, pinned: false)
+      {:ok, grant} = Vhosts.grant_vhost(v, {:visitor, visitor.id})
       assert grant.visitor_id == visitor.id
     end
 
     test "re-granting the same (vhost, subject) is idempotent-ish (:already_exists)" do
       user = user_fixture()
       {:ok, v} = Vhosts.create_vhost(%{address: addr()})
-      {:ok, _} = Vhosts.grant_vhost(v, {:user, user.id}, pinned: false)
-      assert {:error, :already_exists} = Vhosts.grant_vhost(v, {:user, user.id}, pinned: false)
+      {:ok, _} = Vhosts.grant_vhost(v, {:user, user.id})
+      assert {:error, :already_exists} = Vhosts.grant_vhost(v, {:user, user.id})
     end
 
     test "revoke removes the grant" do
       user = user_fixture()
       {:ok, v} = Vhosts.create_vhost(%{address: addr()})
-      {:ok, grant} = Vhosts.grant_vhost(v, {:user, user.id}, pinned: false)
+      {:ok, grant} = Vhosts.grant_vhost(v, {:user, user.id})
       assert :ok = Vhosts.revoke_grant(grant)
       assert Vhosts.list_grants_for_subject({:user, user.id}) == []
     end
   end
 
-  describe "pin_vhost/2 — at most one pin per subject" do
-    test "pinning a second vhost replaces the first pin" do
-      user = user_fixture()
-      {:ok, v1} = Vhosts.create_vhost(%{address: addr()})
-      {:ok, v2} = Vhosts.create_vhost(%{address: addr()})
-
-      {:ok, _} = Vhosts.pin_vhost(v1, {:user, user.id})
-      assert Vhosts.pinned_vhost({:user, user.id}).id == v1.id
-
-      {:ok, _} = Vhosts.pin_vhost(v2, {:user, user.id})
-      assert Vhosts.pinned_vhost({:user, user.id}).id == v2.id
-      # Only one pin remains.
-      pins = Enum.filter(Vhosts.list_grants_for_subject({:user, user.id}), & &1.pinned)
-      assert length(pins) == 1
-    end
-  end
-
-  describe "allowed_vhosts/1 — union of generally-available + granted" do
+  describe "allowed_vhosts/1 — union of generally-available + in_pool + granted" do
     test "includes generally-available vhosts" do
       user = user_fixture()
       {:ok, ga} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
@@ -127,7 +109,7 @@ defmodule Grappa.VhostsTest do
     test "includes vhosts granted to the subject but not generally available" do
       user = user_fixture()
       {:ok, granted} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
-      {:ok, _} = Vhosts.grant_vhost(granted, {:user, user.id}, pinned: false)
+      {:ok, _} = Vhosts.grant_vhost(granted, {:user, user.id})
 
       allowed = Enum.map(Vhosts.allowed_vhosts({:user, user.id}), & &1.id)
       assert granted.id in allowed
@@ -137,10 +119,22 @@ defmodule Grappa.VhostsTest do
       user = user_fixture()
       other = user_fixture()
       {:ok, priv} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
-      {:ok, _} = Vhosts.grant_vhost(priv, {:user, other.id}, pinned: false)
+      {:ok, _} = Vhosts.grant_vhost(priv, {:user, other.id})
 
       allowed = Enum.map(Vhosts.allowed_vhosts({:user, user.id}), & &1.id)
       refute priv.id in allowed
+    end
+
+    # #251 — the pool is seeded `in_pool=1, generally_available=0`, so before
+    # this fix a no-grant subject had an EMPTY allow-set ("can't set my vhost").
+    # in_pool now joins the allow-set: admin decides AVAILABILITY (pool
+    # membership), the user decides SELECTION.
+    test "includes in_pool vhosts so a no-grant subject can self-select the pool" do
+      user = user_fixture()
+      {:ok, pool} = Vhosts.create_vhost(%{address: addr(), in_pool: true, generally_available: false})
+
+      allowed = Enum.map(Vhosts.allowed_vhosts({:user, user.id}), & &1.id)
+      assert pool.id in allowed
     end
   end
 
@@ -165,7 +159,7 @@ defmodule Grappa.VhostsTest do
     test "get_selection re-clamps a stale selection whose grant was revoked" do
       user = user_fixture()
       {:ok, granted} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
-      {:ok, grant} = Vhosts.grant_vhost(granted, {:user, user.id}, pinned: false)
+      {:ok, grant} = Vhosts.grant_vhost(granted, {:user, user.id})
       {:ok, _} = Vhosts.set_selection({:user, user.id}, [granted.address])
 
       :ok = Vhosts.revoke_grant(grant)
@@ -175,17 +169,7 @@ defmodule Grappa.VhostsTest do
   end
 
   describe "effective_source/2 — resolution precedence" do
-    test "1. a pin wins over everything" do
-      user = user_fixture()
-      {:ok, pinned} = Vhosts.create_vhost(%{address: addr()})
-      {:ok, sel} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
-      {:ok, _} = Vhosts.pin_vhost(pinned, {:user, user.id})
-      {:ok, _} = Vhosts.set_selection({:user, user.id}, [sel.address])
-
-      assert Vhosts.effective_source({:user, user.id}, "192.0.2.99") == pinned.address
-    end
-
-    test "2. selection (intersected with allowed) is used when no pin" do
+    test "1. selection (intersected with allowed) wins over server_source" do
       user = user_fixture()
       {:ok, sel} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
       {:ok, _} = Vhosts.set_selection({:user, user.id}, [sel.address])
@@ -203,12 +187,12 @@ defmodule Grappa.VhostsTest do
       assert picked in [a.address, b.address]
     end
 
-    test "3. falls back to server_source when no pin, no selection" do
+    test "3. falls back to server_source when no selection" do
       user = user_fixture()
       assert Vhosts.effective_source({:user, user.id}, "192.0.2.50") == "192.0.2.50"
     end
 
-    test "3b. falls back to nil (pool/kernel) when no pin, no selection, no server source" do
+    test "3b. falls back to nil (pool/kernel) when no selection, no server source" do
       user = user_fixture()
       assert Vhosts.effective_source({:user, user.id}, nil) == nil
     end
@@ -216,7 +200,7 @@ defmodule Grappa.VhostsTest do
     test "a selection whose grant was revoked does NOT bind — falls through to server_source" do
       user = user_fixture()
       {:ok, granted} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
-      {:ok, grant} = Vhosts.grant_vhost(granted, {:user, user.id}, pinned: false)
+      {:ok, grant} = Vhosts.grant_vhost(granted, {:user, user.id})
       {:ok, _} = Vhosts.set_selection({:user, user.id}, [granted.address])
       :ok = Vhosts.revoke_grant(grant)
 

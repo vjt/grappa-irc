@@ -4,16 +4,21 @@ defmodule Grappa.Vhosts.Grant do
 
   Subject XOR FK (`user_id` XOR `visitor_id`), the SAME shape as
   `read_cursors` / `user_settings` / `network_credentials`. A grant means
-  "`subject` may select this vhost even if it isn't `generally_available`."
-
-    * `pinned = false` — a curated availability grant: the subject may
-      self-select this vhost (union with the generally-available set).
-    * `pinned = true` — an admin-forced fixed bind: the subject's
-      effective source is this vhost, not self-changeable (an oper O:line
-      host). Context enforces at most one pin per subject.
+  "`subject` may self-select this vhost even if it isn't
+  `generally_available` / in the pool" (#251 — availability-only; the
+  admin hard-pin was removed).
 
   Visitor grants CASCADE on visitor reap (#211 reaper interaction) — a
   reaped visitor releases its grants automatically, no leak.
+
+  ## Dead `pinned` column (#251)
+
+  #228 shipped a `pinned` boolean (admin-forced fixed bind). #251 removed
+  the pin feature but left the column in the DB as a dead no-op so V1
+  ships HOT (no migration). The schema no longer declares the field —
+  Ecto omits it from INSERTs so SQLite applies the `NOT NULL DEFAULT 0`.
+  A trailing COLD cleanup migration drops the column later (see
+  `docs/DESIGN_NOTES.md` 2026-07-15).
 
   Public API on `Grappa.Vhosts`; callers receive `%Grant{}` structs by
   type and reference the schema only via the parent context.
@@ -33,7 +38,6 @@ defmodule Grappa.Vhosts.Grant do
           user: User.t() | Ecto.Association.NotLoaded.t() | nil,
           visitor_id: Ecto.UUID.t() | nil,
           visitor: Visitor.t() | Ecto.Association.NotLoaded.t() | nil,
-          pinned: boolean() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -43,7 +47,8 @@ defmodule Grappa.Vhosts.Grant do
     belongs_to :user, User, type: :binary_id
     belongs_to :visitor, Visitor, type: :binary_id
 
-    field :pinned, :boolean, default: false
+    # #251 — the `pinned` column still exists in the DB (dead no-op, dropped
+    # by a trailing COLD cleanup migration) but is no longer a schema field.
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -56,7 +61,7 @@ defmodule Grappa.Vhosts.Grant do
   @spec changeset(t() | %__MODULE__{}, map()) :: Ecto.Changeset.t()
   def changeset(grant, attrs) do
     grant
-    |> cast(attrs, [:vhost_id, :user_id, :visitor_id, :pinned])
+    |> cast(attrs, [:vhost_id, :user_id, :visitor_id])
     |> validate_required([:vhost_id])
     |> validate_subject_xor()
     |> assoc_constraint(:vhost)

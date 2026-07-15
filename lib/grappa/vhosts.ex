@@ -4,35 +4,61 @@ defmodule Grappa.Vhosts do
 
   Extends the existing source-bind path (`network_servers.source_address`
   → `Grappa.IRC.Client` `ifaddr` bind) with a per-SUBJECT layer that sits
-  ABOVE it: a subject (user OR visitor, post-#211) can be pinned to a
-  fixed vhost or self-select from an allowed set. The connect path is
-  UNCHANGED — this context only decides WHICH address resolves into the
-  session plan (`effective_source/2`), which `Grappa.Networks.SessionPlan`
-  threads through exactly as it does the per-server `source_address` today.
+  ABOVE it: a subject (user OR visitor, post-#211) self-selects from an
+  allowed set. The connect path is UNCHANGED — this context only decides
+  WHICH address resolves into the session plan (`effective_source/2`),
+  which `Grappa.Networks.SessionPlan` threads through exactly as it does
+  the per-server `source_address` today.
+
+  ## Principle (#251, vjt 2026-07-15)
+
+  **Admin decides AVAILABILITY; the user decides SELECTION.** The admin
+  curates which vhosts a subject *can* use (`generally_available` /
+  `in_pool` / a per-subject grant); the user freely picks among that set.
+  No admin hard-pin, no admin default.
 
   ## Inventory model
 
     * `vhosts` rows — curated from the host's bound addresses
       (`Grappa.Net.HostAddresses.list/0`). `in_pool` = auto-rotation pool
       member (replaces the `GRAPPA_OUTBOUND_V6_POOL` env var, vjt
-      2026-07-14); `generally_available` = any subject may self-select.
-    * `vhost_grants` rows — per-subject grants. `pinned = true` is an
-      admin-forced fixed bind; `pinned = false` is a curated-availability
-      grant the subject may self-select. Visitor grants CASCADE on reap.
+      2026-07-14) AND self-selectable by any subject (#251);
+      `generally_available` = any subject may self-select.
+    * `vhost_grants` rows — per-subject grants: a grant means "`subject`
+      may select this vhost even if it isn't generally-available / in the
+      pool." Visitor grants CASCADE on reap.
 
   ## Resolution precedence (`effective_source/2`, per connect)
 
-    1. a `pinned` grant for the subject → that vhost (admin-forced).
-    2. the subject's selection (`UserSettings` `"vhost_selection"`)
+    1. the subject's selection (`UserSettings` `"vhost_selection"`)
        INTERSECTED with its allowed set → random pick (spec: "random per
        connection" when >1 active).
-    3. the passed `server_source` fallback (`network_servers.source_address`
-       — the existing per-network fixed bind, or `nil` → pool/kernel).
+    2. the passed `server_source` fallback (`network_servers.source_address`
+       — the per-network fixed bind, the operator "force egress from X"
+       mechanism, admin-only; the MECHANISM + its no-selection default is
+       unchanged — or `nil` → the `Grappa.IRC.Client` DB-driven rotation
+       pool / kernel default).
 
-  The allowed set = generally-available vhosts ∪ vhosts granted to the
-  subject. Selection is authz-clamped to this set at write
-  (`set_selection/2`), and re-clamped at read so a revoked grant can't
-  leak a stale selection.
+  The allowed set = generally-available ∪ in_pool ∪ granted-to-subject.
+  Selection is authz-clamped to this set at write (`set_selection/2`), and
+  re-clamped at read so a revoked grant can't leak a stale selection.
+
+  NOTE (#251): `server_source` is only the DEFAULT for a no-selection
+  subject. A subject who self-selects (step 1) overrides it — and with the
+  admin pin removed there is no longer a per-subject *hard* force. A
+  network with a mandated `source_address` still egresses from it for any
+  subject who has NOT self-selected, but a subject CAN now pick a pool /
+  granted address instead. If an operator needs to hard-force a specific
+  account's egress, that capability was intentionally removed with the pin
+  (#251) and is not replaced in V1.
+
+  ## No admin hard-pin (#251)
+
+  #228 shipped an admin `pinned` grant (a forced, non-self-changeable
+  bind). #251 removed it: a grant is now availability-only. The
+  `vhost_grants.pinned` column is left in place as a dead no-op so V1
+  ships HOT; a trailing COLD cleanup migration drops it later (see
+  `docs/DESIGN_NOTES.md` 2026-07-15).
   """
   use Boundary,
     top_level?: true,
@@ -127,15 +153,14 @@ defmodule Grappa.Vhosts do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Grants `vhost` to `subject`. `pinned: true` makes it an admin-forced
-  fixed bind — use `pin_vhost/2` for that (it enforces the one-pin rule).
+  Grants `vhost` to `subject` — makes it available for self-selection
+  (#251: a grant is availability-only, no admin pin).
   `{:error, :already_exists}` when the (vhost, subject) grant exists.
   """
-  @spec grant_vhost(Vhost.t(), Subject.t(), keyword()) ::
+  @spec grant_vhost(Vhost.t(), Subject.t()) ::
           {:ok, Grant.t()} | {:error, :already_exists | Ecto.Changeset.t()}
-  def grant_vhost(%Vhost{id: vhost_id}, {_, _} = subject, opts) when is_list(opts) do
-    attrs =
-      Subject.put_subject_id(%{vhost_id: vhost_id, pinned: Keyword.get(opts, :pinned, false)}, subject)
+  def grant_vhost(%Vhost{id: vhost_id}, {_, _} = subject) do
+    attrs = Subject.put_subject_id(%{vhost_id: vhost_id}, subject)
 
     case Repo.insert(Grant.changeset(%Grant{}, attrs)) do
       {:ok, grant} -> {:ok, grant}
@@ -152,41 +177,7 @@ defmodule Grappa.Vhosts do
     end
   end
 
-  @doc """
-  Pins `subject` to `vhost` (admin-forced fixed bind). Enforces at most
-  one pin per subject: any existing pin for the subject is deleted first,
-  then this vhost is pinned (upserting the grant to `pinned: true` if a
-  non-pinned grant already exists).
-  """
-  @spec pin_vhost(Vhost.t(), Subject.t()) :: {:ok, Grant.t()} | {:error, Ecto.Changeset.t()}
-  def pin_vhost(%Vhost{id: vhost_id}, {_, _} = subject) do
-    Repo.transaction(fn ->
-      # Drop every existing pin for the subject (one-pin invariant).
-      subject
-      |> grants_for_subject_query()
-      |> where([g], g.pinned == true)
-      |> Repo.delete_all()
-
-      case upsert_pinned_grant(vhost_id, subject) do
-        {:ok, grant} -> grant
-        {:error, cs} -> Repo.rollback(cs)
-      end
-    end)
-  end
-
-  defp upsert_pinned_grant(vhost_id, subject) do
-    case get_grant(vhost_id, subject) do
-      %Grant{} = existing -> existing |> Grant.changeset(%{pinned: true}) |> Repo.update()
-      nil -> grant_row(vhost_id, subject, true)
-    end
-  end
-
-  defp grant_row(vhost_id, subject, pinned) do
-    attrs = Subject.put_subject_id(%{vhost_id: vhost_id, pinned: pinned}, subject)
-    Repo.insert(Grant.changeset(%Grant{}, attrs))
-  end
-
-  @doc "Every grant for `subject` (both pinned + curated-availability)."
+  @doc "Every grant for `subject`."
   @spec list_grants_for_subject(Subject.t()) :: [Grant.t()]
   def list_grants_for_subject({_, _} = subject) do
     subject |> grants_for_subject_query() |> Repo.all()
@@ -200,8 +191,7 @@ defmodule Grappa.Vhosts do
   end
 
   @doc """
-  Fetches a grant by id, or `{:error, :not_found}`. Admin
-  revoke/unpin surface.
+  Fetches a grant by id, or `{:error, :not_found}`. Admin revoke surface.
   """
   @spec get_grant_by_id(integer()) :: {:ok, Grant.t()} | {:error, :not_found}
   def get_grant_by_id(id) when is_integer(id) do
@@ -209,27 +199,6 @@ defmodule Grappa.Vhosts do
       %Grant{} = g -> {:ok, g}
       nil -> {:error, :not_found}
     end
-  end
-
-  @doc "The subject's pinned vhost, or `nil` when none is pinned."
-  @spec pinned_vhost(Subject.t()) :: Vhost.t() | nil
-  def pinned_vhost({_, _} = subject) do
-    query =
-      from(g in Grant,
-        join: v in Vhost,
-        on: v.id == g.vhost_id,
-        where: g.pinned == true,
-        select: v
-      )
-
-    query |> Subject.subject_where(subject) |> Repo.one()
-  end
-
-  defp get_grant(vhost_id, subject) do
-    Grant
-    |> where([g], g.vhost_id == ^vhost_id)
-    |> Subject.subject_where(subject)
-    |> Repo.one()
   end
 
   defp grants_for_subject_query(subject) do
@@ -256,24 +225,35 @@ defmodule Grappa.Vhosts do
   # ---------------------------------------------------------------------------
 
   @doc """
-  The subject's allowed vhosts = generally-available ∪ granted-to-subject.
+  The subject's allowed vhosts = generally-available ∪ in_pool ∪
+  granted-to-subject (#251 — in_pool joins the self-selectable set).
   Ordered by address, de-duplicated.
   """
   @spec allowed_vhosts(Subject.t()) :: [Vhost.t()]
   def allowed_vhosts({_, _} = subject) do
-    granted_ids =
-      subject
-      |> grants_for_subject_query()
-      |> select([g], g.vhost_id)
-      |> Repo.all()
+    granted_ids = granted_vhost_ids(subject)
 
     query =
       from(v in Vhost,
-        where: v.generally_available == true or v.id in ^granted_ids,
+        where: v.generally_available == true or v.in_pool == true or v.id in ^granted_ids,
         order_by: [asc: v.address]
       )
 
     Repo.all(query)
+  end
+
+  @doc """
+  The vhost ids the subject holds an explicit grant row for (#251). Used
+  by the self-service view to mark the per-option `granted` flag —
+  distinct from allow-set membership, which now also includes in_pool +
+  generally-available vhosts the subject was never granted.
+  """
+  @spec granted_vhost_ids(Subject.t()) :: [integer()]
+  def granted_vhost_ids({_, _} = subject) do
+    subject
+    |> grants_for_subject_query()
+    |> select([g], g.vhost_id)
+    |> Repo.all()
   end
 
   @doc """
@@ -329,30 +309,30 @@ defmodule Grappa.Vhosts do
   given the per-network `server_source` fallback
   (`network_servers.source_address`, or `nil`).
 
-  Precedence:
+  Precedence (#251 — the admin hard-pin was removed):
 
-    1. a `pinned` grant → that vhost's address (admin-forced).
-    2. the subject's selection (∩ allowed) → random pick (spec: "random
+    1. the subject's selection (∩ allowed) → random pick (spec: "random
        per connection" when more than one is active).
-    3. `server_source` (the existing per-network fixed bind or `nil` →
-       `Grappa.IRC.Client` falls through to the DB-driven pool / kernel
-       default, exactly as today).
+    2. `server_source` (the per-network fixed bind — the operator "force
+       egress from X" mechanism, admin-only; MECHANISM unchanged — or
+       `nil` → `Grappa.IRC.Client` falls through to the DB-driven pool /
+       kernel default, exactly as today).
 
-  Returns a canonical IP-literal string or `nil`. The connect path
-  (`Grappa.IRC.Client.source_bind/2`) is UNCHANGED — this only chooses
-  the value that `SessionPlan` threads through.
+  A network WITH `source_address` set still binds it verbatim for a
+  no-selection subject (the no-selection DEFAULT is preserved); a network
+  with `nil` routes the no-selection subject to `OutboundV6Pool.pick/0`
+  (the in_pool rotation). NOTE (#251): a subject who self-selects (step 1)
+  overrides `server_source` — with the pin removed there is no per-subject
+  hard-force, so a subject CAN now egress from a pool/granted address
+  instead of the mandated one. Returns a canonical IP-literal string or
+  `nil`. The connect path (`Grappa.IRC.Client.source_bind/2`) is UNCHANGED
+  — this only chooses the value that `SessionPlan` threads through.
   """
   @spec effective_source(Subject.t(), String.t() | nil) :: String.t() | nil
   def effective_source({_, _} = subject, server_source) do
-    case pinned_vhost(subject) do
-      %Vhost{address: address} ->
-        address
-
-      nil ->
-        case get_selection(subject) do
-          [] -> server_source
-          selected -> Enum.random(selected)
-        end
+    case get_selection(subject) do
+      [] -> server_source
+      selected -> Enum.random(selected)
     end
   end
 

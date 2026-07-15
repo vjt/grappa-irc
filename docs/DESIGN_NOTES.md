@@ -20877,3 +20877,111 @@ still surfaces it (positive control).
 
 _Deploy: **--cic HOT** — client-only bundle change; no BEAM restart, no
 migration, no supervised child._
+
+## 2026-07-15 — #251 vhost self-service V1 (server + coupled cic)
+
+**The principle (vjt).** *Admin decides AVAILABILITY; the user decides
+SELECTION.* The admin curates which vhosts a subject *can* use
+(`generally_available` / `in_pool` / a per-subject grant); the user freely
+picks among that set. No admin hard-pin, no admin default. #251 is the
+server foundation; V2 (a cic settings 3-section tap-select sub-page that
+consumes the new `granted` marker) is a separate follow-up, not built here.
+
+**Change 1 — `in_pool` is now self-selectable (the P2 root cause).**
+`Vhosts.allowed_vhosts/1` was `generally_available OR granted`. The pool
+is seeded `in_pool=1, generally_available=0`
+(`20260714120100_seed_vhost_pool_from_env.exs`), so a no-grant user had an
+EMPTY allow-set — "can't set my vhost." The allow-set is now
+`generally_available OR in_pool OR granted-to-subject`. A no-grant subject
+with only pool vhosts gets a non-empty allow-set and `PUT /me/settings/vhost`
+accepts a pool address (was 403).
+
+**Change 2 — the admin hard-pin is dropped entirely.** #228 shipped a
+`pinned` grant (admin-forced, non-self-changeable bind) as the top of the
+`effective_source/2` precedence. #251 removed it: `pin_vhost/2`,
+`pinned_vhost/2`, `upsert_pinned_grant`, the `pinned` grant option,
+`grant_vhost/3 → grant_vhost/2`, the `pinned` param on `POST
+/admin/vhosts/:id/grants`, `pinned` from the admin grants wire, and
+`pinned` from `GET /me/settings/vhost`. A grant now means ONLY "available
+to this subject." Existing `pinned=true` grant rows become ordinary
+availability grants (intended — the user can now change their vhost).
+
+**Change 3 — a per-option `granted` marker.** `GET /me/settings/vhost`
+each `available` option is now `{address, in_pool, granted}`. `granted` =
+an explicit grant row exists for this subject — NOT allow-set membership
+(after change 1 the allow-set also holds in_pool + generally-available
+vhosts the subject was never granted, so the two differ). cic V2 buckets
+exclusive (`granted`) / in-pool (`in_pool && !granted`) / out-of-pool
+(`!in_pool && !granted`, necessarily generally-available). `generally_available`
+is NOT on the wire — for an allow-set option, `!in_pool && !granted`
+implies generally-available, so V2 derives it.
+
+**Change 4 — coupled cic.** Removing `pinned` from the two wire shapes
+touched MORE than the admin tab: `AdminVhostsTab.tsx` (pin checkbox +
+grants-table `pinned` column), `SettingsDrawer.tsx` (the read-only
+"Pinned by admin" branch → the user always self-selects now),
+`lib/userSettings.ts` (`VhostOption` gains `granted`, `VhostSettingsView`
+drops `pinned`), `lib/api.ts` (`AdminVhostGrant{,Create}` drop `pinned`),
+and the e2e (the "admin pin renders read-only" test deleted; a new
+assertion checks the pin control is gone). This is a REMOVAL forced by
+change 2, not V2 work.
+
+**The `server.source_address` decision — opt1 (keep), NOT abolish.** vjt's
+2026-07-15 directive PREFERRED abolishing per-network
+`network_servers.source_address` so no-selection users ALWAYS pool-pick,
+with a criterion: *clean removal → abolish; touches non-vhost paths →
+opt1.* Evidence gathered on main @ 74355599:
+  * `source_address` is the per-network operator "force egress from X"
+    mechanism (set via `mix grappa.add_server/bind_network --source` +
+    the admin servers controller). It flows `session_plan.ex:213 →
+    effective_source/2 → IRC.Client.source_bind/2`, which binds it
+    VERBATIM; only a `nil` value reaches `OutboundV6Pool.pick/0`
+    (client.ex:1161). #228's `effective_pool/1` SUBTRACTS fixed sources
+    from the rotation pool.
+  * **Decisive**: `seed_vhost_pool_from_env.exs:13-16` documents a live
+    prod account that egresses from a dedicated /128 via its
+    `source_address`, relying on `effective_source/2`'s fallback.
+    Abolishing that fallback (return `nil` → pool-pick) would make that
+    account pool-pick a RANDOM address, and #228 already removed its /128
+    from the pool → the /128 goes unused. That BREAKS operator
+    force-egress, which the issue says stays unchanged, and force-egress
+    is NOT vestigial: per-network (any subject on that server) vs
+    per-subject grant+selection are different granularities — the grant
+    model cannot express it.
+  * By vjt's own criterion (touches + breaks a non-vhost path → opt1),
+    the decision is **opt1**: drop only the pin branch; keep
+    `server_source` as the no-selection fallback. New precedence:
+    selection (∩ allowed, random per connect) → `server_source` → `nil`
+    (→ client pool-picks). `source_bind/2` is UNCHANGED. This also
+    matches the issue's INTENT ("force egress unchanged") over its
+    literally-written order (selection → pool → source_address), which
+    would itself break force-egress (a non-empty pool wins over the
+    forced source) — the spec inherited that inconsistency; opt1 = current
+    shipped behavior minus the pin.
+
+**Caveat — force-egress is the no-selection DEFAULT, not a hard guarantee.**
+opt1 keeps `server_source` as the no-selection default, so a force-egress
+account's subject who never self-selects still egresses from the mandated
+/128. BUT change 1 (in_pool self-selectable) + change 2 (pin removed)
+together mean that same subject CAN now open Settings and self-select a
+pool/granted address, overriding the mandate (the mandated /128 itself
+stays unselectable — it's pool-subtracted + not granted). Under #228 such
+an account's subject typically had an empty allow-set (no override
+possible) OR the admin used a pin to hard-force. #251 removes both levers.
+This is the direct, intended consequence of "admin decides availability,
+user decides selection" + vjt's explicit "drop the pin ENTIRELY" — the
+operator no longer has a per-subject hard-force. If a future need for hard
+per-account egress arises, it needs a NEW mechanism (e.g. a per-network
+"exclude subjects from self-selection" flag) — out of V1 scope, recorded
+here so the gap is a deliberate decision, not a silent regression.
+
+**Dead columns / deferred COLD cleanup.** V1 stays HOT: no migration. The
+`vhost_grants.pinned` column is left as a dead no-op — the `Grant` schema
+no longer declares the field, so Ecto omits it from INSERTs and SQLite
+applies the `NOT NULL DEFAULT 0`. A TRAILING COLD cleanup migration drops
+the column later. `network_servers.source_address` is UNTOUCHED (opt1
+keeps it a live feature) — no column drop owed there.
+
+_Deploy: **HOT — server logic + `--cic`** (AdminVhostsTab + SettingsDrawer
++ wire types). No migration in V1; the dead `grant.pinned` column drop is
+deferred to a trailing COLD cleanup migration._

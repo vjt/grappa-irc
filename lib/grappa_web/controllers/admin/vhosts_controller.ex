@@ -10,13 +10,13 @@ defmodule GrappaWeb.Admin.VhostsController do
     * `POST   /admin/vhosts`                      create a vhost
     * `PATCH  /admin/vhosts/:id`                  update availability flags / address
     * `DELETE /admin/vhosts/:id`                  delete (grants cascade)
-    * `POST   /admin/vhosts/:id/grants`           grant / pin to a subject
+    * `POST   /admin/vhosts/:id/grants`           grant to a subject
     * `DELETE /admin/vhosts/grants/:grant_id`     revoke a grant
 
-  A grant body carries `subject_type` (`"user"` | `"visitor"`),
-  `subject_id`, and optional `pinned`. `pinned: true` routes through
-  `Vhosts.pin_vhost/2` (enforces the one-pin-per-subject rule); otherwise
-  `grant_vhost/3` adds a curated-availability grant.
+  A grant body carries `subject_type` (`"user"` | `"visitor"`) and
+  `subject_id`. A grant is availability-only (#251 — the admin hard-pin
+  was removed): it makes the vhost self-selectable by the subject, it does
+  NOT force the subject's selection.
 
   No audit events (mirror of `FeaturedChannelsController` — a
   curated-inventory resource, not a security-state transition).
@@ -93,8 +93,8 @@ defmodule GrappaWeb.Admin.VhostsController do
   end
 
   @doc """
-  Grant / pin a vhost to a subject. Body: `subject_type`, `subject_id`,
-  `pinned?`. `201 Created` + the grant JSON.
+  Grant a vhost to a subject (availability-only, #251). Body:
+  `subject_type`, `subject_id`. `201 Created` + the grant JSON.
   """
   @spec grant(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
@@ -103,8 +103,7 @@ defmodule GrappaWeb.Admin.VhostsController do
     with {:ok, parsed_id} <- parse_id(id),
          {:ok, vhost} <- Vhosts.get_vhost(parsed_id),
          {:ok, subject} <- resolve_subject(params),
-         pinned = params["pinned"] == true,
-         {:ok, grant} <- do_grant(vhost, subject, pinned) do
+         {:ok, grant} <- Vhosts.grant_vhost(vhost, subject) do
       conn
       |> put_status(:created)
       |> json(AdminWire.grant_to_admin_json(grant))
@@ -122,11 +121,6 @@ defmodule GrappaWeb.Admin.VhostsController do
       |> text("")
     end
   end
-
-  # `pin_vhost/2` enforces one-pin-per-subject; `grant_vhost/3` adds a
-  # curated-availability grant. pin returns {:ok, grant} | {:error, cs}.
-  defp do_grant(vhost, subject, true), do: Vhosts.pin_vhost(vhost, subject)
-  defp do_grant(vhost, subject, false), do: Vhosts.grant_vhost(vhost, subject, pinned: false)
 
   # Resolve + existence-check the (subject_type, subject_id) grant body.
   defp resolve_subject(%{"subject_type" => "user", "subject_id" => id}) when is_binary(id) do

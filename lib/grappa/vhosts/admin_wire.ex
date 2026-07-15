@@ -21,8 +21,7 @@ defmodule Grappa.Vhosts.AdminWire do
           id: integer(),
           vhost_id: integer(),
           subject_type: String.t(),
-          subject_id: String.t(),
-          pinned: boolean()
+          subject_id: String.t()
         }
 
   @doc "Renders a vhost row to the admin JSON shape."
@@ -57,8 +56,7 @@ defmodule Grappa.Vhosts.AdminWire do
       id: g.id,
       vhost_id: g.vhost_id,
       subject_type: subject_type,
-      subject_id: subject_id,
-      pinned: g.pinned
+      subject_id: subject_id
     }
   end
 end

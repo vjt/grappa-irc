@@ -121,11 +121,10 @@ defmodule GrappaWeb.UserSettingsController do
   def update_upload_ttl_seconds(_, _), do: {:error, :bad_request}
 
   @doc """
-  `GET /me/settings/vhost` — the subject's vhost self-service view (#228):
-  the allowed set (generally-available ∪ granted-to-subject, each marked
-  `in_pool`), the current selection, and the pinned address (`null` when
-  none / not pinned). A pin is admin-forced — the UI greys the selector
-  when `pinned` is set.
+  `GET /me/settings/vhost` — the subject's vhost self-service view
+  (#228, #251): the allowed set (generally-available ∪ in_pool ∪
+  granted-to-subject), each option marked `in_pool` + `granted`, plus the
+  current selection. No admin pin (#251) — the user always self-selects.
   """
   @spec show_vhost(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def show_vhost(conn, _) do
@@ -151,20 +150,21 @@ defmodule GrappaWeb.UserSettingsController do
 
   def update_vhost(_, _), do: {:error, :bad_request}
 
-  # Builds the render assigns for the vhost view — allowed set (with
-  # in_pool marking), current selection, pinned address.
+  # Builds the render assigns for the vhost view — allowed set (each option
+  # marked in_pool + granted), current selection. `granted` reflects a real
+  # per-subject grant row, NOT allow-set membership (which now also includes
+  # in_pool + generally-available vhosts — #251), so cic V2 can bucket
+  # exclusive (granted) / in-pool / out-of-pool.
   defp vhost_view(subject) do
+    granted_ids = MapSet.new(Vhosts.granted_vhost_ids(subject))
+
     available =
       subject
       |> Vhosts.allowed_vhosts()
-      |> Enum.map(fn v -> %{address: v.address, in_pool: v.in_pool} end)
+      |> Enum.map(fn v ->
+        %{address: v.address, in_pool: v.in_pool, granted: MapSet.member?(granted_ids, v.id)}
+      end)
 
-    pinned =
-      case Vhosts.pinned_vhost(subject) do
-        %Vhosts.Vhost{address: address} -> address
-        nil -> nil
-      end
-
-    %{available: available, selection: Vhosts.get_selection(subject), pinned: pinned}
+    %{available: available, selection: Vhosts.get_selection(subject)}
   end
 end

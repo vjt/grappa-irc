@@ -14,18 +14,20 @@ import {
 } from "./lib/api";
 import { token } from "./lib/auth";
 
-// #228 — Vhosts admin tab. Operator surface for the per-subject source-bind
-// (vhost) pool: create/delete host-bindable addresses, toggle their pool
-// membership + general availability, and grant/revoke per-subject access
-// (with an optional `pinned` flag that FORCES the subject's selection).
+// #228, #251 — Vhosts admin tab. Operator surface for the per-subject
+// source-bind (vhost) pool: create/delete host-bindable addresses, toggle
+// their pool membership + general availability, and grant/revoke per-subject
+// access. A grant is availability-only (#251 — the admin hard-pin was
+// removed): it makes the vhost self-selectable by the subject, the user
+// still decides the selection.
 //
 // Per-row controls:
 //   * `in_pool` + `generally_available` toggles (checkbox → PATCH on change,
 //     then full re-fetch — the server projection is the only honest source).
 //   * Delete (InlineConfirmButton) — DELETE /admin/vhosts/:id.
 //   * Grants sub-table: each grant carries a Revoke (InlineConfirmButton);
-//     a small add-grant form (subject_type user/visitor + subject_id +
-//     pinned) POSTs /admin/vhosts/:id/grants.
+//     a small add-grant form (subject_type user/visitor + subject_id)
+//     POSTs /admin/vhosts/:id/grants.
 //
 // Tab-header controls:
 //   * Refresh (↻) — re-calls GET; clears in-flight confirms.
@@ -49,13 +51,11 @@ import { token } from "./lib/auth";
 type GrantForm = {
   subject_type: "user" | "visitor";
   subject_id: string;
-  pinned: boolean;
 };
 
 const emptyGrantForm = (): GrantForm => ({
   subject_type: "user",
   subject_id: "",
-  pinned: false,
 });
 
 function deleteKey(id: number): string {
@@ -196,7 +196,6 @@ const AdminVhostsTab: Component = () => {
       await adminGrantVhost(t, v.id, {
         subject_type: f.subject_type,
         subject_id: f.subject_id.trim(),
-        pinned: f.pinned,
       });
       setGrantForm(
         produce((draft) => {
@@ -454,17 +453,6 @@ const GrantsDisclosure: Component<{
           aria-label={`grant subject id for ${props.vhost.address}`}
           required
         />
-        <label>
-          <input
-            type="checkbox"
-            checked={props.form.pinned}
-            onChange={(e) =>
-              props.onFormChange({ pinned: (e.currentTarget as HTMLInputElement).checked })
-            }
-            data-testid={`admin-vhost-grant-pinned-${props.vhost.id}`}
-          />
-          pinned
-        </label>
         <button
           type="submit"
           disabled={props.form.subject_id.trim() === ""}
@@ -487,7 +475,6 @@ const GrantsDisclosure: Component<{
             <tr>
               <th>subject type</th>
               <th>subject id</th>
-              <th>pinned</th>
               <th>
                 <span class="sr-only">actions</span>
               </th>
@@ -499,7 +486,6 @@ const GrantsDisclosure: Component<{
                 <tr data-testid={`admin-vhost-grant-row-${g.id}`}>
                   <td>{g.subject_type}</td>
                   <td>{g.subject_id}</td>
-                  <td>{g.pinned ? "yes" : "no"}</td>
                   <td>
                     <InlineConfirmButton
                       idleLabel="Revoke"
