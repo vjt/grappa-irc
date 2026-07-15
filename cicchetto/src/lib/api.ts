@@ -18,7 +18,12 @@ import type { MemberEntry } from "./memberTypes";
 // mirror of `Grappa.ServerSettings.Wire.upload_view/0`; the
 // `active_host` closed set (`"embedded" | "litterbox"`) is pinned by
 // the server typespec, not re-hardcoded here.
-import type { NetworksCredentialAuthMethod, ServerSettingsWireUploadView } from "./wireTypes";
+import type {
+  NetworksCredentialAuthMethod,
+  ServerSettingsWireUploadView,
+  SessionLogWireListResult,
+  SessionLogWireT,
+} from "./wireTypes";
 
 function buildHeaders(token?: string): HeadersInit {
   const headers: Record<string, string> = {
@@ -1632,6 +1637,26 @@ export async function adminTerminateSession(token: string, id: string): Promise<
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
+}
+
+// #215 — admin Session Log tab. Snapshot fetch of the persisted
+// session-lifecycle log (`GET /admin/session_log`), newest-first,
+// mirror of `Grappa.SessionLog.Wire.list_result/0`
+// (`{session_log: SessionLogWireT[]}`). `limit` maps to the `?limit=N`
+// query param (server default 200). Rows trust the server, same as the
+// sibling `adminList*` helpers; the live `session_log_event` push on the
+// admin channel (consumed by `lib/sessionLog.ts`) is the narrowed path.
+export type AdminSessionLogEntry = SessionLogWireT;
+
+export async function adminListSessionLog(
+  token: string,
+  limit?: number,
+): Promise<SessionLogWireT[]> {
+  const url = limit === undefined ? "/admin/session_log" : `/admin/session_log?limit=${limit}`;
+  const res = await fetch(url, { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as SessionLogWireListResult;
+  return body.session_log;
 }
 
 // M-cluster M-10 — admin Networks tab wire types + fetch wrappers.

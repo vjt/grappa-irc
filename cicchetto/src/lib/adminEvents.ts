@@ -1,6 +1,7 @@
 import type { Channel } from "phoenix";
 import { createSignal } from "solid-js";
 import { assertNever, type WireAdminEvent } from "./api";
+import { installSessionLog, resetSessionLog } from "./sessionLog";
 import { joinAdminEvents } from "./socket";
 import { narrowAdminEvent, narrowAdminSnapshot } from "./wireNarrow";
 
@@ -146,6 +147,12 @@ export function installAdminEvents(channel: Channel): void {
     }
     ingest(narrowed);
   });
+
+  // #215 — the session-lifecycle log rides the SAME admin channel. This
+  // module owns the channel's join/leave lifecycle, so it also installs
+  // the sibling session-log handler here (its store + ingest live in
+  // sessionLog.ts). One channel, two consumers — no second WS join.
+  installSessionLog(channel);
 }
 
 export function uninstallAdminEvents(): void {
@@ -155,6 +162,10 @@ export function uninstallAdminEvents(): void {
   }
   setEvents([]);
   setLiveCounts({});
+  // #215 — the session-log handler was installed on the same channel we
+  // just left; clear its view state too so the next mount re-fills from
+  // the REST snapshot + fresh live pushes.
+  resetSessionLog();
 }
 
 // Production wrapper: join + install in one call so AdminPane.onMount
