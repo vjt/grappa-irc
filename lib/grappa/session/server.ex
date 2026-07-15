@@ -79,7 +79,7 @@ defmodule Grappa.Session.Server do
   """
   use GenServer, restart: :transient
 
-  alias Grappa.{ChannelDirectory, Log, Mentions, Scrollback, Session, UserSettings}
+  alias Grappa.{ChannelDirectory, Log, Mentions, Scrollback, Session, SessionLog, UserSettings}
   alias Grappa.IRC.{AuthFSM, Client, CTCP, Identifier, Message}
   alias Grappa.PubSub.Topic
   alias Grappa.Push.Triggers, as: PushTriggers
@@ -518,6 +518,13 @@ defmodule Grappa.Session.Server do
           # cic as `umode_changed` on Topic.user for the `/mode <nick>` modal.
           # Defaults to `[]` until the 221 arrives.
           umodes: [String.t()],
+          # #215 session-lifecycle log — `started_at` stamps process spawn
+          # (init/1); `connected_at` stamps the upstream TCP/TLS connect
+          # (`:irc_connected`), nil until then. `disconnected` duration is
+          # `now - (connected_at || started_at)` — connection uptime when we
+          # ever connected, process uptime when we died pre-connect.
+          started_at: DateTime.t(),
+          connected_at: DateTime.t() | nil,
           # C2 — per-target WHOIS accumulator. Keyed by lowercased target
           # nick. Entry shape (all fields optional except target_display):
           # `%{target_display, user, host, realname, server, server_info,
@@ -814,7 +821,10 @@ defmodule Grappa.Session.Server do
       # #100 sustained-reconnect reset gate — config default, opts-overridable
       # for tests. Timer armed on 001, nil until then.
       connection_stable_ms: Map.get(opts, :connection_stable_ms, @connection_stable_ms),
-      connection_stable_timer: nil
+      connection_stable_timer: nil,
+      # #215 — spawn stamp; `connected_at` fills on `:irc_connected`.
+      started_at: DateTime.utc_now(),
+      connected_at: nil
     }
 
     # S3.1 / S3.2 / #182: subscribe to the WSPresence PubSub topic for this
@@ -872,9 +882,14 @@ defmodule Grappa.Session.Server do
         do_start_client(client_opts, state)
 
       ms when is_integer(ms) and ms > 0 ->
-        Logger.info("backoff delaying connect",
+        # #215 — the backoff delay IS a session-lifecycle event (reconnect
+        # gated by the exponential ladder). `SessionLog.emit/3` owns the
+        # Logger line now (single emit path); it rides `delay_ms` + `attempt`
+        # onto the persisted session log so the reconnect/backoff history is
+        # visible in the admin viewer, not just greppable.
+        SessionLog.emit(:backoff, state,
           delay_ms: ms,
-          failure_count: Backoff.failure_count(state.subject, state.network_id)
+          attempt: Backoff.failure_count(state.subject, state.network_id)
         )
 
         Process.send_after(self(), {:start_client_after_backoff, client_opts}, ms)
@@ -956,6 +971,8 @@ defmodule Grappa.Session.Server do
   def terminate(reason, state)
       when reason == :shutdown or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
     emit_lifecycle(:terminated, state)
+    # #215 — clean shutdown (SIGTERM / Application.stop / deploy recreate).
+    emit_disconnected(state, reason, true)
 
     case state.client do
       nil ->
@@ -979,6 +996,8 @@ defmodule Grappa.Session.Server do
 
   def terminate(:normal, state) do
     emit_lifecycle(:terminated, state)
+    # #215 — operator-driven stop_session/2 (clean QUIT already sent).
+    emit_disconnected(state, :normal, true)
     :ok
   end
 
@@ -997,8 +1016,12 @@ defmodule Grappa.Session.Server do
   # shutdown skip it — but the supervisor's `:transient` policy here
   # uses the default `:shutdown` (5s graceful), so every crash class
   # we care about reaches this clause.
-  def terminate(_, state) do
+  def terminate(reason, state) do
     emit_lifecycle(:terminated, state)
+    # #215 — abnormal drop (:tcp_closed, {:client_exit, {:connect_failed, _}},
+    # ping timeout, callback crash, …). This is the disconnect class the
+    # issue was filed on: reason + duration + clean=false, greppable by nick.
+    emit_disconnected(state, reason, false)
     :ok = Backoff.record_failure(state.subject, state.network_id)
     :ok
   end
@@ -1043,6 +1066,44 @@ defmodule Grappa.Session.Server do
       %{network_id: nid, subject_kind: kind}
     )
   end
+
+  # #215 — the disconnect emit funnel shared by all three terminate/2
+  # clauses. `reason` is the raw terminate reason (`:normal`, `:shutdown`,
+  # `{:client_exit, {:connect_failed, _}}`, …); `clean` distinguishes a
+  # graceful stop from an error drop. Duration is connection uptime when we
+  # ever connected, process uptime otherwise (see `disconnect_duration_ms/1`).
+  @spec emit_disconnected(t(), term(), boolean()) :: :ok
+  defp emit_disconnected(state, reason, clean) do
+    SessionLog.emit(:disconnected, state,
+      reason: format_reason(reason),
+      clean: clean,
+      duration_ms: disconnect_duration_ms(state)
+    )
+  end
+
+  defp format_reason(reason) when is_binary(reason), do: reason
+  defp format_reason(reason), do: inspect(reason)
+
+  # `Map.get` (not `state.connected_at`) so a plain hot-reload of a session
+  # whose state predates the #215 fields degrades to `nil` duration rather
+  # than KeyError-crashing terminate/2 (mirror of the umodes/isupport
+  # hot-safety guards). A COLD deploy — #215's class — never hits the nil arm.
+  @spec disconnect_duration_ms(map()) :: non_neg_integer() | nil
+  defp disconnect_duration_ms(state) do
+    case Map.get(state, :connected_at) || Map.get(state, :started_at) do
+      %DateTime{} = anchor -> DateTime.diff(DateTime.utc_now(), anchor, :millisecond)
+      _ -> nil
+    end
+  end
+
+  # #215 — the `:irc_connected` `:session_phase` notify (Visitors.Login
+  # connect/welcome discrimination) is only relevant when a notify slot is
+  # bound; the emit above always fires regardless.
+  defp maybe_notify_session_phase(%{notify_pid: pid, notify_ref: ref}, phase)
+       when is_pid(pid) and is_reference(ref),
+       do: send(pid, {:session_phase, ref, phase})
+
+  defp maybe_notify_session_phase(_, _), do: :ok
 
   # Persist-then-send is intentional Phase 1. Rationale: if the persist
   # fails (validation), we surface the changeset error to the caller
@@ -1728,13 +1789,17 @@ defmodule Grappa.Session.Server do
   # `:connect_timeout` from a rDNS-blocked `:welcome_timeout`. Does NOT
   # clear the notify slot — that happens at 001 via `maybe_fire_notify/1`
   # (the `:welcomed` phase + outer `:session_ready` contract).
-  def handle_info(:irc_connected, %{notify_pid: pid, notify_ref: ref} = state)
-      when is_pid(pid) and is_reference(ref) do
-    send(pid, {:session_phase, ref, :connected})
+  #
+  # #215 — stamp `connected_at` (duration anchor) + emit the `:connected`
+  # session-lifecycle event. The two former clauses (notify vs bare)
+  # collapsed into one path + `maybe_notify_session_phase/2` so the emit is
+  # not duplicated / missed on either.
+  def handle_info(:irc_connected, state) do
+    state = %{state | connected_at: DateTime.utc_now()}
+    SessionLog.emit(:connected, state, [])
+    maybe_notify_session_phase(state, :connected)
     {:noreply, state}
   end
-
-  def handle_info(:irc_connected, state), do: {:noreply, state}
 
   # S3.2 / #182 — a device became VISIBLE (foreground) when none was
   # before. Cancel any pending auto-away debounce timer and (if currently
@@ -1989,6 +2054,11 @@ defmodule Grappa.Session.Server do
       "umode_query",
       Client.send_umode_query(state.client, welcomed_nick)
     )
+
+    # #215 — registration complete (001 RPL_WELCOME). Emit with the
+    # server-authoritative `welcomed_nick` so the session log records the
+    # nick we actually registered as (may differ from the configured one).
+    SessionLog.emit(:registered, %{state | nick: welcomed_nick}, [])
 
     delegate(msg, %{state | connection_stable_timer: stable_timer})
   end
@@ -3128,6 +3198,15 @@ defmodule Grappa.Session.Server do
         SessionWire.umode_changed(state.network_id, modes)
       )
 
+    apply_effects(rest, state)
+  end
+
+  # #215 — the +r bit flipped (EventRouter self-MODE branch). Emit the
+  # `:identified` / `:deidentified` session-lifecycle event. Pure side
+  # effect (Logger + telemetry) — no state mutation.
+  defp apply_effects([{:session_identity_changed, transition} | rest], state) do
+    event = if transition == :acquired, do: :identified, else: :deidentified
+    SessionLog.emit(event, state, [])
     apply_effects(rest, state)
   end
 
