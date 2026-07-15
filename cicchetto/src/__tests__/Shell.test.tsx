@@ -289,6 +289,14 @@ vi.mock("../lib/api", () => ({
   // transitively) needs the classifier in its api mock.
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
   isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
+  // #228 — SettingsDrawer's vhost view runs loadVhostSettings on mount and its
+  // catch does `err instanceof ApiError`; production ../lib/api DOES export both
+  // ApiError and getVhostSettings, so the full-replacement mock must too
+  // (realistic-mock rule). Mirrors SettingsDrawer.test.tsx. Without ApiError the
+  // `instanceof` throws an unhandled rejection during Shell mount; getVhostSettings
+  // resolves null so the load path no-ops (view stays hidden).
+  ApiError: class ApiError extends Error {},
+  getVhostSettings: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../lib/channelKey", () => ({
