@@ -25,6 +25,14 @@ export type ScrollbackMessageKind =
 
 export type ScrollbackMetaT = Record<string, unknown>;
 
+export type SessionLogEvent =
+  | "connected"
+  | "registered"
+  | "identified"
+  | "deidentified"
+  | "disconnected"
+  | "backoff";
+
 // === Grappa.Accounts.Wire ===
 
 export type AccountsWireUserJson = {
@@ -874,6 +882,33 @@ export type WireSessionEvent =
   | SessionWireDirectoryCompletePayload
   | SessionWireDirectoryFailedPayload
   | SessionWireConnectionProgressPayload;
+
+// === Grappa.SessionLog.Wire ===
+
+export type SessionLogWireT = {
+  id: number;
+  session_id: string;
+  event: SessionLogEvent;
+  subject_kind: "user" | "visitor";
+  network_id: number;
+  network_slug: string | null;
+  nick: string | null;
+  reason: string | null;
+  clean: boolean | null;
+  duration_ms: number | null;
+  delay_ms: number | null;
+  attempt: number | null;
+  at: string;
+};
+
+export type SessionLogWireEvent = {
+  kind: string;
+  entry: SessionLogWireT;
+};
+
+export type SessionLogWireListResult = {
+  session_log: SessionLogWireT[];
+};
 
 // === Grappa.Visitors.Wire ===
 

@@ -93,6 +93,10 @@ config :grappa,
 # via `Process.whereis(AdminEvents) |> Ecto.Adapters.SQL.Sandbox.allow/3`
 # (see `test/grappa/admin_events_test.exs`).
 config :grappa, :attach_admin_telemetry, false
+# #215 — same rationale for the SessionLog sink (persists to Repo on a
+# sandbox connection that must be per-test allowed). Persistence tests
+# attach + Sandbox.allow/3 explicitly (test/grappa/session_log_persistence_test.exs).
+config :grappa, :attach_session_log_telemetry, false
 config :phoenix, :plug_init_mode, :runtime
 config :phoenix, :json_library, Jason
 

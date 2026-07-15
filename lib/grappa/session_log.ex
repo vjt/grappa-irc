@@ -16,11 +16,24 @@ defmodule Grappa.SessionLog do
          * fires a `[:grappa, :session, :log, <event>]` telemetry event
            carrying the full structured metadata map.
 
-    2. **Persist + expose** (added by the GenServer sink + Ecto schema in a
-       follow-up commit) — a sink attaches to the telemetry events, writes
-       each to `session_log_events`, prunes to a bounded ring, and
-       broadcasts on `Grappa.PubSub.Topic.session_log/0`. The admin REST /
-       channel doors + cic tab read from there.
+    2. **Persist + expose** (the GenServer sink below) — `init/1` attaches
+       to the `[:grappa, :session, :log, _]` telemetry events; the handler
+       casts each to the sink, which writes it to `session_log_events`,
+       prunes to a bounded on-disk ring (newest `retention` rows), and
+       broadcasts the wire event on `Grappa.PubSub.Topic.session_log/0`.
+       `list/1` is the newest-first tail read the admin REST / channel
+       doors + cic tab consume.
+
+  ## Restart / test isolation
+
+  `:permanent` singleton (registered as `__MODULE__`). Boots with
+  `attach_telemetry: false` in test env (`config :grappa,
+  :attach_session_log_telemetry, false`) — otherwise the global handler
+  would route EVERY async test's lifecycle telemetry to this pid, whose
+  Repo write would hit a sandbox connection owned by the emitting test.
+  Persistence tests attach + `Sandbox.allow/3` explicitly (mirror of
+  `Grappa.AdminEvents`). Tests touching this module MUST be `async:
+  false` (max_cases: 1 invariant).
 
   The emit path is deliberately telemetry-decoupled from the sink: a
   disconnect fired from `Session.Server.terminate/2` must never block on a
@@ -36,9 +49,38 @@ defmodule Grappa.SessionLog do
   see `Grappa.Log` `session_ref`).
   """
 
-  use Boundary, top_level?: true, deps: []
+  use Boundary, top_level?: true, deps: [Grappa.Repo, Grappa.PubSub], exports: [Event, Wire]
+
+  use GenServer
+
+  import Ecto.Query
+
+  alias Grappa.PubSub, as: GrappaPubSub
+  alias Grappa.PubSub.Topic
+  alias Grappa.Repo
+  alias Grappa.SessionLog.{Event, Wire}
 
   require Logger
+
+  # Genuine config default (correct production behavior): the on-disk ring
+  # cap. Session-lifecycle events are LOW frequency (per connect/disconnect,
+  # not per message), so 5000 rows is a long history. `:retention`
+  # start_link opt overrides (tests shrink it to exercise pruning).
+  @default_retention Application.compile_env(:grappa, [:session_log, :retention], 5000)
+
+  @telemetry_handler_id "grappa-session-log"
+  @telemetry_events [
+    [:grappa, :session, :log, :connected],
+    [:grappa, :session, :log, :registered],
+    [:grappa, :session, :log, :identified],
+    [:grappa, :session, :log, :deidentified],
+    [:grappa, :session, :log, :disconnected],
+    [:grappa, :session, :log, :backoff]
+  ]
+
+  defstruct retention: @default_retention
+
+  @type t :: %__MODULE__{retention: pos_integer()}
 
   @typedoc "Closed set of session-lifecycle events (#215)."
   @type event ::
@@ -108,6 +150,110 @@ defmodule Grappa.SessionLog do
 
     log(event, metadata)
     :telemetry.execute([:grappa, :session, :log, event], %{}, metadata)
+    :ok
+  end
+
+  # ----- Sink (GenServer) + read API -----------------------------------
+
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+
+  @doc """
+  Returns the newest-first tail of persisted session-lifecycle events,
+  bounded to `limit`. Reads the DB directly (the store is on disk, not
+  GenServer state) — no sink round-trip.
+  """
+  @spec list(pos_integer()) :: [Event.t()]
+  def list(limit) when is_integer(limit) and limit > 0 do
+    Repo.all(from(e in Event, order_by: [desc: e.id], limit: ^limit))
+  end
+
+  @impl GenServer
+  def init(opts) do
+    if Keyword.get(opts, :attach_telemetry, true) do
+      # Detach-then-attach: a brutal_kill restart skips terminate/2 and
+      # would leave a stale handler bound to a dead pid (mirror of
+      # AdminEvents). Detach on an unknown id is :ok.
+      _ = :telemetry.detach(@telemetry_handler_id)
+
+      :ok =
+        :telemetry.attach_many(
+          @telemetry_handler_id,
+          @telemetry_events,
+          &__MODULE__.handle_telemetry/4,
+          nil
+        )
+    end
+
+    {:ok, %__MODULE__{retention: Keyword.get(opts, :retention, @default_retention)}}
+  end
+
+  @doc false
+  # Runs in the EMITTER's process (Session.Server) per :telemetry semantics
+  # — keep it a bare cast so the emit hot path (incl. terminate/2) never
+  # blocks on the DB write. The full structured map rides in `metadata`.
+  @spec handle_telemetry([atom()], map(), map(), term()) :: :ok
+  def handle_telemetry(_event_name, _measurements, metadata, _) do
+    GenServer.cast(__MODULE__, {:persist, metadata})
+  end
+
+  @impl GenServer
+  def handle_cast({:persist, metadata}, state) do
+    case persist(metadata) do
+      {:ok, event} ->
+        broadcast(event)
+
+      {:error, changeset} ->
+        # Best-effort persist — the Logger line (emit/3) is the reliable
+        # record. Log honestly (no silent drop) and keep the sink alive.
+        Logger.error("session_log persist failed",
+          event: metadata[:event],
+          reason: inspect(changeset)
+        )
+    end
+
+    prune(state.retention)
+    {:noreply, state}
+  end
+
+  @impl GenServer
+  def terminate(_, _) do
+    :ok = :telemetry.detach(@telemetry_handler_id)
+  end
+
+  @spec persist(map()) :: {:ok, Event.t()} | {:error, Ecto.Changeset.t()}
+  defp persist(metadata) do
+    %Event{} |> Event.changeset(metadata) |> Repo.insert()
+  end
+
+  @spec broadcast(Event.t()) :: :ok
+  defp broadcast(event) do
+    case GrappaPubSub.broadcast_event(Topic.session_log(), Wire.entry_payload(event)) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("session_log broadcast failed",
+          topic: Topic.session_log(),
+          reason: inspect(reason)
+        )
+
+        :ok
+    end
+  end
+
+  # On-disk ring: delete every row older than the `retention`-th newest.
+  # id (PK autoincrement) is the insertion order — an indexed range delete.
+  @spec prune(pos_integer()) :: :ok
+  defp prune(retention) do
+    cutoff =
+      Repo.one(from(e in Event, order_by: [desc: e.id], offset: ^(retention - 1), limit: 1, select: e.id))
+
+    case cutoff do
+      nil -> :ok
+      id -> Repo.delete_all(from(e in Event, where: e.id < ^id))
+    end
+
     :ok
   end
 

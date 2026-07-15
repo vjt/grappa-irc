@@ -113,6 +113,19 @@ defmodule Grappa.PubSub.Topic do
   def admin_events, do: "grappa:admin:events"
 
   @doc """
+  Builds the session-lifecycle-log fan-out topic (#215).
+
+  Single fixed topic — the `Grappa.SessionLog` sink broadcasts each newly
+  persisted lifecycle event here. Admin-audience: authz is `is_admin:
+  true` gated at `GrappaWeb.AdminChannel`'s join (same shape as
+  `admin_events/0`), NOT per-user; the topic carries no user identifier.
+  Separate from `admin_events/0` — a distinct persisted surface (Option B:
+  two visible admin surfaces, not a merge).
+  """
+  @spec session_log() :: t()
+  def session_log, do: "grappa:session_log"
+
+  @doc """
   Builds the server-settings fan-out topic (UX-6 bucket B1).
 
   Single fixed topic — `Grappa.ServerSettings.put_*/1` broadcasts
