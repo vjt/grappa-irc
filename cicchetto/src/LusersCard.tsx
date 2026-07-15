@@ -12,10 +12,12 @@ import { dismissLusersCard, lusersBundleByNetwork } from "./lib/lusersBundle";
 // mirroring WhoisCard / WhowasCard. Short-circuits to null when no
 // snapshot exists (#231).
 //
-// Lifecycle: ephemeral, last-write-wins per network. Auto-emitted on
-// connect-welcome AND on operator-issued /lusers; the most recent
-// snapshot replaces. Lost on page refresh — operator types /lusers
-// to refresh.
+// Lifecycle: ephemeral, per network. Surfaced ONLY by an operator
+// /lusers (#248 solicited gate in lusersBundle.ts) — the Bahamut
+// connect-welcome auto-emit is dropped, so this card never covers the
+// message view on connect. Each solicited /lusers replaces the snapshot
+// (last-solicited-write-wins). Lost on page refresh — operator types
+// /lusers to refresh.
 
 type Props = {
   networkSlug: string;

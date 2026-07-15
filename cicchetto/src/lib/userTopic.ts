@@ -16,7 +16,7 @@ import { channelKey } from "./channelKey";
 import { patchHomeNetwork } from "./home";
 import { appendInviteAck } from "./inviteAck";
 import { seedIsupport } from "./isupport";
-import { applyLusersBundle } from "./lusersBundle";
+import { applyLusersBundle, clearLusersRequested } from "./lusersBundle";
 import { clearMentionsBundle, setMentionsBundle } from "./mentionsWindow";
 import { setNamesReply } from "./namesModal";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
@@ -1031,6 +1031,12 @@ createRoot(() => {
           // shows it; "connected" (001 RPL_WELCOME) clears it. Presentational
           // overlay only — the durable connection_state is untouched.
           setReconnecting(payload.network, payload.state === "connecting");
+          // #248 — a fresh connection attempt invalidates any pending
+          // /lusers request for this network: the imminent registration
+          // welcome LUSERS burst is unsolicited and must not consume a
+          // stale flag left by a /lusers issued on a prior (now-dead)
+          // session. Clear on the "connecting" edge (before the burst).
+          if (payload.state === "connecting") clearLusersRequested(payload.network);
           return;
 
         default:

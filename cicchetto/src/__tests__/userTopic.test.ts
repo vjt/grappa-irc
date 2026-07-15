@@ -85,6 +85,7 @@ vi.mock("../lib/peerAway", () => ({
 vi.mock("../lib/lusersBundle", () => ({
   applyLusersBundle: vi.fn(),
   markLusersRequested: vi.fn(),
+  clearLusersRequested: vi.fn(),
 }));
 
 vi.mock("../lib/serverReplyModal", () => ({
@@ -659,6 +660,30 @@ describe("userTopic", () => {
         state: "connected",
       });
       expect(rs.setReconnecting).toHaveBeenCalledWith("bahamut-test", false);
+    });
+
+    // #248 — a fresh connection attempt invalidates any pending /lusers
+    // request: the imminent registration welcome burst is unsolicited and
+    // must not consume a stale flag left by a /lusers issued on a prior
+    // (now-dead) session.
+    it("clears the solicited lusers flag on state connecting", async () => {
+      const lb = await import("../lib/lusersBundle");
+      channelMock.fireEvent({
+        kind: "connection_progress",
+        network: "bahamut-test",
+        state: "connecting",
+      });
+      expect(lb.clearLusersRequested).toHaveBeenCalledWith("bahamut-test");
+    });
+
+    it("does NOT clear the lusers flag on state connected (only the connecting edge)", async () => {
+      const lb = await import("../lib/lusersBundle");
+      channelMock.fireEvent({
+        kind: "connection_progress",
+        network: "bahamut-test",
+        state: "connected",
+      });
+      expect(lb.clearLusersRequested).not.toHaveBeenCalled();
     });
 
     it("drops payload with an unknown state (no setReconnecting call)", async () => {

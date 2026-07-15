@@ -68,6 +68,17 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     solicited.add(networkSlug);
   };
 
+  // #248 — invalidate a pending request for (networkSlug). Called on a
+  // fresh connection attempt (userTopic connection_progress "connecting"):
+  // a solicited /lusers is only valid on the connection it was issued on,
+  // and the imminent registration welcome burst is unsolicited. Without
+  // this, a /lusers issued against a down session leaves a stale flag
+  // that the next reconnect's welcome burst would consume — re-opening
+  // the #248 auto-surface on that network.
+  const clearLusersRequested = (networkSlug: string): void => {
+    solicited.delete(networkSlug);
+  };
+
   // #248 — apply an incoming `lusers_bundle`, gated on the solicited
   // flag. Solicited → store the snapshot (surfaces the card) and consume
   // the flag (Set.delete returns true iff the slug was present).
@@ -89,10 +100,17 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     });
   };
 
-  return { lusersBundleByNetwork, markLusersRequested, applyLusersBundle, dismissLusersCard };
+  return {
+    lusersBundleByNetwork,
+    markLusersRequested,
+    clearLusersRequested,
+    applyLusersBundle,
+    dismissLusersCard,
+  };
 });
 
 export const lusersBundleByNetwork = exports_.lusersBundleByNetwork;
 export const markLusersRequested = exports_.markLusersRequested;
+export const clearLusersRequested = exports_.clearLusersRequested;
 export const applyLusersBundle = exports_.applyLusersBundle;
 export const dismissLusersCard = exports_.dismissLusersCard;

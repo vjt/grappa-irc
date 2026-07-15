@@ -131,4 +131,32 @@ describe("lusersBundle store — solicited-request gate (#248)", () => {
       expect(lb.lusersBundleByNetwork().azzurra).toBeUndefined();
     });
   });
+
+  it("clearLusersRequested drops a pending flag — a later (reconnect welcome) burst does not surface", async () => {
+    const lb = await import("../lib/lusersBundle");
+
+    // Operator issued /lusers against a network with no live session:
+    // the flag is set but no bundle comes back. A fresh connection then
+    // clears it (userTopic connection_progress) so the imminent welcome
+    // burst — which is unsolicited — is dropped, not surfaced (#248).
+    lb.markLusersRequested("azzurra");
+    lb.clearLusersRequested("azzurra");
+    lb.applyLusersBundle("azzurra", SNAPSHOT);
+    expect(lb.lusersBundleByNetwork().azzurra).toBeUndefined();
+  });
+
+  it("clearLusersRequested is per-network — it does not clear another network's pending flag", async () => {
+    const lb = await import("../lib/lusersBundle");
+
+    lb.markLusersRequested("azzurra");
+    lb.markLusersRequested("libera");
+    lb.clearLusersRequested("azzurra");
+
+    // azzurra's flag cleared → its bundle dropped.
+    lb.applyLusersBundle("azzurra", SNAPSHOT);
+    expect(lb.lusersBundleByNetwork().azzurra).toBeUndefined();
+    // libera's flag untouched → its bundle surfaces.
+    lb.applyLusersBundle("libera", SNAPSHOT);
+    expect(lb.lusersBundleByNetwork().libera).toEqual(SNAPSHOT);
+  });
 });
