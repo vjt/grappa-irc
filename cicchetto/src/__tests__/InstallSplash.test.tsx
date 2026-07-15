@@ -5,6 +5,7 @@ import InstallSplash, {
   INSTALL_CHOICE_KEY,
   shouldShowInstallSplash,
 } from "../InstallSplash";
+import { resetPlatformStubs, stubIosStandalone, stubIosUserAgent } from "./helpers/platformStubs";
 
 // Push notifications cluster B0 — InstallSplash UX coverage.
 //
@@ -43,7 +44,7 @@ describe("InstallSplash", () => {
   afterEach(() => {
     localStorage.clear();
     window.__cicInstallPrompt = undefined;
-    vi.restoreAllMocks();
+    resetPlatformStubs();
   });
 
   it("renders title, blurb, and the secondary CTA", () => {
@@ -61,11 +62,16 @@ describe("InstallSplash", () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
-  it("renders 'Install app' button disabled when no beforeinstallprompt event captured", () => {
-    // jsdom UA is "Mozilla/5.0 (linux) ... jsdom" — non-iOS path
+  // #259 — else branch = graceful hide. On a non-iOS browser that never
+  // fired `beforeinstallprompt` (Firefox mobile, Samsung Internet, desktop
+  // Firefox/Safari) there is no programmatic install AND no universal chrome
+  // to aim an arrow at — so DROP the dead disabled "Install app" button
+  // (pre-#259 it rendered one) and surface the manual-menu hint instead.
+  it("gracefully hides the Install button on non-iOS with no prompt (shows hint)", () => {
+    // jsdom UA is "Mozilla/5.0 (linux) ... jsdom" — non-iOS, no prompt.
     render(() => <InstallSplash onDismiss={() => {}} />);
-    const btn = screen.getByRole("button", { name: /Install app/i });
-    expect(btn).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Install app/i })).toBeNull();
+    expect(screen.getByText(/use your browser menu/i)).toBeInTheDocument();
   });
 
   it("'Install app' becomes enabled when window.__cicInstallPrompt is pre-set", () => {
@@ -116,7 +122,9 @@ describe("InstallSplash", () => {
 
   it("captures a late-firing beforeinstallprompt event after mount", () => {
     render(() => <InstallSplash onDismiss={() => {}} />);
-    expect(screen.getByRole("button", { name: /Install app/i })).toBeDisabled();
+    // #259 graceful hide: no dead button before the event fires (non-iOS,
+    // no prompt yet).
+    expect(screen.queryByRole("button", { name: /Install app/i })).toBeNull();
     // Simulate Chrome firing the event AFTER mount.
     const event = Object.assign(new Event("beforeinstallprompt"), {
       prompt: vi.fn().mockResolvedValue(undefined),
@@ -124,26 +132,59 @@ describe("InstallSplash", () => {
       platforms: ["web"],
     });
     window.dispatchEvent(event);
+    // Now the native Install button appears, enabled.
     expect(screen.getByRole("button", { name: /Install app/i })).not.toBeDisabled();
   });
 
-  // #204 — Add-to-Home-Screen arrow. vjt Q2: it lives ONLY on the install
-  // splash (never the login screen), and only for iOS Safari in browser-tab
-  // mode (the platform whose Share → Add to Home Screen flow the arrow
-  // points at). "Continue from browser" unmounts the whole splash, so the
-  // arrow disappears with it — no separate suppression needed.
+  // #204/#259 — Add-to-Home-Screen hint. Lives ONLY on the install splash
+  // (never the login screen), only for iOS Safari in browser-tab mode.
+  // #259: the arrow + step text now target Safari's ⋯ (More) menu — the real
+  // entry to Share → Add to Home Screen — NOT the in-page "Continue from
+  // browser" button (issue #259, screenshot IMG_9559). Assert branch + TEXT
+  // + element presence; the exact arrow-to-⋯ pixel geometry is DEVICE-VERIFY
+  // (jsdom + Playwright reproduce neither Safari's chrome nor its position).
   it("does NOT render the A2HS arrow on non-iOS (jsdom default UA)", () => {
     render(() => <InstallSplash onDismiss={() => {}} />);
     expect(screen.queryByTestId("install-a2hs-arrow")).toBeNull();
   });
 
   it("renders the A2HS arrow on iOS Safari (browser-tab mode)", () => {
-    vi.stubGlobal("navigator", {
-      ...window.navigator,
-      userAgent:
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-    });
+    stubIosUserAgent();
     render(() => <InstallSplash onDismiss={() => {}} />);
     expect(screen.getByTestId("install-a2hs-arrow")).toBeInTheDocument();
+  });
+
+  it("iOS arrow caption targets the ⋯ menu, not 'Share' (issue #259)", () => {
+    stubIosUserAgent();
+    render(() => <InstallSplash onDismiss={() => {}} />);
+    const arrow = screen.getByTestId("install-a2hs-arrow");
+    expect(arrow.textContent).toContain("⋯");
+  });
+
+  it("iOS step text guides ⋯ → Share → Add to Home Screen (issue #259)", () => {
+    stubIosUserAgent();
+    render(() => <InstallSplash onDismiss={() => {}} />);
+    const steps = screen.getByTestId("install-ios-steps");
+    expect(steps.textContent).toContain("⋯");
+    expect(steps.textContent).toMatch(/Share/);
+    expect(steps.textContent).toMatch(/Add to Home Screen/);
+  });
+
+  it("suppresses the A2HS arrow when already installed (standalone PWA)", () => {
+    stubIosStandalone(true);
+    render(() => <InstallSplash onDismiss={() => {}} />);
+    expect(screen.queryByTestId("install-a2hs-arrow")).toBeNull();
+  });
+
+  it("shows the native Install button and NO arrow when the prompt fired (Android/Chromium)", () => {
+    window.__cicInstallPrompt = {
+      preventDefault: () => {},
+      prompt: vi.fn().mockResolvedValue(undefined),
+      userChoice: Promise.resolve({ outcome: "accepted", platform: "web" }),
+      platforms: ["web"],
+    } as unknown as Window["__cicInstallPrompt"];
+    render(() => <InstallSplash onDismiss={() => {}} />);
+    expect(screen.getByRole("button", { name: /Install app/i })).not.toBeDisabled();
+    expect(screen.queryByTestId("install-a2hs-arrow")).toBeNull();
   });
 });

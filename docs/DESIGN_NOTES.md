@@ -20985,3 +20985,57 @@ keeps it a live feature) — no column drop owed there.
 _Deploy: **HOT — server logic + `--cic`** (AdminVhostsTab + SettingsDrawer
 + wire types). No migration in V1; the dead `grant.pinned` column drop is
 deferred to a trailing COLD cleanup migration._
+
+## 2026-07-16 — #259 install-hint: iOS ⋯ misdirection → per-platform hybrid
+
+**The bug (P0, vjt screenshot IMG_9559).** The "Install Cicchetto" splash
+(`cicchetto/src/InstallSplash.tsx`) misdirected iOS users. The step text
+said "tap ⎙ Share, then Add to Home Screen" — skipping the fact that on
+iOS Safari the entry point is the **⋯ (More) menu** in the bottom-right
+browser chrome. Worse, the A2HS hint arrow (`#204`) was an in-card,
+centered `↓` that sat directly above the in-page "Continue from browser"
+button — so it visually **pointed at the wrong thing**. Users had no way
+to tell they must tap ⋯ → Share → Add to Home Screen.
+
+**Fix — HYBRID per platform, because the capability differs.** cic never
+originates platform state beyond capability detection; this is pure
+rendering off `beforeinstallprompt` availability + UA + standalone. The
+render is a capability-detection ORDER (three mutually-exclusive branches
+in `InstallSplash.tsx`, keyed on `showInstallButton() = promptAvailable()
+|| installing()`):
+
+  1. **`beforeinstallprompt` fired → native Install button.** Chromium
+     family (Android + desktop Chrome) capture the event at boot
+     (`main.tsx`) and fire `.prompt()`. No arrow, no manual steps — the
+     browser owns the flow. Wins on ANY platform where the event fired.
+  2. **else iOS Safari + NOT already standalone → corrected manual path.**
+     iOS exposes NO programmatic install API, so the manual route is
+     unavoidable. Step text now reads "tap ⋯ More, then Share, then Add
+     to Home Screen" (⋯ glyph emphasized as the target), and the arrow is
+     re-anchored (CSS) to the **viewport bottom-right corner**, pointing
+     `↘` at Safari's ⋯ chrome — the real target, not the in-page button.
+     Gated on `!isStandalonePwa()`: an installed PWA has no Safari chrome
+     to point at.
+  3. **else → graceful hide.** Non-iOS with no captured prompt (Firefox
+     Mobile, Samsung Internet, desktop Firefox/Safari): no programmatic
+     install AND no universal chrome to aim an arrow at. Prefer a
+     manual-menu **hint** over a dead disabled button (pre-#259 rendered a
+     permanently-disabled "Install app" button here — replaced).
+
+**Supersedes #204's "quiet nudge."** #204 (vjt Q3) deliberately made the
+arrow understated (muted colour, opacity 0.7). #259's whole premise is
+that the subtle hint FAILED to direct users, so the ⋯ target + arrow are
+now emphasized (accent colour, no opacity dial-down). Deliberate reversal,
+recorded here.
+
+**DEVICE-VERIFY (held, do NOT close on CI green).** jsdom + Playwright
+reproduce neither Safari's chrome geometry nor the Android native install
+prompt. Unit tests assert the LOGIC/TEXT/branch (⋯ step text, ⋯-targeted
+arrow caption, graceful hide, standalone suppression, Android
+button-and-no-arrow) — NOT pixel position. Still owed on real devices:
+(a) the arrow-to-⋯ positioning on a real iPhone (exact `right`/`bottom`
+offsets are a first cut, tuned on-device); (b) the Android native prompt
+firing. Rides the batched device-verify hold.
+
+_Deploy: **--cic HOT, client-only. No migration** (single component + CSS
++ tests; server untouched)._

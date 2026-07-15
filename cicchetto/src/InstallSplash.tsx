@@ -5,14 +5,21 @@ import { isStandalonePwa } from "./lib/platform";
 //
 // Shown only when the page is loaded in browser-tab mode (NOT
 // installed-to-home-screen) AND the user hasn't previously chosen
-// "Continue from browser". Two CTAs:
+// "Continue from browser". The install affordance is HYBRID per
+// platform (#259, 2026-07-16) because the capability differs —
+// capability-detection order:
 //
-//   - "Install app" — fires the saved `beforeinstallprompt` event's
-//     `.prompt()` if the browser supports it (Chromium-family on
-//     desktop + Android). On iOS Safari (no `beforeinstallprompt`
-//     support) shows inline instructions for Share → Add to Home
-//     Screen, since iOS Safari Web Push only fires for
-//     installed-to-home-screen PWAs.
+//   1. `beforeinstallprompt` fired (Chromium-family: Android + desktop
+//      Chrome) → native "Install app" button firing the saved event's
+//      `.prompt()`. No arrow, no manual steps.
+//   2. else iOS Safari + NOT already standalone → the manual path
+//      (iOS exposes no `beforeinstallprompt`): step text + an arrow
+//      pointing at Safari's ⋯ (More) menu in the bottom-right browser
+//      chrome — the real entry to Share → Add to Home Screen. iOS Web
+//      Push only fires for installed-to-home-screen PWAs, so this path
+//      is load-bearing on iOS.
+//   3. else → graceful hide: a manual-menu hint, never a dead disabled
+//      button (Firefox Mobile, Samsung Internet, desktop Firefox/Safari).
 //
 //   - "Continue from browser" — sets
 //     `localStorage["cic.installChoice"] = "browser"` and unmounts
@@ -110,6 +117,14 @@ const InstallSplash: Component<{ onDismiss: () => void }> = (props) => {
 
   const ios = isIOSSafari();
   const promptAvailable = () => installPrompt() !== null;
+  // Capability-detection order (#259). A fired `beforeinstallprompt` wins on
+  // ANY platform (Android / Chromium / desktop Chrome) — render the native
+  // Install button and drop every manual hint there. `installing()` keeps
+  // the button mounted while `.prompt()` / `userChoice` resolve (the event
+  // is single-use and cleared only in handleInstall's finally). Falling
+  // through: iOS Safari (no programmatic install API) gets the manual ⋯
+  // path; everything else gracefully hides the CTA (see the three branches).
+  const showInstallButton = () => promptAvailable() || installing();
 
   return (
     <div
@@ -124,29 +139,10 @@ const InstallSplash: Component<{ onDismiss: () => void }> = (props) => {
           Install the app for the best experience — keeps you logged in and lets you receive
           notifications when channels you watch get a mention.
         </p>
-        <Show when={ios}>
-          <div class="install-splash-ios">
-            <p>
-              On iOS: tap{" "}
-              <span class="install-splash-glyph" aria-hidden="true">
-                ⎙
-              </span>{" "}
-              Share, then choose <strong>Add to Home Screen</strong>.
-            </p>
-          </div>
-          {/* #204 — dim/subtle A2HS arrow pointing at Safari's bottom share
-              toolbar. Shown ONLY here (never on login, per vjt Q2) and only
-              when NOT already installed (a standalone PWA has no Safari
-              chrome to point at). "Continue from browser" unmounts the whole
-              splash, so the arrow vanishes with it. */}
-          <Show when={!isStandalonePwa()}>
-            <div class="install-a2hs" data-testid="install-a2hs-arrow" aria-hidden="true">
-              <span class="install-a2hs-caption">tap Share</span>
-              <span class="install-a2hs-arrow">↓</span>
-            </div>
-          </Show>
-        </Show>
-        <Show when={!ios}>
+        {/* 1. Native install — Android / Chromium / desktop Chrome fired
+            `beforeinstallprompt`. No arrow, no manual steps: the browser
+            owns the flow. */}
+        <Show when={showInstallButton()}>
           <button
             type="button"
             class="install-splash-primary"
@@ -155,12 +151,41 @@ const InstallSplash: Component<{ onDismiss: () => void }> = (props) => {
           >
             {installing() ? "Installing…" : "Install app"}
           </button>
-          <Show when={!promptAvailable() && !installing()}>
-            <p class="install-splash-hint">
-              Not installable from this browser yet — use your browser menu's "Install" or "Add to
-              Home Screen" option.
+        </Show>
+        {/* 2. iOS Safari manual path (#259). iOS exposes NO
+            `beforeinstallprompt`, so the manual route is unavoidable — aim
+            the user at Safari's ⋯ (More) menu in the bottom-right browser
+            chrome, the REAL entry to Share → Add to Home Screen. Pre-#259
+            the copy said "tap Share" and a ↓ arrow pointed at the in-page
+            "Continue from browser" button (issue #259, IMG_9559) — the
+            wrong target. Gate on !standalone: an installed PWA has no Safari
+            chrome to point at. The exact arrow-to-⋯ geometry is DEVICE-VERIFY
+            (CSS in themes/default.css `.install-a2hs*`). */}
+        <Show when={!showInstallButton() && ios && !isStandalonePwa()}>
+          <div class="install-splash-ios">
+            <p data-testid="install-ios-steps">
+              On iOS: tap{" "}
+              <span class="install-splash-glyph" aria-hidden="true">
+                ⋯
+              </span>{" "}
+              <strong>More</strong>, then <strong>Share</strong>, then{" "}
+              <strong>Add to Home Screen</strong>.
             </p>
-          </Show>
+          </div>
+          <div class="install-a2hs" data-testid="install-a2hs-arrow" aria-hidden="true">
+            <span class="install-a2hs-caption">tap ⋯ here</span>
+            <span class="install-a2hs-arrow">↘</span>
+          </div>
+        </Show>
+        {/* 3. Graceful hide (#259). Non-iOS with no captured prompt (Firefox
+            Mobile, Samsung Internet, desktop Firefox / Safari): no
+            programmatic install AND no universal chrome to aim an arrow at.
+            Prefer a manual-menu hint over a dead disabled button. */}
+        <Show when={!showInstallButton() && !ios}>
+          <p class="install-splash-hint">
+            Not installable from this browser yet — use your browser menu's "Install" or "Add to
+            Home Screen" option.
+          </p>
         </Show>
         <button type="button" class="install-splash-secondary" onClick={handleContinueBrowser}>
           Continue from browser
