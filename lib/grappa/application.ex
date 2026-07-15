@@ -125,7 +125,7 @@ defmodule Grappa.Application do
         # Ecto.Adapters.SQL.Sandbox.allow(...)` keeps the
         # AdminEvents-targeting tests honest without bleeding into
         # unrelated suites.
-        {Grappa.AdminEvents, attach_telemetry: attach_admin_telemetry?()},
+        {Grappa.AdminEvents, attach_telemetry: attach_admin_telemetry?(), persist: persist_admin_events?()},
         # SessionLog (#215): singleton GenServer sink for the persisted IRC
         # session-lifecycle log. Attaches `[:grappa, :session, :log, _]`
         # telemetry in init/1 + persists each event to `session_log_events`.
@@ -267,6 +267,11 @@ defmodule Grappa.Application do
   # pattern in `test/grappa/admin_events_test.exs`.
   @spec attach_admin_telemetry?() :: boolean()
   defp attach_admin_telemetry?, do: Application.get_env(:grappa, :attach_admin_telemetry, true)
+
+  # #215 Option B — AdminEvents disk mirror. On in prod; off in test env
+  # (the singleton's Repo write would hit a foreign sandbox connection).
+  @spec persist_admin_events?() :: boolean()
+  defp persist_admin_events?, do: Application.get_env(:grappa, :persist_admin_events, true)
 
   # #215 — same test-env opt-out as admin telemetry: the SessionLog sink
   # persists to Repo, which must be sandbox-allowed per test; a global

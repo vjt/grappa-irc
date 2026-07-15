@@ -12,7 +12,7 @@ defmodule Grappa.AdminEventsTest do
   use Grappa.DataCase, async: false
 
   alias Grappa.{AdminEvents, AdmissionStateHelpers, Repo}
-  alias Grappa.AdminEvents.Wire
+  alias Grappa.AdminEvents.{Event, Wire}
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
   alias Grappa.Session.Server, as: SessionServer
@@ -112,6 +112,47 @@ defmodule Grappa.AdminEventsTest do
       # Newest preserved, oldest evicted.
       assert hd(snapshot).count == 205
       assert List.last(snapshot).count == 6
+    end
+  end
+
+  describe "disk-backing (#215 Option B)" do
+    # The singleton boots persist:false in test env (config); flip it on +
+    # rely on the setup's Sandbox.allow so the pid's Repo writes land in
+    # this test's transaction. Restore on exit so other suites see the
+    # in-memory-only steady state.
+    setup do
+      Repo.delete_all(Event)
+      :sys.replace_state(AdminEvents, fn s -> %{s | persist: true, retention: 200} end)
+      on_exit(fn -> :sys.replace_state(AdminEvents, fn s -> %{s | persist: false, buffer: []} end) end)
+      :ok
+    end
+
+    test "record persists the event to admin_events" do
+      :ok = AdminEvents.record(Wire.reaper_swept(5))
+      _ = AdminEvents.snapshot()
+
+      assert [row] = Repo.all(Event)
+      assert row.kind == "reaper_swept"
+      assert row.payload["count"] == 5
+    end
+
+    test "load_recent/1 returns persisted events newest-first (survives restart)" do
+      :ok = AdminEvents.record(Wire.reaper_swept(1))
+      :ok = AdminEvents.record(Wire.reaper_swept(2))
+      _ = AdminEvents.snapshot()
+
+      # Reload path init/1 runs on boot; the decoded (string-keyed) JSON
+      # round-trip is byte-identical over the wire to a fresh event.
+      assert [%{"kind" => "reaper_swept", "count" => 2}, %{"kind" => "reaper_swept", "count" => 1}] =
+               AdminEvents.load_recent(10)
+    end
+
+    test "prune keeps only the newest `retention` rows on disk" do
+      :sys.replace_state(AdminEvents, fn s -> %{s | retention: 2} end)
+      for n <- 1..4, do: AdminEvents.record(Wire.reaper_swept(n))
+      _ = AdminEvents.snapshot()
+
+      assert Repo.aggregate(Event, :count) == 2
     end
   end
 

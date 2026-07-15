@@ -48,13 +48,15 @@ defmodule Grappa.AdminEvents do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Admission, Grappa.Networks, Grappa.PubSub],
-    exports: [Wire]
+    deps: [Grappa.Admission, Grappa.Networks, Grappa.PubSub, Grappa.Repo],
+    exports: [Event, Wire]
 
   use GenServer
 
-  alias Grappa.AdminEvents.Wire
-  alias Grappa.{Admission, Networks}
+  import Ecto.Query
+
+  alias Grappa.AdminEvents.{Event, Wire}
+  alias Grappa.{Admission, Networks, Repo}
   alias Grappa.PubSub, as: GrappaPubSub
   alias Grappa.PubSub.Topic
 
@@ -70,9 +72,17 @@ defmodule Grappa.AdminEvents do
     [:grappa, :session, :lifecycle, :terminated]
   ]
 
-  defstruct buffer: []
+  # #215 Option B — the ring is ALSO mirrored to `admin_events` when
+  # `persist` is on (prod), so it survives a restart. `retention` bounds
+  # the on-disk mirror; it matches @snapshot_cap so the reloaded ring is
+  # exactly the in-memory ring's worth of history.
+  defstruct buffer: [], persist: false, retention: @snapshot_cap
 
-  @type t :: %__MODULE__{buffer: [Wire.event()]}
+  @type t :: %__MODULE__{
+          buffer: [Wire.event()],
+          persist: boolean(),
+          retention: pos_integer()
+        }
 
   ## ----- Public API ---------------------------------------------------
 
@@ -121,7 +131,16 @@ defmodule Grappa.AdminEvents do
         )
     end
 
-    {:ok, %__MODULE__{}}
+    # #215 Option B — when persistence is on (prod), reload the ring from
+    # disk so a restart doesn't blank the Events tab. `persist: false` in
+    # test env (config) keeps the singleton in-memory-only, so unrelated
+    # tests never race the sink's Repo writes on a foreign sandbox
+    # connection (same rationale as `attach_telemetry`).
+    persist = Keyword.get(opts, :persist, false)
+    retention = Keyword.get(opts, :retention, @snapshot_cap)
+    buffer = if persist, do: load_recent(retention), else: []
+
+    {:ok, %__MODULE__{buffer: buffer, persist: persist, retention: retention}}
   end
 
   @doc false
@@ -269,10 +288,76 @@ defmodule Grappa.AdminEvents do
         )
     end
 
+    if state.persist do
+      persist_event(event)
+      prune(state.retention)
+    end
+
     %{state | buffer: cap([event | state.buffer])}
   end
 
   @spec cap([Wire.event()]) :: [Wire.event()]
   defp cap(list) when length(list) > @snapshot_cap, do: Enum.take(list, @snapshot_cap)
   defp cap(list), do: list
+
+  ## ----- Disk-backing (#215 Option B) ---------------------------------
+
+  # Persist one wire event as JSON. Best-effort — the ring is the live
+  # serving source; a persist failure logs honestly (no silent drop) and
+  # never crashes the singleton (the operator still sees the in-memory
+  # ring; only restart-survival for THAT event is lost).
+  @spec persist_event(Wire.event()) :: :ok
+  defp persist_event(event) do
+    attrs = %{kind: to_string(event.kind), payload: event}
+
+    case %Event{} |> Event.changeset(attrs) |> Repo.insert() do
+      {:ok, _} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.error("admin_events persist failed",
+          kind: event.kind,
+          reason: inspect(changeset)
+        )
+
+        :ok
+    end
+  end
+
+  @doc false
+  # Reload path (init/1 on boot): the newest `retention` persisted events,
+  # newest-first. Returns the JSON-decoded (string-keyed) payload maps —
+  # byte-identical over the wire to fresh atom-keyed events; the ring is
+  # opaque + serialized straight to cic, never atom-matched server-side.
+  @spec load_recent(pos_integer()) :: [map()]
+  def load_recent(retention) when is_integer(retention) and retention > 0 do
+    Event
+    |> order_by([e], desc: e.id)
+    |> limit(^retention)
+    |> select([e], e.payload)
+    |> Repo.all()
+  end
+
+  # On-disk ring cap: delete every row older than the `retention`-th newest
+  # (indexed id-range delete). Mirror of Grappa.SessionLog.prune/1.
+  @spec prune(pos_integer()) :: :ok
+  defp prune(retention) do
+    cutoff =
+      Event
+      |> order_by([e], desc: e.id)
+      |> offset(^(retention - 1))
+      |> limit(1)
+      |> select([e], e.id)
+      |> Repo.one()
+
+    case cutoff do
+      nil ->
+        :ok
+
+      id ->
+        Event |> where([e], e.id < ^id) |> Repo.delete_all()
+    end
+
+    :ok
+  end
 end
