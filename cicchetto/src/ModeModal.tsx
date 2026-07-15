@@ -1,7 +1,12 @@
-import { type Component, For, Show } from "solid-js";
+import { type Component, createSignal, For, Show } from "solid-js";
 import { ownNickForNetwork } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
-import { type AvailableMode, availableModes, editorSigils } from "./lib/channelModes";
+import {
+  type AvailableMode,
+  availableModes,
+  editorSigils,
+  sanitizeModeParam,
+} from "./lib/channelModes";
 import { modesByChannel } from "./lib/channelTopic";
 import { isupportForNetwork } from "./lib/isupport";
 import { membersByChannel } from "./lib/members";
@@ -28,16 +33,87 @@ import { pushChannelMode } from "./lib/socket";
 //     menu — no parallel state).
 //
 // Editing pushes the same `mode` WS verb the `/mode #chan +s` command
-// uses (one feature, one code path): toggling an ACTIVE mode off sends
-// `-<letter>`, an inactive one on sends `+<letter>`. Param modes (k/l)
-// show their current value read-only in MVP — setting a keyed/limited
-// mode value is a follow-up (the toggle covers the flag-mode majority
-// the P1 is about; a param SET still works via the explicit
-// `/mode #chan +k secret` command, which bypasses the modal).
+// uses (one feature, one code path): toggling an ACTIVE flag mode off
+// sends `-<letter>`, an inactive one on sends `+<letter>`.
+//
+// #240 — param modes (type B key `+k`, type C limit `+l`) render a value
+// INPUT instead of a bare toggle: an op types the key/limit and hits Set
+// to send `+<letter> <value>`, or Remove to unset. Type B keeps its arg
+// on unset (`-k <key>`, bahamut requires it); type C unsets bare (`-l`).
+// The `params` arg on the same `mode` WS verb already carried this — the
+// #216 MVP just never surfaced the input (was read-only). A non-op still
+// sees the current value read-only.
 //
 // Overlay: registers `createOverlayLock` so the covered ScrollbackPane
 // freezes its scroll position while the modal is up — the
 // new-covering-modal-must-push-overlay-refcount contract (#219-general).
+
+// A single param-taking mode row (#240). Local `draft` signal holds the
+// operator's in-progress value; Set sanitises it (single non-empty wire
+// token) and fires `onSet`, Remove fires `onUnset`. Reactive props are
+// accessors so the row reflects WS-driven mode/param changes live.
+const ParamModeRow: Component<{
+  mode: AvailableMode;
+  active: () => boolean;
+  paramValue: () => string | null;
+  canEdit: () => boolean;
+  onSet: (value: string) => void;
+  onUnset: () => void;
+}> = (props) => {
+  const [draft, setDraft] = createSignal("");
+
+  const submit = (): void => {
+    const value = sanitizeModeParam(draft());
+    if (value === null) return; // empty / whitespace — nothing to send.
+    props.onSet(value);
+    setDraft("");
+  };
+
+  return (
+    <div class="mode-modal-param-row" classList={{ "mode-modal-param-row-active": props.active() }}>
+      <span class="mode-modal-toggle-flag">+{props.mode.letter}</span>
+      <span class="mode-modal-toggle-label">{props.mode.label}</span>
+      <Show when={props.active() && props.paramValue() !== null}>
+        <span class="mode-modal-toggle-param">{props.paramValue()}</span>
+      </Show>
+      <span class="mode-modal-toggle-desc">{props.mode.desc}</span>
+      <Show when={props.canEdit()}>
+        <div class="mode-modal-param-controls">
+          <input
+            type="text"
+            class="mode-modal-param-input"
+            data-testid={`mode-param-input-${props.mode.letter}`}
+            aria-label={`${props.mode.label} value`}
+            placeholder={props.active() ? "new value" : props.mode.label}
+            value={draft()}
+            onInput={(e) => setDraft(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submit();
+            }}
+          />
+          <button
+            type="button"
+            class="mode-modal-param-btn"
+            data-testid={`mode-param-set-${props.mode.letter}`}
+            onClick={submit}
+          >
+            Set
+          </button>
+          <Show when={props.active()}>
+            <button
+              type="button"
+              class="mode-modal-param-btn"
+              data-testid={`mode-param-remove-${props.mode.letter}`}
+              onClick={() => props.onUnset()}
+            >
+              Remove
+            </button>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+};
 
 const ModeModal: Component = () => {
   const target = () => modeModalState();
@@ -100,13 +176,29 @@ const ModeModal: Component = () => {
     const id = networkId();
     const t = target();
     if (id === undefined || !t) return;
-    // Param modes are read-only in the modal MVP — a value SET needs the
-    // explicit `/mode #chan +k secret` command. Toggling a set param mode
-    // OFF is safe (`-k` / `-l` take no arg), so allow that; block turning
-    // one ON from the modal (no value to send).
-    if (m.takesParam && !isActive(m.letter)) return;
     const sign = isActive(m.letter) ? "-" : "+";
     void pushChannelMode(id, t.channel, `${sign}${m.letter}`, []);
+  };
+
+  // #240 — set a param mode to a value: `+<letter> <value>`.
+  const onSetParam = (m: AvailableMode, value: string): void => {
+    if (!canEdit()) return;
+    const id = networkId();
+    const t = target();
+    if (id === undefined || !t) return;
+    void pushChannelMode(id, t.channel, `+${m.letter}`, [value]);
+  };
+
+  // #240 — unset a param mode. Type B (key) keeps its arg (`-k <key>`,
+  // bahamut requires it); type C (limit) unsets bare (`-l`).
+  const onUnsetParam = (m: AvailableMode): void => {
+    if (!canEdit()) return;
+    const id = networkId();
+    const t = target();
+    if (id === undefined || !t) return;
+    const current = currentParams()[m.letter] ?? null;
+    const params = m.paramOnUnset && current !== null ? [current] : [];
+    void pushChannelMode(id, t.channel, `-${m.letter}`, params);
   };
 
   // Overlay refcount so ScrollbackPane freezes while the modal covers it.
@@ -150,28 +242,35 @@ const ModeModal: Component = () => {
             </header>
             <div class="mode-modal-body">
               <For each={toggles()}>
-                {(m) => {
-                  const active = () => isActive(m.letter);
-                  const paramValue = () => currentParams()[m.letter] ?? null;
-                  return (
-                    <button
-                      type="button"
-                      class="mode-modal-toggle"
-                      classList={{ "mode-modal-toggle-active": active() }}
-                      aria-pressed={active()}
-                      aria-disabled={!canEdit()}
-                      aria-label={`${m.label} (+${m.letter})`}
-                      onClick={() => onToggle(m)}
-                    >
-                      <span class="mode-modal-toggle-flag">+{m.letter}</span>
-                      <span class="mode-modal-toggle-label">{m.label}</span>
-                      <span class="mode-modal-toggle-desc">{m.desc}</span>
-                      <Show when={active() && m.takesParam && paramValue() !== null}>
-                        <span class="mode-modal-toggle-param">{paramValue()}</span>
-                      </Show>
-                    </button>
-                  );
-                }}
+                {(m) => (
+                  <Show
+                    when={m.takesParam}
+                    fallback={
+                      <button
+                        type="button"
+                        class="mode-modal-toggle"
+                        classList={{ "mode-modal-toggle-active": isActive(m.letter) }}
+                        aria-pressed={isActive(m.letter)}
+                        aria-disabled={!canEdit()}
+                        aria-label={`${m.label} (+${m.letter})`}
+                        onClick={() => onToggle(m)}
+                      >
+                        <span class="mode-modal-toggle-flag">+{m.letter}</span>
+                        <span class="mode-modal-toggle-label">{m.label}</span>
+                        <span class="mode-modal-toggle-desc">{m.desc}</span>
+                      </button>
+                    }
+                  >
+                    <ParamModeRow
+                      mode={m}
+                      active={() => isActive(m.letter)}
+                      paramValue={() => currentParams()[m.letter] ?? null}
+                      canEdit={canEdit}
+                      onSet={(value) => onSetParam(m, value)}
+                      onUnset={() => onUnsetParam(m)}
+                    />
+                  </Show>
+                )}
               </For>
             </div>
           </div>

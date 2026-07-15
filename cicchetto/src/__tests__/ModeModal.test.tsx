@@ -145,4 +145,83 @@ describe("ModeModal", () => {
     fireEvent.click(noExternal);
     expect(socketMock.pushChannelMode).not.toHaveBeenCalled();
   });
+
+  // #240 — param modes (+k key / +l limit) get a value input the operator
+  // can SET from the modal (previously read-only in the #216 MVP).
+  describe("param modes (#240)", () => {
+    it("op sees a value input + Set control for a param mode (+k)", () => {
+      mockModes[KEY] = { modes: [], params: {} };
+      mockMembers[KEY] = [{ nick: "vjt-grappa", modes: ["@"] }];
+      openModeModal("bahamut", "#bofh");
+
+      const { getByTestId } = render(() => <ModeModal />);
+      expect(getByTestId("mode-param-input-k")).toBeTruthy();
+      expect(getByTestId("mode-param-set-k")).toBeTruthy();
+    });
+
+    it("op typing a key and clicking Set sends +k with the value", () => {
+      mockModes[KEY] = { modes: [], params: {} };
+      mockMembers[KEY] = [{ nick: "vjt-grappa", modes: ["@"] }];
+      openModeModal("bahamut", "#bofh");
+
+      const { getByTestId } = render(() => <ModeModal />);
+      fireEvent.input(getByTestId("mode-param-input-k"), { target: { value: "s3cr3t" } });
+      fireEvent.click(getByTestId("mode-param-set-k"));
+      expect(socketMock.pushChannelMode).toHaveBeenCalledWith(1, "#bofh", "+k", ["s3cr3t"]);
+    });
+
+    it("op typing a limit and clicking Set sends +l with the value", () => {
+      mockModes[KEY] = { modes: [], params: {} };
+      mockMembers[KEY] = [{ nick: "vjt-grappa", modes: ["@"] }];
+      openModeModal("bahamut", "#bofh");
+
+      const { getByTestId } = render(() => <ModeModal />);
+      fireEvent.input(getByTestId("mode-param-input-l"), { target: { value: "42" } });
+      fireEvent.click(getByTestId("mode-param-set-l"));
+      expect(socketMock.pushChannelMode).toHaveBeenCalledWith(1, "#bofh", "+l", ["42"]);
+    });
+
+    it("does not send when the value is empty or whitespace-only", () => {
+      mockModes[KEY] = { modes: [], params: {} };
+      mockMembers[KEY] = [{ nick: "vjt-grappa", modes: ["@"] }];
+      openModeModal("bahamut", "#bofh");
+
+      const { getByTestId } = render(() => <ModeModal />);
+      fireEvent.input(getByTestId("mode-param-input-k"), { target: { value: "   " } });
+      fireEvent.click(getByTestId("mode-param-set-k"));
+      expect(socketMock.pushChannelMode).not.toHaveBeenCalled();
+    });
+
+    it("shows the current value and removing an active key sends -k with the key (type B)", () => {
+      mockModes[KEY] = { modes: ["k"], params: { k: "oldkey" } };
+      mockMembers[KEY] = [{ nick: "vjt-grappa", modes: ["@"] }];
+      openModeModal("bahamut", "#bofh");
+
+      const { getByTestId, getByText } = render(() => <ModeModal />);
+      expect(getByText("oldkey")).toBeTruthy();
+      fireEvent.click(getByTestId("mode-param-remove-k"));
+      expect(socketMock.pushChannelMode).toHaveBeenCalledWith(1, "#bofh", "-k", ["oldkey"]);
+    });
+
+    it("removing an active limit sends a bare -l (type C, no arg)", () => {
+      mockModes[KEY] = { modes: ["l"], params: { l: "42" } };
+      mockMembers[KEY] = [{ nick: "vjt-grappa", modes: ["@"] }];
+      openModeModal("bahamut", "#bofh");
+
+      const { getByTestId } = render(() => <ModeModal />);
+      fireEvent.click(getByTestId("mode-param-remove-l"));
+      expect(socketMock.pushChannelMode).toHaveBeenCalledWith(1, "#bofh", "-l", []);
+    });
+
+    it("a non-op sees the param value read-only — no input, no Set", () => {
+      mockModes[KEY] = { modes: ["k"], params: { k: "sekret" } };
+      mockMembers[KEY] = [{ nick: "vjt-grappa", modes: [] }];
+      openModeModal("bahamut", "#bofh");
+
+      const { queryByTestId, getByText } = render(() => <ModeModal />);
+      expect(getByText("sekret")).toBeTruthy();
+      expect(queryByTestId("mode-param-input-k")).toBeNull();
+      expect(queryByTestId("mode-param-set-k")).toBeNull();
+    });
+  });
 });

@@ -4,7 +4,12 @@ import { describe, expect, it } from "vitest";
 // derivation that folds a network's ISUPPORT capability set into a
 // display list for the /mode modal.
 
-import { availableModes, editorSigils, modeDescription } from "../lib/channelModes";
+import {
+  availableModes,
+  editorSigils,
+  modeDescription,
+  sanitizeModeParam,
+} from "../lib/channelModes";
 import { DEFAULT_ISUPPORT, type IsupportEntry } from "../lib/isupport";
 
 describe("channelModes description table", () => {
@@ -67,6 +72,18 @@ describe("availableModes", () => {
     expect(letters).not.toContain("I");
   });
 
+  it("marks type-B modes as param-on-unset, type-C/D as not (#240)", () => {
+    // Type B (key) takes a param on BOTH set and unset (bahamut `MODE -k
+    // <key>`); type C (limit) takes a param on set only (`-l` bare). The
+    // modal needs this distinction to send `-k <key>` vs a bare `-l`.
+    const modes = availableModes(DEFAULT_ISUPPORT);
+    const find = (letter: string) => modes.find((m) => m.letter === letter);
+
+    expect(find("k")?.paramOnUnset).toBe(true); // type B
+    expect(find("l")?.paramOnUnset).toBe(false); // type C
+    expect(find("s")?.paramOnUnset).toBe(false); // type D (flag)
+  });
+
   it("surfaces an advertised-but-unknown letter with a generic label (no crash)", () => {
     const isupport: IsupportEntry = {
       chanmodes: { a: [], b: [], c: [], d: ["n", "t", "Z"] },
@@ -76,6 +93,25 @@ describe("availableModes", () => {
     const z = modes.find((m) => m.letter === "Z");
     expect(z).toBeDefined();
     expect(z?.takesParam).toBe(false);
+  });
+});
+
+describe("sanitizeModeParam (#240)", () => {
+  it("trims surrounding whitespace and returns the value", () => {
+    expect(sanitizeModeParam("  s3cr3t  ")).toBe("s3cr3t");
+    expect(sanitizeModeParam("42")).toBe("42");
+  });
+
+  it("returns null for empty or whitespace-only input", () => {
+    expect(sanitizeModeParam("")).toBeNull();
+    expect(sanitizeModeParam("   ")).toBeNull();
+  });
+
+  it("returns null when the value contains internal whitespace (IRC params are single tokens)", () => {
+    // A channel key / limit is one wire token — an embedded space would
+    // split into two MODE args and set garbage. Reject at the boundary.
+    expect(sanitizeModeParam("two words")).toBeNull();
+    expect(sanitizeModeParam("a\tb")).toBeNull();
   });
 });
 

@@ -60,7 +60,15 @@ export type AvailableMode = {
   letter: string;
   label: string;
   desc: string;
+  /** Takes a parameter when SET (`+k <key>` / `+l <n>`): type B or C. */
   takesParam: boolean;
+  /**
+   * Takes a parameter when UNSET too (`-k <key>`): type B only. Type C
+   * (`-l`) and type D flags unset bare. #240 — the modal sends the
+   * current value as the `-` arg for type-B modes (bahamut requires it)
+   * but a bare `-<letter>` for type C.
+   */
+  paramOnUnset: boolean;
 };
 
 /**
@@ -74,6 +82,7 @@ export type AvailableMode = {
 export function availableModes(isupport: IsupportEntry): AvailableMode[] {
   const { b, c, d } = isupport.chanmodes;
   const paramModes = new Set([...b, ...c]);
+  const unsetParamModes = new Set(b); // type B keeps its arg on `-`.
   const letters = [...b, ...c, ...d];
 
   return letters
@@ -84,9 +93,26 @@ export function availableModes(isupport: IsupportEntry): AvailableMode[] {
         label: info.label,
         desc: info.desc,
         takesParam: paramModes.has(letter),
+        paramOnUnset: unsetParamModes.has(letter),
       };
     })
     .sort((x, y) => x.label.localeCompare(y.label));
+}
+
+/**
+ * Normalise a user-typed mode parameter (a channel key or member limit)
+ * into a single wire token, or `null` when it is unusable. Trims
+ * surrounding whitespace and rejects an empty result or one containing
+ * internal whitespace — an IRC MODE parameter is ONE space-delimited
+ * token, so an embedded space would split into two args and set garbage.
+ * The ircd remains the authority on value validity (a non-numeric `+l`,
+ * a too-long key); this guard only stops the obviously-malformed frame.
+ */
+export function sanitizeModeParam(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (/\s/.test(trimmed)) return null;
+  return trimmed;
 }
 
 /**
