@@ -229,7 +229,12 @@ defmodule Grappa.Session.EventRouter do
   """
   @spec route(Message.t(), state()) :: {:cont, state(), [effect()]}
   def route(%Message{} = msg, state) do
-    do_route(canonicalize_channel_params(msg), state)
+    statusmsg = ISupport.statusmsg(Map.get(state, :isupport, ISupport.default()))
+
+    msg
+    |> strip_statusmsg_target(statusmsg)
+    |> canonicalize_channel_params()
+    |> do_route(state)
   end
 
   # Rewrites `msg.params` so every channel-shape param is canonicalised
@@ -297,6 +302,47 @@ defmodule Grappa.Session.EventRouter do
   # numerics without a channel param, vendor verbs) pass through
   # unchanged — there is no channel-shape param to canonicalise.
   defp do_canonicalize_params(_, params), do: params
+
+  # #218 — a STATUSMSG target (`@#chan` ops-only, `+#chan` voice) is a
+  # channel message prefixed with a membership sigil; it belongs in the
+  # underlying channel window, NOT the network/`$server` tab or a query
+  # window. Strip a leading statusmsg sigil from a `:notice`/`:privmsg`
+  # param-0 target BEFORE canonicalisation + the channel-prefix dispatch,
+  # so `build_persist` / `canonical_channel` receive a clean `#chan` (no
+  # need to widen `canonical_channel`'s sigil set, which is shared with
+  # `Scrollback.target_kind/1`). Runs BEFORE `canonicalize_channel_params/1`
+  # so the peeled `#Chan` still gets case-folded to `#chan`.
+  #
+  # The sigil SET is sourced from the per-network ISUPPORT table (bahamut
+  # default `@+`), never hardcoded — `route/2` resolves it via
+  # `ISupport.statusmsg(Map.get(state, :isupport, ISupport.default()))` so a
+  # pure router state (unit tests) or a live proc whose state predates the
+  # `:isupport` field parses identically. It's passed IN (rather than this
+  # fn reading `state()`) so the strip stays a pure fn of msg + sigil-set
+  # and doesn't tighten whole-module `state` inference. This is the
+  # remaining STATUSMSG gap of the #78/#128 route-by-target class.
+  @spec strip_statusmsg_target(Message.t(), [String.t()]) :: Message.t()
+  defp strip_statusmsg_target(%Message{command: cmd, params: [target | rest]} = msg, statusmsg)
+       when cmd in [:notice, :privmsg] and is_binary(target) do
+    %{msg | params: [strip_statusmsg_prefix(target, statusmsg) | rest]}
+  end
+
+  defp strip_statusmsg_target(msg, _), do: msg
+
+  # Peels ONE leading statusmsg sigil iff (a) it is in the network's
+  # advertised set AND (b) a channel sigil (`#&!+`) immediately follows —
+  # so a real `+chan` (voice-typed channel, `+` NOT followed by a channel
+  # sigil) is never mis-stripped (the `+` collision: `+` is both a channel
+  # sigil and the voice membership sigil). Returns the underlying channel,
+  # else the target unchanged. Reuses `channel_target?/1` so the
+  # "what follows is a channel" test agrees byte-for-byte with the
+  # channel-NOTICE dispatch guard.
+  @spec strip_statusmsg_prefix(binary(), [String.t()]) :: binary()
+  defp strip_statusmsg_prefix(<<sigil::binary-size(1), rest::binary>> = target, statusmsg) do
+    if sigil in statusmsg and channel_target?(rest), do: rest, else: target
+  end
+
+  defp strip_statusmsg_prefix(target, _), do: target
 
   @spec do_route(Message.t(), state()) :: {:cont, state(), [effect()]}
   # CTCP VERSION query — body is `\x01VERSION\x01` or `\x01VERSION ...\x01`

@@ -766,6 +766,106 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  # #218 — a NOTICE/PRIVMSG addressed to a STATUSMSG target (a membership
+  # sigil prefixing a channel, e.g. `@#chan` ops-only, `+#chan` voice)
+  # belongs in the underlying channel window, NOT the network/$server tab
+  # or a query window. The router strips the statusmsg sigil BEFORE the
+  # channel-prefix test, sourcing the sigil set from ISUPPORT (bahamut
+  # default `@+`), and only when a channel sigil (`#&!+`) immediately
+  # follows — so a real `+chan` (voice-typed channel) is never mis-stripped.
+  # This is the remaining gap of the #78/#128 route-by-target class.
+  describe "route/2 — #218 STATUSMSG-prefixed channel targets" do
+    test "NOTICE @#chan (ops-only) routes to the channel window, not $server" do
+      state = base_state()
+
+      m = msg(:notice, ["@#italia", "ops-only heads up"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "#italia"
+      assert attrs.sender == "op"
+      assert attrs.body == "ops-only heads up"
+    end
+
+    test "NOTICE +#chan (voice) routes to the channel window" do
+      state = base_state()
+
+      m = msg(:notice, ["+#italia", "voiced folks only"], {:nick, "someone", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "#italia"
+      assert attrs.body == "voiced folks only"
+    end
+
+    test "NOTICE @#Chan folds to the canonical lowercase channel (strip THEN casefold)" do
+      state = base_state()
+
+      m = msg(:notice, ["@#Italia", "casefold me"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, %{channel: "#italia"}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "PRIVMSG @#chan routes to the channel window (root-cause: same misroute class)" do
+      state = base_state()
+
+      m = msg(:privmsg, ["@#italia", "ops chatter"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :privmsg, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "#italia"
+      assert attrs.body == "ops chatter"
+    end
+
+    test "collision guard: a real +chan (no channel sigil after +) is NOT mis-stripped" do
+      # `+` is BOTH a channel sigil (modeless channels) AND a voice
+      # statusmsg sigil. A leading `+` is only a statusmsg prefix when a
+      # channel sigil immediately follows; `+chan` is the channel itself.
+      state = base_state()
+
+      m = msg(:notice, ["+chan", "hello modeless channel"], {:nick, "someone", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "+chan"
+      assert attrs.body == "hello modeless channel"
+    end
+
+    test "statusmsg set is ISUPPORT-sourced: an advertised % level is stripped" do
+      # A network advertising `STATUSMSG=@%+` lets `%#chan` (halfop) target
+      # the channel — the strip consults the per-network set, not a
+      # hardcoded `@+`.
+      isupport = ISupport.merge_isupport(["x", "STATUSMSG=@%+"], ISupport.default())
+      state = base_state(%{isupport: isupport})
+
+      m = msg(:notice, ["%#italia", "halfops heads up"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, %{channel: "#italia"}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "statusmsg set is ISUPPORT-sourced: an UNadvertised sigil is NOT stripped" do
+      # Under the bahamut default set (`@+`, no `%`), a `%#chan` target is
+      # not a statusmsg prefix — it falls through to the non-channel arm
+      # (server-origin sender → $server), proving the strip is gated on the
+      # advertised set rather than treating every membership sigil as one.
+      state = base_state()
+
+      m = msg(:notice, ["%#italia", "stray"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      refute attrs.channel == "#italia"
+      assert attrs.channel == "$server"
+    end
+  end
+
   describe "route/2 — #127 server-reply modals (INFO/VERSION/MOTD)" do
     # Explicit /motd primes state.motd_pending; the 375/372 burst folds and
     # 376 RPL_ENDOFMOTD drains ONE {:server_reply, :motd, lines} effect in

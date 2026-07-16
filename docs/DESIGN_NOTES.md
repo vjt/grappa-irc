@@ -21605,3 +21605,91 @@ jsdom can't see — proven in the Playwright e2e / real browser
 _Deploy: **HOT — `--cic` (bundle only)**. No `lib/` change, no migration;
 `Deploy.Preflight.classify_paths` over the cic paths returns `{:hot, []}`.
 A refresh banner surfaces on cic-bundle-hash mismatch._
+
+## 2026-07-16 — #218 STATUSMSG notice routing (channel notices to `@#chan`)
+
+**Symptom (P0, reported on #grappa).** A NOTICE addressed to a STATUSMSG
+target — a membership sigil prefixing a channel, `NOTICE @#grappa :…`
+(ops-only) or `+#grappa` (voice), typically from services or a user not in
+the channel — landed in the network/`$server` tab (or a per-peer query
+window) instead of the `#grappa` window.
+
+**Root cause (server-side, `Grappa.Session.EventRouter`).** The two
+`:notice` clauses dispatch on the target's FIRST byte against the
+channel-sigil set `["#","&","!","+"]`:
+
+  * channel clause (`event_router.ex` ~362) — byte0 ∈ sigils → persist to
+    the channel;
+  * non-channel clause (~1832) → `route_non_channel_notice/2` →
+    `$server`/query window.
+
+`@#grappa` starts with `@` → fails the channel guard → non-channel arm →
+(regular-nick sender) a query window keyed on the sender, or (services/
+server sender) `$server`. The `+#grappa` variant was ALSO broken the other
+way: byte0 `+` ∈ sigils → channel clause → persisted to a bogus literal
+`+#grappa` window instead of `#grappa`. `PRIVMSG @#chan` shared the class
+(`privmsg_default` → `channel_target?/1`, same `#&!+` test). This is the
+remaining STATUSMSG gap of the #78/#128 route-by-**target** class.
+
+**Fix — strip the statusmsg sigil BEFORE the channel-prefix test.**
+`route/2` now peels a leading statusmsg sigil off a `:notice`/`:privmsg`
+param-0 target BEFORE `canonicalize_channel_params/1` (so the peeled
+`#Chan` still case-folds to `#chan`) and before `do_route/2` dispatch. The
+underlying channel then flows through the existing channel arm untouched —
+no widening of `Identifier.canonical_channel/1`'s sigil set (it is shared
+with `Scrollback.target_kind/1`; widening it would mis-tag other contexts).
+
+**The general prefix rule + the `+` collision.** A leading sigil is treated
+as STATUSMSG only when (a) it is in the network's advertised set AND (b) a
+channel sigil (`#&!+`) IMMEDIATELY follows. `+` is BOTH a channel sigil
+(modeless channels) AND the voice membership sigil — so `+#chan` is a
+voiced statusmsg (→ `#chan`) but a bare `+chan` is a real channel and is
+never mis-stripped. Reuses `channel_target?/1` for the "what follows is a
+channel" test so it agrees byte-for-byte with the channel-NOTICE dispatch
+guard. Covered by unit tests + two StreamData properties
+(`event_router_property_test.exs`).
+
+**STATUSMSG sourced from ISUPPORT, not hardcoded.** The sigil set is
+per-network. `Grappa.Session.ISupport` (#216) gains a `:statusmsg` field:
+`@type t` + `default/0` seed the bahamut/Azzurra `@+`, a
+`merge_token("STATUSMSG=" <> …)` clause parses the 005 token, and
+`ISupport.statusmsg/1` exposes it. `route/2` resolves the set via
+`ISupport.statusmsg(Map.get(state, :isupport, ISupport.default()))` and
+passes the LIST into the strip helper — the strip stays a pure fn of
+`(msg, sigil_set)` rather than consuming `state()`, which avoids tightening
+whole-module `state` type inference (an earlier `state()`-typed strip spec
+made Dialyzer prove `state.nick` always-binary and flag the existing
+`nick_eq?(_, nil)` runtime guard as dead — a design signal that the
+strip should not depend on the full state shape).
+
+**Hot-reload safety (mirrors #216's own `:isupport` pattern).** The new
+field lives INSIDE the `ISupport.t()` map, which is `state.isupport` on a
+long-lived `Session.Server`. Every read of `:statusmsg` is defensive —
+`ISupport.statusmsg/1` uses `Map.get(map, :statusmsg, @default_statusmsg)`
+and `merge_token` writes via `Map.put` (not `%{acc | …}`) — so a running
+session holding a pre-#218 isupport map (no `:statusmsg`) degrades to the
+bahamut default `@+` (exactly correct for Azzurra) instead of a KeyError,
+until its next 005 reseeds it. `Grappa.Session.ISupport` is intentionally
+NOT added to `Grappa.HotReload.LongLivedModules` — the defensive reads make
+it hot-safe without the COLD gate, matching how `Map.get(state, :isupport,
+ISupport.default())` already guards the parent field.
+
+**cic is untouched.** Once the row persists with `channel = "#grappa"` it
+fans out on the per-channel topic and cic renders it like any channel
+notice (`userTopic.ts` / `api.ts` only preserve mode-prefixes in WHOIS
+channel *lists* — unrelated to notice routing). The optional "ops-only"
+badge (record the statusmsg LEVEL in `meta` so cic can tag it) is DEFERRED
+— the core user-visible fix (notice → channel window) needs neither a
+migration nor any cic change. If picked up later it ships one-feature-
+three-doors: a `Grappa.Scrollback.Meta` allowlist key + a cic badge +
+vitest, and extends the e2e.
+
+_Deploy: **SERVER — no migration, no `--cic`.** Preflight classifies HOT
+(the field-add is nested inside `ISupport.t()`, which is not a tracked
+long-lived module, and `Session.Server`'s top-level state-shape literal
+`isupport: ISupport.default()` is unchanged — the exact field-add-inside-
+@type gap the preflight misses). HOT is nonetheless SAFE here because every
+`:statusmsg` read defaults defensively to the bahamut `@+`. COLD-server is
+the belt-and-suspenders alternative — free (no migration), it reseeds every
+session's isupport with the full default. Either is fine for a batch
+deploy._

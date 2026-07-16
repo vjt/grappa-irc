@@ -1,7 +1,7 @@
 defmodule Grappa.Session.ISupport do
   @moduledoc """
   Per-network channel-mode capability table, parsed from the upstream's
-  005 RPL_ISUPPORT `CHANMODES=` and `PREFIX=` tokens.
+  005 RPL_ISUPPORT `CHANMODES=`, `PREFIX=`, and `STATUSMSG=` tokens.
 
   ## Why this exists
 
@@ -55,7 +55,8 @@ defmodule Grappa.Session.ISupport do
 
   @type t :: %{
           chanmodes: chanmodes(),
-          prefix: prefix()
+          prefix: prefix(),
+          statusmsg: [String.t()]
         }
 
   # Pre-005 seed = the exact values the old EventRouter constants held.
@@ -83,6 +84,14 @@ defmodule Grappa.Session.ISupport do
     d: ["i", "m", "n", "p", "s", "t", "r", "R", "c", "C", "D", "d"]
   }
 
+  # #218 — STATUSMSG advertises which membership PREFIX sigils may prefix a
+  # message TARGET (`NOTICE @#chan` ops-only, `PRIVMSG +#chan` voice), so a
+  # message can reach only members at-or-above a status level. bahamut/
+  # Azzurra advertises `@+` (op + voice). Seeded so a session strips the
+  # common cases before the first 005 arrives, mirroring how the prefix +
+  # chanmodes seeds carry the pre-005 bahamut values.
+  @default_statusmsg ["@", "+"]
+
   @doc """
   The pre-005 default capability table (bahamut/Azzurra values). Used as
   the initial `Session.Server` state field and as the fallback whenever a
@@ -90,7 +99,7 @@ defmodule Grappa.Session.ISupport do
   """
   @spec default() :: t()
   def default do
-    %{chanmodes: @default_chanmodes, prefix: @default_prefix}
+    %{chanmodes: @default_chanmodes, prefix: @default_prefix, statusmsg: @default_statusmsg}
   end
 
   @doc """
@@ -138,6 +147,29 @@ defmodule Grappa.Session.ISupport do
     Map.fetch(prefix, mode)
   end
 
+  @doc """
+  The advertised STATUSMSG membership sigils for this network — the set a
+  message target may be prefixed with to reach only members at-or-above
+  that status (`@#chan` ops, `+#chan` voice). Read via `Map.get` (not
+  `map.statusmsg`) so a capability table that predates the `:statusmsg`
+  field — a live `Session.Server` state seeded before #218 and read after
+  a hot code-reload — defaults to the bahamut set instead of raising a
+  KeyError. Mirrors `Session.Server`'s
+  `Map.get(state, :isupport, ISupport.default())` hot-safety; a cold
+  restart reseeds the full `default/0`.
+  """
+  @spec statusmsg(t()) :: [String.t()]
+  def statusmsg(isupport) when is_map(isupport),
+    do: Map.get(isupport, :statusmsg, @default_statusmsg)
+
+  @doc """
+  The pre-005 default STATUSMSG sigils (bahamut/Azzurra `@+`). Exposed so
+  callers and tests reference the seed through production code rather than
+  duplicating the literal.
+  """
+  @spec default_statusmsg() :: [String.t()]
+  def default_statusmsg, do: @default_statusmsg
+
   # ---------------------------------------------------------------------------
   # Token parsing
   # ---------------------------------------------------------------------------
@@ -153,6 +185,19 @@ defmodule Grappa.Session.ISupport do
   defp merge_token("PREFIX=" <> rest, acc) do
     case parse_prefix(rest) do
       {:ok, prefix} -> %{acc | prefix: prefix}
+      :error -> acc
+    end
+  end
+
+  # #218 — STATUSMSG=@+ : a raw run of membership sigils that may prefix a
+  # message target. `Map.put` (not `%{acc | statusmsg: ...}`) because `acc`
+  # may be a table that predates the `:statusmsg` field during a hot-reload
+  # window; the update-syntax would KeyError on the absent key. Mirrors
+  # Session.Server's `Map.put(state, :isupport, ...)` write for the same
+  # reason.
+  defp merge_token("STATUSMSG=" <> rest, acc) do
+    case parse_statusmsg(rest) do
+      {:ok, sigils} -> Map.put(acc, :statusmsg, sigils)
       :error -> acc
     end
   end
@@ -194,6 +239,17 @@ defmodule Grappa.Session.ISupport do
       {:ok, mode_list |> Enum.zip(sigil_list) |> Map.new()}
     else
       _ -> :error
+    end
+  end
+
+  # STATUSMSG=<sigils> — a bare run of membership prefix chars (`@+`,
+  # `@%+`). An empty value (`STATUSMSG=`) is malformed: keep the prior set
+  # rather than blanking the strip capability.
+  @spec parse_statusmsg(String.t()) :: {:ok, [String.t()]} | :error
+  defp parse_statusmsg(rest) do
+    case String.graphemes(rest) do
+      [] -> :error
+      sigils -> {:ok, sigils}
     end
   end
 end

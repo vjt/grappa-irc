@@ -221,4 +221,64 @@ defmodule Grappa.Session.EventRouterPropertyTest do
       end)
     end
   end
+
+  # #218 — the GENERAL STATUSMSG-prefix rule. A NOTICE whose target is a
+  # channel prefixed by any advertised statusmsg sigil (bahamut default
+  # `@+`) routes to the UNDERLYING channel window. The complement — a bare
+  # `+channel` (voice-typed channel, no channel sigil after the `+`) — is
+  # never mis-stripped to a bogus window. Both arms exercise the collision-
+  # safe rule for every generated channel body, not just the unit examples.
+  defp min_state do
+    %{
+      subject: {:user, "00000000-0000-0000-0000-000000000001"},
+      network_id: 1,
+      nick: "self",
+      members: %{},
+      topics: %{},
+      channels_created: %{},
+      channel_modes: %{},
+      userhost_cache: %{}
+    }
+  end
+
+  property "#218: a STATUSMSG-prefixed NOTICE target routes to the underlying channel" do
+    check all(
+            body <- ascii_nick_gen(),
+            sigil <- member_of(["@", "+"])
+          ) do
+      channel = "#" <> body
+
+      m = %Message{
+        command: :notice,
+        params: [sigil <> channel, "ops heads up"],
+        prefix: {:nick, "someuser", "u", "h"},
+        tags: %{}
+      }
+
+      assert {:cont, _, [{:persist, :notice, attrs}]} = EventRouter.route(m, min_state())
+
+      assert attrs.channel == String.downcase(channel),
+             "statusmsg target #{sigil <> channel} should route to #{String.downcase(channel)}, got #{attrs.channel}"
+    end
+  end
+
+  property "#218 collision: a bare +channel (no channel sigil after +) is never mis-stripped" do
+    check all(body <- ascii_nick_gen()) do
+      # `ascii_nick_gen` never starts with a channel sigil, so `+<body>` is
+      # always a genuine +-typed channel, not a voiced `+#chan` statusmsg.
+      channel = "+" <> body
+
+      m = %Message{
+        command: :notice,
+        params: [channel, "hi"],
+        prefix: {:nick, "someuser", "u", "h"},
+        tags: %{}
+      }
+
+      assert {:cont, _, [{:persist, :notice, attrs}]} = EventRouter.route(m, min_state())
+
+      assert attrs.channel == String.downcase(channel),
+             "bare +channel #{channel} must not be stripped to #{body}, got #{attrs.channel}"
+    end
+  end
 end

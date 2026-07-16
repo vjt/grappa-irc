@@ -110,4 +110,55 @@ defmodule Grappa.Session.ISupportTest do
       refute ISupport.takes_param?(d, "l", :remove)
     end
   end
+
+  # #218 — STATUSMSG is the ISUPPORT token listing which membership PREFIX
+  # sigils may prefix a message target (`NOTICE @#chan`, `PRIVMSG +#chan`).
+  # It's the source of truth for EventRouter's statusmsg-target strip, so
+  # the set is network-advertised (bahamut/Azzurra: `@+`), never hardcoded.
+  describe "STATUSMSG (#218)" do
+    test "default/0 seeds the bahamut/Azzurra statusmsg sigils (@+)" do
+      assert ISupport.statusmsg(ISupport.default()) == ["@", "+"]
+      assert ISupport.default_statusmsg() == ["@", "+"]
+    end
+
+    test "merge_isupport/2 parses a STATUSMSG= token into the sigil list" do
+      params = ["grappa-test", "STATUSMSG=@+", "are supported by this server"]
+      isupport = ISupport.merge_isupport(params, ISupport.default())
+      assert ISupport.statusmsg(isupport) == ["@", "+"]
+    end
+
+    test "merge_isupport/2 honours a network that advertises a wider set (@%+)" do
+      # A halfop-carrying network (`PREFIX=(ohv)@%+`) may advertise `%` as
+      # a statusmsg level too — the set MUST come from the wire, not a
+      # hardcoded `@+`.
+      params = ["grappa-test", "STATUSMSG=@%+"]
+      isupport = ISupport.merge_isupport(params, ISupport.default())
+      assert ISupport.statusmsg(isupport) == ["@", "%", "+"]
+    end
+
+    test "merge_isupport/2 preserves the current statusmsg when the token is absent" do
+      params = ["grappa-test", "NETWORK=Azzurra", "are supported by this server"]
+      d = ISupport.default()
+      assert ISupport.statusmsg(ISupport.merge_isupport(params, d)) == ISupport.default_statusmsg()
+    end
+
+    test "merge_isupport/2 ignores an empty STATUSMSG= token" do
+      # A server advertising `STATUSMSG=` with no sigils is malformed;
+      # keep the prior set rather than blanking the strip capability.
+      params = ["grappa-test", "STATUSMSG="]
+      d = ISupport.default()
+      assert ISupport.statusmsg(ISupport.merge_isupport(params, d)) == ISupport.default_statusmsg()
+    end
+
+    test "statusmsg/1 falls back to the default on a table predating the field (hot-reload safety)" do
+      # A live Session.Server state seeded BEFORE this field existed holds
+      # an isupport map without `:statusmsg`. A hot code-reload that reads
+      # it must NOT KeyError — it defaults to the bahamut set, mirroring
+      # the `Map.get(state, :isupport, ISupport.default())` pattern in
+      # Session.Server. Cold restart reseeds the full default.
+      pre_218 = Map.drop(ISupport.default(), [:statusmsg])
+      refute Map.has_key?(pre_218, :statusmsg)
+      assert ISupport.statusmsg(pre_218) == ISupport.default_statusmsg()
+    end
+  end
 end

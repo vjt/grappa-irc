@@ -115,6 +115,17 @@ export class IrcPeer {
     this.client.action(target, body);
   }
 
+  // Send a raw NOTICE to a target. `target` may be a nick, a channel, or
+  // a STATUSMSG-prefixed channel (`@#chan` ops-only, `+#chan` voice) —
+  // used by the #218 spec to verify grappa routes a statusmsg-targeted
+  // notice to the channel window. Raw (not `client.notice`) so the exact
+  // wire target is preserved verbatim; `raw(array)` adds the trailing-
+  // param `:` itself. Fire-and-forget — irc-framework doesn't echo own
+  // commands, so observe grappa state for delivery confirmation.
+  notice(target: string, body: string): void {
+    this.client.raw(["NOTICE", target, body]);
+  }
+
   // Register a nick with NickServ. Used by P-0a e2es to put a peer
   // into +r (registered) state so a subsequent /whois returns 307
   // RPL_WHOISREGNICK. EMAIL:0 in the testnet conf disables the
