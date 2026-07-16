@@ -22449,3 +22449,103 @@ pre-fix failure is a clean count-value mismatch (`Expected "1" Received
 
 _Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
 BEAM restart — a single memo re-point in `activeWindows.ts` + its e2e._
+
+## 2026-07-16 — #268: green the `integration` suite + CI-green-before-ship rule
+
+The `integration` CI job had been RED on main for 4+ consecutive commits
+with a DIFFERENT failing spec nearly every run (the flaky-suite signature),
+and batch-0716 shipped on that red base. A chronically-red suite MASKS real
+regressions. This closes the incident on two fronts: a persistent
+deploy-discipline RULE, and a REAL fix for the two specs that were actually
+broken (one reliably, one ~44%).
+
+**The rule (CLAUDE.md §Development Cycle step 3).** "Integration CI VERDE
+prima di OGNI ship — hot/cold, cic/server, nessuna eccezione. Il local
+scoped `--grep` NON basta: gira la suite integration COMPLETA
+(`scripts/integration.sh`) verde prima di ogni merge/deploy." The incident's
+proximate cause was a scoped `--grep #NNN` local pass proving ONE spec green
+while the FULL suite was red — so the ship gate is the full suite, never a
+spot-check of the spec you touched.
+
+### Target 1 (reliably red): `slash-commands-bundle.spec.ts` `/topic #chan <body>` cross-window (#23)
+
+**NOT a grappa bug, NOT a drop, NOT a client-side race — bahamut fake-lag.**
+The reliably-red `#23` test JOINs a FRESH channel then IMMEDIATELY `/topic`s
+it. Both the JOIN and the TOPIC leave grappa's SINGLE upstream socket for
+`(vjt, bahamut-test)` — the ONE connection shared by EVERY spec in the run.
+bahamut applies per-connection command flood-throttling ("fake lag"); under
+full-suite load that connection carries accumulated command penalty, so the
+TOPIC echo — grappa's SOLE topic-persist path (`Session.Server` dropped the
+optimistic persist in the #22 fix; `EventRouter`'s unsolicited-TOPIC handler
+is the only writer) — is delayed until the penalty drains.
+
+**Proven with data (chromium full-suite run 2026-07-16):**
+- The `#23` topic row persisted correctly at **+5.013s** after the `POST
+  /topic` (`INSERT ... :topic ... 12:14:12.809`, POST at `12:14:07.795`) —
+  only ~9ms past `assertMessagePersisted`'s 5s default ceiling. The failure
+  message's "last seen" showed the self-JOIN already persisted
+  (`["join/vjt-grappa: null"]`), so grappa WAS on the channel — refuting the
+  "TOPIC hit a not-yet-joined channel → 442" hypothesis (the JOIN and TOPIC
+  are serialized in-order on one socket by `Session.Server`, so bahamut
+  processes JOIN before TOPIC regardless).
+- The sibling `/topic <body>` test on the already-joined `#bofh` (no
+  preceding JOIN) round-tripped in **~1.0s** (`POST 12:14:05.294` → persist
+  `12:14:06.297`). The 5s delta is the JOIN's flood penalty stacking on the
+  TOPIC.
+- In ISO (`--repeat-each 5` on a warm stack) the same test trended
+  1.3→3.8→4.8→4.7→**5.8s** as each iteration's JOIN/TOPIC/PART accumulated
+  penalty — the same mechanism, sub-threshold in iso, over-threshold under
+  full-suite accumulation.
+
+**Fix (deterministic, NOT a blind bump).** The topic
+`assertMessagePersisted` gets `timeoutMs: 15_000`. `assertMessagePersisted`
+is ALREADY a deterministic wait-for-condition (it polls the REST scrollback
+and returns the instant the row lands), so this is headroom on a
+condition-poll, NOT a fixed sleep — the common ~1-5s case is unaffected. 15s
+sits safely above the proven ~5s and bahamut's ~10s fake-lag bank cap. The
+prompt forbids a blind bump "unless you PROVE the window is genuinely too
+tight for the legitimate round-trip" — proven above; and even then prefers a
+condition-wait over a sleep — which is exactly what the poll is. Validated:
+chromium full suite 308/308 green twice with the fix; the row that lands at
+~5s is now caught.
+
+### Target 2 (~44% flaky): `issue254-own-echo-live.spec.ts` query subscribe-before-send (#254)
+
+**A test-helper race, NOT a product bug.** `/msg <nick> <body>`
+SYNCHRONOUSLY switches the selected window to the fresh query window
+(`compose.ts` `openQueryWindowState` + `setSelectedChannel`) BEFORE it awaits
+`ensureQueryTopicJoined` + the send `POST`. `composeSend` resolves as soon as
+the compose textarea reads empty — but the freshly-mounted query window's
+textarea is ALREADY empty, so `composeSend` can return BEFORE the POST fires.
+The spec then read its `__i254_readyAtPost` discriminator prematurely and saw
+`null`.
+
+**Proven with data (instrumented `--repeat-each 25`, 11/25 null-failures).**
+The passing runs recorded `POST .../<peer>/messages` in the wrapper's call
+log with `readySet:[<key>]`; the failing runs recorded the GETs but **no
+POST** and `readySet:[]` — i.e. the send simply had not been issued yet when
+the discriminator was read. Server-side the join ALWAYS preceded the send
+(`JOINED grappa:...channel:<peer>` before `POST .../messages`), confirming
+the product's subscribe-before-send guarantee holds; only the test's read was
+early.
+
+**Fix (deterministic wait on the real event, not retry-masking).**
+`assertSubscribeBeforeSend` now `page.waitForFunction(() =>
+__i254_readyAtPost != null)` — waiting for the wrapper to OBSERVE the POST
+(the seam flips null→boolean at the POST call frame) — before reading and
+asserting `=== true`. It does not mask: a genuinely-missing POST times out
+(still red), and the subscribe-before-send contract is still asserted. Fixes
+both the chromium and `@webkit` query tests (shared helper). Validated:
+`--repeat-each 25` → 25/25 green (was 11/25 failing).
+
+### Targets 3/4 (listed intermittents): #220 link-double-fire, ux-5-bm mobile hamburger
+
+Re-run under `--repeat-each` and in full-suite passes (chromium 308, webkit
+81) with ZERO failures — stable, no code change needed. Their historical reds
+on other commits were collateral of the same flaky-suite churn, not
+standalone bugs.
+
+_Deploy: **CI/docs only — nothing to ship.** The changes are e2e specs
+(`slash-commands-bundle.spec.ts`, `issue254-own-echo-live.spec.ts`) +
+CLAUDE.md + this note. No `lib/`, no `cicchetto/src`, no migration — no
+BEAM restart, no `--cic` bundle. The gate this unblocks is CI itself._
