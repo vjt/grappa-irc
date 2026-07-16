@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { type TopicEntry, topicJoinLine, topicJoinMeta } from "./channelTopic";
+import {
+  flattenTopicNewlines,
+  type TopicEntry,
+  topicJoinLine,
+  topicJoinMeta,
+} from "./channelTopic";
 
 // #237 — the on-JOIN inline topic line is DERIVED from the existing
 // `topicByChannel` store (no parallel state, no faked scrollback id). These
@@ -14,6 +19,49 @@ const entry = (over: Partial<TopicEntry>): TopicEntry => ({
   set_by: null,
   set_at: null,
   ...over,
+});
+
+describe("flattenTopicNewlines", () => {
+  // #263 — the topic-edit modal uses a multi-line <textarea>, but an IRC topic
+  // is a SINGLE wire line (CRLF is the message terminator). The server REJECTS
+  // a topic body containing \r/\n/\x00 outright (Identifier.safe_line_token?/1
+  // → :invalid_line), so flattening on submit is MANDATORY, not cosmetic: a raw
+  // multi-line submit would always fail. Newline runs collapse to ONE space so
+  // words on separate lines stay separated (never fused).
+
+  it("returns text without newlines unchanged", () => {
+    expect(flattenTopicNewlines("a single line topic")).toBe("a single line topic");
+  });
+
+  it("collapses a Unix newline (\\n) to a single space", () => {
+    expect(flattenTopicNewlines("line one\nline two")).toBe("line one line two");
+  });
+
+  it("collapses a Windows CRLF (\\r\\n) to a SINGLE space (not two)", () => {
+    expect(flattenTopicNewlines("line one\r\nline two")).toBe("line one line two");
+  });
+
+  it("collapses a lone carriage return (\\r) to a single space", () => {
+    expect(flattenTopicNewlines("line one\rline two")).toBe("line one line two");
+  });
+
+  it("collapses a run of consecutive newlines (blank lines) to one space", () => {
+    expect(flattenTopicNewlines("line one\n\n\nline two")).toBe("line one line two");
+  });
+
+  it("collapses mixed EOL forms in one string", () => {
+    expect(flattenTopicNewlines("a\nb\r\nc\rd")).toBe("a b c d");
+  });
+
+  it("returns the empty string unchanged", () => {
+    expect(flattenTopicNewlines("")).toBe("");
+  });
+
+  it("yields a body free of the newline bytes the server's safe-line guard rejects", () => {
+    const flat = flattenTopicNewlines("multi\r\nline\ntopic\rwith more");
+    expect(flat).not.toMatch(/[\r\n]/);
+    expect(flat).toBe("multi line topic with more");
+  });
 });
 
 describe("topicJoinLine", () => {

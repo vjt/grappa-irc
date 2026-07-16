@@ -66,6 +66,23 @@ export const seedTopic = exports_.seedTopic;
 export const seedModes = exports_.seedModes;
 
 /**
+ * #263 — flattens a multi-line topic draft to a SINGLE wire line.
+ *
+ * An IRC topic is one line; CRLF is the message terminator. The #263 modal
+ * editor is a multi-line `<textarea>`, but the server REJECTS a topic body
+ * containing `\r`/`\n`/`\x00` outright (`Identifier.safe_line_token?/1` →
+ * `:invalid_line`) — so flattening on submit is MANDATORY, not cosmetic: a raw
+ * multi-line submit would always fail the save. Every newline run (`\r\n`,
+ * `\r`, `\n`, and consecutive blank lines) collapses to a SINGLE space so
+ * words on separate lines stay separated rather than fused. `\x00` is a
+ * distinct guard concern but a textarea cannot produce it, so it is out of
+ * scope here.
+ */
+export function flattenTopicNewlines(text: string): string {
+  return text.replace(/[\r\n]+/g, " ");
+}
+
+/**
  * Formats a modes array into a compact IRC mode string.
  * `["n", "t"]` → `"+nt"`. Empty array → `""`.
  */

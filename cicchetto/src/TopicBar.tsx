@@ -3,7 +3,12 @@ import { postTopic } from "./lib/api";
 import { token } from "./lib/auth";
 import { ownHoldsChannelEditorSigil } from "./lib/channelEditPerm";
 import { channelKey } from "./lib/channelKey";
-import { compactModeString, modesByChannel, topicByChannel } from "./lib/channelTopic";
+import {
+  compactModeString,
+  flattenTopicNewlines,
+  modesByChannel,
+  topicByChannel,
+} from "./lib/channelTopic";
 import { friendlyError } from "./lib/friendlyError";
 import { membersByChannel } from "./lib/members";
 import { mircPlainText } from "./lib/mircFormat";
@@ -18,31 +23,35 @@ import { MircBody } from "./MircText";
 // Top bar of the middle pane. Hosts:
 //  * channel name (bold accent)
 //  * topic strip: up to TWO lines (#74), "(no topic set)" placeholder when
-//    no topic is cached. Click/tap → edit the topic IN PLACE when the
-//    operator can set it (#74); otherwise → read-only modal (full topic,
-//    setter nick, set-at timestamp) as the non-editable fallback.
+//    no topic is cached. Click/tap → ALWAYS opens the read-only topic modal
+//    (#263), for everyone; the strip is view-only and its only action is
+//    "open modal".
 //  * compact mode-string (e.g. "+nt") with hover tooltip listing modes.
 //    Rendered only when modes are cached and non-empty (C3.1).
 //  * right ☰ hamburger — opens members drawer (desktop + mobile)
 //
-// #74 (2026-07-16) — inline topic edit. Clicking the strip on an editable
-// window swaps it for an inline <input> seeded with the RAW topic; Enter
-// submits, Escape/blur cancels. Submit reuses the EXISTING send doors —
-// `postTopic` (REST) for a non-empty set, `pushChannelTopicClear` (WS verb)
-// for an empty clear — the same doors the `/topic` compose slashes use
-// (one-feature-every-door). cic mirrors the server: NO optimistic write —
-// the strip repaints only when the server's relayed `topic_changed`
-// updates `topicByChannel`. Editability is gated by the SAME editor-sigil
-// derivation ModeModal uses (`ownHoldsChannelEditorSigil`), combined with
-// the +t topic-lock: any joined member can set the topic unless +t is set,
-// in which case only ops (per PREFIX rank) can. A server reject (WS-down /
-// 482) surfaces inline and preserves the draft (S21 no-false-success).
+// #263 (2026-07-16) — topic editing lives INSIDE the modal (supersedes the
+// #74 inline-strip <input>). Tapping the strip opens the READ-ONLY modal for
+// everyone. When the operator can set this channel's topic (canEditTopic:
+// joined + not +t-locked OR op per the shared editor-sigil derivation), the
+// modal shows a ✏️ toggle. ✏️ swaps the topic text for a multi-line
+// <textarea> + ❌ cancel + ✅ save; the ✏️ disappears. ❌ cancel DISCARDS the
+// draft, reverts to read-only, brings the ✏️ back, and KEEPS the modal open.
+// ✅ save flattens newlines → submits via the EXISTING send doors (postTopic
+// REST for a non-empty set, pushChannelTopicClear WS verb for an empty clear —
+// one-feature-every-door, the same doors the `/topic` slashes use) and CLOSES
+// the modal on success. A server reject surfaces inline (S21 no-false-success)
+// and PRESERVES the draft + editing state + open modal so the operator can
+// retry without retyping. cic mirrors the server: NO optimistic write — the
+// strip repaints only when the server's relayed `topic_changed` updates
+// `topicByChannel`. A non-op sees a read-only modal — no ✏️, no textarea, no
+// ❌/✅.
 //
-// The read-only modal is now the FALLBACK for the non-editable case — a
-// window we can't edit (not joined, or +t-locked and not op) still lets
-// the operator VIEW the full topic + setter. The editable path is
-// deliberately dialog-less per #74 ("no separate dialog"); the setter /
-// set-at metadata surfaces only in the read-only fallback.
+// Newline flatten (domain gotcha): an IRC topic is a SINGLE wire line; the
+// server REJECTS a body containing \r/\n outright (Identifier.safe_line_token?
+// → :invalid_line). The <textarea> is a display/editing affordance only —
+// `flattenTopicNewlines` collapses every newline run to one space on submit
+// BEFORE the send door, so a multi-line edit reaches upstream as one line.
 //
 // UX-4 bucket L (2026-05-19): the settings cog AND the left channel-
 // sidebar hamburger moved out of TopicBar into the cluster-wide
@@ -79,17 +88,18 @@ type ModalState = "closed" | "open";
 
 const TopicBar: Component<Props> = (props) => {
   const [modalState, setModalState] = createSignal<ModalState>("closed");
-  // #74 — inline-edit state. `editing` swaps the display strip for the
-  // <input>; `draft` is the operator's in-progress raw text; `editError`
-  // carries the inline server-reject copy; `saving` de-bounces submit.
+  // #263 — modal-edit state. `editing` swaps the modal's read-only topic view
+  // for the <textarea>; `draft` is the operator's in-progress raw text;
+  // `editError` carries the inline server-reject copy; `saving` de-bounces
+  // submit and OWNS the editor lifecycle across an in-flight send (S21).
   const [editing, setEditing] = createSignal(false);
   const [draft, setDraft] = createSignal("");
   const [editError, setEditError] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
-  // Live ref to the inline editor, set on mount so `onStripActivate` can
-  // focus it synchronously inside the tap gesture (iOS keyboard). Stale
-  // between edits is harmless — we only focus right after a fresh mount.
-  let editorRef: HTMLInputElement | undefined;
+  // Live ref to the modal textarea, set on mount so `beginEdit` can focus it
+  // synchronously inside the tap gesture (iOS keyboard). Stale between edits is
+  // harmless — we only focus right after a fresh mount.
+  let editorRef: HTMLTextAreaElement | undefined;
 
   const key = () => channelKey(props.networkSlug, props.channelName);
 
@@ -112,14 +122,28 @@ const TopicBar: Component<Props> = (props) => {
   };
 
   const openModal = () => setModalState("open");
-  const closeModal = () => setModalState("closed");
+  // Full reset of the modal-edit state so the NEXT open is read-only. Called
+  // whenever the modal closes and whenever an edit is cancelled/reverted.
+  const resetEdit = () => {
+    setEditing(false);
+    setDraft("");
+    setEditError(null);
+  };
+  const closeModal = () => {
+    // An in-flight submit OWNS the lifecycle: a ✕/backdrop/Esc that races the
+    // awaited send must NOT tear the editor down (breaks S21 preserve-draft).
+    // The submit itself closes on success / keeps-open on error.
+    if (saving()) return;
+    setModalState("closed");
+    resetEdit();
+  };
 
-  // #74 — can the operator set this channel's topic? Any joined member can,
-  // UNLESS +t (topic-lock) is set, in which case only an op (per the
-  // shared PREFIX-rank editor-sigil derivation) can. Not joined → never.
-  // The ircd is the real authority (482 on an unauthorized TOPIC); this
-  // gate only decides whether to OFFER the inline editor vs the read-only
-  // modal — a server reject is still surfaced inline on submit.
+  // #263 — can the operator set this channel's topic? Any joined member can,
+  // UNLESS +t (topic-lock) is set, in which case only an op (per the shared
+  // PREFIX-rank editor-sigil derivation) can. Not joined → never. The ircd is
+  // the real authority (482 on an unauthorized TOPIC); this gate only decides
+  // whether to OFFER the ✏️ edit toggle in the modal — a server reject is
+  // still surfaced inline on submit.
   const topicLocked = () => (modesByChannel()[key()]?.modes ?? []).includes("t");
   const canEditTopic = () => {
     if (!windowIsJoined(key())) return false;
@@ -133,32 +157,17 @@ const TopicBar: Component<Props> = (props) => {
     setDraft(topicText() ?? "");
     setEditError(null);
     setEditing(true);
+    // Focus synchronously, in-gesture: setEditing is synchronous, so Solid has
+    // already mounted + connected the textarea and set editorRef by now. iOS
+    // raises the soft keyboard only for a focus() that runs inside the tap's
+    // call stack (no microtask/timeout hop).
+    editorRef?.focus();
   };
   const cancelEdit = () => {
-    // An in-flight submit OWNS the editor lifecycle: a blur/Escape that
-    // races the awaited send must NOT tear down the editor + discard the
-    // draft, or a subsequent reject would surface its error next to a
-    // closed strip with nothing to retry (breaks the S21 preserve-draft
-    // contract). The submit itself closes on success / keeps-open on error.
+    // Same S21 guard as closeModal: an in-flight submit owns teardown.
     if (saving()) return;
-    setEditing(false);
-    setDraft("");
-    setEditError(null);
-  };
-
-  // Strip activation: edit-in-place when the operator can set the topic;
-  // otherwise the read-only modal (view full topic + setter).
-  const onStripActivate = () => {
-    if (canEditTopic()) {
-      beginEdit();
-      // Focus synchronously, in-gesture: setEditing is synchronous, so
-      // Solid has already mounted + connected the input and set editorRef
-      // by now. iOS raises the soft keyboard only for a focus() that runs
-      // inside the tap's call stack (no microtask/timeout hop).
-      editorRef?.focus();
-    } else {
-      openModal();
-    }
+    // Revert to read-only, modal STAYS OPEN, ✏️ reappears (does NOT close).
+    resetEdit();
   };
 
   const submitEdit = async (): Promise<void> => {
@@ -167,8 +176,9 @@ const TopicBar: Component<Props> = (props) => {
     const trimmed = next.trim();
     setEditError(null);
     const id = networkIdBySlug(props.networkSlug);
-    // Empty submit with nothing to clear → just close, no send. Done BEFORE
-    // `setSaving(true)` so the (saving-guarded) `cancelEdit` closes cleanly.
+    // Empty submit with nothing to clear → nothing to send: revert to read-only
+    // (modal stays open), like cancel. Done BEFORE `setSaving(true)` so the
+    // (saving-guarded) `cancelEdit` reverts cleanly.
     if (trimmed === "" && (topicText() === null || topicText() === "")) {
       cancelEdit();
       return;
@@ -192,16 +202,21 @@ const TopicBar: Component<Props> = (props) => {
           return;
         }
         // Non-empty set — the SAME REST door the `/topic <text>` slash uses.
-        await postTopic(t, props.networkSlug, props.channelName, next);
+        // Flatten newlines FIRST: the <textarea> can hold multiple lines, but
+        // an IRC topic is one wire line and the server REJECTS raw \r/\n
+        // (:invalid_line). Without the flatten the save would always fail.
+        await postTopic(t, props.networkSlug, props.channelName, flattenTopicNewlines(next));
       }
       // Success — cic mirrors the server: NO optimistic write. The relayed
-      // `topic_changed` repaints the strip. Just leave edit mode.
-      setEditing(false);
-      setDraft("");
+      // `topic_changed` repaints the strip. Release the saving guard, then
+      // close the modal (the #263 save-closes contract).
+      setSaving(false);
+      closeModal();
+      return;
     } catch (e) {
       // S21 — surface the server reject inline and PRESERVE the editor +
-      // draft so the operator can retry without retyping. Never paint a
-      // false success on a dropped frame.
+      // draft + open modal so the operator can retry without retyping. Never
+      // paint a false success on a dropped frame.
       setEditError(friendlyError(e));
     } finally {
       setSaving(false);
@@ -232,12 +247,24 @@ const TopicBar: Component<Props> = (props) => {
   // The lock scroller is the modal element (matches the createOverlayLock
   // contract for iOS touch-lock; the freeze that matters here is the
   // refcount, which drives the pane's overlay-snapshot effect).
-  // #232 — the read-only topic modal is a covering modal, so it also joins
-  // the shared Esc-to-close stack via onEscape (closeModal — the same verb
-  // the × / backdrop use). NOTE: this is the READ-ONLY modal; the inline
-  // topic EDITOR below owns its own input-level Esc (cancelEdit) and is NOT
-  // an overlay, so it stays out of the stack.
-  createOverlayLock(() => modalState() === "open", ".topic-modal", closeModal);
+  //
+  // #232 + #263 — the topic modal joins the shared Esc-to-close stack via
+  // onEscape, but the close verb is EDIT-AWARE: while editing, Esc runs
+  // `cancelEdit` (revert the draft, stay open, ✏️ back — the #263 cancel
+  // contract), NOT `closeModal`. A naive `closeModal` here would tear down the
+  // draft, violating #263. In read-only, Esc runs `closeModal` (the same verb
+  // the × / backdrop use). No element-level keydown on the textarea — the
+  // shared stack is the single ESC authority (#232 deleted all per-dialog
+  // handlers), and Enter in the textarea must stay a newline (save is the ✅
+  // button only), the flatten collapses it on submit.
+  createOverlayLock(
+    () => modalState() === "open",
+    ".topic-modal",
+    () => {
+      if (editing()) cancelEdit();
+      else closeModal();
+    },
+  );
 
   const formatSetAt = (setAt: string | null): string => {
     if (!setAt) return "(unknown time)";
@@ -264,60 +291,23 @@ const TopicBar: Component<Props> = (props) => {
           whole shell. */}
       <span class="topic-bar-channel">{props.channelName}</span>
       {/* Topic strip — always present; shows placeholder when no topic cached.
-          #74: swaps to an inline editor on click when editable. */}
-      <Show
-        when={editing()}
-        fallback={
-          <button
-            type="button"
-            class="topic-bar-topic"
-            onClick={onStripActivate}
-            aria-label={canEditTopic() ? "edit topic" : "expand topic"}
-            title={topicTitle()}
-            data-testid="topic-strip"
-          >
-            <Show when={topicText() !== null} fallback={"(no topic set)"}>
-              {/* #220 — the bar NEVER navigates a link directly; a tap on a
-                  link "surface-wins" (suppresses navigation) and bubbles to
-                  the strip's onClick, which either opens the editor (editable)
-                  or the read-only modal (not). */}
-              <MircBody body={topicText() ?? ""} linkPolicy="surface-wins" />
-            </Show>
-          </button>
-        }
+          #263: view-only, its only action is to open the (read-only) modal for
+          everyone; editing lives inside the modal. */}
+      <button
+        type="button"
+        class="topic-bar-topic"
+        onClick={openModal}
+        aria-label="expand topic"
+        title={topicTitle()}
+        data-testid="topic-strip"
       >
-        {/* #74 — inline editor. Single-line <input> (IRC topics are one
-            wire line); the 2-line clamp is a DISPLAY concern only. Seeded
-            with the raw topic. Enter submits, Escape/blur cancels. */}
-        <input
-          type="text"
-          class="topic-bar-topic-editor"
-          data-testid="topic-editor"
-          aria-label="edit topic"
-          placeholder="Set a topic…"
-          value={draft()}
-          ref={(el) => {
-            editorRef = el;
-          }}
-          onInput={(e) => setDraft(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void submitEdit();
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              cancelEdit();
-            }
-          }}
-          onBlur={cancelEdit}
-        />
-      </Show>
-      {/* #74 — inline submit-error surface (S21 pattern). Only while editing. */}
-      <Show when={editError()}>
-        <span class="topic-bar-edit-error" role="alert">
-          {editError()}
-        </span>
-      </Show>
+        <Show when={topicText() !== null} fallback={"(no topic set)"}>
+          {/* #220 — the bar NEVER navigates a link directly; a tap on a
+              link "surface-wins" (suppresses navigation) and bubbles to
+              the strip's onClick, which opens the modal. */}
+          <MircBody body={topicText() ?? ""} linkPolicy="surface-wins" />
+        </Show>
+      </button>
       {/* Compact mode string — only rendered when modes are non-empty.
           #216: tapping it opens the /mode viewer/editor modal for this
           channel (the third entry point, alongside `/mode #chan` and
@@ -372,9 +362,9 @@ const TopicBar: Component<Props> = (props) => {
         </button>
       </Show>
 
-      {/* Read-only topic modal — the non-editable fallback (#74). Opens on
-          strip click when the operator can't set the topic; shows full
-          topic, setter, timestamp. */}
+      {/* Topic modal (#263) — opens read-only for everyone on strip click;
+          shows full topic, setter, timestamp. An op (canEditTopic) also sees a
+          ✏️ toggle → the topic text swaps for a multi-line editor + ❌/✅. */}
       <Show when={modalState() === "open"}>
         <div class="topic-modal-backdrop" onClick={closeModal} aria-hidden="true" />
         <div role="dialog" aria-modal="true" aria-label="Channel topic" class="topic-modal">
@@ -390,17 +380,84 @@ const TopicBar: Component<Props> = (props) => {
             </button>
           </div>
           <div class="topic-modal-body">
-            <p class="topic-modal-text">
-              <Show when={topicText() !== null} fallback={"(no topic set)"}>
-                <MircBody body={topicText() ?? ""} />
+            <Show
+              when={editing()}
+              fallback={
+                <>
+                  <p class="topic-modal-text">
+                    <Show when={topicText() !== null} fallback={"(no topic set)"}>
+                      <MircBody body={topicText() ?? ""} />
+                    </Show>
+                  </p>
+                  <Show when={topicEntry() !== null}>
+                    <p class="topic-modal-meta">
+                      Set by: {topicEntry()?.set_by ?? "(unknown)"}
+                      {" — "}
+                      {formatSetAt(topicEntry()?.set_at ?? null)}
+                    </p>
+                  </Show>
+                  {/* ✏️ edit toggle — only when the operator can set the topic.
+                      Pressing it enters edit mode (textarea + ❌/✅); the ✏️
+                      itself disappears (edit view has no read-only branch). */}
+                  <Show when={canEditTopic()}>
+                    <div class="topic-modal-actions">
+                      <button
+                        type="button"
+                        class="topic-modal-edit"
+                        data-testid="topic-modal-edit"
+                        aria-label="edit topic"
+                        onClick={beginEdit}
+                      >
+                        ✏️
+                      </button>
+                    </div>
+                  </Show>
+                </>
+              }
+            >
+              {/* #263 — multi-line editor. IRC topics are one wire line, so
+                  newlines are flattened on submit (see submitEdit). NO
+                  Enter-to-submit: Enter inserts a newline; ✅ is the only save.
+                  NO element-level Esc handler — the shared #232 overlay stack
+                  owns Esc (edit-aware onEscape → cancelEdit). Seeded with the
+                  raw topic. */}
+              <textarea
+                class="topic-modal-editor"
+                data-testid="topic-modal-editor"
+                aria-label="edit topic"
+                placeholder="Set a topic…"
+                value={draft()}
+                ref={(el) => {
+                  editorRef = el;
+                }}
+                onInput={(e) => setDraft(e.currentTarget.value)}
+              />
+              {/* #263 — inline submit-error surface (S21 no-false-success). */}
+              <Show when={editError()}>
+                <span class="topic-modal-edit-error" role="alert">
+                  {editError()}
+                </span>
               </Show>
-            </p>
-            <Show when={topicEntry() !== null}>
-              <p class="topic-modal-meta">
-                Set by: {topicEntry()?.set_by ?? "(unknown)"}
-                {" — "}
-                {formatSetAt(topicEntry()?.set_at ?? null)}
-              </p>
+              <div class="topic-modal-actions">
+                <button
+                  type="button"
+                  class="topic-modal-cancel"
+                  data-testid="topic-modal-cancel"
+                  aria-label="cancel edit"
+                  onClick={cancelEdit}
+                >
+                  ❌
+                </button>
+                <button
+                  type="button"
+                  class="topic-modal-save"
+                  data-testid="topic-modal-save"
+                  aria-label="save topic"
+                  onClick={() => void submitEdit()}
+                >
+                  ✅
+                </button>
+              </div>
             </Show>
           </div>
         </div>

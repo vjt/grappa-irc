@@ -22294,3 +22294,99 @@ row: tick in_pool → generally_available becomes checked + disabled; un-tick
 _Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
 BEAM restart — one component (display derivation) + tests. The read-side
 availability OR already ships in prod (#251)._
+
+## 2026-07-16 — #263 move topic editing into the modal (cicchetto-only)
+
+Supersedes the #74 inline-strip editor. Tapping the topic strip now **always
+opens the read-only topic modal, for everyone** — the in-place inline
+`<input>` on the strip is gone. The strip is view-only; its only action is
+"open modal" (the #220 `surface-wins` link handling is preserved: a tap on a
+link in the strip opens the modal, never navigates). Editing lives **inside**
+the modal: when the operator can set the topic (`canEditTopic`), the modal
+shows a **✏️** toggle. ✏️ swaps the topic text for a **multi-line
+`<textarea>`** + **❌ cancel** + **✅ save**, and the ✏️ disappears. ❌ cancel
+discards the draft, reverts to read-only, brings the ✏️ back, and **keeps the
+modal open**. ✅ save submits and **closes the modal on success**; a server
+reject surfaces inline and **preserves the draft + editing state + open
+modal** (S21 no-false-success). A non-op sees a read-only modal only — no ✏️,
+no textarea, no ❌/✅.
+
+**WHY the editing UX changed (vjt, #263).** #74's dialog-less in-place edit
+put a single-line `<input>` on the strip; #263 wants a roomy multi-line
+editing surface and a single, discoverable place to edit (the modal that
+already showed the full topic + setter). Consequence: there is now ONE topic
+window, not a strip-editor-vs-modal fork — the read-only modal is no longer a
+"non-editable fallback", it is THE topic surface for everyone.
+
+**Reuse, not duplication (one-feature-every-door).** The ✅ save reuses the
+EXISTING send doors verbatim — `postTopic` (REST) for a non-empty set,
+`pushChannelTopicClear` (the WS verb) for an empty clear, exactly as the
+`/topic` compose slashes and #74 did. No new server surface. The
+`editing`/`draft`/`editError`/`saving` signals MOVED from driving the strip
+editor to driving the modal editor (reused, not duplicated); the divergent
+inline-strip path — the `<input>`, `onStripActivate`, the strip-level
+`.topic-bar-edit-error` span, the `.topic-bar-topic-editor` +
+`.topic-bar-edit-error` CSS, and the `topic-editor` testid — was DELETED (no
+two edit paths — total-consistency). cic **never originates state**: there is
+no optimistic write; the strip + modal repaint only when the server's relayed
+`topic_changed` updates `topicByChannel`.
+
+**Domain gotcha — flatten to one wire line.** An IRC topic is a SINGLE wire
+line; the server does NOT sanitise, it **REJECTS** any topic body containing
+`\r`/`\n`/`\x00` outright via `Grappa.IRC.Identifier.safe_line_token?/1` →
+`{:error, :invalid_line}` (guard sits in `Session.send_topic/4` and
+`IRC.Client.send_topic/3`). So a raw multi-line `<textarea>` submit would
+ALWAYS fail the save. `flattenTopicNewlines/1` (in `lib/channelTopic.ts`,
+`/[\r\n]+/g` → `" "`) collapses every newline run — CRLF, lone CR, blank-line
+runs, mixed EOL — to a SINGLE space (words on separate lines stay separated,
+never fused) and is applied on the non-empty set path **before** the send
+door. The textarea is a display/editing affordance only. A textarea cannot
+produce `\x00`, so that guard byte is out of scope client-side.
+
+**#232 interaction — edit-aware onEscape.** #232 (shipped just before) made
+ONE global Esc authority; the topic modal joins it via
+`createOverlayLock(() => modalState()==="open", ".topic-modal", onEscape)`.
+#232 explicitly assumed the editor was OUTSIDE the modal — #263 moves it
+inside, so a naive `onEscape = closeModal` would close + discard the draft,
+violating #263's "cancel reverts + stays open". The onEscape is therefore
+**edit-aware**: while editing, Esc runs `cancelEdit` (revert, stay open, ✏️
+back); read-only, Esc runs `closeModal` (the same verb ✕ / backdrop use). No
+element-level keydown fights the shared stack, and **Enter in the textarea
+stays a newline** (save is the ✅ button only — Enter-in-textarea is collapsed
+by the flatten on submit). The in-flight-submit S21 lifecycle-ownership guard
+(`if (saving()) return`) sits on both `closeModal` and `cancelEdit` so a
+✕/backdrop/Esc racing an awaited send can't tear down the editor; the submit
+itself closes on success (releases `saving` first, then `closeModal`) and
+keeps-open on reject.
+
+**Supersedes the #232 precedence-guard note.** The #232 entry (same day)
+recorded that "TopicBar's inline topic editor (#74) handles Esc at its own
+input level (not an overlay)" as the reason no inner-widget Esc conflicted
+with the modal stack. #263 makes that claim STALE on both counts: there is no
+inline strip editor anymore, and the topic editor's Esc now RIDES the shared
+overlay stack via the edit-aware `onEscape` above (no element-level keydown).
+The #232 rule that a future inner Esc-consuming widget inside a modal must
+`stopPropagation()` to win still holds — the topic textarea simply doesn't
+consume Esc, it lets the shared stack own it.
+
+**Testing.** `TopicBar.test.tsx` rewritten for the modal-edit flow (op-gated
+✏️, ✏️→textarea+❌/✅, cancel-reverts-and-stays-open, save-calls-postTopic-
+with-FLATTENED-text-then-closes, empty→clear vs empty→noop, reject-preserves-
+draft S21, close-resets-edit-state, and the edit-aware Esc via
+`runTopmostOverlayEscape`); the channelTopic mock keeps the REAL
+`flattenTopicNewlines` via `importOriginal` so the flatten wiring runs on
+production code. `channelTopic.test.ts` unit-tests `flattenTopicNewlines`
+(CRLF/lone-CR/blank-run/mixed-EOL/empty). The Playwright e2e
+(`issue263-topic-modal-edit.spec.ts`) proves the full flow end-to-end against
+live upstream — strip→read-only modal, op ✏️, cancel-stays-open, **Esc-while-
+editing = cancel** (proving the edit-aware onEscape in a real browser with the
+textarea focused), a **multi-line textarea value flattened to ONE wire line**
+witnessed by a second in-channel `IrcPeer` (`peer.waitForTopic(ch,
+flattened)` — if the flatten regressed the raw submit is rejected upstream,
+the modal never closes, the peer never sees the topic → the spec fails, which
+is the proof), save-closes, and the S21 reject (a body over the 8192-byte
+`BodyLimit` cap → 413 → draft preserved + modal open). Proven RED→GREEN via
+`scripts/integration.sh --grep "#263"`.
+
+_Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no BEAM
+restart — one component + a handful of CSS rules + tests._
