@@ -25,7 +25,16 @@ const PART_TIMEOUT_MS = 5_000;
 const NICK_TIMEOUT_MS = 5_000;
 const MODE_TIMEOUT_MS = 5_000;
 const KICK_TIMEOUT_MS = 5_000;
-const TOPIC_TIMEOUT_MS = 5_000;
+// #268 — TOPIC echoes are the class most exposed to bahamut's per-connection
+// command flood-throttling ("fake lag"): a spec that JOINs a fresh channel
+// then sets/edits its topic sends both frames back-to-back on the shared
+// upstream socket, so the TOPIC echo (which a peer waits on via `topic` /
+// `waitForTopic`) can land past 5s under full-suite command accumulation
+// (proven for the sibling REST path at +5.013s; docs/DESIGN_NOTES.md
+// 2026-07-16). This is a condition-wait ceiling — it resolves the instant the
+// echo arrives — so 15s is headroom above bahamut's ~10s fake-lag bank cap,
+// matching the #23/#220 topic asserts, NOT a fixed sleep.
+const TOPIC_TIMEOUT_MS = 15_000;
 const OPER_TIMEOUT_MS = 5_000;
 const NICKSERV_TIMEOUT_MS = 5_000;
 const AWAY_TIMEOUT_MS = 5_000;

@@ -22549,9 +22549,28 @@ accumulation the echo could land 10-15s and flake — one spec over from #23.
 Green in re-runs is the SAME weak signal this incident condemns for a scoped
 `--grep` (the flaky suite shows a rotating red set), so "green N times ⇒
 stable" is NOT sufficient here. Fixed with the same 15s condition-wait
-headroom as the #23 topic assert (`:145`) — "fix the general rule, not the
-example." A full-tree sweep found NO other residual instance of the
-JOIN→upstream-echo-under-fake-lag class.
+headroom as the #23 topic assert (`:145`).
+
+### Target 3b (surfaced by the full-suite DoD run, SAME fake-lag class): #263 topic-modal-edit
+
+The 2026-07-16 full DoD run then flushed out a THIRD member of the same
+class: `issue263-topic-modal-edit.spec.ts` "op edits the topic from the modal
+… multi-line save flattens" failed intermittently (green in DoD run 1, red in
+run 2) at `peer.waitForTopic(channel, flattened)` — `IrcPeer: timeout waiting
+for witness topic (5000ms)`. It `/join`s a fresh channel then saves a topic
+via the modal, and an in-channel PEER waits to WITNESS the TOPIC echo — again
+the fake-lag-delayed upstream TOPIC round-trip, this time on the peer-witness
+path rather than the REST poll (#23) or the TopicBar store (#220).
+
+"Fix the general rule, not the example": rather than a per-spec bump, the
+shared IRC-peer topic helpers' ceiling was raised at the source —
+`fixtures/ircClient.ts` `TOPIC_TIMEOUT_MS` 5s → 15s. Both `IrcPeer.topic`
+(peer SETS a topic) and `IrcPeer.waitForTopic` (peer WITNESSES one) key off
+it; both are TOPIC-echo condition-waits and both are fake-lag-exposed, so the
+one constant covers the whole peer-side topic-witness class with the same 15s
+headroom (resolves the instant the echo lands — not a sleep). The three
+non-scroll flakes the suite exhibits (#23, #220, #263) are now ALL the one
+bahamut-fake-lag-on-TOPIC-echo root cause, fixed consistently.
 
 ### Target 4 (listed intermittent): ux-5-bm mobile hamburger — genuinely stable
 
@@ -22562,12 +22581,16 @@ passes, zero failures. No change needed.
 
 ### Residual rare tail flake (NOT a #268 target, flagged): #253 webkit keyboard-scroll
 
-The 2026-07-16 full-suite DoD run surfaced ONE new webkit failure —
+The 2026-07-16 full-suite DoD runs surfaced a webkit failure —
 `issue253-kbd-resize-scroll-preserve.spec.ts` "a scrolled-up reader keeps
 their scrollTop when the keyboard opens" (`during-before.top` = 1048px vs ≤5
-expected). It did NOT reproduce: 15/15 in a focused `--repeat-each`, plus the
-standalone webkit project (81) and the webkit stability run (36) all green —
-so ~1 in ~130+ webkit runs. It is a SEAM/WIRING-only test (its own header:
+expected) — that reproduces ONLY in full-suite context: it failed BOTH full
+DoD runs, yet passed 15/15 in a focused `--repeat-each`, plus the standalone
+webkit project (81) and the webkit stability run (36). So it is a
+full-suite-CONTEXT flake (some accumulated state / timing the isolated run
+lacks), NOT iso-reproducible — which is exactly what makes it hard: there is
+no cheap repro to debug against (each full run is ~12min). It is a
+SEAM/WIRING-only test (its own header:
 Playwright webkit does not reproduce real iOS soft-keyboard `visualViewport`
 physics; it stubs `vv.height` + synthetic `scroll` on the 200-line #bofh),
 in the known-hard iOS-scroll-on-webkit class
