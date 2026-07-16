@@ -22172,3 +22172,66 @@ in-browser.
 
 _Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
 BEAM restart — a single component + one CSS rule + tests._
+
+## 2026-07-16 — #242 (P1, cic): admin Sessions tab shows the network slug, not the raw FK
+
+The admin Sessions tab (`AdminSessionsTab.tsx`) rendered the network
+column as `<td>{s.network_id}</td>` — the bare integer FK. When one
+account is connected to two networks the operator saw two identical rows
+distinguishable only by an opaque integer (effectively "the network isn't
+shown"). #242 resolves the FK → network slug and renders that.
+
+**Client-only — no server change.** The `/admin/sessions` wire already
+carries `network_id` (`Grappa.LiveIntrospection.AdminWire.session_to_admin_json/3`),
+and the tab ALREADY fetches `/admin/networks` in parallel on every refresh
+(the per-network cap-count summary above the table uses it). The slug was
+therefore already in hand on the client; the bug was purely that the
+network cell rendered the FK instead of resolving it. Fix: a
+`createMemo` builds a `Map<network_id, slug>` from the loaded networks and
+the cell renders `networkSlugById().get(s.network_id) ?? String(s.network_id)`.
+
+**Challenge-the-spec note + a consistency tradeoff on record.** The build
+brief hypothesised a server-side projection field-add (network slug onto
+the admin-sessions row). Reading the code showed the client already has
+everything it needs: `network_id` is on the sessions wire, and the slug
+source (`/admin/networks`) is already fetched by this tab in parallel for
+the U-3 cap summary — so a client-side resolve is the lighter path for a
+`--cic HOT` fix, keeps resolution a pure display concern (cic owns
+rendering per `feedback_no_localized_strings_server_side`), and touches no
+`lib/`. `network_id` must stay on the wire regardless — it is load-bearing
+for `adminSessionId/1` → the disconnect/terminate mutation URLs.
+
+Honest counterweight (code-review finding, kept on record): the
+admin-sessions wire is actually the *odd one out* — every sibling admin
+wire ships the denormalised slug directly (`network_slug` on the
+admin-events union + `SessionLogWireT`; `slug` on `AdminNetwork`). So a
+server-side `network_slug` field-add would NOT duplicate state; it would
+make the sessions wire *consistent* with its siblings and remove the
+client-side join + fallback path (single source of truth server-side, per
+"one feature, one code path, every door"). This fix deliberately keeps the
+client-derive to stay client-only per the issue scope, at the cost of
+introducing a two-endpoint join pattern not present elsewhere in the admin
+surface. A follow-up that adds `network_slug` to the sessions wire for
+cross-wire consistency is a reasonable future cleanup. Either way: cic
+originates nothing here (pure display join of two server-authoritative
+reads), no new state model, DB-state + live-state columns untouched
+(honesty rule preserved).
+
+**Honesty fallback.** An unresolved `network_id` (deleted-network race, or
+a session on a network `/admin/networks` didn't return) renders the raw
+id, never a silent blank — the operator still sees the FK it couldn't map.
+Added a per-row `data-testid={admin-session-network-${id}}` for precise
+assertions.
+
+**Testing.** vitest adds two cases: slug resolution
+(`network_id === 1` → "bahamut") and the raw-id fallback (empty networks
+list → "1"). Playwright e2e (`#242` case in
+`m9b-admin-sessions-actions.spec.ts`) reconnects the seeded m9b-victim
+(all seeded sessions are bound to `bahamut-test`), opens the Sessions tab,
+and asserts the network cell (column 3, `td.nth(2)`) reads the slug
+`bahamut-test`. Positional locator (not the new testid) is deliberate so
+the RED run — fix stripped, testid absent — still fails on a VALUE
+mismatch (pre-fix cell renders "1"; post-fix "bahamut-test").
+
+_Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
+BEAM restart — a single component + two test files._

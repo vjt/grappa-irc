@@ -1,4 +1,4 @@
-import { type Component, createSignal, For, onMount, Show } from "solid-js";
+import { type Component, createMemo, createSignal, For, onMount, Show } from "solid-js";
 import InlineConfirmButton from "./InlineConfirmButton";
 import {
   type AdminNetwork,
@@ -63,6 +63,22 @@ const AdminSessionsTab: Component = () => {
   const [confirmingKey, setConfirmingKey] = createSignal<string | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
+
+  // #242 — the sessions wire carries `network_id` (the raw integer FK),
+  // not a human-readable name. When one account is connected to two
+  // networks the operator sees two identical rows distinguishable only
+  // by an opaque integer. Resolve the FK → slug via the networks list
+  // this tab ALREADY fetches in parallel (same `/admin/networks`
+  // projection the per-network summary above uses), so no server change
+  // is needed. Rebuilt only when `networks()` changes; falls back to the
+  // raw id when unresolved (deleted-network race / a session on a
+  // network `/admin/networks` didn't return) — the honest signal that
+  // the FK couldn't be mapped, never a silent blank.
+  const networkSlugById = createMemo<Map<number, string>>(() => {
+    const byId = new Map<number, string>();
+    for (const net of networks() ?? []) byId.set(net.id, net.slug);
+    return byId;
+  });
 
   const refresh = async (): Promise<void> => {
     const t = token();
@@ -241,7 +257,9 @@ const AdminSessionsTab: Component = () => {
                       <LiveBadge live={s.live_state} />
                     </td>
                     <td>{renderWho(s)}</td>
-                    <td>{s.network_id}</td>
+                    <td data-testid={`admin-session-network-${id}`}>
+                      {networkSlugById().get(s.network_id) ?? String(s.network_id)}
+                    </td>
                     <td>{s.live_state.mailbox_len}</td>
                     <td>{renderKb(s.live_state.memory_bytes)}</td>
                     <td title={s.last_seen_at ?? "no browser login on record"}>
