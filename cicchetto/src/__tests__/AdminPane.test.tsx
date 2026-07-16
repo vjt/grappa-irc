@@ -22,6 +22,10 @@ vi.mock("../AdminEventsTab", () => ({
   default: () => <div data-testid="admin-events-tab-mock">events-tab</div>,
 }));
 
+vi.mock("../AdminSessionLogTab", () => ({
+  default: () => <div data-testid="admin-session-log-tab-mock">session-log-tab</div>,
+}));
+
 vi.mock("../AdminSettingsTab", () => ({
   default: () => <div data-testid="admin-settings-tab-mock">settings-tab</div>,
 }));
@@ -109,6 +113,17 @@ describe("AdminPane", () => {
     expect(screen.queryByTestId("admin-networks-tab-mock")).toBeNull();
     expect(screen.queryByTestId("admin-settings-tab-mock")).toBeNull();
     expect(screen.getByTestId("admin-tab-events").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("clicking the Session Log tab swaps the active panel + flips aria-selected (#215)", () => {
+    render(() => <AdminPane onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("admin-tab-session_log"));
+    expect(screen.getByTestId("admin-session-log-tab-mock")).toBeInTheDocument();
+    expect(screen.queryByTestId("admin-visitors-tab-mock")).toBeNull();
+    expect(screen.queryByTestId("admin-events-tab-mock")).toBeNull();
+    expect(screen.queryByTestId("admin-settings-tab-mock")).toBeNull();
+    expect(screen.getByTestId("admin-tab-session_log").getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("admin-tab-events").getAttribute("aria-selected")).toBe("false");
   });
 
   it("clicking the Settings tab swaps the active panel + flips aria-selected (UX-6-B2)", () => {

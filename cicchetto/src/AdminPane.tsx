@@ -3,6 +3,7 @@ import AdminCredentialsTab from "./AdminCredentialsTab";
 import AdminDebugTab from "./AdminDebugTab";
 import AdminEventsTab from "./AdminEventsTab";
 import AdminNetworksTab from "./AdminNetworksTab";
+import AdminSessionLogTab from "./AdminSessionLogTab";
 import AdminSessionsTab from "./AdminSessionsTab";
 import AdminSettingsTab from "./AdminSettingsTab";
 import AdminUsersTab from "./AdminUsersTab";
@@ -50,6 +51,7 @@ type TabKey =
   | "users"
   | "credentials"
   | "events"
+  | "session_log"
   | "settings"
   | "debug";
 
@@ -58,6 +60,12 @@ const AdminPane: Component<Props> = (props) => {
 
   const isActive = (k: TabKey): boolean => currentTab() === k;
 
+  // #215 — `startAdminEventsSubscription` joins `grappa:admin:events` and
+  // installs BOTH the admin-events handler AND the session-log handler on
+  // the one channel (adminEvents.ts owns the join/leave; it calls
+  // `installSessionLog`). `uninstallAdminEvents` leaves the channel and
+  // resets both stores. So the Session Log tab's live feed accumulates
+  // while the operator browses any admin tab, torn down on pane close.
   onMount(() => {
     startAdminEventsSubscription();
   });
@@ -174,6 +182,18 @@ const AdminPane: Component<Props> = (props) => {
           type="button"
           role="tab"
           class="admin-tab"
+          aria-selected={isActive("session_log")}
+          aria-controls="admin-tab-session_log"
+          id="admin-tab-session_log-handle"
+          data-testid="admin-tab-session_log"
+          onClick={() => setCurrentTab("session_log")}
+        >
+          Session Log
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="admin-tab"
           aria-selected={isActive("settings")}
           aria-controls="admin-tab-settings"
           id="admin-tab-settings-handle"
@@ -263,6 +283,16 @@ const AdminPane: Component<Props> = (props) => {
           class="admin-tab-panel"
         >
           <AdminEventsTab />
+        </div>
+      </Show>
+      <Show when={isActive("session_log")}>
+        <div
+          role="tabpanel"
+          id="admin-tab-session_log"
+          aria-labelledby="admin-tab-session_log-handle"
+          class="admin-tab-panel"
+        >
+          <AdminSessionLogTab />
         </div>
       </Show>
       <Show when={isActive("settings")}>

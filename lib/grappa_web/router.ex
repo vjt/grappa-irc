@@ -152,6 +152,9 @@ defmodule GrappaWeb.Router do
     get "/uploads", UploadsController, :index
     delete "/uploads/:id", UploadsController, :delete
 
+    # #215 — persisted IRC session-lifecycle log (read-only tail).
+    get "/session_log", SessionLogController, :index
+
     # #228 — vhost (source-bind) inventory + per-subject grants.
     get "/vhosts", VhostsController, :index
     post "/vhosts", VhostsController, :create

@@ -9,6 +9,7 @@ import type {
 } from "./api";
 import type { ModesEntry, TopicEntry } from "./channelTopic";
 import type { MemberEntry } from "./memberTypes";
+import type { SessionLogEvent, SessionLogWireT } from "./wireTypes";
 
 // Bucket G H4+U3 (codebase-review-2026-05-12): runtime narrowing for
 // per-channel WS events. Companion to `userTopic.ts`'s
@@ -469,6 +470,10 @@ function isNullableNumber(v: unknown): boolean {
   return v === null || typeof v === "number";
 }
 
+function isNullableBoolean(v: unknown): boolean {
+  return v === null || typeof v === "boolean";
+}
+
 /**
  * Runtime narrower for admin-channel events (`WireAdminEvent` arms).
  * Mirror of `narrowChannelEvent` / `narrowUserEvent` for the admin
@@ -863,4 +868,69 @@ export function narrowAdminSnapshot(raw: unknown): AdminSnapshotPayload | null {
     events.push(narrowed);
   }
   return { events };
+}
+
+// ── #215 — session-lifecycle-log narrower ──────────────────────────
+//
+// The session-log rides the SAME admin channel (`grappa:admin:events`)
+// as the admin-events audit ring; the live push event name is
+// `session_log_event` with payload `{kind, entry: SessionLogWireT}`.
+// `sessionLog.ts` extracts `.entry` and narrows it here. Same
+// boundary-validation contract as `narrowAdminEvent` — a malformed
+// live push (field missing / wrong-typed) drops instead of crashing
+// the store setter. `event` is validated against the closed
+// `SessionLogEvent` set so a version-skewed server that adds a new
+// kind drops (runtime mirror of the tsc-side literal union).
+const VALID_SESSION_LOG_EVENTS: ReadonlySet<SessionLogEvent> = new Set<SessionLogEvent>([
+  "connected",
+  "registered",
+  "identified",
+  "deidentified",
+  "disconnected",
+  "backoff",
+]);
+
+/**
+ * Runtime narrower for a single `SessionLogWireT` row. Mirror of the
+ * generated wire shape (`Grappa.SessionLog.Wire.t/0`). Returns the
+ * typed row on success or `null` on any shape mismatch. Used by
+ * `sessionLog.ts` on the live `session_log_event` push (the REST
+ * snapshot trusts the server, same as the other `adminList*` helpers).
+ */
+export function narrowSessionLogEntry(raw: unknown): SessionLogWireT | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.id !== "number" ||
+    typeof r.session_id !== "string" ||
+    typeof r.event !== "string" ||
+    !VALID_SESSION_LOG_EVENTS.has(r.event as SessionLogEvent) ||
+    typeof r.subject_kind !== "string" ||
+    !VALID_SUBJECT_KINDS.has(r.subject_kind as "user" | "visitor") ||
+    typeof r.network_id !== "number" ||
+    !isNullableString(r.network_slug) ||
+    !isNullableString(r.nick) ||
+    !isNullableString(r.reason) ||
+    !isNullableBoolean(r.clean) ||
+    !isNullableNumber(r.duration_ms) ||
+    !isNullableNumber(r.delay_ms) ||
+    !isNullableNumber(r.attempt) ||
+    typeof r.at !== "string"
+  )
+    return null;
+  return {
+    id: r.id,
+    session_id: r.session_id,
+    event: r.event as SessionLogEvent,
+    subject_kind: r.subject_kind as "user" | "visitor",
+    network_id: r.network_id,
+    network_slug: r.network_slug as string | null,
+    nick: r.nick as string | null,
+    reason: r.reason as string | null,
+    clean: r.clean as boolean | null,
+    duration_ms: r.duration_ms as number | null,
+    delay_ms: r.delay_ms as number | null,
+    attempt: r.attempt as number | null,
+    at: r.at,
+  };
 }

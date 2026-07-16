@@ -379,7 +379,20 @@ config :logger, :console,
     # operator can grep half-open-socket disconnects and confirm the
     # thresholds that tripped. Mirrors the B6.1 Logger-allowlist sync rule.
     :liveness_idle_ms,
-    :liveness_timeout_ms
+    :liveness_timeout_ms,
+    # #215 structured session-lifecycle log — `Grappa.SessionLog.emit/3`
+    # rides these on the connect / register / +r / disconnect / backoff
+    # lines. `:session_id` is the greppable composite
+    # `<kind>:<uuid>:<network_id>` (NOT the auth bearer id — that is a
+    # secret, see `:session_ref`). `:event` is the closed lifecycle atom
+    # (`:connected | :disconnected | …`). `:duration_ms` + `:clean` ride the
+    # disconnect line so a 2am grep for a nick surfaces WHY + how long it
+    # lasted + whether it was a graceful vs error drop. `:nick`, `:reason`,
+    # `:delay_ms`, `:failure_count` pre-exist and are reused.
+    :session_id,
+    :event,
+    :duration_ms,
+    :clean
   ]
 
 import_config "#{config_env()}.exs"

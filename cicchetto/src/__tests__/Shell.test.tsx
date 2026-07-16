@@ -303,6 +303,13 @@ vi.mock("../lib/api", () => ({
   // resolves null so the load path no-ops (view stays hidden).
   ApiError: class ApiError extends Error {},
   getVhostSettings: vi.fn().mockResolvedValue(null),
+  // #215 — Shell mounts the real AdminPane, which transitively imports the
+  // real AdminSessionLogTab (its onMount would call adminListSessionLog).
+  // The session_log tab is not the default-active tab so the call never
+  // fires in these Shell tests, but a full-replacement api mock must export
+  // every symbol the mounted tree imports (the #228-class gap) — resolve to
+  // an empty snapshot so the fetch path is a benign no-op if it ever runs.
+  adminListSessionLog: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../lib/channelKey", () => ({

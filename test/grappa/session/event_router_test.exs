@@ -111,6 +111,30 @@ defmodule Grappa.Session.EventRouterTest do
       # nick. The assertion is the pattern match succeeding.
     end
 
+    # #215 — the +r bit flip on the own-nick self-MODE echo emits a session
+    # identity-transition effect (Session.Server turns it into an
+    # :identified / :deidentified session-log event).
+    test "self-MODE +r emits {:session_identity_changed, :acquired}" do
+      state = base_state(%{nick: "vjt", umodes: []})
+      m = msg(:mode, ["vjt", "+r"], {:nick, "NickServ", "s", "s"})
+      {:cont, _, effects} = EventRouter.route(m, state)
+      assert {:session_identity_changed, :acquired} in effects
+    end
+
+    test "self-MODE -r emits {:session_identity_changed, :lost}" do
+      state = base_state(%{nick: "vjt", umodes: ["r"]})
+      m = msg(:mode, ["vjt", "-r"], {:nick, "NickServ", "s", "s"})
+      {:cont, _, effects} = EventRouter.route(m, state)
+      assert {:session_identity_changed, :lost} in effects
+    end
+
+    test "self-MODE with no +r/-r change emits no identity effect" do
+      state = base_state(%{nick: "vjt", umodes: ["r"]})
+      m = msg(:mode, ["vjt", "+i"], {:nick, "vjt", "u", "h"})
+      {:cont, _, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:session_identity_changed, _}, &1))
+    end
+
     test "PRIVMSG to DM target (nick) preserves nick case" do
       state = base_state(%{nick: "vjt"})
       m = msg(:privmsg, ["CristoBOT", "hi"], {:nick, "vjt", "u", "h"})

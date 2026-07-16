@@ -23,6 +23,17 @@ defmodule GrappaWeb.AdminChannel do
   `GrappaChannel.push_user_snapshot/2` — cold-WS-subscribe parity so
   the Events tab populates immediately on first open (no flicker).
 
+  ## Session-lifecycle log live push (#215)
+
+  On join the channel ALSO subscribes to `Topic.session_log/0`
+  (`"grappa:session_log"`) — a DIFFERENT topic from the channel's own
+  joined topic, so the sink's `%Phoenix.Socket.Broadcast{}` arrives via
+  `handle_info/2` (not the fastlane) and is re-pushed as a
+  `"session_log_event"`. The snapshot for this surface is the REST door
+  (`GET /admin/session_log`), which cic fetches on tab mount; the channel
+  carries only live updates. Reuses the admin socket rather than a second
+  channel (Option B: two persisted admin surfaces, one operator socket).
+
   ## No inbound handlers
 
   Admin events are server-originated only. The single `handle_in/3`
@@ -42,11 +53,16 @@ defmodule GrappaWeb.AdminChannel do
   use GrappaWeb, :channel
 
   alias Grappa.AdminEvents
+  alias Grappa.PubSub.Topic
 
   @impl Phoenix.Channel
   def join("grappa:admin:events", _, socket) do
     case authorize(socket) do
       :ok ->
+        # #215 — receive session-lifecycle-log events on this admin
+        # socket. Foreign topic (not the channel's joined one), so the
+        # broadcast lands in handle_info/2, not the fastlane.
+        :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.session_log())
         Process.send_after(self(), :after_join, 0)
         {:ok, socket}
 
@@ -60,6 +76,16 @@ defmodule GrappaWeb.AdminChannel do
   @impl Phoenix.Channel
   def handle_info(:after_join, socket) do
     push(socket, "snapshot", %{events: AdminEvents.snapshot()})
+    {:noreply, socket}
+  end
+
+  # #215 — session-lifecycle-log event from the SessionLog sink's
+  # broadcast on Topic.session_log/0. Re-push to the admin socket.
+  def handle_info(
+        %Phoenix.Socket.Broadcast{topic: "grappa:session_log", event: "event", payload: payload},
+        socket
+      ) do
+    push(socket, "session_log_event", payload)
     {:noreply, socket}
   end
 

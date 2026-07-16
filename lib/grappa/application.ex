@@ -126,7 +126,16 @@ defmodule Grappa.Application do
         # Ecto.Adapters.SQL.Sandbox.allow(...)` keeps the
         # AdminEvents-targeting tests honest without bleeding into
         # unrelated suites.
-        {Grappa.AdminEvents, attach_telemetry: attach_admin_telemetry?()},
+        {Grappa.AdminEvents, attach_telemetry: attach_admin_telemetry?(), persist: persist_admin_events?()},
+        # SessionLog (#215): singleton GenServer sink for the persisted IRC
+        # session-lifecycle log. Attaches `[:grappa, :session, :log, _]`
+        # telemetry in init/1 + persists each event to `session_log_events`.
+        # Same ordering rationale as AdminEvents: boot BEFORE
+        # SessionSupervisor so the first session's connect/disconnect
+        # telemetry has a handler attached. Restart: :permanent
+        # (infrastructure). `attach_telemetry: false` in test env for the
+        # same sandbox-ownership reason as AdminEvents.
+        {Grappa.SessionLog, attach_telemetry: attach_session_log_telemetry?()},
         # ShareTokens: ETS-backed one-shot set for visitor share-link
         # token redemption. Must come before Endpoint so the consume
         # controller never races a missing table. No upstream deps;
@@ -282,6 +291,19 @@ defmodule Grappa.Application do
   # pattern in `test/grappa/admin_events_test.exs`.
   @spec attach_admin_telemetry?() :: boolean()
   defp attach_admin_telemetry?, do: Application.get_env(:grappa, :attach_admin_telemetry, true)
+
+  # #215 Option B — AdminEvents disk mirror. On in prod; off in test env
+  # (the singleton's Repo write would hit a foreign sandbox connection).
+  @spec persist_admin_events?() :: boolean()
+  defp persist_admin_events?, do: Application.get_env(:grappa, :persist_admin_events, true)
+
+  # #215 — same test-env opt-out as admin telemetry: the SessionLog sink
+  # persists to Repo, which must be sandbox-allowed per test; a global
+  # handler routing every test's session-lifecycle telemetry would write
+  # on a foreign sandbox connection.
+  @spec attach_session_log_telemetry?() :: boolean()
+  defp attach_session_log_telemetry?,
+    do: Application.get_env(:grappa, :attach_session_log_telemetry, true)
 
   @impl Application
   def config_change(changed, _, removed) do

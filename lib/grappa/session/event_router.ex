@@ -192,6 +192,7 @@ defmodule Grappa.Session.EventRouter do
           | {:lusers_bundle, accum :: map()}
           | {:whowas_bundle, target :: String.t(), accum :: map()}
           | {:umode_changed, modes :: [String.t()]}
+          | {:session_identity_changed, :acquired | :lost}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -664,7 +665,16 @@ defmodule Grappa.Session.EventRouter do
       umode_effects = if next_umodes != prev_umodes, do: [{:umode_changed, next_umodes}], else: []
       state = Map.put(state, :umodes, next_umodes)
 
-      {:cont, state, [self_server_persist | r_effects] ++ umode_effects}
+      # #215 — the +r bit flip IS the session identity transition (NickServ
+      # confirmed / lost). Detected HERE where BOTH prev + next umode sets
+      # are in hand (the `:umode_changed` apply_effects arm only sees the
+      # post-state). Session.Server.apply_effects turns this into an
+      # `:identified` / `:deidentified` session-log event. Orthogonal to
+      # `:visitor_r_observed` (which only fires when a secret is staged —
+      # this covers ALL sessions, including already-SASL-authed users).
+      identity_effects = session_identity_effects(prev_umodes, next_umodes)
+
+      {:cont, state, [self_server_persist | r_effects] ++ umode_effects ++ identity_effects}
     else
       sender = Message.sender_nick(msg)
       isupport = Map.get(state, :isupport, ISupport.default())
@@ -2352,6 +2362,19 @@ defmodule Grappa.Session.EventRouter do
   # "Recursive pattern match over `Enum.reduce_while/3`").
   @spec set_r_mode?(String.t()) :: boolean()
   defp set_r_mode?(modes), do: walk_for_set_r(modes, :add)
+
+  # #215 — session identity transition from the +r bit flip. Compares the
+  # per-session umode sets before/after the self-MODE echo: gaining "r" is
+  # `:acquired` (NickServ/SASL confirmed), losing it is `:lost`. Emits at
+  # most one effect; no change → `[]`.
+  @spec session_identity_effects([String.t()], [String.t()]) :: [{:session_identity_changed, :acquired | :lost}]
+  defp session_identity_effects(prev_umodes, next_umodes) do
+    cond do
+      "r" in next_umodes and "r" not in prev_umodes -> [{:session_identity_changed, :acquired}]
+      "r" in prev_umodes and "r" not in next_umodes -> [{:session_identity_changed, :lost}]
+      true -> []
+    end
+  end
 
   defp walk_for_set_r("", _), do: false
   defp walk_for_set_r("+" <> rest, _), do: walk_for_set_r(rest, :add)

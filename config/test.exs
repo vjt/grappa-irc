@@ -93,6 +93,15 @@ config :grappa,
 # via `Process.whereis(AdminEvents) |> Ecto.Adapters.SQL.Sandbox.allow/3`
 # (see `test/grappa/admin_events_test.exs`).
 config :grappa, :attach_admin_telemetry, false
+# #215 Option B — AdminEvents disk-backing OFF in test env: the singleton
+# persists from its own pid on a foreign sandbox connection otherwise.
+# Disk-backing tests flip it on via :sys.replace_state + the setup's
+# Sandbox.allow (test/grappa/admin_events_test.exs "disk-backing").
+config :grappa, :persist_admin_events, false
+# #215 — same rationale for the SessionLog sink (persists to Repo on a
+# sandbox connection that must be per-test allowed). Persistence tests
+# attach + Sandbox.allow/3 explicitly (test/grappa/session_log_persistence_test.exs).
+config :grappa, :attach_session_log_telemetry, false
 config :phoenix, :plug_init_mode, :runtime
 config :phoenix, :json_library, Jason
 

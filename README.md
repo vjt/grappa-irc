@@ -156,12 +156,13 @@ Re-run `scripts/deploy.sh` and Bootstrap picks up the binding on boot — or att
 
 ### Admin console
 
-Operators get a 4-tab admin pane in cicchetto, gated on `User.is_admin` (REST `/admin/*` 403s for everyone else; nginx allowlists the path):
+Operators get a multi-tab admin pane in cicchetto, gated on `User.is_admin` (REST `/admin/*` 403s for everyone else; nginx allowlists the path):
 
 - **Visitors** — list visitor sessions; delete to free cap slots.
 - **Sessions** — every live `Session.Server` (user + visitor) with DB `connection_state` and live pid shown side by side; per-row disconnect (park) / terminate.
 - **Networks** — per-network cap editor + live counters, plus reset-circuit and force-reap. `PATCH /admin/networks/:slug` flips the per-network **`visitor_enabled`** allowlist flag (visitors may attach only visitor-enabled networks, toggled live with no restart — the runtime replacement for the old compile-time visitor-network pin) AND **`visitor_autoconnect`** (the subset a visitor auto-connects at login: zero-friction multi-network from first login, no picker; `visitor_enabled`-but-not-autoconnect networks are offered on the home page for on-demand one-tap connect).
-- **Events** — real-time admin-event tail over the `grappa:admin:events` topic.
+- **Events** — real-time admin-event tail over the `grappa:admin:events` topic; **disk-backed** (#215) so it survives a restart.
+- **Session Log** — the persisted IRC session-lifecycle log (#215): connect / register / NickServ `+r` / disconnect (with reason + duration + clean-vs-error) / reconnect-backoff, per `(user|visitor, network)` session. Every lifecycle transition also lands as a greppable, structured Logger line (`session=<kind>:<uuid>:<network_id> event=disconnected reason=… duration_ms=… clean=…`), so a 2am `grep <nick>` of the server log finally explains a drop.
 
 The admin UI's Promote button needs an existing admin, so bootstrap the **first** admin with `--admin` on `create-user`:
 
