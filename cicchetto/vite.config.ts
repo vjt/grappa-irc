@@ -83,7 +83,13 @@ export default defineConfig({
         display: "standalone",
         background_color: "#0a0a0a",
         theme_color: "#0a0a0a",
-        orientation: "any",
+        // #234 — NO `orientation` pin: an installed Android PWA then
+        // follows the device auto-rotate / rotation-lock setting instead
+        // of the manifest overriding it. Pinning orientation (even "any")
+        // makes the WebAPK ignore the OS lock — the exact #234 bug. The
+        // app still re-lays out responsively when the platform DOES
+        // rotate; we only drop the OS-lock OVERRIDE. Guarded by
+        // e2e/tests/issue234-manifest-no-orientation-pin.spec.ts.
         // Single source of truth shared with the SW notification icon —
         // see `src/lib/pwaIcons.ts` (S18).
         icons: [...PWA_ICONS],

@@ -23122,3 +23122,64 @@ circle feel).
 
 _Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
 BEAM restart — one CSS block + an e2e spec._
+
+---
+
+## 2026-07-16 — #234 (P0, cic): honor the OS rotation lock — drop the manifest orientation pin
+
+**Bug.** An Android PWA user reported cicchetto re-lays out between
+portrait and landscape **even with the OS auto-rotate lock ON**. A
+well-behaved app stays in the OS-locked orientation. cic was overriding
+the user's OS preference.
+
+**Root cause + fix (one line).** The PWA Web App Manifest pinned
+`orientation: "any"` (`cicchetto/vite.config.ts`, inside the `VitePWA`
+manifest block). A pinned `orientation` — even `"any"` — makes an
+installed Android WebAPK assert control over orientation and IGNORE the
+OS-level rotation lock. Honoring the lock means NOT pinning it at all, so
+the platform decides. The fix DELETES the `orientation` key (it is NOT set
+to `"portrait"`/`"natural"`/anything — removing the key is what returns
+control to the OS). A robust tree grep confirmed this manifest key was the
+**sole** orientation override: there is NO `screen.orientation.lock()`
+anywhere in cic (src/html/sw) and no orientation meta in `index.html`.
+Manifest-only change — no `lib/`, no wire event, no CSS/layout touched.
+
+**Responsive layout is unchanged.** #234 is ONLY about not OVERRIDING the
+OS lock. When the platform DOES rotate (auto-rotate on), cic still
+re-lays out responsively via its existing resize/orientationchange
+listeners (e.g. `ScrollbackPane`) — that path is untouched. We dropped the
+override, not the responsiveness.
+
+**WebAPK manifest-hash re-mint nuance.** Removing `orientation` changes the
+manifest hash. Android's WebAPK minter is hash-keyed
+([[feedback_webapk_minter_caches_by_manifest_hash]]), so it mints a FRESH
+WebAPK with the new (unpinned) orientation. Because `id: "/cic"` is stable,
+it is the SAME app — existing installs are NOT orphaned; they pick up the
+change on Android's periodic WebAPK update / manifest-hash-change re-mint,
+which is **async, not instant**. So installed users update on their own
+schedule after the bundle ships; this is client-propagation nuance, not a
+deploy blocker. `id` was deliberately left untouched (mutating it orphans
+installs and forks a parallel WebAPK — see the vite.config identity
+comment).
+
+**e2e-ability call (rotation behavior is NOT headlessly e2e-able).**
+Playwright cannot emulate Android's OS auto-rotate-off, cannot install a
+WebAPK, and cannot make a PWA honor/ignore an OS-level lock.
+`setViewportSize`/`screen.orientation` emulation models the VIEWPORT
+(responsive CSS), not the OS lock — a viewport-resize "rotation" spec would
+pass with OR without the fix (hollow green), so we deliberately did NOT
+write one. What IS honestly testable headlessly is the **fix artifact**: a
+served-manifest-contract e2e
+(`e2e/tests/issue234-manifest-no-orientation-pin.spec.ts`) that fetches the
+`/manifest.webmanifest` nginx actually serves off the built dist and
+asserts it (a) is the real cic manifest (`id === "/cic"`) and (b) pins no
+`orientation`. It is RED→GREEN-able (RED while the key is present, GREEN
+once removed) and catches the exact regression class — someone re-pinning
+`orientation`. The rotation BEHAVIOR itself is verified on a real device
+(vjt's Android install), same as #264's device-verify. This split — headless
+artifact guard + device behavior verify — was the orchestrator-signed-off
+coverage.
+
+_Deploy: **--cic HOT, client-only** (manifest-only; no server change, no
+migration, no BEAM restart). Installed Android PWAs pick up the unpinned
+orientation on their next async WebAPK re-mint._
