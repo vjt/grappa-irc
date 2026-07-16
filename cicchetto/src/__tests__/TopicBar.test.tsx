@@ -5,34 +5,39 @@ vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
-// windowState mock — TopicBar gates the members hamburger AND (since #74)
-// the inline-topic-edit affordance on `windowIsJoined(key)`. Default the
-// predicate to `true` so the joined-state UI (hamburger + editable topic)
-// is exercised; the not-joined branch is set explicitly where tested.
+// windowState mock — TopicBar gates the members hamburger AND (since #263) the
+// modal ✏️ edit toggle on `windowIsJoined(key)` (via canEditTopic). Default the
+// predicate to `true` so the joined-state UI (hamburger + editable topic) is
+// exercised; the not-joined branch is set explicitly where tested.
 const mockWindowIsJoined = vi.fn((_key: string) => true);
 vi.mock("../lib/windowState", () => ({
   windowIsJoined: (key: string) => mockWindowIsJoined(key),
 }));
 
-// channelTopic mock — controls what topic/modes the TopicBar sees.
-// Updated between test groups to exercise different states.
+// channelTopic mock — stubs the reactive signals so the test controls what
+// topic/modes the TopicBar sees, but keeps the REAL pure helpers
+// (`flattenTopicNewlines`, `compactModeString`) via importOriginal so the
+// newline-flatten wiring is exercised with production code (CLAUDE.md: use
+// production code in tests, never re-implement logic).
 const mockTopicByChannel = vi.fn(() => ({}));
 const mockModesByChannel = vi.fn(() => ({}));
-vi.mock("../lib/channelTopic", () => ({
-  topicByChannel: () => mockTopicByChannel(),
-  modesByChannel: () => mockModesByChannel(),
-  compactModeString: (modes: string[]) => (modes.length > 0 ? `+${modes.join("")}` : ""),
-  seedTopic: vi.fn(),
-  seedModes: vi.fn(),
-}));
+vi.mock("../lib/channelTopic", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/channelTopic")>();
+  return {
+    ...actual,
+    topicByChannel: () => mockTopicByChannel(),
+    modesByChannel: () => mockModesByChannel(),
+    seedTopic: vi.fn(),
+    seedModes: vi.fn(),
+  };
+});
 
-// #74 — inline topic edit. The strip's submit reuses the EXISTING send
-// doors: `postTopic` (REST, non-empty set) and `pushChannelTopicClear`
-// (WS verb, empty = clear). The edit affordance is gated by the same
-// editor-sigil derivation ModeModal uses (`ownHoldsChannelEditorSigil`).
-// All three are mocked so the component test asserts the wiring, not the
-// live network / permission derivation (the derivation has its own unit
-// test; the visible outcome has the Playwright e2e).
+// #263 — the modal editor's ✅ save reuses the EXISTING send doors: `postTopic`
+// (REST, non-empty set) and `pushChannelTopicClear` (WS verb, empty = clear).
+// The ✏️ toggle is gated by the same editor-sigil derivation ModeModal uses
+// (`ownHoldsChannelEditorSigil`). All three are mocked so the component test
+// asserts the wiring, not the live network / permission derivation (each has
+// its own coverage; the visible outcome has the Playwright e2e).
 const postTopicMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("../lib/api", () => ({
   postTopic: (...args: unknown[]) => postTopicMock(...args),
@@ -64,6 +69,10 @@ const baseProps = () => ({
   channelName: "#italia",
   onToggleMembers: vi.fn(),
 });
+
+// A resolved-promise + macrotask drain: lets an awaited postTopic/clear settle
+// AND its synchronous success continuation (setSaving(false) → closeModal) run.
+const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -149,16 +158,11 @@ describe("TopicBar", () => {
     expect(screen.getByText("(no topic set)")).toBeInTheDocument();
   });
 
-  // #74 — the read-only modal is now the FALLBACK for the NON-editable
-  // case (not joined, or +t-locked and not op). The editable case swaps
-  // in the inline editor instead (see "inline topic edit" below). These
-  // modal tests therefore set a non-editable channel (not joined).
-  describe("read-only topic modal — non-editable fallback (C3.1)", () => {
-    beforeEach(() => {
-      // Not joined → cannot edit → the strip opens the read-only modal.
-      mockWindowIsJoined.mockReturnValue(false);
-    });
-
+  // #263 — tapping the strip ALWAYS opens the read-only modal, for EVERYONE
+  // (the #74 inline in-place editor is gone). The modal shows the full topic,
+  // setter + timestamp. An op additionally sees a ✏️ toggle (tested in the
+  // "modal topic edit" block below); a non-op sees a read-only modal only.
+  describe("read-only topic modal (C3.1)", () => {
     it("does NOT show modal initially (modal starts closed)", () => {
       mockTopicByChannel.mockReturnValue({
         "freenode #italia": { text: "A topic", set_by: "alice", set_at: "2026-05-04T10:00:00Z" },
@@ -167,7 +171,7 @@ describe("TopicBar", () => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
 
-    it("clicking topic text opens modal with full topic + setter + timestamp", () => {
+    it("clicking the topic strip opens the modal with full topic + setter + timestamp", () => {
       mockTopicByChannel.mockReturnValue({
         "freenode #italia": {
           text: "A full topic text",
@@ -176,12 +180,14 @@ describe("TopicBar", () => {
         },
       });
       render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("A full topic text"));
+      fireEvent.click(screen.getByTestId("topic-strip"));
       expect(screen.getByRole("dialog")).toBeInTheDocument();
       expect(screen.getByRole("dialog")).toHaveTextContent("A full topic text");
       expect(screen.getByRole("dialog")).toHaveTextContent("vjt");
-      // No inline editor in the non-editable fallback.
+      // The retired #74 inline strip editor must not exist anymore.
       expect(screen.queryByTestId("topic-editor")).toBeNull();
+      // Read-only first: no textarea until ✏️ is pressed.
+      expect(screen.queryByTestId("topic-modal-editor")).toBeNull();
     });
 
     it("modal opens when set_by is null", () => {
@@ -189,7 +195,7 @@ describe("TopicBar", () => {
         "freenode #italia": { text: "A topic", set_by: null, set_at: null },
       });
       render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("A topic"));
+      fireEvent.click(screen.getByTestId("topic-strip"));
       expect(screen.getByRole("dialog")).toBeInTheDocument();
     });
 
@@ -198,47 +204,182 @@ describe("TopicBar", () => {
         "freenode #italia": { text: "A topic", set_by: "vjt", set_at: null },
       });
       render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("A topic"));
+      fireEvent.click(screen.getByTestId("topic-strip"));
       expect(screen.getByRole("dialog")).toBeInTheDocument();
       fireEvent.click(screen.getByLabelText(/close topic/i));
       expect(screen.queryByRole("dialog")).toBeNull();
     });
+
+    it("a non-op (+t-locked, not an editor) sees NO ✏️ edit toggle", () => {
+      mockModesByChannel.mockReturnValue({ "freenode #italia": { modes: ["t"], params: {} } });
+      mockEditorSigil.mockReturnValue(false);
+      mockTopicByChannel.mockReturnValue({
+        "freenode #italia": { text: "Locked topic", set_by: "vjt", set_at: null },
+      });
+      render(() => <TopicBar {...baseProps()} />);
+      fireEvent.click(screen.getByTestId("topic-strip"));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.queryByTestId("topic-modal-edit")).toBeNull();
+    });
+
+    it("a not-joined window sees NO ✏️ edit toggle", () => {
+      mockWindowIsJoined.mockReturnValue(false);
+      mockTopicByChannel.mockReturnValue({
+        "freenode #italia": { text: "A topic", set_by: "vjt", set_at: null },
+      });
+      render(() => <TopicBar {...baseProps()} />);
+      fireEvent.click(screen.getByTestId("topic-strip"));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.queryByTestId("topic-modal-edit")).toBeNull();
+    });
   });
 
-  // #74 — inline topic edit. Click the topic strip on an editable window
-  // → an inline <input> seeded with the RAW topic replaces the strip.
-  // Enter submits via the existing send doors (postTopic for a non-empty
-  // set, pushChannelTopicClear for an empty clear). Escape/blur cancels.
-  // cic mirrors the server: NO optimistic write — the strip repaints only
-  // when the server's relayed `topic_changed` updates topicByChannel.
-  describe("inline topic edit (#74)", () => {
+  // #263 — topic editing lives INSIDE the modal. Tapping the strip opens the
+  // read-only modal; an op sees a ✏️ toggle → the topic text swaps for a
+  // multi-line <textarea> + ❌ cancel + ✅ save. ❌ reverts + stays open + ✏️
+  // returns; ✅ flattens newlines + submits via the existing doors + closes on
+  // success; a reject preserves the draft + editing + open (S21). cic mirrors
+  // the server: NO optimistic write — the strip repaints on the relayed
+  // topic_changed only.
+  describe("modal topic edit (#263)", () => {
     const withTopic = (text: string | null) =>
       mockTopicByChannel.mockReturnValue({
         "freenode #italia": { text, set_by: "vjt", set_at: null },
       });
 
-    it("clicking the topic on an editable channel swaps in an editor seeded with the raw topic", () => {
+    // Open the modal (read-only) then click ✏️ to enter edit mode.
+    const enterEdit = () => {
+      fireEvent.click(screen.getByTestId("topic-strip"));
+      fireEvent.click(screen.getByTestId("topic-modal-edit"));
+    };
+
+    it("✏️ enters edit mode: textarea seeded with the raw topic, ❌/✅ appear, ✏️ disappears", () => {
       withTopic("Old topic");
       render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Old topic"));
-      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
+      enterEdit();
+      const editor = screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement;
       expect(editor).toBeInTheDocument();
       expect(editor.value).toBe("Old topic");
-      // Edit mode, not the read-only modal.
+      expect(screen.getByTestId("topic-modal-cancel")).toBeInTheDocument();
+      expect(screen.getByTestId("topic-modal-save")).toBeInTheDocument();
+      // ✏️ is gone in edit mode.
+      expect(screen.queryByTestId("topic-modal-edit")).toBeNull();
+    });
+
+    it("entering edit focuses the textarea (so the tap gesture raises the mobile keyboard)", () => {
+      withTopic("Old topic");
+      render(() => <TopicBar {...baseProps()} />);
+      enterEdit();
+      expect(document.activeElement).toBe(screen.getByTestId("topic-modal-editor"));
+    });
+
+    it("✏️ on a channel with no topic opens an empty editor", () => {
+      withTopic(null);
+      render(() => <TopicBar {...baseProps()} />);
+      enterEdit();
+      expect((screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement).value).toBe("");
+    });
+
+    it("❌ cancel reverts the draft, restores read-only + ✏️, keeps the modal open, sends nothing", () => {
+      withTopic("Old topic");
+      render(() => <TopicBar {...baseProps()} />);
+      enterEdit();
+      const editor = screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement;
+      fireEvent.input(editor, { target: { value: "discard me" } });
+      fireEvent.click(screen.getByTestId("topic-modal-cancel"));
+      // Back to read-only, modal STILL OPEN, ✏️ back.
+      expect(screen.queryByTestId("topic-modal-editor")).toBeNull();
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.getByTestId("topic-modal-edit")).toBeInTheDocument();
+      expect(postTopicMock).not.toHaveBeenCalled();
+      expect(clearTopicMock).not.toHaveBeenCalled();
+      // Re-entering edit shows the ORIGINAL topic, not the discarded draft.
+      fireEvent.click(screen.getByTestId("topic-modal-edit"));
+      expect((screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement).value).toBe(
+        "Old topic",
+      );
+    });
+
+    it("✅ save calls postTopic with (token, slug, channel, FLATTENED text) and closes the modal", async () => {
+      withTopic("Old topic");
+      render(() => <TopicBar {...baseProps()} />);
+      enterEdit();
+      const editor = screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement;
+      // Multi-line draft → the flatten must collapse newlines to single spaces
+      // (an IRC topic is one wire line; raw \r/\n is rejected upstream).
+      fireEvent.input(editor, { target: { value: "line one\nline two" } });
+      fireEvent.click(screen.getByTestId("topic-modal-save"));
+      expect(postTopicMock).toHaveBeenCalledWith(
+        "tok-test",
+        "freenode",
+        "#italia",
+        "line one line two",
+      );
+      expect(clearTopicMock).not.toHaveBeenCalled();
+      // Save CLOSES the modal on success.
+      await settle();
       expect(screen.queryByRole("dialog")).toBeNull();
     });
 
-    it("opening the editor focuses it (so the tap gesture raises the mobile keyboard)", () => {
+    it("✅ save flattens CRLF, lone CR, and blank-line runs to single spaces", async () => {
       withTopic("Old topic");
       render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Old topic"));
-      const editor = screen.getByTestId("topic-editor");
-      expect(document.activeElement).toBe(editor);
+      enterEdit();
+      const editor = screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement;
+      fireEvent.input(editor, { target: { value: "a\r\nb\rc\n\nd" } });
+      fireEvent.click(screen.getByTestId("topic-modal-save"));
+      expect(postTopicMock).toHaveBeenCalledWith("tok-test", "freenode", "#italia", "a b c d");
+      await settle();
     });
 
-    it("blur DURING an in-flight submit does NOT cancel — the submit owns the editor (S21)", () => {
-      // A never-resolving postTopic keeps saving() true so the blur races
-      // an in-flight send; the guard must keep the editor + draft alive.
+    it("empty save on a channel WITH a topic clears via pushChannelTopicClear + closes", async () => {
+      withTopic("Old topic");
+      render(() => <TopicBar {...baseProps()} />);
+      enterEdit();
+      const editor = screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement;
+      fireEvent.input(editor, { target: { value: "   " } });
+      fireEvent.click(screen.getByTestId("topic-modal-save"));
+      expect(clearTopicMock).toHaveBeenCalledWith(1, "#italia");
+      expect(postTopicMock).not.toHaveBeenCalled();
+      await settle();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("empty save on a channel with NO topic is a no-op: reverts to read-only, modal stays open", () => {
+      withTopic(null);
+      render(() => <TopicBar {...baseProps()} />);
+      enterEdit();
+      fireEvent.click(screen.getByTestId("topic-modal-save"));
+      expect(clearTopicMock).not.toHaveBeenCalled();
+      expect(postTopicMock).not.toHaveBeenCalled();
+      // Reverted to read-only, modal still open.
+      expect(screen.queryByTestId("topic-modal-editor")).toBeNull();
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.getByTestId("topic-modal-edit")).toBeInTheDocument();
+    });
+
+    it("a rejected save surfaces an inline error, keeps the editor + draft + open modal (S21)", async () => {
+      postTopicMock.mockRejectedValueOnce(new Error("boom"));
+      withTopic("Old topic");
+      render(() => <TopicBar {...baseProps()} />);
+      enterEdit();
+      const editor = screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement;
+      fireEvent.input(editor, { target: { value: "rejected topic" } });
+      fireEvent.click(screen.getByTestId("topic-modal-save"));
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveClass("topic-modal-edit-error");
+      expect(alert).toHaveTextContent("that didn't work");
+      // Editor + draft survive so the operator can retry without retyping;
+      // the modal stays open.
+      expect((screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement).value).toBe(
+        "rejected topic",
+      );
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+
+    it("closing the modal DURING an in-flight save is a no-op — the submit owns teardown (S21)", () => {
+      // A never-resolving postTopic keeps saving() true, so a ✕ that races the
+      // in-flight send must NOT tear down the editor + discard the draft.
       let release: () => void = () => {};
       postTopicMock.mockReturnValueOnce(
         new Promise<void>((r) => {
@@ -247,153 +388,42 @@ describe("TopicBar", () => {
       );
       withTopic("Old topic");
       render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Old topic"));
-      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
+      enterEdit();
+      const editor = screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement;
       fireEvent.input(editor, { target: { value: "in flight" } });
-      fireEvent.keyDown(editor, { key: "Enter" });
-      // Focus leaves mid-flight (desktop click-away / mobile keyboard "Go").
-      fireEvent.blur(editor);
-      const stillThere = screen.getByTestId("topic-editor") as HTMLInputElement;
+      fireEvent.click(screen.getByTestId("topic-modal-save"));
+      // ✕ during the in-flight save is guarded — editor + draft survive.
+      fireEvent.click(screen.getByLabelText(/close topic/i));
+      const stillThere = screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement;
       expect(stillThere).toBeInTheDocument();
       expect(stillThere.value).toBe("in flight");
       release(); // cleanup the pending promise
     });
 
-    it("clicking '(no topic set)' on an editable channel opens an empty editor", () => {
-      withTopic(null);
-      render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("(no topic set)"));
-      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
-      expect(editor).toBeInTheDocument();
-      expect(editor.value).toBe("");
-    });
-
-    it("typing a new topic + Enter calls postTopic with (token, slug, channel, text)", async () => {
+    it("closing the modal resets edit state — the next open is read-only", () => {
       withTopic("Old topic");
       render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Old topic"));
-      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
-      fireEvent.input(editor, { target: { value: "Brand new topic" } });
-      fireEvent.keyDown(editor, { key: "Enter" });
-      expect(postTopicMock).toHaveBeenCalledWith(
-        "tok-test",
-        "freenode",
-        "#italia",
-        "Brand new topic",
-      );
-      expect(clearTopicMock).not.toHaveBeenCalled();
-    });
-
-    it("Enter exits edit mode (no optimistic paint — the server drives the strip)", async () => {
-      withTopic("Old topic");
-      render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Old topic"));
-      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
-      fireEvent.input(editor, { target: { value: "Brand new topic" } });
-      fireEvent.keyDown(editor, { key: "Enter" });
-      await Promise.resolve();
-      // Editor closed; strip shows the STILL-CACHED old topic (mirrors
-      // server — the cache repaints only on the relayed topic_changed).
-      expect(screen.queryByTestId("topic-editor")).toBeNull();
-      expect(screen.getByText("Old topic")).toBeInTheDocument();
-    });
-
-    it("Escape cancels — no send, reverts to the display strip", () => {
-      withTopic("Old topic");
-      render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Old topic"));
-      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
-      fireEvent.input(editor, { target: { value: "abandoned edit" } });
-      fireEvent.keyDown(editor, { key: "Escape" });
-      expect(postTopicMock).not.toHaveBeenCalled();
-      expect(clearTopicMock).not.toHaveBeenCalled();
-      expect(screen.queryByTestId("topic-editor")).toBeNull();
-      expect(screen.getByText("Old topic")).toBeInTheDocument();
-    });
-
-    it("blur cancels — no send", () => {
-      withTopic("Old topic");
-      render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Old topic"));
-      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
-      fireEvent.input(editor, { target: { value: "abandoned edit" } });
-      fireEvent.blur(editor);
-      expect(postTopicMock).not.toHaveBeenCalled();
-      expect(clearTopicMock).not.toHaveBeenCalled();
-      expect(screen.queryByTestId("topic-editor")).toBeNull();
-    });
-
-    it("empty submit on a channel WITH a topic clears via pushChannelTopicClear", () => {
-      withTopic("Old topic");
-      render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Old topic"));
-      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
-      fireEvent.input(editor, { target: { value: "   " } });
-      fireEvent.keyDown(editor, { key: "Enter" });
-      expect(clearTopicMock).toHaveBeenCalledWith(1, "#italia");
-      expect(postTopicMock).not.toHaveBeenCalled();
-    });
-
-    it("empty submit on a channel with NO topic is a no-op (no send)", () => {
-      withTopic(null);
-      render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("(no topic set)"));
-      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
-      fireEvent.keyDown(editor, { key: "Enter" });
-      expect(clearTopicMock).not.toHaveBeenCalled();
-      expect(postTopicMock).not.toHaveBeenCalled();
-      expect(screen.queryByTestId("topic-editor")).toBeNull();
-    });
-
-    it("a +t-locked channel where own nick is NOT an editor opens the read-only modal, not the editor", () => {
-      mockModesByChannel.mockReturnValue({ "freenode #italia": { modes: ["t"], params: {} } });
-      mockEditorSigil.mockReturnValue(false);
-      withTopic("Locked topic");
-      render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Locked topic"));
-      expect(screen.queryByTestId("topic-editor")).toBeNull();
-      expect(screen.getByRole("dialog")).toBeInTheDocument();
-    });
-
-    it("a +t-locked channel where own nick IS an editor swaps in the editor", () => {
-      mockModesByChannel.mockReturnValue({ "freenode #italia": { modes: ["t"], params: {} } });
-      mockEditorSigil.mockReturnValue(true);
-      withTopic("Locked topic");
-      render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Locked topic"));
-      expect(screen.getByTestId("topic-editor")).toBeInTheDocument();
+      enterEdit();
+      fireEvent.input(screen.getByTestId("topic-modal-editor"), {
+        target: { value: "abandoned" },
+      });
+      // ✕ closes the whole modal (discards the draft).
+      fireEvent.click(screen.getByLabelText(/close topic/i));
       expect(screen.queryByRole("dialog")).toBeNull();
-    });
-
-    it("a failed set surfaces an inline error and keeps the editor + draft (no false success)", async () => {
-      postTopicMock.mockRejectedValueOnce(new Error("boom"));
-      withTopic("Old topic");
-      render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("Old topic"));
-      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
-      fireEvent.input(editor, { target: { value: "rejected topic" } });
-      fireEvent.keyDown(editor, { key: "Enter" });
-      // Let the rejected promise settle.
-      await Promise.resolve();
-      await Promise.resolve();
-      const alert = await screen.findByRole("alert");
-      expect(alert).toHaveTextContent("that didn't work");
-      // Editor + draft survive so the operator can retry without retyping.
-      const stillThere = screen.getByTestId("topic-editor") as HTMLInputElement;
-      expect(stillThere.value).toBe("rejected topic");
+      // Re-open → read-only (no textarea), ✏️ offered again.
+      fireEvent.click(screen.getByTestId("topic-strip"));
+      expect(screen.queryByTestId("topic-modal-editor")).toBeNull();
+      expect(screen.getByTestId("topic-modal-edit")).toBeInTheDocument();
     });
   });
 
-  // #219-general — the read-only topic modal COVERS the ScrollbackPane
-  // (fixed full-viewport backdrop, .topic-modal-backdrop) and must register
-  // with the shared overlay refcount so the pane's freeze gate engages while
-  // it is up. Opening bumps overlayCount, closing drains it. The modal is
-  // now the non-editable fallback (#74), so this exercises a not-joined
-  // window.
+  // #219-general — the topic modal COVERS the ScrollbackPane (fixed
+  // full-viewport backdrop, .topic-modal-backdrop) and must register with the
+  // shared overlay refcount so the pane's freeze gate engages while it is up.
+  // Opening bumps overlayCount, closing drains it.
   describe("#219-general — topic modal registers the overlay scroll-lock", () => {
     beforeEach(() => {
       resetOverlayLock();
-      mockWindowIsJoined.mockReturnValue(false);
     });
 
     // createOverlayLock defers the push a microtask (it querySelector's the
@@ -408,7 +438,7 @@ describe("TopicBar", () => {
       render(() => <TopicBar {...baseProps()} />);
       expect(overlayCount()).toBe(0);
 
-      fireEvent.click(screen.getByText("A topic"));
+      fireEvent.click(screen.getByTestId("topic-strip"));
       await flushMicrotask();
       expect(overlayCount()).toBe(1);
 
@@ -417,32 +447,53 @@ describe("TopicBar", () => {
       expect(overlayCount()).toBe(0);
     });
 
-    // #232 — the read-only topic modal is a covering modal, so it must close
-    // on Esc via the shared overlay stack (the 12th modal, caught in code
-    // review). runTopmostOverlayEscape is the exact verb the global keydown
-    // listener calls — focus-independent, closing the same way the × does.
-    it("closes on Escape via the shared overlay stack (#232)", async () => {
+    // #232 — the topic modal joins the shared Esc-close stack. In READ-ONLY the
+    // Esc verb closes the whole modal (the same as × / backdrop).
+    it("Esc closes the read-only modal via the shared overlay stack (#232)", async () => {
+      mockWindowIsJoined.mockReturnValue(false); // not-joined → read-only, no ✏️
       mockTopicByChannel.mockReturnValue({
         "freenode #italia": { text: "A topic", set_by: "vjt", set_at: null },
       });
       render(() => <TopicBar {...baseProps()} />);
-      fireEvent.click(screen.getByText("A topic"));
+      fireEvent.click(screen.getByTestId("topic-strip"));
       await flushMicrotask();
       expect(overlayEscapeDepth()).toBe(1);
 
       expect(runTopmostOverlayEscape()).toBe(true);
       await flushMicrotask();
-      expect(screen.queryByLabelText(/close topic/i)).toBeNull();
+      expect(screen.queryByRole("dialog")).toBeNull();
       expect(overlayEscapeDepth()).toBe(0);
+    });
+
+    // #232 + #263 — the Esc verb is EDIT-AWARE: while editing, Esc runs
+    // cancelEdit (revert the draft, stay open, ✏️ back), NOT closeModal — a
+    // naive close would discard the draft, violating #263's cancel contract.
+    it("Esc while editing reverts the draft + stays open (edit-aware, #263)", async () => {
+      mockTopicByChannel.mockReturnValue({
+        "freenode #italia": { text: "Old topic", set_by: "vjt", set_at: null },
+      });
+      render(() => <TopicBar {...baseProps()} />);
+      fireEvent.click(screen.getByTestId("topic-strip"));
+      fireEvent.click(screen.getByTestId("topic-modal-edit"));
+      fireEvent.input(screen.getByTestId("topic-modal-editor"), {
+        target: { value: "abandon me" },
+      });
+      await flushMicrotask();
+
+      expect(runTopmostOverlayEscape()).toBe(true);
+      await flushMicrotask();
+      // Reverted to read-only, modal STILL OPEN, ✏️ back — NOT closed.
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.queryByTestId("topic-modal-editor")).toBeNull();
+      expect(screen.getByTestId("topic-modal-edit")).toBeInTheDocument();
+      expect(postTopicMock).not.toHaveBeenCalled();
     });
   });
 
-  // #220 — the topic bar NEVER navigates a link directly: the strip's
-  // MircBody uses "surface-wins" so an anchor click suppresses navigation
-  // and bubbles to the strip's onClick. On a NON-editable channel that
-  // opens the read-only modal (tested here); on an editable channel it
-  // enters edit mode (tested in "inline topic edit"). Either way the bar
-  // itself never browses.
+  // #220 — the topic bar NEVER navigates a link directly: the strip's MircBody
+  // uses "surface-wins" so an anchor click suppresses navigation and bubbles to
+  // the strip's onClick, which opens the (read-only) modal. The link is
+  // clickable INSIDE the modal (default navigate policy).
   describe("link in topic bar defers to the surface (#220)", () => {
     const LINKED = {
       "freenode #italia": {
@@ -451,11 +502,6 @@ describe("TopicBar", () => {
         set_at: null,
       },
     };
-
-    beforeEach(() => {
-      // Non-editable → strip click opens the read-only modal.
-      mockWindowIsJoined.mockReturnValue(false);
-    });
 
     it("clicking a link in the topic strip opens the modal and does NOT navigate", () => {
       mockTopicByChannel.mockReturnValue(LINKED);
@@ -478,7 +524,7 @@ describe("TopicBar", () => {
       mockTopicByChannel.mockReturnValue(LINKED);
       render(() => <TopicBar {...baseProps()} />);
 
-      fireEvent.click(screen.getByText(/docs at/i));
+      fireEvent.click(screen.getByTestId("topic-strip"));
       const dialog = screen.getByRole("dialog");
       const modalLink = dialog.querySelector(".scrollback-link") as HTMLAnchorElement;
       expect(modalLink).not.toBeNull();

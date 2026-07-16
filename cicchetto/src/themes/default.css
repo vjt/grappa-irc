@@ -1226,35 +1226,6 @@ html.resize-dragging * {
   color: var(--fg);
 }
 
-/* #74 — inline topic editor. Replaces the strip in-place on click when the
-   operator can set the topic. Single-line input (IRC topics are one wire
-   line); the 2-line clamp above is a display-only concern. */
-.topic-bar-topic-editor {
-  flex: 1;
-  min-width: 0;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--accent);
-  border-radius: 2px;
-  padding: 0.15rem 0.4rem;
-  font-family: var(--font-mono);
-  font-size: var(--font-size);
-  line-height: 1.25;
-}
-
-/* #74 — inline submit-error surface (S21 no-false-success pattern). Shown
-   only while editing, when a set/clear is rejected upstream. */
-.topic-bar-edit-error {
-  flex: none;
-  max-width: 45%;
-  color: var(--error, #e06c75);
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .topic-bar-modes {
   /* #216: now a <button> (opens the /mode modal) — reset the native
      button chrome so it reads as the same compact inline mode string. */
@@ -1342,6 +1313,61 @@ html.resize-dragging * {
   margin: 0;
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+/* #263 — in-modal topic editor. The strip is view-only now (#263 supersedes
+   the #74 inline-strip <input>); editing happens here, inside the modal, in a
+   roomy multi-line <textarea>. IRC topics are one wire line — newlines are
+   flattened on submit (TopicBar.submitEdit); the textarea is a display-only
+   affordance. */
+.topic-modal-editor {
+  width: 100%;
+  min-height: 4.5em;
+  box-sizing: border-box;
+  resize: vertical;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  padding: 0.3rem 0.4rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: 1.25;
+}
+
+/* #263 — inline submit-error surface (S21 no-false-success): a server reject
+   surfaces here, preserves the draft, and keeps the modal open. */
+.topic-modal-edit-error {
+  color: var(--error, #e06c75);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  word-break: break-word;
+}
+
+/* #263 — the ✏️ / ❌ / ✅ action row (right-aligned under the topic). */
+.topic-modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.topic-modal-edit,
+.topic-modal-cancel,
+.topic-modal-save {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0.2rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.topic-modal-edit:hover,
+.topic-modal-cancel:hover,
+.topic-modal-save:hover {
+  border-color: var(--accent);
 }
 
 /* UX-4 bucket L (2026-05-19) — ShellChrome bar: always-visible
