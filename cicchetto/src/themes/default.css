@@ -965,10 +965,13 @@ html.resize-dragging * {
   font-size: var(--font-size);
   cursor: pointer;
   line-height: 1;
-  /* #172: the × owns the pointer gesture — a hold-to-confirm must not be
-     stolen by scroll/zoom (mirrors .kbd-key). Desktop is mouse, so this only
-     matters on tablets, but it's the correct declaration for both. */
-  touch-action: none;
+  /* #255: align the × to the sidebar's vertical scroll axis so a drag
+     that starts on the × still scrolls the window list (touch-action
+     does NOT inherit — a child `none` would override the ancestor and
+     eat the pan before any JS runs). Desktop is mouse, so this only
+     matters on tablets. The #172 hold-to-confirm gesture that once
+     needed `none` here was removed in #195; closing is a plain click. */
+  touch-action: pan-y;
 }
 
 .sidebar-close:hover {
@@ -3757,10 +3760,13 @@ html.resize-dragging * {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* #172: the mobile fat-finger surface — the × owns the hold-to-confirm
-     gesture, so it must reject the .bottom-bar's pan-x scroll (touch-action
-     does NOT inherit) or a hold would be stolen by a horizontal drag. */
-  touch-action: none;
+  /* #255: align the × to the .bottom-bar's pan-x scroll axis so a swipe
+     that starts on the × still scrolls the tab strip (touch-action does
+     NOT inherit — a child `none` would override the parent and disable
+     the pan before any JS runs, the reported bug). The #172 hold-to-
+     confirm gesture that once needed `none` here was removed in #195;
+     closing is a plain click. */
+  touch-action: pan-x;
 }
 
 .bottom-bar-close:hover {

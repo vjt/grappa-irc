@@ -21224,3 +21224,47 @@ merge-ready for the real-iOS-device verification batch (#245/#250/#253/#254/#255
 
 _Deploy: **HOT — `--cic` only, client-only.** No server change, no migration
 (server broadcast/persist confirmed correct as-is)._
+
+## 2026-07-15 — #255 (P2, cic): close-× orphaned `touch-action: none` blocked bottom-bar swipe
+
+**Symptom.** On mobile (iOS) the bottom bar (horizontally-scrollable strip
+of window tabs) could not be swipe-scrolled if the swipe happened to START
+on a tab's × close button — the touch was "eaten" and the bar did not
+scroll.
+
+**Root cause — orphaned CSS, not the click handler.** `.bottom-bar-close`
+(mobile) and its desktop sibling `.sidebar-close` still carried
+`touch-action: none`. That declaration was added by **#172** (`d3e8446`)
+so a hold-to-confirm long-press on the × would not be stolen by the parent
+bar's pan scroll. **#195** (`4ab4ef0`) REMOVED the long-press gesture
+(`holdToClose.ts`, the pointer handlers, the `.close-holding` cue) — the ×
+became a plain instant-click button (`CloseButton.tsx`, `onClick` only) —
+but LEFT `touch-action: none` behind. `touch-action` does NOT inherit and
+a child value OVERRIDES the ancestor's, so a touch landing on the × saw
+`touch-action: none` → the browser disabled panning for that gesture
+BEFORE any JS ran → the parent `.bottom-bar { touch-action: pan-x }` never
+scrolled. With the gesture gone, the `none` served no purpose and was
+purely harmful; the comment above each declaration still referenced the
+removed #172 gesture (orphaned).
+
+**Fix — align each × to its PARENT's scroll axis** (more explicit + honest
+than dropping to default `auto`, and lets the e2e assert a precise value):
+`.bottom-bar-close → touch-action: pan-x` (matches `.bottom-bar`),
+`.sidebar-close → touch-action: pan-y` (the desktop/tablet sidebar scrolls
+vertically). A swipe starting on the × now passes through to the bar. Both
+orphaned #172 comments rewritten to describe the actual reason + note the
+#195 gesture removal. **Tap/close is unchanged** — `touch-action` governs
+pan/zoom, not taps; the `onClick` path is untouched. No other
+`touch-action` rule in the sheet was disturbed.
+
+**Verification.** CSS-contract fix. Playwright/WebKit cannot reproduce real
+iOS touch-pan physics, so the deterministic CI contract is the computed
+`touch-action` value the browser consults BEFORE any JS runs:
+`issue255-close-x-touch-action.spec.ts` asserts computed `touch-action`
+`=== "pan-x"` (@webkit `.bottom-bar-close`) and `=== "pan-y"` (chromium
+`.sidebar-close`); pre-fix both read `"none"` (RED→GREEN). CI green is
+NECESSARY but NOT SUFFICIENT: real-iOS device-verify of the pan gesture
+HOLDS on the pending batch (#245/#250/#253/#254/#255).
+
+_Deploy: **`--cic` HOT (client-only)** — CSS + e2e only, no server/schema
+change._
