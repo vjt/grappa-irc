@@ -142,7 +142,14 @@ test.describe("#220 link-bearing surfaces double-fire", () => {
 
         const strip = page.locator(".topic-bar-topic");
         const stripLink = strip.locator(".scrollback-link");
-        await expect(stripLink).toHaveAttribute("href", LINK_URL, { timeout: 10_000 });
+        // #268 — the TopicBar strip is painted from the channelTopic store,
+        // which is driven by the SAME unsolicited-TOPIC echo that bahamut
+        // fake-lag delays after a fresh JOIN (see slash-commands-bundle #23 +
+        // docs/DESIGN_NOTES.md 2026-07-16). Under full-suite load the echo can
+        // land past 10s (bahamut banks ~10s of command penalty), so this
+        // condition-wait gets the same 15s headroom as the #23 topic assert —
+        // above the cap, still a wait-for-condition, not a sleep.
+        await expect(stripLink).toHaveAttribute("href", LINK_URL, { timeout: 15_000 });
 
         // Tap the link in the strip → the bar's surface action wins: the
         // modal opens, and NO popup is created (the link does not navigate).

@@ -22538,12 +22538,46 @@ asserting `=== true`. It does not mask: a genuinely-missing POST times out
 both the chromium and `@webkit` query tests (shared helper). Validated:
 `--repeat-each 25` → 25/25 green (was 11/25 failing).
 
-### Targets 3/4 (listed intermittents): #220 link-double-fire, ux-5-bm mobile hamburger
+### Target 3 (listed intermittent, SAME class as #23): #220 link-double-fire
 
-Re-run under `--repeat-each` and in full-suite passes (chromium 308, webkit
-81) with ZERO failures — stable, no code change needed. Their historical reds
-on other commits were collateral of the same flaky-suite churn, not
-standalone bugs.
+Code review caught that `issue220-link-double-fire.spec.ts` carries the
+IDENTICAL Class-1 latent flake: it `/join`s a fresh channel then `/topic`s it
+and waits (was 10s) for the `.topic-bar-topic` strip, which the channelTopic
+store paints from the SAME unsolicited-TOPIC echo that fake-lag delays. 10s
+sat exactly at bahamut's ~10s fake-lag bank cap, so under full-suite
+accumulation the echo could land 10-15s and flake — one spec over from #23.
+Green in re-runs is the SAME weak signal this incident condemns for a scoped
+`--grep` (the flaky suite shows a rotating red set), so "green N times ⇒
+stable" is NOT sufficient here. Fixed with the same 15s condition-wait
+headroom as the #23 topic assert (`:145`) — "fix the general rule, not the
+example." A full-tree sweep found NO other residual instance of the
+JOIN→upstream-echo-under-fake-lag class.
+
+### Target 4 (listed intermittent): ux-5-bm mobile hamburger — genuinely stable
+
+ux-5-bm asserts static DOM layout (topic-bar hosts the hamburger; drawer
+hosts the launchers; mutex) — it does NOT depend on an upstream round-trip, so
+it is not fake-lag-exposed. Re-run `--repeat-each 12` + two full-suite webkit
+passes, zero failures. No change needed.
+
+### Residual rare tail flake (NOT a #268 target, flagged): #253 webkit keyboard-scroll
+
+The 2026-07-16 full-suite DoD run surfaced ONE new webkit failure —
+`issue253-kbd-resize-scroll-preserve.spec.ts` "a scrolled-up reader keeps
+their scrollTop when the keyboard opens" (`during-before.top` = 1048px vs ≤5
+expected). It did NOT reproduce: 15/15 in a focused `--repeat-each`, plus the
+standalone webkit project (81) and the webkit stability run (36) all green —
+so ~1 in ~130+ webkit runs. It is a SEAM/WIRING-only test (its own header:
+Playwright webkit does not reproduce real iOS soft-keyboard `visualViewport`
+physics; it stubs `vv.height` + synthetic `scroll` on the 200-line #bofh),
+in the known-hard iOS-scroll-on-webkit class
+(`feedback_playwright_webkit_not_ios_scroll`). Because it does not reproduce
+in isolation, there is no data to debug it against — a speculative change
+would be a guess, which this incident's whole discipline forbids. Left
+UNFIXED and flagged for a dedicated look (likely a loadMore-on-scroll-up ×
+vv-resize timing edge in the synthetic simulation, or a real scroll-preserve
+race that only manifests under specific full-suite state). NOT the chronic
+reliably-red signature #268 set out to kill.
 
 _Deploy: **CI/docs only — nothing to ship.** The changes are e2e specs
 (`slash-commands-bundle.spec.ts`, `issue254-own-echo-live.spec.ts`) +
