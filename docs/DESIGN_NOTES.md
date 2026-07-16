@@ -22390,3 +22390,62 @@ is the proof), save-closes, and the S21 reject (a body over the 8192-byte
 
 _Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no BEAM
 restart — one component + a handful of CSS rules + tests._
+
+## 2026-07-16 — #265 (cic): activity/next-active indicator counts messages only, not presence churn
+
+The "jump to next active window" affordance (#235 — the `next-active-btn`
+with its `.next-active-count`, Alt+A, Ctrl+N/P) flags "which windows have
+activity since last visit." It gated on `selection.unreadCounts` — the
+TOTAL, messages **plus** events — so a window with only JOIN/PART spam or a
+lone MODE flip lit the affordance though nothing was said. Field report via
+the #grappa channel: an "unread activity" signal that fires on presence
+churn is noise.
+
+**Fix — one memo re-point, no new state.** The unread accounting already
+splits content from presence at a single source: `api.ts`'s
+`CONTENT_KINDS = {privmsg, notice, action}` + `isContentKind/1`, and
+`selection.ts`'s three derived memos over the same `{messages, events}`
+split — `messagesUnread` (content only), `eventsUnread` (presence only),
+`unreadCounts` (the total). `activeWindows.ts` was the sole consumer that
+gated on the total. It now gates on `messagesUnread` — the import + the one
+call site (`unread: messagesUnread()` into `orderUnreadWindows`) + the stale
+doc comments. `orderUnreadWindows` is a pure fn that takes `unread` as an
+input param and is agnostic to messages-vs-events; the scoping decision
+lives entirely at the CALL SITE (which memo feeds it), so nothing else
+changed. **One source, one gate, every door**: the count, Alt+A, Ctrl+N/P
+and the auto-hide all inherit it (CLAUDE.md "reuse the verbs, not the
+nouns"; DERIVE, don't duplicate — cic originates no parallel activity
+store).
+
+**NOTICE counts by default (the issue's one open question).** The issue
+asked whether NOTICE should count and floated an optional PRIVMSG-only vs
+PRIVMSG+NOTICE preference. Decision: default message-scoped ==
+`CONTENT_KINDS` == PRIVMSG + NOTICE + ACTION (ACTION is a PRIVMSG CTCP).
+Reusing `messagesUnread` gives NOTICE-by-default for free and stays
+consistent with the sidebar message badge, which already counts the same
+set. The preference toggle is **explicitly out of scope** (YAGNI — it was
+optional in the issue). If NOTICE is ever wanted EXCLUDED that is an
+app-wide `CONTENT_KINDS` change (it would move every unread badge in
+lock-step) and belongs in its own issue, NOT a fork of the activity gate.
+
+**Sidebar / BottomBar badges are unaffected.** They already render
+`messagesUnread` (`.sidebar-msg-unread`) and `eventsUnread`
+(`.sidebar-events-unread`) as two separate badge spans — presence churn is
+still surfaced there as the dimmer event badge, it just no longer lights
+the "go read something" affordance. Only the `activeWindows` gate conflated
+the two.
+
+**Testing.** The pure-fn vitest (`activeWindows.test.ts`) is agnostic to
+which memo feeds `orderUnreadWindows`, so it CANNOT catch this fix (a
+false-green trap) — behavioural coverage is the Playwright e2e
+(`issue265-activity-messages-only.spec.ts`, desktop chromium + @webkit
+mobile). It seeds two unfocused windows — a DM with one inbound PRIVMSG
+(content) and #bofh with ONLY a peer JOIN (presence, no channel PRIVMSG),
+verifying #bofh's `.sidebar-events-unread` badge accrued FIRST so the
+pre-fix failure is a clean count-value mismatch (`Expected "1" Received
+"2"`), not a mis-seeded window — then asserts `.next-active-count` is "1"
+(the DM alone). Pre-fix (total gate) #bofh's event bumps it to "2"; post-fix
+(message gate) it contributes 0.
+
+_Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
+BEAM restart — a single memo re-point in `activeWindows.ts` + its e2e._

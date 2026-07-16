@@ -4,7 +4,7 @@ import { mentionCounts } from "./mentions";
 import { channelsBySlug, networks } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { scrollbackByChannel } from "./scrollback";
-import { selectedChannel, setSelectedChannel, unreadCounts } from "./selection";
+import { messagesUnread, selectedChannel, setSelectedChannel } from "./selection";
 
 // GH #235 — "jump to next active window" (irssi Alt+A).
 //
@@ -23,10 +23,21 @@ import { selectedChannel, setSelectedChannel, unreadCounts } from "./selection";
 // upgrade: they now reach DMs and honour tiers too).
 //
 // State is DERIVED, never duplicated (CLAUDE.md): unread activity comes
-// from `selection.unreadCounts`, the mention tier from `mentions`, the
+// from `selection.messagesUnread`, the mention tier from `mentions`, the
 // query tier from `queryWindowsByNetwork`, and the per-window activity
 // timestamp from the newest local scrollback row id. cic originates no
 // parallel activity store.
+//
+// #265 — the activity gate is MESSAGE-scoped (`messagesUnread`, the
+// content kinds PRIVMSG/NOTICE/ACTION via `api.CONTENT_KINDS`), NOT the
+// TOTAL (`unreadCounts` = messages + events). Presence churn — JOIN /
+// PART / QUIT / NICK / MODE / TOPIC / KICK — is real activity for the
+// per-window `.sidebar-events-unread` badge but noise for "which window
+// has something worth reading?", so it does NOT light the affordance.
+// One source (`messagesUnread`), one gate, every door: the count, Alt+A,
+// Ctrl+N/P and the auto-hide all inherit it. The per-window sidebar /
+// bottom-bar badges keep rendering `messagesUnread` + `eventsUnread`
+// separately — they are unaffected.
 
 export type ActiveWindow = {
   networkSlug: string;
@@ -41,7 +52,12 @@ export type OrderInput = {
    * the membership universe and as the final tie-break order.
    */
   candidates: ActiveWindow[];
-  /** Per-window total unread (messages + events) — the activity gate. */
+  /**
+   * Per-window message-scoped unread (content kinds PRIVMSG/NOTICE/ACTION
+   * via `selection.messagesUnread`) — the activity gate. #265: presence
+   * churn (JOIN/PART/QUIT/NICK/MODE/TOPIC/KICK) is EXCLUDED, so a window
+   * with only join/part noise or a mode flip never lights the affordance.
+   */
   unread: Record<ChannelKey, number>;
   /** Per-window mention/highlight count — promotes a channel to tier 0. */
   mentions: Record<ChannelKey, number>;
@@ -127,7 +143,7 @@ const root = createRoot(() => {
   const activeWindows = createMemo((): ActiveWindow[] =>
     orderUnreadWindows({
       candidates: buildCandidates(),
-      unread: unreadCounts(),
+      unread: messagesUnread(),
       mentions: mentionCounts(),
       activityId: buildActivityIds(),
     }),
