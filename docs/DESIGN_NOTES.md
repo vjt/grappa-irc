@@ -21863,3 +21863,63 @@ session's connect/register events render in the tab (emit → persist → REST
 _Deploy: **COLD** — config Logger allowlist + two new supervised sinks/
 behaviour + two migrations. A cluster+migration combo cannot ride the hot
 path._
+
+## 2026-07-16 — #262 mobile topic-bar height clamp (cic, client-only)
+
+**Bug.** On the mobile topic bar a long channel topic was NOT height-bounded:
+the `.topic-bar-topic` strip grew to the topic's FULL height (measured 367.5px
+in the webkit e2e — ~43% of an 852px viewport), pushing the message log far
+down. Field report: iPhone 17 Pro, `#linux` topic wrapping to ~11 lines.
+
+**Root cause — a regression from #74.** #74 (same day, 2026-07-16) replaced the
+old 1-line `white-space: nowrap` clip on `.topic-bar-topic` with a
+`-webkit-line-clamp: 2` clamp. But `-webkit-line-clamp` only engages when the
+clamped runs are the DIRECT line-box content of the `display: -webkit-box`. The
+strip is a `<button>` wrapping a `<MircBody>` (see `TopicBar.tsx` — the strip is
+a button so a link tap can "surface-wins" bubble to open the editor/modal, #220):
+WebKit (iOS Safari) wraps a button's children in an internal anonymous box, so
+the line-clamp never engages. And because #74 ALSO dropped the `nowrap` clip,
+there was then NO height bound at all when the clamp failed — the strip degraded
+to rendering the entire topic (worse than the pre-#74 always-1-line clip).
+
+**Fix — a hard `max-height` cap, independent of `-webkit-line-clamp`.**
+`.topic-bar-topic` gets `max-height: 2.5em` (2 lines × `line-height: 1.25`),
+relying on the pre-existing `overflow: hidden`. `em` is relative to the
+element's own `font-size`, so the 2-line cap holds at every font-size preference
+(S–XXL, `lib/fontSize.ts`), not just the 14px default — the clamp scales with
+the accessibility text-size setting for free. `box-sizing: border-box` (global)
++ the rule's `padding: 0` / `border: none` mean the border-box equals the
+content-box, so `max-height` caps precisely at two line boxes with no half-line
+peek. The full topic stays reachable via the read-only topic modal (tap the
+strip on a non-editable window) and the plain-text `title` tooltip — the clamp
+loses no information.
+
+**Why global, not `@media`-mobile.** The reported surface is mobile, but the
+clamp-on-`<button>` failure is a WebKit/Blink ENGINE behaviour, not a viewport
+one — so bound it on every surface (fix the general rule, not the reported
+example). On Blink desktop, when the line-clamp DOES engage the content is
+already ≤ 2.5em so `max-height` is a no-op; when it fails, `max-height` now
+bounds what was previously unbounded — strictly an improvement, zero desktop
+regression. Placed on the base rule (a single-declaration addition, no new
+selector) so there is no cascade/specificity tie to lose (cf. #260): nothing in
+the `@media (max-width: 768px)`, `@media (hover: hover)`, or `html.is-ios`
+blocks overrides `.topic-bar-topic`'s `max-height`/`overflow`/`display`. The
+23-warn `default.css` biome baseline is unchanged (no `noDescendingSpecificity`).
+
+The inline edit `<input>` (`.topic-bar-topic-editor`, a DIFFERENT element) is
+untouched: IRC topics are one wire line, so the editor is inherently
+single-line and naturally height-bounded — #262 is a display-strip concern only.
+
+**Witness.** `issue262-topic-clamp-mobile.spec.ts` (`@webkit` → webkit-iphone-15,
+the reported mobile-WebKit surface). A peer sets a long topic before vjt joins;
+after vjt focuses the channel the spec asserts the topic is RENDERED (the marker
+is in the strip — anti-false-green, `textContent` is unaffected by
+`overflow: hidden`) THEN that `.topic-bar-topic` ≤ 60px and `.topic-bar` ≤ 120px
+(clamped reality is 35px / ~60px). Proven RED→GREEN via `integration.sh`: with
+the fix reverted the strip measures 367.5px and both caps fail; with the fix it
+passes. jsdom is blind to layout (no line-box height, no `-webkit-line-clamp`,
+no `getBoundingClientRect` geometry), so the Playwright e2e is the SOLE gate —
+there is no pure function to unit-test (vitest justified-skip).
+
+_Deploy: **--cic HOT, client-only.** Pure CSS in the cic bundle; no server
+change, no migration. `deploy-m42.sh --cic` (bundle only)._
