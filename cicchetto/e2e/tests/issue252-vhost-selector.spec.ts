@@ -1,23 +1,32 @@
-// #228, #251 — vhost (source-bind) editor end-to-end.
+// #252 — vhost (source address) self-service V2 end-to-end. Supersedes
+// the #228/#251 `vhost-editor.spec.ts`: the interim native `<select
+// multiple>` is replaced by a dedicated, mobile-friendly SUB-PAGE
+// (customize toggle + tap-select sections, NAME-primary labels).
 //
-// Asserts the VISIBLE outcome across both surfaces the feature adds:
-//   1. admin opens the Vhosts tab, creates a vhost from a host
-//      candidate, and marks it generally-available (UI writes persist).
-//      The admin grant form has NO pin control (#251 — a grant is
+// Asserts the VISIBLE outcome across both surfaces the feature touches:
+//   1. admin opens the Vhosts tab and creates an in-pool,
+//      generally-available vhost from a host candidate (UI writes persist).
+//      The grant form has NO pin control (#251 — a grant is
 //      availability-only; the admin hard-pin was removed).
-//   2. a normal user opens Settings, sees that vhost in the
-//      source-address <select> under the In-pool / Out-of-pool
-//      optgroups, selects it, and the selection persists (verified via
-//      the /me/settings/vhost REST read — the same door the widget uses).
+//   2. a normal user opens Settings → taps the "source address (vhost)"
+//      row → lands on the sub-page → sees the vhost rendered by its NAME
+//      (the /128 rides along) → turns "customize" ON → taps the vhost →
+//      the selection PUTs + persists → turns "customize" OFF → the
+//      selection resets to [] (random-from-pool). Persistence is verified
+//      via the /me/settings/vhost REST read — the same door the widget uses.
+//
+// NAME rendering: in CI the reverse-DNS name falls back to the raw IP
+// (real DNS is unavailable in the test container), so this spec asserts
+// the option shows the address in its NAME-primary structure. The
+// distinguishable name≠IP proof lives in the server controller test +
+// VhostSettingsPage vitest (both drive a deterministic offline resolver).
 //
 // Per feedback_cicchetto_browser_smoke + feedback_ux_e2e_mandatory this
-// exercises the real CSS/DOM render path jsdom can't. Admin writes go
-// through the UI (the point of the feature); a couple of REST calls set
-// up / verify state without re-driving unrelated UI.
+// exercises the real CSS/DOM render path jsdom can't.
 
-import { expect, test } from "../fixtures/test";
-import { getSeededAdmin, getSeededVjt } from "../fixtures/seedData";
 import { GRAPPA_BASE_URL } from "../fixtures/grappaApi";
+import { getSeededAdmin, getSeededVjt } from "../fixtures/seedData";
+import { expect, test } from "../fixtures/test";
 
 type Seed = ReturnType<typeof getSeededAdmin>;
 
@@ -78,18 +87,21 @@ async function deleteVhostBestEffort(token: string, id: number): Promise<void> {
   }
 }
 
-test("admin curates a vhost; a user self-selects it and the binding persists", async ({ page }) => {
+test("#252 admin curates a vhost; a user customizes it via the sub-page and it persists", async ({
+  page,
+}) => {
   const admin = getSeededAdmin();
   const user = getSeededVjt();
   const candidate = await firstHostCandidate(admin.token);
   let vhostId: number | null = null;
 
   try {
-    // --- Admin creates a generally-available vhost via the UI ---
+    // --- Admin creates an in-pool, generally-available vhost via the UI ---
     await loginAs(page, admin);
     await openVhostsTab(page);
 
     await page.getByTestId("vhost-address-select").selectOption(candidate);
+    await page.getByTestId("vhost-create-in-pool").check();
     await page.getByTestId("vhost-create-generally-available").check();
     await page.getByTestId("vhost-create-submit").click();
 
@@ -100,7 +112,7 @@ test("admin curates a vhost; a user self-selects it and the binding persists", a
     // #251 — the grant form has NO pin control (a grant is availability-only).
     await expect(page.locator('[data-testid^="admin-vhost-grant-pinned-"]')).toHaveCount(0);
 
-    // Grab the id from the REST index for cleanup + later assertions.
+    // Grab the id from the REST index for cleanup.
     const idxRes = await fetch(`${GRAPPA_BASE_URL}/admin/vhosts`, {
       headers: { authorization: `Bearer ${admin.token}` },
     });
@@ -108,24 +120,39 @@ test("admin curates a vhost; a user self-selects it and the binding persists", a
     vhostId = idxBody.vhosts.find((v) => v.address === candidate)?.id ?? null;
     expect(vhostId).not.toBeNull();
 
-    // --- User opens Settings, sees + selects the vhost ---
+    // --- User opens Settings, navigates into the vhost sub-page ---
     const userPage = await page.context().newPage();
     try {
       await loginAs(userPage, user);
       await userPage.getByLabel(/open settings/i).click();
       await expect(userPage.getByRole("dialog", { name: /settings/i })).toBeVisible();
 
-      const select = userPage.getByTestId("vhost-select");
-      await expect(select).toBeVisible({ timeout: 10_000 });
-      // The generally-available vhost is an option in the widget.
-      await expect(select.locator(`option[value="${candidate}"]`)).toHaveCount(1);
+      // The main page carries the nav ROW; tapping it lands on the sub-page.
+      await userPage.getByTestId("vhost-settings-entry").click();
+      await expect(userPage.getByTestId("vhost-subpage")).toBeVisible({ timeout: 10_000 });
 
-      await select.selectOption(candidate);
+      // Turn "customize" ON to reveal the tap-select sections.
+      await userPage.getByTestId("vhost-customize-toggle").check();
 
-      // The selection persisted server-side (the widget's own door).
+      // The vhost renders in its NAME-primary structure (label populated;
+      // the address shown — as the muted /128 when a PTR resolves, or as
+      // the label itself on the CI fallback).
+      const option = userPage.getByTestId(`vhost-option-${candidate}`);
+      await expect(option).toBeVisible();
+      await expect(option.locator(".mode-modal-toggle-label")).toBeVisible();
+      await expect(option).toContainText(candidate);
+
+      // Tap → selection PUTs + persists (the widget's own REST door).
+      await option.click();
       await expect
         .poll(async () => (await vhostSelectionFor(user.token)).selection, { timeout: 10_000 })
         .toContain(candidate);
+
+      // Turn "customize" OFF → selection resets to [] (random-from-pool).
+      await userPage.getByTestId("vhost-customize-toggle").uncheck();
+      await expect
+        .poll(async () => (await vhostSelectionFor(user.token)).selection, { timeout: 10_000 })
+        .toEqual([]);
     } finally {
       await userPage.close();
     }

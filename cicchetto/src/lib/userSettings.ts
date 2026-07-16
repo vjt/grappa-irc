@@ -151,6 +151,12 @@ export type VhostOption = {
   address: string;
   in_pool: boolean;
   granted: boolean;
+  // #252 — the address's reverse-DNS (cloak) name, resolved server-side
+  // (the DNS is the source of truth; nothing persisted). The vhost
+  // sub-page renders this as the primary label with `address` as a muted
+  // subline. Always a string: falls back to the raw `address` when the
+  // address has no PTR record or the name isn't cached yet.
+  name: string;
 };
 
 export type VhostSettingsView = {

@@ -96,6 +96,13 @@ config :grappa, :attach_admin_telemetry, false
 config :phoenix, :plug_init_mode, :runtime
 config :phoenix, :json_library, Jason
 
+# #252 — the app singleton `Grappa.Net.PtrCache` resolves vhost PTR names
+# through this deterministic, offline stub instead of real DNS, so the
+# controller test can assert a predictable `name` on the wire without a
+# network round-trip (CLAUDE.md — no network in the suite). Read at boot
+# in `Grappa.Application.start/2` and injected as the cache's resolver.
+config :grappa, :vhost_ptr_resolver, &Grappa.PtrTestResolver.resolve/1
+
 # Visitor self-service config (cluster visitor-auth, Task 9). The per-IP
 # cap is kept low so the cap-exceeded test path stays cheap (provision 2
 # → 3rd fails). #211 phase 3 — the `:visitor_network` slug pin is gone;

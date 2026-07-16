@@ -21693,3 +21693,91 @@ long-lived module, and `Session.Server`'s top-level state-shape literal
 the belt-and-suspenders alternative — free (no migration), it reseeds every
 session's isupport with the full default. Either is fine for a batch
 deploy._
+
+## 2026-07-16 — #252 vhost-selector V2 (rDNS names + mobile sub-page)
+
+V2 replaces the interim #228 native `<select multiple>` of bare IPv6
+literals with (a) a server that resolves each pool address to its human
+**name** and (b) a mobile-friendly cic settings SUB-PAGE with a customize
+toggle + 3-section tap-select showing the NAME. Builds on #251's per-option
+`granted` marker. **Deploy: HOT — server logic + `--cic`, NO migration.**
+
+**NAME source = rDNS/PTR; the DNS is the source of truth (vjt 2026-07-15).**
+No `name` column, no DNS copy persisted. `GET /me/settings/vhost` gains a
+`name` field per `vhost_option` (`{address, in_pool, granted, name}` — the
+bucket is fully determined by these; `generally_available` is NOT on the
+wire since `available` = allowed set already implies it). Wire built inline
+in `UserSettingsController.vhost_view/1` (no `*.Wire` module — the existing
+pattern). `name` is ALWAYS a string: the resolved PTR name, or the raw IP
+as fallback (see no-PTR below).
+
+**Reverse-DNS resolver + TTL cache (new, `lib/grappa/net/`):**
+
+  * `Grappa.Net.PtrResolver` — `reverse_dns_name/1` (PURE: `:inet` tuple →
+    `in-addr.arpa`/`ip6.arpa`; unit + property tested) + `resolve/1` (thin
+    `:inet_res` glue returning `{:ok, name, ttl} | :nxdomain | {:error, _}`;
+    NOT unit-tested — network boundary, injected away in cache tests).
+    `Grappa.Net.IpLiteral.to_tuple/1` (new) parses the persisted canonical
+    address string back to a tuple via the same strict rule.
+  * `Grappa.Net.PtrCache` — ETS-backed GenServer singleton (sibling of
+    Backoff / NetworkCircuit / ShareTokens; supervised BEFORE Endpoint;
+    `table_name/0` in the `Grappa.Health` `:ets` check). Caches each
+    address's name for the record TTL, clamped to `[min_ttl, max_ttl]`.
+
+**Cache strategy: LAZY, non-blocking (chosen over warm-at-boot+schedule).**
+The GET must NOT block on a cold cache. `PtrCache.names_for/1` is a
+LOCK-FREE ETS read: a fresh entry returns its name; a cold/expired entry
+returns `nil` (→ controller falls back to the raw IP) AND fires an
+out-of-band `{:ensure, _}` cast so the NEXT read is warm. The resolve runs
+in the GenServer's cast handler (dedup: re-check ETS, skip if fresh), never
+on the request path. WHY lazy over (a) warm-at-boot + scheduled refresh:
+the allowed set is PER-SUBJECT (generally-available ∪ in_pool ∪ the
+subject's grants), so warm would STILL need a lazy path for freshly-granted
+addresses PLUS a scheduler whose housekeeping can drift (CLAUDE.md
+"lightweight over heavyweight" / "don't duplicate state"). Lazy covers
+every address uniformly with no scheduler; cic re-reads the view on
+entering the sub-page, so the steady state always shows names. TTL honored
+via per-entry `expires_at` (expired = miss = re-resolve). Negative cache:
+`:nxdomain` → `:none` for `negative_ttl_ms` (stable — not every address has
+a name); resolver error → `:none` for the shorter `error_ttl_ms` + one
+`:warning`. Defaults in `config :grappa, :vhost_ptr_cache`; the resolver is
+injected at boot (`:vhost_ptr_resolver`, test wires an offline stub) so the
+suite never touches real DNS.
+
+**No-PTR fallback (implemented; PENDING vjt sign-off — "fai proporre al
+worker"):** `name` falls back to the raw IP string when an address has no
+PTR record (or the name isn't cached yet). cic renders `name` as the bold
+primary label and `address` as a muted `/128` subline, and OMITS the
+subline when `name === address` (no redundant IP). ALTERNATIVE not taken: a
+placeholder label like "(no reverse DNS)". Rationale for raw-IP: it's
+honest, non-empty, and still actionable (the operator sees which `/128` it
+is); a placeholder hides that. Flagged for vjt's call.
+
+**cic sub-page (`VhostSettingsPage.tsx`, new):** a reusable settings
+SUB-PAGE capability — `SettingsDrawer` gains a `settingsPage` signal
+(`"main" | "vhost"`, mirroring AdminPane's tab signal) + a nav ROW on the
+main page + a back button. The sub-page is a PURE presentational widget
+(server owns the allow-set + selection; cic never originates state):
+
+  * "customize your vhost" toggle — OFF (default = empty selection): shows
+    "your vhost is chosen randomly on connection from this pool" + the pool
+    read-only; ON: reveals the sections. Turning OFF PUTs `selection = []`
+    (reset to random).
+  * three tap-select sections bucketed from `granted` + `in_pool`:
+    exclusive to you (`granted`) / in pool (`in_pool && !granted`) / out of
+    pool (`!in_pool && !granted`). The exclusive section (and any empty
+    section) is hidden.
+  * each option is a `.mode-modal-toggle` button (REUSED from the
+    umode/chanmode modal): NAME as the bold primary label, the `/128` as
+    the muted subline (omitted when name IS the IP); full names wrap, never
+    truncated (`overflow-wrap: anywhere` + `title` tooltip — refinement 9).
+    Tap toggles membership → immediate PUT (the existing save-on-change
+    flow). Identical for visitor + registered (ungated).
+
+**Evidence split.** The distinguishable name≠IP proof lives in the server
+controller test + the `VhostSettingsPage` vitest (both drive a
+deterministic OFFLINE resolver). The e2e (`issue252-vhost-selector.spec.ts`,
+supersedes `vhost-editor.spec.ts`) proves the real-browser wiring
+(admin curates → user sub-page → toggle ON → tap → PUT persists → toggle
+OFF clears); it gates on the raw-IP fallback since real DNS is unavailable
+in the test container.

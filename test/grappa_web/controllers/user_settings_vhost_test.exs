@@ -68,6 +68,41 @@ defmodule GrappaWeb.UserSettingsVhostTest do
     end
   end
 
+  describe "GET /me/settings/vhost — resolved name (#252)" do
+    test "each option carries a `name`; a warmed address shows its resolved PTR name", %{
+      conn: conn
+    } do
+      {_, session} = user_and_session()
+      {:ok, ga} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
+
+      # Warm the singleton so the read is a cache hit (the offline test
+      # resolver — config/test.exs — maps every address deterministically).
+      assert Grappa.Net.PtrCache.warm(ga.address) == Grappa.PtrTestResolver.name_for(ga.address)
+
+      conn = conn |> put_bearer(session.id) |> get("/me/settings/vhost")
+      body = json_response(conn, 200)
+
+      row = Enum.find(body["available"], &(&1["address"] == ga.address))
+      assert row["name"] == Grappa.PtrTestResolver.name_for(ga.address)
+    end
+
+    test "a cold (unresolved) address falls back to the raw IP as its name", %{conn: conn} do
+      {_, session} = user_and_session()
+      # Never warmed → the lock-free read is a cold miss → name falls back
+      # to the raw IP (the no-PTR / cold-cache fallback; the GET does not
+      # block on a resolve).
+      {:ok, ga} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
+
+      conn = conn |> put_bearer(session.id) |> get("/me/settings/vhost")
+      body = json_response(conn, 200)
+
+      row = Enum.find(body["available"], &(&1["address"] == ga.address))
+      assert row["name"] == ga.address
+      # Every option carries a string name (never missing).
+      assert Enum.all?(body["available"], &is_binary(&1["name"]))
+    end
+  end
+
   describe "PUT /me/settings/vhost" do
     test "persists an allowed selection", %{conn: conn} do
       {_, session} = user_and_session()
