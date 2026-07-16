@@ -36,6 +36,12 @@ const CHANNEL = AUTOJOIN_CHANNELS[0];
 // Mirror of ScrollbackPane.SCROLL_BOTTOM_THRESHOLD_PX (not exported) — the
 // reader is "at the tail" when distance-to-bottom is within it.
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
+// Mirror of ScrollbackPane.LOAD_MORE_THRESHOLD_PX (not exported) — a scroll-up
+// to within this many px of the TOP fires `maybeLoadOlder` (infinite-scroll
+// prepend). #268: parking the reader inside this zone confounds the
+// absolute-scrollTop assertion below (the prepend's scroll-anchoring shifts
+// scrollTop), so the park point is clamped above it.
+const LOAD_MORE_THRESHOLD_PX = 200;
 // Stand-in for "the keyboard leaves ~300px of the screen visible" — far below
 // the iPhone 15 device viewport (393×659) so the shrink is real. Same value
 // issue66-keyboard-overlap uses for the keyboard-occlusion contract.
@@ -106,19 +112,39 @@ test.describe("#253 — keyboard/viewport resize must not yank a scrolled-up rea
     // `scrollTop` write (chromium does), so we dispatch it so the production
     // handler reads the real, updated scrollTop; (2) each step is its own
     // dispatch so `lastScrollTop` is max before the upward move registers.
-    const before = await sc.evaluate((el, threshold) => {
-      const max = el.scrollHeight - el.clientHeight;
-      el.scrollTop = max; // seat at the tail → onScroll sets atBottom=true, lastScrollTop=max
-      el.dispatchEvent(new Event("scroll"));
-      el.scrollTop = Math.floor(max * 0.3); // scroll UP → onScroll sees st < lastScrollTop → atBottom=false
-      el.dispatchEvent(new Event("scroll"));
-      return {
-        top: el.scrollTop,
-        max,
-        distanceToBottom: el.scrollHeight - el.scrollTop - el.clientHeight,
-        overflows: max > threshold,
-      };
-    }, SCROLL_BOTTOM_THRESHOLD_PX);
+    const before = await sc.evaluate(
+      (el, { bottomThreshold, loadMoreThreshold }) => {
+        const max = el.scrollHeight - el.clientHeight;
+        el.scrollTop = max; // seat at the tail → onScroll sets atBottom=true, lastScrollTop=max
+        el.dispatchEvent(new Event("scroll"));
+        // Park ABOVE the tail (atBottom=false) but BELOW the loadMore-older
+        // trigger zone. #268 root cause (proven via a full-suite I253DBG dump):
+        // when #bofh renders SHORT — only the initial ~50-row REST page loaded,
+        // so max ≈ 600px on the iPhone-15 viewport — `Math.floor(max * 0.3)`
+        // lands at ~180px, INSIDE `maybeLoadOlder`'s `scrollTop <= 200` gate.
+        // The scroll-up then FIRES an infinite-scroll prepend; the browser's
+        // scroll-anchoring bumps ABSOLUTE scrollTop by the prepended height
+        // (observed: scrollHeight 1114→2162, scrollTop 182→1230, Δ==the
+        // prepend, atBottom stayed FALSE the whole time — so NOT a keyboard
+        // yank, a content-shift the absolute-scrollTop assertion misreads). In
+        // a TALL pane 30% clears the zone, so this only bit under full-suite
+        // load where the initial page hadn't grown. Clamp the park point above
+        // the zone so the scroll-up is a pure position change (no prepend
+        // confound); the assertion then measures the real contract — a
+        // keyboard/viewport shrink, which adds NO content, must not move
+        // scrollTop. A real yank (scrollToActivation → tail) is still caught.
+        const parkTop = Math.max(Math.floor(max * 0.3), loadMoreThreshold + 60);
+        el.scrollTop = parkTop; // scroll UP → onScroll sees st < lastScrollTop → atBottom=false
+        el.dispatchEvent(new Event("scroll"));
+        return {
+          top: el.scrollTop,
+          max,
+          distanceToBottom: el.scrollHeight - el.scrollTop - el.clientHeight,
+          overflows: max > bottomThreshold,
+        };
+      },
+      { bottomThreshold: SCROLL_BOTTOM_THRESHOLD_PX, loadMoreThreshold: LOAD_MORE_THRESHOLD_PX },
+    );
     await page.waitForTimeout(200); // let onScroll settle atBottom → false
     // Void the probe unless we are genuinely scrolled up in an overflowing pane.
     expect(before.overflows).toBe(true);

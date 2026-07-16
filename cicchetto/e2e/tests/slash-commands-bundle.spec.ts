@@ -122,6 +122,24 @@ test.describe("slash-commands bundle (24eb1d8 — issues #20, #22, #23)", () => 
       // of the active window selection (#23 context-aware parser).
       await composeSend(page, `/topic ${otherChannel} ${newTopic}`);
 
+      // #268 — this fires a JOIN then an immediate TOPIC on a FRESH
+      // channel, so both wire frames leave grappa's SINGLE upstream
+      // socket back-to-back. bahamut applies per-connection command
+      // flood-throttling ("fake lag"): under full-suite load the shared
+      // (vjt, bahamut-test) connection carries accumulated command
+      // penalty, and the TOPIC echo — grappa's SOLE topic-persist path
+      // (Session.Server dropped the optimistic persist; EventRouter's
+      // unsolicited-TOPIC handler is the only writer) — is delayed until
+      // the penalty drains. PROVEN (2026-07-16 chromium full-suite run):
+      // the row persists correctly at +5.013s, only ~9ms past the 5s
+      // default ceiling; a bare /topic on an already-joined channel (no
+      // preceding JOIN) round-trips in ~1.0s. This is NOT a grappa race
+      // or a dropped frame — it is the legitimate flood-throttled
+      // round-trip genuinely exceeding the default window. So the poll
+      // (already a deterministic wait-for-condition — it returns the
+      // instant the row lands) gets headroom above bahamut's ~10s
+      // fake-lag bank cap; it is NOT a fixed sleep and does not slow the
+      // common (~1-5s) case. See docs/DESIGN_NOTES.md 2026-07-16.
       await assertMessagePersisted({
         token: vjt.token,
         networkSlug: NETWORK_SLUG,
@@ -129,6 +147,7 @@ test.describe("slash-commands bundle (24eb1d8 — issues #20, #22, #23)", () => 
         sender: NETWORK_NICK,
         body: newTopic,
         kind: "topic",
+        timeoutMs: 15_000,
       });
     } finally {
       await partChannel(vjt.token, NETWORK_SLUG, otherChannel).catch(() => {});

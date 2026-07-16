@@ -480,6 +480,14 @@ is due. Don't just look at todo.md.
    path (`/srv/grappa/scripts/…`) — cwd drift runs another
    checkout's copy. `scripts/deploy.sh` (Docker) drives the LOCAL
    dev stack only; nothing production runs on the pi.
+   **Integration CI VERDE prima di OGNI ship — hot/cold, cic/server,
+   nessuna eccezione. Il local scoped `--grep` NON basta: gira la suite
+   integration COMPLETA (`scripts/integration.sh`) verde prima di ogni
+   merge/deploy.** A scoped `--grep #NNN` pass proves ONE spec green
+   while the full suite is red — that gap (a red `integration` job
+   masking real regressions, shipped through anyway) is the exact
+   incident that filed #268. The full `scripts/integration.sh` green is
+   the ship gate, not a spot-check of the spec you touched.
 4. **Docs before deploy.** Update affected living docs (DESIGN_NOTES,
    patterns/*.md if introduced, todo).
 5. Update checkpoint after each feature/fix. Flush before compaction.

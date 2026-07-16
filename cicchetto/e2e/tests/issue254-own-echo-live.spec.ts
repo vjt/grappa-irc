@@ -92,6 +92,26 @@ async function assertSubscribeBeforeSend(
   body: string,
 ): Promise<void> {
   await composeSend(page, `/msg ${peerNick} ${body}`);
+  // #268 — `composeSend` resolves the instant the compose textarea reads
+  // empty, but a `/msg` SYNCHRONOUSLY switches the selected window to the
+  // fresh query window (compose.ts openQueryWindowState +
+  // setSelectedChannel), and that new window's textarea is ALREADY empty —
+  // so composeSend can return BEFORE the handler's awaited
+  // `ensureQueryTopicJoined` + send POST have fired. Reading
+  // `__i254_readyAtPost` right then observed a premature `null` ~44% of runs
+  // (proven: iso `--repeat-each 25` → 11 null-fails; the DBG dump showed the
+  // POST simply hadn't been issued yet, NOT a product race — server-side the
+  // join always precedes the send). Gate on the POST actually being OBSERVED
+  // (the wrapper flips the seam from null → boolean at the POST call frame).
+  // Deterministic wait on the real event, not a fixed sleep; it does NOT
+  // mask — a genuinely-missing POST times out (still red), and the value is
+  // still asserted === true (topic joined BEFORE the send). See
+  // docs/DESIGN_NOTES.md 2026-07-16.
+  await page.waitForFunction(
+    () => (window as unknown as { __i254_readyAtPost?: boolean | null }).__i254_readyAtPost != null,
+    undefined,
+    { timeout: 10_000 },
+  );
   // The deterministic contract: the topic was joined + ACKed BEFORE the POST.
   const readyAtPost = await page.evaluate(
     () => (window as unknown as { __i254_readyAtPost?: boolean | null }).__i254_readyAtPost,

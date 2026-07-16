@@ -22449,3 +22449,177 @@ pre-fix failure is a clean count-value mismatch (`Expected "1" Received
 
 _Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
 BEAM restart — a single memo re-point in `activeWindows.ts` + its e2e._
+
+## 2026-07-16 — #268: green the `integration` suite + CI-green-before-ship rule
+
+The `integration` CI job had been RED on main for 4+ consecutive commits
+with a DIFFERENT failing spec nearly every run (the flaky-suite signature),
+and batch-0716 shipped on that red base. A chronically-red suite MASKS real
+regressions. This closes the incident on two fronts: a persistent
+deploy-discipline RULE, and a REAL fix for the two specs that were actually
+broken (one reliably, one ~44%).
+
+**The rule (CLAUDE.md §Development Cycle step 3).** "Integration CI VERDE
+prima di OGNI ship — hot/cold, cic/server, nessuna eccezione. Il local
+scoped `--grep` NON basta: gira la suite integration COMPLETA
+(`scripts/integration.sh`) verde prima di ogni merge/deploy." The incident's
+proximate cause was a scoped `--grep #NNN` local pass proving ONE spec green
+while the FULL suite was red — so the ship gate is the full suite, never a
+spot-check of the spec you touched.
+
+### Target 1 (reliably red): `slash-commands-bundle.spec.ts` `/topic #chan <body>` cross-window (#23)
+
+**NOT a grappa bug, NOT a drop, NOT a client-side race — bahamut fake-lag.**
+The reliably-red `#23` test JOINs a FRESH channel then IMMEDIATELY `/topic`s
+it. Both the JOIN and the TOPIC leave grappa's SINGLE upstream socket for
+`(vjt, bahamut-test)` — the ONE connection shared by EVERY spec in the run.
+bahamut applies per-connection command flood-throttling ("fake lag"); under
+full-suite load that connection carries accumulated command penalty, so the
+TOPIC echo — grappa's SOLE topic-persist path (`Session.Server` dropped the
+optimistic persist in the #22 fix; `EventRouter`'s unsolicited-TOPIC handler
+is the only writer) — is delayed until the penalty drains.
+
+**Proven with data (chromium full-suite run 2026-07-16):**
+- The `#23` topic row persisted correctly at **+5.013s** after the `POST
+  /topic` (`INSERT ... :topic ... 12:14:12.809`, POST at `12:14:07.795`) —
+  only ~9ms past `assertMessagePersisted`'s 5s default ceiling. The failure
+  message's "last seen" showed the self-JOIN already persisted
+  (`["join/vjt-grappa: null"]`), so grappa WAS on the channel — refuting the
+  "TOPIC hit a not-yet-joined channel → 442" hypothesis (the JOIN and TOPIC
+  are serialized in-order on one socket by `Session.Server`, so bahamut
+  processes JOIN before TOPIC regardless).
+- The sibling `/topic <body>` test on the already-joined `#bofh` (no
+  preceding JOIN) round-tripped in **~1.0s** (`POST 12:14:05.294` → persist
+  `12:14:06.297`). The 5s delta is the JOIN's flood penalty stacking on the
+  TOPIC.
+- In ISO (`--repeat-each 5` on a warm stack) the same test trended
+  1.3→3.8→4.8→4.7→**5.8s** as each iteration's JOIN/TOPIC/PART accumulated
+  penalty — the same mechanism, sub-threshold in iso, over-threshold under
+  full-suite accumulation.
+
+**Fix (deterministic, NOT a blind bump).** The topic
+`assertMessagePersisted` gets `timeoutMs: 15_000`. `assertMessagePersisted`
+is ALREADY a deterministic wait-for-condition (it polls the REST scrollback
+and returns the instant the row lands), so this is headroom on a
+condition-poll, NOT a fixed sleep — the common ~1-5s case is unaffected. 15s
+sits safely above the proven ~5s and bahamut's ~10s fake-lag bank cap. The
+prompt forbids a blind bump "unless you PROVE the window is genuinely too
+tight for the legitimate round-trip" — proven above; and even then prefers a
+condition-wait over a sleep — which is exactly what the poll is. Validated:
+chromium full suite 308/308 green twice with the fix; the row that lands at
+~5s is now caught.
+
+### Target 2 (~44% flaky): `issue254-own-echo-live.spec.ts` query subscribe-before-send (#254)
+
+**A test-helper race, NOT a product bug.** `/msg <nick> <body>`
+SYNCHRONOUSLY switches the selected window to the fresh query window
+(`compose.ts` `openQueryWindowState` + `setSelectedChannel`) BEFORE it awaits
+`ensureQueryTopicJoined` + the send `POST`. `composeSend` resolves as soon as
+the compose textarea reads empty — but the freshly-mounted query window's
+textarea is ALREADY empty, so `composeSend` can return BEFORE the POST fires.
+The spec then read its `__i254_readyAtPost` discriminator prematurely and saw
+`null`.
+
+**Proven with data (instrumented `--repeat-each 25`, 11/25 null-failures).**
+The passing runs recorded `POST .../<peer>/messages` in the wrapper's call
+log with `readySet:[<key>]`; the failing runs recorded the GETs but **no
+POST** and `readySet:[]` — i.e. the send simply had not been issued yet when
+the discriminator was read. Server-side the join ALWAYS preceded the send
+(`JOINED grappa:...channel:<peer>` before `POST .../messages`), confirming
+the product's subscribe-before-send guarantee holds; only the test's read was
+early.
+
+**Fix (deterministic wait on the real event, not retry-masking).**
+`assertSubscribeBeforeSend` now `page.waitForFunction(() =>
+__i254_readyAtPost != null)` — waiting for the wrapper to OBSERVE the POST
+(the seam flips null→boolean at the POST call frame) — before reading and
+asserting `=== true`. It does not mask: a genuinely-missing POST times out
+(still red), and the subscribe-before-send contract is still asserted. Fixes
+both the chromium and `@webkit` query tests (shared helper). Validated:
+`--repeat-each 25` → 25/25 green (was 11/25 failing).
+
+### Target 3 (listed intermittent, SAME class as #23): #220 link-double-fire
+
+Code review caught that `issue220-link-double-fire.spec.ts` carries the
+IDENTICAL Class-1 latent flake: it `/join`s a fresh channel then `/topic`s it
+and waits (was 10s) for the `.topic-bar-topic` strip, which the channelTopic
+store paints from the SAME unsolicited-TOPIC echo that fake-lag delays. 10s
+sat exactly at bahamut's ~10s fake-lag bank cap, so under full-suite
+accumulation the echo could land 10-15s and flake — one spec over from #23.
+Green in re-runs is the SAME weak signal this incident condemns for a scoped
+`--grep` (the flaky suite shows a rotating red set), so "green N times ⇒
+stable" is NOT sufficient here. Fixed with the same 15s condition-wait
+headroom as the #23 topic assert (`:145`).
+
+### Target 3b (surfaced by the full-suite DoD run, SAME fake-lag class): #263 topic-modal-edit
+
+The 2026-07-16 full DoD run then flushed out a THIRD member of the same
+class: `issue263-topic-modal-edit.spec.ts` "op edits the topic from the modal
+… multi-line save flattens" failed intermittently (green in DoD run 1, red in
+run 2) at `peer.waitForTopic(channel, flattened)` — `IrcPeer: timeout waiting
+for witness topic (5000ms)`. It `/join`s a fresh channel then saves a topic
+via the modal, and an in-channel PEER waits to WITNESS the TOPIC echo — again
+the fake-lag-delayed upstream TOPIC round-trip, this time on the peer-witness
+path rather than the REST poll (#23) or the TopicBar store (#220).
+
+"Fix the general rule, not the example": rather than a per-spec bump, the
+shared IRC-peer topic helpers' ceiling was raised at the source —
+`fixtures/ircClient.ts` `TOPIC_TIMEOUT_MS` 5s → 15s. Both `IrcPeer.topic`
+(peer SETS a topic) and `IrcPeer.waitForTopic` (peer WITNESSES one) key off
+it; both are TOPIC-echo condition-waits and both are fake-lag-exposed, so the
+one constant covers the whole peer-side topic-witness class with the same 15s
+headroom (resolves the instant the echo lands — not a sleep). The three
+non-scroll flakes the suite exhibits (#23, #220, #263) are now ALL the one
+bahamut-fake-lag-on-TOPIC-echo root cause, fixed consistently.
+
+### Target 4 (listed intermittent): ux-5-bm mobile hamburger — genuinely stable
+
+ux-5-bm asserts static DOM layout (topic-bar hosts the hamburger; drawer
+hosts the launchers; mutex) — it does NOT depend on an upstream round-trip, so
+it is not fake-lag-exposed. Re-run `--repeat-each 12` + two full-suite webkit
+passes, zero failures. No change needed.
+
+### #253 webkit keyboard-scroll — full-suite-context flake, ROOT CAUSE PROVEN + fixed
+
+The DoD full runs surfaced `issue253-kbd-resize-scroll-preserve.spec.ts` "a
+scrolled-up reader keeps their scrollTop when the keyboard opens"
+(`during-before.top` = 1048px vs ≤5) — failing in full-suite context (2/3 full
+runs) but passing 15/15 iso + standalone webkit(81) + stability(36). A
+dedicated instrumented full run (spec-side `I253DBG` dump of the geometry +
+the atBottom proxy before/after) pinned it definitively — this is NOT a
+keyboard yank and NOT iOS-scroll physics:
+
+```
+before: top=182 max=609 scrollHeight=1114 clientHeight=505  btnBefore=true
+during: top=1230        scrollHeight=2162 clientHeight=146  btnAfter=true
+delta=1048  (== scrollHeight growth 2162-1114)
+```
+
+`atBottom` stayed FALSE the WHOLE time (scroll-to-bottom button visible before
+AND after), so `onResize`'s `if (atBottom()) scrollToActivation("tail-only")`
+never fired — no yank. The scrollHeight GREW by 1048px and scrollTop grew by
+the SAME 1048px = browser **scroll-anchoring after an infinite-scroll
+loadMore prepend**: the VISIBLE position was correctly preserved, only the
+ABSOLUTE offset moved (which the test's absolute-scrollTop assertion misreads
+as a yank). Why full-suite-only: when #bofh renders SHORT — only the initial
+~50-row REST page loaded, `max ≈ 609px` on the iPhone-15 viewport —
+`Math.floor(max * 0.3) = 182` lands INSIDE `ScrollbackPane.maybeLoadOlder`'s
+`scrollTop <= LOAD_MORE_THRESHOLD_PX (200)` gate, so the scroll-up itself
+fires the prepend. Iso/standalone renders taller (30% clears 200), so the
+prepend never fired there. Not a product bug (loadMore + anchoring are both
+correct); a TEST park-point that strays into the loadMore zone.
+
+**Fix:** clamp the park point above the loadMore zone —
+`parkTop = Math.max(Math.floor(max * 0.3), LOAD_MORE_THRESHOLD_PX + 60)`
+(mirror constant added) so the scroll-up is a pure position change with no
+prepend confound; a tall pane keeps 30% (unchanged). `maybeLoadOlder` returns
+on `scrollTop > 200`, so `parkTop ≥ 260` provably prevents the prepend — the
+assertion then measures the real contract (a viewport shrink adds NO content →
+scrollTop must not move), and a genuine keyboard-yank (scrollToActivation →
+tail, which needs atBottom true) is still caught. NOT a masked assertion.
+
+_Deploy: **CI/docs only — nothing to ship.** The changes are e2e specs
+(`slash-commands-bundle`, `issue254-own-echo-live`, `issue220-link-double-fire`,
+`issue253-kbd-resize-scroll-preserve`) + the `fixtures/ircClient.ts` helper
+constant + CLAUDE.md + this note. No `lib/`, no `cicchetto/src`, no migration —
+no BEAM restart, no `--cic` bundle. The gate this unblocks is CI itself._
