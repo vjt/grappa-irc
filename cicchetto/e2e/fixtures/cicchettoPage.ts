@@ -302,18 +302,28 @@ export async function confirmModalCancel(page: Page): Promise<void> {
 // the `<li>`; mobile clicks the `.bottom-bar-tab` directly (no inner
 // button — the tab IS the button).
 //
-// `awaitWsReady` (default `true`): after focus, wait for the
-// auto-joined own-nick JOIN line to render in the scrollback. That
-// line is persisted server-side at session boot AND fanned out on the
-// per-channel WS topic; its presence in the DOM proves BOTH that the
-// initial scrollback REST fetch landed AND that the WS topic
-// subscription completed. Specs that fire IRC traffic immediately
-// after focus would otherwise race the WS subscribe (observed: M1's
-// peer PRIVMSG arriving server-side BEFORE cicchetto's joinChannel for
-// `#bofh` — channel persisted the row, but no WS push reached the
-// browser, DOM assertion times out). Pass `awaitWsReady: false` for
-// the Server / DM / list / mentions windows where the join-line
-// heuristic doesn't apply.
+// `awaitWsReady` (default `true`): after focus, wait for WS readiness
+// via TWO signals (both required when `ownNick` is passed):
+//   1. The auto-joined own-nick JOIN line rendering in scrollback —
+//      proves the initial scrollback REST fetch landed + seeded.
+//   2. The `__cic_channelReady` seam (waitForChannelReady) — proves the
+//      per-channel `phx.join()` ACK'd, i.e. the socket is SUBSCRIBED.
+// #79 correction: signal (1) alone is NOT sufficient. The JOIN line is a
+// boot-persisted row served by the initial REST /messages page, so it
+// renders before the WS join ACKs under full-suite load — a following
+// composeSend's own-echo then fastlanes past the not-yet-subscribed
+// socket (PubSub has no replay to late subscribers) and the row never
+// appears (observed: M1's peer PRIVMSG dropped; #79's own-echo dropped —
+// channel persisted the row, but no WS push reached the browser, DOM
+// assertion times out). Adding signal (2) here makes EVERY
+// selectChannel-then-send spec race-free at the shared fixture, not one
+// spec at a time. Pass `awaitWsReady: false` for the Server / DM / list /
+// mentions windows where the channels-loop join (and the JOIN line) do
+// not apply — AND for kicked / parked / failed channel windows: those are
+// not (re)joined by either subscribe.ts loop, so the seam is never stamped
+// for them, yet a historical self-JOIN row may still satisfy signal (1) —
+// leaving signal (2) to hang the full 10s. Signal (2) assumes the channel
+// is joined / pending / invited (a live or in-flight subscription).
 //
 // Own-nick is derived from the seed (NETWORK_NICK) — kept here as the
 // `ownNick` parameter rather than imported from seedData so this
@@ -339,9 +349,10 @@ export async function selectChannel(
     await target.locator(".sidebar-window-btn").click();
   }
   if (awaitWsReady && opts.ownNick) {
-    // The auto-joined self-JOIN line carries `<ownNick> has joined
-    // <channel>`. Match on both substrings so a peer's later JOIN to
-    // the same channel doesn't false-positive (peer nick differs).
+    // Signal 1 — REST landed + seeded. The auto-joined self-JOIN line
+    // carries `<ownNick> has joined <channel>`. Match on both substrings
+    // so a peer's later JOIN to the same channel doesn't false-positive
+    // (peer nick differs).
     await expect(
       page
         .locator('[data-testid="scrollback-line"][data-kind="join"]')
@@ -349,6 +360,11 @@ export async function selectChannel(
         .filter({ hasText: windowName })
         .first(),
     ).toBeVisible({ timeout: 10_000 });
+    // Signal 2 — WS SUBSCRIBED (#79). The JOIN line above only proves the
+    // REST page landed; the channel `phx.join()` may still be in flight,
+    // so a following own-echo would be fastlaned to a not-yet-subscribed
+    // socket and dropped. Await the channels-loop join ACK seam.
+    await waitForChannelReady(page, networkSlug, windowName);
   }
 }
 
@@ -412,6 +428,62 @@ export async function waitForQueryWindowReady(
     },
     `${networkSlug}/${targetNick}`,
     { timeout: 5_000 },
+  );
+}
+
+// Mirror of `cicchetto/src/lib/channelKey.ts:canonicalChannel` — the e2e
+// tree MIRRORS src, never imports it (separate build context; see
+// fixtures/push.ts). Channel names (RFC 2812 sigils `#&!+`) are
+// case-folded; other targets keep casing. MUST stay byte-identical to the
+// src twin, or the composite key this rebuilds won't match the one
+// subscribe.ts stamped into `__cic_channelReady`.
+function canonicalChannelName(name: string): string {
+  if (name.length === 0) return name;
+  const first = name.charCodeAt(0);
+  // 0x23 #, 0x26 &, 0x21 !, 0x2B +
+  if (first === 0x23 || first === 0x26 || first === 0x21 || first === 0x2b) {
+    return name.toLowerCase();
+  }
+  return name;
+}
+
+// Wait until cic's channels-loop has subscribed to a real IRC channel's
+// per-channel topic (`phx.join()` ack landed for
+// `grappa:user:{u}/network:{slug}/channel:{channelName}`). Pure test
+// seam: subscribe.ts stamps `__cic_channelReady` (a Set of the module
+// composite key `channelKey(slug, name)` = `${slug} ${canonical(name)}`)
+// in the channels-loop join `onJoinOk`. Production never reads it.
+//
+// Why: the server fastlanes the operator's OWN channel PRIVMSG echo on
+// the (slug, channel) topic SYNCHRONOUSLY on POST (server.ex
+// handle_persisting_send: persist_event → per-channel broadcast, NOT
+// upstream-gated — bahamut never echoes PRIVMSG to the sender). A spec
+// that selectChannels then IMMEDIATELY composeSends races the channel
+// subscribe — the echo fastlanes past the not-yet-joined socket, PubSub
+// has NO replay to late subscribers, and the own-echo row never renders
+// (#79 — webkit-iphone-15 5s timeout; POST 201'd + persisted, DOM row
+// absent). The self-JOIN scrollback line selectChannel awaited pre-#79 is
+// NOT a reliable pre-event signal: it is a boot-persisted row served by
+// the initial REST /messages page, so it renders before the WS join ACKs.
+// This seam is the authoritative WS-ready signal, folded into
+// selectChannel's awaitWsReady branch so EVERY channel-then-send spec is
+// race-free — not a per-spec patch.
+export async function waitForChannelReady(
+  page: Page,
+  networkSlug: string,
+  channelName: string,
+): Promise<void> {
+  const key = `${networkSlug} ${canonicalChannelName(channelName)}`;
+  await page.waitForFunction(
+    (k) => {
+      const set = (window as unknown as { __cic_channelReady?: Set<string> }).__cic_channelReady;
+      return set?.has(k) === true;
+    },
+    key,
+    // 10s to match selectChannel's self-JOIN-line ceiling — a channel
+    // join ACK under bahamut fake-lag in a full-suite run can lag a few
+    // seconds. Condition-poll: instant on arrival, so the ceiling is free.
+    { timeout: 10_000 },
   );
 }
 
