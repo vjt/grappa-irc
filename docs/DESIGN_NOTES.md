@@ -21268,3 +21268,77 @@ HOLDS on the pending batch (#245/#250/#253/#254/#255).
 
 _Deploy: **`--cic` HOT (client-only)** — CSS + e2e only, no server/schema
 change._
+
+## 2026-07-15 — #245 (P1, cic): iOS PWA scroll jams in ALL tabs after a bundle refresh until each tab is reopened
+
+**The bug.** On an installed iOS PWA (WebKit), after every hot-reload /
+client bundle refresh the message-list scroll was JAMMED in every channel
+tab — the operator had to open each tab a SECOND time before scrolling
+worked in it. Verified on device (iPhone 17 Pro, iOS 26.5.2); NOT
+reproducible on desktop Chrome → WebKit/iOS-specific. Pre-existing, not the
+latest bundle. Distinct from #230 (touch underfill history-load), #196
+(image-preview overlay scrollTop) and #46 (Android bg unread-anchor).
+
+**Confirmed mechanism (code + CSS, RED e2e — NOT a device repro).** The
+`.scrollback` container is `touch-action: none` in its base rule
+(themes/default.css: "default-deny pan") and ONLY
+`.scrollback.scrollback-overflowing` flips to `touch-action: pan-y`. There
+is no `:has-overflow` selector, so ScrollbackPane JS-measures it:
+`measureOverflow()` sets `isOverflowing = scrollHeight > clientHeight`
+(inside a double-rAF) and the class is `classList={{ "scrollback-
+overflowing": isOverflowing() }}`. So when `isOverflowing` is false the
+pane is genuinely unscrollable on iOS — by design, when there's nothing to
+scroll.
+
+The defect: `isOverflowing` is a function of `clientHeight`, which is
+viewport-derived (the mobile shell height tracks `--vh` /
+`visualViewport.height` via viewportHeight.ts), yet `measureOverflow` ran
+ONLY on mount (onMount) + on message-length-change (the length-effect) —
+NEVER on a viewport resize. The onMount `resize` / `visualViewport.resize`
+listener re-ran `scrollToActivation` (re-anchor scroll) but did NOT
+re-measure overflow.
+
+The refresh is a FULL PAGE reload, not an in-app remount
+(`bundleHash.performRefresh` → SW skip-waiting + cache purge →
+`window.location.reload()`). So "first tab open after refresh" is a COLD
+shell boot → ScrollbackPane `onMount`. On an installed iOS PWA the
+`visualViewport.height` is transiently wrong at boot and settles a few
+hundred ms later, firing a `resize` that rewrites `--vh`. The cold mount
+measured `clientHeight` against that transient (too-large) height and
+latched `isOverflowing=false`; the settle `resize` re-anchored scroll but
+never re-measured overflow, so `.scrollback` kept `touch-action: none` —
+jammed. Opening the tab a SECOND time UNMOUNTS + REMOUNTS the pane
+(admin/home/mentions/list are different Shell `<Show>` branches), whose
+onMount re-measured AFTER the viewport had settled → overflowing → `pan-y`.
+That remount is why the workaround ("open each tab twice") worked.
+
+**The fix — reuse the existing resize seam (one lever, no new machinery).**
+`ScrollbackPane.tsx` onMount `onResize` now calls `measureOverflow()`
+alongside the existing `scrollToActivation("tail-only", true)`. The settle
+`resize` (the same event the workaround's remount benefited from) now
+re-measures overflow → the class flips to `pan-y` → the pane unjams WITHOUT
+a remount. This is the general fix, not just the post-reload incident:
+`isOverflowing` SHOULD track the viewport (orientation change, split-view,
+keyboard) — the omission was recomputing scroll position on resize but not
+overflow. Safe against the untestable iOS surfaces: `measureOverflow` only
+toggles the touch-action class — it never touches `scrollTop`,
+`position:fixed`, the keyboard, or window scroll, so it cannot regress the
+#66/#219/#230/#243 scroll/overlay machinery (all left untouched).
+
+**Testing — WIRING-ONLY, honestly labelled.** Playwright webkit has no OS
+keyboard and cannot reproduce real iOS WebKit post-reload reflow / touch
+scroll physics (feedback_playwright_webkit_not_ios_scroll); jsdom is blind
+to layout geometry so a vitest test of `scrollHeight > clientHeight` would
+be a hollow mirror. `issue245-scroll-remeasure-on-resize.spec.ts`
+(`@webkit`) is the wiring proof: re-seed #bofh to a SMALL corpus (does NOT
+overflow the real device viewport — fix-independent not-overflowing
+baseline), then stub `visualViewport.height` SMALLER (the on-device
+"settled shorter than I cold-mounted at" case) + dispatch `resize`, and
+assert `.scrollback` gains `scrollback-overflowing` / `touch-action:
+pan-y`. RED pre-fix (the class stayed `"scrollback"`, polled 9× over 5s —
+`touch-action: none`, jammed); GREEN post-fix; plus a bidirectional
+grow-back assertion. A GREEN does NOT close #245 — device-proof is vjt on a
+real iOS Safari PWA doing refresh→open-tab→scroll.
+
+_Deploy: **--cic HOT** — client-only bundle change; no BEAM restart, no
+migration, no supervised child._

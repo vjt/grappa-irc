@@ -1291,7 +1291,33 @@ const ScrollbackPane: Component<Props> = (props) => {
     // browser zoom — same canonical behavior.
     // resize (keyboard open/close, orientation, zoom) = resume family → TAIL,
     // never the divider (#46); one-shot, no latch.
-    const onResize = () => scrollToActivation("tail-only", true);
+    //
+    // #245 — re-measure overflow on resize too. `isOverflowing` gates the
+    // `.scrollback-overflowing` class, and default.css makes the base
+    // `.scrollback` `touch-action: none` (reject pan) while only
+    // `.scrollback-overflowing` flips to `pan-y` — so a stale
+    // `isOverflowing` leaves the pane UNSCROLLABLE. That flag is a function
+    // of `clientHeight`, which is viewport-derived (the mobile shell height
+    // tracks `--vh`/`visualViewport.height`), yet `measureOverflow` ran only
+    // on mount + message-length-change, NEVER on a viewport change. On an
+    // installed iOS PWA, a full-page reload (bundleHash.performRefresh →
+    // window.location.reload) cold-mounts before the visualViewport settles;
+    // the mount measured `clientHeight` against a transient (too-large)
+    // height, latched `isOverflowing=false`, and the pane stayed
+    // `touch-action: none` — scroll JAMMED in every tab until a remount
+    // (opening the tab a 2nd time) re-ran the onMount measure after settle.
+    // The settle fires this same `resize`, so re-measuring here unjams the
+    // pane without a remount. Cheap + safe: measureOverflow only toggles the
+    // touch-action class (no scrollTop / position:fixed / keyboard touch).
+    // Deliberately NOT gated by `isOverlayFrozen()` the way scrollToActivation
+    // is: measuring overflow on a covered pane only recomputes a class no one
+    // is touching, and a modal that shrinks the visualViewport must NOT leave
+    // a stale `touch-action` latched after it closes — gating this would
+    // re-open a #245-shaped jam on the overlay's close-edge resize.
+    const onResize = () => {
+      measureOverflow();
+      scrollToActivation("tail-only", true);
+    };
     window.addEventListener("resize", onResize);
     window.visualViewport?.addEventListener("resize", onResize);
 
