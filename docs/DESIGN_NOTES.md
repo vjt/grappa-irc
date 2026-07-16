@@ -22864,12 +22864,16 @@ pattern.
   last-write-wins with NO receive-side monotonic guard — the server's `set/4`
   clamp is the sole monotonicity authority. The Task broadcasts the clamped
   value, and the clamp guarantees no broadcast ever carries a value BELOW the
-  committed cursor. The async move widens the window in which two rapid
-  advancing writes' broadcasts could be delivered out of order, but that reorder
-  class already existed for concurrent requests (each broadcast fired after its
-  own in-request fold), the badge is eventually-consistent (the next settle
-  re-broadcasts), and no broadcast can regress a device below what it set. Not a
-  new hazard class.
+  committed cursor. Honest caveat (code review, 2026-07-16): the async move
+  WIDENS an existing reorder class. The synchronous path fired the broadcast
+  BEFORE the 200, so a single client's sequential settle→settle writes broadcast
+  in order; the async path returns the 200 first, so a fast fold for a later
+  advance can overtake a slower fold for an earlier one, and a PASSIVE PEER
+  device (last-write-wins, no receive-side guard) can transiently regress. It
+  stays benign: the ORIGINATING device advances its own signal map forward-only
+  before the POST (cic `setReadCursor`), so the actor never regresses; the
+  peer's in-pane divider is frozen (not re-latched per cursor move), so there is
+  no visible jump; and it self-heals on the next settle's re-broadcast.
 
 **Covering-index verdict — measured, then declined.** A covering
 `messages (subject_col, network_id, channel, id)` index would fix the fold's

@@ -92,8 +92,9 @@ defmodule GrappaWeb.ReadCursorController do
   # Deferred, off-request-path fan-out for a successful cursor set (#273).
   # Runs in a supervised `Grappa.TaskSupervisor` task (NOT the request
   # process) so the expensive badge fold never blocks the POST. Emits a
-  # `[:grappa, :read_cursor, :fanout]` telemetry event for observability
-  # of the async badge total (and, via handler wall-time, the fold cost).
+  # `[:grappa, :read_cursor, :fanout]` telemetry event (badge total; fold
+  # cost via handler wall-time) — emitted for FUTURE observability + as the
+  # deterministic test seam; no prod handler is attached today.
   #
   # Door #3: `badge_count` is the notify-worthy unread total AFTER this
   # advance (reading drops it), computed here because the controller holds
@@ -107,13 +108,19 @@ defmodule GrappaWeb.ReadCursorController do
   # clamped value preserves the exact broadcast semantics the synchronous
   # path had (a stale lower POST re-affirms the higher cursor); a re-read
   # here could observe a concurrent later write and emit an id inconsistent
-  # with what this request advanced. The async move widens the window in
-  # which two rapid advancing writes' broadcasts could be delivered out of
-  # order, but that reorder class already existed for concurrent requests
-  # (each broadcast fired after its own fold), the badge is
-  # eventually-consistent (the next settle re-broadcasts), and the clamp
-  # guarantees no broadcast ever carries a value BELOW the committed
-  # cursor — so no broadcast can regress a device below what it set.
+  # with what this request advanced. Ordering caveat (honest): the async
+  # move WIDENS an existing reorder class. The synchronous path fired the
+  # broadcast BEFORE the 200, so a single client's sequential settle→settle
+  # writes broadcast in order; the async path returns the 200 first, so a
+  # fast fold for a later advance can overtake a slower fold for an earlier
+  # one, and a PASSIVE PEER device (cic `applyReadCursorSet` is
+  # last-write-wins, no receive-side monotonic guard) can transiently
+  # regress. It stays benign: the ORIGINATING device advances its own
+  # signal map forward-only before the POST (cic `setReadCursor`), so the
+  # actor never regresses; the peer's in-pane divider is frozen (not
+  # re-latched per cursor move), so there's no visible jump; it self-heals
+  # on the next settle's re-broadcast; and the clamp guarantees no
+  # broadcast ever carries a value BELOW the committed cursor.
   @spec fanout(
           Grappa.Session.subject(),
           Subject.t(),

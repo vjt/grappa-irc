@@ -45,8 +45,9 @@ defmodule GrappaWeb.ReadCursorControllerTest do
   end
 
   # Waits (bounded) for every live `Grappa.TaskSupervisor` child to exit.
-  # async: false ⇒ no other test runs concurrently, so the only children
-  # are this case's read-cursor fan-out tasks.
+  # `Task.Supervisor.children/1` is GLOBAL — the async: false lane (no
+  # concurrent test) is load-bearing: it makes the only live children this
+  # case's read-cursor fan-out tasks.
   defp drain_fanout_tasks do
     Grappa.TaskSupervisor
     |> Task.Supervisor.children()
