@@ -1193,6 +1193,20 @@ html.resize-dragging * {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
+  /* #262 — HARD height bound, independent of `-webkit-line-clamp`. The
+     clamp above only engages when the clamped runs are the DIRECT line-box
+     content of the `-webkit-box`. This strip is a <button> wrapping a
+     <MircBody>: WebKit (iOS Safari) wraps a button's children in an internal
+     box, so the line-clamp never engages and the strip grew to the topic's
+     FULL height — eating up to ½ the mobile viewport (regression from #74,
+     which replaced the old 1-line `white-space: nowrap` clip with the clamp
+     and so left NO height bound when the clamp fails to engage). `max-height`
+     = 2 lines × `line-height: 1.25` = 2.5em caps the strip at two lines
+     whether or not the webkit clamp engages; `overflow: hidden` hides the
+     rest. Full topic stays reachable via the topic modal. Global, not
+     @media-mobile: the clamp-on-<button> failure is a WebKit/Blink engine
+     behaviour, not a viewport one — bound it on every surface. */
+  max-height: 2.5em;
   overflow: hidden;
   white-space: normal;
   overflow-wrap: anywhere;
