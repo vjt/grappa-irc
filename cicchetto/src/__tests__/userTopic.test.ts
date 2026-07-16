@@ -611,20 +611,24 @@ describe("userTopic", () => {
     });
   });
 
-  // #188 — clear-on-away lifecycle. Going /away AGAIN clears the prior
-  // mentions bundle so the next return-from-away consults a fresh panel.
-  // The bundle is SET on RETURN (mentions_bundle) and CLEARED on GOING
-  // away (away_confirmed state === "away"); state === "present" must NOT
-  // clear (that IS the return path).
-  describe("clear-on-away lifecycle (#188)", () => {
-    it("clears the network's mentions bundle when state flips to away", async () => {
+  // #188 / #268 — clear-on-away lifecycle. `away_confirmed` still drives the
+  // [away] badge (setAwayState), but it NO LONGER clears the mentions bundle.
+  // `away_confirmed` is emitted only on the upstream 305/306 numeric echo, a
+  // different-latency channel than the SYNCHRONOUS return-from-away
+  // `mentions_bundle` broadcast — so under bahamut fake-lag a going-away's
+  // delayed 306 could reorder AFTER a subsequent return's bundle and wipe it
+  // ("0 messages in 0 channels" flake). The clear now lives in compose.ts's
+  // `/away` (set) handler, causally ordered with the user's own commands. This
+  // arm's ONLY mentions-side responsibility is: never touch the bundle.
+  describe("away_confirmed no longer clears the mentions bundle (#268)", () => {
+    it("does NOT clear the mentions bundle when state flips to away", async () => {
       const mw = await import("../lib/mentionsWindow");
       channelMock.fireEvent({
         kind: "away_confirmed",
         network: "azzurra",
         state: "away",
       });
-      expect(mw.clearMentionsBundle).toHaveBeenCalledWith("azzurra");
+      expect(mw.clearMentionsBundle).not.toHaveBeenCalled();
     });
 
     it("does NOT clear the mentions bundle when state is present (return path)", async () => {
@@ -635,6 +639,14 @@ describe("userTopic", () => {
         state: "present",
       });
       expect(mw.clearMentionsBundle).not.toHaveBeenCalled();
+    });
+
+    it("still drives the [away] badge — setAwayState(true) on away, (false) on present", async () => {
+      const away = await import("../lib/awayStatus");
+      channelMock.fireEvent({ kind: "away_confirmed", network: "azzurra", state: "away" });
+      expect(away.setAwayState).toHaveBeenCalledWith("azzurra", true);
+      channelMock.fireEvent({ kind: "away_confirmed", network: "azzurra", state: "present" });
+      expect(away.setAwayState).toHaveBeenCalledWith("azzurra", false);
     });
   });
 

@@ -17,7 +17,7 @@ import { patchHomeNetwork } from "./home";
 import { appendInviteAck } from "./inviteAck";
 import { seedIsupport } from "./isupport";
 import { applyLusersBundle, clearLusersRequested } from "./lusersBundle";
-import { clearMentionsBundle, setMentionsBundle } from "./mentionsWindow";
+import { setMentionsBundle } from "./mentionsWindow";
 import { setNamesReply } from "./namesModal";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
 import { setPeerAway } from "./peerAway";
@@ -731,15 +731,19 @@ createRoot(() => {
           // away_confirmed with state: "away" | "present" on both set
           // and cancel paths. Update the awayByNetwork signal so the
           // Sidebar can show [away].
+          //
+          // #268 — this arm does NOT clear the mentions bundle. It used to
+          // (`clearMentionsBundle` on state === "away"), but `away_confirmed`
+          // is emitted only on the upstream 305/306 numeric echo
+          // (event_router.ex), a different-latency channel than the
+          // SYNCHRONOUS return-from-away `mentions_bundle` broadcast. Under
+          // bahamut fake-lag a going-away's delayed 306 could arrive AFTER a
+          // subsequent return's bundle and wrongly wipe it (the
+          // "0 messages in 0 channels" bug). The clear-on-going-away lifecycle
+          // now lives in compose.ts's `/away` (set) handler — causally ordered
+          // with the user's own commands, so a fresh bundle can never be
+          // clobbered by a stale echo. See docs/DESIGN_NOTES.md 2026-07-16.
           setAwayState(payload.network, payload.state === "away");
-          // #188 — clear-on-away lifecycle. Going /away AGAIN drops the
-          // prior mentions bundle so the next return-from-away consults a
-          // fresh panel. Clear on GOING away (state === "away") only — the
-          // bundle is re-SET on RETURN via `mentions_bundle`, so clearing
-          // on "present" would wipe it the instant it arrives.
-          if (payload.state === "away") {
-            clearMentionsBundle(payload.network);
-          }
           return;
 
         case "own_nick_changed":

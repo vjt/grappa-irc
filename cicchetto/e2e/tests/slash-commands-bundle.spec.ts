@@ -174,10 +174,27 @@ test.describe("slash-commands bundle (24eb1d8 — issues #20, #22, #23)", () => 
     const queryWindow = sidebarWindow(page, NETWORK_SLUG, peerNick);
     await expect(queryWindow).toBeVisible({ timeout: 10_000 });
 
-    // Bare /q closes the active query window. Drop expectUnmount —
-    // the compose textarea stays mounted on the post-close selection
-    // (Home or another channel); compose's submit clears the draft
-    // signal so `toHaveValue("")` is the correct synchronous signal.
+    // #268 — DETERMINISTIC GATE: wait for the /msg send to FULLY complete
+    // before issuing /q. `composeSend` returns as soon as the compose
+    // textarea reads empty, but `/msg` switches selection to the fresh query
+    // window SYNCHRONOUSLY (compose.ts `setSelectedChannel`) — so the textarea
+    // empties (window swap) while the send is STILL in flight
+    // (`await ensureQueryTopicJoined` + `sendBodyLines`). `peerNick` is a
+    // NON-EXISTENT nick, so the PRIVMSG draws a 401 ERR_NOSUCHNICK — a full
+    // upstream round-trip that, under bahamut fake-lag + full-suite load,
+    // keeps `sending()` (ComposeBox #241 in-flight guard) true well past the
+    // early `composeSend` return. If /q's Enter fires while `sending()` is
+    // still true, ComposeBox's `if (sending()) return` (ComposeBox.tsx) DROPS
+    // the submit — the "/q" draft is never cleared and the window never
+    // closes (the CI-only flake). The in-flight send-spinner
+    // (`<Show when={sending()}>`) is the exact mirror of that guard: waiting
+    // for it to leave the DOM proves `sending()` is false, so /q's Enter is
+    // processed. Condition-poll (instant once the send lands), not a sleep.
+    await expect(page.getByTestId("compose-send-spinner")).toHaveCount(0, { timeout: 15_000 });
+
+    // Bare /q closes the active query window. The compose submit clears the
+    // draft on the ok path; with the send-in-flight guard cleared above,
+    // `toHaveValue("")` is now a race-free signal.
     await composeSend(page, "/q");
 
     // Sidebar entry gone.

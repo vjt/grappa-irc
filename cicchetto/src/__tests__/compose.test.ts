@@ -91,6 +91,13 @@ vi.mock("../lib/lusersBundle", () => ({
   markLusersRequested: vi.fn(),
 }));
 
+// #268 — compose.ts clears the mentions bundle on the user's own GOING-away
+// (`/away <reason>`), moved off the reorder-prone `away_confirmed:"away"` echo.
+vi.mock("../lib/mentionsWindow", () => ({
+  clearMentionsBundle: vi.fn(),
+  setMentionsBundle: vi.fn(),
+}));
+
 // Mock queryWindows.ts — compose.ts calls openQueryWindowState for /msg /query /q.
 // canonicalQueryNick is identity by default (no existing window match);
 // per-test overrides via vi.mocked(...).mockImplementation cover the
@@ -767,6 +774,39 @@ describe("compose tabComplete (members-only, irssi-exact)", () => {
     compose.tabComplete(k, "al", 2, true); // draft now "alex: "
     compose.setDraft(k, "alex: x"); // user typed → cycle must reset
     expect(compose.tabComplete(k, "alex: x", 7, true)).toBeNull();
+  });
+});
+
+// #268 — /away lifecycle: GOING-away clears this network's mentions bundle
+// (moved off the reorder-prone away_confirmed:"away" echo); bare /away
+// (un-away) does NOT clear (the return path re-SETs the bundle).
+describe("compose submit — /away mentions-bundle clear (#268)", () => {
+  it("/away <reason> pushes away-set AND clears this network's mentions bundle", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const mw = await import("../lib/mentionsWindow");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/away lunch break");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushAwaySet).toHaveBeenCalledWith("freenode", "lunch break");
+    expect(mw.clearMentionsBundle).toHaveBeenCalledWith("freenode");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("bare /away (un-away) pushes away-unset and does NOT clear the mentions bundle", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const mw = await import("../lib/mentionsWindow");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/away");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushAwayUnset).toHaveBeenCalledWith("freenode");
+    expect(mw.clearMentionsBundle).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
   });
 });
 
