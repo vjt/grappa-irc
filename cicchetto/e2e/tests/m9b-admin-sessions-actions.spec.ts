@@ -89,6 +89,34 @@ test("M-9b admin Sessions tab lists live sessions including m9b-test seeded row"
   await expect(rows).toHaveCount(3, { timeout: 15_000 });
 });
 
+test("#242 admin Sessions tab shows the network slug (not the raw network_id FK)", async ({
+  page,
+}) => {
+  // Reconnect the sacrificial victim so its row is guaranteed live
+  // (idempotent if already :connected) — every seeded session is bound
+  // to bahamut-test, so the network cell of ANY row must render that
+  // slug. We target the victim's row deterministically via its
+  // composite session id.
+  const victim = getSeededM9bVictim();
+  await patchNetworkConnectionState(victim.token, NETWORK_SLUG, {
+    connection_state: "connected",
+  });
+
+  await adminFriendlyLogin(page, getSeededAdmin());
+  await openAdminSessionsTab(page);
+
+  const victimRow = page.getByTestId(`admin-session-row-${victim.sessionId}`);
+  await expect(victimRow).toBeVisible({ timeout: 15_000 });
+
+  // The network column is the 3rd cell (state, who, network, …). We
+  // assert by column position rather than the `admin-session-network-*`
+  // testid so the RED run (fix stripped, testid absent) still fails on
+  // a VALUE mismatch — pre-fix the cell renders the raw integer FK
+  // ("1"); post-fix it renders the resolved slug ("bahamut-test").
+  const networkCell = victimRow.locator("td").nth(2);
+  await expect(networkCell).toHaveText(NETWORK_SLUG, { timeout: 10_000 });
+});
+
 // IMPORTANT — mutex spec MUST run BEFORE the destructive Disconnect /
 // Terminate specs. The destructive specs leave the e2e DB in a
 // post-action state (sessions parked / pids stopped), so when this

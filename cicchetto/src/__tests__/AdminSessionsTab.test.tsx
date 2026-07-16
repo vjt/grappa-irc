@@ -540,6 +540,41 @@ describe("AdminSessionsTab", () => {
     expect(screen.queryByTestId("admin-sessions-network-summary")).toBeNull();
   });
 
+  // #242 — the network column must render the human-readable slug
+  // resolved from the already-loaded networks list, NOT the raw
+  // integer `network_id` FK. Pre-fix two sessions on different
+  // networks for the same account were indistinguishable (both showed
+  // a bare integer). USER_SESSION.network_id === 1 === BAHAMUT_NET.id,
+  // so the cell must read "bahamut".
+  it("renders the network slug (not the raw network_id) resolved from the loaded networks", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION]);
+    await mockNetworksDefault();
+
+    render(() => <AdminSessionsTab />);
+
+    const cell = await screen.findByTestId(`admin-session-network-${rowId(USER_SESSION)}`);
+    // Exact-match pins the slug AND proves the opaque FK integer ("1")
+    // no longer leaks — a `not.toContain("1")` would be both redundant
+    // and fixture-coupled (a future slug containing "1" would false-fail).
+    expect(cell.textContent?.trim()).toBe("bahamut");
+  });
+
+  // #242 honesty fallback — a session whose network_id isn't in the
+  // loaded networks list (deleted-network race, or /admin/networks
+  // returned []) renders the raw id rather than a silent blank, so the
+  // operator still sees the FK it couldn't map.
+  it("falls back to the raw network_id when the network is not in the loaded list", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION]);
+    // beforeEach mocks adminListNetworks → [], so network 1 is unresolved.
+
+    render(() => <AdminSessionsTab />);
+
+    const cell = await screen.findByTestId(`admin-session-network-${rowId(USER_SESSION)}`);
+    expect(cell.textContent?.trim()).toBe("1");
+  });
+
   it("fetches BOTH sessions + networks in parallel on refresh", async () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION]);
