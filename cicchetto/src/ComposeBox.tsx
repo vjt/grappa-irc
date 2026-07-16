@@ -471,6 +471,11 @@ const ComposeBox: Component<Props> = (props) => {
         <button
           type="submit"
           aria-label="send message"
+          // #241 — expose the in-flight state to assistive tech: the spinner
+          // itself is decorative (aria-hidden), so aria-busy is the a11y twin
+          // of the visual swap. Screen readers announce the busy state instead
+          // of only the disabled state.
+          aria-busy={sending()}
           disabled={sending() || getDraft(key()).trim() === ""}
           // #59: keep the textarea focused when sending via the button.
           // Tapping a <button> moves focus off the textarea, which collapses
@@ -479,21 +484,41 @@ const ComposeBox: Component<Props> = (props) => {
           // submits. Same trick as the image-picker button.
           onPointerDown={(e) => e.preventDefault()}
         >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-            data-testid="compose-send-glyph"
+          {/* #241 — in-flight feedback. While a send is in flight
+              (`sending()` true — POST-scoped: cleared on the send's 201
+              ack, the server persisting+broadcasting atomically) the
+              paper-plane arrow is swapped for a CSS spinner; it reverts
+              to the arrow on resolution. Non-optimistic: the spinner
+              reflects the REAL in-flight window, it does NOT fake a sent
+              row (cic never originates state). The spinner is a decorative
+              (`aria-hidden`) ring like the arrow it replaces — the
+              button's `aria-label` carries the a11y name in both states. */}
+          <Show
+            when={sending()}
+            fallback={
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+                data-testid="compose-send-glyph"
+              >
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+            }
           >
-            <line x1="22" y1="2" x2="11" y2="13" />
-            <polygon points="22 2 15 22 11 13 2 9 22 2" />
-          </svg>
+            <span
+              class="compose-send-spinner"
+              data-testid="compose-send-spinner"
+              aria-hidden="true"
+            />
+          </Show>
         </button>
       </form>
       <Show when={uploadState(key())}>
