@@ -86,6 +86,10 @@ const TopicBar: Component<Props> = (props) => {
   const [draft, setDraft] = createSignal("");
   const [editError, setEditError] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
+  // Live ref to the inline editor, set on mount so `onStripActivate` can
+  // focus it synchronously inside the tap gesture (iOS keyboard). Stale
+  // between edits is harmless — we only focus right after a fresh mount.
+  let editorRef: HTMLInputElement | undefined;
 
   const key = () => channelKey(props.networkSlug, props.channelName);
 
@@ -131,6 +135,12 @@ const TopicBar: Component<Props> = (props) => {
     setEditing(true);
   };
   const cancelEdit = () => {
+    // An in-flight submit OWNS the editor lifecycle: a blur/Escape that
+    // races the awaited send must NOT tear down the editor + discard the
+    // draft, or a subsequent reject would surface its error next to a
+    // closed strip with nothing to retry (breaks the S21 preserve-draft
+    // contract). The submit itself closes on success / keeps-open on error.
+    if (saving()) return;
     setEditing(false);
     setDraft("");
     setEditError(null);
@@ -139,8 +149,16 @@ const TopicBar: Component<Props> = (props) => {
   // Strip activation: edit-in-place when the operator can set the topic;
   // otherwise the read-only modal (view full topic + setter).
   const onStripActivate = () => {
-    if (canEditTopic()) beginEdit();
-    else openModal();
+    if (canEditTopic()) {
+      beginEdit();
+      // Focus synchronously, in-gesture: setEditing is synchronous, so
+      // Solid has already mounted + connected the input and set editorRef
+      // by now. iOS raises the soft keyboard only for a focus() that runs
+      // inside the tap's call stack (no microtask/timeout hop).
+      editorRef?.focus();
+    } else {
+      openModal();
+    }
   };
 
   const submitEdit = async (): Promise<void> => {
@@ -149,17 +167,19 @@ const TopicBar: Component<Props> = (props) => {
     const trimmed = next.trim();
     setEditError(null);
     const id = networkIdBySlug(props.networkSlug);
+    // Empty submit with nothing to clear → just close, no send. Done BEFORE
+    // `setSaving(true)` so the (saving-guarded) `cancelEdit` closes cleanly.
+    if (trimmed === "" && (topicText() === null || topicText() === "")) {
+      cancelEdit();
+      return;
+    }
     try {
       setSaving(true);
       if (trimmed === "") {
-        // Empty submit = clear the topic — via the SAME WS verb the
-        // `/topic -delete` slash uses (`postTopic` server-side rejects an
-        // empty body). No-op when there's nothing to clear.
-        const current = topicText();
-        if (current === null || current === "") {
-          cancelEdit();
-          return;
-        }
+        // Empty submit = clear the topic via `pushChannelTopicClear` — the
+        // SAME WS verb the `/topic -delete` slash uses. (We can't reuse
+        // `postTopic` here: it rejects an empty body server-side. That's
+        // WHY the clear needs the dedicated verb.)
         if (id === undefined) {
           setEditError("That network doesn't exist.");
           return;
@@ -271,7 +291,9 @@ const TopicBar: Component<Props> = (props) => {
           aria-label="edit topic"
           placeholder="Set a topic…"
           value={draft()}
-          ref={(el) => queueMicrotask(() => el.focus())}
+          ref={(el) => {
+            editorRef = el;
+          }}
           onInput={(e) => setDraft(e.currentTarget.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {

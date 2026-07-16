@@ -223,6 +223,37 @@ describe("TopicBar", () => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
 
+    it("opening the editor focuses it (so the tap gesture raises the mobile keyboard)", () => {
+      withTopic("Old topic");
+      render(() => <TopicBar {...baseProps()} />);
+      fireEvent.click(screen.getByText("Old topic"));
+      const editor = screen.getByTestId("topic-editor");
+      expect(document.activeElement).toBe(editor);
+    });
+
+    it("blur DURING an in-flight submit does NOT cancel — the submit owns the editor (S21)", () => {
+      // A never-resolving postTopic keeps saving() true so the blur races
+      // an in-flight send; the guard must keep the editor + draft alive.
+      let release: () => void = () => {};
+      postTopicMock.mockReturnValueOnce(
+        new Promise<void>((r) => {
+          release = () => r();
+        }),
+      );
+      withTopic("Old topic");
+      render(() => <TopicBar {...baseProps()} />);
+      fireEvent.click(screen.getByText("Old topic"));
+      const editor = screen.getByTestId("topic-editor") as HTMLInputElement;
+      fireEvent.input(editor, { target: { value: "in flight" } });
+      fireEvent.keyDown(editor, { key: "Enter" });
+      // Focus leaves mid-flight (desktop click-away / mobile keyboard "Go").
+      fireEvent.blur(editor);
+      const stillThere = screen.getByTestId("topic-editor") as HTMLInputElement;
+      expect(stillThere).toBeInTheDocument();
+      expect(stillThere.value).toBe("in flight");
+      release(); // cleanup the pending promise
+    });
+
     it("clicking '(no topic set)' on an editable channel opens an empty editor", () => {
       withTopic(null);
       render(() => <TopicBar {...baseProps()} />);
