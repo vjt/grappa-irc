@@ -489,7 +489,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
             // stale echo. The mentions bundle is a client-ephemeral render store
             // (not server-mirrored window/away state), so clearing it on a user
             // action does not violate the "cic never originates state" invariant.
-            // See docs/DESIGN_NOTES.md 2026-07-16.
+            // Tradeoff: auto-away / cross-device going-away (no compose) no
+            // longer clear, so a stale bundle can linger IF the next return
+            // carries zero new mentions (the server suppresses the empty
+            // broadcast) — a timestamped, secondary-button digest, strictly
+            // less harmful than the fresh-bundle-wipe it replaces. A robust
+            // auto-away clear would need a server sync-broadcast (out of the
+            // "lato client" scope). See docs/DESIGN_NOTES.md 2026-07-16.
             clearMentionsBundle(networkSlug);
             await pushAwaySet(networkSlug, cmd.reason);
           } else {

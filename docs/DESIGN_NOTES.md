@@ -22661,11 +22661,28 @@ is now causally ordered with the user's own commands, so a fresh bundle set on
 RETURN can never be wiped by a stale echo. The mentions bundle is a
 client-ephemeral render store (not server-mirrored window/away state), so
 clearing it on a user action does NOT violate "cic never originates state".
-Behaviour deltas, all benign: auto-away (server-driven, no compose) no longer
-clears — but the next return REPLACES the bundle anyway and the user is
-backgrounded meanwhile; cross-device no longer cross-clears — but a peer device
-going away should not invalidate THIS device's own last-return snapshot (arguably
-more correct). Unit-covered: `compose.test.ts` (`/away <reason>` clears,
+Behaviour delta (accepted tradeoff, NOT fully benign — corrected per code
+review). Because the clear now fires only on the LOCAL explicit `/away`
+compose, the auto-away and cross-device going-away paths no longer clear the
+bundle. It does NOT always get replaced on the next return: the server
+broadcasts `mentions_bundle` ONLY when `messages != []`
+(`Session.Server.maybe_broadcast_mentions_bundle` — `if messages != []`), so a
+return with ZERO new watchlist matches suppresses the broadcast and the prior
+cycle's bundle SURVIVES. Concretely: user `/away`s → returns with 2 mentions
+(bundle set, `@` open-button lit) → tab backgrounds → auto-away (no compose, no
+clear) → returns with no new mentions (no broadcast) → the `@` button stays lit
+and clicking it shows the PRIOR away window's digest. This is a lingering stale
+digest, not data loss: the panel header timestamps disclose the age, it is a
+secondary button, and it requires a specific multi-cycle sequence — strictly
+LESS harmful than the bug removed (a FRESH bundle silently wiped to 0/0). We
+accept it: a robust auto-away/cross-device clear would need the server to
+broadcast the away transition in a totally-ordered stream (sync-broadcast
+`away_confirmed` on command instead of on the 305/306 echo), which is the
+server-side alternative vjt explicitly steered away from ("risolvilo sul serio
+LATO CLIENT"). The cross-device delta is arguably MORE correct regardless — a
+peer device going away should not invalidate THIS device's own last-return
+snapshot. If the stale `@` ever proves annoying, the server sync-broadcast is
+the tracked follow-up. Unit-covered: `compose.test.ts` (`/away <reason>` clears,
 bare `/away` does not) + `userTopic.test.ts` (away_confirmed does NOT clear,
 still sets the badge). The e2e spec is UNCHANGED — the original flaky spec now
 passes on the fixed client behaviour (the honest end-to-end proof).
