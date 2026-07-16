@@ -30,7 +30,36 @@ defmodule GrappaWeb.ReadCursorControllerTest do
     {user, session} = user_and_session()
     {network, _} = network_with_server(port: 7501, slug: "rc-net-#{uniq()}")
     _ = credential_fixture(user, network)
+
+    # #273 — `create/2` now defers the badge fold + broadcast to a
+    # supervised `Grappa.TaskSupervisor` task. That task does DB work
+    # (`BadgeCount.count/1`); a test that doesn't itself wait for the
+    # fan-out would let the task outlive the case and hit `stop_owner` /
+    # the next case with an in-flight query on the shared sandbox
+    # connection. Deterministically drain the supervisor's children before
+    # the sandbox owner stops (on_exit is LIFO — registered here, AFTER the
+    # ConnCase owner's on_exit, so this runs first).
+    on_exit(&drain_fanout_tasks/0)
+
     {:ok, conn: put_bearer(conn, session.id), user: user, network: network}
+  end
+
+  # Waits (bounded) for every live `Grappa.TaskSupervisor` child to exit.
+  # `Task.Supervisor.children/1` is GLOBAL — the async: false lane (no
+  # concurrent test) is load-bearing: it makes the only live children this
+  # case's read-cursor fan-out tasks.
+  defp drain_fanout_tasks do
+    Grappa.TaskSupervisor
+    |> Task.Supervisor.children()
+    |> Enum.each(fn pid ->
+      ref = Process.monitor(pid)
+
+      receive do
+        {:DOWN, ^ref, :process, ^pid, _} -> :ok
+      after
+        2_000 -> Process.demonitor(ref, [:flush])
+      end
+    end)
   end
 
   defp insert_message(user, network, channel, server_time \\ 1) do
@@ -287,6 +316,50 @@ defmodule GrappaWeb.ReadCursorControllerTest do
         event: "event",
         payload: %{kind: "read_cursor_set", last_read_message_id: ^msg_id}
       }
+    end
+  end
+
+  # #273 — the badge fold (`BadgeCount.count/1`) measured ~150x the cost
+  # of the cursor upsert (proven: 69µs upsert vs ~10ms fold; EXPLAIN shows
+  # no covering index for the id-range unread count). Blocking the write on
+  # it dropped slow cursor writes → cic scrolled back to the stale marker.
+  # The write is request-critical; the badge fold + cross-device broadcast
+  # are eventually-consistent → they move OFF the request path to a
+  # supervised fire-and-forget Task. This proves the deferral via a
+  # `[:grappa, :read_cursor, :fanout]` telemetry event fired FROM the task
+  # process (a different pid than the in-request controller), not by
+  # asserting a flaky wall-clock threshold.
+  describe "POST /read-cursor — async fanout off the write path (#273)" do
+    test "defers the badge fold + broadcast to a separate task process (not in-request)",
+         %{conn: conn, user: user, network: network} do
+      msg = insert_message(user, network, "#sniffo")
+      test_pid = self()
+      handler = "rc-fanout-probe-#{uniq()}"
+
+      :telemetry.attach(
+        handler,
+        [:grappa, :read_cursor, :fanout],
+        fn _, _, _, _ -> send(test_pid, {:fanout_ran_in, self()}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      conn =
+        post(conn, "/networks/#{network.slug}/channels/%23sniffo/read-cursor", %{
+          "message_id" => msg.id
+        })
+
+      # The write is request-critical → the response carries the clamped,
+      # monotonic id synchronously (contract preserved, #233).
+      assert json_response(conn, 200) == %{"last_read_message_id" => msg.id}
+
+      # The fanout fired — in a DIFFERENT process than the request. Proves
+      # the fold was deferred to Grappa.TaskSupervisor, not run in-request
+      # (in ConnCase, `post/2` runs the controller in THIS test process, so
+      # a synchronous fanout would report `self()`).
+      assert_receive {:fanout_ran_in, exec_pid}, 2_000
+      refute exec_pid == test_pid
     end
   end
 end
