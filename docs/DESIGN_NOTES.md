@@ -22800,3 +22800,104 @@ Everything else is CI/test/docs only: the e2e fixtures/specs
 inherits the fixture) + the `fixtures/ircClient.ts` helper constant + CLAUDE.md
 + this note. No `lib/`, no migration — no server COLD/HOT. The gate this
 unblocks is CI itself._
+
+---
+
+## 2026-07-16 — #273 (P0): read-cursor POST was ~10x slower than messages — badge fold moved off the write path
+
+**Symptom (vjt).** `POST /networks/:id/channels/:id/read-cursor` measured
+~200ms vs ~20ms for `GET .../messages`. When the slow write was dropped, the
+cursor never advanced, so on reload cic scrolled the pane back to the stale
+unread-divider marker — a visible "jump back."
+
+**Root cause — PROVEN with timing, not guessed.** A throwaway probe seeded 20
+channels × 300 rows for one subject, set a cursor near the start of each, and
+timed the three segments of `ReadCursorController.create/2` (median of 5):
+
+| segment | median | vs `set/4` |
+| --- | --- | --- |
+| `ReadCursor.set/4` (the upsert + belongs-check) | **69 µs** | 1× |
+| `Grappa.Push.BadgeCount.count/1` (the fold) | **10,264 µs** | **148.8×** |
+| `ReadCursor.broadcast_set/5` | **1 µs** | ~0 |
+
+`EXPLAIN QUERY PLAN` of the per-window unread-content tail:
+
+```
+SEARCH m0 USING INDEX messages_network_id_index (network_id=? AND rowid>?)
+```
+
+The composite `(user_id, network_id, channel, server_time)` index is NOT
+chosen: the query is `WHERE id > after_id ... ORDER BY id ASC LIMIT 100`, and
+that composite is `server_time`-ordered — it can't serve the id-range + id-order
+without a temp sort — so SQLite picks the single-column `network_id` index
+(S33) and filters `channel`/`kind` row-by-row across the whole network
+partition above the cursor. `BadgeCount.count/1` runs that once PER cursored
+window (default prefs make channel messages non-notify-worthy, so the fold
+early-bail at the badge cap never triggers and it visits EVERY window). At 20
+channels the fold is ~10ms; a prod user with many channels + deep history is
+vjt's ~200ms. The upsert (69µs) and the broadcast (1µs) are negligible — the
+**synchronous badge fold on the request path was the entire 10×**.
+
+**Fix — defer the fold + broadcast off the write path.** Only the cursor
+upsert is request-critical (it is validated + `#233`-monotonic-clamped
+synchronously). The door-#3 badge and the cross-device broadcast are
+eventually-consistent, so `create/2` now defers BOTH to a supervised
+fire-and-forget Task under the EXISTING `Grappa.TaskSupervisor` — reusing that
+supervisor (rather than adding a new supervision child) is load-bearing: a new
+`application.ex` child would NOT start on a hot reload (`start/2` doesn't
+re-run), so the change stays a pure controller edit and is **hot-deployable**.
+The response returns right after the upsert. `Grappa.Networks` /
+`Visitors.Login` / `Session.Server` already use this exact `start_child`
+pattern.
+
+**Contracts preserved (design-discipline on the ordering hazard).**
+* **Monotonic advance-only (#233):** `set/4` still clamps synchronously; the
+  Task broadcasts the value `set/4` RETURNED — captured on the request path and
+  threaded into the closure, **never re-read**. A re-read could observe a
+  concurrent later write and emit an id inconsistent with what this request
+  advanced.
+* **Door-#3 badge:** computed from post-set state in the Task, broadcast with
+  the correct value.
+* **`:invalid_message` 422:** stays on the synchronous path (it gates the write
+  itself — not deferrable).
+* **Broadcast ordering:** cic's `applyReadCursorSet` (`readCursor.ts`) is
+  last-write-wins with NO receive-side monotonic guard — the server's `set/4`
+  clamp is the sole monotonicity authority. The Task broadcasts the clamped
+  value, and the clamp guarantees no broadcast ever carries a value BELOW the
+  committed cursor. The async move widens the window in which two rapid
+  advancing writes' broadcasts could be delivered out of order, but that reorder
+  class already existed for concurrent requests (each broadcast fired after its
+  own in-request fold), the badge is eventually-consistent (the next settle
+  re-broadcasts), and no broadcast can regress a device below what it set. Not a
+  new hazard class.
+
+**Covering-index verdict — measured, then declined.** A covering
+`messages (subject_col, network_id, channel, id)` index would fix the fold's
+absolute cost, but (a) it is NOT needed for #273's DoD — once the fold is off
+the critical path the write is just the ~69µs upsert — and (b) it is a
+MIGRATION → COLD deploy, crossing the HOT/no-migration mandate. Declined for
+this fix; recorded here as a future optimization if the background fold's
+absolute cost ever becomes a pool-contention problem.
+
+**Observability + test seam.** The Task emits a
+`[:grappa, :read_cursor, :fanout]` telemetry event (`%{badge_count: n}`,
+metadata `%{network_slug, channel}`). The TDD test attaches a handler that
+captures `self()` and asserts the fanout ran in a DIFFERENT process than the
+in-request controller (in `ConnCase`, `post/2` runs the controller in the test
+process) — a deterministic proof the fold is off the request path, with no
+flaky wall-clock assert. The existing `cursor-forward-only.spec.ts` (+
+`marker-target-window`, `unread-*`) e2e specs exercise the now-async broadcast
+path end-to-end and are the user-visible regression guard; a NEW RED→GREEN e2e
+for a *performance* regression is infeasible deterministically (real timing =
+flaky; a latency hook = test-only prod code), so the full `integration` suite
+green is the e2e ship gate.
+
+**Apply:** the read-cursor write path returns after the upsert; badge +
+broadcast are deferred to `Grappa.TaskSupervisor`. Any new "compute + fan-out"
+that follows a cheap authoritative write belongs OFF the request path under
+that supervisor — but capture the write's returned (clamped) value and pass it
+into the task; never re-read authoritative state inside the deferred closure.
+
+_Deploy: **server, HOT.** Pure `lib/` controller edit (`deploy-m42.sh`, no
+`--cic`, no migration, no config, no new supervision child). The cic
+`applyReadCursorSet` last-write-wins contract is unchanged._
