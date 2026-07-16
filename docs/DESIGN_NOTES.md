@@ -23044,3 +23044,81 @@ context fn per leg, a new read-only route/action, and the cic bundle —
 all hot-reloadable (router recompiles; no schema/index/config change, no
 `.app` change). If a future change to this feature needs a migration /
 config / COLD restart, that changes the ship plan — flag it._
+
+---
+
+## 2026-07-16 — #264 mobile next-active button: keyboard-safe circle (cic, client-only)
+
+**Bug.** The mobile "jump to next active window" affordance
+(`NextActiveButton` variant="mobile", from #235) was a small rounded-rect
+pill anchored `position: absolute; bottom: 0.5rem`. `.shell-mobile` is
+NOT a positioned/transform containing block (the "transform
+containing-block" note in Shell.tsx is stale — there is no transform on
+the shell today), so the button's `absolute` escaped to the **initial
+containing block = the LAYOUT viewport**, which iOS does NOT shrink when
+the on-screen keyboard opens. The button therefore sat UNDER the keyboard
+exactly when the compose box is focused — its primary use case (hop
+between active windows while typing). vjt, mobile, bundle `B_9zgxMI`.
+
+**Root cause vs the fix that already existed nearby.** `.shell-mobile`'s
+own HEIGHT already tracks `--viewport-height` (lib/viewportHeight.ts,
+re-written on every `visualViewport.resize`), and `.settings-drawer` /
+`.shell-members` already ride the keyboard via `position: fixed +
+height/max-height: var(--viewport-height)`. The button just wasn't using
+that primitive.
+
+**Design — fork A + B (combined).**
+- **(A) Keyboard-aware geometry.** `position: fixed` (self-contained — no
+  `position: relative` on `.shell-mobile`, which would re-anchor other
+  absolute descendants) anchored off `--viewport-height`:
+  `top: calc(var(--viewport-height, 100dvh) - 3.5rem - var(--nab-lift))`.
+  The var already shrinks with the keyboard, so the fixed button's top is
+  pinned at the visual-viewport bottom minus its own height + a gap → it
+  rides above the real keyboard. Derives from existing state; adds NO
+  parallel tracker (CLAUDE.md design discipline). Same primitive as the
+  drawers.
+- **(B) `:has(...:focus)` focus lift.**
+  `.shell-mobile:has(textarea:focus, input:focus) .next-active-btn-mobile
+  { --nab-lift: 4rem }` — a focused text field means the keyboard is
+  (about to be) up: lift the button clear of the bottom bar (~3rem) on top
+  of the base gap. On a real device (A) already handled the keyboard, so
+  this is bottom-bar clearance + breathing room. Its SECOND job is
+  testability: headless WebKit raises no soft keyboard, so
+  `--viewport-height` alone would not move on focus — the focus rule makes
+  the reposition observable in the e2e. Reuses the existing focus-react
+  idiom already in this file (~:3444, which collapses the shell's bottom
+  inset under the keyboard).
+
+**Shape (#264 req 2 & 3).** `.next-active-btn-mobile` becomes a symmetric
+`3.5rem` box, `border-radius: 50%`, `padding: 0`, glyph centered
+(`justify-content: center`) and bumped to `1.75rem`. `min-width/height:
+48px` keeps the ≥44px HIG tap target even at the smallest `--font-size`
+(rem = the html font-size = `var(--font-size)`). The active-window count
+moves to a CORNER badge (`.next-active-btn-mobile .next-active-count {
+position: absolute; top/right: -0.15rem }` + a 2px `--bg` ring) so the
+body stays a pure circle. **Pure CSS — NO markup change** (the existing
+`.next-active-count` span is just repositioned), so the count / auto-hide
+/ `jumpToNextActiveWindow` wiring and every vitest are untouched. Desktop
+(`.next-active-btn-desktop`) and the shared base rules are unchanged.
+
+**Testing.** `issue264-next-active-btn-mobile.spec.ts` (`@webkit`,
+iPhone-15, the only branch that mounts variant="mobile") seeds one unread
+channel (button present, count "1" — anti-false-green) then measures a
+real WebKit layout: circle (width === height ±1.5px — the pre-fix pill is
+wider than tall → RED), ≥44px each axis (pre-fix pill ~20px tall → RED),
+round border-radius, glyph rendered, count is `position: absolute`
+(corner badge), and focus-reposition (focusing the compose box moves the
+button's rect top UP ≥30px — the pre-fix button has no focus rule → RED).
+RED→GREEN confirmed via `integration.sh` (strip `cicchetto/src` to main →
+the shape/position assertions fail; restore → green).
+
+**Device-only deferral (justified, NOT a silent skip).** The ACTUAL
+soft-keyboard geometry — `visualViewport` shrink → `--viewport-height`
+change → the button clearing the REAL keyboard — is not
+Playwright-reproducible (headless WebKit has no soft keyboard;
+feedback: Playwright webkit ≠ real iOS keyboard/scroll physics). Queued
+for the pending iOS/Android real-device batch (keyboard-up reachability +
+circle feel).
+
+_Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
+BEAM restart — one CSS block + an e2e spec._
