@@ -101,8 +101,12 @@ test("#252 admin curates a vhost; a user customizes it via the sub-page and it p
     await openVhostsTab(page);
 
     await page.getByTestId("vhost-address-select").selectOption(candidate);
-    await page.getByTestId("vhost-create-in-pool").check();
+    // #256 — check generally_available BEFORE in_pool: ticking in_pool
+    // auto-sets + disables the generally_available control (an in-pool vhost
+    // is generally available by rule), so it can't be checked afterwards.
+    // Setting it first keeps the stored (in_pool=1, generally_available=1).
     await page.getByTestId("vhost-create-generally-available").check();
+    await page.getByTestId("vhost-create-in-pool").check();
     await page.getByTestId("vhost-create-submit").click();
 
     // Row appears with the created address.
