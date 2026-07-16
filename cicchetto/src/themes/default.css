@@ -3722,6 +3722,32 @@ html.resize-dragging * {
   display: flex;
   align-items: center;
   gap: 0.25rem;
+  /* #260 (2026-07-16) — sticky network tab (horizontal section header).
+     The bottom bar groups tabs per network: each `.bottom-bar-network`
+     is a flex row inside the `.bottom-bar` overflow-x scroller, and the
+     header is that group's FIRST child. `position: sticky; left: 0` pins
+     the header to the scroller's leading edge while its group is in
+     view; because a sticky element is constrained by its containing
+     block (the group), the NEXT group's header PUSHES it out when that
+     group reaches the edge — the horizontal analogue of a
+     `position: sticky; top: 0` list section header. So there is always
+     exactly ONE network tab at the leading edge, and the incoming one
+     displaces the outgoing one. Pure CSS, no scroll listener: the
+     browser owns the pin/displace math and cic never originates state
+     (see CLAUDE.md — no parallel client-side state machine). The DOM
+     already has per-group containers + header-first ordering, so CSS
+     sticky expresses the displace cleanly with no JS fallback needed.
+     `z-index` lifts the header above the channel/query tabs that scroll
+     UNDER it; the opaque background it needs to occlude them lives in a
+     separate higher-specificity rule below — `.bottom-bar-tab`'s
+     `background: transparent` shares this rule's (0,1,0) specificity and
+     is declared later, so it would win the tie on source order and leave
+     the pinned header transparent (tab text bleeding through mid-scroll).
+     Mobile-only: `.bottom-bar` renders solely in Shell.tsx's mobile
+     branch. */
+  position: sticky;
+  left: 0;
+  z-index: 1;
 }
 
 .bottom-bar-network-emoji {
@@ -3762,6 +3788,20 @@ html.resize-dragging * {
 .bottom-bar-tab.parted {
   color: var(--muted);
   font-style: italic;
+}
+
+/* #260 — opaque background for the sticky network header so channel/query
+   tabs scroll UNDER it without bleeding through. It must beat
+   `.bottom-bar-tab { background: transparent }` (equal (0,1,0)
+   specificity, declared later → wins on source order), so `:not()` raises
+   this to (0,3,0) while EXCLUDING the selected/hover states so their
+   `.bottom-bar-tab.selected` / `:hover` `--border` backgrounds still
+   apply. At rest the header resolves to the bar's own `--bg-alt`, so it
+   is visually identical to the pre-#260 transparent-over-bar look — just
+   opaque. Placed after the `.bottom-bar-tab*` cluster so specificity
+   ascends in source order (no descending-specificity lint). */
+.bottom-bar-network-header:not(.selected):not(:hover) {
+  background: var(--bg-alt);
 }
 
 .bottom-bar-unread {

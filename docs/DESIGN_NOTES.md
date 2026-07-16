@@ -21923,3 +21923,94 @@ there is no pure function to unit-test (vitest justified-skip).
 
 _Deploy: **--cic HOT, client-only.** Pure CSS in the cic bundle; no server
 change, no migration. `deploy-m42.sh --cic` (bundle only)._
+## 2026-07-16 — #260 sticky network tab on the mobile bottom bar (cicchetto-only)
+
+**Intent (P1, vjt chat).** On the mobile bottom bar (`BottomBar.tsx`),
+scrolling the horizontal tab strip scrolls the per-network label out of
+view — mid-scroll you can face a run of channel tabs with no network
+label on screen and lose track of which network they belong to. Desired:
+the current network's tab stays **pinned at the leading edge** while you
+scroll its channels, and is **displaced** by the next network's tab when
+that group reaches the edge — always exactly ONE network tab visible. The
+horizontal analogue of a `position: sticky; top: 0` list section header.
+
+**Approach — CSS-first, no JS.** The DOM already grouped tabs per network:
+each `.bottom-bar-network` is a flex row inside the `.bottom-bar`
+overflow-x scroller, and its FIRST child is the
+`.bottom-bar-network-header` (the ⚙️+slug server-window tab, since UX-6-E).
+That is the textbook sticky-section-header shape, so the whole feature is
+four declarations on that one rule:
+
+  * `position: sticky; left: 0` — pin the header to the scroller's leading
+    edge. A sticky element is constrained by its **containing block** (the
+    group), so when the next group's right edge reaches the edge it PUSHES
+    the current header out and the incoming group's header takes over —
+    the displace falls out of the CSS spec for free, no scroll listener.
+  * `z-index: 1` — lift the header above the channel/query tabs that
+    scroll UNDER it (they are static → below any positioned sibling).
+  * `background: var(--bg-alt)` — make the header opaque so those tabs
+    don't bleed through, in a SEPARATE rule
+    `.bottom-bar-network-header:not(.selected):not(:hover)`. Code review
+    caught that the header shares `(0,1,0)` specificity with
+    `.bottom-bar-tab { background: transparent }`, which is declared LATER
+    and so wins the tie on source order — a plain `background` on the base
+    header rule is dead (verified: computed `backgroundColor` was
+    `rgba(0,0,0,0)`, tab text bled through mid-scroll). The `:not()` pair
+    raises specificity to `(0,3,0)` to beat `.bottom-bar-tab` while
+    yielding to the selected/hover states (their `--border` backgrounds
+    still apply). At rest the header resolves to the bar's own `--bg-alt`
+    — visually identical to the pre-#260 transparent-over-bar look, just
+    opaque. An e2e assertion (`backgroundColor !== transparent` AND `===`
+    the bar's) locks this against a future `.bottom-bar-tab` edit silently
+    re-breaking it.
+
+**Pre-existing, deliberately NOT fixed here (flagged for separate
+triage).** The same `(0,1,0)` source-order tie means `.bottom-bar-tab`
+ALSO defeats the header's authored `color: var(--accent)` and
+`font-size: 0.75rem` (UX-6-E intent): the mobile network header renders
+in the plain tab colour/size (computed `color rgb(0,0,0)`, `14px`), not
+the accent chip UX-6-E described. That is a pre-existing UX-6-E cascade
+bug, not introduced by #260, and restoring it changes the header's
+appearance (a UX call beyond a "sticky tab" ticket) — so #260 fixes ONLY
+the opacity its own feature requires and leaves the colour/font restyle
+for a separate scoped change.
+
+**Why CSS, not a scroll-driven JS translate.** The plan allowed a JS
+fallback IF CSS sticky couldn't express the horizontal displace. It can:
+the per-group containers + header-first ordering are exactly what sticky
+needs, and the browser owns the pin/displace math. A JS
+`scrollLeft → translate` shadow would be a parallel client-side state
+machine over the existing network grouping — precisely what CLAUDE.md's
+"cic NEVER originates state" invariant forbids. Pure presentation, zero
+new state. Mobile-only: `.bottom-bar` renders solely in Shell.tsx's
+mobile branch; the desktop sidebar is untouched.
+
+**Test coverage — deterministic contract in CI, feel on device.**
+`e2e/tests/issue260-sticky-network-tab.spec.ts`, both `@webkit`
+(webkit-iphone-15; a chromium `#260` run is intentionally empty — the bar
+is mobile-only). (1) A computed-style contract test on the seeded vjt
+(one network) asserts `position: sticky` + `left: 0px`. (2) A behavioural
+test mints one visitor on TWO networks (azzurra + azzurra2 — separate
+ircds, distinct nick namespaces, the #211 phase-7 topology so no 433
+autokill), JOINs several long-named channels on both so each group is
+wider than the viewport, then drives the scroller via **programmatic
+`scrollLeft` + `getBoundingClientRect`** and asserts: at rest the first
+header is the only one at the leading edge; scrolled deep into the first
+group's channels the first header is STILL pinned (would go negative
+without sticky); scrolled to the end the LAST network's header owns the
+edge and the first is pushed fully out — always exactly one at the edge.
+No synthetic touch swipe: the sticky effect is driven by `scrollLeft`
+however it moves, there is no touch-JS handler to prove (unlike #123), and
+`scrollLeft`/`getBoundingClientRect` are deterministic in webkit (the
+#123/#255 caveat is TOUCH PAN PHYSICS, which this deliberately does not
+attempt). No vitest: CSS-only, no pure function to extract, and jsdom is
+blind to layout/scroll — the e2e IS the RED→GREEN. Demonstrated real RED
+(revert `cicchetto/src` → header not pinned, next network does not
+displace) → GREEN.
+
+**DEVICE-VERIFY (held, do NOT close on CI green).** Playwright webkit ≠
+real iOS scroll physics; the "does the pin/displace FEEL right under a
+finger" check on real iOS + Android rides the pending device-verify batch.
+
+_Deploy: **--cic HOT, client-only.** CSS-only (one rule) + a new e2e
+spec; server untouched, no migration._
