@@ -22974,3 +22974,73 @@ _Deploy: **cic-only, `--cic` bundle.** No `lib/` change, no migration, no
 config, no server BEAM restart. A server hot-reload does not touch the cic
 bundle and vice-versa; a cic change that skipped `--cic` would ship nothing.
 The bundle-hash-mismatch refresh banner handles live clients._
+
+---
+
+## 2026-07-16 — #257 admin vhost-grant subject autocomplete (unified users + visitors)
+
+The vhost-grant form (`AdminVhostsTab`) used to carry a `user | visitor`
+type-select plus a raw `subject_id` TEXT input — the operator had to know
+and paste a UUID. #257 replaces both with ONE autocomplete over BOTH
+subject kinds: type a name/nick, see type-tagged "network - nickname"
+results, pick one.
+
+**Unify vs type-select (vjt 2026-07-15): UNIFIED.** vjt's lean was "one
+box, type-tagged results via a tagged-union endpoint; keep the type-select
+as a fallback only if the union turns smelly." It did not turn smelly, so
+the type-select is gone. The union is clean because each leg is scoped to
+its OWN subject column and the two are merged in Elixir — never a single
+polymorphic query with a nullable FK in a `NOT IN` (the #211-p7
+NULL-poisoning class). `Grappa.SubjectSearch.search/2` composes
+`Accounts.search_users/2` (the `users` table) with
+`Credentials.search_visitor_credentials_by_nick/2` (the `visitor_id IS NOT
+NULL` credential path) and maps both onto a `Grappa.SubjectSearch.Result`
+tagged union `%{type: :user | :visitor, id, network, nick}`. Mirror of
+`Grappa.Subject`'s role as the cross-subject hub; the controller stays a
+thin call + render (`Grappa.SubjectSearch.AdminWire` → JSON).
+
+**Stable key, never the nick.** A visitor is multi-network (#211), so its
+nick is not a stable identity key — the result's `id` is the surrogate
+user id / visitor id (from the credential's `visitor_id` FK), which maps
+1:1 onto the existing grant body `{subject_type, subject_id}` (no
+re-plumbing of `resolve_subject/1`). A multi-network visitor holding the
+same nick on N networks yields N rows — the "network - nickname"
+disambiguation the operator needs. A user (account) has no single network:
+`network: nil`, displayed "account - name" (we do not fabricate a
+network).
+
+**Nick fold + LIKE hygiene.** The visitor leg rfc1459-folds BOTH sides
+(GH #121 — `Identifier.canonical_nick/1` on the query, the
+`Identifier.nick_fold/1` fragment on the column) so a case/bracket variant
+resolves the way login does. Folding runs BEFORE the LIKE-escape so a `\`
+in the query (which folds to `|`) never collides with the escape char. The
+new `Grappa.Ecto.Like` leaf util (mirror of `Grappa.Wire.Time`) is the
+single source of the `% _ \` escaping — an underscore is a legal nick /
+account-name char and must match literally, not wildcard. The leading-`%`
+pattern is not index-eligible, but the users + credentials tables are
+operator/visitor-scale, so the bounded scan is fine for an admin
+autocomplete.
+
+**Endpoint path + nginx.** `GET /admin/vhosts/subject_search?q=…` nests
+under `vhosts` deliberately: the existing admin nginx allowlist alt
+(`^/admin/(…|vhosts|…)(/|$)` in `infra/snippets/locations-api.conf`)
+ALREADY matches, so NO nginx conf edit — which keeps the ship a pure hot
+server + `--cic` bundle deploy. A top-level `/admin/subject_search` would
+have required editing the snippet (single source of truth included by both
+prod + e2e) and thus an nginx reload. The search is conceptually
+vhost-grant-only today; if it's ever reused beyond the grant form, promote
+it to a top-level path + add the segment to the allowlist then.
+
+**cic contract.** `SubjectAutocomplete` owns only TRANSIENT search state
+(query / debounced results / open / loading); the SELECTION lives in the
+parent grant form (`subject_id` + a display `subject_label`), so a
+post-grant form reset clears the chip with no component-held state to
+desync (`feedback_solidjs_for_ref_leak` class). cic mirrors the server's
+tag, it originates no state.
+
+_Deploy: **HOT server + `--cic`, NO migration.** New modules
+(`Grappa.SubjectSearch{,.Result,.AdminWire}`, `Grappa.Ecto.Like`), a new
+context fn per leg, a new read-only route/action, and the cic bundle —
+all hot-reloadable (router recompiles; no schema/index/config change, no
+`.app` change). If a future change to this feature needs a migration /
+config / COLD restart, that changes the ship plan — flag it._
