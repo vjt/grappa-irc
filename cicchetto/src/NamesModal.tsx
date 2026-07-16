@@ -54,20 +54,17 @@ const NamesModal: Component = () => {
     return slug === undefined ? undefined : namesModalBySlug()[slug];
   };
 
-  // Refcounted overlay scroll-lock — same wiring as ArchiveModal /
-  // MediaViewerModal. Tracks "is a roster shown for the active network?".
-  // The scroller is `.names-modal-body` (header + footer are pinned), so
-  // that's the registered element iOS is allowed to pan.
-  createOverlayLock(() => bundle() !== undefined, ".names-modal-body");
-
   const close = (): void => {
     const slug = activeSlug();
     if (slug !== undefined) dismissNamesModal(slug);
   };
 
-  const onKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === "Escape") close();
-  };
+  // Refcounted overlay scroll-lock — same wiring as ArchiveModal /
+  // MediaViewerModal. Tracks "is a roster shown for the active network?".
+  // The scroller is `.names-modal-body` (header + footer are pinned), so
+  // that's the registered element iOS is allowed to pan. #232 — the shared
+  // Esc-to-close routes through the same lock (topmost-first, focus-independent).
+  createOverlayLock(() => bundle() !== undefined, ".names-modal-body", close);
 
   // Spec #140 — clicking a nick opens a query window + switches focus,
   // then closes the modal. Mirrors MembersPane's left-click verb pair
@@ -93,9 +90,10 @@ const NamesModal: Component = () => {
           })).filter((s) => s.members.length > 0);
         const total = (): number => b.members.length;
         return (
-          // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc handled by dialog onKeyDown
+          // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
           // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
           <div class="names-modal-backdrop" onClick={close}>
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
             <div
               role="dialog"
               aria-modal="true"
@@ -103,7 +101,6 @@ const NamesModal: Component = () => {
               class="names-modal"
               data-testid="names-modal"
               onClick={(e) => e.stopPropagation()}
-              onKeyDown={onKeyDown}
               tabIndex={-1}
             >
               <header class="names-modal-header">

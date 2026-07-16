@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/auth", () => ({
   token: () => "test-bearer",
@@ -18,11 +18,14 @@ vi.mock("../lib/api", () => ({
   isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
 }));
 
-vi.mock("../lib/overlayScrollLock", () => ({
-  pushOverlay: vi.fn(),
-  popOverlay: vi.fn(),
-}));
-
+// #232 — ShareSessionModal now routes Esc through the REAL shared overlay
+// stack (createOverlayLock onEscape). Use the real module so the Esc test
+// exercises the actual registration; __resetForTest drains it per test.
+import {
+  __resetForTest,
+  overlayEscapeDepth,
+  runTopmostOverlayEscape,
+} from "../lib/overlayScrollLock";
 import ShareSessionModal from "../ShareSessionModal";
 
 const futureIso = (secondsAhead: number): string =>
@@ -30,12 +33,17 @@ const futureIso = (secondsAhead: number): string =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetForTest();
   // Clipboard polyfill — jsdom doesn't ship one. Tests that touch it
   // mock `writeText` per-case.
   Object.defineProperty(navigator, "clipboard", {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
     configurable: true,
   });
+});
+
+afterEach(() => {
+  __resetForTest();
 });
 
 describe("ShareSessionModal", () => {
@@ -123,6 +131,24 @@ describe("ShareSessionModal", () => {
     render(() => <ShareSessionModal open={true} onClose={onClose} />);
 
     fireEvent.click(screen.getByTestId("share-modal-close"));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  // #232 — ShareSessionModal had NO Esc handler before (the a11y gap #232
+  // closes). It now registers onClose on the shared overlay stack, so
+  // runTopmostOverlayEscape (the verb the global keydown listener calls)
+  // fires the same close verb the × / backdrop use — focus-independent.
+  it("closes on Escape via the shared overlay stack (was the a11y gap)", async () => {
+    apiHolder.mintShareToken.mockResolvedValue({
+      token: "abc",
+      expires_at: futureIso(600),
+    });
+    const onClose = vi.fn();
+
+    render(() => <ShareSessionModal open={true} onClose={onClose} />);
+
+    await waitFor(() => expect(overlayEscapeDepth()).toBe(1));
+    expect(runTopmostOverlayEscape()).toBe(true);
     expect(onClose).toHaveBeenCalled();
   });
 

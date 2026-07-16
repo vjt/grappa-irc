@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/uploadOrchestrator", () => ({
@@ -8,6 +8,11 @@ vi.mock("../lib/uploadOrchestrator", () => ({
 }));
 
 import { channelKey } from "../lib/channelKey";
+import {
+  __resetForTest,
+  overlayEscapeDepth,
+  runTopmostOverlayEscape,
+} from "../lib/overlayScrollLock";
 import * as orch from "../lib/uploadOrchestrator";
 import PrivacyModal from "../PrivacyModal";
 
@@ -19,6 +24,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  __resetForTest();
 });
 
 describe("PrivacyModal", () => {
@@ -141,7 +147,10 @@ describe("PrivacyModal", () => {
     expect(orch.dismissUpload).toHaveBeenCalledWith(TEST_KEY);
   });
 
-  it("Esc key calls dismissUpload", () => {
+  // #232 — Esc calls the same close verb (dismissUpload) via the shared
+  // overlay stack, not a per-dialog onKeyDown. runTopmostOverlayEscape is the
+  // exact verb the global keydown listener invokes (focus-independent).
+  it("Esc calls dismissUpload via the shared overlay stack", async () => {
     vi.mocked(orch.privacyModalState).mockReturnValue({
       open: true,
       host: {
@@ -158,8 +167,8 @@ describe("PrivacyModal", () => {
       key: TEST_KEY,
     });
     render(() => <PrivacyModal />);
-    const dialog = screen.getByRole("dialog");
-    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(overlayEscapeDepth()).toBe(1));
+    expect(runTopmostOverlayEscape()).toBe(true);
     expect(orch.dismissUpload).toHaveBeenCalledWith(TEST_KEY);
   });
 });

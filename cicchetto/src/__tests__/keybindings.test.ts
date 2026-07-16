@@ -1,9 +1,13 @@
+import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { install, type KeybindingHandlers, registerHandlers, uninstall } from "../lib/keybindings";
+import { __resetForTest, createOverlayLock } from "../lib/overlayScrollLock";
 
 const dispatch = (init: KeyboardEventInit) => {
   window.dispatchEvent(new KeyboardEvent("keydown", init));
 };
+
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 let handlers: KeybindingHandlers;
 
@@ -22,6 +26,7 @@ beforeEach(() => {
 
 afterEach(() => {
   uninstall();
+  __resetForTest(); // drain the shared overlay ESC stack between tests
 });
 
 describe("keybindings", () => {
@@ -102,9 +107,34 @@ describe("keybindings", () => {
     expect(handlers.insertIntoCompose).not.toHaveBeenCalled();
   });
 
-  it("Esc dispatches closeDrawer", () => {
+  it("Esc dispatches closeDrawer when no modal overlay is open (fallback)", () => {
     dispatch({ key: "Escape" });
     expect(handlers.closeDrawer).toHaveBeenCalledTimes(1);
+  });
+
+  // #232 — the single window keydown listener is the sole ESC authority: on
+  // Esc it closes the frontmost open modal FIRST and only falls back to
+  // closeDrawer when nothing is stacked. This is focus-independent (the old
+  // per-modal element onKeyDown never fired when focus sat in the compose box).
+  it("Esc closes the topmost open overlay (focus-independent) and does NOT reach closeDrawer", async () => {
+    await createRoot(async (dispose) => {
+      const [open, setOpen] = createSignal(true);
+      const onEscape = vi.fn(() => setOpen(false));
+      createOverlayLock(open, ".kb-overlay", onEscape);
+      await flush(); // let createOverlayLock register on the ESC stack
+
+      // Focus a typing surface to prove Esc closes regardless of focus.
+      const ta = document.createElement("textarea");
+      document.body.appendChild(ta);
+      ta.focus();
+
+      dispatch({ key: "Escape" });
+      expect(onEscape).toHaveBeenCalledTimes(1);
+      expect(handlers.closeDrawer).not.toHaveBeenCalled();
+
+      document.body.removeChild(ta);
+      dispose();
+    });
   });
 
   it("Tab in textarea dispatches cycleNickComplete(forward=true)", () => {

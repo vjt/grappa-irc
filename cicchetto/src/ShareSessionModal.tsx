@@ -1,7 +1,7 @@
 import { type Component, createEffect, createSignal, onCleanup, Show } from "solid-js";
 import { mintShareToken } from "./lib/api";
 import { token } from "./lib/auth";
-import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
+import { createOverlayLock } from "./lib/overlayScrollLock";
 
 // Visitor session-sharing — modal that displays a one-time share URL.
 //
@@ -75,26 +75,16 @@ const ShareSessionModal: Component<Props> = (props) => {
     if (tickId !== null) clearInterval(tickId);
   });
 
-  // Overlay scroll-lock, same edge-triggered shape as ArchiveModal /
-  // SettingsDrawer. Pop on unmount if still open so a route nav-away
-  // doesn't strand the refcount.
-  let modalEl: HTMLDivElement | undefined;
-  let scrollLocked = false;
-  createEffect(() => {
-    if (props.open && !scrollLocked) {
-      scrollLocked = true;
-      pushOverlay(modalEl ?? null);
-    } else if (!props.open && scrollLocked) {
-      scrollLocked = false;
-      popOverlay(modalEl ?? null);
-    }
-  });
-  onCleanup(() => {
-    if (scrollLocked) {
-      scrollLocked = false;
-      popOverlay(modalEl ?? null);
-    }
-  });
+  // Overlay scroll-lock + #232 shared Esc-to-close. ShareSessionModal had NO
+  // Esc handler before — this is the a11y gap #232 closes. props.onClose is
+  // the same close verb the × / backdrop use (topmost-first, focus-independent);
+  // createOverlayLock also pops the refcount on unmount so a route nav-away
+  // doesn't strand it.
+  createOverlayLock(
+    () => props.open,
+    ".share-modal",
+    () => props.onClose(),
+  );
 
   const mintOnOpen = async () => {
     const t = token();
@@ -159,13 +149,7 @@ const ShareSessionModal: Component<Props> = (props) => {
         data-testid="share-modal-backdrop"
         aria-hidden="true"
       />
-      <div
-        ref={modalEl}
-        class="share-modal"
-        role="dialog"
-        aria-label="share session"
-        data-testid="share-modal"
-      >
+      <div class="share-modal" role="dialog" aria-label="share session" data-testid="share-modal">
         <header class="share-modal-header">
           <h2>share session</h2>
           <button

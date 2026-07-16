@@ -1,7 +1,12 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ConfirmModal from "../ConfirmModal";
 import { dismissConfirm, requestConfirm } from "../lib/confirmDialog";
+import {
+  __resetForTest,
+  overlayEscapeDepth,
+  runTopmostOverlayEscape,
+} from "../lib/overlayScrollLock";
 
 // #195 — the explicit confirm modal that replaces the removed #172
 // hold-to-close gesture. Store-driven singleton: it renders whatever
@@ -9,7 +14,10 @@ import { dismissConfirm, requestConfirm } from "../lib/confirmDialog";
 // dismisses (without firing) on Cancel / backdrop / Esc.
 
 describe("ConfirmModal (#195)", () => {
-  afterEach(() => dismissConfirm());
+  afterEach(() => {
+    dismissConfirm();
+    __resetForTest();
+  });
 
   it("renders nothing when no request is pending", () => {
     render(() => <ConfirmModal />);
@@ -59,12 +67,16 @@ describe("ConfirmModal (#195)", () => {
     expect(screen.queryByTestId("confirm-modal")).toBeNull();
   });
 
-  it("Escape dismisses WITHOUT firing the action", () => {
+  // #232 — Esc dismisses via the shared overlay stack (dismissConfirm, the
+  // safe close verb) and never fires the carried action. runTopmostOverlayEscape
+  // is the exact verb the global keydown listener invokes (focus-independent).
+  it("Escape dismisses WITHOUT firing the action (shared overlay stack)", async () => {
     const onConfirm = vi.fn();
     render(() => <ConfirmModal />);
     requestConfirm({ title: "t", body: "b", confirmLabel: "Yes", onConfirm });
-    fireEvent.keyDown(screen.getByTestId("confirm-modal"), { key: "Escape" });
+    await waitFor(() => expect(overlayEscapeDepth()).toBe(1));
+    expect(runTopmostOverlayEscape()).toBe(true);
+    await waitFor(() => expect(screen.queryByTestId("confirm-modal")).toBeNull());
     expect(onConfirm).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("confirm-modal")).toBeNull();
   });
 });

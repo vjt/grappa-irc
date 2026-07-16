@@ -1,12 +1,4 @@
-import {
-  type Component,
-  createEffect,
-  createSignal,
-  Match,
-  onCleanup,
-  Show,
-  Switch,
-} from "solid-js";
+import { type Component, createSignal, Match, onCleanup, Show, Switch } from "solid-js";
 import { closeMediaViewer, type MediaViewerState, mediaViewerState } from "./lib/mediaViewer";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import {
@@ -49,11 +41,12 @@ import { maybeEscapePwaClick } from "./lib/platform";
 // same-origin sources, and the classifier never admits cross-origin
 // URLs.
 //
-// Escape uses a document-level keydown listener (UserContextMenu
-// pattern) — focus stays wherever the operator clicked (scrollback,
-// compose box), so a dialog-scoped onKeyDown would never fire.
-// Backdrop is a <button> (UserContextMenu pattern) so close-on-outside
-// needs no a11y lint suppressions.
+// #232 — Escape routes through the shared overlay ESC stack
+// (createOverlayLock's onEscape → the single keybindings keydown listener →
+// runTopmostOverlayEscape), NOT a private document listener: focus stays
+// wherever the operator clicked (scrollback, compose box), and there is only
+// ONE global keydown listener app-wide. Backdrop is a <button>
+// (UserContextMenu pattern) so close-on-outside needs no a11y lint suppressions.
 
 type MediaLoadStatus = "loading" | "ready" | "failed";
 
@@ -270,25 +263,10 @@ const MediaViewerBody: Component<{ state: MediaViewerState }> = (props) => {
 const MediaViewerModal: Component = () => {
   // UX-6 bucket A — refcounted overlay scroll-lock (shared
   // createOverlayLock wiring, extracted from the ArchiveModal/
-  // PrivacyModal copies during this cluster's review).
-  createOverlayLock(() => mediaViewerState() !== null, ".media-viewer-modal");
-
-  const onKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === "Escape") closeMediaViewer();
-  };
-
-  // Document-level Escape, registered ONLY while the viewer is open.
-  // This component is permanently mounted at Shell root (unlike
-  // UserContextMenu, which mounts per-open), so an unconditional
-  // listener would run on every keystroke app-wide forever; tracking
-  // the open signal scopes the listener to the viewer's visible
-  // lifetime. Document-level (not dialog onKeyDown) because focus
-  // stays wherever the operator clicked — scrollback, compose box.
-  createEffect(() => {
-    if (mediaViewerState() === null) return;
-    document.addEventListener("keydown", onKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", onKeyDown));
-  });
+  // PrivacyModal copies during this cluster's review). #232 — Escape now
+  // routes through the same lock's shared ESC stack (topmost-first,
+  // focus-independent) instead of a private document keydown listener.
+  createOverlayLock(() => mediaViewerState() !== null, ".media-viewer-modal", closeMediaViewer);
 
   return (
     <Show when={mediaViewerState()} keyed>

@@ -18,9 +18,12 @@ vi.mock("../lib/lifecycle", () => ({
   deleteAccount: () => deleteAccountMock(),
 }));
 
+// #232 — DeleteAccountModal now registers via createOverlayLock (Esc closes
+// via the shared overlay stack). No-op it here; the Esc-close is covered
+// end-to-end in the issue232 e2e matrix (this modal opens from the settings
+// drawer, which the e2e drives).
 vi.mock("../lib/overlayScrollLock", () => ({
-  pushOverlay: vi.fn(),
-  popOverlay: vi.fn(),
+  createOverlayLock: vi.fn(),
 }));
 
 import DeleteAccountModal from "../DeleteAccountModal";

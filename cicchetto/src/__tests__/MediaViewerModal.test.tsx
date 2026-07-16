@@ -1,7 +1,12 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeMediaViewer, mediaViewerState, openMediaViewer } from "../lib/mediaViewer";
-import { __resetForTest, overlayCount } from "../lib/overlayScrollLock";
+import {
+  __resetForTest,
+  overlayCount,
+  overlayEscapeDepth,
+  runTopmostOverlayEscape,
+} from "../lib/overlayScrollLock";
 import MediaViewerModal from "../MediaViewerModal";
 import { resetPlatformStubs, stubIosStandalone } from "./helpers/platformStubs";
 
@@ -87,11 +92,15 @@ describe("MediaViewerModal", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("Escape closes the viewer (document-level listener — focus may sit anywhere)", () => {
+  // #232 — Escape closes via the shared overlay stack (focus-independent),
+  // replacing the old private document keydown listener. runTopmostOverlayEscape
+  // is the exact verb the single global keybindings listener invokes.
+  it("Escape closes the viewer via the shared overlay stack (focus may sit anywhere)", async () => {
     render(() => <MediaViewerModal />);
     openMediaViewer(IMAGE_URL, "image");
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(overlayEscapeDepth()).toBe(1));
+    expect(runTopmostOverlayEscape()).toBe(true);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("'open in browser' is a real anchor to the URL with target=_blank rel=noopener", () => {

@@ -60,6 +60,37 @@ const CLASS_NAME = "overlay-open";
 const [count, setCount] = createSignal(0);
 let listenerAttached = false;
 
+// #232 — ordered ESC-close stack. Parallel to the scroll-lock refcount but
+// a DIFFERENT population: it carries the close verb, and only overlays that
+// pass an `onEscape` to createOverlayLock register here (scroll-lock-only
+// overlays — the members/settings drawers, admin pane — push the refcount
+// but NOT this stack). Cannot be derived from the refcount (onEscape ⊆
+// pushed), so it's a separate structure, but its lifecycle is bolted to the
+// SAME push/pop edges inside createOverlayLock so the two never drift.
+//
+// `runTopmostOverlayEscape()` invokes the LAST-registered overlay's onEscape
+// (topmost-first) — the single ESC authority `keybindings.ts` calls before
+// its drawer fallback, so there is exactly ONE global keydown listener app-
+// wide (the keybindings window listener), never a second one. A plain array,
+// not a Solid signal: it's read synchronously inside a keydown handler, and
+// nothing derives reactively from it. Entries key on an opaque per-lock
+// `token` so a pop removes the RIGHT entry regardless of stack position (an
+// overlay lower in the stack can close first when its store nulls out).
+type EscapeEntry = { token: object; onEscape: () => void };
+const escapeStack: EscapeEntry[] = [];
+
+function registerEscape(token: object, onEscape: () => void): void {
+  // Defensive: drop any stale entry for this token before pushing on top, so
+  // a same-token re-register (close+reopen racing microtasks) can't duplicate.
+  unregisterEscape(token);
+  escapeStack.push({ token, onEscape });
+}
+
+function unregisterEscape(token: object): void {
+  const i = escapeStack.findIndex((e) => e.token === token);
+  if (i !== -1) escapeStack.splice(i, 1);
+}
+
 function root(): HTMLElement | null {
   if (typeof document === "undefined") return null;
   return document.documentElement;
@@ -151,12 +182,35 @@ export function isListenerAttached(): boolean {
   return listenerAttached;
 }
 
-/** Test reset — clears refcount, DOM class, and detaches listener. */
+/**
+ * #232 — close the TOPMOST open overlay (last-registered onEscape) and return
+ * true; return false when no ESC-closable overlay is open. `keybindings.ts`
+ * calls this from its single global keydown listener BEFORE falling back to
+ * `closeDrawer`, giving correct topmost-first precedence: ESC closes the
+ * frontmost modal, a second ESC closes the drawer underneath it. The onEscape
+ * callback flips the overlay's own open signal, which drives createOverlayLock
+ * to pop this entry via the normal close lifecycle — so we invoke, never pop
+ * here.
+ */
+export function runTopmostOverlayEscape(): boolean {
+  const top = escapeStack[escapeStack.length - 1];
+  if (top === undefined) return false;
+  top.onEscape();
+  return true;
+}
+
+/** Current ESC-close stack depth. Exposed for vitest assertions. */
+export function overlayEscapeDepth(): number {
+  return escapeStack.length;
+}
+
+/** Test reset — clears refcount, DOM class, detaches listener, empties the ESC stack. */
 export function __resetForTest(): void {
   setCount(0);
   const el = root();
   if (el !== null) el.classList.remove(CLASS_NAME);
   detachListener();
+  escapeStack.length = 0;
 }
 
 /**
@@ -180,19 +234,37 @@ export function __resetForTest(): void {
  * `html.overlay-open` class + the non-passive document touchmove
  * preventDefault attached until full reload (permanent iOS
  * scroll-lock). Latent in the pre-extraction copies; fixed once here.
+ *
+ * #232 — optional `onEscape`: when supplied, the overlay ALSO joins the
+ * ordered ESC-close stack for its open lifetime, so `runTopmostOverlayEscape`
+ * (called by keybindings on Esc) closes the frontmost modal regardless of
+ * where focus sits — the fix for the old element-scoped `onKeyDown` handlers
+ * that never fired when focus stayed in the compose box. onEscape MUST call
+ * the same close verb the modal's × / backdrop use (cic never originates
+ * state; the keyboard is just another door to the existing close). Omit it
+ * for scroll-lock-only overlays (drawers, admin pane) — they stay out of the
+ * ESC stack and close via the keybindings drawer fallback. Registration is
+ * bolted to the SAME deferred push / release edges as the refcount, so the
+ * two structures share one leak-safe lifecycle and never drift.
  */
-export function createOverlayLock(isOpen: () => boolean, selector: string): void {
+export function createOverlayLock(
+  isOpen: () => boolean,
+  selector: string,
+  onEscape?: () => void,
+): void {
   // wasOpen = desired state (tracks the signal edge); pushed = actual
   // lock state (whether OUR push reached the refcount). Tracked
   // separately so the deferred push can neither fire after a same-task
   // close (wasOpen false → skip) nor double-fire after a same-task
   // close+reopen queued two microtasks (pushed true → skip).
+  const escapeToken = {};
   let wasOpen = false;
   let pushed = false;
   let lockedEl: HTMLElement | null = null;
   const release = (): void => {
     if (pushed) {
       popOverlay(lockedEl);
+      if (onEscape) unregisterEscape(escapeToken);
       pushed = false;
     }
     lockedEl = null;
@@ -205,6 +277,7 @@ export function createOverlayLock(isOpen: () => boolean, selector: string): void
         if (!wasOpen || pushed) return;
         lockedEl = document.querySelector<HTMLElement>(selector);
         pushOverlay(lockedEl);
+        if (onEscape) registerEscape(escapeToken, onEscape);
         pushed = true;
       });
     } else if (!open && wasOpen) {

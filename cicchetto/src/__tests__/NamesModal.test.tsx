@@ -1,8 +1,13 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import type { NamesReply } from "../lib/api";
 import type { MemberEntry } from "../lib/memberTypes";
 import { dismissNamesModal, setNamesReply } from "../lib/namesModal";
+import {
+  __resetForTest,
+  overlayEscapeDepth,
+  runTopmostOverlayEscape,
+} from "../lib/overlayScrollLock";
 import { setSelectedChannel } from "../lib/selection";
 import NamesModal from "../NamesModal";
 
@@ -27,6 +32,7 @@ describe("NamesModal (#140)", () => {
   afterEach(() => {
     dismissNamesModal(SLUG);
     setSelectedChannel(null);
+    __resetForTest();
   });
 
   it("renders the channel + people-count heading and the End-of-NAMES footer", () => {
@@ -109,11 +115,17 @@ describe("NamesModal (#140)", () => {
     expect(screen.queryByTestId("names-modal")).not.toBeInTheDocument();
   });
 
-  it("dismisses on Escape", () => {
+  // #232 — Esc now closes via the shared overlay stack (createOverlayLock
+  // onEscape → keybindings → runTopmostOverlayEscape), not a per-dialog
+  // onKeyDown. runTopmostOverlayEscape is the exact verb the global keydown
+  // listener invokes, so this proves the modal registered its close AND that
+  // the close is focus-independent (no dialog focus required).
+  it("closes on Escape via the shared overlay stack (focus-independent)", async () => {
     focusNetwork();
     setNamesReply(SLUG, roster([{ nick: "alice", modes: ["@"] }]));
     render(() => <NamesModal />);
-    fireEvent.keyDown(screen.getByTestId("names-modal"), { key: "Escape" });
-    expect(screen.queryByTestId("names-modal")).not.toBeInTheDocument();
+    await waitFor(() => expect(overlayEscapeDepth()).toBe(1));
+    expect(runTopmostOverlayEscape()).toBe(true);
+    await waitFor(() => expect(screen.queryByTestId("names-modal")).not.toBeInTheDocument());
   });
 });
