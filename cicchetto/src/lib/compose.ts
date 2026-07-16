@@ -1,19 +1,9 @@
 import { createSignal } from "solid-js";
-import {
-  ApiError,
-  ChannelPushError,
-  ownNickForNetwork,
-  patchNetwork,
-  postJoin,
-  postNick,
-  postPart,
-  postTopic,
-} from "./api";
+import { ownNickForNetwork, patchNetwork, postJoin, postNick, postPart, postTopic } from "./api";
 import { token } from "./auth";
 import { setQuery } from "./channelDirectory";
 import type { ChannelKey } from "./channelKey";
-import { friendlyApiError } from "./friendlyApiError";
-import { friendlyChannelError } from "./friendlyChannelError";
+import { friendlyError } from "./friendlyError";
 import { identityScopedStore } from "./identityScopedStore";
 import { markLusersRequested } from "./lusersBundle";
 import { membersByChannel } from "./members";
@@ -905,9 +895,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       // Pre-fix every channel-push error collapsed into the generic
       // "send failed" string, swallowing the real reason (the live
       // incident: a visitor's `/away` showed "Send failed" with no clue).
-      if (e instanceof ApiError) return { error: friendlyApiError(e) };
-      if (e instanceof ChannelPushError) return { error: friendlyChannelError(e) };
-      return { error: "send failed" };
+      return { error: friendlyError(e) };
     }
 
     // Success: push the original draft (NOT the parsed cmd) onto history,
