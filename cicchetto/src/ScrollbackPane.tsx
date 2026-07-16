@@ -14,6 +14,7 @@ import LusersCard from "./LusersCard";
 import { isContentKind, ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
 import { channelKey, decodeChannelKey } from "./lib/channelKey";
+import { type TopicJoinLine, topicByChannel, topicJoinLine } from "./lib/channelTopic";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { membersByChannel } from "./lib/members";
@@ -764,7 +765,14 @@ type MessageRow = { type: "message"; msg: ScrollbackMessage };
 // by wallclock `at` (epoch ms, same unit as ScrollbackMessage's
 // server_time) puts each ack at its arrival position in the timeline.
 type InviteAckRow = { type: "invite-ack"; entry: InviteAckEntry; channel: string; id: string };
-type Row = SeparatorRow | UnreadMarkerRow | MessageRow | InviteAckRow;
+// #237: on-JOIN inline topic line — a PRESENTATIONAL row (string id, NOT a
+// ScrollbackMessage), so it never enters the unread/cursor/ring-cap math. It is
+// derived from the `topicByChannel` store and anchored after the own-JOIN row.
+// `type: "topic-join"` (matching its data-kind/data-testid) deliberately DIFFERS
+// from `ScrollbackMessage.kind === "topic"` (the persisted mid-session change
+// row) so the two never blur — distinct rows, distinct code paths.
+type TopicRow = { type: "topic-join"; line: TopicJoinLine; id: string };
+type Row = SeparatorRow | UnreadMarkerRow | MessageRow | InviteAckRow | TopicRow;
 
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
@@ -1126,6 +1134,37 @@ const ScrollbackPane: Component<Props> = (props) => {
           channel,
           id: `invite-ack-${entry.ts}`,
         });
+      }
+    }
+    // #237 — inline topic-on-JOIN. irssi prints the topic to the window when
+    // YOU join; we mirror it by anchoring a presentational topic row right
+    // after the operator's own-JOIN row, derived from the `topicByChannel`
+    // store (seeded by the join-time 332 → topic_changed with full text +
+    // setter + time). Channel windows only; the store carries no topic for
+    // query/server/list panes. Anchored to the LAST own-JOIN in the loaded
+    // buffer so a part/rejoin cycle re-prints against the newest join (and
+    // there is exactly one line, not one per historical join). Reading
+    // `topicByChannel()` makes the memo re-run when the topic seeds/changes —
+    // on a mid-session change the line reflects the new topic AND the
+    // server-persisted `:topic` row renders the change event separately.
+    //
+    // Kept out of the unread/cursor math by construction: it is a TopicRow,
+    // not a "message" row, so the `unreadCount` filter (over `msgs`) and the
+    // `data-msg-id` cursor walk never see it — no faked scrollback id.
+    if (props.kind === "channel") {
+      const tjl = topicJoinLine(props.channelName, topicByChannel()[key()] ?? null);
+      if (tjl !== null && ownNick !== null) {
+        let lastJoinIdx = -1;
+        for (let i = result.length - 1; i >= 0; i -= 1) {
+          const r = result[i];
+          if (r?.type === "message" && r.msg.kind === "join" && nickEquals(r.msg.sender, ownNick)) {
+            lastJoinIdx = i;
+            break;
+          }
+        }
+        if (lastJoinIdx !== -1) {
+          result.splice(lastJoinIdx + 1, 0, { type: "topic-join", line: tjl, id: "topic-join" });
+        }
       }
     }
     return result;
@@ -2456,6 +2495,32 @@ const ScrollbackPane: Component<Props> = (props) => {
                       invited <NickText nick={row.entry.peer} extraClass="invite-ack-peer" /> to{" "}
                       <span class="invite-ack-channel">{row.channel}</span>
                     </span>
+                  </div>
+                );
+              }
+              if (row.type === "topic-join") {
+                // #237 — the on-JOIN inline topic line. An accent+bold
+                // "Topic for <#chan>:" label (the status-line affordance) then
+                // the FULL topic in readable foreground via the shared MircBody
+                // renderer (mIRC formatting, like TopicBar + the on-change
+                // `:topic` row); optional irssi-style setter/time suffix in
+                // muted. The label sits OUTSIDE `.scrollback-body` so its accent
+                // colour actually renders (`.scrollback-body` forces --fg).
+                // Presentational (own data-testid, NOT scrollback-line) so it
+                // stays out of the unread/cursor math and row counts.
+                return (
+                  <div
+                    class="scrollback-topic-join"
+                    data-testid="topic-join-line"
+                    data-kind="topic-join"
+                  >
+                    <span class="scrollback-topic-join-label">Topic for {row.line.channel}:</span>{" "}
+                    <span class="scrollback-body">
+                      <MircBody body={row.line.text} />
+                    </span>
+                    <Show when={row.line.meta}>
+                      <span class="scrollback-topic-join-meta"> — {row.line.meta}</span>
+                    </Show>
                   </div>
                 );
               }

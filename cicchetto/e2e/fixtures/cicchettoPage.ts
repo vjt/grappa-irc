@@ -465,6 +465,15 @@ export function scrollbackLine(page: Page, kind: string, bodyMatch: string | Reg
   );
 }
 
+// #237 — the on-JOIN inline topic line. NOT a `scrollback-line` (it is a
+// presentational, non-message row derived from the topic store — no server
+// message id, so it never enters the unread/cursor math). Its own testid
+// keeps it out of `scrollbackLines(page)` counts while giving specs a stable
+// hook for the "topic visible in the buffer flow after join" assertion.
+export function topicJoinRow(page: Page) {
+  return page.locator('[data-testid="topic-join-line"]');
+}
+
 // Compose ────────────────────────────────────────────────────────────
 
 export function composeTextarea(page: Page) {

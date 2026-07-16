@@ -73,3 +73,58 @@ export function compactModeString(modes: string[]): string {
   if (modes.length === 0) return "";
   return `+${modes.join("")}`;
 }
+
+// #237 — the on-JOIN inline topic line, DERIVED from this store (no parallel
+// state, no faked scrollback id). `topicByChannel` is already seeded by the
+// server's `topic_changed` event on JOIN (RPL_TOPIC 332 → full text + setter +
+// time) and on every change; ScrollbackPane reads these pure helpers to render
+// a PRESENTATIONAL buffer row anchored to the own-JOIN, irssi-style. Kept pure
+// (no signal reads) so the derivation is unit-testable without rendering.
+//
+// on-JOIN vs on-CHANGE split: the server persists a real `:topic` scrollback
+// row ONLY on a mid-session TOPIC change (rendered by ScrollbackPane's
+// `case "topic"`). JOIN emits topic_changed WITHOUT a scrollback row (avoids
+// reconnect spam), so the join-time inline print is derived HERE from the
+// cached entry — it shows the CURRENT cached topic (last-write-wins), not a
+// frozen topic-at-join snapshot (cic holds no per-join topic history). See
+// docs/DESIGN_NOTES.md 2026-07-15.
+
+/** The renderable on-JOIN topic line: channel + full topic text + optional
+ * "set by <nick> at <time>" meta. */
+export type TopicJoinLine = {
+  channel: string;
+  /** Full topic text VERBATIM (mIRC control bytes preserved for MircBody). */
+  text: string;
+  meta: string | null;
+};
+
+/**
+ * Maps a channel + its cached topic entry to the on-JOIN inline line, or
+ * `null` when there is nothing to print (no entry, explicit no-topic, or a
+ * blank/whitespace-only topic — mirrors irssi printing nothing on join for a
+ * topicless channel).
+ */
+export function topicJoinLine(channel: string, entry: TopicEntry | null): TopicJoinLine | null {
+  const text = entry?.text ?? null;
+  if (text === null || text.trim() === "") return null;
+  return { channel, text, meta: topicJoinMeta(entry) };
+}
+
+/**
+ * Formats the irssi-style "set by <nick> at <time>" suffix from a topic entry.
+ * `null` when the setter is unknown (a 332 that arrived without a 333). The
+ * set-at time is dropped when absent, and falls back to the raw string when
+ * unparseable (never leaks a JS "Invalid Date" to the user).
+ */
+export function topicJoinMeta(entry: TopicEntry | null): string | null {
+  const setBy = entry?.set_by ?? null;
+  if (!setBy) return null;
+  const setAt = entry?.set_at ?? null;
+  return setAt ? `set by ${setBy} at ${formatTopicSetAt(setAt)}` : `set by ${setBy}`;
+}
+
+function formatTopicSetAt(setAt: string): string {
+  const parsed = new Date(setAt);
+  if (Number.isNaN(parsed.getTime())) return setAt;
+  return parsed.toLocaleString();
+}

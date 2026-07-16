@@ -1457,6 +1457,28 @@ html.resize-dragging * {
   opacity: 0.75;
 }
 
+/* #237: on-JOIN inline topic line. Presentational row (not .scrollback-line)
+   derived from the topic store; prints the FULL topic in the buffer flow so
+   the mobile-truncated TopicBar is no longer the only surface. The row wraps
+   (unlike the single-line TopicBar strip) so the whole topic is readable on a
+   narrow viewport. The accent+bold "Topic for #chan:" label is the status-line
+   affordance; the topic text itself stays readable foreground (via the
+   .scrollback-body span, which forces --fg) and the setter/time meta is muted. */
+.scrollback-topic-join {
+  padding: 0.15rem 0;
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
+.scrollback-topic-join-label {
+  color: var(--accent);
+  font-weight: bold;
+}
+
+.scrollback-topic-join-meta {
+  color: var(--muted);
+}
+
 .scrollback-time {
   color: var(--muted);
 }
