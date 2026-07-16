@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/compose", () => ({
@@ -99,6 +99,54 @@ describe("ComposeBox", () => {
     // was "send"; post-bucket it's empty (SVG children carry no text).
     expect(btn.textContent?.trim()).toBe("");
     expect(btn.querySelector("[data-testid='compose-send-glyph']")).not.toBeNull();
+  });
+
+  // #241 — animated spinner on the send button during the in-flight send
+  // window. The `sending` signal is POST-scoped: doSubmit → submit →
+  // sendMessage's apiSendMessage POST, resolving on the 201 ack (the server
+  // persists+broadcasts atomically, so the 201 is a real ack, not an
+  // optimistic guess). While in flight the paper-plane arrow is swapped for
+  // a CSS spinner; on resolution the arrow returns. Driven through the REAL
+  // send path (Enter → doSubmit → the mocked submit held pending) and
+  // asserting the VISIBLE arrow↔spinner swap — not the internal signal.
+  it("#241 — send button swaps arrow→spinner while a send is in flight, reverts on resolve", async () => {
+    const compose = await import("../lib/compose");
+    vi.mocked(compose.getDraft).mockReturnValue("hello");
+    // Deferred submit: holds `sending()` true across the in-flight
+    // assertions; resolving it drives the revert-to-arrow.
+    let resolveSubmit: (r: { ok: true }) => void = () => {};
+    vi.mocked(compose.submit).mockReturnValue(
+      new Promise<{ ok: true }>((res) => {
+        resolveSubmit = res;
+      }),
+    );
+    try {
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const btn = screen.getByRole("button", { name: /send message/i });
+
+      // Idle: arrow present, spinner absent, not aria-busy.
+      expect(btn.querySelector("[data-testid='compose-send-glyph']")).not.toBeNull();
+      expect(btn.querySelector("[data-testid='compose-send-spinner']")).toBeNull();
+      expect(btn.getAttribute("aria-busy")).not.toBe("true");
+
+      // Fire the real send path (Enter → doSubmit).
+      fireEvent.keyDown(screen.getByPlaceholderText(/message #a/i), { key: "Enter" });
+
+      // In-flight: spinner present, arrow gone, aria-busy exposed to AT.
+      await screen.findByTestId("compose-send-spinner");
+      expect(btn.querySelector("[data-testid='compose-send-glyph']")).toBeNull();
+      expect(btn.getAttribute("aria-busy")).toBe("true");
+
+      // Resolve the POST ack → arrow returns, spinner gone, no longer busy.
+      resolveSubmit({ ok: true });
+      await waitFor(() => {
+        expect(btn.querySelector("[data-testid='compose-send-glyph']")).not.toBeNull();
+      });
+      expect(btn.querySelector("[data-testid='compose-send-spinner']")).toBeNull();
+      expect(btn.getAttribute("aria-busy")).not.toBe("true");
+    } finally {
+      vi.mocked(compose.getDraft).mockReturnValue("");
+    }
   });
 
   // #59 — tapping the send button must NOT steal focus from the textarea

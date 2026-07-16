@@ -608,7 +608,8 @@ html.overlay-open #root > div {
   .login-matrix,
   .login-matrix::before,
   .login-matrix::after,
-  .login-spinner {
+  .login-spinner,
+  .compose-send-spinner {
     animation: none;
   }
 }
@@ -1966,6 +1967,26 @@ html.resize-dragging * {
 .compose-box button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* #241 — send-button in-flight spinner. Reuses the .login-spinner ring
+   recipe (and the shared @keyframes login-spin) but in `currentColor`,
+   NOT var(--accent): the compose button's own background IS var(--accent)
+   (see `.compose-box button` above), so a lime ring would be invisible.
+   currentColor matches the paper-plane arrow's stroke it replaces, so the
+   spinner inherits the arrow's exact on-button contrast in every theme.
+   box-sizing: border-box + 16px keeps the arrow glyph's footprint so the
+   button never reflows on the arrow↔spinner swap. */
+.compose-send-spinner {
+  box-sizing: border-box;
+  display: inline-block;
+  vertical-align: middle;
+  width: 16px;
+  height: 16px;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: login-spin 0.9s linear infinite;
 }
 
 .compose-box-error {

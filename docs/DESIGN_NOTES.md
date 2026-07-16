@@ -22116,3 +22116,59 @@ Esc-dismisses-safely. Proven RED→GREEN: reverting the modal files +
 focus-outside cases; the fix passes them.
 
 _Deploy: **--cic HOT, client-only** — no server, schema, or wire change._
+## 2026-07-16 — #241 (P0, cic): animated spinner on the send button while a send is in flight
+
+The compose send button's paper-plane arrow (`compose-send-glyph`) is
+swapped for an animated CSS spinner (`compose-send-spinner`) while a
+message send is in flight, reverting to the arrow when the send resolves.
+Pure visual feedback for the POST round-trip; SolidJS `<Show>` keyed on the
+pre-existing `sending()` signal (no new state).
+
+**Design fork — POST-scoped vs echo-scoped "settle" (the real decision).**
+`sending()` is **POST-scoped**: `doSubmit` → `submit` (compose.ts) →
+`sendMessage` (scrollback.ts) → `apiSendMessage`, which resolves on the
+**201**. grappa persists+broadcasts atomically, so the 201 is a *real*
+server ack — and the WS own-echo has a live listener before the POST fires
+(the #254 subscribe-before-send fix for `/msg`; channels are already
+subscribed), so the echo renders effectively simultaneously with the 201.
+An **echo-scoped** settle (spinner clears only when the just-sent row
+paints) was rejected: it needs cross-module sent-row-id plumbing PLUS a
+timeout fallback — a lost/wedged echo would otherwise hang the spinner
+forever, and a timeout reintroduces exactly the artificial delay the spec
+forbids. That's a mechanism heavier than the problem, buying only a
+sub-perceptible gap. POST-scoped is honest, non-optimistic (the spinner
+reflects the REAL in-flight window; it never fakes a sent row — cic never
+originates state), and snappier. Empirically verified the echo does not
+demonstrably lag the 201 before choosing the simpler path.
+
+**Spec deviation — spinner colour is `currentColor`, NOT `var(--accent)`.**
+The issue asked for the on-brand lime accent, but `.compose-box button`'s
+own `background` IS `var(--accent)` — a lime ring on a lime button is
+invisible. The spec inherited a wrong assumption. `currentColor` matches
+the arrow's `stroke` it replaces (`color: var(--bg)` on the button), so the
+spinner inherits the arrow's exact on-button contrast in every theme; the
+lime accent is still present as the button surface. Reuses the
+`.login-spinner` ring recipe + shared `@keyframes login-spin`;
+`box-sizing: border-box` + 16px keeps the arrow glyph's footprint so the
+button never reflows on the swap; added to the `prefers-reduced-motion`
+freeze (static ring is still a busy affordance).
+
+**A11y.** `aria-busy={sending()}` on the button exposes the in-flight state
+to assistive tech (both glyphs are decorative / `aria-hidden`), so a screen
+reader announces the busy state, not merely the disabled state.
+
+**Testing.** vitest drives the real send path (Enter → `doSubmit`, the
+mocked `submit` held pending) and asserts the visible arrow↔spinner swap +
+`aria-busy` + revert-on-resolve. Playwright e2e
+(`issue241-send-button-spinner.spec.ts`) HOLDS the send POST via
+`page.route` (await a Node-side promise before `route.continue()`), making
+the in-flight window non-transient so a plain `toBeVisible()` is race-free
+— deliberately NOT the issue254-style `addInitScript` fetch-frame snapshot,
+because Solid may batch the `sending()` write inside the delegated event
+handler so the spinner DOM isn't guaranteed committed at the synchronous
+fetch call frame; holding the response sidesteps that entirely. The
+spinner→arrow revert on the real 201 also validates the POST-scoped design
+in-browser.
+
+_Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
+BEAM restart — a single component + one CSS rule + tests._
