@@ -383,4 +383,53 @@ defmodule Grappa.AccountsTest do
       assert {:ok, 2} = Accounts.delete_expired_sessions()
     end
   end
+
+  # #257 — user leg of the admin subject-search autocomplete. A
+  # case-insensitive substring match on the account `name`, LIKE-escaped
+  # (an underscore in a name is legal and must match literally), bounded
+  # by `limit`, ordered by name.
+  describe "search_users/2" do
+    test "matches a case-insensitive substring of the name" do
+      {:ok, u} = Accounts.create_user(%{name: "Barnaba", password: @password})
+
+      assert [%User{id: id}] = Accounts.search_users("barn", 10)
+      assert id == u.id
+    end
+
+    test "a blank query returns [] without scanning" do
+      {:ok, _} = Accounts.create_user(%{name: "someone", password: @password})
+
+      assert Accounts.search_users("", 10) == []
+      assert Accounts.search_users("   ", 10) == []
+    end
+
+    test "no match returns []" do
+      {:ok, _} = Accounts.create_user(%{name: "alice", password: @password})
+
+      assert Accounts.search_users("zzz-nobody", 10) == []
+    end
+
+    test "an underscore in the query matches literally (LIKE metachar escaped)" do
+      {:ok, literal} = Accounts.create_user(%{name: "foo_x", password: @password})
+      {:ok, _} = Accounts.create_user(%{name: "fooax", password: @password})
+
+      assert [%User{id: id}] = Accounts.search_users("foo_x", 10)
+      assert id == literal.id
+    end
+
+    test "honours the limit" do
+      for n <- 1..3, do: {:ok, _} = Accounts.create_user(%{name: "lim#{n}", password: @password})
+
+      assert length(Accounts.search_users("lim", 2)) == 2
+    end
+
+    test "orders results by name ascending" do
+      {:ok, _} = Accounts.create_user(%{name: "srch-charlie", password: @password})
+      {:ok, _} = Accounts.create_user(%{name: "srch-alice", password: @password})
+      {:ok, _} = Accounts.create_user(%{name: "srch-bob", password: @password})
+
+      assert ["srch-alice", "srch-bob", "srch-charlie"] ==
+               Enum.map(Accounts.search_users("srch-", 10), & &1.name)
+    end
+  end
 end

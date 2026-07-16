@@ -35,6 +35,7 @@ defmodule Grappa.Networks.Credentials do
   import Ecto.Query
 
   alias Grappa.Accounts.User
+  alias Grappa.Ecto.Like
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.{Credential, Network}
   alias Grappa.{Repo, Session}
@@ -682,6 +683,52 @@ defmodule Grappa.Networks.Credentials do
     case Repo.one(query) do
       %Credential{} = c -> {:ok, c}
       nil -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  #257 — visitor leg of the admin subject-search autocomplete. Returns up
+  to `limit` VISITOR credentials (`visitor_id IS NOT NULL`) whose `nick`
+  contains `query`, with `:network` preloaded (the caller renders the
+  slug), ordered by nick then network.
+
+  The nick match is rfc1459-folded (GH #121) on BOTH sides — the query via
+  `Identifier.canonical_nick/1`, the column via the `Identifier.nick_fold/1`
+  fragment — so a case/bracket variant resolves the same way login does.
+  The folded query is then LIKE-escaped via `Grappa.Ecto.Like` (an
+  underscore is a legal nick char and must match literally) with an
+  explicit `ESCAPE '\\'` clause. Folding runs BEFORE escaping so a `\\` in
+  the query (which folds to `|`) never collides with the LIKE escape char.
+
+  Visitor-scoped BY CONSTRUCTION (`WHERE visitor_id IS NOT NULL`): a USER
+  credential with a matching nick is never returned (the phase-1 subject-
+  blind-reader class). A multi-network visitor holding the same nick on N
+  networks yields N rows — the "network - nickname" disambiguation. The
+  leading-`%` pattern is not index-eligible, but the credential table is
+  operator/visitor-scale, so the scan is bounded. A blank/whitespace
+  `query` short-circuits to `[]`.
+  """
+  @spec search_visitor_credentials_by_nick(String.t(), pos_integer()) :: [Credential.t()]
+  def search_visitor_credentials_by_nick(query, limit)
+      when is_binary(query) and is_integer(limit) and limit > 0 do
+    case String.trim(query) do
+      "" ->
+        []
+
+      trimmed ->
+        pattern = Like.contains(Identifier.canonical_nick(trimmed))
+
+        query =
+          from(c in Credential,
+            where:
+              not is_nil(c.visitor_id) and
+                fragment("? LIKE ? ESCAPE '\\'", Identifier.nick_fold(c.nick), ^pattern),
+            order_by: [asc: c.nick, asc: c.network_id],
+            limit: ^limit,
+            preload: [:network]
+          )
+
+        Repo.all(query)
     end
   end
 

@@ -46,7 +46,7 @@ defmodule Grappa.Accounts do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Repo],
+    deps: [Grappa.Ecto.Like, Grappa.Repo],
     # `Visitors.Visitor` is referenced by `Accounts.Session`
     # (`belongs_to :visitor` + `Visitor.t()` type) and by the
     # `validate_subject_exists/1` existence check (`from row in
@@ -63,6 +63,7 @@ defmodule Grappa.Accounts do
   import Ecto.Query
 
   alias Grappa.Accounts.{Session, User}
+  alias Grappa.Ecto.Like
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
 
@@ -207,6 +208,34 @@ defmodule Grappa.Accounts do
   def list_all_users do
     query = from(u in User, order_by: [asc: u.name])
     Repo.all(query)
+  end
+
+  @doc """
+  #257 — user leg of the admin subject-search autocomplete. Returns up to
+  `limit` users whose `name` contains `query` (case-insensitive), ordered
+  by name.
+
+  The pattern is LIKE-escaped via `Grappa.Ecto.Like` (an underscore is a
+  legal account-name char and must match literally) with an explicit
+  `ESCAPE '\\'` clause; both sides go through SQLite `lower()` so the
+  case-fold is applied identically to the column and the pattern. A blank/
+  whitespace `query` short-circuits to `[]` (no round-trip).
+  """
+  @spec search_users(String.t(), pos_integer()) :: [User.t()]
+  def search_users(query, limit) when is_binary(query) and is_integer(limit) and limit > 0 do
+    case String.trim(query) do
+      "" ->
+        []
+
+      trimmed ->
+        pattern = Like.contains(trimmed)
+
+        User
+        |> where([u], fragment("lower(?) LIKE lower(?) ESCAPE '\\'", u.name, ^pattern))
+        |> order_by([u], asc: u.name)
+        |> limit(^limit)
+        |> Repo.all()
+    end
   end
 
   @doc """
