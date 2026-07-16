@@ -22579,30 +22579,47 @@ hosts the launchers; mutex) — it does NOT depend on an upstream round-trip, so
 it is not fake-lag-exposed. Re-run `--repeat-each 12` + two full-suite webkit
 passes, zero failures. No change needed.
 
-### Residual rare tail flake (NOT a #268 target, flagged): #253 webkit keyboard-scroll
+### #253 webkit keyboard-scroll — full-suite-context flake, ROOT CAUSE PROVEN + fixed
 
-The 2026-07-16 full-suite DoD runs surfaced a webkit failure —
-`issue253-kbd-resize-scroll-preserve.spec.ts` "a scrolled-up reader keeps
-their scrollTop when the keyboard opens" (`during-before.top` = 1048px vs ≤5
-expected) — that reproduces ONLY in full-suite context: it failed BOTH full
-DoD runs, yet passed 15/15 in a focused `--repeat-each`, plus the standalone
-webkit project (81) and the webkit stability run (36). So it is a
-full-suite-CONTEXT flake (some accumulated state / timing the isolated run
-lacks), NOT iso-reproducible — which is exactly what makes it hard: there is
-no cheap repro to debug against (each full run is ~12min). It is a
-SEAM/WIRING-only test (its own header:
-Playwright webkit does not reproduce real iOS soft-keyboard `visualViewport`
-physics; it stubs `vv.height` + synthetic `scroll` on the 200-line #bofh),
-in the known-hard iOS-scroll-on-webkit class
-(`feedback_playwright_webkit_not_ios_scroll`). Because it does not reproduce
-in isolation, there is no data to debug it against — a speculative change
-would be a guess, which this incident's whole discipline forbids. Left
-UNFIXED and flagged for a dedicated look (likely a loadMore-on-scroll-up ×
-vv-resize timing edge in the synthetic simulation, or a real scroll-preserve
-race that only manifests under specific full-suite state). NOT the chronic
-reliably-red signature #268 set out to kill.
+The DoD full runs surfaced `issue253-kbd-resize-scroll-preserve.spec.ts` "a
+scrolled-up reader keeps their scrollTop when the keyboard opens"
+(`during-before.top` = 1048px vs ≤5) — failing in full-suite context (2/3 full
+runs) but passing 15/15 iso + standalone webkit(81) + stability(36). A
+dedicated instrumented full run (spec-side `I253DBG` dump of the geometry +
+the atBottom proxy before/after) pinned it definitively — this is NOT a
+keyboard yank and NOT iOS-scroll physics:
+
+```
+before: top=182 max=609 scrollHeight=1114 clientHeight=505  btnBefore=true
+during: top=1230        scrollHeight=2162 clientHeight=146  btnAfter=true
+delta=1048  (== scrollHeight growth 2162-1114)
+```
+
+`atBottom` stayed FALSE the WHOLE time (scroll-to-bottom button visible before
+AND after), so `onResize`'s `if (atBottom()) scrollToActivation("tail-only")`
+never fired — no yank. The scrollHeight GREW by 1048px and scrollTop grew by
+the SAME 1048px = browser **scroll-anchoring after an infinite-scroll
+loadMore prepend**: the VISIBLE position was correctly preserved, only the
+ABSOLUTE offset moved (which the test's absolute-scrollTop assertion misreads
+as a yank). Why full-suite-only: when #bofh renders SHORT — only the initial
+~50-row REST page loaded, `max ≈ 609px` on the iPhone-15 viewport —
+`Math.floor(max * 0.3) = 182` lands INSIDE `ScrollbackPane.maybeLoadOlder`'s
+`scrollTop <= LOAD_MORE_THRESHOLD_PX (200)` gate, so the scroll-up itself
+fires the prepend. Iso/standalone renders taller (30% clears 200), so the
+prepend never fired there. Not a product bug (loadMore + anchoring are both
+correct); a TEST park-point that strays into the loadMore zone.
+
+**Fix:** clamp the park point above the loadMore zone —
+`parkTop = Math.max(Math.floor(max * 0.3), LOAD_MORE_THRESHOLD_PX + 60)`
+(mirror constant added) so the scroll-up is a pure position change with no
+prepend confound; a tall pane keeps 30% (unchanged). `maybeLoadOlder` returns
+on `scrollTop > 200`, so `parkTop ≥ 260` provably prevents the prepend — the
+assertion then measures the real contract (a viewport shrink adds NO content →
+scrollTop must not move), and a genuine keyboard-yank (scrollToActivation →
+tail, which needs atBottom true) is still caught. NOT a masked assertion.
 
 _Deploy: **CI/docs only — nothing to ship.** The changes are e2e specs
-(`slash-commands-bundle.spec.ts`, `issue254-own-echo-live.spec.ts`) +
-CLAUDE.md + this note. No `lib/`, no `cicchetto/src`, no migration — no
-BEAM restart, no `--cic` bundle. The gate this unblocks is CI itself._
+(`slash-commands-bundle`, `issue254-own-echo-live`, `issue220-link-double-fire`,
+`issue253-kbd-resize-scroll-preserve`) + the `fixtures/ircClient.ts` helper
+constant + CLAUDE.md + this note. No `lib/`, no `cicchetto/src`, no migration —
+no BEAM restart, no `--cic` bundle. The gate this unblocks is CI itself._
