@@ -23183,3 +23183,63 @@ coverage.
 _Deploy: **--cic HOT, client-only** (manifest-only; no server change, no
 migration, no BEAM restart). Installed Android PWAs pick up the unpinned
 orientation on their next async WebAPK re-mint._
+
+---
+
+## 2026-07-17 — #275 (P0, cic): stack channel modes below the name in a width-capped clickable box
+
+**Change.** In the channel top bar (`cicchetto/src/TopicBar.tsx`), the
+channel name and the compact mode string were two independent flex siblings
+on ONE row — a bare `.topic-bar-channel` span, and a `.topic-bar-modes`
+`<button>` rendered INLINE to the right of the topic strip. On a
+width-limited bar (especially mobile) that read cramped and lopsided
+against a topic that wraps to two lines. #275 moves the mode string onto a
+SECOND line BELOW the name, inside a single width-capped box, and makes the
+WHOLE box a click target that opens the /mode modal.
+
+**Reuse-the-verb, not a new modal.** The box's `onClick` calls the
+EXISTING `openModeModal(networkSlug, channel)` (`lib/modeModal.ts`) — the
+same open-verb `/mode #chan`, bare `/mode` (via `compose.ts`), and the old
+inline indicator already used. No new modal, no new store, no new state
+machine ("reuse the verbs, not the nouns"). `ModeModal.tsx` is untouched.
+
+**No button-in-button.** The box is the `<button>`
+(`.topic-bar-namebox`, `data-testid="channel-mode-box"`); the channel name
+and the mode string are now `<span>`s INSIDE it. A tap anywhere on the box
+— name OR modes — bubbles to the box's `onClick`. This deliberately keeps
+`.topic-bar-modes` (now a span) a valid click path: issue216 / issue240,
+which `.click()` that selector to open the modal, stay green because the
+click bubbles to the enclosing button.
+
+**Width cap — annotated default, tunable.** `.topic-bar-namebox` is
+`display:flex; flex-direction:column` (name line 1, modes line 2) with
+`max-width: 18%` — the mid-point of the spec's 15–20% band, a SINGLE CSS
+token, annotated in `default.css` as the retune point. `flex: 0 1 auto`
+(never grow, may shrink) + `min-width:0` + child `max-width:100%` +
+ellipsis so a long `#channel`/mode string is clipped, never blows the box.
+Mobile-first: 18% of a ~393px mobile bar ≈ 70px for the box, leaving the
+topic (`flex:1`) the remaining ~80%. `.topic-bar` stays `align-items:
+center`, so the two-line box is balanced against a two-line topic — both
+sides two-line-tall, the visual consistency the issue asked for. Desktop
+does not regress (18% of a wide middle pane is ample for name + modes).
+
+**e2e coverage (RED→GREEN, real-browser).**
+`e2e/tests/issue275-topbar-modes-below-name.spec.ts` (mirrors issue216 /
+issue262: a peer creates a per-run channel, sets `+t` + a topic before vjt
+joins, so modes+topic populate via the join-time 324/332 queries). It
+asserts BOTH mandatory behaviors: (a) LAYOUT — `.topic-bar-modes` renders
+BELOW `.topic-bar-channel` (its `boundingBox` top is at/below the name's
+bottom) AND shares the name's left edge (same stacked column, not off on
+the same row); and (b) CLICK-OPENS-MODAL — clicking the channel NAME opens
+the `mode-modal` (with the peer's `+t` toggle pressed, proving it's the
+real modal for this channel). Plus a guard that the topic keeps >½ the bar
+width. Proven RED on current main (modes inline → `modes.y 54.5px <
+name.bottom 71.3px` fails assertion (a); the name span is non-interactive →
+the modal never opens for assertion (b)) and GREEN with the change. jsdom /
+vitest is blind to flex-layout geometry + a bubbled click through a
+covering modal, so the Playwright e2e is the only honest gate here; the
+existing `TopicBar.test.tsx` unit coverage (name renders, modal wiring)
+still passes unchanged.
+
+_Deploy: **--cic, client-only** (cicchetto TopicBar + default.css only; no
+`lib/` change, no wire event, no migration, no BEAM restart)._
