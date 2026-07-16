@@ -1175,9 +1175,36 @@ html.resize-dragging * {
   border-color: var(--accent);
 }
 
+/* #275 — channel name + modes stacked in ONE width-capped clickable box.
+   The box opens the /mode viewer/editor modal (reuse openModeModal — the
+   same verb `/mode` and the old inline indicator used). `flex-direction:
+   column` drops the mode string onto a SECOND line below the name, so the
+   box is two-line-tall and balanced against a two-line topic. Native
+   <button> chrome is reset so it reads as plain stacked text. */
+.topic-bar-namebox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  /* WIDTH CAP — annotated DEFAULT (#275, tunable). 18% is the mid-point of
+     the spec's 15–20% band: enough for a typical `#channel` + a `+ntk` mode
+     string on a NARROW mobile bar (mobile-first), while leaving the topic
+     the remaining ~80%. Retune by changing this ONE token. */
+  max-width: 18%;
+  min-width: 0; /* let the name / modes ellipsis inside the cap */
+  flex: 0 1 auto; /* never grow; may shrink below the cap on a tiny bar */
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 .topic-bar-channel {
   font-weight: bold;
   color: var(--accent);
+  max-width: 100%; /* #275 — bounded by the namebox cap so ellipsis engages */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1227,19 +1254,19 @@ html.resize-dragging * {
 }
 
 .topic-bar-modes {
-  /* #216: now a <button> (opens the /mode modal) — reset the native
-     button chrome so it reads as the same compact inline mode string. */
-  background: transparent;
-  border: none;
-  padding: 0;
-  font-family: inherit;
+  /* #275: the mode string is now a <span> stacked on the SECOND line inside
+     `.topic-bar-namebox` (the box owns the click that opens the /mode modal;
+     #216's standalone <button> is gone). Muted + compact; ellipsis inside
+     the width cap so a long mode string never blows the box. */
+  max-width: 100%;
   color: var(--muted);
   font-size: 0.85rem;
   white-space: nowrap;
-  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.topic-bar-modes:hover {
+.topic-bar-namebox:hover .topic-bar-modes {
   color: var(--fg);
 }
 

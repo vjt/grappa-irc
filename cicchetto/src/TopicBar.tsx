@@ -21,13 +21,15 @@ import { windowIsJoined } from "./lib/windowState";
 import { MircBody } from "./MircText";
 
 // Top bar of the middle pane. Hosts:
-//  * channel name (bold accent)
+//  * channel-name + modes box (#275): the channel name (bold accent) on line
+//    one, the compact mode-string (e.g. "+nt", C3.1 — only when modes are
+//    cached and non-empty) stacked BELOW it on line two. The whole box is a
+//    single width-capped click target that opens the /mode viewer/editor
+//    modal (reuse `openModeModal` — the same verb `/mode` uses).
 //  * topic strip: up to TWO lines (#74), "(no topic set)" placeholder when
 //    no topic is cached. Click/tap → ALWAYS opens the read-only topic modal
 //    (#263), for everyone; the strip is view-only and its only action is
 //    "open modal".
-//  * compact mode-string (e.g. "+nt") with hover tooltip listing modes.
-//    Rendered only when modes are cached and non-empty (C3.1).
 //  * right ☰ hamburger — opens members drawer (desktop + mobile)
 //
 // #263 (2026-07-16) — topic editing lives INSIDE the modal (supersedes the
@@ -289,7 +291,36 @@ const TopicBar: Component<Props> = (props) => {
           `.topic-bar-hamburger` below (channel-only, CSS-hidden on
           desktop via @media) is now the SINGLE hamburger across the
           whole shell. */}
-      <span class="topic-bar-channel">{props.channelName}</span>
+      {/* #275 — channel name + modes STACKED in ONE width-capped clickable
+          box. The whole box opens the /mode viewer/editor modal (reuse
+          `openModeModal` — the SAME verb `/mode #chan`, bare `/mode`, and the
+          old inline indicator used; "reuse the verbs, not the nouns"). The
+          mode string drops to a SECOND line below the name (see
+          `.topic-bar-namebox` flex column) so the box is two-line-tall —
+          visually balanced against a two-line topic — and width-capped so the
+          topic keeps ~80% of the bar. Was: a bare `.topic-bar-channel` span
+          plus a separate `.topic-bar-modes` <button> rendered inline AFTER the
+          topic strip. The mode string is now a <span> INSIDE this box (no
+          button-in-button); a tap anywhere on the box — name OR modes —
+          bubbles to this onClick, so the `.topic-bar-modes` click paths that
+          issue216 / issue240 exercise still open the modal. */}
+      <button
+        type="button"
+        class="topic-bar-namebox"
+        data-testid="channel-mode-box"
+        aria-label={`channel ${props.channelName} — view modes`}
+        title={modeStr().length > 0 ? (modesEntry()?.modes.join(", ") ?? "") : "view channel modes"}
+        onClick={() => openModeModal(props.networkSlug, props.channelName)}
+      >
+        <span class="topic-bar-channel">{props.channelName}</span>
+        {/* Compact mode string (e.g. "+nt") — rendered only when modes are
+            cached and non-empty (C3.1). Second line of the box. */}
+        <Show when={modeStr().length > 0}>
+          <span class="topic-bar-modes" title={modesEntry()?.modes.join(", ") ?? ""}>
+            {modeStr()}
+          </span>
+        </Show>
+      </button>
       {/* Topic strip — always present; shows placeholder when no topic cached.
           #263: view-only, its only action is to open the (read-only) modal for
           everyone; editing lives inside the modal. */}
@@ -308,23 +339,6 @@ const TopicBar: Component<Props> = (props) => {
           <MircBody body={topicText() ?? ""} linkPolicy="surface-wins" />
         </Show>
       </button>
-      {/* Compact mode string — only rendered when modes are non-empty.
-          #216: tapping it opens the /mode viewer/editor modal for this
-          channel (the third entry point, alongside `/mode #chan` and
-          bare `/mode`). A <button> not a <span> — a static element with
-          onClick trips biome's noStaticElementInteractions (#220 lesson)
-          and loses keyboard access. */}
-      <Show when={modeStr().length > 0}>
-        <button
-          type="button"
-          class="topic-bar-modes"
-          title={modesEntry()?.modes.join(", ") ?? ""}
-          aria-label="view channel modes"
-          onClick={() => openModeModal(props.networkSlug, props.channelName)}
-        >
-          {modeStr()}
-        </button>
-      </Show>
       {/* #222 — per-channel presence-filter toggle. Suppresses (or
           re-shows) join/part/quit/nick-change rows for THIS channel; the
           choice is an explicit client pref that WINS over the large-channel
