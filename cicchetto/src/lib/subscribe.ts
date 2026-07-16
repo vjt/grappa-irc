@@ -659,6 +659,26 @@ createRoot(() => {
     });
   };
 
+  // #79 — stamp the per-real-channel WS-ready e2e seam after a join ACK.
+  // Production never reads it; specs await it (waitForChannelReady) so a
+  // selectChannel-then-composeSend flow doesn't race the channel-topic
+  // subscribe. Sibling of `stampQueryWindowReady` / `__cic_dmListenerReady`:
+  // the server fastlanes the channel own-echo (persist_event → per-channel
+  // PubSub broadcast, synchronous on POST — server.ex handle_persisting_send)
+  // ONLY to sockets already subscribed; PubSub has NO replay to late
+  // subscribers. The pre-#79 heuristic (selectChannel awaiting the self-JOIN
+  // scrollback line) proved the initial REST /messages page landed, NOT that
+  // the channel `phx.join()` ACK'd — the JOIN line is a boot-persisted row
+  // served by REST, so it renders before the WS subscribe completes under
+  // full-suite load. Key = the module-native `channelKey(slug, name)` so the
+  // await rebuilds the identical composite key.
+  const stampChannelReady = (key: ChannelKey): void => {
+    if (typeof window === "undefined") return;
+    const w = window as Window & { __cic_channelReady?: Set<ChannelKey> };
+    if (!w.__cic_channelReady) w.__cic_channelReady = new Set();
+    w.__cic_channelReady.add(key);
+  };
+
   // Channels loop — one join per real IRC channel in channelsBySlug.
   createEffect(() => {
     // Channel topics are addressed by the server's socket-side
@@ -697,6 +717,11 @@ createRoot(() => {
           // refreshScrollback dedupes bursty rejoins; the resume-cursor
           // heuristic short-circuits when there's nothing to fetch.
           void refreshScrollback(slug, ch.name);
+          // #79: this callback fires on the join ACK (subscribed), NOT the
+          // `joined.set(key, phx)` below which fires on join-ATTEMPT. Stamp
+          // the ready seam here so waitForChannelReady observes a live
+          // subscription, never a merely-issued join.
+          stampChannelReady(key);
         });
         installChannelHandler(phx, slug, ch.name, key, ownNick);
         joined.set(key, phx);
@@ -755,6 +780,13 @@ createRoot(() => {
       const phx = joinChannel(name, slug, channelName, (reply) => {
         applyJoinReplyAndSeed(slug, channelName, reply);
         void refreshScrollback(slug, channelName);
+        // #79: the OTHER channel-topic join path (a mid-session /join goes
+        // pending → subscribed HERE → joined, at which point the
+        // channels-loop skips it via the `joined` guard and never fires its
+        // own ACK). Stamp the ready seam here too so waitForChannelReady
+        // works regardless of which loop owned the join. Uniform rule:
+        // every channel-topic join ACK stamps `__cic_channelReady`.
+        stampChannelReady(typedKey);
       });
       installChannelHandler(phx, slug, channelName, typedKey, ownNick);
       joined.set(typedKey, phx);
@@ -897,9 +929,14 @@ createRoot(() => {
         // `socket.ts:__cic_dropSocketForTests`. The query-window loop
         // has the SAME no-pre-event-DOM-signal gap (its outbound-echo
         // topic, no self-JOIN line) and carries its own
-        // `__cic_queryWindowReady` seam (above); the channels-loop
-        // ($server + real channels) still doesn't need one — the
-        // self-JOIN scrollback line is its live pre-event signal.
+        // `__cic_queryWindowReady` seam (above); the real-channels loop
+        // carries `__cic_channelReady` (stampChannelReady, above) since
+        // #79 — the self-JOIN scrollback line is NOT a reliable pre-event
+        // signal (it is a boot-persisted row served by the initial REST
+        // /messages page, so it renders before the channel `phx.join()`
+        // ACKs; the own-echo then fastlanes past the not-yet-subscribed
+        // socket and the row never appears). The $server synthetic window
+        // is read-only (no compose-then-echo flow) so it needs no seam.
         if (typeof window !== "undefined") {
           const w = window as Window & { __cic_dmListenerReady?: Set<string> };
           if (!w.__cic_dmListenerReady) w.__cic_dmListenerReady = new Set();

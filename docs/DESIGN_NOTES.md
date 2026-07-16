@@ -22717,10 +22717,86 @@ round-trip under fake-lag. The ComposeBox guard is CORRECT product behaviour
 (anti-double-submit); only the test's sequencing assumed `composeSend` waits for
 the send to complete, which it doesn't for window-switching verbs.
 
-_Deploy: **mixed.** #188's fix touches `cicchetto/src` (`compose.ts`,
-`userTopic.ts`) — it ships as a **`--cic` bundle** (`deploy-m42.sh --cic`), no
-BEAM restart, no migration. Everything else is CI/test/docs only: the e2e specs
-(`slash-commands-bundle` /q gate, `issue254-own-echo-live`,
-`issue220-link-double-fire`, `issue253-kbd-resize-scroll-preserve`) + the
-`fixtures/ircClient.ts` helper constant + CLAUDE.md + this note. No `lib/`, no
-migration — no server COLD/HOT. The gate this unblocks is CI itself._
+### Target 7 (the rotating-tail blocker): #79 own-echo drop — WS channel-subscribe race (fixed at the shared fixture)
+
+`issue79-ios-select-keyboard-open.spec.ts` (webkit-iphone-15) failed in DoD
+full run #3 at `expect(scrollbackLine(page,"privmsg", MESSAGE_BODY))
+.toBeVisible({timeout: 5_000})` — the just-sent PRIVMSG's own-echo row absent
+— but PASSED runs #1 and #2. The rotating-red tail signature: PRE-EXISTING,
+UNRELATED to #188/q, a member of the `feedback_ws_subscribe_race_pattern`
+class the codebase already knows (siblings: `__cic_userTopicReady`,
+`__cic_dmListenerReady`, `__cic_queryWindowReady`).
+
+**Proven LOST, not delayed — two independent data sources.**
+
+*Host trace* (`test-results/issue79-…-webkit-iphone-15/`): the `POST
+.../#bofh/messages` **201'd + persisted** (trace resource = the response body:
+`{"id":68595,…,"body":"select-with-keyboard-open <ts>","kind":"privmsg",
+"channel":"#bofh","sender":"vjt-grappa"}`) — the row IS in the DB. The
+error-context DOM aria snapshot showed the scrollback pane rendered fine (seed
+lines #152-#162 visible) but the own-echo row ABSENT. cic renders a sent
+message ONLY via the server's WS own-echo broadcast — there is NO
+optimistic-on-POST render (#254/#251: "the echo is the sole render path"). So
+the broadcast on the per-channel topic never reached cic.
+
+*Server code* (`lib/grappa/session/server.ex` `persist_and_send_fragments`,
+reached via `handle_call({:send_privmsg,…})` → `handle_persisting_send`): the
+channel own-echo is generated LOCALLY on POST — `Scrollback.persist_event`
+(local `System.system_time`, not upstream `server_time`) → immediately
+`Grappa.PubSub.broadcast_event(Topic.channel(…), …)` → THEN
+`send_privmsg_or_log` puts the line on the wire. The broadcast is SYNCHRONOUS
+inside the handle_call, NOT gated on any upstream echo (bahamut never echoes
+PRIVMSG to the sender). So if cic's channel-topic subscription is live at
+broadcast time, the row renders in ~1 RTT (≪5s); a >5s absence therefore means
+the fastlane hit a socket NOT YET subscribed — PubSub has NO replay to late
+subscribers, so the echo is gone forever. A timeout bump would NOT help — this
+is a lost broadcast, not a slow one. (This is exactly why #79 is a DIFFERENT
+root cause from the #23/#220/#263 fake-lag-on-TOPIC class: TOPIC is
+upstream-echo-gated and merely delayed; the channel own-echo is local and
+either delivered instantly or dropped.)
+
+**Why the pre-#79 gate was insufficient.** `selectChannel`'s `awaitWsReady`
+waited for the self-JOIN scrollback line to render, believing its presence
+proved BOTH the initial REST fetch AND the WS topic subscription. It does not:
+the self-JOIN line is a boot-persisted row served by the initial REST
+`/messages` page, so it renders as soon as REST lands — while the channel
+`phx.join()` ACK may still be in flight. The heuristic proved REST-landed,
+never WS-subscribed. The `subscribe.ts` channels-loop comment even asserted the
+loop "doesn't need" a ready seam because "the self-JOIN line is its live
+pre-event signal" — that assumption is the bug, now corrected in-code.
+
+**Fix (test-only seam on a real production ACK; GENERAL, not per-spec).**
+`subscribe.ts` stamps `window.__cic_channelReady` (a `Set<ChannelKey>` keyed by
+the module-native `channelKey(slug, name)`) in the join-ACK callback of BOTH
+channel-topic join paths — the channels-loop (autojoin/steady-state) AND the
+pending pre-subscribe loop (a mid-session `/join` goes pending→subscribed
+there, then joined, at which point the channels-loop skips it via the `joined`
+guard and never fires its own ACK, so both must stamp). `cicchettoPage.ts`
+adds `waitForChannelReady(page, slug, channel)` (`page.waitForFunction` on
+`__cic_channelReady?.has(key)`) and — the general move — FOLDS it into
+`selectChannel`'s `awaitWsReady && ownNick` branch, ADDITIVE to the existing
+self-JOIN-line wait: signal 1 (JOIN line) proves REST landed + seeded, signal 2
+(seam) proves the socket is SUBSCRIBED. Blast radius is exactly the
+real-channel selects that already waited on the JOIN line (the channels/pending
+loops stamp the seam for precisely those channels → no channel can pass signal
+1 yet miss signal 2), so no spec newly times out; every selectChannel-then-send
+spec is now race-free at the shared fixture, not one spec at a time. This kills
+the whole "own-echo dropped because the channel subscribe wasn't live" tail
+class, not just #79 (which is itself unchanged — it inherits the fix through
+the fixture). Deterministic: the seam is a test-only observation of a real
+production join ACK (never read by prod, mirror of `stampQueryWindowReady`), the
+wait is a condition-poll (instant on the ACK, 10s ceiling covers a fake-lag
+join), a never-ACK'd channel times out LOUDLY (a real problem), and no
+production code changed — honors "never weaken prod for a test / never assert
+buggy behavior."
+
+_Deploy: **mixed.** #188 (`compose.ts`, `userTopic.ts`) and #79
+(`subscribe.ts`) both touch `cicchetto/src` — they ship together as a
+**`--cic` bundle** (`deploy-m42.sh --cic`), no BEAM restart, no migration.
+Everything else is CI/test/docs only: the e2e fixtures/specs
+(`fixtures/cicchettoPage.ts` seam + `slash-commands-bundle` /q gate,
+`issue254-own-echo-live`, `issue220-link-double-fire`,
+`issue253-kbd-resize-scroll-preserve`, `issue79-ios-select-keyboard-open`
+inherits the fixture) + the `fixtures/ircClient.ts` helper constant + CLAUDE.md
++ this note. No `lib/`, no migration — no server COLD/HOT. The gate this
+unblocks is CI itself._
