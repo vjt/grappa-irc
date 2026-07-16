@@ -58,6 +58,27 @@ const emptyGrantForm = (): GrantForm => ({
   subject_id: "",
 });
 
+// #256 — in_pool ⟹ generally available. The server ORs the two flags at
+// the availability read boundary (`Grappa.Vhosts.allowed_vhosts/1`:
+// `generally_available OR in_pool OR granted`), so an in-pool vhost is
+// available to every subject regardless of its stored `generally_available`
+// flag. The tab MIRRORS that invariant: when in_pool is on, the
+// generally_available control shows checked + disabled — you can't set an
+// in-pool vhost as not-generally-available. This is display-only
+// enforce-forward: the server read-side OR is the single source of truth,
+// so we NEVER store the derived value (storing it, then ORing at read, is
+// two sources of truth). Un-ticking in_pool re-reveals the honest stored
+// flag. cic never originates state.
+export function effectiveGenerallyAvailable(inPool: boolean, generallyAvailable: boolean): boolean {
+  return inPool || generallyAvailable;
+}
+
+export function generallyAvailableLocked(inPool: boolean): boolean {
+  return inPool;
+}
+
+const IN_POOL_LOCK_TITLE = "in-pool vhosts are always generally available";
+
 function deleteKey(id: number): string {
   return `delete:${id}`;
 }
@@ -277,11 +298,13 @@ const AdminVhostsTab: Component = () => {
         <label>
           <input
             type="checkbox"
-            checked={createGenerallyAvailable()}
+            checked={effectiveGenerallyAvailable(createInPool(), createGenerallyAvailable())}
+            disabled={generallyAvailableLocked(createInPool())}
             onChange={(e) =>
               setCreateGenerallyAvailable((e.currentTarget as HTMLInputElement).checked)
             }
             data-testid="vhost-create-generally-available"
+            title={generallyAvailableLocked(createInPool()) ? IN_POOL_LOCK_TITLE : undefined}
           />
           generally available
         </label>
@@ -346,14 +369,20 @@ const AdminVhostsTab: Component = () => {
                       <label>
                         <input
                           type="checkbox"
-                          checked={v.generally_available}
+                          checked={effectiveGenerallyAvailable(v.in_pool, v.generally_available)}
+                          disabled={generallyAvailableLocked(v.in_pool)}
                           onChange={() => {
                             void onToggleGeneral(v);
                           }}
                           data-testid={`vhost-generally-available-toggle-${v.id}`}
                           aria-label={`generally available for ${v.address}`}
+                          title={
+                            generallyAvailableLocked(v.in_pool) ? IN_POOL_LOCK_TITLE : undefined
+                          }
                         />
-                        {v.generally_available ? "yes" : "no"}
+                        {effectiveGenerallyAvailable(v.in_pool, v.generally_available)
+                          ? "yes"
+                          : "no"}
                       </label>
                     </td>
                     <td class="admin-vhosts-actions">

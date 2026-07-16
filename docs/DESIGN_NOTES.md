@@ -22235,3 +22235,62 @@ mismatch (pre-fix cell renders "1"; post-fix "bahamut-test").
 
 _Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
 BEAM restart — a single component + two test files._
+
+## 2026-07-16 — #256 AdminVhostsTab: in_pool auto-sets + disables generally_available (cic-only)
+
+**Ask (vjt).** In the admin Vhosts tab, ticking `in_pool` should auto-set
++ disable the `generally_available` control: an in-pool vhost is, by
+definition, available to every subject, so the two must never be set
+inconsistently. Show it checked + greyed-out while in_pool is on;
+re-enable on un-tick.
+
+**Design decision — READ-SIDE DERIVE (A), already the server law; UI just
+mirrors it.** The availability authority already exists and is unchanged:
+`Grappa.Vhosts.allowed_vhosts/1` ORs the flags at the single read boundary
+— `where: v.generally_available == true or v.in_pool == true or v.id in
+^granted_ids`. So an in-pool vhost is available to every subject
+REGARDLESS of its stored `generally_available` flag; the stored flag is
+cosmetic while in_pool is on. This is exactly the "don't duplicate state
+that already exists — derive it" rule: there is ONE source of truth for
+availability (the read-side OR), and #256 must NOT store a second copy of
+it. The tab therefore does **display-only enforce-forward**: the
+generally_available control renders `checked = in_pool || generally_available`
+and `disabled = in_pool` (helpers `effectiveGenerallyAvailable/2` +
+`generallyAvailableLocked/1` in `AdminVhostsTab.tsx`, reused by both the
+per-row toggle and the create form). No PATCH writes the derived value; no
+changeset coercion; no migration.
+
+**Why not write-side coerce (B).** Coercing `generally_available := true`
+whenever `in_pool` is true would (1) store a value the read-side already
+derives — two sources of truth, the anti-pattern CLAUDE.md names
+explicitly; (2) require a backfill of existing seed rows (in_pool=1,
+generally_available=0) to be honest — a COLD window. Neither is needed:
+the OR makes existing rows correct today, and un-ticking in_pool then
+re-reveals the operator's HONEST stored flag instead of a coerced `true`
+that silently overrode their intent. The optional DB-honest backfill
+(`in_pool ⟹ generally_available=true`) can still ride a future cold
+window (#215-class) purely for tidiness — it is NOT required and is out of
+scope for #256.
+
+**Defense in depth.** The UI disable is UX only, never a security
+boundary — cic never originates state. The server authority is the
+read-side OR (unit-tested at `test/grappa/vhosts_test.exs`, "includes
+in_pool vhosts so a no-grant subject can self-select the pool") plus the
+write-time authz clamp in `set_selection/2`. Because that OR is pre-existing
+and unchanged, the availability leg needs no new server code and cannot go
+RED→GREEN for a cic-only change; the e2e RED→GREEN proves the UI
+enforce-forward leg (tick → checked + disabled, un-tick → re-enabled).
+
+**Testing.** Vitest (`AdminVhostsTab.test.tsx`) covers the pure helpers +
+the component: an in_pool row shows generally_available checked + disabled
+with a false stored flag; a not-in_pool row stays independently editable;
+the create form locks + shows checked while in_pool is ticked and
+re-enables on un-tick. Playwright e2e
+(`issue256-vhost-inpool-enforce.spec.ts`, chromium desktop admin surface)
+seeds a not-in_pool/not-generally-available vhost via REST, then drives the
+row: tick in_pool → generally_available becomes checked + disabled; un-tick
+→ re-enabled + unchecked.
+
+_Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
+BEAM restart — one component (display derivation) + tests. The read-side
+availability OR already ships in prod (#251)._
