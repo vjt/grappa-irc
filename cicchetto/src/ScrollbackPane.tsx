@@ -1277,22 +1277,41 @@ const ScrollbackPane: Component<Props> = (props) => {
     // re-asserts on the first load / cursor hydration.
     setMarkerActivationPending(true);
     scrollToActivation("marker-or-tail", true);
-    // UX-6 D9 — every vv.resize (keyboard open OR close, orientation
-    // change, browser zoom) re-runs the canonical scroll routine so
-    // the visible content stays anchored to what the operator was
-    // reading. scrollToActivation is defined below at ~:976 (closure
-    // resolves at call time, not registration time). Symmetric for
-    // open + close — vjt accepted yank-on-close in the D9 plan
-    // ("we can start with symmetry and then reset scroll marker
-    // later"). Future: marker-reset-on-scroll so close-side preserve
-    // is finer-grained.
+    // UX-6 D9 / #253 — every vv.resize (keyboard open OR close,
+    // orientation change, browser zoom) and window.resize (desktop
+    // resize, devtools, zoom) re-anchors the scroll — but ONLY when the
+    // reader was already following the tail. scrollToActivation is
+    // defined below at ~:1494 (closure resolves at call time, not
+    // registration time).
     //
-    // window.resize is also wired — desktop window resize, devtools,
-    // browser zoom — same canonical behavior.
-    // resize (keyboard open/close, orientation, zoom) = resume family → TAIL,
-    // never the divider (#46); one-shot, no latch.
+    // #253 — the D9 plan STARTED with symmetric yank-on-{open,close}
+    // (vjt: "we can start with symmetry and then reset scroll marker
+    // later"), snapping to the tail on EVERY resize regardless of
+    // position. A soft-keyboard open (a vv.resize) while the operator
+    // was parked above the tail (unread marker / scrolled-up history)
+    // therefore yanked them to the bottom, losing their place. This
+    // gate IS the deferred "finer-grained close-side preserve" the D9
+    // note promised.
     //
-    // #245 — re-measure overflow on resize too. `isOverflowing` gates the
+    // REUSE the length-effect's irssi-shape follow rule (~:2033), do
+    // not invent a parallel one:
+    //   * atBottom() true  → the operator was following live; re-pin to
+    //     the tail (a shrinking viewport keeps the bottom visible) =
+    //     resume family → TAIL, never the divider (#46), one-shot, no
+    //     latch.
+    //   * atBottom() false → PRESERVE their scrollTop: do nothing, the
+    //     browser holds scrollTop across the clientHeight change (a
+    //     shrink never clamps; content still overflows).
+    // atBottom() flips false ONLY on a real operator scroll-UP
+    // (onScroll, ~:2242), so it is an honest "parked above the tail"
+    // signal HERE — unlike the leave-arm at ~:1593, whose caveat is a
+    // key-change batch where a sibling activation effect races
+    // setAtBottom(true); a resize is not a key change, so atBottom() is
+    // trustworthy (the length-effect trusts it the same way).
+    //
+    // #245 — ALSO re-measure overflow on resize, UNCONDITIONALLY: it runs
+    // BEFORE the atBottom() gate above, regardless of scroll position.
+    // `isOverflowing` gates the
     // `.scrollback-overflowing` class, and default.css makes the base
     // `.scrollback` `touch-action: none` (reject pan) while only
     // `.scrollback-overflowing` flips to `pan-y` — so a stale
@@ -1316,7 +1335,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     // re-open a #245-shaped jam on the overlay's close-edge resize.
     const onResize = () => {
       measureOverflow();
-      scrollToActivation("tail-only", true);
+      if (atBottom()) scrollToActivation("tail-only", true);
     };
     window.addEventListener("resize", onResize);
     window.visualViewport?.addEventListener("resize", onResize);

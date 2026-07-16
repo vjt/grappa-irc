@@ -21405,3 +21405,75 @@ the native selection handles (device-verified post-ship).
 
 _Deploy: **--cic HOT** — client-only bundle change; no BEAM restart, no
 migration, no supervised child._
+
+## 2026-07-15 — #253 keyboard/viewport resize no longer yanks a scrolled-up reader to the tail
+
+**Symptom (device-reported, iOS PWA).** Opening a channel with unread
+history jumps correctly to the unread marker, but then focusing the
+compose input — which opens the soft keyboard, shrinks
+`window.visualViewport.height`, and fires a `visualViewport` `resize` —
+snapped the message list to the BOTTOM, losing the reader's position and
+the marker they were parked on. Intermittent by nature: invisible when
+the reader was already at the tail, visible only when parked above it.
+
+**Confirmed root cause** (`cicchetto/src/ScrollbackPane.tsx`, onMount).
+The resize handler was `const onResize = () => scrollToActivation("tail-
+only", true)`, wired to BOTH `window.resize` and `visualViewport.resize`.
+`scrollToActivation("tail-only", …)` snaps to the tail *unconditionally*
+— it never consults `atBottom()`. So every soft-keyboard open (a
+vv.resize) re-pinned to the bottom regardless of where the reader was.
+This was the accepted UX-6 **D9** starting tradeoff (vjt: "we can start
+with symmetry and then reset scroll marker later"); the onMount comment
+recorded it as a "Future: marker-reset-on-scroll so close-side preserve
+is finer-grained" note. #253 IS that deferred finer-grained work.
+
+**The minimal lever — reuse the length-effect follow rule, don't invent
+a parallel one.** The gate is `if (atBottom()) scrollToActivation("tail-
+only", true)`:
+  * `atBottom()` true  → the operator was following live → re-pin to the
+    tail (a shrinking viewport keeps the bottom visible). Unchanged.
+  * `atBottom()` false → PRESERVE their scrollTop: do nothing. A viewport
+    *shrink* never clamps scrollTop (content still overflows; max
+    scrollTop only grows), so the browser holds the position — a bare
+    no-op, no snapshot/rAF machinery needed (lightweight over heavy).
+This is the exact irssi-shape follow rule the length-effect already uses
+for live message arrival (`~:2033`: `if (atBottom()) { …tail… }` else
+preserve). `atBottom()` flips false ONLY on a real operator scroll-UP
+(`onScroll`, `st < lastScrollTop`), so it is an honest "parked above the
+tail" signal at the resize site — unlike the `~:1593` leave-arm caveat
+(a key-change batch where a sibling activation effect races
+`setAtBottom(true)`); a resize is not a key change, so the gate trusts
+`atBottom()` the same way the length-effect does. `window.resize`
+(desktop resize / zoom / devtools) rides the same handler and is gated
+identically — a desktop reader scrolled up into history is not yanked on
+a window resize either. General across keyboard open AND close,
+orientation, and zoom (all route through this one handler).
+
+**#245 onResize overlap (batched into ONE --cic bundle).** #245 (branch
+`f/245-ios-scroll-refresh`, HELD) also edits this handler — it adds an
+UNCONDITIONAL `measureOverflow()` (a scroll-jam remeasure) that is
+orthogonal to the scroll snap. #253 branches off main (which lacks #245),
+so the two must reconcile at the batch-merge to the combined form:
+`const onResize = () => { measureOverflow(); if (atBottom())
+scrollToActivation("tail-only", true); };` — `measureOverflow` stays
+unconditional, only `scrollToActivation` is gated. Semantically non-
+conflicting.
+
+**Why the e2e is seam-only, NOT device-proof.** Playwright webkit has no
+OS keyboard and does not reproduce iOS soft-keyboard `visualViewport`-
+resize timing/physics (feedback_playwright_webkit_not_ios_scroll). The
+spec (`issue253-kbd-resize-scroll-preserve.spec.ts`, `@webkit`) stubs
+`vv.height` smaller + dispatches `resize` and asserts a scrolled-up
+reader's `scrollTop` is preserved (RED pre-fix: yanked ~3000px to the
+tail; GREEN post-fix: held) plus a positive control that an at-bottom
+reader stays pinned. Two webkit seam quirks the spec compensates for
+(both documented in-file): webkit emits no `scroll` event for a
+programmatic `scrollTop` write, and `atBottom` only flips false on a real
+upward move, so the reader is seated at the tail first (establishing
+`lastScrollTop`) then moved up, each step dispatching the `scroll` the
+production `onScroll` needs. A GREEN proves the atBottom-gate WIRING; it
+does NOT close #253 — that needs a real iOS Safari PWA dogfood. jsdom is
+blind to scroll geometry, so vitest would be a hollow mirror.
+
+_Deploy: **--cic HOT** — client-only bundle change; no BEAM restart, no
+migration, no supervised child._
