@@ -956,6 +956,25 @@ describe("ComposeBox", () => {
       expect(confirmRequest()).toBeNull();
     });
 
+    it("confirming (Paste) splices at the caret, replacing the selection (mirrors native paste)", async () => {
+      const compose = await import("../lib/compose");
+      // Non-empty draft with a mid-string selection: the controlled textarea
+      // renders "hello world"; selecting "llo wo" (2..8) and pasting must keep
+      // "he" + <paste> + "rld" — proving the splice honours BOTH sides + the
+      // replaced range, not just the empty-draft/caret-0 collapse.
+      vi.mocked(compose.getDraft).mockReturnValue("hello world");
+      try {
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+        ta.setSelectionRange(2, 8);
+        ta.dispatchEvent(makeTextPaste(FOUR_LINES));
+        acceptConfirm();
+        expect(compose.setDraft).toHaveBeenCalledWith(expect.any(String), `he${FOUR_LINES}rld`);
+      } finally {
+        vi.mocked(compose.getDraft).mockReturnValue("");
+      }
+    });
+
     it("cancelling (dismiss) leaves the compose draft untouched", async () => {
       const compose = await import("../lib/compose");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);

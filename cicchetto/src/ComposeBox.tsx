@@ -354,7 +354,10 @@ const ComposeBox: Component<Props> = (props) => {
     const data = e.clipboardData;
     if (!data) return;
     const files: File[] = [];
-    for (const item of data.items) {
+    // `?? []`: a clipboardData without an `items` list is degenerate but must
+    // not throw the whole handler — the plain-text branch below still runs off
+    // getData (restores the pre-#80 `if (!items) …` safety).
+    for (const item of data.items ?? []) {
       if (item.kind !== "file") continue;
       const file = item.getAsFile();
       if (file !== null && categoryOf(file.type) !== null) files.push(file);
@@ -380,7 +383,12 @@ const ComposeBox: Component<Props> = (props) => {
     const lines = pastedLineCount(text);
     requestConfirm({
       title: `Paste ${lines} lines?`,
-      body: `You're about to paste ${lines} lines into ${props.channelName}. Each line is sent as a separate message, which can flood the channel.`,
+      // Target-neutral copy: `channelName` is a nick on a query (DM) window,
+      // so "flood the channel" would misdescribe a DM. "a burst of messages"
+      // is honest without over-claiming one-message-per-line (blank lines are
+      // dropped at send — splitMessageLines), and reads right for both a
+      // channel and a DM.
+      body: `You're about to paste ${lines} lines into ${props.channelName}. Sending can flood it with a burst of messages.`,
       confirmLabel: "Paste",
       onConfirm: () => insertPastedText(ta, text),
     });
