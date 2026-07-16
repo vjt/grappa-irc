@@ -232,7 +232,12 @@ const TopicBar: Component<Props> = (props) => {
   // The lock scroller is the modal element (matches the createOverlayLock
   // contract for iOS touch-lock; the freeze that matters here is the
   // refcount, which drives the pane's overlay-snapshot effect).
-  createOverlayLock(() => modalState() === "open", ".topic-modal");
+  // #232 — the read-only topic modal is a covering modal, so it also joins
+  // the shared Esc-to-close stack via onEscape (closeModal — the same verb
+  // the × / backdrop use). NOTE: this is the READ-ONLY modal; the inline
+  // topic EDITOR below owns its own input-level Esc (cancelEdit) and is NOT
+  // an overlay, so it stays out of the stack.
+  createOverlayLock(() => modalState() === "open", ".topic-modal", closeModal);
 
   const formatSetAt = (setAt: string | null): string => {
     if (!setAt) return "(unknown time)";

@@ -1,6 +1,11 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WhoReply, WhoUser } from "../lib/api";
+import {
+  __resetForTest,
+  overlayEscapeDepth,
+  runTopmostOverlayEscape,
+} from "../lib/overlayScrollLock";
 import { setSelectedChannel } from "../lib/selection";
 import { dismissWhoModal, setWhoReply } from "../lib/whoModal";
 import WhoModal from "../WhoModal";
@@ -38,6 +43,7 @@ describe("WhoModal (#169)", () => {
   afterEach(() => {
     dismissWhoModal(SLUG);
     setSelectedChannel(null);
+    __resetForTest();
   });
 
   it("renders the target + user-count heading and the End-of-WHO footer", () => {
@@ -183,11 +189,15 @@ describe("WhoModal (#169)", () => {
     expect(screen.queryByTestId("who-modal")).not.toBeInTheDocument();
   });
 
-  it("dismisses on Escape", () => {
+  // #232 — Esc closes via the shared overlay stack (focus-independent), not a
+  // per-dialog onKeyDown. runTopmostOverlayEscape is the exact verb the global
+  // keydown listener invokes.
+  it("closes on Escape via the shared overlay stack (focus-independent)", async () => {
     focusNetwork();
     setWhoReply(SLUG, roster([row({ nick: "alice" })]));
     render(() => <WhoModal />);
-    fireEvent.keyDown(screen.getByTestId("who-modal"), { key: "Escape" });
-    expect(screen.queryByTestId("who-modal")).not.toBeInTheDocument();
+    await waitFor(() => expect(overlayEscapeDepth()).toBe(1));
+    expect(runTopmostOverlayEscape()).toBe(true);
+    await waitFor(() => expect(screen.queryByTestId("who-modal")).not.toBeInTheDocument());
   });
 });

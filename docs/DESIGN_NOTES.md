@@ -22014,3 +22014,105 @@ finger" check on real iOS + Android rides the pending device-verify batch.
 
 _Deploy: **--cic HOT, client-only.** CSS-only (one rule) + a new e2e
 spec; server untouched, no migration._
+## 2026-07-16 — #232 every cic modal closes on Esc (shared overlay ESC stack, cicchetto-only)
+
+**Invariant shipped:** EVERY modal in cic closes on `Esc`, consistently,
+through ONE shared mechanism — so a new modal inherits it automatically
+(implement-once, reuse-everywhere).
+
+**The real defect (audited at `4c1c644e`).** Esc was ad-hoc and INCONSISTENT.
+Nine modals wired an ELEMENT-scoped `onKeyDown` on the `role="dialog"` div,
+which fires only when focus sits INSIDE the dialog. None of the nine moved
+focus into the dialog on open, so with focus still in the compose textarea
+(the normal state right after `/mode`, `/names`, `/info`) Esc never reached
+the handler and the modal stayed open. MediaViewerModal used its own
+document-level keydown listener; ConfirmModal happened to work only because it
+autofocuses Cancel. ShareSessionModal had NO Esc handler at all. The issue's
+"Today" note (NamesModal/WhoModal lack Esc) was stale — they had Esc, just the
+focus-trapped kind. The defect was the inconsistency + the focus-scoping bug,
+not a missing handler.
+
+**Plan-vs-reality correction (load-bearing).** The build plan's findings said
+`SettingsDrawer` had "no Esc at all" and prescribed adding a NEW
+document-level keydown listener in `overlayScrollLock`, explicitly NOT touching
+`keybindings.ts`. Both were wrong: `lib/keybindings.ts:51` ALREADY owns a
+global `window` keydown listener (installed via `Shell.tsx install()`) whose
+Esc branch calls `closeDrawer()` → closes the settings + members drawers,
+focus-independent. So the drawers already Esc-closed, and adding a SECOND
+global listener would double-close: pressing Esc on a modal opened FROM the
+drawer (Share / DeleteAccount) would close the modal AND the drawer under it
+at once. vjt confirmed the corrected design before build.
+
+**Design U (chosen) — single Esc authority, no new listener.**
+  * `overlayScrollLock` gains an ordered `onEscape` stack (a plain array,
+    keyed by an opaque per-lock `token`) + `runTopmostOverlayEscape(): boolean`.
+    `createOverlayLock(isOpen, selector, onEscape?)` registers / unregisters on
+    the SAME deferred-push / release edges as the scroll-lock refcount, so the
+    two structures share one leak-safe lifecycle and never drift. The ESC stack
+    is a SUBSET of pushed overlays (onEscape ⊆ pushed) — it cannot be derived
+    from the refcount, hence a separate structure, but bolted to the same
+    lifecycle rather than a parallel bookkeeping path.
+  * `keybindings.ts`'s existing Esc branch now does
+    `if (runTopmostOverlayEscape()) return; else closeDrawer()`. ONE global
+    keydown listener remains; it is the sole ESC authority. Topmost-first
+    precedence falls out for free: Esc closes the frontmost modal, a second Esc
+    closes the drawer beneath it. This is why routing through `keybindings`
+    (which the plan gated behind "justify it") was the correct call — reusing
+    the one listener beats adding a rival.
+  * Rejected shape B (a dedicated `useModalEscape` hook with its OWN stack +
+    listener): a second "which overlays are open + order" registry to keep in
+    sync with the refcount → drift risk, and a second global listener racing
+    the keybindings one. Design U reuses the verbs, not the nouns.
+
+**Migration (total consistency or nothing).** All 12 covering modals now route
+Esc through `createOverlayLock`'s `onEscape` and the per-dialog handlers are
+DELETED: ModeModal, UmodeModal, NamesModal, WhoModal, ServerReplyModal,
+ArchiveModal, PrivacyModal (element-scoped → gone); MediaViewerModal (its
+private document listener → gone; it never had arrow keys, contrary to the
+plan note); ConfirmModal, DeleteAccountModal, ShareSessionModal (migrated from
+direct `pushOverlay`/`popOverlay` to `createOverlayLock`; Share GAINS Esc for
+the first time); and TopicBar's read-only topic modal (the 12th — it already
+called `createOverlayLock` for the #219 scroll-freeze but lacked `onEscape`;
+caught in code review, it was the exact half-migration the invariant forbids —
+`createOverlayLock` present, `onEscape` absent). ConfirmModal keeps its
+autofocus-Cancel (a separate #195 UX concern, not the Esc mechanism). The
+inner `role="dialog"` divs keep their
+`onClick={stopPropagation}` (backdrop-propagation containment) with a
+`useKeyWithClickEvents` suppression noting the keyboard door is now the shared
+stack. The two drawers (Settings, Members) stay scroll-lock-only, NOT in the
+ESC stack — they remain the `closeDrawer` fallback (so Design U preserves their
+existing Esc-close with zero regression).
+
+**Out of scope (documented classification).** The inline pinned CARDS —
+`LusersCard`, `WhoisCard`, `WhowasCard` — are NOT modals: no backdrop, no
+focus context, no `createOverlayLock`; they sit inline with a `×` close and
+mirror the scrollback-card UX rule. They are deliberately excluded from the Esc
+invariant. A future covering modal, however, MUST call `createOverlayLock` with
+`onEscape` to inherit the invariant (and the #219 scroll-freeze refcount).
+`InstallSplash` (`role="dialog" aria-modal="true"`) is ALSO excluded: it is a
+blocking install gate whose only exits are "Install app" / "Continue from
+browser" (the latter persists the choice) — there is no neutral "dismiss" verb
+for Esc to map to, so it deliberately has no Esc door.
+
+**Precedence guard (investigated, not ambiguous).** No inner-widget Esc
+currently conflicts with the modal stack: TopicBar's inline topic editor (#74)
+handles Esc at its own input level (not an overlay), ComposeBox tab-complete
+has no Esc, and ModeModal's param input is Enter-only. A future inner
+Esc-consuming widget inside a modal must `stopPropagation()` to win before the
+document handler — the topmost-first stack stays correct.
+
+**Testing.** vitest: the shared mechanism (`overlayScrollLock.test.ts` —
+topmost-first ordering, register/unregister on open/close, no-op when empty,
+scroll-lock-only overlays stay out of the stack); a `keybindings` integration
+test proving Esc closes the topmost overlay from a focused textarea (focus-
+outside) and falls back to `closeDrawer` when nothing is stacked; per-modal Esc
+tests migrated to drive `runTopmostOverlayEscape` (the exact verb the global
+listener calls). e2e (`issue232-modal-esc.spec.ts`): a real-browser
+parameterized spec opening ModeModal/NamesModal/ServerReplyModal and pressing
+Esc with focus PARKED IN THE COMPOSE TEXTAREA (the focus-outside condition the
+old handlers failed), plus ModeModal ×/backdrop still-close and ConfirmModal
+Esc-dismisses-safely. Proven RED→GREEN: reverting the modal files +
+`overlayScrollLock.ts` + `keybindings.ts` while keeping the spec fails the
+focus-outside cases; the fix passes them.
+
+_Deploy: **--cic HOT, client-only** — no server, schema, or wire change._

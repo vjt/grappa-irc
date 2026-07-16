@@ -53,7 +53,11 @@ import VhostSettingsPage from "./VhostSettingsPage";
 //
 // open prop drives the .open class; the drawer stays mounted across
 // open/close so onMount-loaded state (devices + prefs) doesn't refetch
-// per open. Backdrop click fires onClose; Esc handled in Shell.tsx.
+// per open. Backdrop click fires onClose; Esc closes it via the
+// keybindings drawer fallback (Shell.tsx closeDrawer) — the drawer is a
+// scroll-lock-only overlay, NOT in the #232 modal ESC stack, so a modal
+// opened FROM the drawer (share / delete-account) closes on the first Esc
+// and the drawer itself on the next.
 
 export type Props = {
   open: boolean;

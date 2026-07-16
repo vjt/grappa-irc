@@ -59,19 +59,17 @@ const UmodeModal: Component = () => {
     void pushChannelUmode(id, `${sign}${m.letter}`);
   };
 
-  // Overlay refcount so ScrollbackPane freezes while the modal covers it.
-  createOverlayLock(() => umodeModalState() !== null, ".umode-modal");
-
-  const onKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === "Escape") closeUmodeModal();
-  };
+  // Overlay refcount so ScrollbackPane freezes while the modal covers it +
+  // #232 shared Esc-to-close (topmost-first, focus-independent).
+  createOverlayLock(() => umodeModalState() !== null, ".umode-modal", closeUmodeModal);
 
   return (
     <Show when={target()} keyed>
       {(t) => (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc handled by dialog onKeyDown
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
         // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
         <div class="mode-modal-backdrop" onClick={closeUmodeModal}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
           <div
             role="dialog"
             aria-modal="true"
@@ -79,7 +77,6 @@ const UmodeModal: Component = () => {
             class="mode-modal umode-modal"
             data-testid="umode-modal"
             onClick={(e) => e.stopPropagation()}
-            onKeyDown={onKeyDown}
             tabIndex={-1}
           >
             <header class="mode-modal-header">

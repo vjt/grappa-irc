@@ -15,14 +15,6 @@ import { acknowledgePrivacy, dismissUpload, privacyModalState } from "./lib/uplo
 const PrivacyModal: Component = () => {
   const [remember, setRemember] = createSignal(false);
 
-  // UX-6 bucket A — refcounted overlay scroll-lock.
-  // `privacyModalState().open` is the open signal. Shared
-  // createOverlayLock wiring — extracted 2026-06-11 when
-  // MediaViewerModal would have been the third verbatim copy; see
-  // overlayScrollLock.ts for the edge-trigger + deferred-push
-  // semantics, including the same-task-close leak fix.
-  createOverlayLock(() => privacyModalState().open, ".image-upload-modal");
-
   const onContinue = () => {
     acknowledgePrivacy(remember());
     setRemember(false);
@@ -34,9 +26,14 @@ const PrivacyModal: Component = () => {
     setRemember(false);
   };
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") onCancel();
-  };
+  // UX-6 bucket A — refcounted overlay scroll-lock.
+  // `privacyModalState().open` is the open signal. Shared
+  // createOverlayLock wiring — extracted 2026-06-11 when
+  // MediaViewerModal would have been the third verbatim copy; see
+  // overlayScrollLock.ts for the edge-trigger + deferred-push
+  // semantics, including the same-task-close leak fix. #232 — the shared
+  // Esc-to-close routes through the same lock (topmost-first, focus-independent).
+  createOverlayLock(() => privacyModalState().open, ".image-upload-modal", onCancel);
 
   // Narrow the discriminated union for <Show>'s typed-children form.
   // Returning the open state (or null) lets Show's keyed accessor pass
@@ -51,16 +48,16 @@ const PrivacyModal: Component = () => {
   return (
     <Show when={openState()} keyed>
       {(host) => (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc handled by dialog onKeyDown
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
         // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim, click is convenience-only
         <div class="image-upload-modal-backdrop" onClick={onCancel}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="image-upload-modal-title"
             class="image-upload-modal"
             onClick={(e) => e.stopPropagation()}
-            onKeyDown={onKeyDown}
             tabIndex={-1}
           >
             <h2 id="image-upload-modal-title">Upload to {host.displayName}</h2>

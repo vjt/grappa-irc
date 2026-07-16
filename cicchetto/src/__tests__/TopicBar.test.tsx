@@ -51,7 +51,12 @@ vi.mock("../lib/channelEditPerm", () => ({
 }));
 vi.mock("../lib/friendlyError", () => ({ friendlyError: (_e: unknown) => "that didn't work" }));
 
-import { overlayCount, __resetForTest as resetOverlayLock } from "../lib/overlayScrollLock";
+import {
+  overlayCount,
+  overlayEscapeDepth,
+  __resetForTest as resetOverlayLock,
+  runTopmostOverlayEscape,
+} from "../lib/overlayScrollLock";
 import TopicBar from "../TopicBar";
 
 const baseProps = () => ({
@@ -410,6 +415,25 @@ describe("TopicBar", () => {
       fireEvent.click(screen.getByLabelText(/close topic/i));
       await flushMicrotask();
       expect(overlayCount()).toBe(0);
+    });
+
+    // #232 — the read-only topic modal is a covering modal, so it must close
+    // on Esc via the shared overlay stack (the 12th modal, caught in code
+    // review). runTopmostOverlayEscape is the exact verb the global keydown
+    // listener calls — focus-independent, closing the same way the × does.
+    it("closes on Escape via the shared overlay stack (#232)", async () => {
+      mockTopicByChannel.mockReturnValue({
+        "freenode #italia": { text: "A topic", set_by: "vjt", set_at: null },
+      });
+      render(() => <TopicBar {...baseProps()} />);
+      fireEvent.click(screen.getByText("A topic"));
+      await flushMicrotask();
+      expect(overlayEscapeDepth()).toBe(1);
+
+      expect(runTopmostOverlayEscape()).toBe(true);
+      await flushMicrotask();
+      expect(screen.queryByLabelText(/close topic/i)).toBeNull();
+      expect(overlayEscapeDepth()).toBe(0);
     });
   });
 

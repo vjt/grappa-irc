@@ -69,19 +69,16 @@ const WhoModal: Component = () => {
     return slug === undefined ? undefined : whoModalBySlug()[slug];
   };
 
-  // Refcounted overlay scroll-lock — same wiring as NamesModal. Tracks "is a
-  // roster shown for the active network?". The scroller is `.who-modal-body`
-  // (header + footer are pinned).
-  createOverlayLock(() => bundle() !== undefined, ".who-modal-body");
-
   const close = (): void => {
     const slug = activeSlug();
     if (slug !== undefined) dismissWhoModal(slug);
   };
 
-  const onKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === "Escape") close();
-  };
+  // Refcounted overlay scroll-lock — same wiring as NamesModal. Tracks "is a
+  // roster shown for the active network?". The scroller is `.who-modal-body`
+  // (header + footer are pinned). #232 — the shared Esc-to-close routes
+  // through the same lock (topmost-first, focus-independent).
+  createOverlayLock(() => bundle() !== undefined, ".who-modal-body", close);
 
   // Clicking a nick opens a query window + switches focus, then closes the
   // modal. Mirrors NamesModal / MembersPane's left-click verb pair
@@ -101,9 +98,10 @@ const WhoModal: Component = () => {
       {(b) => {
         const total = (): number => b.users.length;
         return (
-          // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc handled by dialog onKeyDown
+          // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
           // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
           <div class="who-modal-backdrop" onClick={close}>
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
             <div
               role="dialog"
               aria-modal="true"
@@ -111,7 +109,6 @@ const WhoModal: Component = () => {
               class="who-modal"
               data-testid="who-modal"
               onClick={(e) => e.stopPropagation()}
-              onKeyDown={onKeyDown}
               tabIndex={-1}
             >
               <header class="who-modal-header">

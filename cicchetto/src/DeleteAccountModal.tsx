@@ -1,7 +1,7 @@
 import { useNavigate } from "@solidjs/router";
-import { type Component, createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { type Component, createEffect, createSignal, Show } from "solid-js";
 import { deleteAccount } from "./lib/lifecycle";
-import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
+import { createOverlayLock } from "./lib/overlayScrollLock";
 
 // #157 — irreversibility gate for self-service account deletion. The
 // destructive button stays DISABLED until the operator types their exact
@@ -42,24 +42,14 @@ const DeleteAccountModal: Component<Props> = (props) => {
     }
   });
 
-  // Overlay scroll-lock — same edge-triggered shape as ShareSessionModal.
-  let modalEl: HTMLDivElement | undefined;
-  let scrollLocked = false;
-  createEffect(() => {
-    if (props.open && !scrollLocked) {
-      scrollLocked = true;
-      pushOverlay(modalEl ?? null);
-    } else if (!props.open && scrollLocked) {
-      scrollLocked = false;
-      popOverlay(modalEl ?? null);
-    }
-  });
-  onCleanup(() => {
-    if (scrollLocked) {
-      scrollLocked = false;
-      popOverlay(modalEl ?? null);
-    }
-  });
+  // Overlay scroll-lock + #232 shared Esc-to-close. props.onClose is the same
+  // close verb the × / backdrop use (topmost-first, focus-independent). Wrapped
+  // in an arrow so a re-rendered parent's onClose is always re-read.
+  createOverlayLock(
+    () => props.open,
+    ".delete-account-modal",
+    () => props.onClose(),
+  );
 
   // Armed only on an EXACT match. An empty confirmationText never arms
   // (guards the loading null-me case where the drawer shouldn't have
@@ -87,15 +77,15 @@ const DeleteAccountModal: Component<Props> = (props) => {
           above it. Backdrop click closes; modal click stops propagation;
           Esc closes. Mirrors ArchiveModal's structure (the sibling layout
           intercepts the confirm button via the backdrop's pointer events). */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc handled by dialog onKeyDown */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape) */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop is a non-interactive scrim */}
       <div
         class="delete-account-backdrop"
         onClick={props.onClose}
         data-testid="delete-account-backdrop"
       >
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
         <div
-          ref={modalEl}
           class="delete-account-modal"
           role="dialog"
           aria-modal="true"
@@ -103,9 +93,6 @@ const DeleteAccountModal: Component<Props> = (props) => {
           data-testid="delete-account-modal"
           tabIndex={-1}
           onClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") props.onClose();
-          }}
         >
           <header class="delete-account-header">
             <h2>delete account</h2>

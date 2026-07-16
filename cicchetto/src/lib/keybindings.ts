@@ -12,6 +12,14 @@
 // uninstall() removes the listener; used by tests + (in principle)
 // for future hot-reload scenarios. Module-singleton pattern: one
 // listener globally, never duplicated.
+//
+// #232 — this single window listener is ALSO the sole ESC authority. On Esc
+// it first asks the overlay ESC stack to close the frontmost modal
+// (`runTopmostOverlayEscape`); only if no modal is open does it fall back to
+// closing an open drawer. One listener, ordered topmost-first — never a
+// second global keydown listener racing this one.
+
+import { runTopmostOverlayEscape } from "./overlayScrollLock";
 
 export type KeybindingHandlers = {
   selectChannelByIndex: (idx: number) => void; // Alt+1..9 → idx 0..8
@@ -46,9 +54,12 @@ function onKeydown(e: KeyboardEvent): void {
     return;
   }
 
-  // Esc closes any open drawer (Shell.tsx tracks the state); never
-  // preventDefault — let any modal/dialog also see it if present.
+  // Esc: close the frontmost open modal first (ordered overlay stack), else
+  // fall back to closing an open drawer. Topmost-first precedence — a modal
+  // opened from the settings drawer closes on the first Esc, the drawer on a
+  // second. Never preventDefault (Esc has no default worth suppressing here).
   if (e.key === "Escape") {
+    if (runTopmostOverlayEscape()) return;
     handlers.closeDrawer();
     return;
   }

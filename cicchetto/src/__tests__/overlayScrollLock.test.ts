@@ -17,16 +17,24 @@
 //      - target with overflow:auto but content NOT taller than
 //        container → STILL preventDefault (no actual scroll capability)
 
-import { createMemo, createRoot } from "solid-js";
-import { afterEach, describe, expect, test } from "vitest";
+import { createMemo, createRoot, createSignal } from "solid-js";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   __resetForTest,
+  createOverlayLock,
   handleTouchmove,
   isListenerAttached,
   overlayCount,
+  overlayEscapeDepth,
   popOverlay,
   pushOverlay,
+  runTopmostOverlayEscape,
 } from "../lib/overlayScrollLock";
+
+// createOverlayLock defers its push + Esc-registration a microtask (so the
+// modal element has mounted); a signal write also schedules the Solid effect.
+// One macrotask turn flushes both.
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 const CLASS = "overlay-open";
 
@@ -157,6 +165,78 @@ describe("overlayScrollLock listener lifecycle", () => {
     expect(isListenerAttached()).toBe(true);
     popOverlay(null);
     expect(isListenerAttached()).toBe(false);
+  });
+});
+
+// #232 — the shared ESC-to-close stack. These pin the mechanism behind the
+// cross-cutting "every modal closes on Esc" invariant: topmost-first ordering,
+// focus-independence (runTopmostOverlayEscape reads the stack, not the DOM
+// focus), and lifecycle-bound register/unregister so the stack never drifts
+// from the refcount.
+describe("overlay escape stack (#232)", () => {
+  test("runTopmostOverlayEscape is a no-op returning false when nothing is open", () => {
+    expect(overlayEscapeDepth()).toBe(0);
+    expect(runTopmostOverlayEscape()).toBe(false);
+  });
+
+  test("createOverlayLock WITHOUT onEscape locks scroll but does NOT join the Esc stack", async () => {
+    await createRoot(async (dispose) => {
+      const [open, setOpen] = createSignal(false);
+      createOverlayLock(open, ".x-scroll-only");
+      setOpen(true);
+      await flush();
+      expect(overlayCount()).toBe(1); // scroll-lock refcount pushed
+      expect(overlayEscapeDepth()).toBe(0); // but not ESC-closable
+      expect(runTopmostOverlayEscape()).toBe(false);
+      dispose();
+    });
+  });
+
+  test("Esc closes the topmost overlay only; a second Esc closes the one beneath", async () => {
+    await createRoot(async (dispose) => {
+      const [aOpen, setAOpen] = createSignal(false);
+      const [bOpen, setBOpen] = createSignal(false);
+      createOverlayLock(aOpen, ".x-a", () => setAOpen(false));
+      createOverlayLock(bOpen, ".x-b", () => setBOpen(false));
+
+      setAOpen(true);
+      await flush();
+      setBOpen(true); // B opens after A → B is topmost
+      await flush();
+      expect(overlayEscapeDepth()).toBe(2);
+
+      expect(runTopmostOverlayEscape()).toBe(true);
+      await flush();
+      expect(bOpen()).toBe(false); // topmost (B) closed
+      expect(aOpen()).toBe(true); // the one beneath is untouched
+      expect(overlayEscapeDepth()).toBe(1);
+
+      expect(runTopmostOverlayEscape()).toBe(true);
+      await flush();
+      expect(aOpen()).toBe(false); // now the next one down closes
+      expect(overlayEscapeDepth()).toBe(0);
+      expect(runTopmostOverlayEscape()).toBe(false); // stack drained
+      dispose();
+    });
+  });
+
+  test("closing an overlay via its own store unregisters it from the Esc stack", async () => {
+    await createRoot(async (dispose) => {
+      const [open, setOpen] = createSignal(false);
+      const onEscape = vi.fn(() => setOpen(false));
+      createOverlayLock(open, ".x-store-close", onEscape);
+
+      setOpen(true);
+      await flush();
+      expect(overlayEscapeDepth()).toBe(1);
+
+      setOpen(false); // closed by the × / backdrop path, not by Esc
+      await flush();
+      expect(overlayEscapeDepth()).toBe(0);
+      expect(onEscape).not.toHaveBeenCalled(); // store-close never invokes onEscape
+      expect(runTopmostOverlayEscape()).toBe(false);
+      dispose();
+    });
   });
 });
 

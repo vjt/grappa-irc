@@ -41,14 +41,20 @@ const ArchiveModal: Component = () => {
   const [armedKey, setArmedKey] = createSignal<string | null>(null);
   const archiveKey = (slug: string, target: string) => `${slug} ${target}`;
 
+  const close = () => {
+    setArchiveModalNetwork(null);
+    setArmedKey(null);
+  };
+
   // UX-6 bucket A — refcounted overlay scroll-lock. Tracks
   // `archiveModalNetwork()` (the "is the modal open?" signal — null
   // when closed, slug when open). Shared createOverlayLock wiring —
   // extracted 2026-06-11 when MediaViewerModal would have been the
   // third verbatim copy of the edge-trigger + deferred-push block;
   // see overlayScrollLock.ts for the semantics, including the
-  // same-task-close leak fix the copies lacked.
-  createOverlayLock(() => archiveModalNetwork() !== null, ".archive-modal");
+  // same-task-close leak fix the copies lacked. #232 — the shared
+  // Esc-to-close routes through the same lock (topmost-first, focus-independent).
+  createOverlayLock(() => archiveModalNetwork() !== null, ".archive-modal", close);
 
   // BUGHUNT-1 B — seed the archive list on edge-trigger open. The
   // mobile chip (`BottomBar.tsx`'s `.bottom-bar-archive-chip`) calls
@@ -75,15 +81,6 @@ const ArchiveModal: Component = () => {
       void loadArchive(slug);
     }
   });
-
-  const close = () => {
-    setArchiveModalNetwork(null);
-    setArmedKey(null);
-  };
-
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") close();
-  };
 
   const handleConfirmDelete = async (slug: string, target: string) => {
     const t = token();
@@ -132,16 +129,16 @@ const ArchiveModal: Component = () => {
           return visibleArchiveForNetwork(slug, net.id);
         };
         return (
-          // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc handled by dialog onKeyDown
+          // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
           // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
           <div class="archive-modal-backdrop" onClick={close}>
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
             <div
               role="dialog"
               aria-modal="true"
               aria-labelledby="archive-modal-title"
               class="archive-modal"
               onClick={(e) => e.stopPropagation()}
-              onKeyDown={onKeyDown}
               tabIndex={-1}
             >
               <header class="archive-modal-header">
