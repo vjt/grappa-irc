@@ -70,6 +70,10 @@ vi.mock("../lib/networks", () => ({
 }));
 
 import ComposeBox from "../ComposeBox";
+// #80 — the paste flood guard reuses the REAL confirm-dialog store (not a
+// mock): ComposeBox calls requestConfirm, and these tests assert on the
+// store signal + drive accept/dismiss exactly as ConfirmModal.test.tsx does.
+import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -77,6 +81,9 @@ beforeEach(() => {
   mockNetworkConnectionState = {};
   mockUploadStateValue = null;
   mockUploadBatchValue = null;
+  // Reset the module-singleton confirm-dialog store so a prior test's
+  // pending request never leaks into the next one.
+  dismissConfirm();
 });
 
 describe("ComposeBox", () => {
@@ -499,6 +506,7 @@ describe("ComposeBox", () => {
       files: File[];
       items: Array<{ kind: string; type: string; getAsFile: () => File | null }>;
       types: string[];
+      getData: (type: string) => string;
     };
 
     const makeDataTransfer = (file: File | null = null, textData = ""): DataTransferLike => {
@@ -511,13 +519,23 @@ describe("ComposeBox", () => {
         items.push({ kind: "string", type: "text/plain", getAsFile: () => null });
         types.push("text/plain");
       }
-      return { files: file !== null ? [file] : [], items, types };
+      // #80 — the real DataTransfer exposes getData; the paste handler reads
+      // the plain-text payload for the multi-line flood guard, so the fake
+      // must supply it too (a file paste never reaches getData, a text paste
+      // does).
+      return {
+        files: file !== null ? [file] : [],
+        items,
+        types,
+        getData: (t: string) => (t === "text" || t === "text/plain" ? textData : ""),
+      };
     };
 
     const makeMultiDataTransfer = (files: File[]): DataTransferLike => ({
       files,
       items: files.map((f) => ({ kind: "file", type: f.type, getAsFile: () => f })),
       types: [],
+      getData: () => "",
     });
 
     it("renders a file-picker button (paperclip icon)", () => {
@@ -855,6 +873,123 @@ describe("ComposeBox", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const select = document.querySelector(".compose-box select");
       expect(select).toBeNull();
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // #80 — multi-line paste flood guard.
+  //
+  // A multi-line paste into the compose box becomes one PRIVMSG per line
+  // on submit (compose.ts → messageLines.ts), so a big pasted block can
+  // flood a channel. Above a small line threshold the paste is intercepted
+  // (preventDefault) and a confirm dialog is opened BEFORE the text lands;
+  // Cancel drops it (the safe default), Paste inserts it. At/below the
+  // threshold + single-line pastes stay frictionless (native paste). The
+  // guard reuses the store-driven confirm dialog (lib/confirmDialog) — no
+  // new modal — so these assert on the REAL confirmRequest store, driving
+  // accept/dismiss just like ConfirmModal.test.tsx.
+  //
+  // jsdom has no constructible ClipboardEvent-with-clipboardData, so we
+  // dispatch a plain paste Event with a structural clipboardData bearing
+  // `getData` (the real DataTransfer API) — the same faking pattern the
+  // file-upload paste tests use for `.items`.
+  // ----------------------------------------------------------------
+  describe("#80 — multi-line paste flood guard", () => {
+    const makeTextPaste = (text: string): Event => {
+      const ev = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, "clipboardData", {
+        value: {
+          items: [{ kind: "string", type: "text/plain", getAsFile: () => null }],
+          types: ["text/plain"],
+          getData: (t: string) => (t === "text" || t === "text/plain" ? text : ""),
+        },
+        configurable: true,
+      });
+      return ev;
+    };
+
+    const FOUR_LINES = "uno\ndue\ntre\nquattro";
+
+    it("a multi-line paste over the threshold opens the confirm dialog, prevents native paste, and does NOT yet mutate the draft", async () => {
+      const compose = await import("../lib/compose");
+      const orch = await import("../lib/uploadOrchestrator");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+
+      const paste = makeTextPaste(FOUR_LINES);
+      ta.dispatchEvent(paste);
+
+      // Native paste suppressed + confirm dialog opened.
+      expect(paste.defaultPrevented).toBe(true);
+      expect(confirmRequest()).not.toBeNull();
+      // Text has NOT landed yet — the draft is untouched until confirm.
+      expect(compose.setDraft).not.toHaveBeenCalled();
+      // A text paste is not an upload.
+      expect(orch.triggerUploads).not.toHaveBeenCalled();
+    });
+
+    it("the dialog copy interpolates the line count + channel and uses the 'Paste' affirmative label", async () => {
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+      ta.dispatchEvent(makeTextPaste(FOUR_LINES));
+
+      const req = confirmRequest();
+      expect(req).not.toBeNull();
+      expect(req?.title).toContain("4");
+      expect(req?.body).toContain("4");
+      expect(req?.body).toContain("#a");
+      expect(req?.confirmLabel).toBe("Paste");
+    });
+
+    it("confirming (Paste) inserts the pasted text into the compose draft", async () => {
+      const compose = await import("../lib/compose");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+      ta.dispatchEvent(makeTextPaste(FOUR_LINES));
+
+      // Fire the affirmative action via the real store verb.
+      acceptConfirm();
+
+      // Into an empty draft the pasted block lands verbatim (caret at 0).
+      expect(compose.setDraft).toHaveBeenCalledWith(expect.any(String), FOUR_LINES);
+      // Dialog closed after confirm.
+      expect(confirmRequest()).toBeNull();
+    });
+
+    it("cancelling (dismiss) leaves the compose draft untouched", async () => {
+      const compose = await import("../lib/compose");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+      ta.dispatchEvent(makeTextPaste(FOUR_LINES));
+
+      // Cancel / backdrop / Esc all resolve to dismissConfirm — the safe
+      // default that never fires the carried action.
+      dismissConfirm();
+
+      expect(compose.setDraft).not.toHaveBeenCalled();
+      expect(confirmRequest()).toBeNull();
+    });
+
+    it("a 3-line paste (at the threshold) does NOT open the dialog — native paste proceeds", async () => {
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+
+      const paste = makeTextPaste("uno\ndue\ntre");
+      ta.dispatchEvent(paste);
+
+      expect(paste.defaultPrevented).toBe(false);
+      expect(confirmRequest()).toBeNull();
+    });
+
+    it("a single-line paste is frictionless (no dialog, native paste proceeds)", async () => {
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+
+      const paste = makeTextPaste("just one pasted line");
+      ta.dispatchEvent(paste);
+
+      expect(paste.defaultPrevented).toBe(false);
+      expect(confirmRequest()).toBeNull();
     });
   });
 });
