@@ -16,6 +16,20 @@
 // project has no real long-press selection (same limitation class as
 // text-selection-restored.spec's @webkit half), so the DOM-range
 // contract is proven on chromium and iOS stays a dogfood check.
+//
+// ⚠️ DESKTOP MOUSE-DRAG ONLY — KNOWN FALSE NEGATIVE FOR ANDROID (#250). ⚠️
+// This spec drives a Chromium mouse-drag `getSelection()` and asserts the
+// captured string contains the nick. Chromium desktop mouse-selection
+// serializes an interactive `<button>`'s text into the range, so this
+// passes REGARDLESS of Android's native touch-selection engine — which is
+// the code path that actually excludes the nick. This exact false negative
+// is why #179 was mis-closed the first time (see #250 + DESIGN_NOTES
+// 2026-07-15). Keep it as a DESKTOP regression guard, but a green run here
+// is NOT evidence the Android bug is fixed: the CSS wiring that fixes
+// Android is proven by `issue250-android-nick-select.spec.ts` (computed
+// `user-select: text` on `.nick-clickable`), and the real user-visible
+// Android behavior needs a physical device / emulator (device-verified
+// post-ship). Do NOT read this file's green status as "Android covered."
 
 import { test, expect } from "../fixtures/test";
 import {
