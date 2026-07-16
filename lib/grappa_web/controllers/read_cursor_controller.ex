@@ -60,29 +60,80 @@ defmodule GrappaWeb.ReadCursorController do
   def create(conn, %{"channel_id" => channel, "message_id" => message_id})
       when is_integer(message_id) and message_id > 0 do
     subject = Subject.to_session(conn.assigns.current_subject)
+    current_subject = conn.assigns.current_subject
     network = conn.assigns.network
 
     with :ok <- validate_target_name(channel),
          {:ok, cursor} <- ReadCursor.set(subject, network.id, channel, message_id) do
-      # Door #3: the badge AFTER this advance — reading drops it. Computed
-      # here (controller holds the subject) so `ReadCursor` stays free of
-      # a `Push.BadgeCount` dependency.
-      badge_count = BadgeCount.count(subject)
+      # #273 — only the cursor upsert is request-critical. Proven with
+      # timing: `ReadCursor.set/4` ~69µs vs a ~10ms+ full
+      # `BadgeCount.count/1` fold (EXPLAIN: no covering index for the
+      # id-range unread count → the fold scans the network partition per
+      # cursored window). Blocking the write on the fold dropped slow POSTs,
+      # so cic scrolled back to the stale unread marker. The door-#3 badge
+      # and the cross-device broadcast are eventually-consistent, so defer
+      # BOTH off the request path to a supervised fire-and-forget Task
+      # (reuses `Grappa.TaskSupervisor` — no NEW supervision child, so the
+      # fix is hot-deployable). The response returns right after the
+      # (monotonic, #233-clamped) upsert.
+      last_read = cursor.last_read_message_id
 
-      _ =
-        maybe_broadcast(
-          conn.assigns.current_subject,
-          network.slug,
-          channel,
-          cursor.last_read_message_id,
-          badge_count
-        )
+      {:ok, _} =
+        Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
+          fanout(subject, current_subject, network.slug, channel, last_read)
+        end)
 
-      json(conn, %{last_read_message_id: cursor.last_read_message_id})
+      json(conn, %{last_read_message_id: last_read})
     end
   end
 
   def create(_, _), do: {:error, :bad_request}
+
+  # Deferred, off-request-path fan-out for a successful cursor set (#273).
+  # Runs in a supervised `Grappa.TaskSupervisor` task (NOT the request
+  # process) so the expensive badge fold never blocks the POST. Emits a
+  # `[:grappa, :read_cursor, :fanout]` telemetry event for observability
+  # of the async badge total (and, via handler wall-time, the fold cost).
+  #
+  # Door #3: `badge_count` is the notify-worthy unread total AFTER this
+  # advance (reading drops it), computed here because the controller holds
+  # the subject — keeping `ReadCursor` free of a `Push.BadgeCount` dep.
+  #
+  # `last_read_message_id` is the value `ReadCursor.set/4` RETURNED — the
+  # #233-clamped, monotonic cursor captured on the request path and
+  # threaded through, NEVER re-read. cic's `applyReadCursorSet` is
+  # last-write-wins with no receive-side monotonic guard, so the server's
+  # `set/4` clamp is the sole monotonicity authority. Passing the captured
+  # clamped value preserves the exact broadcast semantics the synchronous
+  # path had (a stale lower POST re-affirms the higher cursor); a re-read
+  # here could observe a concurrent later write and emit an id inconsistent
+  # with what this request advanced. The async move widens the window in
+  # which two rapid advancing writes' broadcasts could be delivered out of
+  # order, but that reorder class already existed for concurrent requests
+  # (each broadcast fired after its own fold), the badge is
+  # eventually-consistent (the next settle re-broadcasts), and the clamp
+  # guarantees no broadcast ever carries a value BELOW the committed
+  # cursor — so no broadcast can regress a device below what it set.
+  @spec fanout(
+          Grappa.Session.subject(),
+          Subject.t(),
+          String.t(),
+          String.t(),
+          integer()
+        ) :: :ok
+  defp fanout(subject, current_subject, network_slug, channel, last_read_message_id) do
+    badge_count = BadgeCount.count(subject)
+
+    _ = maybe_broadcast(current_subject, network_slug, channel, last_read_message_id, badge_count)
+
+    :telemetry.execute(
+      [:grappa, :read_cursor, :fanout],
+      %{badge_count: badge_count},
+      %{network_slug: network_slug, channel: channel}
+    )
+
+    :ok
+  end
 
   # Resolves the user-name segment of the per-channel topic for the
   # cross-device broadcast. User subjects use `user.name`; visitors
