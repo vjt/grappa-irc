@@ -13,6 +13,7 @@ import {
   adminRevokeVhostGrant,
 } from "./lib/api";
 import { token } from "./lib/auth";
+import SubjectAutocomplete, { formatSubjectLabel } from "./SubjectAutocomplete";
 
 // #228, #251 — Vhosts admin tab. Operator surface for the per-subject
 // source-bind (vhost) pool: create/delete host-bindable addresses, toggle
@@ -51,11 +52,18 @@ import { token } from "./lib/auth";
 type GrantForm = {
   subject_type: "user" | "visitor";
   subject_id: string;
+  // #257 — display label of the selected subject ("network - nick" /
+  // "account - nick"). Parent-owned so a post-grant reset clears the
+  // autocomplete's chip without the component holding its own selection
+  // state (which would desync on reset). subject_type + subject_id remain
+  // the wire fields fed 1:1 into the grant body.
+  subject_label: string;
 };
 
 const emptyGrantForm = (): GrantForm => ({
   subject_type: "user",
   subject_id: "",
+  subject_label: "",
 });
 
 // #256 — in_pool ⟹ generally available. The server ORs the two flags at
@@ -454,33 +462,22 @@ const GrantsDisclosure: Component<{
         onSubmit={props.onAddGrant}
         data-testid={`admin-vhost-add-grant-form-${props.vhost.id}`}
       >
-        <label>
-          subject:
-          <select
-            value={props.form.subject_type}
-            onChange={(e) =>
-              props.onFormChange({
-                subject_type:
-                  (e.currentTarget as HTMLSelectElement).value === "visitor" ? "visitor" : "user",
-              })
-            }
-            data-testid={`admin-vhost-grant-subject-type-${props.vhost.id}`}
-            aria-label={`grant subject type for ${props.vhost.address}`}
-          >
-            <option value="user">user</option>
-            <option value="visitor">visitor</option>
-          </select>
-        </label>
-        <input
-          type="text"
-          placeholder="subject id"
-          value={props.form.subject_id}
-          onInput={(e) =>
-            props.onFormChange({ subject_id: (e.currentTarget as HTMLInputElement).value })
+        {/* #257 — ONE autocomplete over users + visitors replaces the raw
+            subject_type select + subject_id text input. On select it stores
+            the result's stable {type, id} into the grant form (→
+            {subject_type, subject_id} on the wire) + a display label. */}
+        <SubjectAutocomplete
+          vhostId={props.vhost.id}
+          hasSelection={props.form.subject_id.trim() !== ""}
+          selectedLabel={props.form.subject_label}
+          onSelect={(r) =>
+            props.onFormChange({
+              subject_type: r.type,
+              subject_id: r.id,
+              subject_label: formatSubjectLabel(r),
+            })
           }
-          data-testid={`admin-vhost-grant-subject-id-${props.vhost.id}`}
-          aria-label={`grant subject id for ${props.vhost.address}`}
-          required
+          onClear={() => props.onFormChange({ subject_id: "", subject_label: "" })}
         />
         <button
           type="submit"

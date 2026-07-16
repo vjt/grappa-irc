@@ -29,9 +29,13 @@ defmodule GrappaWeb.Admin.VhostsController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, Vhosts, Visitors}
+  alias Grappa.{Accounts, SubjectSearch, Vhosts, Visitors}
   alias Grappa.Vhosts.AdminWire
   alias GrappaWeb.Validation
+
+  # #257 — the autocomplete requests a bounded page; the operator narrows
+  # by typing more. Small on purpose — an admin picker, not a directory.
+  @subject_search_limit 20
 
   @doc """
   Lists the vhost inventory (each with its grants) plus the host's
@@ -109,6 +113,25 @@ defmodule GrappaWeb.Admin.VhostsController do
       |> json(AdminWire.grant_to_admin_json(grant))
     end
   end
+
+  @doc """
+  #257 — subject autocomplete for the grant form. `GET
+  /admin/vhosts/subject_search?q=<query>` returns a tagged union over
+  users + visitors: `%{results: [%{type, id, network, nick}]}`. The
+  `{type, id}` maps 1:1 onto the grant body `{subject_type, subject_id}`.
+  Read-only; a missing `q` is a client bug → `400 bad_request`.
+  """
+  @spec subject_search(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
+  def subject_search(conn, %{"q" => q}) when is_binary(q) do
+    results =
+      q
+      |> SubjectSearch.search(@subject_search_limit)
+      |> Enum.map(&SubjectSearch.AdminWire.result_to_admin_json/1)
+
+    json(conn, %{results: results})
+  end
+
+  def subject_search(_, _), do: {:error, :bad_request}
 
   @doc "Revoke a grant by id. `204 No Content` (idempotent)."
   @spec revoke(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found}

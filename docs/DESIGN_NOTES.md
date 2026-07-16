@@ -22974,3 +22974,212 @@ _Deploy: **cic-only, `--cic` bundle.** No `lib/` change, no migration, no
 config, no server BEAM restart. A server hot-reload does not touch the cic
 bundle and vice-versa; a cic change that skipped `--cic` would ship nothing.
 The bundle-hash-mismatch refresh banner handles live clients._
+
+---
+
+## 2026-07-16 — #257 admin vhost-grant subject autocomplete (unified users + visitors)
+
+The vhost-grant form (`AdminVhostsTab`) used to carry a `user | visitor`
+type-select plus a raw `subject_id` TEXT input — the operator had to know
+and paste a UUID. #257 replaces both with ONE autocomplete over BOTH
+subject kinds: type a name/nick, see type-tagged "network - nickname"
+results, pick one.
+
+**Unify vs type-select (vjt 2026-07-15): UNIFIED.** vjt's lean was "one
+box, type-tagged results via a tagged-union endpoint; keep the type-select
+as a fallback only if the union turns smelly." It did not turn smelly, so
+the type-select is gone. The union is clean because each leg is scoped to
+its OWN subject column and the two are merged in Elixir — never a single
+polymorphic query with a nullable FK in a `NOT IN` (the #211-p7
+NULL-poisoning class). `Grappa.SubjectSearch.search/2` composes
+`Accounts.search_users/2` (the `users` table) with
+`Credentials.search_visitor_credentials_by_nick/2` (the `visitor_id IS NOT
+NULL` credential path) and maps both onto a `Grappa.SubjectSearch.Result`
+tagged union `%{type: :user | :visitor, id, network, nick}`. Mirror of
+`Grappa.Subject`'s role as the cross-subject hub; the controller stays a
+thin call + render (`Grappa.SubjectSearch.AdminWire` → JSON).
+
+**Stable key, never the nick.** A visitor is multi-network (#211), so its
+nick is not a stable identity key — the result's `id` is the surrogate
+user id / visitor id (from the credential's `visitor_id` FK), which maps
+1:1 onto the existing grant body `{subject_type, subject_id}` (no
+re-plumbing of `resolve_subject/1`). A multi-network visitor holding the
+same nick on N networks yields N rows — the "network - nickname"
+disambiguation the operator needs. A user (account) has no single network:
+`network: nil`, displayed "account - name" (we do not fabricate a
+network).
+
+**Nick fold + LIKE hygiene.** The visitor leg rfc1459-folds BOTH sides
+(GH #121 — `Identifier.canonical_nick/1` on the query, the
+`Identifier.nick_fold/1` fragment on the column) so a case/bracket variant
+resolves the way login does. Folding runs BEFORE the LIKE-escape so a `\`
+in the query (which folds to `|`) never collides with the escape char. The
+new `Grappa.Ecto.Like` leaf util (mirror of `Grappa.Wire.Time`) is the
+single source of the `% _ \` escaping — an underscore is a legal nick /
+account-name char and must match literally, not wildcard. The leading-`%`
+pattern is not index-eligible, but the users + credentials tables are
+operator/visitor-scale, so the bounded scan is fine for an admin
+autocomplete.
+
+**Endpoint path + nginx.** `GET /admin/vhosts/subject_search?q=…` nests
+under `vhosts` deliberately: the existing admin nginx allowlist alt
+(`^/admin/(…|vhosts|…)(/|$)` in `infra/snippets/locations-api.conf`)
+ALREADY matches, so NO nginx conf edit — which keeps the ship a pure hot
+server + `--cic` bundle deploy. A top-level `/admin/subject_search` would
+have required editing the snippet (single source of truth included by both
+prod + e2e) and thus an nginx reload. The search is conceptually
+vhost-grant-only today; if it's ever reused beyond the grant form, promote
+it to a top-level path + add the segment to the allowlist then.
+
+**cic contract.** `SubjectAutocomplete` owns only TRANSIENT search state
+(query / debounced results / open / loading); the SELECTION lives in the
+parent grant form (`subject_id` + a display `subject_label`), so a
+post-grant form reset clears the chip with no component-held state to
+desync (`feedback_solidjs_for_ref_leak` class). cic mirrors the server's
+tag, it originates no state.
+
+_Deploy: **HOT server + `--cic`, NO migration.** New modules
+(`Grappa.SubjectSearch{,.Result,.AdminWire}`, `Grappa.Ecto.Like`), a new
+context fn per leg, a new read-only route/action, and the cic bundle —
+all hot-reloadable (router recompiles; no schema/index/config change, no
+`.app` change). If a future change to this feature needs a migration /
+config / COLD restart, that changes the ship plan — flag it._
+
+---
+
+## 2026-07-16 — #264 mobile next-active button: keyboard-safe circle (cic, client-only)
+
+**Bug.** The mobile "jump to next active window" affordance
+(`NextActiveButton` variant="mobile", from #235) was a small rounded-rect
+pill anchored `position: absolute; bottom: 0.5rem`. `.shell-mobile` is
+NOT a positioned/transform containing block (the "transform
+containing-block" note in Shell.tsx is stale — there is no transform on
+the shell today), so the button's `absolute` escaped to the **initial
+containing block = the LAYOUT viewport**, which iOS does NOT shrink when
+the on-screen keyboard opens. The button therefore sat UNDER the keyboard
+exactly when the compose box is focused — its primary use case (hop
+between active windows while typing). vjt, mobile, bundle `B_9zgxMI`.
+
+**Root cause vs the fix that already existed nearby.** `.shell-mobile`'s
+own HEIGHT already tracks `--viewport-height` (lib/viewportHeight.ts,
+re-written on every `visualViewport.resize`), and `.settings-drawer` /
+`.shell-members` already ride the keyboard via `position: fixed +
+height/max-height: var(--viewport-height)`. The button just wasn't using
+that primitive.
+
+**Design — fork A + B (combined).**
+- **(A) Keyboard-aware geometry.** `position: fixed` (self-contained — no
+  `position: relative` on `.shell-mobile`, which would re-anchor other
+  absolute descendants) anchored off `--viewport-height`:
+  `top: calc(var(--viewport-height, 100dvh) - 3.5rem - var(--nab-lift))`.
+  The var already shrinks with the keyboard, so the fixed button's top is
+  pinned at the visual-viewport bottom minus its own height + a gap → it
+  rides above the real keyboard. Derives from existing state; adds NO
+  parallel tracker (CLAUDE.md design discipline). Same primitive as the
+  drawers.
+- **(B) `:has(...:focus)` focus lift.**
+  `.shell-mobile:has(textarea:focus, input:focus) .next-active-btn-mobile
+  { --nab-lift: 4rem }` — a focused text field means the keyboard is
+  (about to be) up: lift the button clear of the bottom bar (~3rem) on top
+  of the base gap. On a real device (A) already handled the keyboard, so
+  this is bottom-bar clearance + breathing room. Its SECOND job is
+  testability: headless WebKit raises no soft keyboard, so
+  `--viewport-height` alone would not move on focus — the focus rule makes
+  the reposition observable in the e2e. Reuses the existing focus-react
+  idiom already in this file (~:3444, which collapses the shell's bottom
+  inset under the keyboard).
+
+**Shape (#264 req 2 & 3).** `.next-active-btn-mobile` becomes a symmetric
+`3.5rem` box, `border-radius: 50%`, `padding: 0`, glyph centered
+(`justify-content: center`) and bumped to `1.75rem`. `min-width/height:
+48px` keeps the ≥44px HIG tap target even at the smallest `--font-size`
+(rem = the html font-size = `var(--font-size)`). The active-window count
+moves to a CORNER badge (`.next-active-btn-mobile .next-active-count {
+position: absolute; top/right: -0.15rem }` + a 2px `--bg` ring) so the
+body stays a pure circle. **Pure CSS — NO markup change** (the existing
+`.next-active-count` span is just repositioned), so the count / auto-hide
+/ `jumpToNextActiveWindow` wiring and every vitest are untouched. Desktop
+(`.next-active-btn-desktop`) and the shared base rules are unchanged.
+
+**Testing.** `issue264-next-active-btn-mobile.spec.ts` (`@webkit`,
+iPhone-15, the only branch that mounts variant="mobile") seeds one unread
+channel (button present, count "1" — anti-false-green) then measures a
+real WebKit layout: circle (width === height ±1.5px — the pre-fix pill is
+wider than tall → RED), ≥44px each axis (pre-fix pill ~20px tall → RED),
+round border-radius, glyph rendered, count is `position: absolute`
+(corner badge), and focus-reposition (focusing the compose box moves the
+button's rect top UP ≥30px — the pre-fix button has no focus rule → RED).
+RED→GREEN confirmed via `integration.sh` (strip `cicchetto/src` to main →
+the shape/position assertions fail; restore → green).
+
+**Device-only deferral (justified, NOT a silent skip).** The ACTUAL
+soft-keyboard geometry — `visualViewport` shrink → `--viewport-height`
+change → the button clearing the REAL keyboard — is not
+Playwright-reproducible (headless WebKit has no soft keyboard;
+feedback: Playwright webkit ≠ real iOS keyboard/scroll physics). Queued
+for the pending iOS/Android real-device batch (keyboard-up reachability +
+circle feel).
+
+_Deploy: **--cic HOT, client-only.** No `lib/` change, no migration, no
+BEAM restart — one CSS block + an e2e spec._
+
+---
+
+## 2026-07-16 — #234 (P0, cic): honor the OS rotation lock — drop the manifest orientation pin
+
+**Bug.** An Android PWA user reported cicchetto re-lays out between
+portrait and landscape **even with the OS auto-rotate lock ON**. A
+well-behaved app stays in the OS-locked orientation. cic was overriding
+the user's OS preference.
+
+**Root cause + fix (one line).** The PWA Web App Manifest pinned
+`orientation: "any"` (`cicchetto/vite.config.ts`, inside the `VitePWA`
+manifest block). A pinned `orientation` — even `"any"` — makes an
+installed Android WebAPK assert control over orientation and IGNORE the
+OS-level rotation lock. Honoring the lock means NOT pinning it at all, so
+the platform decides. The fix DELETES the `orientation` key (it is NOT set
+to `"portrait"`/`"natural"`/anything — removing the key is what returns
+control to the OS). A robust tree grep confirmed this manifest key was the
+**sole** orientation override: there is NO `screen.orientation.lock()`
+anywhere in cic (src/html/sw) and no orientation meta in `index.html`.
+Manifest-only change — no `lib/`, no wire event, no CSS/layout touched.
+
+**Responsive layout is unchanged.** #234 is ONLY about not OVERRIDING the
+OS lock. When the platform DOES rotate (auto-rotate on), cic still
+re-lays out responsively via its existing resize/orientationchange
+listeners (e.g. `ScrollbackPane`) — that path is untouched. We dropped the
+override, not the responsiveness.
+
+**WebAPK manifest-hash re-mint nuance.** Removing `orientation` changes the
+manifest hash. Android's WebAPK minter is hash-keyed
+([[feedback_webapk_minter_caches_by_manifest_hash]]), so it mints a FRESH
+WebAPK with the new (unpinned) orientation. Because `id: "/cic"` is stable,
+it is the SAME app — existing installs are NOT orphaned; they pick up the
+change on Android's periodic WebAPK update / manifest-hash-change re-mint,
+which is **async, not instant**. So installed users update on their own
+schedule after the bundle ships; this is client-propagation nuance, not a
+deploy blocker. `id` was deliberately left untouched (mutating it orphans
+installs and forks a parallel WebAPK — see the vite.config identity
+comment).
+
+**e2e-ability call (rotation behavior is NOT headlessly e2e-able).**
+Playwright cannot emulate Android's OS auto-rotate-off, cannot install a
+WebAPK, and cannot make a PWA honor/ignore an OS-level lock.
+`setViewportSize`/`screen.orientation` emulation models the VIEWPORT
+(responsive CSS), not the OS lock — a viewport-resize "rotation" spec would
+pass with OR without the fix (hollow green), so we deliberately did NOT
+write one. What IS honestly testable headlessly is the **fix artifact**: a
+served-manifest-contract e2e
+(`e2e/tests/issue234-manifest-no-orientation-pin.spec.ts`) that fetches the
+`/manifest.webmanifest` nginx actually serves off the built dist and
+asserts it (a) is the real cic manifest (`id === "/cic"`) and (b) pins no
+`orientation`. It is RED→GREEN-able (RED while the key is present, GREEN
+once removed) and catches the exact regression class — someone re-pinning
+`orientation`. The rotation BEHAVIOR itself is verified on a real device
+(vjt's Android install), same as #264's device-verify. This split — headless
+artifact guard + device behavior verify — was the orchestrator-signed-off
+coverage.
+
+_Deploy: **--cic HOT, client-only** (manifest-only; no server change, no
+migration, no BEAM restart). Installed Android PWAs pick up the unpinned
+orientation on their next async WebAPK re-mint._

@@ -41,6 +41,7 @@ defmodule Grappa.Networks do
     top_level?: true,
     deps: [
       Grappa.Accounts,
+      Grappa.Ecto.Like,
       Grappa.EncryptedBinary,
       Grappa.IRC,
       Grappa.LiveIntrospection,

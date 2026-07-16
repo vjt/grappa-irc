@@ -702,9 +702,15 @@ const Shell: Component = () => {
       */}
       <div class="shell shell-mobile">
         {/* UX-6 D6 — DiagFloat lives in a Portal mounted on document.body
-            so it escapes `.shell-mobile`'s transform containing-block
-            and stays anchored to the layout viewport (visible above
-            the on-screen keyboard during convergence probing). */}
+            so it is anchored to the layout viewport independent of this
+            subtree (visible above the on-screen keyboard during
+            convergence probing). NB: `.shell-mobile` is NOT a
+            transform/containing block today (verified #264 — see
+            DESIGN_NOTES); the Portal keeps DiagFloat robust should one
+            ever be added. `position: fixed` descendants (e.g.
+            `.next-active-btn-mobile`) likewise anchor to the viewport —
+            do NOT add a `transform` to `.shell-mobile` without revisiting
+            #264's keyboard-ride. */}
         <Portal>
           <DiagFloat />
         </Portal>

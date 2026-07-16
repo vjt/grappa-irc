@@ -6377,14 +6377,75 @@ audio.media-viewer-media {
   flex-shrink: 0;
 }
 
-/* Mobile: floating overlay over the RIGHT edge of the bottom bar.
-   Anchored to .shell-mobile (a transform containing-block per the
-   DiagFloat comment in Shell.tsx), so absolute here resolves to the
-   shell box — bottom-right sits over the 3rem-tall bottom bar. */
+/* Mobile: floating CIRCLE affordance at the bottom-right of the shell.
+   #264 — the pre-fix pill used `position: absolute; bottom: 0.5rem`, but
+   `.shell-mobile` is NOT a positioned / transform containing block, so the
+   button escaped to the LAYOUT viewport (the initial containing block),
+   which iOS does NOT shrink when the on-screen keyboard opens → the button
+   sat UNDER the keyboard exactly when you want to hop windows while typing.
+
+   Fix (fork A + B — see #264 / DESIGN_NOTES):
+   (A) Keyboard-aware geometry — `position: fixed` anchored off
+       `--viewport-height` (lib/viewportHeight.ts re-writes it on every
+       `visualViewport.resize`, i.e. it SHRINKS with the soft keyboard).
+       Same primitive as `.settings-drawer` / `.shell-members`
+       (position: fixed + var(--viewport-height)). The button's TOP is
+       pinned at the visual-viewport bottom minus its own height + lift, so
+       it rides above the keyboard on a real device. No new tracker — we
+       derive from the var that already exists.
+   (B) `:has(...:focus)` focus lift (rule below) — when a text field is
+       focused the keyboard is (about to be) up: bump `--nab-lift` to clear
+       the bottom bar too. This ALSO makes the reposition observable in a
+       real-browser e2e (headless WebKit raises no soft keyboard, so
+       `--viewport-height` alone would not move on focus). Mirrors the
+       existing `.shell-mobile:has(textarea:focus, input:focus)`
+       keyboard-react rule (~:3444).
+
+   Bigger + a proper CIRCLE (#264 req 2 & 3): symmetric box, 50% radius,
+   glyph-only body (count → corner badge below). `min-*: 48px` keeps the
+   ≥44px HIG tap target even at the smallest `--font-size` (rem = the html
+   font-size = var(--font-size)). */
 .next-active-btn-mobile {
-  position: absolute;
-  right: 0.5rem;
-  bottom: 0.5rem;
+  position: fixed;
+  width: 3.5rem;
+  height: 3.5rem;
+  min-width: 48px;
+  min-height: 48px;
+  padding: 0;
+  border-radius: 50%;
+  justify-content: center;
+  /* --nab-lift: gap above the visual-viewport bottom; overridden on focus.
+     The subtracted height mirrors the RENDERED box `max(3.5rem, 48px)`
+     (the min-* floor) so the anchor never diverges from the button's
+     actual height below the default --font-size. */
+  --nab-lift: 0.75rem;
+  top: calc(var(--viewport-height, 100dvh) - max(3.5rem, 48px) - var(--nab-lift));
+  right: calc(0.5rem + env(safe-area-inset-right, 0px));
   z-index: 40;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+}
+
+/* #264 req 2 — bigger, more visible glyph inside the circle. */
+.next-active-btn-mobile .next-active-glyph {
+  font-size: 1.75rem;
+}
+
+/* #264 req 3 — count as a small CORNER badge so the button body stays a
+   pure circle. Reuses the base `.next-active-count` visuals (bg / color /
+   pill radius); only placement changes. The 2px ring separates it from
+   the circle edge. */
+.next-active-btn-mobile .next-active-count {
+  position: absolute;
+  top: -0.15rem;
+  right: -0.15rem;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+/* #264 fork B — focus lift. A focused text field means the keyboard is (about
+   to be) up: raise the button clear of the bottom bar (~3rem) on top of the
+   base gap. On a real device `--viewport-height` has already shrunk (fork A),
+   so this is bottom-bar clearance + breathing room; in a headless e2e it is
+   the observable reposition that proves the wiring. */
+.shell-mobile:has(textarea:focus, input:focus) .next-active-btn-mobile {
+  --nab-lift: 4rem;
 }

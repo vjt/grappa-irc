@@ -1867,6 +1867,33 @@ export async function adminRevokeVhostGrant(token: string, grantId: number): Pro
   if (!res.ok) throw await readError(res);
 }
 
+// #257 — subject autocomplete backing the grant form. Read-only search
+// over BOTH users + visitors → a tagged union. `type` maps 1:1 onto the
+// grant body `subject_type`; `id` (the STABLE user id / visitor id, never
+// a nick) → `subject_id`. `network` disambiguates a multi-network visitor
+// ("network - nick"); it is null for a user (no single network). Nests
+// under `/admin/vhosts/` so it rides the existing nginx allowlist alt (no
+// proxy change). Server shape: `Grappa.SubjectSearch.AdminWire`.
+export type AdminSubjectSearchResult = {
+  type: "user" | "visitor";
+  id: string;
+  network: string | null;
+  nick: string;
+};
+
+export type AdminSubjectSearchResponse = { results: AdminSubjectSearchResult[] };
+
+export async function adminSearchVhostSubjects(
+  token: string,
+  q: string,
+): Promise<AdminSubjectSearchResult[]> {
+  const res = await fetch(`/admin/vhosts/subject_search?q=${encodeURIComponent(q)}`, {
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+  return ((await res.json()) as AdminSubjectSearchResponse).results;
+}
+
 // 202 Accepted envelope: `{swept_count: number, swept_at: ISO8601}`.
 // Cic surfaces `swept_count` in a transient success line; nothing else
 // in the wire shape drives UI state today.
