@@ -1185,14 +1185,23 @@ html.resize-dragging * {
 .topic-bar-topic {
   flex: 1;
   color: var(--muted);
-  white-space: nowrap;
+  /* #74 — up to TWO lines, then ellipsis (was a 1-line nowrap clip), so
+     more of a long topic is readable without opening anything. The clamp
+     needs the -webkit-box display + vertical orient; `overflow-wrap` lets a
+     long unbroken URL wrap instead of overflowing the second line. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
   background: transparent;
   border: none;
   padding: 0;
   font-family: var(--font-mono);
   font-size: var(--font-size);
+  line-height: 1.25;
   text-align: left;
   cursor: pointer;
   min-width: 0;
@@ -1200,6 +1209,35 @@ html.resize-dragging * {
 
 .topic-bar-topic:hover {
   color: var(--fg);
+}
+
+/* #74 — inline topic editor. Replaces the strip in-place on click when the
+   operator can set the topic. Single-line input (IRC topics are one wire
+   line); the 2-line clamp above is a display-only concern. */
+.topic-bar-topic-editor {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  padding: 0.15rem 0.4rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: 1.25;
+}
+
+/* #74 — inline submit-error surface (S21 no-false-success pattern). Shown
+   only while editing, when a set/clear is rejected upstream. */
+.topic-bar-edit-error {
+  flex: none;
+  max-width: 45%;
+  color: var(--error, #e06c75);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .topic-bar-modes {
