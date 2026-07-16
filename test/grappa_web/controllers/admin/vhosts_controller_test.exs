@@ -12,7 +12,7 @@ defmodule GrappaWeb.Admin.VhostsControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, Vhosts}
+  alias Grappa.{Accounts, Networks.Credentials, Vhosts}
 
   defp admin_session do
     {user, session} = user_and_session()
@@ -159,6 +159,101 @@ defmodule GrappaWeb.Admin.VhostsControllerTest do
       conn = conn |> put_bearer(session.id) |> delete("/admin/vhosts/grants/#{grant.id}")
       assert response(conn, 204)
       assert Vhosts.list_grants_for_subject({:user, target.id}) == []
+    end
+  end
+
+  # #257 — subject autocomplete backing endpoint. Read-only, rides the
+  # existing `vhosts` nginx allowlist alt (no proxy change). The returned
+  # `{type, id}` maps 1:1 onto the grant body `{subject_type, subject_id}`.
+  describe "GET /admin/vhosts/subject_search" do
+    test "non-admin user returns 403 (admin_authn gate)", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/vhosts/subject_search", %{q: "anything"})
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "a missing q returns 400", %{conn: conn} do
+      session = admin_session()
+      conn = conn |> put_bearer(session.id) |> get("/admin/vhosts/subject_search")
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "returns a tagged :user result", %{conn: conn} do
+      session = admin_session()
+      target = user_fixture(name: "subjsearch257")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/vhosts/subject_search", %{q: "subjsearch257"})
+
+      results = json_response(conn, 200)["results"]
+
+      assert Enum.any?(results, fn r ->
+               r == %{
+                 "type" => "user",
+                 "id" => target.id,
+                 "network" => nil,
+                 "nick" => "subjsearch257"
+               }
+             end)
+    end
+
+    test "returns a tagged :visitor result carrying the network slug", %{conn: conn} do
+      session = admin_session()
+      {visitor, network} = visitor_with_network(7301)
+
+      {:ok, _} =
+        Credentials.upsert_visitor_credential(visitor.id, network.id, %{
+          nick: "visearch257",
+          auth_method: :none
+        })
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/vhosts/subject_search", %{q: "visearch257"})
+
+      results = json_response(conn, 200)["results"]
+
+      assert Enum.any?(results, fn r ->
+               r == %{
+                 "type" => "visitor",
+                 "id" => visitor.id,
+                 "network" => network.slug,
+                 "nick" => "visearch257"
+               }
+             end)
+    end
+
+    test "a searched subject feeds the grant body 1:1", %{conn: conn} do
+      session = admin_session()
+      {:ok, v} = Vhosts.create_vhost(%{address: addr()})
+      target = user_fixture(name: "grantflow257")
+
+      search_conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/vhosts/subject_search", %{q: "grantflow257"})
+
+      [result | _] = json_response(search_conn, 200)["results"]
+
+      grant_conn =
+        build_conn()
+        |> put_bearer(session.id)
+        |> post("/admin/vhosts/#{v.id}/grants", %{
+          subject_type: result["type"],
+          subject_id: result["id"]
+        })
+
+      body = json_response(grant_conn, 201)
+      assert body["subject_type"] == "user"
+      assert body["subject_id"] == target.id
     end
   end
 end

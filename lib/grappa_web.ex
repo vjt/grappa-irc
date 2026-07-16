@@ -42,6 +42,7 @@ defmodule GrappaWeb do
         Grappa.SessionLog,
         Grappa.SpawnOrchestrator,
         Grappa.Subject,
+        Grappa.SubjectSearch,
         Grappa.Uploads,
         Grappa.UserSettings,
         Grappa.Vhosts,

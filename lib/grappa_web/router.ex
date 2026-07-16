@@ -157,6 +157,11 @@ defmodule GrappaWeb.Router do
 
     # #228 — vhost (source-bind) inventory + per-subject grants.
     get "/vhosts", VhostsController, :index
+    # #257 — subject autocomplete backing the grant form (users + visitors).
+    # Read-only; nests under `vhosts` so it rides the existing nginx
+    # allowlist alt (no proxy change). No `GET /vhosts/:id` route exists, so
+    # `/vhosts/subject_search` is unambiguous.
+    get "/vhosts/subject_search", VhostsController, :subject_search
     post "/vhosts", VhostsController, :create
     patch "/vhosts/:id", VhostsController, :update
     delete "/vhosts/:id", VhostsController, :delete
