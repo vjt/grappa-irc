@@ -7,6 +7,7 @@ import { friendlyError } from "./friendlyError";
 import { identityScopedStore } from "./identityScopedStore";
 import { markLusersRequested } from "./lusersBundle";
 import { membersByChannel } from "./members";
+import { clearMentionsBundle } from "./mentionsWindow";
 import { splitMessageLines } from "./messageLines";
 import { openModeModal } from "./modeModal";
 import { networkBySlug, networkIdBySlug, user } from "./networks";
@@ -474,6 +475,22 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // routes to Session.set_explicit_away / Session.unset_explicit_away.
           // networkSlug from submit args is the active window's network.
           if (cmd.action === "set") {
+            // #268 — clear this network's stale mentions bundle HERE, on the
+            // user's own GOING-away action, NOT on the `away_confirmed:"away"`
+            // echo. The clear MUST be causally ordered with the away lifecycle:
+            // the return-from-away `mentions_bundle` is broadcast SYNCHRONOUSLY
+            // by grappa on the un-away command, but `away_confirmed` is emitted
+            // only on the upstream 305/306 numeric echo (event_router.ex) — a
+            // different-latency channel. Under bahamut fake-lag a going-away's
+            // delayed 306 could arrive AFTER a subsequent return's bundle and
+            // clobber it (the "0 messages in 0 channels" bug). Triggering the
+            // clear on the compose action makes it ordered with the user's own
+            // commands, so a fresh bundle set on RETURN can never be wiped by a
+            // stale echo. The mentions bundle is a client-ephemeral render store
+            // (not server-mirrored window/away state), so clearing it on a user
+            // action does not violate the "cic never originates state" invariant.
+            // See docs/DESIGN_NOTES.md 2026-07-16.
+            clearMentionsBundle(networkSlug);
             await pushAwaySet(networkSlug, cmd.reason);
           } else {
             await pushAwayUnset(networkSlug);
