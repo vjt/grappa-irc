@@ -21,6 +21,7 @@ import DiagFloat from "./DiagFloat";
 import DirectoryPane from "./DirectoryPane";
 import ErrorBanners from "./ErrorBanners";
 import HomePane from "./HomePane";
+import { jumpToNextActiveWindow, jumpToPrevActiveWindow } from "./lib/activeWindows";
 import { ownNickForNetwork } from "./lib/api";
 import { archiveSlugForSelection } from "./lib/archiveContext";
 import { token } from "./lib/auth";
@@ -38,12 +39,7 @@ import {
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
-import {
-  closeToPreviousWindow,
-  selectedChannel,
-  setSelectedChannel,
-  unreadCounts,
-} from "./lib/selection";
+import { closeToPreviousWindow, selectedChannel, setSelectedChannel } from "./lib/selection";
 import { isMobile } from "./lib/theme";
 import { loadUploadTtlSeconds } from "./lib/uploadOrchestrator";
 import {
@@ -59,6 +55,7 @@ import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
 import ModeModal from "./ModeModal";
 import NamesModal from "./NamesModal";
+import NextActiveButton from "./NextActiveButton";
 import PrivacyModal from "./PrivacyModal";
 import ResizeHandle from "./ResizeHandle";
 import ScrollbackPane from "./ScrollbackPane";
@@ -300,40 +297,14 @@ const Shell: Component = () => {
       if (target)
         setSelectedChannel({ networkSlug: target.slug, channelName: target.name, kind: "channel" });
     },
-    nextUnread: () => {
-      const list = flatChannels();
-      const counts = unreadCounts();
-      const sel = selectedChannel();
-      const startIdx = sel
-        ? list.findIndex((c) => c.slug === sel.networkSlug && c.name === sel.channelName)
-        : -1;
-      for (let i = 1; i <= list.length; i += 1) {
-        const idx = (startIdx + i) % list.length;
-        const c = list[idx];
-        if (!c) continue;
-        if ((counts[channelKey(c.slug, c.name)] ?? 0) > 0) {
-          setSelectedChannel({ networkSlug: c.slug, channelName: c.name, kind: "channel" });
-          return;
-        }
-      }
-    },
-    prevUnread: () => {
-      const list = flatChannels();
-      const counts = unreadCounts();
-      const sel = selectedChannel();
-      const startIdx = sel
-        ? list.findIndex((c) => c.slug === sel.networkSlug && c.name === sel.channelName)
-        : list.length;
-      for (let i = 1; i <= list.length; i += 1) {
-        const idx = (startIdx - i + list.length) % list.length;
-        const c = list[idx];
-        if (!c) continue;
-        if ((counts[channelKey(c.slug, c.name)] ?? 0) > 0) {
-          setSelectedChannel({ networkSlug: c.slug, channelName: c.name, kind: "channel" });
-          return;
-        }
-      }
-    },
+    // GH #235 — next/prev unread now route through the shared
+    // `activeWindows` ordering (mention/query tier first, chronological
+    // within a tier, cycling), the SAME verb the Alt+A keybinding and
+    // the on-screen affordance button call. This is a strict upgrade
+    // over the previous sidebar-index walk: it also reaches query (DM)
+    // windows, which the old impl skipped.
+    nextUnread: () => jumpToNextActiveWindow(),
+    prevUnread: () => jumpToPrevActiveWindow(),
     insertIntoCompose: (char: string) => {
       const sel = selectedChannel();
       if (!sel) return;
@@ -567,6 +538,10 @@ const Shell: Component = () => {
           <ConfirmModal />
           <aside class="shell-sidebar">
             <Sidebar />
+            {/* GH #235 — "jump to next active window" affordance, pinned
+                bottom-left of the sidebar. Self-hides when nothing is
+                unread. */}
+            <NextActiveButton variant="desktop" />
             {/* UX-5 bucket BS — drag handle on the inner edge of the
                 left sidebar. Desktop-only (mobile branch never mounts
                 it). Width persists to localStorage via
@@ -849,6 +824,11 @@ const Shell: Component = () => {
         </section>
 
         <BottomBar />
+
+        {/* GH #235 — "jump to next active window" affordance, floating
+            over the RIGHT edge of the bottom bar. Self-hides when
+            nothing is unread. */}
+        <NextActiveButton variant="mobile" />
 
         {/* UX-2 (2026-05-17) — Mobile archive overlay. Mounted ONLY
             in the mobile branch (desktop uses Sidebar's per-network

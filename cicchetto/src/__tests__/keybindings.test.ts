@@ -46,6 +46,14 @@ describe("keybindings", () => {
     expect(handlers.prevUnread).toHaveBeenCalledTimes(1);
   });
 
+  it("Alt+A dispatches nextUnread (GH #235 jump to next active window)", () => {
+    // Matched on `e.code` — macOS Option+A emits "å" for `e.key`.
+    dispatch({ code: "KeyA", altKey: true });
+    expect(handlers.nextUnread).toHaveBeenCalledTimes(1);
+    // ...and it must NOT leak into the compose auto-focus path.
+    expect(handlers.insertIntoCompose).not.toHaveBeenCalled();
+  });
+
   it("printable key with no modifiers dispatches insertIntoCompose with the char", () => {
     dispatch({ key: "a" });
     expect(handlers.insertIntoCompose).toHaveBeenCalledWith("a");

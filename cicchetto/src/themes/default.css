@@ -5992,3 +5992,65 @@ html.resize-dragging * {
 audio.media-viewer-media {
   width: min(80vw, 24rem);
 }
+
+/* GH #235 — "jump to next active window" affordance (irssi Alt+A).
+   One button, two placements (see .next-active-btn-desktop /
+   -mobile). Mounted only while there are unread-activity windows
+   (the <Show> in NextActiveButton.tsx), so these rules never apply
+   to an empty state. */
+.next-active-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: bold;
+  cursor: pointer;
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+}
+
+.next-active-btn:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.next-active-glyph {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.next-active-count {
+  background: var(--mode-op);
+  color: var(--bg);
+  border-radius: 999px;
+  padding: 0 0.35rem;
+  font-size: 0.72rem;
+}
+
+/* Desktop: pinned to the bottom-left of the left sidebar. margin-top:
+   auto drops it below the window tree; position: sticky keeps it in
+   view when the tree scrolls (the aside is overflow-y: auto). */
+.next-active-btn-desktop {
+  margin: 0.4rem;
+  margin-top: auto;
+  align-self: flex-start;
+  position: sticky;
+  bottom: 0.4rem;
+  flex-shrink: 0;
+}
+
+/* Mobile: floating overlay over the RIGHT edge of the bottom bar.
+   Anchored to .shell-mobile (a transform containing-block per the
+   DiagFloat comment in Shell.tsx), so absolute here resolves to the
+   shell box — bottom-right sits over the 3rem-tall bottom bar. */
+.next-active-btn-mobile {
+  position: absolute;
+  right: 0.5rem;
+  bottom: 0.5rem;
+  z-index: 40;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+}

@@ -20985,3 +20985,66 @@ keeps it a live feature) — no column drop owed there.
 _Deploy: **HOT — server logic + `--cic`** (AdminVhostsTab + SettingsDrawer
 + wire types). No migration in V1; the dead `grant.pinned` column drop is
 deferred to a trailing COLD cleanup migration._
+
+## 2026-07-15 — #235 jump-to-next-active (Alt+A)
+
+irssi's `Alt+A` replicated in cic: a button + keybinding that jumps focus
+to the NEXT window with unread activity, cycling through all of them, with
+mention/highlight channels AND query (DM) windows surfaced FIRST, then
+ordinary channel traffic. Client-only — the server owns nothing new here.
+
+**Reuse-vs-rebuild.** The prior-art `nextUnread`/`prevUnread` (Ctrl+N /
+Ctrl+P, wired inline in `Shell.tsx`) walked `flatChannels` in SIDEBAR
+order, EXCLUDED query (DM) windows, and had no priority tiers — three ways
+short of the #235 spec. Rather than a parallel verb, the ordering was
+extracted into ONE pure fn `orderUnreadWindows` (`lib/activeWindows.ts`)
+and the two existing verbs re-point at it via `jumpToNextActiveWindow` /
+`jumpToPrevActiveWindow`. So Ctrl+N/P, Alt+A, and the button are the SAME
+verb, one code path, every door (CLAUDE.md "reuse the verbs, not the
+nouns"). Re-wiring Ctrl+N/P is a strict upgrade — they now reach DMs and
+honour tiers too. NOTHING new is stored: unread activity derives from
+`selection.unreadCounts`, the mention tier from `mentions.mentionCounts`,
+the query tier from `queryWindowsByNetwork`, and the per-window activity
+timestamp from the newest local scrollback row `id` (the monotonic sqlite
+PK — globally ordered across windows; a seed-only window with no local
+rows sorts as activity `0`, i.e. "oldest", which is correct for
+pre-session backlog). cic originates NO parallel activity store.
+
+**Ordering.** Filter to windows with `unreadCounts > 0`, then sort by
+(1) tier — mention OR query first (0), ordinary channel second (1);
+(2) activity time ascending (chronological, oldest first — clear the
+backlog in arrival order); (3) flat sidebar index (stable tie-break for
+equal activity ids). Tier trumps time, so a DM that arrives AFTER a
+channel line is still visited first. Cycling wraps; focusing a window
+zeroes its unread (focused-window suppression memo in `selection.ts`), so
+it drops out of the cycle and the next tap advances — repeated taps drain
+to empty.
+
+**Scope.** Candidates are channel + query windows only; the `$server`
+status buffer is excluded (not an "activity window" in the irssi sense),
+matching the spec's "channel/query" wording and avoiding a cold-load
+MOTD/NOTICE chore.
+
+**Placement (vjt: no strong opinion).** Accepted the defaults: desktop =
+sidebar bottom-left (`position: sticky` so it stays visible as the tree
+scrolls); mobile = floating overlay over the RIGHT edge of the bottom bar
+(`position: absolute` anchored to `.shell-mobile`'s transform
+containing-block). ONE `NextActiveButton` component, `variant` selects the
+CSS class. Auto-hides via `<Show when={hasActiveWindows()}>` — the count
+badge and the hide condition both derive from the same ordered list, so
+they can never disagree. Alt+A is matched on `e.code === "KeyA"` (NOT
+`e.key`): macOS Option+A emits the composed char "å", which `e.key` would
+miss.
+
+**Known tradeoff — Alt+A swallows macOS Option+A ("å").** The binding
+fires with NO `isTypingTarget` guard and `preventDefault`s unconditionally
+(same as the existing `Alt+1..9` chords), so a macOS user typing "å"
+(Option+A) inside compose gets a window-jump instead of the character.
+Accepted deliberately for irssi parity: the feature exists BECAUSE you're
+often reading/typing when you want to jump, so gating on `!isTypingTarget`
+would defeat it — and special-casing Alt+A alone would diverge from every
+other chord + couple the pure keybindings dispatch layer to app state.
+Scandinavian users retain press-and-hold-A for the accent popup.
+
+_Deploy: **HOT — `--cic` only, client-only.** No server change, no BEAM
+restart, no migration._

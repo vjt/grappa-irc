@@ -71,6 +71,19 @@ function onKeydown(e: KeyboardEvent): void {
     return;
   }
 
+  // GH #235 — Alt+A jumps to the next window with unread activity
+  // (irssi muscle memory). Dispatches the SAME `nextUnread` verb as
+  // Ctrl+N + the on-screen affordance button — one ordering, one code
+  // path. Matched on `e.code` (physical KeyA), NOT `e.key`: on macOS
+  // Option+A emits the composed char "å", so `e.key` would miss the
+  // chord. Fires regardless of the focus target, consistent with the
+  // sibling Alt+1..9 navigation chords above.
+  if (e.altKey && e.code === "KeyA") {
+    e.preventDefault();
+    handlers.nextUnread();
+    return;
+  }
+
   // irssi-shaped auto-focus: any printable key with no modifiers, fired
   // anywhere except a typing surface, redirects into the compose box.
   // `key.length === 1` filters out named keys (Tab, Escape, Arrow*,
