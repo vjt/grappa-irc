@@ -21128,3 +21128,99 @@ _Deploy: **HOT — `--cic` only, client-only.** No server change, no BEAM
 restart, no migration. The on-change inline `:topic` row is pre-existing
 server behavior; #237 adds only the client-side on-join presentational
 line._
+
+## 2026-07-15 — #254 own-echo live render (query + channel-iOS)
+
+**Symptom (real iOS dogfooding).** The operator's OWN outbound message does
+not appear in their own live view — no error. It IS delivered (recipient gets
+it) and IS persisted (reappears on app quit+reopen); only the sender's LIVE
+render is lost. Two surfaces:
+  * QUERY/DM: first `/msg <target>` to a freshly-opened query window after
+    (re)opening the app.
+  * CHANNEL: typing in an already-open channel after the iOS PWA was
+    backgrounded/suspended and re-foregrounded.
+P1 — annoyance, no data loss (send + deliver + persist all work).
+
+**Confirmed root cause (evidence-first; vjt's hypothesis independently verified
++ deepened; server-side adversarially ruled out).** cic renders an own
+outbound line ONLY on the server's WS echo arrival (no optimistic render — by
+design). If the target topic's WS subscription is not LIVE when the server
+broadcasts the echo, the echo fastlanes to zero subscribers and is dropped;
+the row persists → reappears only on reload. TWO necessary conditions, shared
+by both surfaces:
+  * **(A) echo dropped** — the subscription isn't live at broadcast time.
+    - QUERY: the `(slug,target)` topic is joined LAZILY by a reactive effect
+      gated on the server's `open_query_window` → `query_windows_list`
+      round-trip, while compose's `/msg` fires the POST immediately
+      (`compose.ts` `case "msg"`). The echo broadcasts (server persist →
+      `broadcast_event`, synchronous + ordered in `Session.Server`,
+      `server.ex:2497`) strictly BEFORE the topic is even joined.
+    - CHANNEL/iOS: the channel is eagerly subscribed, but an iOS
+      background/foreground can silently tear the WS with NO `online` event
+      (the network was never "offline" per the browser), and `kickReconnect`
+      was wired ONLY to `window "online"` (`socket.ts`) — nothing forced a
+      reconnect on wake, so the echo had no live socket.
+  * **(B) refresh recovery can't save it** — the existing #159
+    refresh-on-activation recovery works for INBOUND rows (their
+    `getResumeCursor` = `lastSeen` < the missed id) but NOT for an own-send:
+    the send advances the read cursor to the own row's id (`scrollback.ts`
+    `sendMessage`, anti-poison gate passes once the pane holds rows) and, with
+    no prior live arrival this session, `lastSeen` is undefined so
+    `getResumeCursor` = read cursor = own id → `?after=<own-id>` skips the very
+    row. (An empty fresh query is protected by the #50/m6 gate — cursor stays
+    0, refresh resumes from 0 — which is why the bug bites windows WITH
+    history/prior cursor, and reload shows it via `before(cursor+1)`.)
+
+**Adversarial rule-out (challenge-the-spec).** Server `persist_event` →
+`broadcast_event` is synchronous + ordered inside the `Session.Server`
+GenServer call, so persist strictly precedes broadcast; a broadcast to zero
+subscribers returns `:ok` and the POST still 201s. No server broadcast/persist
+race — the defect is purely client-side subscription readiness.
+
+**Design constraint (vjt direct order) — NO optimistic render, NO 2nd source
+of truth.** The server WS echo stays the ONE render path. The previously-
+recommended "optimistic append of the POST row" is REJECTED: it introduces a
+second source of truth to reconcile — the same reason `server.source_address`'s
+fallback was abolished in #251, and it aligns with the CLAUDE.md invariant "cic
+NEVER originates state." The fix makes the SUBSCRIPTION ready; it adds no render
+writer. `appendToScrollback` via echo-driven `routeMessage` stays the sole
+writer; the #50/m6 anti-poison cursor gate is untouched.
+
+**Fix (per surface — echo stays sole truth).**
+  * QUERY — **subscribe-before-send.** compose.ts `case "msg"` awaits
+    `ensureQueryTopicJoined(slug, target)` (join ACK) BEFORE the first PRIVMSG
+    POST, so the echo has a live listener. The verb reuses the same
+    `joinChannel` + `installChannelHandler` + shared `joined` Map as the
+    reactive query-windows loop (which was refactored to call the SAME verb —
+    no double-join, no parallel path); `queryJoinAcks` coalesces the reactive
+    loop + compose onto one ACK; own-nick is skipped (the DM-listener loop owns
+    that topic); the join is bounded (4s) so a wedged WS (e.g. #193
+    WS-blocked-but-REST-up) can't hang the send — past the cap the send
+    proceeds and the reconnect self-heal recovers. Decoupled from compose's
+    unit tests via a leaf `queryTopicJoin.ts` (importing subscribe.ts into
+    compose booted the whole WS `createRoot` in jsdom → `fetch() URL is
+    invalid`); subscribe.ts registers the impl at boot, compose calls the
+    getter, the default no-op is correct pre-boot + in unit tests.
+  * CHANNEL/iOS — **visibility-driven reconnect.** socket.ts adds a
+    `visibilitychange`→visible `kickReconnect(_socket)`, the twin of the
+    `online` handler. On wake it forces an immediate reconnect (no-op on a
+    healthy socket) → phoenix rejoins channels → the socket-open self-heal
+    (`subscribe.ts`) fires `refreshScrollback` → future sends' echoes have a
+    live listener again.
+
+**Scope.** QUERY fix targets the reported `/msg` (open+send in one). `/query`
+then plain-type is lower-risk (human typing latency covers the join) and not
+covered here — flagged for the device-verify batch. Channel eager-subscribe is
+unchanged; only the wake reconnect is added.
+
+**Verification HOLD.** Playwright cannot reproduce the real iOS timing (query
+race ~2/4; channel-wake gap not reproducible by wall-clock). Both e2e RED→GREEN
+are seam-forced deterministic (query: a synchronous `window.fetch` wrapper
+snapshots `__cic_queryWindowReady` at the POST call frame — a Node-side
+`page.route` snapshot yields the event loop and masks the race; channel:
+`__cic_dropSocketForTests` holds the socket down until the visibility kick
+reconnects). CI green is NECESSARY BUT NOT SUFFICIENT — the fix HOLDS at
+merge-ready for the real-iOS-device verification batch (#245/#250/#253/#254/#255).
+
+_Deploy: **HOT — `--cic` only, client-only.** No server change, no migration
+(server broadcast/persist confirmed correct as-is)._

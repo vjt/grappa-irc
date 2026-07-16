@@ -15,6 +15,7 @@ import { channelsBySlug, networks, refetchChannels, refetchNetworks, user } from
 import { nickEquals } from "./nickEquals";
 import { isOperatorActionEcho } from "./operatorActionEcho";
 import { isOwnPresenceEvent } from "./ownPresenceEvent";
+import { setEnsureQueryTopicJoined } from "./queryTopicJoin";
 import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { applyJoinReply, applyReadCursorSet } from "./readCursor";
 import { recordSeen } from "./reconnectBackfill";
@@ -114,12 +115,18 @@ createRoot(() => {
   // event, doubling presence/unread/mention bumps. N rotations = N+1
   // handlers per channel.
   const joined = new Map<ChannelKey, Channel>();
+  // #254 — coalesce concurrent join callers (the reactive query-windows loop +
+  // a compose `/msg` via `ensureQueryTopicJoined`) onto ONE join-ACK promise
+  // per query topic, so subscribe-before-send awaits the SAME ack the loop
+  // drives (no double-join). Cleared on identity rotation alongside `joined`.
+  const queryJoinAcks = new Map<ChannelKey, Promise<void>>();
 
   createEffect(
     on(token, (t, prev) => {
       if (prev != null && t !== prev) {
         for (const ch of joined.values()) ch.leave();
         joined.clear();
+        queryJoinAcks.clear();
       }
     }),
   );
@@ -754,73 +761,86 @@ createRoot(() => {
     }
   });
 
-  // Query-windows loop — one join per (networkId, targetNick) tuple in
-  // queryWindowsByNetwork. Catches outbound DM echoes (the server
-  // broadcasts the operator's own `/msg <target> body` on the
-  // (slug, target) topic). When the auto-open from the DM-listener
-  // adds a new entry, this effect re-runs and joins the new topic so
-  // ongoing exchanges flow without a reload.
-  //
-  // IMPORTANT: skip targetNick == ownNick. The dm-listener loop is the
-  // SOLE handler for the own-nick topic — installing an extra channel-
-  // handler there would route ALL traffic (NOTICEs, presence events,
-  // etc.) to the own-nick scrollback key, polluting it. The `joined`
-  // Set deduplication alone is insufficient because whichever loop runs
-  // first installs its handler; this explicit skip guarantees the
-  // dm-listener handler wins regardless of effect evaluation order.
+  // #254 — stamp the query-window-ready e2e seam after a (slug,target) join
+  // ACK. Production never reads it; specs await it (waitForQueryWindowReady)
+  // and the subscribe-before-send probe reads it synchronously at POST time.
+  const stampQueryWindowReady = (slug: string, target: string): void => {
+    if (typeof window === "undefined") return;
+    const w = window as Window & { __cic_queryWindowReady?: Set<string> };
+    if (!w.__cic_queryWindowReady) w.__cic_queryWindowReady = new Set();
+    w.__cic_queryWindowReady.add(`${slug}/${target}`);
+  };
+
+  // #254 — subscribe-before-send: join a query peer's (slug,target) topic and
+  // resolve on the join ACK. SINGLE source for BOTH the reactive query-windows
+  // loop (fire-and-forget) AND compose's `/msg` (awaited) — so the server's
+  // own-echo broadcast has a live listener the instant it fires, WITHOUT an
+  // optimistic render. Reuses joinChannel + installChannelHandler + the shared
+  // `joined` Map (loop and compose dedup against it → no double-join, no second
+  // handler on a topic). Own-nick is skipped: the DM-listener loop is the SOLE
+  // subscriber for that topic — a channel handler there would route ALL traffic
+  // to the own-nick scrollback key, polluting it (the `joined` guard alone is
+  // insufficient because effect evaluation order isn't fixed). `queryJoinAcks`
+  // coalesces concurrent callers onto ONE ack. Bounded by
+  // `ENSURE_JOIN_ACK_TIMEOUT_MS` so a wedged WS (e.g. #193 WS-blocked-but-
+  // REST-up) can't hang the send forever — past the cap the send proceeds and
+  // the reconnect self-heal (refreshScrollback on the eventual rejoin) recovers
+  // the row. Own-nick uses `ownNickForNetwork` (visitor → me.nick; user →
+  // per-credential net.nick), never the displayNick fallback (cic H3).
+  const ENSURE_JOIN_ACK_TIMEOUT_MS = 4000;
+  const ensureQueryTopicJoined = (slug: string, target: string): Promise<void> => {
+    const userName = socketUserName();
+    const nets = networks();
+    const u = user();
+    if (!userName || !nets) return Promise.resolve();
+    const net = nets.find((n) => n.slug === slug);
+    if (!net) return Promise.resolve();
+    const ownNick = ownNickForNetwork(net, u);
+    if (nickEquals(target, ownNick)) return Promise.resolve();
+    const key = channelKey(slug, target);
+    const pending = queryJoinAcks.get(key);
+    if (pending) return pending;
+    if (joined.has(key)) return Promise.resolve();
+    const acked = new Promise<void>((resolve) => {
+      const phx = joinChannel(userName, slug, target, (reply) => {
+        applyJoinReplyAndSeed(slug, target, reply);
+        void refreshScrollback(slug, target);
+        stampQueryWindowReady(slug, target);
+        resolve();
+      });
+      installChannelHandler(phx, slug, target, key, ownNick);
+      joined.set(key, phx);
+    });
+    const bounded = Promise.race([
+      acked,
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ENSURE_JOIN_ACK_TIMEOUT_MS);
+      }),
+    ]);
+    queryJoinAcks.set(key, bounded);
+    return bounded;
+  };
+  // Register the real verb so compose.ts (via the queryTopicJoin leaf) can
+  // await it without importing this side-effectful module into its unit tests.
+  setEnsureQueryTopicJoined(ensureQueryTopicJoined);
+
+  // Query-windows loop — ensure every open query window's (slug,target) topic
+  // is joined so outbound `/msg` echoes AND inbound-DM auto-opened windows flow
+  // live without a reload. Re-runs when queryWindowsByNetwork changes;
+  // `ensureQueryTopicJoined` is idempotent (the `joined` guard makes a
+  // re-run a no-op) and skips own-nick internally (the DM-listener loop owns
+  // that topic). Fire-and-forget here — the effect only needs the join started.
   createEffect(() => {
     const t = token();
     const qwbn = queryWindowsByNetwork();
     if (!t) return;
-    const userName = socketUserName();
     const nets = networks();
-    const u = user();
-    if (!userName || !nets) return;
+    if (!nets) return;
     for (const [networkIdStr, windowsList] of Object.entries(qwbn)) {
-      const networkId = Number(networkIdStr);
-      const net = nets.find((n) => n.id === networkId);
+      const net = nets.find((n) => n.id === Number(networkIdStr));
       if (!net) continue;
-      // Own-nick comparison uses the canonical per-network IRC nick
-      // (`ownNickForNetwork(net, me)`). When user.name coincides with a
-      // query window's targetNick (e.g. operator name "vjt", query target
-      // "vjt") but the IRC nick is different ("grappa"), the prior
-      // displayNick-based fallback incorrectly skipped the join — see
-      // api.ts moduledoc + cic H3.
-      const perNetOwnNick = ownNickForNetwork(net, u);
       for (const qw of windowsList) {
-        // Skip own-nick — the dm-listener loop is the sole subscriber
-        // for that topic and installs the correct re-keying handler.
-        if (nickEquals(qw.targetNick, perNetOwnNick)) continue;
-        const key = channelKey(net.slug, qw.targetNick);
-        if (joined.has(key)) continue;
-        const phx = joinChannel(userName, net.slug, qw.targetNick, (reply) => {
-          applyJoinReplyAndSeed(net.slug, qw.targetNick, reply);
-          void refreshScrollback(net.slug, qw.targetNick);
-          // e2e seam: stamp `${slug}/${targetNick}` on window after the
-          // query-window phx.join() ack. The server broadcasts the
-          // operator's OWN outbound `/msg <target>` echo on THIS
-          // (slug, target) topic (see loop header) — so a spec that
-          // opens a DM via /query and immediately composeSends an own
-          // line races this subscribe: the echo fastlanes past the
-          // not-yet-joined socket and the on-join refreshScrollback
-          // already ran, so the own line never renders (marker-target
-          // T2, ~2/4 in suite). Unlike the channels loop, a query
-          // window has NO self-JOIN DOM line a test can latch onto
-          // pre-event — same gap the DM-listener seam
-          // (`__cic_queryWindowReady`'s sibling below) closes for the
-          // own-nick topic. Production never reads the property.
-          if (typeof window !== "undefined") {
-            const w = window as Window & { __cic_queryWindowReady?: Set<string> };
-            if (!w.__cic_queryWindowReady) w.__cic_queryWindowReady = new Set();
-            w.__cic_queryWindowReady.add(`${net.slug}/${qw.targetNick}`);
-          }
-        });
-        // Query-window handler: ownNick is perNetOwnNick so BUG5b (own-nick
-        // presence suppression) works for query topics too. BUG4/BUG5a
-        // (self-JOIN auto-focus / self-PART dismiss) are not expected on query
-        // topics but handled correctly as no-ops if they ever arrive.
-        installChannelHandler(phx, net.slug, qw.targetNick, key, perNetOwnNick);
-        joined.set(key, phx);
+        void ensureQueryTopicJoined(net.slug, qw.targetNick);
       }
     }
   });

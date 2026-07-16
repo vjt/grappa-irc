@@ -21,6 +21,7 @@ import { splitMessageLines } from "./messageLines";
 import { openModeModal } from "./modeModal";
 import { networkBySlug, networkIdBySlug, user } from "./networks";
 import { nickEquals } from "./nickEquals";
+import { ensureQueryTopicJoined } from "./queryTopicJoin";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { quitAll } from "./quit";
 import { sendMessage as sendPrivmsg } from "./scrollback";
@@ -386,6 +387,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           const canonical = canonicalQueryNick(networkId, cmd.target);
           openQueryWindowState(networkId, canonical, new Date().toISOString());
           setSelectedChannel({ networkSlug, channelName: canonical, kind: "query" });
+          // #254 — subscribe-before-send: make the (slug,target) query topic's
+          // WS subscription READY (await the join ACK) BEFORE the first PRIVMSG
+          // POST, so the server's own-echo broadcast has a live listener and
+          // renders live. Pre-fix the join raced the POST (it's gated on the
+          // open_query_window → query_windows_list round-trip) and the echo
+          // fastlaned to nobody — the row then only reappeared on reload. The
+          // echo stays the sole render path (no optimistic local render — cf.
+          // the #251 source_address abolition).
+          await ensureQueryTopicJoined(networkSlug, canonical);
           await sendBodyLines(networkSlug, canonical, cmd.body, false);
           result = { ok: true };
           break;

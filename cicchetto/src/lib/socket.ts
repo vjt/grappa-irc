@@ -213,6 +213,19 @@ export function haltForOffline(s: ReconnectableSocket | null): void {
 if (typeof window !== "undefined") {
   window.addEventListener("online", () => kickReconnect(_socket));
   window.addEventListener("offline", () => haltForOffline(_socket));
+  // #254 — iOS PWA wake reconnect kick. On background→foreground iOS can
+  // silently tear the WS with NO `online` event (the network was never
+  // "offline" from the browser's POV), so the handler above never fires and
+  // phoenix may still be waiting out its reconnect backoff. A
+  // visibilitychange→visible kick forces an immediate reconnect so an own
+  // message sent right after wake has a live subscription for its echo — the
+  // echo stays the sole render path (no optimistic local render). Twin of the
+  // `online` handler; `kickReconnect` no-ops on an already-healthy socket.
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") kickReconnect(_socket);
+    });
+  }
 }
 
 // joinUser + joinChannel mirror Topic.user/1 + Topic.channel/3 from the
