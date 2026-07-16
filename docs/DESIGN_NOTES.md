@@ -22905,3 +22905,72 @@ into the task; never re-read authoritative state inside the deferred closure.
 _Deploy: **server, HOT.** Pure `lib/` controller edit (`deploy-m42.sh`, no
 `--cic`, no migration, no config, no new supervision child). The cic
 `applyReadCursorSet` last-write-wins contract is unchanged._
+
+---
+
+## 2026-07-16 — #80 (P1, cic): confirm dialog before a multi-line paste (flood guard)
+
+A tester noticed you can dump a big multi-line block into the compose box and,
+on Enter, flood a channel. Root cause is by-design, not a bug: on submit,
+`compose.ts` splits the body and sends **one PRIVMSG per line**
+(`splitMessageLines` — an embedded LF can't ride a single IRC frame, the server
+bounces it as `:invalid_line`). So a 40-line paste is 40 messages. The spec
+(#80) asked for either (a) a confirmation popup or (b) a buffer/review area.
+
+**Decision — option (a), reusing the existing confirm dialog.** cicchetto
+already has a store-driven confirm singleton (`lib/confirmDialog.ts` +
+`ConfirmModal.tsx`, from #195) that carries the overlay scroll-lock, the #232
+shared Esc-to-close, and a Cancel-is-safe default. The flood guard maps onto it
+perfectly: Cancel = don't paste (safe), the affirmative "Paste" button =
+insert. So the whole feature is one `requestConfirm({title, body, confirmLabel,
+onConfirm})` call in `ComposeBox`'s `onPaste` — **no new modal**. A new
+covering modal would need its own `createOverlayLock` refcount (#219) + #232 Esc
+wiring; reusing the verb avoids all of it ("reuse the verbs, not the nouns").
+Option (b), a review/edit area, was rejected as materially more surface for the
+same outcome — the textarea already IS an editable area once the paste lands.
+
+**Threshold — guard when a paste has > 3 lines (4+).** Spec suggested
+"e.g. >2-3 lines"; 3 is the upper bound, biasing toward fewer interruptions so
+1–3-line pastes (a URL, a short snippet, an address) stay frictionless. The
+count normalizes every line-ending (CRLF, lone CR, LF), strips ONE trailing
+newline (a common copy artifact must not read as an extra empty line), and
+COUNTS blank interior lines — this is the count the operator SEES land in the
+box, deliberately distinct from the send-time fan-out (`splitMessageLines`
+drops blanks; a different concern). One pure knob, `PASTE_FLOOD_LINE_THRESHOLD`
+in `lib/pasteFlood.ts`, boundary-proven in isolation.
+
+**Copy is target-neutral + honest.** `props.channelName` is a peer nick on a
+query (DM) window, so "flood the channel" would misdescribe a DM; and
+"one message per line" over-claims (blank lines drop at send). Body:
+_"You're about to paste N lines into <target>. Sending can flood it with a
+burst of messages."_ — reads right for a channel and a DM, doesn't over-claim.
+
+**Disjoint from the file-paste upload path.** `onPaste` handles clipboard FILE
+items first (image/media upload, its own `preventDefault` + `triggerUploads`);
+the text-line guard only fires for a plain-text paste with no uploadable file
+items. The two branches never overlap.
+
+**Insertion mirrors native paste.** On confirm, the block is spliced at the
+caret (replacing any selection), then the caret is placed after it and the
+textarea refocused (the modal's affirmative button had stolen focus). Cancel
+does NOT restore focus — `overlayScrollLock` has no focus-restore and it's not
+in the DoD; the asymmetry is intentional (accept = keep typing/send; cancel =
+you changed your mind).
+
+**Out of scope (deferred).** The spec's optional "send line-by-line vs single
+message" is a SEPARATE decision — it changes how ComposeBox SUBMITS multi-line
+content (today always per-line), not how a paste is guarded. Not built here.
+
+**Tests.** `lib/pasteFlood.test.ts` table-proves the boundary (3 lines
+frictionless, 4 guarded) off the production constant. `ComposeBox.test.tsx`
+drives the REAL confirm store (open / copy / accept-inserts-at-caret /
+cancel-drops / below-threshold-frictionless), with a mid-string-selection
+splice test locking the "mirrors native paste" contract. `issue80-paste-flood-
+guard.spec.ts` is the real-browser proof (a genuine `ClipboardEvent` +
+`DataTransfer` in chromium → modal renders → Paste lands the text + refocuses;
+Cancel gates it) — jsdom can't show the actual modal render/focus.
+
+_Deploy: **cic-only, `--cic` bundle.** No `lib/` change, no migration, no
+config, no server BEAM restart. A server hot-reload does not touch the cic
+bundle and vice-versa; a cic change that skipped `--cic` would ship nothing.
+The bundle-hash-mismatch refresh banner handles live clients._

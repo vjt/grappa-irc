@@ -3,8 +3,10 @@ import { isDiagEnabled } from "./DiagFloat";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from "./lib/compose";
 import { composePlaceholder } from "./lib/composePlaceholder";
+import { requestConfirm } from "./lib/confirmDialog";
 import { diagPush } from "./lib/diagLog";
 import { networkBySlug } from "./lib/networks";
+import { pastedLineCount, shouldGuardPaste } from "./lib/pasteFlood";
 import {
   claimAxis,
   type DragAxis,
@@ -327,18 +329,69 @@ const ComposeBox: Component<Props> = (props) => {
     handleFiles(files);
   };
 
+  // #80 — insert a confirmed multi-line paste at the caret, replacing any
+  // selection, exactly as a native paste would — the confirm dialog only
+  // GATED it, so on Paste we perform the insertion the browser skipped
+  // (we preventDefault'd it). Then place the caret after the inserted text
+  // and refocus the textarea: the modal's affirmative button stole focus,
+  // and the operator wants to keep typing / hit Enter to send. queueMicrotask
+  // mirrors the recall-caret precedent — run AFTER the controlled value
+  // re-render commits to the DOM.
+  const insertPastedText = (ta: HTMLTextAreaElement, text: string): void => {
+    const before = getDraft(key());
+    const start = ta.selectionStart ?? before.length;
+    const end = ta.selectionEnd ?? before.length;
+    const next = before.slice(0, start) + text + before.slice(end);
+    setDraft(key(), next);
+    const caret = start + text.length;
+    queueMicrotask(() => {
+      ta.focus();
+      ta.setSelectionRange(caret, caret);
+    });
+  };
+
   const onPaste = (e: ClipboardEvent) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
+    const data = e.clipboardData;
+    if (!data) return;
     const files: File[] = [];
-    for (const item of items) {
+    // `?? []`: a clipboardData without an `items` list is degenerate but must
+    // not throw the whole handler — the plain-text branch below still runs off
+    // getData (restores the pre-#80 `if (!items) …` safety).
+    for (const item of data.items ?? []) {
       if (item.kind !== "file") continue;
       const file = item.getAsFile();
       if (file !== null && categoryOf(file.type) !== null) files.push(file);
     }
-    if (files.length === 0) return;
+    // File paste (image/media upload) — disjoint from the text-line guard.
+    // The upload path owns preventDefault + its own e2e/vitest coverage.
+    if (files.length > 0) {
+      e.preventDefault();
+      handleFiles(files);
+      return;
+    }
+    // #80 — plain-text multi-line paste flood guard. A pasted block is sent
+    // as one PRIVMSG per line on submit (compose.ts → messageLines.ts), so a
+    // large block can flood the channel. Above the line threshold, intercept
+    // the native paste and confirm BEFORE the text lands; below it, fall
+    // through to native textarea paste so 1–3-line pastes stay frictionless.
+    // Reuses the store-driven confirm dialog (lib/confirmDialog) — Cancel is
+    // the safe default (drop the paste), the affirmative button pastes.
+    const text = data.getData("text");
+    if (!shouldGuardPaste(text)) return;
     e.preventDefault();
-    handleFiles(files);
+    const ta = e.currentTarget as HTMLTextAreaElement;
+    const lines = pastedLineCount(text);
+    requestConfirm({
+      title: `Paste ${lines} lines?`,
+      // Target-neutral copy: `channelName` is a nick on a query (DM) window,
+      // so "flood the channel" would misdescribe a DM. "a burst of messages"
+      // is honest without over-claiming one-message-per-line (blank lines are
+      // dropped at send — splitMessageLines), and reads right for both a
+      // channel and a DM.
+      body: `You're about to paste ${lines} lines into ${props.channelName}. Sending can flood it with a burst of messages.`,
+      confirmLabel: "Paste",
+      onConfirm: () => insertPastedText(ta, text),
+    });
   };
 
   // #118 — "(i/N)" counter, shown only while a multi-file batch is in
