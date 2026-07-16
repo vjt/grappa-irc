@@ -256,6 +256,26 @@ export class IrcPeer {
     await topicSet;
   }
 
+  // Witness an INBOUND topic change: resolve once THIS peer (already
+  // joined to `channel`) receives a TOPIC carrying `text` — i.e. someone
+  // ELSE set it. Used by #74 to prove the cic inline-topic-edit reached
+  // upstream for real (not an optimistic client paint). The listener is
+  // attached synchronously when this is CALLED, so arm it BEFORE
+  // triggering the set to avoid a race:
+  //   const seen = peer.waitForTopic(ch, txt); // listener attached now
+  //   ...submit the topic in cic...
+  //   await seen;                              // real upstream send proven
+  async waitForTopic(channel: string, text: string): Promise<void> {
+    await onceMatching(
+      this.client,
+      "topic",
+      (event: { channel: string; topic: string }) =>
+        event.channel === channel && event.topic === text,
+      TOPIC_TIMEOUT_MS,
+      `witness topic ${channel}`,
+    );
+  }
+
   // KICK a target nick from a channel with a reason. Resolves once
   // upstream echoes the KICK on the channel topic. Caller must be op
   // (`+o`) on the channel — bahamut otherwise emits 482

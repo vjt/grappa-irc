@@ -20985,3 +20985,63 @@ keeps it a live feature) — no column drop owed there.
 _Deploy: **HOT — server logic + `--cic`** (AdminVhostsTab + SettingsDrawer
 + wire types). No migration in V1; the dead `grant.pinned` column drop is
 deferred to a trailing COLD cleanup migration._
+
+## 2026-07-16 — #74 inline topic edit from the topic bar (cicchetto-only)
+
+The topic bar gained two things: (1) the topic strip clamps to **two
+lines** instead of a one-line ellipsis, so more of a long topic is readable
+without opening anything; (2) clicking the strip on an **editable** window
+now **edits the topic in place** — an inline `<input>` seeded with the raw
+topic replaces the strip, Enter submits, Escape/blur cancels. No separate
+dialog for the edit path (per the issue's "no separate dialog or tooltip").
+
+**Reuse the existing doors — no new server surface, no parallel state.**
+This is a `cicchetto/`-only change: the server already fully supports
+setting + relaying TOPIC. Inline-edit submit routes through the SAME doors
+the `/topic` compose slashes use (one-feature-every-door): a non-empty set
+calls `postTopic` (REST → `ChannelsController.topic/2`), an empty submit
+CLEARS via `pushChannelTopicClear` (the WS verb, since `postTopic`
+server-side rejects an empty body). cic mirrors the server — there is **no
+optimistic client write**: the strip repaints only when the server's
+relayed `topic_changed` updates `topicByChannel`. A server reject (WS-down
+/ 482) surfaces inline and PRESERVES the editor + draft (the S21
+no-false-success pattern), mapped to human copy via `friendlyError`.
+
+**FORK 1 — click behaviour vs the read-only modal.** Pre-#74 a click
+always opened a read-only modal (topic + set_by + set_at). #74 makes the
+click edit-in-place. Resolution (the issue's directive + the resume's
+blessed LEAN): click → inline editor when the operator CAN set the topic;
+the read-only modal is retained ONLY as the **non-editable fallback** (not
+joined, or +t-locked and not op) so those users can still VIEW the full
+topic + setter. Consequence: the set_by/set_at metadata surfaces only in
+the fallback modal — an accepted tradeoff of the dialog-less edit path.
+
+**FORK 2 — permission gating (derivable, no invented model).** Editability
+= `windowIsJoined && (!topicLocked || ownIsEditor)`: any joined member can
+set the topic unless `+t` (topic-lock) is set, in which case only ops (per
+the network's PREFIX rank) can. The op check reuses ModeModal's exact
+editor-sigil derivation — extracted to a shared `ownHoldsChannelEditorSigil`
+(see below) rather than hand-rolled. It degrades **closed** (false when own
+membership isn't yet in state), consistent with ModeModal; the ircd's 482 —
+surfaced inline on submit — is the authority safety net for any race, so a
+momentarily-strict gate only risks briefly hiding the affordance from a
+legit op (self-healing once NAMES seeds), never a silent failed set.
+
+**Two DRY extractions (reuse rule).** The inline-edit error mapping and the
+op-sigil check both already existed inline elsewhere; copying them would
+create the "half-migrated, two patterns" trap. So both were extracted and
+BOTH call sites migrated: `lib/friendlyError.ts` (`ApiError` →
+`friendlyApiError`, `ChannelPushError` → `friendlyChannelError`, else a loud
+generic — now used by both compose.ts's submit catch and TopicBar) and
+`lib/channelEditPerm.ts` (`ownHoldsChannelEditorSigil`, used by both
+ModeModal and TopicBar). Existing ModeModal + compose suites stayed green
+across the migration.
+
+The editor is a single-line `<input>` (an IRC TOPIC is one wire line); the
+two-line clamp is a DISPLAY-only concern (`-webkit-line-clamp: 2`), which
+jsdom can't see — proven in the Playwright e2e / real browser
+(`feedback_cicchetto_browser_smoke`).
+
+_Deploy: **HOT — `--cic` (bundle only)**. No `lib/` change, no migration;
+`Deploy.Preflight.classify_paths` over the cic paths returns `{:hot, []}`.
+A refresh banner surfaces on cic-bundle-hash mismatch._
