@@ -22618,8 +22618,92 @@ assertion then measures the real contract (a viewport shrink adds NO content →
 scrollTop must not move), and a genuine keyboard-yank (scrollToActivation →
 tail, which needs atBottom true) is still caught. NOT a masked assertion.
 
-_Deploy: **CI/docs only — nothing to ship.** The changes are e2e specs
-(`slash-commands-bundle`, `issue254-own-echo-live`, `issue220-link-double-fire`,
-`issue253-kbd-resize-scroll-preserve`) + the `fixtures/ircClient.ts` helper
-constant + CLAUDE.md + this note. No `lib/`, no `cicchetto/src`, no migration —
-no BEAM restart, no `--cic` bundle. The gate this unblocks is CI itself._
+### Target 5 (the CI gate-blocker): #188 mentions-panel — a REAL cic ordering bug (fixed client-side)
+
+`issue188-mentions-panel-polish.spec.ts` failed in CI (chromium) at the count
+assertion: expected `"2 messages in 2 channels"`, got
+`"while you were /away — 0 messages in 0 channels"`. Unlike the fake-lag TOPIC
+class, this was NOT a test-timing artifact over correct server behaviour — the
+server accounting is CORRECT; it is a genuine (if latent) **cic-side
+event-ordering bug**.
+
+**Proven with data (the CI failure output + code + composeSend semantics).**
+The failure is at the COUNT line, not the panel-open — so `composeSend("/away",
+{expectUnmount:true})` had already succeeded. `expectUnmount` waits for
+`toHaveCount(0)` on the compose textarea (`cicchettoPage.ts`), which does NOT
+fast-pass; the textarea unmounts ONLY when selection moves to the mentions
+window, and the ONLY code that moves it there is the `mentions_bundle` handler
+(`userTopic.ts`). The server broadcasts `mentions_bundle` ONLY when
+`messages != []` (`Session.Server.maybe_broadcast_mentions_bundle`). So the
+panel opening PROVES a non-empty bundle arrived and was stored. The panel then
+rendering `0/0` (Shell's empty-default fallback, `Shell.tsx`) proves the store
+was WIPED after the set. The only wipe path reachable in this flow is
+`clearMentionsBundle` in the `away_confirmed:"away"` arm of `userTopic.ts`.
+
+**Root cause: two away-lifecycle events ride different-latency channels and
+reorder.** The return-from-away `mentions_bundle` is broadcast SYNCHRONOUSLY by
+grappa on the un-away command (`unset_away_internal`). `away_confirmed` is
+emitted ONLY on the upstream 305/306 numeric echo (`event_router.ex` 305→present
+/ 306→away) — `set_explicit_away_internal` does NOT broadcast it. Under bahamut
+fake-lag the GOING-away's 306 (from the FIRST `/away`) is delayed and arrives at
+cic AFTER the un-away's `mentions_bundle`; cic's `away_confirmed:"away"` handler
+called `clearMentionsBundle`, clobbering the freshly-set bundle while selection
+was stuck on the mentions window → the empty-default fallback → `0/0`. This is
+unreachable in real usage (away periods dwarf 306 latency); the e2e compresses
+the away→return cycle and fake-lag amplifies it.
+
+**Fix (client-side, root cause — vjt directive "risolvilo sul serio lato
+client").** Move the clear off the reorder-prone echo and onto the user's own
+GOING-away action: `compose.ts`'s `/away` (set) handler now calls
+`clearMentionsBundle(networkSlug)`; `userTopic.ts`'s `away_confirmed` arm no
+longer clears (it still drives the `[away]` badge via `setAwayState`). The clear
+is now causally ordered with the user's own commands, so a fresh bundle set on
+RETURN can never be wiped by a stale echo. The mentions bundle is a
+client-ephemeral render store (not server-mirrored window/away state), so
+clearing it on a user action does NOT violate "cic never originates state".
+Behaviour deltas, all benign: auto-away (server-driven, no compose) no longer
+clears — but the next return REPLACES the bundle anyway and the user is
+backgrounded meanwhile; cross-device no longer cross-clears — but a peer device
+going away should not invalidate THIS device's own last-return snapshot (arguably
+more correct). Unit-covered: `compose.test.ts` (`/away <reason>` clears,
+bare `/away` does not) + `userTopic.test.ts` (away_confirmed does NOT clear,
+still sets the badge). The e2e spec is UNCHANGED — the original flaky spec now
+passes on the fixed client behaviour (the honest end-to-end proof).
+
+### Target 6 (reproduced in full-suite run): #268 /q — composeSend early-return races the send-in-flight guard
+
+`slash-commands-bundle.spec.ts` `/q on a query window closes that window`
+failed (chromium, full-suite) at `composeSend("/q")` →
+`toHaveValue("")` timeout, textarea stuck at `"/q"`, the query window still
+open. NOT a product bug — a test-determinism race, sibling of #254.
+
+**Proven with data (the failure trace on the host).** `error-context.md` +
+`trace.zip`: the query window (`slash-q-peer-<runId>`) was selected and open, the
+textarea value stuck at `"/q"`, and the query scrollback held a `hello` own-echo
+PLUS a `No such nick/channel` — a **401 ERR_NOSUCHNICK** (the peer nick is
+deliberately non-existent). Sequence: `composeSend("/msg <peer> hello")` returns
+as soon as the textarea reads empty, but `/msg` switches selection to the fresh
+query window SYNCHRONOUSLY (`compose.ts` `setSelectedChannel`) — so the textarea
+empties (window swap) while the send is STILL in flight (`await
+ensureQueryTopicJoined` + `sendBodyLines`). The 401 round-trip, under fake-lag +
+full-suite load, keeps `sending()` (ComposeBox's #241 in-flight guard) true past
+the early `composeSend` return. `/q`'s Enter then fires while `sending()` is
+true, and ComposeBox's `if (sending()) return` (`ComposeBox.tsx`) DROPS the
+submit — the draft is never cleared and the window never closes. The in-flight
+send-spinner (`<Show when={sending()}>`) is the exact mirror of that guard.
+
+**Fix (deterministic wait, test-only).** Before `/q`, wait for
+`compose-send-spinner` to leave the DOM (`toHaveCount(0)`) — proof that
+`sending()` is false, so the guard won't drop `/q`'s submit. Condition-poll
+(instant once the send lands), not a sleep; the 15s ceiling covers the 401
+round-trip under fake-lag. The ComposeBox guard is CORRECT product behaviour
+(anti-double-submit); only the test's sequencing assumed `composeSend` waits for
+the send to complete, which it doesn't for window-switching verbs.
+
+_Deploy: **mixed.** #188's fix touches `cicchetto/src` (`compose.ts`,
+`userTopic.ts`) — it ships as a **`--cic` bundle** (`deploy-m42.sh --cic`), no
+BEAM restart, no migration. Everything else is CI/test/docs only: the e2e specs
+(`slash-commands-bundle` /q gate, `issue254-own-echo-live`,
+`issue220-link-double-fire`, `issue253-kbd-resize-scroll-preserve`) + the
+`fixtures/ircClient.ts` helper constant + CLAUDE.md + this note. No `lib/`, no
+migration — no server COLD/HOT. The gate this unblocks is CI itself._
