@@ -1890,12 +1890,38 @@ html.resize-dragging * {
   user-select: none;
 }
 
-/* C7.4: Scroll-to-bottom floating button — lower-right of .scrollback-pane. */
-
-.scroll-to-bottom-btn {
+/* #280 — floating action stack at the lower-right of `.scrollback-pane`.
+   The scroll-to-bottom button (C7.4) and, on mobile, the "jump to next
+   active window" affordance (#235) render into ONE container-anchored,
+   evenly-spaced, right-aligned column. Anchoring BOTH to the message
+   container (not the viewport) is the root-cause fix for #280: their
+   position is CONSTANT relative to the container regardless of keyboard
+   state (the pane rides above the compose box + soft keyboard) and they
+   never overlap. `pointer-events: none` on the box lets taps fall through
+   the inter-button gap to the scrollback; each button re-enables its own.
+   z-index above `.scrollback-overlay` (cards) — matches the old mobile
+   next-active circle (z-index 40). */
+.scrollback-float-stack {
   position: absolute;
-  bottom: 0.75rem;
   right: 1rem;
+  bottom: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+  z-index: 40;
+  pointer-events: none;
+}
+
+.scrollback-float-stack > * {
+  pointer-events: auto;
+}
+
+/* C7.4: Scroll-to-bottom button. Now an in-flow child of the float stack
+   (#280) — the stack owns the absolute anchor, so this is position:
+   static. */
+.scroll-to-bottom-btn {
+  flex-shrink: 0;
   background: var(--accent);
   color: var(--bg);
   border: none;
@@ -1909,8 +1935,20 @@ html.resize-dragging * {
   align-items: center;
   justify-content: center;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-  z-index: 10;
   line-height: 1;
+}
+
+/* #280 req 4 — on mobile, match the next-active circle's box so the
+   stacked pair looks consistent (was a smaller 2rem square vs the 3.5rem
+   circle). Desktop keeps 2rem — next-active lives in the sidebar there,
+   not adjacent. Mirrors `.next-active-btn-mobile`'s size + 48px HIG
+   floor. */
+.shell-mobile .scroll-to-bottom-btn {
+  width: 3.5rem;
+  height: 3.5rem;
+  min-width: 48px;
+  min-height: 48px;
+  font-size: 1.75rem;
 }
 
 .scroll-to-bottom-btn:hover {
@@ -6404,6 +6442,21 @@ audio.media-viewer-media {
   font-size: 0.72rem;
 }
 
+/* #280 — badge color by the next target's tier (activeWindows.
+   nextActiveKind, applied via NextActiveButton's classList): RED when the
+   next target is a mention or DM (priority), BLUE for an ordinary channel
+   message (normal). Reuses existing theme tokens (--mode-op red / --accent
+   blue) and overrides the base --mode-op fill above. Same specificity as
+   the base rule → source order wins; applies to both the desktop pill and
+   the mobile corner badge (whose own rule sets placement only). */
+.next-active-count-priority {
+  background: var(--mode-op);
+}
+
+.next-active-count-normal {
+  background: var(--accent);
+}
+
 /* Desktop: pinned to the bottom-left of the left sidebar. margin-top:
    auto drops it below the window tree; position: sticky keeps it in
    view when the tree scrolls (the aside is overflow-y: auto). */
@@ -6478,6 +6531,32 @@ audio.media-viewer-media {
   top: -0.15rem;
   right: -0.15rem;
   box-shadow: 0 0 0 2px var(--bg);
+}
+
+/* #280 — inside ScrollbackPane's float stack the mobile next-active
+   button is an IN-FLOW stack child, not a viewport-fixed circle:
+   neutralize the fixed anchor so it stacks with scroll-to-bottom and
+   stays constant relative to the message container. `position: static`
+   makes the `top` calc AND the `:has(textarea:focus)` `--nab-lift`
+   (below) inert (both only affect `top`), so no keyboard jump. Keeps the
+   circle size / glyph / corner badge. The Shell-mounted mobile variant
+   (non-scrollback windows — no pane to anchor to) keeps position: fixed.
+   Placed BEFORE the higher-specificity `:has` rule to satisfy biome's
+   no-descending-specificity lint (the cascade RESULT is order-independent:
+   `static` makes `top` inert regardless of source order).
+
+   COUPLING (keep in mind if you extend this stack): with the button
+   `static` it is no longer a containing block, so its `.next-active-count`
+   corner badge (position: absolute, top/right: -0.15rem) resolves to the
+   `.scrollback-float-stack` instead. It lands on the button's corner
+   because next-active is the TOPMOST, right-aligned stack child and the
+   stack has no padding — AND scroll-to-bottom is the SAME size (never
+   wider). If you add a floating button ABOVE next-active, or let a stack
+   child render wider than it, re-anchor the badge (give the button
+   `position: relative; top: auto; right: auto` to make it the containing
+   block without reintroducing the `top` jump). */
+.scrollback-float-stack .next-active-btn-mobile {
+  position: static;
 }
 
 /* #264 fork B — focus lift. A focused text field means the keyboard is (about

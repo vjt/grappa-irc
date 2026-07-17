@@ -41,9 +41,11 @@ import {
 } from "./lib/scrollback";
 import { scrollToBottomRequest } from "./lib/scrollToBottomCommand";
 import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
+import { isMobile } from "./lib/theme";
 import { formatTimestamp } from "./lib/timeFormat";
 import { SERVER_WINDOW_NAME, type WindowKind } from "./lib/windowKinds";
 import { MircBody } from "./MircText";
+import NextActiveButton from "./NextActiveButton";
 import NickText from "./NickText";
 import PeerAwayBanner from "./PeerAwayBanner";
 import UserContextMenu from "./UserContextMenu";
@@ -2629,18 +2631,37 @@ const ScrollbackPane: Component<Props> = (props) => {
           </For>
         </Show>
       </div>
-      {/* C7.4: scroll-to-bottom floating button — shown when NOT at bottom. */}
-      <Show when={!atBottom()}>
-        <button
-          type="button"
-          class="scroll-to-bottom-btn"
-          data-testid="scroll-to-bottom"
-          onClick={scrollToBottom}
-          aria-label="Scroll to bottom"
-        >
-          ↓
-        </button>
-      </Show>
+      {/* #280 — floating action stack, bottom-right of the message
+          container. On mobile the "jump to next active window" affordance
+          (NextActiveButton variant="mobile") joins the scroll-to-bottom
+          button as an evenly-spaced, same-size stacked pair ANCHORED to
+          the pane — so both stay constant relative to the message
+          container across keyboard toggles and never overlap (root-cause
+          fix for the two-independent-anchors collision). ScrollbackPane
+          owns it: the scroll authority + message-container owner
+          (CLAUDE.md). next-active sits ABOVE scroll-to-bottom (moved up to
+          clear it). Desktop keeps next-active in the sidebar (variant
+          desktop); only the mobile variant stacks here. On non-scrollback
+          windows (home / mentions / list) Shell mounts the mobile variant
+          itself — mutually exclusive via `kindHasScrollback` — so exactly
+          one mobile next-active ever mounts. scroll-to-bottom still shows
+          only when NOT at the bottom (C7.4). */}
+      <div class="scrollback-float-stack">
+        <Show when={isMobile()}>
+          <NextActiveButton variant="mobile" />
+        </Show>
+        <Show when={!atBottom()}>
+          <button
+            type="button"
+            class="scroll-to-bottom-btn"
+            data-testid="scroll-to-bottom"
+            onClick={scrollToBottom}
+            aria-label="Scroll to bottom"
+          >
+            ↓
+          </button>
+        </Show>
+      </div>
       {/* C7.6: nick right-click context menu. Rendered outside the scrollback
           div so it positions freely in the viewport. Closed by backdrop or
           Escape (handled inside UserContextMenu). */}

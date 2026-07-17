@@ -127,6 +127,14 @@ vi.mock("../lib/networks", () => ({
   },
 }));
 
+// #280 — ScrollbackPane now mounts NextActiveButton inside its float
+// stack (mobile). Stub the child: this suite unit-tests ScrollbackPane's
+// own projection/scroll behavior, not the next-active affordance (covered
+// by activeWindows unit tests + the #280 e2e). Stubbing it also keeps
+// activeWindows' full reactive dependency graph (channelsBySlug /
+// messagesUnread / mentions) out of this suite's mock surface.
+vi.mock("../NextActiveButton", () => ({ default: () => null }));
+
 // C7.6: queryWindows + socket mocked so UserContextMenu import doesn't crash.
 const mockOpenQueryWindowState = vi.fn();
 vi.mock("../lib/queryWindows", () => ({
