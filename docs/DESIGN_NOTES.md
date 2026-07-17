@@ -24264,3 +24264,76 @@ _Deploy: still **batched/HELD.** This increment is a PARTIAL feature (consumer
 path); #75 + #291 stay `status:cooking` until the producer path lands. When the
 whole feature ships it is a SERVER COLD restart (new themes table + system-user
 migration) + `--cic` bundle + `mix grappa.seed_themes` on the target._
+
+### 2026-07-17 — themes PRODUCER UI: editor + fonts + background (#75, cic sub-task)
+
+The client half that **completes** #75 — the producer path deferred by the
+consumer increment above (plan sub-tasks 6/8/9). Themes now go browse → apply
+→ **create/edit** → publish/share, with a curated font and an uploadable
+background. No server work: the producer path drives the existing REST verbs.
+
+**Editor = a covering overlay with LIVE preview + snapshot/restore.**
+`ThemeEditor.tsx` (mounted at the shell root, opened from the gallery's "new
+theme" / "edit" entry points) edits a draft `TokenPayload` and re-applies it on
+every change via `applyCustomTheme`, so the whole app re-paints in real time —
+that IS the "changes visible LIVE" requirement, and it stays CLIENT-only (cic
+NEVER originates the server active theme). On open it snapshots the applied
+payload; Save persists via `createTheme`/`updateTheme` → `activateTheme`
+(server round-trip → authoritative re-apply); Cancel/ESC/backdrop re-apply the
+snapshot so an abandoned edit leaks no draft. The snapshot source is a new
+`customTheme.getAppliedThemePayload()` — the localStorage FOUC mirror, which
+live preview deliberately never writes, so mid-edit it still holds the pre-edit
+active theme. The overlay rides the shared `createOverlayLock` refcount (a new
+pane-covering modal MUST, or it yanks iOS scroll).
+
+**No hand-copied palette constant (orchestrator directive).** "New theme" seeds
+from the built-in the gallery already fetched (`newThemeSeedPayload` prefers
+`irssi-dark`, else any built-in; null → the entry disables itself) — two copies
+of the 27-key palette would drift, so we reuse the server's canonical default
+rather than mirror it in cic. `getAppliedThemePayload` is strictly the
+snapshot source, not the new-theme seed.
+
+**Self-hosted curated fonts (fork 3 = "equivalent = self-hosted").** The font
+picker (shipped with the editor) had no faces, so a picked family fell back to
+the base mono stack. `scripts/vendor-fonts.sh` copies latin 400+700 woff2 out
+of npm devdeps into `public/fonts/<family>/` (committed, served same-origin);
+`@font-face` in `default.css` binds each slug (= what `customTheme` writes into
+`--font-mono`). A RUNTIME CDN/Google-Fonts fetch is banned (per-render beacon /
+IP leak, same class as a remote `url()`), so the woff2 are vendored, not linked.
+Sourcing (all npm, no arbitrary host): **@fontsource** for jetbrains-mono /
+fira-code / source-code-pro / ibm-plex-mono / cascadia-code (Google-Fonts
+mirror, OFL); the official source-foundry **`hack-font`** package for hack (NOT
+on @fontsource — not a Google Font). **iosevka is intentionally skipped** (vjt,
+2026-07-17): its latin subset is ~1.9MB, too heavy to vendor — it stays in the
+picker but has no face, so it resolves to the fallback mono stack (graceful).
+Total vendored: 264KB. `@font-face` carries the standard latin `unicode-range`
+so non-latin glyphs fall through to the fallback stack instead of tofu.
+
+**Background = a scoped wallpaper layer, gated on a class.** The editor's
+upload (file → `uploadBackground({file})`, or fetch-by-URL) + opacity slider
+were dormant (nothing consumed `--theme-bg-image`/`--theme-bg-opacity`).
+`applyCustomTheme` now toggles a `theme-has-bg` class (CSS can't branch on a
+var being `"none"`); `default.css` paints `--theme-bg-image` at
+`--theme-bg-opacity` on `.scrollback-pane::before` (the pane is already
+`position:relative`; `isolation` makes it a stacking context so the layer sits
+below the transparent scrollback text but above the pane backdrop). Confined to
+the reading pane — sidebar/chrome stay solid for legibility, the ComposeBox (a
+sibling outside the pane) stays opaque. Still **never an `<img>`** (text-only
+scrollback) — a CSS `background-image` only. The upload pipeline's typed errors
+(not_raster / too_large / ssrf_blocked / fetch_failed / image_reencode_failed)
++ rate_limited get human copy in `friendlyApiError`.
+
+**Tests.** vitest pins the pure seams (newThemeSeedPayload,
+persistThemeDraft, the open/close signal, getAppliedThemePayload, the
+font_family→--font-mono mapping, the theme-has-bg toggle, every new
+friendlyApiError arm). Playwright e2e (chromium + @webkit): editor live-preview
+→ save persists across reload via the server + cancel restores; a self-hosted
+font applies from same-origin `/fonts/` with NO Google-Fonts request; a
+background upload engages the layer live (computed `::before` consumes the var)
+and persists across reload.
+
+_Deploy: **batched/HELD** — the orchestrator decides the point. The producer
+path completing #75 means the WHOLE feature is user-done, so #75 + #291 move
+`cooking → soon`. Ship is unchanged: SERVER COLD restart (the themes table +
+system-user migration from the server subsystem still haven't reached prod) +
+`--cic` bundle + `mix grappa.seed_themes` on the target._

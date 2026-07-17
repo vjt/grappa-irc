@@ -21,8 +21,10 @@ import type { ThemesWireT } from "./wireTypes";
 // the first paint, refreshed from the server on every login.
 
 // The 11 named color keys + nick_0..15 — mirror of
-// `Grappa.Themes.TokenModel.color_keys/0`.
-const COLOR_KEYS: string[] = [
+// `Grappa.Themes.TokenModel.color_keys/0`. Exported so the editor's grouped
+// picker vocabulary can be pinned against it (no silent drift into a
+// non-editable key).
+export const COLOR_KEYS: string[] = [
   "bg",
   "bg_alt",
   "fg",
@@ -91,6 +93,7 @@ export function applyCustomTheme(payload: TokenPayload | null): void {
   const root = document.documentElement;
   if (payload === null) {
     for (const v of THEME_CSS_VARS) root.style.removeProperty(v);
+    root.classList.remove("theme-has-bg");
     return;
   }
   const vars = tokenToCssVars(payload);
@@ -100,6 +103,11 @@ export function applyCustomTheme(payload: TokenPayload | null): void {
   for (const [name, value] of Object.entries(vars)) {
     root.style.setProperty(name, value);
   }
+  // Gate the wallpaper layer + pane translucency (themes/default.css) on a
+  // class — CSS can't branch on `--theme-bg-image` being "none". Only a
+  // theme carrying an image engages the layer; clearing it drops back to
+  // the opaque base bg.
+  root.classList.toggle("theme-has-bg", payload.background.image_id !== null);
 }
 
 // Read the cached payload, defending BOTH the parse AND the shape. This
@@ -119,6 +127,15 @@ function readCache(): TokenPayload | null {
   } catch {
     return null;
   }
+}
+
+// The theme payload currently PERSISTED as applied — the editor's
+// snapshot source for restore-on-cancel. Live preview (`applyCustomTheme`)
+// deliberately leaves the cache untouched, so mid-edit this still returns
+// the pre-edit active theme (or null = base cascade). Same defend-the-shape
+// read as boot, so a corrupt cache degrades to "no snapshot", never a throw.
+export function getAppliedThemePayload(): TokenPayload | null {
+  return readCache();
 }
 
 function isTokenPayloadShape(v: unknown): v is TokenPayload {

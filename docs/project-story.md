@@ -4329,3 +4329,50 @@ the ircd" is only true with the receipt. A bug reported as mis-parsing is often
 mis-routing; a numeric you don't recognize is a class to handle, not a case to
 enumerate. And a build that succeeds is not a program that runs — the node doesn't
 exist until it says Ready and a socket agrees.*
+
+## The curated set that no single registry carried (2026-07-17, themes-producer)
+
+The themes feature had shipped in halves: the server model and the consumer
+gallery — browse, apply, persist — were live. What was left was the half that
+lets a person *make* a theme: an editor with live preview, a real font, an
+uploadable background. The editor came easily; the shape was already decided
+(a covering overlay that re-paints the app on every color change, save persists
+to the server, cancel puts back exactly what was there before). The interesting
+resistance came from the two places where the plan met the world.
+
+First the palette. The obvious way to seed a brand-new theme is a default
+constant — twenty-seven colors, right there in the client. The orchestrator
+stopped me before I typed it: two hand-copies of the same palette *will* drift,
+and the server already owns the canonical one. So "new theme" seeds from a
+built-in the gallery has *already fetched* — reuse the value, don't mirror it.
+The constant I was about to write became a one-line find over data I already had.
+
+Then the fonts, which is where the curated set stopped being an abstraction. The
+spec said "self-hosted, from npm" and I assumed one registry would carry the
+list. @fontsource had five of them. It 404'd on Hack — because Hack isn't a
+Google Font, and @fontsource mirrors Google Fonts. Hack lives in its own
+publisher's package, `hack-font`, which I found only by asking whether it
+existed instead of assuming it didn't. And Iosevka *was* on @fontsource — but
+its "latin subset" alone was 1.9MB, thirty times the others combined. That
+wasn't my call to make: I surfaced the number and vjt said skip it. It stays in
+the picker and quietly falls back to the system mono — a dead option is cheaper
+than a two-megabyte one nobody asked for. The curated set didn't map to a
+registry; it mapped to a *decision per font*.
+
+The last lesson came from the tests that failed for the right reason. The mobile
+editor spec timed out reaching for a hamburger that wasn't there — because the
+members sidebar is channel-scoped and I hadn't selected a channel. The
+background spec passed every assertion about the theme and then failed on the
+wallpaper layer — because the layer lives on the scrollback pane, and with no
+channel selected there was no pane to paint. Both "failures" were the feature
+working against a surface that didn't exist yet. The fix was never in the
+component; it was one `selectChannel` in the test, twice.
+
+*Law: derive, don't duplicate — a default you can read off data you already have
+is not a constant you should write, because the second copy is the one that
+drifts. A curated set is a decision per element, not a lookup in one place:
+verify each source, and when an element costs more than it's worth, the honest
+move is to surface the cost and let it fall back, not to smuggle it in. And when
+an e2e fails, ask whether the surface it needs even exists — a feature that
+works against a missing precondition looks exactly like a feature that's
+broken.*

@@ -57,6 +57,14 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   // validation_failed without info → generic copy fallback.
   { code: "validation_failed", matches: /the request was invalid/i },
   { code: "cannot_disconnect_self", matches: /can't disconnect or terminate your own session/i },
+  // #75 themes — daily create/publish cap.
+  { code: "rate_limited", matches: /today's theme limit/i },
+  // #75 themes — background-image upload pipeline errors.
+  { code: "not_raster", matches: /supported image/i },
+  { code: "too_large", matches: /too large/i },
+  { code: "ssrf_blocked", matches: /url isn't allowed/i },
+  { code: "fetch_failed", matches: /couldn't fetch that image url/i },
+  { code: "image_reencode_failed", matches: /couldn't be processed/i },
 ];
 
 describe("friendlyApiError", () => {

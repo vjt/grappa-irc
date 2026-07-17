@@ -1,4 +1,5 @@
 import { type Component, createEffect, For, onCleanup } from "solid-js";
+import { Portal } from "solid-js/web";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 import {
@@ -122,7 +123,14 @@ const UserContextMenu: Component<Props> = (props) => {
   };
 
   return (
-    <>
+    // Portal to <body> so the fixed-position menu + backdrop are never
+    // trapped inside a scrollback-pane stacking context. #75's background
+    // wallpaper makes `.scrollback-pane` an `isolation: isolate` stacking
+    // context when a bg theme is active; a fixed descendant of it would be
+    // confined to the pane's paint region (menu behind the ComposeBox,
+    // backdrop not covering out-of-pane chrome). Rendering at the document
+    // root keeps the z-300/301 layers above everything, themed or not.
+    <Portal>
       {/* Backdrop: click-outside closes the menu. Rendered as button for a11y. */}
       <button
         type="button"
@@ -149,7 +157,7 @@ const UserContextMenu: Component<Props> = (props) => {
           )}
         </For>
       </div>
-    </>
+    </Portal>
   );
 };
 
