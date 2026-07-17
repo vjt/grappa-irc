@@ -1,4 +1,4 @@
-import { createMemo, createResource, createRoot } from "solid-js";
+import { batch, createMemo, createResource } from "solid-js";
 import {
   type ChannelEntry,
   listChannels,
@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { token } from "./auth";
 import { setBadge } from "./badge";
+import { identityScopedStore } from "./identityScopedStore";
 import { applyMeEnvelope } from "./readCursor";
 
 // Network/channel tree resources. Module-singleton — every consumer
@@ -31,12 +32,27 @@ import { applyMeEnvelope } from "./readCursor";
 // the network/user resources; the schemas (`Network`, `ChannelEntry`,
 // `MeResponse`) live in `api.ts`.
 //
-// The `createRoot` wrapper anchors the resources' internal memos to
-// an owner so Solid doesn't warn about computations created outside
-// a root. Mirror of the same shape used by `scrollback.ts`,
-// `selection.ts`, `subscribe.ts`. No on(token) cleanup needed —
-// `createResource` already keys on the bearer signal and re-fetches
-// automatically on rotation.
+// `identityScopedStore` wraps the resources in a `createRoot` (anchors
+// their internal memos to an owner) AND registers the token-rotation
+// purge below — the same factory `scrollback.ts` / `selection.ts` use.
+//
+// #281 — identity-change purge. These resources re-fetch on rotation,
+// but re-fetch is NOT the same as clear: Solid 1.9's createResource
+// `load()` RETAINS the last resolved value whenever the source signal
+// goes falsy (`if (lookup == null || lookup === false) loadEnd(pr,
+// untrack(value))`). So on detach (`token: tokA → null`) `user` — and,
+// keyed off it, `networks` + `channelsBySlug` — keep the PREVIOUS
+// account's data. On re-login as a different account (`null → tokB`)
+// TWO arms replay that STALE data under the new bearer: the
+// token-tracking effects in `subscribe.ts` (channels / query /
+// dm-listener / server loops, each gated on a `networks()` entry) AND
+// the HomePane featured fetch (gated on `user()` via `home.ts`
+// `homeData`). The result is a burst of `GET /networks/<prev-net>/…/
+// messages` + `/featured`, all 404, which trips the host `http-404`
+// fail2ban jail and firewall-bans the client IP. The `onIdentityChange`
+// purge below clears all three so no previous-identity network / channel
+// state survives the switch. (An earlier moduledoc claimed "no on(token)
+// cleanup needed" — that was the #281 bug's origin.)
 //
 // BUG1-FIX: `mutateNetworks` is exported so `userTopic.ts` can patch
 // a single network's `nick` field in-place when the server broadcasts
@@ -44,41 +60,41 @@ import { applyMeEnvelope } from "./readCursor";
 // consumers (subscribe.ts DM-listener loop, query-window own-nick skip)
 // see the updated nick immediately.
 
-const exports = createRoot(() => {
-  const [user, { refetch: refetchUserResource }] = createResource<MeResponse | null, string | null>(
-    token,
-    async (t) => {
-      if (!t) return null;
-      const m = await me(t);
-      // CP29 R-4: hydrate the readCursor signal map from the bulk envelope
-      // BEFORE downstream consumers (subscribe.ts join effects, etc.)
-      // observe `user()` and start joining channel topics. The join-reply
-      // arm (`applyJoinReply`) layers per-channel refreshes on top later;
-      // this is the cold-load primer. Default to `{}` if the server omits
-      // the field (older test mocks predating the field landing in
-      // `MeResponse`) — production /me always emits it.
-      applyMeEnvelope(m.read_cursors ?? {});
-      // PWA icon badge door #2 (2026-06-21): seed the badge signal from the
-      // `/me` notify-worthy unread total so the home-screen icon /
-      // document.title reflect the count before any push or read_cursor_set
-      // arrives. `badge.ts` has no networks/selection imports, so seeding
-      // here (unlike `unread_counts`) closes no import cycle. Default 0 for
-      // older test mocks / pre-field servers.
-      setBadge(m.badge_count ?? 0);
-      // Bucket C (2026-06-01) — the parallel `unread_counts` cold-load
-      // primer for `selection.ts`'s `serverSeedCounts` lives inside
-      // selection.ts itself (an `on(user)` effect there reads
-      // `m.unread_counts` and calls `applySeedEnvelope`). Routing the
-      // call back through networks.ts would close a networks ↔ selection
-      // import cycle that breaks under vitest module re-entry: the named
-      // binding `applySeedEnvelope` resolves to `undefined` because
-      // selection.ts is still mid-eval when networks.ts captures it.
-      // selection.ts already imports `user` from this module for its
-      // existing selection-clear arm, so the new effect is one extra
-      // line in a module that already lives downstream.
-      return m;
-    },
-  );
+const exports = identityScopedStore((onIdentityChange) => {
+  const [user, { mutate: mutateUserResource, refetch: refetchUserResource }] = createResource<
+    MeResponse | null,
+    string | null
+  >(token, async (t) => {
+    if (!t) return null;
+    const m = await me(t);
+    // CP29 R-4: hydrate the readCursor signal map from the bulk envelope
+    // BEFORE downstream consumers (subscribe.ts join effects, etc.)
+    // observe `user()` and start joining channel topics. The join-reply
+    // arm (`applyJoinReply`) layers per-channel refreshes on top later;
+    // this is the cold-load primer. Default to `{}` if the server omits
+    // the field (older test mocks predating the field landing in
+    // `MeResponse`) — production /me always emits it.
+    applyMeEnvelope(m.read_cursors ?? {});
+    // PWA icon badge door #2 (2026-06-21): seed the badge signal from the
+    // `/me` notify-worthy unread total so the home-screen icon /
+    // document.title reflect the count before any push or read_cursor_set
+    // arrives. `badge.ts` has no networks/selection imports, so seeding
+    // here (unlike `unread_counts`) closes no import cycle. Default 0 for
+    // older test mocks / pre-field servers.
+    setBadge(m.badge_count ?? 0);
+    // Bucket C (2026-06-01) — the parallel `unread_counts` cold-load
+    // primer for `selection.ts`'s `serverSeedCounts` lives inside
+    // selection.ts itself (an `on(user)` effect there reads
+    // `m.unread_counts` and calls `applySeedEnvelope`). Routing the
+    // call back through networks.ts would close a networks ↔ selection
+    // import cycle that breaks under vitest module re-entry: the named
+    // binding `applySeedEnvelope` resolves to `undefined` because
+    // selection.ts is still mid-eval when networks.ts captures it.
+    // selection.ts already imports `user` from this module for its
+    // existing selection-clear arm, so the new effect is one extra
+    // line in a module that already lives downstream.
+    return m;
+  });
 
   // Networks resource is keyed on `user` (not raw token) so the
   // boundary tagger reads the explicit server-set `kind` discriminator
@@ -107,17 +123,37 @@ const exports = createRoot(() => {
       return tagged;
     });
 
-  const [channelsBySlug, { refetch: refetchChannelsResource }] = createResource<
-    Record<string, ChannelEntry[]>,
-    Network[]
-  >(networks, async (nets) => {
-    if (!nets || nets.length === 0) return {};
-    const t = token();
-    if (!t) return {};
-    const entries = await Promise.all(
-      nets.map(async (n) => [n.slug, await listChannels(t, n.slug)] as const),
-    );
-    return Object.fromEntries(entries);
+  const [channelsBySlug, { mutate: mutateChannelsResource, refetch: refetchChannelsResource }] =
+    createResource<Record<string, ChannelEntry[]>, Network[]>(networks, async (nets) => {
+      if (!nets || nets.length === 0) return {};
+      const t = token();
+      if (!t) return {};
+      const entries = await Promise.all(
+        nets.map(async (n) => [n.slug, await listChannels(t, n.slug)] as const),
+      );
+      return Object.fromEntries(entries);
+    });
+
+  // #281 — purge on identity change (see moduledoc for the createResource
+  // stale-value mechanism). `user` is the ROOT of the burst: it's keyed
+  // on `token`, `networks` (keyed on `user`) + `channelsBySlug` (keyed on
+  // `networks`) cascade from it, and `home.ts` `homeData` (→ the HomePane
+  // featured fetch) reads `user()` directly — so clearing `user` is what
+  // stops BOTH replay arms (the subscribe.ts loops via empty networks /
+  // channels, AND the featured fetch via empty homeData). We still purge
+  // all three explicitly: `batch` makes it one atomic update (no
+  // dependent computed observes a half-purged new-token / stale-networks
+  // state that could re-fire a fetch), and no consumer (isAdmin, ownNick
+  // / socketUserName, sidebar) ever reads the previous identity during
+  // the refetch window. The factory's `prev != null && t !== prev` filter
+  // fires only on the real transitions (logout tokA→null, rotation
+  // tokA→tokB) — initial registration + cold login are masked.
+  onIdentityChange(() => {
+    batch(() => {
+      mutateUserResource(null);
+      mutateNetworksResource([]);
+      mutateChannelsResource({});
+    });
   });
 
   const refetchChannels = (): void => {
