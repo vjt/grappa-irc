@@ -23757,23 +23757,30 @@ burst. The RED e2e captured all four replay sources: `#bofh` (channels loop),
 `$server` (server loop), the own-nick topic (dm-listener loop), and `featured`.
 
 **Fix — reuse the verb, not a new noun.** Every other identity-scoped cic store
-already resets on identity change (`scrollback.ts`, `selection.ts`,
-`subscribe.ts`, `readCursor.ts`, …). `networks.ts` was the sole gap. Added the
-same `on(token)` arm inside its `createRoot`: on `prev != null && t !== prev`
-(the two real transitions — logout `tokA→null`, rotation `tokA→tokB`; masks
-initial registration `prev===undefined` and cold login `prev===null`)
-`batch`-mutate all three resources to empty (`user→null`, `networks→[]`,
-`channelsBySlug→{}`). `batch` so no dependent computed observes a half-purged
-(new-token, stale-networks) state that could re-fire a fetch.
+already resets on identity change; the signal/resource stores (`scrollback.ts`,
+`selection.ts`, …) do it through the shared `identityScopedStore` factory
+(`createRoot` + an `on(token)` reset arm). `networks.ts` was the sole gap — it
+hand-rolled a bare `createRoot` with no reset. Fix: wrap it in the same factory
+and register an `onIdentityChange` purge that `batch`-mutates all three
+resources to empty (`user→null`, `networks→[]`, `channelsBySlug→{}`). The
+factory's `prev != null && t !== prev` filter fires on the two real transitions
+(logout `tokA→null`, rotation `tokA→tokB`) and masks initial registration
+(`prev===undefined`) + cold login (`prev===null`). `batch` so no dependent
+computed observes a half-purged (new-token, stale-networks) state that could
+re-fire a fetch.
 
-**Why clear all three (not just `networks`).** Clearing `networks()` alone would
-stop the burst — every replay loop is gated on a matching entry in `networks()`
-(the channels/query/dm/server loops `continue` when the slug/id isn't found, and
-`HomePane` renders no rows) — so an empty `networks()` neuters them all. But we
-purge `user` and `channelsBySlug` too so no consumer (`isAdmin`, `ownNick` /
-`socketUserName` readers, the sidebar projection) ever observes the previous
-identity for the refetch window after the switch. General rule (any
-stale-identity cache that outlives the switch), not the libera/oftc instance.
+**`user` is the root of the burst — clear it, the rest cascade.** `user` is
+keyed on `token`; `networks` is keyed on `user`; `channelsBySlug` is keyed on
+`networks`; and `home.ts` `homeData` (→ the HomePane featured fetch) reads
+`user()` directly. So the two replay arms have *different* gates: the
+subscribe.ts loops (channels / query / dm / server) key off `networks()`
+entries, but the **featured** fetch keys off `user()` via `homeData`. Clearing
+`user` is what stops BOTH (it cascades to empty networks/channels AND empties
+homeData). We purge all three explicitly anyway — `batch` atomicity, and so no
+consumer (`isAdmin`, `ownNick` / `socketUserName`, sidebar) reads the previous
+identity during the refetch window. General rule (any stale-identity cache that
+outlives the switch), not the libera/oftc instance. NB: purging `networks`
+alone would leave the featured 404s firing — a trap the code comment calls out.
 
 **Deferred defense-in-depth (separate deploy classes).** The issue listed two
 secondary hardenings that this client fix does NOT need but are worth doing for

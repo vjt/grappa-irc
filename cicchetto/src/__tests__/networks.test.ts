@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChannelEntry, MeResponse, RawNetwork } from "../lib/api";
 
 // Boundary: mock REST (`lib/api`) + the socket helpers (`lib/socket`),
 // leave Solid's reactive primitives real. The store wires resources
@@ -442,6 +443,48 @@ describe("networks resources", () => {
       // No keys hydrated when server omits the field.
       expect(selection.messagesUnread()[channelKey("freenode", "#grappa")]).toBeUndefined();
       expect(selection.eventsUnread()[channelKey("freenode", "#grappa")]).toBeUndefined();
+    });
+  });
+
+  // #281 — identity-change purge. createResource RETAINS the last resolved
+  // value when its source signal goes falsy (Solid 1.9 load(): a null/false
+  // source calls loadEnd(pr, untrack(value))). Without an explicit reset,
+  // account A's user/networks/channels survive a token rotation and get
+  // replayed under the next account's bearer → the 404 self-ban burst. The
+  // networks store registers an identityScopedStore onIdentityChange purge
+  // to clear all three. This locks that contract in the fast lane; the
+  // request-burst behavior itself is proven by the e2e (jsdom can't).
+  describe("#281 identity-change purge", () => {
+    it("clears user/networks/channelsBySlug on token rotation so A's data can't be replayed", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      await seedStubs();
+      const api = await import("../lib/api");
+      const auth = await import("../lib/auth");
+      const networks = await import("../lib/networks");
+
+      // Account A fully hydrated (networks + channels + /me).
+      await vi.waitFor(() => {
+        expect(networks.networks()?.length).toBe(1);
+        expect(networks.channelsBySlug()?.freenode).toBeDefined();
+      });
+      expect(networks.user()).not.toBeNull();
+
+      // Rotate to a DIFFERENT account whose data never resolves — so if the
+      // purge regressed, account A's stale networks/channels would linger
+      // here (createResource keeps the last value across the refetch window).
+      const pending = <T>(): Promise<T> => new Promise<T>(() => {});
+      vi.mocked(api.me).mockReturnValue(pending<MeResponse>());
+      vi.mocked(api.listNetworks).mockReturnValue(pending<RawNetwork[]>());
+      vi.mocked(api.listChannels).mockReturnValue(pending<ChannelEntry[]>());
+      auth.setToken("tok-b");
+
+      // Identity change purged all three; the tok-b refetch is still in
+      // flight, so nothing repopulates — account A's data is simply gone.
+      await vi.waitFor(() => {
+        expect(networks.user()).toBeNull();
+        expect(networks.networks()).toEqual([]);
+        expect(networks.channelsBySlug()).toEqual({});
+      });
     });
   });
 });

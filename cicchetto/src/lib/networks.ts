@@ -1,4 +1,4 @@
-import { batch, createEffect, createMemo, createResource, createRoot, on } from "solid-js";
+import { batch, createMemo, createResource } from "solid-js";
 import {
   type ChannelEntry,
   listChannels,
@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { token } from "./auth";
 import { setBadge } from "./badge";
+import { identityScopedStore } from "./identityScopedStore";
 import { applyMeEnvelope } from "./readCursor";
 
 // Network/channel tree resources. Module-singleton — every consumer
@@ -31,27 +32,27 @@ import { applyMeEnvelope } from "./readCursor";
 // the network/user resources; the schemas (`Network`, `ChannelEntry`,
 // `MeResponse`) live in `api.ts`.
 //
-// The `createRoot` wrapper anchors the resources' internal memos to
-// an owner so Solid doesn't warn about computations created outside
-// a root. Mirror of the same shape used by `scrollback.ts`,
-// `selection.ts`, `subscribe.ts`.
+// `identityScopedStore` wraps the resources in a `createRoot` (anchors
+// their internal memos to an owner) AND registers the token-rotation
+// purge below — the same factory `scrollback.ts` / `selection.ts` use.
 //
 // #281 — identity-change purge. These resources re-fetch on rotation,
 // but re-fetch is NOT the same as clear: Solid 1.9's createResource
 // `load()` RETAINS the last resolved value whenever the source signal
 // goes falsy (`if (lookup == null || lookup === false) loadEnd(pr,
-// untrack(value))`). So on detach (`token: tokA → null`) `user` /
-// `networks` / `channelsBySlug` keep the PREVIOUS account's data, and
-// on re-login as a different account (`null → tokB`) the token-tracking
-// effects in `subscribe.ts` (channels / query / dm-listener / server
-// loops) + the HomePane featured fetch replay that STALE list under the
-// new bearer — a burst of `GET /networks/<prev-net>/…/messages` +
-// `/featured`, all 404, which trips the host `http-404` fail2ban jail
-// and firewall-bans the client IP. So this module MUST reset like every
-// sibling identity-scoped store: the `on(token)` arm below purges all
-// three resources on identity change so no previous-identity network /
-// channel state survives the switch. (An earlier moduledoc claimed "no
-// on(token) cleanup needed" — that was the #281 bug's origin.)
+// untrack(value))`). So on detach (`token: tokA → null`) `user` — and,
+// keyed off it, `networks` + `channelsBySlug` — keep the PREVIOUS
+// account's data. On re-login as a different account (`null → tokB`)
+// TWO arms replay that STALE data under the new bearer: the
+// token-tracking effects in `subscribe.ts` (channels / query /
+// dm-listener / server loops, each gated on a `networks()` entry) AND
+// the HomePane featured fetch (gated on `user()` via `home.ts`
+// `homeData`). The result is a burst of `GET /networks/<prev-net>/…/
+// messages` + `/featured`, all 404, which trips the host `http-404`
+// fail2ban jail and firewall-bans the client IP. The `onIdentityChange`
+// purge below clears all three so no previous-identity network / channel
+// state survives the switch. (An earlier moduledoc claimed "no on(token)
+// cleanup needed" — that was the #281 bug's origin.)
 //
 // BUG1-FIX: `mutateNetworks` is exported so `userTopic.ts` can patch
 // a single network's `nick` field in-place when the server broadcasts
@@ -59,7 +60,7 @@ import { applyMeEnvelope } from "./readCursor";
 // consumers (subscribe.ts DM-listener loop, query-window own-nick skip)
 // see the updated nick immediately.
 
-const exports = createRoot(() => {
+const exports = identityScopedStore((onIdentityChange) => {
   const [user, { mutate: mutateUserResource, refetch: refetchUserResource }] = createResource<
     MeResponse | null,
     string | null
@@ -133,34 +134,27 @@ const exports = createRoot(() => {
       return Object.fromEntries(entries);
     });
 
-  // #281 — identity-change purge. createResource does NOT clear its
-  // value when its source signal goes falsy (see moduledoc); on detach
-  // (token: tokA → null) user/networks/channelsBySlug keep the previous
-  // account's data, and on re-login as a different account the
-  // token-tracking effects in subscribe.ts + the HomePane featured fetch
-  // replay that stale list under the new bearer → the 404 self-ban
-  // burst. Mirror the on(token) reset arms in scrollback.ts /
-  // selection.ts / subscribe.ts: `prev != null && t !== prev` fires on
-  // the real identity transitions (logout tokA→null, rotation tokA→tokB)
-  // and masks the initial registration (prev===undefined) + cold login
-  // (prev===null). `batch` so the three mutations land as one atomic
-  // update — no dependent computed observes a half-purged (new-token,
-  // stale-networks) state that could re-fire a fetch. Clearing
-  // `networks` alone stops the burst (every replay loop is gated on a
-  // matching entry in networks()), but purge all three so no consumer
-  // (isAdmin, ownNick / socketUserName readers) ever observes the
-  // previous identity after the switch.
-  createEffect(
-    on(token, (t, prev) => {
-      if (prev != null && t !== prev) {
-        batch(() => {
-          mutateUserResource(null);
-          mutateNetworksResource([]);
-          mutateChannelsResource({});
-        });
-      }
-    }),
-  );
+  // #281 — purge on identity change (see moduledoc for the createResource
+  // stale-value mechanism). `user` is the ROOT of the burst: it's keyed
+  // on `token`, `networks` (keyed on `user`) + `channelsBySlug` (keyed on
+  // `networks`) cascade from it, and `home.ts` `homeData` (→ the HomePane
+  // featured fetch) reads `user()` directly — so clearing `user` is what
+  // stops BOTH replay arms (the subscribe.ts loops via empty networks /
+  // channels, AND the featured fetch via empty homeData). We still purge
+  // all three explicitly: `batch` makes it one atomic update (no
+  // dependent computed observes a half-purged new-token / stale-networks
+  // state that could re-fire a fetch), and no consumer (isAdmin, ownNick
+  // / socketUserName, sidebar) ever reads the previous identity during
+  // the refetch window. The factory's `prev != null && t !== prev` filter
+  // fires only on the real transitions (logout tokA→null, rotation
+  // tokA→tokB) — initial registration + cold login are masked.
+  onIdentityChange(() => {
+    batch(() => {
+      mutateUserResource(null);
+      mutateNetworksResource([]);
+      mutateChannelsResource({});
+    });
+  });
 
   const refetchChannels = (): void => {
     void refetchChannelsResource();
