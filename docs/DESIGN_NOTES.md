@@ -24062,3 +24062,43 @@ a fresh `position: fixed` anchor.
 _Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
 change (`activeWindows.ts` + `NextActiveButton.tsx` + `ScrollbackPane.tsx` +
 `Shell.tsx` + `themes/default.css` + tests). No server, no schema, no config._
+
+## 2026-07-17 — #284 (P1, cic): password field always-visible + optional on the main login form (drop the password-behind-Advanced gating)
+
+Login previously hid the password inside the collapsed **Advanced**
+disclosure (a hangover from the abandoned "two-step" login design, which
+would have probed for a pre-existing credential before prompting). #284
+**cancels that gating**: the password field moves back **onto the main form,
+always visible, labelled `Password (optional)`**. Advanced keeps only ident +
+realname (#152).
+
+**Why the gating was pointless (verified in the server code, no change
+needed).** The worry was "don't ask for a password we'd waste" — but grappa
+already fires an entered password to NickServ as an IDENTIFY on first connect
+**even with no pre-existing credential**:
+- `lib/grappa/visitors/login.ex` threads `input.password` through the
+  fresh-visitor login path (`spawn_and_await`).
+- `lib/grappa/visitors/session_plan.ex` `with_login_identify/2` rewrites a
+  fresh anon plan carrying a password to `auth_method: :nickserv_identify`.
+- `lib/grappa/irc/auth_fsm.ex` `maybe_nickserv_identify` sends
+  `PRIVMSG NickServ :IDENTIFY <pw>` at numeric 001.
+- `lib/grappa/session/server.ex` persists it via `Visitors.commit_password/3`
+  when `+r` MODE is observed.
+
+So **no login branch drops the password** — prompting up-front costs nothing.
+Empty password → minimal `{identifier}` body → anonymous/guest login
+(`auth.ts` already omits the key when blank). Non-empty → `{identifier,
+password}` → IDENTIFY at 001. Both paths pre-existed; #284 is purely the cic
+form layout catching up.
+
+**Apply:** when a conditional UI gate exists "to avoid wasting user input,"
+verify the downstream actually wastes it before keeping the gate. Here it
+didn't — the server always uses the password — so the gate was pure friction.
+Simpler-is-better: an always-visible optional field beats a two-step probe
+that guards nothing. cic still originates no state; the identify decision
+stays server-side (empty vs non-empty at the `/auth/login` boundary).
+
+_Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
+change (`Login.tsx` + `Login.test.tsx` + `issue204-foolproof-login.spec.ts` +
+new `issue284-password-always-visible.spec.ts`). No server, no schema, no
+config — the NickServ IDENTIFY path already exists._

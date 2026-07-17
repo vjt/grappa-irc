@@ -4,10 +4,11 @@
 // the build recipe it ships a REAL browser spec asserting the visible
 // outcomes, not a hollow smoke test:
 //
-//   1. Minimal-by-default view — big "IRC" wordmark, one nick field, the
-//      Advanced toggle, a Connect button; the password is NOT in the DOM.
-//   2. Advanced toggle reveals the password, and sits BETWEEN the nick
-//      input and Connect (vjt layout fix).
+//   1. Main-form view — big "IRC" wordmark, a nick field, the always-visible
+//      optional password field (#284), the Advanced toggle, a Connect button;
+//      realname/ident are NOT in the DOM until Advanced opens.
+//   2. Advanced toggle reveals realname + ident (#284: password moved OUT to
+//      the main form), and sits BETWEEN the nick input and Connect (vjt fix).
 //   3. On-submit nick sanitization: `my nick` → `my_nick` reflected into
 //      the field, and the connecting spinner renders.
 //   4. Illegal nick (leading digit) → inline foolproof error, no navigation.
@@ -30,23 +31,28 @@ test.describe("#204 foolproof login", () => {
     await expect(page.getByLabel(/nick or email/i)).toBeVisible({ timeout: 10_000 });
   });
 
-  test("minimal view: IRC wordmark + nick + Advanced, password hidden", async ({ page }) => {
+  test("main-form view: IRC wordmark + nick + password (optional) + Advanced", async ({ page }) => {
     await expect(page.getByText("IRC", { exact: true })).toBeVisible();
     await expect(page.getByLabel(/nick or email/i)).toBeVisible();
     await expect(page.getByRole("button", { name: /advanced/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /^connect$/i })).toBeVisible();
-    // Password is conditionally rendered — absent until Advanced opens.
-    await expect(page.getByLabel(/password/i)).toHaveCount(0);
+    // #284 — password is ALWAYS visible on the main form (not behind Advanced).
+    await expect(page.getByLabel(/password/i)).toBeVisible();
+    // realname/ident are conditionally rendered — absent until Advanced opens.
+    await expect(page.getByLabel(/real name/i)).toHaveCount(0);
   });
 
-  test("Advanced toggle reveals the password and sits between nick and Connect", async ({
+  test("Advanced toggle reveals realname + ident and sits between nick and Connect", async ({
     page,
   }) => {
     const toggle = page.getByRole("button", { name: /advanced/i });
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // #284 — realname/ident are behind Advanced (password lives on the main form).
+    await expect(page.getByLabel(/real name/i)).toHaveCount(0);
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    await expect(page.getByLabel(/password/i)).toBeVisible();
+    await expect(page.getByLabel(/real name/i)).toBeVisible();
+    await expect(page.getByLabel(/^ident$/i)).toBeVisible();
 
     // DOM order: nick → Advanced → Connect (vjt layout fix). Compare
     // document positions in-page.
@@ -136,10 +142,10 @@ test.describe("#204 foolproof login", () => {
 
 // Mobile-webkit smoke (@webkit → runs on the iPhone-15 project). vjt
 // condition (3) is iPad/mobile-first tap targets; this verifies the
-// minimal view + Advanced disclosure actually render + tap on a real
+// main-form view + Advanced disclosure actually render + tap on a real
 // mobile WebKit viewport, where chromium/jsdom are blind to mobile CSS.
 test.describe("#204 foolproof login @webkit mobile", () => {
-  test("minimal view renders and Advanced reveals the password on iPhone", async ({ page }) => {
+  test("main-form view renders and Advanced reveals realname/ident on iPhone", async ({ page }) => {
     await page.addInitScript(() => {
       localStorage.setItem("cic.installChoice", "browser");
     });
@@ -148,13 +154,15 @@ test.describe("#204 foolproof login @webkit mobile", () => {
     const nick = page.getByLabel(/nick or email/i);
     await expect(nick).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText("IRC", { exact: true })).toBeVisible();
-    await expect(page.getByLabel(/password/i)).toHaveCount(0);
+    // #284 — password is on the main form; realname/ident behind Advanced.
+    await expect(page.getByLabel(/password/i)).toBeVisible();
+    await expect(page.getByLabel(/real name/i)).toHaveCount(0);
 
     // Tap the Advanced disclosure (real touch tap on mobile webkit) and
-    // confirm the password field reveals — the collapsible works on touch.
+    // confirm realname/ident reveal — the collapsible works on touch.
     const toggle = page.getByRole("button", { name: /advanced/i });
     await toggle.tap();
-    await expect(page.getByLabel(/password/i)).toBeVisible();
+    await expect(page.getByLabel(/real name/i)).toBeVisible();
 
     // Connect is comfortably tall (≥44px) — the tap-target contract from
     // the CSS, asserted on the rendered box rather than the declared rule.

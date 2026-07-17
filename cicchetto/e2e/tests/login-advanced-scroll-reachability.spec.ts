@@ -8,7 +8,8 @@
 // `.login-form` grows to ~643px; on a 480px viewport it overflows. But NO
 // ancestor is a scroll container (`overflow:hidden` clips, nothing offers
 // `auto`), so a real user wheel/touch gesture scrolls NOTHING — Connect (and
-// the password/realname/ident inputs) sit permanently off-screen, unreachable.
+// the realname/ident inputs in the disclosure, plus the always-visible
+// password field at the top) sit permanently off-screen, unreachable.
 // `overflow:hidden` was deliberate (it blocks the iOS document-drag-chrome
 // bug), so the fix makes the card scroll INTERNALLY without letting the
 // document overflow.
@@ -32,8 +33,10 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("login Advanced section stays reachable on a short viewport", () => {
-  // Short enough that the open Advanced form (brand + nick + toggle +
-  // password + realname + ident + two hints + Connect) overflows.
+  // Short enough that the open Advanced form (brand + nick + password + hint +
+  // toggle + realname + ident + hint + Connect) overflows. #284 moved the
+  // password OUT to the main form above the toggle; realname + ident are the
+  // disclosure content below it.
   test.use({ viewport: { width: 390, height: 480 } });
 
   test.beforeEach(async ({ page }) => {
@@ -47,10 +50,11 @@ test.describe("login Advanced section stays reachable on a short viewport", () =
   test("open Advanced → wheel reaches Connect (bottom) then password (top)", async ({ page }) => {
     const connect = page.getByRole("button", { name: /^connect$/i });
     const password = page.getByLabel(/password/i);
+    const realname = page.getByLabel(/real name/i);
 
     // Open the disclosure so the form grows past the viewport.
     await page.getByRole("button", { name: /advanced/i }).click();
-    await expect(password).toBeVisible();
+    await expect(realname).toBeVisible();
 
     // Sanity: the form overflows this short viewport — Connect sits below the
     // fold before any scroll. If this ever fails the viewport got too tall and
@@ -93,10 +97,14 @@ test.describe("login Advanced section stays reachable on a short viewport", () =
       .toBe(true);
     await expect(connect).toBeInViewport();
     await expect(connect).toBeEnabled();
+    // #284 — the disclosure content (realname, immediately above Connect) is
+    // reachable at the bottom-scroll position too: a regression that clipped
+    // ONLY the disclosure top would be caught here, not masked by Connect.
+    await expect(realname).toBeInViewport();
 
-    // Wheel back UP — the TOP of the disclosure must be reachable too (the
-    // centered-clip bug clipped BOTH ends). Poll until the password input is
-    // back in the viewport.
+    // Wheel back UP — the TOP of the card must be reachable too (the
+    // centered-clip bug clipped BOTH ends). The always-visible password field
+    // is the topmost input above the toggle; poll until it is back in view.
     await expect
       .poll(
         async () => {
