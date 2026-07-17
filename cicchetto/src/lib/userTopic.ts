@@ -730,7 +730,7 @@ createRoot(() => {
           // C8.3 — away visual indicator. Server broadcasts
           // away_confirmed with state: "away" | "present" on both set
           // and cancel paths. Update the awayByNetwork signal so the
-          // Sidebar can show [away].
+          // Sidebar can show the 💤 badge (#276).
           //
           // #268 — this arm does NOT clear the mentions bundle. It used to
           // (`clearMentionsBundle` on state === "away"), but `away_confirmed`

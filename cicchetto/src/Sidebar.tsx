@@ -366,9 +366,15 @@ const Sidebar: Component<Props> = () => {
                     {/* C8.3 — away visual indicator. Surfaces on the
                       collapsed network-header row when the user is in away
                       state on this network. Driven by `away_confirmed`
-                      server event via awayStatus.ts. */}
+                      server event via awayStatus.ts.
+                      #276 — the VISIBLE label is the 💤 (zzz) emoji, not the
+                      word "away". The accessible name stays the WORD "away"
+                      (aria-label) so a screen reader announces the state, not
+                      the emoji's "sleeping symbol" glyph name. */}
                     <Show when={awayByNetwork()[network.slug]}>
-                      <span class="sidebar-away-badge">[away]</span>
+                      <span class="sidebar-away-badge" role="img" aria-label="away" title="away">
+                        {"💤"}
+                      </span>
                     </Show>
                     {/* #100 — transient reconnect indicator. Surfaces on the
                       network-header row while a Session (re)establishes the
