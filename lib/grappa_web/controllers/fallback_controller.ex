@@ -70,6 +70,12 @@ defmodule GrappaWeb.FallbackController do
            | :last_admin
            | :share_token_expired
            | :share_token_consumed
+           | :rate_limited
+           | :not_raster
+           | :too_large
+           | :ssrf_blocked
+           | :fetch_failed
+           | :image_reencode_failed
            | {:invalid_setting, String.t()}
            | {:file_too_large, pos_integer()}
            | {:metadata_strip, String.t()}
@@ -181,6 +187,68 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:not_found)
     |> json(%{error: "not_found"})
+  end
+
+  # #75 themes — per-(subject, day) creation/copy quota exhausted
+  # (`Grappa.RateLimit.DailyQuota`). 429 is the canonical "you did nothing
+  # wrong, just too often" surface; cic renders "you've saved enough themes
+  # today, try tomorrow." No Retry-After: the reset is a calendar-day
+  # boundary, not a rolling window, so a seconds hint would mislead.
+  def call(conn, {:error, :rate_limited}) do
+    conn
+    |> put_status(:too_many_requests)
+    |> json(%{error: "rate_limited"})
+  end
+
+  # #75 themes background pipeline — the source (upload or fetched URL) is not
+  # a raster image (SVG, text, unknown type). 415: the request shape is valid,
+  # the media type is not one we re-host. Distinct atom from
+  # `:unsupported_media_type` (the /api/uploads MIME gate) so the theme editor
+  # can render a background-specific "raster images only, no SVG" hint.
+  def call(conn, {:error, :not_raster}) do
+    conn
+    |> put_status(:unsupported_media_type)
+    |> json(%{error: "not_raster"})
+  end
+
+  # #75 themes background pipeline — the source exceeds the byte cap. 413 with
+  # the bare tag (the cap is a fixed module constant, not admin-tunable, so no
+  # value is threaded through — unlike `{:file_too_large, max_bytes}`).
+  def call(conn, {:error, :too_large}) do
+    conn
+    |> put_status(:request_entity_too_large)
+    |> json(%{error: "too_large"})
+  end
+
+  # #75 themes background fetch-by-URL — the resolved IP fell inside a blocked
+  # range (loopback/private/link-local/metadata/ULA/v4-mapped) per
+  # `Grappa.Net.Ssrf`. 422: well-formed request, semantically refused. The
+  # resolved IP stays server-side (logged) — echoing it would confirm an
+  # internal address to a prober.
+  def call(conn, {:error, :ssrf_blocked}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "ssrf_blocked"})
+  end
+
+  # #75 themes background fetch-by-URL — the remote fetch failed (connect
+  # error, non-200, redirect, oversized-mid-stream). 422: the URL was
+  # syntactically fine but we couldn't retrieve a usable image from it.
+  def call(conn, {:error, :fetch_failed}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "fetch_failed"})
+  end
+
+  # #75 themes background pipeline — ffmpeg could not decode+re-encode the
+  # bytes to a canonical PNG (garbage, a polyglot with no valid image stream,
+  # or a post-decode store failure). 422: fail CLOSED, the reason stays
+  # server-side (tool stderr can leak tmp paths), same posture as
+  # `:metadata_strip`.
+  def call(conn, {:error, :image_reencode_failed}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "image_reencode_failed"})
   end
 
   # T32 (S1.3): `Networks.disconnect/2` rejects if the credential is
