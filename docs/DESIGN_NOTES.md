@@ -23274,10 +23274,18 @@ parallel tracker invented): the focused `--nab-lift` goes `4rem → 8rem`
 (`3rem` bottom bar + `~3.5rem` compose box + margin), so the circle rides
 clearly ABOVE the send button while staying reachable/on-screen. The compose
 textarea's `rows=1` + `resize: none` (fixed height, scrolls internally) and
-the bottom bar's stable `min-height: 3rem` make the fixed `8rem` robust — no
-realistic focused state re-introduces the overlap, and on a real
-keyboard-shrunk `--viewport-height` the circle still lands above the compose
-row and well on-screen. Pure CSS — one rule value + comment; no markup / wire
+the bottom bar's stable `min-height: 3rem` make the fixed `8rem` robust — clear
+of the send button in the reported **plain focused state**, and on a real
+keyboard-shrunk `--viewport-height` it still lands above the compose row and
+well on-screen. **Known residual (accepted, MVP):** `ComposeBox` renders
+variable-height sibling strips BELOW the form (`.compose-box-upload-progress` /
+`-upload-error` / `-error` / `-not-joined`) that pin to the viewport bottom and
+push the send button UPWARD; a simultaneous active upload or a multi-line error
+can narrow the gap and, worst case, re-touch the circle. Eliminating that fully
+would mean anchoring the lift to the compose GROUP's variable height (a
+JS/layout-ref change beyond this MVP); the reported bug is the plain compose
+state, and the residual is a strictly better position than #264's `4rem`. The
+e2e covers the plain focused state only. Pure CSS — one rule value + comment; no markup / wire
 / component change, so the count / auto-hide / jump wiring and every vitest are
 untouched. Considered + rejected: (a) raising the send button's `z-index`
 (leaves the two still visually stacked — a tap ambiguity, not a fix); (b)

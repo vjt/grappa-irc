@@ -6484,7 +6484,14 @@ audio.media-viewer-media {
    must clear the bottom bar AND the compose box, so the circle rides ABOVE the
    send button while staying reachable/visible: 3rem (bottom bar) + ~3.5rem
    (compose box) + margin ≈ 8rem. Forward-fix, NOT a revert — reverting #264
-   re-buries the circle under the keyboard. See DESIGN_NOTES 2026-07-17. */
+   re-buries the circle under the keyboard. See DESIGN_NOTES 2026-07-17.
+
+   Known residual (accepted, MVP): `ComposeBox` can render variable-height
+   strips BELOW the form (upload progress/error, send error) that push the send
+   button up into this fixed band, so a simultaneous active upload or a
+   multi-line error CAN re-narrow the gap. Fully robust would mean anchoring to
+   the compose GROUP's variable height (bigger than this fix warrants); the
+   reported bug is the plain focused state, which 8rem clears comfortably. */
 .shell-mobile:has(textarea:focus, input:focus) .next-active-btn-mobile {
   --nab-lift: 8rem;
 }
