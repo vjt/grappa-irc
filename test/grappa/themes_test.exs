@@ -2,10 +2,12 @@ defmodule Grappa.ThemesTest do
   use Grappa.DataCase, async: true
 
   import Grappa.AuthFixtures
+  import Grappa.UploadFixtures, only: [bytes: 1]
 
   alias Grappa.Repo
   alias Grappa.Themes
   alias Grappa.Themes.{Theme, TokenModel}
+  alias Grappa.Uploads
   alias Grappa.Visitors.Visitor
 
   defp valid_payload do
@@ -204,6 +206,60 @@ defmodule Grappa.ThemesTest do
 
     test "a visitor owns nothing" do
       assert Themes.list_owned(visitor_subject()) == []
+    end
+  end
+
+  describe "get_active_theme/1 + set_active_theme/2" do
+    test "get_active_theme returns nil when the subject has no active theme" do
+      user = user_fixture()
+      assert Themes.get_active_theme({:user, user.id}) == nil
+    end
+
+    test "set_active_theme persists the pointer and get resolves it" do
+      user = user_fixture()
+      {:ok, theme} = Themes.create_theme({:user, user}, %{name: "Mine", payload: valid_payload()})
+
+      assert {:ok, set} = Themes.set_active_theme({:user, user.id}, theme.id)
+      assert set.id == theme.id
+      assert Themes.get_active_theme({:user, user.id}).id == theme.id
+    end
+
+    test "set_active_theme returns :not_found for a missing id (no pointer stored)" do
+      user = user_fixture()
+      assert {:error, :not_found} = Themes.set_active_theme({:user, user.id}, 9_999_999)
+      assert Themes.get_active_theme({:user, user.id}) == nil
+    end
+
+    test "get_active_theme returns nil when the stored pointer dangles" do
+      user = user_fixture()
+      {:ok, theme} = Themes.create_theme({:user, user}, %{name: "Mine", payload: valid_payload()})
+      {:ok, _} = Themes.set_active_theme({:user, user.id}, theme.id)
+      :ok = Themes.delete_theme({:user, user}, theme.id)
+
+      assert Themes.get_active_theme({:user, user.id}) == nil
+    end
+  end
+
+  describe "store_background/2" do
+    test "delegates to the background pipeline and returns an uploads slug" do
+      user = user_fixture()
+      path = Path.join(System.tmp_dir!(), "themetest-" <> Uploads.mint_slug())
+      File.write!(path, bytes(:gps_png))
+      on_exit(fn -> File.rm(path) end)
+      upload = %Plug.Upload{path: path, content_type: "image/png", filename: "bg.png"}
+
+      assert {:ok, slug} = Themes.store_background({:user, user.id}, {:upload, upload})
+      assert slug =~ ~r/\A[a-z2-7]{26}\z/
+    end
+
+    test "propagates a non-raster rejection" do
+      user = user_fixture()
+      path = Path.join(System.tmp_dir!(), "themetest-" <> Uploads.mint_slug())
+      File.write!(path, "hi")
+      on_exit(fn -> File.rm(path) end)
+      upload = %Plug.Upload{path: path, content_type: "text/plain", filename: "x.txt"}
+
+      assert {:error, :not_raster} = Themes.store_background({:user, user.id}, {:upload, upload})
     end
   end
 

@@ -33,17 +33,20 @@ defmodule Grappa.Themes do
       Grappa.Repo,
       Grappa.Subject,
       Grappa.Sys.HardenedCmd,
-      Grappa.Uploads
+      Grappa.Uploads,
+      Grappa.UserSettings
     ],
     dirty_xrefs: [Grappa.Visitors.Visitor],
-    exports: [Theme, TokenModel]
+    exports: [Theme, TokenModel, Wire]
 
   import Ecto.Query
 
   alias Grappa.Accounts.User
   alias Grappa.RateLimit.DailyQuota
   alias Grappa.Repo
-  alias Grappa.Themes.Theme
+  alias Grappa.Subject
+  alias Grappa.Themes.{BackgroundImage, Theme}
+  alias Grappa.UserSettings
   alias Grappa.Visitors.Visitor
 
   @system_user_name "system"
@@ -173,6 +176,54 @@ defmodule Grappa.Themes do
   end
 
   def copy_theme({:visitor, %Visitor{}}, _id), do: {:error, :forbidden}
+
+  @doc """
+  Resolve the subject's active theme (server-persisted per-subject pointer,
+  cross-device — #75 fork-1). Returns `nil` when no pointer is set OR the
+  pointer dangles (theme deleted / unpublished-and-gone) — the caller (cic)
+  falls back to its built-in default look. Takes the bare-id subject tuple
+  (`Grappa.UserSettings` scope shape).
+  """
+  @spec get_active_theme(Subject.t()) :: Theme.t() | nil
+  def get_active_theme(subject) do
+    case UserSettings.get_active_theme_id(subject) do
+      nil ->
+        nil
+
+      id ->
+        case get_theme(id) do
+          {:ok, theme} -> theme
+          {:error, :not_found} -> nil
+        end
+    end
+  end
+
+  @doc """
+  Point the subject at `id` as their active theme. Any readable theme (every
+  theme is public by id — share-link target) is a valid target; the pointer is
+  only stored once the theme is confirmed to exist, so a bad id never persists.
+  Takes the bare-id subject tuple.
+  """
+  @spec set_active_theme(Subject.t(), integer()) ::
+          {:ok, Theme.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def set_active_theme(subject, id) when is_integer(id) do
+    with {:ok, theme} <- get_theme(id),
+         {:ok, _settings} <- UserSettings.put_active_theme_id(subject, id) do
+      {:ok, theme}
+    end
+  end
+
+  @doc """
+  Run a background-image source through the re-encode + re-host pipeline and
+  return the uploads slug for storing in a theme payload's `background.image_id`.
+  The context is the door — controllers call this, never the sub-module. Takes
+  the bare-id subject tuple (`Grappa.Uploads` scope shape).
+  """
+  @spec store_background(Subject.t(), BackgroundImage.source()) ::
+          {:ok, String.t()} | {:error, BackgroundImage.error()}
+  def store_background(subject, source) do
+    BackgroundImage.process_and_store(subject, source)
+  end
 
   ## Internals
 
