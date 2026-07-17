@@ -23727,3 +23727,76 @@ only valid ship-proof.
 
 _Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
 JSX relocation + doc-comment updates. No server, no schema, no config._
+
+## 2026-07-17 — #281 (P1, cic): account switch replayed the previous session's fetches → 404 self-ban; purge network resources on identity change
+
+**The incident.** Switching accounts on the same client — detach account A
+(multiple networks/channels), log back in as a different account B — fired a
+~30-request burst of `GET /networks/<A-net>/channels/<chan>/messages?after=0` +
+`/networks/<A-net>/featured` **under B's bearer**, all `404` (B isn't attached
+to A's networks). The burst tripped the m42 host's aggressive `http-404`
+fail2ban jail, which **firewall-banned the client's public IP** — cutting off
+the web session that caused it and every other service on the host. A routine
+account switch self-banned the user.
+
+**Root cause (confirmed by reading Solid, not guessed).** cic's network tree
+lives in three token-keyed `createResource`s in `lib/networks.ts`: `user`
+(keyed on `token`), `networks` (keyed on `user`), `channelsBySlug` (keyed on
+`networks`). The moduledoc claimed "no `on(token)` cleanup needed —
+createResource re-fetches on rotation." That is the bug: re-fetch is not the
+same as **clear**. Solid 1.9.12's `createResource` `load()`
+(`node_modules/solid-js/dist/solid.cjs:343`) does
+`if (lookup == null || lookup === false) loadEnd(pr, untrack(value))` — when
+the source signal goes falsy it RETAINS the last resolved value. So on detach
+(`token: tokA → null`) all three resources keep account A's data. On re-login
+as B (`null → tokB`) the token-tracking reactive effects in `subscribe.ts`
+(channels loop, query-windows loop, dm-listener loop, server-window loop) and
+the `HomePane` featured fetch re-run against A's **stale** network/channel list
+using B's new bearer — before the resources refetch B's data — producing the
+burst. The RED e2e captured all four replay sources: `#bofh` (channels loop),
+`$server` (server loop), the own-nick topic (dm-listener loop), and `featured`.
+
+**Fix — reuse the verb, not a new noun.** Every other identity-scoped cic store
+already resets on identity change (`scrollback.ts`, `selection.ts`,
+`subscribe.ts`, `readCursor.ts`, …). `networks.ts` was the sole gap. Added the
+same `on(token)` arm inside its `createRoot`: on `prev != null && t !== prev`
+(the two real transitions — logout `tokA→null`, rotation `tokA→tokB`; masks
+initial registration `prev===undefined` and cold login `prev===null`)
+`batch`-mutate all three resources to empty (`user→null`, `networks→[]`,
+`channelsBySlug→{}`). `batch` so no dependent computed observes a half-purged
+(new-token, stale-networks) state that could re-fire a fetch.
+
+**Why clear all three (not just `networks`).** Clearing `networks()` alone would
+stop the burst — every replay loop is gated on a matching entry in `networks()`
+(the channels/query/dm/server loops `continue` when the slug/id isn't found, and
+`HomePane` renders no rows) — so an empty `networks()` neuters them all. But we
+purge `user` and `channelsBySlug` too so no consumer (`isAdmin`, `ownNick` /
+`socketUserName` readers, the sidebar projection) ever observes the previous
+identity for the refetch window after the switch. General rule (any
+stale-identity cache that outlives the switch), not the libera/oftc instance.
+
+**Deferred defense-in-depth (separate deploy classes).** The issue listed two
+secondary hardenings that this client fix does NOT need but are worth doing for
+the general class: (b) SERVER — return `200` + empty page instead of `404` for
+a well-formed history request against a net/chan the session isn't attached to
+(server code → hot/cold deploy); (c) INFRA — whitelist the API vhost from the
+aggressive `http-404` jail, or raise its threshold, so ANY 404-emitting client
+bug can't self-ban a real user (fail2ban config on the m42 host). Both cross
+deploy classes the client fix can't own; filed as follow-up issues. The client
+purge removes the request burst at the source, so the self-ban is fixed without
+them.
+
+**Regression proof.** `cicchetto/e2e/tests/issue281-account-switch-no-replay.spec.ts`
+boots as A (seeded vjt: bahamut-test + `#bofh`), snapshots every request URL via
+a synchronous `window.fetch` wrap (`feedback_e2e_fetch_wrap_sync_race_snapshot`
+— `page.route` yields the event loop and masks the burst race), performs the
+real in-context switch (drawer → detach → `/login` → log in as admin-vjt, which
+has NO networks so the real login spawns no upstream Session.Server), and
+asserts ZERO `messages`/`featured` fetches for A's network fire after the
+switch. RED before the fix (4 A-net fetches under B); GREEN after (zero).
+jsdom/vitest can't exercise the request burst, so the Playwright fetch-wrap is
+the only valid ship-proof.
+
+_Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
+reactive-glue + doc-comment change in `lib/networks.ts`. No server, no schema,
+no config._
