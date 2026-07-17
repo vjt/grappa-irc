@@ -12,6 +12,7 @@ defmodule Grappa.Application do
       Grappa.OutboundV6Pool,
       Grappa.PubSub,
       Grappa.Push,
+      Grappa.RateLimit,
       Grappa.Repo,
       Grappa.Session,
       Grappa.Uploads,
@@ -142,6 +143,13 @@ defmodule Grappa.Application do
         # placed here to sit alongside the other ETS singletons
         # (Backoff, NetworkCircuit) for ordering clarity.
         Grappa.Visitors.ShareTokens,
+        # #75 — per-(bucket, subject, day) creation quota. ETS-backed
+        # singleton, sibling of Backoff / NetworkCircuit / ShareTokens:
+        # must exist before Endpoint so `Grappa.Themes.create_theme/2`'s
+        # rate-limit check (via the ThemesController) never races a
+        # missing table. No upstream deps; writes funnel through its
+        # GenServer for atomic check-and-record.
+        Grappa.RateLimit.DailyQuota,
         # #252 — vhost reverse-DNS (PTR) name cache. ETS-backed singleton
         # sibling of Backoff / NetworkCircuit / ShareTokens: must exist
         # before Endpoint so `UserSettingsController.show_vhost/2`'s

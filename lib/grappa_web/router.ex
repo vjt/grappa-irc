@@ -266,6 +266,26 @@ defmodule GrappaWeb.Router do
     # endpoint lives under /auth above (unauthenticated by design).
     post "/me/share-token", ShareTokenController, :mint
 
+    # #75 — themes gallery + owned library + share-by-id + server-persisted
+    # active theme. Every theme is public by id (share-link target); authz
+    # (owner-or-admin edit/delete, rate-limited create/copy) lives in
+    # `Grappa.Themes`. `/themes*` rides the new nginx `themes` REST alt;
+    # `/me/theme` + `/me/themes` ride the existing `me` alt. `/themes/background`
+    # is a 2-segment literal that never collides with `/themes/:id/*` (3-seg).
+    get "/themes", ThemesController, :index
+    get "/me/themes", ThemesController, :mine
+    post "/themes", ThemesController, :create
+    post "/themes/background", ThemesController, :background
+    get "/themes/:id", ThemesController, :show
+    patch "/themes/:id", ThemesController, :update
+    delete "/themes/:id", ThemesController, :delete
+    post "/themes/:id/publish", ThemesController, :publish
+    post "/themes/:id/unpublish", ThemesController, :unpublish
+    post "/themes/:id/copy", ThemesController, :copy
+
+    get "/me/theme", MeThemeController, :show
+    put "/me/theme", MeThemeController, :update
+
     get "/networks", NetworksController, :index
 
     # Push notifications cluster B1 (2026-05-14) — Web Push

@@ -11,7 +11,10 @@ defmodule Grappa.RateLimit do
       consumed by `Grappa.Session.Backoff` (per-(subject, network)
       reconnect pacing) and `Grappa.Admission.NetworkCircuit`
       (per-network failure circuit cooldown).
+    * `DailyQuota` — per-(bucket, subject, day) creation quota
+      (ETS-backed GenServer), consumed by `Grappa.Themes` for the
+      ~5/day theme save+copy anti-abuse cap (#75).
   """
 
-  use Boundary, top_level?: true, deps: [], exports: [JitteredCooldown]
+  use Boundary, top_level?: true, deps: [], exports: [JitteredCooldown, DailyQuota]
 end

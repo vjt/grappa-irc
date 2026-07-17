@@ -145,6 +145,15 @@ config :grappa, Grappa.ChannelDirectory,
   progress_throttle_ms: 1_000,
   ingest_batch: 200
 
+# Themes (#75). `image_fetcher` is the fetch-by-URL implementation resolved by
+# `Grappa.Themes.BackgroundImage` at runtime; prod uses the real Req+SSRF impl,
+# tests inject a Mox mock. `daily_quota` (default 5, read via compile_env in
+# Grappa.Themes) is the per-user/day save+copy cap. `image_ssrf_resolver`
+# (default `Grappa.Net.Ssrf`, read via compile_env in ImageFetcher.Req) is the
+# rebind-safe resolver seam — test.exs swaps in a loopback-permitting resolver
+# so Bypass is reachable while private ranges stay blocked.
+config :grappa, :themes, image_fetcher: Grappa.Themes.ImageFetcher.Req
+
 config :grappa, Grappa.Repo,
   adapter: Ecto.Adapters.SQLite3,
   database: "runtime/grappa_dev.db"

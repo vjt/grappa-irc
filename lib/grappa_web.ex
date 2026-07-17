@@ -43,6 +43,7 @@ defmodule GrappaWeb do
         Grappa.SpawnOrchestrator,
         Grappa.Subject,
         Grappa.SubjectSearch,
+        Grappa.Themes,
         Grappa.Uploads,
         Grappa.UserSettings,
         Grappa.Vhosts,
