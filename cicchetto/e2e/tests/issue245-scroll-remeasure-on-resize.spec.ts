@@ -2,34 +2,34 @@
 // hot-reload / bundle-refresh until each tab is reopened (WebKit reflow).
 //
 // ROOT CAUSE (confirmed from code + CSS, NOT from a device):
-//   `.scrollback` base rule is `touch-action: none` (themes/default.css) —
-//   it REJECTS all pan/scroll. ONLY `.scrollback.scrollback-overflowing`
-//   flips to `touch-action: pan-y`. That class is JS-measured:
-//   `ScrollbackPane.measureOverflow()` sets `isOverflowing =
-//   scrollHeight > clientHeight`, and `clientHeight` is viewport-derived
-//   (the mobile shell height tracks `--vh` / `visualViewport.height`).
-//   measureOverflow ran ONLY on mount + on message-length-change — NEVER
-//   on a viewport resize. On a FULL-PAGE reload in an installed iOS PWA
-//   (bundleHash.performRefresh → window.location.reload) the
-//   visualViewport height is transiently wrong at boot and SETTLES a few
-//   hundred ms later via a `resize` event (which rewrites `--vh`); the
-//   cold mount measured `clientHeight` before that settle and latched
-//   `isOverflowing=false`, so `.scrollback` kept `touch-action: none` and
-//   was unscrollable in every tab until a remount (opening the tab a
-//   SECOND time) re-ran the onMount measure after the viewport settled.
-//   The fix wires `measureOverflow()` onto the EXISTING onMount
-//   `resize` / `visualViewport.resize` seam so the settle re-measures
-//   overflow and unjams the pane without a remount.
+//   `.scrollback`'s touch-action is JS-measured by
+//   `ScrollbackPane.measureOverflow()` against `clientHeight`, which is
+//   viewport-derived (the mobile shell height tracks `--vh` /
+//   `visualViewport.height`). measureOverflow ran ONLY on mount + on
+//   message-length-change — NEVER on a viewport resize. On a FULL-PAGE reload
+//   in an installed iOS PWA (bundleHash.performRefresh →
+//   window.location.reload) the visualViewport height is transiently wrong at
+//   boot and SETTLES a few hundred ms later via a `resize` event (which
+//   rewrites `--vh`); the cold mount measured `clientHeight` before that
+//   settle, so the gate was stale until a remount. The #245 fix wires
+//   `measureOverflow()` onto the EXISTING onMount `resize` /
+//   `visualViewport.resize` seam so the settle re-measures without a remount.
+//
+//   #285 reopen — the gate is now FAIL-OPEN: base `.scrollback
+//   { touch-action: pan-y }`, and `.scrollback.scrollback-locked
+//   { touch-action: none }` LOCKS the pane only when the content definitively
+//   FITS a trustworthy clientHeight. So the class/touch-action mapping this
+//   spec asserts is: overflow → NOT locked → `pan-y`; fits → locked → `none`.
+//   The #245 resize-remeasure contract this spec proves is unchanged.
 //
 // WIRING-ONLY — this is NOT a device repro
 // (feedback_playwright_webkit_not_ios_scroll). Playwright webkit has no OS
 // keyboard and cannot reproduce real iOS WebKit post-reload reflow / touch
 // scroll physics. This spec proves the CONTRACT: a `visualViewport` resize
-// that changes whether the content overflows re-computes
-// `scrollback-overflowing` (→ touch-action) — exactly the wiring the fix
-// adds. A GREEN here does NOT close #245; that needs a real iOS Safari PWA
-// (vjt on-device). Mirrors the simulate-via-stubbed-`vv.height` approach of
-// issue66-keyboard-overlap.spec.ts.
+// that changes whether the content overflows re-computes the `scrollback-locked`
+// gate (→ touch-action) — exactly the wiring the fix adds. A GREEN here does
+// NOT close #245; that needs a real iOS Safari PWA (vjt on-device). Mirrors the
+// simulate-via-stubbed-`vv.height` approach of issue66-keyboard-overlap.spec.ts.
 //
 // `@webkit` opts this into the `webkit-iphone-15` project so `html.is-ios`
 // engages and the real iOS height path (`body { height: calc(var(--vh) *
@@ -120,25 +120,26 @@ test("@webkit #245 — .scrollback re-measures overflow (touch-action) on visual
 
   // BASELINE (fix-independent — the mount + REST-load length-effect measure
   // at the real viewport): the small corpus fits, so `.scrollback` does NOT
-  // overflow → base `touch-action: none`. Correct: nothing to scroll.
-  await expect(scrollback).not.toHaveClass(/scrollback-overflowing/, { timeout: 10_000 });
+  // overflow → fail-open gate LOCKS to `touch-action: none`. Correct: nothing
+  // to scroll.
+  await expect(scrollback).toHaveClass(/scrollback-locked/, { timeout: 10_000 });
   await expect.poll(touchAction, { timeout: 5_000 }).toBe("none");
 
   // DISCRIMINATING (the #245 bug + fix): shrink the visible viewport (the
   // on-device post-reload settle to a height SMALLER than the cold-mount
   // measure) so the SAME content now overflows. The pane MUST re-measure on
-  // the resize and flip to `touch-action: pan-y`. WITHOUT the fix, resize
-  // re-anchors scroll but never re-measures overflow, so the class stays
-  // absent and the pane is JAMMED (`touch-action: none`) exactly as
-  // reported. expect.poll absorbs measureOverflow's double-rAF.
+  // the resize and UNLOCK to `touch-action: pan-y`. WITHOUT the #245 fix,
+  // resize re-anchors scroll but never re-measures the gate, so the lock stays
+  // and the pane is JAMMED (`touch-action: none`). expect.poll absorbs
+  // measureOverflow's double-rAF.
   await setVisualViewportHeight(page, TINY_VV_PX);
-  await expect(scrollback).toHaveClass(/scrollback-overflowing/, { timeout: 5_000 });
+  await expect(scrollback).not.toHaveClass(/scrollback-locked/, { timeout: 5_000 });
   await expect.poll(touchAction, { timeout: 5_000 }).toBe("pan-y");
 
   // BIDIRECTIONAL confirmation: grow the viewport back past the content →
-  // overflow must clear (touch-action back to none). Proves the re-measure
+  // the gate must re-LOCK (touch-action back to none). Proves the re-measure
   // tracks the viewport in BOTH directions, not a one-shot latch.
   await setVisualViewportHeight(page, HUGE_VV_PX);
-  await expect(scrollback).not.toHaveClass(/scrollback-overflowing/, { timeout: 5_000 });
+  await expect(scrollback).toHaveClass(/scrollback-locked/, { timeout: 5_000 });
   await expect.poll(touchAction, { timeout: 5_000 }).toBe("none");
 });

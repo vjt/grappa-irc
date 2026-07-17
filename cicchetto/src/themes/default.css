@@ -1509,13 +1509,13 @@ html.resize-dragging * {
   /* UX-3 Z3 R3+R4: `overflow-y: scroll` declares the container as
      always-scrollable for layout purposes (browsers auto-hide the
      indicator on iOS / macOS Safari / Firefox so no permanent UI
-     cost). But iOS still falls through `pan-y` to chrome reveal when
+     cost). iOS falls through `pan-y` to chrome reveal when
      scrollHeight ≤ clientHeight — there's no `:has-overflow` CSS
      selector to gate on, so ScrollbackPane.tsx measures the DOM
-     after layout and toggles `scrollback-overflowing` accordingly.
-     Base rule: `touch-action: none` (rejects pan, no chrome reveal).
-     Overflowing rule below flips to `pan-y` so vertical scroll
-     works when there's actually something to scroll. */
+     after layout and toggles `scrollback-locked` accordingly.
+     #285 reopen — FAIL-OPEN base: `touch-action: pan-y`. The lock rule
+     below rejects pan ONLY when a trustworthy measurement proves the
+     content does not overflow. */
   overflow-y: scroll;
   padding: 0.5rem 1rem;
   font-family: var(--font-mono);
@@ -1526,13 +1526,17 @@ html.resize-dragging * {
      animation when overscroll is not contained, even with `pan-y`
      enabled. */
   overscroll-behavior: contain;
-  /* UX-3 Z3 R4: default-deny pan. JS-measured `.scrollback-overflowing`
-     re-enables `pan-y` below when scrollHeight > clientHeight. */
-  touch-action: none;
+  /* #285 reopen — fail-open default. JS-measured `.scrollback-locked`
+     locks to `none` below only when the content definitively fits a
+     trustworthy clientHeight; a bad/pre-settle read can never latch the
+     pane dead (the reported cold-boot P0). A false-positive pannable pane
+     (iOS may reveal chrome on a pane with nothing to scroll) is the
+     accepted, harmless trade for never dead-locking scroll. */
+  touch-action: pan-y;
 }
 
-.scrollback.scrollback-overflowing {
-  touch-action: pan-y;
+.scrollback.scrollback-locked {
+  touch-action: none;
 }
 
 .scrollback-empty {

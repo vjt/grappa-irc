@@ -204,10 +204,11 @@ test.describe("issue #230 (mobile) — touch-drag-down loads older history when 
       .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
       .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
 
-    // Underfill precondition — the pane must NOT carry `scrollback-overflowing`,
-    // so the base rule applies. This is the state the touch rescue depends on:
-    // `touch-action: none` rejects the iOS chrome-drag AND still lets the JS
-    // touchmove handler see the gesture. Flipping it to `auto` reopens the hole.
+    // Underfill precondition — content fits, so the fail-open gate (#285
+    // reopen) LOCKS the pane (`.scrollback-locked` → `touch-action: none`).
+    // This is the state the touch rescue depends on: `touch-action: none`
+    // rejects the iOS chrome-drag AND still lets the JS touchmove handler see
+    // the gesture. Flipping it to `auto` reopens the hole.
     await expect
       .poll(async () => {
         const g = await scrollbackGeometry(page);
@@ -215,13 +216,26 @@ test.describe("issue #230 (mobile) — touch-drag-down loads older history when 
       })
       .toBeLessThanOrEqual(0);
 
-    const styles = await page.evaluate(() => {
+    // Fail-open gate (#285 reopen): the underfilled pane must have LOCKED to
+    // `touch-action: none` (content fits → trustworthy → locked). POLL it — the
+    // lock is now set by measureOverflow after layout settles, NOT baked by an
+    // unconditional base rule (that base is `pan-y` now). Mirrors issue245/#285.
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const el = document.querySelector('[data-testid="scrollback"]');
+            if (!el) throw new Error("scrollback container not found");
+            return getComputedStyle(el).touchAction;
+          }),
+        { timeout: 5_000 },
+      )
+      .toBe("none");
+    const overscrollBehaviorY = await page.evaluate(() => {
       const el = document.querySelector('[data-testid="scrollback"]');
       if (!el) throw new Error("scrollback container not found");
-      const cs = getComputedStyle(el);
-      return { touchAction: cs.touchAction, overscrollBehaviorY: cs.overscrollBehaviorY };
+      return getComputedStyle(el).overscrollBehaviorY;
     });
-    expect(styles.touchAction).toBe("none");
-    expect(styles.overscrollBehaviorY).toBe("contain");
+    expect(overscrollBehaviorY).toBe("contain");
   });
 });
