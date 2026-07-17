@@ -66,12 +66,33 @@ const TINY_VV_PX = 150;
 // clientHeight via a CSS layout / safe-area reflow that fires NO
 // window/visualViewport `resize` event. Mirrors `writeViewport`
 // (lib/viewportHeight.ts) — both `--vh` and `--viewport-height` — but OMITS
-// the dispatch. No dispatch = nothing re-runs `installViewportHeightTracker`,
-// so the direct set is not clobbered (the #245 clobber gotcha only bites when
-// a `resize` actually fires). The container box change is caught ONLY by the
-// #285 ResizeObserver — no `resize` event exists for #245's onResize to see.
+// the dispatch. The container box change is then caught ONLY by the #285
+// ResizeObserver — no `resize` event exists for #245's onResize to see.
+//
+// CLOBBER GUARD (reopen-flake fix, 2026-07-17): we ALSO stub the REAL
+// `visualViewport.height` (as #245 does via `Object.defineProperty`), but WITHOUT
+// dispatching a resize. Rationale: the reopen fix added an EVENT-INDEPENDENT
+// boot-settle re-read (viewportHeight.ts `SETTLE_REREAD_DELAYS_MS = [100,400,900]`)
+// that re-reads `window.visualViewport.height` on a timer and rewrites
+// `--viewport-height` / `--vh`. A bare CSS-var set leaves the real `vv.height` at
+// the device height (659px on webkit-iphone-15), so any pending settle timer (or
+// a stray real resize) reconciles our fake value BACK to 659px — the container
+// regrows and the fail-open gate RE-LOCKS to `touch-action: none`. That clobber
+// is timing-dependent (whether a re-read fires after we set the var) → green
+// locally, red on slower CI (the reported failure: the CI trace shows the gate
+// unlock at `--viewport-height:150px`, then RE-LOCK once the var was clobbered
+// back to 659px). Stubbing `vv.height` makes every production re-read write the
+// SAME value, so the simulated device state is self-consistent and the gate
+// stays where the ResizeObserver put it. We still dispatch NO resize: the
+// box-change re-measure under test remains the ResizeObserver alone, exactly as
+// before — this only removes the source-of-truth contradiction the bare CSS-var
+// set created, it does not change what is being asserted.
 async function setViewportVarsNoResize(page: Page, px: number): Promise<void> {
   await page.evaluate((h) => {
+    const vv = window.visualViewport;
+    if (vv) {
+      Object.defineProperty(vv, "height", { configurable: true, get: () => h });
+    }
     const s = document.documentElement.style;
     s.setProperty("--viewport-height", `${h}px`);
     s.setProperty("--vh", `${(h * 0.01).toFixed(2)}px`);
