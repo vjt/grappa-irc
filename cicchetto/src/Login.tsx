@@ -104,9 +104,10 @@ function isCaptchaInfo(info: unknown): info is { provider: string; site_key: str
 const Login: Component = () => {
   const [identifier, setIdentifier] = createSignal("");
   const [password, setPassword] = createSignal("");
-  // #152 — login-Advanced realname + ident (both optional, collapsed
-  // under the Advanced toggle alongside password). Blank = use server
-  // defaults (nick for ident, "Grappa Visitor" for realname).
+  // #152 — login-Advanced realname + ident (both optional, collapsed under
+  // the Advanced toggle). #284 moved password OUT to the always-visible main
+  // form, so Advanced now holds only these two. Blank = use server defaults
+  // (nick for ident, "Grappa Visitor" for realname).
   const [realname, setRealname] = createSignal("");
   const [ident, setIdent] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
@@ -293,9 +294,30 @@ const Login: Component = () => {
                 required
               />
 
-              {/* Advanced toggle sits BETWEEN the nick input and Connect
-                (vjt layout fix). Real button + aria-expanded + conditional
-                render (not display:none) so a11y + tests see the truth. */}
+              {/* #284 — password lives on the MAIN form, always visible and
+                labelled optional (supersedes the password-behind-Advanced
+                layout). Empty → anonymous/guest login; non-empty is fired to
+                NickServ as an IDENTIFY at numeric 001. That server path
+                already exists for fresh visitors (visitors/login.ex →
+                session_plan.with_login_identify → auth_fsm.maybe_nickserv_identify),
+                so prompting up-front wastes nothing: no login branch ever
+                drops the password. */}
+              <label for="login-password">Password (optional)</label>
+              <input
+                id="login-password"
+                type="password"
+                autocomplete="current-password"
+                value={password()}
+                onInput={(e) => setPassword(e.currentTarget.value)}
+              />
+              <p class="login-advanced-hint">
+                Leave blank to join as a guest. Enter your account password to log into a registered
+                account.
+              </p>
+
+              {/* Advanced toggle sits BETWEEN the password and Connect (vjt
+                layout fix). Real button + aria-expanded + conditional render
+                (not display:none) so a11y + tests see the truth. */}
               <button
                 type="button"
                 class="login-advanced-toggle"
@@ -307,19 +329,6 @@ const Login: Component = () => {
               </button>
               <Show when={advanced()}>
                 <div id="login-advanced" class="login-advanced">
-                  <label for="login-password">Password</label>
-                  <input
-                    id="login-password"
-                    type="password"
-                    autocomplete="current-password"
-                    value={password()}
-                    onInput={(e) => setPassword(e.currentTarget.value)}
-                  />
-                  <p class="login-advanced-hint">
-                    Leave blank to join as a guest. Enter your account password to log into a
-                    registered account.
-                  </p>
-
                   {/* #152 — realname + ident, optional. Blank = server
                     defaults (nick for ident, "Grappa Visitor" for
                     realname). ident is the `user` slot of nick!user@host. */}

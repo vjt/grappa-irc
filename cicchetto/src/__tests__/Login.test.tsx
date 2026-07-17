@@ -30,9 +30,10 @@ const renderLogin = () =>
     </Router>
   ));
 
-// #204 — the password field lives behind the collapsed "Advanced" section.
-// Every test that needs the password must open it first. Centralize the
-// interaction so a label/aria change updates one place.
+// #284 — the Advanced section now holds ONLY realname + ident (password
+// moved out to the always-visible main form). Every test that needs
+// realname/ident must open Advanced first. Centralize the interaction so a
+// label/aria change updates one place.
 const openAdvanced = () => fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
 
 const nickField = () => screen.getByLabelText(/nick or email/i);
@@ -42,15 +43,25 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("Login — #204 foolproof minimal view", () => {
-  it("shows the nick field + Connect + Advanced toggle, but NOT the password, by default", () => {
+describe("Login — #284 main-form view (password always visible, optional)", () => {
+  it("shows nick + password + Connect + Advanced toggle by default", () => {
     renderLogin();
     expect(nickField()).toBeInTheDocument();
     expect(connectBtn()).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /advanced/i })).toBeInTheDocument();
-    // Password is collapsed away in the minimal view (conditional render,
-    // not display:none — so it is absent from the DOM, not just hidden).
-    expect(screen.queryByLabelText(/password/i)).toBeNull();
+    // #284 — password is ALWAYS on the main form now (not behind Advanced).
+    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    // realname + ident stay collapsed away in the minimal view (conditional
+    // render, not display:none — absent from the DOM, not just hidden).
+    expect(screen.queryByLabelText(/real name/i)).toBeNull();
+    expect(screen.queryByLabelText(/^ident$/i)).toBeNull();
+  });
+
+  it("labels the always-visible password field as optional (#284)", () => {
+    renderLogin();
+    // The password input's accessible name carries the "optional" marker so
+    // it is unambiguous a guest login needs no password.
+    expect(screen.getByLabelText(/password.*optional/i)).toBeInTheDocument();
   });
 
   it("keeps the big IRC branding wordmark visible", () => {
@@ -59,10 +70,14 @@ describe("Login — #204 foolproof minimal view", () => {
     expect(screen.getByText(/^IRC$/)).toBeInTheDocument();
   });
 
-  it("reveals the password field when Advanced is expanded", () => {
+  it("reveals realname + ident (NOT password) when Advanced is expanded (#284)", () => {
     renderLogin();
-    expect(screen.queryByLabelText(/password/i)).toBeNull();
+    expect(screen.queryByLabelText(/real name/i)).toBeNull();
+    expect(screen.queryByLabelText(/^ident$/i)).toBeNull();
     openAdvanced();
+    expect(screen.getByLabelText(/real name/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^ident$/i)).toBeInTheDocument();
+    // Password is NOT duplicated into Advanced — it lives on the main form.
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
   });
 
@@ -123,11 +138,11 @@ describe("Login — #204 on-submit nick sanitization", () => {
     expect((nickField() as HTMLInputElement).value).toBe("my_nick");
   });
 
-  it("submits the password too when Advanced is open", async () => {
+  it("submits the password entered on the main form (#284, no Advanced needed)", async () => {
     vi.mocked(auth.login).mockResolvedValue(undefined);
     renderLogin();
     fireEvent.input(nickField(), { target: { value: "alice" } });
-    openAdvanced();
+    // No openAdvanced() — the password is right there on the main form.
     fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
     fireEvent.click(connectBtn());
     await waitFor(() => {
@@ -236,7 +251,6 @@ describe("Login — friendly error copy (carried forward)", () => {
     vi.mocked(auth.login).mockRejectedValue(new ApiError(401, "invalid_credentials"));
     renderLogin();
     fireEvent.input(nickField(), { target: { value: "alice" } });
-    openAdvanced();
     fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "wrong" } });
     fireEvent.click(connectBtn());
     await waitFor(() => {
