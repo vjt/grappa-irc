@@ -45,6 +45,11 @@ defmodule Grappa.Visitors.AdminWire do
 
   @type network_json :: %{
           network_slug: String.t(),
+          # #269 — the raw integer FK. cic builds the composite session id
+          # `visitor:<id>:<network_id>` from it to drive the per-network
+          # Disconnect/Reconnect toggle through the `/admin/sessions/:id/*`
+          # verbs (which key on that composite, NOT the slug).
+          network_id: pos_integer(),
           nick: String.t(),
           connection_state: Credential.connection_state(),
           live_state: live_state_json() | nil
@@ -89,6 +94,7 @@ defmodule Grappa.Visitors.AdminWire do
   defp network_entry({%Credential{network: %Network{slug: slug}} = cred, live}) do
     %{
       network_slug: slug,
+      network_id: cred.network_id,
       nick: cred.nick,
       connection_state: cred.connection_state,
       live_state: live_state_to_json(live)

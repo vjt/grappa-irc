@@ -5,7 +5,10 @@ import {
   type AdminVisitorNetwork,
   ApiError,
   adminDeleteVisitor,
+  adminDisconnectSession,
   adminListVisitors,
+  adminReconnectSession,
+  adminVisitorSessionId,
 } from "./lib/api";
 import { token } from "./lib/auth";
 import { connectionStateEmoji } from "./lib/connectionStateEmoji";
@@ -55,6 +58,11 @@ import { connectionStateEmoji } from "./lib/connectionStateEmoji";
 const AdminVisitorsTab: Component = () => {
   const [visitors, setVisitors] = createSignal<AdminVisitor[] | null>(null);
   const [confirmingId, setConfirmingId] = createSignal<string | null>(null);
+  // #269 — per-(visitor, network) toggle armed-state, keyed
+  // `"<visitor_id>:<network_slug>"`. Disjoint from `confirmingId` (the
+  // Delete-column arm) so a Disconnect/Reconnect arm on one network row
+  // doesn't fight the Delete arm — different columns, different verbs.
+  const [confirmingToggleKey, setConfirmingToggleKey] = createSignal<string | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
 
@@ -69,6 +77,7 @@ const AdminVisitorsTab: Component = () => {
     // "armed row exists in `visitors()`" invariant required by the
     // M-11 grappa:admin:events live-refit.
     setConfirmingId(null);
+    setConfirmingToggleKey(null);
     try {
       const next = await adminListVisitors(t);
       setVisitors(next);
@@ -94,6 +103,42 @@ const AdminVisitorsTab: Component = () => {
       const code = e instanceof ApiError ? e.code : "delete_failed";
       setError(code);
       setConfirmingId(null);
+    }
+  };
+
+  // #269 — per-(visitor, network) toggle arm key. One toggle per network
+  // row (Disconnect ⇄ Reconnect are mutually exclusive by live_state), so
+  // the slug is enough — no action-kind discriminant needed in the key.
+  const toggleKey = (v: AdminVisitor, net: AdminVisitorNetwork): string =>
+    `${v.id}:${net.network_slug}`;
+
+  // #269 — fire the per-network toggle. The action is chosen by LIVE truth
+  // (`net.live_state`), NOT the DB `connection_state`: a live session
+  // Disconnects (reusing the existing POST .../disconnect endpoint), a
+  // downed one (live_state === null) Reconnects (POST .../reconnect). Both
+  // build the composite `visitor:<id>:<network_id>` id server-side keys on.
+  const runToggle = async (v: AdminVisitor, net: AdminVisitorNetwork): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    const live = net.live_state !== null;
+    const kind = live ? "disconnect" : "reconnect";
+    const fn = live ? adminDisconnectSession : adminReconnectSession;
+    setError(null);
+    try {
+      await fn(t, adminVisitorSessionId(v, net));
+      setConfirmingToggleKey(null);
+      // Re-fetch (NOT splice) — the action mutates live BEAM state the
+      // /admin/visitors response reflects on the next call: Disconnect
+      // drops the pid → live_state:null; Reconnect spawns it →
+      // live_state non-null. The row STAYS; only its per-network
+      // live_state flips, which re-derives the toggle affordance.
+      await refresh();
+    } catch (e) {
+      // Prefix with the verb so the operator can tell a failed disconnect
+      // from a failed reconnect (mirrors AdminSessionsTab's `${kind}: ${code}`).
+      const code = e instanceof ApiError ? e.code : "request_failed";
+      setError(`${kind}: ${code}`);
+      setConfirmingToggleKey(null);
     }
   };
 
@@ -168,6 +213,27 @@ const AdminVisitorsTab: Component = () => {
                               <span class="admin-visitor-network-nick">{net.nick}</span>
                               <span class="admin-visitor-network-slug">{net.network_slug}</span>
                               <NetworkStateEmoji state={net.connection_state} />
+                              {/* #269 — per-network Disconnect ⇄ Reconnect
+                                  toggle. Affordance keys off LIVE truth
+                                  (net.live_state), NOT the DB
+                                  connection_state, so a `:connected` row
+                                  whose pid is gone correctly offers
+                                  Reconnect. */}
+                              <InlineConfirmButton
+                                idleLabel={net.live_state !== null ? "Disconnect" : "Reconnect"}
+                                confirmLabel={
+                                  net.live_state !== null
+                                    ? "Confirm disconnect?"
+                                    : "Confirm reconnect?"
+                                }
+                                armed={confirmingToggleKey() === toggleKey(v, net)}
+                                onArm={() => setConfirmingToggleKey(toggleKey(v, net))}
+                                onConfirm={() => runToggle(v, net)}
+                                testId={`admin-visitor-toggle-${v.id}-${net.network_slug}`}
+                                extraClass={
+                                  net.live_state !== null ? "disconnect-btn" : "reconnect-btn"
+                                }
+                              />
                             </li>
                           )}
                         </For>

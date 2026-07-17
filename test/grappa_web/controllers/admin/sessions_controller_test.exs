@@ -556,4 +556,136 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # #269: POST /admin/sessions/:id/reconnect
+  #
+  # Visitor-only sibling of the disconnect verb — brings a downed
+  # (visitor, network) session back up via the reused
+  # SessionPlan.resolve → SpawnOrchestrator.spawn core. Same composite
+  # `:id` shape + same `:admin_authn` gate as disconnect. User subjects
+  # are rejected 400 (admin-side reconnect is visitor-only; users
+  # park/reconnect their own sessions via PATCH /networks/:id).
+  # ---------------------------------------------------------------------------
+
+  describe "POST /admin/sessions/:id/reconnect — auth gate" do
+    test "no bearer returns 401 (Authn upstream)", %{conn: conn} do
+      conn = post(conn, "/admin/sessions/visitor:#{Ecto.UUID.generate()}:1/reconnect")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "visitor subject returns 403", %{conn: conn} do
+      {_, session} = visitor_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/admin/sessions/visitor:#{Ecto.UUID.generate()}:1/reconnect")
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "non-admin user returns 403", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/admin/sessions/visitor:#{Ecto.UUID.generate()}:1/reconnect")
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+  end
+
+  describe "POST /admin/sessions/:id/reconnect — admin user" do
+    test "204 on a downed visitor session — pid comes back up", %{conn: conn} do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      ref = Process.monitor(pid)
+
+      # Tear it down first (mirrors an admin Disconnect on the row).
+      :ok = Session.stop_session({:visitor, visitor.id}, network.id)
+      assert_received {:DOWN, ^ref, :process, ^pid, _}
+      assert Session.whereis({:visitor, visitor.id}, network.id) == nil
+      on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
+
+      session = admin_session()
+      id_param = build_session_id({:visitor, visitor.id}, network.id)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/admin/sessions/#{id_param}/reconnect")
+
+      assert response(conn, 204) == ""
+      assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
+    end
+
+    test "204 (idempotent) when the visitor session is already live", %{conn: conn} do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
+
+      session = admin_session()
+      id_param = build_session_id({:visitor, visitor.id}, network.id)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/admin/sessions/#{id_param}/reconnect")
+
+      assert response(conn, 204) == ""
+      # Kept the live pid — spawn/4 dedups via :already_started.
+      assert Session.whereis({:visitor, visitor.id}, network.id) == pid
+    end
+
+    test "404 on unknown visitor id", %{conn: conn} do
+      session = admin_session()
+      id_param = build_session_id({:visitor, Ecto.UUID.generate()}, 999_999_999)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/admin/sessions/#{id_param}/reconnect")
+
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+
+    test "400 bad_request for a user subject (admin reconnect is visitor-only)", %{conn: conn} do
+      session = admin_session()
+      id_param = build_session_id({:user, Ecto.UUID.generate()}, 1)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/admin/sessions/#{id_param}/reconnect")
+
+      assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+
+    test "400 bad_request on malformed id", %{conn: conn} do
+      session = admin_session()
+      uuid = Ecto.UUID.generate()
+
+      bad_ids = [
+        "garbage",
+        "visitor:not-a-uuid:1",
+        "visitor:#{uuid}:abc",
+        "visitor:#{uuid}:0",
+        "visitor:#{uuid}:-1"
+      ]
+
+      for bad <- bad_ids do
+        conn =
+          conn
+          |> recycle()
+          |> put_bearer(session.id)
+          |> post("/admin/sessions/#{bad}/reconnect")
+
+        assert json_response(conn, 400) == %{"error" => "bad_request"}
+      end
+    end
+  end
 end

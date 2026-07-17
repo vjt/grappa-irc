@@ -33,6 +33,21 @@ defmodule GrappaWeb.Admin.SessionsController do
   cannot_disconnect_self` if the admin targets their own user
   session (server-side foot-gun gate).
 
+  ## POST /admin/sessions/:id/reconnect (#269)
+
+  The Reconnect half of the admin **Visitors**-tab Disconnect ⇄ Reconnect
+  toggle. Visitor-only (users park/reconnect their OWN sessions via
+  `PATCH /networks/:id`): a user subject in the composite `:id` is rejected
+  `400`. Reuses the connect core the visitor `PATCH /networks/:id` path
+  drives (`Grappa.Operator.reconnect_session/2` →
+  `Grappa.Visitors.SessionPlan.resolve/2` → `SpawnOrchestrator.spawn/4`,
+  `:visitor_reconnect` flow) — no verb rebuilt.
+
+  Returns `204 No Content` on success (idempotent on an already-live
+  session), `400` on malformed id / user subject, `404` when the
+  visitor/network row is gone, `500 session_plan_resolve_failed` when the
+  visitor holds no credential on the network.
+
   ## DELETE /admin/sessions/:id (M-cluster M-9a)
 
   Synchronously stops the `Session.Server` pid without touching the
@@ -171,6 +186,45 @@ defmodule GrappaWeb.Admin.SessionsController do
       send_resp(conn, :no_content, "")
     end
   end
+
+  @doc """
+  #269: bring a downed visitor session back up — the Reconnect half of the
+  admin Visitors-tab Disconnect ⇄ Reconnect toggle. Visitor-only: a user
+  subject is rejected `400 bad_request` (a user reconnect is the user's own
+  `PATCH /networks/:id`, not an operator verb). Delegates to
+  `Grappa.Operator.reconnect_session/2`, which reuses the connect core
+  (`SessionPlan.resolve` → `SpawnOrchestrator.spawn`). Same composite `:id`
+  shape + `:admin_authn` gate as `disconnect/2`.
+
+  Returns `204 No Content` on success (including the idempotent
+  already-live case). `400` on malformed `:id` OR a user subject; `404`
+  when the visitor / network row is gone; `500 session_plan_resolve_failed`
+  when the visitor holds no credential on the network; `503` / `502` for
+  admission / spawn failures — all via `FallbackController`.
+  """
+  @spec reconnect(Plug.Conn.t(), map()) ::
+          Plug.Conn.t()
+          | {:error,
+             :bad_request
+             | :not_found
+             | :resolve_failed
+             | Grappa.Admission.capacity_error()
+             | {:start_failed, term()}}
+  def reconnect(conn, %{"id" => id}) do
+    with {:ok, {subject, network_id}} <- parse_session_id(id),
+         {:ok, visitor_subject} <- ensure_visitor_subject(subject),
+         :ok <- Operator.reconnect_session(visitor_subject, network_id) do
+      send_resp(conn, :no_content, "")
+    end
+  end
+
+  # #269: admin-side reconnect is visitor-only. A user subject is a
+  # well-formed composite id for a verb it doesn't support → `:bad_request`
+  # (users park/reconnect their own sessions via `PATCH /networks/:id`).
+  @spec ensure_visitor_subject(Session.subject()) ::
+          {:ok, {:visitor, Ecto.UUID.t()}} | {:error, :bad_request}
+  defp ensure_visitor_subject({:visitor, _} = subject), do: {:ok, subject}
+  defp ensure_visitor_subject({:user, _}), do: {:error, :bad_request}
 
   # `:admin_authn` upstream guarantees `current_subject = {:user, _}`,
   # so the bare match is safe — visitor subjects never reach this

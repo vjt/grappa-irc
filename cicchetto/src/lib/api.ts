@@ -1541,6 +1541,12 @@ export type AdminVisitorLiveState = AdminLiveState;
 // of `Grappa.Visitors.AdminWire.network_json/0`.
 export type AdminVisitorNetwork = {
   network_slug: string;
+  // #269 — the raw integer FK. The Visitors-tab per-network Disconnect ⇄
+  // Reconnect toggle builds the composite session id
+  // `visitor:<id>:<network_id>` from it to drive the `/admin/sessions/:id/*`
+  // verbs (which key on that composite, NOT the slug). Mirror of the
+  // `network_id` added to `Grappa.Visitors.AdminWire.network_json/0`.
+  network_id: number;
   nick: string;
   connection_state: ConnectionState;
   live_state: AdminVisitorLiveState | null;
@@ -1616,6 +1622,15 @@ export function adminSessionId(s: AdminSession): string {
   return `${s.subject_kind}:${s.subject_id}:${s.network_id}`;
 }
 
+// #269 — composite session id for a Visitors-tab per-network row. Same
+// wire shape as `adminSessionId` (mirrors `parse_session_id/1`), but built
+// from the identity-wide visitor id + the per-network `network_id` FK
+// (the Visitors tab has no flat AdminSession row). Drives the per-network
+// Disconnect ⇄ Reconnect toggle through `/admin/sessions/:id/{disconnect,reconnect}`.
+export function adminVisitorSessionId(v: AdminVisitor, net: AdminVisitorNetwork): string {
+  return `visitor:${v.id}:${net.network_id}`;
+}
+
 export async function adminListSessions(token: string): Promise<AdminSession[]> {
   const res = await fetch("/admin/sessions", { headers: buildHeaders(token) });
   if (!res.ok) throw await readError(res);
@@ -1625,6 +1640,19 @@ export async function adminListSessions(token: string): Promise<AdminSession[]> 
 
 export async function adminDisconnectSession(token: string, id: string): Promise<void> {
   const res = await fetch(`/admin/sessions/${encodeURIComponent(id)}/disconnect`, {
+    method: "POST",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// #269 — Reconnect half of the admin Visitors-tab toggle. Sibling of
+// `adminDisconnectSession`; POSTs to the visitor-only
+// `/admin/sessions/:id/reconnect` verb (server reuses
+// SessionPlan.resolve → SpawnOrchestrator.spawn). 204 on success
+// (idempotent on an already-live session); errors collapse to ApiError.
+export async function adminReconnectSession(token: string, id: string): Promise<void> {
+  const res = await fetch(`/admin/sessions/${encodeURIComponent(id)}/reconnect`, {
     method: "POST",
     headers: buildHeaders(token),
   });

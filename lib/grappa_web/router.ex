@@ -107,6 +107,10 @@ defmodule GrappaWeb.Router do
     delete "/visitors/:id", VisitorsController, :delete
     get "/sessions", SessionsController, :index
     post "/sessions/:id/disconnect", SessionsController, :disconnect
+    # #269 — Reconnect half of the admin Visitors-tab toggle (visitor-only).
+    # Nests under `/admin/sessions/` so it rides the existing nginx
+    # allowlist entry — no proxy change.
+    post "/sessions/:id/reconnect", SessionsController, :reconnect
     delete "/sessions/:id", SessionsController, :delete
 
     # M-cluster M-5 (operator console networks pane):

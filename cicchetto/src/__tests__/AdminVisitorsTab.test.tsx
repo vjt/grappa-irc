@@ -13,6 +13,8 @@ vi.mock("../lib/api", async () => {
     ...actual,
     adminListVisitors: vi.fn(),
     adminDeleteVisitor: vi.fn(),
+    adminDisconnectSession: vi.fn(),
+    adminReconnectSession: vi.fn(),
   };
 });
 
@@ -47,6 +49,7 @@ const ALIVE: AdminVisitor = {
   networks: [
     {
       network_slug: "azzurra",
+      network_id: 1,
       nick: "alice",
       connection_state: "connected",
       live_state: {
@@ -70,6 +73,7 @@ const ORPHANED: AdminVisitor = {
   networks: [
     {
       network_slug: "azzurra",
+      network_id: 1,
       nick: "bob",
       connection_state: "connected",
       // U-0 honesty signal: DB intent says active, BEAM has no pid.
@@ -87,6 +91,7 @@ const DEAD: AdminVisitor = {
   networks: [
     {
       network_slug: "azzurra",
+      network_id: 1,
       nick: "carol",
       connection_state: "connected",
       live_state: {
@@ -113,6 +118,7 @@ const NICKSERV_IDENTIFIED: AdminVisitor = {
   networks: [
     {
       network_slug: "azzurra",
+      network_id: 1,
       nick: "M\\Grappa",
       connection_state: "connected",
       live_state: {
@@ -145,6 +151,7 @@ const REGISTERED_WITH_TTL: AdminVisitor = {
   networks: [
     {
       network_slug: "azzurra",
+      network_id: 1,
       nick: "RegdGrappa",
       connection_state: "connected",
       live_state: {
@@ -417,7 +424,13 @@ describe("AdminVisitorsTab", () => {
           ip: null,
           inserted_at: "2026-07-12T00:00:00Z",
           networks: [
-            { network_slug: "azzurra", nick: `n${i}`, connection_state: state, live_state: null },
+            {
+              network_slug: "azzurra",
+              network_id: 1,
+              nick: `n${i}`,
+              connection_state: state,
+              live_state: null,
+            },
           ],
         })),
       );
@@ -432,6 +445,157 @@ describe("AdminVisitorsTab", () => {
         const el = screen.getByLabelText(label, { exact: true });
         expect(el.textContent).toContain(glyph);
       }
+    });
+  });
+
+  // #269 — per-(visitor, network) Disconnect ⇄ Reconnect toggle. Mirrors
+  // the Sessions tab's Disconnect control, adapted to the Visitors tab's
+  // per-network rows. The button affordance keys off LIVE truth
+  // (`net.live_state`): a live session shows Disconnect (reuses the
+  // existing POST /admin/sessions/:id/disconnect endpoint); a downed one
+  // (live_state === null) shows Reconnect (POST .../reconnect). Both build
+  // the composite session id `visitor:<id>:<network_id>` — hence the
+  // per-network `network_id` on the wire row.
+  describe("per-network Disconnect/Reconnect toggle (#269)", () => {
+    // A live visitor session on one network (live_state non-null → the
+    // toggle reads Disconnect).
+    const TOGGLE_LIVE: AdminVisitor = {
+      id: "00000000-0000-0000-0000-000000000269",
+      expires_at: "2099-01-01T00:00:00Z",
+      identified: false,
+      ip: "1.2.3.4",
+      inserted_at: "2026-07-17T00:00:00Z",
+      networks: [
+        {
+          network_slug: "azzurra",
+          network_id: 7,
+          nick: "toggler",
+          connection_state: "connected",
+          live_state: {
+            alive: true,
+            pid_inspect: "#PID<0.269.0>",
+            mailbox_len: 0,
+            memory_bytes: 100_000,
+            joined_channels: ["#italia"],
+            introspection_degraded: [],
+          },
+        },
+      ],
+    };
+
+    // A downed visitor session (live_state === null → the toggle reads
+    // Reconnect). The DB credential is still `connected` — the divergence
+    // IS the U-0 honesty signal, and the toggle keys off live truth.
+    const TOGGLE_DOWN: AdminVisitor = {
+      id: "00000000-0000-0000-0000-00000000026a",
+      expires_at: "2099-01-01T00:00:00Z",
+      identified: false,
+      ip: "5.6.7.8",
+      inserted_at: "2026-07-17T00:00:00Z",
+      networks: [
+        {
+          network_slug: "azzurra",
+          network_id: 9,
+          nick: "downer",
+          connection_state: "connected",
+          live_state: null,
+        },
+      ],
+    };
+
+    const toggleId = (v: AdminVisitor, slug: string): string =>
+      `admin-visitor-toggle-${v.id}-${slug}`;
+
+    it("renders Disconnect for a live (live_state non-null) network row", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListVisitors).mockResolvedValue([TOGGLE_LIVE]);
+
+      render(() => <AdminVisitorsTab />);
+
+      const btn = await screen.findByTestId(toggleId(TOGGLE_LIVE, "azzurra"));
+      expect(btn.textContent?.trim()).toBe("Disconnect");
+    });
+
+    it("renders Reconnect for a downed (live_state === null) network row", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListVisitors).mockResolvedValue([TOGGLE_DOWN]);
+
+      render(() => <AdminVisitorsTab />);
+
+      const btn = await screen.findByTestId(toggleId(TOGGLE_DOWN, "azzurra"));
+      expect(btn.textContent?.trim()).toBe("Reconnect");
+    });
+
+    it("Disconnect: two-step confirm fires adminDisconnectSession with the composite id + refetches", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListVisitors).mockResolvedValue([TOGGLE_LIVE]);
+      vi.mocked(api.adminDisconnectSession).mockResolvedValue(undefined);
+
+      render(() => <AdminVisitorsTab />);
+
+      const btn = await screen.findByTestId(toggleId(TOGGLE_LIVE, "azzurra"));
+      fireEvent.click(btn); // arm
+      expect(btn.textContent?.trim()).toBe("Confirm disconnect?");
+      expect(api.adminDisconnectSession).not.toHaveBeenCalled();
+      fireEvent.click(btn); // confirm
+
+      await waitFor(() => {
+        // Composite id: visitor:<uuid>:<network_id> — mirrors the
+        // server-side parse_session_id/1.
+        expect(api.adminDisconnectSession).toHaveBeenCalledWith(
+          "test-bearer",
+          `visitor:${TOGGLE_LIVE.id}:7`,
+        );
+      });
+      // Re-fetch so the row's live_state (and thus the toggle affordance)
+      // reflects the post-action truth — NOT a splice (the row stays; only
+      // its live state flips).
+      await waitFor(() => {
+        expect(api.adminListVisitors).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it("Reconnect: two-step confirm fires adminReconnectSession with the composite id + refetches", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListVisitors).mockResolvedValue([TOGGLE_DOWN]);
+      vi.mocked(api.adminReconnectSession).mockResolvedValue(undefined);
+
+      render(() => <AdminVisitorsTab />);
+
+      const btn = await screen.findByTestId(toggleId(TOGGLE_DOWN, "azzurra"));
+      fireEvent.click(btn); // arm
+      expect(btn.textContent?.trim()).toBe("Confirm reconnect?");
+      expect(api.adminReconnectSession).not.toHaveBeenCalled();
+      fireEvent.click(btn); // confirm
+
+      await waitFor(() => {
+        expect(api.adminReconnectSession).toHaveBeenCalledWith(
+          "test-bearer",
+          `visitor:${TOGGLE_DOWN.id}:9`,
+        );
+      });
+      await waitFor(() => {
+        expect(api.adminListVisitors).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it("surfaces a toggle failure inline, prefixed with the verb", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListVisitors).mockResolvedValue([TOGGLE_LIVE]);
+      vi.mocked(api.adminDisconnectSession).mockRejectedValue(
+        new api.ApiError(503, "network_busy"),
+      );
+
+      render(() => <AdminVisitorsTab />);
+
+      const btn = await screen.findByTestId(toggleId(TOGGLE_LIVE, "azzurra"));
+      fireEvent.click(btn); // arm
+      fireEvent.click(btn); // confirm → rejects
+
+      const banner = await screen.findByTestId("admin-visitors-error");
+      // The verb prefix lets the operator tell disconnect from reconnect
+      // failures (mirrors the Sessions tab's `${kind}: ${code}` shape).
+      expect(banner.textContent).toContain("disconnect: network_busy");
     });
   });
 });
