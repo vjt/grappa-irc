@@ -1401,6 +1401,36 @@ const ScrollbackPane: Component<Props> = (props) => {
       listRef.addEventListener("touchcancel", onTouchEndEl, { passive: true });
     }
 
+    // #285 (P0) — make the overflow/touch-action gate follow REAL container
+    // geometry, not discrete moments. `measureOverflow` (→ `isOverflowing` →
+    // `.scrollback-overflowing` → `touch-action: pan-y`, base `none`) ran only
+    // on mount + message-length + window/visualViewport `resize` (#245). On an
+    // installed iOS PWA a full-page reload cold-mounts BEFORE the visualViewport
+    // settles: the mount measure reads a too-tall clientHeight (the mobile shell
+    // height derives from `--viewport-height`/`vv.height`, unsettled at boot),
+    // latches `isOverflowing=false`, and the pane stays `touch-action: none` —
+    // scroll DEAD in every tab. #245's re-measure never unjams it because the
+    // corrective viewport SHRINK is a geometry change that fires no `resize`
+    // event this onMount listener catches (a CSS layout / safe-area settle, or a
+    // vv.resize in the boot→onMount window before this listener attaches —
+    // installViewportHeightTracker's own earlier listener corrects
+    // `--viewport-height` but ScrollbackPane's onResize missed the event). A
+    // ResizeObserver fires on the container's height change ITSELF, independent
+    // of any event, so the false latch self-corrects the instant the settled
+    // height propagates down the flex chain — no remount, no keyboard-open, no
+    // message needed. This is the general geometry-tracking lever the three
+    // discrete triggers only approximated. Cheap + loop-free: measureOverflow
+    // toggles only the touch-action class (no box-size change → no RO re-fire).
+    // Guarded on `typeof ResizeObserver` for graceful degradation where the API
+    // is absent (mirrors `window.visualViewport?.` above; also lets jsdom tests
+    // that don't stub it skip construction). Element-level create-in-onMount /
+    // disconnect-in-onCleanup mirrors the #230 passive-touch discipline.
+    let overflowObserver: ResizeObserver | undefined;
+    if (listRef && typeof ResizeObserver !== "undefined") {
+      overflowObserver = new ResizeObserver(() => measureOverflow());
+      overflowObserver.observe(listRef);
+    }
+
     onCleanup(() => {
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
@@ -1408,6 +1438,7 @@ const ScrollbackPane: Component<Props> = (props) => {
       listRef?.removeEventListener("touchmove", onTouchMoveEl);
       listRef?.removeEventListener("touchend", onTouchEndEl);
       listRef?.removeEventListener("touchcancel", onTouchEndEl);
+      overflowObserver?.disconnect();
       if (scrollSettleTimer !== undefined) {
         window.clearTimeout(scrollSettleTimer);
       }
