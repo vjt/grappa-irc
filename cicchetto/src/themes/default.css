@@ -2057,6 +2057,22 @@ html.resize-dragging * {
   pointer-events: auto;
 }
 
+/* #289 — on mobile the float-stack buttons (next-active circle +
+   scroll-to-bottom) sit ON TOP of the message list; wrapped text behind
+   them was unreadable because they were fully opaque. Make them
+   translucent so the text shows through while the control (large glyph +
+   accent fill + shadow) stays clearly tappable. One rule on the stack's
+   children keeps the pair consistent by construction (#280's "same box")
+   and theme-agnostic — whole-element opacity needs no per-theme
+   translucent color. Scoped to `.shell-mobile` + the stack: desktop
+   scroll-to-bottom stays opaque (it's smaller and next-active is a
+   sidebar button there, not a floating overlay). Higher specificity than
+   `.scroll-to-bottom-btn:hover` (0.85), so a stray mobile hover can't
+   make it MORE opaque than this. */
+.shell-mobile .scrollback-float-stack > * {
+  opacity: 0.75;
+}
+
 /* C7.4: Scroll-to-bottom button. Now an in-flow child of the float stack
    (#280) — the stack owns the absolute anchor, so this is position:
    static. */
