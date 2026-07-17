@@ -2,34 +2,34 @@
 // channel tab after a full-page reload / cold boot, until a tab switch or the
 // on-screen keyboard opens. Longstanding, NOT a regression.
 //
-// ROOT CAUSE (confirmed from code + CSS, NOT from a device):
-//   `.scrollback` base rule is `touch-action: none` (themes/default.css) — it
-//   REJECTS all pan. ONLY `.scrollback.scrollback-overflowing` flips to
-//   `touch-action: pan-y`. That class is JS-measured:
-//   `ScrollbackPane.measureOverflow()` sets `isOverflowing =
-//   scrollHeight > clientHeight`, and `clientHeight` is viewport-derived (the
-//   mobile shell height tracks `--vh` / `--viewport-height` /
-//   `visualViewport.height`). #245 already made `measureOverflow` re-run on
-//   window/visualViewport `resize` EVENTS. But on an installed iOS PWA cold
-//   reload the corrective viewport SHRINK is a CSS layout / safe-area-inset
-//   settle that fires NO `resize` event this pane catches (or a vv.resize in
-//   the boot→onMount window before the listener attaches). So #245's
-//   remeasure never runs, the mount's false `isOverflowing=false` latch is
-//   never corrected, and the pane stays `touch-action: none` — scroll DEAD.
+// ROOT CAUSE (refined at REOPEN, from code + CSS, NOT a device):
+//   The touch-pan gate FAILED CLOSED. `.scrollback` base was
+//   `touch-action: none` and only `.scrollback.scrollback-overflowing` flipped
+//   to `pan-y`, JS-measured by `measureOverflow` off a viewport-derived
+//   `clientHeight`. The first #285 fix added a ResizeObserver — necessary but
+//   NOT sufficient: on a cold iOS-PWA kill+relaunch the boot read latches an
+//   INFLATED `--viewport-height`, the container BAKES to that inflated height,
+//   and NO subsequent box change ever occurs to correct it — so the RO never
+//   fires, `measureOverflow` never re-runs, and the pane stays
+//   `touch-action: none` FOREVER (worse in tabs with no unread marker, whose
+//   content sits just under the inflated threshold).
 //
-//   THE FIX: a ResizeObserver on the scroll container. It fires on the
-//   container's height change ITSELF, independent of any `resize` event, so
-//   the false latch self-corrects the instant the settled height propagates.
+//   THE DURABLE FIX (this reopen): (1) INVERT the gate to FAIL OPEN — base
+//   `.scrollback { touch-action: pan-y }`, and `.scrollback.scrollback-locked
+//   { touch-action: none }` locks ONLY when `shouldLockScrollGate` proves the
+//   content fits a trustworthy clientHeight, so a bad/pre-settle read can never
+//   latch the pane dead; (2) a boot settle RE-READ of `visualViewport.height`
+//   (viewportHeight.ts) that corrects the inflated `--viewport-height`
+//   event-independently; (3) a post-mount settle re-measure timer. The RO stays
+//   for legit box-change tracking.
 //
-// WIRING-ONLY — this is NOT a device repro
-// (feedback_playwright_webkit_not_ios_scroll). Playwright cannot reproduce
-// real iOS WebKit post-reload reflow / touch-pan physics. This spec proves
-// the DISCRIMINATING contract #245 could not: a container height change with
-// NO `resize` event re-computes `scrollback-overflowing` (→ touch-action).
-// Pre-fix that path re-runs nothing (no `resize` → #245's onResize is silent)
-// so the class stays absent and the pane is JAMMED; only the ResizeObserver
-// unjams it. A GREEN here does NOT close #285 — the actual iOS touch-pan
-// unlock after reload is verified ON DEVICE by vjt, not by CI.
+// WIRING / CSS-CONTRACT ONLY — this is NOT a device repro
+// (feedback_playwright_webkit_not_ios_scroll). Playwright cannot reproduce real
+// iOS WebKit post-reload reflow / touch-pan physics. This spec proves: (a) the
+// FAIL-OPEN base — `.scrollback`'s base `touch-action` is `pan-y`; and (b) a
+// container height change with NO `resize` event re-computes the
+// `scrollback-locked` gate (RO). A GREEN here does NOT close #285 — the actual
+// iOS touch-pan unlock after a cold relaunch is verified ON DEVICE by vjt.
 //
 // `@webkit` opts this into the `webkit-iphone-15` project so `html.is-ios`
 // engages and the real iOS height path drives `.scrollback`'s clientHeight —
@@ -87,7 +87,7 @@ async function setViewportVarsNoResize(page: Page, px: number): Promise<void> {
     .toBe(`${px}px`);
 }
 
-test("@webkit #285 — .scrollback re-measures overflow via ResizeObserver on a container height change with NO resize event", async ({
+test("@webkit #285 reopen — .scrollback base is fail-open pan-y and the lock gate re-measures on a container height change with NO resize event", async ({
   page,
 }) => {
   const admin = getSeededAdmin();
@@ -113,28 +113,45 @@ test("@webkit #285 — .scrollback re-measures overflow via ResizeObserver on a 
   const touchAction = (): Promise<string> =>
     scrollback.evaluate((el) => getComputedStyle(el).touchAction);
 
+  // FAIL-OPEN BASE (#285 reopen — the CSS contract only a real browser can
+  // verify; jsdom is blind to CSS). With every state class stripped, the base
+  // `.scrollback` rule computes `touch-action: pan-y`. This is the crux: a
+  // missing / pre-settle / failed measurement leaves the pane PANNABLE, never
+  // the dead `touch-action: none` the old fail-CLOSED base baked. Strip + read
+  // + restore synchronously inside one evaluate so Solid's reactive classList
+  // can't re-assert mid-read (no race).
+  const baseTouchAction = await scrollback.evaluate((el) => {
+    const prev = el.className;
+    el.className = "scrollback";
+    const ta = getComputedStyle(el).touchAction;
+    el.className = prev;
+    return ta;
+  });
+  expect(baseTouchAction).toBe("pan-y");
+
   // BASELINE (fix-independent — the mount + REST-load length-effect measure at
   // the real viewport): the small corpus fits → `.scrollback` does NOT
-  // overflow → base `touch-action: none`. Correct: nothing to scroll.
-  await expect(scrollback).not.toHaveClass(/scrollback-overflowing/, { timeout: 10_000 });
+  // overflow → the fail-open gate LOCKS to `touch-action: none`. Correct:
+  // nothing to scroll.
+  await expect(scrollback).toHaveClass(/scrollback-locked/, { timeout: 10_000 });
   await expect.poll(touchAction, { timeout: 5_000 }).toBe("none");
 
-  // DISCRIMINATING (the #285 bug + fix): shrink the container height via CSS
-  // vars with NO `resize` event — the on-device post-reload settle that #245's
+  // DISCRIMINATING (the #285 wiring): shrink the container height via CSS vars
+  // with NO `resize` event — the on-device post-reload settle that #245's
   // onResize never sees. The pane MUST re-measure on the container's box change
-  // and flip to `touch-action: pan-y`. WITHOUT the ResizeObserver, nothing
-  // re-runs `measureOverflow` (no `resize` event fired), so the class stays
-  // absent and the pane is JAMMED (`touch-action: none`) exactly as reported.
-  // expect.poll absorbs the RO callback's double-rAF.
+  // and UNLOCK to `touch-action: pan-y`. WITHOUT the ResizeObserver, nothing
+  // re-runs `measureOverflow` (no `resize` event fired), so the lock stays and
+  // the pane is JAMMED (`touch-action: none`). expect.poll absorbs the RO
+  // callback's double-rAF.
   await setViewportVarsNoResize(page, TINY_VV_PX);
-  await expect(scrollback).toHaveClass(/scrollback-overflowing/, { timeout: 5_000 });
+  await expect(scrollback).not.toHaveClass(/scrollback-locked/, { timeout: 5_000 });
   await expect.poll(touchAction, { timeout: 5_000 }).toBe("pan-y");
 
   // BIDIRECTIONAL confirmation: grow the container back past the content — again
-  // with NO resize event — so overflow must clear (touch-action back to none).
+  // with NO resize event — so the gate must re-LOCK (touch-action back to none).
   // Proves the ResizeObserver tracks geometry in BOTH directions, not a
   // one-shot unlatch.
   await setViewportVarsNoResize(page, HUGE_VV_PX);
-  await expect(scrollback).not.toHaveClass(/scrollback-overflowing/, { timeout: 5_000 });
+  await expect(scrollback).toHaveClass(/scrollback-locked/, { timeout: 5_000 });
   await expect.poll(touchAction, { timeout: 5_000 }).toBe("none");
 });

@@ -55,6 +55,19 @@ export interface VisualViewportLike {
 const HEIGHT_VAR = "--viewport-height";
 const VH_VAR = "--vh";
 
+// #285 reopen — boot settle re-read schedule. On a cold iOS-PWA
+// kill+relaunch the boot `vv.height` read is a pre-settle INFLATED value
+// (full screen, before safe-area / chrome insets settle), and the corrective
+// settle fires NO `resize` event — so the one-shot boot write is never
+// re-read and the scroll container bakes to the inflated height forever
+// (the reported dead-scroll). Re-reading `vv.height` on a short post-boot
+// timer schedule, event-independently, lets the settled (smaller) height
+// overwrite the inflated boot value even when no resize ever fires. Each
+// re-read reads the LIVE `vv.height`, so overlapping a genuine keyboard-open
+// resize just writes the current correct value (never a stale clobber).
+// Brackets a fast, medium, and slow settle.
+const SETTLE_REREAD_DELAYS_MS = [100, 400, 900];
+
 function writeViewport(vp: VisualViewportLike): void {
   const style = document.documentElement.style;
   style.setProperty(HEIGHT_VAR, `${vp.height}px`);
@@ -64,7 +77,9 @@ function writeViewport(vp: VisualViewportLike): void {
 /**
  * Boot-time entry. Writes `--vh` (Telegram pattern) AND
  * `--viewport-height` (legacy pattern) from `window.visualViewport`,
- * then re-writes on every resize event.
+ * then re-writes on every resize event AND on a short post-boot settle
+ * re-read schedule (#285 reopen — the cold-boot settle that fires no
+ * resize event).
  *
  * Idempotent — main.tsx invokes once.
  *
@@ -80,6 +95,11 @@ export function installViewportHeightTracker(
   if (!vp) return;
   writeViewport(vp);
   vp.addEventListener("resize", () => writeViewport(vp));
+  if (typeof setTimeout === "function") {
+    for (const ms of SETTLE_REREAD_DELAYS_MS) {
+      setTimeout(() => writeViewport(vp), ms);
+    }
+  }
 }
 
 /**

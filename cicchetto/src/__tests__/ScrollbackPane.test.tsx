@@ -231,6 +231,7 @@ import {
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
 import ScrollbackPane, {
   resetAutoFocusedJoinsForTest,
+  shouldLockScrollGate,
   shouldRescueUnderfillLoadOlder,
 } from "../ScrollbackPane";
 
@@ -3014,35 +3015,77 @@ describe("ScrollbackPane", () => {
     });
   });
 
-  // #285 (P0) — iOS-PWA cold-reload scroll lock. `.scrollback` touch pan is
-  // gated by the `.scrollback-overflowing` class (base `touch-action: none`;
-  // overflowing → `pan-y`), bound to the `isOverflowing` signal. That signal
-  // is recomputed by `measureOverflow` on only three discrete triggers:
-  // mount, message-count change, and window/visualViewport `resize` (#245).
-  // On an installed iOS PWA a full-page reload cold-mounts BEFORE the
-  // visualViewport settles: the mount measure reads a too-tall clientHeight,
-  // latches `isOverflowing=false`, and the corrective viewport shrink is a
-  // geometry change that fires NO `resize` event the onMount listener catches
-  // — so #245's remeasure never runs and the pane stays `touch-action: none`
-  // (scroll DEAD) until a remount (tab switch) or keyboard-open resize. The
-  // fix is a ResizeObserver on the scroll container: it fires on ANY
-  // container height change, decoupled from discrete events, so the false
-  // latch self-corrects the instant the settled height arrives. jsdom ships
-  // NO ResizeObserver and no layout, so we stub the observer to capture its
-  // callback and drive geometry via defineProperty (CONSTRAINT: the iOS
-  // touch-physics unlock itself is on-device-only — this pins the WIRING, the
-  // gate recomputing on a container resize).
-  describe("#285 — overflow gate follows container geometry via ResizeObserver", () => {
+  // #285 reopen (P0) — the FAIL-OPEN scroll gate. The first #285 fix (a
+  // ResizeObserver) is necessary but NOT sufficient: on a cold iOS-PWA
+  // kill+relaunch the boot read latches an INFLATED `--viewport-height`, the
+  // container bakes to it, and NO subsequent box change ever fires — so the RO
+  // never triggers, `measureOverflow` never re-runs, and the OLD default-deny
+  // gate (`.scrollback { touch-action: none }`, only `.scrollback-overflowing`
+  // → `pan-y`) leaves the pane PERMANENTLY dead. The reopen fix INVERTS the
+  // gate to fail OPEN: base `.scrollback { touch-action: pan-y }`, and only
+  // LOCK to `touch-action: none` (via a `.scrollback-locked` class bound to
+  // the `scrollLocked` signal) when a TRUSTWORTHY measurement definitively
+  // proves the content does not overflow. A false-positive pannable pane is
+  // harmless; the P0 is the false-negative dead scroll — so an untrusted
+  // (0 / unsettled) clientHeight NEVER locks. `shouldLockScrollGate` is the
+  // pure decision seam (below); this describe pins the DOM wiring. CONSTRAINT:
+  // the iOS touch-physics unlock itself is on-device-only
+  // (feedback_playwright_webkit_not_ios_scroll) — this pins the WIRING.
+  describe("#285 reopen — shouldLockScrollGate fail-open decision seam", () => {
+    it("does NOT lock when content overflows a trusted viewport (pan-y needed)", () => {
+      expect(shouldLockScrollGate({ scrollHeight: 5000, clientHeight: 500 })).toBe(false);
+    });
+
+    it("locks when content definitively fits a trusted (nonzero) clientHeight", () => {
+      expect(shouldLockScrollGate({ scrollHeight: 100, clientHeight: 500 })).toBe(true);
+    });
+
+    it("locks when content exactly fills the viewport (not overflowing)", () => {
+      expect(shouldLockScrollGate({ scrollHeight: 500, clientHeight: 500 })).toBe(true);
+    });
+
+    it("FAILS OPEN on an untrusted zero clientHeight (the cold-boot latch → never dead)", () => {
+      // The reported P0: a pre-settle/unsettled measure reads clientHeight 0.
+      // Under the OLD fail-CLOSED gate this latched the pane `touch-action:
+      // none` forever. Fail-open MUST leave it pannable (no lock).
+      expect(shouldLockScrollGate({ scrollHeight: 0, clientHeight: 0 })).toBe(false);
+      expect(shouldLockScrollGate({ scrollHeight: 42, clientHeight: 0 })).toBe(false);
+    });
+
+    it("FAILS OPEN on a negative/NaN clientHeight (never trust a bad read)", () => {
+      expect(shouldLockScrollGate({ scrollHeight: 10, clientHeight: -1 })).toBe(false);
+      expect(shouldLockScrollGate({ scrollHeight: 10, clientHeight: Number.NaN })).toBe(false);
+    });
+  });
+
+  // The DOM wiring of the fail-open gate: the `.scrollback-locked` class is
+  // bound to the `scrollLocked` signal, recomputed by `measureOverflow` on the
+  // mount + length + resize + ResizeObserver triggers. jsdom ships no
+  // ResizeObserver and no layout, so we stub the observer + drive geometry via
+  // defineProperty.
+  describe("#285 reopen — fail-open gate DOM wiring", () => {
     const flushRaf = async (): Promise<void> => {
       await new Promise((r) =>
         requestAnimationFrame(() => requestAnimationFrame(() => r(undefined))),
       );
     };
 
-    it("recomputes the touch-action overflow gate when the scroll container resizes", async () => {
-      // jsdom ships no ResizeObserver — a bare render pre-fix never
-      // constructs one, so `observedEl` stays undefined and the gate never
-      // recomputes (the RED assertions).
+    it("does NOT lock the pane at cold mount (jsdom clientHeight 0 → fail open, never dead)", async () => {
+      // jsdom geometry is 0/0 → clientHeight is untrusted → the gate must NOT
+      // lock. Under the OLD gate the DEFAULT was `touch-action: none` (dead);
+      // the fail-open default carries NO `.scrollback-locked` class so the base
+      // `pan-y` applies. This is the direct P0-protection wiring.
+      setScrollback({ "freenode #grappa": fixture });
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const pane = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      if (!pane) throw new Error("scrollback DOM not found");
+      await flushRaf();
+      expect(pane.classList.contains("scrollback-locked")).toBe(false);
+    });
+
+    it("recomputes the lock gate when the scroll container resizes (ResizeObserver)", async () => {
       let roCallback: ResizeObserverCallback | undefined;
       let observedEl: Element | undefined;
       class FakeResizeObserver {
@@ -3064,37 +3107,78 @@ describe("ScrollbackPane", () => {
         const pane = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
         if (!pane) throw new Error("scrollback DOM not found");
 
-        // Drain the mount rAFs. jsdom geometry is 0/0 → scrollHeight is not
-        // greater than clientHeight → `isOverflowing` latches false — exactly
-        // the cold-boot false-negative latch. Gate closed: no pan-y.
+        // jsdom 0/0 → untrusted → fail open (not locked).
         await flushRaf();
-        expect(pane.classList.contains("scrollback-overflowing")).toBe(false);
+        expect(pane.classList.contains("scrollback-locked")).toBe(false);
 
-        // The observer MUST be wired onto the scroll container — the element
-        // that hosts the touch-action gate. Pre-fix: no RO → RED here.
+        // The observer MUST be wired onto the scroll container (hosts the gate).
         expect(observedEl).toBe(pane);
 
-        // iOS-PWA post-reload viewport settle: the container's clientHeight
-        // shrinks so content now overflows — a geometry change with NO
-        // window/visualViewport `resize` event (#245's trigger stays silent).
-        Object.defineProperty(pane, "scrollHeight", { value: 5000, configurable: true });
+        // Settle to a TRUSTWORTHY geometry where content FITS (nonzero
+        // clientHeight, scrollHeight <= clientHeight) — a box change with NO
+        // window/visualViewport `resize` event. The gate must LOCK.
+        Object.defineProperty(pane, "scrollHeight", { value: 100, configurable: true });
         Object.defineProperty(pane, "clientHeight", { value: 500, configurable: true });
-
-        // The container resized → the ResizeObserver fires.
         roCallback?.([], {} as ResizeObserver);
         await flushRaf();
+        expect(pane.classList.contains("scrollback-locked")).toBe(true);
 
-        // Gate recomputed off REAL geometry → touch-action flips to pan-y,
-        // unlocking the pan the cold-boot latch had frozen.
-        expect(pane.classList.contains("scrollback-overflowing")).toBe(true);
+        // Content now overflows the same container → gate UNLOCKS (pan-y). Proves
+        // the gate tracks geometry bidirectionally, not a one-shot latch.
+        Object.defineProperty(pane, "scrollHeight", { value: 5000, configurable: true });
+        Object.defineProperty(pane, "clientHeight", { value: 500, configurable: true });
+        roCallback?.([], {} as ResizeObserver);
+        await flushRaf();
+        expect(pane.classList.contains("scrollback-locked")).toBe(false);
       } finally {
         vi.unstubAllGlobals();
       }
     });
 
+    it("re-measures the gate on a post-mount settle timer, independent of any event", async () => {
+      // #285 reopen part (3): the reported cold-boot settle fires NO resize /
+      // box change, so a defensive event-independent re-measure on a short
+      // post-mount timer is the belt-and-suspenders corrector. Stub RO to a
+      // no-op so the ONLY corrective path is the timer.
+      vi.useFakeTimers();
+      class NoopResizeObserver {
+        constructor(_cb: ResizeObserverCallback) {}
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      }
+      vi.stubGlobal("ResizeObserver", NoopResizeObserver);
+      try {
+        setScrollback({ "freenode #grappa": fixture });
+        const { container } = render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        const pane = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+        if (!pane) throw new Error("scrollback DOM not found");
+
+        // Flush the mount + length-effect measures against jsdom's 0/0 geometry
+        // → untrusted → fail open (not locked). This settles the initial gate
+        // BEFORE the viewport corrects, so the only remaining corrective path is
+        // the settle timer (RO is a no-op, no resize is fired).
+        await vi.advanceTimersByTimeAsync(50);
+        expect(pane.classList.contains("scrollback-locked")).toBe(false);
+
+        // Post-mount the viewport SETTLES: clientHeight is now a trustworthy
+        // value against which content fits — but NO resize / RO / box change
+        // fires (the reported no-event settle).
+        Object.defineProperty(pane, "scrollHeight", { value: 100, configurable: true });
+        Object.defineProperty(pane, "clientHeight", { value: 500, configurable: true });
+
+        // Only the event-independent settle timer can correct the gate now.
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(pane.classList.contains("scrollback-locked")).toBe(true);
+      } finally {
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    });
+
     it("disconnects the ResizeObserver on unmount (no leaked observer)", () => {
-      // Mirror the #230 passive-touch onMount/onCleanup discipline: the
-      // observer created in onMount MUST be disconnected in onCleanup.
       const disconnect = vi.fn();
       class FakeResizeObserver {
         constructor(_cb: ResizeObserverCallback) {}

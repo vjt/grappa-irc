@@ -23894,6 +23894,96 @@ CSS._
 
 ---
 
+### 2026-07-17 — #285 REOPEN (P0, cic): the ResizeObserver was necessary but not sufficient — FAIL-OPEN the scroll gate + harden the boot viewport read
+
+**Reopened.** The ResizeObserver fix above shipped (`--cic`, bundle
+`C8xRjjUq`), and the P0 STILL reproduced on-device: a full PWA **kill +
+relaunch from the app switcher** (not just a reload) → scroll still completely
+locked, **mainly in tabs with no unread-messages marker**.
+
+**Why the RO was necessary but not sufficient (the refined root cause).** A
+`ResizeObserver` fires only on a container **box change**. On a cold iOS-PWA
+relaunch the boot read latches an **INFLATED `--viewport-height`** (read
+pre-settle, before safe-area / chrome insets settle), the scroll container
+BAKES to that inflated height, and — because `installViewportHeightTracker`
+re-reads `visualViewport.height` only on a `resize` event, which the silent
+settle never fires — **no subsequent box change ever occurs**. No box change →
+the RO never fires → `measureOverflow` never re-runs → the OLD default-deny gate
+(`.scrollback { touch-action: none }`, only `.scrollback-overflowing` → `pan-y`)
+stayed latched `none` forever. The prior entry's assumption — *"the observer
+subsumes the boot race — derive, don't chase it"* — does not hold when the boot
+race produces a permanently-frozen container with no event to derive from.
+
+**Why "tabs without an unread marker" is the tell.** The gate is
+`isOverflowing = scrollHeight > clientHeight` against an inflated `clientHeight`.
+The unread-marker element adds height to `scrollHeight`; in tabs that have it,
+content clears the inflated threshold → gate opens. In tabs without it,
+`scrollHeight` sits just UNDER the inflated `clientHeight` → gate stays closed →
+scroll dead. Same root cause, content-height-dependent manifestation.
+
+**The core defect: the gate FAILED CLOSED.** A single wrong / pre-settle
+`clientHeight` read produced a *permanently* dead scroll, and the only
+correction path depended on an event (resize / box change) this exact scenario
+never emits.
+
+**Fix — layered, in vjt's blessed order.**
+1. **Fail open (primary — kills the whole bug class).** Invert the gate. Base
+   `.scrollback { touch-action: pan-y }`; a new `.scrollback.scrollback-locked
+   { touch-action: none }` LOCKS the pane ONLY when the pure seam
+   `shouldLockScrollGate({scrollHeight, clientHeight})` proves the content fits
+   a **trustworthy** clientHeight (`clientHeight > 0`; a 0 / negative / NaN read
+   NEVER locks). The signal `isOverflowing` → `scrollLocked` (default `false` =
+   not locked = pannable from the first frame). A false-positive pannable pane
+   is harmless (worst case: iOS reveals chrome on a pane with nothing to scroll);
+   the P0 is the false-negative dead scroll. This removes the entire "bad
+   measurement → dead scroll" class regardless of boot-race timing.
+2. **Harden the boot read (correctness backing — the piece the first fix
+   punted).** `installViewportHeightTracker` now RE-READS `visualViewport.height`
+   on a short post-boot timer schedule (`[100, 400, 900]` ms), event-independently,
+   so the settled (smaller) height overwrites the inflated boot value even when
+   no `resize` ever fires — un-baking the container (→ the RO then fires → the
+   gate recomputes). Each re-read reads the LIVE `vv.height`, so overlapping a
+   genuine keyboard-open resize just writes the current correct value (never a
+   stale clobber).
+3. **Defensive post-mount settle re-measure.** `ScrollbackPane.onMount` schedules
+   `measureOverflow()` on a `[150, 500]` ms timer, cleared in `onCleanup`,
+   independent of resize/RO — the belt-and-suspenders corrector for the
+   no-box-change settle.
+
+**Why a local inflation heuristic can't be the fix.** The gate cannot detect a
+*relative* inflation from a single measurement: `.scrollback` is ALWAYS shorter
+than the document (top bar + compose siblings), so comparing its clientHeight to
+`documentElement.clientHeight` never flags the inflation. Inflation must be
+corrected at the SOURCE (part 2) and on SETTLE (part 3); the gate stays simple
+and fails open (part 1).
+
+**Proof.** vitest core RED→GREEN: `shouldLockScrollGate` fail-open decision seam
+(overflow → no lock; fit → lock; **zero/negative/NaN clientHeight → no lock** =
+the P0 protection); the `.scrollback-locked` DOM wiring (cold-mount fail-open;
+RO recompute; **event-independent settle-timer** re-measure; disconnect on
+unmount); and `viewportHeight` boot **settle re-read** correcting `--viewport-height`
+with NO resize event. Full unit suite **2826 passed**. e2e (`@webkit`,
+`issue285-scroll-lock-resizeobserver.spec.ts`): assert the FAIL-OPEN base
+(`.scrollback` computes `touch-action: pan-y`) + the RO recompute on a silent
+box change; siblings `issue245` / `issue230` migrated to the inverted
+`scrollback-locked` semantics. Per **CONSTRAINT**
+(`feedback_playwright_webkit_not_ios_scroll`) Playwright cannot reproduce iOS
+touch physics — the actual on-device touch-pan unlock after a cold relaunch is
+verified by vjt, not CI.
+
+**Apply.** A binary UI gate whose WRONG value is catastrophic (dead scroll) and
+whose RIGHT-but-idle value is harmless (a slightly-too-permissive pan) MUST fail
+open: default to the harmless state, and switch to the strict state only on a
+measurement you can TRUST. Never gate a critical affordance on a single
+early/derived read whose only self-correction depends on an event that the
+failure scenario suppresses.
+
+_Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
+change (`ScrollbackPane.tsx` + `lib/viewportHeight.ts` + `themes/default.css` +
+tests). No server, no schema, no config._
+
+---
+
 ### 2026-07-17 — #280 (P1, cic): "next" + scroll-to-bottom buttons coexist via a shared, container-anchored float stack
 
 Follow-up to #264/#278 (the mobile "jump to next active window" affordance).

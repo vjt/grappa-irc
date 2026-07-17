@@ -171,6 +171,14 @@ const SCROLL_KEYS = new Set<string>([
 // cases; this constant only controls when to *try*.
 const LOAD_MORE_THRESHOLD_PX = 200;
 
+// #285 reopen part (3) — defensive post-mount settle re-measure schedule. The
+// reported cold-iOS-PWA relaunch latch corrects via a viewport settle that
+// fires NO resize / box change, so neither the resize listener nor the
+// ResizeObserver catches it. These event-independent re-measures re-run the
+// gate against the settled geometry a few hundred ms after mount, bracketing a
+// fast and a slower settle. Belt-and-suspenders on top of the fail-open base.
+const SETTLE_REMEASURE_DELAYS_MS = [150, 500] as const;
+
 // #230 — the pure underfill-rescue DECISION seam, shared by the desktop wheel
 // path and the mobile touch path (implement-once). Both detect an operator
 // intent to reveal OLDER history on a pane that has NO native scroll (content
@@ -203,6 +211,34 @@ export function shouldRescueUnderfillLoadOlder(geometry: {
   if (nativelyScrollable) return false;
   if (geometry.scrollTop > geometry.thresholdPx) return false;
   return geometry.revealOlderIntent;
+}
+
+// #285 reopen — the pure FAIL-OPEN scroll-gate decision. Returns whether to
+// LOCK `.scrollback` to `touch-action: none`. The CSS base rule is fail-open
+// (`touch-action: pan-y`); we lock ONLY when a TRUSTWORTHY measurement
+// definitively proves the content does not overflow. An untrusted clientHeight
+// — 0 / negative / NaN, i.e. an unsettled or pre-settle cold-boot read — NEVER
+// locks: a false-positive pannable pane is harmless (worst case iOS reveals
+// chrome on a pane with nothing to pan), whereas a false-negative lock is the
+// P0 (scroll DEAD in every tab after a cold iOS-PWA relaunch, because the
+// corrective settle fires no event to re-open the gate). The inflated-boot read
+// that triggers the P0 is corrected at the SOURCE (viewportHeight boot settle
+// re-read) and on the post-mount settle re-measure; the gate itself stays
+// deliberately simple — a local heuristic cannot detect a *relative* inflation
+// (`.scrollback` is always shorter than the document thanks to the top bar +
+// compose siblings), so it does not try.
+//
+// Pure + exported so the fail-open decision is unit-testable without real iOS
+// layout (Playwright webkit does not reproduce it —
+// feedback_playwright_webkit_not_ios_scroll).
+export function shouldLockScrollGate(geometry: {
+  scrollHeight: number;
+  clientHeight: number;
+}): boolean {
+  // Untrusted read (0 / negative / NaN) → fail open (stay pannable).
+  if (!(geometry.clientHeight > 0)) return false;
+  // Trusted read + content fits → lock (touch-action: none).
+  return geometry.scrollHeight <= geometry.clientHeight;
 }
 
 // Module-level tracking of which channels have already auto-focused on
@@ -808,11 +844,15 @@ const ScrollbackPane: Component<Props> = (props) => {
   // window activates normally. `null` when no overlay snapshot is held.
   let overlaySnapshotKey: string | null = null;
   const [atBottom, setAtBottom] = createSignal(true);
-  // UX-3 Z3 R4: actual-overflow gate for the `pan-y → chrome reveal`
-  // trap. Recomputed on every layout-affecting signal (messages,
-  // window resize, visualViewport resize → keyboard open/close).
-  // True when scrollback content actually exceeds the viewport.
-  const [isOverflowing, setIsOverflowing] = createSignal(false);
+  // #285 reopen — FAIL-OPEN touch-action gate. The CSS base is `pan-y`; this
+  // signal drives the `.scrollback-locked` class that LOCKS the pane to
+  // `touch-action: none` ONLY when a trustworthy measurement proves the content
+  // does not overflow (see `shouldLockScrollGate`). Default `false` = not
+  // locked = pannable: the pane is scrollable from the first frame and a bad /
+  // pre-settle measurement can never latch it dead (the reported P0). Recomputed
+  // on every layout-affecting trigger (messages, window/visualViewport resize,
+  // ResizeObserver container box change, post-mount settle timer).
+  const [scrollLocked, setScrollLocked] = createSignal(false);
 
   // #130 — window-activation flicker gate. The activation scroll lands
   // inside `scrollToActivation`'s double-rAF (load-bearing — see its doc
@@ -1202,9 +1242,12 @@ const ScrollbackPane: Component<Props> = (props) => {
   // declared overflow mode.
   //
   // Real fix is JS-measured: read scrollHeight vs clientHeight on
-  // every layout-affecting change and toggle a class on `.scrollback`
-  // so the CSS rule `.scrollback-overflowing { touch-action: pan-y }`
-  // / `.scrollback { touch-action: none }` (base) flips accordingly.
+  // every layout-affecting change and toggle a class on `.scrollback`.
+  // #285 reopen — the gate is now FAIL-OPEN: base `.scrollback
+  // { touch-action: pan-y }`, and `.scrollback-locked { touch-action: none }`
+  // LOCKS the pane only when `shouldLockScrollGate` says the content
+  // definitively fits a trustworthy clientHeight. A bad/pre-settle read can
+  // never latch it dead (the reported cold-boot P0).
   //
   // Triggers: messages count, window resize, visualViewport resize
   // (keyboard open/close shrinks the scrollback). Measured in a
@@ -1236,7 +1279,12 @@ const ScrollbackPane: Component<Props> = (props) => {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (!listRef) return;
-        setIsOverflowing(listRef.scrollHeight > listRef.clientHeight);
+        setScrollLocked(
+          shouldLockScrollGate({
+            scrollHeight: listRef.scrollHeight,
+            clientHeight: listRef.clientHeight,
+          }),
+        );
       });
     });
   };
@@ -1311,30 +1359,23 @@ const ScrollbackPane: Component<Props> = (props) => {
     // setAtBottom(true); a resize is not a key change, so atBottom() is
     // trustworthy (the length-effect trusts it the same way).
     //
-    // #245 — ALSO re-measure overflow on resize, UNCONDITIONALLY: it runs
+    // #245 — ALSO re-measure the gate on resize, UNCONDITIONALLY: it runs
     // BEFORE the atBottom() gate above, regardless of scroll position.
-    // `isOverflowing` gates the
-    // `.scrollback-overflowing` class, and default.css makes the base
-    // `.scrollback` `touch-action: none` (reject pan) while only
-    // `.scrollback-overflowing` flips to `pan-y` — so a stale
-    // `isOverflowing` leaves the pane UNSCROLLABLE. That flag is a function
-    // of `clientHeight`, which is viewport-derived (the mobile shell height
-    // tracks `--vh`/`visualViewport.height`), yet `measureOverflow` ran only
-    // on mount + message-length-change, NEVER on a viewport change. On an
-    // installed iOS PWA, a full-page reload (bundleHash.performRefresh →
-    // window.location.reload) cold-mounts before the visualViewport settles;
-    // the mount measured `clientHeight` against a transient (too-large)
-    // height, latched `isOverflowing=false`, and the pane stayed
-    // `touch-action: none` — scroll JAMMED in every tab until a remount
-    // (opening the tab a 2nd time) re-ran the onMount measure after settle.
-    // The settle fires this same `resize`, so re-measuring here unjams the
-    // pane without a remount. Cheap + safe: measureOverflow only toggles the
-    // touch-action class (no scrollTop / position:fixed / keyboard touch).
-    // Deliberately NOT gated by `isOverlayFrozen()` the way scrollToActivation
-    // is: measuring overflow on a covered pane only recomputes a class no one
-    // is touching, and a modal that shrinks the visualViewport must NOT leave
-    // a stale `touch-action` latched after it closes — gating this would
-    // re-open a #245-shaped jam on the overlay's close-edge resize.
+    // `scrollLocked` drives the `.scrollback-locked` class (#285 reopen:
+    // fail-open base `pan-y`, lock to `none` only on a trustworthy fit). The
+    // gate is a function of `clientHeight`, which is viewport-derived (the
+    // mobile shell height tracks `--vh`/`visualViewport.height`), yet
+    // `measureOverflow` ran only on mount + message-length-change, NEVER on a
+    // viewport change until #245 wired it here. A viewport resize (keyboard
+    // open/close, modal-driven shrink) that changes whether the content
+    // overflows re-runs the gate so a stale lock never survives the geometry
+    // change. Cheap + safe: measureOverflow only toggles the touch-action class
+    // (no scrollTop / position:fixed / keyboard touch). Deliberately NOT gated
+    // by `isOverlayFrozen()` the way scrollToActivation is: measuring on a
+    // covered pane only recomputes a class no one is touching, and a modal that
+    // shrinks the visualViewport must NOT leave a stale `touch-action` latched
+    // after it closes — gating this would re-open a jam on the overlay's
+    // close-edge resize.
     const onResize = () => {
       measureOverflow();
       if (atBottom()) scrollToActivation("tail-only", true);
@@ -1403,35 +1444,41 @@ const ScrollbackPane: Component<Props> = (props) => {
       listRef.addEventListener("touchcancel", onTouchEndEl, { passive: true });
     }
 
-    // #285 (P0) — make the overflow/touch-action gate follow REAL container
-    // geometry, not discrete moments. `measureOverflow` (→ `isOverflowing` →
-    // `.scrollback-overflowing` → `touch-action: pan-y`, base `none`) ran only
-    // on mount + message-length + window/visualViewport `resize` (#245). On an
-    // installed iOS PWA a full-page reload cold-mounts BEFORE the visualViewport
-    // settles: the mount measure reads a too-tall clientHeight (the mobile shell
-    // height derives from `--viewport-height`/`vv.height`, unsettled at boot),
-    // latches `isOverflowing=false`, and the pane stays `touch-action: none` —
-    // scroll DEAD in every tab. #245's re-measure never unjams it because the
-    // corrective viewport SHRINK is a geometry change that fires no `resize`
-    // event this onMount listener catches (a CSS layout / safe-area settle, or a
-    // vv.resize in the boot→onMount window before this listener attaches —
-    // installViewportHeightTracker's own earlier listener corrects
-    // `--viewport-height` but ScrollbackPane's onResize missed the event). A
-    // ResizeObserver fires on the container's height change ITSELF, independent
-    // of any event, so the false latch self-corrects the instant the settled
-    // height propagates down the flex chain — no remount, no keyboard-open, no
-    // message needed. This is the general geometry-tracking lever the three
-    // discrete triggers only approximated. Cheap + loop-free: measureOverflow
-    // toggles only the touch-action class (no box-size change → no RO re-fire).
-    // Guarded on `typeof ResizeObserver` for graceful degradation where the API
-    // is absent (mirrors `window.visualViewport?.` above; also lets jsdom tests
-    // that don't stub it skip construction). Element-level create-in-onMount /
+    // #285 — ResizeObserver on the scroll container so the gate follows REAL
+    // container geometry, not just discrete events. It fires on ANY container
+    // height change (e.g. a flex-chain propagation that emits no `resize`), so a
+    // gate recompute rides the box change itself. Cheap + loop-free:
+    // measureOverflow toggles only the touch-action class (no box-size change →
+    // no RO re-fire). Guarded on `typeof ResizeObserver` for graceful
+    // degradation (mirrors `window.visualViewport?.` above; also lets jsdom
+    // tests that don't stub it skip construction). Create-in-onMount /
     // disconnect-in-onCleanup mirrors the #230 passive-touch discipline.
+    //
+    // #285 REOPEN — the RO is necessary but NOT sufficient. On a cold iOS-PWA
+    // kill+relaunch the boot read latches an INFLATED `--viewport-height`, the
+    // container BAKES to that inflated height, and NO subsequent box change ever
+    // occurs to correct it (the corrective settle fires no `resize` and — with
+    // the container frozen inflated — no RO callback either). Under the OLD
+    // default-deny gate that left scroll DEAD forever (worse in tabs with no
+    // unread marker, whose content sits just under the inflated threshold). The
+    // durable fix is layered: (1) the FAIL-OPEN base + `shouldLockScrollGate`
+    // (a pre-settle read can no longer latch the pane dead); (2) the
+    // viewportHeight boot settle RE-READ that corrects the inflated
+    // `--viewport-height` event-independently (so the container un-bakes → RO
+    // fires → gate recomputes); (3) the post-mount settle timer below, an
+    // event-independent re-measure for the no-box-change settle.
     let overflowObserver: ResizeObserver | undefined;
     if (listRef && typeof ResizeObserver !== "undefined") {
       overflowObserver = new ResizeObserver(() => measureOverflow());
       overflowObserver.observe(listRef);
     }
+
+    // #285 reopen part (3) — defensive post-mount settle re-measure. Fires
+    // regardless of any resize / box change, so the no-event settle that RO and
+    // onResize both miss still re-runs the gate against the settled geometry.
+    const settleTimers = SETTLE_REMEASURE_DELAYS_MS.map((ms) =>
+      window.setTimeout(() => measureOverflow(), ms),
+    );
 
     onCleanup(() => {
       window.removeEventListener("resize", onResize);
@@ -1440,6 +1487,7 @@ const ScrollbackPane: Component<Props> = (props) => {
       listRef?.removeEventListener("touchmove", onTouchMoveEl);
       listRef?.removeEventListener("touchend", onTouchEndEl);
       listRef?.removeEventListener("touchcancel", onTouchEndEl);
+      for (const t of settleTimers) window.clearTimeout(t);
       overflowObserver?.disconnect();
       if (scrollSettleTimer !== undefined) {
         window.clearTimeout(scrollSettleTimer);
@@ -2509,7 +2557,7 @@ const ScrollbackPane: Component<Props> = (props) => {
       <div
         ref={listRef}
         class="scrollback"
-        classList={{ "scrollback-overflowing": isOverflowing() }}
+        classList={{ "scrollback-locked": scrollLocked() }}
         // #130 — hidden (pre-paint) while the activation scroll settles so
         // the wrong-scroll frame is never shown; visibility (not display)
         // keeps layout/scrollHeight readable for the deferred geometry read.

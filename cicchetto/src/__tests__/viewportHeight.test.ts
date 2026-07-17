@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   installSmartScrollPin,
@@ -15,6 +15,7 @@ import {
 function makeFakeVp(initialHeight: number): {
   vp: VisualViewportLike;
   fireResize: (h: number) => void;
+  setHeight: (h: number) => void;
 } {
   let handler: (() => void) | null = null;
   let height = initialHeight;
@@ -32,13 +33,26 @@ function makeFakeVp(initialHeight: number): {
       height = h;
       handler?.();
     },
+    // Change the reported height WITHOUT dispatching a resize event — the
+    // #285-reopen "silent settle" an installed iOS PWA emits no `resize` for.
+    setHeight: (h: number) => {
+      height = h;
+    },
   };
 }
 
 describe("viewportHeight module", () => {
   beforeEach(() => {
+    // Fake timers so the boot settle re-read schedule (#285 reopen) never
+    // leaks a deferred CSS-var write across tests; tests that don't advance
+    // are unaffected (the synchronous boot write happens before any timer).
+    vi.useFakeTimers();
     document.documentElement.style.removeProperty("--viewport-height");
     document.documentElement.style.removeProperty("--vh");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("writes --viewport-height (px) on boot", () => {
@@ -69,6 +83,30 @@ describe("viewportHeight module", () => {
     installViewportHeightTracker(undefined);
     expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("");
     expect(document.documentElement.style.getPropertyValue("--vh")).toBe("");
+  });
+
+  it("re-reads the settled viewport height on a post-boot timer, WITHOUT a resize event (#285 reopen)", () => {
+    // The reported P0 mechanism: on a cold iOS-PWA kill+relaunch the boot read
+    // latches an INFLATED height (pre-settle), and the corrective settle fires
+    // NO `resize` event — so the one-shot boot write is never re-read and the
+    // scroll container bakes to the inflated height forever. The reopen fix
+    // re-reads visualViewport.height on a short post-boot timer schedule,
+    // event-independently, so the settled (smaller) height overwrites the
+    // inflated boot value even when no resize ever fires.
+    const { vp, setHeight } = makeFakeVp(852); // boot reads the inflated full-screen height
+    installViewportHeightTracker(vp);
+    expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("852px");
+
+    // Silent settle: the real usable height is 762 (safe-area/chrome settled),
+    // but iOS emits NO resize event, so the resize handler never runs.
+    setHeight(762);
+    expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("852px");
+
+    // The boot settle re-read fires on its timer and corrects the var — with no
+    // resize event in play.
+    vi.advanceTimersByTime(2000);
+    expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("762px");
+    expect(document.documentElement.style.getPropertyValue("--vh")).toBe("7.62px");
   });
 
   it("subscribes to the resize event only (D9 dropped vv.scroll — vvOffsetTop unreliable per WebKit #297779)", () => {
