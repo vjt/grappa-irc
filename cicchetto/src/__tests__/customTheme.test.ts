@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { getAppliedThemePayload } from "../lib/customTheme";
+import { getAppliedThemePayload, tokenToCssVars } from "../lib/customTheme";
 import type { TokenColors, TokenPayload } from "../lib/themesApi";
 
 // #75 producer path — apply-engine seams the editor depends on.
@@ -65,5 +65,27 @@ describe("customTheme.getAppliedThemePayload", () => {
   it("returns null on a wrong-shaped cache", () => {
     localStorage.setItem(CACHE_KEY, JSON.stringify({ nope: true }));
     expect(getAppliedThemePayload()).toBeNull();
+  });
+});
+
+// #75 producer path B — font family → --font-mono mapping contract. The
+// editor's font picker writes `payload.font_family` (a slug from the closed
+// allow-list); the self-hosted @font-face in default.css binds that slug.
+describe("customTheme.tokenToCssVars font mapping", () => {
+  it("maps a named family to --font-mono with a fallback stack", () => {
+    const vars = tokenToCssVars(payload({ font_family: "jetbrains-mono" }));
+    expect(vars["--font-mono"]).toContain('"jetbrains-mono"');
+    expect(vars["--font-mono"]).toContain("monospace");
+  });
+
+  it("omits --font-mono for mono-default so the base stack wins", () => {
+    const vars = tokenToCssVars(payload({ font_family: "mono-default" }));
+    expect(vars["--font-mono"]).toBeUndefined();
+  });
+
+  it("still maps iosevka (no @font-face → graceful fallback via the stack)", () => {
+    const vars = tokenToCssVars(payload({ font_family: "iosevka" }));
+    expect(vars["--font-mono"]).toContain('"iosevka"');
+    expect(vars["--font-mono"]).toContain("monospace");
   });
 });

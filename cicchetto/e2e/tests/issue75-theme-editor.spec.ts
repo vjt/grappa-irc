@@ -128,4 +128,42 @@ test.describe("#75 — theme editor (producer path)", () => {
     await expect(page.getByTestId("theme-editor")).toHaveCount(0, { timeout: 5_000 });
     await expect.poll(() => readAccent(page), { timeout: 5_000 }).toBe(accentPreOpen);
   });
+
+  test("self-hosted font applies live from same-origin /fonts (no CDN)", async ({ page }) => {
+    const requests: string[] = [];
+    page.on("request", (r) => requests.push(r.url()));
+
+    await loginAs(page, getSeededVjt());
+    await openThemesGalleryDesktop(page);
+
+    await page.getByTestId("theme-new").click();
+    await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
+
+    // Pick a vendored family → --font-mono re-paints live to include it (no
+    // save; purely the editor's live preview).
+    await page.getByTestId("theme-editor-font").selectOption("jetbrains-mono");
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() =>
+            document.documentElement.style.getPropertyValue("--font-mono"),
+          ),
+        { timeout: 5_000 },
+      )
+      .toContain("jetbrains-mono");
+
+    // The woff2 is fetched same-origin from /fonts/… once the face paints
+    // (the editor modal itself uses --font-mono).
+    await expect
+      .poll(() => requests.some((u) => u.includes("/fonts/jetbrains-mono/")), { timeout: 5_000 })
+      .toBe(true);
+
+    // …and NO external CDN / Google-Fonts request happened — a runtime
+    // webfont fetch would be a per-render beacon / IP leak (#75 security).
+    expect(
+      requests.some((u) => /fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.google/i.test(u)),
+    ).toBe(false);
+
+    await page.getByTestId("theme-editor-cancel-btn").click();
+  });
 });
