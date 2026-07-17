@@ -15,6 +15,7 @@ import ShareConsume from "./ShareConsume";
 import "./lib/subscribe";
 import "./lib/userTopic";
 import { mountBadgeReconcile, mountBadgeSync } from "./lib/badge";
+import { applyCachedCustomTheme, mountCustomThemeSync } from "./lib/customTheme";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
@@ -34,6 +35,14 @@ import "./themes/default.css";
 // FOUC on cold load and no flash on toggle (both themes ship in one CSS
 // file via :root[data-theme="..."] blocks).
 applyTheme();
+
+// #75 — pre-paint the operator's custom theme (server-owned, cached in
+// localStorage) BEFORE render() so the first frame carries their palette
+// with no FOUC, exactly like `applyTheme()`. The inline CSS custom
+// properties cascade over the base `[data-theme]` blocks. The
+// authoritative payload is refreshed from `GET /me/theme` after login via
+// `mountCustomThemeSync` below.
+applyCachedCustomTheme();
 
 // Same rationale for `--font-size`: write the CSS var on `<html>`
 // BEFORE render() so the first frame already has the user's preferred
@@ -58,6 +67,12 @@ applyIosClass();
 // from the `/me` seed, `read_cursor_set` broadcasts, the SW push, and
 // the optimistic foreground mention bump.
 createRoot(() => mountBadgeSync());
+
+// #75 — refresh the custom theme from the server on every `token()`
+// change: on login apply + cache the resolved `GET /me/theme` payload, on
+// logout clear back to the base cascade. Own root (app-lifetime owner for
+// the createEffect), alongside the other createRoot-wired effects.
+createRoot(() => mountCustomThemeSync());
 
 // PWA icon badge foreground reconcile (#badge-orphan, 2026-06-21) — the
 // SW push path (door #1) writes `setAppBadge` directly off-signal while
