@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { getAppliedThemePayload, tokenToCssVars } from "../lib/customTheme";
+import { applyCustomTheme, getAppliedThemePayload, tokenToCssVars } from "../lib/customTheme";
 import type { TokenColors, TokenPayload } from "../lib/themesApi";
 
 // #75 producer path — apply-engine seams the editor depends on.
@@ -87,5 +87,33 @@ describe("customTheme.tokenToCssVars font mapping", () => {
     const vars = tokenToCssVars(payload({ font_family: "iosevka" }));
     expect(vars["--font-mono"]).toContain('"iosevka"');
     expect(vars["--font-mono"]).toContain("monospace");
+  });
+});
+
+// #75 producer path C — the background wallpaper layer is CSS-gated on a
+// `theme-has-bg` class (default.css can't branch on a var being "none").
+// applyCustomTheme toggles it so the layer + pane translucency only engage
+// when a theme actually carries a background image.
+describe("customTheme.applyCustomTheme background class", () => {
+  beforeEach(() => {
+    document.documentElement.className = "";
+    document.documentElement.style.cssText = "";
+  });
+
+  it("adds theme-has-bg when a background image is set", () => {
+    applyCustomTheme(payload({ background: { image_id: "abcdef", opacity: 0.3 } }));
+    expect(document.documentElement.classList.contains("theme-has-bg")).toBe(true);
+  });
+
+  it("removes theme-has-bg when the background image is cleared", () => {
+    applyCustomTheme(payload({ background: { image_id: "abcdef", opacity: 0.3 } }));
+    applyCustomTheme(payload({ background: { image_id: null, opacity: 0.3 } }));
+    expect(document.documentElement.classList.contains("theme-has-bg")).toBe(false);
+  });
+
+  it("removes theme-has-bg on a null apply (clear back to base)", () => {
+    applyCustomTheme(payload({ background: { image_id: "abcdef", opacity: 0.3 } }));
+    applyCustomTheme(null);
+    expect(document.documentElement.classList.contains("theme-has-bg")).toBe(false);
   });
 });

@@ -91,6 +91,7 @@ export function applyCustomTheme(payload: TokenPayload | null): void {
   const root = document.documentElement;
   if (payload === null) {
     for (const v of THEME_CSS_VARS) root.style.removeProperty(v);
+    root.classList.remove("theme-has-bg");
     return;
   }
   const vars = tokenToCssVars(payload);
@@ -100,6 +101,11 @@ export function applyCustomTheme(payload: TokenPayload | null): void {
   for (const [name, value] of Object.entries(vars)) {
     root.style.setProperty(name, value);
   }
+  // Gate the wallpaper layer + pane translucency (themes/default.css) on a
+  // class — CSS can't branch on `--theme-bg-image` being "none". Only a
+  // theme carrying an image engages the layer; clearing it drops back to
+  // the opaque base bg.
+  root.classList.toggle("theme-has-bg", payload.background.image_id !== null);
 }
 
 // Read the cached payload, defending BOTH the parse AND the shape. This

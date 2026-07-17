@@ -5190,6 +5190,42 @@ html.resize-dragging * {
   border-color: var(--accent);
 }
 
+/* #75 producer path — background wallpaper layer.
+ *
+ * A theme's background image (--theme-bg-image, a same-origin
+ * /uploads/<slug>) paints as a scoped layer behind the scrollback reading
+ * area at the user-configured --theme-bg-opacity (default 0.3). Confined to
+ * .scrollback-pane (already position:relative) rather than the whole shell:
+ * the message list is the surface the wallpaper belongs behind; the sidebar
+ * + chrome stay solid for legibility, and the ComposeBox (a sibling OUTSIDE
+ * the pane) stays opaque. Gated on the `theme-has-bg` class
+ * (applyCustomTheme) because CSS can't branch on the var being "none".
+ * `isolation` makes the pane a stacking context so the ::before layer sits
+ * below the (transparent) scrollback text but above the pane backdrop.
+ * NEVER an <img> — the text-only-scrollback rule holds; this is a CSS
+ * background-image only. */
+:root.theme-has-bg .scrollback-pane {
+  isolation: isolate;
+}
+
+:root.theme-has-bg .scrollback-pane::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-image: var(--theme-bg-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: var(--theme-bg-opacity, 0.3);
+  pointer-events: none;
+}
+
+:root.theme-has-bg .scrollback {
+  position: relative;
+  z-index: 1;
+}
+
 .vhost-random-msg {
   color: var(--muted);
   font-size: 0.85rem;

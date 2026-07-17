@@ -52,7 +52,12 @@ export type KnownApiErrorCode =
   | "unauthorized"
   | "validation_failed"
   | "cannot_disconnect_self"
-  | "rate_limited";
+  | "rate_limited"
+  | "not_raster"
+  | "too_large"
+  | "ssrf_blocked"
+  | "fetch_failed"
+  | "image_reencode_failed";
 
 const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "invalid_credentials",
@@ -77,6 +82,11 @@ const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "validation_failed",
   "cannot_disconnect_self",
   "rate_limited",
+  "not_raster",
+  "too_large",
+  "ssrf_blocked",
+  "fetch_failed",
+  "image_reencode_failed",
 ]);
 
 function isKnownCode(code: string): code is KnownApiErrorCode {
@@ -210,6 +220,20 @@ function friendlyKnown(err: ApiError, code: KnownApiErrorCode): string {
       // user (anti-abuse, ~5/day). Reached on Save/publish once the daily
       // budget is spent; the recourse is to wait.
       return "You've hit today's theme limit. Try again tomorrow.";
+    // #75 themes — background-image upload pipeline errors (POST
+    // /themes/background). The server validates content-type (raster
+    // only, no SVG), a size cap, re-encodes to strip polyglots, and
+    // SSRF-guards the fetch-by-URL path.
+    case "not_raster":
+      return "That file isn't a supported image. Use a PNG, JPEG, GIF, or WebP.";
+    case "too_large":
+      return "That image is too large. Pick a smaller file.";
+    case "ssrf_blocked":
+      return "That URL isn't allowed. Use a public image URL, or upload a file instead.";
+    case "fetch_failed":
+      return "Couldn't fetch that image URL. Check the link, or upload a file instead.";
+    case "image_reencode_failed":
+      return "That image couldn't be processed. Try a different file.";
     default:
       // Cic M2 reviewer fix: exhaustiveness assertion. Adding a token
       // to `KnownApiErrorCode` without a `case` arm above becomes a

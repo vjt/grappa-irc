@@ -16,6 +16,7 @@
 // daily create budget — use a fresh user or low N when triaging the save
 // test.
 
+import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
@@ -165,5 +166,78 @@ test.describe("#75 — theme editor (producer path)", () => {
     ).toBe(false);
 
     await page.getByTestId("theme-editor-cancel-btn").click();
+  });
+
+  test("background upload: wallpaper layer applies live + persists across reload", async ({
+    page,
+  }) => {
+    await loginAs(page, getSeededVjt());
+    // Select a channel so the shell renders a .scrollback-pane (the surface
+    // the wallpaper layer paints behind) underneath the settings drawer.
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+    await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toBeVisible();
+    await openThemesGalleryDesktop(page);
+
+    await page.getByTestId("theme-new").click();
+    await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
+
+    // Upload a tiny raster → the server re-encodes + re-hosts it → returns
+    // an image_id → draft.background.image_id → applyCustomTheme sets the
+    // var + the `theme-has-bg` gate LIVE.
+    await page.getByTestId("theme-editor-bg-file").setInputFiles({
+      name: "bg.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(TINY_PNG_HEX, "hex"),
+    });
+
+    // The gate class engages + --theme-bg-image points at the re-hosted
+    // same-origin /uploads/<slug> once the upload resolves.
+    await expect(page.locator("html.theme-has-bg")).toHaveCount(1, { timeout: 15_000 });
+    const bgImage = await page.evaluate(() =>
+      document.documentElement.style.getPropertyValue("--theme-bg-image").trim(),
+    );
+    expect(bgImage).toContain("/uploads/");
+
+    // The wallpaper layer actually CONSUMES the var (computed ::before on
+    // the scrollback pane) — proves the CSS layer is wired, not just the var.
+    const layerImage = await page.evaluate(() => {
+      const pane = document.querySelector(".scrollback-pane");
+      return pane ? getComputedStyle(pane, "::before").backgroundImage : "";
+    });
+    expect(layerImage).toContain("/uploads/");
+
+    // Opacity slider re-paints --theme-bg-opacity live.
+    await page.getByTestId("theme-editor-opacity").evaluate((el) => {
+      (el as HTMLInputElement).value = "0.55";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() =>
+            document.documentElement.style.getPropertyValue("--theme-bg-opacity").trim(),
+          ),
+        { timeout: 5_000 },
+      )
+      .toBe("0.55");
+
+    await page.getByTestId("theme-editor-name").fill(`e2e-bg-${Date.now()}`);
+    await page.getByTestId("theme-editor-save").click();
+    await expect(page.getByTestId("theme-editor")).toHaveCount(0, { timeout: 5_000 });
+
+    // Clear the FOUC mirror → reload → the bg + opacity can ONLY come from
+    // the server (GET /me/theme), proving the cross-device round-trip.
+    await page.evaluate(() => localStorage.removeItem("grappa-custom-theme"));
+    await page.reload();
+    await expect(page.locator("html.theme-has-bg")).toHaveCount(1, { timeout: 15_000 });
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() =>
+            document.documentElement.style.getPropertyValue("--theme-bg-opacity").trim(),
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe("0.55");
   });
 });
