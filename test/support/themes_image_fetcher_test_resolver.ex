@@ -18,6 +18,7 @@ defmodule Grappa.Themes.ImageFetcher.TestResolver do
   Mirrors the `Grappa.PtrTestResolver` seam for the vhost PTR cache.
   """
 
+  @doc "Loopback (`127.0.0.1`/`localhost`) resolves to itself so Bypass is reachable; every other host delegates to the real `Grappa.Net.Ssrf` guard."
   @spec resolve_safe(String.t()) ::
           {:ok, :inet.ip_address()} | {:error, :ssrf_blocked | :dns_error}
   def resolve_safe("127.0.0.1"), do: {:ok, {127, 0, 0, 1}}
