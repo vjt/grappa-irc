@@ -1060,8 +1060,11 @@ html.resize-dragging * {
 }
 
 /* UX-4 bucket C — away badge styling. Lives inline in the collapsed
-   network-header row (was inside the dropped `<h3>` until C). Muted +
-   small so it reads as a passive indicator, not an unread badge. */
+   network-header row (was inside the dropped `<h3>` until C). Small so it
+   reads as a passive indicator, not an unread badge. #276 — the visible
+   label is now the 💤 emoji (accessible name kept as "away" via
+   aria-label); `color: var(--muted)` is inert on the emoji glyph but kept
+   for parity with the sibling reconnect/umode badges. */
 .sidebar-away-badge {
   margin-left: 0.4rem;
   color: var(--muted);

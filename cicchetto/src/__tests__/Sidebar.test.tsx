@@ -819,15 +819,27 @@ describe("Sidebar", () => {
       });
     });
 
-    it("[away] badge surfaces on the collapsed network header row", () => {
+    // #276 — the away indicator's VISIBLE label is the 💤 (zzz) emoji, not
+    // the word "away". The accessible name stays the WORD "away"
+    // (aria-label) so screen readers announce the state, not "sleeping
+    // symbol". Driven by the same `away_confirmed` server event.
+    it("💤 away badge surfaces on the collapsed network header row (#276)", () => {
       mockAwayByNetwork = { freenode: true };
       const { container } = render(() => <Sidebar />);
       const header = container.querySelector("li.sidebar-network-header");
       const badge = header?.querySelector(".sidebar-away-badge");
-      expect(badge?.textContent).toBe("[away]");
+      expect(badge?.textContent).toBe("💤");
     });
 
-    it("[away] badge is absent when the network is not away", () => {
+    it("away badge keeps the accessible name 'away' for a11y (#276)", () => {
+      mockAwayByNetwork = { freenode: true };
+      const { container } = render(() => <Sidebar />);
+      const header = container.querySelector("li.sidebar-network-header");
+      const badge = header?.querySelector(".sidebar-away-badge");
+      expect(badge?.getAttribute("aria-label")).toBe("away");
+    });
+
+    it("away badge is absent when the network is not away", () => {
       mockAwayByNetwork = {};
       const { container } = render(() => <Sidebar />);
       const header = container.querySelector("li.sidebar-network-header");

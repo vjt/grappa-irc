@@ -11,21 +11,23 @@ defmodule Grappa.Session.NumericRouter do
 
   Priority order (highest → lowest):
 
-  1. **Label-based** (IRCv3 `labeled-response` cap): if the numeric carries
-     a `label` message-tag AND the label is registered in `labels_pending`,
-     the recorded `origin_window` wins unconditionally — perfect-correlation
-     path.
+  1. **Delegated**: away acks (305/306, #276), WHOIS (311–319),
+     WHO (352/315), NAMES (353/366), MOTD (375/372/376) — owned by
+     dedicated handlers in `EventRouter`. We return `:delegated`; the
+     caller skips the matrix. Delegation wins even over a matching label
+     (see `route/2` — `labels_pending` holds only away labels, so a
+     labeled away-ack must not resurrect the row #276 suppresses).
 
-  2. **Delegated**: WHOIS (311–319), WHO (352/315), NAMES (353/366),
-     LIST (321/322/323), LINKS (364/365), MOTD (375/372/376) — owned by
-     dedicated handlers in `EventRouter`. We return `:delegated`; the caller
-     skips the matrix.
+  2. **Label-based** (IRCv3 `labeled-response` cap): if the numeric carries
+     a `label` message-tag AND the label is registered in `labels_pending`,
+     the recorded `origin_window` wins over the param scan and active-deny —
+     perfect-correlation path (but NOT over delegation, per #276 above).
 
   3. **Active deny list** (`@active_numerics`): a small set of numerics
      whose params look nick-shaped but the "nick" is not a routing
      destination — it's the rejected nick (433/432), the unknown command
-     name (421), the offending command's argument list (461), or just an
-     ack (305/306/437). These ALWAYS go to `{:server, nil}`. Without this
+     name (421), the offending command's argument list (461), or an
+     ack (437). These ALWAYS go to `{:server, nil}`. Without this
      deny list, the param-scan below would happily route 433's
      "BLEH-as-nick" to a query window.
 
@@ -176,10 +178,12 @@ defmodule Grappa.Session.NumericRouter do
                          4,
                          42,
                          263,
-                         # 305 RPL_UNAWAY — upstream confirmed away unset
-                         305,
-                         # 306 RPL_NOWAWAY — upstream confirmed away set
-                         306,
+                         # #276 — 305 RPL_UNAWAY / 306 RPL_NOWAWAY moved OUT
+                         # of the deny list into @delegated_numerics. The away
+                         # STATE reaches cic via EventRouter's away_confirmed
+                         # effect; persisting the ack as a $server :notice row
+                         # was pure noise on every (auto-)away/back cycle. See
+                         # the delegated set below.
                          # 421 ERR_UNKNOWNCOMMAND — unknown IRC command issued
                          421,
                          # 432 ERR_ERRONEUSNICKNAME — bad nick format in /nick
@@ -196,6 +200,26 @@ defmodule Grappa.Session.NumericRouter do
   # Delegated numerics: already handled by dedicated EventRouter/Server
   # handlers. `:delegated` short-circuits the matrix; the caller defers.
   @delegated_numerics MapSet.new([
+                        # #276 — 305 RPL_UNAWAY / 306 RPL_NOWAWAY. Away-state
+                        # acks owned by EventRouter's away_confirmed handler
+                        # (fires the typed `{:away_confirmed, :present |
+                        # :away}` effect; Session.Server broadcasts it on
+                        # Topic.user → cic's awayStatus.ts → 💤 badge). The
+                        # numeric itself is content-free noise: pre-#276 it
+                        # was deny-listed to `{:server, nil}` and persisted as
+                        # a `:notice` row ("You have been marked as being
+                        # away" / "…no longer…") on every (auto-)away/back
+                        # cycle. Delegated so Server.handle_info routes via
+                        # `delegate/2` (EventRouter only, NO persist) — same
+                        # disease shape as the 324/332/333 channel-state
+                        # numerics below. NB `route/2` also makes this
+                        # delegation win over the labeled-response override:
+                        # `labels_pending` is populated SOLELY by the away
+                        # command, so 305/306 are the only labeled replies
+                        # grappa receives — a labeled ack must NOT resurrect
+                        # the suppressed row in its origin window.
+                        305,
+                        306,
                         # #229 — 221 RPL_UMODEIS. Reply to the bare
                         # `MODE <selfnick>` umode query grappa issues at 001
                         # RPL_WELCOME. EventRouter's 221 clause parses the
@@ -404,12 +428,26 @@ defmodule Grappa.Session.NumericRouter do
   @doc """
   Routes one numeric `%Message{}` to a `routing_decision()`.
 
-  Priority: label-override > delegated > active-deny → `{:server, nil}` >
-  param scan (channel-prefix → nick-shaped non-own non-host → fallback
+  Priority: **delegated** > label-override > active-deny → `{:server, nil}`
+  > param scan (channel-prefix → nick-shaped non-own non-host → fallback
   `{:server, nil}`).
 
   Delegated numerics return `:delegated` immediately — the caller must
   skip persistence; the dedicated handlers own them.
+
+  ## Delegation wins over the label override (#276)
+
+  Pre-#276 the label override was checked FIRST ("label > delegated"). But
+  `labels_pending` is populated SOLELY by the away command
+  (`Server.prepare_label`), so 305/306 (RPL_UNAWAY/RPL_NOWAWAY) are the
+  ONLY labeled replies grappa ever receives — and they are now delegated
+  (away acks the EventRouter owns; never persisted). If the label override
+  still won, a labeled away-ack would route to its origin window and
+  RESURRECT the very `:notice` row #276 suppresses. So a delegated numeric
+  delegates even when a label matches. This is behaviour-identical for
+  every OTHER numeric (none is ever labeled), and it also closes the
+  latent double-persist any future labeled delegated numeric would
+  otherwise hit (raw notice row + typed EventRouter event).
 
   `state` must satisfy `router_state()` — Session.Server builds this view
   from its own state before calling.
@@ -418,7 +456,19 @@ defmodule Grappa.Session.NumericRouter do
   def route(%Message{command: {:numeric, code}} = msg, state) do
     case label_lookup(msg, state) do
       {:ok, window_ref} ->
-        window_ref_to_decision(window_ref)
+        # Delegation wins over the label override — see the #276 moduledoc
+        # note above. A matching label never resurrects a delegated
+        # numeric's persist (the away acks 305/306 are the only labeled
+        # replies in practice). NB: on this arm the label is NOT consumed
+        # from `labels_pending` (Server.delegate/2 doesn't touch it) — a
+        # lingering away label is harmless (bounded by prepare_label's
+        # lazy TTL sweep on the next away command; 305/306 both delegate,
+        # so it can never misroute another numeric).
+        if MapSet.member?(@delegated_numerics, code) do
+          :delegated
+        else
+          window_ref_to_decision(window_ref)
+        end
 
       :miss ->
         param_derived_route(code, msg, state)

@@ -23313,3 +23313,87 @@ with the fix (overlap **0**).
 _Deploy: **--cic, client-only** (cicchetto `default.css` focus-lift value +
 comment + the new e2e spec only; no `lib/` change, no wire event, no
 migration, no BEAM restart)._
+
+---
+
+## 2026-07-17 — #276 (P0, grappa + cic): suppress away-ack scrollback noise at the server; 💤 away indicator
+
+**Problem.** Every away toggle wrote a chatty line into the `$server`
+scrollback: "You have been marked as being away" on set, "You are no longer
+marked as being away" on clear. On an auto-away/back cycle (WSPresence fires
+`AWAY` when every WS for a user disconnects, then un-aways on reconnect) these
+accreted as pure noise. The away STATE is already conveyed by a separate typed
+signal cic renders as an indicator — the scrollback lines add nothing.
+Separately, that indicator read the word "away"; vjt wants the 💤 emoji.
+
+**Root cause (server, with data).** The lines are the trailing text of the
+upstream ack numerics **305 RPL_UNAWAY** / **306 RPL_NOWAWAY**. In
+`Grappa.Session.NumericRouter` these were in `@active_numerics` (the deny
+list), which routes them to `{:server, nil}`; `Session.Server.handle_info`
+then persisted a `:notice` row on `$server` with `meta.numeric = 305|306`.
+Confirmed by the RED session test: pre-fix the `$server` fetch returned
+`[%Message{channel: "$server", kind: :notice, body: "You have been marked as
+being away", meta: %{numeric: 306}}]`. The **away STATE** rides a SEPARATE,
+already-correct path: EventRouter's 305/306 clauses fire the typed
+`{:away_confirmed, :present | :away}` effect, which `Session.Server` broadcasts
+on `Topic.user` (`SessionWire.away_confirmed/2`); cic's `awayStatus.ts`
+consumes it into `awayByNetwork()`. The two are cleanly separable — suppress
+the persisted row, keep the effect.
+
+**Fix (server, not a cic band-aid — respects "cic never originates state").**
+Moved 305/306 out of `@active_numerics` into `@delegated_numerics`. Delegated
+numerics are owned by a dedicated EventRouter handler and are NOT persisted —
+`Session.Server.handle_info` routes them via `delegate/2` (EventRouter only, no
+`:persist`), so the `away_confirmed` effect still fires while no `$server` row
+is written.
+
+**Labeled-response subtlety (the general-case root cause, not just the
+incident).** `NumericRouter.route/2` checked the `labeled-response` label
+override FIRST ("label > delegated"), and `labels_pending` is populated SOLELY
+by the away command (`Server.prepare_label`, called only from
+set/unset_explicit_away). So 305/306 are the ONLY labeled replies grappa ever
+receives — a *labeled* away-ack would hit the label override, route to its
+origin window, and **resurrect the very row we're suppressing** (in the channel
+the `/away` was typed from, not `$server`). So the fix also makes **delegation
+win over the label override**: `route/2` returns `:delegated` for a delegated
+numeric even when a label matches. This is behaviour-identical for every other
+numeric (none is ever labeled) and additionally closes the latent
+double-persist any future labeled delegated numeric would otherwise hit (raw
+notice row + typed EventRouter event). Priority is now
+**delegated > label > active-deny > param-scan**.
+
+**cic — 💤 label.** The visible away indicator lives in exactly one place:
+`Sidebar.tsx`'s collapsed network-header badge (`.sidebar-away-badge`), driven
+by `awayByNetwork()`. Swapped the visible text `[away]` → the 💤 emoji rendered
+as `role="img" aria-label="away"` (+ `title="away"`) — the canonical accessible
+-emoji pattern: the VISIBLE glyph is 💤, the ACCESSIBLE NAME stays the word
+"away" so screen readers announce the state (not the emoji's "sleeping symbol"
+glyph name). `role="img"` also makes the accessible name valid (a bare `<span>`
+has the generic role, which prohibits naming — biome a11y flags it).
+
+**RED→GREEN coverage.**
+- `test/grappa/session/numeric_router_test.exs` — 305/306 now assert
+  `:delegated` (moved out of the `@active_numerics` mirror into the
+  `@delegated_numerics` mirror); plus a labeled-306 and labeled-305 test proving
+  delegation wins over the label override (the #276 robustness case).
+- `test/grappa/session/server_test.exs` — new describe "away acks 305/306 do
+  NOT persist to $server scrollback (#276)": feeds 306/305 through the
+  in-process `Grappa.IRCServer`, asserts the typed `away_confirmed` broadcast
+  fires (STATE kept) AND `Scrollback.fetch(…, "$server", …) == []` (NOISE
+  gone). Proven RED (the persisted row surfaced) then GREEN. Same
+  assertion shape as the #210 inbound-PONG no-persist test.
+- `cicchetto/src/__tests__/Sidebar.test.tsx` — the two `[away]` assertions
+  flipped to `💤` + an aria-label="away" assertion (RED→GREEN in jsdom for the
+  pure textContent/attr swap).
+- `cicchetto/e2e/tests/issue276-away-emoji-badge.spec.ts` — real-browser
+  end-to-end: `/away :reason` → 💤 badge appears (visible glyph, not "away";
+  aria-label="away"), bare `/away` → badge clears, and the REST `$server`
+  scrollback carries no row with `meta.numeric ∈ {305,306}` (server suppression
+  proven end-to-end; `$server` legitimately carries MOTD notices so we filter
+  by numeric, not emptiness).
+
+_Deploy: **server + --cic**. SERVER change is a pure routing-table + function
+-body change (no schema/struct/@type/migration) → HOT-reload eligible; VERIFY
+the deploy preflight's hot verdict before trusting it. cic changed
+(`Sidebar.tsx` badge + `default.css` comment + the two test files) → ALSO
+`--cic` (one SPA bundle hash, no BEAM restart). Run BOTH._
