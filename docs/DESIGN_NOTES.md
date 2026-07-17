@@ -24370,3 +24370,51 @@ change. An e2e asserts the `sux` card renders in the seeded gallery.
 _Deploy unchanged: batched/HELD, SERVER COLD restart + `--cic` + `mix
 grappa.seed_themes` (the seed step is what publishes `sux` into the gallery).
 With `sux` seeded + gallery-verified, #75 + #291 finally move `cooking → soon`._
+
+## 2026-07-18 — #289 (enhancement, cic): mobile floating buttons translucent so message text shows through
+
+Fast-follow to **#280**. #280 fixed the two mobile floating buttons —
+next-active circle (`NextActiveButton` variant="mobile") + scroll-to-bottom
+(`.scroll-to-bottom-btn`) — overlapping EACH OTHER by pulling them into one
+container-anchored stack (`.scrollback-float-stack`, same box, same size).
+This is the next polish pass on the same pair: now that they coexist cleanly,
+they were still fully OPAQUE and painted on top of the message list, so any
+line that wrapped behind a button was unreadable. Make them translucent.
+
+**Fix — one rule, on the stack's children:**
+```css
+.shell-mobile .scrollback-float-stack > * { opacity: 0.75; }
+```
+
+**Why whole-element `opacity`, not a per-color alpha.** The alternative —
+`color-mix(... transparent)` / rgba on each `background` — would need a
+translucent variant baked per theme (13 built-ins + user-authored custom
+themes), i.e. a new token surface, and would leave the glyph/border/shadow
+fully opaque (less text bleed-through). Whole-element opacity is
+theme-agnostic (translucency is an interaction constant, NOT a color, so it
+does NOT belong in the per-theme token maps) and fades the whole control
+uniformly. 0.75 = text behind stays legible while the large glyph + accent
+fill stays clearly a tappable control (not disabled-looking).
+
+**Why ONE rule on `> *`, not two per-button rules.** Both buttons are direct
+children of the float stack, so a single rule keeps the pair's translucency
+consistent BY CONSTRUCTION (honoring #280's "same box" intent — no two
+literals to drift) and any future stack child inherits the correct
+floating-overlay default. Scoped to `.shell-mobile` + the stack: desktop
+scroll-to-bottom stays opaque (it's the smaller 2rem button and next-active
+is a sidebar button there, not a floating overlay). Specificity (0,3,0) beats
+`.scroll-to-bottom-btn:hover` (0,2,0), so a stray mobile hover can't make it
+MORE opaque than the base.
+
+**Proof.** e2e RED→GREEN (`@webkit` iPhone-15,
+`cicchetto/e2e/tests/issue289-float-btn-opacity.spec.ts`): surface BOTH
+buttons at once (mirror #280 test-1 — scrolled-up CHANNEL + a background
+channel unread lights next-active count "1"), assert both PRESENT + VISIBLE
+(anti-false-green) BEFORE reading computed opacity, then assert each button's
+opacity is in `[0.4, 1)` — translucent (the bug was 1.0) yet clearly tappable.
+The band, not a magic number, is the contract. jsdom is blind to the
+`.shell-mobile` gate + computed opacity, so the mobile-WebKit e2e is the gate.
+
+_Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure CSS
+change in `default.css` + one e2e. No server, no schema, no config. HELD for
+the batched COLD ship._
