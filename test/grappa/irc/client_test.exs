@@ -1650,4 +1650,233 @@ defmodule Grappa.IRC.ClientTest do
       assert pings == 0, "steady inbound traffic must reset idle before the probe fires, saw #{pings}"
     end
   end
+
+  describe "outbound leaf selection + rotation (#271)" do
+    # #271 — a multi-AAAA (round-robin) upstream hostname must NOT pin one
+    # leaf. Pre-fix grappa handed the HOSTNAME to :ssl.connect/:gen_tcp.connect,
+    # so the OS getaddrinfo RFC-6724 destination-address sort picked the same
+    # leaf on every connect (~40 sessions on one leaf; a single leaf down took
+    # every session with it). The fix: grappa resolves the full RR set itself
+    # (:inet_res.lookup), shuffles, and dials the IP TUPLE — bypassing the
+    # deterministic getaddrinfo sort so it OWNS the leaf choice.
+    #
+    # Two realistic azzurra AAAA leaves (from the issue) + one synthetic so the
+    # rotation assertion has >1 candidate.
+    @azzurra_aaaa [
+      {0x2A01, 0x4F8, 0x201, 0x2281, 0x11, 0, 0, 0x22},
+      {0x2603, 0xC027, 0x17, 0xF145, 0, 0, 0, 0xF35},
+      {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x42}
+    ]
+
+    # (a) full set considered + rotation: resolve_targets returns every member
+    # (a permutation of the whole RR set) and the leaf actually dialed (the head
+    # of the shuffle) is NOT always the same one across many calls.
+    test "resolve_targets returns the full AAAA set as a shuffled permutation (RR, not pinned)" do
+      resolver = fn ~c"irc.azzurra.chat", :in, :aaaa -> @azzurra_aaaa end
+
+      # Every call yields all members — no leaf is silently dropped from the pool.
+      for _ <- 1..20 do
+        got = Client.__resolve_targets_for_test__(~c"irc.azzurra.chat", :inet6, resolver)
+        assert Enum.sort(got) == Enum.sort(@azzurra_aaaa)
+      end
+
+      # Rotation: across many calls the first-picked leaf varies. With ≥2
+      # members over 64 rolls, an all-identical head is astronomically unlikely
+      # (≤ (1/3)^63) — a stable head means the RR pin is still there.
+      heads = for _ <- 1..64, do: hd(Client.__resolve_targets_for_test__(~c"irc.azzurra.chat", :inet6, resolver))
+
+      assert heads |> Enum.uniq() |> length() > 1,
+             "leaf pick never rotated across 64 resolves — RR still pinned"
+    end
+
+    # The v6 path (source pool active) must query AAAA; the v4 path must query A.
+    test "resolve_targets queries A records for the :inet family" do
+      a_set = [{1, 2, 3, 4}, {5, 6, 7, 8}]
+      resolver = fn ~c"irc.example.org", :in, :a -> a_set end
+
+      got = Client.__resolve_targets_for_test__(~c"irc.example.org", :inet, resolver)
+      assert Enum.sort(got) == Enum.sort(a_set)
+    end
+
+    # An IP-literal host has nothing to rotate: dial it directly, no DNS. This
+    # is what keeps the IRCServer integration tests (host "127.0.0.1") dialing a
+    # v4 tuple with no resolver round-trip.
+    test "resolve_targets short-circuits an IP-literal host (no DNS, dial the literal)" do
+      # The resolver must NOT be consulted for a literal.
+      resolver = fn _, _, _ -> raise "resolver must not run for an IP literal" end
+
+      assert Client.__resolve_targets_for_test__(~c"127.0.0.1", :inet, resolver) == [{127, 0, 0, 1}]
+      assert Client.__resolve_targets_for_test__(~c"::1", :inet6, resolver) == [{0, 0, 0, 0, 0, 0, 0, 1}]
+    end
+
+    # Resolution gap (empty answer for a real name) falls back to handing the
+    # hostname to the connect fun — no worse than the pre-#271 behavior for a
+    # host with no records in the chosen family.
+    test "resolve_targets falls back to the hostname when resolution is empty" do
+      resolver = fn ~c"irc.nowhere.invalid", :in, :aaaa -> [] end
+
+      assert Client.__resolve_targets_for_test__(~c"irc.nowhere.invalid", :inet6, resolver) ==
+               [~c"irc.nowhere.invalid"]
+    end
+
+    # (b) IP-tuple connect target + (c) SNI/hostname-check anchored to the
+    # ORIGINAL hostname after the IP-tuple switch — the #89 regression guard vjt
+    # explicitly demanded. connect_fun is injected so no real socket is opened;
+    # we inspect exactly what the connect boundary was handed.
+    test "TLS connect dials an IP tuple while SNI + hostname-check stay the hostname (#89 guard)" do
+      resolver = fn ~c"irc.azzurra.chat", :in, :aaaa -> @azzurra_aaaa end
+      parent = self()
+
+      connect_fun = fn transport, target, port, opts, _ ->
+        send(parent, {:dial, transport, target, port, opts})
+        {:ok, :fake_socket}
+      end
+
+      assert {:ok, :fake_socket} =
+               Client.__connect_with_rotation_for_test__(
+                 ~c"irc.azzurra.chat",
+                 6697,
+                 true,
+                 [],
+                 :inet6,
+                 resolver,
+                 connect_fun
+               )
+
+      assert_received {:dial, :ssl, target, 6697, opts}
+
+      # (b) The connect TARGET is an IP 8-tuple from the resolved set — NOT the
+      # hostname charlist. This is what bypasses the getaddrinfo RFC-6724 sort.
+      assert is_tuple(target) and tuple_size(target) == 8
+      assert target in @azzurra_aaaa
+
+      # (c) SNI is the ORIGINAL hostname (charlist), not the picked IP — so the
+      # leaf's cert (SAN irc.azzurra.chat) validates under verify_peer.
+      assert Keyword.fetch!(opts, :server_name_indication) == ~c"irc.azzurra.chat"
+
+      # (c) hostname verification stays wired to the RFC-6125 :https match_fun.
+      match = Keyword.fetch!(opts, :customize_hostname_check)
+      assert is_function(Keyword.fetch!(match, :match_fun), 2)
+
+      # #89 verify_peer must survive the IP-tuple switch untouched.
+      assert Keyword.fetch!(opts, :verify) == :verify_peer
+      assert Keyword.fetch!(opts, :depth) == 3
+    end
+
+    test "TCP connect dials an IP tuple target (no hostname to getaddrinfo)" do
+      resolver = fn ~c"irc.azzurra.chat", :in, :aaaa -> @azzurra_aaaa end
+      parent = self()
+
+      connect_fun = fn transport, target, port, opts, _ ->
+        send(parent, {:dial, transport, target, port, opts})
+        {:ok, :fake_socket}
+      end
+
+      assert {:ok, :fake_socket} =
+               Client.__connect_with_rotation_for_test__(
+                 ~c"irc.azzurra.chat",
+                 6667,
+                 false,
+                 [],
+                 :inet6,
+                 resolver,
+                 connect_fun
+               )
+
+      assert_received {:dial, :tcp, target, 6667, _}
+      assert is_tuple(target) and tuple_size(target) == 8
+      assert target in @azzurra_aaaa
+    end
+
+    # The bind_opts (ifaddr source bind) still ride through to the connect fun —
+    # the source-address pool bind is not lost by the IP-tuple switch.
+    test "connect passes the source-bind ifaddr opts through to the connect fun" do
+      resolver = fn ~c"irc.azzurra.chat", :in, :aaaa -> @azzurra_aaaa end
+      parent = self()
+      source = {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x1}
+
+      connect_fun = fn _, _, _, opts, _ ->
+        send(parent, {:opts, opts})
+        {:ok, :fake_socket}
+      end
+
+      assert {:ok, :fake_socket} =
+               Client.__connect_with_rotation_for_test__(
+                 ~c"irc.azzurra.chat",
+                 6697,
+                 true,
+                 [ifaddr: source],
+                 :inet6,
+                 resolver,
+                 connect_fun
+               )
+
+      assert_received {:opts, opts}
+      assert Keyword.fetch!(opts, :ifaddr) == source
+    end
+
+    # (d) rotate-on-connect-fail: the first-picked leaf's connect failure must
+    # roll to a DIFFERENT member of the set before the :transient give-up, so a
+    # single dead leaf can't park every session.
+    test "rotate-on-fail: a first-pick connect failure retries a DIFFERENT leaf" do
+      resolver = fn ~c"irc.azzurra.chat", :in, :aaaa -> @azzurra_aaaa end
+      parent = self()
+      attempts = :counters.new(1, [])
+
+      connect_fun = fn _, target, _, _, _ ->
+        n = :counters.get(attempts, 1)
+        :counters.add(attempts, 1, 1)
+        send(parent, {:tried, target})
+        # First leaf is down; the next one is up.
+        if n == 0, do: {:error, :econnrefused}, else: {:ok, :fake_socket}
+      end
+
+      assert {:ok, :fake_socket} =
+               Client.__connect_with_rotation_for_test__(
+                 ~c"irc.azzurra.chat",
+                 6697,
+                 true,
+                 [],
+                 :inet6,
+                 resolver,
+                 connect_fun
+               )
+
+      assert_received {:tried, first}
+      assert_received {:tried, second}
+      assert first != second, "retry dialed the SAME dead leaf — no rotation"
+      assert first in @azzurra_aaaa and second in @azzurra_aaaa
+      assert :counters.get(attempts, 1) == 2, "expected exactly 2 attempts (fail then success)"
+    end
+
+    # (d) exhaustion: when EVERY leaf is down, connect_with_rotation surfaces the
+    # last {:error, reason} verbatim so the existing connect-fail throttle +
+    # :transient give-up chain still engages (rotation must not swallow a real
+    # give-up).
+    test "all leaves down: surfaces the last {:error, reason} for the give-up chain" do
+      resolver = fn ~c"irc.azzurra.chat", :in, :aaaa -> @azzurra_aaaa end
+      parent = self()
+      attempts = :counters.new(1, [])
+
+      connect_fun = fn _, target, _, _, _ ->
+        :counters.add(attempts, 1, 1)
+        send(parent, {:tried, target})
+        {:error, :econnrefused}
+      end
+
+      assert {:error, :econnrefused} =
+               Client.__connect_with_rotation_for_test__(
+                 ~c"irc.azzurra.chat",
+                 6697,
+                 true,
+                 [],
+                 :inet6,
+                 resolver,
+                 connect_fun
+               )
+
+      # Every leaf in the set was attempted before give-up.
+      assert :counters.get(attempts, 1) == length(@azzurra_aaaa)
+    end
+  end
 end
