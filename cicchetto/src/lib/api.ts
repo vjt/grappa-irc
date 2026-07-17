@@ -25,7 +25,10 @@ import type {
   SessionLogWireT,
 } from "./wireTypes";
 
-function buildHeaders(token?: string): HeadersInit {
+// Exported so sibling REST clients (e.g. `themesApi.ts`) reuse the exact
+// same JSON header shape — content-type + the `x-grappa-client-id` header
+// every grappa request carries — rather than re-deriving it and drifting.
+export function buildHeaders(token?: string): HeadersInit {
   const headers: Record<string, string> = {
     "content-type": "application/json",
     "x-grappa-client-id": getOrCreateClientId(),
@@ -1450,7 +1453,11 @@ export function setOn401Handler(fn: (() => void) | null): void {
   on401Handler = fn;
 }
 
-async function readError(res: Response): Promise<ApiError> {
+// Exported so sibling REST clients (e.g. `themesApi.ts`) collapse wire
+// error tokens to `ApiError.code` through the ONE decoder that also fires
+// the shared 401 dead-token handler — duplicating it would silently skip
+// the dead-token detection for those verbs.
+export async function readError(res: Response): Promise<ApiError> {
   if (res.status === 401 && on401Handler !== null) on401Handler();
   let body: Record<string, unknown> = {};
   let code: string;

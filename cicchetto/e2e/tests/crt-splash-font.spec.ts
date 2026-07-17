@@ -45,6 +45,17 @@ test("crt splash text is bumped ~30% (#180)", async ({ page }) => {
   // resource is PENDING (not errored) for the lifetime of the test.
   await page.route("**/me", () => new Promise(() => {}));
 
+  // #75 — boot now fires GET /me/theme (customTheme.mountCustomThemeSync)
+  // whenever a token is present. The `**/me` glob does NOT match
+  // `/me/theme`, so against this test's FAKE bearer that request would
+  // hit the real server, 401, and the shared on401 handler would clear
+  // the token → RequireAuth bounces → the frozen splash vanishes. Stub it
+  // to a benign "no active theme" so the freeze holds. (Real specs use
+  // seeded tokens, so their /me/theme 200s.)
+  await page.route("**/me/theme", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: "null" }),
+  );
+
   await page.goto("/");
 
   const splash = page.getByTestId("crt-splash");

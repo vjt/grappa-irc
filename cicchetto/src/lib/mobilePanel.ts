@@ -1,4 +1,5 @@
 import { setArchiveModalNetwork } from "./archive";
+import { requestSettingsPage } from "./settingsNav";
 
 // UX-5 bucket BM (2026-05-20) — mobile chrome panel mutex.
 //
@@ -57,6 +58,18 @@ export function openSettingsPanel(setters: MobilePanelSetters): void {
   setters.setSettingsOpen(true);
 }
 
+// #75 — themes launcher in the mobile drawer footer. Opens the settings
+// drawer directly on the "themes" sub-page: same mutex as
+// `openSettingsPanel` (close members + archive) plus a one-shot deep-link
+// request the drawer consumes on its open transition. No new signal — the
+// drawer's own `settingsPage` state is the target.
+export function openThemesPanel(setters: MobilePanelSetters): void {
+  setters.setMembersOpen(false);
+  setArchiveModalNetwork(null);
+  requestSettingsPage("themes");
+  setters.setSettingsOpen(true);
+}
+
 export function openArchivePanel(setters: MobilePanelSetters, slug: string): void {
   setters.setMembersOpen(false);
   setters.setSettingsOpen(false);
@@ -73,6 +86,19 @@ export function openArchivePanel(setters: MobilePanelSetters, slug: string): voi
 // delegate the selection change via the `navigate` thunk. No new
 // `adminOpen` signal: the selection store already carries this state.
 export function openAdminPanel(setters: MobilePanelSetters, navigate: () => void): void {
+  setters.setMembersOpen(false);
+  setters.setSettingsOpen(false);
+  setArchiveModalNetwork(null);
+  navigate();
+}
+
+// #291 — home launcher in the mobile drawer footer. Mobile narrow layout
+// has no other way back to the home window (desktop has the sidebar home
+// link). Same selection-driven, mutex shape as `openAdminPanel`: close
+// the three sibling surfaces, then delegate the selection change via the
+// `navigate` thunk (Shell sets `selectedChannel` → kind "home"). No new
+// signal — the selection store already carries this state.
+export function openHomePanel(setters: MobilePanelSetters, navigate: () => void): void {
   setters.setMembersOpen(false);
   setters.setSettingsOpen(false);
   setArchiveModalNetwork(null);

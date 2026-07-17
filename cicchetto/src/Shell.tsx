@@ -33,7 +33,9 @@ import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import {
   openAdminPanel,
   openArchivePanel,
+  openHomePanel,
   openSettingsPanel,
+  openThemesPanel,
   toggleMembersPanel,
 } from "./lib/mobilePanel";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
@@ -873,6 +875,27 @@ const Shell: Component = () => {
               context — same `archiveSlugForSelection()` rule that
               gates the standalone ShellChrome archive button. */}
           <footer class="mobile-panel-actions">
+            {/* #291 — home launcher. Mobile narrow layout has no other way
+                back to the home window (desktop has the sidebar home link).
+                Always visible, leftmost (footer left-aligns per #291);
+                selection-driven dispatch mirrors the admin launcher. */}
+            <button
+              type="button"
+              class="shell-chrome-btn shell-chrome-home"
+              aria-label="open home"
+              data-testid="mobile-panel-home"
+              onClick={() =>
+                openHomePanel({ membersOpen, setMembersOpen, setSettingsOpen }, () =>
+                  setSelectedChannel({
+                    networkSlug: HOME_WINDOW_SLUG,
+                    channelName: HOME_WINDOW_NAME,
+                    kind: "home",
+                  }),
+                )
+              }
+            >
+              {"\u{1F3E0}"}
+            </button>
             <Show when={archiveSlugForSelection()}>
               {(slug) => (
                 <button
@@ -896,6 +919,18 @@ const Shell: Component = () => {
               onClick={() => openSettingsPanel({ membersOpen, setMembersOpen, setSettingsOpen })}
             >
               ⚙
+            </button>
+            {/* #75 — themes launcher: opens the settings drawer directly on
+                the themes gallery sub-page (openThemesPanel deep-links via
+                settingsNav). Same footer surface as #291's home button. */}
+            <button
+              type="button"
+              class="shell-chrome-btn shell-chrome-themes"
+              aria-label="open themes"
+              data-testid="mobile-panel-themes"
+              onClick={() => openThemesPanel({ membersOpen, setMembersOpen, setSettingsOpen })}
+            >
+              {"\u{1F3A8}"}
             </button>
             {/* UX-6 bucket C (2026-05-21) — 4th launcher: admin
                 console. Visible only when `isAdmin()` is true (single

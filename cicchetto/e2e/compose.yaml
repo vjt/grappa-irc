@@ -183,6 +183,10 @@ services:
         mix deps.get
         mix ecto.create
         mix ecto.migrate
+        # #75 — seed the curated built-in theme gallery (system-owned,
+        # published) so the themes gallery e2e has rows to browse + apply.
+        # Idempotent upsert; safe under the seeder's re-run guard.
+        mix grappa.seed_themes
         mix grappa.create_user --name vjt --password test-password-not-secret
         mix grappa.bind_network --user vjt --network bahamut-test \
           --server bahamut-test:6667 --no-tls --nick vjt-grappa \

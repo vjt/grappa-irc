@@ -24210,3 +24210,57 @@ _Deploy: **batched, NOT yet shipped.** The REST surface is dormant
 (auth-gated, no cic caller yet), so the tested server increment merges to main
 but nothing deploys until the cic UI sub-task + #291 complete. `mix
 grappa.seed_themes` must run on the target once the feature ships._
+
+### 2026-07-17 — themes CONSUMER UI + #291 mobile home button (#75, cic sub-task)
+
+The client half of the themes subsystem — the **consumer path** only. The
+producer path (editor overlay, self-hosted fonts, background-image upload UI)
+is deliberately deferred to a follow-up session (plan sub-tasks 6/8/9); this
+increment makes themes user-VISIBLE end to end: browse the built-in gallery →
+apply → it persists cross-device.
+
+**One footer, two buttons (#75 + #291 batched).** Both add a launcher to the
+mobile hamburger drawer footer (`.mobile-panel-actions`), so they ship together
+to avoid conflicting on that one surface. `mobilePanel.ts` gains
+`openHomePanel` (🏠, mirrors `openAdminPanel`: mutex-close siblings then
+selection-navigate to `kind:"home"`) and `openThemesPanel` (🎨). The footer
+left-aligns (was flex-end) and its launchers enlarge to ≥44px via a scoped
+`.shell-mobile .mobile-panel-actions .shell-chrome-btn` rule — the base
+`.shell-chrome-btn` (shared with the top ShellChrome bar) is untouched.
+
+**Deep-link into a settings sub-page.** The 🎨 launcher must open the drawer
+AND jump to the themes sub-page. `settingsNav.ts` is the one-shot channel:
+`requestSettingsPage("themes")` → the drawer's open-transition effect
+`consumePendingSettingsPage()`s it (falls back to "main"). No parallel client
+state — the drawer's own `settingsPage` signal (now `"main"|"vhost"|"themes"`)
+is the single target; the union type lives in `settingsNav.ts`.
+
+**Apply engine = inline CSS custom properties over the base cascade.**
+`customTheme.ts` maps the frozen token payload to `--bg`/`--nick-color-N`/… and
+writes them on `document.documentElement.style`, so they cascade OVER the
+`:root[data-theme="…"]` blocks with no rebuild and no FOUC (boot applies the
+localStorage-cached payload synchronously, mirroring `applyTheme()`). Active
+theme stays SERVER-owned: `mountCustomThemeSync` re-fetches `GET /me/theme` on
+every `token()` change; `activateTheme` writes via `PUT /me/theme` then applies
+the AUTHORITATIVE payload the server returns (not the optimistic client copy);
+logout clears back to the base cascade. localStorage is a pure offline FOUC
+mirror — the e2e clears it before reload to prove the value round-trips through
+the server, not the cache.
+
+**Gallery preview = derived swatch, not a screenshot** (matches the server's
+"no screenshot column" decision): `ThemeGallery.tsx` renders palette chips from
+the token payload on the fly. Copy/publish/unpublish/delete gate on
+owner|admin (`canManageTheme`); everyone can browse + copy + apply. The gallery
+renders inside the already-overlay-locked drawer, so it needs no extra
+`createOverlayLock`.
+
+**Deferred (flagged, not silent):** the background-image VISUAL layer. The
+apply engine SETS `--theme-bg-image`/`--theme-bg-opacity`, but compositing a
+background image behind semi-transparent panes is a producer-path concern that
+ships with the background-upload UI (sub-task 9). No built-in carries an image,
+so the vars are dormant. Colors + font are the live consumer feature.
+
+_Deploy: still **batched/HELD.** This increment is a PARTIAL feature (consumer
+path); #75 + #291 stay `status:cooking` until the producer path lands. When the
+whole feature ships it is a SERVER COLD restart (new themes table + system-user
+migration) + `--cic` bundle + `mix grappa.seed_themes` on the target._

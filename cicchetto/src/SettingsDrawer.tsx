@@ -25,6 +25,7 @@ import {
   listPushDevices,
   type PushDeviceSummary,
 } from "./lib/push";
+import { consumePendingSettingsPage, type SettingsSubPage } from "./lib/settingsNav";
 import { getTheme, setTheme, type ThemePref } from "./lib/theme";
 import { getTimeFormat, setTimeFormat, type TimeFormatKey } from "./lib/timeFormat";
 import { activeHost } from "./lib/uploadHost";
@@ -44,6 +45,7 @@ import {
   type VhostSettingsView,
 } from "./lib/userSettings";
 import ShareSessionModal from "./ShareSessionModal";
+import ThemeGallery from "./ThemeGallery";
 import VhostSettingsPage from "./VhostSettingsPage";
 
 // Right-overlay drawer: theme toggle + notifications (push permission +
@@ -99,7 +101,7 @@ const SettingsDrawer: Component<Props> = (props) => {
   // AdminPane's tab signal and is reusable for future sub-pages. cic never
   // originates vhost state — the sub-page reads `vhostView` + reports
   // changes up via the same save-on-change PUT flow.
-  const [settingsPage, setSettingsPage] = createSignal<"main" | "vhost">("main");
+  const [settingsPage, setSettingsPage] = createSignal<SettingsSubPage>("main");
   // Visitor session-sharing modal open state. Hidden for user
   // subjects entirely (users have passwords, no need to share).
   const [shareOpen, setShareOpen] = createSignal(false);
@@ -360,6 +362,11 @@ const SettingsDrawer: Component<Props> = (props) => {
     if (o && !wasOpen) {
       wasOpen = true;
       pushOverlay(drawerEl ?? null);
+      // #75 — a footer 🎨 launcher requested a deep-link into the themes
+      // sub-page before opening; consume it (one-shot). No pending
+      // request → stay on "main" (reset on the prior close below).
+      const pending = consumePendingSettingsPage();
+      if (pending !== null) setSettingsPage(pending);
     } else if (!o && wasOpen) {
       wasOpen = false;
       popOverlay(drawerEl ?? null);
@@ -796,6 +803,21 @@ const SettingsDrawer: Component<Props> = (props) => {
             </button>
           </Show>
 
+          {/* #75 — themes gallery sub-page nav row. Always available (any
+              logged-in subject can browse + apply the published +
+              built-in gallery). */}
+          <button
+            type="button"
+            class="settings-nav-row"
+            data-testid="themes-settings-entry"
+            onClick={() => setSettingsPage("themes")}
+          >
+            <span class="settings-nav-row-label">themes</span>
+            <span class="settings-nav-row-chevron" aria-hidden="true">
+              ›
+            </span>
+          </button>
+
           <fieldset class="font-size-fieldset">
             <legend>text size</legend>
             <label>
@@ -1061,6 +1083,12 @@ const SettingsDrawer: Component<Props> = (props) => {
             }}
             onBack={() => setSettingsPage("main")}
           />
+        </Show>
+
+        {/* #75 — themes gallery sub-page. Replaces the main page while
+            active; the gallery owns its own server data loading. */}
+        <Show when={settingsPage() === "themes"}>
+          <ThemeGallery onBack={() => setSettingsPage("main")} />
         </Show>
       </aside>
       <ShareSessionModal open={shareOpen()} onClose={() => setShareOpen(false)} />
