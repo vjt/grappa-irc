@@ -1,11 +1,15 @@
 defmodule Grappa.Themes.Builtins do
   @moduledoc """
-  The curated built-in theme gallery (#75 fork-2): ~12 hand-picked schemes
+  The curated built-in theme gallery (#75 fork-2): ~a dozen hand-picked schemes
   written directly into the closed token model. Materialised into the DB as
   system-owned, published themes by `mix grappa.seed_themes`.
 
-  Fork-2 (vjt authoritative): built-ins are CURATED, not parsed from the irssi
-  `.theme` corpus (a separate follow-up). Each entry is a `%{name, payload}` map
+  Fork-2 (vjt authoritative): built-ins are CURATED, not bulk-parsed from the
+  irssi `.theme` corpus (a full parser is a separate follow-up, #293). The one
+  exception is `sux` (a #75 hard requirement): its COLOUR scheme was extracted
+  by hand from alk's canonical `sux.theme` (irssi-import/themes) into the token
+  model — its format-strings / row-layout are out of v1 (#293). Each entry is a
+  `%{name, payload}` map
   whose payload is ALREADY canonical — every hex lowercase 6-digit, opacity a
   float — so `Grappa.Themes.TokenModel.sanitize/1` is the identity on it (the
   `builtins_test` pins this; a mis-authored palette fails there, not in prod).
@@ -25,6 +29,39 @@ defmodule Grappa.Themes.Builtins do
   def all do
     [
       %{name: "irssi-dark", payload: payload(TokenModel.default_colors())},
+      # alk's irssi `sux.theme` (#75 hard requirement, vjt: "NON possiamo non
+      # averlo"). Its COLOR scheme, extracted from the canonical file
+      # (irssi-import/themes `sux.theme`): green-on-black — black bg (%0),
+      # white text/nicks (%W), the signature bright-green accent (the
+      # `%K>%g>%G>>` line-start + green channel/hilight/action), grey
+      # delimiters (%K), yellow mention (%Y highlight-for-me), red errors
+      # (%R). sux does NOT colour op/halfop/voice or a nick palette, so those
+      # are composed from its own palette (op=red, halfop=amber, voice=green,
+      # plain=white; nicks = the product's proven dark-bg colored-nick set).
+      # Format-string / row-layout customisation is out of v1 (follow-up #293).
+      %{
+        name: "sux",
+        payload:
+          payload(
+            colors(
+              %{
+                "bg" => "#000000",
+                "bg_alt" => "#0e0e0e",
+                "fg" => "#e5e5e5",
+                "accent" => "#00d75f",
+                "muted" => "#767676",
+                "border" => "#1c1c1c",
+                "mention" => "#2b2b00",
+                "mode_op" => "#ff5f5f",
+                "mode_halfop" => "#d7af5f",
+                "mode_voiced" => "#5fd75f",
+                "mode_plain" => "#e5e5e5"
+              },
+              ~w(#ff8c8c #ffb060 #ffd060 #d8e060 #90d870 #60d8a8 #60d8d8 #60b8e8
+                 #88a8ff #b890ff #e088e0 #ff90c0 #e0a888 #c0c0c0 #a0e8b8 #f0d090)
+            )
+          )
+      },
       %{
         name: "mirc-light",
         payload:

@@ -24337,3 +24337,36 @@ path completing #75 means the WHOLE feature is user-done, so #75 + #291 move
 `cooking → soon`. Ship is unchanged: SERVER COLD restart (the themes table +
 system-user migration from the server subsystem still haven't reached prod) +
 `--cic` bundle + `mix grappa.seed_themes` on the target._
+
+### 2026-07-17 — sux.theme built-in: the actual final #75 piece (hard req)
+
+The producer addendum above said the producer path made #75 "user-done." That
+was superseded within the hour: vjt made alk's irssi **`sux.theme`** a
+**hard requirement** for v1 ("NON possiamo non averlo") — #75 is NOT complete
+until it ships in the built-in gallery. So the producer path merged as a tested
+increment but #75/#291 stayed `cooking`; THIS piece flips them.
+
+**Extract the colours, defer the layout.** An irssi `.theme` is mostly
+format-string / row-layout templates (that surface is #293, out of v1), but its
+COLOUR choices are real and extractable. `sux.theme` (from the canonical
+`irssi-import/themes` repo) is green-on-black: black bg (`%0`), white text/nicks
+(`%W`), a signature bright-green accent (the `%K>%g>%G>>` line-start + green
+channel/hilight/action), grey delimiters (`%K`), a yellow highlight-for-me
+(`%Y`), red errors (`%R`). Those map cleanly onto the base tokens. sux does NOT
+colour op/halfop/voice distinctly, nor define a nick palette, so those tokens
+are COMPOSED from its own palette (op=red, halfop=amber, voice=green,
+plain=white; nicks = the product's proven dark-bg colored-nick set) — flagged,
+not fabricated.
+
+**No new conversion machinery.** The 12 existing built-ins are hand-authored
+canonical token maps (`Grappa.Themes.Builtins`); the issue's fork-2 "conversion
+script" was aspirational for a future bulk import (#293). Rather than build a
+one-off irssi parser that contradicts the shipped pattern, `sux` is a 13th
+hand-authored entry whose colours were extracted offline + human-reviewed — the
+`builtins_test` sanitize-identity check pins it canonical, and
+`seed_themes_test` (which derives its count from `Builtins.all()`) needs no
+change. An e2e asserts the `sux` card renders in the seeded gallery.
+
+_Deploy unchanged: batched/HELD, SERVER COLD restart + `--cic` + `mix
+grappa.seed_themes` (the seed step is what publishes `sux` into the gallery).
+With `sux` seeded + gallery-verified, #75 + #291 finally move `cooking → soon`._

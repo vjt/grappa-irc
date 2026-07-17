@@ -55,6 +55,10 @@ test.describe("#75 — themes gallery consumer flow", () => {
     await expect(
       cards.first().locator("[data-testid^='theme-swatch-'] .theme-chip").first(),
     ).toBeVisible();
+
+    // #75 hard requirement (vjt): alk's `sux` built-in ships in the v1
+    // gallery (seeded from Grappa.Themes.Builtins).
+    await expect(page.locator(".theme-card-name").filter({ hasText: /^sux$/ })).toBeVisible();
   });
 
   test("@webkit apply flips --bg live and persists across reload via the server", async ({
