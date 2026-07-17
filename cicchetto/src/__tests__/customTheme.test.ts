@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { applyCustomTheme, getAppliedThemePayload, tokenToCssVars } from "../lib/customTheme";
+import {
+  applyCustomTheme,
+  COLOR_KEYS,
+  getAppliedThemePayload,
+  tokenToCssVars,
+} from "../lib/customTheme";
+import { EDITOR_BASE_KEYS, EDITOR_MODE_KEYS, EDITOR_NICK_KEYS } from "../lib/themeEditor";
 import type { TokenColors, TokenPayload } from "../lib/themesApi";
 
 // #75 producer path — apply-engine seams the editor depends on.
@@ -115,5 +121,20 @@ describe("customTheme.applyCustomTheme background class", () => {
     applyCustomTheme(payload({ background: { image_id: "abcdef", opacity: 0.3 } }));
     applyCustomTheme(null);
     expect(document.documentElement.classList.contains("theme-has-bg")).toBe(false);
+  });
+});
+
+// #75 producer path — the editor renders a color picker per grouped key.
+// If a key existed in the canonical set but no editor group, it would be a
+// silently NON-editable token (preserved on save via the cloned seed, but
+// with no control). Pin the grouped vocabulary against COLOR_KEYS.
+describe("editor color vocabulary vs the canonical key set", () => {
+  it("the grouped editor keys exactly cover customTheme.COLOR_KEYS", () => {
+    const editorKeys = new Set<string>([
+      ...EDITOR_BASE_KEYS,
+      ...EDITOR_MODE_KEYS,
+      ...EDITOR_NICK_KEYS,
+    ]);
+    expect(editorKeys).toEqual(new Set<string>(COLOR_KEYS));
   });
 });

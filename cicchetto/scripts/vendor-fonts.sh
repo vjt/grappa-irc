@@ -43,7 +43,16 @@ done
 
 # hack — different package layout (build/web/fonts, regular/bold subset).
 mkdir -p public/fonts/hack
-cp node_modules/hack-font/build/web/fonts/hack-regular-subset.woff2 public/fonts/hack/hack-400.woff2
-cp node_modules/hack-font/build/web/fonts/hack-bold-subset.woff2 public/fonts/hack/hack-700.woff2
+hack_src="node_modules/hack-font/build/web/fonts"
+for pair in "regular:400" "bold:700"; do
+  variant="${pair%%:*}"
+  weight="${pair##*:}"
+  src="$hack_src/hack-$variant-subset.woff2"
+  if [ ! -f "$src" ]; then
+    echo "MISSING: $src — run scripts/bun.sh install first" >&2
+    exit 1
+  fi
+  cp "$src" "public/fonts/hack/hack-$weight.woff2"
+done
 
 echo "vendored ${#FAMILIES[@]} @fontsource families + hack x ${#WEIGHTS[@]} weights -> public/fonts/"

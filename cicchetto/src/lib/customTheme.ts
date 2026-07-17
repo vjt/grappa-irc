@@ -21,8 +21,10 @@ import type { ThemesWireT } from "./wireTypes";
 // the first paint, refreshed from the server on every login.
 
 // The 11 named color keys + nick_0..15 — mirror of
-// `Grappa.Themes.TokenModel.color_keys/0`.
-const COLOR_KEYS: string[] = [
+// `Grappa.Themes.TokenModel.color_keys/0`. Exported so the editor's grouped
+// picker vocabulary can be pinned against it (no silent drift into a
+// non-editable key).
+export const COLOR_KEYS: string[] = [
   "bg",
   "bg_alt",
   "fg",

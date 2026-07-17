@@ -1,4 +1,13 @@
-import { type Component, createEffect, createSignal, For, Match, Show, Switch } from "solid-js";
+import {
+  type Component,
+  createEffect,
+  createSignal,
+  For,
+  Match,
+  Show,
+  Switch,
+  untrack,
+} from "solid-js";
 import { ApiError } from "./lib/api";
 import { token } from "./lib/auth";
 import { activateTheme, activeThemeId } from "./lib/customTheme";
@@ -58,7 +67,10 @@ const ThemeGallery: Component<Props> = (props) => {
   // — one source of truth (the server), never a locally-patched card.
   createEffect(() => {
     themesRevision();
-    void load();
+    // untrack: load() reads token() before its first await; without this the
+    // effect would also re-run on token() change (unintended dependency).
+    // The revision bump is the only trigger we want.
+    untrack(() => void load());
   });
 
   // Seed for a brand-new theme — the built-in the gallery already fetched

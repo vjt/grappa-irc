@@ -7,6 +7,9 @@ import { createOverlayLock } from "./lib/overlayScrollLock";
 import {
   bumpThemesRevision,
   closeThemeEditor,
+  EDITOR_BASE_KEYS,
+  EDITOR_MODE_KEYS,
+  EDITOR_NICK_KEYS,
   persistThemeDraft,
   themeEditorState,
 } from "./lib/themeEditor";
@@ -28,14 +31,9 @@ import { uploadBackground } from "./lib/themesApi";
 // (`.theme-editor-modal`) — a new pane-covering modal MUST refcount the
 // lock or it yanks iOS scroll (feedback_new_covering_modal_must_push…).
 
-// Color pickers grouped by role (mirror of TokenModel's key set). nick_N
-// is the 16-slot palette. `--font-mono` families are the closed allow-list.
-const BASE_KEYS: ThemeColorKey[] = ["bg", "bg_alt", "fg", "accent", "muted", "border", "mention"];
-const MODE_KEYS: ThemeColorKey[] = ["mode_op", "mode_halfop", "mode_voiced", "mode_plain"];
-const NICK_KEYS: ThemeColorKey[] = Array.from(
-  { length: 16 },
-  (_, i) => `nick_${i}` as ThemeColorKey,
-);
+// Color pickers grouped by role (EDITOR_*_KEYS live in lib/themeEditor,
+// pinned against customTheme.COLOR_KEYS by a unit test). `--font-mono`
+// families are the closed allow-list.
 const FONT_FAMILIES: ThemeFontFamily[] = [
   "mono-default",
   "jetbrains-mono",
@@ -54,7 +52,14 @@ const ThemeEditor: Component = () => {
   // lives inside the keyed block below).
   let snapshot: TokenPayload | null = null;
 
+  // Component-scope so the top-level overlay-lock onEscape / backdrop can
+  // see it: a save in flight already dispatched createTheme→activateTheme,
+  // so a "cancel" mid-save would restore the snapshot yet the save still
+  // lands + activates. No-op the close paths while saving instead.
+  const [saving, setSaving] = createSignal(false);
+
   const cancel = () => {
+    if (saving()) return;
     applyCustomTheme(snapshot);
     closeThemeEditor();
   };
@@ -79,7 +84,7 @@ const ThemeEditor: Component = () => {
         const [draft, setDraft] = createSignal<TokenPayload>(initial);
         const [name, setName] = createSignal(seed.mode === "edit" ? seed.theme.name : "");
         const [error, setError] = createSignal<string | null>(null);
-        const [saving, setSaving] = createSignal(false);
+        setSaving(false); // reset the component-scope flag per open
 
         // LIVE preview — re-paint the whole app on every draft change.
         createEffect(() => applyCustomTheme(draft()));
@@ -189,18 +194,18 @@ const ThemeEditor: Component = () => {
 
                 <fieldset class="theme-editor-group">
                   <legend>base</legend>
-                  <For each={BASE_KEYS}>{colorRow}</For>
+                  <For each={EDITOR_BASE_KEYS}>{colorRow}</For>
                 </fieldset>
 
                 <fieldset class="theme-editor-group">
                   <legend>modes</legend>
-                  <For each={MODE_KEYS}>{colorRow}</For>
+                  <For each={EDITOR_MODE_KEYS}>{colorRow}</For>
                 </fieldset>
 
                 <fieldset class="theme-editor-group">
                   <legend>nick palette</legend>
                   <div class="theme-editor-nick-grid">
-                    <For each={NICK_KEYS}>{colorRow}</For>
+                    <For each={EDITOR_NICK_KEYS}>{colorRow}</For>
                   </div>
                 </fieldset>
 

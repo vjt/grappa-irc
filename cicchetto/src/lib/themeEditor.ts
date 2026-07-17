@@ -1,8 +1,33 @@
 import { createRoot, createSignal } from "solid-js";
 import { activateTheme } from "./customTheme";
-import type { TokenPayload } from "./themesApi";
+import type { ThemeColorKey, TokenPayload } from "./themesApi";
 import { createTheme, updateTheme } from "./themesApi";
 import type { ThemesWireT } from "./wireTypes";
+
+// The editor's grouped color-picker vocabulary. Kept here (data, not view)
+// so a unit test can pin `[...base, ...mode, ...nick]` against the canonical
+// `customTheme.COLOR_KEYS` — a server-side key added without a group here
+// would otherwise become a silently non-editable token (preserved on save
+// via the cloned seed, but with no control rendered).
+export const EDITOR_BASE_KEYS: ThemeColorKey[] = [
+  "bg",
+  "bg_alt",
+  "fg",
+  "accent",
+  "muted",
+  "border",
+  "mention",
+];
+export const EDITOR_MODE_KEYS: ThemeColorKey[] = [
+  "mode_op",
+  "mode_halfop",
+  "mode_voiced",
+  "mode_plain",
+];
+export const EDITOR_NICK_KEYS: ThemeColorKey[] = Array.from(
+  { length: 16 },
+  (_, i) => `nick_${i}` as ThemeColorKey,
+);
 
 // #75 producer path — the theme editor's shared state + orchestration.
 //
