@@ -64,8 +64,11 @@ export const THEME_CSS_VARS: string[] = [
 
 // Pure: token payload → CSS custom property map. `mono-default` omits
 // `--font-mono` so the base stack wins; a named family overrides it with
-// a graceful fallback. Background maps to a scoped `url()` (or `none`) +
-// an opacity var consumed by the `themes/default.css` background layer.
+// a graceful fallback. Background maps to `--theme-bg-image` (a scoped
+// `url()` or `none`) + `--theme-bg-opacity`. NOTE: the CSS layer that
+// CONSUMES those two vars ships with the deferred background-upload UI
+// (producer-path sub-task 9) — no built-in carries an image today, so the
+// vars are currently dormant. The colors + font vars are the live feature.
 export function tokenToCssVars(payload: TokenPayload): Record<string, string> {
   const vars: Record<string, string> = {};
   for (const [key, value] of Object.entries(payload.colors)) {
@@ -99,13 +102,34 @@ export function applyCustomTheme(payload: TokenPayload | null): void {
   }
 }
 
+// Read the cached payload, defending BOTH the parse AND the shape. This
+// runs at module top-level (main.tsx boot, before render, outside any
+// ErrorBoundary), so a malformed cache that reached `tokenToCssVars`
+// (`Object.entries(payload.colors)`) would throw and white-screen the PWA
+// on every boot — and the bad cache reloads each time, bricking it. A
+// wrong-shaped object is treated as "no cache" (the server refresh on the
+// next login re-establishes the real theme).
 function readCache(): TokenPayload | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
-    return raw ? (JSON.parse(raw) as TokenPayload) : null;
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isTokenPayloadShape(parsed)) return null;
+    return parsed;
   } catch {
     return null;
   }
+}
+
+function isTokenPayloadShape(v: unknown): v is TokenPayload {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.colors === "object" &&
+    o.colors !== null &&
+    typeof o.background === "object" &&
+    o.background !== null
+  );
 }
 
 function writeCache(payload: TokenPayload | null): void {
@@ -156,8 +180,11 @@ export function mountCustomThemeSync(): void {
         if (token() !== t) return;
         applyResolved(theme);
       })
-      .catch(() => {
-        // Offline / transient failure — keep the boot-cached apply.
+      .catch((e) => {
+        // Offline / transient failure — keep the boot-cached apply. Log
+        // for observability so a PERSISTENT server error (e.g. a 500 on
+        // /me/theme) isn't fully invisible.
+        console.warn("customTheme: active-theme refresh failed", e);
       });
   });
 }

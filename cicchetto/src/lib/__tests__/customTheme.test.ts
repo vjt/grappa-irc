@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { applyCustomTheme, THEME_CSS_VARS, tokenToCssVars } from "../customTheme";
+import {
+  applyCachedCustomTheme,
+  applyCustomTheme,
+  THEME_CSS_VARS,
+  tokenToCssVars,
+} from "../customTheme";
 import type { TokenPayload } from "../themesApi";
 
 // customTheme — the token → CSS-custom-property apply engine (#75
@@ -93,5 +98,39 @@ describe("applyCustomTheme", () => {
     expect(root().style.getPropertyValue("--bg")).toBe("");
     expect(root().style.getPropertyValue("--nick-color-0")).toBe("");
     expect(root().style.getPropertyValue("--theme-bg-image")).toBe("");
+  });
+});
+
+describe("applyCachedCustomTheme boot guard", () => {
+  const root = () => document.documentElement;
+  const KEY = "grappa-custom-theme";
+
+  beforeEach(() => {
+    for (const v of THEME_CSS_VARS) root().style.removeProperty(v);
+    localStorage.removeItem(KEY);
+  });
+  afterEach(() => {
+    for (const v of THEME_CSS_VARS) root().style.removeProperty(v);
+    localStorage.removeItem(KEY);
+  });
+
+  test("a malformed cached payload does not throw and applies nothing", () => {
+    // Valid JSON but wrong shape (no colors/background) — reaches the apply
+    // engine at module top-level BEFORE render, outside any ErrorBoundary,
+    // so a throw here would white-screen the PWA on every boot.
+    localStorage.setItem(KEY, JSON.stringify({ foo: 1 }));
+    expect(() => applyCachedCustomTheme()).not.toThrow();
+    expect(root().style.getPropertyValue("--bg")).toBe("");
+  });
+
+  test("a non-JSON cache does not throw", () => {
+    localStorage.setItem(KEY, "not json{{");
+    expect(() => applyCachedCustomTheme()).not.toThrow();
+  });
+
+  test("a well-formed cached payload applies", () => {
+    localStorage.setItem(KEY, JSON.stringify(payload()));
+    applyCachedCustomTheme();
+    expect(root().style.getPropertyValue("--bg")).toBe("#111111");
   });
 });

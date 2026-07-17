@@ -31,8 +31,10 @@ export type Props = {
 const ThemeGallery: Component<Props> = (props) => {
   const [themes, setThemes] = createSignal<ThemesWireT[] | null>(null);
   const [error, setError] = createSignal<string | null>(null);
-  // Id of the theme whose action is in flight — disables the row's
-  // buttons so a double-tap can't fire two mutations.
+  // Id of the theme whose action is in flight. Every action button gates
+  // on `busyId() !== null`, so ALL cards' buttons disable during any
+  // in-flight action (not just the acting row) — a deliberately
+  // conservative guard against concurrent mutations + double-taps.
   const [busyId, setBusyId] = createSignal<number | null>(null);
 
   const errMessage = (e: unknown): string =>
