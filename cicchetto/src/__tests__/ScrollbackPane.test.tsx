@@ -3006,6 +3006,108 @@ describe("ScrollbackPane", () => {
     });
   });
 
+  // #285 (P0) — iOS-PWA cold-reload scroll lock. `.scrollback` touch pan is
+  // gated by the `.scrollback-overflowing` class (base `touch-action: none`;
+  // overflowing → `pan-y`), bound to the `isOverflowing` signal. That signal
+  // is recomputed by `measureOverflow` on only three discrete triggers:
+  // mount, message-count change, and window/visualViewport `resize` (#245).
+  // On an installed iOS PWA a full-page reload cold-mounts BEFORE the
+  // visualViewport settles: the mount measure reads a too-tall clientHeight,
+  // latches `isOverflowing=false`, and the corrective viewport shrink is a
+  // geometry change that fires NO `resize` event the onMount listener catches
+  // — so #245's remeasure never runs and the pane stays `touch-action: none`
+  // (scroll DEAD) until a remount (tab switch) or keyboard-open resize. The
+  // fix is a ResizeObserver on the scroll container: it fires on ANY
+  // container height change, decoupled from discrete events, so the false
+  // latch self-corrects the instant the settled height arrives. jsdom ships
+  // NO ResizeObserver and no layout, so we stub the observer to capture its
+  // callback and drive geometry via defineProperty (CONSTRAINT: the iOS
+  // touch-physics unlock itself is on-device-only — this pins the WIRING, the
+  // gate recomputing on a container resize).
+  describe("#285 — overflow gate follows container geometry via ResizeObserver", () => {
+    const flushRaf = async (): Promise<void> => {
+      await new Promise((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => r(undefined))),
+      );
+    };
+
+    it("recomputes the touch-action overflow gate when the scroll container resizes", async () => {
+      // jsdom ships no ResizeObserver — a bare render pre-fix never
+      // constructs one, so `observedEl` stays undefined and the gate never
+      // recomputes (the RED assertions).
+      let roCallback: ResizeObserverCallback | undefined;
+      let observedEl: Element | undefined;
+      class FakeResizeObserver {
+        constructor(cb: ResizeObserverCallback) {
+          roCallback = cb;
+        }
+        observe(el: Element): void {
+          observedEl = el;
+        }
+        unobserve(): void {}
+        disconnect(): void {}
+      }
+      vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+      try {
+        setScrollback({ "freenode #grappa": fixture });
+        const { container } = render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        const pane = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+        if (!pane) throw new Error("scrollback DOM not found");
+
+        // Drain the mount rAFs. jsdom geometry is 0/0 → scrollHeight is not
+        // greater than clientHeight → `isOverflowing` latches false — exactly
+        // the cold-boot false-negative latch. Gate closed: no pan-y.
+        await flushRaf();
+        expect(pane.classList.contains("scrollback-overflowing")).toBe(false);
+
+        // The observer MUST be wired onto the scroll container — the element
+        // that hosts the touch-action gate. Pre-fix: no RO → RED here.
+        expect(observedEl).toBe(pane);
+
+        // iOS-PWA post-reload viewport settle: the container's clientHeight
+        // shrinks so content now overflows — a geometry change with NO
+        // window/visualViewport `resize` event (#245's trigger stays silent).
+        Object.defineProperty(pane, "scrollHeight", { value: 5000, configurable: true });
+        Object.defineProperty(pane, "clientHeight", { value: 500, configurable: true });
+
+        // The container resized → the ResizeObserver fires.
+        roCallback?.([], {} as ResizeObserver);
+        await flushRaf();
+
+        // Gate recomputed off REAL geometry → touch-action flips to pan-y,
+        // unlocking the pan the cold-boot latch had frozen.
+        expect(pane.classList.contains("scrollback-overflowing")).toBe(true);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("disconnects the ResizeObserver on unmount (no leaked observer)", () => {
+      // Mirror the #230 passive-touch onMount/onCleanup discipline: the
+      // observer created in onMount MUST be disconnected in onCleanup.
+      const disconnect = vi.fn();
+      class FakeResizeObserver {
+        constructor(_cb: ResizeObserverCallback) {}
+        observe(): void {}
+        unobserve(): void {}
+        disconnect = disconnect;
+      }
+      vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+      try {
+        setScrollback({ "freenode #grappa": fixture });
+        const { unmount } = render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        unmount();
+        expect(disconnect).toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
   // #230 (mobile) — the pure underfill-rescue DECISION seam. Both the desktop
   // wheel path and the mobile touch path funnel through this one function
   // (implement-once); it is the CORE proof because Playwright's webkit project

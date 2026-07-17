@@ -23807,3 +23807,87 @@ the only valid ship-proof.
 _Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
 reactive-glue + doc-comment change in `lib/networks.ts`. No server, no schema,
 no config._
+
+---
+
+### 2026-07-17 — #285 (P0, cic): iOS-PWA cold-reload scroll lock — overflow gate now follows real geometry via ResizeObserver
+
+**Symptom.** On the installed iOS PWA, after a full-page reload / cold boot the
+`.scrollback` message area is COMPLETELY unpannable in EVERY tab. It unblocks
+only by switching window/tab OR changing the message-area height (opening the
+iOS keyboard). Longstanding, NOT a regression (not #209/#280). Not reproducible
+off-device (iOS WebKit + `visualViewport` settle timing only).
+
+**Root cause.** Touch pan of `.scrollback` is gated by a JS-toggled class, not
+native overflow: base `touch-action: none` (default-deny, else iOS falls
+through `pan-y` to a chrome-reveal gesture when not overflowing), and only
+`.scrollback.scrollback-overflowing { touch-action: pan-y }` enables the pan.
+That class is bound to the `isOverflowing` signal, set ONLY by
+`measureOverflow()` (double-rAF `scrollHeight > clientHeight`), which ran on
+just THREE discrete triggers: mount, message-length change, and window/
+visualViewport `resize` (the latter added by **#245**). There is no
+`ResizeObserver` — the gate never followed the container's actual geometry.
+
+On an iOS-PWA cold reload the mount measure reads a too-tall `clientHeight`
+(the mobile shell height derives from `--viewport-height` / `--vh` /
+`visualViewport.height`, unsettled at boot) → `scrollHeight > clientHeight` is
+FALSE → `isOverflowing` latches false → base `touch-action: none` → scroll
+dead. When the viewport SETTLES, the container's clientHeight SHRINKS — a real
+geometry change — but **that shrink is not accompanied by a `resize` event this
+pane catches** (a CSS layout / safe-area-inset settle fires no JS `resize`; or
+a `vv.resize` fires in the boot→onMount window BEFORE the pane's listener
+attaches — `installViewportHeightTracker`'s own earlier listener corrects the
+CSS var but ScrollbackPane's onResize missed the event). So #245's
+resize→remeasure never runs on this path and the false latch is never
+corrected. The two workarounds fit: a tab switch remounts (re-runs onMount
+`measureOverflow` post-settle) or changes `messages().length`; a keyboard-open
+IS a `vv.resize`, which #245 does catch.
+
+**Why #245 wasn't enough (the DATA).** `onResize` (ScrollbackPane, ~:1336)
+already calls `measureOverflow()` unconditionally — confirmed present in prod
+SHA a273408a, and the P0 still reproduced. The gap is not a missing trigger;
+it's that the corrective settle produces a geometry change WITHOUT a `resize`
+event to trigger on. Of the three candidate hypotheses (h1 no/late resize
+event; h2 zero/unsettled clientHeight; h3 one-shot boot var read), **h1 held.**
+h2 is a false-POSITIVE (a zero clientHeight makes `scrollHeight > 0` true =
+pan-y ENABLED, not the reported false-negative jam) and self-heals via the
+observer, and a retry-on-zero guard would spin an unbounded rAF loop in jsdom
+(no layout → clientHeight always 0) — rejected. h3 is the upstream trigger, but
+chasing the boot var read is the wrong lever: the observer makes the gate
+self-correcting regardless of the boot value ("derive, don't chase the boot
+race").
+
+**Fix.** A `ResizeObserver` on the scroll container (`listRef`), created in
+`onMount` (guarded on `typeof ResizeObserver` for graceful degradation, mirror
+of the existing `window.visualViewport?.` guard + the #230 passive-touch
+create-in-onMount / disconnect-in-onCleanup discipline), callback →
+`measureOverflow()`, `disconnect()` in `onCleanup`. It fires on ANY container
+height change independent of any event, so the false latch self-corrects the
+instant the settled height propagates the flex chain — no remount, no
+keyboard, no message. Loop-free: `measureOverflow` toggles only a
+`touch-action` class (no box-size change → no RO re-fire). The three existing
+triggers stay (not wrong; removing risks regressions). This is the general
+geometry-tracking lever the discrete triggers only approximated.
+
+**Deliberately NOT done (scope discipline).** No cold-boot zero-guard (h2 — not
+the bug, self-heals, jsdom rAF footgun) and no `viewportHeight.ts` boot-read
+hardening (h3 — the observer subsumes it). "Add X means add X"; lightweight
+over heavyweight.
+
+**Proof.** vitest core RED→GREEN
+(`cicchetto/src/__tests__/ScrollbackPane.test.tsx`, `#285` describe): stub
+`ResizeObserver` to capture its callback, drive geometry via `defineProperty`,
+assert the pane observes `listRef` and the `.scrollback-overflowing` gate
+recomputes when the callback fires on a height change (RED pre-fix: no observer
+constructed); plus a disconnect-on-unmount test. e2e WIRING (best-effort,
+`@webkit` iPhone-15,
+`cicchetto/e2e/tests/issue285-scroll-lock-resizeobserver.spec.ts`): shrink the
+container height via the CSS vars **without dispatching a `resize` event** — the
+exact path #245's onResize can't see — and assert `touch-action` flips
+`none → pan-y` (and back). Per **CONSTRAINT** (`feedback_playwright_webkit_not_ios_scroll`)
+Playwright cannot reproduce iOS touch physics; the actual on-device touch-pan
+unlock after reload is verified by vjt, not CI.
+
+_Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
+change in `ScrollbackPane.tsx` + tests. No server, no schema, no config, no
+CSS._
