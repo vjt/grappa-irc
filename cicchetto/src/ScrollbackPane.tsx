@@ -2442,17 +2442,21 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   return (
     <div class="scrollback-pane">
-      {/* #133 — top-pinned overlay layer. WHOIS / WHOWAS / peer-away /
-          LUSERS are ephemeral lookup affordances the operator opens from
-          the window they're reading. Rendered as flex siblings BEFORE
-          `.scrollback` they shrank the scroll list on mount, shifting the
-          reader's anchor and losing their place in the channel buffer.
-          They now float in this absolutely-positioned overlay: the scroll
-          list keeps its full height and scrollTop, the cards paint on top.
-          The container is `pointer-events: none` so the uncovered
-          scrollback below stays scrollable; each card re-enables pointer
-          events for its own box. Each child still short-circuits to null
-          when no bundle exists for the selected window's network. */}
+      {/* #133 — top-pinned overlay layer. WHOIS / WHOWAS / LUSERS are
+          ephemeral lookup affordances the operator opens from the window
+          they're reading. Rendered as flex siblings BEFORE `.scrollback`
+          they shrank the scroll list on mount, shifting the reader's anchor
+          and losing their place in the channel buffer. They now float in
+          this absolutely-positioned overlay: the scroll list keeps its full
+          height and scrollTop, the cards paint on top. The container is
+          `pointer-events: none` so the uncovered scrollback below stays
+          scrollable; each card re-enables pointer events for its own box.
+          Each child still short-circuits to null when no bundle exists for
+          the selected window's network.
+          #270 — the peer-away banner is NOT here: unlike these ephemeral
+          lookup cards it is persistent + DM-contextual, so it renders
+          IN-FLOW at the top of `.scrollback` (below) rather than floating
+          over the y=0 first row (which it overlapped in a fresh DM). */}
       <div class="scrollback-overlay" data-testid="scrollback-overlay">
         {/* C2 — WHOIS card. Mounts on every window kind; the card itself
             short-circuits to null when no bundle is present. */}
@@ -2460,12 +2464,6 @@ const ScrollbackPane: Component<Props> = (props) => {
         {/* P-0c — WHOWAS card. Mirrors WhoisCard mount shape (every window
             kind, not just $server). */}
         <WhowasCard networkSlug={props.networkSlug} />
-        {/* P-0b — peer-away banner. Mount only on DM windows; the banner
-            short-circuits to null when no entry exists for (slug, peer).
-            The "peer" is the channelName itself for query windows. */}
-        <Show when={props.kind === "query"}>
-          <PeerAwayBanner networkSlug={props.networkSlug} peer={props.channelName} />
-        </Show>
         {/* P-0d / #231 — LUSERS card. Mounts on every window kind (mirror
             WhoisCard / WhowasCard); the card itself short-circuits to null
             when no bundle is present. Only one ScrollbackPane is mounted at
@@ -2491,6 +2489,23 @@ const ScrollbackPane: Component<Props> = (props) => {
         onKeyDown={onKeyDown}
         data-testid="scrollback"
       >
+        {/* #270 — peer-away banner as an IN-FLOW top row. Persistent +
+            DM-contextual (unlike the ephemeral WHOIS / WHOWAS / LUSERS
+            overlay cards above), so it reserves its own space at the top of
+            the scroll list instead of floating over the y=0 first row.
+            Reactive to peerAwayBySlug() only — deliberately NOT woven into
+            rows() — so its appear (301) / dismiss (×) toggle never trips the
+            #196/#230 tail-follow effect keyed on rows().length. In-flow like
+            the P-0e synthetic rows (a row in the scroll flow, not a floating
+            card); it scrolls WITH the buffer rather than pinning to the top —
+            the accepted B trade (the away context matters most at DM start).
+            Mounts only on DM windows; the banner short-circuits to null when no
+            entry exists for (slug, peer) — the "peer" is the channelName for
+            query windows. Rendered before the `rows()` block so it stays at
+            the top even in an empty DM (the "no messages yet" fallback). */}
+        <Show when={props.kind === "query"}>
+          <PeerAwayBanner networkSlug={props.networkSlug} peer={props.channelName} />
+        </Show>
         <Show
           when={rows().length > 0}
           fallback={<p class="muted scrollback-empty">no messages yet</p>}
