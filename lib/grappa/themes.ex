@@ -45,7 +45,7 @@ defmodule Grappa.Themes do
   alias Grappa.RateLimit.DailyQuota
   alias Grappa.Repo
   alias Grappa.Subject
-  alias Grappa.Themes.{BackgroundImage, Theme}
+  alias Grappa.Themes.{BackgroundImage, Builtins, Theme}
   alias Grappa.UserSettings
   alias Grappa.Visitors.Visitor
 
@@ -223,6 +223,30 @@ defmodule Grappa.Themes do
           {:ok, String.t()} | {:error, BackgroundImage.error()}
   def store_background(subject, source) do
     BackgroundImage.process_and_store(subject, source)
+  end
+
+  @doc """
+  Materialise the curated built-in gallery (`Grappa.Themes.Builtins.all/0`) as
+  system-owned, published themes. Idempotent: upserts by the `(owner_id, name)`
+  unique index, so a re-run refreshes the payload in place rather than
+  duplicating rows (drives the re-runnable `mix grappa.seed_themes`). Returns
+  the number of built-ins seeded.
+  """
+  @spec seed_builtins() :: non_neg_integer()
+  def seed_builtins do
+    owner_id = system_user().id
+    builtins = Builtins.all()
+
+    Enum.each(builtins, fn %{name: name, payload: payload} ->
+      %Theme{}
+      |> Theme.changeset(%{name: name, owner_id: owner_id, payload: payload, published: true})
+      |> Repo.insert!(
+        on_conflict: {:replace, [:payload, :published, :updated_at]},
+        conflict_target: [:owner_id, :name]
+      )
+    end)
+
+    length(builtins)
   end
 
   ## Internals
