@@ -6469,10 +6469,29 @@ audio.media-viewer-media {
 }
 
 /* #264 fork B — focus lift. A focused text field means the keyboard is (about
-   to be) up: raise the button clear of the bottom bar (~3rem) on top of the
-   base gap. On a real device `--viewport-height` has already shrunk (fork A),
-   so this is bottom-bar clearance + breathing room; in a headless e2e it is
-   the observable reposition that proves the wiring. */
+   to be) up: raise the button clear of the compose row on top of the base gap.
+   On a real device `--viewport-height` has already shrunk (fork A), so this is
+   compose-row clearance + breathing room; in a headless e2e it is the
+   observable reposition that proves the wiring.
+
+   #278 (regression fix) — #264 lifted by 4rem, which cleared ONLY the
+   `.bottom-bar` (min-height: 3rem). But the `.compose-box` (~3.5rem: a rows=1
+   textarea + padding; it never grows — `resize: none` scrolls internally)
+   stacks ON TOP of the bottom bar, and the send `<button>` is an in-flow flex
+   child of it with no stacking context. So the 4rem lift dropped this
+   `z-index: 40` circle squarely onto the send button (~29px vertical overlap
+   on the shared right edge) — tapping near send hit the wrong target. The lift
+   must clear the bottom bar AND the compose box, so the circle rides ABOVE the
+   send button while staying reachable/visible: 3rem (bottom bar) + ~3.5rem
+   (compose box) + margin ≈ 8rem. Forward-fix, NOT a revert — reverting #264
+   re-buries the circle under the keyboard. See DESIGN_NOTES 2026-07-17.
+
+   Known residual (accepted, MVP): `ComposeBox` can render variable-height
+   strips BELOW the form (upload progress/error, send error) that push the send
+   button up into this fixed band, so a simultaneous active upload or a
+   multi-line error CAN re-narrow the gap. Fully robust would mean anchoring to
+   the compose GROUP's variable height (bigger than this fix warrants); the
+   reported bug is the plain focused state, which 8rem clears comfortably. */
 .shell-mobile:has(textarea:focus, input:focus) .next-active-btn-mobile {
-  --nab-lift: 4rem;
+  --nab-lift: 8rem;
 }
