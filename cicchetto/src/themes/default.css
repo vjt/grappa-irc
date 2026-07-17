@@ -3721,11 +3721,15 @@ html.resize-dragging * {
   }
 
   /* #291 — enlarge ONLY the drawer-footer launchers to proper mobile tap
-     targets (≥44px). Scoped to `.mobile-panel-actions` so the top
-     ShellChrome bar's `.shell-chrome-btn` (same class) is untouched. */
+     targets (Apple HIG 44px minimum). Scoped to `.mobile-panel-actions`
+     so the top ShellChrome bar's `.shell-chrome-btn` (same class) is
+     untouched. ABSOLUTE px, not rem: rem tracks the user's `--font-size`
+     text-size preference (14px default → 2.75rem is only 38.5px, and S=12px
+     would shrink it to 33px) — a tap target is a physical constraint that
+     must NOT shrink with the text size. */
   .shell-mobile .mobile-panel-actions .shell-chrome-btn {
-    min-width: 2.75rem;
-    min-height: 2.75rem;
+    min-width: 44px;
+    min-height: 44px;
   }
 
   .shell-drawer-backdrop {
