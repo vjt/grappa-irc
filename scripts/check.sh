@@ -38,6 +38,17 @@
 cd "$REPO_ROOT"
 
 "$SRC_ROOT/scripts/mix.sh" --env=dev ci.check
+# CI-PARITY doctor gate (#75, 4-red-commits post-mortem). The `ci.check`
+# alias above runs `mix doctor` in MIX_ENV=dev, where `elixirc_paths/1`
+# is just `["lib"]` — so doctor NEVER scans `test/support/*.ex`. The GH
+# `ci` workflow runs the whole gate job in MIX_ENV=test (.github/workflows/
+# ci.yml), where `elixirc_paths(:test)` adds `test/support`, so its
+# `mix doctor` step DOES scan test-only modules (e.g.
+# Grappa.Themes.ImageFetcher.TestResolver). A test-support module missing a
+# per-function @doc therefore passed local check.sh but reddened GH main.
+# Run doctor again in :test here so local == GH — same env, same file set.
+echo "=== check.sh: mix doctor (MIX_ENV=test — GH-ci parity, scans test/support) ==="
+"$SRC_ROOT/scripts/mix.sh" --env=test doctor
 # Drift gate for cicchetto/src/lib/wireTypes.ts — regenerates the file
 # in memory and diffs against the committed copy. Fails with a clear
 # error message pointing the operator at `scripts/mix.sh
