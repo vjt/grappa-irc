@@ -61,11 +61,25 @@ defmodule Grappa.Operator do
       Grappa.LiveIntrospection,
       Grappa.Networks,
       Grappa.Session,
+      # #269 — the admin Visitors-tab Reconnect verb reuses the connect
+      # core (admission → backoff-reset → spawn) through the shared
+      # orchestrator, same as Bootstrap + NetworksController.
+      Grappa.SpawnOrchestrator,
       Grappa.Visitors,
       Grappa.Visitors.Reaper
     ]
 
-  alias Grappa.{Accounts, AdminEvents, LiveIntrospection, Networks, Session, Visitors}
+  alias Grappa.{
+    Accounts,
+    AdminEvents,
+    Admission,
+    LiveIntrospection,
+    Networks,
+    Session,
+    SpawnOrchestrator,
+    Visitors
+  }
+
   alias Grappa.Accounts.User
   alias Grappa.AdminEvents.Wire, as: AdminWire
   alias Grappa.Admission.NetworkCircuit
@@ -552,6 +566,111 @@ defmodule Grappa.Operator do
     case Session.send_quit(subject, network_id, @terminate_reason) do
       :ok -> :ok
       {:error, :no_session} -> :ok
+    end
+  end
+
+  @doc """
+  #269: bring a downed visitor `(subject, network_id)` session back up —
+  the Reconnect half of the admin Visitors-tab Disconnect ⇄ Reconnect
+  toggle. Visitor-only: users park/reconnect their OWN sessions via
+  `PATCH /networks/:id`; the admin Visitors-tab reconnect targets a
+  specific visitor's `(visitor, network)` session on the operator's behalf.
+
+  Reuses the connect core the visitor `PATCH /networks/:id` path drives —
+  `Grappa.Visitors.SessionPlan.resolve/2` → `Grappa.SpawnOrchestrator.spawn/4`
+  with the `:visitor_reconnect` flow (so the per-network + per-IP caps gate
+  the visitor pool, mirroring `NetworksController.orchestrate_spawn/4`). No
+  verb is rebuilt here (CLAUDE.md "reuse the verbs, not the nouns"): this is
+  the disconnect verb's sibling, one call up from the shared spawn.
+
+  `source_ip` is `nil` — there is no `Plug.Conn` in the operator boundary,
+  same as the identity-bounce path (`NetworksController.identity_capacity_input/2`);
+  the visitor's own `requesting_subject` self-excludes its live browser
+  session from the per-IP cap on the respawn.
+
+  Idempotent: an already-live session yields `:already_started` → `:ok`
+  (no bounce — `spawn/4`, not `reconnect/5`). Errors:
+
+    * `{:error, :not_found}` — the visitor row or the network row is gone
+      (or the credential unbound between admission and spawn → `:ignored`).
+    * `{:error, :resolve_failed}` — the visitor holds no credential on this
+      network, or the network has no enabled server. Mirrors
+      `NetworksController.resolve_plan/3`'s typed collapse so
+      `FallbackController` renders 500 `session_plan_resolve_failed`.
+    * `Admission.capacity_error()` / `{:start_failed, term()}` — propagated
+      verbatim from `SpawnOrchestrator.spawn/4`.
+  """
+  @spec reconnect_session({:visitor, Ecto.UUID.t()}, integer()) ::
+          :ok
+          | {:error, :not_found | :resolve_failed | Admission.capacity_error() | {:start_failed, term()}}
+  def reconnect_session({:visitor, visitor_id} = subject, network_id)
+      when is_binary(visitor_id) and is_integer(network_id) do
+    with {:ok, visitor} <- fetch_visitor(visitor_id),
+         {:ok, network} <- fetch_network(network_id),
+         {:ok, plan} <- resolve_visitor_plan(visitor, network) do
+      spawn_visitor_reconnect(subject, network_id, plan)
+    end
+  end
+
+  @spec fetch_visitor(Ecto.UUID.t()) :: {:ok, Visitor.t()} | {:error, :not_found}
+  defp fetch_visitor(visitor_id) do
+    case Visitors.get(visitor_id) do
+      nil -> {:error, :not_found}
+      %Visitor{} = visitor -> {:ok, visitor}
+    end
+  end
+
+  @spec fetch_network(integer()) :: {:ok, Networks.Network.t()} | {:error, :not_found}
+  defp fetch_network(network_id) do
+    case Networks.get_network(network_id) do
+      nil -> {:error, :not_found}
+      %Networks.Network{} = network -> {:ok, network}
+    end
+  end
+
+  # Mirror of `NetworksController.resolve_plan/3`'s visitor arm: collapse
+  # every `SessionPlan.resolve/2` failure (`:network_unconfigured` /
+  # `:no_server`) to `:resolve_failed` so FallbackController renders the
+  # uniform 500 `session_plan_resolve_failed`.
+  @spec resolve_visitor_plan(Visitor.t(), Networks.Network.t()) ::
+          {:ok, Session.start_opts()} | {:error, :resolve_failed}
+  defp resolve_visitor_plan(%Visitor{} = visitor, %Networks.Network{} = network) do
+    case Grappa.Visitors.SessionPlan.resolve(visitor, network) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "admin reconnect: visitor session plan resolve failed " <>
+            "(visitor_id=#{visitor.id} network_id=#{network.id} reason=#{inspect(reason)})"
+        )
+
+        {:error, :resolve_failed}
+    end
+  end
+
+  # The admission → backoff-reset → spawn dance for a visitor reconnect.
+  # `:visitor_reconnect` flow (subject_kind :visitor) so the cap + circuit
+  # gate the visitor pool; `source_ip: nil` (no conn) mirrors the identity
+  # bounce; `requesting_subject` self-excludes the visitor's own live
+  # browser session from the per-IP cap. `:spawned` (fresh) and
+  # `:already_started` (already live) both collapse to `:ok`; `:ignored`
+  # (row unbound mid-spawn) surfaces as `:not_found`.
+  @spec spawn_visitor_reconnect(Session.subject(), integer(), Session.start_opts()) ::
+          :ok | {:error, :not_found | Admission.capacity_error() | {:start_failed, term()}}
+  defp spawn_visitor_reconnect(subject, network_id, plan) do
+    capacity_input = %{
+      network_id: network_id,
+      source_ip: nil,
+      flow: :visitor_reconnect,
+      requesting_subject: subject
+    }
+
+    case SpawnOrchestrator.spawn(subject, network_id, plan, capacity_input) do
+      {:ok, :spawned, _} -> :ok
+      {:ok, :already_started, _} -> :ok
+      {:ok, :ignored} -> {:error, :not_found}
+      {:error, _} = err -> err
     end
   end
 

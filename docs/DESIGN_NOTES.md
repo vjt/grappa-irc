@@ -23508,3 +23508,89 @@ config, no cic) → HOT-reload eligible; VERIFY the deploy preflight's hot verdi
 before trusting it. A HOT reload does NOT reconnect live sessions — the rotation
 applies to the NEXT (re)connect, which is expected + correct; the ExUnit is the
 proof, do not force-cold to "demonstrate" it._
+
+---
+
+## 2026-07-17 — #269: admin Visitors-tab Disconnect ⇄ Reconnect toggle (Sessions-tab parity)
+
+**What.** The admin **Sessions** tab already had a per-`(subject, network)`
+Disconnect control; the **Visitors** tab had only Delete. #269 brings the
+Visitors tab to parity with a per-`(visitor, network)` **Disconnect ⇄ Reconnect**
+toggle. Per-network by design: a visitor identity can hold sessions on several
+networks — the control acts on ONE, never a global "disconnect everywhere".
+
+**Route decision — reuse, no new nginx prefix.** Disconnect for visitors ALREADY
+worked: `POST /admin/sessions/:id/disconnect` parses the composite
+`"<kind>:<uuid>:<network_id>"` id and `Operator.disconnect_session/4` already
+handles `{:visitor, _}` (collapses to terminate — visitors have no `:parked`
+state). So the toggle's Disconnect half is pure reuse. Only **Reconnect** was
+missing → added `POST /admin/sessions/:id/reconnect` on the SAME controller +
+composite-id shape. Because it nests under `/admin/sessions/`, it rides the
+existing nginx allowlist regex (`^/admin/(…|sessions|…)(/|$)`) in BOTH the shared
+snippet (`infra/snippets/locations-api.conf`, included by the prod `:80`+`:443`
+blocks) AND the e2e `nginx-test.conf` — **no proxy change**.
+
+**Verb reuse (CLAUDE.md "reuse the verbs, not the nouns").** Reconnect is the
+disconnect verb's sibling, one call up from the shared spawn — no rebuilt
+lifecycle: `Grappa.Operator.reconnect_session({:visitor, id}, network_id)` →
+`Grappa.Visitors.SessionPlan.resolve/2` → `Grappa.SpawnOrchestrator.spawn/4`
+(`flow: :visitor_reconnect`, `source_ip: nil` like the identity bounce,
+`requesting_subject` self-excluded from the per-IP cap). It is the SAME connect
+core the visitor `PATCH /networks/:id` path drives (`NetworksController.
+orchestrate_spawn/4`). Idempotent (`:already_started → :ok`); resolve failures
+collapse to `:resolve_failed` (500), unknown visitor/network → `:not_found`
+(404), admission/spawn errors propagate verbatim to the existing
+FallbackController clauses.
+
+**Visitor-only (by design).** Admin-side reconnect targets a visitor session on
+the operator's behalf; users park/reconnect their OWN sessions via
+`PATCH /networks/:id`, so a `{:user, _}` composite id on the reconnect endpoint
+is `400 bad_request` (`SessionsController.ensure_visitor_subject/1`). The
+Sessions tab is registry-driven (live pids only), so a downed session never
+shows a Reconnect button there anyway — the toggle belongs on the Visitors tab,
+which lists every visitor DB-canonically with per-network `live_state`.
+
+**DB-vs-live honesty (CLAUDE.md invariant).** The toggle affordance keys off LIVE
+truth (`net.live_state`, the Registry SessionEntry join), NOT the DB
+`connection_state`: a visitor disconnect collapses to terminate (pid gone, the
+credential row stays `:connected`), so the row honestly shows the divergence —
+`live_state: null` (badge "BEAM has no pid") alongside `connection_state:
+:connected` (glyph) — and the toggle reads **Reconnect** because the pid is gone.
+`Grappa.Visitors.AdminWire.network_json/0` gained a `network_id` field (the raw
+FK) so cic can build the composite id `visitor:<id>:<network_id>`; the wire is
+hand-mirrored in `api.ts` (`AdminVisitorNetwork`), NOT codegen'd (`admin_wire.ex`
+≠ the `lib/grappa/**/wire.ex` glob), so no wire-types drift gate involved.
+
+**RED→GREEN coverage.**
+- `test/grappa/operator_test.exs` (describe "reconnect_session/2 (#269)"):
+  downed→up, idempotent `:already_started`, no-credential→`:resolve_failed`,
+  unknown visitor / unknown network → `:not_found`. RED = 13
+  `UndefinedFunctionError` → GREEN 64/0.
+- `test/grappa_web/controllers/admin/sessions_controller_test.exs`: auth gate
+  (401/403), 204 downed→up, 204 idempotent-live, 404 unknown, 400 user-subject,
+  400 malformed id.
+- cic vitest `AdminVisitorsTab.test.tsx`: Disconnect/Reconnect label by
+  `live_state`, two-step confirm fires the right verb with the composite id +
+  refetches, verb-prefixed error banner. 2806/0.
+- e2e `cicchetto/e2e/tests/issue269-visitor-reconnect-toggle.spec.ts` (the
+  browser-smoke gate): mint visitor → admin Visitors tab → Disconnect (toggle
+  flips to Reconnect, badge → "BEAM has no pid") → Reconnect (flips back to
+  Disconnect, alive badge returns). Asserts the live-pid OUTCOME per-network, not
+  DOM cosmetics. Proven RED on the branch (missing `admin-visitor-toggle-*`
+  testid, harness otherwise wired all the way to the network cell) → GREEN.
+
+**Scope.** MVP = the issue's parity toggle. No `session_reconnected` admin event
+was added (disconnect emits `:session_disconnected`; reconnect stays silent) —
+adding a new admin-event kind cascades across the `AdminEvents.Wire` enum + cic
+`WireAdminEvent` union + `adminEvents.ts` renderer, beyond the toggle MVP. The
+Visitors-tab tables are refresh-driven (not event-live yet, per the M-11
+comment), so the reconnect surfaces via the post-action refetch regardless; a
+`session_reconnected` event is a clean follow-up if the events tab wants audit
+symmetry.
+
+_Deploy: **`--cic` bundle + server HOT**. Server side is a pure
+controller/context/@spec change (new `reconnect_session/2` + `reconnect/2` action
++ route + a `network_id` field on a non-struct wire map) — no schema, no
+migration, no struct/`@type`-inside-a-struct change → HOT-reload eligible (HEED
+the deploy preflight verdict). The cic bundle change is mandatory (`--cic`) — new
+toggle + api helper. No config change._

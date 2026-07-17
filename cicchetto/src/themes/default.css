@@ -3097,6 +3097,13 @@ html.resize-dragging * {
   border-color: #c00;
 }
 
+/* #269 — Reconnect half of the Visitors-tab toggle. Positive/green tint
+   distinguishes "bring it back up" from the amber Disconnect. */
+.reconnect-btn.confirming {
+  color: #0a0;
+  border-color: #0a0;
+}
+
 .introspection-degraded-warning {
   color: #c80;
   font-size: 0.75rem;

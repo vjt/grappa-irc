@@ -441,6 +441,63 @@ defmodule Grappa.OperatorTest do
     end
   end
 
+  describe "reconnect_session/2 (#269)" do
+    test "visitor with a downed session → :ok + pid back up" do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      ref = Process.monitor(pid)
+
+      # Tear the live session down — mirrors an admin Disconnect (visitor
+      # disconnect collapses to terminate: pid gone, credential row kept).
+      :ok = Session.stop_session({:visitor, visitor.id}, network.id)
+      assert_received {:DOWN, ^ref, :process, ^pid, _}
+      assert Session.whereis({:visitor, visitor.id}, network.id) == nil
+
+      # Reconnect spawns it back on THIS network via the reused
+      # SessionPlan.resolve → SpawnOrchestrator.spawn core.
+      assert :ok = Operator.reconnect_session({:visitor, visitor.id}, network.id)
+      assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
+      on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
+    end
+
+    test "idempotent when a live session already exists (:already_started → :ok)" do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
+
+      assert :ok = Operator.reconnect_session({:visitor, visitor.id}, network.id)
+      # Same pid kept — spawn/4 dedups via :already_started, no bounce.
+      assert Session.whereis({:visitor, visitor.id}, network.id) == pid
+    end
+
+    test "visitor with no credential on the target network → {:error, :resolve_failed}" do
+      {_, port} = start_irc_server()
+      {visitor, _} = visitor_with_network(port)
+      # A DIFFERENT network the visitor holds no credential on.
+      {network_b, _} = network_with_server(port: 1)
+
+      assert {:error, :resolve_failed} =
+               Operator.reconnect_session({:visitor, visitor.id}, network_b.id)
+    end
+
+    test "unknown visitor id → {:error, :not_found}" do
+      {network, _} = network_with_server(port: 1)
+
+      assert {:error, :not_found} =
+               Operator.reconnect_session({:visitor, Ecto.UUID.generate()}, network.id)
+    end
+
+    test "unknown network id → {:error, :not_found}" do
+      {_, port} = start_irc_server()
+      {visitor, _} = visitor_with_network(port)
+
+      assert {:error, :not_found} =
+               Operator.reconnect_session({:visitor, visitor.id}, 999_999_999)
+    end
+  end
+
   # #211 phase 7 — the `Visitors.update_identity/2` live-apply-reconnect
   # describe block was DELETED: `Visitors.update_identity/2` is a REMOVED
   # function. Visitor identity editing moved onto the per-network door
