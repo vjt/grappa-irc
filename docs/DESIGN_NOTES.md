@@ -23653,3 +23653,77 @@ _Deploy: **server HOT**. Pure function-body change (extra catch clauses in
 `terminate/2`) — no schema, no migration, no struct/`@type`-inside-a-struct
 change → HOT-reload eligible (HEED the deploy preflight verdict). No `--cic`, no
 config change._
+
+### 2026-07-17 — #270 (cic): peer-away banner rendered in-flow, not floating
+
+**Bug.** In a query (DM) window to an away user, the first message you send
+rendered exactly *underneath* the peer-away banner — the 301 "is away" notice
+and the first outgoing line visually overlapped.
+
+**Root cause.** The peer-away banner mounted inside `.scrollback-overlay` — the
+#133 top-pinned overlay (`position: absolute; top: 0; z-index: 5;
+pointer-events: none`). #133 moved WHOIS / WHOWAS / peer-away / LUSERS into that
+floating layer so mounting a card no longer shrinks the scroll list / shifts the
+reader's anchor: the `.scrollback` list keeps full height + scrollTop, cards
+paint on top. The catch: `.scrollback` reserves **no** top space for the overlay
+— its first row paints at `y = 0`, directly beneath the banner. In a *fresh*
+query to an away peer the scrollback is near-empty, so the first line you send
+IS that first row → it lands under the floating banner. (The ephemeral lookup
+cards tolerate this — they float over already-scrolled content and are dismissed;
+the peer-away banner is *persistent* and appears *precisely when the scrollback
+is empty*, so the overlap is very visible.)
+
+**Decision — B over A (issue's two directions).** Two fixes were on the table:
+(A) reserve dynamic `padding-top`/`scroll-padding-top` in `.scrollback` equal to
+the banner height only while a peer-away banner shows; (B) render the peer-away
+banner as an **in-flow** element at the top of the scroll list instead of a
+floating overlay card. **Chose B.** A needs a magic-number banner-height
+measurement (the away message wraps to variable height) and adding conditional
+top padding is itself a scrollTop shift — a partial re-introduction of the very
+#133 anchor-shift the overlay exists to avoid. B reserves the banner's own space
+by construction, no measurement.
+
+**Why B does not re-introduce the #133 anchor-shift.** #133 was about
+*ephemeral* lookup cards mounted as flex siblings *before* `.scrollback`,
+shrinking the scroll list's **height** and shifting scrollTop mid-read. Peer-away
+differs on three axes: it is DM-contextual + persistent (semantically the first
+line of the conversation); it appears as a consequence of the operator's *own*
+`/msg` (they are bottom-anchored composing, not scrolled up reading history); and
+placing it *inside* `.scrollback` adds content to the scroll area rather than
+shrinking the container. It never fed the overlay-freeze machinery either
+(`isOverlayFrozen` reads `overlayScrollSnapshot` captured by the covering cards;
+the thin `pointer-events: none` banner never contributed). So no anchor
+regression — argued and verified, not assumed.
+
+**Why in-flow, but NOT woven into `rows()` (B2, not B1).** The issue named the
+P-0e invite-ack synthetic rows as the precedent, but invite-ack lives *inside*
+the `rows()` memo only because it needs wallclock timeline-weaving. Peer-away is
+a persistent top header and needs none. Injecting it as a `rows()` Row would make
+its appear (301) / dismiss (×) toggle change `rows().length`, tripping the
+#196/#230 tail-follow effect keyed on `rows().length`. Instead the mount moved
+from the overlay to the first child *inside* `.scrollback`, still gated by
+`<Show when={props.kind === "query"}>` and reactive to `peerAwayBySlug()` only —
+entirely out of `rows()` and the anchor machinery. Lightweight over heavyweight.
+The component (`PeerAwayBanner.tsx`) and its CSS are unchanged (self-contained
+margins already work in flow); WHOIS / WHOWAS / LUSERS overlay cards are
+untouched (MVP scope).
+
+**Accepted trade of B.** An in-flow banner scrolls *with* the buffer, so in a
+long DM scrolled to the bottom the away notice scrolls out of view — the old
+floating overlay stayed pinned. This is fine: the away context matters most at
+the *start* of a DM, and irssi treats an away notice as an ordinary buffer line.
+If persistent pinning is ever wanted, `position: sticky; top: 0` on
+`.peer-away-banner` reserves its own space **and** pins it — fixing the overlap
+without reintroducing the floating overlay. Left out of scope here (MVP is the
+overlap fix, nothing more).
+
+**Regression proof.** `cicchetto/e2e/tests/issue270-peer-away-overlap.spec.ts`
+drives the real testnet P-0b path (peer `/AWAY`, operator `/msg`), then asserts
+the banner boundingBox does **not** overlap the first DM row's boundingBox
+(`overlapArea === 0` + first-row-below-banner), with both elements asserted
+present first (anti-false-green). RED before (overlap detected), GREEN after.
+jsdom/vitest is blind to layout overlap, so a Playwright geometry assert is the
+only valid ship-proof.
+
+_Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
+JSX relocation + doc-comment updates. No server, no schema, no config._

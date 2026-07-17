@@ -1454,7 +1454,8 @@ html.resize-dragging * {
   position: relative;
 }
 
-/* #133 — top-pinned overlay layer (WHOIS / WHOWAS / peer-away / LUSERS).
+/* #133 — top-pinned overlay layer (WHOIS / WHOWAS / LUSERS; #270 moved
+   the peer-away banner in-flow into `.scrollback`, see `.peer-away-banner`).
    Floats above `.scrollback` so a card mounting never resizes the scroll
    list — resizing it would shift the reader's scrollTop and lose their
    place in the channel buffer (the bug). `pointer-events: none` lets taps
@@ -5018,10 +5019,11 @@ html.resize-dragging * {
   color: var(--fg);
 }
 
-/* P-0b — peer-away banner. Lives at the top of the scrollback in DM
-   windows when the operator /msg's an away peer. Visual mirrors
-   `.whois-card` (border-left accent, dim panel) but tighter — single
-   line of text. */
+/* P-0b — peer-away banner. Renders IN-FLOW at the top of `.scrollback`
+   in DM windows when the operator /msg's an away peer (#270 — moved out of
+   the floating `.scrollback-overlay` so it reserves its own space and never
+   overlaps the y=0 first row). Visual mirrors `.whois-card` (border-left
+   accent, dim panel) but tighter — single line of text. */
 .peer-away-banner {
   display: flex;
   align-items: baseline;
