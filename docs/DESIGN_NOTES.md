@@ -24102,3 +24102,111 @@ _Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
 change (`Login.tsx` + `Login.test.tsx` + `issue204-foolproof-login.spec.ts` +
 new `issue284-password-always-visible.spec.ts`). No server, no schema, no
 config — the NickServ IDENTIFY path already exists._
+
+---
+
+### 2026-07-17 — themes subsystem (#75, SERVER sub-task)
+
+A server-owned, security-hardened theme gallery: users author colour/font/
+background schemes, publish them, copy others', and pin one as their active
+theme (cross-device). This entry records the SERVER subsystem; the cicchetto
+UI (Settings section, hamburger themes button, live-preview editor, gallery,
+background-opacity) + the #291 mobile home button are a LATER sub-task, so
+**#75 stays `cooking`** until the whole feature lands.
+
+**Closed token vocabulary IS the sanitizer.** A theme drives CSS, and CSS is
+code (exfil via `url()`/`@import`, fake-UI overlays). A published theme renders
+in every viewer's browser, so an unsafe theme is stored-XSS-via-CSS. The
+defence is safe-by-construction: the only thing that crosses the wire and lands
+in the DB is `Grappa.Themes.TokenModel`'s closed vocabulary — 27 strict
+`#rrggbb` colours, one font-family from a curated allowlist, a background
+`{image_id, opacity}`. `sanitize/1` drops everything else and is run at the
+`Theme` changeset boundary, so the DB can never hold attacker-controlled CSS.
+cicchetto generates scoped CSS from the sanitized map; it NEVER consumes raw
+`.theme`/CSS. Font *size* is deliberately NOT a token (fork-3) — it stays a
+per-client setting to avoid two sources of truth.
+
+**KISS data model — every theme is an independent full copy.** No
+copy-on-write, no shared storage, no reference counter that gates lifecycle,
+no delete-in-use guard. Copying a gallery theme inserts a fresh owned row from
+the source's payload; deleting a copy can never affect anyone else. All themes
+are public by id (the share-link target); `published` only controls
+gallery-list inclusion.
+
+**`apply_count` is analytics, not a refcount.** `copy_theme/2` bumps the
+SOURCE's `apply_count` in the same transaction as the insert — a "how many
+people applied it" popularity metric that sorts the gallery. It gates nothing:
+a theme at `apply_count: 900` deletes as freely as one at 0. It is NOT a
+reference count (the copies carry no back-reference), so it never blocks a
+lifecycle op.
+
+**Authz lives in the context (owner-or-admin), one code path every door.**
+`Grappa.Themes.{update,delete,publish,unpublish}_theme` take the RICH subject
+(`{:user, %User{}}` — carries `is_admin` + id) and route through one
+`authorize/2`: admin edits/deletes any (moderation); owner edits/deletes own;
+everyone else forbidden. Built-ins are read-only by CONSTRUCTION, not a special
+case — they are owned by the reserved `"system"` user (seeded by an idempotent
+data migration), and no logged-in non-admin can be that owner, so the generic
+owner-or-admin check refuses them. Create/copy (the row-creating ops) are
+rate-limited to ~5/day/subject via `Grappa.RateLimit.DailyQuota` (an ETS
+per-(bucket, subject, day) GenServer counter), checked BEFORE the insert so a
+malformed request never burns a slot.
+
+**Active theme = server-persisted per-subject pointer (fork-1).** vjt chose
+cross-device over localStorage: `UserSettings.active_theme_id` (a new key in
+the existing per-subject JSON column). `Themes.get_active_theme/1` resolves it
+and fails SOFT to `nil` on a dangling id (theme deleted) — cic falls back to
+its default look. `set_active_theme/2` only persists the pointer once the
+target is confirmed readable, so a bad id never sticks. `GET /me/theme`
+returns the fully-resolved wire (or JSON `null`), not a scalar id, so the
+client applies it directly.
+
+**Built-ins are curated, not parsed (fork-2).** `Grappa.Themes.Builtins`
+carries ~12 hand-picked schemes (irssi-dark, mirc-light, solarized ×2,
+gruvbox ×2, nord, dracula, monokai, tokyo-night, catppuccin-mocha, one-dark)
+written directly in the token model — NO irssi `.theme`-corpus parse in v1
+(a separate follow-up). Each payload is already canonical (`sanitize/1` is the
+identity on it, pinned by a test). `mix grappa.seed_themes` upserts them as
+system-owned, published rows by the `(owner_id, name)` unique index —
+idempotent, safe to re-run on every cold deploy as the default gallery.
+
+**Background-image pipeline — raster in, canonical PNG re-hosted.** Two
+threats: a polyglot file (valid image AND valid script) and an SSRF via
+fetch-by-URL. Defences, in order: (1) source is either a `Plug.Upload` or a
+URL fetched through `Grappa.Themes.ImageFetcher` — SSRF-guarded
+(`Grappa.Net.Ssrf.resolve_safe/1` is rebind-safe: resolve → range-check →
+connect to the RESOLVED ip, block the whole host if ANY address is
+private/loopback/link-local/metadata/ULA/v4-mapped), size-capped, no redirects;
+(2) decode + re-encode through ffmpeg (`-frames:v 1`, PNG encoder) under the
+shared `Grappa.Sys.HardenedCmd` (wall-clock `timeout -s KILL`, scrubbed-env
+RCE containment) — decoding the pixels and emitting a fresh flat PNG drops any
+non-image bytes riding a polyglot; (3) re-host via `Grappa.Uploads.create/3`
+with a forced `image/png` mime and NO expiry (`expires_at` omitted → NULL →
+the Uploads Reaper never sweeps theme backgrounds; they are durable). The
+download surface serves the bytes with `Content-Type: image/png` + `nosniff`.
+No SVG (scriptable). `HardenedCmd` was extracted from
+`Grappa.Uploads.MetadataStrip` so both external-tool sites share one hardening.
+
+**Wire discipline + a codegen fix.** `Grappa.Themes.Wire.to_wire/2` is the
+single source of truth for the theme wire shape, deriving the viewer-relative
+`mine` + `built_in` flags from the preloaded owner (no raw `%Theme{}` crosses
+the wire). The viewer subject is inlined into `to_wire/2`'s `@spec` rather than
+exposed as a public `@type` — otherwise `grappa.gen_wire_types` would emit a
+`ThemesWireViewer` TS type dragging the full `User`/`Visitor` structs
+(password_hash included!) into the client wire-types file. The wire's
+`payload: map()` was ALSO the first bare-`map()` field in any Wire typespec and
+exposed a latent codegen bug (the strip phase crashed on the abstract form's
+`:any` args) — fixed to emit the documented `Record<string, unknown>` fallback.
+
+**Apply:** for any producer-authored styling/config that renders in other
+users' browsers, the model is a closed, server-side-sanitized token vocabulary
+— never raw CSS/HTML/markup on the wire, never client-side sanitization as the
+primary defence. Reuse the verbs (authz-in-context, rate-limit,
+`HardenedCmd`, `Uploads`, `UserSettings`, `*.Wire`), not new nouns. A
+popularity metric is not a refcount — keep lifecycle ops unconditional. A
+fetch-by-URL always needs a rebind-safe SSRF guard on the RESOLVED ip.
+
+_Deploy: **batched, NOT yet shipped.** The REST surface is dormant
+(auth-gated, no cic caller yet), so the tested server increment merges to main
+but nothing deploys until the cic UI sub-task + #291 complete. `mix
+grappa.seed_themes` must run on the target once the feature ships._
