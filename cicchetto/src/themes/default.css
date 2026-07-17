@@ -3709,12 +3709,23 @@ html.resize-dragging * {
   .shell-mobile .mobile-panel-actions {
     display: flex;
     flex-direction: row;
-    justify-content: flex-end;
+    /* #291 — left-align now that the home launcher is the leftmost,
+       always-present affordance (was flex-end when the row held only the
+       optional archive/settings/admin launchers). */
+    justify-content: flex-start;
     gap: 0.5rem;
     padding: 0.5rem;
     border-top: 1px solid var(--border);
     background: var(--bg-alt);
     flex-shrink: 0;
+  }
+
+  /* #291 — enlarge ONLY the drawer-footer launchers to proper mobile tap
+     targets (≥44px). Scoped to `.mobile-panel-actions` so the top
+     ShellChrome bar's `.shell-chrome-btn` (same class) is untouched. */
+  .shell-mobile .mobile-panel-actions .shell-chrome-btn {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
   }
 
   .shell-drawer-backdrop {

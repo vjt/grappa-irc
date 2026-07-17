@@ -78,3 +78,16 @@ export function openAdminPanel(setters: MobilePanelSetters, navigate: () => void
   setArchiveModalNetwork(null);
   navigate();
 }
+
+// #291 — home launcher in the mobile drawer footer. Mobile narrow layout
+// has no other way back to the home window (desktop has the sidebar home
+// link). Same selection-driven, mutex shape as `openAdminPanel`: close
+// the three sibling surfaces, then delegate the selection change via the
+// `navigate` thunk (Shell sets `selectedChannel` → kind "home"). No new
+// signal — the selection store already carries this state.
+export function openHomePanel(setters: MobilePanelSetters, navigate: () => void): void {
+  setters.setMembersOpen(false);
+  setters.setSettingsOpen(false);
+  setArchiveModalNetwork(null);
+  navigate();
+}

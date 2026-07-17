@@ -33,6 +33,7 @@ import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import {
   openAdminPanel,
   openArchivePanel,
+  openHomePanel,
   openSettingsPanel,
   toggleMembersPanel,
 } from "./lib/mobilePanel";
@@ -873,6 +874,27 @@ const Shell: Component = () => {
               context — same `archiveSlugForSelection()` rule that
               gates the standalone ShellChrome archive button. */}
           <footer class="mobile-panel-actions">
+            {/* #291 — home launcher. Mobile narrow layout has no other way
+                back to the home window (desktop has the sidebar home link).
+                Always visible, leftmost (footer left-aligns per #291);
+                selection-driven dispatch mirrors the admin launcher. */}
+            <button
+              type="button"
+              class="shell-chrome-btn shell-chrome-home"
+              aria-label="open home"
+              data-testid="mobile-panel-home"
+              onClick={() =>
+                openHomePanel({ membersOpen, setMembersOpen, setSettingsOpen }, () =>
+                  setSelectedChannel({
+                    networkSlug: HOME_WINDOW_SLUG,
+                    channelName: HOME_WINDOW_NAME,
+                    kind: "home",
+                  }),
+                )
+              }
+            >
+              {"\u{1F3E0}"}
+            </button>
             <Show when={archiveSlugForSelection()}>
               {(slug) => (
                 <button
