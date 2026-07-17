@@ -112,6 +112,15 @@ config :phoenix, :json_library, Jason
 # in `Grappa.Application.start/2` and injected as the cache's resolver.
 config :grappa, :vhost_ptr_resolver, &Grappa.PtrTestResolver.resolve/1
 
+# #75 — theme image pipeline test seams. `image_fetcher` → a Mox mock so
+# `Grappa.Themes.BackgroundImage`'s URL path never opens a real socket.
+# `image_ssrf_resolver` → a resolver that treats loopback as safe (so the
+# Req-impl tests can reach a Bypass server) while delegating every other host
+# to the real `Grappa.Net.Ssrf` guard, keeping the block path honest.
+config :grappa, :themes,
+  image_fetcher: Grappa.Themes.ImageFetcherMock,
+  image_ssrf_resolver: Grappa.Themes.ImageFetcher.TestResolver
+
 # Visitor self-service config (cluster visitor-auth, Task 9). The per-IP
 # cap is kept low so the cap-exceeded test path stays cheap (provision 2
 # → 3rd fails). #211 phase 3 — the `:visitor_network` slug pin is gone;

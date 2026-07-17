@@ -18,3 +18,4 @@
 ExUnit.start(capture_log: true)
 Ecto.Adapters.SQL.Sandbox.mode(Grappa.Repo, :manual)
 Mox.defmock(Grappa.Admission.CaptchaMock, for: Grappa.Admission.Captcha)
+Mox.defmock(Grappa.Themes.ImageFetcherMock, for: Grappa.Themes.ImageFetcher)
