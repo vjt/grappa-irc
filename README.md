@@ -172,6 +172,18 @@ bin/grappa create-user --name vjt --password '…' --admin
 
 After that, promote/demote everyone else from the **Admin → Users** tab. (To promote an already-existing user from the shell: `bin/grappa remote-shell --batch -e 'Grappa.Accounts.get_user_by_name!("vjt") |> Grappa.Accounts.update_admin_flags(%{is_admin: true})'`.)
 
+### Themes
+
+irssi-style theming as a first-class feature (Settings → themes, or the 🎨 launcher in the mobile hamburger footer):
+
+- **Gallery** — browse the built-in curated schemes (solarized / gruvbox / nord / dracula / …, seeded by `mix grappa.seed_themes`) plus anything users publish. Each card is a derived palette-swatch preview (no stored screenshot). **Apply** activates a theme; the active theme is **server-owned** (`PUT /me/theme`) so it follows you across devices.
+- **Editor** — a covering overlay with **live preview**: color pickers per token (base / mode / 16-slot nick palette), a curated font family, and a background image. Every change re-paints the app in real time; **Save** persists your own copy (create or edit), Cancel restores the pre-open theme. Editing always saves a copy — no copy-on-write, no shared state.
+- **Share** — **publish** your copy into the gallery for others to pick, or share a published entry by id (`/theme/<id>`); the recipient copies it into their own account. **Delete** your copies freely (everyone else already has their own). Owners edit/delete their own; admins moderate any entry.
+- **Fonts** — a curated, **self-hosted** monospace set (JetBrains Mono, Fira Code, Source Code Pro, IBM Plex Mono, Cascadia Code, Hack). No runtime CDN/Google-Fonts fetch — the woff2 are served from our own origin (a remote webfont would be a per-render tracking beacon).
+- **Background** — upload an image (or fetch by URL); it's re-encoded + re-hosted server-side (raster only, no SVG, EXIF stripped, SSRF-guarded) and painted as a wallpaper behind the message list at a user-configurable opacity.
+
+Security by construction: a theme is a **closed set of tokens** (palette + font-id + background), never raw CSS — the renderer only ever consumes the sanitized model, so a published theme can't smuggle CSS/JS or a tracking `url()`.
+
 ## REST + events surface
 
 REST carries resources (id-addressed); state changes push over Channels. The main families: `POST /auth/login` + `/auth/logout`; `/me`; `/networks` (CRUD, plus `PATCH` to flip `connection_state` between `connected`/`parked` — subject-agnostic: users AND visitors park/reconnect each network the same way; `PATCH /networks/:id/identity` sets per-network IRC nick/ident/realname, live-applied via an internal reconnect); `POST /session/networks` (a visitor one-tap-connects an additional `visitor_enabled` network — accretion); `/networks/:id/channels` (join / part / topic); `/channels/:id/messages` (paginated `GET`, `POST` to send); `/channels/:id/members`; `/channels/:id/read-cursor`; `/networks/:id/archive`; `/settings`; `/uploads`; `/push/subscriptions`; and `WS /socket/websocket`. The router (`lib/grappa_web/router.ex`) is the source of truth; a published OpenAPI schema is a pre-PUBLIC-OPEN deliverable.
