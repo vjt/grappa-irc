@@ -64,12 +64,17 @@ defmodule Grappa.Uploads do
 
   ## Boundary
 
-  Deps: `Grappa.Repo`, `Grappa.Subject`. NOT `Grappa.ServerSettings`
-  (caps are passed in by the controller — Uploads context is pure
-  persistence + filesystem; cap policy lives at the boundary).
+  Deps: `Grappa.Repo`, `Grappa.Subject`, `Grappa.Sys.HardenedCmd`
+  (`MetadataStrip` shells out through the shared hardened runner). NOT
+  `Grappa.ServerSettings` (caps are passed in by the controller —
+  Uploads context is pure persistence + filesystem; cap policy lives at
+  the boundary).
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.Repo, Grappa.Subject], exports: [Upload]
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Repo, Grappa.Subject, Grappa.Sys.HardenedCmd],
+    exports: [Upload]
 
   import Ecto.Query
 

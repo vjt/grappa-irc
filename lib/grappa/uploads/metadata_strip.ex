@@ -162,55 +162,36 @@ defmodule Grappa.Uploads.MetadataStrip do
     end
   end
 
-  # The tools parse HOSTILE user bytes and exiftool has an RCE
-  # history (CVE-2021-22204) — a compromised child must not find the
-  # deployment's secrets in its environment. ALLOWLIST, not denylist:
-  # the child keeps only what a media tool needs, so a secret added
-  # to the deployment tomorrow cannot leak by omission. `{name, nil}`
-  # REMOVES the variable (vs `env: []`, which only adds nothing).
-  @kept_env ~w(PATH HOME LANG LC_ALL TMPDIR)
-
-  defp scrubbed_env do
-    for {name, _} <- System.get_env(), name not in @kept_env, do: {name, nil}
-  end
-
   # Hard wall-clock ceiling on the child: a pathological crafted file
   # that wedges ffmpeg/exiftool must not pin the request process (and
-  # the OS child) forever — System.cmd/3 itself has no timeout.
-  # timeout(1) ships in busybox (alpine container) AND FreeBSD base
-  # (m42 jail). SIGKILL directly: the tools are stateless over our
-  # tmp files, nothing graceful to preserve.
+  # the OS child) forever. The timeout + env-scrub + exit-code mapping
+  # is the shared `Grappa.Sys.HardenedCmd` hardening (also used by the
+  # #75 theme background re-encode); this module keeps only the
+  # strip-domain error mapping.
   @tool_timeout_seconds 30
-  # GNU/busybox/FreeBSD timeout exit codes for an expired child:
-  # 124 (TERM default) / 137 (128+9 when -s KILL delivered).
-  @timeout_exit_codes [124, 137]
 
   defp run_tool(tool, in_path, out_path, mime) do
     exe_name = exe_name(tool)
 
-    with {:ok, timeout_exe} <- find_exe("timeout", "part of busybox / FreeBSD base", mime),
-         {:ok, _} <- find_exe(exe_name, install_hint(tool), mime) do
-      argv =
-        ["-s", "KILL", Integer.to_string(@tool_timeout_seconds), exe_name] ++
-          args(tool, in_path, out_path, mime)
+    case Grappa.Sys.HardenedCmd.run(
+           exe_name,
+           args(tool, in_path, out_path, mime),
+           @tool_timeout_seconds
+         ) do
+      {:ok, _output} ->
+        :ok
 
-      case System.cmd(timeout_exe, argv, env: scrubbed_env(), stderr_to_stdout: true) do
-        {_, 0} ->
-          :ok
+      {:error, {:exe_not_found, "timeout"}} ->
+        strip_error(mime, "timeout not found on PATH — part of busybox / FreeBSD base")
 
-        {_, code} when code in @timeout_exit_codes ->
-          strip_error(mime, "#{exe_name} timed out after #{@tool_timeout_seconds}s")
+      {:error, {:exe_not_found, name}} ->
+        strip_error(mime, "#{name} not found on PATH — #{install_hint(tool)}")
 
-        {output, code} ->
-          strip_error(mime, "#{exe_name} exit #{code}: #{String.trim(output)}")
-      end
-    end
-  end
+      {:error, :timeout} ->
+        strip_error(mime, "#{exe_name} timed out after #{@tool_timeout_seconds}s")
 
-  defp find_exe(name, hint, mime) do
-    case System.find_executable(name) do
-      nil -> strip_error(mime, "#{name} not found on PATH — #{hint}")
-      exe -> {:ok, exe}
+      {:error, {:exit, code, output}} ->
+        strip_error(mime, "#{exe_name} exit #{code}: #{output}")
     end
   end
 
