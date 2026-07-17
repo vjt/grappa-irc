@@ -52,6 +52,8 @@ defmodule Grappa.UserSettings do
   |                        |                        | `put_upload_ttl_seconds/2`      |
   | `"vhost_selection"`    | `list(String.t())`     | `get_vhost_selection/1`,        |
   |                        |                        | `put_vhost_selection/2`         |
+  | `"active_theme_id"`    | `pos_integer() \\| nil`| `get_active_theme_id/1`,        |
+  |                        |                        | `put_active_theme_id/2`         |
 
   ## Boundary
 
@@ -101,6 +103,7 @@ defmodule Grappa.UserSettings do
   @notification_prefs_key "notification_prefs"
   @upload_ttl_seconds_key "upload_ttl_seconds"
   @vhost_selection_key "vhost_selection"
+  @active_theme_id_key "active_theme_id"
 
   # Upper bound for upload_ttl_seconds: one year. Image hosts (litterbox,
   # 0x0.st) cap at days; nobody legitimately wants a year-long TTL token
@@ -458,6 +461,69 @@ defmodule Grappa.UserSettings do
 
       {:error, cs}
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # active_theme_id accessor (#75 themes)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Returns the subject's active theme id (the `themes.id` pointer), or `nil`
+  when no row exists, the key is absent, or the stored value is malformed.
+
+  `nil` means "no theme chosen" — the caller
+  (`Grappa.Themes.get_active_theme/1`) falls back to the client/default look.
+  Reads with the string key (`:map` JSON round-trip).
+  """
+  @spec get_active_theme_id(Subject.t()) :: pos_integer() | nil
+  def get_active_theme_id({_, _} = subject) do
+    case fetch_existing_or_nil(subject) do
+      nil ->
+        nil
+
+      %Settings{data: data} ->
+        case data[@active_theme_id_key] do
+          n when is_integer(n) and n > 0 -> n
+          _ -> nil
+        end
+    end
+  end
+
+  @doc """
+  Sets the subject's active theme id (a positive `themes.id`), or clears it
+  with `nil`. Preserves other keys in `data` (merge semantics). Validates the
+  id is `nil` or a positive integer; confirming that the id references a
+  readable theme is the caller's job (`Grappa.Themes.set_active_theme/2`).
+  """
+  @spec put_active_theme_id(Subject.t(), pos_integer() | nil) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t()}
+  def put_active_theme_id({_, _} = subject, id) do
+    with :ok <- validate_active_theme_id(id, subject),
+         {:ok, settings} <- get_or_init(subject) do
+      merged_data =
+        case id do
+          nil -> Map.delete(settings.data, @active_theme_id_key)
+          n -> Map.put(settings.data, @active_theme_id_key, n)
+        end
+
+      cs = Settings.changeset(settings, %{data: merged_data})
+      Repo.update(cs)
+    end
+  end
+
+  @spec validate_active_theme_id(term(), Subject.t()) :: :ok | {:error, Ecto.Changeset.t()}
+  defp validate_active_theme_id(nil, _), do: :ok
+  defp validate_active_theme_id(n, _) when is_integer(n) and n > 0, do: :ok
+
+  defp validate_active_theme_id(_, subject) do
+    attrs = Subject.put_subject_id(%{data: %{}}, subject)
+
+    cs =
+      %Settings{}
+      |> Settings.changeset(attrs)
+      |> Ecto.Changeset.add_error(:active_theme_id, "must be a positive integer or null")
+
+    {:error, cs}
   end
 
   # ---------------------------------------------------------------------------
