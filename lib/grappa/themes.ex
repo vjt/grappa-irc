@@ -26,7 +26,15 @@ defmodule Grappa.Themes do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Net.Ssrf, Grappa.RateLimit, Grappa.Repo],
+    deps: [
+      Grappa.Accounts,
+      Grappa.Net.Ssrf,
+      Grappa.RateLimit,
+      Grappa.Repo,
+      Grappa.Subject,
+      Grappa.Sys.HardenedCmd,
+      Grappa.Uploads
+    ],
     dirty_xrefs: [Grappa.Visitors.Visitor],
     exports: [Theme, TokenModel]
 
