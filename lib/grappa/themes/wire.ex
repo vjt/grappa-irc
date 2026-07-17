@@ -25,9 +25,12 @@ defmodule Grappa.Themes.Wire do
   alias Grappa.Themes.Theme
   alias Grappa.Visitors.Visitor
 
-  @typedoc "The rich viewer subject (as carried in `conn.assigns.current_subject`)."
-  @type viewer :: {:user, User.t()} | {:visitor, Visitor.t()} | nil
-
+  # The rich viewer subject (as carried in `conn.assigns.current_subject`) is
+  # inlined into `to_wire/2`'s spec rather than exposed as a public `@type` — a
+  # named type would make `grappa.gen_wire_types` emit a `ThemesWireViewer` TS
+  # type that drags the full `User`/`Visitor` structs (password_hash included)
+  # into the client wire-types file. Only `t/0` — the actual wire shape — is a
+  # public type.
   @type t :: %{
           id: integer(),
           name: String.t(),
@@ -44,7 +47,7 @@ defmodule Grappa.Themes.Wire do
   Render one `%Theme{}` (owner preloaded) to the wire shape, from `viewer`'s
   perspective (drives the derived `mine` flag).
   """
-  @spec to_wire(Theme.t(), viewer()) :: t()
+  @spec to_wire(Theme.t(), {:user, User.t()} | {:visitor, Visitor.t()} | nil) :: t()
   def to_wire(%Theme{owner: %User{} = owner} = theme, viewer) do
     %{
       id: theme.id,
@@ -61,5 +64,5 @@ defmodule Grappa.Themes.Wire do
 
   # A theme is `mine` only for the user who owns it — visitors own nothing.
   defp mine?(%Theme{owner_id: owner_id}, {:user, %User{id: owner_id}}), do: true
-  defp mine?(%Theme{}, _viewer), do: false
+  defp mine?(%Theme{}, _), do: false
 end

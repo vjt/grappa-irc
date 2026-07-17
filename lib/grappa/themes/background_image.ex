@@ -27,11 +27,11 @@ defmodule Grappa.Themes.BackgroundImage do
 
   Returns `{:ok, slug}` or a tagged `{:error, reason}`; never raises.
   """
-  require Logger
-
   alias Grappa.Sys.HardenedCmd
   alias Grappa.Themes.ImageFetcher
   alias Grappa.Uploads
+
+  require Logger
 
   # Consumed by Sobelow (the tmp round-trip touches File.*); registered so the
   # unused-attribute warning doesn't trip --warnings-as-errors (mirrors
@@ -63,7 +63,7 @@ defmodule Grappa.Themes.BackgroundImage do
     # guard; its errors (`:ssrf_blocked | :not_raster | :too_large |
     # :fetch_failed`) are all in our error set, so they propagate as-is.
     case fetcher().fetch(url) do
-      {:ok, bytes, _content_type} -> {:ok, bytes}
+      {:ok, bytes, _} -> {:ok, bytes}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -102,7 +102,7 @@ defmodule Grappa.Themes.BackgroundImage do
   defp validate_raster(_), do: {:error, :not_raster}
 
   defp validate_size(bytes) when byte_size(bytes) > @max_bytes, do: {:error, :too_large}
-  defp validate_size(_bytes), do: :ok
+  defp validate_size(_), do: :ok
 
   # The path is Plug-managed (a multipart temp file), not a user-controlled
   # string — same provenance as UploadsController's read of the upload.
@@ -110,7 +110,7 @@ defmodule Grappa.Themes.BackgroundImage do
   defp read_upload(path) do
     case File.read(path) do
       {:ok, bytes} -> {:ok, bytes}
-      {:error, _posix} -> {:error, :image_reencode_failed}
+      {:error, _} -> {:error, :image_reencode_failed}
     end
   end
 
@@ -138,7 +138,7 @@ defmodule Grappa.Themes.BackgroundImage do
   defp write_tmp(path, bytes) do
     case File.write(path, bytes) do
       :ok -> :ok
-      {:error, _posix} -> {:error, :image_reencode_failed}
+      {:error, _} -> {:error, :image_reencode_failed}
     end
   end
 
@@ -146,7 +146,7 @@ defmodule Grappa.Themes.BackgroundImage do
   defp read_tmp(path) do
     case File.read(path) do
       {:ok, png} -> {:ok, png}
-      {:error, _posix} -> {:error, :image_reencode_failed}
+      {:error, _} -> {:error, :image_reencode_failed}
     end
   end
 
@@ -171,8 +171,8 @@ defmodule Grappa.Themes.BackgroundImage do
     ]
 
     case HardenedCmd.run("ffmpeg", args, @reencode_timeout_s) do
-      {:ok, _output} -> :ok
-      {:error, _reason} -> {:error, :image_reencode_failed}
+      {:ok, _} -> :ok
+      {:error, _} -> {:error, :image_reencode_failed}
     end
   end
 

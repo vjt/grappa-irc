@@ -317,6 +317,12 @@ defmodule Mix.Tasks.Grappa.GenWireTypes do
           nil
           | [nil | [nil | [any(), ...] | {atom(), any(), any()}, ...] | {atom(), any(), any()}, ...]
           | {atom(), any(), any()}
+  # Bare `map()` — the Erlang abstract form carries `:any` (not `[]`) as its
+  # field spec. Route it straight to the empty-map shape so `do_render/1` emits
+  # `Record<string, unknown>` (the documented bare-map fallback) instead of
+  # `strip_map/1` crashing on `Enum.all?(:any, …)`. A typed `%{...}` map still
+  # carries a LIST of fields and falls through to the clause below.
+  defp strip_typespec_metadata({:type, _, :map, :any}), do: {:map, [], []}
   defp strip_typespec_metadata({:type, _, :map, fields}), do: strip_map(fields)
   defp strip_typespec_metadata({:atom, _, value}) when is_atom(value), do: {:atom, [], [value]}
 

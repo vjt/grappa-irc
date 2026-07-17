@@ -56,7 +56,7 @@ defmodule Grappa.Themes.ImageFetcher.Req do
   end
 
   defp get(uri, ip) do
-    target = %{uri | host: ip_host(ip)} |> URI.to_string()
+    target = URI.to_string(%{uri | host: ip_host(ip)})
 
     opts = [
       redirect: false,
@@ -130,5 +130,5 @@ defmodule Grappa.Themes.ImageFetcher.Req do
   defp connect_options(%URI{scheme: "https", host: host}),
     do: [timeout: @connect_timeout_ms, hostname: host]
 
-  defp connect_options(_uri), do: [timeout: @connect_timeout_ms]
+  defp connect_options(_), do: [timeout: @connect_timeout_ms]
 end

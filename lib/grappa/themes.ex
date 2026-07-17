@@ -41,13 +41,17 @@ defmodule Grappa.Themes do
 
   import Ecto.Query
 
-  alias Grappa.Accounts.User
-  alias Grappa.RateLimit.DailyQuota
-  alias Grappa.Repo
-  alias Grappa.Subject
-  alias Grappa.Themes.{BackgroundImage, Builtins, Theme}
-  alias Grappa.UserSettings
-  alias Grappa.Visitors.Visitor
+  alias Grappa.{
+    Accounts.User,
+    RateLimit.DailyQuota,
+    Repo,
+    Subject,
+    Themes.BackgroundImage,
+    Themes.Builtins,
+    Themes.Theme,
+    UserSettings,
+    Visitors.Visitor
+  }
 
   @system_user_name "system"
   @daily_quota Application.compile_env(:grappa, [:themes, :daily_quota], 5)
@@ -70,8 +74,8 @@ defmodule Grappa.Themes do
     Theme
     |> where([t], t.published == true)
     |> order_by([t], desc: t.apply_count, asc: t.name)
+    |> preload(:owner)
     |> Repo.all()
-    |> Repo.preload(:owner)
   end
 
   @doc "The caller's own theme library. Visitors own nothing."
@@ -80,8 +84,8 @@ defmodule Grappa.Themes do
     Theme
     |> where([t], t.owner_id == ^user_id)
     |> order_by([t], asc: t.name)
+    |> preload(:owner)
     |> Repo.all()
-    |> Repo.preload(:owner)
   end
 
   def list_owned({:visitor, %Visitor{}}), do: []
@@ -114,7 +118,7 @@ defmodule Grappa.Themes do
     end
   end
 
-  def create_theme({:visitor, %Visitor{}}, _attrs), do: {:error, :forbidden}
+  def create_theme({:visitor, %Visitor{}}, _), do: {:error, :forbidden}
 
   @doc "Edit a theme (owner or admin)."
   @spec update_theme(subject(), integer(), map()) ::
@@ -175,7 +179,7 @@ defmodule Grappa.Themes do
     end
   end
 
-  def copy_theme({:visitor, %Visitor{}}, _id), do: {:error, :forbidden}
+  def copy_theme({:visitor, %Visitor{}}, _), do: {:error, :forbidden}
 
   @doc """
   Resolve the subject's active theme (server-persisted per-subject pointer,
@@ -208,7 +212,7 @@ defmodule Grappa.Themes do
           {:ok, Theme.t()} | {:error, :not_found | Ecto.Changeset.t()}
   def set_active_theme(subject, id) when is_integer(id) do
     with {:ok, theme} <- get_theme(id),
-         {:ok, _settings} <- UserSettings.put_active_theme_id(subject, id) do
+         {:ok, _} <- UserSettings.put_active_theme_id(subject, id) do
       {:ok, theme}
     end
   end
@@ -262,7 +266,7 @@ defmodule Grappa.Themes do
   # non-admin against a system-owned built-in): forbidden.
   defp authorize({:user, %User{is_admin: true}}, %Theme{}), do: :ok
   defp authorize({:user, %User{id: id}}, %Theme{owner_id: id}), do: :ok
-  defp authorize(_subject, %Theme{}), do: {:error, :forbidden}
+  defp authorize(_, %Theme{}), do: {:error, :forbidden}
 
   defp check_quota(%User{id: user_id}) do
     DailyQuota.check_and_record(@quota_bucket, {:user, user_id}, @daily_quota)
@@ -278,13 +282,13 @@ defmodule Grappa.Themes do
       |> Repo.all()
       |> MapSet.new()
 
-    if MapSet.member?(taken, base) do
-      Enum.find_value(2..999, base, fn n ->
-        candidate = "#{base} (#{n})"
-        if MapSet.member?(taken, candidate), do: nil, else: candidate
-      end)
-    else
-      base
-    end
+    if MapSet.member?(taken, base), do: first_free_suffix(base, taken), else: base
+  end
+
+  defp first_free_suffix(base, taken) do
+    Enum.find_value(2..999, base, fn n ->
+      candidate = "#{base} (#{n})"
+      if MapSet.member?(taken, candidate), do: nil, else: candidate
+    end)
   end
 end

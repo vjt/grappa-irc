@@ -4,11 +4,7 @@ defmodule Grappa.ThemesTest do
   import Grappa.AuthFixtures
   import Grappa.UploadFixtures, only: [bytes: 1]
 
-  alias Grappa.Repo
-  alias Grappa.Themes
-  alias Grappa.Themes.{Theme, TokenModel}
-  alias Grappa.Uploads
-  alias Grappa.Visitors.Visitor
+  alias Grappa.{Repo, Themes, Themes.Theme, Themes.TokenModel, Uploads, Visitors.Visitor}
 
   defp valid_payload do
     %{
@@ -144,7 +140,7 @@ defmodule Grappa.ThemesTest do
       {:ok, _} = Themes.publish_theme({:user, owner}, pub.id)
       builtin = seed_builtin()
 
-      ids = Themes.list_gallery() |> Enum.map(& &1.id)
+      ids = Enum.map(Themes.list_gallery(), & &1.id)
       assert pub.id in ids
       assert builtin.id in ids
       refute draft.id in ids
@@ -155,7 +151,7 @@ defmodule Grappa.ThemesTest do
       {:ok, pub} = Themes.create_theme({:user, owner}, %{name: "Pub", payload: valid_payload()})
       {:ok, _} = Themes.publish_theme({:user, owner}, pub.id)
       {:ok, _} = Themes.unpublish_theme({:user, owner}, pub.id)
-      refute pub.id in (Themes.list_gallery() |> Enum.map(& &1.id))
+      refute pub.id in Enum.map(Themes.list_gallery(), & &1.id)
     end
   end
 
@@ -200,7 +196,7 @@ defmodule Grappa.ThemesTest do
       other = user_fixture()
       {:ok, mine} = Themes.create_theme({:user, me}, %{name: "Mine", payload: valid_payload()})
       {:ok, _} = Themes.create_theme({:user, other}, %{name: "Theirs", payload: valid_payload()})
-      ids = Themes.list_owned({:user, me}) |> Enum.map(& &1.id)
+      ids = Enum.map(Themes.list_owned({:user, me}), & &1.id)
       assert ids == [mine.id]
     end
 

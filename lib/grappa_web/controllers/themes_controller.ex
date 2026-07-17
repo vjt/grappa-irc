@@ -35,18 +35,21 @@ defmodule GrappaWeb.ThemesController do
   alias Grappa.{Subject, Themes}
   alias Grappa.Themes.Wire
 
+  @doc false
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def index(conn, _params) do
+  def index(conn, _) do
     viewer = conn.assigns.current_subject
     json(conn, %{themes: Enum.map(Themes.list_gallery(), &Wire.to_wire(&1, viewer))})
   end
 
+  @doc false
   @spec mine(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def mine(conn, _params) do
+  def mine(conn, _) do
     viewer = conn.assigns.current_subject
     json(conn, %{themes: Enum.map(Themes.list_owned(viewer), &Wire.to_wire(&1, viewer))})
   end
 
+  @doc false
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found}
   def show(conn, %{"id" => id}) do
     viewer = conn.assigns.current_subject
@@ -57,6 +60,7 @@ defmodule GrappaWeb.ThemesController do
     end
   end
 
+  @doc false
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :rate_limited | :forbidden | Ecto.Changeset.t()}
   def create(conn, params) do
@@ -67,6 +71,7 @@ defmodule GrappaWeb.ThemesController do
     end
   end
 
+  @doc false
   @spec update(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :not_found | :forbidden | Ecto.Changeset.t()}
   def update(conn, %{"id" => id} = params) do
@@ -78,6 +83,7 @@ defmodule GrappaWeb.ThemesController do
     end
   end
 
+  @doc false
   @spec delete(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found | :forbidden}
   def delete(conn, %{"id" => id}) do
     viewer = conn.assigns.current_subject
@@ -88,12 +94,15 @@ defmodule GrappaWeb.ThemesController do
     end
   end
 
+  @doc false
   @spec publish(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found | :forbidden}
   def publish(conn, %{"id" => id}), do: set_published(conn, id, &Themes.publish_theme/2)
 
+  @doc false
   @spec unpublish(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found | :forbidden}
   def unpublish(conn, %{"id" => id}), do: set_published(conn, id, &Themes.unpublish_theme/2)
 
+  @doc false
   @spec copy(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :not_found | :forbidden | :rate_limited}
   def copy(conn, %{"id" => id}) do
@@ -105,11 +114,10 @@ defmodule GrappaWeb.ThemesController do
     end
   end
 
+  @doc false
   @spec background(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
-          | {:error,
-             :bad_request | :not_raster | :too_large | :ssrf_blocked | :fetch_failed
-             | :image_reencode_failed}
+          | {:error, :bad_request | :not_raster | :too_large | :ssrf_blocked | :fetch_failed | :image_reencode_failed}
   def background(conn, %{"file" => %Plug.Upload{} = upload}) do
     store_background(conn, {:upload, upload})
   end
@@ -118,7 +126,7 @@ defmodule GrappaWeb.ThemesController do
     store_background(conn, {:url, url})
   end
 
-  def background(_conn, _params), do: {:error, :bad_request}
+  def background(_, _), do: {:error, :bad_request}
 
   ## Internals
 

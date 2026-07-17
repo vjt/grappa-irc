@@ -111,7 +111,7 @@ defmodule Grappa.Themes.TokenModel do
   # Collect-or-bail over the closed key set: every color key must be present and
   # valid; unknown keys in the input are never read, so they cannot ride through.
   defp sanitize_colors(colors), do: sanitize_colors(@color_keys, colors, [])
-  defp sanitize_colors([], _colors, acc), do: {:ok, Map.new(acc)}
+  defp sanitize_colors([], _, acc), do: {:ok, Map.new(acc)}
 
   defp sanitize_colors([key | rest], colors, acc) do
     with {:ok, raw} <- Map.fetch(colors, key),

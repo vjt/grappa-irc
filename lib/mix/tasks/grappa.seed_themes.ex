@@ -25,7 +25,7 @@ defmodule Mix.Tasks.Grappa.SeedThemes do
   alias Mix.Tasks.Grappa.Boot
 
   @impl Mix.Task
-  def run(_args) do
+  def run(_) do
     Boot.start_app_silent()
     count = Themes.seed_builtins()
     IO.puts("seeded #{count} curated built-in themes (owner=#{Themes.system_user_name()})")

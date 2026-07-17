@@ -18,8 +18,9 @@ defmodule GrappaWeb.MeThemeController do
   alias Grappa.{Subject, Themes}
   alias Grappa.Themes.Wire
 
+  @doc false
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def show(conn, _params) do
+  def show(conn, _) do
     viewer = conn.assigns.current_subject
     subject = Subject.from_assigns(conn.assigns)
 
@@ -29,6 +30,7 @@ defmodule GrappaWeb.MeThemeController do
     end
   end
 
+  @doc false
   @spec update(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request | :not_found | Ecto.Changeset.t()}
   def update(conn, %{"id" => id}) do
@@ -42,7 +44,7 @@ defmodule GrappaWeb.MeThemeController do
     end
   end
 
-  def update(_conn, _params), do: {:error, :bad_request}
+  def update(_, _), do: {:error, :bad_request}
 
   defp parse_id(id) when is_integer(id), do: {:ok, id}
 

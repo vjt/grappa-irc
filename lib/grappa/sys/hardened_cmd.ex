@@ -57,7 +57,7 @@ defmodule Grappa.Sys.HardenedCmd do
 
       case System.cmd(timeout_exe, argv, env: scrubbed_env(), stderr_to_stdout: true) do
         {output, 0} -> {:ok, output}
-        {_output, code} when code in @timeout_exit_codes -> {:error, :timeout}
+        {_, code} when code in @timeout_exit_codes -> {:error, :timeout}
         {output, code} -> {:error, {:exit, code, String.trim(output)}}
       end
     end
@@ -66,7 +66,7 @@ defmodule Grappa.Sys.HardenedCmd do
   defp find_exe(name) do
     case System.find_executable(name) do
       nil -> {:error, {:exe_not_found, name}}
-      _exe -> {:ok, name}
+      _ -> {:ok, name}
     end
   end
 

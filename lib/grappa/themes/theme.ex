@@ -35,6 +35,12 @@ defmodule Grappa.Themes.Theme do
     timestamps(type: :utc_datetime_usec)
   end
 
+  @doc """
+  Build a theme changeset. Casts `name`/`owner_id`/`payload`/`published`,
+  requires the first three, bounds the name to 1..60 chars, and runs `payload`
+  through `TokenModel.sanitize/1` — an unsanitizable payload becomes a
+  `:payload` error, and a valid one is REPLACED in-place by its canonical form.
+  """
   @spec changeset(t() | %__MODULE__{}, map()) :: Ecto.Changeset.t()
   def changeset(theme, attrs) do
     theme

@@ -13,9 +13,7 @@ defmodule GrappaWeb.ThemesControllerTest do
   import Grappa.AuthFixtures
   import Grappa.UploadFixtures, only: [bytes: 1]
 
-  alias Grappa.Themes
-  alias Grappa.Themes.TokenModel
-  alias Grappa.Uploads
+  alias Grappa.{Themes, Themes.TokenModel, Uploads}
 
   defp valid_payload do
     %{
@@ -133,6 +131,7 @@ defmodule GrappaWeb.ThemesControllerTest do
     test "403 for a non-owner", %{conn: conn} do
       owner = user_fixture()
       {:ok, theme} = Themes.create_theme({:user, owner}, %{name: "A", payload: valid_payload()})
+
       assert json_response(patch(conn, "/themes/#{theme.id}", %{"name" => "B"}), 403) ==
                %{"error" => "forbidden"}
     end
@@ -172,7 +171,7 @@ defmodule GrappaWeb.ThemesControllerTest do
 
   describe "POST /themes/background" do
     setup %{conn: conn} do
-      {_user, session} = user_and_session()
+      {_, session} = user_and_session()
       {:ok, conn: put_bearer(conn, session.id)}
     end
 

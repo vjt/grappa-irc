@@ -24,6 +24,12 @@ defmodule Grappa.Net.Ssrf do
 
   import Bitwise, only: [band: 2, bsr: 2]
 
+  @doc """
+  Is `ip` a routable public address (true) or an
+  internal/loopback/link-local/metadata/reserved one that must never be dialled
+  (false)? v4-mapped + NAT64 v6 forms are decoded and re-checked against the v4
+  rules so an embedded loopback can't slip past a naive v6 check.
+  """
   @spec safe_public_ip?(:inet.ip_address()) :: boolean()
   def safe_public_ip?({a, b, c, d}), do: safe_v4?(a, b, c, d)
 
@@ -35,6 +41,13 @@ defmodule Grappa.Net.Ssrf do
 
   def safe_public_ip?({a, b, c, d, e, f, g, h}), do: safe_v6?(a, b, c, d, e, f, g, h)
 
+  @doc """
+  Resolve `host` (or accept an IP literal) and return a single safe IP, or
+  `{:error, :ssrf_blocked | :dns_error}`. Rebind-conservative: if ANY resolved
+  address is unsafe, the whole host is blocked. The caller MUST dial the
+  returned IP (not the hostname) so a DNS-rebind between check and connect
+  cannot swing onto an internal address.
+  """
   @spec resolve_safe(String.t()) :: {:ok, :inet.ip_address()} | {:error, :ssrf_blocked | :dns_error}
   def resolve_safe(host) when is_binary(host) do
     case parse_literal(host) do
@@ -43,30 +56,28 @@ defmodule Grappa.Net.Ssrf do
     end
   end
 
-  ## IPv4 ranges
+  ## IPv4 ranges — blocked ranges match to `false`, everything else is public.
+  ## Pattern clauses (not one big `cond`) keep each clause's cyclomatic
+  ## complexity trivial and read as a plain blocklist.
 
-  defp safe_v4?(a, b, c, _d) do
-    cond do
-      a == 0 -> false
-      a == 10 -> false
-      a == 100 and b in 64..127 -> false
-      a == 127 -> false
-      a == 169 and b == 254 -> false
-      a == 172 and b in 16..31 -> false
-      a == 192 and b == 0 and c == 0 -> false
-      a == 192 and b == 168 -> false
-      a == 198 and b in 18..19 -> false
-      a >= 224 -> false
-      true -> true
-    end
-  end
+  defp safe_v4?(0, _, _, _), do: false
+  defp safe_v4?(10, _, _, _), do: false
+  defp safe_v4?(100, b, _, _) when b in 64..127, do: false
+  defp safe_v4?(127, _, _, _), do: false
+  defp safe_v4?(169, 254, _, _), do: false
+  defp safe_v4?(172, b, _, _) when b in 16..31, do: false
+  defp safe_v4?(192, 0, 0, _), do: false
+  defp safe_v4?(192, 168, _, _), do: false
+  defp safe_v4?(198, b, _, _) when b in 18..19, do: false
+  defp safe_v4?(a, _, _, _) when a >= 224, do: false
+  defp safe_v4?(_, _, _, _), do: true
 
   ## IPv6 ranges
 
   defp safe_v6?(0, 0, 0, 0, 0, 0, 0, 0), do: false
   defp safe_v6?(0, 0, 0, 0, 0, 0, 0, 1), do: false
 
-  defp safe_v6?(a, b, _c, _d, _e, _f, _g, _h) do
+  defp safe_v6?(a, b, _, _, _, _, _, _) do
     cond do
       band(a, 0xFE00) == 0xFC00 -> false
       band(a, 0xFFC0) == 0xFE80 -> false

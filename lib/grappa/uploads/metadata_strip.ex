@@ -178,7 +178,7 @@ defmodule Grappa.Uploads.MetadataStrip do
            args(tool, in_path, out_path, mime),
            @tool_timeout_seconds
          ) do
-      {:ok, _output} ->
+      {:ok, _} ->
         :ok
 
       {:error, {:exe_not_found, "timeout"}} ->

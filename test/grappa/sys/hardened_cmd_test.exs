@@ -9,7 +9,7 @@ defmodule Grappa.Sys.HardenedCmdTest do
   end
 
   test "maps a non-zero exit to {:exit, code, output}" do
-    assert {:error, {:exit, 3, _output}} = HardenedCmd.run("sh", ["-c", "exit 3"], 5)
+    assert {:error, {:exit, 3, _}} = HardenedCmd.run("sh", ["-c", "exit 3"], 5)
   end
 
   test "kills and reports :timeout when the child overruns its budget" do

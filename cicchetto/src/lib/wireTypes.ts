@@ -910,6 +910,20 @@ export type SessionLogWireListResult = {
   session_log: SessionLogWireT[];
 };
 
+// === Grappa.Themes.Wire ===
+
+export type ThemesWireT = {
+  id: number;
+  name: string;
+  author: string;
+  built_in: boolean;
+  published: boolean;
+  apply_count: number;
+  mine: boolean;
+  payload: Record<string, unknown>;
+  inserted_at: string;
+};
+
 // === Grappa.Visitors.Wire ===
 
 export type VisitorsWireCredentialJson = {

@@ -67,7 +67,7 @@ defmodule Grappa.RateLimit.DailyQuota do
   end
 
   @impl GenServer
-  def handle_call({:check_and_record, key, limit, date}, _from, state) do
+  def handle_call({:check_and_record, key, limit, date}, _, state) do
     count = current_count(key, date)
 
     if count >= limit do

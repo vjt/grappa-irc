@@ -81,6 +81,10 @@ const navigationRoute = new NavigationRoute(navigationHandler, {
     /^\/session/,
     /^\/admin/,
     /^\/uploads/,
+    // #75 themes REST surface. PLURAL only — `/^\/themes/` does NOT match the
+    // singular `/theme/:id` SPA share route (after `/theme` comes `/`, not
+    // `s`), so a shared theme link still resolves to the SPA shell.
+    /^\/themes/,
   ],
 });
 registerRoute(navigationRoute);
