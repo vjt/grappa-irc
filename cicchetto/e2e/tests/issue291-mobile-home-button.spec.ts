@@ -72,7 +72,7 @@ test.describe("#291 — mobile home button in drawer footer", () => {
     await setAdminFlag(admin.token, vjtUserId, false);
   });
 
-  test("@webkit home launcher: all 4 footer buttons ≥44px, tap returns to home", async ({
+  test("@webkit home launcher: all footer buttons ≥44px, tap returns to home", async ({
     page,
   }) => {
     const admin = getSeededAdmin();
@@ -91,15 +91,18 @@ test.describe("#291 — mobile home button in drawer footer", () => {
     const launcherFooter = drawer.locator(".mobile-panel-actions");
     await expect(launcherFooter).toBeVisible();
 
-    // All four launchers present (home is the new one).
+    // All launchers present. #75 + #291 are batched onto this ONE footer,
+    // so an admin in a channel sees FIVE: home (new, #291), archive,
+    // settings, themes (new, #75), admin.
     await expect(launcherFooter.locator("[data-testid='mobile-panel-home']")).toHaveCount(1);
     await expect(launcherFooter.locator("[data-testid='mobile-panel-archive']")).toHaveCount(1);
     await expect(launcherFooter.locator("[data-testid='mobile-panel-settings']")).toHaveCount(1);
+    await expect(launcherFooter.locator("[data-testid='mobile-panel-themes']")).toHaveCount(1);
     await expect(launcherFooter.locator("[data-testid='mobile-panel-admin']")).toHaveCount(1);
 
     // Every launcher is a proper mobile tap target (≥44px, #291).
     const buttons = launcherFooter.locator(".shell-chrome-btn");
-    await expect(buttons).toHaveCount(4);
+    await expect(buttons).toHaveCount(5);
     const count = await buttons.count();
     for (let i = 0; i < count; i++) {
       const box = await buttons.nth(i).boundingBox();
