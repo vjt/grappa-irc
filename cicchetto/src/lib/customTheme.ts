@@ -121,6 +121,15 @@ function readCache(): TokenPayload | null {
   }
 }
 
+// The theme payload currently PERSISTED as applied — the editor's
+// snapshot source for restore-on-cancel. Live preview (`applyCustomTheme`)
+// deliberately leaves the cache untouched, so mid-edit this still returns
+// the pre-edit active theme (or null = base cascade). Same defend-the-shape
+// read as boot, so a corrupt cache degrades to "no snapshot", never a throw.
+export function getAppliedThemePayload(): TokenPayload | null {
+  return readCache();
+}
+
 function isTokenPayloadShape(v: unknown): v is TokenPayload {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;

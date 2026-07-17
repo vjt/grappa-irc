@@ -57,6 +57,8 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   // validation_failed without info → generic copy fallback.
   { code: "validation_failed", matches: /the request was invalid/i },
   { code: "cannot_disconnect_self", matches: /can't disconnect or terminate your own session/i },
+  // #75 themes — daily create/publish cap.
+  { code: "rate_limited", matches: /today's theme limit/i },
 ];
 
 describe("friendlyApiError", () => {

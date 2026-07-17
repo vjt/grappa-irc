@@ -65,6 +65,7 @@ import ServerReplyModal from "./ServerReplyModal";
 import SettingsDrawer from "./SettingsDrawer";
 import ShellChrome from "./ShellChrome";
 import Sidebar from "./Sidebar";
+import ThemeEditor from "./ThemeEditor";
 import TopicBar from "./TopicBar";
 import UmodeModal from "./UmodeModal";
 import WhoModal from "./WhoModal";
@@ -533,6 +534,7 @@ const Shell: Component = () => {
           <PrivacyModal />
           <MediaViewerModal />
           <NamesModal />
+          <ThemeEditor />
           <WhoModal />
           <ModeModal />
           <UmodeModal />
@@ -720,6 +722,7 @@ const Shell: Component = () => {
         <PrivacyModal />
         <MediaViewerModal />
         <NamesModal />
+        <ThemeEditor />
         <WhoModal />
         <UmodeModal />
         <ModeModal />

@@ -51,7 +51,8 @@ export type KnownApiErrorCode =
   | "internal"
   | "unauthorized"
   | "validation_failed"
-  | "cannot_disconnect_self";
+  | "cannot_disconnect_self"
+  | "rate_limited";
 
 const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "invalid_credentials",
@@ -75,6 +76,7 @@ const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "unauthorized",
   "validation_failed",
   "cannot_disconnect_self",
+  "rate_limited",
 ]);
 
 function isKnownCode(code: string): code is KnownApiErrorCode {
@@ -203,6 +205,11 @@ function friendlyKnown(err: ApiError, code: KnownApiErrorCode): string {
       // wire token for debugging); this arm exists so any other
       // surface that bubbles the ApiError up gets friendly copy.
       return "You can't disconnect or terminate your own session.";
+    case "rate_limited":
+      // #75 themes — the server caps theme creation/publish per day per
+      // user (anti-abuse, ~5/day). Reached on Save/publish once the daily
+      // budget is spent; the recourse is to wait.
+      return "You've hit today's theme limit. Try again tomorrow.";
     default:
       // Cic M2 reviewer fix: exhaustiveness assertion. Adding a token
       // to `KnownApiErrorCode` without a `case` arm above becomes a

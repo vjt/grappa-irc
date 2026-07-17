@@ -4875,6 +4875,185 @@ html.resize-dragging * {
   color: var(--mode-op);
 }
 
+/* #75 producer path — theme editor overlay (new/edit). Mirrors the
+   archive-modal backdrop+panel shell; adds a scrollable form of grouped
+   color pickers, a font select, and the background controls. Tap targets
+   are ABSOLUTE 44px (Apple HIG) — never rem, since the html root font-size
+   is 14px (feedback_cic_tap_target_rem_pitfall). */
+.theme-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  z-index: 1100;
+}
+
+.theme-editor-modal {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  width: 100%;
+  max-width: 32rem;
+  max-height: var(--viewport-height, 100dvh);
+  padding: max(0.75rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom));
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+}
+
+.theme-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.theme-editor-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: normal;
+}
+
+.theme-editor-close {
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.theme-editor-error {
+  color: var(--mode-op);
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+}
+
+.theme-editor-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.theme-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.theme-editor-name-input,
+.theme-editor-font-select,
+.theme-editor-bg-url-input {
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  padding: 0 0.5rem;
+  min-height: 44px;
+}
+
+.theme-editor-group {
+  border: 1px solid var(--border);
+  padding: 0.5rem;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.theme-editor-group legend {
+  color: var(--muted);
+  font-size: 0.8rem;
+  padding: 0 0.35rem;
+}
+
+.theme-editor-color-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 44px;
+}
+
+.theme-editor-color-label {
+  color: var(--fg);
+  font-size: 0.85rem;
+}
+
+.theme-editor-color-input {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+}
+
+.theme-editor-nick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.25rem 0.75rem;
+}
+
+.theme-editor-bg-url-row {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.theme-editor-bg-url-input {
+  flex: 1;
+}
+
+.theme-editor-opacity {
+  width: 100%;
+  min-height: 44px;
+}
+
+.theme-editor-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.theme-editor-action {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  padding: 0 0.75rem;
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+}
+
+.theme-editor-action:hover {
+  border-color: var(--accent);
+}
+
+.theme-editor-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.theme-editor-save {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .vhost-random-msg {
   color: var(--muted);
   font-size: 0.85rem;

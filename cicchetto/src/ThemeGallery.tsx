@@ -1,9 +1,10 @@
-import { type Component, createSignal, For, Match, onMount, Show, Switch } from "solid-js";
+import { type Component, createEffect, createSignal, For, Match, Show, Switch } from "solid-js";
 import { ApiError } from "./lib/api";
 import { token } from "./lib/auth";
 import { activateTheme, activeThemeId } from "./lib/customTheme";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { isAdmin } from "./lib/networks";
+import { newThemeSeedPayload, openThemeEditor, themesRevision } from "./lib/themeEditor";
 import { canManageTheme, swatchColors } from "./lib/themeGallery";
 import type { TokenPayload } from "./lib/themesApi";
 import { copyTheme, deleteTheme, listGallery, publishTheme, unpublishTheme } from "./lib/themesApi";
@@ -51,12 +52,19 @@ const ThemeGallery: Component<Props> = (props) => {
     }
   };
 
-  // Re-load on entry — the sub-page mounts each time it's opened, so the
-  // gallery reflects the server (parity with the vhost sub-page's
-  // re-load-on-entry).
-  onMount(() => {
+  // Re-load on entry AND whenever the editor bumps the revision (a save
+  // creates/edits a theme underneath the still-mounted gallery). The first
+  // effect run does the on-entry load; subsequent runs refresh after edits
+  // — one source of truth (the server), never a locally-patched card.
+  createEffect(() => {
+    themesRevision();
     void load();
   });
+
+  // Seed for a brand-new theme — the built-in the gallery already fetched
+  // (irssi-dark), never a hand-copied palette. null → no built-in loaded →
+  // hide the "new theme" entry point rather than fabricate a palette.
+  const newSeed = (): TokenPayload | null => newThemeSeedPayload(themes() ?? []);
 
   const withBusy = async (id: number, fn: (t: string) => Promise<void>): Promise<void> => {
     const t = token();
@@ -114,6 +122,20 @@ const ThemeGallery: Component<Props> = (props) => {
           ‹ back
         </button>
         <h3>themes</h3>
+        <Show when={newSeed() !== null}>
+          <button
+            type="button"
+            class="theme-action"
+            data-testid="theme-new"
+            disabled={busyId() !== null}
+            onClick={() => {
+              const seed = newSeed();
+              if (seed !== null) openThemeEditor({ mode: "new", basePayload: seed });
+            }}
+          >
+            new theme
+          </button>
+        </Show>
       </header>
 
       <Show when={error() !== null}>
@@ -179,6 +201,15 @@ const ThemeGallery: Component<Props> = (props) => {
                     copy
                   </button>
                   <Show when={canManageTheme(theme, isAdmin())}>
+                    <button
+                      type="button"
+                      class="theme-action"
+                      data-testid={`theme-edit-${theme.id}`}
+                      disabled={busyId() !== null}
+                      onClick={() => openThemeEditor({ mode: "edit", theme })}
+                    >
+                      edit
+                    </button>
                     <Switch>
                       <Match when={theme.published}>
                         <button
