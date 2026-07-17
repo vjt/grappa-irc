@@ -33,14 +33,17 @@ test.describe("#284 password always-visible + optional", () => {
   test("password is visible on the main form by default (not behind Advanced)", async ({ page }) => {
     // No Advanced expand — the password is right there on the first screen.
     await expect(page.getByLabel(/password/i)).toBeVisible();
-    // And it sits OUTSIDE the Advanced disclosure container in the DOM.
+
+    // Open Advanced so its container actually mounts, THEN prove the password
+    // is not a descendant of it — a non-trivial containment check (while
+    // collapsed the container is absent and the check would be vacuous).
+    await page.getByRole("button", { name: /advanced/i }).click();
+    await expect(page.getByLabel(/real name/i)).toBeVisible();
     const outsideAdvanced = await page.evaluate(() => {
       const pw = document.querySelector("#login-password");
       const advanced = document.querySelector("#login-advanced");
-      if (!pw) return null;
-      // Advanced is conditionally rendered — absent when collapsed. Either
-      // way the password must not be a descendant of it.
-      return advanced === null || !advanced.contains(pw);
+      if (!pw || !advanced) return null;
+      return !advanced.contains(pw);
     });
     expect(outsideAdvanced).toBe(true);
   });
@@ -87,6 +90,37 @@ test.describe("#284 password always-visible + optional", () => {
     await expect(page.getByTestId("login-connecting")).toBeVisible({ timeout: 10_000 });
     // The password entered on the main form is what the server would receive.
     expect(capturedBody).toMatchObject({ identifier: "alice", password: "hunter2" });
+
+    release?.();
+    await expect(page.getByRole("alert")).toBeVisible({ timeout: 10_000 });
+  });
+
+  test("an empty password stays a minimal guest {identifier} body", async ({ page }) => {
+    // The default (blank password) is the anonymous/guest path: auth.ts omits
+    // the password key entirely, so the server never sees an empty IDENTIFY.
+    let capturedBody: Record<string, unknown> | undefined;
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    await page.route("**/auth/login", async (route) => {
+      capturedBody = route.request().postDataJSON();
+      await held;
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "invalid_credentials" }),
+      });
+    });
+
+    await page.getByLabel(/nick or email/i).fill("alice");
+    // Leave the password field blank — the guest path.
+    await page.getByRole("button", { name: /^connect$/i }).click();
+
+    await expect(page.getByTestId("login-connecting")).toBeVisible({ timeout: 10_000 });
+    expect(capturedBody).toMatchObject({ identifier: "alice" });
+    // No empty password threaded — the key is absent, not "" (auth.ts:83).
+    expect(capturedBody !== undefined && "password" in capturedBody).toBe(false);
 
     release?.();
     await expect(page.getByRole("alert")).toBeVisible({ timeout: 10_000 });
