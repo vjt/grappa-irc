@@ -126,7 +126,12 @@ defmodule Grappa.Session.NumericRouterTest do
   # reply family (211–219 RPL_STATS* + RPL_ENDOFSTATS, 240–250) in — the
   # stats letter (`/stats o` → 219 `[nick, "o", "End of /STATS report"]`)
   # is a nick-shaped metadata token, NOT a query destination.
-  @active_numerics [4, 42, 263, 305, 306, 421, 432, 433, 437, 461] ++
+  # #276 — 305/306 moved OUT of the active deny list into
+  # @delegated_numerics: RPL_UNAWAY / RPL_NOWAWAY are pure away-state
+  # acks owned by EventRouter's away_confirmed handler and must NEVER
+  # persist a scrollback row (the away STATE is the signal, the numeric
+  # is noise). See the delegated-numerics section below.
+  @active_numerics [4, 42, 263, 421, 432, 433, 437, 461] ++
                      Enum.to_list(211..219) ++ Enum.to_list(240..250)
 
   describe "@active_numerics deny list → {:server, nil}" do
@@ -177,15 +182,9 @@ defmodule Grappa.Session.NumericRouterTest do
       assert {:server, nil} = NumericRouter.route(m, state())
     end
 
-    test "305 RPL_UNAWAY routes to $server" do
-      m = msg(305, ["vjt", "You are no longer marked as being away"])
-      assert {:server, nil} = NumericRouter.route(m, state())
-    end
-
-    test "306 RPL_NOWAWAY routes to $server" do
-      m = msg(306, ["vjt", "You have been marked as being away"])
-      assert {:server, nil} = NumericRouter.route(m, state())
-    end
+    # #276 — 305/306 (RPL_UNAWAY/RPL_NOWAWAY) coverage moved to the
+    # delegated-numerics section: they are away-state acks owned by
+    # EventRouter (away_confirmed effect), never a persist destination.
 
     # #184 — STATS reply family. `/stats <letter>` numerics carry the
     # stats letter (and O-line/I-line class letters) as a middle param
@@ -218,6 +217,13 @@ defmodule Grappa.Session.NumericRouterTest do
   # ---------------------------------------------------------------------------
 
   @delegated_numerics [
+    # #276 — away acks. RPL_UNAWAY (305) / RPL_NOWAWAY (306) are owned by
+    # EventRouter's away_confirmed handler (fires the typed away STATE
+    # effect); the numeric itself is content-free noise that must NEVER
+    # persist as a scrollback row. Delegated so Server.handle_info routes
+    # them via `delegate/2` (EventRouter only, no notice persist).
+    305,
+    306,
     # WHOIS / WHO / NAMES / MOTD (pre-CP15)
     311,
     312,
@@ -289,6 +295,43 @@ defmodule Grappa.Session.NumericRouterTest do
     test "311 RPL_WHOISUSER is delegated" do
       m = msg(311, ["vjt", "nick", "user", "host", "*", "realname"])
       assert :delegated = NumericRouter.route(m, state())
+    end
+
+    # #276 — away acks are delegated (never a persist destination). The
+    # away STATE reaches cic via EventRouter's away_confirmed effect, not
+    # a scrollback row.
+    test "305 RPL_UNAWAY is delegated (no $server/persist row #276)" do
+      m = msg(305, ["vjt", "You are no longer marked as being away"])
+      assert :delegated = NumericRouter.route(m, state())
+    end
+
+    test "306 RPL_NOWAWAY is delegated (no $server/persist row #276)" do
+      m = msg(306, ["vjt", "You have been marked as being away"])
+      assert :delegated = NumericRouter.route(m, state())
+    end
+
+    # #276 — the LABELED-response robustness case. `labels_pending` is
+    # populated SOLELY by the away command (Server.prepare_label), so
+    # 305/306 are the only labeled replies grappa ever receives. Without
+    # delegation winning over the label override, a labeled away-ack would
+    # route to its origin window and RESURRECT the very row #276
+    # suppresses. Delegation MUST win even when the label matches.
+    test "labeled 306 RPL_NOWAWAY stays delegated (delegation wins over label #276)" do
+      m = msg_tagged(306, ["vjt", "You have been marked as being away"], "away-lbl")
+
+      state =
+        state(labels_pending: %{"away-lbl" => %{kind: :channel, target: "#sniffo"}})
+
+      assert :delegated = NumericRouter.route(m, state)
+    end
+
+    test "labeled 305 RPL_UNAWAY stays delegated (delegation wins over label #276)" do
+      m = msg_tagged(305, ["vjt", "You are no longer marked as being away"], "back-lbl")
+
+      state =
+        state(labels_pending: %{"back-lbl" => %{kind: :query, target: "peer"}})
+
+      assert :delegated = NumericRouter.route(m, state)
     end
 
     # B6.1 HIGH-3 — LIST (321/322/323) + LINKS (364/365) used to be

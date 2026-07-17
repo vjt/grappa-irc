@@ -865,6 +865,92 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  # #276 — away acks (305 RPL_UNAWAY / 306 RPL_NOWAWAY) are redundant
+  # scrollback noise: the away STATE reaches cic via the typed
+  # `away_confirmed` user-topic event, so persisting a "You have been
+  # marked as being away" / "You are no longer marked as being away"
+  # :notice row on $server adds nothing and clutters the window on every
+  # (auto-)away/back cycle. Root cause: NumericRouter routed 305/306 to
+  # `{:server, nil}` (the active deny list), so Server.handle_info
+  # persisted a notice row. Fix: 305/306 are now delegated → routed via
+  # `delegate/2` (EventRouter only, no persist), while the
+  # `away_confirmed` STATE effect still fires. Same disease + assertion
+  # shape as the #210 inbound-PONG no-persist test above.
+  describe "away acks 305/306 do NOT persist to $server scrollback (#276)" do
+    test "306 RPL_NOWAWAY fires away_confirmed(:away) but persists NO $server row" do
+      # Reply to USER with 001 so the session reaches registered before we
+      # feed the away numeric (mirrors the 221 RPL_UMODEIS test handler).
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Upstream confirms away-set.
+      IRCServer.feed(server, ":irc.test.org 306 grappa-test :You have been marked as being away\r\n")
+
+      # STATE signal survives: the typed away_confirmed event on the
+      # user-level topic (cic's awayStatus.ts consumes this → 💤 badge).
+      # Receiving it is also the synchronisation barrier — once observed,
+      # the numeric has been fully processed, so the $server fetch below
+      # sees its (non-)effect deterministically.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :away_confirmed, network: net_slug, state: "away"}
+                     },
+                     1_000
+
+      assert net_slug == network.slug
+
+      # NOISE gone: no notice row was persisted to $server.
+      assert [] = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 10, nil)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "305 RPL_UNAWAY fires away_confirmed(:present) but persists NO $server row" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(server, ":irc.test.org 305 grappa-test :You are no longer marked as being away\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :away_confirmed, network: net_slug, state: "present"}
+                     },
+                     1_000
+
+      assert net_slug == network.slug
+
+      assert [] = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 10, nil)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "PRIVMSG persistence + broadcast" do
     test "persists row and broadcasts canonical wire-shape event on PRIVMSG" do
       {server, port} = start_server()
