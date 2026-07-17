@@ -9,7 +9,12 @@ vi.mock("../archive", () => ({
   setArchiveModalNetwork: (v: unknown) => setArchiveModalNetwork(v),
 }));
 
-import { openHomePanel } from "../mobilePanel";
+const requestSettingsPage = vi.fn();
+vi.mock("../settingsNav", () => ({
+  requestSettingsPage: (v: unknown) => requestSettingsPage(v),
+}));
+
+import { openHomePanel, openThemesPanel } from "../mobilePanel";
 
 function setters() {
   return {
@@ -32,5 +37,21 @@ describe("openHomePanel (#291)", () => {
     expect(s.setSettingsOpen).toHaveBeenCalledWith(false);
     expect(setArchiveModalNetwork).toHaveBeenCalledWith(null);
     expect(navigate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("openThemesPanel (#75)", () => {
+  beforeEach(() => {
+    setArchiveModalNetwork.mockReset();
+    requestSettingsPage.mockReset();
+  });
+
+  test("closes members + archive, requests the themes sub-page, opens settings", () => {
+    const s = setters();
+    openThemesPanel(s);
+    expect(s.setMembersOpen).toHaveBeenCalledWith(false);
+    expect(setArchiveModalNetwork).toHaveBeenCalledWith(null);
+    expect(requestSettingsPage).toHaveBeenCalledWith("themes");
+    expect(s.setSettingsOpen).toHaveBeenCalledWith(true);
   });
 });

@@ -4778,6 +4778,99 @@ html.resize-dragging * {
   border-color: var(--accent);
 }
 
+/* #75 — theme gallery sub-page. Each card shows a DERIVED swatch (palette
+   chips, no stored screenshot) + name/author/apply-count + actions. */
+.theme-gallery-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.theme-gallery-loading,
+.theme-gallery-error {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0.25rem 0;
+}
+
+.theme-gallery-error {
+  color: var(--mode-op);
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.theme-card.theme-card-active {
+  border-color: var(--accent);
+}
+
+.theme-swatch {
+  display: flex;
+  flex-direction: row;
+  height: 1.5rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.theme-chip {
+  flex: 1 1 0;
+}
+
+.theme-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.theme-card-name {
+  font-weight: bold;
+}
+
+.theme-card-active-marker {
+  color: var(--accent);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.theme-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.theme-action {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.theme-action:hover {
+  border-color: var(--accent);
+}
+
+.theme-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.theme-action-danger {
+  color: var(--mode-op);
+}
+
 .vhost-random-msg {
   color: var(--muted);
   font-size: 0.85rem;

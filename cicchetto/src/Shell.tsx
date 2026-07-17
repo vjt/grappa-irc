@@ -35,6 +35,7 @@ import {
   openArchivePanel,
   openHomePanel,
   openSettingsPanel,
+  openThemesPanel,
   toggleMembersPanel,
 } from "./lib/mobilePanel";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
@@ -918,6 +919,18 @@ const Shell: Component = () => {
               onClick={() => openSettingsPanel({ membersOpen, setMembersOpen, setSettingsOpen })}
             >
               ⚙
+            </button>
+            {/* #75 — themes launcher: opens the settings drawer directly on
+                the themes gallery sub-page (openThemesPanel deep-links via
+                settingsNav). Same footer surface as #291's home button. */}
+            <button
+              type="button"
+              class="shell-chrome-btn shell-chrome-themes"
+              aria-label="open themes"
+              data-testid="mobile-panel-themes"
+              onClick={() => openThemesPanel({ membersOpen, setMembersOpen, setSettingsOpen })}
+            >
+              {"\u{1F3A8}"}
             </button>
             {/* UX-6 bucket C (2026-05-21) — 4th launcher: admin
                 console. Visible only when `isAdmin()` is true (single
