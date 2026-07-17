@@ -990,6 +990,20 @@ defmodule Grappa.Session.Server do
           :exit, {:shutdown, _} -> :ok
           :exit, {:noproc, _} -> :ok
           :exit, {:timeout, _} -> :ok
+          # #88 — socket-already-gone race. The linked `IRC.Client` stops
+          # with `:tcp_closed` / `:ssl_closed` (`Client.handle_info`
+          # socket-close → `{:stop, _}`); if that stop lands while this
+          # best-effort QUIT `GenServer.call` is in flight, the call exits
+          # `{:tcp_closed | :ssl_closed, {GenServer, :call, _}}`. A QUIT
+          # against a socket that has already closed is a no-op, not a
+          # terminate/2 crash — the peer never sees the QUIT either way,
+          # so log-spamming `terminating` on every deploy that races a
+          # FIN is pure noise. Narrow allowlist of the two known reasons
+          # only (bare + call-wrapped tuple), not a widened `:exit, _`.
+          :exit, :tcp_closed -> :ok
+          :exit, {:tcp_closed, _} -> :ok
+          :exit, :ssl_closed -> :ok
+          :exit, {:ssl_closed, _} -> :ok
         end
     end
   end

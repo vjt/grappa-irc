@@ -23594,3 +23594,62 @@ controller/context/@spec change (new `reconnect_session/2` + `reconnect/2` actio
 migration, no struct/`@type`-inside-a-struct change → HOT-reload eligible (HEED
 the deploy preflight verdict). The cic bundle change is mandatory (`--cic`) — new
 toggle + api helper. No config change._
+
+## 2026-07-17 — #88 (P2, grappa): terminate/2 graceful QUIT — best-effort against a socket-close race
+
+**Core was already shipped** (`d3c7286` / `fd96891` / `18aa3b9`):
+`terminate(:shutdown | {:shutdown, _}, state)` sends a graceful upstream
+`QUIT :grappa shutting down` so peers see "grappa shutting down" instead of
+"Connection reset by peer", and `terminate(:normal, state)` deliberately does
+NOT QUIT (the operator path — `Networks.disconnect/2` → `:send_quit` handle_call
+→ `stop_session`) already emitted its own QUIT before the `:normal` stop). This
+entry is the **residual tail #88 tracked**.
+
+**Data-driven decision (DATA FIRST).** #88 item 3 asked to verify whether the
+`tcp_closed terminating` test-stdout noise that motivated the issue still
+reproduces. It does: a clean `test/grappa/session/server_test.exs` run on
+a8e34bca produced the crash signature **10×**:
+
+```
+GenServer {Grappa.SessionRegistry, {:session, {:user, …}, N}} terminating
+** (stop) exited in: GenServer.call(#PID, {:send, "QUIT :grappa shutting down\r\n"}, 5000)
+    ** (EXIT) :tcp_closed
+    lib/grappa/session/server.ex:983: Grappa.Session.Server.terminate/2
+Last message: {:EXIT, #PID, :shutdown}
+```
+
+**Root cause — a socket-close race, NOT the `:normal`-clause gap #88 first
+guessed.** `terminate(:shutdown)` sends the QUIT via `Client.send_quit/2` →
+`GenServer.call(client, {:send, "QUIT …"})`. When the upstream socket has just
+closed, the linked `IRC.Client` stops with `:tcp_closed` / `:ssl_closed`
+(`Client.handle_info({:tcp_closed | :ssl_closed, _}) → {:stop, _}`, client.ex
+912/913). If that stop lands **while the QUIT call is in flight**, the call exits
+`{:tcp_closed | :ssl_closed, {GenServer, :call, _}}`. The U-cluster boundary fix
+(`handle_call({:send, _})` returns `{:error, :no_socket}` for a nil/closed
+socket) handles the *dead-before-call* case cleanly — but not this *dies-during-
+call* race, whose exit reason was missing from terminate/2's catch allowlist
+(`:noproc | :timeout | :normal | :shutdown` + tuple twins). So a best-effort
+QUIT crash-logged a scary `terminating` on every deploy/shutdown that raced a FIN.
+
+**Fix (MVP — the issue's proposal, nothing more).** Extend the
+`terminate(:shutdown)` catch allowlist with the two known socket-already-gone
+reasons (`:tcp_closed` / `:ssl_closed`, bare + call-wrapped tuple forms). A QUIT
+against a socket that already closed is a no-op — the peer never sees it either
+way — so it must not crash terminate/2. **Narrow allowlist of the two known
+reasons only, NOT a widened `:exit, _`** (CLAUDE.md "no silent-swallow at
+boundaries": a best-effort QUIT that ignores ONLY the socket-close class is fine;
+swallowing everything hides the next bug). The `:normal` clause is untouched
+(item 1 was a red herring — the noise is in `:shutdown`); item 2 ("close socket
+cleanly / explicit") stays out of scope — link teardown already closes the
+socket, and making it explicit adds no behavior.
+
+**Regression proof.** New `describe "terminate/2 — best-effort QUIT survives a
+socket-close race (#88)"` parameterizes `:tcp_closed` / `:ssl_closed`, swapping
+the linked Client for a bare process that dies with the reason mid-QUIT-call
+(reproducing the exact `{reason, {GenServer, :call, _}}` term). RED before, GREEN
+after; the whole-file crash-signature count dropped **10 → 0**.
+
+_Deploy: **server HOT**. Pure function-body change (extra catch clauses in
+`terminate/2`) — no schema, no migration, no struct/`@type`-inside-a-struct
+change → HOT-reload eligible (HEED the deploy preflight verdict). No `--cic`, no
+config change._
