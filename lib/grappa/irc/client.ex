@@ -188,7 +188,7 @@ defmodule Grappa.IRC.Client do
     :ping_timer
   ]
 
-  # Cluster visitor-auth hotfix: pre-crash throttle when do_connect/4
+  # Cluster visitor-auth hotfix: pre-crash throttle when do_connect/5
   # fails (ECONNREFUSED, ECONNRESET, ssl handshake :closed, the
   # permanent {:source_family_mismatch, ...} misconfig, etc.).
   # Without it, the DynamicSupervisor's :transient restart cycle spins
@@ -866,8 +866,13 @@ defmodule Grappa.IRC.Client do
   @impl GenServer
   def handle_continue({:connect, opts}, state) do
     host = to_charlist(opts.host)
+    # #271 — the DNS resolver + socket connect fun are injected here as the real
+    # production funs, so the leaf-selection + rotation logic (resolve_targets/3,
+    # connect_rotating/7) is unit-testable via the `__*_for_test__` seams without
+    # standing up a socket. See do_connect/5.
+    deps = %{resolver: &:inet_res.lookup/3, connect_fun: &default_connect/5}
 
-    case do_connect(host, opts.port, opts.tls, Map.get(opts, :source_address)) do
+    case do_connect(host, opts.port, opts.tls, Map.get(opts, :source_address), deps) do
       {:ok, socket} ->
         connected = %{state | socket: socket}
         # U-2 (UD7): announce the post-connect / post-TLS / pre-handshake
@@ -996,12 +1001,45 @@ defmodule Grappa.IRC.Client do
   # `:gen_tcp` / `:ssl` give up. 30s is the standard upstream-handshake
   # ceiling; Phase 5 reconnect/backoff revisits this when retry policy
   # lands.
+  #
+  # #271 — this is the PER-LEAF ceiling. `connect_rotating/7` tries each
+  # resolved leaf sequentially, so an all-leaves-black-holed outage (SYN
+  # dropped, not refused) can block `handle_continue` for up to
+  # N × @connect_timeout_ms before the give-up throttle engages
+  # (~60s for azzurra's 2 leaves). Accepted tradeoff for the MVP: (1) a
+  # leaf that is genuinely DOWN usually REFUSES (ECONNREFUSED is instant),
+  # so rotation is fast in the common case; (2) this is strictly BETTER
+  # than the pre-#271 behavior, where the stable getaddrinfo RFC-6724 sort
+  # re-picked the SAME dead leaf on every backoff respawn and NEVER
+  # recovered — one rotation cycle now finds a live leaf. Phase 5's retry
+  # policy can budget the ceiling across the set if the double-black-hole
+  # window ever bites in practice.
   @connect_timeout_ms 30_000
 
-  defp do_connect(host, port, tls, source_address) do
+  # #271 — injectable seams for the leaf-selection + rotation path. Production
+  # wires the real resolver (`:inet_res.lookup/3`) + socket connect fun
+  # (`default_connect/5`) in handle_continue/2; tests inject fakes via the
+  # `__*_for_test__` seams to assert the connect TARGET shape (IP tuple vs
+  # hostname) + rotation without opening a socket. A map threaded through
+  # do_connect/5 (not start_link opts) because the full Client start path has no
+  # need to substitute these — only the pure-ish connect logic does. `resolver`
+  # matches `:inet_res.lookup/3`; `connect_fun` abstracts the
+  # `:gen_tcp.connect/4` / `:ssl.connect/4` pair over the `:tcp | :ssl` tag.
+  # `target` is an IP tuple (or the hostname charlist fallback), both legal
+  # first args to the connect funs.
+  @typep leaf_target :: :inet.ip_address() | :inet.hostname()
+  @typep resolver_fun :: (charlist(), :in, :a | :aaaa -> [:inet.ip_address()])
+  @typep connect_fun ::
+           (:tcp | :ssl, leaf_target(), :inet.port_number(), keyword(), timeout() ->
+              {:ok, :gen_tcp.socket() | :ssl.sslsocket()} | {:error, term()})
+  @typep connect_deps :: %{resolver: resolver_fun(), connect_fun: connect_fun()}
+
+  @spec do_connect(charlist(), :inet.port_number(), boolean(), String.t() | nil, connect_deps()) ::
+          {:ok, :gen_tcp.socket() | :ssl.sslsocket()} | {:error, term()}
+  defp do_connect(host, port, tls, source_address, deps) do
     case source_bind(host, source_address) do
       {:ok, {bind_opts, fam}} ->
-        transport_connect(host, port, tls, bind_opts, fam)
+        connect_with_rotation(host, port, tls, bind_opts, fam, deps)
 
       {:error, {:source_family_mismatch, _, _, _} = reason} ->
         # Permanent misconfig (e.g. a v4 source pinned to a v6-only
@@ -1017,17 +1055,132 @@ defmodule Grappa.IRC.Client do
     end
   end
 
-  defp transport_connect(host, port, false, bind_opts, fam) do
-    :gen_tcp.connect(host, port, [:binary, fam, packet: :line, active: :once] ++ bind_opts, @connect_timeout_ms)
+  # #271 — grappa OWNS the leaf choice instead of delegating it to getaddrinfo.
+  # Handing the HOSTNAME to :ssl.connect/:gen_tcp.connect lets the OS apply
+  # RFC-6724 destination-address sorting, which is STABLE: the same leaf wins
+  # every connect, so a multi-AAAA round-robin pool collapses onto ONE leaf
+  # (load imbalance + a single leaf down taking every session with it). Here we
+  # resolve the full RR set for the chosen family ourselves, shuffle it, and
+  # dial the IP TUPLE — bypassing the getaddrinfo sort. SNI + hostname
+  # verification stay anchored to the ORIGINAL hostname (transport_connect/7
+  # threads `host` into tls_connect_opts/1, NOT the target) so #89 verify_peer
+  # still validates the picked leaf's cert (its SAN covers the hostname).
+  @spec connect_with_rotation(
+          charlist(),
+          :inet.port_number(),
+          boolean(),
+          keyword(),
+          :inet | :inet6,
+          connect_deps()
+        ) :: {:ok, :gen_tcp.socket() | :ssl.sslsocket()} | {:error, term()}
+  defp connect_with_rotation(host, port, tls, bind_opts, fam, deps) do
+    host
+    |> resolve_targets(fam, deps.resolver)
+    |> connect_rotating(host, port, tls, bind_opts, fam, deps.connect_fun)
   end
 
-  defp transport_connect(host, port, true, bind_opts, fam) do
-    :ssl.connect(
-      host,
+  # Resolve the round-robin candidate set for `fam` and shuffle it so each
+  # connect rolls a fresh leaf order. An IP-literal host has nothing to rotate —
+  # dial it directly (this also keeps IP-literal upstreams and the IRCServer
+  # test harness, host "127.0.0.1", off the resolver entirely). A DNS name is
+  # queried for AAAA (v6 source) or A (v4 source); an empty answer falls back to
+  # handing the hostname to the connect fun — no worse than the pre-#271
+  # behavior for a host with no record in the chosen family.
+  @spec resolve_targets(charlist(), :inet | :inet6, resolver_fun()) :: [leaf_target(), ...]
+  defp resolve_targets(host, fam, resolver) do
+    case :inet.parse_address(host) do
+      {:ok, ip} ->
+        [ip]
+
+      {:error, _} ->
+        rr_type = if fam == :inet6, do: :aaaa, else: :a
+
+        case resolver.(host, :in, rr_type) do
+          [_ | _] = addrs -> Enum.shuffle(addrs)
+          [] -> [host]
+        end
+    end
+  end
+
+  # Try the shuffled leaf set in order until one connects. A dead leaf rolls to
+  # the next member BEFORE the :transient give-up, so a single down leaf can no
+  # longer park every session. The last member's result is surfaced verbatim: on
+  # exhaustion the real {:error, reason} propagates into the existing
+  # connect-fail throttle + give-up chain (rotation must not swallow a genuine
+  # give-up). Three-clause recursive shape (collect-until-success traversal),
+  # tail-recursive — CLAUDE.md.
+  @spec connect_rotating(
+          [leaf_target(), ...],
+          charlist(),
+          :inet.port_number(),
+          boolean(),
+          keyword(),
+          :inet | :inet6,
+          connect_fun()
+        ) :: {:ok, :gen_tcp.socket() | :ssl.sslsocket()} | {:error, term()}
+  defp connect_rotating([target], host, port, tls, bind_opts, fam, connect_fun) do
+    transport_connect(target, host, port, tls, bind_opts, fam, connect_fun)
+  end
+
+  defp connect_rotating([target | rest], host, port, tls, bind_opts, fam, connect_fun) do
+    case transport_connect(target, host, port, tls, bind_opts, fam, connect_fun) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} ->
+        Logger.warning("upstream leaf connect failed — rotating to next leaf",
+          error: inspect({target, reason})
+        )
+
+        connect_rotating(rest, host, port, tls, bind_opts, fam, connect_fun)
+    end
+  end
+
+  # `target` is the IP tuple we dial (or the hostname fallback); `host` is the
+  # ORIGINAL hostname threaded into tls_connect_opts/1 for SNI + hostname check.
+  # Keeping the two separate is the #89 invariant: dial the picked leaf's IP but
+  # verify its cert against the hostname we were asked to reach.
+  @spec transport_connect(
+          leaf_target(),
+          charlist(),
+          :inet.port_number(),
+          boolean(),
+          keyword(),
+          :inet | :inet6,
+          connect_fun()
+        ) :: {:ok, :gen_tcp.socket() | :ssl.sslsocket()} | {:error, term()}
+  defp transport_connect(target, _, port, false, bind_opts, fam, connect_fun) do
+    connect_fun.(:tcp, target, port, [:binary, fam, packet: :line, active: :once] ++ bind_opts, @connect_timeout_ms)
+  end
+
+  defp transport_connect(target, host, port, true, bind_opts, fam, connect_fun) do
+    connect_fun.(
+      :ssl,
+      target,
       port,
       [:binary, fam, packet: :line, active: :once] ++ tls_connect_opts(host) ++ bind_opts,
       @connect_timeout_ms
     )
+  end
+
+  # Production socket connect. Injected as the connect fun in handle_continue/2;
+  # tests substitute a recording fake through __connect_with_rotation_for_test__.
+  @spec default_connect(:tcp | :ssl, leaf_target(), :inet.port_number(), keyword(), timeout()) ::
+          {:ok, :gen_tcp.socket() | :ssl.sslsocket()} | {:error, term()}
+  defp default_connect(:tcp, target, port, opts, timeout), do: :gen_tcp.connect(target, port, opts, timeout)
+
+  defp default_connect(:ssl, target, port, opts, timeout) do
+    # `:ssl.connect/4` returns `{:ok, sslsocket}` OR — when hello-handshake
+    # extensions are requested — `{:ok, sslsocket, protocol_extensions}`. We
+    # request no such opts, so the 3-tuple never fires at runtime; normalise it
+    # to the 2-tuple regardless so the `{:ok, socket}` contract holds
+    # end-to-end (handle_continue/2 matches the 2-tuple — a 3-tuple would
+    # CaseClauseError) and Dialyzer's success typing agrees with the spec.
+    case :ssl.connect(target, port, opts, timeout) do
+      {:ok, socket} -> {:ok, socket}
+      {:ok, socket, _} -> {:ok, socket}
+      {:error, _} = err -> err
+    end
   end
 
   # #89 — TLS certificate-chain verification (replaces the Phase-1
@@ -1081,7 +1234,7 @@ defmodule Grappa.IRC.Client do
 
   @doc false
   # Test-only seam for the #89 verify_peer opts. Production callers go
-  # through transport_connect/5. Mirrors __source_bind_for_test__/2 —
+  # through transport_connect/7. Mirrors __source_bind_for_test__/2 —
   # greppable, absent from public docs. Lets the client_test assert the
   # ssl-opts SHAPE without standing up a real TLS listener (the real
   # handshake to azzurra was proven out-of-band, see issue #89).
@@ -1128,12 +1281,39 @@ defmodule Grappa.IRC.Client do
 
   @doc false
   # Test-only seam for the family / ifaddr / mismatch logic. Production
-  # callers go through do_connect/4. Mirrors the __merge_autojoin_for_test__
+  # callers go through do_connect/5. Mirrors the __merge_autojoin_for_test__
   # convention in Networks.SessionPlan — greppable, absent from public docs.
   @spec __source_bind_for_test__(charlist(), String.t() | nil) ::
           {:ok, {keyword(), :inet | :inet6}}
           | {:error, {:source_family_mismatch, String.t(), String.t(), :inet | :inet6}}
   def __source_bind_for_test__(host, source), do: source_bind(host, source)
+
+  @doc false
+  # #271 test seams — mirror __source_bind_for_test__/2. Production callers go
+  # through handle_continue/2 → do_connect/5. Greppable, absent from public docs.
+  # `__resolve_targets_for_test__` pins the leaf-PICK (full RR set considered +
+  # shuffle); `__connect_with_rotation_for_test__` pins the connect TARGET shape
+  # (IP tuple, not hostname), the #89 SNI/hostname-check anchor, and
+  # rotate-on-fail — with an injected resolver + connect fun so no socket opens.
+  @spec __resolve_targets_for_test__(charlist(), :inet | :inet6, resolver_fun()) ::
+          [leaf_target(), ...]
+  def __resolve_targets_for_test__(host, fam, resolver), do: resolve_targets(host, fam, resolver)
+
+  @spec __connect_with_rotation_for_test__(
+          charlist(),
+          :inet.port_number(),
+          boolean(),
+          keyword(),
+          :inet | :inet6,
+          resolver_fun(),
+          connect_fun()
+        ) :: {:ok, :gen_tcp.socket() | :ssl.sslsocket()} | {:error, term()}
+  def __connect_with_rotation_for_test__(host, port, tls, bind_opts, fam, resolver, connect_fun) do
+    connect_with_rotation(host, port, tls, bind_opts, fam, %{
+      resolver: resolver,
+      connect_fun: connect_fun
+    })
+  end
 
   # Outbound v6 source-address selection.
   #

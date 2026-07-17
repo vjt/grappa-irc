@@ -23397,3 +23397,114 @@ _Deploy: **server + --cic**. SERVER change is a pure routing-table + function
 the deploy preflight's hot verdict before trusting it. cic changed
 (`Sidebar.tsx` badge + `default.css` comment + the two test files) → ALSO
 `--cic` (one SPA bundle hash, no BEAM restart). Run BOTH._
+
+---
+
+## 2026-07-17 — #271 (P0, grappa): outbound sessions all pin ONE v6 leaf — own the leaf choice (self-resolve AAAA + random pick + IP-tuple connect), rotate on fail
+
+**Symptom (P0, upstream-observed).** Every outbound grappa session (user +
+visitor) landed on the *same* upstream v6 leaf. Azzurra opers saw ~40 grappa
+connections all on one of `irc.azzurra.chat`'s two v6 leaves, zero on the
+other — no load distribution, and (the real damage) a **single leaf down takes
+every grappa session with it** instead of 1/N. Single point of failure on the
+bouncer side.
+
+**Root cause (verified against the code + prod DNS).** `Grappa.IRC.Client`
+handed the **hostname** to `:ssl.connect`/`:gen_tcp.connect`
+(`transport_connect/5` dialed `host = to_charlist(opts.host)`). With no inet
+override in `vm.args`, name resolution goes through the OS resolver =
+`getaddrinfo`, which applies **RFC-6724 destination-address sorting** (Rule 9:
+longest-prefix-match toward the source). With the source pool in
+`2a03:4000:2:33c::/64`, of azzurra's two AAAA (`2a01:4f8:201:2281:11::22`
+vs `2603:c027:17:f145::f35`) the same one wins the sort on **every** connect —
+regardless of the order DNS returns the records in. The DNS round-robin rotates
+server-side; the client threw the rotation away at the getaddrinfo sort.
+`resolve_and_ifaddr/1` *already* did `:inet_res.lookup(host, :in, :aaaa)` — but
+only as a presence check (`[_ | _]`), discarding the set and still dialing the
+hostname. #271 is that sibling gap: it resolved but never *picked*.
+
+Confirmed with data: `dig AAAA irc.azzurra.chat` → 2 members (multi-leaf);
+`irc.sniffo.org`/`irc.sindro.me` → a single AAAA (CNAME to one leaf), so the fix
+changes behavior only where multiple leaves exist — exactly azzurra.
+
+**Fix — grappa OWNS the leaf choice.** New `connect_with_rotation/6` between
+`source_bind/2` and the socket call:
+1. `resolve_targets/3` — for the family `source_bind/2` chose, resolve the full
+   RR set with the injected resolver (`:inet_res.lookup(host, :in, :aaaa | :a)`),
+   then `Enum.shuffle/1`. An **IP-literal host** short-circuits
+   (`:inet.parse_address` → `[ip]`, no DNS, nothing to rotate — this is what
+   keeps IP-literal upstreams and the `Grappa.IRCServer` harness, host
+   `"127.0.0.1"`, off the resolver). An **empty answer** falls back to `[host]`
+   (hand the hostname to the connect fun — no worse than pre-#271 for a host with
+   no record in that family).
+2. Dial the **IP tuple** as the connect target → bypasses the getaddrinfo
+   RFC-6724 sort entirely.
+3. `connect_rotating/7` tries the shuffled set in order; a dead leaf rolls to
+   the next member **before** the `:transient` give-up. On exhaustion the last
+   member's `{:error, reason}` is surfaced verbatim into the existing
+   connect-fail throttle + give-up chain (rotation never swallows a real
+   give-up). Three-clause recursive (collect-until-success), tail-recursive.
+
+Applies to **both** `source_bind/2` paths (pool `resolve_and_ifaddr/1` **and**
+the fixed-source `is_binary(source)` bind) — they share `do_connect/5` →
+`connect_with_rotation/6`, so pooled and fixed-source sessions both rotate.
+Total-consistency: one target-resolution path for both families and both source
+modes. (Minor accepted redundancy: the pool path's AAAA *presence* lookup in
+`resolve_and_ifaddr/1` and the AAAA *set* lookup in `resolve_targets/3` are two
+queries on reconnect — cheap, resolver-cached, backoff-paced; kept for ONE
+consistent target path rather than threading a second return shape out of
+`source_bind/2`.)
+
+**#89 TLS invariant PRESERVED (the explicit guard).** Dialing an IP tuple
+strips the hostname the TLS layer needs for SNI + RFC-6125 hostname
+verification. `transport_connect/7` keeps the two separate: `target` is the IP
+tuple we dial, `host` is the **original hostname** threaded into
+`tls_connect_opts/1`, so `server_name_indication: host` +
+`customize_hostname_check` (the `:https` match_fun) stay anchored to the
+hostname, never the IP. The picked leaf's cert (SAN `irc.azzurra.chat`)
+validates under `verify: :verify_peer` exactly as before. If SNI/hostname-check
+had followed the IP tuple, verify_peer would fail every TLS connect — hence the
+dedicated regression test.
+
+**DI shape.** Resolver + connect fun are injected via a `deps` map threaded
+through `do_connect/5` (real funs — `&:inet_res.lookup/3`, `&default_connect/5`
+— wired in `handle_continue/2`; NO runtime `Application.get_env`, no `\\`
+defaults). Tests substitute fakes through the `__resolve_targets_for_test__/3`
+and `__connect_with_rotation_for_test__/7` seams (mirroring the existing
+`__source_bind_for_test__/2` / `__tls_connect_opts_for_test__/1` convention) so
+the pure-ish connect logic is asserted without opening a socket.
+
+**RED→GREEN coverage** (`test/grappa/irc/client_test.exs`, describe "outbound
+leaf selection + rotation (#271)"):
+- **full set + rotation** — `resolve_targets` returns a permutation of the whole
+  AAAA set (no leaf silently dropped) and the head (leaf actually dialed) varies
+  across 64 rolls (RR no longer pinned).
+- **family** — `:inet6` queries AAAA, `:inet` queries A; IP-literal host dials
+  the literal with no resolver call; empty answer falls back to the hostname.
+- **IP-tuple target** — the TCP and TLS connect target is an IP 8-tuple from the
+  set, not the hostname.
+- **#89 guard (vjt-demanded)** — after the IP-tuple switch,
+  `server_name_indication` is still the original hostname charlist, the
+  `customize_hostname_check` 2-arity match_fun is still wired, and
+  `verify: :verify_peer` + `depth: 3` are untouched. Plus: the source-bind
+  `ifaddr` opts still ride through to the connect fun.
+- **rotate-on-fail** — first-pick connect failure retries a *different* member
+  before give-up; all-leaves-down surfaces the last `{:error, reason}` after
+  attempting every member.
+Proven RED on the branch (9 `UndefinedFunctionError` on the new seams, 104
+existing tests still green) → GREEN (113/0). Existing IRCServer integration
+tests exercise the real `default_connect` end-to-end through the IP-literal
+short-circuit.
+
+**Scope.** #271 (leaf-level, this change) only. vjt's issue comment folds #93
+(server-level failover: iterate `network_servers` rows by priority + backoff) as
+a joint work-unit — that touches the Networks context + session bring-up, well
+beyond #271's client.ex leaf-rotation proposal, so it is queued separately, not
+shipped here.
+
+_Deploy: **server HOT, no `--cic`, no config**. Pure function-body change to
+`lib/grappa/irc/client.ex` (no schema/struct/@type-inside-a-struct/migration, no
+config, no cic) → HOT-reload eligible; VERIFY the deploy preflight's hot verdict
+before trusting it. A HOT reload does NOT reconnect live sessions — the rotation
+applies to the NEXT (re)connect, which is expected + correct; the ExUnit is the
+proof, do not force-cold to "demonstrate" it._
