@@ -650,6 +650,83 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "terminate/2 — best-effort QUIT survives a socket-close race (#88)" do
+    # #88 tail: `terminate(:shutdown, state)` sends a graceful QUIT via
+    # `Client.send_quit/2` → `GenServer.call(client, {:send, "QUIT ..."})`.
+    # When the upstream socket has just closed, the linked `IRC.Client`
+    # stops with `:tcp_closed` / `:ssl_closed`
+    # (`Client.handle_info({:tcp_closed | :ssl_closed, _}) → {:stop, _}`).
+    # If that stop lands while the QUIT call is in flight, the call exits
+    # with `{:tcp_closed | :ssl_closed, {GenServer, :call, _}}`. Pre-fix the
+    # `terminate/2` catch allowlist covered `:noproc | :timeout | :normal |
+    # :shutdown` but NOT the socket-close reasons, so a best-effort QUIT
+    # crash-logged `GenServer ... terminating ... server.ex:NNN
+    # Session.Server.terminate/2` on every deploy/shutdown that raced a
+    # socket close (the exact #88 driver — reproduced 10× in one clean
+    # `server_test.exs` run on a8e34bca). A best-effort QUIT against an
+    # already-gone socket must be a no-op, not a terminate crash.
+
+    for reason <- [:tcp_closed, :ssl_closed] do
+      test "terminate(:shutdown) treats a #{inspect(reason)} QUIT-call exit as a no-op, not a crash" do
+        reason = unquote(reason)
+        {server, port} = start_server()
+        {user, network, _} = setup_user_and_network(port)
+        pid = start_session_for(user, network)
+        :ok = await_handshake(server)
+
+        # Model the production race: swap the linked Client for a bare
+        # (unlinked, non-GenServer) process that, on the first {:send, _}
+        # GenServer.call (the QUIT), dies with the socket-close reason
+        # WITHOUT replying — the same effect as IRC.Client's `{:stop,
+        # reason, _}` on socket close. The caller's GenServer.call then
+        # exits `{reason, {GenServer, :call, _}}`, the term that pre-fix
+        # escaped terminate/2's catch. A plain process exits silently, so
+        # no stray error log muddies the assertion.
+        test_pid = self()
+
+        stub =
+          spawn(fn ->
+            receive do
+              {:"$gen_call", _, {:send, _}} ->
+                send(test_pid, :quit_call_received)
+                exit(reason)
+            end
+          end)
+
+        :sys.replace_state(pid, fn state -> %{state | client: stub} end)
+
+        ref = Process.monitor(pid)
+        Process.flag(:trap_exit, true)
+
+        log =
+          capture_log(fn ->
+            # GenServer.stop drives terminate(:shutdown). If terminate
+            # crashes on the uncaught exit the process dies with the crash
+            # reason (≠ :shutdown) and GenServer.stop re-raises it here —
+            # catch so the test process survives to inspect the log.
+            try do
+              GenServer.stop(pid, :shutdown, 1_000)
+            catch
+              :exit, _ -> :ok
+            end
+
+            # Second, log-format-independent discriminator: post-fix the
+            # session exits with the requested `:shutdown` reason; pre-fix
+            # the terminate crash means it exits with the (uncaught) socket-
+            # close reason instead, so this pattern would not match.
+            assert_receive {:DOWN, ^ref, :process, ^pid, :shutdown}, 1_000
+          end)
+
+        assert_receive :quit_call_received, 1_000
+
+        refute log =~ "Session.Server.terminate/2",
+               "terminate(:shutdown) crash-logged on a #{inspect(reason)} QUIT-call " <>
+                 "exit — the best-effort QUIT must swallow the socket-already-gone " <>
+                 "reason, not crash terminate/2 (#88)"
+      end
+    end
+  end
+
   describe "cancel_and_drain/2 — stale-fire mailbox drain (lifecycle review HIGH S3)" do
     # Process.cancel_timer/1 returns false when the timer has already
     # delivered its message. Without a follow-up selective receive, that
