@@ -23243,3 +23243,65 @@ still passes unchanged.
 
 _Deploy: **--cic, client-only** (cicchetto TopicBar + default.css only; no
 `lib/` change, no wire event, no migration, no BEAM restart)._
+
+---
+
+## 2026-07-17 — #278 (P1, cic): mobile next-active circle overlapped the send button, keyboard-open
+
+**Regression from #264.** #264 reshaped the mobile "jump to next active
+window" affordance (`NextActiveButton` variant="mobile") into a keyboard-safe
+`position: fixed` CIRCLE anchored off `--viewport-height`, and — fork B —
+bumped `--nab-lift` from `0.75rem` to `4rem` when a text field is focused (the
+keyboard-open signal) so the circle "clears the bottom bar." vjt hit the
+regression live on device (screenshot): with the keyboard **open** the circle
+sat **on top of the compose send button**; keyboard **closed** it was fine.
+
+**Root cause.** `4rem` clears ONLY the `.bottom-bar` (`min-height: 3rem`). But
+the `.compose-box` (~3.5rem — a `rows=1` textarea + padding; it never grows,
+`resize: none` scrolls a long draft internally) stacks ON TOP of the bottom
+bar, and the send `<button>` is an in-flow flex child of it with **no stacking
+context**. So the `4rem` lift dropped the `z-index: 40` circle squarely into
+the compose-row band on the shared **right** edge — ~29px of vertical overlap
+covering the send button, so a tap near send hit the wrong target. Keyboard
+closed (`--nab-lift: 0.75rem`) the circle floats over the bottom bar, not the
+compose row → no collision, which is why only the keyboard-open state broke.
+
+**Decision — forward-fix, NOT a revert.** Reverting #264 re-buries the circle
+under the on-screen keyboard (the original #264 bug). The 20% #264 got wrong
+was the lift MAGNITUDE, not the mechanism. Fix rides the SAME existing
+keyboard-open signal (`.shell-mobile:has(textarea:focus, input:focus)` — no
+parallel tracker invented): the focused `--nab-lift` goes `4rem → 8rem`
+(`3rem` bottom bar + `~3.5rem` compose box + margin), so the circle rides
+clearly ABOVE the send button while staying reachable/on-screen. The compose
+textarea's `rows=1` + `resize: none` (fixed height, scrolls internally) and
+the bottom bar's stable `min-height: 3rem` make the fixed `8rem` robust — no
+realistic focused state re-introduces the overlap, and on a real
+keyboard-shrunk `--viewport-height` the circle still lands above the compose
+row and well on-screen. Pure CSS — one rule value + comment; no markup / wire
+/ component change, so the count / auto-hide / jump wiring and every vitest are
+untouched. Considered + rejected: (a) raising the send button's `z-index`
+(leaves the two still visually stacked — a tap ambiguity, not a fix); (b)
+adding a `transform` to `.shell-mobile` to make it a containing block (would
+break #264's viewport-anchored keyboard-ride — explicitly forbidden by the
+Shell.tsx #264 comment); (c) moving the circle to bottom-LEFT (collides with
+the paperclip upload button / covers the textarea).
+
+**e2e coverage (RED→GREEN, real-browser).**
+`e2e/tests/issue278-next-active-send-overlap.spec.ts` (@webkit-iphone-15 — the
+only place `variant="mobile"` mounts; jsdom/vitest is blind to layout geometry
+and the `:has(...:focus)` branch). Reuses #264/#235's seeding (a peer accrues
+one unread channel window while focus is parked on the neutral `$server`
+window, which mounts a compose box) and the ux-6-f send-button a11y selector
+(`getByRole("button", {name:/send message/i})`). Drives the app's OWN
+keyboard-open signal — focus the compose textarea (headless WebKit raises no
+soft keyboard, so `--viewport-height` does not shrink; the `:has(...:focus)`
+lift IS the observable branch, same as #264/#235). Anti-false-green: the
+button is asserted PRESENT (count "1") before any geometry is measured. Then
+asserts the axis-aligned intersection area of the next-active circle and the
+send button is **0**, and the circle stays fully on-screen (top ≥ 0, bottom ≤
+viewport height). Proven RED on current main (overlap **1258px²**) and GREEN
+with the fix (overlap **0**).
+
+_Deploy: **--cic, client-only** (cicchetto `default.css` focus-lift value +
+comment + the new e2e spec only; no `lib/` change, no wire event, no
+migration, no BEAM restart)._
