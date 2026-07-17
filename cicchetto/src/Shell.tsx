@@ -831,10 +831,18 @@ const Shell: Component = () => {
 
         <BottomBar />
 
-        {/* GH #235 — "jump to next active window" affordance, floating
-            over the RIGHT edge of the bottom bar. Self-hides when
-            nothing is unread. */}
-        <NextActiveButton variant="mobile" />
+        {/* GH #235 — "jump to next active window" affordance (mobile).
+            #280: on scrollback windows (channel/query/server) it renders
+            INSIDE ScrollbackPane's float stack — stacked with
+            scroll-to-bottom, anchored to the message container. Here it
+            covers the NON-scrollback windows (home / mentions / list /
+            admin), which have no pane to anchor to and no scroll-to-bottom
+            to collide with, keeping the viewport-fixed placement.
+            Mutually exclusive via `kindHasScrollback` so exactly one
+            mobile next-active mounts. Self-hides when nothing is unread. */}
+        <Show when={!kindHasScrollback(selKind())}>
+          <NextActiveButton variant="mobile" />
+        </Show>
 
         {/* UX-2 (2026-05-17) — Mobile archive overlay. Mounted ONLY
             in the mobile branch (desktop uses Sidebar's per-network

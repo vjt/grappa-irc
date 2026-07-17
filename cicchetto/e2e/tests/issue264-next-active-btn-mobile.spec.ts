@@ -25,10 +25,18 @@
 //         (`position: absolute`) not an inline pill segment.
 //   (ii)  ≥44px tap target: width ≥ 44 AND height ≥ 44 (the pre-fix pill is
 //         ~20px tall → FAILS).
-//   (iii) RIDE-ABOVE wiring: focusing the compose box drives the
-//         `.shell-mobile:has(...:focus)` reposition → the button's rect top
-//         moves UP vs unfocused. Proves the focus-react wiring in a real
-//         browser (the pre-fix button has no focus rule → does not move).
+//
+// #280 SUPERSEDED leg (iii). On scrollback windows (channel/query/server —
+// incl. the `$server` window parked below) next-active no longer rides up
+// via `.shell-mobile:has(...:focus)`: it renders in ScrollbackPane's float
+// stack, `position: static`, ANCHORED to the message container, so it stays
+// CONSTANT relative to the pane across keyboard toggles (the pane already
+// rides above the compose box + soft keyboard). #264's keyboard-safety
+// requirement is preserved by that pane-anchoring, and the new
+// constant-relative-to-container wiring is proven by
+// `issue280-button-coexist.spec.ts`. This spec retains #264's SHAPE
+// contract (legs i + ii — circle / ≥44px / corner badge), which #280
+// preserves; the ride-up leg is REMOVED (superseded), not weakened.
 //
 // NOT reproducible here (device-only, deferred): the ACTUAL soft-keyboard
 // geometry (visualViewport shrink → `--viewport-height` change → button
@@ -44,7 +52,7 @@
 // one line while vjt's focus is parked on the neutral $server window, so the
 // channel accrues unread; the peer disconnects in `finally`.
 
-import { composeTextarea, loginAs, selectChannel, sidebarMessageBadge } from "../fixtures/cicchettoPage";
+import { loginAs, selectChannel, sidebarMessageBadge } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { assertMessagePersisted } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -60,10 +68,6 @@ const CHANNEL_LINE = "264 ordinary channel traffic";
 const MIN_TAP_PX = 44;
 // The circle is width === height; allow sub-pixel + 1px border slack.
 const SQUARE_TOLERANCE_PX = 1.5;
-// The focus reposition lifts the button clear of the bottom bar (~3rem +
-// gap ≈ 45px at --font-size 14px); require a clear upward move to prove the
-// wiring without being brittle about the exact px.
-const MIN_FOCUS_LIFT_PX = 30;
 
 interface BtnMetrics {
   width: number;
@@ -103,7 +107,7 @@ function isRound(borderRadius: string, width: number): boolean {
   return Number.parseFloat(first) >= width / 2 - 1;
 }
 
-test("#264 @webkit — mobile next-active button is a keyboard-safe circle that rides up on focus", async ({
+test("#264 @webkit — mobile next-active button is a keyboard-safe circle (≥44px, corner badge)", async ({
   page,
 }) => {
   const vjt = getSeededVjt();
@@ -162,15 +166,12 @@ test("#264 @webkit — mobile next-active button is a keyboard-safe circle that 
       `count must be an absolutely-positioned corner badge, got position: ${unfocused.countPosition}`,
     ).toBe("absolute");
 
-    // --- Leg (iii): RIDE-ABOVE wiring. Focusing the compose box drives the
-    // `.shell-mobile:has(...:focus)` reposition → the button moves UP.
-    await composeTextarea(page).focus();
-    await expect
-      .poll(async () => (await measureButton(page)).top, {
-        message: `button rect top must move UP by ≥ ${MIN_FOCUS_LIFT_PX}px when the compose box is focused (was ${unfocused.top}px)`,
-        timeout: 5_000,
-      })
-      .toBeLessThanOrEqual(unfocused.top - MIN_FOCUS_LIFT_PX);
+    // Leg (iii) — RIDE-ABOVE wiring — REMOVED: #280 superseded the
+    // viewport-fixed `:has(textarea:focus)` lift on scrollback windows
+    // (incl. this `$server` parked window). next-active now sits in
+    // ScrollbackPane's pane-anchored float stack (position: static), so it
+    // does NOT move on focus — it stays constant relative to the message
+    // container, which `issue280-button-coexist.spec.ts` asserts directly.
   } finally {
     await peer.disconnect("264 done").catch(() => {});
   }

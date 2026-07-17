@@ -23891,3 +23891,84 @@ unlock after reload is verified by vjt, not CI.
 _Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
 change in `ScrollbackPane.tsx` + tests. No server, no schema, no config, no
 CSS._
+
+---
+
+### 2026-07-17 — #280 (P1, cic): "next" + scroll-to-bottom buttons coexist via a shared, container-anchored float stack
+
+Follow-up to #264/#278 (the mobile "jump to next active window" affordance).
+With the on-screen keyboard open the "next" circle **overlapped** the
+scroll-to-bottom button, the two were **different sizes**, and "next" **jumped**
+on keyboard show/hide.
+
+**Root cause — two independent anchors, two reference frames.** The two floating
+buttons were owned by DIFFERENT components and positioned INDEPENDENTLY:
+
+- **scroll-to-bottom** — rendered inside `ScrollbackPane`, `position: absolute`
+  to `.scrollback-pane` (the message container), `bottom: 0.75rem`, a 2rem
+  square.
+- **next-active (mobile)** — mounted in `Shell`, `position: fixed` to the
+  VISUAL VIEWPORT, `top: viewport-height − 3.5rem − --nab-lift`, a 3.5rem
+  circle, with a DISCRETE `--nab-lift: 8rem` bump when a text field is focused
+  (`.shell-mobile:has(textarea:focus)` — the keyboard-open signal, from #264/
+  #278).
+
+Keyboard-open → the 8rem focus-lift shoved the viewport-fixed circle UP into
+scroll-to-bottom's band on the shared right edge → overlap. The e2e even
+measured overlap keyboard-CLOSED (next-active `y498–547` vs scroll-to-bottom
+`y528–556`) and the size split (49px vs 28px = 3.5rem vs 2rem). There was no
+shared floating-button layer; the keyboard shift of one anchor collided it with
+the other.
+
+**Fix — one container-anchored float stack, owned by ScrollbackPane.** Weighed
+against the alternative (coordinate the two existing components' bottom offsets
+off a shared CSS var): that CANNOT satisfy the issue's item-1 requirement
+("position CONSTANT relative to the message container, no jump on keyboard").
+Viewport-anchoring fundamentally NEEDS a keyboard lift to clear the compose box
+(the #278 fix), and any such lift IS the jump item-1 forbids. Only anchoring to
+the message container delivers constancy — so the fork resolves to a shared
+stack, not coordinated offsets. `ScrollbackPane` already owns the scroll
+container and is the single scroll authority (CLAUDE.md) → the natural owner of
+a bottom-right floating stack (`.scrollback-float-stack`, `position: absolute`
+in `.scrollback-pane`, flex-column, `align-items: flex-end`, `gap`). Both
+buttons render into it as an evenly-spaced, right-aligned, same-size pair, with
+"next" ABOVE scroll-to-bottom (moved up to clear it). Because the stack is
+anchored to the pane — which rides above the compose box + soft keyboard — both
+positions are constant relative to the message container regardless of keyboard
+state; the `:has(textarea:focus)` lift is neutralized inside the stack via
+`.scrollback-float-stack .next-active-btn-mobile { position: static }` (the lift
+only affects `top`, inert under static) — NO new variant, and the viewport-fixed
+placement survives untouched for the non-scrollback path.
+
+- **One component, N placements (no regression).** `NextActiveButton` keeps its
+  single-component contract: desktop → sidebar (variant desktop, unchanged);
+  mobile scrollback windows (channel/query/server) → the pane's float stack;
+  mobile NON-scrollback windows (home/mentions/list/admin — no pane to anchor
+  to, no scroll-to-bottom to collide with) → Shell's viewport-fixed mount,
+  gated `Show when={!kindHasScrollback(selKind())}` so exactly one mobile
+  next-active ever mounts.
+- **Size parity (item 4).** scroll-to-bottom bumped to the next-active circle's
+  box (3.5rem / 48px HIG floor) on mobile only (`.shell-mobile` scope); desktop
+  keeps 2rem (next-active is in the sidebar there, not adjacent).
+- **Badge color (item 3) derives from the EXISTING tier — #267 deferred.**
+  `activeWindows.nextActiveKind()` classifies the ordered-list HEAD via the
+  SHARED `isPriorityWindow` predicate (extracted from `orderUnreadWindows` so
+  the two can never diverge): RED (`--mode-op`) when the next target is a query
+  (DM) OR carries a mention (tier 0), BLUE (`--accent`) for an ordinary channel
+  (tier 1). The issue's note that the counter "should be the server-side
+  mention/activity counter — see #267" is orthogonal: the COLOR needs the
+  target's KIND, which is derivable client-side today; #267's client→server
+  counter-provenance migration is a separate domain and stays with #267.
+
+**Apply:** two floating affordances over the same edge belong in ONE
+container-anchored stack owned by the scroll authority — never two
+independently-anchored fixed/absolute boxes off different reference frames (the
+keyboard shift of one WILL collide the other). When a badge needs a
+color/semantic that maps to an existing tier, derive it from the tier's single
+source of truth (shared predicate), don't mint a parallel counter. A new
+floating button in the scrollback zone goes into `.scrollback-float-stack`, not
+a fresh `position: fixed` anchor.
+
+_Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure client
+change (`activeWindows.ts` + `NextActiveButton.tsx` + `ScrollbackPane.tsx` +
+`Shell.tsx` + `themes/default.css` + tests). No server, no schema, no config._

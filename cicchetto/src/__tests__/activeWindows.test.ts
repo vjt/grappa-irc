@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { type ActiveWindow, orderUnreadWindows } from "../lib/activeWindows";
+import {
+  type ActiveWindow,
+  classifyNextActive,
+  isPriorityWindow,
+  orderUnreadWindows,
+} from "../lib/activeWindows";
 import { type ChannelKey, channelKey } from "../lib/channelKey";
 
 // GH #235 — pure ordering for the "jump to next active window" (Alt+A)
@@ -172,5 +177,60 @@ describe("orderUnreadWindows", () => {
       activityId: {},
     });
     expect(names(out)).toEqual(["#o"]);
+  });
+});
+
+// #280 — the "next" badge COLOR derives from the TIER of the highest-
+// priority pending window (the ordered-list HEAD): RED (priority) when
+// that window is a query (DM) OR carries a mention; BLUE (normal) when it
+// is an ordinary channel. The tier predicate is SHARED with
+// orderUnreadWindows (isPriorityWindow) so the badge color can never
+// disagree with the ordering / auto-hide. #267's client→server mention-
+// counter migration is orthogonal (the color needs the target's KIND,
+// not the provenance of the count) and is deferred to #267.
+
+describe("isPriorityWindow", () => {
+  it("a query (DM) window is priority regardless of mentions", () => {
+    expect(isPriorityWindow(query("bob"), {})).toBe(true);
+  });
+
+  it("a channel with mentions > 0 is priority", () => {
+    const m = chan("#ment");
+    expect(isPriorityWindow(m, counts([[m, 1]]))).toBe(true);
+  });
+
+  it("a plain channel with no mention entry is not priority", () => {
+    expect(isPriorityWindow(chan("#plain"), {})).toBe(false);
+  });
+
+  it("a channel with a zero mention entry is not priority", () => {
+    const c = chan("#c");
+    expect(isPriorityWindow(c, counts([[c, 0]]))).toBe(false);
+  });
+});
+
+describe("classifyNextActive", () => {
+  it("returns null when the ordered list is empty", () => {
+    expect(classifyNextActive([], {})).toBeNull();
+  });
+
+  it("priority when the head is a query (DM)", () => {
+    expect(classifyNextActive([query("bob"), chan("#a")], {})).toBe("priority");
+  });
+
+  it("priority when the head is a mentioned channel", () => {
+    const ment = chan("#ment");
+    expect(classifyNextActive([ment, chan("#a")], counts([[ment, 2]]))).toBe("priority");
+  });
+
+  it("normal when the head is an ordinary channel", () => {
+    expect(classifyNextActive([chan("#a"), chan("#b")], {})).toBe("normal");
+  });
+
+  it("classifies the HEAD only — trusts the list is already tier-ordered", () => {
+    // A deliberately mis-ordered list (normal head, priority tail): the fn
+    // reads the head, so it reports "normal". Ordering is orderUnreadWindows'
+    // job; this documents that classifyNextActive does not re-scan.
+    expect(classifyNextActive([chan("#a"), query("bob")], {})).toBe("normal");
   });
 });

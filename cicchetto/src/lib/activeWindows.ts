@@ -70,6 +70,16 @@ export type OrderInput = {
   activityId: Record<ChannelKey, number>;
 };
 
+// Tier-0 predicate: a window is "priority" when it is a query (DM) OR
+// carries a mention/highlight. The single source of truth for the tier
+// distinction, shared by `orderUnreadWindows` (tier assignment) and
+// `classifyNextActive` (#280 badge color) so the two can never diverge —
+// derive, don't duplicate (CLAUDE.md).
+export function isPriorityWindow(w: ActiveWindow, mentions: Record<ChannelKey, number>): boolean {
+  const key = channelKey(w.networkSlug, w.channelName);
+  return w.kind === "query" || (mentions[key] ?? 0) > 0;
+}
+
 // Pure ordering. Filter to windows with unread activity, then sort:
 //   1. tier — mention/highlight OR query (DM) come first (0), ordinary
 //      channel traffic second (1);
@@ -82,11 +92,10 @@ export function orderUnreadWindows(input: OrderInput): ActiveWindow[] {
   const ranked = candidates
     .map((w, flatIndex) => {
       const key = channelKey(w.networkSlug, w.channelName);
-      const isTierZero = w.kind === "query" || (mentions[key] ?? 0) > 0;
       return {
         window: w,
         unread: unread[key] ?? 0,
-        tier: isTierZero ? 0 : 1,
+        tier: isPriorityWindow(w, mentions) ? 0 : 1,
         activityId: activityId[key] ?? 0,
         flatIndex,
       };
@@ -100,6 +109,23 @@ export function orderUnreadWindows(input: OrderInput): ActiveWindow[] {
   });
 
   return ranked.map((r) => r.window);
+}
+
+// #280 — the "next" badge color reflects the KIND of the highest-priority
+// pending window (the ordered-list HEAD, since orderUnreadWindows sorts
+// tier-0 first): "priority" (RED) when that window is a query (DM) or
+// carries a mention, "normal" (BLUE) when it is an ordinary channel, null
+// when nothing is pending. Pure: takes the already-ordered list + the same
+// mention map, so it can never disagree with the ordering / auto-hide.
+export type NextActiveKind = "priority" | "normal";
+
+export function classifyNextActive(
+  ordered: ActiveWindow[],
+  mentions: Record<ChannelKey, number>,
+): NextActiveKind | null {
+  const head = ordered[0];
+  if (!head) return null;
+  return isPriorityWindow(head, mentions) ? "priority" : "normal";
 }
 
 // Flat candidate list mirroring the sidebar/bottom-bar window order:
@@ -156,6 +182,15 @@ export const activeWindows = root.activeWindows;
 export const hasActiveWindows = (): boolean => activeWindows().length > 0;
 
 export const activeWindowCount = (): number => activeWindows().length;
+
+// #280 — reactive badge KIND for the on-screen affordance. Reads the same
+// live signals as the count / auto-hide (activeWindows + mentionCounts),
+// so the color is derived from ONE source and can never drift. Returns
+// null when nothing is pending (button auto-hidden anyway). #267's
+// client→server mention-counter migration is orthogonal (the color needs
+// the target's KIND, not the count's provenance) — deferred to #267.
+export const nextActiveKind = (): NextActiveKind | null =>
+  classifyNextActive(activeWindows(), mentionCounts());
 
 // Advance selection to the next (dir = 1) or previous (dir = -1) window
 // with unread activity, wrapping. Untracked: callers are event handlers
