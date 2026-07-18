@@ -25728,3 +25728,64 @@ MEDIUM (S6) and the S27 demotion residual.
   AdminChannel keeps its snapshot-at-connect design. Bearer sessions
   are NOT revoked — demotion is a privilege change, not a credential
   compromise.
+## 2026-07-18 — #247: /notify presence watch (MONITOR/WATCH), server-side list
+
+External contribution (gabrielemarrone). Implements the design captured in
+GH #247 verbatim where possible; the deltas below are the decisions the
+issue text left open (or that repo invariants overruled) and WHY.
+
+### What shipped (v1 = the issue's own "Suggested v1")
+
+`/notify [list | add … | del … | clear]` + Watched panel; DB-owned list per
+(subject, network) in `notify_entries` (`Grappa.Notify` context); session-side
+arm at end-of-MOTD with MONITOR (solanum/Libera) or WATCH (bahamut/Azzurra)
+picked from 005; authoritative presence map on `Session.Server` state;
+`presence_changed` / `presence_error` / `presence_snapshot` + `notify_list`
+wire events on `Topic.user`; snapshot-on-attach at user-topic after-join;
+REST surface `/networks/:network_id/notify` with the live-sync diff
+(`Session.notify_changed/4`). **ISON polling fallback deferred** (phase 2 per
+the issue) — a no-mechanism network logs honestly and keeps `:unknown` dots.
+
+### Decisions the issue left open
+
+* **Arm slot is 376/422 (end-of-MOTD), NOT the 001 JOIN-replay slot** the
+  issue suggested. 005 arrives AFTER 001, and the MONITOR-vs-WATCH pick needs
+  the ISUPPORT tokens; end-of-MOTD is the earliest reliable post-005 point.
+  A `presence_armed` latch keeps an explicit mid-session `/motd` (which
+  re-fires 376) from re-sending the burst. Reconnect re-arm is free: socket
+  drop crashes the session, `:transient` restart replays 001→005→376.
+* **Storage is subject-XOR (user_id XOR visitor_id)**, not the issue's
+  "account_id" — repo shape (`query_windows` twin: inline CHECK because
+  SQLite can't ALTER TABLE ADD CONSTRAINT, rfc1459-folded partial unique
+  expression indexes per #121, CASCADE on visitor reap).
+* **Fold is rfc1459 everywhere**, not per-network CASEMAPPING as the issue
+  sketched — #121 made rfc1459 THE server-wide fold invariant; a per-network
+  fold would fork the identity rule. cic mirrors the fold for presence-map
+  KEYS ONLY (`rfc1459Fold` in `notifyWatch.ts`, documented against the
+  `normalizeNick` ascii tradeoff — without it bracket-nick dots never light).
+* **Baseline-vs-transition lives in the map, not the numeric**: first report
+  on an `:unknown` entry is `initial: true` (dot only), a flip is a
+  toast-eligible transition. 604/600 (and 730 batches) therefore need no
+  special-casing — the issue's "no notification storm on bulk add" falls out
+  of the state machine.
+* **Numeric routing**: 730/731/600/601/602/604/605 are NumericRouter-delegated
+  (per-transition noise; WATCH's nick-shaped params[1] would misroute to query
+  windows — the #221 WHOIS-leg disease). The error numerics 734/512 are NOT
+  delegated: raw text stays visible on `$server` AND a typed `presence_error`
+  goes out (never a silent drop on a full list). 512 is gated on an armed
+  WATCH because other ircds reuse the numeric.
+* **Boundary**: `Grappa.Notify` takes `Networks.Network` as a dirty_xref (FK
+  only) — a full dep would close the cycle Session → Notify → Networks →
+  LiveIntrospection → Session created by the session's arm-time list read.
+* **Watched panel has NO add-input**: the home pane is input-free by pinned
+  design (HomePane.test "no compose / input affordance"). Panel = dots +
+  remove; adding is `/notify add`. Flagged in the PR for maintainer judgment.
+
+### Known limitations (documented in the issue)
+
+Nick-keyed, not account-keyed — a watched nick that renames reads offline
+(extended-monitor is a future upgrade). MONITOR/WATCH limits are enforced by
+the server only; grappa surfaces the rejection rather than pre-clamping.
+
+_Deploy: **COLD** — new migration (`notify_entries`) + `Session.Server`
+state-shape change (presence fields) + cic bundle._

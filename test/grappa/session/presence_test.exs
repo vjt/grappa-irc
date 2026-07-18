@@ -50,9 +50,8 @@ defmodule Grappa.Session.PresenceTest do
                   max_length: 200
                 )
             ) do
-        rendered =
-          Presence.arm_commands({:monitor, :unlimited}, nicks)
-          |> Enum.flat_map(fn "MONITOR + " <> targets -> String.split(targets, ",") end)
+        lines = Presence.arm_commands({:monitor, :unlimited}, nicks)
+        rendered = Enum.flat_map(lines, fn "MONITOR + " <> targets -> String.split(targets, ",") end)
 
         assert rendered == nicks
       end
@@ -73,25 +72,25 @@ defmodule Grappa.Session.PresenceTest do
     end
 
     test "first report on an :unknown entry is :initial (baseline, no toast)" do
-      map = Presence.seed(["Foo"])
+      seeded = Presence.seed(["Foo"])
 
-      assert {:changed, :initial, map} = Presence.apply_report(map, "Foo", :online)
-      assert map == %{"foo" => :online}
+      assert {:changed, :initial, reported} = Presence.apply_report(seeded, "Foo", :online)
+      assert reported == %{"foo" => :online}
     end
 
     test "a genuine flip is :transition (toast-eligible)" do
-      map = Presence.seed(["Foo"])
-      {:changed, :initial, map} = Presence.apply_report(map, "Foo", :online)
+      seeded = Presence.seed(["Foo"])
+      {:changed, :initial, online} = Presence.apply_report(seeded, "Foo", :online)
 
-      assert {:changed, :transition, map} = Presence.apply_report(map, "foo", :offline)
-      assert map == %{"foo" => :offline}
+      assert {:changed, :transition, flipped} = Presence.apply_report(online, "foo", :offline)
+      assert flipped == %{"foo" => :offline}
     end
 
     test "duplicate reports dedupe to :unchanged" do
-      map = Presence.seed(["Foo"])
-      {:changed, :initial, map} = Presence.apply_report(map, "Foo", :online)
+      seeded = Presence.seed(["Foo"])
+      {:changed, :initial, online} = Presence.apply_report(seeded, "Foo", :online)
 
-      assert Presence.apply_report(map, "FOO", :online) == :unchanged
+      assert Presence.apply_report(online, "FOO", :online) == :unchanged
     end
 
     test "reports fold rfc1459 (Foo[1] report matches foo{1} entry)" do
@@ -107,11 +106,11 @@ defmodule Grappa.Session.PresenceTest do
 
   describe "track/2 + untrack/2" do
     test "track adds :unknown entries without clobbering known state" do
-      map = Presence.seed(["Foo"])
-      {:changed, :initial, map} = Presence.apply_report(map, "Foo", :online)
+      seeded = Presence.seed(["Foo"])
+      {:changed, :initial, online} = Presence.apply_report(seeded, "Foo", :online)
 
-      map = Presence.track(map, ["FOO", "Bar"])
-      assert map == %{"foo" => :online, "bar" => :unknown}
+      tracked = Presence.track(online, ["FOO", "Bar"])
+      assert tracked == %{"foo" => :online, "bar" => :unknown}
     end
 
     test "untrack drops fold-matched entries" do

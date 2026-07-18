@@ -193,28 +193,26 @@ defmodule Grappa.Session.ISupportTest do
       # Whichever 005 line order the tokens arrive in, MONITOR (the
       # IRCv3 push mechanism) is preferred over legacy WATCH.
       params = ["grappa-test", "WATCH=128", "MONITOR=100"]
-      isupport = ISupport.merge_isupport(params, ISupport.default())
-      assert ISupport.presence_mechanism(isupport) == {:monitor, 100}
+      one_line = ISupport.merge_isupport(params, ISupport.default())
+      assert ISupport.presence_mechanism(one_line) == {:monitor, 100}
 
       # Reversed order across two merge passes (multi-line 005).
-      isupport =
+      two_lines =
         ISupport.default()
         |> then(&ISupport.merge_isupport(["grappa-test", "MONITOR=100"], &1))
         |> then(&ISupport.merge_isupport(["grappa-test", "WATCH=128"], &1))
 
-      assert ISupport.presence_mechanism(isupport) == {:monitor, 100}
+      assert ISupport.presence_mechanism(two_lines) == {:monitor, 100}
     end
 
     test "malformed limit values fall back to :unlimited" do
       # `MONITOR=` (empty) and `WATCH=abc` (non-numeric) advertise the
       # mechanism without a parseable limit — arm it, don't reject it.
-      params = ["grappa-test", "MONITOR="]
-      isupport = ISupport.merge_isupport(params, ISupport.default())
-      assert ISupport.presence_mechanism(isupport) == {:monitor, :unlimited}
+      empty_monitor = ISupport.merge_isupport(["grappa-test", "MONITOR="], ISupport.default())
+      assert ISupport.presence_mechanism(empty_monitor) == {:monitor, :unlimited}
 
-      params = ["grappa-test", "WATCH=abc"]
-      isupport = ISupport.merge_isupport(params, ISupport.default())
-      assert ISupport.presence_mechanism(isupport) == {:watch, :unlimited}
+      alpha_watch = ISupport.merge_isupport(["grappa-test", "WATCH=abc"], ISupport.default())
+      assert ISupport.presence_mechanism(alpha_watch) == {:watch, :unlimited}
     end
 
     test "presence_mechanism/1 is :none on a table predating the fields (hot-reload safety)" do

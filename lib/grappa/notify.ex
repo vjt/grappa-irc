@@ -198,7 +198,8 @@ defmodule Grappa.Notify do
   """
   @spec clear_all_for_user(Ecto.UUID.t()) :: :ok
   def clear_all_for_user(user_id) when is_binary(user_id) do
-    Repo.delete_all(from(e in Entry, where: e.user_id == ^user_id))
+    query = from(e in Entry, where: e.user_id == ^user_id)
+    Repo.delete_all(query)
     :ok
   end
 
@@ -236,7 +237,7 @@ defmodule Grappa.Notify do
           Subject.t(),
           integer()
         ) :: {:ok, [Entry.t()]} | {:error, Ecto.Changeset.t()}
-  defp traverse_inserts([], acc, _subject, _network_id), do: {:ok, Enum.reverse(acc)}
+  defp traverse_inserts([], acc, _, _), do: {:ok, Enum.reverse(acc)}
 
   defp traverse_inserts([{cs, nick} | rest], acc, subject, network_id) do
     case insert_one(cs, subject, network_id, nick) do
@@ -326,7 +327,9 @@ defmodule Grappa.Notify do
         changeset
 
       id ->
-        if Repo.exists?(from(row in schema, where: row.id == ^id)) do
+        query = from(row in schema, where: row.id == ^id)
+
+        if Repo.exists?(query) do
           changeset
         else
           Ecto.Changeset.add_error(changeset, error_field, "does not exist")
