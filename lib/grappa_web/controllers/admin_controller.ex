@@ -105,7 +105,7 @@ defmodule GrappaWeb.AdminController do
         send_resp(conn, :no_content, "")
 
       hash when is_binary(hash) ->
-        payload = CicWire.bundle_hash(hash)
+        payload = CicWire.bundle_hash(hash, CicBundle.current_version())
         user_names = WSPresence.list_user_names()
         attempted = length(user_names)
 
