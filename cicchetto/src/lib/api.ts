@@ -738,6 +738,17 @@ export type QueryWindowEntry = {
   opened_at: string;
 };
 
+// #247 — one /notify watch-list entry (Notify.Wire `entry/0`,
+// codegen-pinned by `_Assert_NotifyEntry`). `nick` is the display form
+// (first-add-wins); `network_id` is redundant on cic (map key) but
+// pins the type to the generated `NotifyWireEntry` — same S43 rationale
+// as `QueryWindowEntry` above.
+export type NotifyEntry = {
+  network_id: number;
+  nick: string;
+  added_at: string;
+};
+
 // Per-message item in the `mentions_bundle` payload (Session.Wire
 // `mentions_bundle_message/0`). Deliberately stripped vs
 // `ScrollbackMessage`: no id/network/meta — the bundle is a
@@ -1141,7 +1152,33 @@ export type WireUserEvent =
   // NOT the durable `connection_state` — that stays `connected` through a
   // transient reconnect; the badge is an ephemeral overlay. Rides the user
   // topic with the `network` slug discriminator (mirrors away_confirmed).
-  | { kind: "connection_progress"; network: string; state: "connecting" | "connected" };
+  | { kind: "connection_progress"; network: string; state: "connecting" | "connected" }
+  // #247 — /notify presence watch. `notify_list` is the full-list
+  // snapshot broadcast on every Grappa.Notify mutation AND pushed on
+  // user-topic after-join (same setState contract as
+  // query_windows_list). `presence_changed` is one live report:
+  // `initial: true` = post-arm baseline (paint the dot, NO toast),
+  // `initial: false` = genuine transition (toast-eligible).
+  // `presence_snapshot` re-paints the whole per-network dot map on
+  // (re)attach; its keys are SERVER-side rfc1459-folded nicks.
+  // `presence_error` surfaces an upstream watch-list rejection
+  // (ERR_MONLISTFULL / ERR_TOOMANYWATCH) — never a silent drop.
+  | { kind: "notify_list"; networks: Record<string, NotifyEntry[]> }
+  | {
+      kind: "presence_changed";
+      network_id: number;
+      nick: string;
+      presence: "online" | "offline";
+      initial: boolean;
+      source: "monitor" | "watch";
+      ts: string;
+    }
+  | { kind: "presence_error"; network_id: number; reason: "list_full"; detail: string }
+  | {
+      kind: "presence_snapshot";
+      network_id: number;
+      nicks: Record<string, "online" | "offline" | "unknown">;
+    };
 
 // M-11 — Admin events stream. Discriminated union mirrors
 // `Grappa.AdminEvents.Wire`'s closed `event_kind` enum. Server emits
@@ -2347,6 +2384,58 @@ export async function postNick(token: string, networkSlug: string, nick: string)
     method: "POST",
     headers: buildHeaders(token),
     body: JSON.stringify({ nick }),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// #247 — /notify watch-list REST surface
+// (`GrappaWeb.NotifyController`). The GET combines both sources of
+// truth: `entries` is the durable DB list, `presence` the live session
+// map — `null` when no session is running (parked/failed), which the
+// panel renders as unknown dots rather than fabricating offline.
+
+export type NotifyIndexResponse = {
+  entries: NotifyEntry[];
+  presence: Record<string, "online" | "offline" | "unknown"> | null;
+};
+
+export async function getNotify(token: string, networkSlug: string): Promise<NotifyIndexResponse> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/notify`, {
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as NotifyIndexResponse;
+}
+
+export async function postNotifyAdd(
+  token: string,
+  networkSlug: string,
+  nicks: string[],
+): Promise<void> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/notify`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ nicks }),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+export async function deleteNotifyNick(
+  token: string,
+  networkSlug: string,
+  nick: string,
+): Promise<void> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/notify/${encodeURIComponent(nick)}`,
+    { method: "DELETE", headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
+}
+
+export async function clearNotify(token: string, networkSlug: string): Promise<void> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/notify`, {
+    method: "DELETE",
+    headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
 }

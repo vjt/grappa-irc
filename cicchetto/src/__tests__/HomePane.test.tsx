@@ -93,6 +93,10 @@ vi.mock("../lib/networks", () => ({
   networks: () => networksMock(),
   refetchUser: () => refetchUserMock(),
   refetchNetworks: () => refetchNetworksMock(),
+  // #247 — WatchedPanel (mounted in ConnectedRow) resolves the network
+  // id from the slug; the HomePane fixtures don't carry ids, so
+  // undefined (panel renders empty list + add form) is the honest mock.
+  networkIdBySlug: () => undefined,
 }));
 // channelKey is a pure fn — use the real one (mock at boundaries, not
 // pure helpers) so the joined-state key shape matches production exactly.

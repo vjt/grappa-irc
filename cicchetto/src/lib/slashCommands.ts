@@ -134,6 +134,11 @@ export type SlashCommand =
   | { kind: "watchlist"; action: "add"; pattern: string }
   | { kind: "watchlist"; action: "del"; pattern: string }
   | { kind: "watchlist"; action: "list" }
+  // #247 — /notify presence watch (server-side list; NOT the
+  // client-local /watch|/highlight word-highlight list above).
+  | { kind: "notify"; action: "list" }
+  | { kind: "notify"; action: "add" | "del"; nicks: string[] }
+  | { kind: "notify"; action: "clear" }
   | { kind: "quote"; line: string }
   | { kind: "oper"; name: string; password: string }
   | { kind: "error"; verb: string; message: string };
@@ -516,6 +521,19 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
 
   watch: (verb, rest) => parseWatchlist(verb, rest),
   highlight: (verb, rest) => parseWatchlist(verb, rest),
+
+  // #247 — irssi-shaped /notify. Bare form == `list`; `add`/`del` take
+  // one or more nicks; `clear` wipes the current network's list.
+  notify: (verb, rest) => {
+    const [action, ...nicks] = tokens(rest);
+    if (!action || action === "list") return { kind: "notify", action: "list" };
+    if (action === "clear") return { kind: "notify", action: "clear" };
+    if (action === "add" || action === "del") {
+      if (nicks.length === 0) return err(verb, `/notify ${action} requires at least one nick`);
+      return { kind: "notify", action, nicks };
+    }
+    return err(verb, "/notify usage: /notify [list | add <nick> … | del <nick> … | clear]");
+  },
 
   // Issue #20 — services shortcuts. Each one rewrites to a {kind: "msg"}
   // command targeting the canonical ServiceNick. Empty body → error (no

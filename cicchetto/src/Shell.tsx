@@ -57,6 +57,7 @@ import MentionsWindow from "./MentionsWindow";
 import ModeModal from "./ModeModal";
 import NamesModal from "./NamesModal";
 import NextActiveButton from "./NextActiveButton";
+import PresenceToasts from "./PresenceToasts";
 import PrivacyModal from "./PrivacyModal";
 import ResizeHandle from "./ResizeHandle";
 import ScrollbackPane from "./ScrollbackPane";
@@ -531,6 +532,7 @@ const Shell: Component = () => {
         // ── Desktop three-pane layout (unchanged from pre-C6) ─────────
         <div class="shell" classList={{ "shell-no-members": !isActiveChannelJoined() }}>
           <ErrorBanners />
+          <PresenceToasts />
           <PrivacyModal />
           <MediaViewerModal />
           <NamesModal />
@@ -720,6 +722,7 @@ const Shell: Component = () => {
           <DiagFloat />
         </Portal>
         <ErrorBanners />
+        <PresenceToasts />
         <PrivacyModal />
         <MediaViewerModal />
         <NamesModal />

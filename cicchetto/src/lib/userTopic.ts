@@ -3,6 +3,7 @@ import {
   assertNever,
   type ConnectionState,
   type MentionsBundleMessage,
+  type NotifyEntry,
   type QueryWindowEntry,
   type WhoisExtraLine,
   type WireUserEvent,
@@ -13,6 +14,7 @@ import { setAwayState } from "./awayStatus";
 import { setServerBundleHash, setServerBundleVersion } from "./bundleHash";
 import { onDirectoryComplete, onDirectoryFailed, onDirectoryProgress } from "./channelDirectory";
 import { channelKey } from "./channelKey";
+import { diagPush } from "./diagLog";
 import { patchHomeNetwork } from "./home";
 import { appendInviteAck } from "./inviteAck";
 import { seedIsupport } from "./isupport";
@@ -20,6 +22,7 @@ import { applyLusersBundle, clearLusersRequested } from "./lusersBundle";
 import { setMentionsBundle } from "./mentionsWindow";
 import { setNamesReply } from "./namesModal";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
+import { applyPresenceChange, applyPresenceSnapshot, setNotifyList } from "./notifyWatch";
 import { setPeerAway } from "./peerAway";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { clearSeen } from "./reconnectBackfill";
@@ -211,6 +214,46 @@ function narrowWindowsMap(raw: unknown): Record<string, QueryWindowEntry[]> | nu
   return out;
 }
 
+// #247 — per-entry narrower for `notify_list`. Mirror of
+// `Grappa.Notify.Wire.entry/0` (pinned to the generated
+// `NotifyWireEntry` by `_Assert_NotifyEntry`).
+function narrowNotifyEntry(raw: unknown): NotifyEntry | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.network_id !== "number" ||
+    typeof r.nick !== "string" ||
+    typeof r.added_at !== "string"
+  )
+    return null;
+  return { network_id: r.network_id, nick: r.nick, added_at: r.added_at };
+}
+
+// #247 — narrows the `notify_list` `networks` map (network-id-keyed
+// object of entry arrays; strict like narrowWindowsMap).
+function narrowNotifyMap(raw: unknown): Record<string, NotifyEntry[]> | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const out: Record<string, NotifyEntry[]> = {};
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    const entries = narrowArray(val, narrowNotifyEntry);
+    if (entries === null) return null;
+    out[key] = entries;
+  }
+  return out;
+}
+
+// #247 — narrows the `presence_snapshot` folded-nick → state map. A
+// value outside the closed presence set drops the whole map (strict).
+function narrowPresenceMap(raw: unknown): Record<string, "online" | "offline" | "unknown"> | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const out: Record<string, "online" | "offline" | "unknown"> = {};
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (val !== "online" && val !== "offline" && val !== "unknown") return null;
+    out[key] = val;
+  }
+  return out;
+}
+
 // Codebase audit cic M1 — runtime narrowing for WireUserEvent. The
 // `WireUserEvent` discriminated union is a TypeScript-side contract;
 // it cannot enforce shape at runtime. A malformed server push (kind
@@ -263,6 +306,50 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       if (typeof r.network !== "string" || (r.state !== "connecting" && r.state !== "connected"))
         return null;
       return { kind: "connection_progress", network: r.network, state: r.state };
+    case "notify_list": {
+      // #247 — validate each entry, same strictness as query_windows_list.
+      const networks = narrowNotifyMap(r.networks);
+      if (networks === null) return null;
+      return { kind: "notify_list", networks };
+    }
+    case "presence_changed":
+      if (
+        typeof r.network_id !== "number" ||
+        typeof r.nick !== "string" ||
+        (r.presence !== "online" && r.presence !== "offline") ||
+        typeof r.initial !== "boolean" ||
+        (r.source !== "monitor" && r.source !== "watch") ||
+        typeof r.ts !== "string"
+      )
+        return null;
+      return {
+        kind: "presence_changed",
+        network_id: r.network_id,
+        nick: r.nick,
+        presence: r.presence,
+        initial: r.initial,
+        source: r.source,
+        ts: r.ts,
+      };
+    case "presence_error":
+      if (
+        typeof r.network_id !== "number" ||
+        r.reason !== "list_full" ||
+        typeof r.detail !== "string"
+      )
+        return null;
+      return {
+        kind: "presence_error",
+        network_id: r.network_id,
+        reason: r.reason,
+        detail: r.detail,
+      };
+    case "presence_snapshot": {
+      if (typeof r.network_id !== "number") return null;
+      const nicks = narrowPresenceMap(r.nicks);
+      if (nicks === null) return null;
+      return { kind: "presence_snapshot", network_id: r.network_id, nicks };
+    }
     case "own_nick_changed":
       if (typeof r.network_id !== "number" || typeof r.nick !== "string") return null;
       return { kind: "own_nick_changed", network_id: r.network_id, nick: r.nick };
@@ -1084,6 +1171,31 @@ createRoot(() => {
           // stale flag left by a /lusers issued on a prior (now-dead)
           // session. Clear on the "connecting" edge (before the burst).
           if (payload.state === "connecting") clearLusersRequested(payload.network);
+          return;
+
+        // #247 — /notify watch list + presence. Full-list snapshot
+        // (per-mutation broadcast + after-join push) and the live dot
+        // updates; toast gating on `initial` lives in the store.
+        case "notify_list":
+          setNotifyList(payload.networks);
+          return;
+
+        case "presence_snapshot":
+          applyPresenceSnapshot(payload.network_id, payload.nicks);
+          return;
+
+        case "presence_changed":
+          applyPresenceChange(payload);
+          return;
+
+        case "presence_error":
+          // Upstream rejected the watch registration (list full). Not a
+          // presence transition — surface as an error toast so the add
+          // is never silently dropped; the raw numeric also landed as a
+          // $server notice row server-side.
+          diagPush(
+            `notify: watch list full on network ${payload.network_id} — rejected: ${payload.detail}`,
+          );
           return;
 
         default:
