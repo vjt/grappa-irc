@@ -4969,6 +4969,37 @@ html.resize-dragging * {
   border-color: var(--accent);
 }
 
+/* #299 item 7 — the whole-card tap target: selects (reveals the action row)
+   AND applies the theme live. Native <button> chrome is reset so it reads as
+   a card, not a chip. Min-height is ABSOLUTE 44px (Apple HIG) — never rem,
+   since the html root font-size is 14px (feedback_cic_tap_target_rem_pitfall). */
+.theme-card-select {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 0.25rem;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.theme-card-select:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* Selected card (its action row is open) — subtle accent, distinct from the
+   ACTIVE (currently-applied) border so both states read at once. */
+.theme-card.theme-card-selected {
+  border-color: var(--accent);
+}
+
 .theme-swatch {
   display: flex;
   flex-direction: row;
@@ -5005,6 +5036,11 @@ html.resize-dragging * {
 }
 
 .theme-action {
+  display: inline-flex;
+  align-items: center;
+  /* ABSOLUTE 44px tap target (Apple HIG) — never rem (root font-size 14px,
+     feedback_cic_tap_target_rem_pitfall). #299 item 7. */
+  min-height: 44px;
   background: transparent;
   color: var(--accent);
   border: 1px solid var(--border);

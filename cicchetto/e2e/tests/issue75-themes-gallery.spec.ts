@@ -63,7 +63,7 @@ test.describe("#75 — themes gallery consumer flow", () => {
     await expect(page.locator(".theme-card-name").filter({ hasText: /^sux$/ })).toBeVisible();
   });
 
-  test("@webkit apply flips --bg live and persists across reload via the server", async ({
+  test("@webkit tapping a card flips --bg live and persists across reload via the server", async ({
     page,
   }) => {
     const vjt = getSeededVjt();
@@ -73,18 +73,20 @@ test.describe("#75 — themes gallery consumer flow", () => {
 
     await openThemesSubPage(page);
 
-    const applyButtons = page.locator("[data-testid^='theme-apply-']");
-    await expect(applyButtons.first()).toBeVisible({ timeout: 5_000 });
-    expect(await applyButtons.count()).toBeGreaterThanOrEqual(2);
+    // #299 item 7 — no standalone apply button: tapping a card's select
+    // button IS the apply (and reveals its action row).
+    const selectButtons = page.locator("[data-testid^='theme-select-']");
+    await expect(selectButtons.first()).toBeVisible({ timeout: 5_000 });
+    expect(await selectButtons.count()).toBeGreaterThanOrEqual(2);
 
-    // Apply the first theme → --bg becomes non-empty (live inline apply).
-    await applyButtons.nth(0).click();
+    // Tap the first card → --bg becomes non-empty (live inline apply).
+    await selectButtons.nth(0).tap();
     await expect.poll(() => readInlineBg(page), { timeout: 5_000 }).not.toBe("");
     const bg1 = await readInlineBg(page);
 
-    // Apply a DIFFERENT theme → --bg changes (proves the tap drove it, not
-    // a pre-existing active theme).
-    await applyButtons.nth(1).click();
+    // Tap a DIFFERENT card → --bg changes (proves the tap drove it, not a
+    // pre-existing active theme).
+    await selectButtons.nth(1).tap();
     await expect.poll(() => readInlineBg(page), { timeout: 5_000 }).not.toBe(bg1);
     const bg2 = await readInlineBg(page);
     expect(bg2).not.toBe("");
