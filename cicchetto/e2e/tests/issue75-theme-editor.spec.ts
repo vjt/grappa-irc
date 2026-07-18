@@ -104,18 +104,20 @@ test.describe("#75 — theme editor (producer path)", () => {
 
   test("@webkit editor opens + live-previews + cancels on mobile", async ({ page }) => {
     await loginAs(page, getSeededVjt());
-    // The mobile members-sidebar hamburger (which hosts the 🎨 themes
-    // launcher) is channel-scoped — select a channel first (mirror the
-    // gallery consumer spec).
+    // The mobile members-sidebar hamburger (which hosts the settings cog,
+    // the path to themes since #299) is channel-scoped — select a channel
+    // first (mirror the gallery consumer spec).
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
     await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toBeVisible();
 
-    // Mobile: reach the themes sub-page via the hamburger 🎨 launcher.
+    // Mobile: reach the themes sub-page via the cog (settings) → themes nav
+    // row. (#299 removed the footer 🎨 launcher; the cog is the path now.)
     await page.getByLabel(/open members sidebar/i).tap();
     const drawer = page.locator(".shell-members.open");
     await expect(drawer).toBeVisible({ timeout: 5_000 });
-    await drawer.locator("[data-testid='mobile-panel-themes']").tap();
+    await drawer.locator("[data-testid='mobile-panel-settings']").tap();
     await expect(page.locator(".shell-members.open")).toHaveCount(0, { timeout: 5_000 });
+    await page.getByTestId("themes-settings-entry").tap();
     await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
 
     const accentPreOpen = await readAccent(page);

@@ -28,10 +28,12 @@ async function openThemesSubPage(page: import("@playwright/test").Page): Promise
   await page.getByLabel(/open members sidebar/i).tap();
   const drawer = page.locator(".shell-members.open");
   await expect(drawer).toBeVisible({ timeout: 5_000 });
-  await drawer.locator("[data-testid='mobile-panel-themes']").tap();
-  // openThemesPanel closes the members drawer (mutex) + opens settings on
-  // the themes sub-page.
+  // #299 — the footer 🎨 launcher was removed; themes is reached via the
+  // cog (settings) → themes nav row now. Tapping the cog closes the members
+  // drawer (mutex) and opens the settings drawer on its "main" page.
+  await drawer.locator("[data-testid='mobile-panel-settings']").tap();
   await expect(page.locator(".shell-members.open")).toHaveCount(0, { timeout: 5_000 });
+  await page.getByTestId("themes-settings-entry").tap();
   await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
 }
 
