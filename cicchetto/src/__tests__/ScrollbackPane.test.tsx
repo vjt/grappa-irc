@@ -228,6 +228,12 @@ import {
   LARGE_CHANNEL_THRESHOLD,
   setChannelPresencePref,
 } from "../lib/presenceFilter";
+// #310 — the #243 re-tap command signal. NOT mocked (real module): driving
+// it exercises the SAME `scrollToBottomGesture` the floating scroll-to-bottom
+// button's onClick invokes, so the unit test can prove the shared gesture
+// advances the read cursor without needing the button to render (jsdom's
+// zero-geometry keeps `atBottom` true, so the button never mounts).
+import { requestScrollToBottom } from "../lib/scrollToBottomCommand";
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
 import ScrollbackPane, {
   resetAutoFocusedJoinsForTest,
@@ -984,6 +990,50 @@ describe("ScrollbackPane", () => {
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       // Initially atBottom = true; button should not be visible.
       expect(screen.queryByTestId("scroll-to-bottom")).toBeNull();
+    });
+  });
+
+  // #310 — the scroll-to-bottom GESTURE (floating button + #243 re-tap)
+  // must advance the server read cursor to the NEWEST rendered message.
+  // Pre-#310 both funnelled through the pure `scrollToBottom()` helper,
+  // which never POSTed a cursor advance — so reaching the bottom did not
+  // persist "read to newest", and a later marker re-assert snapped the
+  // view back to the divider (~2s later; vjt prod report on #libera). The
+  // gesture now runs the same "reached bottom → advance to newest" logic a
+  // manual scroll does, capturing the tail id AFTER the (instant) scroll
+  // via the shared forward-only `setCursorIfAdvances` path.
+  //
+  // jsdom is blind to scroll geometry — the button only renders when
+  // `!atBottom()`, which never happens under jsdom's zero-geometry — so this
+  // drives the SHARED gesture through the #243 re-tap command
+  // (`requestScrollToBottom`), the same `scrollToBottomGesture` the button's
+  // onClick invokes. The real button DOM tap + the no-snap-back proof live
+  // in the issue310 Playwright spec (jsdom can't reproduce the scroll).
+  describe("#310 — scroll-to-bottom gesture advances the read cursor", () => {
+    it("advances the read cursor to the newest rendered message id on a jump-to-bottom gesture", async () => {
+      // Unread present: cursor mid-list at id 1 → ids 2 and 3 are unread.
+      seedReadCursor("freenode", "#grappa", 1);
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      // Pane mounted (the deferred re-tap effect is registered) and rows rendered.
+      await waitFor(() => {
+        expect(screen.getAllByTestId("scrollback-line")).toHaveLength(3);
+      });
+
+      // A bare mount/activation is a PROGRAMMATIC scroll — it must NOT advance
+      // the cursor (that's the BUGHUNT-2 input-gate contract).
+      expect(mockSetCursorIfAdvances).not.toHaveBeenCalled();
+
+      // THE GESTURE: the jump-to-bottom command the floating button + the #243
+      // re-tap share.
+      requestScrollToBottom();
+
+      // Reaching the bottom advances the cursor to the NEWEST rendered id (3),
+      // read AFTER the scroll via lastFullyVisibleRowId's at-bottom short-circuit
+      // (the true tail, never a stale pre-scroll id → no #233 clamp no-op).
+      await waitFor(() => {
+        expect(mockSetCursorIfAdvances).toHaveBeenCalledWith("freenode", "#grappa", 3);
+      });
     });
   });
 
