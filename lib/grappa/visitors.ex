@@ -576,18 +576,25 @@ defmodule Grappa.Visitors do
 
   # The single hard-delete mechanic shared by delete/1 (reap + operator) and
   # purge_if_anon/1 (anon co-terminus). Re-homes the visitor's PUBLISHED themes
-  # to the system user (survive as gallery contributions, #299) INSIDE the same
-  # txn as the delete, so the visitor_id ON DELETE CASCADE then wipes the
-  # private themes + credentials + messages + sessions atomically. Backoff
-  # eviction is ETS, so it runs after the DB txn commits.
+  # to the system user (survive as gallery contributions, #299) BEFORE the
+  # delete, so the visitor_id ON DELETE CASCADE then wipes only the private
+  # themes + credentials + messages + sessions.
+  #
+  # Deliberately NOT wrapped in a Repo.transaction: re-home's leading SELECT
+  # would start a DEFERRED (read) sqlite transaction that then upgrades to a
+  # write on the DELETE — and that read→write upgrade throws SQLITE_BUSY under
+  # concurrent writers (integration CI hit exactly this: "Database busy" on
+  # DELETE FROM visitors). Sequential single-statement writes each take the
+  # write lock immediately (busy_timeout waits, never upgrade-fails) — the same
+  # shape as the pre-#299 lone `Repo.delete`. Atomicity isn't needed: re-home
+  # is idempotent (it only matches `visitor_id = ? AND published`, and re-homed
+  # rows have `visitor_id = NULL`), so a crash between the two steps self-heals
+  # on the next reap/retry (re-home finds nothing, delete proceeds). Backoff
+  # eviction is ETS, after the DB writes.
   @spec destroy_visitor(Visitor.t()) :: :ok
   defp destroy_visitor(%Visitor{} = visitor) do
-    {:ok, _} =
-      Repo.transaction(fn ->
-        Themes.rehome_visitor_published_to_system(visitor.id)
-        Repo.delete!(visitor)
-      end)
-
+    Themes.rehome_visitor_published_to_system(visitor.id)
+    {:ok, _} = Repo.delete(visitor)
     :ok = Session.Backoff.forget({:visitor, visitor.id})
     :ok
   end

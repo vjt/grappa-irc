@@ -24601,9 +24601,18 @@ against the system user's existing themes) BEFORE the delete, so they shed
 `visitor_id` and escape the `visitor_id ON DELETE CASCADE`; private rows keep
 `visitor_id` and CASCADE. Wired into a shared `Visitors.destroy_visitor/1`
 choke point — BOTH `delete/1` (reap + operator + AccountDeletion visitor path)
-AND `purge_if_anon/1` (anon co-terminus logout) — inside the delete txn.
-`Grappa.Visitors` gained a `Grappa.Themes` boundary dep (one-way; Themes only
-dirty-xrefs the Visitor struct). A voluntarily self-deleted USER's themes
+AND `purge_if_anon/1` (anon co-terminus logout). Re-home runs SEQUENTIALLY
+before the delete, NOT inside a `Repo.transaction`: re-home's leading SELECT
+would start a deferred (read) sqlite txn that upgrades to a write on the
+DELETE, and that read→write upgrade throws `SQLITE_BUSY` under concurrent
+writers (integration CI hit exactly this — "Database busy" on `DELETE FROM
+visitors`). Sequential single-statement writes each take the write lock
+immediately (busy_timeout waits, never upgrade-fails). Atomicity isn't
+needed — re-home is idempotent (`visitor_id = ? AND published`; re-homed rows
+carry `visitor_id = NULL`), so a crash between the two steps self-heals on the
+next reap/retry. `Grappa.Visitors` gained a `Grappa.Themes` boundary dep
+(one-way; Themes only dirty-xrefs the Visitor struct). A voluntarily
+self-deleted USER's themes
 (published + private) all CASCADE — voluntary deletion is a full wipe; only
 involuntary visitor reaping preserves public contributions. The distinction is
 deliberate.

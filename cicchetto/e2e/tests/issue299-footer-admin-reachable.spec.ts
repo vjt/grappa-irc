@@ -102,8 +102,10 @@ test.describe("#299 — footer admin reachable (themes launcher removed)", () =>
     await expect(adminBtn).toHaveCount(1);
     const box = await adminBtn.boundingBox();
     if (box === null) throw new Error("admin launcher has no bounding box");
-    expect(box.width).toBeGreaterThanOrEqual(MIN_TAP_TARGET_PX);
-    expect(box.height).toBeGreaterThanOrEqual(MIN_TAP_TARGET_PX);
+    // Round: webkit returns sub-pixel fractional widths (e.g. 43.99997 for a
+    // 44px min box) — assert the rounded tap target, not the raw float.
+    expect(Math.round(box.width)).toBeGreaterThanOrEqual(MIN_TAP_TARGET_PX);
+    expect(Math.round(box.height)).toBeGreaterThanOrEqual(MIN_TAP_TARGET_PX);
 
     // Reachable end-to-end: tap admin → members drawer closes (mutex) and the
     // AdminPane renders.

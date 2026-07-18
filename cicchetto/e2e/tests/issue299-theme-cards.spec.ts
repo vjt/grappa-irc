@@ -75,7 +75,8 @@ test.describe("#299 — theme cards (tap-select + progressive disclosure)", () =
     await expect(copyBtn).toBeVisible();
     const box = await copyBtn.boundingBox();
     if (box === null) throw new Error("copy action has no bounding box");
-    expect(box.height).toBeGreaterThanOrEqual(MIN_TAP_TARGET_PX);
+    // Round: webkit returns sub-pixel fractional heights for a min-44px box.
+    expect(Math.round(box.height)).toBeGreaterThanOrEqual(MIN_TAP_TARGET_PX);
 
     // Tapping a DIFFERENT card moves the disclosure — still exactly one row.
     await selects.nth(1).tap();
