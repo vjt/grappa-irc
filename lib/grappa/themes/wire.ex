@@ -23,7 +23,14 @@ defmodule Grappa.Themes.Wire do
   `"guest"` label for a visitor-owned theme — #299 author model B: a visitor's
   nick is NEVER surfaced (no impersonation surface, no anchor-nick).
 
-  `to_wire/2` requires the `:user` association preloaded (every context reader
+  `in_use` (#299 item 9) is a derived, CONTEXT-SUPPLIED count — how many
+  subjects currently have this theme active — passed in by the caller rather
+  than stored on the struct (a virtual field populated post-query over a list
+  doesn't type cleanly, and the count is `Grappa.UserSettings`' domain). List
+  callers fetch `Themes.active_theme_counts/0` once; single callers use
+  `Themes.count_theme_usage/1`.
+
+  `to_wire/3` requires the `:user` association preloaded (every context reader
   preloads it). For a visitor-owned theme `:user` is `nil` (XOR guarantees
   `visitor_id` is set); `author`/`built_in` derive from that.
   """
@@ -62,10 +69,12 @@ defmodule Grappa.Themes.Wire do
 
   @doc """
   Render one `%Theme{}` (`:user` preloaded) to the wire shape, from `viewer`'s
-  perspective (drives the derived `mine` flag).
+  perspective (drives the derived `mine` flag), with the caller-supplied
+  `in_use` active-usage count (#299 item 9).
   """
-  @spec to_wire(Theme.t(), {:user, User.t()} | {:visitor, Visitor.t()} | nil) :: t()
-  def to_wire(%Theme{} = theme, viewer) do
+  @spec to_wire(Theme.t(), {:user, User.t()} | {:visitor, Visitor.t()} | nil, non_neg_integer()) ::
+          t()
+  def to_wire(%Theme{} = theme, viewer, in_use) when is_integer(in_use) do
     {author, built_in} = attribution(theme)
 
     %{
@@ -75,7 +84,7 @@ defmodule Grappa.Themes.Wire do
       built_in: built_in,
       published: theme.published,
       apply_count: theme.apply_count,
-      in_use: theme.in_use,
+      in_use: in_use,
       mine: mine?(theme, viewer),
       payload: theme.payload,
       inserted_at: DateTime.to_iso8601(theme.inserted_at)

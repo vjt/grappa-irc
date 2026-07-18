@@ -24617,9 +24617,15 @@ retained `apply_count` (copy popularity + gallery sort). `active_theme_id` is a
 JSON key in `user_settings.data`, so the count is a `json_extract` predicate:
 `UserSettings.count_active_theme_users/1` (single) + `active_theme_counts/0`
 (one grouped pass → `%{theme_id => count}`, the batched form the list readers
-use to avoid an N+1). Counts BOTH users and visitors. `Theme` gains a virtual
-`:in_use` field the context readers populate; the wire emits it; cic renders
-"N in use" instead of the old "N applied".
+use to avoid an N+1). Counts BOTH users and visitors. `in_use` is a DERIVED
+wire field (like `built_in`/`mine`), passed into `Themes.Wire.to_wire/3` as an
+explicit arg — NOT stored on the struct. A virtual field populated post-query
+over a list doesn't type cleanly (Dialyzer `missing_range` — the `Enum.map` +
+struct-update over `Repo.all` widens the element type), and the count is
+`UserSettings`' domain anyway (a correlated subquery from `Themes` would leak
+the `user_settings` table across the boundary). List readers fetch the batched
+`Themes.active_theme_counts/0` once and index per theme; single reads use
+`Themes.count_theme_usage/1`. cic renders "N in use" instead of "N applied".
 
 ### Item 7 — tap-to-apply cards with progressive disclosure
 

@@ -26,7 +26,7 @@ defmodule GrappaWeb.MeThemeController do
 
     case Themes.get_active_theme(subject) do
       nil -> json(conn, nil)
-      theme -> json(conn, Wire.to_wire(theme, viewer))
+      theme -> json(conn, Wire.to_wire(theme, viewer, Themes.count_theme_usage(theme.id)))
     end
   end
 
@@ -39,8 +39,8 @@ defmodule GrappaWeb.MeThemeController do
 
     with {:ok, theme_id} <- parse_id(id),
          {:ok, theme} <- Themes.set_active_theme(subject, theme_id) do
-      # set_active_theme returns the theme via get_theme/1, which preloads :owner.
-      json(conn, Wire.to_wire(theme, viewer))
+      # set_active_theme returns the theme via get_theme/1, which preloads :user.
+      json(conn, Wire.to_wire(theme, viewer, Themes.count_theme_usage(theme.id)))
     end
   end
 

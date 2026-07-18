@@ -180,16 +180,36 @@ defmodule Grappa.ThemesTest do
       {:ok, _} = Themes.unpublish_theme({:user, owner}, pub.id)
       refute pub.id in Enum.map(Themes.list_gallery(), & &1.id)
     end
+  end
 
-    test "gallery themes carry the in_use active-usage count (#299 item 9)" do
+  describe "theme usage counts (#299 item 9)" do
+    test "count_theme_usage reflects subjects that set the theme active (users + visitors)" do
       owner = user_fixture()
-      {:ok, pub} = Themes.create_theme({:user, owner}, %{name: "Pub", payload: valid_payload()})
-      {:ok, _} = Themes.publish_theme({:user, owner}, pub.id)
-      a = user_fixture()
-      {:ok, _} = Themes.set_active_theme({:user, a.id}, pub.id)
+      {:ok, theme} = Themes.create_theme({:user, owner}, %{name: "Live", payload: valid_payload()})
 
-      [g] = Enum.filter(Themes.list_gallery(), &(&1.id == pub.id))
-      assert g.in_use == 1
+      assert Themes.count_theme_usage(theme.id) == 0
+
+      a = user_fixture()
+      visitor = visitor_fixture()
+      {:ok, _} = Themes.set_active_theme({:user, a.id}, theme.id)
+      {:ok, _} = Themes.set_active_theme({:visitor, visitor.id}, theme.id)
+
+      assert Themes.count_theme_usage(theme.id) == 2
+    end
+
+    test "active_theme_counts maps every theme to its active-usage count" do
+      owner = user_fixture()
+      {:ok, one} = Themes.create_theme({:user, owner}, %{name: "One", payload: valid_payload()})
+      {:ok, two} = Themes.create_theme({:user, owner}, %{name: "Two", payload: valid_payload()})
+      a = user_fixture()
+      b = user_fixture()
+      {:ok, _} = Themes.set_active_theme({:user, a.id}, one.id)
+      {:ok, _} = Themes.set_active_theme({:user, b.id}, one.id)
+      {:ok, _} = Themes.set_active_theme({:user, owner.id}, two.id)
+
+      counts = Themes.active_theme_counts()
+      assert counts[one.id] == 2
+      assert counts[two.id] == 1
     end
   end
 

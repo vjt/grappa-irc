@@ -19,7 +19,7 @@ defmodule GrappaWeb.ThemesController do
   ## Thin controller, thick context
 
   Actions parse params, call `Grappa.Themes`, and render the context-owned wire
-  shape via `Grappa.Themes.Wire.to_wire/2` inline (no JSON view module). Authz +
+  shape via `Grappa.Themes.Wire.to_wire/3` inline (no JSON view module). Authz +
   rate-limiting + sanitization all live in the context; the FallbackController
   maps the tagged errors to HTTP.
 
@@ -41,23 +41,36 @@ defmodule GrappaWeb.ThemesController do
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _) do
     viewer = conn.assigns.current_subject
-    json(conn, %{themes: Enum.map(Themes.list_gallery(), &Wire.to_wire(&1, viewer))})
+    counts = Themes.active_theme_counts()
+
+    json(conn, %{
+      themes: Enum.map(Themes.list_gallery(), &Wire.to_wire(&1, viewer, Map.get(counts, &1.id, 0)))
+    })
   end
 
   @doc false
   @spec mine(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def mine(conn, _) do
     viewer = conn.assigns.current_subject
-    json(conn, %{themes: Enum.map(Themes.list_owned(viewer), &Wire.to_wire(&1, viewer))})
+    counts = Themes.active_theme_counts()
+
+    json(conn, %{
+      themes: Enum.map(Themes.list_owned(viewer), &Wire.to_wire(&1, viewer, Map.get(counts, &1.id, 0)))
+    })
   end
 
   @doc false
   @spec unpublished(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def unpublished(conn, _) do
     viewer = conn.assigns.current_subject
+    counts = Themes.active_theme_counts()
 
     json(conn, %{
-      themes: Enum.map(Themes.list_unpublished_builtins(viewer), &Wire.to_wire(&1, viewer))
+      themes:
+        Enum.map(
+          Themes.list_unpublished_builtins(viewer),
+          &Wire.to_wire(&1, viewer, Map.get(counts, &1.id, 0))
+        )
     })
   end
 
@@ -68,7 +81,7 @@ defmodule GrappaWeb.ThemesController do
 
     with {:ok, theme_id} <- parse_id(id),
          {:ok, theme} <- Themes.get_theme(theme_id) do
-      json(conn, Wire.to_wire(theme, viewer))
+      json(conn, Wire.to_wire(theme, viewer, Themes.count_theme_usage(theme.id)))
     end
   end
 
@@ -170,7 +183,7 @@ defmodule GrappaWeb.ThemesController do
   # this request, so the read is guaranteed to hit.
   defp render_theme(conn, status, id, viewer) do
     {:ok, theme} = Themes.get_theme(id)
-    conn |> put_status(status) |> json(Wire.to_wire(theme, viewer))
+    conn |> put_status(status) |> json(Wire.to_wire(theme, viewer, Themes.count_theme_usage(id)))
   end
 
   # Controller attrs MUST be atom-keyed (`%{name:, payload:}`) — the context does

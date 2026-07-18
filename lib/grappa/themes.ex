@@ -104,7 +104,6 @@ defmodule Grappa.Themes do
     |> order_by([t], desc: t.apply_count, asc: t.name)
     |> preload(:user)
     |> Repo.all()
-    |> put_in_use()
   end
 
   @doc "The caller's own theme library (users AND visitors, #299 item 8)."
@@ -118,7 +117,6 @@ defmodule Grappa.Themes do
     |> order_by([t], asc: t.name)
     |> preload(:user)
     |> Repo.all()
-    |> put_in_use()
   end
 
   @doc """
@@ -139,7 +137,6 @@ defmodule Grappa.Themes do
     |> order_by([t], asc: t.name)
     |> preload(:user)
     |> Repo.all()
-    |> put_in_use()
   end
 
   def list_unpublished_builtins(_), do: []
@@ -149,7 +146,7 @@ defmodule Grappa.Themes do
   def get_theme(id) when is_integer(id) do
     case Repo.get(Theme, id) do
       nil -> {:error, :not_found}
-      %Theme{} = theme -> {:ok, theme |> Repo.preload(:user) |> put_in_use()}
+      %Theme{} = theme -> {:ok, Repo.preload(theme, :user)}
     end
   end
 
@@ -365,19 +362,25 @@ defmodule Grappa.Themes do
     length(themes)
   end
 
+  @doc """
+  Active-theme usage counts for every theme in one pass: `%{theme_id => count}`
+  (#299 item 9 — the real "in use" metric, distinct from copy-only
+  `apply_count`). The wire's derived `in_use` field is fed from this; the
+  gallery/owned listings fetch it ONCE and index per theme (no N+1). Delegates
+  to `Grappa.UserSettings`, which owns the `active_theme_id` pointer.
+  """
+  @spec active_theme_counts() :: %{pos_integer() => non_neg_integer()}
+  defdelegate active_theme_counts(), to: UserSettings
+
+  @doc """
+  How many subjects currently have theme `id` active — the single-theme
+  sibling of `active_theme_counts/0` for the by-id read paths.
+  """
+  @spec count_theme_usage(pos_integer()) :: non_neg_integer()
+  def count_theme_usage(id) when is_integer(id),
+    do: UserSettings.count_active_theme_users(id)
+
   ## Internals
-
-  # Populate the derived `in_use` (active-usage) count on a theme or list of
-  # themes (#299 item 9). The list form fetches ALL counts in one grouped
-  # query (no N+1); the single form does one targeted count.
-  defp put_in_use(themes) when is_list(themes) do
-    counts = UserSettings.active_theme_counts()
-    Enum.map(themes, fn %Theme{} = t -> %{t | in_use: Map.get(counts, t.id, 0)} end)
-  end
-
-  defp put_in_use(%Theme{} = theme) do
-    %{theme | in_use: UserSettings.count_active_theme_users(theme.id)}
-  end
 
   defp set_published(subject, id, value) when is_integer(id) and is_boolean(value) do
     with {:ok, theme} <- get_theme(id),

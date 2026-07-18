@@ -34,7 +34,6 @@ defmodule Grappa.Themes.Theme do
           payload: map() | nil,
           published: boolean() | nil,
           apply_count: integer() | nil,
-          in_use: non_neg_integer(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -44,10 +43,6 @@ defmodule Grappa.Themes.Theme do
     field :payload, :map
     field :published, :boolean, default: false
     field :apply_count, :integer, default: 0
-    # #299 item 9 — derived (NOT stored): how many subjects currently have this
-    # theme active. Populated by the context readers from
-    # `Grappa.UserSettings.active_theme_counts/0`; 0 until then.
-    field :in_use, :integer, virtual: true, default: 0
     belongs_to :user, User, type: :binary_id
     belongs_to :visitor, Visitor, type: :binary_id
     timestamps(type: :utc_datetime_usec)
