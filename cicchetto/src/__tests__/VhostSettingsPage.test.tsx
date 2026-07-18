@@ -26,7 +26,14 @@ const view = (over: Partial<VhostSettingsView> = {}): VhostSettingsView => ({
 
 const renderPage = (
   v: VhostSettingsView | null,
-  opts: { error?: string | null; onSetSelection?: (a: string[]) => void; onBack?: () => void } = {},
+  opts: {
+    error?: string | null;
+    onSetSelection?: (a: string[]) => void;
+    onBack?: () => void;
+    onReconnect?: () => void;
+    reconnecting?: boolean;
+    reconnectError?: string | null;
+  } = {},
 ) =>
   render(() => (
     <VhostSettingsPage
@@ -34,6 +41,9 @@ const renderPage = (
       error={opts.error ?? null}
       onSetSelection={opts.onSetSelection ?? vi.fn()}
       onBack={opts.onBack ?? vi.fn()}
+      onReconnect={opts.onReconnect ?? vi.fn()}
+      reconnecting={opts.reconnecting ?? false}
+      reconnectError={opts.reconnectError ?? null}
     />
   ));
 
@@ -48,6 +58,59 @@ describe("VhostSettingsPage — chrome", () => {
   it("shows the error message when error is set", () => {
     renderPage(view(), { error: "forbidden_vhost" });
     expect(screen.getByTestId("vhost-error")).toHaveTextContent("forbidden_vhost");
+  });
+});
+
+describe("VhostSettingsPage — #282 reconnect footer", () => {
+  it("renders an always-available Reconnect button (no pending-gate, even with an empty view)", () => {
+    // Empty view = no change; the button is STILL available (D2: reconnect is
+    // on-demand, never gated on pending-detection).
+    renderPage(view());
+    const btn = screen.getByTestId("vhost-reconnect") as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    expect(btn).toHaveTextContent(/reconnect to apply/i);
+  });
+
+  it("stays available with a customized selection", () => {
+    renderPage(
+      view({
+        available: [opt({ address: "2001:db8::1", in_pool: true })],
+        selection: ["2001:db8::1"],
+      }),
+    );
+    expect((screen.getByTestId("vhost-reconnect") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("arms on the first tap and fires onReconnect ONLY on the confirm (second) tap", () => {
+    const onReconnect = vi.fn();
+    renderPage(view(), { onReconnect });
+    const btn = screen.getByTestId("vhost-reconnect");
+    // First tap → arm (confirm label), no reconnect yet — a single stray tap
+    // never bounces every network.
+    fireEvent.click(btn);
+    expect(onReconnect).not.toHaveBeenCalled();
+    expect(btn).toHaveTextContent(/reconnect now/i);
+    // Second tap → confirm → reconnect fires exactly once.
+    fireEvent.click(btn);
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns to the idle label after confirming (the arm resets)", () => {
+    renderPage(view());
+    const btn = screen.getByTestId("vhost-reconnect");
+    fireEvent.click(btn); // arm
+    fireEvent.click(btn); // confirm
+    expect(btn).toHaveTextContent(/reconnect to apply/i);
+  });
+
+  it("relabels the idle button to Reconnecting… while a reconnect is in flight", () => {
+    renderPage(view(), { reconnecting: true });
+    expect(screen.getByTestId("vhost-reconnect")).toHaveTextContent(/reconnecting/i);
+  });
+
+  it("surfaces a reconnect error inline", () => {
+    renderPage(view(), { reconnectError: "network_circuit_open" });
+    expect(screen.getByTestId("vhost-reconnect-error")).toHaveTextContent("network_circuit_open");
   });
 });
 

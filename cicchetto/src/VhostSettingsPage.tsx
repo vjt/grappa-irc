@@ -1,4 +1,5 @@
 import { type Component, createMemo, createSignal, For, type JSX, Show } from "solid-js";
+import InlineConfirmButton from "./InlineConfirmButton";
 import type { VhostOption, VhostSettingsView } from "./lib/userSettings";
 
 // #252 — the vhost (source address) settings SUB-PAGE.
@@ -25,6 +26,23 @@ export type Props = {
   error: string | null;
   onSetSelection: (addresses: string[]) => void;
   onBack: () => void;
+  // #282 — the vhost is INERT until the upstream reconnects (source-bind
+  // resolves per connect), so the sub-page carries an explicit sticky
+  // "Reconnect to apply" footer button (the drawer owns the reconnect
+  // orchestration → `reconnectConnectedNetworks`). The button is ALWAYS
+  // available on-demand — deliberately NOT gated on pending-detection
+  // (unreliable client-side; hiding a heavyweight externally-visible action
+  // behind detection violates least-astonishment). It fires through a
+  // two-tap `InlineConfirmButton` arm — the SAME confirm gate the drawer's
+  // other disruptive reconnect/teardown actions use (`quit`, visitor "apply
+  // identity") — so a single stray tap can't drop + rejoin every network. An
+  // arm is not a disable and not a pending-gate, so this preserves the
+  // always-available contract. `reconnecting` relabels the idle button while
+  // the bounce is in flight (the drawer's own guard blocks re-fire);
+  // `reconnectError` surfaces a failure inline.
+  onReconnect: () => void;
+  reconnecting: boolean;
+  reconnectError: string | null;
 };
 
 const VhostSettingsPage: Component<Props> = (props) => {
@@ -33,6 +51,11 @@ const VhostSettingsPage: Component<Props> = (props) => {
   // an explicit user override (so ON can reveal the sections before any
   // address is picked, and OFF survives the reset-to-[] round-trip).
   const [override, setOverride] = createSignal<boolean | null>(null);
+  // #282 — local two-tap arm for the Reconnect footer button. The sub-page
+  // unmounts on ‹ back (it's a `<Show>` branch in SettingsDrawer), so this
+  // ephemeral flag auto-resets on leave — no drawer-side disarm needed
+  // (unlike the always-mounted `quitArmed`/`identityArmed`).
+  const [reconnectArmed, setReconnectArmed] = createSignal(false);
   const customizeOn = (): boolean => {
     const o = override();
     if (o !== null) return o;
@@ -162,6 +185,35 @@ const VhostSettingsPage: Component<Props> = (props) => {
           {props.error}
         </p>
       </Show>
+
+      {/* #282 — sticky "Reconnect to apply" footer. Single instance at the
+          bottom of the list (no top+bottom duplication — a duplicated
+          disruptive action invites accidental double-fire). Always
+          available; the drawer's onReconnect bounces the connected
+          networks so the new source address binds on the fresh upstream. */}
+      <footer class="vhost-reconnect-footer">
+        <InlineConfirmButton
+          idleLabel={props.reconnecting ? "Reconnecting…" : "Reconnect to apply"}
+          confirmLabel="reconnect now (drops + rejoins)"
+          testId="vhost-reconnect"
+          extraClass="vhost-reconnect"
+          armed={reconnectArmed()}
+          onArm={() => setReconnectArmed(true)}
+          onConfirm={() => {
+            setReconnectArmed(false);
+            props.onReconnect();
+          }}
+        />
+        <p class="vhost-reconnect-hint">
+          your source address takes effect on reconnect — you'll briefly drop and rejoin your
+          channels
+        </p>
+        <Show when={props.reconnectError !== null}>
+          <p class="vhost-reconnect-error" role="alert" data-testid="vhost-reconnect-error">
+            {props.reconnectError}
+          </p>
+        </Show>
+      </footer>
     </section>
   );
 };

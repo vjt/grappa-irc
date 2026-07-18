@@ -25,6 +25,7 @@ import {
   listPushDevices,
   type PushDeviceSummary,
 } from "./lib/push";
+import { reconnectConnectedNetworks } from "./lib/reconnect";
 import { getTimeFormat, setTimeFormat, type TimeFormatKey } from "./lib/timeFormat";
 import { activeHost } from "./lib/uploadHost";
 import {
@@ -100,6 +101,12 @@ const SettingsDrawer: Component<Props> = (props) => {
   // (the widget stays hidden until the first GET lands).
   const [vhostView, setVhostView] = createSignal<VhostSettingsView | null>(null);
   const [vhostError, setVhostError] = createSignal<string | null>(null);
+  // #282 — explicit "Reconnect to apply" state for the vhost sub-page. The
+  // vhost is inert until the upstream reconnects; the footer button bounces
+  // the connected networks. `reconnecting` is the in-flight/double-fire
+  // guard + drives the button label; `reconnectError` surfaces a failure.
+  const [reconnecting, setReconnecting] = createSignal(false);
+  const [reconnectError, setReconnectError] = createSignal<string | null>(null);
   // #252 — settings sub-page navigation. The drawer is a flat page ("main")
   // that can push into a dedicated sub-page ("vhost"); the pattern mirrors
   // AdminPane's tab signal and is reusable for future sub-pages. cic never
@@ -284,6 +291,9 @@ const SettingsDrawer: Component<Props> = (props) => {
       setIdentitySaved(false);
       setIdentityError(null);
       setIdentitySeeded(false);
+      // #282 — clear a stale reconnect error so a reopened drawer that
+      // re-enters the vhost sub-page never strands the previous failure.
+      setReconnectError(null);
     }
   });
 
@@ -538,6 +548,28 @@ const SettingsDrawer: Component<Props> = (props) => {
     }
   };
 
+  // #282 — explicit "Reconnect to apply". Bounces every connected network
+  // via `reconnectConnectedNetworks` (park→reconnect per network — the clean
+  // same-account path the home-page Reconnect uses, NOT the #281
+  // account-switch client purge) so the new source address binds on the
+  // fresh upstream. The `reconnecting` guard blocks double-fire; a failure
+  // surfaces inline via friendlyApiError (errors MUST be visible —
+  // feedback_silent_retry_anti_pattern).
+  const reconnectSession = async (): Promise<void> => {
+    if (reconnecting()) return;
+    setReconnectError(null);
+    setReconnecting(true);
+    try {
+      await reconnectConnectedNetworks();
+    } catch (err) {
+      setReconnectError(
+        err instanceof ApiError ? friendlyApiError(err) : "reconnect failed (unknown error)",
+      );
+    } finally {
+      setReconnecting(false);
+    }
+  };
+
   // #252 — navigate into the vhost sub-page. Re-reads the view on entry so
   // the resolved rDNS names land (the server resolves cold addresses out
   // of band after the drawer-open GET, per the non-blocking cache — a
@@ -545,6 +577,10 @@ const SettingsDrawer: Component<Props> = (props) => {
   const enterVhostPage = (): void => {
     const t = token();
     if (t !== null) void loadVhostSettings(t);
+    // #282 review — clear a stale reconnect error so a back→re-enter within an
+    // open drawer never strands a prior failure (close-effect clears it too,
+    // but the within-drawer re-entry path is the gap the drawer close misses).
+    setReconnectError(null);
     setSettingsPage("vhost");
   };
 
@@ -1047,6 +1083,11 @@ const SettingsDrawer: Component<Props> = (props) => {
               void saveVhostSelection(addresses);
             }}
             onBack={() => setSettingsPage("main")}
+            onReconnect={() => {
+              void reconnectSession();
+            }}
+            reconnecting={reconnecting()}
+            reconnectError={reconnectError()}
           />
         </Show>
 
