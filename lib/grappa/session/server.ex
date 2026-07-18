@@ -4558,15 +4558,12 @@ defmodule Grappa.Session.Server do
   defp sync_presence(state, added, removed) do
     mechanism = presence_mechanism(state)
 
-    if Map.get(state, :presence_armed, false) and mechanism != :none do
-      for line <- Presence.add_commands(mechanism, added) do
-        maybe_log_send_failure("presence_sync", Client.send_raw(state.client, line))
+    :ok =
+      if Map.get(state, :presence_armed, false) and mechanism != :none do
+        send_sync_lines(state, mechanism, added, removed)
+      else
+        :ok
       end
-
-      for line <- Presence.remove_commands(mechanism, removed) do
-        maybe_log_send_failure("presence_sync", Client.send_raw(state.client, line))
-      end
-    end
 
     next_map =
       state
@@ -4575,6 +4572,19 @@ defmodule Grappa.Session.Server do
       |> Presence.untrack(removed)
 
     Map.put(state, :presence, next_map)
+  end
+
+  @spec send_sync_lines(t(), ISupport.presence_mechanism(), [String.t()], [String.t()]) :: :ok
+  defp send_sync_lines(state, mechanism, added, removed) do
+    for line <- Presence.add_commands(mechanism, added) do
+      maybe_log_send_failure("presence_sync", Client.send_raw(state.client, line))
+    end
+
+    for line <- Presence.remove_commands(mechanism, removed) do
+      maybe_log_send_failure("presence_sync", Client.send_raw(state.client, line))
+    end
+
+    :ok
   end
 
   @spec presence_mechanism(t()) :: ISupport.presence_mechanism()
