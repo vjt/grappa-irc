@@ -25193,3 +25193,71 @@ state-shape change (already tracked in `HotReload.LongLivedModules` →
 `Deploy.Preflight` auto-classifies COLD), and the cic bundle carries the fold.
 **HELD** — rides the already-HELD #299 COLD batch (with #282 / #290 / #294 /
 #301 / #302 / #304 / #305 / #306 / #307 / #318)._
+
+### 2026-07-18 — #310: persist the read cursor on the scroll-to-bottom BUTTON tap
+
+**Gap.** Tapping the floating scroll-to-bottom button jumped the view to the
+newest line, then ~2s later the view SNAPPED BACK up to the read marker — the
+read cursor was not persisted at the bottom (reported live on Libera #libera,
+recurring; a regression of #233). The discriminator: a MANUAL scroll to the
+bottom persists the cursor fine — ONLY the button (and the #243 re-tap, which
+shares the same scroll helper) was broken. #233's fix was SERVER-side (the
+monotonic advance-only clamp in `ReadCursor.do_set/4`), and the working
+manual-scroll path proves that clamp is fine — so the regression lives in
+cicchetto's button handler, not the server.
+
+**Root cause (cic-side, two coupled defects).** The button's `onClick` and the
+#243 re-tap both funnelled through the pure `scrollToBottom()` helper, which only
+scrolls + sets `atBottom(true)`. Unlike a manual scroll it did NOT:
+- **(a) advance the read cursor.** The manual path advances via the input-gated
+  `onScroll` scroll-settle (`setCursorIfAdvances` after 500ms). A button tap
+  never arms that gate: the button is a sibling OUTSIDE `.scrollback`, so its tap
+  emits no `pointerdown`/`wheel`/`touchmove` on the `listRef` and
+  `lastInputEventAtMs` stays stale → the settle never fires → no cursor POST.
+  So "read to newest" never persisted (reload / cross-device kept the old
+  unread). `cursor-forward-only.spec.ts` had documented this gap from the other
+  side ("the button... cursor never advances").
+- **(b) release the marker-activation latch.** A channel activation into an
+  unread window leaves `markerActivationPending` set; only an operator INPUT
+  event (`on(lastInputEventAtMs)`) or an own send cleared it. With it still set,
+  the NEXT `rows()` recreation (a live message, or the switch-time
+  `refreshScrollback` completing ~1-2s later) hit the length-effect's re-assert
+  `if (markerActivationPending() && marker exists) scrollToActivation("marker-or-tail")`
+  → the view re-jumped to the divider: the ~2s snap-back. A manual scroll cleared
+  the latch (via the input arm), so it never snapped back.
+
+**Fix — one shared gesture (reuse the verbs, not the nouns).** Route the button
+`onClick` AND the #243 re-tap through a new `scrollToBottomGesture` that, exactly
+like a manual scroll to the bottom, does both: clears `markerActivationPending`
+(hands scroll authority back, the same thing the operator-input arm does) and
+advances the server read cursor to the newest rendered id via the EXISTING
+forward-only `setCursorIfAdvances` POST. The newest id is read AFTER the instant
+scroll — `scrollToBottom()` pins the tail synchronously, so
+`lastFullyVisibleRowId`'s at-bottom short-circuit returns the TRUE DOM tail, not
+a stale pre-scroll id the #233 monotonic clamp would drop as non-advancing
+(candidate b in the issue). No second cursor authority, no server-clamp change.
+The send-relatch (`on(lastOwnSend)`) keeps its own plain `scrollToBottom()` (it
+does its own latch clear + `markerCursorId` re-latch); the gesture deliberately
+does NOT call `setMarkerCursorId`, so the frozen divider is left in place — it
+re-latches only on the next focus acquisition or own send (freeze contract),
+matching the manual-scroll behaviour.
+
+**#243 re-tap.** Reaching the bottom via a re-tap is the same "read to newest"
+intent, so it advances too. The #243 spec asserts scroll GEOMETRY only (lands at
+bottom, button hides), never "no cursor POST", and #200/#125 no-steal is
+untouched (the gesture never calls `setSelectedChannel`) — so the re-tap advance
+regresses nothing. Its moduledoc's "no server round-trip" claim was corrected.
+
+**Tests.** vitest drives the shared gesture through the #243 re-tap command
+(`requestScrollToBottom` — jsdom can't render the geometry-gated button) and
+asserts the advance to the newest id — RED before, GREEN after. A Playwright spec
+(desktop chromium + @webkit iPhone 15) seeds a mid-page cursor, taps the button,
+and asserts (1) the server cursor advances from the mid seed to the tail
+(deterministic, peer-free) and (2) a peer PRIVMSG arriving AFTER the tap — the
+exact rows() recreation that re-asserted the marker jump — does NOT snap the view
+back.
+
+_Deploy: **cic-bundle only** — no `.ex` change, so hot-eligible via
+`deploy-m42.sh --cic`. **HELD** — rides the already-HELD #299 COLD batch's 4AM
+window, shipped together with `deploy-m42.sh --force-cold --cic` (with #249 /
+#282 / #290 / #294 / #301 / #302 / #304 / #305 / #306 / #307 / #318)._
