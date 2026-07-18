@@ -276,6 +276,10 @@ defmodule GrappaWeb.Router do
     get "/me/themes", ThemesController, :mine
     post "/themes", ThemesController, :create
     post "/themes/background", ThemesController, :background
+    # #294 — built-in background catalog for the picker. A 2-segment literal
+    # that MUST precede `/themes/:id` (else "backgrounds" is parsed as an id and
+    # 404s). Static assets themselves are served by nginx at /backgrounds/*.
+    get "/themes/backgrounds", ThemesController, :backgrounds
     get "/themes/:id", ThemesController, :show
     patch "/themes/:id", ThemesController, :update
     delete "/themes/:id", ThemesController, :delete

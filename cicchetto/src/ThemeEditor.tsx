@@ -1,4 +1,4 @@
-import { type Component, createEffect, createSignal, For, Show } from "solid-js";
+import { type Component, createEffect, createResource, createSignal, For, Show } from "solid-js";
 import { ApiError } from "./lib/api";
 import { token } from "./lib/auth";
 import { applyCustomTheme, getAppliedThemePayload } from "./lib/customTheme";
@@ -6,15 +6,18 @@ import { friendlyApiError } from "./lib/friendlyApiError";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import {
   bumpThemesRevision,
+  clearBackground,
   closeThemeEditor,
   EDITOR_BASE_KEYS,
   EDITOR_MODE_KEYS,
   EDITOR_NICK_KEYS,
   persistThemeDraft,
+  setBackgroundBuiltin,
+  setBackgroundUpload,
   themeEditorState,
 } from "./lib/themeEditor";
 import type { ThemeColorKey, ThemeFontFamily, TokenPayload } from "./lib/themesApi";
-import { uploadBackground } from "./lib/themesApi";
+import { listBuiltinBackgrounds, uploadBackground } from "./lib/themesApi";
 
 // #75 producer path — the theme editor overlay.
 //
@@ -58,6 +61,25 @@ const ThemeEditor: Component = () => {
   // lands + activates. No-op the close paths while saving instead.
   const [saving, setSaving] = createSignal(false);
 
+  // #294 — the server-owned built-in background catalog for the picker.
+  // GATED on editor-open (source is `false` while closed) so it NEVER fetches
+  // at boot: ThemeEditor is mounted at Shell boot with the modal closed, and a
+  // boot-time GET /themes/backgrounds against an unresolved/fake token would
+  // 401 → trip the shared on401 → clear the token → bounce (the frozen-splash
+  // e2e class, feedback_boot_auth_fetch_breaks_freeze_e2e). cic never hard-codes
+  // the closed set (it would drift from the server sanitizer); empty on failure
+  // — the upload path still works.
+  const [builtins] = createResource(
+    () => (themeEditorState() !== null ? token() : false),
+    async (t) => {
+      try {
+        return await listBuiltinBackgrounds(t);
+      } catch {
+        return [];
+      }
+    },
+  );
+
   const cancel = () => {
     if (saving()) return;
     applyCustomTheme(snapshot);
@@ -94,8 +116,12 @@ const ThemeEditor: Component = () => {
         const setFont = (f: ThemeFontFamily) => setDraft((d) => ({ ...d, font_family: f }));
         const setOpacity = (o: number) =>
           setDraft((d) => ({ ...d, background: { ...d.background, opacity: o } }));
-        const setImageId = (image_id: string | null) =>
-          setDraft((d) => ({ ...d, background: { ...d.background, image_id } }));
+        // #294 — background is one source at a time (upload XOR built-in);
+        // the pure helpers clear the other on select.
+        const selectBuiltin = (key: string) =>
+          setDraft((d) => ({ ...d, background: setBackgroundBuiltin(d.background, key) }));
+        const clearBg = () =>
+          setDraft((d) => ({ ...d, background: clearBackground(d.background) }));
 
         const uploadFrom = async (source: { file: File } | { url: string }) => {
           const t = token();
@@ -103,7 +129,7 @@ const ThemeEditor: Component = () => {
           setError(null);
           try {
             const { image_id } = await uploadBackground(t, source);
-            setImageId(image_id);
+            setDraft((d) => ({ ...d, background: setBackgroundUpload(d.background, image_id) }));
           } catch (e) {
             setError(errMessage(e));
           }
@@ -223,6 +249,33 @@ const ThemeEditor: Component = () => {
 
                 <fieldset class="theme-editor-group">
                   <legend>background</legend>
+                  <Show when={(builtins() ?? []).length > 0}>
+                    <div class="theme-editor-field">
+                      <span>built-in backgrounds</span>
+                      <div class="theme-editor-bg-grid" data-testid="theme-editor-bg-builtins">
+                        <For each={builtins() ?? []}>
+                          {(bg) => (
+                            <button
+                              type="button"
+                              class="theme-editor-bg-swatch"
+                              classList={{
+                                "theme-editor-bg-swatch--active":
+                                  draft().background.builtin === bg.key,
+                              }}
+                              data-testid={`theme-editor-bg-builtin-${bg.key}`}
+                              title={bg.name}
+                              aria-label={`select ${bg.name} background`}
+                              aria-pressed={draft().background.builtin === bg.key}
+                              style={{ "background-image": `url("${bg.path}")` }}
+                              onClick={() => selectBuiltin(bg.key)}
+                            >
+                              <span class="theme-editor-bg-swatch-name">{bg.name}</span>
+                            </button>
+                          )}
+                        </For>
+                      </div>
+                    </div>
+                  </Show>
                   <label class="theme-editor-field">
                     <span>upload image</span>
                     <input
@@ -258,12 +311,16 @@ const ThemeEditor: Component = () => {
                       </button>
                     </div>
                   </div>
-                  <Show when={draft().background.image_id !== null}>
+                  <Show
+                    when={
+                      draft().background.image_id !== null || draft().background.builtin !== null
+                    }
+                  >
                     <button
                       type="button"
                       class="theme-editor-action"
                       data-testid="theme-editor-bg-clear"
-                      onClick={() => setImageId(null)}
+                      onClick={clearBg}
                     >
                       remove background
                     </button>

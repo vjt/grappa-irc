@@ -24418,3 +24418,79 @@ The band, not a magic number, is the contract. jsdom is blind to the
 _Deploy: **cic-only (`--cic`)** bundle rebuild, no BEAM restart — pure CSS
 change in `default.css` + one e2e. No server, no schema, no config. HELD for
 the batched COLD ship._
+
+## 2026-07-18 — #294 (P0, cic): built-in background picker (v1 — 8 cover backgrounds)
+
+Follow-up to #75. A curated set of **system-owned, read-only** background
+images selectable in the theme editor, alongside the existing custom-upload
+path. v1 (vjt dispatch 2026-07-17, Gemini rate-limited mid-set) = **8
+full-bleed `cover` backgrounds** (4 dark / 4 light, 1920w WebP, ~888KB total);
+the seamless-tile pattern set is a next-session follow-up.
+
+**Payload shape (the load-bearing decision).** A theme's `background` was a
+fixed 2-key map `%{image_id, opacity}` (`TokenModel.sanitize_background/1`).
+It gains two fields → the canonical 4-key shape
+`%{image_id, builtin, size, opacity}`:
+
+  * `builtin` — a key from the **closed** `Grappa.Themes.BuiltinBackgrounds`
+    catalog, or nil. **Mutually exclusive** with `image_id` (a background is
+    EITHER an upload OR a built-in — `reject_dual_source/2` fails a payload
+    setting both). Discriminated shape, NOT an overloaded `image_id` — reusing
+    the uploads-slug field for a built-in key would break its `[a-z2-7]{26}`
+    invariant and conflate two namespaces (the CLAUDE.md "shared data model
+    with a type flag = boundary violation" rule).
+  * `size` — `"cover"` (v1 default + every upload) or `"repeat"` (reserved,
+    wired now so the deferred tile set needs no second wire-contract change —
+    vjt chose the forward-compat option).
+
+**Backward-compat is a feature, not an afterthought.** `sanitize_background/1`
+reads `builtin`/`size` via `Map.get` and DEFAULTS them (nil / `"cover"`), so a
+pre-#294 payload (a theme row saved before this, returned as-is by the server
+until re-saved; a #293 `.theme` import; an old cic localStorage FOUC cache)
+sanitizes forward cleanly. cic's `tokenToCssVars` mirrors the defense
+(truthiness on `builtin`, `size === "repeat"` — `undefined` → cover). Every
+themes test still feeds a 2-key input as a standing forward-compat guard; the
+built-in `payload/1` helper emits the canonical 4-key shape so `sanitize` stays
+the identity (pinned by `builtins_test`).
+
+**Serving: static assets, NOT `/uploads/`.** Phoenix serves ZERO static files
+(no `Plug.Static`) — nginx serves the whole SPA + assets from
+`cicchetto/public/**` → dist (the `/fonts/**` precedent). So the 8 WebP live at
+`cicchetto/public/backgrounds/*.webp` → `/backgrounds/<key>.webp`, with a new
+long-cache `location /backgrounds/` block in the shared
+`infra/snippets/locations-api.conf` (`expires max` → `Cache-Control:
+max-age=315360000` + far-future `Expires`; the issue's CDN-friendly posture).
+This deliberately does NOT reuse `/uploads/` (Phoenix-served, `max-age=3600`,
+per-subject DB-registered — wrong ownership model). It also sidesteps the Vite
+dist `/assets/` collision a literal `assets/` mount (the issue's wording) would
+have hit — so the URL is `/backgrounds/`, not `/assets/`.
+
+**Catalog is server-owned, cic consumes it.** `GET /themes/backgrounds`
+(`ThemesController.backgrounds/2`, route declared BEFORE `/themes/:id` so the
+literal wins) serves `BuiltinBackgrounds.all/0` (`{key, name, variant, path}`).
+The picker fetches it — cic never hard-codes the closed set (it would drift
+from the sanitizer's allowlist; same discipline as `newThemeSeedPayload`
+reusing the server's built-ins). `builtin` → URL is a pure convention
+(`/backgrounds/<key>.webp`) so `customTheme` resolves it synchronously at boot
+without a catalog fetch; the fetch is only for the picker's display metadata.
+
+**CSS: cover needed zero new rules; only sizing vars are new.** The #75
+wallpaper `::before` already painted `background-size: cover`. #294 makes it
+`var(--theme-bg-size, cover)` / `var(--theme-bg-repeat, no-repeat)` (defaults
+keep legacy payloads full-bleed) so the deferred tile mode slots in with no
+further CSS. The `theme-has-bg` gate now engages for an upload OR a built-in.
+
+**Proof.** TDD RED→GREEN across every layer: `BuiltinBackgrounds` +
+`TokenModel` (backward-compat / mutual-exclusion / closed-set) + controller
+(catalog + route-order) Elixir tests; `customTheme` (builtin/size resolution +
+legacy degrade) + `themesApi` (`listBuiltinBackgrounds`) + `themeEditor`
+(mutual-exclusion mutations) vitest; and a chromium e2e
+(`issue294-builtin-bg-picker.spec.ts`) that renders the 8-swatch picker,
+selects one, asserts `html.theme-has-bg` + `--theme-bg-image` at `/backgrounds/`
++ the `::before` layer CONSUMES it, and fetches the asset to assert the
+long-cache header (`max-age ≥ 1yr` + `Expires`). Both e2e tests are save-free —
+no spend of the shared `vjt` daily theme-create budget.
+
+_Deploy: **COLD** (server route + payload-model change) **+ `--cic`** (bundle
+carries the picker + the 8 WebP). No migration (payload is a JSON blob; the
+sanitizer defaults old rows forward). **HELD** for the batched 4am COLD ship._

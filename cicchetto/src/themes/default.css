@@ -5172,6 +5172,51 @@ html.resize-dragging * {
   min-height: 44px;
 }
 
+/* #294 — built-in background picker. A responsive grid of cover-previewed
+ * swatches; the active one gets an accent ring. Each swatch renders the actual
+ * asset as its own background-image (background-size:cover) so the picker is a
+ * live preview of what the wallpaper will look like. */
+.theme-editor-bg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+}
+
+.theme-editor-bg-swatch {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  background-color: var(--bg-alt);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+}
+
+.theme-editor-bg-swatch--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.theme-editor-bg-swatch-name {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 0.1rem 0.25rem;
+  font-size: 0.7rem;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .theme-editor-footer {
   display: flex;
   justify-content: flex-end;
@@ -5230,9 +5275,12 @@ html.resize-dragging * {
   inset: 0;
   z-index: 0;
   background-image: var(--theme-bg-image);
-  background-size: cover;
+  /* #294 — sizing driven by the theme (cover for the v1 built-in set + every
+   * upload; auto+repeat for the deferred seamless-tile set). Defaults keep the
+   * pre-#294 full-bleed behaviour for legacy payloads that set neither var. */
+  background-size: var(--theme-bg-size, cover);
   background-position: center;
-  background-repeat: no-repeat;
+  background-repeat: var(--theme-bg-repeat, no-repeat);
   opacity: var(--theme-bg-opacity, 0.3);
   pointer-events: none;
 }

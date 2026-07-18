@@ -28,7 +28,7 @@ function payload(): TokenPayload {
   return {
     colors: colors as TokenPayload["colors"],
     font_family: "mono-default",
-    background: { image_id: null, opacity: 0.3 },
+    background: { image_id: null, builtin: null, size: "cover", opacity: 0.3 },
   };
 }
 

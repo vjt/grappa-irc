@@ -9,7 +9,7 @@ defmodule Grappa.Themes.WireTest do
     %{
       "colors" => Map.new(TokenModel.color_keys(), fn k -> {k, "#123456"} end),
       "font_family" => "mono-default",
-      "background" => %{"image_id" => nil, "opacity" => 0.3}
+      "background" => %{"image_id" => nil, "builtin" => nil, "size" => "cover", "opacity" => 0.3}
     }
   end
 

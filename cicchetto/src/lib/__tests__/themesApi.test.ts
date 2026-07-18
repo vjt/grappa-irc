@@ -6,6 +6,7 @@ import {
   deleteTheme,
   getActiveTheme,
   getTheme,
+  listBuiltinBackgrounds,
   listGallery,
   listMine,
   publishTheme,
@@ -76,7 +77,7 @@ function samplePayload(): TokenPayload {
   return {
     colors: colors as TokenPayload["colors"],
     font_family: "jetbrains-mono",
-    background: { image_id: null, opacity: 0.3 },
+    background: { image_id: null, builtin: null, size: "cover", opacity: 0.3 },
   };
 }
 
@@ -173,6 +174,23 @@ describe("themesApi", () => {
     const copy = await copyTheme(TOKEN, 7);
     expect(copy.id).toBe(99);
     expect(fetchSpy.mock.calls[0]?.[0]).toBe("/themes/7/copy");
+  });
+
+  test("listBuiltinBackgrounds GETs /themes/backgrounds and unwraps the envelope", async () => {
+    const catalog = [
+      {
+        key: "01-lain-dark",
+        name: "Lain",
+        variant: "dark",
+        path: "/backgrounds/01-lain-dark.webp",
+      },
+    ];
+    fetchSpy.mockResolvedValue(ok({ backgrounds: catalog }));
+    const bgs = await listBuiltinBackgrounds(TOKEN);
+    expect(bgs).toEqual(catalog);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/themes/backgrounds");
+    expect(init.method ?? "GET").toBe("GET");
   });
 
   test("getActiveTheme GETs /me/theme and passes through null", async () => {

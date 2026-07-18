@@ -34,7 +34,7 @@ function payload(overrides: Partial<TokenPayload> = {}): TokenPayload {
   return {
     colors: colors as TokenPayload["colors"],
     font_family: "mono-default",
-    background: { image_id: null, opacity: 0.3 },
+    background: { image_id: null, builtin: null, size: "cover", opacity: 0.3 },
     ...overrides,
   };
 }
@@ -62,15 +62,62 @@ describe("tokenToCssVars", () => {
   });
 
   test("background with no image maps to none + the opacity var", () => {
-    const vars = tokenToCssVars(payload({ background: { image_id: null, opacity: 0.3 } }));
+    const vars = tokenToCssVars(
+      payload({ background: { image_id: null, builtin: null, size: "cover", opacity: 0.3 } }),
+    );
     expect(vars["--theme-bg-image"]).toBe("none");
     expect(vars["--theme-bg-opacity"]).toBe("0.3");
   });
 
   test("background with a slug maps to a /uploads url()", () => {
-    const vars = tokenToCssVars(payload({ background: { image_id: "abc123", opacity: 0.5 } }));
+    const vars = tokenToCssVars(
+      payload({ background: { image_id: "abc123", builtin: null, size: "cover", opacity: 0.5 } }),
+    );
     expect(vars["--theme-bg-image"]).toBe('url("/uploads/abc123")');
     expect(vars["--theme-bg-opacity"]).toBe("0.5");
+  });
+
+  // #294 — a built-in key resolves to the static /backgrounds/<key>.webp asset
+  // (the BuiltinBackgrounds.path convention); it takes precedence over image_id.
+  test("a builtin key maps to a /backgrounds url()", () => {
+    const vars = tokenToCssVars(
+      payload({
+        background: { image_id: null, builtin: "01-lain-dark", size: "cover", opacity: 0.4 },
+      }),
+    );
+    expect(vars["--theme-bg-image"]).toBe('url("/backgrounds/01-lain-dark.webp")');
+    expect(vars["--theme-bg-opacity"]).toBe("0.4");
+  });
+
+  test("size cover maps the sizing vars to cover + no-repeat", () => {
+    const vars = tokenToCssVars(
+      payload({
+        background: { image_id: null, builtin: "01-lain-dark", size: "cover", opacity: 0.3 },
+      }),
+    );
+    expect(vars["--theme-bg-size"]).toBe("cover");
+    expect(vars["--theme-bg-repeat"]).toBe("no-repeat");
+  });
+
+  test("size repeat maps the sizing vars to auto + repeat (forward-compat tile mode)", () => {
+    const vars = tokenToCssVars(
+      payload({
+        background: { image_id: null, builtin: "01-lain-dark", size: "repeat", opacity: 0.3 },
+      }),
+    );
+    expect(vars["--theme-bg-size"]).toBe("auto");
+    expect(vars["--theme-bg-repeat"]).toBe("repeat");
+  });
+
+  test("a pre-#294 payload (no builtin/size) degrades to the upload path + cover", () => {
+    const legacy = payload();
+    // An old cached / wire payload lacking the new fields (a theme row saved
+    // before #294, returned as-is by the server until re-saved).
+    legacy.background = { image_id: "abc123", opacity: 0.3 } as TokenPayload["background"];
+    const vars = tokenToCssVars(legacy);
+    expect(vars["--theme-bg-image"]).toBe('url("/uploads/abc123")');
+    expect(vars["--theme-bg-size"]).toBe("cover");
+    expect(vars["--theme-bg-repeat"]).toBe("no-repeat");
   });
 });
 

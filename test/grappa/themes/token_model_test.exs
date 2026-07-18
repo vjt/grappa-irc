@@ -1,7 +1,7 @@
 defmodule Grappa.Themes.TokenModelTest do
   use ExUnit.Case, async: true
 
-  alias Grappa.Themes.TokenModel
+  alias Grappa.Themes.{BuiltinBackgrounds, TokenModel}
 
   defp valid_colors do
     Map.new(TokenModel.color_keys(), fn k -> {k, "#123456"} end)
@@ -35,7 +35,9 @@ defmodule Grappa.Themes.TokenModelTest do
     assert Enum.sort(Map.keys(clean)) == ["background", "colors", "font_family"]
     assert Enum.sort(Map.keys(clean["colors"])) == Enum.sort(TokenModel.color_keys())
     refute Map.has_key?(clean["colors"], "evil")
-    assert clean["background"] == %{"image_id" => nil, "opacity" => 0.3}
+
+    assert clean["background"] ==
+             %{"image_id" => nil, "builtin" => nil, "size" => "cover", "opacity" => 0.3}
   end
 
   test "sanitize keeps a valid uploads-slug image_id" do
@@ -108,5 +110,66 @@ defmodule Grappa.Themes.TokenModelTest do
     }
 
     assert {:ok, _} = TokenModel.sanitize(raw)
+  end
+
+  # #294 — built-in background picker. `background` gains a discriminated
+  # `builtin` key (a member of the closed BuiltinBackgrounds catalog, mutually
+  # exclusive with an uploads `image_id`) + a forward-compat `size` mode
+  # (`cover` default; `repeat` reserved for the next-session tile set).
+  describe "#294 built-in background field" do
+    defp builtin_key, do: hd(BuiltinBackgrounds.keys())
+
+    test "sanitize accepts a valid built-in key" do
+      raw = put_in(valid_raw(), ["background", "builtin"], builtin_key())
+      assert {:ok, clean} = TokenModel.sanitize(raw)
+      assert clean["background"]["builtin"] == builtin_key()
+      assert clean["background"]["image_id"] == nil
+    end
+
+    test "sanitize rejects an unknown built-in key (closed set)" do
+      raw = put_in(valid_raw(), ["background", "builtin"], "99-not-a-real-bg")
+      assert {:error, :invalid_theme} = TokenModel.sanitize(raw)
+    end
+
+    test "sanitize rejects a path-traversal built-in key" do
+      raw = put_in(valid_raw(), ["background", "builtin"], "../../etc/passwd")
+      assert {:error, :invalid_theme} = TokenModel.sanitize(raw)
+    end
+
+    test "sanitize rejects image_id AND builtin set together (mutually exclusive)" do
+      raw =
+        valid_raw()
+        |> put_in(["background", "image_id"], String.duplicate("a", 26))
+        |> put_in(["background", "builtin"], builtin_key())
+
+      assert {:error, :invalid_theme} = TokenModel.sanitize(raw)
+    end
+
+    test "sanitize defaults size to cover when absent (backward-compat old payloads)" do
+      assert {:ok, clean} = TokenModel.sanitize(valid_raw())
+      assert clean["background"]["size"] == "cover"
+    end
+
+    test "sanitize defaults builtin to nil when absent (backward-compat old payloads)" do
+      assert {:ok, clean} = TokenModel.sanitize(valid_raw())
+      assert clean["background"]["builtin"] == nil
+    end
+
+    test "sanitize accepts the repeat size mode" do
+      raw = put_in(valid_raw(), ["background", "size"], "repeat")
+      assert {:ok, clean} = TokenModel.sanitize(raw)
+      assert clean["background"]["size"] == "repeat"
+    end
+
+    test "sanitize rejects an unknown size mode" do
+      raw = put_in(valid_raw(), ["background", "size"], "stretch")
+      assert {:error, :invalid_theme} = TokenModel.sanitize(raw)
+    end
+
+    test "sanitize canonicalises background to exactly image_id/builtin/size/opacity" do
+      raw = put_in(valid_raw(), ["background", "builtin"], builtin_key())
+      assert {:ok, clean} = TokenModel.sanitize(raw)
+      assert Enum.sort(Map.keys(clean["background"])) == ~w(builtin image_id opacity size)
+    end
   end
 end

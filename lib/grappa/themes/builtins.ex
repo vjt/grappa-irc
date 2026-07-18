@@ -16,8 +16,8 @@ defmodule Grappa.Themes.Builtins do
 
   The palette shape per theme: 11 base color tokens + 16 nick colors
   (`nick_0..15`) + `font_family` (all `mono-default` — the self-hosted font set
-  ships in a later cic sub-task) + a default background (`image_id: nil`,
-  `opacity: 0.3`).
+  ships in a later cic sub-task) + a default background (no image, no built-in,
+  `size: "cover"`, `opacity: 0.3` — the canonical #294 4-key shape).
   """
 
   alias Grappa.Themes.TokenModel
@@ -327,12 +327,15 @@ defmodule Grappa.Themes.Builtins do
     |> Enum.reduce(base, fn {hex, i}, acc -> Map.put(acc, "nick_#{i}", hex) end)
   end
 
-  # Wrap a 27-key color map into a full canonical token payload.
+  # Wrap a 27-key color map into a full canonical token payload. The background
+  # is the canonical 4-key shape (#294): no image, no built-in, cover sizing —
+  # so `TokenModel.sanitize/1` stays the identity on every built-in (pinned by
+  # `builtins_test`).
   defp payload(colors) do
     %{
       "colors" => colors,
       "font_family" => "mono-default",
-      "background" => %{"image_id" => nil, "opacity" => 0.3}
+      "background" => %{"image_id" => nil, "builtin" => nil, "size" => "cover", "opacity" => 0.3}
     }
   end
 end

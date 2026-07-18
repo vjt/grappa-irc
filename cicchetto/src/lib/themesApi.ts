@@ -50,15 +50,36 @@ export type TokenColors = Record<ThemeColorKey, string>;
 // Producers can only express what this allows; anything else is dropped
 // server-side (safe-by-construction). `customTheme.ts` consumes this to
 // generate scoped CSS custom properties.
+// Background sizing — mirror of `Grappa.Themes.TokenModel.size_modes/0`.
+// `cover` = full-bleed (the v1 built-in set + every upload); `repeat` =
+// seamless tile (the deferred #294 pattern set).
+export type ThemeBackgroundSize = "cover" | "repeat";
+
 export type TokenPayload = {
   colors: TokenColors;
   font_family: ThemeFontFamily;
   background: {
     // Uploads slug of the re-hosted background image, or null for none.
     image_id: string | null;
+    // #294 — a member of the server-owned BuiltinBackgrounds catalog, or null.
+    // Mutually exclusive with image_id (a background is EITHER an upload OR a
+    // built-in). Resolves to /backgrounds/<builtin>.webp in customTheme.
+    builtin: string | null;
+    // #294 — cover (v1 default) or repeat (deferred tile mode).
+    size: ThemeBackgroundSize;
     // 0.0..1.0; default 0.3.
     opacity: number;
   };
+};
+
+// One entry in the built-in background catalog (`GET /themes/backgrounds`) —
+// mirror of `Grappa.Themes.BuiltinBackgrounds.t`. The picker consumes this;
+// `path` is the static /backgrounds/<key>.webp URL the asset is served at.
+export type BuiltinBackground = {
+  key: string;
+  name: string;
+  variant: "dark" | "light";
+  path: string;
 };
 
 // Request body for create — atom-keyed at the server boundary; the wire
@@ -86,6 +107,15 @@ export async function listMine(token: string): Promise<ThemesWireT[]> {
   const res = await fetch("/me/themes", { headers: buildHeaders(token) });
   if (!res.ok) throw await readError(res);
   return ((await res.json()) as ThemesEnvelope).themes;
+}
+
+// GET /themes/backgrounds — the server-owned built-in background catalog the
+// picker renders. Server-owned so cic never hard-codes the closed set (it would
+// drift from the sanitizer's allowlist).
+export async function listBuiltinBackgrounds(token: string): Promise<BuiltinBackground[]> {
+  const res = await fetch("/themes/backgrounds", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  return ((await res.json()) as { backgrounds: BuiltinBackground[] }).backgrounds;
 }
 
 export async function getTheme(token: string, id: number): Promise<ThemesWireT> {

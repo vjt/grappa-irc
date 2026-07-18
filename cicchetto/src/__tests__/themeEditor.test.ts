@@ -32,10 +32,13 @@ vi.mock("../lib/customTheme", () => ({
 }));
 
 import {
+  clearBackground,
   closeThemeEditor,
   newThemeSeedPayload,
   openThemeEditor,
   persistThemeDraft,
+  setBackgroundBuiltin,
+  setBackgroundUpload,
   themeEditorState,
 } from "../lib/themeEditor";
 
@@ -63,7 +66,7 @@ function payload(over: Partial<TokenPayload> = {}): TokenPayload {
   return {
     colors: fullColors(),
     font_family: "mono-default",
-    background: { image_id: null, opacity: 0.3 },
+    background: { image_id: null, builtin: null, size: "cover", opacity: 0.3 },
     ...over,
   };
 }
@@ -158,6 +161,40 @@ describe("persistThemeDraft", () => {
     expect(mocks.createTheme).not.toHaveBeenCalled();
     expect(mocks.activateTheme).toHaveBeenCalledWith("tok", saved);
     expect(result).toBe(saved);
+  });
+});
+
+// #294 — background-source mutations for the picker. A theme carries exactly
+// one background source (upload XOR built-in, mirroring the server's mutual
+// exclusion), so selecting one clears the other.
+describe("background source mutations", () => {
+  it("setBackgroundBuiltin selects the built-in, clears any upload, resets size to cover", () => {
+    const from = {
+      image_id: "abcdefghijklmnopqrstuvwxyz",
+      builtin: null,
+      size: "repeat",
+      opacity: 0.5,
+    } as const;
+    const next = setBackgroundBuiltin(from, "01-lain-dark");
+    expect(next.builtin).toBe("01-lain-dark");
+    expect(next.image_id).toBeNull();
+    expect(next.size).toBe("cover");
+    expect(next.opacity).toBe(0.5);
+  });
+
+  it("setBackgroundUpload sets the slug and clears any built-in", () => {
+    const from = { image_id: null, builtin: "01-lain-dark", size: "cover", opacity: 0.3 } as const;
+    const next = setBackgroundUpload(from, "abcdefghijklmnopqrstuvwxyz");
+    expect(next.image_id).toBe("abcdefghijklmnopqrstuvwxyz");
+    expect(next.builtin).toBeNull();
+  });
+
+  it("clearBackground drops both sources but keeps opacity", () => {
+    const from = { image_id: null, builtin: "01-lain-dark", size: "cover", opacity: 0.7 } as const;
+    const next = clearBackground(from);
+    expect(next.image_id).toBeNull();
+    expect(next.builtin).toBeNull();
+    expect(next.opacity).toBe(0.7);
   });
 });
 
