@@ -24991,3 +24991,63 @@ the `+d`/`+g`/`+S` toggles show even though vjt holds none of them).
 _Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
 rides the already-HELD #299 COLD batch (with #282 / #290 / #294 / #302 /
 #304 / #305 / #307), NOT shipped solo._
+
+### 2026-07-18 — #306: default.css audit + SAFE cleanup (dead rules + tap-target token)
+
+The systemic follow-up to #305 (which consolidated the chrome-button cluster):
+a structured entropy audit of `cicchetto/src/themes/default.css` (7421 lines,
+the single stylesheet; 3 shipped palettes live in-file as base `:root`,
+`:root[data-theme="irssi-dark"]`, `:root[data-theme="mirc-light"]`). The full
+audit — grouped by the five #306 hunt buckets, with the SAFE-vs-VETO split — is
+posted as a comment on #306. This entry records what was APPLIED (the SAFE set
+only) and WHY the rest was deferred.
+
+**Removed — 6 dead rules.** Each class stem was proven to match no element
+anywhere in `src/**`, `e2e/**`, or `index.html`, checked per-selector including
+runtime class construction (template strings / `classList`):
+`.sidebar-unread` + `.bottom-bar-unread` (pre-**C7.5** single-badge remnants,
+superseded by the `-msg-unread` / `-events-unread` split), `.sidebar-footer`,
+`.compose-box-image-ttl`, `.admin-pane-placeholder`, and
+`.home-pane-directory-link` (+`:hover`, + its now-orphaned `#135` comment;
+superseded by the base `.home-pane-network-browse`). A selector matching no
+element paints nothing, so removal is behaviour-preserving by construction.
+Looks-dead-but-live variants built at runtime — `error-banner-${severity}`,
+`who-modal-flag-tag-${cssMod}`, `whois-card-tag-oper`,
+`next-active-btn-${variant}` — were checked against their component enums and
+KEPT.
+
+**Extracted — `--tap-min: 44px` token.** The Apple-HIG 44px tap-target minimum
+was hard-coded at 28 `min-width`/`min-height` sites (rows, modal close buttons,
+cards, theme editor). #305 had already established the tap-target-token pattern
+with `--chrome-tap-min: 48px` on `:root`; this promotes the sibling 44px value
+to `--tap-min` right beside it. Behaviour-preserving by construction: sizing
+tokens live on the base `:root`, and both the `data-theme` palette blocks and
+the runtime custom-theme system (`lib/customTheme.ts` applies a **closed**
+`THEME_CSS_VARS` colour set only) never touch `--tap-min`, so it resolves to
+44px in every theme. Absolute px on purpose (root font-size is 14px — a rem tap
+target would under-size below the HIG floor, `feedback_cic_tap_target_rem_pitfall`).
+Complete atomic adoption — 0 literal `min-*: 44px` remain, so no two-pattern
+drift; the fixed `44px` swatch square in `.theme-editor-color-input` is a
+different semantic (fixed size, not a tap floor) and is intentionally left.
+
+**Deferred to the maintainer (VETO list on #306).** The button-quartet
+consolidation (~21 buttons re-declaring `transparent + 1px var(--border) +
+font-mono`) is the systemic #305 follow-up but collapsing it touches N call-sites
+or shifts cascade — the "atomic-adoption, all-or-nothing" hazard — so it wants a
+dedicated issue, not this behaviour-preserving pass. The 23 baseline
+`noDescendingSpecificity` warnings are the highest-risk bucket (reordering can
+change which rule wins) and were left untouched (count unchanged). The
+float-button opacity token was deferred because `0.5` conflates two semantics
+(mobile float-stack idle vs generic `:disabled`).
+
+**Witness.** jsdom is blind to CSS, so there is no RED→GREEN unit gate here —
+the net is regression: full `scripts/integration.sh` (real chromium + webkit,
+~430 specs asserting visibility / computed layout / element presence) green,
+plus a real-browser theme-gallery smoke in a light and a dark shipped palette
+(`--border`/`--accent` contrast varies per theme). `bun run check` held at the
+23-warning baseline with 0 new warnings and 0 `error TS`; `bun run test`
+(vitest) green. No brittle mirror tests asserting the old literals were added.
+
+_Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
+rides the already-HELD #299 COLD batch (with #282 / #290 / #294 / #302 /
+#304 / #305 / #307), NOT shipped solo._
