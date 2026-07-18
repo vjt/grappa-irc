@@ -19,9 +19,14 @@ defmodule Grappa.Themes.Wire do
       9 — the real usage metric, distinct from the copy-only `apply_count`).
       The context reader populates it on the `%Theme{}`; 0 if unpopulated.
 
-  `author` is the owning user's name for a user-owned theme, and a FIXED
-  `"guest"` label for a visitor-owned theme — #299 author model B: a visitor's
-  nick is NEVER surfaced (no impersonation surface, no anchor-nick).
+  `author` (#299 amendment, model A) prefers the theme's stored `author_nick`
+  snapshot whenever present — the publishing visitor's representative nick,
+  captured at publish time and surviving reap + system re-home (so a re-homed
+  row credits the original nick, NOT "system"). With no snapshot it falls back
+  to the owning user's name (user themes) or the fixed `"guest"` label (legacy
+  / never-published visitor themes). vjt accepted the impersonation caveat: a
+  visitor may publish under any nick they hold. `built_in` stays a pure
+  ownership predicate (system user) — decoupled from `author`.
 
   `in_use` (#299 item 9) is a derived, CONTEXT-SUPPLIED count — how many
   subjects currently have this theme active — passed in by the caller rather
@@ -40,8 +45,9 @@ defmodule Grappa.Themes.Wire do
   alias Grappa.Themes.Theme
   alias Grappa.Visitors.Visitor
 
-  # #299 author model B — the fixed attribution label for a visitor-owned
-  # theme. A closed constant, never a nick.
+  # #299 author model A — the fallback attribution label, used only when a
+  # theme carries no `author_nick` snapshot (legacy / never-published visitor
+  # themes). A closed constant.
   @guest_author "guest"
 
   # The rich viewer subject (as carried in `conn.assigns.current_subject`) is
@@ -63,7 +69,7 @@ defmodule Grappa.Themes.Wire do
           inserted_at: String.t()
         }
 
-  @doc "The fixed author label for a visitor-owned theme (author model B)."
+  @doc "The fallback author label for a snapshot-less visitor theme (author model A)."
   @spec guest_author() :: String.t()
   def guest_author, do: @guest_author
 
@@ -91,13 +97,20 @@ defmodule Grappa.Themes.Wire do
     }
   end
 
-  # User-owned: the user's name; built_in iff the system user. Visitor-owned
-  # (`:user` is nil — XOR guarantees `visitor_id` set): the fixed guest label,
-  # never built_in, NEVER the visitor's nick (author model B).
-  defp attribution(%Theme{user: %User{} = user}),
-    do: {user.name, user.name == Themes.system_user_name()}
+  # #299 author model A: author prefers the stored publish-time nick snapshot
+  # whenever present (so it survives reap + system re-home — a now-system-owned
+  # row still credits the visitor's nick), else the owning user's name, else
+  # the fixed guest label. `built_in` is a pure ownership predicate (system
+  # user), decoupled from `author` — a re-homed row is built_in AND
+  # nick-credited.
+  defp attribution(%Theme{} = theme), do: {author_label(theme), built_in?(theme)}
 
-  defp attribution(%Theme{user: nil}), do: {@guest_author, false}
+  defp author_label(%Theme{author_nick: nick}) when is_binary(nick) and nick != "", do: nick
+  defp author_label(%Theme{user: %User{name: name}}), do: name
+  defp author_label(%Theme{user: nil}), do: @guest_author
+
+  defp built_in?(%Theme{user: %User{name: name}}), do: name == Themes.system_user_name()
+  defp built_in?(%Theme{user: nil}), do: false
 
   # A theme is `mine` for the user OR visitor whose subject FK it carries. The
   # `is_binary` guard prevents a nil FK (the other subject branch) from

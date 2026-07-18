@@ -24593,6 +24593,39 @@ source; `built_in` is always false for a visitor-owned theme. Considered and
 rejected: attributing to the visitor's current nick (impersonation risk + a
 reaped visitor's nick is meaningless).
 
+**Author model A (amendment, 2026-07-18 — SUPERSEDES model B).** vjt reversed
+the call: a visitor-published theme is credited to the **visitor's nick,
+snapshotted at PUBLISH time and PERSISTED** as `themes.author_nick` (nullable,
+expand-safe add-column migration riding the same HELD #299 COLD batch). vjt saw
+and ACCEPTED the impersonation caveat ("il nick che il visitor ha in quel
+momento, è ok"). Wire attribution now **prefers `author_nick` whenever
+present, regardless of current owner**: `author = author_nick || user.name ||
+"guest"`. That ordering is load-bearing — the reaping re-home (below) flips a
+published visitor theme to `user_id=system`, so a live-owner read would render
+"system"; the stored snapshot keeps crediting the original nick. `built_in`
+is now decoupled from `author` (pure ownership predicate = system user) — a
+re-homed row is `built_in: true` AND nick-credited. Legacy pre-amendment
+visitor themes (`author_nick` NULL) keep "guest"; user themes keep the owner's
+name — no behavior change for either.
+
+_Spec-vs-code deviation recorded (CLAUDE.md "challenge the spec"):_ the
+amendment brief said to read the nick from "the Visitor row / subject", but
+#211 phase 7 DROPPED the row's nick — it lives per-network on
+`network_credentials`, and the request `current_subject` carries no nick. The
+snapshot is instead derived server-side from
+`Networks.Credentials.representative_visitor_credential/1` (the identity-anchor
+= lowest-`network_id` credential's nick — the SAME "a visitor's nick" the
+subject wire + admin Visitors tab already show), keyed off the THEME's
+`visitor_id` (NOT the caller subject — an admin may publish another subject's
+theme). Raw nick, NOT rfc1459-folded: a display LABEL, not a fold-MATCH site
+(consistent with the raw-cased members map / `state.nick`). `author_nick` is
+written ONLY server-side via `set_published/3`'s `Ecto.Changeset.change/2`, NOT
+added to the public `cast/3` allowlist — a user-supplied author string would
+widen the surface past the accepted "publish under a nick you hold" caveat
+(tighter than the brief's "cast it", which the current controller never
+exercises anyway). Themes gained a one-way `Grappa.Networks` boundary dep.
+Follow-up (separate ticket, NOT built here): make the author label editable.
+
 **Reaping re-home (the one non-CASCADE dependent).** A reaped/deleted
 visitor's PUBLISHED themes must survive as gallery contributions; private ones
 die with the row. `Themes.rehome_visitor_published_to_system/1` moves published

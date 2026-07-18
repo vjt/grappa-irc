@@ -14,7 +14,14 @@
 // spec exercises the client half.
 
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
-import { adminDeleteVisitor, mintVisitor } from "../fixtures/grappaApi";
+import {
+  adminDeleteTheme,
+  adminDeleteVisitor,
+  copyTheme,
+  listGalleryThemes,
+  mintVisitor,
+  publishTheme,
+} from "../fixtures/grappaApi";
 import {
   AUTOJOIN_CHANNELS,
   getSeededAdmin,
@@ -46,6 +53,16 @@ async function openThemesSubPageMobile(page: PWPage): Promise<void> {
 // Desktop path to the themes sub-page (settings cog → themes nav row).
 async function openThemesSubPageDesktop(page: PWPage): Promise<void> {
   await page.getByLabel(/open settings/i).click();
+  await page.getByTestId("themes-settings-entry").click();
+  await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
+}
+
+// Back out of the gallery and re-enter it — the ThemeGallery component
+// re-fetches on mount (`load()` in its on-entry effect), so this forces a
+// fresh gallery read after a server-side change (e.g. a visitor reap that
+// re-homes a published theme) without a full page reload.
+async function reopenGalleryDesktop(page: PWPage): Promise<void> {
+  await page.getByTestId("themes-back").click();
   await page.getByTestId("themes-settings-entry").click();
   await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
 }
@@ -130,6 +147,62 @@ test.describe("#299 — theme cards (tap-select + progressive disclosure)", () =
       await ctx.close();
       // The copy is a private (unpublished) theme, so it CASCADE-dies with the
       // visitor — no gallery residue to clean up.
+      await adminDeleteVisitor(getSeededAdmin().token, visitor.id).catch(() => {});
+    }
+  });
+
+  test("a visitor-published theme credits the publish-time nick and it survives reap", async ({
+    page,
+  }) => {
+    // Author model A (#299 amendment): a visitor-published theme is credited to
+    // the publishing visitor's nick, snapshotted at PUBLISH time and PERSISTED
+    // — so it survives the visitor being reaped, which re-homes the published
+    // theme to the system owner (visitor_id → nil). If attribution read the
+    // live owner instead of the snapshot, the card would flip to "system" (or
+    // the "guest" fallback) after reap. Set-up runs over REST (the runner talks
+    // to grappa directly); the assertion is the cic gallery RENDER.
+    const visitor = await mintVisitor(`e2e299n-${Date.now()}`);
+    let themeId: number | undefined;
+
+    try {
+      // The visitor copies a built-in (a guaranteed-valid payload) into their
+      // library, then publishes it → the server snapshots author_nick.
+      const gallery = await listGalleryThemes(visitor.token);
+      const builtin = gallery.find((t) => t.built_in);
+      if (builtin === undefined) throw new Error("no built-in theme in the gallery to copy");
+      const copy = await copyTheme(visitor.token, builtin.id);
+      themeId = copy.id;
+      const published = await publishTheme(visitor.token, copy.id);
+      // Server truth: the wire already credits the nick, not the guest label.
+      expect(published.author).toBe(visitor.nick);
+
+      // View the gallery as the seeded vjt; the card credits the visitor nick.
+      await loginAs(page, getSeededVjt());
+      await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+      await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toBeVisible();
+      await openThemesSubPageDesktop(page);
+
+      const author = page.locator(`[data-testid="theme-card-${themeId}"] .theme-card-author`);
+      await expect(author).toBeVisible({ timeout: 5_000 });
+      await expect(author).toContainText(visitor.nick);
+
+      // Reap the publishing visitor → re-homes the published theme to system.
+      await adminDeleteVisitor(getSeededAdmin().token, visitor.id);
+
+      // Re-open the gallery (forces a fresh fetch): the nick snapshot STILL
+      // shows — NOT "system" (the new owner), NOT the "guest" fallback.
+      await reopenGalleryDesktop(page);
+      const authorAfter = page.locator(
+        `[data-testid="theme-card-${themeId}"] .theme-card-author`,
+      );
+      await expect(authorAfter).toBeVisible({ timeout: 5_000 });
+      await expect(authorAfter).toContainText(visitor.nick);
+    } finally {
+      // The re-homed theme is a published, system-owned gallery row — clean it
+      // up so it doesn't accrete as gallery residue across runs.
+      if (themeId !== undefined) {
+        await adminDeleteTheme(getSeededAdmin().token, themeId).catch(() => {});
+      }
       await adminDeleteVisitor(getSeededAdmin().token, visitor.id).catch(() => {});
     }
   });
