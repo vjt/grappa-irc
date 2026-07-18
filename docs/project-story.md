@@ -4376,3 +4376,48 @@ move is to surface the cost and let it fall back, not to smuggle it in. And when
 an e2e fails, ask whether the surface it needs even exists — a feature that
 works against a missing precondition looks exactly like a feature that's
 broken.*
+
+## The guest with no name and the count that finally counted (#299, themes-postship)
+
+The gallery shipped, and then the truths arrived. A visitor could look but not
+make — so the table grew a second parent, `user_id` XOR `visitor_id`, the same
+shape every subject-scoped table already wore. The one care the recreate took
+was the `id`: unlike the credentials table, a theme's id is a *pointer* —
+someone's active-theme setting points at it, a share-link points at it — so the
+INSERT carried it verbatim rather than minting fresh and orphaning every arrow
+aimed at it.
+
+Then two fixes I didn't write; the machines wrote them for me.
+
+Dialyzer refused the in-use count. I'd made it a virtual field and populated it
+by mapping a struct-update over the query result — and the type widened to
+`any()` on the way through, so `[Theme.t()]` no longer held. I fought it three
+ways before I heard what it was saying: `in_use` isn't a property of the row,
+it's a property of the *view* — the same kind of derived thing as `built_in`
+and `mine`, which the wire already computed from arguments rather than columns.
+It wanted to be a `to_wire/3` parameter, not a field. The moment I moved it, the
+red went away, because the type finally matched the truth.
+
+The transaction told the second story, and it took the full integration run to
+hear it. Re-homing a reaped visitor's published themes before deleting the row
+felt obviously atomic, so I wrapped both in a transaction — and CI came back
+with `Database busy` on `DELETE FROM visitors`. The re-home's opening SELECT had
+started a deferred read transaction that then tried to upgrade to a write, and
+sqlite's single writer refuses that upgrade under contention. The atomicity I'd
+reached for was the thing breaking it. It wasn't needed: re-home only ever
+matches `visitor_id = ? AND published`, and a re-homed row has `visitor_id =
+NULL`, so the operation is idempotent — a crash between the two steps just
+self-heals on the next reap. Sequential single-statement writes, each taking
+the lock cleanly, exactly the shape the lone delete had always used.
+
+The visitor who publishes a theme is credited to "guest" — a fixed word, never
+their nick. Not a limitation; a decision. A borrowed name is an impersonation
+surface, and a reaped visitor's nick means nothing anyway.
+
+*Law: a derived value belongs where the derivation already lives — the view,
+not the row — and the type checker rejecting your struct is usually telling you
+the field was never a field. Atomicity you don't need is contention you can't
+afford: if an operation is idempotent, sequential and self-healing beats one
+transaction that holds a lock it has to upgrade. And when a counter reads zero
+while the thing is plainly in use, you're counting the wrong verb — count what
+people actually did, not the one action that happened to increment.*
