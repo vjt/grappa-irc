@@ -192,6 +192,7 @@ defmodule Grappa.Session.EventRouter do
           | {:lusers_bundle, accum :: map()}
           | {:whowas_bundle, target :: String.t(), accum :: map()}
           | {:umode_changed, modes :: [String.t()]}
+          | {:supported_umodes_changed, modes :: [String.t()]}
           | {:session_identity_changed, :acquired | :lost}
 
   @doc """
@@ -1016,6 +1017,36 @@ defmodule Grappa.Session.EventRouter do
     next_umodes = apply_umode_string([], mode_str)
     effects = if next_umodes != prev_umodes, do: [{:umode_changed, next_umodes}], else: []
     {:cont, Map.put(state, :umodes, next_umodes), effects}
+  end
+
+  # 004 RPL_MYINFO (#249): the connection-registration line advertising the
+  # server's supported feature set. Param layout:
+  # `[own_nick, servername, version, usermodes, chanmodes, chanmodes_with_param?]`.
+  # Param index 3 (usermodes, e.g. "oiwgrsk") is the SUPPORTED user-mode set —
+  # the umode analogue of 005 CHANMODES for channels. Fold it into the
+  # per-session `supported_umodes` set + emit `{:supported_umodes_changed,
+  # letters}` so cic drives the `/umode` modal's AVAILABLE toggles from the
+  # server's real set instead of a static bahamut table (#249).
+  #
+  # This does NOT alter 004's ROUTING: 004 stays deny-listed in NumericRouter
+  # (`@active_numerics`) → `{:server, nil}` display, and this fold runs INSIDE
+  # the generic numeric handler's `EventRouter.route/2` call (server.ex), AFTER
+  # the $server `:notice` persist — so the connect-storm display row is
+  # untouched (the #276 ghost-routing fix is preserved; numeric_router_test
+  # guards it). `Map.get`/`Map.put` (never `%{state | ...}`) for the #216
+  # hot-reload contract; emit only on a real change to keep fan-out minimal.
+  # `parse_supported_umodes/1` (NOT `apply_umode_string/2`) parses the token:
+  # the supported set is an availability advertisement, a DISTINCT domain
+  # concept from an active `+/-` umode delta (CLAUDE.md design-discipline #6).
+  defp do_route(
+         %Message{command: {:numeric, 4}, params: [_, _, _, usermodes | _]},
+         state
+       )
+       when is_binary(usermodes) do
+    prev = Map.get(state, :supported_umodes, [])
+    next = parse_supported_umodes(usermodes)
+    effects = if next != prev, do: [{:supported_umodes_changed, next}], else: []
+    {:cont, Map.put(state, :supported_umodes, next), effects}
   end
 
   # 366 RPL_ENDOFNAMES is the end-of-NAMES marker. Each preceding 353
@@ -2583,6 +2614,22 @@ defmodule Grappa.Session.EventRouter do
 
   defp walk_umodes(set, <<letter::binary-size(1), rest::binary>>, :remove),
     do: walk_umodes(MapSet.delete(set, letter), rest, :remove)
+
+  # #249 — parse the 004 RPL_MYINFO supported-usermode token (a signless
+  # concatenation of letters, e.g. "oiwgrsk") into a sorted, deduped
+  # single-letter list. This is the AVAILABILITY set the server advertises —
+  # a distinct domain concept from the active umode DELTA `apply_umode_string/2`
+  # applies, so it does NOT share that walker (same wire SHAPE, different
+  # MEANING; CLAUDE.md design-discipline #6). Any stray sign char is dropped
+  # defensively (the token is signless by spec).
+  @spec parse_supported_umodes(String.t()) :: [String.t()]
+  defp parse_supported_umodes(token) when is_binary(token) do
+    token
+    |> String.graphemes()
+    |> Enum.reject(&(&1 in ["+", "-"]))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
 
   # Parse a full mode snapshot string (e.g. "+nt" or "+ntk") plus arg list
   # into a channel_mode_entry. Replaces any existing entry entirely (used by

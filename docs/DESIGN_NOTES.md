@@ -25135,3 +25135,61 @@ _Deploy: **COLD** — `Grappa.WSPresence` state-shape change (per-pid tuple +
 — rides the already-HELD #299 COLD batch (with #282 / #290 / #294 / #302 / #304 /
 #305 / #306 / #307). The COLD window MUST include the post-deploy iPhone efficacy
 verification with the reporter (vjt / #sniffo) reading `/admin/ws_presence`._
+
+### 2026-07-18 — #249: drive the cic /umode modal from the server-advertised umode set
+
+**Gap.** cicchetto's `UmodeModal` rendered its togglable letters from a STATIC
+bahamut umode table (`umodeModes.ts`), unioned with any active-but-unknown
+letter — a pure-cic best effort. That is the umode twin of the channel-mode
+modal, which #216 already drives from the network's SERVER-advertised CHANMODES
+(005 RPL_ISUPPORT). The umode side had no such source: the supported-umode set
+lives in 004 RPL_MYINFO (param index 3, e.g. `"oiwgrsk"`), which the server
+deliberately did NOT parse — 004 is on the connect-storm deny list
+(`NumericRouter.@active_numerics`), routed to `$server` for display with its
+params ignored (the bucket-I ghost-routing fix). `umode_changed` (#229) carries
+only the operator's ACTIVE set (221 RPL_UMODEIS), not the AVAILABILITY set.
+Split out of #240 part 3; was gated on #221 (generic upstream umode parsing),
+now closed — so buildable.
+
+**Fix — mirror the #216 ISUPPORT plumbing (reuse the verbs, not the nouns).**
+- **Parse (server).** A new `EventRouter` clause folds 004 param index 3 into a
+  per-session `supported_umodes` set and emits `{:supported_umodes_changed,
+  letters}`. It runs INSIDE the generic numeric handler's `EventRouter.route/2`
+  call — AFTER the `$server` `:notice` persist and WITHOUT touching
+  `NumericRouter` — so 004 still displays and the ghost-routing fix is preserved
+  (`numeric_router_test` guards the routing decision). `parse_supported_umodes/1`
+  (graphemes → dedupe → sort) is a DISTINCT helper from `apply_umode_string/2`:
+  the supported set is an availability advertisement, not a `+/-` delta — same
+  wire SHAPE, different MEANING (design-discipline #6).
+- **State + wire.** `Grappa.Session.Server` gains a `supported_umodes` field
+  (default `[]`, `Map.get`/`Map.put` hot-reload-safe reads mirroring
+  `:umodes` / `:isupport`); `apply_effects` broadcasts the typed
+  `supported_umodes_changed` payload on `Topic.user/1` (per (subject, network),
+  same carrier as `umode_changed` / `isupport_changed`). A
+  `get_supported_umodes` handle_call + `Session` facade + a
+  `push_supported_umodes_if_live/2` user-topic cold-WS-subscribe snapshot close
+  the always-on-session race (mirror of `push_umodes_if_live/2`).
+- **Fold (cic).** A `supportedUmodes` store (mirror of `umodes.ts`) is seeded
+  from the narrowed `supported_umodes_changed` event; `availableUmodes(active,
+  serverSet)` renders one toggle per ADVERTISED letter (known letters keep their
+  cic-side description, unknown get the generic non-settable copy), falling back
+  to the static table when `serverSet` is empty (a network that omits 004
+  umodes, or a pre-snapshot session). An active letter the server omitted still
+  renders (never hide the operator's own state). The description table (#301
+  Azzurra semantics) is unchanged — #249 only changes WHICH letters are
+  available, not what they mean.
+- **REPLACE, not union.** A non-empty advertised set REPLACES the static table
+  (union would reintroduce the static guess #249 removes and offer toggles a
+  server may reject). 004 is the ircd's AUTHORITATIVE supported-umode list —
+  Azzurra's real bahamut 004 carries the full settable set (`i w s x R`, e.g.
+  `iowghraAsORTVSCKBxNI`), so nothing is hidden on the target; the short
+  `oiwgrsk` used in the tests is an illustrative subset. A hypothetical PARTIAL
+  004 would drop an omitted-but-settable letter from the modal — an accepted
+  degradation (the operator can still `/umode +x` by hand), not a re-union of
+  the static table.
+
+_Deploy: **COLD** — the `supported_umodes` field is a `Grappa.Session.Server`
+state-shape change (already tracked in `HotReload.LongLivedModules` →
+`Deploy.Preflight` auto-classifies COLD), and the cic bundle carries the fold.
+**HELD** — rides the already-HELD #299 COLD batch (with #282 / #290 / #294 /
+#301 / #302 / #304 / #305 / #306 / #307 / #318)._

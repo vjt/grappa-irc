@@ -518,6 +518,15 @@ defmodule Grappa.Session.Server do
           # cic as `umode_changed` on Topic.user for the `/mode <nick>` modal.
           # Defaults to `[]` until the 221 arrives.
           umodes: [String.t()],
+          # #249: per-session SUPPORTED user-mode set — the umode letters the
+          # server advertises in 004 RPL_MYINFO (param index 3), a sorted list
+          # of single-letter strings. Unlike `umodes` (the operator's ACTIVE
+          # set from 221), this is the AVAILABILITY set that drives the cic
+          # `/umode` modal's togglable letters (the umode analogue of #216's
+          # `isupport` CHANMODES for channels). Broadcast to cic as
+          # `supported_umodes_changed` on Topic.user. Defaults to `[]` until
+          # the 004 arrives.
+          supported_umodes: [String.t()],
           # #215 session-lifecycle log — `started_at` stamps process spawn
           # (init/1); `connected_at` stamps the upstream TCP/TLS connect
           # (`:irc_connected`), nil until then. `disconnected` duration is
@@ -771,6 +780,8 @@ defmodule Grappa.Session.Server do
       isupport: ISupport.default(),
       # #229: empty umode set until the 221 RPL_UMODEIS reply arrives.
       umodes: [],
+      # #249: empty supported-umode set until the 004 RPL_MYINFO arrives.
+      supported_umodes: [],
       # C2 — pending WHOIS accumulators keyed by lowercased target nick.
       # Set up on `:send_whois` (the operator issued /whois); 311/312/313/
       # 317/319 fold into the entry; 318 emits `{:whois_bundle, ...}` and
@@ -1629,6 +1640,16 @@ defmodule Grappa.Session.Server do
   # reaches here). See #229 umode hot-reload safety test.
   def handle_call(:get_umodes, _, state) do
     {:reply, {:ok, Map.get(state, :umodes, [])}, state}
+  end
+
+  # #249: returns the per-session SUPPORTED umode set (004 RPL_MYINFO). Always
+  # succeeds ([] before the 004 arrives). `Map.get` default (not
+  # `state.supported_umodes`) so a live proc whose state predates the field —
+  # a plain hot module reload does NOT rewrite process state — returns []
+  # instead of KeyError-crashing the :transient proc on the next user-topic
+  # after-join snapshot (which reaches here). See #249 hot-reload safety test.
+  def handle_call(:get_supported_umodes, _, state) do
+    {:reply, {:ok, Map.get(state, :supported_umodes, [])}, state}
   end
 
   # CP15 B3 + cluster #6: returns the snapshot-ready window-state
@@ -3210,6 +3231,21 @@ defmodule Grappa.Session.Server do
       Grappa.PubSub.broadcast_event(
         Topic.user(state.subject_label),
         SessionWire.umode_changed(state.network_id, modes)
+      )
+
+    apply_effects(rest, state)
+  end
+
+  # #249 — per-session SUPPORTED umode set changed (004 RPL_MYINFO parse from
+  # EventRouter). Broadcast on Topic.user (umodes are per (subject, network),
+  # not per-channel — same carrier as umode_changed / isupport_changed).
+  # `state.supported_umodes` was already updated by EventRouter (Map.put); this
+  # arm just fans out the payload.
+  defp apply_effects([{:supported_umodes_changed, modes} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.supported_umodes_changed(state.network_id, modes)
       )
 
     apply_effects(rest, state)

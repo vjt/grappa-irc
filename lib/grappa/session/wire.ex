@@ -70,6 +70,7 @@ defmodule Grappa.Session.Wire do
           | :own_nick_changed
           | :isupport_changed
           | :umode_changed
+          | :supported_umodes_changed
           | :topic_changed
           | :channel_modes_changed
           | :channel_created
@@ -134,6 +135,24 @@ defmodule Grappa.Session.Wire do
   """
   @type umode_changed_payload :: %{
           kind: :umode_changed,
+          network_id: integer(),
+          modes: [String.t()]
+        }
+
+  @typedoc """
+  Per-session SUPPORTED USER-mode set (#249). The umode letters the server
+  advertises in 004 RPL_MYINFO — the AVAILABILITY set (a sorted list of
+  single-letter strings), distinct from `umode_changed`'s ACTIVE set. The cic
+  `/umode` modal renders one toggle per ADVERTISED letter (the description
+  table lives cic-side per `feedback_no_localized_strings_server_side`),
+  mirroring how #216's `isupport_changed` CHANMODES drives channel-mode
+  toggles; cic falls back to a static table when the server never advertised.
+  Carries `:network_id` (not slug) and rides `Topic.user/1` — per
+  (subject, network), the same carrier as `umode_changed/2` +
+  `isupport_changed/2`.
+  """
+  @type supported_umodes_changed_payload :: %{
+          kind: :supported_umodes_changed,
           network_id: integer(),
           modes: [String.t()]
         }
@@ -628,6 +647,21 @@ defmodule Grappa.Session.Wire do
   def umode_changed(network_id, modes)
       when is_integer(network_id) and is_list(modes) do
     %{kind: :umode_changed, network_id: network_id, modes: modes}
+  end
+
+  @doc """
+  Per-session SUPPORTED USER-mode set (#249). `modes` is the sorted letter
+  list the server advertised in 004 RPL_MYINFO — the AVAILABILITY set that
+  drives the cic `/umode` modal's togglable letters (distinct from
+  `umode_changed/2`'s ACTIVE set). Carries `:network_id` (not slug) and rides
+  `Topic.user/1` — per (subject, network) state on a non-network-scoped user
+  topic, the same carrier as `umode_changed/2` + `isupport_changed/2`.
+  """
+  @spec supported_umodes_changed(integer(), [String.t()]) ::
+          supported_umodes_changed_payload()
+  def supported_umodes_changed(network_id, modes)
+      when is_integer(network_id) and is_list(modes) do
+    %{kind: :supported_umodes_changed, network_id: network_id, modes: modes}
   end
 
   @doc """

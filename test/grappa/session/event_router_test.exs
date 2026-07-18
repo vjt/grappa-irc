@@ -1866,6 +1866,93 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  describe "route/2 — 004 RPL_MYINFO supported umodes (#249)" do
+    test "004 folds the supported-umode set + emits :supported_umodes_changed" do
+      # 004 param index 3 is the signless supported-usermode concatenation
+      # (the availability set the server advertises). Fold into
+      # supported_umodes (sorted, deduped) + emit the effect.
+      state = base_state(%{nick: "vjt", supported_umodes: []})
+
+      m =
+        msg(
+          {:numeric, 4},
+          ["vjt", "irc.azzurra.chat", "bahamut-2.2.1", "oiwgrsk", "biklmnopstv", "bklov"],
+          {:server, "irc.azzurra.chat"}
+        )
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.supported_umodes == ["g", "i", "k", "o", "r", "s", "w"]
+      assert {:supported_umodes_changed, ["g", "i", "k", "o", "r", "s", "w"]} in effects
+    end
+
+    test "004 with an unchanged set emits no effect (idempotent)" do
+      state = base_state(%{nick: "vjt", supported_umodes: ["i", "o", "w"]})
+
+      m =
+        msg(
+          {:numeric, 4},
+          ["vjt", "irc.azzurra.chat", "bahamut-2.2.1", "iow", "biklmnopstv", "bklov"],
+          {:server, "irc.azzurra.chat"}
+        )
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.supported_umodes == ["i", "o", "w"]
+      refute Enum.any?(effects, &match?({:supported_umodes_changed, _}, &1))
+    end
+
+    test "004 on a state predating :supported_umodes folds from [] (hot-safe)" do
+      # A hot-reloaded proc's state map lacks :supported_umodes; Map.get
+      # default [] must let the 004 fold in without KeyError (mirror of the
+      # #216 :isupport / #229 :umodes hot-reload contract).
+      state = Map.delete(base_state(), :supported_umodes)
+
+      m =
+        msg(
+          {:numeric, 4},
+          ["vjt", "irc.azzurra.chat", "bahamut-2.2.1", "iw", "biklmnopstv", "bklov"],
+          {:server, "irc.azzurra.chat"}
+        )
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.supported_umodes == ["i", "w"]
+      assert {:supported_umodes_changed, ["i", "w"]} in effects
+    end
+
+    test "004 supported-set parse is letter- and order-agnostic (solanum)" do
+      # solanum (Libera) advertises a different umode set; the parse is
+      # generic — no bahamut-letter assumption, no ordering dependence.
+      state = base_state(%{nick: "libera-user", supported_umodes: []})
+
+      m =
+        msg(
+          {:numeric, 4},
+          [
+            "libera-user",
+            "irc.libera.chat",
+            "solanum-1",
+            "DQZagiow",
+            "beI,k,l,CPcgimnpst",
+            "bklov"
+          ],
+          {:server, "irc.libera.chat"}
+        )
+
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
+      assert new_state.supported_umodes == ["D", "Q", "Z", "a", "g", "i", "o", "w"]
+    end
+
+    test "004 with too-few params does not match (no crash, no fold)" do
+      # A malformed 004 lacking the usermodes param falls through to the
+      # catch-all; supported_umodes is untouched, no effect emitted.
+      state = base_state(%{nick: "vjt", supported_umodes: ["i"]})
+      m = msg({:numeric, 4}, ["vjt", "irc.azzurra.chat"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.supported_umodes == ["i"]
+      refute Enum.any?(effects, &match?({:supported_umodes_changed, _}, &1))
+    end
+  end
+
   describe "route/2 — :topic (TOPIC command only)" do
     test "TOPIC command stores in cache + emits :persist :topic + :topic_changed" do
       state = base_state()

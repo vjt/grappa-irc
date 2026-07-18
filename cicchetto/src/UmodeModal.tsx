@@ -2,6 +2,7 @@ import { type Component, For, Show } from "solid-js";
 import { networkIdBySlug } from "./lib/networks";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import { pushChannelUmode } from "./lib/socket";
+import { supportedUmodesForNetwork } from "./lib/supportedUmodes";
 import { closeUmodeModal, umodeModalState } from "./lib/umodeModal";
 import { type AvailableUmode, availableUmodes } from "./lib/umodeModes";
 import { umodesForNetwork } from "./lib/umodes";
@@ -16,8 +17,12 @@ import { umodesForNetwork } from "./lib/umodes";
 //
 // Data sources (all server-owned, cic mirrors — no client state
 // origination):
-//   * available toggles ← the static `umodeModes` table unioned with any
-//     active-but-unknown vendor letter (availableUmodes/1).
+//   * available toggles ← the SERVER-advertised supported-umode set
+//     (`supportedUmodesForNetwork`, from 004 RPL_MYINFO via the
+//     supported_umodes_changed wire event, #249), unioned with any active
+//     letter; falls back to the static `umodeModes` table when the server
+//     hasn't advertised (availableUmodes/2). This mirrors #216's channel-mode
+//     modal driving its toggles from server-advertised CHANMODES.
 //   * active umodes     ← `umodesForNetwork(networkId)` (from 221 / self-MODE
 //     echoes, seeded via the umode_changed wire event).
 //
@@ -45,7 +50,15 @@ const UmodeModal: Component = () => {
     return id === undefined ? [] : umodesForNetwork(id);
   };
 
-  const toggles = (): AvailableUmode[] => availableUmodes(activeModes());
+  // #249 — the server-advertised supported umode set (004 RPL_MYINFO). Empty
+  // when the network hasn't advertised → availableUmodes falls back to the
+  // static table.
+  const serverSet = (): string[] => {
+    const id = networkId();
+    return id === undefined ? [] : supportedUmodesForNetwork(id);
+  };
+
+  const toggles = (): AvailableUmode[] => availableUmodes(activeModes(), serverSet());
 
   const isActive = (letter: string): boolean => activeModes().includes(letter);
 
