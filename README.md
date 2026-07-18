@@ -224,6 +224,8 @@ Typed in cicchetto's compose box, parsed client-side, dispatched to REST or IRC.
 | `/umode` | With NO mode args: open the user-mode (umode) viewer/editor modal — your own umodes as retro toggle buttons; server/services-managed umodes (o/r/a/A/S) shown read-only. Also reachable via `/mode <yournick>` or by tapping the umode indicator on the network-header row |
 | `/mode <#chan> <modes> [args]` | Apply channel `MODE` directly (e.g. `/mode #c +k key`) |
 | `/mode [#chan]` | With NO mode args: open the mode viewer/editor modal (retro toggle buttons; chanop-gated editing; available modes from the network's ISUPPORT). Bare `/mode` targets the current channel; tapping the mode indicator next to the topic opens it too |
+| `/ns <cmd>` · `/cs` `/ms` `/os` `/hs` `/rs` `<cmd>` | Send a command to a network service (NickServ / ChanServ / MemoServ / OperServ / HelpServ / RootServ); the reply shows inline in the server window |
+| `/ns` · `/cs` `/ms` … (bare) | With NO args: open the dedicated **services console** modal (titled by the service) and fire `help` — the service's NOTICEs mirror into the modal (nick stripped, service in the title) with a `>` command prompt, instead of flooding the server window. The notices also stay in the server window (mirror, not move). Display-only: the modal never drives an auth action off notice content (the source nick is spoofable) |
 | `/away [reason]` | Set away; bare `/away` clears explicit away |
 | `/watch add\|del\|list <pattern>` | Watchlist / highlight (alias `/highlight`) |
 | `/connect <network>` | Unpark + respawn a network |

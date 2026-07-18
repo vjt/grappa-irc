@@ -781,8 +781,20 @@ describe("parseSlash — services shortcuts (#20)", () => {
     });
   });
 
-  it.each(["cs", "ns", "ms", "os", "hs", "rs"])("/%s with no body → error", (verb) => {
-    expect(parseSlash(`/${verb}`)).toMatchObject({ kind: "error", verb });
+  // #290 — a BARE services command opens the dedicated services console
+  // modal (titled by the service) instead of erroring. compose.ts fires
+  // `help` on open so the service help wall lands in the modal, not the
+  // server-window flood; a full command WITH args stays the inline `msg`
+  // path above (no unsolicited popup for power users).
+  it.each([
+    ["cs", "ChanServ"],
+    ["ns", "NickServ"],
+    ["ms", "MemoServ"],
+    ["os", "OperServ"],
+    ["hs", "HelpServ"],
+    ["rs", "RootServ"],
+  ])("/%s bare → service-modal service=%s (#290)", (verb, service) => {
+    expect(parseSlash(`/${verb}`)).toEqual({ kind: "service-modal", service });
   });
 });
 

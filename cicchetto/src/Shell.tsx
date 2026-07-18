@@ -61,6 +61,7 @@ import PrivacyModal from "./PrivacyModal";
 import ResizeHandle from "./ResizeHandle";
 import ScrollbackPane from "./ScrollbackPane";
 import ServerReplyModal from "./ServerReplyModal";
+import ServiceModal from "./ServiceModal";
 import SettingsDrawer from "./SettingsDrawer";
 import ShellChrome from "./ShellChrome";
 import Sidebar from "./Sidebar";
@@ -538,6 +539,7 @@ const Shell: Component = () => {
           <ModeModal />
           <UmodeModal />
           <ServerReplyModal />
+          <ServiceModal />
           <ConfirmModal />
           <aside class="shell-sidebar">
             <Sidebar />
@@ -726,6 +728,7 @@ const Shell: Component = () => {
         <UmodeModal />
         <ModeModal />
         <ServerReplyModal />
+        <ServiceModal />
         <ConfirmModal />
         <Show when={membersOpen()}>
           <div

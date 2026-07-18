@@ -24655,3 +24655,69 @@ _Deploy: **COLD** (new `themes` table reshape migration) + **`--cic`** bundle.
 **HELD** — batched into the next COLD window, NOT shipped solo. `mix
 grappa.seed_themes` is idempotent and already-run; no re-seed needed (the
 migration carries the existing built-in rows forward with their ids)._
+
+## 2026-07-18 — #290 (P1, cic): dedicated services console modal
+
+A bare services command — `/ns`, `/cs`, `/ms`, `/os`, `/hs`, `/rs` — now opens
+a dedicated **services console** modal instead of erroring. The modal is titled
+by the service, mirrors that service's NOTICEs (nick stripped, service in the
+title), and carries a bottom `>` command prompt. A bare `/ns` is treated as
+`/ns help`: the modal opens and fires `help`, so the service's multi-NOTICE
+help wall lands confined in the modal instead of flooding the server window. A
+full command WITH args (`/ns identify <pass>`) stays the inline `msg` path
+unchanged — no unsolicited popup for power users. **cic-only**; no server
+change. Register-wizard-on-home + per-network profile + labeled quick-action
+buttons (the #290 refinements) are DEFERRED — this ships the raw-console MVP,
+which the spec itself names as the services-modal core (register lives on the
+home screen, a separate surface).
+
+### Design decisions (challenged against CLAUDE.md)
+
+- **Bare vs args is a parser split, mirroring `/mode` and `/umode`.**
+  `parseServiceShortcut` (slashCommands.ts) emits `{kind:"service-modal",
+  service}` when `rest === ""`, keeps `{kind:"msg", target, body}` otherwise —
+  the exact bare-opens-modal / args-execute shape #216 (`/mode`) and #229
+  (`/umode`) already use. compose.ts's `service-modal` arm calls
+  `openServiceModal` then fires `help` via the shared `sendBodyLines` (now
+  exported — the same free-text send path privmsg/me/msg use, a 4th consumer,
+  not a copy).
+
+- **The notice-mirror is DERIVED from `$server`, not a duplicated buffer.**
+  Services NOTICEs already route server-side to the `$server` window
+  (`Identifier.services_sender?` allowlist + EventRouter persist-to-$server);
+  cic already subscribes to `$server`, so those rows live in
+  `scrollbackByChannel[$server]`. `ServiceModal` derives its body as a reactive
+  memo over that store, filtered `kind === "notice" && nickEquals(sender,
+  service)`. This is CLAUDE.md "don't duplicate state that already exists —
+  derive it": zero capture/correlation state, and "mirror not move — nothing
+  lost" falls out for free (the rows stay in `$server`; the modal is a filtered
+  live view). No server-side capture logic (the spec calls that path brittle).
+
+- **"Capture only while open" = a `sinceId` high-water mark.** `serviceModal.ts`
+  captures the max `$server` message id at open; the body filters `id >
+  sinceId`. Ids are monotonic (messages autoincrement), so a service NOTICE
+  arriving after open always shows and stale notices from a prior session stay
+  hidden — the spec's while-open semantics with one integer of state, still
+  derived (no buffer).
+
+- **Display-only, content untrusted (spec hard rule).** The modal NEVER drives
+  an auth action off notice content. The source nick is spoofable on a network
+  without nick protection (a user could nick to the service name and phish
+  through the modal), so opening only on a user command + capturing only while
+  open shrinks the surface, and nothing reads a notice to trigger a side effect.
+
+- **Nick stripped structurally.** Each line renders ONLY `<MircBody body>` — no
+  `.scrollback-sender` chip (the service name is in the title). The e2e proves
+  this content-independently: the modal has zero `.scrollback-sender` while the
+  `$server` mirror keeps NickServ notices WITH their sender chip.
+
+Store: `lib/serviceModal.ts` (createRoot singleton, like modeModal). Component:
+`ServiceModal.tsx` (clone of ServerReplyModal scaffold + `>` prompt footer),
+mounted in both Shell branches. Pinned by `slashCommands.test.ts` (bare →
+service-modal), `serviceModal.test.ts` (sinceId capture), `ServiceModal.test.tsx`
+(filter/strip/prompt), `compose.test.ts` (arm opens + fires help), and the
+`issue290-services-modal.spec.ts` browser e2e (open → real NickServ HELP →
+mirror + `>` prompt reply → nick-strip-vs-$server contrast).
+
+_Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
+batched into the next COLD window with #299, NOT shipped solo._

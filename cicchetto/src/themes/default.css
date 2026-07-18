@@ -5539,6 +5539,161 @@ html.resize-dragging * {
   }
 }
 
+/* #290 — dedicated services console modal. Same overlay/panel/header/body
+ * scaffolding as the ServerReplyModal (backdrop scrim, keyboard-aware
+ * max-height, pinned header, scrollable `.service-modal-body` notice-mirror),
+ * with a bottom `>` command prompt in place of the retro line-count footer:
+ * a leading phosphor `>` sigil + a borderless mono input, so the modal reads
+ * as a confined terminal console for the service. Theme-safe: all colors come
+ * from the existing CSS vars. */
+.service-modal-backdrop {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: var(--viewport-height, 100dvh);
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
+}
+
+.service-modal {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  width: 100%;
+  max-width: 40rem;
+  max-height: min(var(--viewport-height, 100dvh), 100%);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  overflow: hidden;
+  /* Retro double-frame accent (inset ring) without new colors. */
+  box-shadow:
+    inset 0 0 0 1px var(--bg),
+    inset 0 0 0 2px var(--border);
+}
+
+.service-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1rem;
+  flex: 0 0 auto;
+}
+
+.service-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.service-modal-sigil {
+  color: var(--link, var(--fg));
+  margin-right: 0.5rem;
+}
+
+.service-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin: -0.6rem -0.5rem -0.6rem 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.service-modal-close:hover {
+  color: var(--fg);
+}
+
+.service-modal-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0.5rem 1rem 0.75rem;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+  /* A newly-opened console with no reply yet still needs vertical room so the
+   * modal doesn't collapse to header+prompt only. */
+  min-height: 6rem;
+}
+
+.service-modal-line {
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  /* Preserve the service's own layout (aligned help columns) but wrap
+   * over-long lines rather than clipping. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.service-modal-empty {
+  color: var(--muted);
+  font-style: italic;
+  padding: 0.25rem 0;
+}
+
+/* Bottom `>` command prompt — the one addition over ServerReplyModal. */
+.service-modal-prompt {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-top: 1px solid var(--border);
+  padding: 0.5rem 1rem;
+}
+
+.service-modal-prompt-sigil {
+  color: var(--link, var(--fg));
+  flex: 0 0 auto;
+}
+
+.service-modal-prompt-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  padding: 0.25rem 0;
+}
+
+.service-modal-prompt-input::placeholder {
+  color: var(--muted);
+}
+
+/* Inline send-error row (between the notice-mirror body and the `>` prompt) —
+ * shown only when a prompt command fails to send; the typed line is kept in
+ * the input for retry. Same phosphor-red accent as the compose-box alert. */
+.service-modal-prompt-error {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: 0.5rem 1rem;
+  color: var(--error, #e06c75);
+  font-size: var(--font-size);
+  overflow-wrap: anywhere;
+}
+
 /* C2 — WHOIS card. Inline ephemeral surface above scrollback when a
  * /whois bundle exists for the active window's network. Single-card
  * stack — replaces in place on each new /whois. */

@@ -51,13 +51,15 @@
 //   - `/j` == `/join`  (both produce {kind: "join"})
 //   - `/watch` == `/highlight` (both produce {kind: "watchlist"})
 //
-// Services shortcuts (issue #20) — rewrite to {kind: "msg", target}:
-//   - `/cs <cmd>` → ChanServ
-//   - `/ns <cmd>` → NickServ
-//   - `/ms <cmd>` → MemoServ
-//   - `/os <cmd>` → OperServ
-//   - `/hs <cmd>` → HelpServ
-//   - `/rs <cmd>` → RootServ
+// Services shortcuts (issue #20) — `/<x>s <cmd>` rewrites to
+// {kind: "msg", target}; a BARE `/<x>s` (issue #290) opens the dedicated
+// services console modal via {kind: "service-modal", service}:
+//   - `/cs [cmd]` → ChanServ
+//   - `/ns [cmd]` → NickServ
+//   - `/ms [cmd]` → MemoServ
+//   - `/os [cmd]` → OperServ
+//   - `/hs [cmd]` → HelpServ
+//   - `/rs [cmd]` → RootServ
 //
 // Power-user verbs:
 //   - `/quote <line>` → raw IRC frame (escape hatch)
@@ -78,6 +80,12 @@ export type SlashCommand =
   | { kind: "topic-clear"; channel: string | null }
   | { kind: "nick"; nick: string }
   | { kind: "msg"; target: string; body: string }
+  // #290 — a BARE services command (`/ns`, `/cs`, `/ms`, …) opens the
+  // dedicated services console modal, titled by `service`. compose.ts
+  // fires `help` on open so the service help wall lands in the modal, not
+  // the server-window flood. A full command WITH args stays `kind:"msg"`
+  // (inline execute) — no unsolicited popup for power users.
+  | { kind: "service-modal"; service: string }
   | { kind: "query"; target: string | null }
   | { kind: "quit"; reason: string | null }
   | { kind: "disconnect"; network: string | null; reason: string | null }
@@ -560,8 +568,14 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   },
 };
 
-function parseServiceShortcut(verb: string, target: string, rest: string): SlashCommand {
-  if (rest === "") return err(verb, `/${verb} requires a command to send to ${target}`);
+function parseServiceShortcut(_verb: string, target: string, rest: string): SlashCommand {
+  // #290 — a BARE services command opens the dedicated services console
+  // modal (titled by `target`); compose.ts fires `help` on open so the
+  // service's multi-NOTICE help wall lands confined in the modal instead
+  // of flooding the server window. A full command WITH args stays an
+  // inline PRIVMSG (kind:"msg") to the service — power users typing e.g.
+  // `/ns identify <pass>` get no unsolicited popup, reply shows inline.
+  if (rest === "") return { kind: "service-modal", service: target };
   return { kind: "msg", target, body: rest };
 }
 
