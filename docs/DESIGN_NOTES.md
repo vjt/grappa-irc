@@ -24897,3 +24897,48 @@ the full topic (`scrollHeight ≫ clientHeight`).
 _Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
 rides the already-HELD #299 COLD batch (with #282 / #290 / #294), NOT shipped
 solo._
+
+### 2026-07-18 — #302: mobile float-stack buttons — lower opacity + kill sticky-`:hover` latch
+
+The mobile float-stack button pair (`scroll-to-bottom` + `next-active`,
+`NextActiveButton` variant `"mobile"`) got two pure-CSS fixes on
+`src/themes/default.css`.
+
+**Item 1 — opacity.** #289 dropped the pair to `opacity: 0.75` on the single
+stack-child rule `.shell-mobile .scrollback-float-stack > *`; #302 lowers it
+to **`0.5`**. 0.75 was still too opaque and wrapped message text behind the
+buttons stayed hard to read. Kept on the ONE stack-child rule so the pair
+stays consistent by construction (#280 "same box") — never split per-button.
+`0.5` sits comfortably above the e2e's `TAPPABLE_FLOOR` (0.4), so the pair is
+still clearly tappable.
+
+**Item 2 — sticky-`:hover` "selected" latch.** Both buttons inverted to the
+accent look on `:hover` (`.next-active-btn:hover` → accent fill;
+`.scroll-to-bottom-btn:hover` → brighten to `opacity: 0.85`). Touch has no
+real hover, so after a TAP the `:hover` state latched on release and read as
+"still selected". Fix mirrors the file's existing idioms
+(`.mentions-row:active`, `.member-name:hover` inside `@media (hover: hover)`):
+drive the press feedback off **`:active`** (paints only WHILE the finger is
+down, clears on release) and gate the `:hover` invert behind
+**`@media (hover: hover)`** so a hover-less pointer never latches it.
+True-hover pointers (mouse/trackpad) keep the hover feedback; desktop
+scroll-to-bottom (base `opacity: 1`, hover `0.85`) is unchanged.
+
+**e2e witness path (systematic-debugging).** The webkit-iphone-15 Playwright
+project DOES emulate a hover-less pointer (`matchMedia('(hover: none)')` =
+`true`, asserted as a precondition) AND `.hover()` moves a virtual mouse that
+triggers the `:hover` pseudo-class — so this is a REAL RED→GREEN witness, not
+the CSS-contract fallback the issue-brief allowed for. RED on current code:
+after `.hover()` next-active bg = `rgb(0,0,127)` (accent) ≠ base
+`rgb(245,245,245)` (`--bg-alt`); GREEN after the fix: bg stays `--bg-alt`
+because the `@media (hover: hover)` gate never matches on the hover-less
+project. Same shape for scroll-to-bottom (`0.5` → would-be `0.85` latch →
+stays `0.5`). Item 1 got a ceiling assertion (`<= 0.6`) added to
+`issue289-float-btn-opacity.spec.ts` — the #289 `< 1` band alone stays green
+at 0.75 and never witnesses the lowering. The heavy "surface both float
+buttons" setup was factored into a shared `surfaceBothFloatButtons` helper
+used by both the #289 opacity test and the new #302 hover-latch test.
+
+_Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
+rides the already-HELD #299 COLD batch (with #282 / #290 / #294 / #304 /
+#305 / #307), NOT shipped solo._

@@ -2104,11 +2104,15 @@ html.resize-dragging * {
    and theme-agnostic — whole-element opacity needs no per-theme
    translucent color. Scoped to `.shell-mobile` + the stack: desktop
    scroll-to-bottom stays opaque (it's smaller and next-active is a
-   sidebar button there, not a floating overlay). Higher specificity than
-   `.scroll-to-bottom-btn:hover` (0.85), so a stray mobile hover can't
-   make it MORE opaque than this. */
+   sidebar button there, not a floating overlay).
+
+   #302 — 0.75 was still too opaque; text behind stayed hard to read.
+   Lowered to 0.5 (translucent-yet-tappable, tuned on a mobile viewport).
+   The `.scroll-to-bottom-btn:hover` brighten (0.85) that used to fight
+   this on a stuck mobile hover is now gated behind `@media (hover: hover)`
+   (below), so a hover-less pointer never overrides this base. */
 .shell-mobile .scrollback-float-stack > * {
-  opacity: 0.75;
+  opacity: 0.5;
 }
 
 /* C7.4: Scroll-to-bottom button. Now an in-flow child of the float stack
@@ -2145,8 +2149,22 @@ html.resize-dragging * {
   font-size: 1.75rem;
 }
 
-.scroll-to-bottom-btn:hover {
+/* #302 — press feedback via `:active` (brighten only WHILE the finger is
+   down), not `:hover`. Touch has no real hover, so a bare
+   `.scroll-to-bottom-btn:hover` latched the 0.85 "brighter" look after tap
+   (read as stuck-selected). `:active` clears on release. The hover-brighten
+   is kept for true-hover pointers (mouse/trackpad) but gated behind
+   `@media (hover: hover)` so a hover-less pointer never latches it. Mirrors
+   the `.mentions-row:active` + `.member-name:hover @media(hover:hover)`
+   idioms already in this file. */
+.scroll-to-bottom-btn:active {
   opacity: 0.85;
+}
+
+@media (hover: hover) {
+  .scroll-to-bottom-btn:hover {
+    opacity: 0.85;
+  }
 }
 
 /* ComposeBox */
@@ -7226,9 +7244,22 @@ audio.media-viewer-media {
   padding: 0.25rem 0.6rem;
 }
 
-.next-active-btn:hover {
+/* #302 — the accent-fill "selected" look on tap must clear on release.
+   Touch has no real hover, so a bare `:hover` latched the accent fill after
+   tap (read as stuck-selected). Drive the press feedback off `:active`
+   (fill only WHILE the finger is down) and gate the hover-invert behind
+   `@media (hover: hover)` so a hover-less pointer never latches it. Mirrors
+   `.mentions-row:active` + `.member-name:hover @media(hover:hover)`. */
+.next-active-btn:active {
   background: var(--accent);
   color: var(--bg);
+}
+
+@media (hover: hover) {
+  .next-active-btn:hover {
+    background: var(--accent);
+    color: var(--bg);
+  }
 }
 
 .next-active-glyph {
