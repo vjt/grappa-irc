@@ -23,6 +23,10 @@
 //
 // Anti-hollow-green: `/umode -i` in `finally` restores the seeded vjt's
 // umode set so the shared session doesn't leak +i into sibling specs.
+//
+// #301 — this spec ALSO asserts the corrected Azzurra umode copy (+d DEBUG,
+// +g GLOBOPS, +S SSL) renders in the modal. The modal shows the full known
+// table, so those toggles are present even though vjt holds none of them.
 
 import { expect, test } from "../fixtures/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
@@ -70,6 +74,20 @@ test("#229 — own umodes are visible from connect (cold-snapshot after reload),
     // The "invisible" (+i) toggle is ACTIVE (pressed) — the umode we set.
     const invisible = modal.getByLabel(/invisible/i);
     await expect(invisible).toHaveAttribute("aria-pressed", "true");
+
+    // #301 — the modal renders the FULL known umode table (not just the
+    // operator's active letters), so the three corrected Azzurra entries
+    // render even though vjt holds none of them. Proves the fixed COPY
+    // reaches the rendered DOM, not just the static table (the UX-behavior
+    // e2e gate). Each toggle's aria-label is `<label> (+<letter>)`; the
+    // human copy lives in `.mode-modal-toggle-desc`. Assert on the KEY
+    // phrase (DEBUG / GLOBOPS / SSL) so the copy stays tunable.
+    const debugDesc = modal.getByLabel(/\(\+d\)/).locator(".mode-modal-toggle-desc");
+    await expect(debugDesc).toContainText(/debug/i);
+    const globopsDesc = modal.getByLabel(/\(\+g\)/).locator(".mode-modal-toggle-desc");
+    await expect(globopsDesc).toContainText(/globops/i);
+    const sslDesc = modal.getByLabel(/\(\+S\)/).locator(".mode-modal-toggle-desc");
+    await expect(sslDesc).toContainText(/ssl/i);
 
     // The × close control dismisses the modal (gemello of the /mode modal).
     await modal.getByLabel("close user modes").click();
