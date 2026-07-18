@@ -1324,7 +1324,9 @@ html.resize-dragging * {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.1rem;
+  /* #304 — a touch more breathing room between the name (now underlined by a
+     border-bottom) and the +modes line so the divider isn't cramped. */
+  gap: 0.2rem;
   /* WIDTH CAP — annotated DEFAULT (#275, tunable). 18% is the mid-point of
      the spec's 15–20% band: enough for a typical `#channel` + a `+ntk` mode
      string on a NARROW mobile bar (mobile-first), while leaving the topic
@@ -1347,6 +1349,13 @@ html.resize-dragging * {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* #304 — border-bottom splits the channel NAME from the +modes line below
+     so the two read as distinct rows. `var(--border)` follows the active
+     theme (subtle 1px in both irssi-dark + mirc-light). The name is
+     ellipsized, so the rule underlines only the visible (clipped) width —
+     intentional. */
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.1rem;
 }
 
 .topic-bar-topic {
@@ -1380,6 +1389,14 @@ html.resize-dragging * {
   background: transparent;
   border: none;
   padding: 0;
+  /* #304 — vertical rule between the namebox and the topic strip (the two
+     were separated only by the flex gap). `border-left` after `border: none`
+     + `padding-left` after `padding: 0` (longhand-after-shorthand wins for
+     the left side); scoped to THIS boundary only — no dividers around the
+     presence-toggle / hamburger further right. `var(--border)` follows the
+     active theme. */
+  border-left: 1px solid var(--border);
+  padding-left: 0.5rem;
   font-family: var(--font-mono);
   font-size: var(--font-size);
   line-height: 1.25;

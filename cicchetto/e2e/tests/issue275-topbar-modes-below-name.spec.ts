@@ -95,6 +95,19 @@ test("#275 — channel modes stack below the name in a width-capped box that ope
       `topic width ${topicBox.width}px must exceed half the bar ${barBox.width}px`,
     ).toBeGreaterThan(barBox.width * 0.5);
 
+    // #304 — separators render (content-independent computed-border witness;
+    // jsdom is blind to the cascade, hence the e2e). Both use var(--border) so
+    // the value differs per theme but PRESENCE is theme-independent — proving
+    // one theme proves the wiring.
+    //   (1) border-bottom under the channel NAME (splits name from +modes).
+    //   (2) border-left on the topic strip (vertical rule name↔topic boundary).
+    const nameBorderBottom = await page
+      .locator(".topic-bar-channel")
+      .evaluate((el) => getComputedStyle(el).borderBottomWidth);
+    expect(nameBorderBottom, "#304 — channel name needs a border-bottom rule").not.toBe("0px");
+    const topicBorderLeft = await topic.evaluate((el) => getComputedStyle(el).borderLeftWidth);
+    expect(topicBorderLeft, "#304 — topic strip needs a border-left rule").not.toBe("0px");
+
     // (b) CLICK-OPENS-MODAL — clicking the channel NAME opens the /mode modal.
     await page.locator(".topic-bar-channel").click();
     const modal = page.getByTestId("mode-modal");
