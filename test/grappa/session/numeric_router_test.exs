@@ -148,6 +148,11 @@ defmodule Grappa.Session.NumericRouterTest do
       # ≤30 chars per `Identifier.valid_nick?`) and pre-fix routed to
       # `{:query, "oiwgrsk"}`, leaking a ghost row into the Archive
       # section via list_archive's COALESCE(dm_with, channel).
+      #
+      # #249 — LOAD-BEARING: 004 now ALSO folds `oiwgrsk` into the
+      # supported-umode set (EventRouter, AFTER this routing decision, in
+      # the generic numeric handler). This test guards that the fold is
+      # display-safe: 004 must STILL route to $server here (no ghost).
       m = msg(4, ["vjt", "irc.example.org", "bahamut-2.2.1", "oiwgrsk", "biklmnopstvI"])
       assert {:server, nil} = NumericRouter.route(m, state())
     end

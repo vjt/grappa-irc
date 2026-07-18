@@ -2316,6 +2316,124 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "#249 — supported umodes (server-advertised umode set from 004)" do
+    test "004 RPL_MYINFO stores supported umodes + broadcasts on Topic.user" do
+      # 004 advertises the server's supported usermode set (param index 3).
+      # Fold it onto the per-session supported_umodes field + broadcast the
+      # typed supported_umodes_changed payload on Topic.user (umodes are per
+      # (subject, network), like umode_changed / isupport_changed). The 004
+      # STILL routes to $server for display — see numeric_router_test.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 004 grappa-test irc.test.org bahamut-2.2.1 oiwgrsk biklmnopstv bklov\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :supported_umodes_changed,
+                         network_id: net_id,
+                         modes: modes
+                       }
+                     },
+                     1_000
+
+      assert net_id == network.id
+      # "oiwgrsk" parsed into a sorted, deduped letter set.
+      assert modes == ["g", "i", "k", "o", "r", "s", "w"]
+
+      # get_supported_umodes facade returns the stored set.
+      assert {:ok, ["g", "i", "k", "o", "r", "s", "w"]} =
+               Session.get_supported_umodes({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "get_supported_umodes returns [] before any 004 (always-succeeds)" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert {:ok, []} = Session.get_supported_umodes({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "hot-reload safety: a live proc whose state predates :supported_umodes survives" do
+      # Mirror of the #216 :isupport / #229 :umodes hot-reload test: a plain
+      # hot module reload does NOT rewrite live process state, so a proc
+      # spawned before the field existed keeps its keyless map. The read path
+      # (get_supported_umodes) and the write path (004 fold) must tolerate the
+      # absent key (Map.get default + Map.put) rather than KeyError-crashing
+      # the :transient proc on the next user-topic snapshot / 004.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Simulate the stale-proc shape: strip :supported_umodes from live state.
+      _ = :sys.replace_state(pid, fn state -> Map.delete(state, :supported_umodes) end)
+
+      # Read path: returns default [], not KeyError.
+      assert {:ok, []} = Session.get_supported_umodes({:user, user.id}, network.id)
+
+      # Write path: a fresh 004 on the stale proc folds in + broadcasts.
+      IRCServer.feed(
+        server,
+        ":irc.test.org 004 grappa-test irc.test.org bahamut-2.2.1 iwx biklmnopstv bklov\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :supported_umodes_changed, modes: ["i", "w", "x"]}
+                     },
+                     1_000
+
+      # Same pid — the stale proc never crashed/respawned (no session drop).
+      assert Process.alive?(pid)
+      assert Session.whereis({:user, user.id}, network.id) == pid
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "CP15 B2 — in_flight_joins map" do
     test "Session.Server starts with empty in_flight_joins map" do
       {_, port} = start_server()

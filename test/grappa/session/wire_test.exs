@@ -54,6 +54,21 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "supported_umodes_changed/2 (#249)" do
+    test "carries network_id (integer) + modes (string list)" do
+      assert Wire.supported_umodes_changed(7, ["i", "o", "w"]) == %{
+               kind: :supported_umodes_changed,
+               network_id: 7,
+               modes: ["i", "o", "w"]
+             }
+    end
+
+    test "the payload is JSON-encodable (plain list, no leaks)" do
+      payload = Wire.supported_umodes_changed(3, ["i", "w"])
+      assert {:ok, _} = Jason.encode(payload)
+    end
+  end
+
   describe "isupport_changed/2" do
     test "projects ISupport.t() to a JSON-encodable payload (MapSets → sorted lists)" do
       isupport =

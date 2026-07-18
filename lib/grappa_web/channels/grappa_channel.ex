@@ -1028,6 +1028,7 @@ defmodule GrappaWeb.GrappaChannel do
       {:ok, subject} ->
         push_query_windows_list(subject, socket)
         push_umodes_if_live(subject, socket)
+        push_supported_umodes_if_live(subject, socket)
 
       :error ->
         :ok
@@ -1051,6 +1052,31 @@ defmodule GrappaWeb.GrappaChannel do
       case Session.get_umodes(subject, network.id) do
         {:ok, modes} ->
           push(socket, "event", SessionWire.umode_changed(network.id, modes))
+
+        {:error, _} ->
+          :ok
+      end
+    end
+
+    :ok
+  end
+
+  # #249: seed the cic `/umode` modal's AVAILABLE toggle set on the user-topic
+  # cold-WS-subscribe. Mirror of `push_umodes_if_live/2` (umodes are
+  # per-session, reachable with ZERO channels, so this rides the user topic —
+  # not the per-channel snapshot #216's isupport uses). The live edge is the
+  # 004 `supported_umodes_changed` broadcast; this closes the always-on-session
+  # race where the 004 fired long before the client subscribed.
+  # `get_supported_umodes` only misses on `{:error, :no_session}`
+  # (parked/failed) — cic falls back to its static umode table until a session
+  # is live. Best-effort: one network's resolve/push failure must not disturb
+  # the others (each push is independent).
+  @spec push_supported_umodes_if_live(Session.subject(), Phoenix.Socket.t()) :: :ok
+  defp push_supported_umodes_if_live(subject, socket) do
+    for %Network{} = network <- Networks.Credentials.list_networks_for_subject(subject) do
+      case Session.get_supported_umodes(subject, network.id) do
+        {:ok, modes} ->
+          push(socket, "event", SessionWire.supported_umodes_changed(network.id, modes))
 
         {:error, _} ->
           :ok

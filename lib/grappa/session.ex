@@ -898,6 +898,22 @@ defmodule Grappa.Session do
     call_session(subject, network_id, :get_umodes)
   end
 
+  @doc """
+  Returns the per-session SUPPORTED USER-mode set (#249).
+
+  Serves the in-memory `supported_umodes` list — the umode letters the server
+  advertised in 004 RPL_MYINFO (or `[]` before it arrives). Returns
+  `{:ok, modes}` or `{:error, :no_session}` when no session is registered for
+  `(subject, network_id)`. Used by the user-topic cold-WS-subscribe snapshot
+  to seed the cic `/umode` modal's AVAILABLE toggles from connect.
+  """
+  @spec get_supported_umodes(subject(), integer()) ::
+          {:ok, [String.t()]} | {:error, :no_session}
+  def get_supported_umodes(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, :get_supported_umodes)
+  end
+
   @typedoc """
   CP15 B3 — snapshot-ready window-state payload returned by
   `get_window_state/3`. Byte-identical to the event-time broadcast cic
