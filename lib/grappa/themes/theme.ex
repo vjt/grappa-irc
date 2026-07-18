@@ -34,6 +34,7 @@ defmodule Grappa.Themes.Theme do
           payload: map() | nil,
           published: boolean() | nil,
           apply_count: integer() | nil,
+          author_nick: String.t() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -43,6 +44,13 @@ defmodule Grappa.Themes.Theme do
     field :payload, :map
     field :published, :boolean, default: false
     field :apply_count, :integer, default: 0
+    # #299 amendment (author model A) — a stored snapshot of the publishing
+    # visitor's representative nick, written server-side at PUBLISH time by
+    # `Grappa.Themes.set_published/3` (NOT via `cast/3`: a user-supplied
+    # author string would widen the impersonation surface past the accepted
+    # "publish under a nick you hold" caveat). NULL for user themes + legacy
+    # pre-amendment visitor themes; the wire falls back accordingly.
+    field :author_nick, :string
     belongs_to :user, User, type: :binary_id
     belongs_to :visitor, Visitor, type: :binary_id
     timestamps(type: :utc_datetime_usec)

@@ -111,6 +111,58 @@ export async function mintVisitor(nick: string): Promise<MintedVisitor> {
   };
 }
 
+// #299 amendment (author model A) — thin theme REST helpers for the
+// author-nick e2e. The runner talks to grappa directly on port 4000
+// (bypassing nginx), so these mirror the cic `themesApi` verbs without the
+// browser. Only the fields the spec asserts on are typed.
+export type ThemeWire = { id: number; author: string; built_in: boolean };
+
+export async function listGalleryThemes(token: string): Promise<ThemeWire[]> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/themes`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`grappaApi.listGalleryThemes: ${res.status} ${await res.text()}`);
+  }
+  const body = (await res.json()) as { themes: ThemeWire[] };
+  return body.themes;
+}
+
+export async function copyTheme(token: string, id: number): Promise<ThemeWire> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/themes/${id}/copy`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`grappaApi.copyTheme: ${id} → ${res.status} ${await res.text()}`);
+  }
+  return (await res.json()) as ThemeWire;
+}
+
+export async function publishTheme(token: string, id: number): Promise<ThemeWire> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/themes/${id}/publish`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`grappaApi.publishTheme: ${id} → ${res.status} ${await res.text()}`);
+  }
+  return (await res.json()) as ThemeWire;
+}
+
+// Admin deletes any theme (owner|admin authz) — teardown for the re-homed
+// system-owned gallery row the author-nick spec leaves behind. Idempotent:
+// 404 (already gone) is success.
+export async function adminDeleteTheme(adminToken: string, id: number): Promise<void> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/themes/${id}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${adminToken}` },
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`grappaApi.adminDeleteTheme: ${id} → ${res.status} ${await res.text()}`);
+  }
+}
+
 // BUGHUNT-3 cascade fix (2026-05-25) — restore the seeded vjt's read
 // cursor on `(networkSlug, channel)` to the current tail row. Used in
 // `afterAll` hooks of specs that intentionally advance the cursor to

@@ -4,7 +4,7 @@ defmodule Grappa.ThemesTest do
   import Grappa.AuthFixtures
   import Grappa.UploadFixtures, only: [bytes: 1]
 
-  alias Grappa.{Repo, Themes, Themes.Theme, Themes.TokenModel, Uploads, Visitors.Visitor}
+  alias Grappa.{Networks, Repo, Themes, Themes.Theme, Themes.TokenModel, Themes.Wire, Uploads, Visitors.Visitor}
 
   defp valid_payload do
     %{
@@ -357,6 +357,63 @@ defmodule Grappa.ThemesTest do
       visitor = visitor_fixture()
       {:ok, _} = Themes.create_theme({:visitor, visitor}, %{name: "Priv", payload: valid_payload()})
       assert Themes.rehome_visitor_published_to_system(visitor.id) == 0
+    end
+  end
+
+  describe "author_nick snapshot (#299 amendment — author model A)" do
+    # visitor_fixture(nick: …) provisions the anon (visitor, network)
+    # credential that carries the nick — but only when the slug resolves to a
+    # real `networks` row (see the fixture moduledoc). The publish-path
+    # snapshot reads the visitor's representative (identity-anchor) credential
+    # nick, so the network MUST exist for the nick to be found.
+    setup do
+      {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
+      %{network: network}
+    end
+
+    test "publishing a visitor theme snapshots the visitor's representative nick" do
+      visitor = visitor_fixture(nick: "alk")
+      {:ok, theme} = Themes.create_theme({:visitor, visitor}, %{name: "V", payload: valid_payload()})
+      assert theme.author_nick == nil
+
+      {:ok, published} = Themes.publish_theme({:visitor, visitor}, theme.id)
+      assert published.author_nick == "alk"
+    end
+
+    test "attribution still credits the snapshot nick after re-home to system" do
+      visitor = visitor_fixture(nick: "alk")
+      {:ok, theme} = Themes.create_theme({:visitor, visitor}, %{name: "V", payload: valid_payload()})
+      {:ok, _} = Themes.publish_theme({:visitor, visitor}, theme.id)
+
+      assert Themes.rehome_visitor_published_to_system(visitor.id) == 1
+
+      {:ok, rehomed} = Themes.get_theme(theme.id)
+      assert rehomed.user_id == Themes.system_user().id
+      assert rehomed.visitor_id == nil
+      assert rehomed.author_nick == "alk"
+      assert Wire.to_wire(rehomed, {:user, user_fixture()}, 0).author == "alk"
+    end
+
+    test "publishing a user theme leaves author_nick nil (owner name is the author)" do
+      user = user_fixture(name: "bob")
+      {:ok, theme} = Themes.create_theme({:user, user}, %{name: "U", payload: valid_payload()})
+      {:ok, published} = Themes.publish_theme({:user, user}, theme.id)
+
+      assert published.author_nick == nil
+      assert Wire.to_wire(published, {:user, user}, 0).author == "bob"
+    end
+
+    test "an admin publishing a visitor's theme snapshots the VISITOR's nick, not the admin's" do
+      # The snapshot is keyed off the THEME's visitor_id, NOT the caller
+      # subject — so a moderator publishing someone else's theme credits the
+      # author, never the moderator. Guards against a future "snapshot from
+      # subject" regression (which would pass every owner-publishes-own test).
+      visitor = visitor_fixture(nick: "alk")
+      admin = user_fixture(is_admin: true)
+      {:ok, theme} = Themes.create_theme({:visitor, visitor}, %{name: "V", payload: valid_payload()})
+
+      {:ok, published} = Themes.publish_theme({:user, admin}, theme.id)
+      assert published.author_nick == "alk"
     end
   end
 

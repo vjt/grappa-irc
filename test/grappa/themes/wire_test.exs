@@ -3,7 +3,7 @@ defmodule Grappa.Themes.WireTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Repo, Themes, Themes.Theme, Themes.TokenModel, Themes.Wire, Visitors.Visitor}
+  alias Grappa.{Accounts.User, Repo, Themes, Themes.Theme, Themes.TokenModel, Themes.Wire, Visitors.Visitor}
 
   defp valid_payload do
     %{
@@ -89,15 +89,79 @@ defmodule Grappa.Themes.WireTest do
     end
   end
 
-  describe "to_wire/3 — visitor-owned (#299 author model B)" do
-    test "author is the fixed guest label (never a nick) and built_in is false" do
+  describe "to_wire/3 — visitor-owned (#299 author model A)" do
+    test "an un-snapshotted visitor theme falls back to the guest label; built_in false" do
+      # author model A snapshots the nick at PUBLISH time; a never-published
+      # (or legacy pre-amendment) visitor theme carries author_nick == nil, so
+      # attribution falls back to the fixed guest label.
       visitor = visitor_fixture()
       {:ok, created} = Themes.create_theme({:visitor, visitor}, %{name: "Guest", payload: valid_payload()})
       {:ok, theme} = Themes.get_theme(created.id)
 
+      assert theme.author_nick == nil
       wire = Wire.to_wire(theme, {:visitor, visitor}, 0)
       assert wire.author == Wire.guest_author()
       assert wire.built_in == false
+    end
+
+    test "prefers the stored author_nick over the guest label" do
+      theme = %Theme{
+        id: 1,
+        name: "V",
+        user: nil,
+        user_id: nil,
+        visitor_id: Ecto.UUID.generate(),
+        author_nick: "alk",
+        payload: valid_payload(),
+        published: true,
+        apply_count: 0,
+        inserted_at: DateTime.utc_now()
+      }
+
+      wire = Wire.to_wire(theme, visitor_subject(), 0)
+      assert wire.author == "alk"
+      assert wire.built_in == false
+    end
+
+    test "author_nick survives re-home: system-owned theme still credits the snapshot nick" do
+      # rehome_visitor_published_to_system/1 flips a reaped visitor's PUBLISHED
+      # theme to the system owner (user set, visitor_id nil). The snapshot must
+      # keep crediting the original author — NOT collapse to "system".
+      theme = %Theme{
+        id: 2,
+        name: "R",
+        user: %User{name: Themes.system_user_name()},
+        user_id: Ecto.UUID.generate(),
+        visitor_id: nil,
+        author_nick: "alk",
+        payload: valid_payload(),
+        published: true,
+        apply_count: 0,
+        inserted_at: DateTime.utc_now()
+      }
+
+      wire = Wire.to_wire(theme, {:user, user_fixture()}, 0)
+      assert wire.author == "alk"
+      # Still system-owned ⇒ still a built-in (house-maintained gallery row),
+      # but attributed to the snapshot nick.
+      assert wire.built_in == true
+    end
+
+    test "a user theme with no snapshot keeps the owner's name" do
+      theme = %Theme{
+        id: 3,
+        name: "U",
+        user: %User{name: "bob"},
+        user_id: Ecto.UUID.generate(),
+        visitor_id: nil,
+        author_nick: nil,
+        payload: valid_payload(),
+        published: false,
+        apply_count: 0,
+        inserted_at: DateTime.utc_now()
+      }
+
+      assert Wire.to_wire(theme, {:user, user_fixture()}, 0).author == "bob"
     end
 
     test "mine is true for the owning visitor, false for other subjects" do

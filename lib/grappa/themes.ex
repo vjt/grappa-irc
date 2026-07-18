@@ -18,9 +18,12 @@ defmodule Grappa.Themes do
   shared daily quota AND a 50-total owned-theme cap (users have no lifetime
   cap). A reaped visitor's PUBLISHED themes re-home to the system user
   (`rehome_visitor_published_to_system/1`) so gallery contributions survive;
-  private ones die with the row. A visitor-owned theme is attributed to a
-  FIXED "guest" label on the wire — NEVER a nick (author model B: no
-  impersonation surface).
+  private ones die with the row. A visitor-published theme is attributed to
+  the publishing visitor's nick, snapshotted at publish time into
+  `author_nick` (#299 amendment, author model A) and surviving the re-home
+  above; a snapshot-less theme (user-owned, or a never-published visitor
+  theme) falls back to the owner's name or the fixed "guest" label. See
+  `Grappa.Themes.Wire` for the attribution ordering.
 
   ## Authz (owner-or-admin, in the context — one code path, every door)
 
@@ -42,6 +45,9 @@ defmodule Grappa.Themes do
     deps: [
       Grappa.Accounts,
       Grappa.Net.Ssrf,
+      # #299 amendment (author model A): publish snapshots the visitor's
+      # representative nick from the credential anchor.
+      Grappa.Networks,
       Grappa.RateLimit,
       Grappa.Repo,
       Grappa.Subject,
@@ -56,6 +62,7 @@ defmodule Grappa.Themes do
 
   alias Grappa.{
     Accounts.User,
+    Networks.Credentials,
     RateLimit.DailyQuota,
     Repo,
     Subject,
@@ -335,10 +342,12 @@ defmodule Grappa.Themes do
   hard-delete choke point BEFORE `Repo.delete(visitor)` (so re-homed rows no
   longer carry `visitor_id` and escape the CASCADE).
 
-  Author model B (vjt-locked): a re-homed theme becomes system-owned, so the
-  wire renders it as a built-in — the visitor's nick is NEVER surfaced (no
-  anchor-nick, no impersonation). Each re-homed name is de-duplicated against
-  the system user's existing names (a visitor may have published a theme named
+  Author model A (#299 amendment): a re-homed theme becomes system-owned, so
+  the wire renders it as a built-in — but its `author_nick` snapshot (captured
+  at publish time) is PRESERVED here (this only rewrites `user_id`/`visitor_id`/
+  `name`), so the wire keeps crediting the original visitor's nick rather than
+  collapsing to "system". Each re-homed name is de-duplicated against the
+  system user's existing names (a visitor may have published a theme named
   identically to a built-in), reusing the same suffixing as copy. Returns the
   number of themes re-homed.
   """
@@ -385,9 +394,39 @@ defmodule Grappa.Themes do
   defp set_published(subject, id, value) when is_integer(id) and is_boolean(value) do
     with {:ok, theme} <- get_theme(id),
          :ok <- authorize(subject, theme) do
-      theme |> Ecto.Changeset.change(published: value) |> Repo.update()
+      theme
+      |> Ecto.Changeset.change(published: value)
+      |> maybe_snapshot_author_nick(theme, value)
+      |> Repo.update()
     end
   end
+
+  # #299 amendment (author model A): snapshot the publishing visitor's
+  # representative (identity-anchor) nick into `author_nick` at PUBLISH time.
+  # A STORED snapshot, NOT a live lookup: visitors are reaped, and a reaped
+  # visitor's published theme re-homes to the system user (`visitor_id` → nil),
+  # so the author label must not depend on the visitor still existing. Derived
+  # from the credential anchor (`Networks.Credentials.representative_visitor_credential/1`,
+  # the same identity nick the subject wire + admin tab show), NOT the caller
+  # subject (an admin may publish another subject's theme) and NOT the Visitor
+  # row (#211 phase 7 dropped the row's nick — it lives per-network on the
+  # credential). Raw nick as displayed, NOT rfc1459-folded: a display LABEL,
+  # not a fold-MATCH site (consistent with the raw-cased members map / state.nick).
+  # Only on publish=true, only for a visitor-owned theme; a missing anchor (no
+  # credential — should not happen post-provision) leaves `author_nick`
+  # untouched so the wire falls back to the guest label.
+  defp maybe_snapshot_author_nick(changeset, %Theme{visitor_id: visitor_id}, true)
+       when is_binary(visitor_id) do
+    case Credentials.representative_visitor_credential(visitor_id) do
+      {:ok, %{nick: nick}} when is_binary(nick) ->
+        Ecto.Changeset.change(changeset, author_nick: nick)
+
+      _ ->
+        changeset
+    end
+  end
+
+  defp maybe_snapshot_author_nick(changeset, _, _), do: changeset
 
   # Admin: any. Owner: own (user OR visitor, #299 item 8). Everyone else
   # (non-owners, and every non-admin against a system-owned built-in): forbidden.
