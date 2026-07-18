@@ -24942,3 +24942,52 @@ used by both the #289 opacity test and the new #302 hover-latch test.
 _Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
 rides the already-HELD #299 COLD batch (with #282 / #290 / #294 / #304 /
 #305 / #307), NOT shipped solo._
+
+### 2026-07-18 — #301: umode description table — Azzurra semantics + missing letters
+
+The static umode copy table (`cicchetto/src/lib/umodeModes.ts`,
+`UMODE_DESCRIPTIONS`, added in #229) shipped **generic-ircd (charybdis/Unreal)
+conventions** for three letters that mean something else on Azzurra/bahamut.
+A user hit the umode viewer and reported the wrong text via #grappa.
+
+**Authority.** The source of truth is Azzurra's own `helpserv umode` helpfile
+(`azzurra/services/run/data/helpfiles/{it,us}/helpserv/umode`), NOT other
+ircds' conventions. These descriptions are UI copy and live ONLY in cic, never
+on the wire (CLAUDE.md "no localized strings server-side") — so this is a
+pure client-side copy fix: no Elixir, no Wire typespec, no protocol change.
+
+**Three corrected letters.**
+
+| letter | was (generic-ircd) | Azzurra actual | settable |
+|--------|--------------------|----------------|----------|
+| `+d` | "deaf · ignore all channel messages" | IRCop: receive DEBUG messages | true → **false** |
+| `+g` | "caller ID · only accepted nicks may /msg you" | IRCop: receive GLOBOPS messages | true → **false** |
+| `+S` | "network service · (services-set)" | connected to the server via SSL | false (unchanged) |
+
+The **`settable` flip on `+d`/`+g` (true → false)** is the load-bearing
+correction: they are IRCop snomask-style RECEIVE flags, not user message
+filters — a normal user cannot set them, so the modal shows them read-only
+(same conservative default as the unknown-letter fallback). `+S` was already
+read-only; only its label/desc were wrong.
+
+**Missing-letter fill (secondary).** The table only knew 13 letters, so any
+active-but-unlisted Azzurra umode rendered "user mode (no description
+available)". Added the full real Azzurra set from the reference —
+`b c e f F h I j k K m n y z` — all `settable:false` (IRCop / services /
+connection-property flags; cic can't grant itself an oper/services capability,
+so the same default the unknown-letter fallback uses). The existing correct
+entries (`i w s x R` settable; `o O r a A` read-only) are unchanged, and the
+`umodeDescription`/`availableUmodes` shapes are untouched — this is a DATA
+edit, not a refactor.
+
+**Witness.** Unlike a CSS change, umode copy is TEXT that jsdom SEES, so the
+vitest unit test is a real RED→GREEN gate: assertions on `/debug/i`,
+`/globops/i`, `/ssl/i` (KEY phrase, not exact string, so copy stays tunable) +
+the `+d`/`+g` `settable === false` flip + a previously-missing letter no longer
+hitting the generic fallback. The `#229` e2e is extended to prove the corrected
+copy reaches the rendered modal DOM (the modal renders the full known table, so
+the `+d`/`+g`/`+S` toggles show even though vjt holds none of them).
+
+_Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
+rides the already-HELD #299 COLD batch (with #282 / #290 / #294 / #302 /
+#304 / #305 / #307), NOT shipped solo._
