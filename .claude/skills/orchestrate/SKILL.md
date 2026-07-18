@@ -93,22 +93,62 @@ thing that survives the orchestrator's own `/clear` (manual OR the auto-clearer)
 handoff is the highest-severity bug. **Resolve panes BY TITLE, never hardcode `%NN`** (ids
 are ephemeral): sibling = "grappa-worker", orchestrator = "grappa-orch", ircbot = "vjt-claude".
 
+**THE HANDOFF IS BOUNDED — PRUNE DONE WORK, DO NOT APPEND (vjt direct order 2026-07-15).**
+The handoff is a LIVE-STATE snapshot, NOT a log. It must not grow unbounded. Every update
+is DELETE-then-write, never append-only:
+- **The instant an issue is shipped + closed (`gh issue close` done, `status:*` label
+  removed), DELETE its block from the handoff entirely.** The only residue a closed issue
+  may leave is a fact still load-bearing for LIVE work — e.g. the new PROD SHA it produced,
+  or "shipped X, so held branch Y must rebase past it." One line, in the PROD/held section —
+  not its own block.
+- **DELETE resolved narrative on sight:** past dispatch blow-by-blow, superseded plans,
+  "[HISTORICAL]" / "RESUMED + RECONCILED" / "MORNING BRIEFING" / prior-window sections,
+  old timestamped LIVE-NOW blocks. Once the event is over and left no live consequence,
+  it is git/DESIGN_NOTES territory, not handoff territory. The decision log (DESIGN_NOTES)
+  and closed GitHub issues ARE the permanent record — the handoff never duplicates them.
+- **Held (merge-ready, not-yet-shipped) work stays, but COMPRESSED:** SHA + deploy-class +
+  device-verify-or-not + any batch-merge gotcha (e.g. two branches touching the same line).
+  The full merge-ready essay lives in the branch + code-review, not here — one or two lines
+  per held issue is enough to drive the ship.
+- **Target ceiling: the whole handoff reads in ONE Read (≤~120 lines / well under the
+  25k-token page cap).** If it needs pagination, it's overdue for a prune — prune it THIS
+  turn before doing anything else. A bloated handoff (the 388-line / 260KB states this file
+  hit twice) is itself the bug, not a byproduct.
+
 ### Permanent rules (apply to EVERY run — do NOT re-paste into the handoff)
 
-- **Announce to #grappa on BOTH Azzurra AND Libera** (new 2026-07-14; not #it-opers). Every
-  prod ship AND every `--cic` bundle deploy (even hygiene — users get a BundleRefreshBanner,
-  tell them why) → one line to #grappa on each network via the ircbot pane ("vjt-claude"), its
-  own voice, no vjt-highlight for routine. The bot owns both net connections (2 monitors). The
-  bot may decline "nothing to add" → re-brief explicitly as an unposted ship announce so it
-  posts. See memory [[feedback_announce_ships_to_grappa]].
-- **Batch ALL cold-classified issues into ONE cold window** (reinforced 2026-07-14): don't fire
-  a cold deploy for one issue while another cold issue is close behind — hold + ship them
-  together to minimize restarts. Prefer designing features HOT. See [[feedback_minimize_cold_deploys]].
+- **Announce to #grappa on BOTH Azzurra AND Libera** (new 2026-07-14; not #it-opers). **ONE
+  announce PER BATCHED DEPLOY, not one per issue (vjt 2026-07-17)** — since deploys are batched
+  (see the batch rule below), the announce covers all issues in that bundle in one line per
+  network (users get a single BundleRefreshBanner for the batch; tell them what changed). Post
+  via the ircbot pane ("vjt-claude"), its own voice, no vjt-highlight for routine. The bot owns
+  both net connections (2 monitors). The bot may decline "nothing to add" → re-brief explicitly
+  as an unposted ship announce so it posts. See memory [[feedback_announce_ships_to_grappa]].
+- **BATCH ALL DEPLOYS — never deploy per-issue (vjt STANDING ORDER 2026-07-17).** A per-issue
+  `--cic` bundle deploy (OR cold restart) spams live users with a BundleRefreshBanner every
+  ~20min. So: as each issue completes, worker MERGES + pushes to origin/main (the CI-green
+  gate still gates the merge) and moves the issue `status:cooking → status:soon` — but does
+  **NOT** deploy. Accumulate in `soon`. Ship ONE batched deploy only when **~4–5 issues are
+  resolved (merged, awaiting deploy)**, carrying all of them in a single bundle broadcast, then
+  ONE announce covering the batch + close all + strip their `status:soon`. Merge ≠ deploy: the
+  m42 jail only pulls origin/main when `deploy-m42` runs, so merging freely does not touch prod.
+  This SUPERSEDES per-issue ship-on-green in dispatch briefs — tell the worker to merge+soon+HOLD,
+  not deploy. Deploy rules stack: this batching gate + the **CI-green-before-ship** gate
+  (`integration` must be green before ANY merge/ship) + the **night-cold-deploy** window (cold-
+  classified issues wait for the ~4am restart window; batch them there too). Prefer designing
+  features HOT. See [[feedback_minimize_cold_deploys]].
 - **Every new feature needs a REAL e2e** that asserts the user-visible outcome (not a
   hollow green spec). **A red `integration`/e2e CI job BLOCKS** — never build/ship on red;
   `gh run list` to find where it went red, fix/bump-to-front, green it. cic `ci` job is
   Elixir-only; `integration` is the real e2e gate. See [[feedback_e2e_mandatory_and_ci_blocks]].
 - **Close-out = `gh issue close N`** (+ announce). Ship+announce alone is NOT done.
+- **WORKTREE HYGIENE — remove merged worktrees (vjt STANDING ORDER 2026-07-17).** Once a worktree branch is merged
+  to main, its worktree MUST be removed (`git worktree remove`, `--force` only after merged+clean is verified — the
+  submodule blocker needs it) and the merged branch deleted (`git branch -d`). Removal is part of the merge step, not
+  a someday-cleanup — tens of stale worktrees had piled up eating disk (chore #296). EVERY dispatch brief MUST tell the
+  worker to remove its worktree after merging. NEVER force-remove an UNmerged or DIRTY worktree — it belongs to a
+  concurrent session's in-flight work (also the source of the "sibling stashed my changes" pitfall). Codified in
+  CLAUDE.md Development Cycle too.
 - **`status:*` label discipline (WIP board — grappa-irc #258, mandatory 2026-07-15).** The
   grappa.chat WIP board renders directly from three mutually-exclusive grappa-irc labels —
   `status:queued` (accepted, in build queue, not started), `status:cooking` (actively building
@@ -126,6 +166,19 @@ are ephemeral): sibling = "grappa-worker", orchestrator = "grappa-orch", ircbot 
     ship/close-out step, alongside `gh issue close` + announce.
   - A newly-filed backlog issue gets NO `status:*` label (it lives under the backlog link until
     triaged into the queue). The board is a shared artifact — keep it honest every transition.
+  - **ANTI-DRIFT (vjt caught two misses 2026-07-16 — stale `cooking` on closed #268; forgotten
+    `queued→cooking` on the #273 dispatch). The label move is NOT a separate step you remember —
+    it is ATOMIC with the action:**
+    - The `queued→cooking` edit goes in the **SAME Bash block as the clear-and-dispatch send-keys**
+      (dispatch and label move as one tool call — you cannot dispatch without moving the label).
+    - The `strip status:*` edit goes in the **SAME handling turn as processing the worker's
+      shipped/closed report** (alongside `gh issue close` + the announce brief).
+    - **`lib/board-check.sh [--cooking N]` is the STANDING GUARD.** Run it at EVERY handoff-flush
+      and EVERY `/orchestrate` resume (Step 0). It fails (exit 1) on: a CLOSED issue with a
+      `status:*` label, any issue with >1 status label, or (with `--cooking N`) a cooking set that
+      doesn't match the in-flight issue you believe is building. It bakes in `--limit 300` — plain
+      `gh issue list` defaults to 30 and silently truncates older issues (that truncation masked
+      the drift twice). If it prints DRIFT, fix it BEFORE doing anything else.
 - **Pull the queue at end of each round (2026-07-15).** The `status:queued` label set IS the
   execution queue — there is no hand-managed list. When the worker is free and nothing is in
   flight, read the open queued set (`gh issue list --state open --label status:queued --json
