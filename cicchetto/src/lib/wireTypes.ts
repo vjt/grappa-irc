@@ -920,6 +920,7 @@ export type ThemesWireT = {
   built_in: boolean;
   published: boolean;
   apply_count: number;
+  in_use: number;
   mine: boolean;
   payload: Record<string, unknown>;
   inserted_at: string;

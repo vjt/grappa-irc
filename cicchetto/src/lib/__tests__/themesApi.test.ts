@@ -9,6 +9,7 @@ import {
   listBuiltinBackgrounds,
   listGallery,
   listMine,
+  listUnpublishedBuiltins,
   publishTheme,
   setActiveTheme,
   type TokenPayload,
@@ -89,6 +90,7 @@ function sampleTheme(overrides: Record<string, unknown> = {}) {
     built_in: false,
     published: false,
     apply_count: 0,
+    in_use: 0,
     mine: true,
     payload: samplePayload() as unknown as Record<string, unknown>,
     inserted_at: "2026-07-17T10:00:00Z",
@@ -118,6 +120,16 @@ describe("themesApi", () => {
     const themes = await listMine(TOKEN);
     expect(themes).toEqual([]);
     expect(fetchSpy.mock.calls[0]?.[0]).toBe("/me/themes");
+  });
+
+  test("listUnpublishedBuiltins GETs /themes/unpublished and unwraps the envelope", async () => {
+    fetchSpy.mockResolvedValue(
+      ok({ themes: [sampleTheme({ built_in: true, published: false, mine: false })] }),
+    );
+    const themes = await listUnpublishedBuiltins(TOKEN);
+    expect(themes).toHaveLength(1);
+    expect(themes[0]?.built_in).toBe(true);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("/themes/unpublished");
   });
 
   test("getTheme GETs /themes/:id", async () => {

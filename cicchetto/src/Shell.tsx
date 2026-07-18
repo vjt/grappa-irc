@@ -35,7 +35,6 @@ import {
   openArchivePanel,
   openHomePanel,
   openSettingsPanel,
-  openThemesPanel,
   toggleMembersPanel,
 } from "./lib/mobilePanel";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
@@ -923,19 +922,13 @@ const Shell: Component = () => {
             >
               ⚙
             </button>
-            {/* #75 — themes launcher: opens the settings drawer directly on
-                the themes gallery sub-page (openThemesPanel deep-links via
-                settingsNav). Same footer surface as #291's home button. */}
-            <button
-              type="button"
-              class="shell-chrome-btn shell-chrome-themes"
-              aria-label="open themes"
-              data-testid="mobile-panel-themes"
-              onClick={() => openThemesPanel({ membersOpen, setMembersOpen, setSettingsOpen })}
-            >
-              {"\u{1F3A8}"}
-            </button>
-            {/* UX-6 bucket C (2026-05-21) — 4th launcher: admin
+            {/* #299 — the #75 themes launcher was REMOVED here (Opt A). It only
+                deep-linked to the settings drawer's themes sub-page, which is
+                already reachable via the cog (settings → themes). Five footer
+                buttons overflowed on narrow devices and clipped the high-freq
+                admin launcher off-screen; dropping the redundant themes
+                shortcut brings the footer back to 4 and keeps admin reachable. */}
+            {/* UX-6 bucket C (2026-05-21) — admin launcher: admin
                 console. Visible only when `isAdmin()` is true (single
                 source of truth shared with Sidebar admin row +
                 SettingsDrawer admin entry). Selection-driven dispatch

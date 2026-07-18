@@ -6,11 +6,6 @@ vi.mock("@solidjs/router", () => ({
   useNavigate: () => vi.fn(),
 }));
 
-vi.mock("../lib/theme", () => ({
-  getTheme: vi.fn(() => "auto"),
-  setTheme: vi.fn(),
-}));
-
 vi.mock("../lib/fontSize", () => ({
   getFontSize: vi.fn(() => "M"),
   setFontSize: vi.fn(),
@@ -238,18 +233,13 @@ beforeEach(() => {
 });
 
 describe("SettingsDrawer", () => {
-  it("renders theme radios", () => {
+  it("does not render the legacy theme selector radios (#299 removed it)", () => {
     wrap(true);
-    expect(screen.getByLabelText(/auto/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/mirc light/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/irssi dark/i)).toBeInTheDocument();
-  });
-
-  it("changing radio fires setTheme", async () => {
-    const theme = await import("../lib/theme");
-    wrap(true);
-    fireEvent.click(screen.getByLabelText(/mirc light/i));
-    expect(theme.setTheme).toHaveBeenCalledWith("mirc-light");
+    // The auto/mirc-light/irssi-dark radio selector was superseded by the
+    // #75 gallery (cog → themes) and removed. It must be gone from the
+    // settings main page.
+    expect(screen.queryByLabelText(/mirc light/i)).toBeNull();
+    expect(screen.queryByLabelText(/irssi dark/i)).toBeNull();
   });
 
   it("renders the #217 timestamp-format radios (default with-seconds checked)", () => {
@@ -423,11 +413,10 @@ describe("SettingsDrawer (visitor subject)", () => {
     });
   });
 
-  it("renders theme + the universal quit verb for the loading null subject", () => {
+  it("renders the universal quit verb for the loading null subject", () => {
     wrap(true);
-    expect(screen.getByLabelText(/auto/i)).toBeInTheDocument();
-    // #126 — theme chrome is shared; the lifecycle affordance is quit
-    // alone for the not-yet-loaded subject ("log out" retired).
+    // #126 — the lifecycle affordance is quit alone for the not-yet-loaded
+    // subject ("log out" retired). (#299 removed the theme radio selector.)
     expect(screen.getByTestId("quit-irc-btn")).toBeInTheDocument();
     expect(screen.queryByText(/^log out$/i)).toBeNull();
   });

@@ -194,8 +194,6 @@ vi.mock("../lib/compose", () => ({
 }));
 
 vi.mock("../lib/theme", () => ({
-  getTheme: vi.fn(() => "auto"),
-  setTheme: vi.fn(),
   isMobile: () => mobileState.value,
 }));
 

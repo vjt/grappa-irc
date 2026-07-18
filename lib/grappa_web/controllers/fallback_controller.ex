@@ -71,6 +71,7 @@ defmodule GrappaWeb.FallbackController do
            | :share_token_expired
            | :share_token_consumed
            | :rate_limited
+           | :theme_cap_reached
            | :not_raster
            | :too_large
            | :ssrf_blocked
@@ -198,6 +199,15 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:too_many_requests)
     |> json(%{error: "rate_limited"})
+  end
+
+  # #299 item 8 — a visitor hit the 50-total owned-theme cap. 429 like
+  # :rate_limited, but a DISTINCT wire string so cic can render a
+  # cap-specific "delete a theme to make room" hint (vs "try tomorrow").
+  def call(conn, {:error, :theme_cap_reached}) do
+    conn
+    |> put_status(:too_many_requests)
+    |> json(%{error: "theme_cap_reached"})
   end
 
   # #75 themes background pipeline — the source (upload or fetched URL) is not

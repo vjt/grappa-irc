@@ -15,7 +15,7 @@ defmodule Mix.Tasks.Grappa.SeedThemesTest do
     system = Themes.system_user()
 
     Theme
-    |> where([t], t.owner_id == ^system.id)
+    |> where([t], t.user_id == ^system.id)
     |> Repo.aggregate(:count, :id)
   end
 
@@ -32,7 +32,7 @@ defmodule Mix.Tasks.Grappa.SeedThemesTest do
     end
 
     system_id = Themes.system_user().id
-    seeded = Enum.filter(gallery, &(&1.owner_id == system_id))
+    seeded = Enum.filter(gallery, &(&1.user_id == system_id))
     assert Enum.all?(seeded, & &1.published)
   end
 

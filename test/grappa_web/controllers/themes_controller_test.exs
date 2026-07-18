@@ -13,7 +13,7 @@ defmodule GrappaWeb.ThemesControllerTest do
   import Grappa.AuthFixtures
   import Grappa.UploadFixtures, only: [bytes: 1]
 
-  alias Grappa.{Themes, Themes.TokenModel, Uploads}
+  alias Grappa.{Repo, Themes, Themes.Theme, Themes.TokenModel, Uploads}
 
   defp valid_payload do
     %{
@@ -21,6 +21,21 @@ defmodule GrappaWeb.ThemesControllerTest do
       "font_family" => "mono-default",
       "background" => %{"image_id" => nil, "builtin" => nil, "size" => "cover", "opacity" => 0.3}
     }
+  end
+
+  # A system-owned, published built-in inserted directly (mirrors the seed task).
+  defp seed_builtin do
+    {:ok, theme} =
+      %Theme{}
+      |> Theme.changeset(%{
+        name: "builtin-#{System.unique_integer([:positive])}",
+        user_id: Themes.system_user().id,
+        payload: valid_payload(),
+        published: true
+      })
+      |> Repo.insert()
+
+    theme
   end
 
   describe "auth gate" do
@@ -61,6 +76,30 @@ defmodule GrappaWeb.ThemesControllerTest do
       assert %{"themes" => [theme]} = json_response(get(conn, "/me/themes"), 200)
       assert theme["id"] == mine.id
       assert theme["mine"] == true
+    end
+  end
+
+  describe "GET /themes/unpublished (#299 admin un-stranding)" do
+    test "an admin sees stranded (unpublished) system built-ins", %{conn: conn} do
+      {admin, session} = user_and_session(is_admin: true)
+      conn = put_bearer(conn, session.id)
+      stranded = seed_builtin()
+      {:ok, _} = Themes.unpublish_theme({:user, admin}, stranded.id)
+
+      assert %{"themes" => [theme]} = json_response(get(conn, "/themes/unpublished"), 200)
+      assert theme["id"] == stranded.id
+      assert theme["published"] == false
+      assert theme["built_in"] == true
+    end
+
+    test "a non-admin user gets an empty list", %{conn: conn} do
+      {_, session} = user_and_session()
+      conn = put_bearer(conn, session.id)
+      {admin, _} = user_and_session(is_admin: true)
+      stranded = seed_builtin()
+      {:ok, _} = Themes.unpublish_theme({:user, admin}, stranded.id)
+
+      assert %{"themes" => []} = json_response(get(conn, "/themes/unpublished"), 200)
     end
   end
 

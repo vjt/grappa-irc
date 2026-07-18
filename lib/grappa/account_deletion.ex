@@ -35,8 +35,12 @@ defmodule Grappa.AccountDeletion do
   `*_id` FK once the GenServer has drained via `terminate/2`, and the
   capacity slot frees synchronously. The DB-level `ON DELETE CASCADE` on
   every subject-keyed FK (sessions, messages, query_windows, read_cursors,
-  network_credentials, user_settings, push_subscriptions, …) wipes the
-  dependents in the same transaction as the parent-row delete.
+  network_credentials, user_settings, push_subscriptions, themes, …) wipes
+  the dependents in the same transaction as the parent-row delete. A USER's
+  themes (published + private) all CASCADE — voluntary account deletion is a
+  full wipe. A VISITOR self-delete routes through `Visitors.delete/1`, which
+  first re-homes the visitor's PUBLISHED themes to the system user (#299) so
+  gallery contributions survive; only their private themes CASCADE.
 
   No admin-event is emitted — this is the SELF-SERVICE door (no admin
   actor). The admin-attributed wipe (`Operator.delete_visitor/2`) is a

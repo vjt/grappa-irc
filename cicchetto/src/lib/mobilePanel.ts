@@ -1,5 +1,4 @@
 import { setArchiveModalNetwork } from "./archive";
-import { requestSettingsPage } from "./settingsNav";
 
 // UX-5 bucket BM (2026-05-20) — mobile chrome panel mutex.
 //
@@ -55,18 +54,6 @@ export function toggleMembersPanel(setters: MobilePanelSetters): void {
 export function openSettingsPanel(setters: MobilePanelSetters): void {
   setters.setMembersOpen(false);
   setArchiveModalNetwork(null);
-  setters.setSettingsOpen(true);
-}
-
-// #75 — themes launcher in the mobile drawer footer. Opens the settings
-// drawer directly on the "themes" sub-page: same mutex as
-// `openSettingsPanel` (close members + archive) plus a one-shot deep-link
-// request the drawer consumes on its open transition. No new signal — the
-// drawer's own `settingsPage` state is the target.
-export function openThemesPanel(setters: MobilePanelSetters): void {
-  setters.setMembersOpen(false);
-  setArchiveModalNetwork(null);
-  requestSettingsPage("themes");
   setters.setSettingsOpen(true);
 }
 

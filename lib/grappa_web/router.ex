@@ -280,6 +280,12 @@ defmodule GrappaWeb.Router do
     # that MUST precede `/themes/:id` (else "backgrounds" is parsed as an id and
     # 404s). Static assets themselves are served by nginx at /backgrounds/*.
     get "/themes/backgrounds", ThemesController, :backgrounds
+    # #299 — admin-only view of UNPUBLISHED system built-ins (stranded by an
+    # unpublish), so an admin can re-publish them. Authz is in-context
+    # (owner-or-admin, like every /themes verb) so it rides the existing
+    # `themes` nginx alt — no proxy change, ships hot. A 2-segment literal that
+    # MUST precede `/themes/:id` (else "unpublished" parses as an id).
+    get "/themes/unpublished", ThemesController, :unpublished
     get "/themes/:id", ThemesController, :show
     patch "/themes/:id", ThemesController, :update
     delete "/themes/:id", ThemesController, :delete

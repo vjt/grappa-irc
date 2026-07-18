@@ -4,8 +4,9 @@
 // (desktop has the sidebar home link). This adds a 🏠 launcher to the
 // `.mobile-panel-actions` footer, LEFT-aligned, alongside archive /
 // settings / admin — and enlarges ALL those launchers to ≥44px tap
-// targets. Batched with #75 (themes button) because both touch the same
-// footer surface.
+// targets. (#299 removed the #75 themes launcher from this footer — five
+// buttons overflowed on narrow devices and clipped admin; the footer is
+// back to FOUR: home / archive / settings / admin.)
 //
 // This spec drives the real mobile layout (@webkit / iPhone 15): open
 // the hamburger, assert all 4 launchers are present and each ≥44px, tap
@@ -91,18 +92,18 @@ test.describe("#291 — mobile home button in drawer footer", () => {
     const launcherFooter = drawer.locator(".mobile-panel-actions");
     await expect(launcherFooter).toBeVisible();
 
-    // All launchers present. #75 + #291 are batched onto this ONE footer,
-    // so an admin in a channel sees FIVE: home (new, #291), archive,
-    // settings, themes (new, #75), admin.
+    // All launchers present. #299 removed the #75 themes button, so an
+    // admin in a channel sees FOUR: home (#291), archive, settings, admin.
+    // The themes launcher must be ABSENT (reachable via cog → themes now).
     await expect(launcherFooter.locator("[data-testid='mobile-panel-home']")).toHaveCount(1);
     await expect(launcherFooter.locator("[data-testid='mobile-panel-archive']")).toHaveCount(1);
     await expect(launcherFooter.locator("[data-testid='mobile-panel-settings']")).toHaveCount(1);
-    await expect(launcherFooter.locator("[data-testid='mobile-panel-themes']")).toHaveCount(1);
+    await expect(launcherFooter.locator("[data-testid='mobile-panel-themes']")).toHaveCount(0);
     await expect(launcherFooter.locator("[data-testid='mobile-panel-admin']")).toHaveCount(1);
 
     // Every launcher is a proper mobile tap target (≥44px, #291).
     const buttons = launcherFooter.locator(".shell-chrome-btn");
-    await expect(buttons).toHaveCount(5);
+    await expect(buttons).toHaveCount(4);
     const count = await buttons.count();
     for (let i = 0; i < count; i++) {
       const box = await buttons.nth(i).boundingBox();

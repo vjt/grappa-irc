@@ -60,13 +60,14 @@ defmodule Grappa.Visitors do
       Grappa.Networks,
       Grappa.Repo,
       Grappa.Session,
-      Grappa.SpawnOrchestrator
+      Grappa.SpawnOrchestrator,
+      Grappa.Themes
     ],
     exports: [AdminWire, Login, SessionPlan, Visitor, Wire]
 
   import Ecto.Query
 
-  alias Grappa.{Admission, Networks, Repo, Session, SpawnOrchestrator}
+  alias Grappa.{Admission, Networks, Repo, Session, SpawnOrchestrator, Themes}
   alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.Visitors.{SessionPlan, Visitor}
 
@@ -554,8 +555,10 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  Delete a visitor row. The DB-level FK ON DELETE CASCADE on
-  `messages`, and `sessions` wipes dependents in the same transaction.
+  Delete a visitor row. Before the hard delete, the visitor's PUBLISHED themes
+  re-home to the system user (#299) so gallery contributions survive; the
+  DB-level FK ON DELETE CASCADE on `themes` (the private ones), `messages`,
+  `network_credentials` and `sessions` wipes the rest in the same transaction.
 
   This is the single reap + admin delete choke point (`Visitors.Reaper`,
   `Operator.delete_visitor`, `AccountDeletion`), so it also evicts the
@@ -566,14 +569,34 @@ defmodule Grappa.Visitors do
   @spec delete(Ecto.UUID.t()) :: :ok | {:error, :not_found}
   def delete(visitor_id) when is_binary(visitor_id) do
     case Repo.get(Visitor, visitor_id) do
-      nil ->
-        {:error, :not_found}
-
-      visitor ->
-        {:ok, _} = Repo.delete(visitor)
-        :ok = Session.Backoff.forget({:visitor, visitor.id})
-        :ok
+      nil -> {:error, :not_found}
+      visitor -> destroy_visitor(visitor)
     end
+  end
+
+  # The single hard-delete mechanic shared by delete/1 (reap + operator) and
+  # purge_if_anon/1 (anon co-terminus). Re-homes the visitor's PUBLISHED themes
+  # to the system user (survive as gallery contributions, #299) BEFORE the
+  # delete, so the visitor_id ON DELETE CASCADE then wipes only the private
+  # themes + credentials + messages + sessions.
+  #
+  # Deliberately NOT wrapped in a Repo.transaction: re-home's leading SELECT
+  # would start a DEFERRED (read) sqlite transaction that then upgrades to a
+  # write on the DELETE — and that read→write upgrade throws SQLITE_BUSY under
+  # concurrent writers (integration CI hit exactly this: "Database busy" on
+  # DELETE FROM visitors). Sequential single-statement writes each take the
+  # write lock immediately (busy_timeout waits, never upgrade-fails) — the same
+  # shape as the pre-#299 lone `Repo.delete`. Atomicity isn't needed: re-home
+  # is idempotent (it only matches `visitor_id = ? AND published`, and re-homed
+  # rows have `visitor_id = NULL`), so a crash between the two steps self-heals
+  # on the next reap/retry (re-home finds nothing, delete proceeds). Backoff
+  # eviction is ETS, after the DB writes.
+  @spec destroy_visitor(Visitor.t()) :: :ok
+  defp destroy_visitor(%Visitor{} = visitor) do
+    Themes.rehome_visitor_published_to_system(visitor.id)
+    {:ok, _} = Repo.delete(visitor)
+    :ok = Session.Backoff.forget({:visitor, visitor.id})
+    :ok
   end
 
   @doc """
@@ -1042,12 +1065,11 @@ defmodule Grappa.Visitors do
           # Registered — identity persists; its backoff history must survive.
           :ok
         else
-          {:ok, _} = Repo.delete(visitor)
           # S11 — the anon subject is destroyed here (login case-1 failure /
-          # preempt); evict its Backoff entries so the retired UUID leaves
-          # no orphan.
-          :ok = Session.Backoff.forget({:visitor, visitor.id})
-          :ok
+          # preempt). destroy_visitor re-homes published themes (#299), hard-
+          # deletes the row (CASCADE), and evicts its Backoff entries so the
+          # retired UUID leaves no orphan.
+          destroy_visitor(visitor)
         end
     end
   end

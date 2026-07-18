@@ -5,6 +5,7 @@ defmodule GrappaWeb.ThemesController do
 
       GET    /themes               gallery (published + built-ins)   :index
       GET    /me/themes            the caller's owned library         :mine
+      GET    /themes/unpublished   admin: stranded built-ins (#299)   :unpublished
       GET    /themes/:id           one theme (public read by id)      :show
       POST   /themes               create (rate-limited)              :create
       PATCH  /themes/:id           edit (owner|admin)                 :update
@@ -18,7 +19,7 @@ defmodule GrappaWeb.ThemesController do
   ## Thin controller, thick context
 
   Actions parse params, call `Grappa.Themes`, and render the context-owned wire
-  shape via `Grappa.Themes.Wire.to_wire/2` inline (no JSON view module). Authz +
+  shape via `Grappa.Themes.Wire.to_wire/3` inline (no JSON view module). Authz +
   rate-limiting + sanitization all live in the context; the FallbackController
   maps the tagged errors to HTTP.
 
@@ -40,14 +41,37 @@ defmodule GrappaWeb.ThemesController do
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _) do
     viewer = conn.assigns.current_subject
-    json(conn, %{themes: Enum.map(Themes.list_gallery(), &Wire.to_wire(&1, viewer))})
+    counts = Themes.active_theme_counts()
+
+    json(conn, %{
+      themes: Enum.map(Themes.list_gallery(), &Wire.to_wire(&1, viewer, Map.get(counts, &1.id, 0)))
+    })
   end
 
   @doc false
   @spec mine(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def mine(conn, _) do
     viewer = conn.assigns.current_subject
-    json(conn, %{themes: Enum.map(Themes.list_owned(viewer), &Wire.to_wire(&1, viewer))})
+    counts = Themes.active_theme_counts()
+
+    json(conn, %{
+      themes: Enum.map(Themes.list_owned(viewer), &Wire.to_wire(&1, viewer, Map.get(counts, &1.id, 0)))
+    })
+  end
+
+  @doc false
+  @spec unpublished(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def unpublished(conn, _) do
+    viewer = conn.assigns.current_subject
+    counts = Themes.active_theme_counts()
+
+    json(conn, %{
+      themes:
+        Enum.map(
+          Themes.list_unpublished_builtins(viewer),
+          &Wire.to_wire(&1, viewer, Map.get(counts, &1.id, 0))
+        )
+    })
   end
 
   @doc false
@@ -57,13 +81,13 @@ defmodule GrappaWeb.ThemesController do
 
     with {:ok, theme_id} <- parse_id(id),
          {:ok, theme} <- Themes.get_theme(theme_id) do
-      json(conn, Wire.to_wire(theme, viewer))
+      json(conn, Wire.to_wire(theme, viewer, Themes.count_theme_usage(theme.id)))
     end
   end
 
   @doc false
   @spec create(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :rate_limited | :forbidden | Ecto.Changeset.t()}
+          Plug.Conn.t() | {:error, :rate_limited | :theme_cap_reached | Ecto.Changeset.t()}
   def create(conn, params) do
     viewer = conn.assigns.current_subject
 
@@ -105,7 +129,7 @@ defmodule GrappaWeb.ThemesController do
 
   @doc false
   @spec copy(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :not_found | :forbidden | :rate_limited}
+          Plug.Conn.t() | {:error, :not_found | :rate_limited | :theme_cap_reached}
   def copy(conn, %{"id" => id}) do
     viewer = conn.assigns.current_subject
 
@@ -154,17 +178,18 @@ defmodule GrappaWeb.ThemesController do
     end
   end
 
-  # Re-fetch to preload :owner (context write functions don't preload it) so the
+  # Re-fetch to preload :user (context write functions don't preload it) so the
   # wire's `author` + `built_in` are available. The theme was just written in
   # this request, so the read is guaranteed to hit.
   defp render_theme(conn, status, id, viewer) do
     {:ok, theme} = Themes.get_theme(id)
-    conn |> put_status(status) |> json(Wire.to_wire(theme, viewer))
+    conn |> put_status(status) |> json(Wire.to_wire(theme, viewer, Themes.count_theme_usage(id)))
   end
 
   # Controller attrs MUST be atom-keyed (`%{name:, payload:}`) — the context does
-  # `Map.put(attrs, :owner_id, …)`, and a mixed string+atom map crashes
-  # `Ecto.Changeset.cast`. The payload VALUE stays string-keyed (`"colors"` …).
+  # `Subject.put_subject_id(attrs, …)` (which `Map.put`s `:user_id`/`:visitor_id`),
+  # and a mixed string+atom map crashes `Ecto.Changeset.cast`. The payload VALUE
+  # stays string-keyed (`"colors"` …).
   defp theme_attrs(params) do
     for {k, v} <- Map.take(params, ["name", "payload"]),
         into: %{},

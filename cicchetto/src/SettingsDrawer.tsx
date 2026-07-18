@@ -25,8 +25,6 @@ import {
   listPushDevices,
   type PushDeviceSummary,
 } from "./lib/push";
-import { consumePendingSettingsPage, type SettingsSubPage } from "./lib/settingsNav";
-import { getTheme, setTheme, type ThemePref } from "./lib/theme";
 import { getTimeFormat, setTimeFormat, type TimeFormatKey } from "./lib/timeFormat";
 import { activeHost } from "./lib/uploadHost";
 import {
@@ -47,6 +45,13 @@ import {
 import ShareSessionModal from "./ShareSessionModal";
 import ThemeGallery from "./ThemeGallery";
 import VhostSettingsPage from "./VhostSettingsPage";
+
+// #75/#252 sub-page union for the settings drawer. The drawer is a flat
+// "main" page that pushes into dedicated sub-pages (vhost #252, themes #75),
+// each entered from a nav row inside the drawer. (#299 removed the mobile
+// footer 🎨 launcher + its one-shot deep-link — themes is reached via the cog
+// → themes nav row now, so no cross-module deep-link state is needed.)
+type SettingsSubPage = "main" | "vhost" | "themes";
 
 // Right-overlay drawer: theme toggle + notifications (push permission +
 // per-trigger prefs + device list) + optional "admin console" entry
@@ -76,7 +81,6 @@ export type Props = {
 
 const SettingsDrawer: Component<Props> = (props) => {
   const navigate = useNavigate();
-  const [pref, setPref] = createSignal<ThemePref>(getTheme());
   const [size, setSize] = createSignal<FontSizeKey>(getFontSize());
   const [timeFmt, setTimeFmt] = createSignal<TimeFormatKey>(getTimeFormat());
 
@@ -153,12 +157,6 @@ const SettingsDrawer: Component<Props> = (props) => {
   // re-split on PUT so partial typing doesn't drop characters.
   const [channelsOnlyText, setChannelsOnlyText] = createSignal("");
   const [nicksOnlyText, setNicksOnlyText] = createSignal("");
-
-  const onChange = (e: Event) => {
-    const value = (e.currentTarget as HTMLInputElement).value as ThemePref;
-    setPref(value);
-    setTheme(value);
-  };
 
   const onFontSizeChange = (e: Event) => {
     const value = (e.currentTarget as HTMLInputElement).value as FontSizeKey;
@@ -362,11 +360,6 @@ const SettingsDrawer: Component<Props> = (props) => {
     if (o && !wasOpen) {
       wasOpen = true;
       pushOverlay(drawerEl ?? null);
-      // #75 — a footer 🎨 launcher requested a deep-link into the themes
-      // sub-page before opening; consume it (one-shot). No pending
-      // request → stay on "main" (reset on the prior close below).
-      const pending = consumePendingSettingsPage();
-      if (pending !== null) setSettingsPage(pending);
     } else if (!o && wasOpen) {
       wasOpen = false;
       popOverlay(drawerEl ?? null);
@@ -592,40 +585,12 @@ const SettingsDrawer: Component<Props> = (props) => {
         {/* #252 — main settings page. A `<Show>`-gated sub-page (vhost)
             renders in its place; the header × stays visible for both. */}
         <Show when={settingsPage() === "main"}>
-          <fieldset>
-            <legend>theme</legend>
-            <label>
-              <input
-                type="radio"
-                name="theme"
-                value="auto"
-                checked={pref() === "auto"}
-                onChange={onChange}
-              />
-              auto (follow system)
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="theme"
-                value="mirc-light"
-                checked={pref() === "mirc-light"}
-                onChange={onChange}
-              />
-              mIRC light
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="theme"
-                value="irssi-dark"
-                checked={pref() === "irssi-dark"}
-                onChange={onChange}
-              />
-              irssi dark
-            </label>
-          </fieldset>
-
+          {/* #299 — the legacy auto/mirc-light/irssi-dark radio selector was
+              removed here. It is superseded by the #75 theme gallery (cog →
+              themes) and was broken: an active gallery theme layers inline
+              CSS vars over the [data-theme] base blocks, so toggling the radio
+              did nothing visible. The base look is now OS-resolved at boot
+              (lib/theme.applyTheme). */}
           <fieldset class="notifications-fieldset">
             <legend>notifications</legend>
             <label class="master-toggle">

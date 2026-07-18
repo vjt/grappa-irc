@@ -109,6 +109,15 @@ export async function listMine(token: string): Promise<ThemesWireT[]> {
   return ((await res.json()) as ThemesEnvelope).themes;
 }
 
+// GET /themes/unpublished — admin-only view of UNPUBLISHED system built-ins
+// (stranded by an unpublish, no owner UI can see them), so an admin can
+// re-publish them. Returns [] for non-admins (server-decided authz). #299.
+export async function listUnpublishedBuiltins(token: string): Promise<ThemesWireT[]> {
+  const res = await fetch("/themes/unpublished", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  return ((await res.json()) as ThemesEnvelope).themes;
+}
+
 // GET /themes/backgrounds — the server-owned built-in background catalog the
 // picker renders. Server-owned so cic never hard-codes the closed set (it would
 // drift from the sanitizer's allowlist).

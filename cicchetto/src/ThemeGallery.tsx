@@ -14,9 +14,17 @@ import { activateTheme, activeThemeId } from "./lib/customTheme";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { isAdmin } from "./lib/networks";
 import { newThemeSeedPayload, openThemeEditor, themesRevision } from "./lib/themeEditor";
-import { canManageTheme, swatchColors } from "./lib/themeGallery";
+import { canManageTheme, dedupeThemesById, swatchColors } from "./lib/themeGallery";
 import type { TokenPayload } from "./lib/themesApi";
-import { copyTheme, deleteTheme, listGallery, publishTheme, unpublishTheme } from "./lib/themesApi";
+import {
+  copyTheme,
+  deleteTheme,
+  listGallery,
+  listMine,
+  listUnpublishedBuiltins,
+  publishTheme,
+  unpublishTheme,
+} from "./lib/themesApi";
 import type { ThemesWireT } from "./lib/wireTypes";
 
 // #75 sub-task 7 — the theme gallery, rendered as the SettingsDrawer
@@ -46,15 +54,35 @@ const ThemeGallery: Component<Props> = (props) => {
   // in-flight action (not just the acting row) — a deliberately
   // conservative guard against concurrent mutations + double-taps.
   const [busyId, setBusyId] = createSignal<number | null>(null);
+  // #299 item 7 — progressive disclosure: only the SELECTED card reveals its
+  // action row (copy + owner/admin manage). Tapping a card's select button
+  // both selects it AND applies it live. Nothing is selected on entry, so the
+  // gallery opens uncluttered (44px tap targets, mobile-first).
+  const [selectedId, setSelectedId] = createSignal<number | null>(null);
 
   const errMessage = (e: unknown): string =>
     e instanceof ApiError ? friendlyApiError(e) : "something went wrong";
 
+  // #299 — the gallery view is the published gallery PLUS the caller's owned
+  // library (their unpublished copies/creates/saves, which never appear in the
+  // published gallery — the root cause of "copy/create/save don't show"). Both
+  // are fetched and merged, de-duplicated by id (gallery order leads). Owned
+  // fetch is the caller's own themes — for BOTH users and visitors: visitors
+  // are first-class producers (create/copy/edit/publish their own, #299 item 8).
   const load = async (): Promise<void> => {
     const t = token();
     if (t === null) return;
     try {
-      setThemes(await listGallery(t));
+      // #299 — admins ALSO see unpublished system built-ins (stranded by an
+      // unpublish) so they can re-publish them; the existing owner|admin
+      // `canManageTheme` gate already renders the publish switch on those rows.
+      // Non-admins skip the request (the server would return [] anyway).
+      const [gallery, owned, stranded] = await Promise.all([
+        listGallery(t),
+        listMine(t),
+        isAdmin() ? listUnpublishedBuiltins(t) : Promise.resolve([]),
+      ]);
+      setThemes(dedupeThemesById([...gallery, ...owned, ...stranded]));
       setError(null);
     } catch (e) {
       setError(errMessage(e));
@@ -92,14 +120,21 @@ const ThemeGallery: Component<Props> = (props) => {
     }
   };
 
-  const apply = (theme: ThemesWireT): Promise<void> =>
-    withBusy(theme.id, (t) => activateTheme(t, theme));
+  // Tap a card → reveal its actions (select) AND apply it live (activate).
+  // The two are one gesture per the #299 item-7 spec (no standalone apply
+  // button): tapping a card is "try this on + manage it".
+  const selectAndApply = (theme: ThemesWireT): Promise<void> => {
+    setSelectedId(theme.id);
+    return withBusy(theme.id, (t) => activateTheme(t, theme));
+  };
 
   const copy = (theme: ThemesWireT): Promise<void> =>
     withBusy(theme.id, async (t) => {
       const made = await copyTheme(t, theme.id);
-      // "Copy → set active" (spec): apply the fresh owned copy.
+      // "Copy → set active" (spec): apply the fresh owned copy, and select it
+      // so its own card (now owned → manage actions) is revealed after reload.
       await activateTheme(t, made);
+      setSelectedId(made.id);
       await load();
     });
 
@@ -170,93 +205,106 @@ const ThemeGallery: Component<Props> = (props) => {
               <li
                 class="theme-card"
                 data-testid={`theme-card-${theme.id}`}
-                classList={{ "theme-card-active": activeThemeId() === theme.id }}
+                classList={{
+                  "theme-card-active": activeThemeId() === theme.id,
+                  "theme-card-selected": selectedId() === theme.id,
+                }}
               >
-                <div
-                  class="theme-swatch"
-                  data-testid={`theme-swatch-${theme.id}`}
-                  aria-hidden="true"
+                {/* Whole-card tap target: select (reveal actions) + apply live.
+                    The action buttons below are SIBLINGS, never nested inside
+                    this button (no nested-interactive, no stopPropagation). */}
+                <button
+                  type="button"
+                  class="theme-card-select"
+                  data-testid={`theme-select-${theme.id}`}
+                  aria-label={`apply theme ${theme.name}`}
+                  disabled={busyId() !== null}
+                  onClick={() => void selectAndApply(theme)}
                 >
-                  <For each={swatchColors(theme.payload as TokenPayload)}>
-                    {(c) => <span class="theme-chip" style={{ "background-color": c }} />}
-                  </For>
-                </div>
-                <div class="theme-card-meta">
-                  <span class="theme-card-name">{theme.name}</span>
-                  <span class="theme-card-author muted">by {theme.author}</span>
-                  <span class="theme-card-count muted" data-testid={`theme-count-${theme.id}`}>
-                    {theme.apply_count} applied
-                  </span>
-                  <Show when={activeThemeId() === theme.id}>
-                    <span class="theme-card-active-marker" data-testid={`theme-active-${theme.id}`}>
-                      active
+                  <div
+                    class="theme-swatch"
+                    data-testid={`theme-swatch-${theme.id}`}
+                    aria-hidden="true"
+                  >
+                    <For each={swatchColors(theme.payload as TokenPayload)}>
+                      {(c) => <span class="theme-chip" style={{ "background-color": c }} />}
+                    </For>
+                  </div>
+                  <div class="theme-card-meta">
+                    <span class="theme-card-name">{theme.name}</span>
+                    <span class="theme-card-author muted">by {theme.author}</span>
+                    {/* #299 item 9 — real usage: how many subjects have this
+                        theme active right now (apply_count only counts copies). */}
+                    <span class="theme-card-count muted" data-testid={`theme-count-${theme.id}`}>
+                      {theme.in_use} in use
                     </span>
-                  </Show>
-                </div>
-                <div class="theme-card-actions">
-                  <button
-                    type="button"
-                    class="theme-action"
-                    data-testid={`theme-apply-${theme.id}`}
-                    disabled={busyId() !== null}
-                    onClick={() => void apply(theme)}
-                  >
-                    apply
-                  </button>
-                  <button
-                    type="button"
-                    class="theme-action"
-                    data-testid={`theme-copy-${theme.id}`}
-                    disabled={busyId() !== null}
-                    onClick={() => void copy(theme)}
-                  >
-                    copy
-                  </button>
-                  <Show when={canManageTheme(theme, isAdmin())}>
+                    <Show when={activeThemeId() === theme.id}>
+                      <span
+                        class="theme-card-active-marker"
+                        data-testid={`theme-active-${theme.id}`}
+                      >
+                        active
+                      </span>
+                    </Show>
+                  </div>
+                </button>
+                <Show when={selectedId() === theme.id}>
+                  <div class="theme-card-actions" data-testid={`theme-actions-${theme.id}`}>
                     <button
                       type="button"
                       class="theme-action"
-                      data-testid={`theme-edit-${theme.id}`}
+                      data-testid={`theme-copy-${theme.id}`}
                       disabled={busyId() !== null}
-                      onClick={() => openThemeEditor({ mode: "edit", theme })}
+                      onClick={() => void copy(theme)}
                     >
-                      edit
+                      copy
                     </button>
-                    <Switch>
-                      <Match when={theme.published}>
-                        <button
-                          type="button"
-                          class="theme-action"
-                          data-testid={`theme-unpublish-${theme.id}`}
-                          disabled={busyId() !== null}
-                          onClick={() => void unpublish(theme)}
-                        >
-                          unpublish
-                        </button>
-                      </Match>
-                      <Match when={!theme.published}>
-                        <button
-                          type="button"
-                          class="theme-action"
-                          data-testid={`theme-publish-${theme.id}`}
-                          disabled={busyId() !== null}
-                          onClick={() => void publish(theme)}
-                        >
-                          publish
-                        </button>
-                      </Match>
-                    </Switch>
-                    <button
-                      type="button"
-                      class="theme-action theme-action-danger"
-                      data-testid={`theme-delete-${theme.id}`}
-                      disabled={busyId() !== null}
-                      onClick={() => void remove(theme)}
-                    >
-                      delete
-                    </button>
-                  </Show>
-                </div>
+                    <Show when={canManageTheme(theme, isAdmin())}>
+                      <button
+                        type="button"
+                        class="theme-action"
+                        data-testid={`theme-edit-${theme.id}`}
+                        disabled={busyId() !== null}
+                        onClick={() => openThemeEditor({ mode: "edit", theme })}
+                      >
+                        edit
+                      </button>
+                      <Switch>
+                        <Match when={theme.published}>
+                          <button
+                            type="button"
+                            class="theme-action"
+                            data-testid={`theme-unpublish-${theme.id}`}
+                            disabled={busyId() !== null}
+                            onClick={() => void unpublish(theme)}
+                          >
+                            unpublish
+                          </button>
+                        </Match>
+                        <Match when={!theme.published}>
+                          <button
+                            type="button"
+                            class="theme-action"
+                            data-testid={`theme-publish-${theme.id}`}
+                            disabled={busyId() !== null}
+                            onClick={() => void publish(theme)}
+                          >
+                            publish
+                          </button>
+                        </Match>
+                      </Switch>
+                      <button
+                        type="button"
+                        class="theme-action theme-action-danger"
+                        data-testid={`theme-delete-${theme.id}`}
+                        disabled={busyId() !== null}
+                        onClick={() => void remove(theme)}
+                      >
+                        delete
+                      </button>
+                    </Show>
+                  </div>
+                </Show>
               </li>
             )}
           </For>

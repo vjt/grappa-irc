@@ -174,10 +174,11 @@ After that, promote/demote everyone else from the **Admin → Users** tab. (To p
 
 ### Themes
 
-irssi-style theming as a first-class feature (Settings → themes, or the 🎨 launcher in the mobile hamburger footer):
+irssi-style theming as a first-class feature (Settings → themes):
 
-- **Gallery** — browse the built-in curated schemes (solarized / gruvbox / nord / dracula / …, seeded by `mix grappa.seed_themes`) plus anything users publish. Each card is a derived palette-swatch preview (no stored screenshot). **Apply** activates a theme; the active theme is **server-owned** (`PUT /me/theme`) so it follows you across devices.
+- **Gallery** — browse the built-in curated schemes (solarized / gruvbox / nord / dracula / …, seeded by `mix grappa.seed_themes`) plus anything users **and visitors** publish. Each card is a derived palette-swatch preview (no stored screenshot) and shows how many people currently have it **in use**. **Tap a card** to apply it live and reveal its actions (copy / edit / publish / delete); the active theme is **server-owned** (`PUT /me/theme`) so it follows you across devices.
 - **Editor** — a covering overlay with **live preview**: color pickers per token (base / mode / 16-slot nick palette), a curated font family, and a background image. Every change re-paints the app in real time; **Save** persists your own copy (create or edit), Cancel restores the pre-open theme. Editing always saves a copy — no copy-on-write, no shared state.
+- **Everyone's a producer** — logged-in users AND anonymous visitors can create / copy / edit / publish / keep their own themes (visitors are capped at 50 owned themes; a visitor's published themes re-home to the house account when the visitor is reaped, so gallery contributions survive). A visitor-published theme is credited to a fixed **guest** label — never a nick.
 - **Share** — **publish** your copy into the gallery for others to pick, or share a published entry by id (`/theme/<id>`); the recipient copies it into their own account. **Delete** your copies freely (everyone else already has their own). Owners edit/delete their own; admins moderate any entry.
 - **Fonts** — a curated, **self-hosted** monospace set (JetBrains Mono, Fira Code, Source Code Pro, IBM Plex Mono, Cascadia Code, Hack). No runtime CDN/Google-Fonts fetch — the woff2 are served from our own origin (a remote webfont would be a per-render tracking beacon).
 - **Background** — pick from a curated set of **built-in backgrounds** (system-owned, read-only, served as long-cached static assets) or upload your own image (or fetch by URL; re-encoded + re-hosted server-side — raster only, no SVG, EXIF stripped, SSRF-guarded). Either way it paints as a wallpaper behind the message list at a user-configurable opacity.

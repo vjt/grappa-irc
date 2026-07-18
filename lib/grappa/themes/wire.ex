@@ -9,21 +9,40 @@ defmodule Grappa.Themes.Wire do
   conversion so controllers stay thin and no raw `%Theme{}` struct crosses the
   wire (its storage shape ≠ its wire shape).
 
-  The wire adds two viewer-derived, non-stored fields:
+  The wire adds three derived, non-stored fields:
 
     * `built_in` — the theme is owned by the reserved system user (a curated
-      seed, read-only for non-admins).
+      seed, read-only for non-admins). A visitor-owned theme is never built_in.
     * `mine` — the requesting subject owns this theme (drives the cic
-      edit/delete affordances).
+      edit/delete affordances). True for the owning user OR the owning visitor.
+    * `in_use` — how many subjects currently have this theme active (#299 item
+      9 — the real usage metric, distinct from the copy-only `apply_count`).
+      The context reader populates it on the `%Theme{}`; 0 if unpopulated.
 
-  `to_wire/2` requires the `:owner` association preloaded (every context reader
-  preloads it); `author` and `built_in` both derive from it.
+  `author` is the owning user's name for a user-owned theme, and a FIXED
+  `"guest"` label for a visitor-owned theme — #299 author model B: a visitor's
+  nick is NEVER surfaced (no impersonation surface, no anchor-nick).
+
+  `in_use` (#299 item 9) is a derived, CONTEXT-SUPPLIED count — how many
+  subjects currently have this theme active — passed in by the caller rather
+  than stored on the struct (a virtual field populated post-query over a list
+  doesn't type cleanly, and the count is `Grappa.UserSettings`' domain). List
+  callers fetch `Themes.active_theme_counts/0` once; single callers use
+  `Themes.count_theme_usage/1`.
+
+  `to_wire/3` requires the `:user` association preloaded (every context reader
+  preloads it). For a visitor-owned theme `:user` is `nil` (XOR guarantees
+  `visitor_id` is set); `author`/`built_in` derive from that.
   """
 
   alias Grappa.Accounts.User
   alias Grappa.Themes
   alias Grappa.Themes.Theme
   alias Grappa.Visitors.Visitor
+
+  # #299 author model B — the fixed attribution label for a visitor-owned
+  # theme. A closed constant, never a nick.
+  @guest_author "guest"
 
   # The rich viewer subject (as carried in `conn.assigns.current_subject`) is
   # inlined into `to_wire/2`'s spec rather than exposed as a public `@type` — a
@@ -38,31 +57,57 @@ defmodule Grappa.Themes.Wire do
           built_in: boolean(),
           published: boolean(),
           apply_count: integer(),
+          in_use: non_neg_integer(),
           mine: boolean(),
           payload: map(),
           inserted_at: String.t()
         }
 
+  @doc "The fixed author label for a visitor-owned theme (author model B)."
+  @spec guest_author() :: String.t()
+  def guest_author, do: @guest_author
+
   @doc """
-  Render one `%Theme{}` (owner preloaded) to the wire shape, from `viewer`'s
-  perspective (drives the derived `mine` flag).
+  Render one `%Theme{}` (`:user` preloaded) to the wire shape, from `viewer`'s
+  perspective (drives the derived `mine` flag), with the caller-supplied
+  `in_use` active-usage count (#299 item 9).
   """
-  @spec to_wire(Theme.t(), {:user, User.t()} | {:visitor, Visitor.t()} | nil) :: t()
-  def to_wire(%Theme{owner: %User{} = owner} = theme, viewer) do
+  @spec to_wire(Theme.t(), {:user, User.t()} | {:visitor, Visitor.t()} | nil, non_neg_integer()) ::
+          t()
+  def to_wire(%Theme{} = theme, viewer, in_use) when is_integer(in_use) do
+    {author, built_in} = attribution(theme)
+
     %{
       id: theme.id,
       name: theme.name,
-      author: owner.name,
-      built_in: owner.name == Themes.system_user_name(),
+      author: author,
+      built_in: built_in,
       published: theme.published,
       apply_count: theme.apply_count,
+      in_use: in_use,
       mine: mine?(theme, viewer),
       payload: theme.payload,
       inserted_at: DateTime.to_iso8601(theme.inserted_at)
     }
   end
 
-  # A theme is `mine` only for the user who owns it — visitors own nothing.
-  defp mine?(%Theme{owner_id: owner_id}, {:user, %User{id: owner_id}}), do: true
+  # User-owned: the user's name; built_in iff the system user. Visitor-owned
+  # (`:user` is nil — XOR guarantees `visitor_id` set): the fixed guest label,
+  # never built_in, NEVER the visitor's nick (author model B).
+  defp attribution(%Theme{user: %User{} = user}),
+    do: {user.name, user.name == Themes.system_user_name()}
+
+  defp attribution(%Theme{user: nil}), do: {@guest_author, false}
+
+  # A theme is `mine` for the user OR visitor whose subject FK it carries. The
+  # `is_binary` guard prevents a nil FK (the other subject branch) from
+  # unifying with a nil viewer id in the degenerate case.
+  defp mine?(%Theme{user_id: user_id}, {:user, %User{id: user_id}}) when is_binary(user_id),
+    do: true
+
+  defp mine?(%Theme{visitor_id: visitor_id}, {:visitor, %Visitor{id: visitor_id}})
+       when is_binary(visitor_id),
+       do: true
+
   defp mine?(%Theme{}, _), do: false
 end

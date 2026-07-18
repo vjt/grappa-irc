@@ -10,11 +10,20 @@ defmodule Grappa.VisitorsTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, Networks, Visitors}
+  alias Grappa.{Accounts, Networks, Themes, Visitors}
   alias Grappa.Accounts.Session
   alias Grappa.Networks.Credentials
   alias Grappa.Session.Backoff
+  alias Grappa.Themes.{Theme, TokenModel}
   alias Grappa.Visitors.Visitor
+
+  defp valid_theme_payload do
+    %{
+      "colors" => Map.new(TokenModel.color_keys(), fn k -> {k, "#123456"} end),
+      "font_family" => "mono-default",
+      "background" => %{"image_id" => nil, "opacity" => 0.3}
+    }
+  end
 
   @network "azzurra"
   @ttl_anon 48 * 3600
@@ -395,6 +404,22 @@ defmodule Grappa.VisitorsTest do
       assert {:error, :not_found} = Visitors.delete(Ecto.UUID.generate())
     end
 
+    test "re-homes the visitor's PUBLISHED themes to system, CASCADE-kills private (#299)" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-themes", @network, "1.2.3.4")
+      {:ok, pub} = Themes.create_theme({:visitor, v}, %{name: "Pub", payload: valid_theme_payload()})
+      {:ok, _} = Themes.publish_theme({:visitor, v}, pub.id)
+      {:ok, priv} = Themes.create_theme({:visitor, v}, %{name: "Priv", payload: valid_theme_payload()})
+
+      assert :ok = Visitors.delete(v.id)
+
+      # Published theme survives, re-homed to the system user.
+      survivor = Repo.get(Theme, pub.id)
+      assert survivor.user_id == Themes.system_user().id
+      assert survivor.visitor_id == nil
+      # Private theme died with the visitor via the visitor_id CASCADE.
+      assert is_nil(Repo.get(Theme, priv.id))
+    end
+
     test "evicts the subject's Backoff entries" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt-bo", @network, "1.2.3.4")
       :ok = Backoff.record_failure({:visitor, v.id}, 1)
@@ -508,6 +533,20 @@ defmodule Grappa.VisitorsTest do
 
       assert %Visitor{} = Repo.get(Visitor, v.id)
       assert %Session{} = Repo.get(Session, session.id)
+    end
+
+    test "anon purge re-homes PUBLISHED themes to system, CASCADE-kills private (#299)" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-purge-themes", @network, "1.2.3.4")
+      {:ok, pub} = Themes.create_theme({:visitor, v}, %{name: "Pub", payload: valid_theme_payload()})
+      {:ok, _} = Themes.publish_theme({:visitor, v}, pub.id)
+      {:ok, priv} = Themes.create_theme({:visitor, v}, %{name: "Priv", payload: valid_theme_payload()})
+
+      assert :ok = Visitors.purge_if_anon(v.id)
+
+      survivor = Repo.get(Theme, pub.id)
+      assert survivor.user_id == Themes.system_user().id
+      assert survivor.visitor_id == nil
+      assert is_nil(Repo.get(Theme, priv.id))
     end
 
     test "anon delete evicts the subject's Backoff entries" do

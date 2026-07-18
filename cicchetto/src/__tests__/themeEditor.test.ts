@@ -79,6 +79,7 @@ function theme(over: Partial<ThemesWireT> = {}): ThemesWireT {
     built_in: false,
     published: false,
     apply_count: 0,
+    in_use: 0,
     mine: true,
     payload: payload() as unknown as Record<string, unknown>,
     inserted_at: "2026-07-17T00:00:00Z",

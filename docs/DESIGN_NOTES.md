@@ -24550,3 +24550,108 @@ for the mechanism to stay honest — the appended hash covers unbumped rebuilds.
 _Deploy: **`--cic` only** (cic bundle + the server-side wire read). **HELD** —
 batched into the next cic bundle ship; NOT shipped solo (the #294 4am COLD
 batch is separate)._
+
+## 2026-07-18 — #299 (post-ship, themes): visitor producers + real usage count + tap-card UI
+
+Follow-ups on the freshly-shipped themes gallery (#75/#291), folded into #299
+and promoted to a **COLD** epic because item 8 reshapes a table. Items 1/2/3/6
+landed earlier this session (owned-in-gallery, admin un-stranding, legacy
+selector drop, footer launcher removal); items 8/9/7 below.
+
+### Item 8 — visitors are first-class theme producers (XOR-FK promotion)
+
+The v1 gallery let only logged-in USERS own themes; a visitor could browse but
+`create_theme`/`copy_theme` 403'd. vjt's call: visitors are producers too
+(copy / edit / publish / keep), same as every other subject-scoped resource
+post-#211. So `themes` joins the XOR-FK family.
+
+**Storage.** `20260718120000_xor_fk_themes.exs` — the table-recreate dance
+(sqlite can't ALTER nullability or ADD a CHECK), mirroring
+`20260515005117_xor_fk_user_settings`: `owner_id` → nullable `user_id`, add
+`visitor_id` (ON DELETE CASCADE), the `themes_subject_xor` CHECK, and two
+partial unique indexes (`(user_id,name)` / `(visitor_id,name)`) replacing the
+single composite. **Critical deviation from the network_credentials recreate:
+the INSERT carries `id` VERBATIM.** Theme ids are POINTER TARGETS
+(`user_settings.data.active_theme_id` + share-links), so minting fresh
+AUTOINCREMENT ids would dangle every active-theme pointer. Schema + context +
+wire renamed `owner_id` → `user_id` throughout; writes route through
+`Subject.put_subject_id` (the XOR-table invariant); `seed_builtins`' upsert
+target became the partial-index `:unsafe_fragment "(user_id, name) WHERE
+user_id IS NOT NULL"`. Shipped as a behavior-preserving refactor commit
+(visitors still forbidden), then the feature commit on top — clean bisect.
+
+**Guards.** Daily quota applies to BOTH subjects (~5/day burst bound). A
+**50-total owned-theme cap for VISITORS only** (users unchanged, no lifetime
+cap) — a pure count checked BEFORE the recording quota so a capped visitor
+never burns a daily slot. New `:theme_cap_reached` → 429 with a distinct wire
+string (cic renders a cap-specific hint vs the daily "try tomorrow").
+
+**Author model B (vjt-locked).** A visitor-owned theme renders `author:
+"guest"` on the wire — a FIXED label, NEVER a nick. No `visitorAnchorNick`, no
+impersonation surface. `Grappa.Themes.Wire.guest_author/0` is the single
+source; `built_in` is always false for a visitor-owned theme. Considered and
+rejected: attributing to the visitor's current nick (impersonation risk + a
+reaped visitor's nick is meaningless).
+
+**Reaping re-home (the one non-CASCADE dependent).** A reaped/deleted
+visitor's PUBLISHED themes must survive as gallery contributions; private ones
+die with the row. `Themes.rehome_visitor_published_to_system/1` moves published
+rows to the system user (`user_id=system, visitor_id=NULL`, de-duping the name
+against the system user's existing themes) BEFORE the delete, so they shed
+`visitor_id` and escape the `visitor_id ON DELETE CASCADE`; private rows keep
+`visitor_id` and CASCADE. Wired into a shared `Visitors.destroy_visitor/1`
+choke point — BOTH `delete/1` (reap + operator + AccountDeletion visitor path)
+AND `purge_if_anon/1` (anon co-terminus logout). Re-home runs SEQUENTIALLY
+before the delete, NOT inside a `Repo.transaction`: re-home's leading SELECT
+would start a deferred (read) sqlite txn that upgrades to a write on the
+DELETE, and that read→write upgrade throws `SQLITE_BUSY` under concurrent
+writers (integration CI hit exactly this — "Database busy" on `DELETE FROM
+visitors`). Sequential single-statement writes each take the write lock
+immediately (busy_timeout waits, never upgrade-fails). Atomicity isn't
+needed — re-home is idempotent (`visitor_id = ? AND published`; re-homed rows
+carry `visitor_id = NULL`), so a crash between the two steps self-heals on the
+next reap/retry. `Grappa.Visitors` gained a `Grappa.Themes` boundary dep
+(one-way; Themes only dirty-xrefs the Visitor struct). A voluntarily
+self-deleted USER's themes
+(published + private) all CASCADE — voluntary deletion is a full wipe; only
+involuntary visitor reaping preserves public contributions. The distinction is
+deliberate.
+
+### Item 9 — "0 applied" was a lie; show real in-use count
+
+`apply_count` only bumps on COPY, so a theme many subjects set ACTIVE (a plain
+set-active never touched the counter) still read `0 applied`. Added a derived
+`in_use` = how many subjects currently have the theme active, alongside the
+retained `apply_count` (copy popularity + gallery sort). `active_theme_id` is a
+JSON key in `user_settings.data`, so the count is a `json_extract` predicate:
+`UserSettings.count_active_theme_users/1` (single) + `active_theme_counts/0`
+(one grouped pass → `%{theme_id => count}`, the batched form the list readers
+use to avoid an N+1). Counts BOTH users and visitors. `in_use` is a DERIVED
+wire field (like `built_in`/`mine`), passed into `Themes.Wire.to_wire/3` as an
+explicit arg — NOT stored on the struct. A virtual field populated post-query
+over a list doesn't type cleanly (Dialyzer `missing_range` — the `Enum.map` +
+struct-update over `Repo.all` widens the element type), and the count is
+`UserSettings`' domain anyway (a correlated subquery from `Themes` would leak
+the `user_settings` table across the boundary). List readers fetch the batched
+`Themes.active_theme_counts/0` once and index per theme; single reads use
+`Themes.count_theme_usage/1`. cic renders "N in use" instead of "N applied".
+
+### Item 7 — tap-to-apply cards with progressive disclosure
+
+The card is now ONE whole tap target: tapping it applies the theme live AND
+reveals its action row (copy + owner/admin edit/publish/delete). The standalone
+"apply" button is gone; only the selected card's actions render (declutters the
+list, mobile-first). Structure: a `<button class="theme-card-select">` holds
+the swatch + meta; the action row is a SIBLING `<Show>`, never nested inside the
+button (no nested-interactive elements, no `stopPropagation`). Tap targets are
+ABSOLUTE 44px (Apple HIG) on both `.theme-card-select` and `.theme-action` —
+never rem (html root font-size is 14px). A fresh copy auto-selects so its owned
+card (now with manage actions) is revealed on reload. New
+`issue299-theme-cards` e2e proves the tap-reveals-one-≥44px-row interaction
+(@webkit) AND a minted anon visitor copying a built-in and getting edit/delete
+on the owned copy — the item-8 producer path end to end through the real UI.
+
+_Deploy: **COLD** (new `themes` table reshape migration) + **`--cic`** bundle.
+**HELD** — batched into the next COLD window, NOT shipped solo. `mix
+grappa.seed_themes` is idempotent and already-run; no re-seed needed (the
+migration carries the existing built-in rows forward with their ids)._

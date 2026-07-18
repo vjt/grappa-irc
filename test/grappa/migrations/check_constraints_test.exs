@@ -159,6 +159,50 @@ defmodule Grappa.Migrations.CheckConstraintsTest do
     end
   end
 
+  describe "themes.subject_xor CHECK (#299)" do
+    setup do
+      ts = "2026-07-18T00:00:00Z"
+
+      {:ok, user} =
+        Accounts.create_user(%{name: "u-#{System.unique_integer([:positive])}", password: "correct horse battery"})
+
+      {:ok, network} = Networks.find_or_create_network(%{slug: "n-#{System.unique_integer([:positive])}"})
+
+      {:ok, visitor} =
+        %{nick: "guest", network_slug: network.slug, expires_at: DateTime.add(DateTime.utc_now(), 48, :hour)}
+        |> Grappa.Visitors.Visitor.create_changeset()
+        |> Repo.insert()
+
+      %{ts: ts, user: user, visitor: visitor}
+    end
+
+    test "rejects a both-null subject raw insert", %{ts: ts} do
+      assert_raise Exqlite.Error, ~r/themes_subject_xor/, fn ->
+        Repo.query!(
+          "INSERT INTO themes (user_id, visitor_id, name, payload, published, apply_count, inserted_at, updated_at) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?)",
+          ["night", "{}", 0, 0, ts, ts]
+        )
+      end
+    end
+
+    test "rejects a both-set subject raw insert", %{ts: ts, user: user, visitor: visitor} do
+      assert_raise Exqlite.Error, ~r/themes_subject_xor/, fn ->
+        Repo.query!(
+          "INSERT INTO themes (user_id, visitor_id, name, payload, published, apply_count, inserted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          [user.id, visitor.id, "night", "{}", 0, 0, ts, ts]
+        )
+      end
+    end
+
+    test "accepts a visitor-only subject raw insert", %{ts: ts, visitor: visitor} do
+      assert {:ok, _} =
+               Repo.query(
+                 "INSERT INTO themes (user_id, visitor_id, name, payload, published, apply_count, inserted_at, updated_at) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)",
+                 [visitor.id, "night", "{}", 0, 0, ts, ts]
+               )
+    end
+  end
+
   describe "messages.kind enum" do
     test "kind_enum rejects an unknown atom string" do
       ts = "2026-05-04T00:00:00Z"
