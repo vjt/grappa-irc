@@ -10,13 +10,26 @@ defmodule Grappa.Themes do
   storage, no reference counter that gates lifecycle — deleting a copy can never
   affect anyone else.
 
+  ## Subjects (#299 item 8 — visitors are first-class producers)
+
+  A theme belongs to EITHER a user OR a visitor (`user_id` XOR `visitor_id`,
+  the same shape as `user_settings`). Visitors may create / copy / edit /
+  publish / keep their own themes exactly like users — with two guards: the
+  shared daily quota AND a 50-total owned-theme cap (users have no lifetime
+  cap). A reaped visitor's PUBLISHED themes re-home to the system user
+  (`rehome_visitor_published_to_system/1`) so gallery contributions survive;
+  private ones die with the row. A visitor-owned theme is attributed to a
+  FIXED "guest" label on the wire — NEVER a nick (author model B: no
+  impersonation surface).
+
   ## Authz (owner-or-admin, in the context — one code path, every door)
 
     * `admin` may edit/delete ANY theme (moderation).
-    * `owner` may edit/delete their own.
+    * `owner` (the user OR visitor whose subject FK the theme carries) may
+      edit/delete/publish their own.
     * anyone may browse the gallery + copy.
     * built-ins are read-only: they are owned by the reserved `"system"` user,
-      and no logged-in non-admin can be that owner, so the generic
+      and no logged-in non-admin/non-owner can be that owner, so the generic
       owner-or-admin check refuses them without a special case.
 
   The authz-bearing functions take the RICH subject
@@ -58,6 +71,12 @@ defmodule Grappa.Themes do
   @daily_quota Application.compile_env(:grappa, [:themes, :daily_quota], 5)
   @quota_bucket :theme_create
 
+  # #299 item 8 — total owned-theme cap for VISITORS only (users are
+  # unchanged: they keep the daily quota, no lifetime cap). The daily quota
+  # bounds burst; this bounds the lifetime storage a single anon identity can
+  # accumulate. Mirror of the per-IP session cap discipline.
+  @visitor_theme_cap 50
+
   @typedoc "Rich subject as carried in `conn.assigns.current_subject`."
   @type subject :: {:user, User.t()} | {:visitor, Visitor.t()}
 
@@ -87,17 +106,18 @@ defmodule Grappa.Themes do
     |> Repo.all()
   end
 
-  @doc "The caller's own theme library. Visitors own nothing."
+  @doc "The caller's own theme library (users AND visitors, #299 item 8)."
   @spec list_owned(subject()) :: [Theme.t()]
-  def list_owned({:user, %User{id: user_id}}) do
+  def list_owned({:user, %User{id: user_id}}), do: owned_query({:user, user_id})
+  def list_owned({:visitor, %Visitor{id: visitor_id}}), do: owned_query({:visitor, visitor_id})
+
+  defp owned_query(bare_subject) do
     Theme
-    |> where([t], t.user_id == ^user_id)
+    |> Subject.subject_where(bare_subject)
     |> order_by([t], asc: t.name)
     |> preload(:user)
     |> Repo.all()
   end
-
-  def list_owned({:visitor, %Visitor{}}), do: []
 
   @doc """
   Unpublished, system-owned built-ins — visible ONLY to admins (#299). This is
@@ -131,25 +151,34 @@ defmodule Grappa.Themes do
   end
 
   @doc """
-  Save a new theme owned by the calling user (rate-limited, ~5/day). Visitors
-  cannot own themes.
+  Save a new theme owned by the caller (user OR visitor, #299 item 8).
+  Rate-limited (~5/day, both subjects); visitors additionally hit the 50-total
+  owned-theme cap.
   """
   @spec create_theme(subject(), map()) ::
-          {:ok, Theme.t()} | {:error, :rate_limited | :forbidden | Ecto.Changeset.t()}
-  def create_theme({:user, %User{} = user}, attrs) when is_map(attrs) do
-    changeset = Theme.changeset(%Theme{}, Subject.put_subject_id(attrs, {:user, user.id}))
+          {:ok, Theme.t()}
+          | {:error, :rate_limited | :theme_cap_reached | Ecto.Changeset.t()}
+  def create_theme({:user, %User{id: id}} = subject, attrs) when is_map(attrs),
+    do: do_create(subject, {:user, id}, attrs)
 
-    # Validate BEFORE consuming quota so a malformed request never burns a slot.
+  def create_theme({:visitor, %Visitor{id: id}} = subject, attrs) when is_map(attrs),
+    do: do_create(subject, {:visitor, id}, attrs)
+
+  defp do_create(subject, bare_subject, attrs) do
+    changeset = Theme.changeset(%Theme{}, Subject.put_subject_id(attrs, bare_subject))
+
+    # Validate BEFORE the cap/quota gates so a malformed request never burns a
+    # quota slot. Cap first (a pure count), quota last (it RECORDS on success)
+    # — hitting the cap must not consume a daily slot.
     if changeset.valid? do
-      with :ok <- check_quota(user) do
+      with :ok <- check_cap(subject),
+           :ok <- check_quota(subject) do
         Repo.insert(changeset)
       end
     else
       {:error, changeset}
     end
   end
-
-  def create_theme({:visitor, %Visitor{}}, _), do: {:error, :forbidden}
 
   @doc "Edit a theme (owner or admin)."
   @spec update_theme(subject(), integer(), map()) ::
@@ -183,19 +212,27 @@ defmodule Grappa.Themes do
 
   @doc """
   Copy a theme (any readable theme, by id) into the caller's account as a new
-  independent owned theme (rate-limited). Bumps the SOURCE's `apply_count` — the
-  "how many people applied it" usage metric. The copy carries no back-reference
-  to its source. Visitors cannot own copies.
+  independent owned theme (user OR visitor, #299 item 8; rate-limited, visitor
+  cap-gated). Bumps the SOURCE's `apply_count` — the copy-popularity metric.
+  The copy carries no back-reference to its source.
   """
   @spec copy_theme(subject(), integer()) ::
-          {:ok, Theme.t()} | {:error, :not_found | :forbidden | :rate_limited}
-  def copy_theme({:user, %User{} = user}, id) when is_integer(id) do
-    with {:ok, source} <- get_theme(id),
-         :ok <- check_quota(user) do
-      Repo.transaction(fn ->
-        name = available_name(user.id, source.name)
+          {:ok, Theme.t()}
+          | {:error, :not_found | :rate_limited | :theme_cap_reached}
+  def copy_theme({:user, %User{id: id}} = subject, theme_id) when is_integer(theme_id),
+    do: do_copy(subject, {:user, id}, theme_id)
 
-        attrs = Subject.put_subject_id(%{name: name, payload: source.payload}, {:user, user.id})
+  def copy_theme({:visitor, %Visitor{id: id}} = subject, theme_id) when is_integer(theme_id),
+    do: do_copy(subject, {:visitor, id}, theme_id)
+
+  defp do_copy(subject, bare_subject, theme_id) do
+    with {:ok, source} <- get_theme(theme_id),
+         :ok <- check_cap(subject),
+         :ok <- check_quota(subject) do
+      Repo.transaction(fn ->
+        name = available_name(bare_subject, source.name)
+
+        attrs = Subject.put_subject_id(%{name: name, payload: source.payload}, bare_subject)
 
         copy =
           %Theme{}
@@ -211,8 +248,6 @@ defmodule Grappa.Themes do
       end)
     end
   end
-
-  def copy_theme({:visitor, %Visitor{}}, _), do: {:error, :forbidden}
 
   @doc """
   Resolve the subject's active theme (server-persisted per-subject pointer,
@@ -292,6 +327,41 @@ defmodule Grappa.Themes do
     length(builtins)
   end
 
+  @doc """
+  Re-home a reaped visitor's PUBLISHED themes to the system user so their
+  gallery contributions survive the visitor's deletion (#299). The visitor's
+  PRIVATE themes are left untouched — they die with the row via the
+  `visitor_id ON DELETE CASCADE`. Called from `Grappa.Visitors` at the single
+  hard-delete choke point BEFORE `Repo.delete(visitor)` (so re-homed rows no
+  longer carry `visitor_id` and escape the CASCADE).
+
+  Author model B (vjt-locked): a re-homed theme becomes system-owned, so the
+  wire renders it as a built-in — the visitor's nick is NEVER surfaced (no
+  anchor-nick, no impersonation). Each re-homed name is de-duplicated against
+  the system user's existing names (a visitor may have published a theme named
+  identically to a built-in), reusing the same suffixing as copy. Returns the
+  number of themes re-homed.
+  """
+  @spec rehome_visitor_published_to_system(Ecto.UUID.t()) :: non_neg_integer()
+  def rehome_visitor_published_to_system(visitor_id) when is_binary(visitor_id) do
+    system_id = system_user().id
+
+    themes =
+      Theme
+      |> where([t], t.visitor_id == ^visitor_id and t.published == true)
+      |> Repo.all()
+
+    Enum.each(themes, fn theme ->
+      name = available_name({:user, system_id}, theme.name)
+
+      theme
+      |> Ecto.Changeset.change(user_id: system_id, visitor_id: nil, name: name)
+      |> Repo.update!()
+    end)
+
+    length(themes)
+  end
+
   ## Internals
 
   defp set_published(subject, id, value) when is_integer(id) and is_boolean(value) do
@@ -301,22 +371,41 @@ defmodule Grappa.Themes do
     end
   end
 
-  # Admin: any. Owner: own. Everyone else (incl. visitors, non-owners, and every
-  # non-admin against a system-owned built-in): forbidden.
+  # Admin: any. Owner: own (user OR visitor, #299 item 8). Everyone else
+  # (non-owners, and every non-admin against a system-owned built-in): forbidden.
   defp authorize({:user, %User{is_admin: true}}, %Theme{}), do: :ok
   defp authorize({:user, %User{id: id}}, %Theme{user_id: id}), do: :ok
+  defp authorize({:visitor, %Visitor{id: id}}, %Theme{visitor_id: id}), do: :ok
   defp authorize(_, %Theme{}), do: {:error, :forbidden}
 
-  defp check_quota(%User{id: user_id}) do
-    DailyQuota.check_and_record(@quota_bucket, {:user, user_id}, @daily_quota)
+  # Daily creation quota — applies to BOTH subjects (~5/day burst bound).
+  defp check_quota({:user, %User{id: id}}),
+    do: DailyQuota.check_and_record(@quota_bucket, {:user, id}, @daily_quota)
+
+  defp check_quota({:visitor, %Visitor{id: id}}),
+    do: DailyQuota.check_and_record(@quota_bucket, {:visitor, id}, @daily_quota)
+
+  # Total owned-theme cap — VISITORS only (users are unchanged: no lifetime
+  # cap). Pure count, no side effect — runs before the quota so a capped
+  # visitor never burns a daily slot.
+  defp check_cap({:user, %User{}}), do: :ok
+
+  defp check_cap({:visitor, %Visitor{id: id}}) do
+    count =
+      Theme
+      |> where([t], t.visitor_id == ^id)
+      |> Repo.aggregate(:count, :id)
+
+    if count >= @visitor_theme_cap, do: {:error, :theme_cap_reached}, else: :ok
   end
 
   # Find a free name in the caller's library: the base, else "base (2)", …
-  # (partial unique index is (user_id, name); dedup avoids clashing on re-copy).
-  defp available_name(user_id, base) do
+  # (partial unique index is (subject_id, name); dedup avoids clashing on
+  # re-copy / re-home). Takes the bare subject tuple.
+  defp available_name(bare_subject, base) do
     taken =
       Theme
-      |> where([t], t.user_id == ^user_id)
+      |> Subject.subject_where(bare_subject)
       |> select([t], t.name)
       |> Repo.all()
       |> MapSet.new()

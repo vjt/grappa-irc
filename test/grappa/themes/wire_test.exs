@@ -78,4 +78,27 @@ defmodule Grappa.Themes.WireTest do
       assert Wire.to_wire(theme, visitor_subject()).mine == false
     end
   end
+
+  describe "to_wire/2 — visitor-owned (#299 author model B)" do
+    test "author is the fixed guest label (never a nick) and built_in is false" do
+      visitor = visitor_fixture()
+      {:ok, created} = Themes.create_theme({:visitor, visitor}, %{name: "Guest", payload: valid_payload()})
+      {:ok, theme} = Themes.get_theme(created.id)
+
+      wire = Wire.to_wire(theme, {:visitor, visitor})
+      assert wire.author == Wire.guest_author()
+      assert wire.built_in == false
+    end
+
+    test "mine is true for the owning visitor, false for other subjects" do
+      visitor = visitor_fixture()
+      other = visitor_fixture()
+      {:ok, created} = Themes.create_theme({:visitor, visitor}, %{name: "G", payload: valid_payload()})
+      {:ok, theme} = Themes.get_theme(created.id)
+
+      assert Wire.to_wire(theme, {:visitor, visitor}).mine == true
+      assert Wire.to_wire(theme, {:visitor, other}).mine == false
+      assert Wire.to_wire(theme, {:user, user_fixture()}).mine == false
+    end
+  end
 end

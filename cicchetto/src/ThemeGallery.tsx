@@ -62,8 +62,8 @@ const ThemeGallery: Component<Props> = (props) => {
   // library (their unpublished copies/creates/saves, which never appear in the
   // published gallery — the root cause of "copy/create/save don't show"). Both
   // are fetched and merged, de-duplicated by id (gallery order leads). Owned
-  // fetch is a user/visitor's own themes; visitors get an empty list until the
-  // #299 visitor-ownership work lands.
+  // fetch is the caller's own themes — for BOTH users and visitors: visitors
+  // are first-class producers (create/copy/edit/publish their own, #299 item 8).
   const load = async (): Promise<void> => {
     const t = token();
     if (t === null) return;

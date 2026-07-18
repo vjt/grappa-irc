@@ -74,7 +74,7 @@ defmodule GrappaWeb.ThemesController do
 
   @doc false
   @spec create(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :rate_limited | :forbidden | Ecto.Changeset.t()}
+          Plug.Conn.t() | {:error, :rate_limited | :theme_cap_reached | Ecto.Changeset.t()}
   def create(conn, params) do
     viewer = conn.assigns.current_subject
 
@@ -116,7 +116,7 @@ defmodule GrappaWeb.ThemesController do
 
   @doc false
   @spec copy(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :not_found | :forbidden | :rate_limited}
+          Plug.Conn.t() | {:error, :not_found | :rate_limited | :theme_cap_reached}
   def copy(conn, %{"id" => id}) do
     viewer = conn.assigns.current_subject
 

@@ -39,7 +39,11 @@ defmodule Grappa.Visitors.Visitor do
   - Reaped by `Grappa.Visitors.Reaper` when
     `expires_at IS NOT NULL AND expires_at <= now() AND NOT registered`.
     CASCADE wipes related rows in `network_credentials`, `messages`,
-    `accounts_sessions`.
+    `accounts_sessions`, and the visitor's PRIVATE `themes`. A reaped
+    visitor's PUBLISHED themes are the one exception: they re-home to the
+    system user (`Grappa.Themes.rehome_visitor_published_to_system/1`, run
+    inside `Grappa.Visitors.delete/1`'s txn BEFORE the delete) so gallery
+    contributions survive — #299.
   """
 
   use Ecto.Schema

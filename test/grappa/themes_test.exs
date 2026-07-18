@@ -14,7 +14,20 @@ defmodule Grappa.ThemesTest do
     }
   end
 
-  defp visitor_subject, do: {:visitor, %Visitor{id: Ecto.UUID.generate()}}
+  # A REAL persisted visitor — visitor-owned themes carry a visitor_id FK, so
+  # an unpersisted %Visitor{} would trip the FK on insert.
+  defp visitor_subject, do: {:visitor, visitor_fixture()}
+
+  # Seed N themes owned by `visitor` directly (bypasses the create-path quota)
+  # so the total-cap boundary can be exercised without the daily quota firing.
+  defp seed_visitor_themes(%Visitor{id: visitor_id}, n) do
+    for i <- 1..n do
+      {:ok, _} =
+        %Theme{}
+        |> Theme.changeset(%{name: "seed-#{i}", visitor_id: visitor_id, payload: valid_payload()})
+        |> Repo.insert()
+    end
+  end
 
   # A system-owned, published built-in inserted directly (bypasses the
   # user-facing create path, mirroring the seed task).
@@ -43,9 +56,23 @@ defmodule Grappa.ThemesTest do
       assert theme.apply_count == 0
     end
 
-    test "a visitor is forbidden" do
-      assert {:error, :forbidden} =
-               Themes.create_theme(visitor_subject(), %{name: "x", payload: valid_payload()})
+    test "a visitor persists an owned, unpublished theme (#299 item 8)" do
+      visitor = visitor_fixture()
+
+      assert {:ok, theme} =
+               Themes.create_theme({:visitor, visitor}, %{name: "Guest", payload: valid_payload()})
+
+      assert theme.visitor_id == visitor.id
+      assert theme.user_id == nil
+      refute theme.published
+    end
+
+    test "a visitor is capped at 50 total owned themes (#299 item 8)" do
+      visitor = visitor_fixture()
+      seed_visitor_themes(visitor, 50)
+
+      assert {:error, :theme_cap_reached} =
+               Themes.create_theme({:visitor, visitor}, %{name: "51", payload: valid_payload()})
     end
 
     test "an invalid payload returns a changeset error and does NOT consume quota" do
@@ -178,10 +205,26 @@ defmodule Grappa.ThemesTest do
       assert first.name != second.name
     end
 
-    test "a visitor cannot copy" do
+    test "a visitor copies a gallery theme into their own library (#299 item 8)" do
       owner = user_fixture()
+      visitor = visitor_fixture()
       {:ok, src} = Themes.create_theme({:user, owner}, %{name: "Src", payload: valid_payload()})
-      assert {:error, :forbidden} = Themes.copy_theme(visitor_subject(), src.id)
+
+      assert {:ok, copy} = Themes.copy_theme({:visitor, visitor}, src.id)
+      assert copy.visitor_id == visitor.id
+      assert copy.user_id == nil
+
+      assert {:ok, reloaded} = Themes.get_theme(src.id)
+      assert reloaded.apply_count == 1
+    end
+
+    test "a visitor copy is capped at 50 total owned themes (#299 item 8)" do
+      owner = user_fixture()
+      visitor = visitor_fixture()
+      {:ok, src} = Themes.create_theme({:user, owner}, %{name: "Src", payload: valid_payload()})
+      seed_visitor_themes(visitor, 50)
+
+      assert {:error, :theme_cap_reached} = Themes.copy_theme({:visitor, visitor}, src.id)
     end
 
     test "copying a missing theme is not_found" do
@@ -200,8 +243,89 @@ defmodule Grappa.ThemesTest do
       assert ids == [mine.id]
     end
 
-    test "a visitor owns nothing" do
-      assert Themes.list_owned(visitor_subject()) == []
+    test "a visitor's owned list returns only their themes (#299 item 8)" do
+      visitor = visitor_fixture()
+      other = user_fixture()
+      {:ok, mine} = Themes.create_theme({:visitor, visitor}, %{name: "Mine", payload: valid_payload()})
+      {:ok, _} = Themes.create_theme({:user, other}, %{name: "Theirs", payload: valid_payload()})
+
+      ids = Enum.map(Themes.list_owned({:visitor, visitor}), & &1.id)
+      assert ids == [mine.id]
+    end
+  end
+
+  describe "visitor authz (#299 item 8)" do
+    test "a visitor can edit their own theme" do
+      visitor = visitor_fixture()
+      {:ok, theme} = Themes.create_theme({:visitor, visitor}, %{name: "A", payload: valid_payload()})
+      assert {:ok, %{name: "B"}} = Themes.update_theme({:visitor, visitor}, theme.id, %{name: "B"})
+    end
+
+    test "a visitor can delete their own theme" do
+      visitor = visitor_fixture()
+      {:ok, theme} = Themes.create_theme({:visitor, visitor}, %{name: "A", payload: valid_payload()})
+      assert :ok = Themes.delete_theme({:visitor, visitor}, theme.id)
+      assert {:error, :not_found} = Themes.get_theme(theme.id)
+    end
+
+    test "a visitor can publish their own theme into the gallery" do
+      visitor = visitor_fixture()
+      {:ok, theme} = Themes.create_theme({:visitor, visitor}, %{name: "A", payload: valid_payload()})
+      assert {:ok, %{published: true}} = Themes.publish_theme({:visitor, visitor}, theme.id)
+      assert theme.id in Enum.map(Themes.list_gallery(), & &1.id)
+    end
+
+    test "a visitor cannot edit another visitor's theme" do
+      owner = visitor_fixture()
+      other = visitor_fixture()
+      {:ok, theme} = Themes.create_theme({:visitor, owner}, %{name: "A", payload: valid_payload()})
+      assert {:error, :forbidden} = Themes.update_theme({:visitor, other}, theme.id, %{name: "B"})
+    end
+
+    test "a visitor cannot edit a user's theme" do
+      owner = user_fixture()
+      visitor = visitor_fixture()
+      {:ok, theme} = Themes.create_theme({:user, owner}, %{name: "A", payload: valid_payload()})
+      assert {:error, :forbidden} = Themes.update_theme({:visitor, visitor}, theme.id, %{name: "B"})
+    end
+  end
+
+  describe "rehome_visitor_published_to_system/1 (#299 reaping)" do
+    test "re-homes a reaped visitor's PUBLISHED themes to the system user" do
+      visitor = visitor_fixture()
+      {:ok, pub} = Themes.create_theme({:visitor, visitor}, %{name: "Pub", payload: valid_payload()})
+      {:ok, _} = Themes.publish_theme({:visitor, visitor}, pub.id)
+      {:ok, priv} = Themes.create_theme({:visitor, visitor}, %{name: "Priv", payload: valid_payload()})
+
+      assert Themes.rehome_visitor_published_to_system(visitor.id) == 1
+
+      {:ok, rehomed} = Themes.get_theme(pub.id)
+      assert rehomed.user_id == Themes.system_user().id
+      assert rehomed.visitor_id == nil
+
+      # The private draft is untouched (still the visitor's) — it dies later
+      # via the visitor_id ON DELETE CASCADE, not here.
+      {:ok, still_priv} = Themes.get_theme(priv.id)
+      assert still_priv.visitor_id == visitor.id
+    end
+
+    test "renames on collision with an existing system theme name" do
+      visitor = visitor_fixture()
+      builtin = seed_builtin()
+      {:ok, clash} = Themes.create_theme({:visitor, visitor}, %{name: builtin.name, payload: valid_payload()})
+      {:ok, _} = Themes.publish_theme({:visitor, visitor}, clash.id)
+
+      assert Themes.rehome_visitor_published_to_system(visitor.id) == 1
+
+      {:ok, rehomed} = Themes.get_theme(clash.id)
+      assert rehomed.user_id == Themes.system_user().id
+      assert rehomed.name != builtin.name
+    end
+
+    test "returns 0 when the visitor published nothing" do
+      visitor = visitor_fixture()
+      {:ok, _} = Themes.create_theme({:visitor, visitor}, %{name: "Priv", payload: valid_payload()})
+      assert Themes.rehome_visitor_published_to_system(visitor.id) == 0
     end
   end
 
