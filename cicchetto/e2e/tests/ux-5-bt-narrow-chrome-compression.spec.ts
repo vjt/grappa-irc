@@ -120,6 +120,25 @@ test("@webkit ux-5-bt mobile — channel: NO standalone .shell-chrome row (BM mo
     page.locator(".shell-members [data-testid='mobile-panel-settings']"),
   ).toHaveCount(1);
 
+  // #305 — the mobile members hamburger ADOPTS `.shell-chrome-btn` and so
+  // sizes from the shared tokens: the tap target meets the 48px HIG floor
+  // (--chrome-tap-min, up from the old bespoke 44px box) and the ☰ glyph is
+  // enlarged (--chrome-icon-size: 1.4rem, up from the base 14px — defect 1).
+  // Round for webkit sub-pixel; parse the computed glyph size.
+  const hamburger = page.locator(".topic-bar-hamburger");
+  await expect(hamburger).toBeVisible({ timeout: 5_000 });
+  const hamBox = await hamburger.boundingBox();
+  if (hamBox === null) throw new Error("hamburger has no bounding box");
+  expect(
+    Math.round(hamBox.height),
+    `#305 — hamburger tap target ${hamBox.height}px must meet the 48px HIG floor`,
+  ).toBeGreaterThanOrEqual(48);
+  const hamGlyphPx = await hamburger.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+  expect(
+    hamGlyphPx,
+    `#305 — hamburger glyph ${hamGlyphPx}px must be enlarged from the base 14px`,
+  ).toBeGreaterThanOrEqual(18);
+
   // Per `feedback_e2e_visitor_members_list` — UI-shape spec is
   // registered-class today; satisfy the rule by asserting the members
   // drawer populates after a tap on the TopicBar hamburger.

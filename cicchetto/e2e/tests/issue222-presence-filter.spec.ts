@@ -73,6 +73,24 @@ test("#222 — per-channel toggle hides join/part rows, persists across reload, 
     const toggle = page.locator('[data-testid="presence-toggle"]');
     await expect(toggle).toBeVisible({ timeout: 5_000 });
 
+    // #305 — the presence toggle ADOPTS `.shell-chrome-btn`, which drives the
+    // HIG tap-target floor (--chrome-tap-min: 48px) + glyph size
+    // (--chrome-icon-size: 1.4rem) from shared tokens. Pre-#305 the toggle
+    // re-declared its own size and fell below the floor (defect 2, tiny hit
+    // area) with a var(--font-size) 14px glyph (defect 1). Round the box for
+    // sub-pixel; parse the computed glyph size.
+    const toggleBox = await toggle.boundingBox();
+    if (toggleBox === null) throw new Error("presence toggle has no bounding box");
+    expect(
+      Math.round(toggleBox.height),
+      `#305 — presence toggle tap target ${toggleBox.height}px must meet the 48px HIG floor`,
+    ).toBeGreaterThanOrEqual(48);
+    const toggleGlyphPx = await toggle.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    expect(
+      toggleGlyphPx,
+      `#305 — presence toggle glyph ${toggleGlyphPx}px must be enlarged from the base 14px`,
+    ).toBeGreaterThanOrEqual(18);
+
     // 2. toggle "hide presence" ON → join/part vanish, PRIVMSG stays.
     await toggle.click();
     await expect(joinRow).toHaveCount(0, { timeout: 5_000 });
