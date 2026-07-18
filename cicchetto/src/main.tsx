@@ -27,6 +27,7 @@ import { notifyClientClosing, reportVisibility } from "./lib/socket";
 import { recordSwRegError, recordSwRegistered } from "./lib/swRegistration";
 import { applyTheme } from "./lib/theme";
 import { installSmartScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
+import { createVisibilityHeartbeat } from "./lib/visibilityHeartbeat";
 import Shell from "./Shell";
 import "./themes/default.css";
 
@@ -196,10 +197,22 @@ window.addEventListener("beforeunload", notifyClientClosing);
 // registration). The initial state is reported on user-channel join (see
 // socket.ts joinUser); this effect keeps it live on every focus/visibility
 // transition after.
+// #318 — plus a foreground HEARTBEAT. The edge report above fires only on
+// a visibility TRANSITION; on iOS PWA background the transition often never
+// fires (visibilitychange is unreliable), so the server kept reading the
+// socket as visible and suppressed push until the zombie socket died
+// (~90 min). While genuinely foreground the heartbeat re-reports on a fixed
+// interval so the server (WSPresence read-time staleness) can tell a live
+// foreground PWA (fresh reports) from a backgrounded one whose JS timers
+// suspend OR whose visibilityState silently flips (reportVisibility re-reads
+// the live property each tick). Reuses the `visibility` verb — see
+// lib/visibilityHeartbeat.ts. Stops the interval when hidden.
 createRoot(() => {
+  const heartbeat = createVisibilityHeartbeat(reportVisibility);
   createEffect(() => {
-    isDocumentVisible();
+    const visible = isDocumentVisible();
     reportVisibility();
+    heartbeat.setVisible(visible);
   });
 });
 
