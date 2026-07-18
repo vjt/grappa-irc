@@ -177,6 +177,16 @@
   --font-size: 14px;
   --line-height: 1.4;
   --breakpoint-mobile: 768px;
+  /* #305 — chrome-button sizing tokens, theme-INDEPENDENT (same value in
+     irssi-dark + mirc-light), so they live on :root next to --font-size, NOT
+     in the per-theme blocks. `.shell-chrome-btn` drives glyph + tap-target
+     from these, and the topic-bar hamburger / presence toggle adopt that base
+     so ALL chrome buttons size uniformly from one place (no per-selector
+     patching). --chrome-tap-min is ABSOLUTE px on purpose: the html root
+     font-size is 14px, so a rem tap target would under-size below the HIG
+     floor (feedback_cic_tap_target_rem_pitfall). */
+  --chrome-icon-size: 1.4rem; /* glyph size for all chrome buttons */
+  --chrome-tap-min: 48px; /* Apple HIG minimum tap-target floor */
   /* grappa-irc#69: theme the scrollbars. `scrollbar-color` and
      `scrollbar-width` inherit, so declaring them on :root themes every
      scrollable descendant (.scrollback, members pane, admin tables…)
@@ -1277,41 +1287,43 @@ html.resize-dragging * {
   background: var(--bg);
 }
 
-.topic-bar-hamburger {
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  padding: 0.25rem 0.5rem;
-  font-family: var(--font-mono);
-  font-size: var(--font-size);
-  cursor: pointer;
+/* #305 — the hamburger ADOPTS `.shell-chrome-btn` (base + size tokens) via
+   its className in TopicBar.tsx; the only bespoke bit left is the desktop
+   display gate. The `.topic-bar` descendant bump is load-bearing: at equal
+   specificity `.shell-chrome-btn`'s `display: inline-flex` (declared LATER in
+   this file) would otherwise win the cascade and show the hamburger on
+   desktop. Bumping to `.topic-bar .topic-bar-hamburger` (0,2,0) beats it
+   regardless of source order; the mobile media query re-shows with a matching
+   selector. */
+.topic-bar .topic-bar-hamburger {
   display: none; /* desktop: hidden; mobile media query un-hides */
 }
 
 /* #222 — per-channel presence-filter toggle (hide/show join/part/quit).
    Sits inline in the topic bar; visible on both desktop and mobile (the
-   noise it hides matters most on small mobile viewports). Muted by default;
-   the `.presence-hidden` state (rows currently suppressed) gets the accent
-   so the operator can see at a glance the channel is filtered. */
+   noise it hides matters most on small mobile viewports).
+   #305 — ADOPTS `.shell-chrome-btn` (base chrome + size tokens) via its
+   className in TopicBar.tsx, which fixes its sub-floor tap target (defect 2).
+   The only bespoke bits are `flex: none` (never grow/shrink in the row) and
+   the `.presence-hidden` accent state (rows currently suppressed → accent so
+   the operator sees at a glance the channel is filtered). */
 .topic-bar-presence-toggle {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  padding: 0.25rem 0.5rem;
-  font-family: var(--font-mono);
-  font-size: var(--font-size);
-  line-height: 1;
-  cursor: pointer;
   flex: none;
-}
-
-.topic-bar-presence-toggle:hover {
-  color: var(--fg);
 }
 
 .topic-bar-presence-toggle.presence-hidden {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* #305 — a filtered toggle keeps its accent on hover. `.shell-chrome-btn:hover`
+   (0,2,0) is declared LATER than `.presence-hidden` (0,2,0) and would flip the
+   text to var(--fg) on hover, dropping the "channel is filtered" accent that
+   pre-#305 persisted (the old dedicated :hover lost to .presence-hidden). This
+   0,3,0 rule restores it — the border already stays accent (the base :hover
+   doesn't touch border-color). */
+.topic-bar-presence-toggle.presence-hidden:hover {
+  color: var(--accent);
 }
 
 /* #275 — channel name + modes stacked in ONE width-capped clickable box.
@@ -1324,7 +1336,9 @@ html.resize-dragging * {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.1rem;
+  /* #304 — a touch more breathing room between the name (now underlined by a
+     border-bottom) and the +modes line so the divider isn't cramped. */
+  gap: 0.2rem;
   /* WIDTH CAP — annotated DEFAULT (#275, tunable). 18% is the mid-point of
      the spec's 15–20% band: enough for a typical `#channel` + a `+ntk` mode
      string on a NARROW mobile bar (mobile-first), while leaving the topic
@@ -1347,49 +1361,68 @@ html.resize-dragging * {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* #304 — border-bottom splits the channel NAME from the +modes line below
+     so the two read as distinct rows. `var(--border)` follows the active
+     theme (subtle 1px in both irssi-dark + mirc-light). The name is
+     ellipsized, so the rule underlines only the visible (clipped) width —
+     intentional. */
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.1rem;
 }
 
 .topic-bar-topic {
   flex: 1;
   color: var(--muted);
-  /* #74 — up to TWO lines, then ellipsis (was a 1-line nowrap clip), so
-     more of a long topic is readable without opening anything. The clamp
-     needs the -webkit-box display + vertical orient; `overflow-wrap` lets a
-     long unbroken URL wrap instead of overflowing the second line. */
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  /* #262 — HARD height bound, independent of `-webkit-line-clamp`. The
-     clamp above only engages when the clamped runs are the DIRECT line-box
-     content of the `-webkit-box`. This strip is a <button> wrapping a
-     <MircBody>: WebKit (iOS Safari) wraps a button's children in an internal
-     box, so the line-clamp never engages and the strip grew to the topic's
-     FULL height — eating up to ½ the mobile viewport (regression from #74,
-     which replaced the old 1-line `white-space: nowrap` clip with the clamp
-     and so left NO height bound when the clamp fails to engage). `max-height`
-     = 2 lines × `line-height: 1.25` = 2.5em caps the strip at two lines
-     whether or not the webkit clamp engages; `overflow: hidden` hides the
-     rest. Full topic stays reachable via the topic modal. Global, not
-     @media-mobile: the clamp-on-<button> failure is a WebKit/Blink engine
-     behaviour, not a viewport one — bound it on every surface. */
-  max-height: 2.5em;
-  overflow: hidden;
-  white-space: normal;
-  overflow-wrap: anywhere;
   background: transparent;
   border: none;
   padding: 0;
+  /* #304 — vertical rule between the namebox and the topic strip (the two
+     were separated only by the flex gap). `border-left` after `border: none`
+     + `padding-left` after `padding: 0` (longhand-after-shorthand wins for
+     the left side); scoped to THIS boundary only — no dividers around the
+     presence-toggle / hamburger further right. `var(--border)` follows the
+     active theme. */
+  border-left: 1px solid var(--border);
+  padding-left: 0.5rem;
   font-family: var(--font-mono);
   font-size: var(--font-size);
   line-height: 1.25;
   text-align: left;
   cursor: pointer;
   min-width: 0;
+  /* #307 belt — the 2-line clamp + height bound live on the inner
+     `.topic-bar-topic-text` span (a <button> defeats -webkit-line-clamp, see
+     that rule). This outer clip is the backstop if that element's bound ever
+     fails, so the strip can never overflow the button box. */
+  overflow: hidden;
 }
 
 .topic-bar-topic:hover {
   color: var(--fg);
+}
+
+/* #307 — the clamp lives on this NON-button inner span, NOT the <button>.
+   `-webkit-line-clamp` only engages when the clamped runs are the DIRECT
+   line-box content of the `-webkit-box`; a <button> wraps its children in an
+   internal box, so the clamp NEVER engaged on `.topic-bar-topic` itself (the
+   #262 bug) — only the max-height clipped, hard-cutting the topic with NO
+   ellipsis. MircBody emits its runs with no block wrapper, so making this
+   span the `-webkit-box` puts those runs as its direct children → the clamp
+   engages and paints the trailing … natively at 2 lines (mid-word, as
+   desired). The #262 max-height:2.5em (2 lines × line-height 1.25) + overflow
+   is RETAINED as belt-and-suspenders: it caps the strip whether or not the
+   clamp engages, so the mobile-height guarantee survives even on an engine
+   where the clamp fails. */
+.topic-bar-topic-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  max-height: 2.5em;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
 }
 
 .topic-bar-modes {
@@ -1562,11 +1595,16 @@ html.resize-dragging * {
   border: 1px solid var(--border);
   padding: 0.25rem 0.5rem;
   font-family: var(--font-mono);
-  font-size: var(--font-size);
+  /* #305 — glyph + tap floor driven from the shared tokens (was hard-coded
+     var(--font-size) / 2.25rem / 2rem). Fixes tiny glyphs (defect 1) + the
+     sub-floor tap target (defect 2) for every chrome button at once — cog /
+     mentions / archive AND the adopting topic-bar hamburger / presence
+     toggle grow together (desired parity). */
+  font-size: var(--chrome-icon-size);
   line-height: 1;
   cursor: pointer;
-  min-width: 2.25rem;
-  min-height: 2rem;
+  min-width: var(--chrome-tap-min);
+  min-height: var(--chrome-tap-min);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3729,15 +3767,14 @@ html.resize-dragging * {
     /* scrollback (flex:1) + compose take natural heights inside shell-main */
   }
 
-  /* C6.3: single hamburger — right-side (members); left hamburger hidden
-     on mobile via isMobile() gating in TopicBar.tsx (no CSS needed). */
-  .topic-bar-hamburger {
-    display: inline-block;
-    min-width: 44px; /* Apple HIG minimum touch target */
-    min-height: 44px;
-    padding: 0 0.75rem;
-    line-height: 44px;
-    text-align: center;
+  /* C6.3: single hamburger — right-side (members). #305 — un-hide on mobile;
+     sizing (48px HIG tap floor + glyph) + glyph centering now come from the
+     adopted `.shell-chrome-btn` base, so only the show is bespoke here. The
+     `.topic-bar` bump matches the desktop-hide specificity, and this rule is
+     later in source, so it wins on mobile. (Was: display:inline-block + a
+     hand-rolled 44px box — replaced by the shared 48px token.) */
+  .topic-bar .topic-bar-hamburger {
+    display: inline-flex;
   }
 
   /* Members drawer slide-in from right (unchanged from pre-C6) */

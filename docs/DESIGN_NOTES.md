@@ -24823,3 +24823,77 @@ connected `azzurra`).
 
 _Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
 batched into the next COLD window with #299/#290, NOT shipped solo._
+
+---
+
+## 2026-07-18 — TopicBar CSS batch (#304 + #305 + #307, cic-only)
+
+Three top-bar tweaks that all touch the SAME surface (`TopicBar.tsx` +
+`.topic-bar-*` / `.shell-chrome-btn` / theme tokens in `default.css`) — that
+shared-file overlap is why they land as one batch (three bite-sized commits,
+one per issue). Pure CSS + minor className/JSX plumbing; NO server change.
+
+### #304 — separators (pure CSS)
+
+A vertical rule between the namebox and the topic strip (`border-left` +
+`padding-left` on `.topic-bar-topic`, longhand-after-shorthand so the left
+side beats the `border: none` / `padding: 0` reset), and a `border-bottom`
+under the channel name that splits it from the `+modes` line (namebox `gap`
+nudged 0.1rem → 0.2rem so the rule isn't cramped). Both use `var(--border)`,
+so presence is theme-independent (subtle 1px in irssi-dark + mirc-light) even
+though the colour differs. The name is ellipsized, so the underline spans only
+the visible clipped width — intentional.
+
+### #305 — chrome-button sizing: shared base + tokens (the DRY ask)
+
+Two defects — tiny glyph in a correct-sized box, and a sub-floor tap target on
+the presence toggle — shared one root cause: sibling chrome buttons
+re-declared size per-selector instead of adopting the shared `.shell-chrome-btn`
+base, so glyph size + tap floor drifted per-button. Fix, per the maintainer's
+explicit "don't patch each selector" request:
+
+- Two **theme-independent** tokens on `:root` (next to `--font-size`):
+  `--chrome-icon-size: 1.4rem` (glyph) + `--chrome-tap-min: 48px` (HIG floor).
+  The tap floor is **absolute px** on purpose — the html root font-size is
+  14px, so a rem target would under-size (`feedback_cic_tap_target_rem_pitfall`).
+- `.shell-chrome-btn` drives `font-size` + `min-width`/`min-height` from the
+  tokens (was hard-coded `var(--font-size)` / `2.25rem` / `2rem`). This enlarges
+  cog / mentions / archive too — desired parity across the top-chrome row.
+- `.topic-bar-hamburger` + `.topic-bar-presence-toggle` **adopt** the base via
+  their className; their per-selector size declarations are deleted, keeping
+  only distinguishing bits (hamburger desktop display gate; presence
+  `.presence-hidden` accent + `flex: none`).
+
+**Cascade gotcha (load-bearing):** `.shell-chrome-btn`'s `display: inline-flex`
+is declared LATER in the file than `.topic-bar-hamburger`, so at equal
+specificity it would win and show the hamburger on desktop. The desktop-hide +
+the mobile un-hide are bumped to `.topic-bar .topic-bar-hamburger` (0,2,0) so
+they beat the base regardless of source order (the desktop-hide has no media
+query; the mobile un-hide is later in source at equal specificity, so it wins
+on mobile).
+
+### #307 — topic strip clips with no ellipsis: button → non-button clamp host
+
+Root cause (verified): `.topic-bar-topic` is a `<button>` wrapping `<MircBody>`.
+WebKit/Blink wrap a button's children in an internal box, so the clamped runs
+are never the DIRECT line-box content of the `-webkit-box` → `-webkit-line-clamp`
+never engaged → only the #262 `max-height` clipped, hard-cutting the topic with
+**no ellipsis**. Fix: move the clamp onto a **non-button inner span**
+(`.topic-bar-topic-text`) whose direct children ARE the MircBody runs (MircBody
+emits its runs with no block wrapper). The clamp then engages and paints the
+trailing `…` natively at 2 lines. The click affordance + a11y stay on the real
+`<button>`, so no `role`/`tabindex`/`keydown` reimplementation was needed — this
+was chosen over converting the button itself to a `div[role=button]` (the
+issue's first-listed option) precisely to keep native button semantics; it
+still satisfies the issue's core requirement (the `-webkit-box` element is a
+non-button with the runs as direct children). The #262 `max-height: 2.5em;
+overflow: hidden` is **retained** on the inner span as belt-and-suspenders (it
+caps the strip whether or not the clamp engages), plus an outer `overflow:
+hidden` on the button. e2e witness: on the inner span, an engaged clamp
+truncates to 2 lines so `scrollHeight ≈ clientHeight` — the ellipsis proof the
+DOM can't surface (the `…` is a rendered glyph, not text); a dead clamp lays out
+the full topic (`scrollHeight ≫ clientHeight`).
+
+_Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
+rides the already-HELD #299 COLD batch (with #282 / #290 / #294), NOT shipped
+solo._

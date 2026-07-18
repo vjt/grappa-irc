@@ -332,12 +332,22 @@ const TopicBar: Component<Props> = (props) => {
         title={topicTitle()}
         data-testid="topic-strip"
       >
-        <Show when={topicText() !== null} fallback={"(no topic set)"}>
-          {/* #220 — the bar NEVER navigates a link directly; a tap on a
-              link "surface-wins" (suppresses navigation) and bubbles to
-              the strip's onClick, which opens the modal. */}
-          <MircBody body={topicText() ?? ""} linkPolicy="surface-wins" />
-        </Show>
+        {/* #307 — the clamped runs MUST be the direct children of a NON-button
+            `-webkit-box` for `-webkit-line-clamp` to engage (a <button> wraps
+            its children in an internal box and defeats the clamp — the #262
+            bug: geometric clip with no ellipsis). This inner span carries the
+            clamp (see `.topic-bar-topic-text`); the click affordance + a11y
+            stay on the real <button> above, so no role/tabindex/keydown
+            reimplementation is needed. MircBody emits its runs with no block
+            wrapper, so they land as the span's direct line-box content. */}
+        <span class="topic-bar-topic-text">
+          <Show when={topicText() !== null} fallback={"(no topic set)"}>
+            {/* #220 — the bar NEVER navigates a link directly; a tap on a
+                link "surface-wins" (suppresses navigation) and bubbles to
+                the strip's onClick, which opens the modal. */}
+            <MircBody body={topicText() ?? ""} linkPolicy="surface-wins" />
+          </Show>
+        </span>
       </button>
       {/* #222 — per-channel presence-filter toggle. Suppresses (or
           re-shows) join/part/quit/nick-change rows for THIS channel; the
@@ -347,7 +357,7 @@ const TopicBar: Component<Props> = (props) => {
           noStaticElementInteractions (#220) and loses keyboard access. */}
       <button
         type="button"
-        class="topic-bar-presence-toggle"
+        class="topic-bar-presence-toggle shell-chrome-btn"
         classList={{ "presence-hidden": !presenceShown() }}
         data-testid="presence-toggle"
         aria-pressed={!presenceShown()}
@@ -368,7 +378,7 @@ const TopicBar: Component<Props> = (props) => {
       <Show when={windowIsJoined(key())}>
         <button
           type="button"
-          class="topic-bar-hamburger"
+          class="topic-bar-hamburger shell-chrome-btn"
           aria-label="open members sidebar"
           onClick={props.onToggleMembers}
         >

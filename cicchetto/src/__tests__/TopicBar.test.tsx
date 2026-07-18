@@ -565,4 +565,82 @@ describe("TopicBar", () => {
   // moves them into the mobile members drawer footer as launchers, so
   // the slot no longer has a caller. The tests that exercised the
   // slot were dropped with the prop.
+
+  // #305 — the two topic-bar chrome buttons (members hamburger + presence
+  // toggle) ADOPT the shared `.shell-chrome-btn` base class instead of
+  // re-declaring size/border/font per-selector, so the size tokens
+  // (--chrome-icon-size / --chrome-tap-min) drive both uniformly. jsdom is
+  // blind to the CSS pixels (the tap-target-floor + glyph-size proof lives
+  // in the Playwright e2e); the unit test pins the CLASS WIRING that carries
+  // the tokens onto the elements.
+  describe("chrome-button base-class adoption (#305)", () => {
+    it("the members hamburger wears the shared .shell-chrome-btn base", () => {
+      const { container } = render(() => <TopicBar {...baseProps()} />);
+      const ham = container.querySelector(".topic-bar-hamburger");
+      expect(ham).not.toBeNull();
+      expect(ham).toHaveClass("shell-chrome-btn");
+    });
+
+    it("the presence toggle wears the shared .shell-chrome-btn base (keeps its own class too)", () => {
+      const { container } = render(() => <TopicBar {...baseProps()} />);
+      const toggle = container.querySelector(".topic-bar-presence-toggle");
+      expect(toggle).not.toBeNull();
+      expect(toggle).toHaveClass("shell-chrome-btn");
+    });
+
+    it("the presence toggle keeps its .presence-hidden accent state alongside the base", () => {
+      // Default (small channel, pref unset) → shown → no accent. Toggling to
+      // hide flips the class, which must COEXIST with the shared base class.
+      const { container } = render(() => <TopicBar {...baseProps()} />);
+      const toggle = container.querySelector(".topic-bar-presence-toggle") as HTMLElement;
+      expect(toggle).not.toHaveClass("presence-hidden");
+      try {
+        fireEvent.click(toggle);
+        expect(toggle).toHaveClass("shell-chrome-btn");
+        expect(toggle).toHaveClass("presence-hidden");
+      } finally {
+        // togglePresence persists an explicit "hide" pref in localStorage —
+        // clear it so it can't leak into sibling tests reading the same key.
+        localStorage.clear();
+      }
+    });
+  });
+
+  // #307 — the topic strip is a <button>; WebKit/Blink wrap a button's
+  // children in an internal box, so `-webkit-line-clamp` never engaged on
+  // `.topic-bar-topic` itself (only the #262 max-height clipped, with NO
+  // ellipsis). The fix moves the clamp onto a NON-button inner span whose
+  // direct children are the MircBody runs. jsdom can't judge the pixel clamp
+  // (that's the @webkit e2e), but it can pin the STRUCTURE the clamp needs.
+  describe("topic strip clamp structure (#307)", () => {
+    it("wraps the topic runs in a non-button .topic-bar-topic-text span", () => {
+      mockTopicByChannel.mockReturnValue({
+        "freenode #italia": { text: "A clamped topic", set_by: "vjt", set_at: null },
+      });
+      const { container } = render(() => <TopicBar {...baseProps()} />);
+      const strip = container.querySelector(".topic-bar-topic");
+      expect(strip).not.toBeNull();
+      const clampSpan = strip?.querySelector(".topic-bar-topic-text");
+      expect(clampSpan).not.toBeNull();
+      // MUST be a non-button element (a <button> defeats the clamp).
+      expect(clampSpan?.tagName).toBe("SPAN");
+      expect(clampSpan).toHaveTextContent("A clamped topic");
+    });
+
+    it("renders the '(no topic set)' placeholder inside the clamp span too", () => {
+      mockTopicByChannel.mockReturnValue({});
+      const { container } = render(() => <TopicBar {...baseProps()} />);
+      const clampSpan = container.querySelector(".topic-bar-topic .topic-bar-topic-text");
+      expect(clampSpan).toHaveTextContent("(no topic set)");
+    });
+
+    it("still opens the read-only topic modal on strip click after the restructure", () => {
+      mockTopicByChannel.mockReturnValue({
+        "freenode #italia": { text: "A topic", set_by: "vjt", set_at: null },
+      });
+      render(() => <TopicBar {...baseProps()} />);
+      fireEvent.click(screen.getByTestId("topic-strip"));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+  });
 });
