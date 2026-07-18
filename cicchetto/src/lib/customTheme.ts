@@ -62,15 +62,21 @@ export const THEME_CSS_VARS: string[] = [
   "--font-mono",
   "--theme-bg-image",
   "--theme-bg-opacity",
+  "--theme-bg-size",
+  "--theme-bg-repeat",
 ];
 
 // Pure: token payload → CSS custom property map. `mono-default` omits
 // `--font-mono` so the base stack wins; a named family overrides it with
 // a graceful fallback. Background maps to `--theme-bg-image` (a scoped
-// `url()` or `none`) + `--theme-bg-opacity`. NOTE: the CSS layer that
-// CONSUMES those two vars ships with the deferred background-upload UI
-// (producer-path sub-task 9) — no built-in carries an image today, so the
-// vars are currently dormant. The colors + font vars are the live feature.
+// `url()` or `none`), `--theme-bg-opacity`, and the #294 sizing pair
+// `--theme-bg-size`/`--theme-bg-repeat` the wallpaper `::before` consumes.
+//
+// A `builtin` key resolves to the static /backgrounds/<key>.webp asset and
+// takes precedence over an uploaded `image_id` (the two are mutually exclusive
+// server-side). `size === "repeat"` → tile at natural size; anything else
+// (cover, or a legacy pre-#294 payload where `size` is absent) → full-bleed
+// cover — so an old cached/wire payload degrades safely.
 export function tokenToCssVars(payload: TokenPayload): Record<string, string> {
   const vars: Record<string, string> = {};
   for (const [key, value] of Object.entries(payload.colors)) {
@@ -79,10 +85,16 @@ export function tokenToCssVars(payload: TokenPayload): Record<string, string> {
   if (payload.font_family !== "mono-default") {
     vars["--font-mono"] = `"${payload.font_family}", ${FONT_FALLBACK_STACK}`;
   }
-  vars["--theme-bg-image"] = payload.background.image_id
-    ? `url("/uploads/${payload.background.image_id}")`
-    : "none";
-  vars["--theme-bg-opacity"] = String(payload.background.opacity);
+  const bg = payload.background;
+  vars["--theme-bg-image"] = bg.builtin
+    ? `url("/backgrounds/${bg.builtin}.webp")`
+    : bg.image_id
+      ? `url("/uploads/${bg.image_id}")`
+      : "none";
+  vars["--theme-bg-opacity"] = String(bg.opacity);
+  const tile = bg.size === "repeat";
+  vars["--theme-bg-size"] = tile ? "auto" : "cover";
+  vars["--theme-bg-repeat"] = tile ? "repeat" : "no-repeat";
   return vars;
 }
 
@@ -105,9 +117,12 @@ export function applyCustomTheme(payload: TokenPayload | null): void {
   }
   // Gate the wallpaper layer + pane translucency (themes/default.css) on a
   // class — CSS can't branch on `--theme-bg-image` being "none". Only a
-  // theme carrying an image engages the layer; clearing it drops back to
-  // the opaque base bg.
-  root.classList.toggle("theme-has-bg", payload.background.image_id !== null);
+  // theme carrying a background (an upload OR a #294 built-in) engages the
+  // layer; clearing it drops back to the opaque base bg.
+  root.classList.toggle(
+    "theme-has-bg",
+    Boolean(payload.background.image_id || payload.background.builtin),
+  );
 }
 
 // Read the cached payload, defending BOTH the parse AND the shape. This

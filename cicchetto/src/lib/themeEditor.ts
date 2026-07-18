@@ -89,6 +89,25 @@ export function newThemeSeedPayload(themes: ThemesWireT[]): TokenPayload | null 
   return builtin ? structuredClone(builtin.payload as TokenPayload) : null;
 }
 
+// #294 — background-source mutations for the editor picker. A theme carries
+// exactly ONE background source (an upload XOR a built-in, mirroring the
+// server's mutual-exclusion invariant), so selecting one clears the other.
+// Pure background transforms (not full-payload) so the component composes them
+// into its `setDraft`.
+type Background = TokenPayload["background"];
+
+export function setBackgroundBuiltin(bg: Background, key: string): Background {
+  return { ...bg, builtin: key, image_id: null, size: "cover" };
+}
+
+export function setBackgroundUpload(bg: Background, image_id: string): Background {
+  return { ...bg, image_id, builtin: null };
+}
+
+export function clearBackground(bg: Background): Background {
+  return { ...bg, image_id: null, builtin: null };
+}
+
 // Save the editor draft: create (new) or update (edit own), then activate
 // so the saved theme becomes the live + server-persisted active theme.
 // Returns the server-authoritative saved theme (the caller applies it via

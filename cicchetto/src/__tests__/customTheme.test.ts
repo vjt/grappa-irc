@@ -43,7 +43,7 @@ function payload(over: Partial<TokenPayload> = {}): TokenPayload {
   return {
     colors: fullColors(),
     font_family: "mono-default",
-    background: { image_id: null, opacity: 0.3 },
+    background: { image_id: null, builtin: null, size: "cover", opacity: 0.3 },
     ...over,
   };
 }
@@ -107,18 +107,35 @@ describe("customTheme.applyCustomTheme background class", () => {
   });
 
   it("adds theme-has-bg when a background image is set", () => {
-    applyCustomTheme(payload({ background: { image_id: "abcdef", opacity: 0.3 } }));
+    applyCustomTheme(
+      payload({ background: { image_id: "abcdef", builtin: null, size: "cover", opacity: 0.3 } }),
+    );
+    expect(document.documentElement.classList.contains("theme-has-bg")).toBe(true);
+  });
+
+  it("adds theme-has-bg when a built-in background is selected", () => {
+    applyCustomTheme(
+      payload({
+        background: { image_id: null, builtin: "01-lain-dark", size: "cover", opacity: 0.3 },
+      }),
+    );
     expect(document.documentElement.classList.contains("theme-has-bg")).toBe(true);
   });
 
   it("removes theme-has-bg when the background image is cleared", () => {
-    applyCustomTheme(payload({ background: { image_id: "abcdef", opacity: 0.3 } }));
-    applyCustomTheme(payload({ background: { image_id: null, opacity: 0.3 } }));
+    applyCustomTheme(
+      payload({ background: { image_id: "abcdef", builtin: null, size: "cover", opacity: 0.3 } }),
+    );
+    applyCustomTheme(
+      payload({ background: { image_id: null, builtin: null, size: "cover", opacity: 0.3 } }),
+    );
     expect(document.documentElement.classList.contains("theme-has-bg")).toBe(false);
   });
 
   it("removes theme-has-bg on a null apply (clear back to base)", () => {
-    applyCustomTheme(payload({ background: { image_id: "abcdef", opacity: 0.3 } }));
+    applyCustomTheme(
+      payload({ background: { image_id: "abcdef", builtin: null, size: "cover", opacity: 0.3 } }),
+    );
     applyCustomTheme(null);
     expect(document.documentElement.classList.contains("theme-has-bg")).toBe(false);
   });
