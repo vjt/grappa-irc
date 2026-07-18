@@ -148,13 +148,13 @@ async function scrollByPx(page: Page, deltaY: number): Promise<void> {
 }
 
 async function scrollToBottom(page: Page): Promise<void> {
-  // BUGHUNT-2: ALWAYS use a real wheel-down, never the
-  // scroll-to-bottom button. The button's onClick triggers a
-  // programmatic `scrollTo({behavior:"smooth"})` which the BUGHUNT-2
-  // input-event gate correctly suppresses (no preceding
-  // wheel/pointerdown/touchmove/keydown on the listRef) — cursor
-  // never advances. Single big wheel-down: fires ONE WheelEvent →
-  // gate arms → settle fires once 500ms later → POSTs visible-tail.
+  // BUGHUNT-2: use a real wheel-down here, NOT the scroll-to-bottom button.
+  // This helper is deliberately exercising the SCROLL-SETTLE path: a single
+  // big wheel-down fires ONE WheelEvent → the input-event gate arms → the
+  // 500ms settle fires once → POSTs the visible-tail. (Since #310 the button
+  // ALSO advances the cursor, but via a DIFFERENT path — a direct
+  // reached-bottom advance in `scrollToBottomGesture`, not the settle — so
+  // the wheel is what pins the settle contract these tests assert.)
   const box = await page.locator('[data-testid="scrollback"]').boundingBox();
   if (!box) throw new Error("scrollback bounding box null");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
