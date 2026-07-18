@@ -37,9 +37,10 @@ import { expect, test } from "../fixtures/test";
 // Height caps. The clamped strip is 2 lines × line-height 1.25 × 14px =
 // 35px; the cap leaves generous slack for sub-pixel/metric variance while
 // staying far below the broken-clamp height (many wrapped lines → 150px+ in
-// the ~130px-wide flex strip). The bar's floor is the 44px hamburger touch
-// target + 0.5rem×2 padding ≈ 60px when clamped; a broken clamp drives it to
-// the topic's full height (200px+). Both caps sit cleanly between the two.
+// the ~130px-wide flex strip). The bar's floor is the 48px chrome-button tap
+// target (#305 --chrome-tap-min, was 44px) + 0.5rem×2 padding ≈ 62px; a
+// broken clamp drives it to the topic's full height (200px+). Both caps sit
+// cleanly between the two.
 const TOPIC_STRIP_HEIGHT_CAP_PX = 60;
 const TOPIC_BAR_HEIGHT_CAP_PX = 120;
 
@@ -49,7 +50,9 @@ async function boundingHeight(locator: import("@playwright/test").Locator): Prom
   return box.height;
 }
 
-test("#262 @webkit — a long topic is height-clamped on the mobile topic bar", async ({ page }) => {
+test("#262/#307 @webkit — a long topic clamps to 2 lines with a native ellipsis (not a bare max-height clip)", async ({
+  page,
+}) => {
   const vjt = getSeededVjt();
   const channel = `#t262-${Date.now()}`;
   const marker = `t262-marker-${Date.now()}`;
@@ -94,6 +97,40 @@ test("#262 @webkit — a long topic is height-clamped on the mobile topic bar", 
       barHeight,
       `.topic-bar height ${barHeight}px must stay ≤ ${TOPIC_BAR_HEIGHT_CAP_PX}px`,
     ).toBeLessThanOrEqual(TOPIC_BAR_HEIGHT_CAP_PX);
+
+    // #307 — the `-webkit-line-clamp` actually ENGAGES (→ native trailing …),
+    // not merely the #262 max-height clip. The clamp moved onto the NON-button
+    // inner span `.topic-bar-topic-text` (a <button> wraps its children in an
+    // internal box and defeats the clamp — the #262 no-ellipsis bug).
+    //
+    // The two mechanisms overlap on the happy path (both cap the strip at 2
+    // lines), and `-webkit-line-clamp` does NOT collapse scrollHeight (the
+    // clamped overflow stays in the scroll area, merely hidden), so height /
+    // scrollHeight alone can't tell an engaged clamp from a dead-clamp +
+    // max-height clip. To ISOLATE the clamp: drop the #262 max-height backstop
+    // inline, force a reflow, and measure — an ENGAGED clamp still bounds the
+    // span to 2 lines (and paints the …); a DEAD clamp grows to the full topic
+    // height (200px+). This is the only DOM-observable ellipsis proof — the …
+    // glyph itself isn't in the DOM. (Anti-false-green: the marker was asserted
+    // present above, so the span holds a multi-line topic, not an empty box.)
+    const textSpan = page.locator(".topic-bar-topic-text");
+    await expect(textSpan).toContainText(marker, { timeout: 15_000 });
+    const clampOnlyHeight = await textSpan.evaluate((el) => {
+      const node = el as HTMLElement;
+      const prev = node.style.maxHeight;
+      node.style.maxHeight = "none"; // drop the #262 backstop — clamp must hold alone
+      void node.offsetHeight; // force synchronous reflow
+      const h = node.clientHeight;
+      node.style.maxHeight = prev; // restore
+      return h;
+    });
+    // 2 lines × line-height 1.25 × 14px = 35px; slack for sub-pixel/metrics,
+    // far below the unclamped full-topic height (200px+).
+    expect(
+      clampOnlyHeight,
+      `with the max-height backstop removed, -webkit-line-clamp must STILL bound the strip ` +
+        `to ~2 lines (${clampOnlyHeight}px) — a dead clamp (the #262 no-ellipsis bug) grows to the full topic`,
+    ).toBeLessThanOrEqual(50);
   } finally {
     await composeSend(page, `/part ${channel}`).catch(() => {});
     await peer.disconnect("t262 done").catch(() => {});

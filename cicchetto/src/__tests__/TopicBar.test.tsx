@@ -605,4 +605,42 @@ describe("TopicBar", () => {
       }
     });
   });
+
+  // #307 — the topic strip is a <button>; WebKit/Blink wrap a button's
+  // children in an internal box, so `-webkit-line-clamp` never engaged on
+  // `.topic-bar-topic` itself (only the #262 max-height clipped, with NO
+  // ellipsis). The fix moves the clamp onto a NON-button inner span whose
+  // direct children are the MircBody runs. jsdom can't judge the pixel clamp
+  // (that's the @webkit e2e), but it can pin the STRUCTURE the clamp needs.
+  describe("topic strip clamp structure (#307)", () => {
+    it("wraps the topic runs in a non-button .topic-bar-topic-text span", () => {
+      mockTopicByChannel.mockReturnValue({
+        "freenode #italia": { text: "A clamped topic", set_by: "vjt", set_at: null },
+      });
+      const { container } = render(() => <TopicBar {...baseProps()} />);
+      const strip = container.querySelector(".topic-bar-topic");
+      expect(strip).not.toBeNull();
+      const clampSpan = strip?.querySelector(".topic-bar-topic-text");
+      expect(clampSpan).not.toBeNull();
+      // MUST be a non-button element (a <button> defeats the clamp).
+      expect(clampSpan?.tagName).toBe("SPAN");
+      expect(clampSpan).toHaveTextContent("A clamped topic");
+    });
+
+    it("renders the '(no topic set)' placeholder inside the clamp span too", () => {
+      mockTopicByChannel.mockReturnValue({});
+      const { container } = render(() => <TopicBar {...baseProps()} />);
+      const clampSpan = container.querySelector(".topic-bar-topic .topic-bar-topic-text");
+      expect(clampSpan).toHaveTextContent("(no topic set)");
+    });
+
+    it("still opens the read-only topic modal on strip click after the restructure", () => {
+      mockTopicByChannel.mockReturnValue({
+        "freenode #italia": { text: "A topic", set_by: "vjt", set_at: null },
+      });
+      render(() => <TopicBar {...baseProps()} />);
+      fireEvent.click(screen.getByTestId("topic-strip"));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+  });
 });
