@@ -24721,3 +24721,60 @@ mirror + `>` prompt reply → nick-strip-vs-$server contrast).
 
 _Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
 batched into the next COLD window with #299, NOT shipped solo._
+
+## 2026-07-18 — #282 (P2, cic): explicit vhost Reconnect button
+
+The vhost sub-page (#252) PUTs the source-address selection on every toggle,
+but the change is INERT until the upstream reconnects — `Grappa.Vhosts`
+`effective_source/2` resolves the source-bind per connect, so a new selection
+only binds on a fresh socket. There was no first-class way to apply it. #282
+adds a single sticky "Reconnect to apply" footer button to the sub-page.
+
+### Design decisions (challenged against CLAUDE.md)
+
+- **The teardown path — reuse the per-network park→reconnect, NOT the #281
+  purge.** The spec framed this as "same clean teardown as Switch identity"
+  and "the clean path #281 establishes." Traced against the code, that's a
+  category mismatch: there is no "Switch identity" button, and the #281 clean
+  path is the `identityScopedStore` `onIdentityChange` client purge keyed on a
+  **token rotation** (logout / account-SWITCH). A same-account vhost reconnect
+  never rotates the token, and #281's 404-storm risk (stale CROSS-account
+  network/channel state replayed under a new bearer) does not arise — the same
+  account keeps the same networks/channels, so history-fetches 200, not 404.
+  The genuinely-clean same-account path is the home-page Reconnect (`HomePane`
+  `DisconnectedRow`): a per-network `PATCH /networks/:slug {connection_state}`
+  bounce. `reconnectConnectedNetworks` (`lib/reconnect.ts`, sibling of
+  `quit.ts`) reuses that verb: park→reconnect every `:connected` network
+  concurrently (`Promise.allSettled`; a failed park never reconnects that net;
+  the first failure re-throws so the button surfaces it). Only `:connected`
+  nets are bounced — a `:parked`/`:failed` net was left down deliberately and
+  picks up the new vhost when the user reconnects it from the home page.
+
+- **Always-available button, NOT "disabled until pending" (autopilot D2 —
+  deviation from the written spec).** The spec's acceptance said "disabled /
+  greyed until a pending vhost change exists." But the vhost is account-level
+  with NO server field exposing the live-bound vs selected address, so
+  pending-detection is only a fragile client dirty-flag — and gating a
+  heavyweight, externally-visible action on unreliable detection is itself a
+  least-astonishment hazard. Ruling (vjt autopilot 2026-07-18): the button is
+  ALWAYS available on-demand, never gated on pending-detection. The static
+  "Reconnect to apply" label communicates intent (the spec's real goal); the
+  only disable is the in-flight double-fire guard (`reconnecting`). No
+  dirty-flag hint shipped in v1 (optional; deferred).
+
+- **Explicit only — never implicit on back/close.** ‹ back just navigates; it
+  issues no reconnect. A single sticky footer instance (no top+bottom
+  duplication — a duplicated disruptive action invites accidental double-fire).
+
+State + orchestration live in `SettingsDrawer` (`reconnectSession` →
+`reconnectConnectedNetworks`; `reconnecting`/`reconnectError` signals, error via
+`friendlyApiError`); `VhostSettingsPage` stays presentational (props in,
+`onReconnect` out). Pinned by `reconnect.test.ts` (park→reconnect sequence +
+skip-non-connected + propagate-failure), `VhostSettingsPage.test.tsx`
+(always-available + label + in-flight guard + inline error), and the
+`issue282-vhost-reconnect-button.spec.ts` browser e2e (back-fires-nothing /
+button-fires-`["parked","connected"]`, deterministic PATCH intercept on a real
+connected `azzurra`).
+
+_Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
+batched into the next COLD window with #299/#290, NOT shipped solo._

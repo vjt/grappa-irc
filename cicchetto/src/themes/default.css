@@ -5406,6 +5406,57 @@ html.resize-dragging * {
   margin: 0.25rem 0;
 }
 
+/* #282 — sticky "Reconnect to apply" footer for the vhost sub-page. A
+   single instance pinned to the bottom of the drawer's scroll viewport so
+   the (heavyweight, externally-visible) reconnect action is always
+   reachable without scrolling to the end of a long allow-set. The opaque
+   backdrop + top border let the option rows scroll UNDER it. */
+.vhost-reconnect-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-top: 0.5rem;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+.vhost-reconnect {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+}
+
+.vhost-reconnect:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.vhost-reconnect:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.vhost-reconnect-hint {
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+.settings-drawer .vhost-reconnect-error {
+  background: var(--bg);
+  border: 1px solid var(--mode-op);
+  color: var(--mode-op);
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8rem;
+  margin: 0.25rem 0;
+}
+
 /* #127 — /info, /version, /motd modal. Same overlay/panel/header/footer
  * scaffolding as the WHO/NAMES modals (backdrop scrim, keyboard-aware
  * max-height, pinned header/footer, `.server-reply-modal-body` scroller),

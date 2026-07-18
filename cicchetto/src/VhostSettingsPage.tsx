@@ -25,6 +25,18 @@ export type Props = {
   error: string | null;
   onSetSelection: (addresses: string[]) => void;
   onBack: () => void;
+  // #282 — the vhost is INERT until the upstream reconnects (source-bind
+  // resolves per connect), so the sub-page carries an explicit sticky
+  // "Reconnect to apply" footer button (the drawer owns the reconnect
+  // orchestration → `reconnectConnectedNetworks`). The button is ALWAYS
+  // available on-demand — deliberately NOT gated on pending-detection
+  // (unreliable client-side; hiding a heavyweight externally-visible
+  // action behind detection violates least-astonishment). `reconnecting`
+  // disables + relabels it while the bounce is in flight (double-fire
+  // guard); `reconnectError` surfaces a failure inline.
+  onReconnect: () => void;
+  reconnecting: boolean;
+  reconnectError: string | null;
 };
 
 const VhostSettingsPage: Component<Props> = (props) => {
@@ -162,6 +174,32 @@ const VhostSettingsPage: Component<Props> = (props) => {
           {props.error}
         </p>
       </Show>
+
+      {/* #282 — sticky "Reconnect to apply" footer. Single instance at the
+          bottom of the list (no top+bottom duplication — a duplicated
+          disruptive action invites accidental double-fire). Always
+          available; the drawer's onReconnect bounces the connected
+          networks so the new source address binds on the fresh upstream. */}
+      <footer class="vhost-reconnect-footer">
+        <button
+          type="button"
+          class="vhost-reconnect"
+          data-testid="vhost-reconnect"
+          disabled={props.reconnecting}
+          onClick={props.onReconnect}
+        >
+          {props.reconnecting ? "Reconnecting…" : "Reconnect to apply"}
+        </button>
+        <p class="vhost-reconnect-hint">
+          your source address takes effect on reconnect — you'll briefly drop and rejoin your
+          channels
+        </p>
+        <Show when={props.reconnectError !== null}>
+          <p class="vhost-reconnect-error" role="alert" data-testid="vhost-reconnect-error">
+            {props.reconnectError}
+          </p>
+        </Show>
+      </footer>
     </section>
   );
 };
