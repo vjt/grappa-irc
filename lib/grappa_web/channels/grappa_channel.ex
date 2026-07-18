@@ -162,6 +162,7 @@ defmodule GrappaWeb.GrappaChannel do
   alias Grappa.{
     Accounts,
     Networks,
+    Notify,
     QueryWindows,
     ReadCursor,
     Session,
@@ -1042,6 +1043,8 @@ defmodule GrappaWeb.GrappaChannel do
         push_query_windows_list(subject, socket)
         push_umodes_if_live(subject, socket)
         push_supported_umodes_if_live(subject, socket)
+        push_notify_list(subject, socket)
+        push_presence_if_live(subject, socket)
 
       :error ->
         :ok
@@ -1171,6 +1174,42 @@ defmodule GrappaWeb.GrappaChannel do
       |> QueryWindows.Wire.windows_list_payload()
 
     push(socket, "event", payload)
+  end
+
+  # #247 — pushes the full notify watch list on user-topic join, same
+  # full-list-snapshot contract as query_windows_list (cic setState,
+  # no delta tracking). Envelope owned by `Grappa.Notify.Wire`, shared
+  # with the per-mutation broadcast fired from the Notify context.
+  @spec push_notify_list(Session.subject(), Phoenix.Socket.t()) :: :ok
+  defp push_notify_list(subject, socket) do
+    payload =
+      subject
+      |> Notify.list_for_subject()
+      |> Notify.Wire.render_grouped()
+      |> Notify.Wire.notify_list_payload()
+
+    push(socket, "event", payload)
+  end
+
+  # #247 — snapshot-on-attach for /notify presence dots: one
+  # `presence_snapshot` push per bound network with a live session.
+  # Mirrors `push_umodes_if_live/2` (same per-network fan-out, same
+  # best-effort contract — a parked/failed network is skipped and cic
+  # keeps unknown dots until the session comes up). Empty maps are
+  # skipped: no watch list means nothing to paint.
+  @spec push_presence_if_live(Session.subject(), Phoenix.Socket.t()) :: :ok
+  defp push_presence_if_live(subject, socket) do
+    for %Network{} = network <- Networks.Credentials.list_networks_for_subject(subject) do
+      case Session.presence_snapshot(subject, network.id) do
+        {:ok, map} when map_size(map) > 0 ->
+          push(socket, "event", SessionWire.presence_snapshot(network.id, map))
+
+        _ ->
+          :ok
+      end
+    end
+
+    :ok
   end
 
   @spec push_topic_if_cached(Session.subject(), Network.t(), String.t(), Phoenix.Socket.t()) :: :ok

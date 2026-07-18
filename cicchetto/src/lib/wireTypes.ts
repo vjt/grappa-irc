@@ -483,6 +483,21 @@ export type WireNetworksEvent =
   | NetworksWireNetworkWithNickJson
   | NetworksWireVisitorNetworkWithNickJson;
 
+// === Grappa.Notify.Wire ===
+
+export type NotifyWireEntriesMap = Record<string, NotifyWireEntry[]>;
+
+export type NotifyWireEntry = {
+  network_id: number;
+  nick: string;
+  added_at: string;
+};
+
+export type NotifyWireNotifyListPayload = {
+  kind: string;
+  networks: NotifyWireEntriesMap;
+};
+
 // === Grappa.QueryWindows.Wire ===
 
 export type QueryWindowsWireWindowsMap = Record<string, QueryWindowsWireWindowsEntry[]>;
@@ -593,7 +608,10 @@ export type SessionWireWireEventKind =
   | "directory_progress"
   | "directory_complete"
   | "directory_failed"
-  | "connection_progress";
+  | "connection_progress"
+  | "presence_changed"
+  | "presence_error"
+  | "presence_snapshot";
 
 export type SessionWireChannelsChangedPayload = {
   kind: "channels_changed";
@@ -625,6 +643,29 @@ export type SessionWireSupportedUmodesChangedPayload = {
   kind: "supported_umodes_changed";
   network_id: number;
   modes: string[];
+};
+
+export type SessionWirePresenceChangedPayload = {
+  kind: "presence_changed";
+  network_id: number;
+  nick: string;
+  presence: "online" | "offline";
+  initial: boolean;
+  source: "monitor" | "watch";
+  ts: string;
+};
+
+export type SessionWirePresenceErrorPayload = {
+  kind: "presence_error";
+  network_id: number;
+  reason: "list_full";
+  detail: string;
+};
+
+export type SessionWirePresenceSnapshotPayload = {
+  kind: "presence_snapshot";
+  network_id: number;
+  nicks: Record<string, "online" | "offline" | "unknown">;
 };
 
 export type SessionWireTopicEntryWire = {
@@ -881,6 +922,9 @@ export type WireSessionEvent =
   | SessionWireIsupportChangedPayload
   | SessionWireUmodeChangedPayload
   | SessionWireSupportedUmodesChangedPayload
+  | SessionWirePresenceChangedPayload
+  | SessionWirePresenceErrorPayload
+  | SessionWirePresenceSnapshotPayload
   | SessionWireTopicChangedPayload
   | SessionWireChannelModesChangedPayload
   | SessionWireChannelCreatedPayload

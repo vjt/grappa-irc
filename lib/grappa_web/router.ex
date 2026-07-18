@@ -366,6 +366,14 @@ defmodule GrappaWeb.Router do
     delete "/archive/:target", ArchiveController, :delete
 
     post "/nick", NickController, :create
+
+    # #247 — /notify presence watch list. GET combines the DB list with
+    # the live session presence map; mutations diff-sync the running
+    # session's MONITOR/WATCH registration.
+    get "/notify", NotifyController, :index
+    post "/notify", NotifyController, :create
+    delete "/notify/:nick", NotifyController, :remove
+    delete "/notify", NotifyController, :clear
   end
 
   # Test-only FORCE read-cursor surface. Compile-gated to dev/test Mix
