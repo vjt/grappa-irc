@@ -21,6 +21,7 @@ import {
   deleteTheme,
   listGallery,
   listMine,
+  listUnpublishedBuiltins,
   publishTheme,
   unpublishTheme,
 } from "./lib/themesApi";
@@ -67,8 +68,16 @@ const ThemeGallery: Component<Props> = (props) => {
     const t = token();
     if (t === null) return;
     try {
-      const [gallery, owned] = await Promise.all([listGallery(t), listMine(t)]);
-      setThemes(dedupeThemesById([...gallery, ...owned]));
+      // #299 — admins ALSO see unpublished system built-ins (stranded by an
+      // unpublish) so they can re-publish them; the existing owner|admin
+      // `canManageTheme` gate already renders the publish switch on those rows.
+      // Non-admins skip the request (the server would return [] anyway).
+      const [gallery, owned, stranded] = await Promise.all([
+        listGallery(t),
+        listMine(t),
+        isAdmin() ? listUnpublishedBuiltins(t) : Promise.resolve([]),
+      ]);
+      setThemes(dedupeThemesById([...gallery, ...owned, ...stranded]));
       setError(null);
     } catch (e) {
       setError(errMessage(e));

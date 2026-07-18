@@ -205,6 +205,49 @@ defmodule Grappa.ThemesTest do
     end
   end
 
+  describe "list_unpublished_builtins/1 (#299 — admin un-stranding)" do
+    test "an admin sees system-owned UNPUBLISHED built-ins, not published ones" do
+      admin = user_fixture(is_admin: true)
+      published_builtin = seed_builtin()
+      stranded = seed_builtin()
+      {:ok, _} = Themes.unpublish_theme({:user, admin}, stranded.id)
+
+      ids = Enum.map(Themes.list_unpublished_builtins({:user, admin}), & &1.id)
+      assert stranded.id in ids
+      refute published_builtin.id in ids
+    end
+
+    test "excludes a user's own unpublished draft (not system-owned — rides list_owned)" do
+      admin = user_fixture(is_admin: true)
+      owner = user_fixture()
+      {:ok, draft} = Themes.create_theme({:user, owner}, %{name: "Draft", payload: valid_payload()})
+
+      refute draft.id in Enum.map(Themes.list_unpublished_builtins({:user, admin}), & &1.id)
+    end
+
+    test "preloads the owner so the wire's author/built_in resolve" do
+      admin = user_fixture(is_admin: true)
+      stranded = seed_builtin()
+      {:ok, _} = Themes.unpublish_theme({:user, admin}, stranded.id)
+
+      [theme] = Themes.list_unpublished_builtins({:user, admin})
+      assert theme.owner.name == Themes.system_user_name()
+    end
+
+    test "a non-admin user gets an empty list (own drafts ride list_owned)" do
+      admin = user_fixture(is_admin: true)
+      user = user_fixture()
+      stranded = seed_builtin()
+      {:ok, _} = Themes.unpublish_theme({:user, admin}, stranded.id)
+
+      assert Themes.list_unpublished_builtins({:user, user}) == []
+    end
+
+    test "a visitor gets an empty list" do
+      assert Themes.list_unpublished_builtins(visitor_subject()) == []
+    end
+  end
+
   describe "get_active_theme/1 + set_active_theme/2" do
     test "get_active_theme returns nil when the subject has no active theme" do
       user = user_fixture()

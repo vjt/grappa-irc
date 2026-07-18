@@ -99,6 +99,28 @@ defmodule Grappa.Themes do
 
   def list_owned({:visitor, %Visitor{}}), do: []
 
+  @doc """
+  Unpublished, system-owned built-ins — visible ONLY to admins (#299). This is
+  the moderation surface that un-strands a built-in that was unpublished: a
+  stranded built-in has no owner-UI path (the system user has no session),
+  unlike a user's own unpublished theme which the owner sees via `list_owned/1`
+  and can re-publish from there. Non-admins get `[]` — nothing is stranded from
+  their view (their own drafts ride `list_owned/1`). Re-publishing reuses the
+  existing owner-or-admin `publish_theme/2` verb; this is just the read.
+  """
+  @spec list_unpublished_builtins(subject()) :: [Theme.t()]
+  def list_unpublished_builtins({:user, %User{is_admin: true}}) do
+    system_id = system_user().id
+
+    Theme
+    |> where([t], t.owner_id == ^system_id and t.published == false)
+    |> order_by([t], asc: t.name)
+    |> preload(:owner)
+    |> Repo.all()
+  end
+
+  def list_unpublished_builtins(_), do: []
+
   @doc "Fetch one theme by id (public read — share-link target), owner preloaded."
   @spec get_theme(integer()) :: {:ok, Theme.t()} | {:error, :not_found}
   def get_theme(id) when is_integer(id) do

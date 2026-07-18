@@ -5,6 +5,7 @@ defmodule GrappaWeb.ThemesController do
 
       GET    /themes               gallery (published + built-ins)   :index
       GET    /me/themes            the caller's owned library         :mine
+      GET    /themes/unpublished   admin: stranded built-ins (#299)   :unpublished
       GET    /themes/:id           one theme (public read by id)      :show
       POST   /themes               create (rate-limited)              :create
       PATCH  /themes/:id           edit (owner|admin)                 :update
@@ -48,6 +49,16 @@ defmodule GrappaWeb.ThemesController do
   def mine(conn, _) do
     viewer = conn.assigns.current_subject
     json(conn, %{themes: Enum.map(Themes.list_owned(viewer), &Wire.to_wire(&1, viewer))})
+  end
+
+  @doc false
+  @spec unpublished(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def unpublished(conn, _) do
+    viewer = conn.assigns.current_subject
+
+    json(conn, %{
+      themes: Enum.map(Themes.list_unpublished_builtins(viewer), &Wire.to_wire(&1, viewer))
+    })
   end
 
   @doc false
