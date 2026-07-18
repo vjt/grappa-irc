@@ -13,8 +13,12 @@
 // tests pin the seam up to the command nonce; this pins nonce → scroll.
 //
 // Why this is NOT a visitor/registered parity-matrix spec: the gesture is
-// a pure client-side scroll on the already-selected window — identical
-// across every user class (no server round-trip, no window-state change).
+// a client-side scroll on the already-selected window — identical across
+// every user class (since #310 it ALSO advances the read cursor via a
+// forward-only POST, but that reached-bottom behaviour is user-class-agnostic;
+// no window-state change, no focus steal). The read-cursor persist is pinned
+// by issue310-scroll-to-bottom-btn-cursor.spec.ts; this spec asserts the
+// re-tap SCROLL geometry only.
 // The parity matrix is for IRC FUNCTIONS whose behaviour differs by class;
 // this rides the scroll-spec precedent (issue168, contamination, cp14-b1),
 // which assert scroll geometry only.

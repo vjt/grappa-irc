@@ -104,8 +104,11 @@ import WhowasCard from "./WhowasCard";
 // below for the full contract.
 //
 // C7.4: Scroll-to-bottom floating button — appears when scrolled more than
-// SCROLL_BOTTOM_THRESHOLD_PX from the tail. Click → smooth-scroll to bottom
-// and resume auto-follow (resets atBottom to true).
+// SCROLL_BOTTOM_THRESHOLD_PX from the tail. Click → instant scroll to the
+// tail + resume auto-follow (resets atBottom to true), AND (since #310) —
+// like a manual scroll to the bottom — advances the read cursor to the newest
+// line and releases the marker-activation latch so the view does not snap back
+// to the divider. See `scrollToBottomGesture`.
 //
 // C7.6: Clickable nicks in scrollback — sender spans on PRIVMSG / NOTICE /
 // ACTION get .nick-clickable class. Left-click → open query window + focus.
@@ -2509,6 +2512,47 @@ const ScrollbackPane: Component<Props> = (props) => {
     setAtBottom(true);
   };
 
+  // #310 — the scroll-to-bottom GESTURE, shared by the floating button's
+  // onClick AND the #243 re-tap command below. Reaching the bottom via an
+  // explicit operator gesture means they have read to the newest line, so —
+  // exactly like a manual scroll to the bottom — it does two things the pure
+  // `scrollToBottom()` helper (kept for the send-relatch, which owns its own
+  // marker + cursor bookkeeping) deliberately does NOT:
+  //
+  //   1. Clears the marker-activation latch. A channel activation into an
+  //      unread window leaves `markerActivationPending` set; only an operator
+  //      INPUT event (`on(lastInputEventAtMs)`) or an own send cleared it. A
+  //      button tap is NOT a `listRef` input event (the button is a sibling
+  //      OUTSIDE `.scrollback`), so the latch stayed set — and the next rows()
+  //      recreation (a live message, or the switch-time `refreshScrollback`)
+  //      hit the length-effect's marker re-assert and yanked the view back to
+  //      the divider ~2s later (the #310 snap-back). Handing scroll authority
+  //      back here is exactly what the operator-input arm does for a manual
+  //      scroll.
+  //   2. Advances the server read cursor to the newest rendered id via the
+  //      existing forward-only `setCursorIfAdvances` POST path — so "read to
+  //      newest" persists across reload / cross-device. The button never
+  //      POSTed at all (candidate a; the manual path advances via the
+  //      input-gated scroll-settle, which a button tap never arms — see
+  //      cursor-forward-only.spec.ts).
+  //
+  // The newest id is read AFTER the instant scroll: `scrollToBottom()` pins
+  // the tail synchronously, so `lastFullyVisibleRowId`'s at-bottom
+  // short-circuit returns the true DOM tail — never a stale pre-scroll id the
+  // #233 monotonic clamp would drop as non-advancing (candidate b). No second
+  // cursor authority, no window-state mutation. The frozen divider is left in
+  // place, same as a manual scroll — it re-latches only on the next focus
+  // acquisition or own send (freeze contract).
+  const scrollToBottomGesture = () => {
+    scrollToBottom();
+    setMarkerActivationPending(false);
+    if (!listRef) return;
+    const id = lastFullyVisibleRowId(listRef);
+    if (id !== null) {
+      setCursorIfAdvances(props.networkSlug, props.channelName, id);
+    }
+  };
+
   // #243 — re-tap "jump to latest". The Sidebar / BottomBar tap handler
   // bumps `scrollToBottomRequest` when the operator re-taps the window
   // they're already on; this pane is the sole subscriber and the only one
@@ -2516,10 +2560,12 @@ const ScrollbackPane: Component<Props> = (props) => {
   // so the command always lands on the active scrollback. `defer: true`
   // skips the value read at mount, so a channel SWITCH (no nonce change) or
   // a stale nonce carried across identity rotation never fires a spurious
-  // jump — only a genuine re-tap does. Reuses the SAME instant, layout-
-  // aware `scrollToBottom()` the floating button uses (no second scroll
-  // authority; the #196/#230 anchor machinery is untouched).
-  createEffect(on(scrollToBottomRequest, () => scrollToBottom(), { defer: true }));
+  // jump — only a genuine re-tap does. Routes through the SHARED
+  // `scrollToBottomGesture` the floating button uses (#310) — same instant,
+  // layout-aware scroll (no second scroll authority; the #196/#230 anchor
+  // machinery is untouched) PLUS the reached-bottom cursor advance + latch
+  // release, since a re-tap to the bottom is the same "read to newest" intent.
+  createEffect(on(scrollToBottomRequest, () => scrollToBottomGesture(), { defer: true }));
 
   return (
     <div class="scrollback-pane">
@@ -2703,7 +2749,7 @@ const ScrollbackPane: Component<Props> = (props) => {
             type="button"
             class="scroll-to-bottom-btn"
             data-testid="scroll-to-bottom"
-            onClick={scrollToBottom}
+            onClick={scrollToBottomGesture}
             aria-label="Scroll to bottom"
           >
             ↓
