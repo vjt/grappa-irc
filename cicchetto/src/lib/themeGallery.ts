@@ -41,3 +41,24 @@ export function swatchColors(payload: TokenPayload): string[] {
 export function canManageTheme(theme: ThemesWireT, isAdmin: boolean): boolean {
   return theme.mine || isAdmin;
 }
+
+// #299 — merge the theme lists that back the gallery view (the published
+// gallery + the caller's owned library + the admin-visible stranded built-ins)
+// into one list, de-duplicated by id with the FIRST occurrence winning. The
+// caller passes them in priority order (gallery first) so the gallery copy's
+// order + viewer-relative flags lead; a theme that is BOTH published and owned
+// appears once (from the gallery), and the caller's UNPUBLISHED themes — which
+// never appear in the published gallery — are surfaced from the owned list.
+// This is the root-cause fix for copy/create/save "not showing": those rows
+// always persisted, the UI just never listed the owned library alongside the
+// gallery.
+export function dedupeThemesById(themes: ThemesWireT[]): ThemesWireT[] {
+  const seen = new Set<number>();
+  const out: ThemesWireT[] = [];
+  for (const t of themes) {
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
+    out.push(t);
+  }
+  return out;
+}

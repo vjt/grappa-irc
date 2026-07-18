@@ -14,9 +14,16 @@ import { activateTheme, activeThemeId } from "./lib/customTheme";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { isAdmin } from "./lib/networks";
 import { newThemeSeedPayload, openThemeEditor, themesRevision } from "./lib/themeEditor";
-import { canManageTheme, swatchColors } from "./lib/themeGallery";
+import { canManageTheme, dedupeThemesById, swatchColors } from "./lib/themeGallery";
 import type { TokenPayload } from "./lib/themesApi";
-import { copyTheme, deleteTheme, listGallery, publishTheme, unpublishTheme } from "./lib/themesApi";
+import {
+  copyTheme,
+  deleteTheme,
+  listGallery,
+  listMine,
+  publishTheme,
+  unpublishTheme,
+} from "./lib/themesApi";
 import type { ThemesWireT } from "./lib/wireTypes";
 
 // #75 sub-task 7 — the theme gallery, rendered as the SettingsDrawer
@@ -50,11 +57,18 @@ const ThemeGallery: Component<Props> = (props) => {
   const errMessage = (e: unknown): string =>
     e instanceof ApiError ? friendlyApiError(e) : "something went wrong";
 
+  // #299 — the gallery view is the published gallery PLUS the caller's owned
+  // library (their unpublished copies/creates/saves, which never appear in the
+  // published gallery — the root cause of "copy/create/save don't show"). Both
+  // are fetched and merged, de-duplicated by id (gallery order leads). Owned
+  // fetch is a user/visitor's own themes; visitors get an empty list until the
+  // #299 visitor-ownership work lands.
   const load = async (): Promise<void> => {
     const t = token();
     if (t === null) return;
     try {
-      setThemes(await listGallery(t));
+      const [gallery, owned] = await Promise.all([listGallery(t), listMine(t)]);
+      setThemes(dedupeThemesById([...gallery, ...owned]));
       setError(null);
     } catch (e) {
       setError(errMessage(e));

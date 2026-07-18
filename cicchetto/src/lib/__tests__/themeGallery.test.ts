@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { canManageTheme, SWATCH_KEYS, swatchColors } from "../themeGallery";
+import { canManageTheme, dedupeThemesById, SWATCH_KEYS, swatchColors } from "../themeGallery";
 import type { TokenPayload } from "../themesApi";
 import type { ThemesWireT } from "../wireTypes";
 
@@ -69,5 +69,30 @@ describe("canManageTheme", () => {
 
   test("admin can manage any theme (moderation)", () => {
     expect(canManageTheme(theme({ mine: false, built_in: true }), true)).toBe(true);
+  });
+});
+
+describe("dedupeThemesById", () => {
+  test("keeps the first occurrence of each id, preserving order", () => {
+    // #299 — the gallery view concatenates the published gallery + the
+    // caller's owned library (their own published themes appear in BOTH).
+    // Dedup by id, first occurrence wins, so the gallery copy's order +
+    // viewer-relative flags lead and the owned-only (unpublished) rows append.
+    const galleryA = theme({ id: 1, name: "gallery-1" });
+    const galleryB = theme({ id: 2, name: "gallery-2" });
+    const ownedDupe = theme({ id: 1, name: "owned-1-dupe", mine: true });
+    const ownedUnpublished = theme({ id: 3, name: "owned-3", mine: true, published: false });
+
+    const merged = dedupeThemesById([galleryA, galleryB, ownedDupe, ownedUnpublished]);
+
+    expect(merged.map((t) => t.id)).toEqual([1, 2, 3]);
+    // First occurrence (the gallery copy of id 1) wins over the owned dupe.
+    expect(merged[0]?.name).toBe("gallery-1");
+    // The owned unpublished theme (never in the published gallery) is surfaced.
+    expect(merged.some((t) => t.id === 3)).toBe(true);
+  });
+
+  test("returns an empty array when given no themes", () => {
+    expect(dedupeThemesById([])).toEqual([]);
   });
 });
