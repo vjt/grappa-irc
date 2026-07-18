@@ -95,6 +95,7 @@ defmodule Grappa.Session.Server do
     NSInterceptor,
     NumericRouter,
     PartCleanup,
+    Presence,
     WindowState
   }
 
@@ -510,6 +511,18 @@ defmodule Grappa.Session.Server do
           # Defaults to `ISupport.default/0` (bahamut/Azzurra values) until
           # a 005 with the tokens arrives. See `Grappa.Session.ISupport`.
           isupport: ISupport.t(),
+          # #247: authoritative /notify presence map for this session,
+          # keyed by rfc1459-folded nick — `:unknown` until the first
+          # MONITOR/WATCH report after arm. Seeded from `Grappa.Notify`
+          # at end-of-MOTD (376/422 — post-005, when the mechanism pick
+          # is known; 001 is too early). Dies with the process: a
+          # reconnect gets a fresh seed + re-arm, which is the whole
+          # point of server-side /notify.
+          presence: Presence.state_map(),
+          # #247: end-of-MOTD arm latch. An explicit /motd re-fires
+          # 376 mid-session — without the latch that would re-send the
+          # full MONITOR/WATCH arm burst on every /motd.
+          presence_armed: boolean(),
           # #229: per-session USER-mode set (the operator's own umodes on
           # this network) — a sorted list of single-letter strings. Seeded
           # by the 221 RPL_UMODEIS reply to the bare `MODE <selfnick>` query
@@ -778,6 +791,9 @@ defmodule Grappa.Session.Server do
       linelen: 512,
       # #216: default channel-mode capability table until 005 arrives.
       isupport: ISupport.default(),
+      # #247: /notify presence map — seeded at the end-of-MOTD arm.
+      presence: %{},
+      presence_armed: false,
       # #229: empty umode set until the 221 RPL_UMODEIS reply arrives.
       umodes: [],
       # #249: empty supported-umode set until the 004 RPL_MYINFO arrives.
@@ -1569,6 +1585,26 @@ defmodule Grappa.Session.Server do
     {:reply, {:ok, channels}, state}
   end
 
+  # #247 — the authoritative /notify presence map for this session.
+  # Public via `Grappa.Session.presence_snapshot/2`; consumed by the
+  # channel after-join snapshot and the REST notify listing (DB list +
+  # live map = both sources of truth, per the CLAUDE.md admin-listing
+  # rule). `Map.get` for the hot-reload window.
+  def handle_call(:presence_snapshot, _, state) do
+    {:reply, Map.get(state, :presence, %{}), state}
+  end
+
+  # #247 — live watch-list sync after a `/notify add|del|clear`
+  # mutation while connected. `added`/`removed` are display-form nick
+  # lists (the controller computed the diff against Grappa.Notify);
+  # translation to MONITOR/WATCH lines + map bookkeeping live in
+  # `sync_presence/3`. A pre-arm session only updates the map — the
+  # end-of-MOTD arm reads the DB list, which already carries the change.
+  def handle_call({:notify_changed, added, removed}, _, state)
+      when is_list(added) and is_list(removed) do
+    {:reply, :ok, sync_presence(state, added, removed)}
+  end
+
   @doc """
   Returns a snapshot of `state.members[channel]` in mIRC sort order
   (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).
@@ -2106,6 +2142,21 @@ defmodule Grappa.Session.Server do
   def handle_info(:connection_stable, state) do
     Backoff.record_success(state.subject, state.network_id)
     {:noreply, %{state | connection_stable_timer: nil}}
+  end
+
+  # #247 — end-of-MOTD (376 RPL_ENDOFMOTD / 422 ERR_NOMOTD): arm the
+  # /notify presence watch. This is the earliest reliable point PAST the
+  # full 005 burst — the MONITOR-vs-WATCH pick needs the ISUPPORT
+  # tokens, so the 001 autojoin slot is too early. Arm-then-delegate:
+  # 376/422 are in NumericRouter's delegated set, so the generic numeric
+  # clause below would route them straight to `delegate/2` anyway
+  # (EventRouter's MOTD clause owns the persist-vs-modal branching);
+  # this clause just front-runs it with the arm. The `presence_armed`
+  # latch keeps an explicit mid-session /motd (which re-fires 376) from
+  # re-sending the arm burst.
+  def handle_info({:irc, %Message{command: {:numeric, numeric}} = msg}, state)
+      when numeric in [376, 422] do
+    delegate(msg, arm_presence(state))
   end
 
   # Cleared 10s after the last NSInterceptor capture if no +r MODE
@@ -3272,6 +3323,40 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # #247 — one /notify presence report (EventRouter's MONITOR/WATCH
+  # clauses). Same Topic.user carrier as umode_changed: presence is per
+  # (subject, network), and cic's user-topic dispatch reaches every
+  # attached client without a per-channel subscription dance.
+  defp apply_effects([{:presence_changed, nick, presence, kind, source} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.presence_changed(
+          state.network_id,
+          nick,
+          presence,
+          kind == :initial,
+          source,
+          DateTime.utc_now()
+        )
+      )
+
+    apply_effects(rest, state)
+  end
+
+  # #247 — upstream watch-list rejection. Typed event on Topic.user;
+  # the raw numeric is additionally persisted on $server by the routing
+  # matrix (734/512 are NOT delegated).
+  defp apply_effects([{:presence_error, reason, detail} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.presence_error(state.network_id, reason, detail)
+      )
+
+    apply_effects(rest, state)
+  end
+
   # #215 — the +r bit flipped (EventRouter self-MODE branch). Emit the
   # `:identified` / `:deidentified` session-lifecycle event. Pure side
   # effect (Logger + telemetry) — no state mutation.
@@ -4416,6 +4501,81 @@ defmodule Grappa.Session.Server do
     Logger.warning("#{label}: Client.send failed",
       reason: inspect(reason)
     )
+  end
+
+  # ---------------------------------------------------------------------------
+  # #247 — /notify presence arm + live sync
+  # ---------------------------------------------------------------------------
+
+  # Arms the /notify presence watch at end-of-MOTD: reads the durable
+  # list from Grappa.Notify, picks the mechanism from the (by now
+  # complete) 005 capability table, sends the chunked MONITOR/WATCH
+  # burst, and seeds the presence map `:unknown`. The `presence_armed`
+  # latch makes a mid-session /motd's second 376 a no-op. All state
+  # access via Map.get/Map.put for the standard hot-reload-window
+  # safety (a live pre-#247 process state lacks both keys).
+  @spec arm_presence(t()) :: t()
+  defp arm_presence(state) do
+    if Map.get(state, :presence_armed, false) do
+      state
+    else
+      nicks = Enum.map(Grappa.Notify.list(state.subject, state.network_id), & &1.nick)
+      mechanism = presence_mechanism(state)
+
+      case {nicks, mechanism} do
+        {[], _} ->
+          :ok
+
+        {_, :none} ->
+          # Log honesty: state what was OBSERVED — the list exists, the
+          # network offers no mechanism (v1 ships no ISON fallback).
+          Logger.info(
+            "presence arm skipped: no MONITOR/WATCH in ISUPPORT " <>
+              "(#{length(nicks)} watched nicks stay :unknown)"
+          )
+
+        {_, mechanism} ->
+          for line <- Presence.arm_commands(mechanism, nicks) do
+            maybe_log_send_failure("presence_arm", Client.send_raw(state.client, line))
+          end
+
+          :ok
+      end
+
+      state
+      |> Map.put(:presence, Presence.seed(nicks))
+      |> Map.put(:presence_armed, true)
+    end
+  end
+
+  # Live `/notify add|del|clear` sync while connected (the reconnect
+  # path re-arms from the DB instead). Diffs are computed by the caller
+  # (the notify controller knows which nicks changed); this just
+  # translates them upstream and keeps the map in step. No-op sends
+  # when the watch was never armed (pre-MOTD or parked session): the
+  # eventual arm reads the DB list, which already carries the change.
+  @spec sync_presence(t(), [String.t()], [String.t()]) :: t()
+  defp sync_presence(state, added, removed) do
+    mechanism = presence_mechanism(state)
+    map = Map.get(state, :presence, %{})
+
+    if Map.get(state, :presence_armed, false) and mechanism != :none do
+      for line <- Presence.add_commands(mechanism, added) do
+        maybe_log_send_failure("presence_sync", Client.send_raw(state.client, line))
+      end
+
+      for line <- Presence.remove_commands(mechanism, removed) do
+        maybe_log_send_failure("presence_sync", Client.send_raw(state.client, line))
+      end
+    end
+
+    map = map |> Presence.track(added) |> Presence.untrack(removed)
+    Map.put(state, :presence, map)
+  end
+
+  @spec presence_mechanism(t()) :: ISupport.presence_mechanism()
+  defp presence_mechanism(state) do
+    ISupport.presence_mechanism(Map.get(state, :isupport, ISupport.default()))
   end
 
   # C8: aggregate mentions during the away interval and broadcast

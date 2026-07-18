@@ -4281,4 +4281,86 @@ defmodule Grappa.Session.EventRouterTest do
       assert [{:persist, :server_event, %{channel: "#mixedcase"}}, {:invited, "#mixedcase"}] = effects
     end
   end
+
+  describe "presence numerics (#247)" do
+    defp presence_state(map) do
+      base_state(%{presence: map})
+    end
+
+    test "730 RPL_MONONLINE folds a multi-target hostmask list into per-nick effects" do
+      state = presence_state(%{"foo" => :unknown, "bar" => :unknown})
+      m = msg({:numeric, 730}, ["vjt", "Foo!u@h,Bar!u2@h2"], {:server, "irc.test.org"})
+
+      {:cont, next, effects} = EventRouter.route(m, state)
+
+      assert effects == [
+               {:presence_changed, "Foo", :online, :initial, :monitor},
+               {:presence_changed, "Bar", :online, :initial, :monitor}
+             ]
+
+      assert next.presence == %{"foo" => :online, "bar" => :online}
+    end
+
+    test "731 flip after baseline is a :transition; duplicate emits nothing" do
+      state = presence_state(%{"foo" => :online})
+      m = msg({:numeric, 731}, ["vjt", "Foo"], {:server, "irc.test.org"})
+
+      {:cont, next, effects} = EventRouter.route(m, state)
+      assert effects == [{:presence_changed, "Foo", :offline, :transition, :monitor}]
+
+      {:cont, _, effects2} = EventRouter.route(m, next)
+      assert effects2 == []
+    end
+
+    test "reports for untracked nicks emit nothing — never invent entries" do
+      state = presence_state(%{"foo" => :unknown})
+      m = msg({:numeric, 730}, ["vjt", "Stranger!u@h"], {:server, "irc.test.org"})
+
+      {:cont, next, effects} = EventRouter.route(m, state)
+      assert effects == []
+      assert next.presence == %{"foo" => :unknown}
+    end
+
+    test "600/604 online + 601/605 offline route through the WATCH source" do
+      state = presence_state(%{"foo" => :unknown})
+
+      for {numeric, presence, kind, seed} <- [
+            {600, :online, :initial, %{"foo" => :unknown}},
+            {604, :online, :initial, %{"foo" => :unknown}},
+            {601, :offline, :transition, %{"foo" => :online}},
+            {605, :offline, :initial, %{"foo" => :unknown}}
+          ] do
+        m =
+          msg({:numeric, numeric}, ["vjt", "Foo", "user", "host", "0", "text"], {:server, "irc.test.org"})
+
+        {:cont, _, effects} = EventRouter.route(m, %{state | presence: seed})
+        assert effects == [{:presence_changed, "Foo", presence, kind, :watch}]
+      end
+    end
+
+    test "602 RPL_WATCHOFF ack is a handled no-op" do
+      m = msg({:numeric, 602}, ["vjt", "Foo", "user", "host", "0", "stopped watching"], {:server, "irc.test.org"})
+      assert {:cont, _, []} = EventRouter.route(m, presence_state(%{}))
+    end
+
+    test "734 ERR_MONLISTFULL emits a presence_error with the rejected targets" do
+      m = msg({:numeric, 734}, ["vjt", "100", "Foo,Bar", "Monitor list is full."], {:server, "irc.test.org"})
+      {:cont, _, effects} = EventRouter.route(m, presence_state(%{}))
+      assert effects == [{:presence_error, :list_full, "Foo,Bar"}]
+    end
+
+    test "512 emits presence_error only when WATCH is the armed mechanism" do
+      watch_isupport = ISupport.merge_isupport(["vjt", "WATCH=128"], ISupport.default())
+      m = msg({:numeric, 512}, ["vjt", "Foo", "Maximum size for WATCH-list is 128 entries"], {:server, "irc.test.org"})
+
+      {:cont, _, effects} =
+        EventRouter.route(m, base_state(%{presence: %{}, isupport: watch_isupport}))
+
+      assert effects == [{:presence_error, :list_full, "Foo"}]
+
+      # A non-WATCH network's 512 is not a watch-list error.
+      {:cont, _, effects2} = EventRouter.route(m, base_state(%{presence: %{}}))
+      assert effects2 == []
+    end
+  end
 end

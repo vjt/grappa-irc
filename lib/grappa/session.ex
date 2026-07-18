@@ -60,6 +60,7 @@ defmodule Grappa.Session do
       Grappa.Scrollback,
       Grappa.SessionLog,
       Grappa.Subject,
+      Grappa.Notify,
       Grappa.UserSettings,
       Grappa.Version,
       Grappa.WindowCounts
@@ -1128,6 +1129,49 @@ defmodule Grappa.Session do
   def send_motd(subject, network_id)
       when is_subject(subject) and is_integer(network_id) do
     call_session(subject, network_id, :send_motd)
+  end
+
+  @doc """
+  #247 — the live /notify presence map for `(subject, network_id)`:
+  `%{folded_nick => :online | :offline | :unknown}`. `{:error,
+  :no_session}` when no session is running — callers surface the DB
+  watch list with unknown presence in that case (DB state and live
+  state are separate sources of truth; never fake one from the other).
+  """
+  @spec presence_snapshot(subject(), integer()) ::
+          {:ok, %{String.t() => :online | :offline | :unknown}} | {:error, :no_session | :timeout}
+  def presence_snapshot(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    case call_session(subject, network_id, :presence_snapshot) do
+      {:error, _} = err -> err
+      map when is_map(map) -> {:ok, map}
+    end
+  end
+
+  @doc """
+  #247 — live watch-list sync after a `Grappa.Notify` mutation while a
+  session is up: sends the MONITOR/WATCH add/remove lines and updates
+  the session's presence map. `added`/`removed` are display-form nick
+  lists (the caller computed the diff). `:ok` on a no-session miss —
+  the next (re)connect's end-of-MOTD arm reads the DB list, which
+  already carries the mutation, so a missing live session is the
+  expected parked/disconnected case, not an error.
+  """
+  @spec notify_changed(subject(), integer(), [String.t()], [String.t()]) :: :ok
+  def notify_changed(subject, network_id, added, removed)
+      when is_subject(subject) and is_integer(network_id) and is_list(added) and
+             is_list(removed) do
+    case call_session(subject, network_id, {:notify_changed, added, removed}) do
+      :ok ->
+        :ok
+
+      {:error, :no_session} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("notify_changed sync failed", reason: inspect(reason))
+        :ok
+    end
   end
 
   @doc """
