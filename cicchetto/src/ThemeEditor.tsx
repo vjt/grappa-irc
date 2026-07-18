@@ -61,18 +61,24 @@ const ThemeEditor: Component = () => {
   // lands + activates. No-op the close paths while saving instead.
   const [saving, setSaving] = createSignal(false);
 
-  // #294 — the server-owned built-in background catalog for the picker. Fetched
-  // once on editor mount; cic never hard-codes the closed set (it would drift
-  // from the server sanitizer). Empty on failure — the upload path still works.
-  const [builtins] = createResource(async () => {
-    const t = token();
-    if (t === null) return [];
-    try {
-      return await listBuiltinBackgrounds(t);
-    } catch {
-      return [];
-    }
-  });
+  // #294 — the server-owned built-in background catalog for the picker.
+  // GATED on editor-open (source is `false` while closed) so it NEVER fetches
+  // at boot: ThemeEditor is mounted at Shell boot with the modal closed, and a
+  // boot-time GET /themes/backgrounds against an unresolved/fake token would
+  // 401 → trip the shared on401 → clear the token → bounce (the frozen-splash
+  // e2e class, feedback_boot_auth_fetch_breaks_freeze_e2e). cic never hard-codes
+  // the closed set (it would drift from the server sanitizer); empty on failure
+  // — the upload path still works.
+  const [builtins] = createResource(
+    () => (themeEditorState() !== null ? token() : false),
+    async (t) => {
+      try {
+        return await listBuiltinBackgrounds(t);
+      } catch {
+        return [];
+      }
+    },
+  );
 
   const cancel = () => {
     if (saving()) return;
