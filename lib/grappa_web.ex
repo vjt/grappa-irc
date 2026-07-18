@@ -29,6 +29,7 @@ defmodule GrappaWeb do
         Grappa.Net.IpLiteral,
         Grappa.Net.PtrCache,
         Grappa.Networks,
+        Grappa.Notify,
         Grappa.Operator,
         Grappa.OutboundV6Pool,
         Grappa.PubSub,
