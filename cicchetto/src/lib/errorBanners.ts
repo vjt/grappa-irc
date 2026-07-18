@@ -1,5 +1,5 @@
 import { createSignal, untrack } from "solid-js";
-import { performRefresh, shouldShowRefreshBanner } from "./bundleHash";
+import { performRefresh, refreshBannerMessage, shouldShowRefreshBanner } from "./bundleHash";
 import { isOffline } from "./connectivity";
 import { shouldShowBanner, socketHealth } from "./socketHealth";
 import { shouldShowSwRegBanner, swRegistration } from "./swRegistration";
@@ -132,11 +132,14 @@ export function activeBanners(): BannerEntry[] {
   }
 
   // New cic bundle deployed — user-actionable refresh; persists until reload.
+  // #292 — the message now shows current-vs-available version (semver +
+  // short build-hash suffix), composed by bundleHash (the owner of the
+  // version+hash signals).
   if (shouldShowRefreshBanner()) {
     entries.push({
       source: "bundle-refresh",
       severity: "info",
-      message: "New version available — a fresh cicchetto build was deployed.",
+      message: refreshBannerMessage(),
       actionHint: { label: "Refresh", onAction: () => void performRefresh() },
     });
   }

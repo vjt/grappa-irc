@@ -24494,3 +24494,59 @@ no spend of the shared `vjt` daily theme-create budget.
 _Deploy: **COLD** (server route + payload-model change) **+ `--cic`** (bundle
 carries the picker + the 8 WebP). No migration (payload is a JSON blob; the
 sanitizer defaults old rows forward). **HELD** for the batched 4am COLD ship._
+
+## 2026-07-18 — #292 (P1, cic): refresh bar shows current vs available version
+
+The refresh banner (a `bundle-refresh` entry in the #119 unified error region)
+went from an opaque "New version available" string to
+`current <X> → available <Y>`. The issue assumed the version strings "are
+presumably already available from the bundle/build metadata — wire them in."
+**They were not** — challenge-the-spec confirmed the cic bundle had NO semver
+anywhere: `cicchetto/package.json` was a never-bumped `0.0.1` placeholder never
+wired into the build, and the ONLY build identity was the opaque Vite asset hash
+(`index-<hash>.js`). The server's `@version` (`mix.exs` `0.3.2`,
+`Grappa.Version`) is the **bouncer** version (CTCP-VERSION-only, different
+artifact + deploy path) — semantically wrong as "the cic version". So this
+bucket had to **establish** a cic-bundle version scheme, not wire an existing
+one.
+
+**The decision (vjt): Option A + a short hash suffix for trivial changes.**
+The primary version is the `cicchetto/package.json` semver (bumped per cic
+release). But a semver alone goes dead the moment a rebuild ships without a
+bump — both sides read the same number and the "changed" signal vanishes. So
+the refresh bar **appends the short (7-char) bundle hash** whenever the two
+semvers match (a trivial rebuild) or a semver is missing:
+`current 0.1.0 (4f2a9c1) → available 0.1.0 (9c1bd3e)`. A real version bump
+shows clean semvers with no hash noise: `current 0.1.0 → available 0.2.0`. The
+hash mismatch remains the banner **trigger** (`shouldShowRefreshBanner`
+unchanged); the version is display enrichment only. Reusing the EXISTING
+bundle-hash signals as the suffix (not a second hash) keeps one identity source.
+
+**Cross-side source: ONE `<meta name="cicchetto-version">` in `index.html`.**
+Vite's `transformIndexHtml` bakes the `package.json` semver into the shell HTML
+(dev + build). cic reads it for the RUNNING version
+(`bundleHash.readBootBundleVersion`, parallel to `readBootBundleHash`). The
+**server** reads the SAME tag from the **deployed** dist
+(`Grappa.Cic.Bundle.current_version/0`, parallel to `current_hash/0`) — NOT the
+source `package.json` — so it advertises what is actually **served**, exactly
+as it already does for the bundle hash. Reading source `package.json` would be
+a second source of truth and wrong in prod (source can lead the deployed dist).
+
+**Wire: the semver rides the existing `bundle_hash` event, optional key.**
+`Grappa.Cic.Wire.bundle_hash/2` gains a `version` field; a `nil`/empty version
+(bundle predates the meta tag, or parse miss) **omits the key** rather than
+shipping `null`, and cic's `userTopic` narrower normalises absent → `null` so
+the consumer always sees `string | null`. Both push sites
+(`GrappaChannel.push_bundle_hash/1` after-join snapshot,
+`AdminController.cic_bundle_changed/2` deploy broadcast) pass
+`CicBundle.current_version()`. The generated `wireTypes.ts` regenerated (the
+`gen_wire_types` codegen can't emit optional keys, so the generated
+`CicWireBundleHashPayload` shows a required `version: string` — it is unused;
+the consumed type is the hand-written `WireUserEvent` arm in `api.ts`).
+
+**Going forward:** cic releases bump `cicchetto/package.json`. No bump needed
+for the mechanism to stay honest — the appended hash covers unbumped rebuilds.
+
+_Deploy: **`--cic` only** (cic bundle + the server-side wire read). **HELD** —
+batched into the next cic bundle ship; NOT shipped solo (the #294 4am COLD
+batch is separate)._

@@ -2,16 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetBundleHashForTests,
   bootBundleHashAccessor,
+  bootBundleVersionAccessor,
+  formatRefreshBanner,
   performRefresh,
   serverBundleHash,
+  serverBundleVersion,
   setServerBundleHash,
+  setServerBundleVersion,
   shouldShowRefreshBanner,
 } from "../lib/bundleHash";
 
 describe("bundleHash", () => {
   beforeEach(() => {
-    // Reset server hash to null so each test starts unsynced.
-    __resetBundleHashForTests(null);
+    // Reset server hash + version to null so each test starts unsynced.
+    __resetBundleHashForTests(null, null);
   });
 
   it("starts with serverBundleHash null and shouldShowRefreshBanner false", () => {
@@ -41,6 +45,65 @@ describe("bundleHash", () => {
     }
     setServerBundleHash("definitely-different-hash-xxx");
     expect(shouldShowRefreshBanner()).toBe(true);
+  });
+
+  describe("bundle version signals (#292)", () => {
+    it("starts with serverBundleVersion null", () => {
+      expect(serverBundleVersion()).toBeNull();
+    });
+
+    it("bootBundleVersion is null in jsdom (no <meta cicchetto-version> tag)", () => {
+      // The version is baked into a real vite build's index.html <meta> tag;
+      // setupTests provides none, so the running-version accessor is null and
+      // the display degrades to the build hash. e2e covers the built page.
+      expect(bootBundleVersionAccessor()).toBeNull();
+    });
+
+    it("setServerBundleVersion updates the serverBundleVersion signal", () => {
+      setServerBundleVersion("1.2.4");
+      expect(serverBundleVersion()).toBe("1.2.4");
+    });
+
+    it("setServerBundleVersion(null) clears the signal", () => {
+      setServerBundleVersion("1.2.4");
+      setServerBundleVersion(null);
+      expect(serverBundleVersion()).toBeNull();
+    });
+  });
+});
+
+describe("formatRefreshBanner (#292 — current vs available)", () => {
+  it("shows both semvers cleanly (no hash) when they are known and differ", () => {
+    const msg = formatRefreshBanner("1.2.3", "aaaaaaa1111", "1.2.4", "bbbbbbb2222");
+    expect(msg).toContain("current 1.2.3");
+    expect(msg).toContain("available 1.2.4");
+    // A real version bump tells the whole story — no build-hash noise.
+    expect(msg).not.toContain("aaaaaaa");
+    expect(msg).not.toContain("bbbbbbb");
+  });
+
+  it("appends the truncated build hash when the semver is unchanged (trivial rebuild)", () => {
+    const msg = formatRefreshBanner("1.2.3", "aaaaaaa1111", "1.2.3", "bbbbbbb2222");
+    // Same version on both sides → the short (7-char) hash disambiguates.
+    expect(msg).toContain("current 1.2.3 (aaaaaaa)");
+    expect(msg).toContain("available 1.2.3 (bbbbbbb)");
+  });
+
+  it("falls back to the build hash alone when no semver is known", () => {
+    const msg = formatRefreshBanner(null, "aaaaaaa1111", null, "bbbbbbb2222");
+    expect(msg).toContain("current aaaaaaa");
+    expect(msg).toContain("available bbbbbbb");
+  });
+
+  it("truncates the build hash to 7 characters", () => {
+    const msg = formatRefreshBanner(null, "0123456789abcdef", null, "fedcba9876543210");
+    expect(msg).toContain("0123456");
+    expect(msg).not.toContain("0123456789");
+  });
+
+  it("always leads with the 'New version available' signal (banner contract)", () => {
+    expect(formatRefreshBanner("1.0.0", "aaa", "2.0.0", "bbb")).toContain("New version available");
+    expect(formatRefreshBanner(null, "aaa", null, "bbb")).toContain("New version available");
   });
 
   describe("performRefresh (UX-6-I: single-press)", () => {

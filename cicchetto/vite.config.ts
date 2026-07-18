@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import solid from "vite-plugin-solid";
@@ -5,6 +6,18 @@ import solid from "vite-plugin-solid";
 // service-worker's Web Push notification icon (`src/lib/pwaIcons.ts`), so a
 // rename can't silently drift the SW into a 404 path.
 import { PWA_ICONS } from "./src/lib/pwaIcons";
+
+// #292 — bake the cic package.json semver into the built (and dev) index.html
+// as `<meta name="cicchetto-version">`. ONE source (package.json), ONE
+// injection point: cic reads this tag for the RUNNING version
+// (`bundleHash.readBootBundleVersion`), and the server reads the SAME tag
+// from the DEPLOYED dist (`Grappa.Cic.Bundle.current_version/0`) to advertise
+// the AVAILABLE version over the `bundle_hash` wire event. Bumping the semver
+// is `cicchetto/package.json` — trivial rebuilds that skip the bump are
+// disambiguated by the short bundle-hash suffix the refresh bar appends.
+const CIC_VERSION = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+).version as string;
 
 // Dev-only proxy: vite serves the SolidJS app on :5173 and forwards the
 // REST + Channels surfaces to grappa on :4000. In prod, sub-task 6's
@@ -49,6 +62,19 @@ import { PWA_ICONS } from "./src/lib/pwaIcons";
 export default defineConfig({
   plugins: [
     solid(),
+    // #292 — inject the semver <meta> tag into index.html (dev + build).
+    {
+      name: "cicchetto-version-meta",
+      transformIndexHtml() {
+        return [
+          {
+            tag: "meta",
+            attrs: { name: "cicchetto-version", content: CIC_VERSION },
+            injectTo: "head",
+          },
+        ];
+      },
+    },
     VitePWA({
       registerType: "autoUpdate",
       strategies: "injectManifest",

@@ -1053,7 +1053,10 @@ export type WireUserEvent =
       by: string | null;
       reason: string | null;
     }
-  | { kind: "bundle_hash"; hash: string }
+  // #292 — `version` is the deployed bundle's semver (server omits the wire
+  // key when unknown; the narrower normalises absent → null). Drives the
+  // refresh bar's "current X → available Y" display.
+  | { kind: "bundle_hash"; hash: string; version: string | null }
   // UX-6-B2 (2026-05-21) — operator-visible server-settings reactive
   // signal. Fired on `Admin.SettingsController.update/2` fan-out AND
   // on after-join snapshot from `GrappaChannel.push_server_settings/1`

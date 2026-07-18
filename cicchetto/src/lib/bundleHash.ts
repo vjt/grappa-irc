@@ -44,14 +44,40 @@ function readBootBundleHash(): string | null {
   return null;
 }
 
+// #292 — the running bundle's human-readable semver, baked into the page
+// as `<meta name="cicchetto-version" content="<pkg.version>">` by the
+// `transformIndexHtml` hook in vite.config.ts (server side reads the same
+// tag via `Grappa.Cic.Bundle.current_version/0`). Read once at module
+// init, same as `readBootBundleHash`. `null` when absent (jsdom unit env
+// with no meta tag, or a bundle built before this shipped) — the display
+// then degrades to the build hash alone.
+function readBootBundleVersion(): string | null {
+  if (typeof document === "undefined") return null;
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="cicchetto-version"]');
+  const content = meta?.content ?? "";
+  return content !== "" ? content : null;
+}
+
 const [bootBundleHash] = createSignal<string | null>(readBootBundleHash());
 const [serverBundleHashSignal, setServerBundleHashInternal] = createSignal<string | null>(null);
+const [bootBundleVersion] = createSignal<string | null>(readBootBundleVersion());
+const [serverBundleVersionSignal, setServerBundleVersionInternal] = createSignal<string | null>(
+  null,
+);
 
 export const bootBundleHashAccessor: Accessor<string | null> = bootBundleHash;
 export const serverBundleHash: Accessor<string | null> = serverBundleHashSignal;
+export const bootBundleVersionAccessor: Accessor<string | null> = bootBundleVersion;
+export const serverBundleVersion: Accessor<string | null> = serverBundleVersionSignal;
 
 export function setServerBundleHash(hash: string): void {
   setServerBundleHashInternal(hash);
+}
+
+// The server advertises the deployed bundle's semver alongside the hash;
+// `null` when the deployed bundle carries no version (wire key omitted).
+export function setServerBundleVersion(version: string | null): void {
+  setServerBundleVersionInternal(version);
 }
 
 // True iff (1) we know what we booted with, (2) the server has told us
@@ -61,6 +87,63 @@ export function shouldShowRefreshBanner(): boolean {
   const boot = bootBundleHash();
   const server = serverBundleHashSignal();
   return boot !== null && server !== null && boot !== server;
+}
+
+// #292 — refresh bar "current vs available" version display.
+//
+// The hash mismatch is the TRIGGER (shouldShowRefreshBanner); the semver
+// is display enrichment. A short (7-char) slice of the build hash is the
+// disambiguator per vjt's ask: a trivial rebuild reuses the semver, so
+// without the hash suffix the two sides would read identically and the
+// signal would go dead. `git`-style 7 chars is a familiar, sufficient
+// content fingerprint.
+const SHORT_HASH_LEN = 7;
+
+function shortHash(hash: string | null): string | null {
+  return hash !== null && hash !== "" ? hash.slice(0, SHORT_HASH_LEN) : null;
+}
+
+// Compose one side's label: "<semver> (<hash7>)" when both are known,
+// the semver or the hash alone when only one is, "unknown" when neither
+// (the banner never actually shows in that case — both hashes are known
+// by construction). Pure so it's exhaustively unit-testable.
+function versionLabel(version: string | null, hash: string | null): string {
+  const sh = shortHash(hash);
+  if (version !== null && sh !== null) return `${version} (${sh})`;
+  if (version !== null) return version;
+  if (sh !== null) return sh;
+  return "unknown";
+}
+
+// Pure formatter for the refresh-bar message. When both semvers are known
+// AND differ, the version bump tells the whole story — clean
+// "current X → available Y", no hash noise. Otherwise (same semver = a
+// trivial rebuild, or a semver missing) fall back to the build-hash
+// suffix so the user still sees a concrete diff.
+export function formatRefreshBanner(
+  currentVersion: string | null,
+  currentHash: string | null,
+  availableVersion: string | null,
+  availableHash: string | null,
+): string {
+  if (currentVersion !== null && availableVersion !== null && currentVersion !== availableVersion) {
+    return `New version available — current ${currentVersion} → available ${availableVersion}.`;
+  }
+  const current = versionLabel(currentVersion, currentHash);
+  const available = versionLabel(availableVersion, availableHash);
+  return `New version available — current ${current} → available ${available}.`;
+}
+
+// Signal-reading wrapper — the message the error-banner registry renders.
+// Reads the current (baked-in) + available (server-advertised) version +
+// hash signals and delegates to the pure `formatRefreshBanner`.
+export function refreshBannerMessage(): string {
+  return formatRefreshBanner(
+    bootBundleVersion(),
+    bootBundleHash(),
+    serverBundleVersionSignal(),
+    serverBundleHashSignal(),
+  );
 }
 
 // UX-6-I (2026-05-22) — single-press refresh fix. Pre-fix this was a
@@ -158,9 +241,14 @@ export async function performRefresh(): Promise<void> {
   }
 }
 
-// Test-only — reset both signals. Production code never calls this.
-export function __resetBundleHashForTests(serverHash: string | null = null): void {
+// Test-only — reset the server-advertised signals. Production code never
+// calls this. Both params are required (no silent-default degradation).
+export function __resetBundleHashForTests(
+  serverHash: string | null,
+  serverVersion: string | null,
+): void {
   setServerBundleHashInternal(serverHash);
+  setServerBundleVersionInternal(serverVersion);
 }
 
 // E2E hook surface — Playwright runs against a vite build (no /src
@@ -179,8 +267,10 @@ declare global {
   interface Window {
     __cic_bundleHash?: {
       setServerHash: (hash: string) => void;
+      setServerVersion: (version: string | null) => void;
       reset: () => void;
       bootHash: () => string | null;
+      bootVersion: () => string | null;
       __refreshProbe?: () => void;
     };
   }
@@ -189,7 +279,9 @@ declare global {
 if (typeof window !== "undefined") {
   window.__cic_bundleHash = {
     setServerHash: setServerBundleHash,
-    reset: () => __resetBundleHashForTests(null),
+    setServerVersion: setServerBundleVersion,
+    reset: () => __resetBundleHashForTests(null, null),
     bootHash: () => bootBundleHash(),
+    bootVersion: () => bootBundleVersion(),
   };
 }
