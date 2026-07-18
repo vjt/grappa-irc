@@ -53,10 +53,29 @@ defmodule Grappa.Session.ISupport do
 
   @type prefix :: %{String.t() => String.t()}
 
+  @typedoc """
+  Advertised limit of a presence-watch mechanism (#247). `:unlimited`
+  when the token carries no parseable numeric value (`MONITOR`,
+  `MONITOR=`, `WATCH=abc`) — the mechanism is armed, just without a
+  known cap.
+  """
+  @type presence_limit :: pos_integer() | :unlimited
+
+  @typedoc """
+  The presence-watch mechanism this network advertises for `/notify`
+  (#247): IRCv3 `MONITOR` (solanum/Libera, OFTC), legacy `WATCH`
+  (bahamut/Azzurra), or `:none`. MONITOR wins when both are advertised.
+  ISON polling (the no-mechanism fallback) is out of v1 scope — a
+  `:none` network simply gets no live presence.
+  """
+  @type presence_mechanism :: {:monitor, presence_limit()} | {:watch, presence_limit()} | :none
+
   @type t :: %{
           chanmodes: chanmodes(),
           prefix: prefix(),
-          statusmsg: [String.t()]
+          statusmsg: [String.t()],
+          monitor: presence_limit() | nil,
+          watch: presence_limit() | nil
         }
 
   # Pre-005 seed = the exact values the old EventRouter constants held.
@@ -99,7 +118,17 @@ defmodule Grappa.Session.ISupport do
   """
   @spec default() :: t()
   def default do
-    %{chanmodes: @default_chanmodes, prefix: @default_prefix, statusmsg: @default_statusmsg}
+    %{
+      chanmodes: @default_chanmodes,
+      prefix: @default_prefix,
+      statusmsg: @default_statusmsg,
+      # #247 — no presence mechanism assumed pre-005: MONITOR/WATCH are
+      # armed only on an explicit advertisement, never a seed guess
+      # (arming WATCH against a server without it earns an ERR_UNKNOWNCOMMAND
+      # per reconnect for zero signal).
+      monitor: nil,
+      watch: nil
+    }
   end
 
   @doc """
@@ -170,6 +199,26 @@ defmodule Grappa.Session.ISupport do
   @spec default_statusmsg() :: [String.t()]
   def default_statusmsg, do: @default_statusmsg
 
+  @doc """
+  The presence-watch mechanism to arm for `/notify` (#247), decided
+  from the captured `MONITOR=`/`WATCH=` tokens. MONITOR (the IRCv3
+  push mechanism with typed numerics) wins over legacy WATCH when a
+  network advertises both. `:none` when neither was advertised —
+  the session arms nothing (ISON fallback is out of v1 scope).
+
+  Reads via `Map.get` (not pattern match on the keys) for the same
+  hot-reload safety as `statusmsg/1`: a live isupport table seeded
+  before #247 has no `:monitor`/`:watch` keys and must not KeyError.
+  """
+  @spec presence_mechanism(t()) :: presence_mechanism()
+  def presence_mechanism(isupport) when is_map(isupport) do
+    cond do
+      limit = Map.get(isupport, :monitor) -> {:monitor, limit}
+      limit = Map.get(isupport, :watch) -> {:watch, limit}
+      true -> :none
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Token parsing
   # ---------------------------------------------------------------------------
@@ -202,7 +251,27 @@ defmodule Grappa.Session.ISupport do
     end
   end
 
+  # #247 — MONITOR/WATCH presence-mechanism advertisements. Exact-token
+  # or `=`-suffixed forms only (`WATCHFOO=1` is a different token).
+  # `Map.put` (not update-syntax) for the same hot-reload-window reason
+  # as STATUSMSG above.
+  defp merge_token("MONITOR=" <> rest, acc), do: Map.put(acc, :monitor, parse_limit(rest))
+  defp merge_token("MONITOR", acc), do: Map.put(acc, :monitor, :unlimited)
+  defp merge_token("WATCH=" <> rest, acc), do: Map.put(acc, :watch, parse_limit(rest))
+  defp merge_token("WATCH", acc), do: Map.put(acc, :watch, :unlimited)
+
   defp merge_token(_, acc), do: acc
+
+  # A presence-mechanism limit value. Non-numeric / empty / non-positive
+  # values advertise the mechanism without a usable cap → :unlimited
+  # (arm it, don't reject it).
+  @spec parse_limit(String.t()) :: presence_limit()
+  defp parse_limit(rest) do
+    case Integer.parse(rest) do
+      {n, ""} when n > 0 -> n
+      _ -> :unlimited
+    end
+  end
 
   # CHANMODES=A,B,C,D — four comma-separated classes of mode letters.
   # Anything other than exactly four classes is malformed (some ircds

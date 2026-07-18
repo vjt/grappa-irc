@@ -15,6 +15,8 @@ defmodule Grappa.Session.ISupportTest do
     only; type D never).
   - `user_prefix/2` — mode letter → sigil for per-user (membership)
     modes, or `:error` for channel-level modes.
+  - `presence_mechanism/1` (#247) — MONITOR=/WATCH= token capture and
+    the monitor-over-watch mechanism pick for the `/notify` arm.
   """
   use ExUnit.Case, async: true
 
@@ -159,6 +161,75 @@ defmodule Grappa.Session.ISupportTest do
       pre_218 = Map.drop(ISupport.default(), [:statusmsg])
       refute Map.has_key?(pre_218, :statusmsg)
       assert ISupport.statusmsg(pre_218) == ISupport.default_statusmsg()
+    end
+  end
+
+  describe "presence_mechanism/1 (#247)" do
+    test "default/0 advertises no presence mechanism (:none pre-005)" do
+      assert ISupport.presence_mechanism(ISupport.default()) == :none
+    end
+
+    test "MONITOR=<limit> yields {:monitor, limit}" do
+      # solanum / Libera shape.
+      params = ["grappa-test", "MONITOR=100", "are supported by this server"]
+      isupport = ISupport.merge_isupport(params, ISupport.default())
+      assert ISupport.presence_mechanism(isupport) == {:monitor, 100}
+    end
+
+    test "bare MONITOR token yields {:monitor, :unlimited}" do
+      params = ["grappa-test", "MONITOR", "are supported by this server"]
+      isupport = ISupport.merge_isupport(params, ISupport.default())
+      assert ISupport.presence_mechanism(isupport) == {:monitor, :unlimited}
+    end
+
+    test "WATCH=<limit> yields {:watch, limit}" do
+      # bahamut / Azzurra shape.
+      params = ["grappa-test", "WATCH=128", "are supported by this server"]
+      isupport = ISupport.merge_isupport(params, ISupport.default())
+      assert ISupport.presence_mechanism(isupport) == {:watch, 128}
+    end
+
+    test "MONITOR wins over WATCH when both are advertised" do
+      # Whichever 005 line order the tokens arrive in, MONITOR (the
+      # IRCv3 push mechanism) is preferred over legacy WATCH.
+      params = ["grappa-test", "WATCH=128", "MONITOR=100"]
+      isupport = ISupport.merge_isupport(params, ISupport.default())
+      assert ISupport.presence_mechanism(isupport) == {:monitor, 100}
+
+      # Reversed order across two merge passes (multi-line 005).
+      isupport =
+        ISupport.default()
+        |> then(&ISupport.merge_isupport(["grappa-test", "MONITOR=100"], &1))
+        |> then(&ISupport.merge_isupport(["grappa-test", "WATCH=128"], &1))
+
+      assert ISupport.presence_mechanism(isupport) == {:monitor, 100}
+    end
+
+    test "malformed limit values fall back to :unlimited" do
+      # `MONITOR=` (empty) and `WATCH=abc` (non-numeric) advertise the
+      # mechanism without a parseable limit — arm it, don't reject it.
+      params = ["grappa-test", "MONITOR="]
+      isupport = ISupport.merge_isupport(params, ISupport.default())
+      assert ISupport.presence_mechanism(isupport) == {:monitor, :unlimited}
+
+      params = ["grappa-test", "WATCH=abc"]
+      isupport = ISupport.merge_isupport(params, ISupport.default())
+      assert ISupport.presence_mechanism(isupport) == {:watch, :unlimited}
+    end
+
+    test "presence_mechanism/1 is :none on a table predating the fields (hot-reload safety)" do
+      # Same shape as the statusmsg/1 hot-safety: a live isupport map
+      # seeded before #247 has no :monitor/:watch keys and must not
+      # KeyError.
+      pre_247 = Map.drop(ISupport.default(), [:monitor, :watch])
+      assert ISupport.presence_mechanism(pre_247) == :none
+    end
+
+    test "WATCH token does not leak into an unrelated token prefix" do
+      # `WATCHFOO=1` is NOT a WATCH advertisement.
+      params = ["grappa-test", "WATCHFOO=1", "MONITORBAR=2"]
+      isupport = ISupport.merge_isupport(params, ISupport.default())
+      assert ISupport.presence_mechanism(isupport) == :none
     end
   end
 end
