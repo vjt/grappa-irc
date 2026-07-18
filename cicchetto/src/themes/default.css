@@ -187,6 +187,13 @@
      floor (feedback_cic_tap_target_rem_pitfall). */
   --chrome-icon-size: 1.4rem; /* glyph size for all chrome buttons */
   --chrome-tap-min: 48px; /* Apple HIG minimum tap-target floor */
+  /* #306 — the Apple-HIG 44px tap-target minimum used by non-chrome
+     controls (list rows, modal toggles, cards, close buttons). Sibling of
+     --chrome-tap-min (48px): ABSOLUTE px on purpose, since the html root
+     font-size is 14px a rem tap target would under-size below the HIG
+     floor (feedback_cic_tap_target_rem_pitfall). Theme-independent, so it
+     lives on base :root, NOT in the per-theme blocks. */
+  --tap-min: 44px;
   /* grappa-irc#69: theme the scrollbars. `scrollbar-color` and
      `scrollbar-width` inherit, so declaring them on :root themes every
      scrollable descendant (.scrollback, members pane, admin tables…)
@@ -640,7 +647,7 @@ html.overlay-open #root > div {
   border: 1px solid var(--border);
   /* #204 tap target: comfortable ≥44px touch height (iPad/mobile-first). */
   padding: 0.7rem 0.6rem;
-  min-height: 44px;
+  min-height: var(--tap-min);
   font-family: var(--font-mono);
   font-size: var(--font-size);
 }
@@ -657,7 +664,7 @@ html.overlay-open #root > div {
   border: none;
   /* #204 tap target: ≥44px, generous horizontal padding. */
   padding: 0.75rem 1rem;
-  min-height: 44px;
+  min-height: var(--tap-min);
   font-family: var(--font-mono);
   font-size: var(--font-size);
   cursor: pointer;
@@ -678,7 +685,7 @@ html.overlay-open #root > div {
   border: none;
   text-align: left;
   padding: 0.6rem 0.25rem;
-  min-height: 44px;
+  min-height: var(--tap-min);
   font-family: var(--font-mono);
   font-size: 0.9rem;
   cursor: pointer;
@@ -1145,15 +1152,6 @@ html.resize-dragging * {
   font-style: italic;
 }
 
-.sidebar-unread {
-  background: var(--accent);
-  color: var(--bg);
-  border-radius: 999px;
-  padding: 0 0.4rem;
-  font-size: 0.75rem;
-  margin-left: 0.5rem;
-}
-
 /* C7.5: split msg-vs-events badges. */
 .sidebar-msg-unread {
   background: var(--accent);
@@ -1265,15 +1263,6 @@ html.resize-dragging * {
 .compose-box-greyed textarea {
   color: var(--muted);
   font-style: italic;
-}
-
-.sidebar-footer {
-  margin-top: auto;
-  padding: 0.5rem 1rem;
-  border-top: 1px solid var(--border);
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
 }
 
 /* TopicBar */
@@ -2322,15 +2311,6 @@ html.resize-dragging * {
   color: var(--accent);
 }
 
-.compose-box-image-ttl {
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  padding: 0 0.25rem;
-}
-
 .compose-box-upload-progress,
 .compose-box-upload-error {
   display: flex;
@@ -3044,12 +3024,6 @@ html.resize-dragging * {
   height: 2rem;
   cursor: pointer;
   line-height: 1;
-}
-
-.admin-pane-placeholder {
-  font-family: var(--font-mono);
-  color: var(--muted);
-  font-size: 0.85rem;
 }
 
 /* M-cluster M-8 — admin tab nav + Visitors tab. M-9/M-10/M-11
@@ -3935,8 +3909,8 @@ html.resize-dragging * {
      would shrink it to 33px) — a tap target is a physical constraint that
      must NOT shrink with the text size. */
   .shell-mobile .mobile-panel-actions .shell-chrome-btn {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
   }
 
   .shell-drawer-backdrop {
@@ -4119,7 +4093,7 @@ html.resize-dragging * {
   cursor: pointer;
   white-space: nowrap;
   height: 100%;
-  min-width: 44px; /* Apple HIG minimum touch target */
+  min-width: var(--tap-min); /* Apple HIG minimum touch target */
   display: flex;
   align-items: center;
   gap: 0.25rem;
@@ -4151,15 +4125,6 @@ html.resize-dragging * {
    ascends in source order (no descending-specificity lint). */
 .bottom-bar-network-header:not(.selected):not(:hover) {
   background: var(--bg-alt);
-}
-
-.bottom-bar-unread {
-  background: var(--accent);
-  color: var(--bg);
-  border-radius: 999px;
-  padding: 0 0.3rem;
-  font-size: 0.7rem;
-  line-height: 1.4;
 }
 
 /* C7.5: split msg-vs-events badges for mobile bottom-bar. */
@@ -4336,7 +4301,7 @@ html.resize-dragging * {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  min-height: 44px; /* Apple HIG touch target */
+  min-height: var(--tap-min); /* Apple HIG touch target */
 }
 
 .archive-modal-entry-btn:hover {
@@ -4363,7 +4328,7 @@ html.resize-dragging * {
   font-size: var(--font-size);
   cursor: pointer;
   line-height: 1;
-  min-width: 44px;
+  min-width: var(--tap-min);
 }
 
 .archive-modal-delete:hover {
@@ -4465,8 +4430,8 @@ html.resize-dragging * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
   margin: -0.6rem -0.5rem -0.6rem 0;
   padding: 0;
   background: transparent;
@@ -4774,8 +4739,8 @@ html.resize-dragging * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
   margin: -0.6rem -0.5rem -0.6rem 0;
   padding: 0;
   background: transparent;
@@ -4904,7 +4869,7 @@ html.resize-dragging * {
 .mode-modal-param-input {
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 44px;
+  min-height: var(--tap-min);
   padding: 0.35rem 0.5rem;
   background: var(--bg);
   color: var(--fg);
@@ -4920,7 +4885,7 @@ html.resize-dragging * {
 
 .mode-modal-param-btn {
   flex: 0 0 auto;
-  min-height: 44px;
+  min-height: var(--tap-min);
   padding: 0.35rem 0.9rem;
   background: var(--bg);
   color: var(--fg);
@@ -5033,7 +4998,7 @@ html.resize-dragging * {
   flex-direction: column;
   gap: 0.4rem;
   width: 100%;
-  min-height: 44px;
+  min-height: var(--tap-min);
   margin: 0;
   padding: 0.25rem;
   background: transparent;
@@ -5095,7 +5060,7 @@ html.resize-dragging * {
   align-items: center;
   /* ABSOLUTE 44px tap target (Apple HIG) — never rem (root font-size 14px,
      feedback_cic_tap_target_rem_pitfall). #299 item 7. */
-  min-height: 44px;
+  min-height: var(--tap-min);
   background: transparent;
   color: var(--accent);
   border: 1px solid var(--border);
@@ -5172,8 +5137,8 @@ html.resize-dragging * {
   font-size: 1.5rem;
   line-height: 1;
   cursor: pointer;
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
 }
 
 .theme-editor-error {
@@ -5203,7 +5168,7 @@ html.resize-dragging * {
   font-family: var(--font-mono);
   font-size: var(--font-size);
   padding: 0 0.5rem;
-  min-height: 44px;
+  min-height: var(--tap-min);
 }
 
 .theme-editor-group {
@@ -5226,7 +5191,7 @@ html.resize-dragging * {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  min-height: 44px;
+  min-height: var(--tap-min);
 }
 
 .theme-editor-color-label {
@@ -5260,7 +5225,7 @@ html.resize-dragging * {
 
 .theme-editor-opacity {
   width: 100%;
-  min-height: 44px;
+  min-height: var(--tap-min);
 }
 
 /* #294 — built-in background picker. A responsive grid of cover-previewed
@@ -5322,7 +5287,7 @@ html.resize-dragging * {
   color: var(--accent);
   border: 1px solid var(--border);
   padding: 0 0.75rem;
-  min-height: 44px;
+  min-height: var(--tap-min);
   font-family: var(--font-mono);
   font-size: var(--font-size);
   cursor: pointer;
@@ -5576,8 +5541,8 @@ html.resize-dragging * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
   margin: -0.6rem -0.5rem -0.6rem 0;
   padding: 0;
   background: transparent;
@@ -5709,8 +5674,8 @@ html.resize-dragging * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
   margin: -0.6rem -0.5rem -0.6rem 0;
   padding: 0;
   background: transparent;
@@ -6081,8 +6046,8 @@ html.resize-dragging * {
   align-items: center;
   justify-content: center;
   align-self: center;
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
   margin-top: -0.6rem;
   margin-bottom: -0.6rem;
   padding: 0;
@@ -6640,21 +6605,6 @@ html.resize-dragging * {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   opacity: 0.85;
-}
-
-/* #135 — the directory link is a PRIMARY affordance on the visitor
-   landing (not the low-emphasis secondary chip on registered rows), so
-   it bumps the base .home-pane-network-browse styling to full opacity
-   with a framed, tappable target. */
-.home-pane-directory-link {
-  opacity: 1;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 0.5rem 0.9rem;
-}
-
-.home-pane-directory-link:hover {
-  border-color: var(--accent);
 }
 
 .home-pane-network-slug {
