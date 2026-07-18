@@ -25051,3 +25051,87 @@ plus a real-browser theme-gallery smoke in a light and a dark shipped palette
 _Deploy: **`--cic`** bundle only (cic-only, no server change). **HELD** —
 rides the already-HELD #299 COLD batch (with #282 / #290 / #294 / #302 /
 #304 / #305 / #307), NOT shipped solo._
+
+### 2026-07-18 — #318: web push suppressed for a stale-`:visible` iOS PWA (P0)
+
+**Root cause (verified on prod).** An iOS cicchetto PWA the user
+backgrounded/closed kept its WebSocket open, but iOS does not reliably fire
+`visibilitychange` on the PWA background/terminate lifecycle. So the socket's
+pid stayed `:visible` in `Grappa.WSPresence`; `any_visible?/1` read the user as
+present; and `Grappa.Push.Triggers`' foreground-suppression gate (#182) skipped
+the ENTIRE push fan-out. Live-node introspection confirmed a single socket at
+`:visible`, `any_visible? = true`, and the subscription's `last_used_at` NULL
+(no push ever delivered) while other subscribers to the same channel were bumped
+at the test-message instant. The owner datapoint: delivery **self-resolved after
+~90 min with no user action** — i.e. only when the zombie socket finally died on
+its own did presence drop and push resume. Until then every push is suppressed.
+
+**Fix — read-time staleness (server) + foreground heartbeat (client).** The
+owner-blessed direction, and safe by construction:
+
+- **Server (`Grappa.WSPresence`, COLD).** Each pid now carries
+  `{visibility, last_visible_at}` (monotonic ms), stamped on every
+  `set_visibility(true)`. `any_visible?/1` counts a pid present iff it is
+  `:visible` AND `now - last_visible_at < stale_ms`. Read-time derivation — NO
+  periodic sweep, no parallel timer state (CLAUDE.md "derive, don't duplicate").
+  `stale_ms` (default 60s) is injected via `start_link/1` opts, never read from
+  Application env at runtime. `Push.Triggers` is UNCHANGED — the fix flows
+  through the one existing gate.
+- **Client (cicchetto `visibilityHeartbeat.ts`).** A foreground heartbeat
+  re-reports visibility every 30s (half `stale_ms`) WHILE foreground, stopping
+  when hidden. It reuses `reportVisibility` (the `visibility` verb) — no new
+  channel event. Because `reportVisibility` re-reads the live
+  `document.visibilityState`/`hasFocus()` each call, the tick catches a SILENT
+  iOS hide (property flips with no event), not only a full timer suspension.
+
+A genuinely-foreground app keeps its stamp fresh by construction, so foreground
+push-suppression (acceptance #2) is **preserved**; a backgrounded app goes stale
+and push resumes within `stale_ms` (~60s) instead of ~90 min.
+
+**Scope.** Read-time staleness fixes PUSH only. The auto-away FSM keys off the
+`any_visible?/1` TRANSITION (an emitted event), and no event fires when a pid
+merely ages out with no write, so a stale `:visible` pid does not itself trip
+auto-away — that stays bounded by the real socket DOWN / `client_closing`,
+unchanged. A sweep that flips state + emits `:ws_all_hidden` so auto-away also
+benefits is a deliberate NON-goal here (the P0 is push); flagged to the
+orchestrator as a possible follow-up rather than silently expanded.
+
+**★ iOS efficacy caveat (device-verify owed).** The efficacy hinges on an iOS
+behaviour that CANNOT be confirmed off-device: does a backgrounded PWA stop
+sending fresh `visible` reports? The prod socket survived ~90 min under
+Phoenix's default 60s WS idle timeout (`endpoint.ex` configures no custom
+`websocket: [timeout: …]`), which implies phx heartbeats — hence JS timers —
+kept running while backgrounded. If timers run AND `document.visibilityState`
+stays "visible" while backgrounded, neither the heartbeat nor the staleness
+downgrade engages and the fix is a no-op (never worse than today). The load-
+bearing hope is the silent-property-flip path (hypothesis c), which only a real
+device can decide. The fix is therefore shipped as a **safe backstop**, and the
+on-device confirmation is owed post-deploy via the reporter (vjt / #sniffo).
+
+**Diagnostic — `GET /admin/ws_presence`.** So the device run can be read back
+from the server (CLAUDE.md "debugging tools are infrastructure — build an
+endpoint, not a throwaway"), a read-only admin endpoint exposes
+`WSPresence.snapshot/0`: per-user / per-pid reported visibility, `age_ms` since
+the last visible report, computed freshness, `any_visible?` per user, and the
+active `stale_ms`. Behind `:admin_authn`; one `infra/snippets/locations-api.conf`
+regex edit adds it to the nginx allowlist (the snippet is mounted into both the
+prod/docker nginx and the e2e nginx-test). The reporter backgrounds the PWA and
+the operator reads whether the socket goes stale/hidden (fix effective) or stays
+fresh-visible (fix a no-op → hypothesis a, needs a different signal).
+
+**Witness.** Server: `mark_stale_for_test/2` (Mix.env-guarded, sibling of
+`reset_for_test`) backdates a pid's stamp past `stale_ms` so the real staleness
+comparison is a deterministic RED→GREEN gate without sleeping the window; the
+`/admin/ws_presence` controller test proves the 401/403 auth gate + the
+fresh-vs-stale snapshot shape. Client: vitest fake timers prove the heartbeat
+fires on the interval while visible, stops when hidden, and never stacks. jsdom
+sees timers/logic; the iOS-specific behaviour is deliberately NOT asserted (the
+harness cannot reproduce it — that is the owed device-verify), so no test
+encodes an unproven assumption.
+
+_Deploy: **COLD** — `Grappa.WSPresence` state-shape change (per-pid tuple +
+`stale_ms` field) is hot-reload-unsafe (already tracked in
+`HotReload.LongLivedModules`), and the cic bundle carries the heartbeat. **HELD**
+— rides the already-HELD #299 COLD batch (with #282 / #290 / #294 / #302 / #304 /
+#305 / #306 / #307). The COLD window MUST include the post-deploy iPhone efficacy
+verification with the reporter (vjt / #sniffo) reading `/admin/ws_presence`._
