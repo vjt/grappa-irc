@@ -842,3 +842,49 @@ describe("parseSlash — /oper", () => {
     });
   });
 });
+
+// #247 — /notify presence-watch verbs (server-side list; distinct from
+// the client-local /watch|/highlight word-highlight aliases above).
+describe("parseSlash — /notify", () => {
+  it("bare /notify is list", () => {
+    expect(parseSlash("/notify")).toEqual({ kind: "notify", action: "list" });
+  });
+
+  it("/notify list", () => {
+    expect(parseSlash("/notify list")).toEqual({ kind: "notify", action: "list" });
+  });
+
+  it("/notify add with one or more nicks", () => {
+    expect(parseSlash("/notify add Foo")).toEqual({
+      kind: "notify",
+      action: "add",
+      nicks: ["Foo"],
+    });
+    expect(parseSlash("/notify add Foo Bar baz")).toEqual({
+      kind: "notify",
+      action: "add",
+      nicks: ["Foo", "Bar", "baz"],
+    });
+  });
+
+  it("/notify del with nicks", () => {
+    expect(parseSlash("/notify del Foo Bar")).toEqual({
+      kind: "notify",
+      action: "del",
+      nicks: ["Foo", "Bar"],
+    });
+  });
+
+  it("/notify clear", () => {
+    expect(parseSlash("/notify clear")).toEqual({ kind: "notify", action: "clear" });
+  });
+
+  it("/notify add without nicks errors", () => {
+    expect(parseSlash("/notify add")).toMatchObject({ kind: "error", verb: "notify" });
+    expect(parseSlash("/notify del")).toMatchObject({ kind: "error", verb: "notify" });
+  });
+
+  it("unknown /notify subverb errors with usage", () => {
+    expect(parseSlash("/notify bogus")).toMatchObject({ kind: "error", verb: "notify" });
+  });
+});

@@ -7369,3 +7369,101 @@ audio.media-viewer-media {
 .shell-mobile:has(textarea:focus, input:focus) .next-active-btn-mobile {
   --nab-lift: 8rem;
 }
+
+/* #247 — /notify Watched panel (home pane, per network card). The GUI
+   face of the server-side watch list: status dot + nick + remove, plus
+   an inline add form. Dot colors: online = green-ish accent, offline =
+   muted, unknown = dimmer still (no report yet). */
+.watched-panel {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.watched-panel-title {
+  margin: 0 0 0.25rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.watched-panel-list {
+  list-style: none;
+  margin: 0 0 0.35rem;
+  padding: 0;
+}
+
+.watched-panel-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.1rem 0;
+}
+
+.watched-panel-dot[data-state="online"] {
+  color: #4caf50;
+}
+
+.watched-panel-dot[data-state="offline"] {
+  color: var(--muted);
+}
+
+.watched-panel-dot[data-state="unknown"] {
+  color: var(--muted);
+  opacity: 0.5;
+}
+
+.watched-panel-remove {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.watched-panel-remove:hover {
+  color: var(--fg);
+}
+
+.watched-panel-error {
+  color: #e57373;
+  margin-top: 0.25rem;
+}
+
+/* #247 — presence transition toasts. Fixed stack, bottom-right on
+   desktop; self-expiring, click-to-dismiss. Deliberately quiet — the
+   durable signal is the Watched panel dot, not this. */
+.presence-toasts {
+  position: fixed;
+  right: 0.75rem;
+  bottom: 3.5rem;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+.presence-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--muted);
+  border-radius: 3px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.presence-toast-online .presence-toast-dot {
+  color: #4caf50;
+}
+
+.presence-toast-offline .presence-toast-dot {
+  color: var(--muted);
+}

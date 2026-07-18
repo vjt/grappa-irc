@@ -16,6 +16,7 @@ import { setSelectedChannel } from "./lib/selection";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
 import NickText from "./NickText";
+import WatchedPanel from "./WatchedPanel";
 
 // #85 — operator-curated featured channels for a network, fetched on
 // home DISPLAY (component mount / slug change) so an operator config
@@ -247,6 +248,7 @@ const ConnectedRow: Component<{ row: HomeRow }> = (props) => {
         📇 Browse channels
       </button>
       <FeaturedLinks slug={props.row.slug} />
+      <WatchedPanel slug={props.row.slug} />
     </li>
   );
 };

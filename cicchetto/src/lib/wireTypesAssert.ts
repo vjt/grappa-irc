@@ -53,6 +53,7 @@ import type {
   HomeNetworkRow,
   MentionsBundleMessage,
   MessageKind,
+  NotifyEntry,
   QueryWindowEntry,
   ScrollbackMessage,
   ServerReplySource,
@@ -67,6 +68,7 @@ import type {
   NetworksWireCredentialJson,
   NetworksWireHomeData,
   NetworksWireHomeNetworkRow,
+  NotifyWireEntry,
   QueryWindowsWireWindowsEntry,
   ScrollbackMessageKind,
   ScrollbackWireT,
@@ -134,6 +136,7 @@ export type _Assert_ModesEntry = Assert<Equal<ModesEntry, SessionWireChannelMode
 export type _Assert_QueryWindowEntry = Assert<
   Equal<QueryWindowEntry, QueryWindowsWireWindowsEntry>
 >;
+export type _Assert_NotifyEntry = Assert<Equal<NotifyEntry, NotifyWireEntry>>;
 export type _Assert_HomeNetworkRow = Assert<Equal<HomeNetworkRow, NetworksWireHomeNetworkRow>>;
 export type _Assert_HomeData = Assert<Equal<HomeData, NetworksWireHomeData>>;
 export type _Assert_CredentialJson = Assert<Equal<CredentialJson, NetworksWireCredentialJson>>;
