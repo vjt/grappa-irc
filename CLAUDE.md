@@ -463,6 +463,16 @@ is due. Don't just look at todo.md.
    main has unpushed commits. Branching from origin loses recent work.
    **Rebase before merge.** Before merging a worktree branch to main,
    rebase it onto main first: `git rebase main` from the worktree.
+   **Remove the worktree at merge — not someday.** A worktree is opened
+   here (step 0) and MUST be closed at the merge (step 3): once its
+   branch is merged to main, remove the worktree
+   (`git worktree remove <path>`) and delete the merged branch
+   (`git branch -d <branch>`) as PART OF the merge step, never a
+   deferred cleanup. Never leave merged worktrees lying around — dozens
+   accumulated on the worker host and ate real disk before #296 swept
+   them. If `git worktree remove` trips the submodule error, `--force`
+   is safe ONLY once the branch is proven merged (`git branch --merged
+   main`) AND the worktree is clean (`git status --porcelain` empty).
 1. **Fix pre-existing errors first.** Before starting any work, run
    `scripts/check.sh`. If there are existing failures, fix them in the
    first commit. Zero errors is the baseline. NEVER dismiss errors as
@@ -476,6 +486,7 @@ is due. Don't just look at todo.md.
    bastille jail** — `scripts/deploy-m42.sh` (server, auto hot/cold)
    / `--cic` (bundle only). The jail pulls origin/main, so: rebase
    worktree onto main → merge to main → push origin main →
+   remove the now-merged worktree + delete its branch (step 0) →
    deploy-m42 → verify health. Invoke deploy scripts by ABSOLUTE
    path (`/srv/grappa/scripts/…`) — cwd drift runs another
    checkout's copy. `scripts/deploy.sh` (Docker) drives the LOCAL
