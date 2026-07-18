@@ -10,8 +10,10 @@ defmodule Grappa.WSPresence do
   ## Responsibility
 
   One named `GenServer` (`:permanent`, single-node) that owns
-  `%{user_name => %{pid() => :visible | :hidden}}`. Each entry is a
-  live socket pid (monitored) mapped to the last visibility the page
+  `%{user_name => %{pid() => {:visible | :hidden, last_visible_at}}}`.
+  Each entry is a live socket pid (monitored) mapped to the last
+  visibility the page reported plus a monotonic freshness stamp (#318).
+  For brevity the rest of these docs say the page maps to the last visibility
   reported over the `"visibility"` channel event. When the set of
   VISIBLE devices for a user transitions, it notifies interested
   listeners so `Session.Server`s can schedule / cancel their 30s
@@ -33,6 +35,41 @@ defmodule Grappa.WSPresence do
       Reads `any_visible?/1` synchronously at message time, no debounce
       (a debounced gate would miss mentions right after you set the
       phone down).
+
+  ## Read-time staleness (#318)
+
+  A `:visible` pid is trusted only while its last visibility report is
+  FRESH. `any_visible?/1` discounts a `:visible` pid whose last
+  `set_visibility(true)` is older than `stale_ms` (default 60s, injected
+  via `start_link/1` opts). This is a READ-TIME derivation — no periodic
+  sweep, no parallel timer state (CLAUDE.md "derive, don't duplicate").
+
+  Root cause: an iOS PWA backgrounded/closed keeps its WebSocket open but
+  stops firing `visibilitychange`, so the pid stayed `:visible` and push
+  was suppressed until the zombie socket finally died (~90 min in the
+  field report). The client complements this with a foreground HEARTBEAT
+  (cicchetto `visibilityHeartbeat.ts`): while genuinely foreground it
+  re-reports `visibility` every ~`stale_ms/2` (reusing the existing
+  `set_visibility` verb, not a new event). A real foreground app keeps
+  its stamp fresh by construction, so foreground push-suppression is
+  PRESERVED; a backgrounded app whose JS timers suspend — OR whose
+  `document.visibilityState` silently flips to hidden (the heartbeat
+  re-reads the live property each tick) — stops refreshing, goes stale,
+  and push resumes within `stale_ms` instead of ~90 min.
+
+  Scope: read-time staleness fixes PUSH suppression only. The auto-away
+  FSM keys off the `any_visible?/1` TRANSITION (an emitted event), and no
+  event fires when a pid merely ages out with no write — so a stale
+  `:visible` pid does not itself trip auto-away. Auto-away stays bounded
+  by the real socket DOWN / `client_closing`, unchanged by this fix.
+
+  Efficacy caveat: whether a backgrounded iOS PWA actually stops sending
+  fresh `visible` reports is unconfirmed off-device — the prod socket
+  survived ~90 min under Phoenix's 60s WS idle timeout, implying phx
+  heartbeats (hence JS timers) kept running while backgrounded. The fix
+  is safe by construction (worst case: no improvement, never worse than
+  today); on-device confirmation is owed via a reporter run reading the
+  `/admin/ws_presence` diagnostic (see `snapshot/0`).
 
   ## Lifecycle events
 
@@ -118,19 +155,38 @@ defmodule Grappa.WSPresence do
   # State shape
   # ---------------------------------------------------------------------------
 
-  # `sockets` — %{user_name => %{pid() => :visible | :hidden}}
+  # `sockets` — %{user_name => %{pid() => {:visible | :hidden, last_visible_at}}}
+  #   `last_visible_at` is the monotonic-ms stamp of the pid's last
+  #   `set_visibility(true)` report, or nil when it has never reported
+  #   visible / is hidden. See "Read-time staleness (#318)" in the moduledoc.
   # `notify_pids` — %{user_name => pid()} for test overrides; in production nil
   # `refs_to_user` — %{reference() => user_name} for monitor → user lookup
+  # `stale_ms` — a :visible pid whose last report is older than this counts
+  #   as NOT present for `any_visible?/1`. Injected via `start_link/1` opts;
+  #   NEVER read from Application env at runtime (CLAUDE.md boot-time inject).
 
-  defstruct sockets: %{}, notify_pids: %{}, refs_to_user: %{}
+  # Default read-time staleness window. The client foreground heartbeat
+  # (cicchetto `visibilityHeartbeat.ts`) re-reports at ~half this cadence
+  # (30s), so a genuinely-foreground PWA stays fresh with a whole beat of
+  # margin; this MUST stay ≥ 2× the client heartbeat interval.
+  @default_stale_ms 60_000
+
+  defstruct sockets: %{}, notify_pids: %{}, refs_to_user: %{}, stale_ms: @default_stale_ms
 
   @typedoc "Per-pid reported PWA foreground visibility."
   @type visibility :: :visible | :hidden
 
+  @typedoc "Monotonic-ms stamp of the pid's last :visible report, or nil (#318)."
+  @type last_visible_at :: integer() | nil
+
+  @typedoc "Per-pid presence entry: reported visibility + freshness stamp (#318)."
+  @type pid_state :: {visibility(), last_visible_at()}
+
   @type t :: %__MODULE__{
-          sockets: %{String.t() => %{pid() => visibility()}},
+          sockets: %{String.t() => %{pid() => pid_state()}},
           notify_pids: %{String.t() => pid()},
-          refs_to_user: %{reference() => String.t()}
+          refs_to_user: %{reference() => String.t()},
+          stale_ms: non_neg_integer()
         }
 
   # ---------------------------------------------------------------------------
@@ -140,6 +196,10 @@ defmodule Grappa.WSPresence do
   @doc """
   Starts the WSPresence GenServer as a named singleton. Used by the
   application supervision tree.
+
+  Opts: `:stale_ms` — the read-time staleness window for `any_visible?/1`
+  (#318); defaults to `#{@default_stale_ms}`. Injected here (boot-time)
+  rather than read from Application env at runtime.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
@@ -283,13 +343,35 @@ defmodule Grappa.WSPresence do
     end
   end
 
+  @doc """
+  Test-support: backdates `socket_pid`'s last-visible stamp past
+  `stale_ms` (keeping it `:visible` but stale) so `any_visible?/1`
+  treats it as no-longer-present WITHOUT sleeping the whole window —
+  mirrors the real "backgrounded PWA stopped heartbeating" state (#318).
+  A no-op when `socket_pid` is untracked. Not available in prod.
+  """
+  # Dialyzer sees two clauses depending on Mix.env() (test → :ok reply,
+  # non-test → raises no_return); a single @spec can't capture both.
+  @dialyzer {:nowarn_function, mark_stale_for_test: 2}
+  @spec mark_stale_for_test(String.t(), pid()) :: :ok
+  if Mix.env() == :test do
+    def mark_stale_for_test(user_name, socket_pid)
+        when is_binary(user_name) and is_pid(socket_pid) do
+      GenServer.call(__MODULE__, {:mark_stale_for_test, user_name, socket_pid})
+    end
+  else
+    def mark_stale_for_test(_, _) do
+      raise "mark_stale_for_test/2 is test-only and must not be called in production"
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # GenServer callbacks
   # ---------------------------------------------------------------------------
 
   @impl GenServer
-  def init(_) do
-    {:ok, %__MODULE__{}}
+  def init(opts) do
+    {:ok, %__MODULE__{stale_ms: Keyword.get(opts, :stale_ms, @default_stale_ms)}}
   end
 
   @impl GenServer
@@ -306,7 +388,7 @@ defmodule Grappa.WSPresence do
         state
       else
         ref = Process.monitor(socket_pid)
-        updated = Map.put(existing, socket_pid, :hidden)
+        updated = Map.put(existing, socket_pid, {:hidden, nil})
 
         %{
           state
@@ -331,7 +413,11 @@ defmodule Grappa.WSPresence do
 
     if Map.has_key?(existing, socket_pid) do
       before? = any_visible_in?(state, user_name)
-      updated = Map.put(existing, socket_pid, if(visible, do: :visible, else: :hidden))
+      # #318 — stamp the monotonic freshness time on every visible report so
+      # `any_visible?/1` can discount a stale-visible pid; a hidden report
+      # clears the stamp (nil).
+      entry = if visible, do: {:visible, now_ms()}, else: {:hidden, nil}
+      updated = Map.put(existing, socket_pid, entry)
       state1 = put_user_sockets(state, user_name, updated)
       after? = any_visible_in?(state1, user_name)
       emit_transition(user_name, before?, after?, state1)
@@ -371,7 +457,7 @@ defmodule Grappa.WSPresence do
       before? = any_visible_in?(state, user_name)
       # A closing tab is not visible — mark it hidden now. The real pid
       # DOWN removes it later (idempotent).
-      updated = Map.put(existing, socket_pid, :hidden)
+      updated = Map.put(existing, socket_pid, {:hidden, nil})
       state1 = put_user_sockets(state, user_name, updated)
       after? = any_visible_in?(state1, user_name)
       emit_transition(user_name, before?, after?, state1)
@@ -403,6 +489,19 @@ defmodule Grappa.WSPresence do
     {:reply, :ok, new_state}
   end
 
+  def handle_call({:mark_stale_for_test, user_name, socket_pid}, _, state) do
+    existing = Map.get(state.sockets, user_name, %{})
+
+    if Map.has_key?(existing, socket_pid) do
+      # Backdate strictly past stale_ms so the freshness check discounts it.
+      stale_ts = now_ms() - state.stale_ms - 1_000
+      updated = Map.put(existing, socket_pid, {:visible, stale_ts})
+      {:reply, :ok, put_user_sockets(state, user_name, updated)}
+    else
+      {:reply, :ok, state}
+    end
+  end
+
   @impl GenServer
   def handle_info({:DOWN, ref, :process, pid, _}, state) do
     case Map.get(state.refs_to_user, ref) do
@@ -428,17 +527,36 @@ defmodule Grappa.WSPresence do
   # Private helpers
   # ---------------------------------------------------------------------------
 
-  @spec put_user_sockets(t(), String.t(), %{pid() => visibility()}) :: t()
+  @spec put_user_sockets(t(), String.t(), %{pid() => pid_state()}) :: t()
   defp put_user_sockets(state, user_name, user_sockets) do
     %{state | sockets: Map.put(state.sockets, user_name, user_sockets)}
   end
 
   @spec any_visible_in?(t(), String.t()) :: boolean()
   defp any_visible_in?(state, user_name) do
+    now = now_ms()
+
     state.sockets
     |> Map.get(user_name, %{})
-    |> Enum.any?(fn {_, vis} -> vis == :visible end)
+    |> Enum.any?(fn {_, {vis, last}} ->
+      vis == :visible and fresh?(last, now, state.stale_ms)
+    end)
   end
+
+  # A :visible pid counts as present only while its last report is fresh
+  # (#318). Guard `is_integer(last)` FIRST — a nil (never-reported-visible)
+  # stamp would make `now - nil` a BadArithmeticError and `n <= nil`
+  # silently true (feedback_monotonic_guard_nil_term_order_footgun), so nil
+  # must fall through to `false`, never arithmetic.
+  @spec fresh?(last_visible_at(), integer(), non_neg_integer()) :: boolean()
+  defp fresh?(last, now, stale_ms) when is_integer(last), do: now - last < stale_ms
+  defp fresh?(_, _, _), do: false
+
+  # Monotonic clock — immune to wall-clock adjustments; the sole time base
+  # for the staleness comparison. Isolated so set_visibility, the freshness
+  # check, snapshot, and mark_stale_for_test all share one source.
+  @spec now_ms() :: integer()
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   # Fire the visibility lifecycle event when `any_visible?/1` transitions
   # for `user_name` (the single crux of the auto-away generalization).
