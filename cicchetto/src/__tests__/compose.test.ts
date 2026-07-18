@@ -198,6 +198,14 @@ vi.mock("../lib/umodeModal", () => ({
   umodeModalState: vi.fn(() => null),
 }));
 
+// #290 — dedicated services console modal store. compose.ts opens it for a
+// bare services command (`/ns`, `/cs`, …) then fires `help`.
+vi.mock("../lib/serviceModal", () => ({
+  openServiceModal: vi.fn(),
+  closeServiceModal: vi.fn(),
+  serviceModalState: vi.fn(() => null),
+}));
+
 // #229 — nickEquals is used by the /mode <ownnick> self-nick gate. Real
 // impl is pinned in nickEquals.test.ts; here a boundary stub (rfc1459-ish
 // case-insensitive compare is enough for the dispatch tests).
@@ -362,6 +370,31 @@ describe("compose submit — slash command dispatch", () => {
     const result = await compose.submit(k, "freenode", "#a");
 
     expect(socket.pushMotd).toHaveBeenCalledWith(1);
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #290 — a BARE services command opens the dedicated services console
+  // modal (pinned to the active window's network) AND fires `help` so the
+  // service's multi-NOTICE help wall lands confined in the modal instead of
+  // flooding the server window. A full command WITH args stays the inline
+  // `msg` path (asserted in the bucket-G tests below) — no unsolicited popup.
+  it.each([
+    ["/ns", "NickServ"],
+    ["/cs", "ChanServ"],
+    ["/ms", "MemoServ"],
+  ])("%s bare opens the services modal for %s and fires help (#290)", async (verb, service) => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+    const svc = await import("../lib/serviceModal");
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, verb);
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(svc.openServiceModal).toHaveBeenCalledWith("freenode", service);
+    expect(sb.sendMessage).toHaveBeenCalledWith("freenode", service, "help");
     expect(result).toEqual({ ok: true });
   });
 
