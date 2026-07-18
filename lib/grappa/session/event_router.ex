@@ -90,7 +90,7 @@ defmodule Grappa.Session.EventRouter do
 
   alias Grappa.IRC.{CTCP, Identifier, Message}
   alias Grappa.{Scrollback, Session}
-  alias Grappa.Session.ISupport
+  alias Grappa.Session.{ISupport, Presence}
 
   @typedoc """
   The Session.Server state subset this module reads + mutates. The
@@ -194,6 +194,8 @@ defmodule Grappa.Session.EventRouter do
           | {:umode_changed, modes :: [String.t()]}
           | {:supported_umodes_changed, modes :: [String.t()]}
           | {:session_identity_changed, :acquired | :lost}
+          | {:presence_changed, nick :: String.t(), :online | :offline, Presence.change_kind(), :monitor | :watch}
+          | {:presence_error, :list_full, detail :: String.t()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -1605,6 +1607,89 @@ defmodule Grappa.Session.EventRouter do
   # and cicchetto derives the display from away_state, not this numeric.
   defp do_route(%Message{command: {:numeric, 306}}, state) do
     {:cont, state, [{:away_confirmed, :away}]}
+  end
+
+  # ---------------------------------------------------------------------------
+  # #247 /notify presence numerics (MONITOR + WATCH families)
+  # ---------------------------------------------------------------------------
+  #
+  # Every report folds through `Presence.apply_report/3` against the
+  # session's authoritative presence map: the first report on a freshly
+  # armed (`:unknown`) entry classifies `:initial` (baseline snapshot —
+  # cic paints the dot, no toast), a genuine online↔offline flip
+  # classifies `:transition` (toast-eligible), and duplicates or reports
+  # for untracked nicks emit nothing. The map itself is seeded by
+  # `Session.Server`'s end-of-MOTD arm (376/422 — post-005, when the
+  # mechanism pick is known).
+
+  # 730 RPL_MONONLINE / 731 RPL_MONOFFLINE (MONITOR, solanum/Libera):
+  # `:server 730 own :nick[!user@host][,nick2...]` — the target list is
+  # the trailing param, comma-separated, each entry optionally carrying
+  # a full hostmask.
+  defp do_route(%Message{command: {:numeric, numeric}, params: params}, state)
+       when numeric in [730, 731] do
+    presence = if numeric == 730, do: :online, else: :offline
+    fold_presence_reports(state, monitor_targets(List.last(params)), presence, :monitor)
+  end
+
+  # 600 RPL_LOGON / 604 RPL_NOWON (WATCH, bahamut/Azzurra): `:server 600
+  # own nick user host logintime :logged online`. 600 is the live logon
+  # push; 604 is the baseline reply to `WATCH +nick` for an
+  # already-online nick — the map classification (not the numeric)
+  # decides initial-vs-transition, so both route identically.
+  defp do_route(%Message{command: {:numeric, numeric}, params: [_, nick | _]}, state)
+       when numeric in [600, 604] and is_binary(nick) do
+    fold_presence_reports(state, [nick], :online, :watch)
+  end
+
+  # 601 RPL_LOGOFF / 605 RPL_NOWOFF — the offline mirror of 600/604.
+  defp do_route(%Message{command: {:numeric, numeric}, params: [_, nick | _]}, state)
+       when numeric in [601, 605] and is_binary(nick) do
+    fold_presence_reports(state, [nick], :offline, :watch)
+  end
+
+  # 602 RPL_WATCHOFF: ack of `WATCH -nick`. Content-free — the map entry
+  # was already dropped when the removal was sent. Handled (vs falling
+  # through) so the delegation in NumericRouter has an owner and the ack
+  # never lands as a $server :notice row.
+  defp do_route(%Message{command: {:numeric, 602}}, state) do
+    {:cont, state, []}
+  end
+
+  # 734 ERR_MONLISTFULL: `:server 734 own <limit> <targets> :Monitor list
+  # is full.` — the rejected targets stay un-armed. Surface a typed
+  # presence_error (never a silent drop, per the issue's list-full rule);
+  # the numeric ALSO lands as a $server notice via the routing matrix
+  # (not delegated) so the raw server text stays visible.
+  defp do_route(%Message{command: {:numeric, 734}, params: params}, state) do
+    detail =
+      case params do
+        [_own, _limit, targets | _] when is_binary(targets) -> targets
+        _ -> ""
+      end
+
+    {:cont, state, [{:presence_error, :list_full, detail}]}
+  end
+
+  # 512 ERR_TOOMANYWATCH (bahamut): `:server 512 own <nick> :Maximum size
+  # for WATCH-list is <n> entries`. 512 is NOT globally unique to WATCH
+  # (other ircds reuse it), so the effect is gated on the session having
+  # an armed WATCH mechanism; on any other network the numeric flows
+  # through untouched (matrix persistence still applies either way).
+  defp do_route(%Message{command: {:numeric, 512}, params: params}, state) do
+    case ISupport.presence_mechanism(Map.get(state, :isupport, ISupport.default())) do
+      {:watch, _} ->
+        detail =
+          case params do
+            [_own, nick | _] when is_binary(nick) -> nick
+            _ -> ""
+          end
+
+        {:cont, state, [{:presence_error, :list_full, detail}]}
+
+      _ ->
+        {:cont, state, []}
+    end
   end
 
   # 341 RPL_INVITING: `:server 341 own_nick target_nick channel`. Sent
@@ -3142,5 +3227,43 @@ defmodule Grappa.Session.EventRouter do
       {:ok, entry} -> cache |> Map.delete(old_key) |> Map.put(new_key, entry)
       :error -> cache
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # #247 presence helpers
+  # ---------------------------------------------------------------------------
+
+  # Folds a batch of presence reports through the session's presence
+  # map, emitting one `presence_changed` effect per genuine change
+  # (`Presence.apply_report/3` classifies initial-vs-transition and
+  # dedupes). `Map.get(state, :presence, %{})` — a pre-arm report (or a
+  # pure unit-test state without the field) folds against the empty map
+  # and emits nothing.
+  @spec fold_presence_reports(state(), [String.t()], :online | :offline, :monitor | :watch) ::
+          {:cont, state(), [effect()]}
+  defp fold_presence_reports(state, nicks, presence, source) do
+    {map, effects} =
+      Enum.reduce(nicks, {Map.get(state, :presence, %{}), []}, fn nick, {map, acc} ->
+        case Presence.apply_report(map, nick, presence) do
+          :unchanged ->
+            {map, acc}
+
+          {:changed, kind, next} ->
+            {next, [{:presence_changed, nick, presence, kind, source} | acc]}
+        end
+      end)
+
+    {:cont, Map.put(state, :presence, map), Enum.reverse(effects)}
+  end
+
+  # A 730/731 trailing target list: comma-separated, each entry a bare
+  # nick or a full `nick!user@host` hostmask — keep the nick half only.
+  @spec monitor_targets(String.t() | nil) :: [String.t()]
+  defp monitor_targets(nil), do: []
+
+  defp monitor_targets(trailing) when is_binary(trailing) do
+    trailing
+    |> String.split(",", trim: true)
+    |> Enum.map(fn entry -> entry |> String.split("!", parts: 2) |> hd() end)
   end
 end

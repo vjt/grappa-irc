@@ -94,6 +94,9 @@ defmodule Grappa.Session.Wire do
           | :directory_complete
           | :directory_failed
           | :connection_progress
+          | :presence_changed
+          | :presence_error
+          | :presence_snapshot
 
   @type channels_changed_payload :: %{kind: :channels_changed}
 
@@ -155,6 +158,50 @@ defmodule Grappa.Session.Wire do
           kind: :supported_umodes_changed,
           network_id: integer(),
           modes: [String.t()]
+        }
+
+  @typedoc """
+  #247 — one /notify presence report. `initial: true` marks the
+  baseline snapshot after arm (cic paints the dot, no toast); `false`
+  is a genuine online↔offline transition (toast-eligible). `nick` is
+  the display form as reported upstream; `source` names the upstream
+  mechanism that produced the report. Rides `Topic.user/1` (presence
+  is per (subject, network), same carrier as `umode_changed`).
+  """
+  @type presence_changed_payload :: %{
+          kind: :presence_changed,
+          network_id: integer(),
+          nick: String.t(),
+          presence: :online | :offline,
+          initial: boolean(),
+          source: :monitor | :watch,
+          ts: String.t()
+        }
+
+  @typedoc """
+  #247 — a watch-list rejection surfaced by the upstream
+  (`ERR_MONLISTFULL` 734 / `ERR_TOOMANYWATCH` 512). Never a silent
+  drop: `detail` carries the rejected target(s) as reported. The raw
+  numeric additionally lands on `$server` via the routing matrix.
+  """
+  @type presence_error_payload :: %{
+          kind: :presence_error,
+          network_id: integer(),
+          reason: :list_full,
+          detail: String.t()
+        }
+
+  @typedoc """
+  #247 — full presence map snapshot for one network, pushed at
+  channel after-join so a (re)attaching client paints correct dots
+  without waiting for the next transition. Keys are rfc1459-folded
+  nicks (cic matches via its `nickEquals` mirror); `:unknown` means
+  no upstream report yet (or no mechanism on this network).
+  """
+  @type presence_snapshot_payload :: %{
+          kind: :presence_snapshot,
+          network_id: integer(),
+          nicks: %{String.t() => :online | :offline | :unknown}
         }
 
   @typedoc """
@@ -662,6 +709,57 @@ defmodule Grappa.Session.Wire do
   def supported_umodes_changed(network_id, modes)
       when is_integer(network_id) and is_list(modes) do
     %{kind: :supported_umodes_changed, network_id: network_id, modes: modes}
+  end
+
+  @doc """
+  #247 — one /notify presence report (see `t:presence_changed_payload/0`
+  for the initial-vs-transition contract). `ts` is stamped by the
+  caller (`Session.Server.apply_effects/2`) at broadcast time so this
+  builder stays pure. Rides `Topic.user/1`.
+  """
+  @spec presence_changed(
+          integer(),
+          String.t(),
+          :online | :offline,
+          boolean(),
+          :monitor | :watch,
+          DateTime.t()
+        ) :: presence_changed_payload()
+  def presence_changed(network_id, nick, presence, initial, source, %DateTime{} = ts)
+      when is_integer(network_id) and is_binary(nick) and presence in [:online, :offline] and
+             is_boolean(initial) and source in [:monitor, :watch] do
+    %{
+      kind: :presence_changed,
+      network_id: network_id,
+      nick: nick,
+      presence: presence,
+      initial: initial,
+      source: source,
+      ts: DateTime.to_iso8601(ts)
+    }
+  end
+
+  @doc """
+  #247 — upstream watch-list rejection (`ERR_MONLISTFULL` /
+  `ERR_TOOMANYWATCH`), surfaced typed so cic can render a clear error
+  instead of a silent drop. Rides `Topic.user/1`.
+  """
+  @spec presence_error(integer(), :list_full, String.t()) :: presence_error_payload()
+  def presence_error(network_id, reason, detail)
+      when is_integer(network_id) and reason == :list_full and is_binary(detail) do
+    %{kind: :presence_error, network_id: network_id, reason: reason, detail: detail}
+  end
+
+  @doc """
+  #247 — full presence map snapshot for one network (channel
+  after-join). The map comes straight from `Session.Server`'s
+  `:presence_snapshot` call — folded keys, closed presence atoms —
+  and is JSON-encodable as-is.
+  """
+  @spec presence_snapshot(integer(), %{String.t() => :online | :offline | :unknown}) ::
+          presence_snapshot_payload()
+  def presence_snapshot(network_id, nicks) when is_integer(network_id) and is_map(nicks) do
+    %{kind: :presence_snapshot, network_id: network_id, nicks: nicks}
   end
 
   @doc """

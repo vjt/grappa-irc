@@ -400,7 +400,34 @@ defmodule Grappa.Session.NumericRouter do
                         330,
                         335,
                         338,
-                        671
+                        671,
+                        # #247 — /notify presence numerics. EventRouter folds
+                        # each one through the session presence map and emits
+                        # typed `presence_changed` effects; the raw numerics
+                        # are per-transition noise that would otherwise persist
+                        # as `$server` :notice rows (and the WATCH family's
+                        # params[1] is nick-shaped, so the param scan would
+                        # misroute them to bogus query windows — same disease
+                        # as the #221 WHOIS legs). The error numerics 734
+                        # ERR_MONLISTFULL / 512 ERR_TOOMANYWATCH are NOT
+                        # delegated: their raw server text stays visible on
+                        # `$server` while EventRouter additionally emits the
+                        # typed `presence_error` effect.
+                        #
+                        # 730 RPL_MONONLINE   (MONITOR — solanum/Libera)
+                        # 731 RPL_MONOFFLINE  (MONITOR)
+                        # 600 RPL_LOGON       (WATCH — bahamut/Azzurra)
+                        # 601 RPL_LOGOFF      (WATCH)
+                        # 602 RPL_WATCHOFF    (WATCH removal ack)
+                        # 604 RPL_NOWON       (WATCH baseline: online)
+                        # 605 RPL_NOWOFF      (WATCH baseline: offline)
+                        730,
+                        731,
+                        600,
+                        601,
+                        602,
+                        604,
+                        605
                       ])
 
   # ---------------------------------------------------------------------------

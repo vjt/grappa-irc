@@ -895,6 +895,152 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "presence arm at end-of-MOTD (#247)" do
+    # The full 001 → 005 → 376 registration tail. The mechanism pick
+    # needs the 005 tokens, so the arm rides 376/422 — NOT the 001
+    # autojoin slot.
+    defp feed_registration(server, isupport_tokens) do
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      if isupport_tokens != "" do
+        IRCServer.feed(
+          server,
+          ":irc.test.org 005 grappa-test #{isupport_tokens} :are supported by this server\r\n"
+        )
+      end
+
+      IRCServer.feed(server, ":irc.test.org 376 grappa-test :End of /MOTD command.\r\n")
+    end
+
+    test "WATCH network: arms the DB list with WATCH +nick lines after 376" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo", "Bar"], user.name)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      feed_registration(server, "WATCH=128")
+
+      assert {:ok, "WATCH +Foo +Bar\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo +Bar\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "MONITOR network: arms with MONITOR + comma list (MONITOR wins over WATCH)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo", "Bar"], user.name)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      feed_registration(server, "MONITOR=100 WATCH=128")
+
+      assert {:ok, "MONITOR + Foo,Bar\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MONITOR + Foo,Bar\r\n"), 1_000)
+
+      refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "WATCH"))
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "no mechanism advertised: no arm lines, watched nicks stay :unknown" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      feed_registration(server, "")
+      Process.sleep(100)
+
+      sent = IRCServer.sent_lines(server)
+      refute Enum.any?(sent, &String.starts_with?(&1, "MONITOR"))
+      refute Enum.any?(sent, &String.starts_with?(&1, "WATCH"))
+
+      assert {:ok, %{"foo" => :unknown}} = Session.presence_snapshot({:user, user.id}, network.id)
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "baseline 604 is initial (no-toast), live 601 flip is a transition" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      feed_registration(server, "WATCH=128")
+
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
+
+      # Baseline reply: Foo already online when we armed.
+      IRCServer.feed(server, ":irc.test.org 604 grappa-test Foo user host 0 :is online\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{
+                         kind: :presence_changed,
+                         nick: "Foo",
+                         presence: :online,
+                         initial: true,
+                         source: :watch
+                       }
+                     },
+                     1_000
+
+      # Live logoff: a genuine transition.
+      IRCServer.feed(server, ":irc.test.org 601 grappa-test Foo user host 0 :logged offline\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :presence_changed, nick: "Foo", presence: :offline, initial: false}
+                     },
+                     1_000
+
+      assert {:ok, %{"foo" => :offline}} = Session.presence_snapshot({:user, user.id}, network.id)
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "second 376 (explicit /motd) does not re-send the arm burst" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      feed_registration(server, "WATCH=128")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
+
+      IRCServer.feed(server, ":irc.test.org 376 grappa-test :End of /MOTD command.\r\n")
+      Process.sleep(100)
+
+      watch_lines = Enum.count(IRCServer.sent_lines(server), &String.starts_with?(&1, "WATCH"))
+      assert watch_lines == 1
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "notify_changed live sync sends WATCH +new / WATCH -old and updates the map" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      feed_registration(server, "WATCH=128")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
+
+      :ok = Session.notify_changed({:user, user.id}, network.id, ["Bar"], ["Foo"])
+
+      assert {:ok, "WATCH +Bar\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "WATCH +Bar\r\n"), 1_000)
+
+      assert {:ok, "WATCH -Foo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "WATCH -Foo\r\n"), 1_000)
+
+      assert {:ok, snapshot} = Session.presence_snapshot({:user, user.id}, network.id)
+      assert snapshot == %{"bar" => :unknown}
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "PING/PONG" do
     test "responds to server PING with matching PONG" do
       {server, port} = start_server()
