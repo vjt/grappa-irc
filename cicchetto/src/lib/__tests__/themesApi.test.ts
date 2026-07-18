@@ -90,6 +90,7 @@ function sampleTheme(overrides: Record<string, unknown> = {}) {
     built_in: false,
     published: false,
     apply_count: 0,
+    in_use: 0,
     mine: true,
     payload: samplePayload() as unknown as Record<string, unknown>,
     inserted_at: "2026-07-17T10:00:00Z",

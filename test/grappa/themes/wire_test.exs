@@ -49,7 +49,7 @@ defmodule Grappa.Themes.WireTest do
       assert wire.payload == valid_payload()
 
       assert Enum.sort(Map.keys(wire)) ==
-               ~w(apply_count author built_in id inserted_at mine name payload published)a
+               ~w(apply_count author built_in id in_use inserted_at mine name payload published)a
     end
 
     test "inserted_at is an ISO-8601 string" do
@@ -76,6 +76,27 @@ defmodule Grappa.Themes.WireTest do
       assert Wire.to_wire(theme, {:user, owner}).mine == true
       assert Wire.to_wire(theme, {:user, other}).mine == false
       assert Wire.to_wire(theme, visitor_subject()).mine == false
+    end
+  end
+
+  describe "to_wire/2 — in_use active-usage count (#299 item 9)" do
+    test "in_use reflects the number of subjects with the theme active" do
+      owner = user_fixture()
+      {:ok, created} = Themes.create_theme({:user, owner}, %{name: "Live", payload: valid_payload()})
+      a = user_fixture()
+      b = user_fixture()
+      {:ok, _} = Themes.set_active_theme({:user, a.id}, created.id)
+      {:ok, _} = Themes.set_active_theme({:user, b.id}, created.id)
+
+      {:ok, theme} = Themes.get_theme(created.id)
+      assert Wire.to_wire(theme, {:user, owner}).in_use == 2
+    end
+
+    test "in_use is 0 for a theme nobody is using" do
+      owner = user_fixture()
+      {:ok, created} = Themes.create_theme({:user, owner}, %{name: "Idle", payload: valid_payload()})
+      {:ok, theme} = Themes.get_theme(created.id)
+      assert Wire.to_wire(theme, {:user, owner}).in_use == 0
     end
   end
 

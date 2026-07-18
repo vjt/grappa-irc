@@ -180,6 +180,17 @@ defmodule Grappa.ThemesTest do
       {:ok, _} = Themes.unpublish_theme({:user, owner}, pub.id)
       refute pub.id in Enum.map(Themes.list_gallery(), & &1.id)
     end
+
+    test "gallery themes carry the in_use active-usage count (#299 item 9)" do
+      owner = user_fixture()
+      {:ok, pub} = Themes.create_theme({:user, owner}, %{name: "Pub", payload: valid_payload()})
+      {:ok, _} = Themes.publish_theme({:user, owner}, pub.id)
+      a = user_fixture()
+      {:ok, _} = Themes.set_active_theme({:user, a.id}, pub.id)
+
+      [g] = Enum.filter(Themes.list_gallery(), &(&1.id == pub.id))
+      assert g.in_use == 1
+    end
   end
 
   describe "copy_theme/2" do

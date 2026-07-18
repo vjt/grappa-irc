@@ -9,12 +9,15 @@ defmodule Grappa.Themes.Wire do
   conversion so controllers stay thin and no raw `%Theme{}` struct crosses the
   wire (its storage shape ≠ its wire shape).
 
-  The wire adds two viewer-derived, non-stored fields:
+  The wire adds three derived, non-stored fields:
 
     * `built_in` — the theme is owned by the reserved system user (a curated
       seed, read-only for non-admins). A visitor-owned theme is never built_in.
     * `mine` — the requesting subject owns this theme (drives the cic
       edit/delete affordances). True for the owning user OR the owning visitor.
+    * `in_use` — how many subjects currently have this theme active (#299 item
+      9 — the real usage metric, distinct from the copy-only `apply_count`).
+      The context reader populates it on the `%Theme{}`; 0 if unpopulated.
 
   `author` is the owning user's name for a user-owned theme, and a FIXED
   `"guest"` label for a visitor-owned theme — #299 author model B: a visitor's
@@ -47,6 +50,7 @@ defmodule Grappa.Themes.Wire do
           built_in: boolean(),
           published: boolean(),
           apply_count: integer(),
+          in_use: non_neg_integer(),
           mine: boolean(),
           payload: map(),
           inserted_at: String.t()
@@ -71,6 +75,7 @@ defmodule Grappa.Themes.Wire do
       built_in: built_in,
       published: theme.published,
       apply_count: theme.apply_count,
+      in_use: theme.in_use,
       mine: mine?(theme, viewer),
       payload: theme.payload,
       inserted_at: DateTime.to_iso8601(theme.inserted_at)

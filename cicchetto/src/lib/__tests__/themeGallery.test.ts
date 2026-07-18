@@ -40,6 +40,7 @@ function theme(overrides: Partial<ThemesWireT> = {}): ThemesWireT {
     built_in: true,
     published: true,
     apply_count: 0,
+    in_use: 0,
     mine: false,
     payload: payload() as unknown as Record<string, unknown>,
     inserted_at: "2026-07-17T00:00:00Z",

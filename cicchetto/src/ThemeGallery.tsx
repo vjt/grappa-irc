@@ -207,8 +207,10 @@ const ThemeGallery: Component<Props> = (props) => {
                 <div class="theme-card-meta">
                   <span class="theme-card-name">{theme.name}</span>
                   <span class="theme-card-author muted">by {theme.author}</span>
+                  {/* #299 item 9 — real usage: how many subjects have this
+                      theme active right now (apply_count only counts copies). */}
                   <span class="theme-card-count muted" data-testid={`theme-count-${theme.id}`}>
-                    {theme.apply_count} applied
+                    {theme.in_use} in use
                   </span>
                   <Show when={activeThemeId() === theme.id}>
                     <span class="theme-card-active-marker" data-testid={`theme-active-${theme.id}`}>

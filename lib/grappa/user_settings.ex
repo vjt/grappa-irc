@@ -526,6 +526,35 @@ defmodule Grappa.UserSettings do
     {:error, cs}
   end
 
+  @doc """
+  How many subjects (users AND visitors) currently have theme `theme_id` set as
+  their active theme (#299 item 9 — the real "in use" metric, distinct from the
+  copy-popularity `apply_count`). `active_theme_id` is a JSON key in `data`, so
+  the count is a `json_extract` predicate over `user_settings`.
+  """
+  @spec count_active_theme_users(pos_integer()) :: non_neg_integer()
+  def count_active_theme_users(theme_id) when is_integer(theme_id) do
+    Settings
+    |> where([s], fragment("json_extract(?, '$.active_theme_id')", s.data) == ^theme_id)
+    |> Repo.aggregate(:count, :id)
+  end
+
+  @doc """
+  Active-theme usage counts for EVERY theme in one pass: `%{theme_id => count}`
+  (#299 item 9). The batched sibling of `count_active_theme_users/1` — the
+  gallery/owned listings use it to populate each theme's `in_use` without an
+  N+1. Rows with no active theme (`json_extract` → NULL) are excluded.
+  """
+  @spec active_theme_counts() :: %{pos_integer() => non_neg_integer()}
+  def active_theme_counts do
+    Settings
+    |> group_by([s], fragment("json_extract(?, '$.active_theme_id')", s.data))
+    |> select([s], {fragment("json_extract(?, '$.active_theme_id')", s.data), count(s.id)})
+    |> Repo.all()
+    |> Enum.reject(fn {theme_id, _} -> is_nil(theme_id) end)
+    |> Map.new()
+  end
+
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------

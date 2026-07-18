@@ -104,6 +104,7 @@ defmodule Grappa.Themes do
     |> order_by([t], desc: t.apply_count, asc: t.name)
     |> preload(:user)
     |> Repo.all()
+    |> put_in_use()
   end
 
   @doc "The caller's own theme library (users AND visitors, #299 item 8)."
@@ -117,6 +118,7 @@ defmodule Grappa.Themes do
     |> order_by([t], asc: t.name)
     |> preload(:user)
     |> Repo.all()
+    |> put_in_use()
   end
 
   @doc """
@@ -137,6 +139,7 @@ defmodule Grappa.Themes do
     |> order_by([t], asc: t.name)
     |> preload(:user)
     |> Repo.all()
+    |> put_in_use()
   end
 
   def list_unpublished_builtins(_), do: []
@@ -146,7 +149,7 @@ defmodule Grappa.Themes do
   def get_theme(id) when is_integer(id) do
     case Repo.get(Theme, id) do
       nil -> {:error, :not_found}
-      %Theme{} = theme -> {:ok, Repo.preload(theme, :user)}
+      %Theme{} = theme -> {:ok, theme |> Repo.preload(:user) |> put_in_use()}
     end
   end
 
@@ -363,6 +366,18 @@ defmodule Grappa.Themes do
   end
 
   ## Internals
+
+  # Populate the derived `in_use` (active-usage) count on a theme or list of
+  # themes (#299 item 9). The list form fetches ALL counts in one grouped
+  # query (no N+1); the single form does one targeted count.
+  defp put_in_use(themes) when is_list(themes) do
+    counts = UserSettings.active_theme_counts()
+    Enum.map(themes, fn %Theme{} = t -> %{t | in_use: Map.get(counts, t.id, 0)} end)
+  end
+
+  defp put_in_use(%Theme{} = theme) do
+    %{theme | in_use: UserSettings.count_active_theme_users(theme.id)}
+  end
 
   defp set_published(subject, id, value) when is_integer(id) and is_boolean(value) do
     with {:ok, theme} <- get_theme(id),
