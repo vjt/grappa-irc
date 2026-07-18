@@ -22,7 +22,7 @@ defmodule Grappa.Themes.WireTest do
       %Theme{}
       |> Theme.changeset(%{
         name: "builtin-#{System.unique_integer([:positive])}",
-        owner_id: system.id,
+        user_id: system.id,
         payload: valid_payload(),
         published: true
       })

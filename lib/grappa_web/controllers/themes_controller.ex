@@ -165,7 +165,7 @@ defmodule GrappaWeb.ThemesController do
     end
   end
 
-  # Re-fetch to preload :owner (context write functions don't preload it) so the
+  # Re-fetch to preload :user (context write functions don't preload it) so the
   # wire's `author` + `built_in` are available. The theme was just written in
   # this request, so the read is guaranteed to hit.
   defp render_theme(conn, status, id, viewer) do
@@ -174,8 +174,9 @@ defmodule GrappaWeb.ThemesController do
   end
 
   # Controller attrs MUST be atom-keyed (`%{name:, payload:}`) — the context does
-  # `Map.put(attrs, :owner_id, …)`, and a mixed string+atom map crashes
-  # `Ecto.Changeset.cast`. The payload VALUE stays string-keyed (`"colors"` …).
+  # `Subject.put_subject_id(attrs, …)` (which `Map.put`s `:user_id`/`:visitor_id`),
+  # and a mixed string+atom map crashes `Ecto.Changeset.cast`. The payload VALUE
+  # stays string-keyed (`"colors"` …).
   defp theme_attrs(params) do
     for {k, v} <- Map.take(params, ["name", "payload"]),
         into: %{},

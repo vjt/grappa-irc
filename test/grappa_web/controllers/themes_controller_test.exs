@@ -29,7 +29,7 @@ defmodule GrappaWeb.ThemesControllerTest do
       %Theme{}
       |> Theme.changeset(%{
         name: "builtin-#{System.unique_integer([:positive])}",
-        owner_id: Themes.system_user().id,
+        user_id: Themes.system_user().id,
         payload: valid_payload(),
         published: true
       })

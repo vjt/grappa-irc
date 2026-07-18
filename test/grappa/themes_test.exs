@@ -25,7 +25,7 @@ defmodule Grappa.ThemesTest do
       %Theme{}
       |> Theme.changeset(%{
         name: "builtin-#{System.unique_integer([:positive])}",
-        owner_id: system.id,
+        user_id: system.id,
         payload: valid_payload(),
         published: true
       })
@@ -38,7 +38,7 @@ defmodule Grappa.ThemesTest do
     test "a user persists an owned, unpublished theme" do
       user = user_fixture()
       assert {:ok, theme} = Themes.create_theme({:user, user}, %{name: "Mine", payload: valid_payload()})
-      assert theme.owner_id == user.id
+      assert theme.user_id == user.id
       refute theme.published
       assert theme.apply_count == 0
     end
@@ -74,7 +74,7 @@ defmodule Grappa.ThemesTest do
       {:ok, theme} = Themes.create_theme({:user, user}, %{name: "N", payload: valid_payload()})
       assert {:ok, got} = Themes.get_theme(theme.id)
       assert got.id == theme.id
-      assert got.owner.id == user.id
+      assert got.user.id == user.id
     end
 
     test "returns :not_found for a missing id" do
@@ -162,7 +162,7 @@ defmodule Grappa.ThemesTest do
       {:ok, src} = Themes.create_theme({:user, owner}, %{name: "Src", payload: valid_payload()})
 
       assert {:ok, copy} = Themes.copy_theme({:user, copier}, src.id)
-      assert copy.owner_id == copier.id
+      assert copy.user_id == copier.id
       assert copy.id != src.id
 
       assert {:ok, reloaded} = Themes.get_theme(src.id)
@@ -231,7 +231,7 @@ defmodule Grappa.ThemesTest do
       {:ok, _} = Themes.unpublish_theme({:user, admin}, stranded.id)
 
       [theme] = Themes.list_unpublished_builtins({:user, admin})
-      assert theme.owner.name == Themes.system_user_name()
+      assert theme.user.name == Themes.system_user_name()
     end
 
     test "a non-admin user gets an empty list (own drafts ride list_owned)" do

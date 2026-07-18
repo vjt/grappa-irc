@@ -16,7 +16,7 @@ defmodule Grappa.Themes.Wire do
     * `mine` — the requesting subject owns this theme (drives the cic
       edit/delete affordances).
 
-  `to_wire/2` requires the `:owner` association preloaded (every context reader
+  `to_wire/2` requires the `:user` association preloaded (every context reader
   preloads it); `author` and `built_in` both derive from it.
   """
 
@@ -48,12 +48,12 @@ defmodule Grappa.Themes.Wire do
   perspective (drives the derived `mine` flag).
   """
   @spec to_wire(Theme.t(), {:user, User.t()} | {:visitor, Visitor.t()} | nil) :: t()
-  def to_wire(%Theme{owner: %User{} = owner} = theme, viewer) do
+  def to_wire(%Theme{user: %User{} = user} = theme, viewer) do
     %{
       id: theme.id,
       name: theme.name,
-      author: owner.name,
-      built_in: owner.name == Themes.system_user_name(),
+      author: user.name,
+      built_in: user.name == Themes.system_user_name(),
       published: theme.published,
       apply_count: theme.apply_count,
       mine: mine?(theme, viewer),
@@ -62,7 +62,7 @@ defmodule Grappa.Themes.Wire do
     }
   end
 
-  # A theme is `mine` only for the user who owns it — visitors own nothing.
-  defp mine?(%Theme{owner_id: owner_id}, {:user, %User{id: owner_id}}), do: true
+  # A theme is `mine` only for the user who owns it — visitors own nothing (yet).
+  defp mine?(%Theme{user_id: user_id}, {:user, %User{id: user_id}}), do: true
   defp mine?(%Theme{}, _), do: false
 end

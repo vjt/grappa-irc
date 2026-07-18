@@ -83,7 +83,7 @@ defmodule Grappa.Themes do
     Theme
     |> where([t], t.published == true)
     |> order_by([t], desc: t.apply_count, asc: t.name)
-    |> preload(:owner)
+    |> preload(:user)
     |> Repo.all()
   end
 
@@ -91,9 +91,9 @@ defmodule Grappa.Themes do
   @spec list_owned(subject()) :: [Theme.t()]
   def list_owned({:user, %User{id: user_id}}) do
     Theme
-    |> where([t], t.owner_id == ^user_id)
+    |> where([t], t.user_id == ^user_id)
     |> order_by([t], asc: t.name)
-    |> preload(:owner)
+    |> preload(:user)
     |> Repo.all()
   end
 
@@ -113,20 +113,20 @@ defmodule Grappa.Themes do
     system_id = system_user().id
 
     Theme
-    |> where([t], t.owner_id == ^system_id and t.published == false)
+    |> where([t], t.user_id == ^system_id and t.published == false)
     |> order_by([t], asc: t.name)
-    |> preload(:owner)
+    |> preload(:user)
     |> Repo.all()
   end
 
   def list_unpublished_builtins(_), do: []
 
-  @doc "Fetch one theme by id (public read — share-link target), owner preloaded."
+  @doc "Fetch one theme by id (public read — share-link target), :user preloaded."
   @spec get_theme(integer()) :: {:ok, Theme.t()} | {:error, :not_found}
   def get_theme(id) when is_integer(id) do
     case Repo.get(Theme, id) do
       nil -> {:error, :not_found}
-      %Theme{} = theme -> {:ok, Repo.preload(theme, :owner)}
+      %Theme{} = theme -> {:ok, Repo.preload(theme, :user)}
     end
   end
 
@@ -137,7 +137,7 @@ defmodule Grappa.Themes do
   @spec create_theme(subject(), map()) ::
           {:ok, Theme.t()} | {:error, :rate_limited | :forbidden | Ecto.Changeset.t()}
   def create_theme({:user, %User{} = user}, attrs) when is_map(attrs) do
-    changeset = Theme.changeset(%Theme{}, Map.put(attrs, :owner_id, user.id))
+    changeset = Theme.changeset(%Theme{}, Subject.put_subject_id(attrs, {:user, user.id}))
 
     # Validate BEFORE consuming quota so a malformed request never burns a slot.
     if changeset.valid? do
@@ -195,9 +195,11 @@ defmodule Grappa.Themes do
       Repo.transaction(fn ->
         name = available_name(user.id, source.name)
 
+        attrs = Subject.put_subject_id(%{name: name, payload: source.payload}, {:user, user.id})
+
         copy =
           %Theme{}
-          |> Theme.changeset(%{name: name, owner_id: user.id, payload: source.payload})
+          |> Theme.changeset(attrs)
           |> Repo.insert!()
 
         {1, _} =
@@ -262,22 +264,28 @@ defmodule Grappa.Themes do
 
   @doc """
   Materialise the curated built-in gallery (`Grappa.Themes.Builtins.all/0`) as
-  system-owned, published themes. Idempotent: upserts by the `(owner_id, name)`
-  unique index, so a re-run refreshes the payload in place rather than
-  duplicating rows (drives the re-runnable `mix grappa.seed_themes`). Returns
-  the number of built-ins seeded.
+  system-owned, published themes. Idempotent: upserts by the partial
+  `(user_id, name) WHERE user_id IS NOT NULL` unique index, so a re-run
+  refreshes the payload in place rather than duplicating rows (drives the
+  re-runnable `mix grappa.seed_themes`). Returns the number of built-ins seeded.
   """
   @spec seed_builtins() :: non_neg_integer()
   def seed_builtins do
-    owner_id = system_user().id
+    system_id = system_user().id
     builtins = Builtins.all()
 
     Enum.each(builtins, fn %{name: name, payload: payload} ->
+      attrs =
+        Subject.put_subject_id(%{name: name, payload: payload, published: true}, {:user, system_id})
+
       %Theme{}
-      |> Theme.changeset(%{name: name, owner_id: owner_id, payload: payload, published: true})
+      |> Theme.changeset(attrs)
       |> Repo.insert!(
         on_conflict: {:replace, [:payload, :published, :updated_at]},
-        conflict_target: [:owner_id, :name]
+        # Partial index → the conflict target MUST carry the same WHERE
+        # predicate, char-identical to the migration index, or SQLite won't
+        # match it (see CLAUDE.md: `:unsafe_fragment` conflict target rule).
+        conflict_target: {:unsafe_fragment, "(user_id, name) WHERE user_id IS NOT NULL"}
       )
     end)
 
@@ -296,7 +304,7 @@ defmodule Grappa.Themes do
   # Admin: any. Owner: own. Everyone else (incl. visitors, non-owners, and every
   # non-admin against a system-owned built-in): forbidden.
   defp authorize({:user, %User{is_admin: true}}, %Theme{}), do: :ok
-  defp authorize({:user, %User{id: id}}, %Theme{owner_id: id}), do: :ok
+  defp authorize({:user, %User{id: id}}, %Theme{user_id: id}), do: :ok
   defp authorize(_, %Theme{}), do: {:error, :forbidden}
 
   defp check_quota(%User{id: user_id}) do
@@ -304,11 +312,11 @@ defmodule Grappa.Themes do
   end
 
   # Find a free name in the caller's library: the base, else "base (2)", …
-  # (unique index is (owner_id, name); dedup avoids clashing on re-copy).
+  # (partial unique index is (user_id, name); dedup avoids clashing on re-copy).
   defp available_name(user_id, base) do
     taken =
       Theme
-      |> where([t], t.owner_id == ^user_id)
+      |> where([t], t.user_id == ^user_id)
       |> select([t], t.name)
       |> Repo.all()
       |> MapSet.new()
