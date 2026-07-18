@@ -906,6 +906,19 @@ export type WireUserEvent =
       modes: string[];
     }
   | {
+      // #249 — per-session SUPPORTED user-mode set, parsed from 004 RPL_MYINFO
+      // server-side. The AVAILABILITY set (distinct from umode_changed's ACTIVE
+      // set): the `/umode` modal drives its togglable letters from this, exactly
+      // as #216's isupport CHANMODES drives channel-mode toggles. Rides
+      // `Topic.user/1` (per (subject, network)) and is cold-snapshotted on the
+      // user-topic after-join push (umodes are reachable with zero channels).
+      // userTopic.ts dispatches into `seedSupportedUmodes(network_id, modes)`.
+      // `modes` is the sorted letter list the server advertised.
+      kind: "supported_umodes_changed";
+      network_id: number;
+      modes: string[];
+    }
+  | {
       // #216 — per-network ISUPPORT channel-mode capability set, parsed
       // from 005 RPL_ISUPPORT CHANMODES= + PREFIX= server-side. The
       // `/mode` modal drives its available toggles from this. Rides

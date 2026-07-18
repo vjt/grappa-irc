@@ -1,13 +1,15 @@
 // #229 — static USER-mode (umode) description table + the display
 // derivation for the /mode <nick> (umode) modal.
 //
-// Unlike channel modes (#216), umodes have NO ISUPPORT availability source
-// grappa parses (004 RPL_MYINFO carries the letters but is deliberately not
-// parsed — it's connect-storm server metadata). So this static table IS the
-// available set: the KNOWN bahamut/Azzurra umodes, plus any currently-active
-// letter the operator holds that isn't in the table (a vendor umode still
-// renders rather than vanishing). Descriptions are UI copy and MUST live in
-// cic, never on the wire (CLAUDE.md "no localized strings server-side").
+// As of #249 the AVAILABLE set is driven by the SERVER-advertised umode set
+// (004 RPL_MYINFO, parsed server-side into a `supported_umodes_changed` wire
+// event), exactly as #216 drives the channel-mode modal from server CHANMODES.
+// This static table is now the FALLBACK: its descriptions ARE the UI copy for
+// the known bahamut/Azzurra umodes, and its KEYS supply the available set only
+// when the server has not advertised one (a network that omits 004 umodes, or
+// a pre-snapshot session — see `availableUmodes`). Descriptions are UI copy and
+// MUST live in cic, never on the wire (CLAUDE.md "no localized strings
+// server-side").
 //
 // `settable` marks umodes a normal user may flip themselves. Server-managed
 // umodes (o oper, r registered, a/A services/admin), IRCop snomask receive
@@ -93,14 +95,30 @@ export type AvailableUmode = {
 };
 
 /**
- * The umodes the modal renders, given the operator's currently-active set.
- * The union of the KNOWN table letters and any active-but-unknown letter,
- * so a vendor umode the operator holds still shows (read-only). Each entry
- * carries the human copy + whether the user may toggle it. Sorted by label
- * for a stable modal layout.
+ * The umodes the modal renders. When the server advertised a supported set
+ * (004 RPL_MYINFO, #249), the available letters are that set unioned with any
+ * currently-active letter — an active umode always renders even if the server
+ * omitted it from the advertisement (defensive: never hide the operator's own
+ * active state). When `serverSet` is empty (a network that never advertised,
+ * or a pre-snapshot session), fall back to the KNOWN static table unioned with
+ * active letters — the pre-#249 behavior. This mirrors #216's `availableModes`
+ * folding server-advertised CHANMODES for channel modes; the server drives the
+ * WHICH-letters, cic owns the description copy. Known letters keep their
+ * description + settable arity; an advertised-but-unknown vendor letter gets
+ * the generic non-settable copy. Sorted by label for a stable modal layout.
+ *
+ * REPLACE (not union-with-static) when `serverSet` is non-empty is deliberate:
+ * 004 RPL_MYINFO is the ircd's AUTHORITATIVE supported-umode list — a
+ * well-behaved bahamut/solanum lists every supported letter (Azzurra's real 004
+ * carries the full settable set i/w/s/x/R), so honoring it faithfully is the
+ * whole point of #249. A hypothetical PARTIAL 004 would drop an omitted-but-
+ * settable letter from the modal; that degradation is accepted (the operator
+ * can still `/umode +x` by hand) rather than re-unioning the static guess this
+ * feature removes and offering toggles the server may reject.
  */
-export function availableUmodes(activeModes: string[]): AvailableUmode[] {
-  const letters = new Set<string>([...Object.keys(UMODE_DESCRIPTIONS), ...activeModes]);
+export function availableUmodes(activeModes: string[], serverSet: string[]): AvailableUmode[] {
+  const base = serverSet.length > 0 ? serverSet : Object.keys(UMODE_DESCRIPTIONS);
+  const letters = new Set<string>([...base, ...activeModes]);
 
   return [...letters]
     .map((letter) => {

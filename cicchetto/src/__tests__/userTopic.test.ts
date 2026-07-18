@@ -131,6 +131,10 @@ vi.mock("../lib/umodes", () => ({
   seedUmodes: vi.fn(),
 }));
 
+vi.mock("../lib/supportedUmodes", () => ({
+  seedSupportedUmodes: vi.fn(),
+}));
+
 // #100 — builds a valid connection_state_changed payload (the narrower
 // requires the full set of top-level + nested `network` fields).
 function connectionStateChanged(slug: string, to: "connected" | "parked" | "failed") {
@@ -361,6 +365,59 @@ describe("userTopic", () => {
       vi.mocked(umodes.seedUmodes).mockClear();
       channelMock.fireEvent({ kind: "umode_changed", network_id: 7, modes: "iwS" });
       expect(umodes.seedUmodes).not.toHaveBeenCalled();
+    });
+  });
+
+  // #249 — supported_umodes_changed seeds the per-network supported-umode store.
+  describe("supported_umodes_changed event (#249)", () => {
+    it("calls seedSupportedUmodes with the narrowed advertised letter list", async () => {
+      const supported = await import("../lib/supportedUmodes");
+      channelMock.fireEvent({
+        kind: "supported_umodes_changed",
+        network_id: 7,
+        modes: ["g", "i", "k", "o", "r", "s", "w"],
+      });
+      expect(supported.seedSupportedUmodes).toHaveBeenCalledWith(7, [
+        "g",
+        "i",
+        "k",
+        "o",
+        "r",
+        "s",
+        "w",
+      ]);
+    });
+
+    it("accepts an empty advertised list", async () => {
+      const supported = await import("../lib/supportedUmodes");
+      vi.mocked(supported.seedSupportedUmodes).mockClear();
+      channelMock.fireEvent({ kind: "supported_umodes_changed", network_id: 7, modes: [] });
+      expect(supported.seedSupportedUmodes).toHaveBeenCalledWith(7, []);
+    });
+
+    it("drops supported_umodes_changed with a non-number network_id (narrower rejects)", async () => {
+      const supported = await import("../lib/supportedUmodes");
+      vi.mocked(supported.seedSupportedUmodes).mockClear();
+      channelMock.fireEvent({
+        kind: "supported_umodes_changed",
+        network_id: "seven",
+        modes: ["i"],
+      });
+      expect(supported.seedSupportedUmodes).not.toHaveBeenCalled();
+    });
+
+    it("drops supported_umodes_changed whose modes contain a non-string (narrower rejects)", async () => {
+      const supported = await import("../lib/supportedUmodes");
+      vi.mocked(supported.seedSupportedUmodes).mockClear();
+      channelMock.fireEvent({ kind: "supported_umodes_changed", network_id: 7, modes: ["i", 42] });
+      expect(supported.seedSupportedUmodes).not.toHaveBeenCalled();
+    });
+
+    it("drops supported_umodes_changed with a non-array modes (narrower rejects)", async () => {
+      const supported = await import("../lib/supportedUmodes");
+      vi.mocked(supported.seedSupportedUmodes).mockClear();
+      channelMock.fireEvent({ kind: "supported_umodes_changed", network_id: 7, modes: "iwS" });
+      expect(supported.seedSupportedUmodes).not.toHaveBeenCalled();
     });
   });
 

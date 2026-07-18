@@ -29,6 +29,7 @@ import { selectedChannel, setSelectedChannel } from "./selection";
 import { setServerReply } from "./serverReplyModal";
 import { applyServerSettings } from "./serverSettings";
 import { joinUser } from "./socket";
+import { seedSupportedUmodes } from "./supportedUmodes";
 import { seedUmodes } from "./umodes";
 import { setWhoisBundle } from "./whoisCard";
 import { setWhoReply } from "./whoModal";
@@ -273,6 +274,19 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       if (typeof r.network_id !== "number" || !Array.isArray(r.modes)) return null;
       if (!r.modes.every((m) => typeof m === "string")) return null;
       return { kind: "umode_changed", network_id: r.network_id, modes: r.modes as string[] };
+    }
+    case "supported_umodes_changed": {
+      // #249 — per-session SUPPORTED umode set. User-topic-only, narrowed
+      // inline here (mirror of umode_changed). `modes` must be a string[]
+      // (sorted advertised umode letters); any non-string element drops the
+      // whole payload.
+      if (typeof r.network_id !== "number" || !Array.isArray(r.modes)) return null;
+      if (!r.modes.every((m) => typeof m === "string")) return null;
+      return {
+        kind: "supported_umodes_changed",
+        network_id: r.network_id,
+        modes: r.modes as string[],
+      };
     }
     case "isupport_changed":
       // #216 — dual-topic event: this is the LIVE 005 edge on the user
@@ -785,6 +799,14 @@ createRoot(() => {
           // snapshot (user-topic after-join) both flow here; last-write-wins
           // idempotent.
           seedUmodes(payload.network_id, payload.modes);
+          return;
+
+        case "supported_umodes_changed":
+          // #249 — seed the per-network SUPPORTED umode set the /umode modal
+          // reads for its AVAILABLE toggles. Live edge (004 RPL_MYINFO) + cold
+          // snapshot (user-topic after-join) both flow here; last-write-wins
+          // idempotent.
+          seedSupportedUmodes(payload.network_id, payload.modes);
           return;
 
         case "connection_state_changed":

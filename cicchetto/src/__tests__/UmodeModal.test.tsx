@@ -21,6 +21,14 @@ vi.mock("../lib/umodes", () => ({
   umodesForNetwork: (id: number) => mockUmodes[id] ?? [],
 }));
 
+// #249 — server-advertised supported-umode set. Empty (unseeded) → the modal
+// falls back to the static table, exercising the pre-#249 behavior in every
+// test that doesn't set it.
+let mockSupported: Record<number, string[]> = {};
+vi.mock("../lib/supportedUmodes", () => ({
+  supportedUmodesForNetwork: (id: number) => mockSupported[id] ?? [],
+}));
+
 import { closeUmodeModal, openUmodeModal } from "../lib/umodeModal";
 import UmodeModal from "../UmodeModal";
 
@@ -28,6 +36,7 @@ describe("UmodeModal", () => {
   beforeEach(() => {
     socketMock.pushChannelUmode.mockClear();
     mockUmodes = {};
+    mockSupported = {};
     closeUmodeModal();
   });
 
@@ -90,5 +99,19 @@ describe("UmodeModal", () => {
     const vendor = getByLabelText(/\+Z/);
     expect(vendor.getAttribute("aria-pressed")).toBe("true");
     expect(vendor.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("renders only the server-advertised umodes when the server sent a set (#249)", () => {
+    // The server advertised only +i (invisible) and +x (masked host); the
+    // modal renders exactly those, NOT the full static table.
+    mockUmodes[1] = [];
+    mockSupported[1] = ["i", "x"];
+    openUmodeModal("bahamut");
+
+    const { getByText, queryByText } = render(() => <UmodeModal />);
+    expect(getByText("invisible")).toBeTruthy();
+    expect(getByText("masked host")).toBeTruthy();
+    // +w (wallops) is in the static table but was NOT advertised — absent.
+    expect(queryByText("wallops")).toBeNull();
   });
 });

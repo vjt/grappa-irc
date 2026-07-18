@@ -53,9 +53,11 @@ describe("umodeModes description table", () => {
   });
 });
 
-describe("availableUmodes", () => {
+// #249 — with an empty serverSet, availableUmodes falls back to the static
+// KNOWN table (unioned with active letters) — the pre-#249 behavior.
+describe("availableUmodes — static-table fallback (empty serverSet)", () => {
   it("lists the KNOWN umode table with settable arity", () => {
-    const modes = availableUmodes([]);
+    const modes = availableUmodes([], []);
     const find = (letter: string) => modes.find((m) => m.letter === letter);
 
     const i = find("i");
@@ -69,14 +71,60 @@ describe("availableUmodes", () => {
   });
 
   it("surfaces an active-but-unknown letter (vendor umode) read-only, no crash", () => {
-    const modes = availableUmodes(["Z"]);
+    const modes = availableUmodes(["Z"], []);
     const z = modes.find((m) => m.letter === "Z");
     expect(z).toBeDefined();
     expect(z?.settable).toBe(false);
   });
 
   it("is sorted by label for a stable modal layout", () => {
-    const labels = availableUmodes([]).map((m) => m.label);
+    const labels = availableUmodes([], []).map((m) => m.label);
+    const sorted = [...labels].sort((a, b) => a.localeCompare(b));
+    expect(labels).toEqual(sorted);
+  });
+});
+
+// #249 — when the server advertised a supported set (004 RPL_MYINFO), the
+// modal renders exactly that set (unioned with active letters), NOT the full
+// static table. Known letters keep their description; advertised-but-unknown
+// letters get the generic non-settable copy.
+describe("availableUmodes — server-advertised set (#249)", () => {
+  it("renders one entry per advertised letter (known letters keep their copy)", () => {
+    const modes = availableUmodes([], ["i", "o", "x"]);
+    expect(modes.map((m) => m.letter).sort()).toEqual(["i", "o", "x"]);
+
+    const i = modes.find((m) => m.letter === "i");
+    expect(i?.label).toBe("invisible");
+    expect(i?.settable).toBe(true);
+
+    const o = modes.find((m) => m.letter === "o");
+    expect(o?.settable).toBe(false); // operator — server-managed
+  });
+
+  it("does NOT include static-table letters the server did not advertise", () => {
+    // "w" (wallops) is in the static table but not in this advertised set.
+    const modes = availableUmodes([], ["i", "x"]);
+    expect(modes.find((m) => m.letter === "w")).toBeUndefined();
+  });
+
+  it("gives an advertised-but-unknown vendor letter the generic non-settable copy", () => {
+    const modes = availableUmodes([], ["Q"]);
+    const q = modes.find((m) => m.letter === "Q");
+    expect(q).toBeDefined();
+    expect(q?.settable).toBe(false);
+    expect(q?.desc).toMatch(/no description available/i);
+  });
+
+  it("still surfaces an active letter the server omitted (union with active)", () => {
+    // The operator holds +Z but the server's 004 didn't list it — it must
+    // still render (read-only) so the active state is never hidden.
+    const modes = availableUmodes(["Z"], ["i"]);
+    expect(modes.map((m) => m.letter).sort()).toEqual(["Z", "i"]);
+    expect(modes.find((m) => m.letter === "Z")?.settable).toBe(false);
+  });
+
+  it("is sorted by label for a stable modal layout", () => {
+    const labels = availableUmodes([], ["i", "o", "x", "w"]).map((m) => m.label);
     const sorted = [...labels].sort((a, b) => a.localeCompare(b));
     expect(labels).toEqual(sorted);
   });
