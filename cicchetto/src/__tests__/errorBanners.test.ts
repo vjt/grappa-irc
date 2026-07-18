@@ -32,6 +32,11 @@ import { __resetSwRegistrationForTests, recordSwRegError } from "../lib/swRegist
 // live behavior is covered by the bundle-refresh e2e specs.
 vi.mock("../lib/bundleHash", () => ({
   shouldShowRefreshBanner: vi.fn(() => false),
+  // #292 — the bundle-refresh entry's message is now composed by
+  // bundleHash (which owns the current/available version+hash signals).
+  // The registry just asks for it; the composition logic is unit-tested
+  // in bundleHash.test.ts (formatRefreshBanner).
+  refreshBannerMessage: vi.fn(() => "New version available — current 1.0.0 → available 2.0.0."),
   performRefresh: vi.fn(),
 }));
 
@@ -99,6 +104,14 @@ describe("errorBanners registry", () => {
     expect(bundle?.severity).toBe("info");
     expect(bundle?.actionHint?.label).toBe("Refresh");
     expect(typeof bundle?.actionHint?.onAction).toBe("function");
+  });
+
+  it("sources the bundle-refresh message from refreshBannerMessage (#292)", () => {
+    mockShouldShowRefresh.mockReturnValue(true);
+    const bundle = activeBanners().find((e) => e.source === "bundle-refresh");
+    // The registry delegates the current-vs-available string to bundleHash;
+    // it does not hard-code a message of its own.
+    expect(bundle?.message).toBe("New version available — current 1.0.0 → available 2.0.0.");
   });
 
   it("stacks all active sources simultaneously (N sources → N entries)", () => {

@@ -1070,7 +1070,7 @@ defmodule GrappaWeb.GrappaChannel do
   defp push_bundle_hash(socket) do
     case CicBundle.current_hash() do
       nil -> :ok
-      hash -> push(socket, "event", CicWire.bundle_hash(hash))
+      hash -> push(socket, "event", CicWire.bundle_hash(hash, CicBundle.current_version()))
     end
   end
 

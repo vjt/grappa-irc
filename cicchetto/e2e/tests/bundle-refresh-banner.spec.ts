@@ -65,6 +65,79 @@ test("BundleRefreshBanner appears on hash mismatch and click reloads the page", 
   await expect(page.locator(BANNER_SELECTOR)).toHaveCount(0);
 });
 
+test("refresh bar shows current vs available version, refresh still applies (#292)", async ({
+  page,
+}) => {
+  await loginAs(page, getSeededVjt());
+  await expect(page.locator(BANNER_SELECTOR)).toHaveCount(0);
+
+  const boot = await page.evaluate(() => {
+    const bh = window.__cic_bundleHash;
+    if (!bh) throw new Error("__cic_bundleHash hook missing");
+    return { hash: bh.bootHash(), version: bh.bootVersion() };
+  });
+
+  // The vite build MUST bake the <meta name="cicchetto-version"> tag, so the
+  // running version is observable end-to-end. If this trips, the meta
+  // injection regressed (the whole current-vs-available display depends on it).
+  expect(boot.version).not.toBeNull();
+  expect(typeof boot.version).toBe("string");
+  expect(boot.hash).not.toBeNull();
+
+  // Server advertises a DIFFERENT semver + hash (a real release).
+  await page.evaluate(() => {
+    const bh = window.__cic_bundleHash;
+    bh?.setServerVersion("99.0.0");
+    bh?.setServerHash("synthetic-release-hash-0001");
+  });
+
+  const banner = page.locator(BANNER_SELECTOR);
+  await expect(banner).toBeVisible();
+  const message = banner.locator(".error-banner-message");
+  // Both the running version and the available version are visible, side by
+  // side — the #292 ask. A real version bump shows clean semvers, no hash.
+  await expect(message).toContainText(`current ${boot.version}`);
+  await expect(message).toContainText("available 99.0.0");
+
+  // The refresh button STILL applies the update (reload) — the existing CTA
+  // is preserved.
+  const navPromise = page.waitForNavigation();
+  await banner.locator(".error-banner-action").click();
+  await navPromise;
+  await expect(page.locator(BANNER_SELECTOR)).toHaveCount(0);
+});
+
+test("refresh bar appends the short build hash when the semver is unchanged (#292)", async ({
+  page,
+}) => {
+  await loginAs(page, getSeededVjt());
+  await expect(page.locator(BANNER_SELECTOR)).toHaveCount(0);
+
+  const boot = await page.evaluate(() => {
+    const bh = window.__cic_bundleHash;
+    if (!bh) throw new Error("__cic_bundleHash hook missing");
+    return { hash: bh.bootHash(), version: bh.bootVersion() };
+  });
+  expect(boot.version).not.toBeNull();
+  expect(boot.hash).not.toBeNull();
+
+  // Same semver on both sides (a trivial rebuild with no version bump), but a
+  // different build hash. The refresh bar must still show a concrete diff via
+  // the short (7-char) hash suffix, so the "changed" signal never goes dead.
+  await page.evaluate((bootVersion: string) => {
+    const bh = window.__cic_bundleHash;
+    bh?.setServerVersion(bootVersion);
+    bh?.setServerHash("trivialrebuildhash999999");
+  }, boot.version as string);
+
+  const message = page.locator(`${BANNER_SELECTOR} .error-banner-message`);
+  await expect(message).toBeVisible();
+  // Same version, disambiguated by the hash suffix on both sides.
+  await expect(message).toContainText(`${boot.version} (`);
+  // First 7 chars of the synthetic server hash.
+  await expect(message).toContainText("trivial");
+});
+
 test("BundleRefreshBanner stays hidden when server pushes the same hash", async ({ page }) => {
   await loginAs(page, getSeededVjt());
 
@@ -237,8 +310,10 @@ declare global {
     // typing without an import (the spec doesn't run through tsc).
     __cic_bundleHash?: {
       setServerHash: (hash: string) => void;
+      setServerVersion: (version: string | null) => void;
       reset: () => void;
       bootHash: () => string | null;
+      bootVersion: () => string | null;
       __refreshProbe?: () => void;
     };
   }

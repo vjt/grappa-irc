@@ -10,7 +10,7 @@ import {
 import { loadArchive } from "./archive";
 import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
-import { setServerBundleHash } from "./bundleHash";
+import { setServerBundleHash, setServerBundleVersion } from "./bundleHash";
 import { onDirectoryComplete, onDirectoryFailed, onDirectoryProgress } from "./channelDirectory";
 import { channelKey } from "./channelKey";
 import { patchHomeNetwork } from "./home";
@@ -490,9 +490,14 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         channel: r.channel,
         peer: r.peer,
       };
-    case "bundle_hash":
+    case "bundle_hash": {
       if (typeof r.hash !== "string" || r.hash === "") return null;
-      return { kind: "bundle_hash", hash: r.hash };
+      // #292 — version is optional on the wire (omitted when the deployed
+      // bundle advertises none). Normalise absent / malformed → null so the
+      // consumer always sees `string | null`.
+      const version = typeof r.version === "string" && r.version !== "" ? r.version : null;
+      return { kind: "bundle_hash", hash: r.hash, version };
+    }
     case "server_settings_changed": {
       // UX-6-B2 (2026-05-21) — operator-visible server-settings push.
       // Wire shape mirrors `Grappa.ServerSettings.Wire.server_settings_
@@ -890,7 +895,10 @@ createRoot(() => {
           // bundleHash.ts compares against bootBundleHash (the hash
           // baked into the page the browser loaded); mismatch shows the
           // refresh banner. No focus change — banner is a passive cue.
+          // #292 — the deployed semver rides alongside the hash so the
+          // banner can show "current X → available Y".
           setServerBundleHash(payload.hash);
+          setServerBundleVersion(payload.version);
           return;
 
         case "server_settings_changed":

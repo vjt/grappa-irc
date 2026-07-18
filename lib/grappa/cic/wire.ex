@@ -18,7 +18,13 @@ defmodule Grappa.Cic.Wire do
   inline. CLAUDE.md "Wire conversion is per-context responsibility"
   + "implement once, reuse everywhere" → both sites now delegate
   here. Adding a field to the cic-bundle wire (e.g. build timestamp,
-  asset digests) is one edit in `bundle_hash/1` instead of two.
+  asset digests) is one edit in `bundle_hash/2` instead of two.
+
+  #292 added the `version` field — the human-readable semver of the
+  deployed bundle (from `Grappa.Cic.Bundle.current_version/0`). It is
+  OPTIONAL: a `nil` version (bundle predates the meta tag / parse miss)
+  omits the key entirely rather than shipping `null`, so cic's narrower
+  simply sees an absent field and falls back to the build-hash display.
 
   Sibling Wire modules (`Grappa.Scrollback.Wire`, `Grappa.Networks.Wire`,
   `Grappa.Accounts.Wire`, `Grappa.QueryWindows.Wire`,
@@ -31,18 +37,28 @@ defmodule Grappa.Cic.Wire do
   @typedoc """
   Wire shape pushed on the user-topic when the cic bundle hash
   changes (deploy-cic broadcast) OR is observed at after-join
-  (snapshot push).
+  (snapshot push). `version` is present only when the deployed bundle
+  advertises a semver.
   """
-  @type bundle_hash_payload :: %{kind: String.t(), hash: String.t()}
+  @type bundle_hash_payload :: %{
+          required(:kind) => String.t(),
+          required(:hash) => String.t(),
+          optional(:version) => String.t()
+        }
 
   @doc """
-  Renders the cic bundle hash to its public wire shape. Caller is
-  responsible for the `nil` short-circuit (no bundle on disk → no
-  broadcast); this fn requires a binary to keep the wire contract
-  unambiguous.
+  Renders the cic bundle hash + semver to its public wire shape. Caller
+  is responsible for the `nil`-hash short-circuit (no bundle on disk →
+  no broadcast); this fn requires a binary hash to keep the wire
+  contract unambiguous. A `nil`/empty version omits the `version` key.
   """
-  @spec bundle_hash(String.t()) :: bundle_hash_payload()
-  def bundle_hash(hash) when is_binary(hash) do
-    %{kind: "bundle_hash", hash: hash}
+  @spec bundle_hash(String.t(), String.t() | nil) :: bundle_hash_payload()
+  def bundle_hash(hash, version) when is_binary(hash) do
+    base = %{kind: "bundle_hash", hash: hash}
+
+    case version do
+      v when is_binary(v) and v != "" -> Map.put(base, :version, v)
+      _ -> base
+    end
   end
 end

@@ -17,6 +17,9 @@ import {
 // behavior is covered by the bundle-refresh e2e specs.
 vi.mock("../lib/bundleHash", () => ({
   shouldShowRefreshBanner: vi.fn(() => false),
+  // #292 — the registry asks bundleHash for the current-vs-available message;
+  // the mock supplies a stand-in so the owner renders without the real signals.
+  refreshBannerMessage: vi.fn(() => "New version available — current 1.0.0 → available 2.0.0."),
   performRefresh: vi.fn(),
 }));
 

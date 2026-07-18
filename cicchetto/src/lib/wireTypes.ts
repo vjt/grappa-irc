@@ -372,6 +372,7 @@ export type ChannelDirectoryWireIndexPayload = {
 export type CicWireBundleHashPayload = {
   kind: string;
   hash: string;
+  version: string;
 };
 
 // === Grappa.Networks.FeaturedChannels.Wire ===

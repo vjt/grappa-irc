@@ -76,6 +76,7 @@ vi.mock("../lib/selection", () => ({
 
 vi.mock("../lib/bundleHash", () => ({
   setServerBundleHash: vi.fn(),
+  setServerBundleVersion: vi.fn(),
 }));
 
 vi.mock("../lib/peerAway", () => ({
@@ -743,6 +744,19 @@ describe("userTopic", () => {
       const bh = await import("../lib/bundleHash");
       channelMock.fireEvent({ kind: "bundle_hash", hash: "RvD22cM9" });
       expect(bh.setServerBundleHash).toHaveBeenCalledWith("RvD22cM9");
+    });
+
+    it("dispatches the advertised version alongside the hash (#292)", async () => {
+      const bh = await import("../lib/bundleHash");
+      channelMock.fireEvent({ kind: "bundle_hash", hash: "RvD22cM9", version: "1.2.4" });
+      expect(bh.setServerBundleHash).toHaveBeenCalledWith("RvD22cM9");
+      expect(bh.setServerBundleVersion).toHaveBeenCalledWith("1.2.4");
+    });
+
+    it("normalises an absent version to null (#292 — hash-only wire)", async () => {
+      const bh = await import("../lib/bundleHash");
+      channelMock.fireEvent({ kind: "bundle_hash", hash: "RvD22cM9" });
+      expect(bh.setServerBundleVersion).toHaveBeenCalledWith(null);
     });
 
     it("drops bundle_hash with empty hash (no setServerBundleHash call)", async () => {
