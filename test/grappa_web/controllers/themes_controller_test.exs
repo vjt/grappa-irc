@@ -93,7 +93,7 @@ defmodule GrappaWeb.ThemesControllerTest do
     end
 
     test "a non-admin user gets an empty list", %{conn: conn} do
-      {_user, session} = user_and_session()
+      {_, session} = user_and_session()
       conn = put_bearer(conn, session.id)
       {admin, _} = user_and_session(is_admin: true)
       stranded = seed_builtin()
