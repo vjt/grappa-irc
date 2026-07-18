@@ -5422,24 +5422,20 @@ html.resize-dragging * {
   border-top: 1px solid var(--border);
 }
 
-.vhost-reconnect {
-  background: transparent;
+/* The button is an InlineConfirmButton (two-tap arm, like `quit`); override
+   the compact base sizing + the base reddish idle colour to a full-size
+   accent primary. The base `.inline-confirm-btn.confirming` rule supplies
+   the red armed treatment on the confirm tap. */
+.settings-drawer .inline-confirm-btn.vhost-reconnect {
   color: var(--accent);
-  border: 1px solid var(--accent);
+  border-color: var(--accent);
   padding: 0.5rem 1rem;
-  font-family: var(--font-mono);
-  font-size: var(--font-size);
-  cursor: pointer;
+  font-size: inherit;
 }
 
-.vhost-reconnect:hover:not(:disabled) {
+.settings-drawer .inline-confirm-btn.vhost-reconnect:hover:not(.confirming) {
   background: var(--accent);
   color: var(--bg);
-}
-
-.vhost-reconnect:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .vhost-reconnect-hint {

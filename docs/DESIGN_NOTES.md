@@ -24758,9 +24758,21 @@ adds a single sticky "Reconnect to apply" footer button to the sub-page.
   heavyweight, externally-visible action on unreliable detection is itself a
   least-astonishment hazard. Ruling (vjt autopilot 2026-07-18): the button is
   ALWAYS available on-demand, never gated on pending-detection. The static
-  "Reconnect to apply" label communicates intent (the spec's real goal); the
-  only disable is the in-flight double-fire guard (`reconnecting`). No
+  "Reconnect to apply" label communicates intent (the spec's real goal). No
   dirty-flag hint shipped in v1 (optional; deferred).
+
+- **Two-tap confirm arm (`InlineConfirmButton`), NOT a single-tap fire (code
+  review 2026-07-18).** The button drops + rejoins EVERY connected network at
+  once, so — like the drawer's two other disruptive actions (`quit`, visitor
+  "apply identity", which reconnects a single network) — it fires through the
+  shared two-tap `InlineConfirmButton` arm. The spec asks to "mirror the
+  existing button, same pattern," and the existing reconnect-triggering button
+  IS a two-tap `InlineConfirmButton`; the arm also directly answers the spec's
+  own accidental-fire concern. An arm is neither a disable nor a
+  pending-detection gate, so the always-available D2 contract holds. The
+  `armed` flag is LOCAL to `VhostSettingsPage` (unlike the drawer-owned
+  `quitArmed`/`identityArmed`): the sub-page unmounts on ‹ back, so the arm
+  auto-resets on leave — no drawer-side disarm needed.
 
 - **Explicit only — never implicit on back/close.** ‹ back just navigates; it
   issues no reconnect. A single sticky footer instance (no top+bottom
@@ -24771,7 +24783,7 @@ State + orchestration live in `SettingsDrawer` (`reconnectSession` →
 `friendlyApiError`); `VhostSettingsPage` stays presentational (props in,
 `onReconnect` out). Pinned by `reconnect.test.ts` (park→reconnect sequence +
 skip-non-connected + propagate-failure), `VhostSettingsPage.test.tsx`
-(always-available + label + in-flight guard + inline error), and the
+(always-available + two-tap arm + idle-label + inline error), and the
 `issue282-vhost-reconnect-button.spec.ts` browser e2e (back-fires-nothing /
 button-fires-`["parked","connected"]`, deterministic PATCH intercept on a real
 connected `azzurra`).

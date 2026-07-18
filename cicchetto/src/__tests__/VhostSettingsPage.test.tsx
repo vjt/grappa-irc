@@ -62,18 +62,16 @@ describe("VhostSettingsPage — chrome", () => {
 });
 
 describe("VhostSettingsPage — #282 reconnect footer", () => {
-  it("renders an always-available Reconnect button that fires onReconnect", () => {
-    const onReconnect = vi.fn();
-    // Empty view = no pending change; the button is STILL available (D2:
-    // reconnect is on-demand, never gated on pending-detection).
-    renderPage(view(), { onReconnect });
+  it("renders an always-available Reconnect button (no pending-gate, even with an empty view)", () => {
+    // Empty view = no change; the button is STILL available (D2: reconnect is
+    // on-demand, never gated on pending-detection).
+    renderPage(view());
     const btn = screen.getByTestId("vhost-reconnect") as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
-    fireEvent.click(btn);
-    expect(onReconnect).toHaveBeenCalledTimes(1);
+    expect(btn).toHaveTextContent(/reconnect to apply/i);
   });
 
-  it("stays available even with a customized selection (no pending-gate)", () => {
+  it("stays available with a customized selection", () => {
     renderPage(
       view({
         available: [opt({ address: "2001:db8::1", in_pool: true })],
@@ -83,23 +81,31 @@ describe("VhostSettingsPage — #282 reconnect footer", () => {
     expect((screen.getByTestId("vhost-reconnect") as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("communicates intent in the idle label", () => {
-    renderPage(view());
-    expect(screen.getByTestId("vhost-reconnect")).toHaveTextContent(/reconnect to apply/i);
-  });
-
-  it("disables + relabels the button ONLY while a reconnect is in flight", () => {
-    renderPage(view(), { reconnecting: true });
-    const btn = screen.getByTestId("vhost-reconnect") as HTMLButtonElement;
-    expect(btn.disabled).toBe(true);
-    expect(btn).toHaveTextContent(/reconnecting/i);
-  });
-
-  it("does not fire onReconnect on a second click while a reconnect is in flight", () => {
+  it("arms on the first tap and fires onReconnect ONLY on the confirm (second) tap", () => {
     const onReconnect = vi.fn();
-    renderPage(view(), { onReconnect, reconnecting: true });
-    fireEvent.click(screen.getByTestId("vhost-reconnect"));
+    renderPage(view(), { onReconnect });
+    const btn = screen.getByTestId("vhost-reconnect");
+    // First tap → arm (confirm label), no reconnect yet — a single stray tap
+    // never bounces every network.
+    fireEvent.click(btn);
     expect(onReconnect).not.toHaveBeenCalled();
+    expect(btn).toHaveTextContent(/reconnect now/i);
+    // Second tap → confirm → reconnect fires exactly once.
+    fireEvent.click(btn);
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns to the idle label after confirming (the arm resets)", () => {
+    renderPage(view());
+    const btn = screen.getByTestId("vhost-reconnect");
+    fireEvent.click(btn); // arm
+    fireEvent.click(btn); // confirm
+    expect(btn).toHaveTextContent(/reconnect to apply/i);
+  });
+
+  it("relabels the idle button to Reconnecting… while a reconnect is in flight", () => {
+    renderPage(view(), { reconnecting: true });
+    expect(screen.getByTestId("vhost-reconnect")).toHaveTextContent(/reconnecting/i);
   });
 
   it("surfaces a reconnect error inline", () => {

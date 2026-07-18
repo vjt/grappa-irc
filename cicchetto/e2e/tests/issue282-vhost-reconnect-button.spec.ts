@@ -143,22 +143,29 @@ test.describe("issue #282 — explicit vhost Reconnect button", () => {
       const { page, patches } = booted;
 
       // The button is ALWAYS available (D2 — never gated on pending-detection)
-      // and communicates intent in its label.
+      // and communicates intent in its idle label.
       const reconnect = page.getByTestId("vhost-reconnect");
       await expect(reconnect).toBeEnabled();
       await expect(reconnect).toHaveText(/reconnect to apply/i);
 
-      // SAFETY: leaving via ‹ back must NOT reconnect (explicit-only).
+      // SAFETY: leaving via ‹ back must NOT reconnect (explicit-only). Arming
+      // the button but leaving without confirming must also fire nothing.
+      await reconnect.click(); // arm only
+      await expect(reconnect).toHaveText(/reconnect now/i);
       await page.getByTestId("vhost-back").click();
       await expect(page.getByTestId("vhost-subpage")).toHaveCount(0);
       await page.waitForTimeout(300); // let any (buggy) async reconnect fire
       expect(patches).toEqual([]);
 
-      // ACTION: re-enter the sub-page and press Reconnect → the connected
-      // network is bounced park→reconnect (the clean same-account teardown).
+      // ACTION: re-enter the sub-page (arm auto-reset on unmount) and confirm
+      // the two-tap Reconnect → the connected network is bounced
+      // park→reconnect (the clean same-account teardown).
       await page.getByTestId("vhost-settings-entry").click();
       await expect(page.getByTestId("vhost-subpage")).toBeVisible();
-      await page.getByTestId("vhost-reconnect").click();
+      const reconnect2 = page.getByTestId("vhost-reconnect");
+      await expect(reconnect2).toHaveText(/reconnect to apply/i); // arm reset
+      await reconnect2.click(); // arm
+      await reconnect2.click(); // confirm
 
       await expect.poll(() => patches.length, { timeout: 10_000 }).toBe(2);
       expect(patches).toEqual(["parked", "connected"]);

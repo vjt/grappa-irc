@@ -577,6 +577,10 @@ const SettingsDrawer: Component<Props> = (props) => {
   const enterVhostPage = (): void => {
     const t = token();
     if (t !== null) void loadVhostSettings(t);
+    // #282 review — clear a stale reconnect error so a back→re-enter within an
+    // open drawer never strands a prior failure (close-effect clears it too,
+    // but the within-drawer re-entry path is the gap the drawer close misses).
+    setReconnectError(null);
     setSettingsPage("vhost");
   };
 
