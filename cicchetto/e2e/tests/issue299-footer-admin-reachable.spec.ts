@@ -124,6 +124,10 @@ test.describe("#299 — footer admin reachable (themes launcher removed)", () =>
     // its "main" page, which hosts the themes nav row.
     await drawer.locator("[data-testid='mobile-panel-settings']").tap();
     await expect(page.locator(".shell-members.open")).toHaveCount(0, { timeout: 5_000 });
+    // #299 item 3 — the legacy auto/mirc-light/irssi-dark radio selector is
+    // gone from the settings main page (superseded by the gallery).
+    await expect(page.getByLabel(/mirc light/i)).toHaveCount(0);
+    await expect(page.getByLabel(/irssi dark/i)).toHaveCount(0);
     await page.getByTestId("themes-settings-entry").tap();
     await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
   });

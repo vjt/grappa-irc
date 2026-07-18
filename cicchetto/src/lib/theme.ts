@@ -1,31 +1,31 @@
 import { createEffect, createRoot, createSignal } from "solid-js";
 
-// Theme state + DOM dataset toggle + reactive viewport-mode signal.
+// Boot-time base theme + reactive viewport-mode signal.
 // Module-singleton pattern mirroring auth.ts / socket.ts / scrollback.ts:
 // every consumer reads the same fine-grained signals, no provider
 // boilerplate.
 //
-// Three resolved themes:
+// The base look is one of two [data-theme] palette blocks in
+// themes/default.css:
 //   * "mirc-light" — white bg, mIRC palette accents
-//   * "irssi-dark" — dark bg, irssi palette accents (existing default)
+//   * "irssi-dark" — dark bg, irssi palette accents (default)
 //
-// User preference persists in localStorage as one of:
-//   * "mirc-light" / "irssi-dark" — explicit override
-//   * (absent / "auto") — follow prefers-color-scheme
+// #299 removed the user-facing auto/mirc/irssi selector: it was superseded
+// by the #75 theme gallery (cog → themes), which layers inline CSS vars OVER
+// this base, and it was broken (toggling the radio did nothing once a gallery
+// theme was active). The base is now ALWAYS OS-resolved
+// (prefers-color-scheme). A user who picked a gallery theme has it applied
+// over this base by customTheme.ts; a user who hasn't falls back to this.
 //
 // `applyTheme()` is the boot-time entry called from main.tsx BEFORE
-// `render()` so the first paint already has the right theme — no FOUC
-// (and no flash on toggle either, because both themes ship in one CSS
-// file via :root[data-theme="..."] blocks).
+// `render()` so the first paint already has the right base — no FOUC (both
+// palettes ship in one CSS file via :root[data-theme="..."] blocks).
 
-export type ThemePref = "mirc-light" | "irssi-dark" | "auto";
 export type ResolvedTheme = "mirc-light" | "irssi-dark";
 
-const STORAGE_KEY = "grappa-theme";
 const MOBILE_QUERY = "(max-width: 768px)";
 
-// Resolves the OS preference via matchMedia — used when ThemePref is
-// "auto" to pick a concrete theme. Defensive against environments
+// Resolves the OS preference via matchMedia. Defensive against environments
 // without matchMedia (older browsers, SSR — neither applies to cicchetto
 // today, but the boundary is cheap).
 function resolveAuto(): ResolvedTheme {
@@ -33,50 +33,19 @@ function resolveAuto(): ResolvedTheme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "irssi-dark" : "mirc-light";
 }
 
-function readStoredPref(): ThemePref {
-  const v = localStorage.getItem(STORAGE_KEY);
-  if (v === "mirc-light" || v === "irssi-dark") return v;
-  return "auto";
-}
-
-function resolveTheme(pref: ThemePref): ResolvedTheme {
-  return pref === "auto" ? resolveAuto() : pref;
-}
-
 function writeDataset(theme: ResolvedTheme): void {
   document.documentElement.dataset.theme = theme;
 }
 
-export function getTheme(): ThemePref {
-  return readStoredPref();
-}
-
-export function setTheme(pref: ThemePref): void {
-  if (pref === "auto") {
-    localStorage.removeItem(STORAGE_KEY);
-  } else {
-    localStorage.setItem(STORAGE_KEY, pref);
-  }
-  writeDataset(resolveTheme(pref));
-}
-
-// Boot-time entry. Applies the stored or auto-resolved theme to
-// document.documentElement.dataset.theme so the first paint matches.
-// Also wires up a media-query listener so OS-level theme changes
-// propagate live when the user has "auto" selected.
+// Boot-time entry. Applies the OS-resolved base theme to
+// document.documentElement.dataset.theme so the first paint matches, and
+// wires a media-query listener so OS-level theme changes propagate live.
 export function applyTheme(): void {
-  const pref = readStoredPref();
-  writeDataset(resolveTheme(pref));
+  writeDataset(resolveAuto());
 
   if (typeof window === "undefined" || !window.matchMedia) return;
   const dark = window.matchMedia("(prefers-color-scheme: dark)");
-  dark.addEventListener("change", () => {
-    // Only re-resolve when user is in "auto" mode; explicit override
-    // ignores OS changes.
-    if (readStoredPref() === "auto") {
-      writeDataset(resolveTheme("auto"));
-    }
-  });
+  dark.addEventListener("change", () => writeDataset(resolveAuto()));
 }
 
 // Reactive viewport-mode signal — backed by matchMedia(MOBILE_QUERY).

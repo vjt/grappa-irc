@@ -25,7 +25,6 @@ import {
   listPushDevices,
   type PushDeviceSummary,
 } from "./lib/push";
-import { getTheme, setTheme, type ThemePref } from "./lib/theme";
 import { getTimeFormat, setTimeFormat, type TimeFormatKey } from "./lib/timeFormat";
 import { activeHost } from "./lib/uploadHost";
 import {
@@ -82,7 +81,6 @@ export type Props = {
 
 const SettingsDrawer: Component<Props> = (props) => {
   const navigate = useNavigate();
-  const [pref, setPref] = createSignal<ThemePref>(getTheme());
   const [size, setSize] = createSignal<FontSizeKey>(getFontSize());
   const [timeFmt, setTimeFmt] = createSignal<TimeFormatKey>(getTimeFormat());
 
@@ -159,12 +157,6 @@ const SettingsDrawer: Component<Props> = (props) => {
   // re-split on PUT so partial typing doesn't drop characters.
   const [channelsOnlyText, setChannelsOnlyText] = createSignal("");
   const [nicksOnlyText, setNicksOnlyText] = createSignal("");
-
-  const onChange = (e: Event) => {
-    const value = (e.currentTarget as HTMLInputElement).value as ThemePref;
-    setPref(value);
-    setTheme(value);
-  };
 
   const onFontSizeChange = (e: Event) => {
     const value = (e.currentTarget as HTMLInputElement).value as FontSizeKey;
@@ -593,40 +585,12 @@ const SettingsDrawer: Component<Props> = (props) => {
         {/* #252 — main settings page. A `<Show>`-gated sub-page (vhost)
             renders in its place; the header × stays visible for both. */}
         <Show when={settingsPage() === "main"}>
-          <fieldset>
-            <legend>theme</legend>
-            <label>
-              <input
-                type="radio"
-                name="theme"
-                value="auto"
-                checked={pref() === "auto"}
-                onChange={onChange}
-              />
-              auto (follow system)
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="theme"
-                value="mirc-light"
-                checked={pref() === "mirc-light"}
-                onChange={onChange}
-              />
-              mIRC light
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="theme"
-                value="irssi-dark"
-                checked={pref() === "irssi-dark"}
-                onChange={onChange}
-              />
-              irssi dark
-            </label>
-          </fieldset>
-
+          {/* #299 — the legacy auto/mirc-light/irssi-dark radio selector was
+              removed here. It is superseded by the #75 theme gallery (cog →
+              themes) and was broken: an active gallery theme layers inline
+              CSS vars over the [data-theme] base blocks, so toggling the radio
+              did nothing visible. The base look is now OS-resolved at boot
+              (lib/theme.applyTheme). */}
           <fieldset class="notifications-fieldset">
             <legend>notifications</legend>
             <label class="master-toggle">
