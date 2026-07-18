@@ -287,6 +287,43 @@ defmodule Grappa.WSPresence do
     GenServer.call(__MODULE__, :list_user_names)
   end
 
+  @typedoc """
+  JSON-encodable read-only snapshot of live presence for the
+  `/admin/ws_presence` diagnostic (#318). `age_ms` is `nil` for a pid
+  that has never reported visible.
+  """
+  @type snapshot :: %{
+          stale_ms: non_neg_integer(),
+          users: [
+            %{
+              user_name: String.t(),
+              any_visible: boolean(),
+              sockets: [
+                %{
+                  pid: String.t(),
+                  visibility: visibility(),
+                  age_ms: non_neg_integer() | nil,
+                  fresh: boolean()
+                }
+              ]
+            }
+          ]
+        }
+
+  @doc """
+  Returns a JSON-encodable snapshot of live presence for every connected
+  user — per-pid reported visibility, `age_ms` since the last visible
+  report, computed freshness, plus `any_visible?/1` per user and the
+  active `stale_ms`. Backs the `/admin/ws_presence` diagnostic (#318): a
+  backgrounded-iOS-PWA run reads back whether the socket went
+  stale/hidden or is (wrongly) still fresh-visible. Users with no live
+  socket are omitted.
+  """
+  @spec snapshot() :: snapshot()
+  def snapshot do
+    GenServer.call(__MODULE__, :snapshot)
+  end
+
   @doc """
   Immediate-close hint — the socket at `socket_pid` is about to close.
 
@@ -448,6 +485,31 @@ defmodule Grappa.WSPresence do
       |> Enum.map(fn {name, _} -> name end)
 
     {:reply, names, state}
+  end
+
+  def handle_call(:snapshot, _, state) do
+    now = now_ms()
+
+    users =
+      state.sockets
+      |> Enum.reject(fn {_, pids} -> map_size(pids) == 0 end)
+      |> Enum.map(fn {user_name, pids} ->
+        %{
+          user_name: user_name,
+          any_visible: any_visible_in?(state, user_name),
+          sockets:
+            Enum.map(pids, fn {pid, {vis, last}} ->
+              %{
+                pid: inspect(pid),
+                visibility: vis,
+                age_ms: if(is_integer(last), do: now - last, else: nil),
+                fresh: fresh?(last, now, state.stale_ms)
+              }
+            end)
+        }
+      end)
+
+    {:reply, %{stale_ms: state.stale_ms, users: users}, state}
   end
 
   def handle_call({:client_closing, user_name, socket_pid}, _, state) do

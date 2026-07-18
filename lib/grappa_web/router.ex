@@ -159,6 +159,10 @@ defmodule GrappaWeb.Router do
     # #215 — persisted IRC session-lifecycle log (read-only tail).
     get "/session_log", SessionLogController, :index
 
+    # #318 — live WS presence + per-pid visibility freshness snapshot.
+    # Read-only diagnostic for the iOS stale-`:visible` push bug.
+    get "/ws_presence", WSPresenceController, :index
+
     # #228 — vhost (source-bind) inventory + per-subject grants.
     get "/vhosts", VhostsController, :index
     # #257 — subject autocomplete backing the grant form (users + visitors).
