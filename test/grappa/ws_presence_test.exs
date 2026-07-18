@@ -142,6 +142,52 @@ defmodule Grappa.WSPresenceTest do
     end
   end
 
+  describe "read-time staleness downgrade (#318)" do
+    # #318 — an iOS PWA backgrounded/closed keeps its WS open but stops
+    # sending fresh `visibility` reports (visibilitychange is unreliable on
+    # the iOS PWA background lifecycle). A stale `:visible` pid must NOT
+    # count as present, so push resumes within @stale_ms instead of only
+    # when the zombie socket finally dies (~90 min in the field report).
+    # `mark_stale_for_test/2` backdates a pid's last-visible stamp past
+    # @stale_ms so we exercise the real staleness comparison without
+    # sleeping the whole window.
+
+    test "a :visible pid whose last report is older than @stale_ms is NOT counted present" do
+      :ok = WSPresence.register("vjt", self())
+      :ok = WSPresence.set_visibility("vjt", self(), true)
+      assert WSPresence.any_visible?("vjt")
+
+      :ok = WSPresence.mark_stale_for_test("vjt", self())
+
+      refute WSPresence.any_visible?("vjt")
+    end
+
+    test "a fresh re-report bumps a stale pid back to visible" do
+      :ok = WSPresence.register("vjt", self())
+      :ok = WSPresence.set_visibility("vjt", self(), true)
+      :ok = WSPresence.mark_stale_for_test("vjt", self())
+      refute WSPresence.any_visible?("vjt")
+
+      # The client foreground heartbeat re-asserts visibility — freshness resets.
+      :ok = WSPresence.set_visibility("vjt", self(), true)
+      assert WSPresence.any_visible?("vjt")
+    end
+
+    test "one stale + one fresh visible pid → any_visible? stays true" do
+      fresh = stub_pid()
+      :ok = WSPresence.register("vjt", self())
+      :ok = WSPresence.register("vjt", fresh)
+      :ok = WSPresence.set_visibility("vjt", self(), true)
+      :ok = WSPresence.set_visibility("vjt", fresh, true)
+      :ok = WSPresence.mark_stale_for_test("vjt", self())
+
+      # self() is stale, `fresh` is not — the user is still genuinely present.
+      assert WSPresence.any_visible?("vjt")
+
+      send(fresh, :stop)
+    end
+  end
+
   describe "socket pid DOWN handling" do
     test "count decrements when a tracked pid exits" do
       p1 = stub_pid()
