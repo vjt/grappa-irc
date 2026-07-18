@@ -47,6 +47,7 @@ defmodule Grappa.Themes do
     Repo,
     Subject,
     Themes.BackgroundImage,
+    Themes.BuiltinBackgrounds,
     Themes.Builtins,
     Themes.Theme,
     UserSettings,
@@ -67,6 +68,14 @@ defmodule Grappa.Themes do
   @doc "The seeded system user that owns built-in themes (always present)."
   @spec system_user() :: User.t()
   def system_user, do: Repo.get_by!(User, name: @system_user_name)
+
+  @doc """
+  The curated built-in background catalog (#294) — the picker's server-owned
+  vocabulary. Static assets served by nginx at `/backgrounds/<key>.webp`; this
+  is the metadata + the closed key set the sanitizer validates against.
+  """
+  @spec builtin_backgrounds() :: [BuiltinBackgrounds.t()]
+  defdelegate builtin_backgrounds(), to: BuiltinBackgrounds, as: :all
 
   @doc "Gallery listing — published themes (built-ins ship published), most-copied first."
   @spec list_gallery() :: [Theme.t()]

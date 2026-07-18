@@ -18,17 +18,30 @@ defmodule Grappa.Themes.TokenModel do
       strict `#rrggbb` hex string (`#rgb` shorthand is accepted and expanded).
     * `"font_family"` — one of `font_families/0` (a curated, self-hosted set;
       no arbitrary fonts, no runtime CDN fetch).
-    * `"background"` — `%{"image_id" => uploads-slug | nil, "opacity" => 0.0..1.0}`.
+    * `"background"` — `%{"image_id" => uploads-slug | nil, "builtin" =>
+      catalog-key | nil, "size" => "cover" | "repeat", "opacity" => 0.0..1.0}`.
+      `image_id` (a re-hosted upload) and `builtin` (a member of the
+      `BuiltinBackgrounds` closed catalog, #294) are mutually exclusive — at
+      most one is non-nil. `size` is COVER by default (`repeat` reserved for the
+      next-session tile set). `builtin`/`size` are DEFAULTED when absent, so a
+      pre-#294 payload (`image_id`+`opacity` only) sanitizes forward cleanly.
 
   Font *size* is deliberately NOT a token — it stays a per-client setting to
   avoid two sources of truth (see #75 fork-3 decision).
   """
+
+  alias Grappa.Themes.BuiltinBackgrounds
 
   @base_color_keys ~w(bg bg_alt fg accent muted border mention mode_op mode_halfop mode_voiced mode_plain)
   @nick_color_keys Enum.map(0..15, &"nick_#{&1}")
   @color_keys @base_color_keys ++ @nick_color_keys
 
   @font_families ~w(mono-default jetbrains-mono fira-code iosevka hack cascadia-code source-code-pro ibm-plex-mono)
+
+  # Background sizing modes (#294). `cover` = full-bleed (the v1 built-in set +
+  # every upload); `repeat` = seamless tile (the deferred pattern set). cic
+  # mirrors this closed set in `themesApi.ts`.
+  @size_modes ~w(cover repeat)
 
   # #rgb or #rrggbb, case-insensitive. Nothing else — a value that is not a
   # bare hex color (e.g. `red; }body{}` or `url(http://evil)`) is rejected, so
@@ -79,6 +92,10 @@ defmodule Grappa.Themes.TokenModel do
   @doc "The closed allowlist of font-family keys."
   @spec font_families() :: [String.t()]
   def font_families, do: @font_families
+
+  @doc "The closed allowlist of background sizing modes (#294)."
+  @spec size_modes() :: [String.t()]
+  def size_modes, do: @size_modes
 
   @doc "The irssi-dark default palette — every color key mapped to valid hex."
   @spec default_colors() :: %{String.t() => String.t()}
@@ -137,10 +154,17 @@ defmodule Grappa.Themes.TokenModel do
   defp sanitize_font(font) when font in @font_families, do: {:ok, font}
   defp sanitize_font(_), do: {:error, :invalid_theme}
 
-  defp sanitize_background(%{"image_id" => image_id, "opacity" => opacity}) do
-    with {:ok, id} <- sanitize_image_id(image_id),
-         {:ok, op} <- sanitize_opacity(opacity) do
-      {:ok, %{"image_id" => id, "opacity" => op}}
+  # `opacity` is the one always-required key; `image_id`/`builtin`/`size` are
+  # read via `Map.get` so a pre-#294 payload (no `builtin`/`size`) sanitizes
+  # forward to the canonical 4-key shape. `image_id` and `builtin` are mutually
+  # exclusive (a background is EITHER an upload OR a built-in, never both).
+  defp sanitize_background(%{"opacity" => opacity} = bg) do
+    with {:ok, id} <- sanitize_image_id(Map.get(bg, "image_id")),
+         {:ok, builtin} <- sanitize_builtin(Map.get(bg, "builtin")),
+         {:ok, size} <- sanitize_size(Map.get(bg, "size")),
+         {:ok, op} <- sanitize_opacity(opacity),
+         :ok <- reject_dual_source(id, builtin) do
+      {:ok, %{"image_id" => id, "builtin" => builtin, "size" => size, "opacity" => op}}
     end
   end
 
@@ -153,6 +177,26 @@ defmodule Grappa.Themes.TokenModel do
   end
 
   defp sanitize_image_id(_), do: {:error, :invalid_theme}
+
+  # A built-in reference is a member of the closed catalog or nil — an unknown
+  # key (or a path-traversal attempt) is rejected, never resolved to an asset.
+  defp sanitize_builtin(nil), do: {:ok, nil}
+
+  defp sanitize_builtin(key) when is_binary(key) do
+    if BuiltinBackgrounds.valid_key?(key), do: {:ok, key}, else: {:error, :invalid_theme}
+  end
+
+  defp sanitize_builtin(_), do: {:error, :invalid_theme}
+
+  # Absent size defaults to cover (backward-compat + the v1 default).
+  defp sanitize_size(nil), do: {:ok, "cover"}
+  defp sanitize_size(size) when size in @size_modes, do: {:ok, size}
+  defp sanitize_size(_), do: {:error, :invalid_theme}
+
+  # A theme carries at most one background source.
+  defp reject_dual_source(nil, _), do: :ok
+  defp reject_dual_source(_, nil), do: :ok
+  defp reject_dual_source(_, _), do: {:error, :invalid_theme}
 
   defp sanitize_opacity(opacity) when is_integer(opacity), do: sanitize_opacity(opacity * 1.0)
 

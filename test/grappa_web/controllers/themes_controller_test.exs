@@ -19,7 +19,7 @@ defmodule GrappaWeb.ThemesControllerTest do
     %{
       "colors" => Map.new(TokenModel.color_keys(), fn k -> {k, "#123456"} end),
       "font_family" => "mono-default",
-      "background" => %{"image_id" => nil, "opacity" => 0.3}
+      "background" => %{"image_id" => nil, "builtin" => nil, "size" => "cover", "opacity" => 0.3}
     }
   end
 
@@ -193,6 +193,35 @@ defmodule GrappaWeb.ThemesControllerTest do
 
       assert json_response(post(conn, "/themes/background", %{"file" => upload}), 415) ==
                %{"error" => "not_raster"}
+    end
+  end
+
+  # #294 — the built-in background catalog the picker consumes. Server-owned so
+  # cic never hard-codes the closed set (would drift from the sanitizer).
+  describe "GET /themes/backgrounds (built-in catalog)" do
+    setup %{conn: conn} do
+      {user, session} = user_and_session()
+      {:ok, conn: put_bearer(conn, session.id), user: user}
+    end
+
+    test "returns the closed built-in background catalog", %{conn: conn} do
+      assert %{"backgrounds" => bgs} = json_response(get(conn, "/themes/backgrounds"), 200)
+      assert length(bgs) == length(Themes.builtin_backgrounds())
+
+      first = hd(bgs)
+      assert Enum.sort(Map.keys(first)) == ~w(key name path variant)
+      assert first["variant"] in ["dark", "light"]
+      assert first["path"] == "/backgrounds/#{first["key"]}.webp"
+    end
+
+    test "does NOT collide with GET /themes/:id (literal route wins)", %{conn: conn} do
+      # If the /themes/:id route matched first, "backgrounds" → 404 not_found.
+      assert %{"backgrounds" => _} = json_response(get(conn, "/themes/backgrounds"), 200)
+    end
+
+    test "401 without a bearer" do
+      assert json_response(get(build_conn(), "/themes/backgrounds"), 401) ==
+               %{"error" => "unauthorized"}
     end
   end
 end

@@ -13,6 +13,7 @@ defmodule GrappaWeb.ThemesController do
       POST   /themes/:id/unpublish unpublish (owner|admin)            :unpublish
       POST   /themes/:id/copy      copy into my account (rate-limited):copy
       POST   /themes/background    upload|url → re-hosted image slug  :background
+      GET    /themes/backgrounds   built-in background catalog        :backgrounds
 
   ## Thin controller, thick context
 
@@ -112,6 +113,12 @@ defmodule GrappaWeb.ThemesController do
          {:ok, theme} <- Themes.copy_theme(viewer, theme_id) do
       render_theme(conn, :created, theme.id, viewer)
     end
+  end
+
+  @doc false
+  @spec backgrounds(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def backgrounds(conn, _) do
+    json(conn, %{backgrounds: Themes.builtin_backgrounds()})
   end
 
   @doc false
