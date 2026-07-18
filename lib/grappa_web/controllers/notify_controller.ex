@@ -42,7 +42,7 @@ defmodule GrappaWeb.NotifyController do
   session is running).
   """
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def index(conn, _params) do
+  def index(conn, _) do
     subject = session_subject(conn)
     network = conn.assigns.network
 
@@ -99,7 +99,7 @@ defmodule GrappaWeb.NotifyController do
   network (`/notify clear`). 200 `{ok: true}`.
   """
   @spec clear(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def clear(conn, _params) do
+  def clear(conn, _) do
     subject = session_subject(conn)
     network = conn.assigns.network
 

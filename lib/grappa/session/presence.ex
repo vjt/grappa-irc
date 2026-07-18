@@ -72,10 +72,10 @@ defmodule Grappa.Session.Presence do
   (512) are surfaced as presence errors by the numeric handlers.
   """
   @spec arm_commands(ISupport.presence_mechanism(), [String.t()]) :: [String.t()]
-  def arm_commands(_mechanism, []), do: []
-  def arm_commands({:monitor, _limit}, nicks), do: monitor_commands("+", nicks)
-  def arm_commands({:watch, _limit}, nicks), do: watch_commands("+", nicks)
-  def arm_commands(:none, _nicks), do: []
+  def arm_commands(_, []), do: []
+  def arm_commands({:monitor, _}, nicks), do: monitor_commands("+", nicks)
+  def arm_commands({:watch, _}, nicks), do: watch_commands("+", nicks)
+  def arm_commands(:none, _), do: []
 
   @doc """
   The upstream lines that add `nicks` to an already-armed session
@@ -89,10 +89,10 @@ defmodule Grappa.Session.Presence do
   (`MONITOR - a,b` / `WATCH -a -b`).
   """
   @spec remove_commands(ISupport.presence_mechanism(), [String.t()]) :: [String.t()]
-  def remove_commands(_mechanism, []), do: []
-  def remove_commands({:monitor, _limit}, nicks), do: monitor_commands("-", nicks)
-  def remove_commands({:watch, _limit}, nicks), do: watch_commands("-", nicks)
-  def remove_commands(:none, _nicks), do: []
+  def remove_commands(_, []), do: []
+  def remove_commands({:monitor, _}, nicks), do: monitor_commands("-", nicks)
+  def remove_commands({:watch, _}, nicks), do: watch_commands("-", nicks)
+  def remove_commands(:none, _), do: []
 
   # ---------------------------------------------------------------------------
   # State map
@@ -128,7 +128,7 @@ defmodule Grappa.Session.Presence do
       :error -> :unchanged
       {:ok, ^presence} -> :unchanged
       {:ok, :unknown} -> {:changed, :initial, Map.put(map, key, presence)}
-      {:ok, _flip} -> {:changed, :transition, Map.put(map, key, presence)}
+      {:ok, _} -> {:changed, :transition, Map.put(map, key, presence)}
     end
   end
 
@@ -160,7 +160,8 @@ defmodule Grappa.Session.Presence do
   @spec monitor_commands(String.t(), [String.t()]) :: [String.t()]
   defp monitor_commands(sign, nicks) do
     nicks
-    |> chunk_by_budget(_joiner_overhead = 1)
+    # comma joiner: 1 byte of overhead per packed nick
+    |> chunk_by_budget(1)
     |> Enum.map(fn chunk -> "MONITOR #{sign} #{Enum.join(chunk, ",")}" end)
   end
 

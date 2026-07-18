@@ -4520,32 +4520,32 @@ defmodule Grappa.Session.Server do
       state
     else
       nicks = Enum.map(Grappa.Notify.list(state.subject, state.network_id), & &1.nick)
-      mechanism = presence_mechanism(state)
-
-      case {nicks, mechanism} do
-        {[], _} ->
-          :ok
-
-        {_, :none} ->
-          # Log honesty: state what was OBSERVED — the list exists, the
-          # network offers no mechanism (v1 ships no ISON fallback).
-          Logger.info(
-            "presence arm skipped: no MONITOR/WATCH in ISUPPORT " <>
-              "(#{length(nicks)} watched nicks stay :unknown)"
-          )
-
-        {_, mechanism} ->
-          for line <- Presence.arm_commands(mechanism, nicks) do
-            maybe_log_send_failure("presence_arm", Client.send_raw(state.client, line))
-          end
-
-          :ok
-      end
+      send_arm_burst(state, presence_mechanism(state), nicks)
 
       state
       |> Map.put(:presence, Presence.seed(nicks))
       |> Map.put(:presence_armed, true)
     end
+  end
+
+  @spec send_arm_burst(t(), ISupport.presence_mechanism(), [String.t()]) :: :ok
+  defp send_arm_burst(_, _, []), do: :ok
+
+  defp send_arm_burst(_, :none, nicks) do
+    # Log honesty: state what was OBSERVED — the list exists, the
+    # network offers no mechanism (v1 ships no ISON fallback).
+    Logger.info(
+      "presence arm skipped: no MONITOR/WATCH in ISUPPORT " <>
+        "(#{length(nicks)} watched nicks stay :unknown)"
+    )
+  end
+
+  defp send_arm_burst(state, mechanism, nicks) do
+    for line <- Presence.arm_commands(mechanism, nicks) do
+      maybe_log_send_failure("presence_arm", Client.send_raw(state.client, line))
+    end
+
+    :ok
   end
 
   # Live `/notify add|del|clear` sync while connected (the reconnect
@@ -4557,7 +4557,6 @@ defmodule Grappa.Session.Server do
   @spec sync_presence(t(), [String.t()], [String.t()]) :: t()
   defp sync_presence(state, added, removed) do
     mechanism = presence_mechanism(state)
-    map = Map.get(state, :presence, %{})
 
     if Map.get(state, :presence_armed, false) and mechanism != :none do
       for line <- Presence.add_commands(mechanism, added) do
@@ -4569,8 +4568,13 @@ defmodule Grappa.Session.Server do
       end
     end
 
-    map = map |> Presence.track(added) |> Presence.untrack(removed)
-    Map.put(state, :presence, map)
+    next_map =
+      state
+      |> Map.get(:presence, %{})
+      |> Presence.track(added)
+      |> Presence.untrack(removed)
+
+    Map.put(state, :presence, next_map)
   end
 
   @spec presence_mechanism(t()) :: ISupport.presence_mechanism()

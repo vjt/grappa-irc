@@ -1664,7 +1664,7 @@ defmodule Grappa.Session.EventRouter do
   defp do_route(%Message{command: {:numeric, 734}, params: params}, state) do
     detail =
       case params do
-        [_own, _limit, targets | _] when is_binary(targets) -> targets
+        [_, _, targets | _] when is_binary(targets) -> targets
         _ -> ""
       end
 
@@ -1681,7 +1681,7 @@ defmodule Grappa.Session.EventRouter do
       {:watch, _} ->
         detail =
           case params do
-            [_own, nick | _] when is_binary(nick) -> nick
+            [_, nick | _] when is_binary(nick) -> nick
             _ -> ""
           end
 
