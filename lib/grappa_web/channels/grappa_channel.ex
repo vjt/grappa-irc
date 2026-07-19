@@ -159,7 +159,16 @@ defmodule GrappaWeb.GrappaChannel do
   """
   use GrappaWeb, :channel
 
-  alias Grappa.{Accounts, Networks, QueryWindows, ReadCursor, Scrollback, Session, UserSettings, WSPresence}
+  alias Grappa.{
+    Accounts,
+    Networks,
+    QueryWindows,
+    ReadCursor,
+    Session,
+    UserSettings,
+    WindowCounts,
+    WSPresence
+  }
   alias Grappa.Cic.Bundle, as: CicBundle
   alias Grappa.Cic.Wire, as: CicWire
   alias Grappa.IRC.Identifier
@@ -247,24 +256,25 @@ defmodule GrappaWeb.GrappaChannel do
   # bulk envelope from `/me`. User + network topics get an empty map
   # (no per-channel cursor concept; bulk fetch lives at `/me`).
   #
-  # 2026-06-01 (unread-badges-from-cursor cluster, bucket B1): the
-  # reply ALSO carries `:unread_count` — the integer count of rows
-  # strictly after the cursor under the same predicate `fetch_after/6`
-  # uses (`Grappa.Scrollback.count_after/5`). cic seeds its
-  # `serverSeedCounts` store from this value and falls back to it for
-  # channels whose scrollback hasn't been hydrated yet; when local
-  # scrollback IS hydrated, cic derives the count from it directly so
-  # the badge tracks the cursor as it advances (read_cursor_set
-  # broadcasts) without a server round-trip.
+  # #267 (server-authoritative counters): the reply ALSO carries
+  # `:window_counts` — the full `Grappa.WindowCounts.snapshot/6`
+  # (`%{messages, mentions, events, severity}`) for the window relative to
+  # the cursor. This REPLACED the former scalar `:unread_count`: cic now
+  # renders the message / mention / event counts + severity colour
+  # directly from server truth and no longer derives counts from the raw
+  # event stream. The mention count is server-computed via the SSOT
+  # `Mentions.mentioned?/3` (own_nick ∪ highlight patterns), so it
+  # reconstructs identically on reconnect / across tabs — the
+  # inconsistency the client-side mention bump could not fix.
   #
-  # `:unread_count = 0` for the unresolvable-context fall-through
-  # (deleted user, missing network, no session at all) so cic can
-  # render a zero badge instead of branching on null. The cursor
-  # remains `nil` in that same fall-through; cic uses that as the
-  # "no cursor yet" signal, not the count.
+  # `:window_counts = WindowCounts.zero()` for the unresolvable-context
+  # fall-through (deleted user, missing network, no session at all) so cic
+  # renders a zero badge instead of branching on null. The cursor remains
+  # `nil` in that same fall-through; cic uses that as the "no cursor yet"
+  # signal, not the count.
   @spec join_reply(Topic.parsed()) :: %{
           optional(:read_cursor) => integer() | nil,
-          optional(:unread_count) => non_neg_integer()
+          optional(:window_counts) => WindowCounts.t()
         }
   defp join_reply({:channel, user_name, network_slug, channel}) do
     with {:ok, subject} <- resolve_subject(user_name),
@@ -281,16 +291,18 @@ defmodule GrappaWeb.GrappaChannel do
           {:error, :no_session} -> nil
         end
 
-      # cursor == nil → after_id = 0 → count_after returns every row
-      # in the (subject, network, channel) partition (all unread). cic
-      # treats `:read_cursor = nil` as "no cursor yet" + uses
-      # `:unread_count` to render the full-channel badge until the user
-      # focuses the window and the cursor lands.
-      unread = Scrollback.count_after(subject, network.id, channel, cursor || 0, own_nick)
+      # #267 — the per-channel WS seed is the full server-authoritative
+      # `WindowCounts.snapshot/6` (messages/mentions/events + severity),
+      # NOT the former scalar unread_count. cic renders these directly and
+      # stops deriving counts client-side. cursor == nil → snapshot counts
+      # from row 0 (all unread); cic treats `:read_cursor = nil` as "no
+      # cursor yet". Highlight patterns feed the mention count (SSOT).
+      patterns = UserSettings.get_highlight_patterns(subject)
+      counts = WindowCounts.snapshot(subject, network.id, channel, cursor, own_nick, patterns)
 
-      %{read_cursor: cursor, unread_count: unread}
+      %{read_cursor: cursor, window_counts: counts}
     else
-      _ -> %{read_cursor: nil, unread_count: 0}
+      _ -> %{read_cursor: nil, window_counts: WindowCounts.zero()}
     end
   end
 

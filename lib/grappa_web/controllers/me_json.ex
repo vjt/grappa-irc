@@ -34,11 +34,11 @@ defmodule GrappaWeb.MeJSON do
 
   ## unread_counts envelope (bucket C, 2026-06-01)
 
-  Nested map: `%{network_slug => %{channel => %{messages: int, events:
-  int}}}`. Same nesting as `read_cursors`; same nested-by-network grouping.
-  Built inline by `MeController.show/2` from
-  `Grappa.Scrollback.count_after_split/5` per cursor (slug→id index
-  resolved controller-side to keep `Scrollback` free of a `Networks`
+  Nested map: `%{network_slug => %{channel => %{messages, mentions,
+  events, severity}}}`. Same nesting as `read_cursors`; same
+  nested-by-network grouping. Built inline by `MeController.show/2` from
+  `Grappa.WindowCounts.snapshot/6` per cursor (#267; slug→id index
+  resolved controller-side to keep the count context free of a `Networks`
   dep edge). Channels without a cursor row are absent — cic falls
   back to the per-channel join reply seed (bucket B1) for those. Cic
   consumes via `selection.ts`'s `applySeedEnvelope`.
@@ -75,12 +75,20 @@ defmodule GrappaWeb.MeJSON do
 
   @typedoc """
   Unread-count envelope: nested `%{slug => %{channel => %{messages,
-  events}}}`. The pair shape mirrors cic
-  `selection.ts`'s `ServerSeedCount` type byte-for-byte.
+  mentions, events, severity}}}`. #267 — the per-channel value is the
+  `Grappa.WindowCounts.snapshot/6` result (server-authoritative), so cic
+  renders the message / mention / event counts + severity colour without
+  any client-side count derivation. Mirrors cic `selection.ts`'s
+  `ServerWindowCounts` type byte-for-byte.
   """
   @type unread_counts :: %{
           String.t() => %{
-            String.t() => %{messages: non_neg_integer(), events: non_neg_integer()}
+            String.t() => %{
+              messages: non_neg_integer(),
+              mentions: non_neg_integer(),
+              events: non_neg_integer(),
+              severity: :mention | :message | :event | :none
+            }
           }
         }
 

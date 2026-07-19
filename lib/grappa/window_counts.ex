@@ -86,6 +86,14 @@ defmodule Grappa.WindowCounts do
   @mention_scan_cap 100
 
   @doc """
+  The all-zero snapshot (`severity: :none`). Used for the unresolvable
+  join-reply fall-through (deleted user / missing network / no session) so
+  cic renders a zero badge instead of branching on a missing map.
+  """
+  @spec zero() :: t()
+  def zero, do: %{messages: 0, mentions: 0, events: 0, severity: :none}
+
+  @doc """
   Returns the `%{messages, mentions, events, severity}` snapshot for the
   `(subject, network_id, channel)` window relative to `cursor`
   (`last_read_message_id`; `nil` counts from the beginning).
@@ -93,19 +101,23 @@ defmodule Grappa.WindowCounts do
   `own_nick` and `patterns` are REQUIRED positionals — no defaulting
   wrapper (same rule as `Scrollback.count_after/5`): a default silently
   re-opens the CP14-B3 own-nick DM over-count and the mention-fold
-  hazard. Pass `nil`-free values from the call site.
+  hazard. `own_nick` MAY be `nil` for the unbound-but-retained network
+  case (`/me` seed for a network the subject holds no credential on) —
+  there is then no nick to match, so `mentions` is `0` and messages/events
+  fall back to `count_after_split/5`'s channel-shape narrowing. Live
+  doors (`join_reply`, per-message push) always pass a real nick.
   """
   @spec snapshot(
           Subject.t(),
           integer(),
           String.t(),
           integer() | nil,
-          String.t(),
+          String.t() | nil,
           [String.t()]
         ) :: t()
   def snapshot(subject, network_id, channel, cursor, own_nick, patterns)
       when is_integer(network_id) and (is_integer(cursor) or is_nil(cursor)) and
-             is_binary(own_nick) and is_list(patterns) do
+             (is_binary(own_nick) or is_nil(own_nick)) and is_list(patterns) do
     after_id = cursor || 0
 
     %{messages: messages, events: events} =
@@ -132,9 +144,12 @@ defmodule Grappa.WindowCounts do
           integer(),
           String.t(),
           integer(),
-          String.t(),
+          String.t() | nil,
           [String.t()]
         ) :: non_neg_integer()
+  # No configured nick on this network — nothing to match, so no mentions.
+  defp count_mentions(_subject, _network_id, _channel, _after_id, nil, _patterns), do: 0
+
   defp count_mentions(subject, network_id, channel, after_id, own_nick, patterns) do
     own = Identifier.canonical_nick(own_nick)
 

@@ -253,7 +253,12 @@ defmodule GrappaWeb.MeControllerTest do
       body = json_response(conn, 200)
 
       assert body["unread_counts"][network.slug] == %{
-               "#a" => %{"messages" => 2, "events" => 1}
+               "#a" => %{
+                 "messages" => 2,
+                 "mentions" => 0,
+                 "events" => 1,
+                 "severity" => "message"
+               }
              }
     end
 
@@ -336,7 +341,7 @@ defmodule GrappaWeb.MeControllerTest do
       body = json_response(conn, 200)
 
       assert body["unread_counts"][network.slug]["#retained"] ==
-               %{"messages" => 1, "events" => 0}
+               %{"messages" => 1, "mentions" => 0, "events" => 0, "severity" => "message"}
     end
 
     # PROD HOTFIX 2026-06-01 — `ReadCursor.bulk_for_subject/1` returns
@@ -472,7 +477,7 @@ defmodule GrappaWeb.MeControllerTest do
 
       # Only the self-msg counts — the inbound DM is narrowed out.
       assert body["unread_counts"][network.slug][own_nick] ==
-               %{"messages" => 1, "events" => 0}
+               %{"messages" => 1, "mentions" => 0, "events" => 0, "severity" => "message"}
 
       # Door parity: the /me total equals what the WS `join_reply` seeds
       # via the SAME predicate `Scrollback.count_after/5`, with own_nick
@@ -482,6 +487,56 @@ defmodule GrappaWeb.MeControllerTest do
 
       %{"messages" => m, "events" => e} = body["unread_counts"][network.slug][own_nick]
       assert m + e == ws_count
+    end
+
+    # #267 — the /me seed carries the server-computed mention count +
+    # severity, not just {messages, events}. A channel with an unread
+    # highlight surfaces mentions ≥ 1 and severity "mention" so cic renders
+    # the red badge from server truth without any client-side regex.
+    test "unread_counts surfaces server-computed mentions + :mention severity",
+         %{conn: conn} do
+      {user, session} = user_and_session()
+
+      {network, _} =
+        network_with_server(port: 7411, slug: "mention-#{System.unique_integer([:positive])}")
+
+      _ = credential_fixture(user, network, %{nick: "vjt"})
+
+      {:ok, anchor} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#m",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "peer",
+          body: "anchor"
+        })
+
+      {:ok, _} = Grappa.ReadCursor.set({:user, user.id}, network.id, "#m", anchor.id)
+
+      # One plain message + one highlight of own nick, both unread.
+      for {i, body} <- [{2, "hello all"}, {3, "vjt you around?"}] do
+        {:ok, _} =
+          Grappa.ScrollbackHelpers.insert(%{
+            user_id: user.id,
+            network_id: network.id,
+            channel: "#m",
+            server_time: i,
+            kind: :privmsg,
+            sender: "peer",
+            body: body
+          })
+      end
+
+      body =
+        conn
+        |> put_bearer(session.id)
+        |> get("/me")
+        |> json_response(200)
+
+      assert body["unread_counts"][network.slug]["#m"] ==
+               %{"messages" => 2, "mentions" => 1, "events" => 0, "severity" => "mention"}
     end
   end
 

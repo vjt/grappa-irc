@@ -62,6 +62,10 @@ defmodule Grappa.WindowCountsTest do
     assert snap(c, "#chan", 0, "vjt") == %{messages: 0, mentions: 0, events: 0, severity: :none}
   end
 
+  test "zero/0 is the all-zero none snapshot" do
+    assert WindowCounts.zero() == %{messages: 0, mentions: 0, events: 0, severity: :none}
+  end
+
   test "cursor at the tail returns all-zero, severity :none" do
     c = ctx()
     insert(c, "#chan", st: 1, body: "a")
@@ -198,5 +202,21 @@ defmodule Grappa.WindowCountsTest do
     assert result.messages == 2
     assert result.mentions == 1
     assert result.severity == :mention
+  end
+
+  # ---------------------------------------------------------------------------
+  # nil own_nick — unbound network with no configured nick (/me door)
+  # ---------------------------------------------------------------------------
+
+  test "nil own_nick yields zero mentions but still counts messages/events" do
+    c = ctx()
+    anchor = insert(c, "#chan", st: 1, body: "anchor")
+    # Would be a mention if we knew the nick — but with no configured nick
+    # on an unbound-but-retained network there is nothing to match.
+    insert(c, "#chan", st: 2, sender: "bob", body: "vjt ping")
+    insert(c, "#chan", st: 3, sender: "carol", kind: :join, body: nil)
+
+    result = WindowCounts.snapshot(c.subject, c.network.id, "#chan", anchor.id, nil, [])
+    assert result == %{messages: 1, mentions: 0, events: 1, severity: :message}
   end
 end

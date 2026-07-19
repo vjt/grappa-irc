@@ -24,7 +24,7 @@ defmodule GrappaWeb.MeController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{AccountDeletion, Networks, ReadCursor, Scrollback}
+  alias Grappa.{AccountDeletion, Networks, ReadCursor, UserSettings, WindowCounts}
   alias Grappa.Networks.Credentials
   alias Grappa.Push.BadgeCount
   alias GrappaWeb.UserSocket
@@ -55,14 +55,15 @@ defmodule GrappaWeb.MeController do
   ## Unread-counts envelope (bucket C, 2026-06-01)
 
   The response carries `unread_counts: %{network_slug => %{channel =>
-  %{messages: int, events: int}}}` — the per-channel
-  `Scrollback.count_after_split/5` for every cursor in `read_cursors`,
-  with the same nested shape. cic's `applySeedEnvelope` consumes the
-  `selection.ts` `serverSeedCounts` signal so cold-load sidebar badges
-  render the right counts for channels the user has a cursor on but
-  hasn't focused yet in this session. Channels without a cursor are
-  absent — cic falls back to the per-channel join reply seed (bucket
-  B1) for those.
+  %{messages, mentions, events, severity}}}` — the per-channel
+  `Grappa.WindowCounts.snapshot/6` (#267) for every cursor in
+  `read_cursors`, with the same nested shape. cic's `applySeedEnvelope`
+  consumes the `selection.ts` `serverSeedCounts` signal so cold-load
+  sidebar badges render the right counts + severity colour for channels
+  the user has a cursor on but hasn't focused yet in this session — with
+  NO client-side count derivation (#267: server is authority, client
+  renders). Channels without a cursor are absent — cic falls back to the
+  per-channel join reply seed (bucket B1) for those.
 
   Built inline here (not in `Scrollback`) so the slug→id resolution
   stays controller-side and `Scrollback` doesn't grow a dependency
@@ -215,7 +216,7 @@ defmodule GrappaWeb.MeController do
   @spec build_unread_counts(
           Grappa.Scrollback.subject(),
           %{String.t() => %{String.t() => integer() | nil}}
-        ) :: %{String.t() => %{String.t() => %{messages: non_neg_integer(), events: non_neg_integer()}}}
+        ) :: %{String.t() => %{String.t() => WindowCounts.t()}}
   defp build_unread_counts(_, cursor_envelope) when map_size(cursor_envelope) == 0,
     do: %{}
 
@@ -238,6 +239,12 @@ defmodule GrappaWeb.MeController do
     # consistent for the unbound case too.
     own_nicks = BadgeCount.configured_nick_windows(subject)
 
+    # #267 — highlight patterns for the mention count are subject-wide
+    # (not per-network), so resolve once here and thread into every
+    # per-channel snapshot. Same off-Session stance as own_nick: no
+    # Session round-trip on the cold-load path.
+    patterns = UserSettings.get_highlight_patterns(subject)
+
     for {slug, per_channel} <- cursor_envelope,
         Map.has_key?(slug_to_id, slug),
         reduce: %{} do
@@ -253,7 +260,7 @@ defmodule GrappaWeb.MeController do
               Map.put(
                 inner,
                 channel,
-                Scrollback.count_after_split(subject, net_id, channel, cursor, own_nick)
+                WindowCounts.snapshot(subject, net_id, channel, cursor, own_nick, patterns)
               )
           end
 

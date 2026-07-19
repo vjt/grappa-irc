@@ -554,7 +554,10 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert reply == %{read_cursor: nil, unread_count: 0}
+      assert reply == %{
+               read_cursor: nil,
+               window_counts: %{messages: 0, mentions: 0, events: 0, severity: :none}
+             }
     end
 
     test "channel topic join returns the cursor id and unread count (cursor at tail → 0)" do
@@ -584,7 +587,10 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert reply == %{read_cursor: msg.id, unread_count: 0}
+      assert reply == %{
+               read_cursor: msg.id,
+               window_counts: %{messages: 0, mentions: 0, events: 0, severity: :none}
+             }
     end
 
     test "channel topic join surfaces the unread count when rows exist past the cursor" do
@@ -627,7 +633,10 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert reply == %{read_cursor: anchor.id, unread_count: 3}
+      assert reply == %{
+               read_cursor: anchor.id,
+               window_counts: %{messages: 3, mentions: 0, events: 0, severity: :message}
+             }
     end
 
     test "channel topic join with no cursor yet counts every row as unread" do
@@ -657,7 +666,10 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert reply == %{read_cursor: nil, unread_count: 2}
+      assert reply == %{
+               read_cursor: nil,
+               window_counts: %{messages: 2, mentions: 0, events: 0, severity: :message}
+             }
     end
 
     test "channel topic join surfaces the unread count for visitor subjects too" do
@@ -698,7 +710,10 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert reply == %{read_cursor: anchor.id, unread_count: 2}
+      assert reply == %{
+               read_cursor: anchor.id,
+               window_counts: %{messages: 2, mentions: 0, events: 0, severity: :message}
+             }
     end
 
     test "user-level topic join returns an empty join reply (no cursor concept)" do
