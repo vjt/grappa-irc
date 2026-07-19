@@ -3,8 +3,10 @@ import * as api from "./api";
 
 // Auth state is a single module-level signal. The token is *the* identity
 // — REST calls attach it as `Authorization: Bearer ${token}`, the WS
-// connect (sub-task 4) appends it as `?token=...`, and the route guard
-// reads it to redirect unauthenticated users.
+// connect passes it via the `Sec-WebSocket-Protocol` subprotocol
+// (`authToken`, OFF the URL since #95; the `?token=` query-string
+// fallback was dropped in #202), and the route guard reads it to redirect
+// unauthenticated users.
 //
 // Persistence: localStorage. Simple, survives reloads + PWA cold-start,
 // and the iPhone "Add to Home Screen" surface keeps it across launches.
