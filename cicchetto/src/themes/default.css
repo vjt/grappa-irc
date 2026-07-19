@@ -3890,6 +3890,13 @@ html.resize-dragging * {
   .shell-mobile .mobile-panel-actions {
     display: flex;
     flex-direction: row;
+    /* #332 — wrap launchers to a new row instead of overflowing/clipping
+       when they exceed the drawer width. The footer holds 3–5 launchers
+       (home always; archive/admin conditional; #332 restored the themes
+       button as the 5th) — on narrow devices 5 × 48px tap targets + gaps
+       exceed the row, so they must wrap, not push admin off-screen (the
+       clip that motivated #299's removal). Layout adapts to button count. */
+    flex-wrap: wrap;
     /* #291 — left-align now that the home launcher is the leftmost,
        always-present affordance (was flex-end when the row held only the
        optional archive/settings/admin launchers). */

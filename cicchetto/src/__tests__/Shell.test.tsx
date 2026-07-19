@@ -856,7 +856,7 @@ describe("Shell — mobile layout (isMobile = true)", () => {
       expect(container.querySelector(".topic-bar .topic-bar-hamburger")).not.toBeNull();
     });
 
-    it("mobile channel window: launcher footer in .shell-members hosts settings + archive launchers (network context present)", async () => {
+    it("mobile channel window: launcher footer in .shell-members hosts settings + archive + themes launchers (network context present)", async () => {
       mobileState.value = true;
       selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
       const { container } = render(() => <Shell />);
@@ -866,6 +866,10 @@ describe("Shell — mobile layout (isMobile = true)", () => {
       const footer = container.querySelector(".shell-members .mobile-panel-actions");
       expect(footer?.querySelector("[data-testid='mobile-panel-settings']")).not.toBeNull();
       expect(footer?.querySelector("[data-testid='mobile-panel-archive']")).not.toBeNull();
+      // #332 — the 🎨 themes launcher was restored to the mobile footer
+      // (removed by #299). It deep-links to the settings drawer's themes
+      // sub-page; the footer `flex-wrap`s so it doesn't clip admin.
+      expect(footer?.querySelector("[data-testid='mobile-panel-themes']")).not.toBeNull();
     });
 
     it("mobile home window: standalone .shell-chrome row STAYS (no TopicBar / drawer to absorb buttons)", async () => {

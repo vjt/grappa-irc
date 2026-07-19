@@ -5,13 +5,17 @@
 // `.mobile-panel-actions` footer, LEFT-aligned, alongside archive /
 // settings / admin — and enlarges ALL those launchers to ≥44px tap
 // targets. (#299 removed the #75 themes launcher from this footer — five
-// buttons overflowed on narrow devices and clipped admin; the footer is
-// back to FOUR: home / archive / settings / admin.)
+// buttons overflowed on narrow devices and clipped admin. #332 (P0, vjt)
+// RESTORED the 🎨 themes launcher: the footer is back to FIVE — home /
+// archive / settings / themes / admin — and the overflow is now handled
+// by `flex-wrap` on `.mobile-panel-actions` instead of dropping a button,
+// so admin no longer clips. This spec's launcher-count assertions moved
+// from 4 to 5 with that restoration.)
 //
 // This spec drives the real mobile layout (@webkit / iPhone 15): open
-// the hamburger, assert all 4 launchers are present and each ≥44px, tap
+// the hamburger, assert all 5 launchers are present and each ≥44px, tap
 // home and assert the drawer closes and the HOME window renders. The
-// 4-launcher count needs the admin button present, so vjt is temporarily
+// 5-launcher count needs the admin button present, so vjt is temporarily
 // promoted to admin (mirrors ux-6-c-mobile-admin-launcher), then reverted
 // in afterEach so the shared stack baseline is restored.
 
@@ -92,18 +96,19 @@ test.describe("#291 — mobile home button in drawer footer", () => {
     const launcherFooter = drawer.locator(".mobile-panel-actions");
     await expect(launcherFooter).toBeVisible();
 
-    // All launchers present. #299 removed the #75 themes button, so an
-    // admin in a channel sees FOUR: home (#291), archive, settings, admin.
-    // The themes launcher must be ABSENT (reachable via cog → themes now).
+    // All launchers present. #332 RESTORED the #75 themes button, so an
+    // admin in a channel sees FIVE: home (#291), archive, settings, themes
+    // (#332), admin. The themes launcher deep-links to the settings
+    // drawer's themes sub-page (covered by issue332 spec).
     await expect(launcherFooter.locator("[data-testid='mobile-panel-home']")).toHaveCount(1);
     await expect(launcherFooter.locator("[data-testid='mobile-panel-archive']")).toHaveCount(1);
     await expect(launcherFooter.locator("[data-testid='mobile-panel-settings']")).toHaveCount(1);
-    await expect(launcherFooter.locator("[data-testid='mobile-panel-themes']")).toHaveCount(0);
+    await expect(launcherFooter.locator("[data-testid='mobile-panel-themes']")).toHaveCount(1);
     await expect(launcherFooter.locator("[data-testid='mobile-panel-admin']")).toHaveCount(1);
 
     // Every launcher is a proper mobile tap target (≥44px, #291).
     const buttons = launcherFooter.locator(".shell-chrome-btn");
-    await expect(buttons).toHaveCount(4);
+    await expect(buttons).toHaveCount(5);
     const count = await buttons.count();
     for (let i = 0; i < count; i++) {
       const box = await buttons.nth(i).boundingBox();

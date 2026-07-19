@@ -97,7 +97,7 @@ const ShellChrome: Component<Props> = (props) => {
         data-testid="shell-chrome-cog"
         onClick={props.onOpenSettings}
       >
-        ⚙
+        {"\u{2699}\u{FE0F}"}
       </button>
     </header>
   );

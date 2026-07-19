@@ -35,6 +35,7 @@ import {
   openArchivePanel,
   openHomePanel,
   openSettingsPanel,
+  openThemesPanel,
   toggleMembersPanel,
 } from "./lib/mobilePanel";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
@@ -926,14 +927,23 @@ const Shell: Component = () => {
               data-testid="mobile-panel-settings"
               onClick={() => openSettingsPanel({ membersOpen, setMembersOpen, setSettingsOpen })}
             >
-              ⚙
+              {"\u{2699}\u{FE0F}"}
             </button>
-            {/* #299 — the #75 themes launcher was REMOVED here (Opt A). It only
-                deep-linked to the settings drawer's themes sub-page, which is
-                already reachable via the cog (settings → themes). Five footer
-                buttons overflowed on narrow devices and clipped the high-freq
-                admin launcher off-screen; dropping the redundant themes
-                shortcut brings the footer back to 4 and keeps admin reachable. */}
+            {/* #75/#332 — themes launcher: opens the settings drawer directly on
+                the themes gallery sub-page (openThemesPanel deep-links via
+                settingsNav). #299 removed this (footer overflowed at 5 buttons,
+                clipping admin); #332 (P0, vjt) restored it — the footer now
+                `flex-wrap`s (default.css `.mobile-panel-actions`), so a 5th
+                button wraps to a new row instead of clipping admin off-screen. */}
+            <button
+              type="button"
+              class="shell-chrome-btn shell-chrome-themes"
+              aria-label="open themes"
+              data-testid="mobile-panel-themes"
+              onClick={() => openThemesPanel({ membersOpen, setMembersOpen, setSettingsOpen })}
+            >
+              {"\u{1F3A8}"}
+            </button>
             {/* UX-6 bucket C (2026-05-21) — admin launcher: admin
                 console. Visible only when `isAdmin()` is true (single
                 source of truth shared with Sidebar admin row +

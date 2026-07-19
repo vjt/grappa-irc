@@ -1,18 +1,24 @@
-// #299 item 6 (Opt A) — footer admin reachable after removing the #75
-// themes launcher.
+// #299 item 6 → superseded by #332 — footer admin reachable WITH the #75
+// themes launcher present.
 //
-// #75 added a 🎨 themes launcher to the mobile drawer footer, taking it to
-// FIVE buttons (home / archive / settings / themes / admin). On narrow
-// devices the fifth button overflowed and clipped the high-frequency admin
-// launcher off-screen (vjt 2026-07-18 dogfood). The themes launcher was
-// pure redundancy — it only ever deep-linked to the settings drawer's themes
-// sub-page, which is already reachable from the cog. Opt A removes it.
+// History: #75 added a 🎨 themes launcher to the mobile drawer footer,
+// taking it to FIVE buttons (home / archive / settings / themes / admin).
+// On narrow devices the fifth button overflowed and clipped the
+// high-frequency admin launcher off-screen (vjt 2026-07-18 dogfood). #299
+// (Opt A) fixed the clip by REMOVING the themes launcher. #332 (P0, vjt)
+// reversed that trade: the themes launcher is RESTORED, and the overflow is
+// now handled the right way — `flex-wrap` on `.mobile-panel-actions`
+// (default.css) wraps a 5th button to a new row instead of clipping admin.
 //
-// This spec drives the real mobile layout (@webkit / iPhone 15) and proves:
-//   (a) the footer is back to FOUR buttons with the themes launcher ABSENT,
+// So the invariant this spec guards — "admin stays reachable" — is
+// unchanged; only the mechanism flipped (button-removal → flex-wrap). It
+// drives the real mobile layout (@webkit / iPhone 15) and proves:
+//   (a) the footer holds FIVE buttons with the themes launcher PRESENT,
 //   (b) admin is present, ≥44px, and TAPPABLE (renders the AdminPane — i.e.
-//       not clipped off-screen), and
+//       not clipped off-screen even with the 5th button back), and
 //   (c) themes is still reachable via the cog → themes nav row.
+// The themes launcher's own deep-link behaviour is owned by the issue332
+// spec; here it's just the 5th button that must not strand admin.
 //
 // vjt (admin-by-seed can drift under the shared stack) is explicitly
 // promoted to admin for the admin-launcher assertions, then reverted in
@@ -81,7 +87,7 @@ test.describe("#299 — footer admin reachable (themes launcher removed)", () =>
     await setAdminFlag(getSeededAdmin().token, vjtUserId, false);
   });
 
-  test("@webkit footer drops themes launcher; admin present, ≥44px, and tappable", async ({
+  test("@webkit footer holds themes launcher; admin still present, ≥44px, and tappable", async ({
     page,
   }) => {
     await setAdminFlag(getSeededAdmin().token, vjtUserId, true);
@@ -93,9 +99,11 @@ test.describe("#299 — footer admin reachable (themes launcher removed)", () =>
     const footer = drawer.locator(".mobile-panel-actions");
     await expect(footer).toBeVisible();
 
-    // The themes launcher is GONE; the footer is back to FOUR buttons.
-    await expect(footer.locator("[data-testid='mobile-panel-themes']")).toHaveCount(0);
-    await expect(footer.locator(".shell-chrome-btn")).toHaveCount(4);
+    // #332 restored the themes launcher; the footer is FIVE buttons and the
+    // row `flex-wrap`s so the 5th doesn't clip admin (the #299 regression
+    // this spec still guards, now via wrap instead of removal).
+    await expect(footer.locator("[data-testid='mobile-panel-themes']")).toHaveCount(1);
+    await expect(footer.locator(".shell-chrome-btn")).toHaveCount(5);
 
     // Admin is present AND a proper ≥44px tap target (not clipped off-screen).
     const adminBtn = footer.locator("[data-testid='mobile-panel-admin']");

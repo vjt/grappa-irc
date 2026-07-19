@@ -26,6 +26,7 @@ import {
   type PushDeviceSummary,
 } from "./lib/push";
 import { reconnectConnectedNetworks } from "./lib/reconnect";
+import { consumePendingSettingsPage, type SettingsSubPage } from "./lib/settingsNav";
 import { getTimeFormat, setTimeFormat, type TimeFormatKey } from "./lib/timeFormat";
 import { activeHost } from "./lib/uploadHost";
 import {
@@ -46,13 +47,6 @@ import {
 import ShareSessionModal from "./ShareSessionModal";
 import ThemeGallery from "./ThemeGallery";
 import VhostSettingsPage from "./VhostSettingsPage";
-
-// #75/#252 sub-page union for the settings drawer. The drawer is a flat
-// "main" page that pushes into dedicated sub-pages (vhost #252, themes #75),
-// each entered from a nav row inside the drawer. (#299 removed the mobile
-// footer 🎨 launcher + its one-shot deep-link — themes is reached via the cog
-// → themes nav row now, so no cross-module deep-link state is needed.)
-type SettingsSubPage = "main" | "vhost" | "themes";
 
 // Right-overlay drawer: theme toggle + notifications (push permission +
 // per-trigger prefs + device list) + optional "admin console" entry
@@ -370,6 +364,11 @@ const SettingsDrawer: Component<Props> = (props) => {
     if (o && !wasOpen) {
       wasOpen = true;
       pushOverlay(drawerEl ?? null);
+      // #75/#332 — the footer 🎨 launcher requests a deep-link into the
+      // themes sub-page before opening; consume it (one-shot). No pending
+      // request → stay on "main" (reset on the prior close below).
+      const pending = consumePendingSettingsPage();
+      if (pending !== null) setSettingsPage(pending);
     } else if (!o && wasOpen) {
       wasOpen = false;
       popOverlay(drawerEl ?? null);
