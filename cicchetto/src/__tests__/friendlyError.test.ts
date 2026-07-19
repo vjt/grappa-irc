@@ -24,6 +24,21 @@ describe("friendlyError", () => {
     );
   });
 
+  // #342 — the ingress token-bucket throttle (#340) 429s a flooding send
+  // with the SAME `rate_limited` wire token themes' daily quota uses. On the
+  // SEND door that token means "slow down", not themes' "try tomorrow".
+  // `friendlyError` is the send-door dispatcher, so it owns the throttle copy
+  // and overrides `rate_limited` BEFORE delegating to `friendlyApiError`
+  // (which keeps the themes-surface copy for ThemeEditor/ThemeGallery that
+  // call it directly, bypassing this dispatcher). Any `rate_limited` reaching
+  // `friendlyError` is a send-throttle by construction — themes never route
+  // through here.
+  it("maps a send-door rate_limited to the throttle copy, not themes' quota copy", () => {
+    expect(friendlyError(new ApiError(429, "rate_limited"))).toBe(
+      "You're sending too fast — the server is throttling you. Slow down and try again in a moment.",
+    );
+  });
+
   it("falls back to a loud generic string for an untyped Error", () => {
     expect(friendlyError(new Error("kaboom"))).toBe("send failed");
   });

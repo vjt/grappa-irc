@@ -26054,3 +26054,45 @@ card's — the "tap flips bg" assertion broke. Fix: scope the taps to the
 gallery section. General lesson: positional card selectors are fragile across
 a per-viewer, ownership-partitioned list; scope to the section whose contents
 are stable.
+
+
+### #342 — send-door throttle copy: discriminating a shared `rate_limited` token by surface
+
+#340 added a per-`(subject, network)` ingress token bucket
+(`messages_controller.ex` → `RateLimit.TokenBucket`) that 429s a flooding
+message send at the hard cap. The catch: its `FallbackController` clause reuses
+the **existing** `{error: "rate_limited"}` wire token — the same one themes'
+per-day creation quota (`RateLimit.DailyQuota`) already emitted. On cic,
+`friendlyApiError`'s `rate_limited` arm carries themes-specific copy ("You've
+hit today's theme limit. Try again tomorrow."). So a throttled send rendered
+the themes copy — nonsensical on the compose box.
+
+**Challenge-the-spec note:** the clean-slate contract is a DISTINCT server
+token, exactly as `FallbackController` already does for `too_many_attempts`
+(login window) and `theme_cap_reached` (owned-theme cap) — both 429s that got
+their own wire string precisely so cic can render distinct copy. #340 shipped
+reusing `rate_limited`, and #342 was scoped client-only (per #grappa request,
+no scope creep), so the fix discriminates by SURFACE on the client rather than
+by token on the server. If a future batch touches #340's controller, minting
+`send_throttled` server-side and dropping the client override is the tidier
+end state.
+
+**The fix — one line, at the right seam.** `friendlyError` is THE send-door
+dispatcher (its #74 moduledoc: "the single dispatcher that turns a thrown
+error from EITHER send door into human copy"). It overrides `rate_limited` to
+the throttle copy BEFORE delegating to `friendlyApiError`. The themes surfaces
+(`ThemeEditor`, `ThemeGallery`) call `friendlyApiError` **directly**, bypassing
+`friendlyError`, so their `rate_limited` copy is untouched. The two surfaces
+were already cleanly separated at the dispatcher boundary — this isn't a
+special-case hack, it's the send door owning its own copy. Any `rate_limited`
+reaching `friendlyError` is a send throttle by construction (topic-set,
+`/notify`, and services verbs that also route through `friendlyError` don't hit
+the message token bucket; themes never route through here at all).
+
+No server change, no new component, no state machine, no optimistic echo — the
+existing `.compose-box-error` affordance renders the new copy, draft preserved
+for retry. Pinned at unit level (`friendlyError.test.ts`: the send-door arm
+maps to throttle copy, NOT the themes arm) and end-to-end
+(`issue342-throttle-copy.spec.ts`: a mocked 429 on the send POST paints the
+throttle copy — matches `/throttl|too fast/`, explicitly NOT `/theme limit/` —
+in a real browser, draft preserved).
