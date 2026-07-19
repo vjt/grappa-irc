@@ -516,33 +516,15 @@ describe("selection store", () => {
   // by visibility transition instead of selection change.
   //
   // Post-2026-06-01 contract: focus-regain does NOT clear badge counts
-  // (they're derived from cursor + scrollback and drop automatically
-  // as the cursor advances). It DOES clear mention counts which remain
-  // bump-based.
-  describe("focus-regain: mentions clear, badge memos untouched", () => {
-    it("mentionCounts for selected window clear when browser regains focus", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const key = channelKey("freenode", "#grappa");
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      setVisibilityForTest(false);
-      await Promise.resolve();
-      mentions.bumpMention(key);
-      expect(mentions.mentionCounts()[key]).toBe(1);
-
-      setVisibilityForTest(true);
-      await Promise.resolve();
-
-      expect(mentions.mentionCounts()[key]).toBeUndefined();
-    });
-
+  // (they're derived from cursor + scrollback and drop automatically as
+  // the cursor advances).
+  //
+  // #267: the mention badge is server-authoritative and its focus-zero
+  // overlay is a pure projection in `mentions.ts` (selected+visible → 0).
+  // selection.ts no longer clears mentions imperatively, so the
+  // mention-clear tests that used to live here moved to
+  // `mentions.test.ts`, which owns the overlay contract directly.
+  describe("focus-regain: badge memos untouched (derive from cursor + scrollback)", () => {
     it("badge memos are untouched by focus-regain — they derive from cursor + scrollback", async () => {
       // Pre-cluster, focus-regain CLEARED the bump-store badges. Post-
       // cluster, the memos derive from `(scrollbackByChannel,
@@ -574,73 +556,6 @@ describe("selection store", () => {
 
       expect(selection.messagesUnread()[seededKey]).toBe(3);
       expect(selection.unreadCounts()[seededKey]).toBe(3);
-    });
-
-    it("focus-regain does NOT clear OTHER (non-selected) windows' mentionCounts", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const selKey = channelKey("freenode", "#grappa");
-      const otherKey = channelKey("freenode", "#cicchetto");
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      setVisibilityForTest(false);
-      await Promise.resolve();
-      mentions.bumpMention(selKey);
-      mentions.bumpMention(otherKey);
-
-      setVisibilityForTest(true);
-      await Promise.resolve();
-
-      expect(mentions.mentionCounts()[selKey]).toBeUndefined();
-      expect(mentions.mentionCounts()[otherKey]).toBe(1);
-    });
-
-    it("focus-regain with no selected window is a no-op for mentions", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const selection = await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const key = channelKey("freenode", "#grappa");
-      // No setSelectedChannel — selection is null. Use selection
-      // import to ensure the module evaluates and installs its arms.
-      void selection;
-      mentions.bumpMention(key);
-      setVisibilityForTest(false);
-      await Promise.resolve();
-      setVisibilityForTest(true);
-      await Promise.resolve();
-
-      expect(mentions.mentionCounts()[key]).toBe(1);
-    });
-
-    it("initial visibility=true does NOT spuriously clear bumped mentions", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const key = channelKey("freenode", "#grappa");
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      mentions.bumpMention(key);
-      // No setVisibilityForTest — visibility stays true (initial state).
-      await Promise.resolve();
-
-      // Initial visibility-effect run with prev===undefined must NOT
-      // re-fire mention-clear; the selection-arm DID clear at select
-      // time so the assertion is "after selection cleared it, bumping
-      // again leaves the count visible." If the visibility effect
-      // re-fired on initial mount, the mention added post-selection
-      // would also clear.
-      expect(mentions.mentionCounts()[key]).toBe(1);
     });
   });
 
@@ -1289,19 +1204,18 @@ describe("selection store", () => {
     });
   });
 
-  // UX-5 bucket BU — unread state machine: single "is operator reading?"
-  // gate drives all three sinks (messagesUnread / eventsUnread /
-  // mentionCounts). Before BU, mentionCounts cleared on selection only —
-  // browser-blur arrivals on the selected window were left as a stale red
-  // badge after focus regain. setSelectedChannel was also not idempotent
-  // on identical (slug, name, kind) — re-clicking the active channel
-  // re-fired the selection effect, which cleared mentions (legitimately,
-  // but also crossed the marker-injection invariant by triggering
-  // sessionTopId recapture in ScrollbackPane). The fix consolidates the
-  // mention clear into `clearBadgesForWindow` and adds an idempotency
-  // guard at the setter boundary so the active-channel re-click is a
-  // pure no-op.
-  describe("UX-5 bucket BU — mention badge symmetry + idempotent setter", () => {
+  // UX-5 bucket BU — idempotent selection setter. setSelectedChannel was
+  // not idempotent on identical (slug, name, kind) — re-clicking the
+  // active channel re-fired the selection effect, which crossed the
+  // marker-injection invariant by triggering sessionTopId recapture in
+  // ScrollbackPane. The fix adds an idempotency guard at the setter
+  // boundary so the active-channel re-click is a pure no-op.
+  //
+  // #267: the mention-badge-symmetry tests that used to live here moved
+  // to `mentions.test.ts` — the mention count is server-authoritative and
+  // its focus-zero overlay is a pure projection, no longer an imperative
+  // clear driven from selection.ts.
+  describe("UX-5 bucket BU — idempotent selection setter", () => {
     it("setSelectedChannel is idempotent on identical (slug, name, kind)", async () => {
       // BU bug-2 root cause: re-clicking the active sidebar row passed a
       // new object literal, which re-fired the on(selectedChannel) effect
@@ -1343,135 +1257,20 @@ describe("selection store", () => {
       await Promise.resolve();
       expect(readCursor.setReadCursor).not.toHaveBeenCalled();
     });
-
-    it("selecting a channel clears its accumulated mentionCounts", async () => {
-      // BU bug-1 prerequisite: selection clear must include mentions
-      // (was the case in pre-BU mentions.ts; verify still works after
-      // moving the clear into selection.ts's clearBadgesForWindow).
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const key = channelKey("freenode", "#grappa");
-      mentions.bumpMention(key);
-      mentions.bumpMention(key);
-      expect(mentions.mentionCounts()[key]).toBe(2);
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      expect(mentions.mentionCounts()[key]).toBeUndefined();
-    });
-
-    it("browser-focus-regain clears mentionCounts for the selected window (BU bug-1 fix)", async () => {
-      // BU bug-1 root: visibility-regain cleared unread/messages/events
-      // but NOT mentions. After fix: the same arm clears all four.
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const key = channelKey("freenode", "#grappa");
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      setVisibilityForTest(false);
-      await Promise.resolve();
-      // Simulate the subscribe.ts blurred-arrival path: mention bumped
-      // because effective-focus was false (selected but tab hidden).
-      mentions.bumpMention(key);
-      expect(mentions.mentionCounts()[key]).toBe(1);
-
-      setVisibilityForTest(true);
-      await Promise.resolve();
-
-      // Mention badge clears alongside the other three sinks — single
-      // unified "is operator reading?" gate.
-      expect(mentions.mentionCounts()[key]).toBeUndefined();
-    });
-
-    it("focus-regain does NOT clear mentionCounts for OTHER windows", async () => {
-      // Symmetric anti-spec guard: focus-regain only clears the SELECTED
-      // window's badges (all four sinks).
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const selKey = channelKey("freenode", "#grappa");
-      const otherKey = channelKey("freenode", "#cicchetto");
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      setVisibilityForTest(false);
-      await Promise.resolve();
-      mentions.bumpMention(selKey);
-      mentions.bumpMention(otherKey);
-
-      setVisibilityForTest(true);
-      await Promise.resolve();
-
-      expect(mentions.mentionCounts()[selKey]).toBeUndefined();
-      expect(mentions.mentionCounts()[otherKey]).toBe(1);
-    });
-
-    it("focus-regain with no selected window does NOT clear any mentionCounts", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      // Importing selection registers its on(isDocumentVisible) effect
-      // — even though we never call setSelectedChannel here.
-      await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const key = channelKey("freenode", "#grappa");
-      // No setSelectedChannel — selection is null.
-      mentions.bumpMention(key);
-      setVisibilityForTest(false);
-      await Promise.resolve();
-      setVisibilityForTest(true);
-      await Promise.resolve();
-      expect(mentions.mentionCounts()[key]).toBe(1);
-    });
   });
 
   // UX-6 bucket K — PM (query) unread-marker symmetry. Bug as filed by
-  // vjt 2026-05-20: channels clear their unread/mention badge on focus,
-  // PMs DON'T. Channel-side path was settled in UX-5 bucket BU; this
-  // bucket asserts the symmetric behaviour for `kind: "query"` so any
-  // future kind-discriminator regression that selectively skips PMs
-  // fails loudly here instead of needing an e2e.
+  // vjt 2026-05-20: channels clear their unread badge on focus, PMs
+  // DON'T. This bucket asserts the symmetric behaviour for `kind: "query"`
+  // so any future kind-discriminator regression that selectively skips
+  // PMs fails loudly here instead of needing an e2e.
   //
-  // Key invariants under test:
-  //   * `setSelectedChannel({kind: "query"})` clears messagesUnread +
-  //     eventsUnread + unreadCounts + mentionCounts for the PM key.
-  //   * Browser-focus-regain on a selected query window clears the same
-  //     four sinks (symmetric with the channel case).
-  //   * Focus-regain leaves OTHER PM windows' badges alone.
-  describe("UX-6 bucket K — PM (query) unread + mention badge symmetry", () => {
-    it("selecting a query window clears its accumulated mentionCounts", async () => {
-      // Symmetric counterpart of UX-5 BU's "selecting a channel clears
-      // its accumulated mentionCounts" — same shape, kind: "query".
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const key = channelKey("freenode", "vjt");
-      mentions.bumpMention(key);
-      mentions.bumpMention(key);
-      expect(mentions.mentionCounts()[key]).toBe(2);
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "vjt",
-        kind: "query",
-      });
-      expect(mentions.mentionCounts()[key]).toBeUndefined();
-    });
-
+  // #267: the query-window MENTION-badge symmetry tests moved to
+  // `mentions.test.ts` — the mention count is server-authoritative and its
+  // focus-zero overlay is a pure projection that keys on (slug, name)
+  // regardless of window kind. The remaining test pins the badge-memo
+  // (message/event) selection semantics for the query case.
+  describe("UX-6 bucket K — PM (query) unread badge symmetry", () => {
     it("selecting a query window does NOT spuriously clear the seed/memo badge counts of OTHER windows", async () => {
       // Post-cluster contract: selection.ts no longer wipes badge counts
       // (they derive from cursor + scrollback). Selecting a window MUST
@@ -1493,54 +1292,6 @@ describe("selection store", () => {
       expect(selection.messagesUnread()[otherKey]).toBe(2);
       expect(selection.eventsUnread()[otherKey]).toBe(1);
       expect(selection.unreadCounts()[otherKey]).toBe(3);
-    });
-
-    it("browser-focus-regain clears mentionCounts for the selected query window", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const key = channelKey("freenode", "vjt");
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "vjt",
-        kind: "query",
-      });
-      setVisibilityForTest(false);
-      await Promise.resolve();
-      mentions.bumpMention(key);
-      expect(mentions.mentionCounts()[key]).toBe(1);
-
-      setVisibilityForTest(true);
-      await Promise.resolve();
-
-      expect(mentions.mentionCounts()[key]).toBeUndefined();
-    });
-
-    it("focus-regain on selected query window does NOT clear OTHER PM windows' mentions", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const mentions = await import("../lib/mentions");
-      const selKey = channelKey("freenode", "vjt");
-      const otherKey = channelKey("freenode", "bob");
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "vjt",
-        kind: "query",
-      });
-      setVisibilityForTest(false);
-      await Promise.resolve();
-      mentions.bumpMention(selKey);
-      mentions.bumpMention(otherKey);
-
-      setVisibilityForTest(true);
-      await Promise.resolve();
-
-      expect(mentions.mentionCounts()[selKey]).toBeUndefined();
-      expect(mentions.mentionCounts()[otherKey]).toBe(1);
     });
   });
 

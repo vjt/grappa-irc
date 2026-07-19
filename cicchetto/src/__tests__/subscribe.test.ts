@@ -116,10 +116,13 @@ vi.mock("../lib/windowState", () => ({
   isActiveChannelJoined: vi.fn(() => false),
 }));
 
+// #267 — mention count is server-authoritative now. subscribe.ts imports
+// only `setServerMention` (driven by the `window_counts` push + join
+// reply); the client-bump `bumpMention`/`clearMentionsForKey` verbs are
+// gone. `mentionCounts` kept as a harmless stub for any transitive reader.
 vi.mock("../lib/mentions", () => ({
-  bumpMention: vi.fn(),
   mentionCounts: () => ({}),
-  clearMentionsForKey: vi.fn(),
+  setServerMention: vi.fn(),
 }));
 
 vi.mock("../lib/beep", () => ({
@@ -941,7 +944,28 @@ describe("subscribe — WS join effect", () => {
       expect(afterUnread - beforeUnread).toBe(1);
     });
 
-    it("PRIVMSG mentioning operator nick on non-selected channel bumps mention badge (P4-1 Task 29)", async () => {
+    // #267 — the per-channel MENTION count is server-authoritative. It is
+    // NO LONGER derived from a client-side PRIVMSG-body regex bump; the
+    // server pushes the whole snapshot as a `window_counts` event (on every
+    // new message + cursor advance) and seeds it in the per-channel join
+    // reply. subscribe.ts is a pure conduit: it forwards the event's
+    // `mentions` value into `mentions.setServerMention` unconditionally —
+    // the focus-zero overlay + severity projection live in mentions.ts
+    // (see mentions.test.ts), NOT here. The live in-app mention ALERT
+    // (beep + optimistic badge) still fires on a body match and is covered
+    // by the "UX-6-L foreground beep wiring" describe below.
+    //
+    // Helper: fire a raw (non-`kind:"message"`) event through the first
+    // installed channel handler — the singleton mockChannel's `on` shares
+    // one handler for the channels-loop topics.
+    const fireRawChannelEvent = (payload: unknown) => {
+      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      handler(payload);
+    };
+
+    it("window_counts event on a channel topic forwards the server mention count to setServerMention", async () => {
       localStorage.setItem("grappa-token", "tok");
       localStorage.setItem(
         "grappa-subject",
@@ -949,48 +973,29 @@ describe("subscribe — WS join effect", () => {
       );
       await seedStubs();
       const mentions = await import("../lib/mentions");
-      const store = await loadStores();
+      await loadStores();
       await vi.waitFor(() => {
         expect(mockChannel.on).toHaveBeenCalled();
       });
 
-      // Selection on OTHER channel; mention arrives on #grappa.
-      store.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#cicchetto",
-        kind: "channel",
+      fireRawChannelEvent({
+        kind: "window_counts",
+        channel: "#grappa",
+        messages: 5,
+        mentions: 2,
+        events: 1,
+        severity: "mention",
       });
-
-      fireMessageEvent("#grappa", { id: 100, kind: "privmsg", body: "hey alice come look" });
 
       const key = channelKey("freenode", "#grappa");
-      expect(mentions.bumpMention).toHaveBeenCalledWith(key);
+      expect(mentions.setServerMention).toHaveBeenCalledWith(key, 2);
     });
 
-    it("PRIVMSG mentioning nick on the SELECTED channel does NOT bump mention badge", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      localStorage.setItem(
-        "grappa-subject",
-        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-      );
-      await seedStubs();
-      const mentions = await import("../lib/mentions");
-      const store = await loadStores();
-      await vi.waitFor(() => {
-        expect(mockChannel.on).toHaveBeenCalled();
-      });
-
-      store.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      fireMessageEvent("#grappa", { id: 101, kind: "privmsg", body: "hey alice" });
-
-      expect(mentions.bumpMention).not.toHaveBeenCalled();
-    });
-
-    it("PRIVMSG without nick mention does NOT bump mention badge", async () => {
+    it("window_counts keys by the event's `channel` field (server truth), independent of the selected window", async () => {
+      // The count is server-authoritative: it must land at the key the
+      // server names in the payload, NOT the topic the socket happens to be
+      // subscribed to and NOT gated by which window is focused. Select a
+      // DIFFERENT window and fire a window_counts naming #grappa.
       localStorage.setItem("grappa-token", "tok");
       localStorage.setItem(
         "grappa-subject",
@@ -1008,9 +1013,44 @@ describe("subscribe — WS join effect", () => {
         channelName: "#cicchetto",
         kind: "channel",
       });
-      fireMessageEvent("#grappa", { id: 102, kind: "privmsg", body: "no mention here" });
 
-      expect(mentions.bumpMention).not.toHaveBeenCalled();
+      fireRawChannelEvent({
+        kind: "window_counts",
+        channel: "#grappa",
+        messages: 0,
+        mentions: 3,
+        events: 0,
+        severity: "mention",
+      });
+
+      expect(mentions.setServerMention).toHaveBeenCalledWith(channelKey("freenode", "#grappa"), 3);
+    });
+
+    it("per-channel join reply seeds the server mention count via setServerMention", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      const mentions = await import("../lib/mentions");
+      const socket = await import("../lib/socket");
+      await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      // Grab the #grappa join call's reply callback (arg index 3) and
+      // invoke it with the full server snapshot — the mock joinChannel
+      // never fires the callback itself.
+      const joinCall = vi.mocked(socket.joinChannel).mock.calls.find((c) => c[2] === "#grappa");
+      const replyCb = joinCall?.[3] as (reply: unknown) => void;
+      replyCb({
+        read_cursor: 10,
+        window_counts: { messages: 3, events: 1, mentions: 2, severity: "mention" },
+      });
+
+      expect(mentions.setServerMention).toHaveBeenCalledWith(channelKey("freenode", "#grappa"), 2);
     });
 
     it("dispatches presence events to members.applyPresenceEvent (P4-1 Q4)", async () => {
@@ -2908,9 +2948,8 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
       isActiveChannelJoined: vi.fn(() => false),
     }));
     vi.doMock("../lib/mentions", () => ({
-      bumpMention: vi.fn(),
       mentionCounts: () => ({}),
-      clearMentionsForKey: vi.fn(),
+      setServerMention: vi.fn(),
     }));
     vi.doMock("../lib/queryWindows", () => ({
       openQueryWindowState: vi.fn(),
@@ -2950,8 +2989,8 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
 // UX-6-L (2026-05-20) — foreground push → in-app beep.
 //
 // `lib/beep.ts` is the audio surface. `subscribe.ts` calls
-// `playBeep()` at two sites: channel mention path (after
-// `bumpMention`'s gate) and DM-listener PRIVMSG/ACTION arrivals
+// `playBeep()` at two sites: channel mention path (own-nick body
+// match on a non-focused window) and DM-listener PRIVMSG/ACTION arrivals
 // (call-site BEFORE `routeMessage` so DM-routing logic doesn't
 // need to know about audio). Both sites are gated on
 // `!isEffectivelyFocused` so a selected+visible window doesn't beep.

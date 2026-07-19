@@ -1,7 +1,9 @@
 // Pure mention matcher. Case-insensitive word-boundary match against
 // the operator's own nick. Used by:
 //   - ScrollbackPane (.scrollback-mention class on rendered line)
-//   - subscribe.ts (bumpMention dispatch on PRIVMSG)
+//   - subscribe.ts (live mention ALERT — beep + optimistic badge — on
+//     PRIVMSG; #267 moved the mention COUNT server-side, so this drives
+//     only the transient alert, not a count)
 //
 // Same predicate, two consumers — extracted once here so a regex tweak
 // (e.g. broader Unicode word-boundary support in M-cluster) lands in
