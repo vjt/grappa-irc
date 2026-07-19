@@ -1,21 +1,28 @@
 defmodule GrappaWeb.UserSocketTest do
   @moduledoc """
-  WebSocket connect-time auth (sub-task 2i).
+  WebSocket connect-time auth (sub-task 2i + #95 + #202).
 
-  `UserSocket.connect/3` flips from the Phase 1 hardcoded
-  `user_name: "vjt"` to a token-derived assign chain:
+  `UserSocket.connect/3` derives its assigns from a bearer token that
+  rides the `Sec-WebSocket-Protocol` subprotocol
+  (`connect_info.auth_token`), entirely OFF the WS upgrade URL:
 
-    * params: `%{"token" => bearer}` — the same UUID PK that
-      `Accounts.create_session/3` returns + the REST surface
-      consumes via `Authorization: Bearer ...`.
+    * `connect_info.auth_token` — the bearer Phoenix decodes from the
+      `base64url.bearer.phx.<token>` subprotocol. The same UUID PK that
+      `Accounts.create_session/3` returns + the REST surface consumes
+      via `Authorization: Bearer ...`.
     * `Accounts.authenticate(token)` validates + bumps `last_seen_at`
       with the same 60 s threshold the REST plug uses.
     * On success: `socket.assigns.user_name` (from the User row) and
       `:current_session_id` (for future revocation hooks).
-    * On any failure (missing param, malformed UUID, unknown row,
+    * On any failure (missing / empty / malformed token, unknown row,
       revoked, expired): `:error` so Phoenix returns the standard
       WS rejection — distinct error strings would just leak
       enumeration info.
+
+  #202 dropped the legacy `params["token"]` query-string fallback that
+  #95 had retained for one deploy cycle: a bearer supplied only via the
+  query string is now IGNORED (see the "ignores a query-string token
+  entirely" regression guard below).
 
   Cross-user join authz at the channel layer
   (`GrappaWeb.GrappaChannel.authorize/2`) was wired in 2h against
@@ -30,50 +37,45 @@ defmodule GrappaWeb.UserSocketTest do
   alias Grappa.{Accounts, PubSub.Topic}
   alias GrappaWeb.UserSocket
 
-  defp connect_with(params) do
-    Phoenix.ChannelTest.connect(UserSocket, params, connect_info: %{})
-  end
-
-  # #95 — subprotocol path: the bearer arrives via
+  # #95 + #202 — the ONLY token source: the bearer arrives via
   # `connect_info.auth_token` (Phoenix decodes it from the
   # `Sec-WebSocket-Protocol` header), NOT via a query-string param.
   defp connect_via_subprotocol(token) do
     Phoenix.ChannelTest.connect(UserSocket, %{}, connect_info: %{auth_token: token})
   end
 
+  # #202 — a query-string `?token=` connect with NO subprotocol token.
+  # The fallback that once honored this is gone, so every such connect is
+  # rejected regardless of whether the query-string token is valid.
+  defp connect_with_query_string(token) do
+    Phoenix.ChannelTest.connect(UserSocket, %{"token" => token}, connect_info: %{})
+  end
+
   describe "connect/3" do
-    test "returns :error when no token param is given" do
-      assert :error = connect_with(%{})
+    test "returns :error when no token is given" do
+      assert :error = Phoenix.ChannelTest.connect(UserSocket, %{}, connect_info: %{})
     end
 
     test "returns :error for a malformed (non-UUID) token" do
-      assert :error = connect_with(%{"token" => "not-a-uuid"})
+      assert :error = connect_via_subprotocol("not-a-uuid")
     end
 
     test "returns :error for a UUID that does not match any session" do
-      assert :error = connect_with(%{"token" => Ecto.UUID.generate()})
+      assert :error = connect_via_subprotocol(Ecto.UUID.generate())
     end
 
     test "returns :error for a revoked token" do
       {_, session} = user_and_session(name: "vjt-#{System.unique_integer([:positive])}")
       _ = Accounts.revoke_session(session.id)
 
-      assert :error = connect_with(%{"token" => session.id})
+      assert :error = connect_via_subprotocol(session.id)
+    end
+
+    test "returns :error when the subprotocol auth_token is empty" do
+      assert :error = connect_via_subprotocol("")
     end
 
     test "assigns :user_name + :current_session_id on success" do
-      user_name = "vjt-#{System.unique_integer([:positive])}"
-      {_, session} = user_and_session(name: user_name)
-
-      assert {:ok, socket} = connect_with(%{"token" => session.id})
-      assert socket.assigns.user_name == user_name
-      assert socket.assigns.current_session_id == session.id
-    end
-
-    # #95 — the token now rides the Sec-WebSocket-Protocol subprotocol
-    # (connect_info.auth_token), OFF the WS upgrade URL. The query-string
-    # param path above is retained only as a temporary fallback.
-    test "authenticates via connect_info.auth_token (subprotocol path)" do
       user_name = "vjt-#{System.unique_integer([:positive])}"
       {_, session} = user_and_session(name: user_name)
 
@@ -82,38 +84,25 @@ defmodule GrappaWeb.UserSocketTest do
       assert socket.assigns.current_session_id == session.id
     end
 
-    test "prefers the subprotocol token over a query-string token when both are present" do
-      sub_name = "vjt-sub-#{System.unique_integer([:positive])}"
-      qs_name = "vjt-qs-#{System.unique_integer([:positive])}"
-      {_, sub_session} = user_and_session(name: sub_name)
-      {_, qs_session} = user_and_session(name: qs_name)
+    # #202 — the legacy `params["token"]` fallback is gone. A VALID
+    # bearer supplied only via the query string is now IGNORED, so the
+    # connect is rejected exactly as if no token were present. This is
+    # the regression guard that the URL can never again carry the bearer.
+    test "ignores a query-string token entirely (subprotocol-only)" do
+      {_, session} = user_and_session(name: "vjt-#{System.unique_integer([:positive])}")
 
-      # Both sources carry a valid (but DIFFERENT) session; the
-      # subprotocol must win so a stale query-string bearer can't shadow
-      # the header-supplied one.
-      assert {:ok, socket} =
-               Phoenix.ChannelTest.connect(UserSocket, %{"token" => qs_session.id},
-                 connect_info: %{auth_token: sub_session.id}
-               )
-
-      assert socket.assigns.user_name == sub_name
-    end
-
-    test "returns :error for a malformed token via the subprotocol path" do
-      assert :error = connect_via_subprotocol("not-a-uuid")
-    end
-
-    test "returns :error when connect_info.auth_token is empty and no param token" do
-      assert :error = Phoenix.ChannelTest.connect(UserSocket, %{}, connect_info: %{auth_token: ""})
+      assert :error = connect_with_query_string(session.id)
     end
   end
 
-  # #95 — auth-method observability: connect/3 emits a
-  # [:grappa, :ws, :connect] telemetry event tagging the source method
-  # (:subprotocol | :query_string), METHOD ONLY — never the token value.
-  # This is the operator signal that gates dropping the query-string
-  # fallback (follow-up), so the tag must be correct for each path.
-  describe "auth-method telemetry (#95)" do
+  # #95 + #202 — connect observability: connect/3 emits a
+  # [:grappa, :ws, :connect] counter on every authenticated connect. #202
+  # dropped the `auth_method` metadata tag — it had collapsed to a
+  # constant `:subprotocol` once the query-string fallback was removed —
+  # leaving a bare `%{count: 1}` measurement with EMPTY metadata. The
+  # token value is NEVER emitted (the raw bearer IS the session
+  # credential — S9).
+  describe "connect telemetry (#95 / #202)" do
     setup do
       ref = make_ref()
       handler_id = "ws-connect-test-#{System.unique_integer([:positive])}"
@@ -132,22 +121,17 @@ defmodule GrappaWeb.UserSocketTest do
       %{ref: ref}
     end
 
-    test "tags :subprotocol when the bearer rides the subprotocol", %{ref: ref} do
+    test "emits the connect counter with empty metadata on an authenticated connect", %{ref: ref} do
       {_, session} = user_and_session(name: "vjt-#{System.unique_integer([:positive])}")
 
       assert {:ok, _} = connect_via_subprotocol(session.id)
-      assert_receive {^ref, %{count: 1}, %{auth_method: :subprotocol}}
+      assert_receive {^ref, measurements, metadata}
+      assert measurements == %{count: 1}
+      assert metadata == %{}
     end
 
-    test "tags :query_string on the legacy fallback path", %{ref: ref} do
-      {_, session} = user_and_session(name: "vjt-#{System.unique_integer([:positive])}")
-
-      assert {:ok, _} = connect_with(%{"token" => session.id})
-      assert_receive {^ref, %{count: 1}, %{auth_method: :query_string}}
-    end
-
-    test "emits NO connect event on an auth failure (method tag is post-auth)", %{ref: ref} do
-      assert :error = connect_with(%{"token" => Ecto.UUID.generate()})
+    test "emits NO connect event on an auth failure (counter is post-auth)", %{ref: ref} do
+      assert :error = connect_via_subprotocol(Ecto.UUID.generate())
       refute_receive {^ref, _, _}
     end
   end
@@ -156,7 +140,7 @@ defmodule GrappaWeb.UserSocketTest do
     test "scopes the per-user socket id by user_name" do
       user_name = "vjt-#{System.unique_integer([:positive])}"
       {_, session} = user_and_session(name: user_name)
-      {:ok, socket} = connect_with(%{"token" => session.id})
+      {:ok, socket} = connect_via_subprotocol(session.id)
 
       assert UserSocket.id(socket) == "user_socket:#{user_name}"
     end
@@ -170,7 +154,7 @@ defmodule GrappaWeb.UserSocketTest do
       {_, alice_session} =
         user_and_session(name: "alice-#{System.unique_integer([:positive])}")
 
-      {:ok, socket} = connect_with(%{"token" => alice_session.id})
+      {:ok, socket} = connect_via_subprotocol(alice_session.id)
 
       assert {:error, %{error: "forbidden"}} =
                Phoenix.ChannelTest.subscribe_and_join(socket, Topic.user(vjt_name), %{})
@@ -182,7 +166,7 @@ defmodule GrappaWeb.UserSocketTest do
       visitor = visitor_fixture()
       {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
-      assert {:ok, socket} = connect_with(%{"token" => session.id})
+      assert {:ok, socket} = connect_via_subprotocol(session.id)
       assert socket.assigns.user_name == "visitor:" <> visitor.id
       assert socket.assigns.current_visitor_id == visitor.id
       assert socket.assigns.current_visitor.id == visitor.id
@@ -195,7 +179,7 @@ defmodule GrappaWeb.UserSocketTest do
       visitor = visitor_fixture(expires_at: past)
       {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
-      assert :error = connect_with(%{"token" => session.id})
+      assert :error = connect_via_subprotocol(session.id)
     end
 
     # CP24 bucket E web/S5: visitor connects must register with
@@ -212,7 +196,7 @@ defmodule GrappaWeb.UserSocketTest do
       visitor = visitor_fixture()
       {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
-      assert {:ok, _} = connect_with(%{"token" => session.id})
+      assert {:ok, _} = connect_via_subprotocol(session.id)
 
       visitor_name = "visitor:" <> visitor.id
       assert visitor_name in Grappa.WSPresence.list_user_names()
@@ -223,7 +207,7 @@ defmodule GrappaWeb.UserSocketTest do
     test "scopes the per-socket id by visitor:<id>" do
       visitor = visitor_fixture()
       {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
-      {:ok, socket} = connect_with(%{"token" => session.id})
+      {:ok, socket} = connect_via_subprotocol(session.id)
 
       assert UserSocket.id(socket) == "user_socket:visitor:" <> visitor.id
     end
@@ -240,7 +224,7 @@ defmodule GrappaWeb.UserSocketTest do
     test "user subject — equals UserSocket.id/1 of the matching connect" do
       user_name = "vjt-#{System.unique_integer([:positive])}"
       {user, session} = user_and_session(name: user_name)
-      {:ok, socket} = connect_with(%{"token" => session.id})
+      {:ok, socket} = connect_via_subprotocol(session.id)
 
       assert UserSocket.id_for_subject({:user, user}) == UserSocket.id(socket)
     end
@@ -248,7 +232,7 @@ defmodule GrappaWeb.UserSocketTest do
     test "visitor subject — equals UserSocket.id/1 of the matching connect" do
       visitor = visitor_fixture()
       {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
-      {:ok, socket} = connect_with(%{"token" => session.id})
+      {:ok, socket} = connect_via_subprotocol(session.id)
 
       assert UserSocket.id_for_subject({:visitor, visitor}) == UserSocket.id(socket)
     end

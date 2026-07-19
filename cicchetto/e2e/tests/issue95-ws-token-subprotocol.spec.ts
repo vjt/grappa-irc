@@ -1,8 +1,10 @@
-// #95 — the bearer token must ride the `Sec-WebSocket-Protocol`
+// #95 + #202 — the bearer token must ride the `Sec-WebSocket-Protocol`
 // subprotocol, OFF the WS upgrade URL (`?token=…` was pre-redaction
-// visible in access logs). The server keeps a query-string fallback for
-// old bundles mid-cold-deploy. This spec proves BOTH server paths accept
-// a connection, and that the NEW bundle never puts the token in the URL.
+// visible in access logs). #95 kept a query-string fallback for old
+// bundles mid-cold-deploy; #202 dropped it. This spec proves the NEW
+// bundle connects with the token off the URL AND that a raw `?token=`
+// handshake is now REJECTED (the e2e twin of the Elixir "ignores a
+// query-string token entirely" guard).
 //
 // chromium-only: raw WebSocket construction + framereceived inspection
 // need a real socket engine; the webkit-iphone-15 project adds nothing
@@ -46,7 +48,7 @@ test("subprotocol path — cic connects with the token OFF the URL, members seed
   });
 });
 
-test("legacy query-string path — a raw ?token= WS handshake still connects (server fallback)", async ({
+test("legacy query-string path — a raw ?token= WS handshake is now rejected (#202 dropped the fallback)", async ({
   page,
 }) => {
   const vjt = getSeededVjt();
@@ -55,8 +57,9 @@ test("legacy query-string path — a raw ?token= WS handshake still connects (se
   await loginAs(page, vjt);
 
   // Drive a RAW WebSocket with the bearer on the query string — exactly
-  // what an OLD (pre-#95) bundle does — and prove the server's
-  // params["token"] fallback in UserSocket.connect/3 still accepts it.
+  // what an OLD (pre-#95) bundle did — and prove the server NO LONGER
+  // honors it: #202 removed the params["token"] fallback in
+  // UserSocket.connect/3, so a query-string-only handshake is refused.
   // phoenix's WS transport lives at /socket/websocket and needs the
   // protocol version param (vsn) like phoenix.js appends.
   const result = await page.evaluate(async (token) => {
@@ -89,6 +92,8 @@ test("legacy query-string path — a raw ?token= WS handshake still connects (se
     });
   }, vjt.token);
 
-  // The server's query-string fallback accepted the handshake.
-  expect(result.opened).toBe(true);
+  // #202 — the server rejected the query-string handshake (no fallback):
+  // the socket closed without ever opening. Twin of the Elixir "ignores a
+  // query-string token entirely" guard.
+  expect(result.opened).toBe(false);
 });
