@@ -22,7 +22,12 @@ import { applyLusersBundle, clearLusersRequested } from "./lusersBundle";
 import { setMentionsBundle } from "./mentionsWindow";
 import { setNamesReply } from "./namesModal";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
-import { applyPresenceChange, applyPresenceSnapshot, setNotifyList } from "./notifyWatch";
+import {
+  applyPresenceChange,
+  applyPresenceError,
+  applyPresenceSnapshot,
+  setNotifyList,
+} from "./notifyWatch";
 import { setPeerAway } from "./peerAway";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { clearSeen } from "./reconnectBackfill";
@@ -1189,10 +1194,12 @@ createRoot(() => {
           return;
 
         case "presence_error":
-          // Upstream rejected the watch registration (list full). Not a
-          // presence transition — surface as an error toast so the add
-          // is never silently dropped; the raw numeric also landed as a
-          // $server notice row server-side.
+          // Upstream rejected the watch registration (list full).
+          // Error-styled toast via the shared presence-toast queue
+          // (review 2026-07-19 R2 — diagPush alone renders only behind
+          // the cic_diag flag, i.e. never in production); the raw
+          // numeric also landed as a $server notice row server-side.
+          applyPresenceError(payload);
           diagPush(
             `notify: watch list full on network ${payload.network_id} — rejected: ${payload.detail}`,
           );
