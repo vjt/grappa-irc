@@ -48,6 +48,18 @@ config :grappa, dev_routes: true
 # 100 for anon-visitor volume.
 config :grappa, :admission, default_max_per_ip_per_network: 10
 
+# #340 — send-throttle headroom for dev + e2e. Production stays at
+# config.exs's default (capacity 10, 2/s). cic splits a multi-line compose
+# into ONE PRIVMSG POST per line, so an e2e that seeds history with a
+# 12-line body (e.g. issue173's LONG_BODY) fires a 12-POST burst that the
+# production capacity would 429 mid-seed — leaving text in the box and
+# cascading unrelated compose/caret specs. The e2e is not the throttle's
+# test surface (the 429 wire contract is proven deterministically in
+# GrappaWeb.MessagesControllerOutboundTest); dev/e2e drive real users, not
+# a flood, so the throttle is effectively off here. Mirror of the
+# :admission relaxation above.
+config :grappa, :send_throttle, capacity: 1_000, refill_per_sec: 1_000
+
 # Cloak vault key — non-secret, dev-only. Anyone with the repo has it;
 # the dev sqlite file is gitignored. Prod reads from GRAPPA_ENCRYPTION_KEY
 # env var (see config/runtime.exs).
