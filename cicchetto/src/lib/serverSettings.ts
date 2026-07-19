@@ -64,6 +64,12 @@ export type ServerSettingsView = {
   uploadActiveHost: ServerSettingsWireUploadView["active_host"];
   uploadPerFileCapBytes: Record<UploadCategory, number>;
   uploadGlobalCapBytes: number;
+  // #324 — the deployment's HTTP host aliases (bare lowercased
+  // hostnames the server advertised). `mediaLink.ts` admits an upload
+  // link on ANY of them (they share the /uploads store). Always an
+  // array — `[]` before the first snapshot / on an old server — so the
+  // classifier falls back to the page origin only.
+  httpHostAliases: string[];
 };
 
 // Public-subset wire shape — mirrors `GET /api/server-settings`
@@ -71,9 +77,13 @@ export type ServerSettingsView = {
 // `upload` reuses the GENERATED `ServerSettingsWireUploadView`
 // (wireTypes.ts, drift-gated against `Grappa.ServerSettings.Wire`) —
 // the only delta vs the generated changed-payload is that the REST
-// response carries no `kind` field.
+// response carries no `kind` field. `http_host_aliases` (#324) is
+// optional on the wire: an older server (mid-deploy) omits it, and the
+// REST path is a blind cast — absent → `[]` (page origin only). The WS
+// path narrows it strictly in userTopic.ts.
 export type ServerSettingsWirePayload = {
   upload: ServerSettingsWireUploadView;
+  http_host_aliases?: string[];
 };
 
 const exports_ = identityScopedStore((onIdentityChange) => {
@@ -96,6 +106,9 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         audio: raw.upload.audio_per_file_cap_bytes,
       },
       uploadGlobalCapBytes: raw.upload.global_cap_bytes,
+      // #324 — absent (old server / pre-snapshot / REST blind-cast) → []
+      // so mediaLink admits the page origin only (pre-#324 behaviour).
+      httpHostAliases: raw.http_host_aliases ?? [],
     });
   };
 

@@ -19,15 +19,28 @@
 //
 // ## Classification rules
 //
-// 1. Cross-HOST → null, always. Two independent reasons: (a) the
-//    CSP (`img-src 'self' data:`, `media-src 'self' blob:`) would
-//    block the modal's media element anyway — the modal must not
-//    require a CSP loosening; (b) cross-host links don't have the
-//    standalone bug in the first place.
-//    Host-equality, NOT full-origin equality: pre-fix prod minted
-//    `http://host/uploads/<slug>` (Endpoint `url:` carried no scheme
-//    key) while the PWA runs at `https://host`. Those bodies are
-//    permanent scrollback history — a strict origin check would dead-
+// 1. Host NOT in the admitted set → null, always. The admitted set is
+//    the page-origin host ∪ the deployment's server-provided HTTP host
+//    aliases (`aliasHosts` param, #324 — from `serverSettings()`'s
+//    `httpHostAliases`, ultimately `Grappa.HttpHosts`; NEVER a client-
+//    baked list). Two independent reasons a genuinely foreign host is
+//    excluded: (a) the CSP (`img-src 'self' data:`, `media-src 'self'
+//    blob:`) would block the modal's media element anyway — the modal
+//    must not require a CSP loosening; (b) genuinely cross-host links
+//    don't have the standalone bug and open fine in the iOS Safari view.
+//    #324 — a deployment can answer on several hostname aliases
+//    (`irc.sindro.me`, `irc.sniffo.org`) that reverse-proxy to ONE
+//    instance + shared /uploads store; a link minted under one alias
+//    viewed from another must still open the viewer. Because the
+//    returned `href` is re-rooted on the PAGE origin (below), the modal's
+//    `<img src>` stays SAME-ORIGIN even for an alias link → CSP
+//    `img-src 'self'` is UNTOUCHED (no loosening). A foreign host is
+//    NEVER re-rooted onto the page origin (that would 404 / load the
+//    wrong file) — only admitted hosts pass.
+//    Host-equality (hostname + port), NOT full-origin equality: pre-fix
+//    prod minted `http://host/uploads/<slug>` (Endpoint `url:` carried
+//    no scheme key) while the PWA runs at `https://host`. Those bodies
+//    are permanent scrollback history — a strict origin check would dead-
 //    letter every historical upload link. The viewer must NEVER load
 //    an http src on the https page (mixed content), so the returned
 //    `href` is re-rooted on the page origin (path + query + hash
@@ -125,9 +138,19 @@ function hostOf(origin: string): string | null {
 }
 
 // Shared host-match + re-root core: parse, admit only http(s), require
-// host equality with the page origin, and produce the origin-rooted
-// href (path + query + hash preserved).
-function sameHostUrl(href: string, origin: string): { url: URL; rooted: string } | null {
+// the host to be in the admitted set (page origin ∪ server-provided
+// deployment aliases), and produce the origin-rooted href (path + query
+// + hash preserved). `aliasHosts` are the deployment's #324 HTTP host
+// aliases — bare, lowercased hostnames the server advertised; the page-
+// origin host is ALWAYS admitted in addition, so a single-host or
+// pre-snapshot deployment (empty aliasHosts) keeps the pre-#324
+// behaviour. Injected (not read from a store here) so this module stays
+// pure + table-testable.
+function sameHostUrl(
+  href: string,
+  origin: string,
+  aliasHosts: readonly string[],
+): { url: URL; rooted: string } | null {
   let url: URL;
   try {
     url = new URL(href);
@@ -136,9 +159,11 @@ function sameHostUrl(href: string, origin: string): { url: URL; rooted: string }
   }
 
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  // Host (hostname + port) equality — see the moduledoc on why scheme
-  // is deliberately NOT compared.
-  if (url.host !== hostOf(origin)) return null;
+  // Host (hostname + port) membership — see the moduledoc on why scheme
+  // is deliberately NOT compared. Page origin always admitted; #324
+  // widens to any deployment alias so a sibling-hostname upload link
+  // opens the viewer too.
+  if (url.host !== hostOf(origin) && !aliasHosts.includes(url.host)) return null;
 
   return { url, rooted: `${origin}${url.pathname}${url.search}${url.hash}` };
 }
@@ -148,10 +173,16 @@ function sameHostUrl(href: string, origin: string): { url: URL; rooted: string }
  * for links that are not modal-eligible but still have the
  * iOS-standalone navigate-in-place bug (📄 docs, emoji-split-run
  * fallbacks; review fix 2026-06-11). Returns the origin-rooted href,
- * or null for cross-host / non-http(s) / unparseable hrefs.
+ * or null for cross-host / non-http(s) / unparseable hrefs. Widens with
+ * the SAME `aliasHosts` set as `classifyMediaLink` (#324) so the escape
+ * path also routes through the in-app handler on a deployment alias.
  */
-export function sameHostHref(href: string, origin: string): string | null {
-  return sameHostUrl(href, origin)?.rooted ?? null;
+export function sameHostHref(
+  href: string,
+  origin: string,
+  aliasHosts: readonly string[],
+): string | null {
+  return sameHostUrl(href, origin, aliasHosts)?.rooted ?? null;
 }
 
 /**
@@ -166,13 +197,20 @@ export function sameHostHref(href: string, origin: string): string | null {
  *   formatting run ("" when the URL starts the run).
  * @param origin window.location.origin at the call site — injected so
  *   the classifier stays pure and table-testable.
+ * @param aliasHosts the deployment's server-provided HTTP host aliases
+ *   (#324, bare lowercased hostnames from `serverSettings()`'s
+ *   `httpHostAliases`). A URL whose host is any of these — OR the page
+ *   origin's own host — is admitted and re-rooted onto the page origin;
+ *   a third-party host still returns null. Empty set = page origin only
+ *   (pre-#324 behaviour). Injected so the classifier stays pure.
  */
 export function classifyMediaLink(
   href: string,
   precedingText: string,
   origin: string,
+  aliasHosts: readonly string[],
 ): MediaLink | null {
-  const match = sameHostUrl(href, origin);
+  const match = sameHostUrl(href, origin, aliasHosts);
   if (match === null) return null;
 
   const kind = kindOf(match.url, precedingText);

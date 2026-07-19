@@ -214,7 +214,7 @@ describe("linkify", () => {
       expect(urlSeg).toBeDefined();
       if (urlSeg?.type !== "url") throw new Error("expected url segment");
       expect(urlSeg.href).toBe("https://grappa.example/files/shot.png");
-      expect(classifyMediaLink(urlSeg.href, "look ", origin)).toEqual({
+      expect(classifyMediaLink(urlSeg.href, "look ", origin, [])).toEqual({
         kind: "image",
         href: "https://grappa.example/files/shot.png",
       });

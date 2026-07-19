@@ -48,6 +48,8 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         audio: 26_214_400,
       },
       uploadGlobalCapBytes: 10_737_418_240,
+      // #324 — absent on the wire → [] (page origin only).
+      httpHostAliases: [],
     });
   });
 
@@ -100,7 +102,31 @@ describe("applyServerSettings/1 — wire → store shape", () => {
       uploadActiveHost: "litterbox",
       uploadPerFileCapBytes: { image: 3, video: 4, document: 5, audio: 7 },
       uploadGlobalCapBytes: 6,
+      httpHostAliases: [],
     });
+  });
+
+  // #324 — the deployment's HTTP host aliases ride the same payload;
+  // mediaLink.ts reads them from this store.
+  it("maps http_host_aliases into httpHostAliases", () => {
+    applyServerSettings({
+      upload: {
+        active_host: "embedded",
+        image_per_file_cap_bytes: 1,
+        video_per_file_cap_bytes: 2,
+        document_per_file_cap_bytes: 3,
+        audio_per_file_cap_bytes: 5,
+        global_cap_bytes: 4,
+      },
+      http_host_aliases: ["irc.sindro.me", "irc.sniffo.org"],
+    });
+
+    expect(serverSettings()?.httpHostAliases).toEqual(["irc.sindro.me", "irc.sniffo.org"]);
+  });
+
+  it("defaults httpHostAliases to [] when the wire omits it (old server / pre-snapshot)", () => {
+    applyServerSettings({ upload: wireUpload("embedded") });
+    expect(serverSettings()?.httpHostAliases).toEqual([]);
   });
 });
 
