@@ -22,10 +22,12 @@ defmodule Grappa.ServerSettings do
 
   ## Public-subset shape (`public_view/0`)
 
-  Returns the operator-visible subset for `GET /api/server-settings`
-  — currently the upload block (active_host + the three per-category
-  per-file caps + global_cap_bytes). Admin-only settings (when added)
-  stay out of this view.
+  Returns the operator-visible subset for `GET /api/server-settings`:
+  the upload block (active_host + the per-category per-file caps +
+  global_cap_bytes) plus `http_host_aliases` — the deployment's HTTP
+  host aliases (#324, from `Grappa.HttpHosts`, config-derived not
+  DB-backed) that cic's media-link classifier admits. Admin-only
+  settings (when added) stay out of this view.
 
   ## PubSub broadcast on change
 
@@ -49,10 +51,16 @@ defmodule Grappa.ServerSettings do
 
   ## Boundary
 
-  Deps: `Grappa.PubSub`, `Grappa.Repo`. Pure persistence + broadcast.
+  Deps: `Grappa.PubSub`, `Grappa.Repo`, `Grappa.HttpHosts`.
+  `public_view/0` ASSEMBLES the cic-facing view from two sources: the
+  DB-backed `upload` knobs (Repo) and the deployment-global HTTP host
+  aliases (`Grappa.HttpHosts`, #324) — the latter is config, not DB
+  state, so it is derived at read time, never persisted here.
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.Repo, Grappa.PubSub, Grappa.ServerSettings.Wire]
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Repo, Grappa.PubSub, Grappa.ServerSettings.Wire, Grappa.HttpHosts]
 
   alias Grappa.PubSub, as: GrappaPubSub
   alias Grappa.PubSub.Topic
@@ -93,7 +101,8 @@ defmodule Grappa.ServerSettings do
             document_per_file_cap_bytes: pos_integer(),
             audio_per_file_cap_bytes: pos_integer(),
             global_cap_bytes: pos_integer()
-          }
+          },
+          http_host_aliases: [String.t()]
         }
 
   @doc "PubSub topic name for settings changes."
@@ -194,7 +203,11 @@ defmodule Grappa.ServerSettings do
         document_per_file_cap_bytes: get_upload_per_file_cap_bytes(:document),
         audio_per_file_cap_bytes: get_upload_per_file_cap_bytes(:audio),
         global_cap_bytes: get_upload_global_cap_bytes()
-      }
+      },
+      # #324 — deployment HTTP host aliases (config, not DB): boot-derived
+      # in config/runtime.exs, stashed via Grappa.HttpHosts. cic's media-
+      # link classifier admits an upload link on ANY alias.
+      http_host_aliases: Grappa.HttpHosts.aliases()
     }
   end
 

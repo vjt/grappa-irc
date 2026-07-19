@@ -25261,3 +25261,80 @@ _Deploy: **cic-bundle only** — no `.ex` change, so hot-eligible via
 `deploy-m42.sh --cic`. **HELD** — rides the already-HELD #299 COLD batch's 4AM
 window, shipped together with `deploy-m42.sh --force-cold --cic` (with #249 /
 #282 / #290 / #294 / #301 / #302 / #304 / #305 / #306 / #307 / #318)._
+
+### 2026-07-19 — #324: media-modal same-host gate rejects deployment hostname aliases (P0)
+
+**The gap.** cic's media-link classifier (`cicchetto/src/lib/mediaLink.ts`) gated
+an upload link on a SINGLE host equality — `url.host === page-origin host`. A
+deployment that answers on several hostname aliases (`irc.sindro.me` +
+`irc.sniffo.org`, both reverse-proxying to ONE grappa instance + a shared
+`/uploads` store) mints upload URLs under one alias while a session may be loaded
+from another. cic opened from `irc.sindro.me`, a scrollback link
+`📸 https://irc.sniffo.org/uploads/<slug>` → cross-host → `classifyMediaLink`
+returned `null` → the link fell back to the plain anchor. On the iOS standalone
+PWA (the manifest has no `scope`, so the whole origin is in-scope) that navigates
+IN PLACE: raw media document, no chrome, return reloads cic.
+
+**The fix — host ∈ (page origin ∪ server-provided alias set), re-root preserved.**
+The classifier now admits a URL whose host is the page origin's OR any of the
+deployment's server-provided HTTP host aliases, and re-roots the returned href
+onto the PAGE origin exactly as before (`${origin}${path}${search}${hash}`).
+Because the aliases share one backend + upload store, a link
+`https://irc.sniffo.org/uploads/x` viewed from `irc.sindro.me` re-roots to
+`https://irc.sindro.me/uploads/x` → the modal's `<img src>` stays SAME-ORIGIN →
+CSP `img-src 'self'` is UNTOUCHED (no loosening). ONE predicate widened
+(host-equality → host-membership) + the alias set threaded in; the re-root
+machinery is unchanged. A genuinely third-party host (litterbox) is still `null`
+— NEVER re-root a foreign host onto the page origin (would 404 / load the wrong
+file). `sameHostHref()` (the non-media 📄 / emoji-split escape path) widens with
+the SAME set.
+
+**Challenge-the-spec: server-settings (deployment-global), NOT per-network
+ISUPPORT.** #324 suggested the alias set could ride "a server-settings payload OR
+an ISUPPORT token." A hostname alias is a DEPLOYMENT-GLOBAL HTTP property — the
+whole instance answers on `irc.sindro.me` / `irc.sniffo.org` regardless of which
+IRC network a session is on. `Grappa.Session.ISupport` is per-(subject, network),
+the wrong altitude — a media link's host has nothing to do with the IRC network.
+So the alias set rides the existing deployment-global server-settings payload
+(`Grappa.ServerSettings.public_view/0` → `Grappa.ServerSettings.Wire` →
+`GET /api/server-settings` + the WS `server_settings_changed` snapshot / admin
+fan-out); cic reads it into `serverSettings().httpHostAliases` and threads it into
+the PURE classifier (mediaLink.ts stays store-free + table-testable). No new
+endpoint, no nginx allowlist route.
+
+**Single source of truth — derived, no client-baked or second list.** The alias
+set is DERIVED at boot from the SAME env inputs that already build the Endpoint's
+`check_origin` gate — `PHX_HOST` + `EXTRA_CHECK_ORIGINS` (`config/runtime.exs`) —
+into bare lowercased hostnames, stashed in `:persistent_term` by the new
+`Grappa.HttpHosts` (boot-read in `Grappa.Application.start/2`, the CLAUDE.md
+`Application.get_env` boot boundary; mirrors `Grappa.Uploads.boot/1`). Adding a
+vhost is one `EXTRA_CHECK_ORIGINS` edit — no cic redeploy, no hand-maintained
+duplicate. This is NOT `Grappa.Vhosts` (#228) — that is per-network IRC
+source-bind (outbound IP), a different axis. cic bakes NO host list; an empty set
+(single-host / pre-snapshot) → page origin only (pre-#324 behaviour).
+
+**Wire.** `changed_payload` + `public_view/0` gain `http_host_aliases:
+[String.t()]` → codegen emits `http_host_aliases: string[]` on
+`ServerSettingsWireChangedPayload` (drift-gated). REST `GET /api/server-settings`
+carries it too (sibling to `upload`, no `kind`). cic's userTopic narrower
+validates it (malformed / absent → `[]`, never drops the upload subtree);
+`serverSettings.ts` maps it to `httpHostAliases` (optional on the wire →
+old-server / pre-snapshot tolerant, mirroring the #292 bundle-version posture).
+
+**Tests.** Pure vitest table (mediaLink): alias host admitted + re-rooted onto the
+page origin, third-party still `null`, page origin always admitted, empty-set
+fallback, port + emoji rules preserved, `sameHostHref` parity — all meaningful
+against the old single-host gate. Server ExUnit: `Grappa.HttpHosts` boot/aliases;
+`public_view/0` + REST + Wire carry the alias set. e2e (chromium + @webkit): the
+server advertises a synthetic sibling `alias-b.test` via `EXTRA_CHECK_ORIGINS`, a
+composed body carrying that host opens the viewer re-rooted to the page origin
+(real bytes through nginx under the prod CSP — the `_cspGuard` fixture proves
+`img-src 'self'` admits the re-rooted same-origin `<img>`), and a third-party
+host stays a plain anchor.
+
+_Deploy: **COLD** — the alias set is boot-derived (`config/runtime.exs` env re-read
++ `Grappa.Application.start/2` `:persistent_term` stash); a hot module reload
+re-runs neither, so the set only populates on a full restart. server + cic bundle.
+**HELD** — rides the already-HELD #299 COLD batch's 4AM window
+(`deploy-m42.sh --force-cold --cic`, together with #249 / #282 / #290 / #294 /
+#301 / #302 / #304 / #305 / #306 / #307 / #318)._

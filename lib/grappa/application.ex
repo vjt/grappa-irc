@@ -8,6 +8,7 @@ defmodule Grappa.Application do
       Grappa.AdminEvents,
       Grappa.Bootstrap,
       Grappa.Health,
+      Grappa.HttpHosts,
       Grappa.Net.PtrCache,
       Grappa.OutboundV6Pool,
       Grappa.PubSub,
@@ -57,6 +58,13 @@ defmodule Grappa.Application do
     # `apply_pool/1` before spawning any session (#228 — DB-driven, no
     # env var). Empty pool = kernel-default source selection.
     :ok = Grappa.OutboundV6Pool.boot()
+
+    # #324: stash the deployment's HTTP host aliases in `:persistent_term`
+    # so `ServerSettings.public_view/0` advertises them to cic lock-free
+    # (the media-link classifier admits any deployment alias, not just the
+    # page origin). Boot-time read of `Application.get_env/2` is the
+    # CLAUDE.md-designated boundary (mirrors `Grappa.Uploads.boot/1`).
+    :ok = Grappa.HttpHosts.boot(http_host_aliases())
 
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a
@@ -274,6 +282,13 @@ defmodule Grappa.Application do
   defp uploads_storage_root do
     Application.fetch_env!(:grappa, :uploads_storage_root)
   end
+
+  # #324 — the deployment's HTTP host aliases, boot-derived in
+  # `config/runtime.exs` from `PHX_HOST` + `EXTRA_CHECK_ORIGINS`.
+  # Boot-time read (the CLAUDE.md-designated boundary for
+  # `Application.get_env/2`); absent in dev/test without `PHX_HOST` →
+  # empty set, so cic admits only its own page origin (pre-#324).
+  defp http_host_aliases, do: Application.get_env(:grappa, :http_host_aliases, [])
 
   # #252 — the vhost PTR cache child spec. Boot-time read (the CLAUDE.md
   # designated boundary for `Application.get_env/2`) of an OPTIONAL

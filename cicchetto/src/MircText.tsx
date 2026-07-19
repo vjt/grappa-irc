@@ -5,6 +5,7 @@ import { classifyMediaLink, sameHostHref } from "./lib/mediaLink";
 import { openMediaViewer } from "./lib/mediaViewer";
 import { parseMircFormat, type Run } from "./lib/mircFormat";
 import { maybeEscapePwaClick } from "./lib/platform";
+import { serverSettings } from "./lib/serverSettings";
 
 // Shared mIRC-formatting renderer. Extracted from ScrollbackPane (#125) so
 // the channel-directory topic reuses the SAME typed-formatting render path
@@ -105,12 +106,22 @@ const renderRun = (run: Run, linkPolicy: LinkPolicy): JSX.Element => {
           // untouched: out-of-scope already opens correctly in the iOS
           // Safari view.
           const prev = segments[i() - 1];
+          // #324 — the deployment's server-provided HTTP host aliases:
+          // an upload link on ANY of them opens the in-app viewer, not
+          // just one on the page origin (aliases share the /uploads
+          // store). Read from the reactive serverSettings() store; []
+          // before the after-join snapshot (page origin only, pre-#324).
+          // Injected into the classifier so mediaLink.ts stays pure +
+          // table-testable (no store import there).
+          const aliasHosts = serverSettings()?.httpHostAliases ?? [];
           const media = classifyMediaLink(
             seg.href,
             prev?.type === "text" ? prev.value : "",
             window.location.origin,
+            aliasHosts,
           );
-          const escapeHref = media === null ? sameHostHref(seg.href, window.location.origin) : null;
+          const escapeHref =
+            media === null ? sameHostHref(seg.href, window.location.origin, aliasHosts) : null;
           // #220 — compose the per-surface policy with the existing
           // media/escape in-app handling. The click handler is only
           // BUILT and attached when there's something to do; the pure

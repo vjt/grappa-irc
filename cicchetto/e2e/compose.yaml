@@ -346,6 +346,15 @@ services:
       # the Playwright runner browses — same shape as prod, where
       # PHX_HOST roots them at the public https host.
       PHX_HOST: nginx-test
+      # #324 media-alias e2e: advertise a synthetic sibling hostname
+      # alongside PHX_HOST so `Grappa.HttpHosts` (via runtime.exs) exposes
+      # http_host_aliases = [nginx-test, alias-b.test]. The
+      # media-link-alias spec composes a body carrying
+      # `https://alias-b.test/uploads/<slug>` (a host that is NOT the page
+      # origin) and asserts the in-app viewer opens re-rooted onto the
+      # page origin. Harmless for other specs (no browser reaches
+      # alias-b.test; MIX_ENV=dev leaves check_origin=false anyway).
+      EXTRA_CHECK_ORIGINS: "https://alias-b.test"
     command: ["mix", "phx.server"]
     networks:
       grappa-e2e:

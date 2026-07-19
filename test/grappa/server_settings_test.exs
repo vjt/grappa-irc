@@ -20,6 +20,30 @@ defmodule Grappa.ServerSettingsTest do
       assert view.upload.video_per_file_cap_bytes == 50 * 1024 * 1024
       assert view.upload.document_per_file_cap_bytes == 10 * 1024 * 1024
       assert view.upload.global_cap_bytes == 10 * 1024 * 1024 * 1024
+      # #324 — the deployment HTTP host alias set is always present (a
+      # list; empty when no PHX_HOST is configured, as in test env).
+      assert is_list(view.http_host_aliases)
+    end
+  end
+
+  describe "public_view/0 — http_host_aliases (#324)" do
+    setup do
+      # Snapshot + restore the process-global persistent_term so a
+      # stashed set doesn't leak into sibling tests (max_cases: 1
+      # serializes, but restore keeps this hermetic regardless).
+      prior = Grappa.HttpHosts.aliases()
+      on_exit(fn -> :ok = Grappa.HttpHosts.boot(prior) end)
+      :ok
+    end
+
+    test "reflects the deployment's HttpHosts alias set" do
+      :ok = Grappa.HttpHosts.boot(["irc.sindro.me", "irc.sniffo.org"])
+      assert ServerSettings.public_view().http_host_aliases == ["irc.sindro.me", "irc.sniffo.org"]
+    end
+
+    test "is an empty list when no aliases are configured" do
+      :ok = Grappa.HttpHosts.boot([])
+      assert ServerSettings.public_view().http_host_aliases == []
     end
   end
 

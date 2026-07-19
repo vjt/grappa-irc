@@ -1081,6 +1081,10 @@ export type WireUserEvent =
       // (drift-gated against `Grappa.ServerSettings.Wire`); the
       // `active_host` closed set is no longer re-hardcoded here.
       upload: ServerSettingsWireUploadView;
+      // #324 — the deployment's HTTP host aliases; mediaLink admits an
+      // upload link on any of them. Narrowed to string[] in userTopic.ts
+      // (malformed / absent → []), threaded into applyServerSettings.
+      http_host_aliases: string[];
     }
   | { kind: "archive_changed"; network_slug: string }
   // UX-7-B (2026-05-22) — `archive_purged` push after a destructive

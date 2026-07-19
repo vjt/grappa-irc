@@ -39,6 +39,21 @@ defmodule Grappa.ServerSettings.Wire do
   a third host (`:s3`) is one edit there + here. Adding an upload
   subtree field is one edit in `upload_view/1`; no second wire-shape
   definition to keep in sync.
+
+  ## `http_host_aliases` — deployment-global, config-sourced (#324)
+
+  Alongside the DB-backed `upload` subtree the payload carries
+  `http_host_aliases`: the bare hostnames nginx serves this ONE
+  deployment under (`Grappa.HttpHosts.aliases/0`, boot-derived from
+  `PHX_HOST` + `EXTRA_CHECK_ORIGINS`). cic's media-link classifier
+  admits an upload link on ANY of them (they share the upload store),
+  opening the in-app viewer instead of navigating the iOS PWA in
+  place. It is deployment config, NOT an admin-editable DB setting —
+  `Grappa.ServerSettings.public_view/0` assembles it from
+  `Grappa.HttpHosts`, not the settings table — and NOT per-network
+  ISUPPORT (a hostname alias is an HTTP property, not a per-(subject,
+  network) IRC property). Static for the deployment lifetime, so it
+  rides the same snapshot/change payload idempotently.
   """
 
   use Boundary, top_level?: true, deps: []
@@ -65,7 +80,8 @@ defmodule Grappa.ServerSettings.Wire do
   """
   @type changed_payload :: %{
           kind: String.t(),
-          upload: upload_view()
+          upload: upload_view(),
+          http_host_aliases: [String.t()]
         }
 
   @doc """
@@ -96,13 +112,16 @@ defmodule Grappa.ServerSettings.Wire do
   @doc """
   Renders a `Grappa.ServerSettings.public_view/0` map to its public
   wire shape for the `server_settings_changed` event push. Delegates
-  the `upload` subtree projection to `upload_view/1`.
+  the `upload` subtree projection to `upload_view/1`; the
+  `http_host_aliases` list (#324) passes through unchanged.
   """
   @spec server_settings_changed(Grappa.ServerSettings.public_view()) :: changed_payload()
-  def server_settings_changed(%{upload: %{} = upload}) do
+  def server_settings_changed(%{upload: %{} = upload, http_host_aliases: aliases})
+      when is_list(aliases) do
     %{
       kind: "server_settings_changed",
-      upload: upload_view(upload)
+      upload: upload_view(upload),
+      http_host_aliases: aliases
     }
   end
 end

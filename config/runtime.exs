@@ -25,6 +25,22 @@ phx_host =
     host -> host
   end
 
+# Extra origins accepted by the WebSocket handshake's `check_origin`
+# gate alongside the canonical PHX_HOST, AND — with PHX_HOST — the
+# source of the deployment's HTTP host-alias set (#324, derived in the
+# `if phx_host` block below → Grappa.HttpHosts). Comma-separated, full
+# origin form (no trailing slash). Use case: operators reaching the
+# bouncer via raw IP or a secondary hostname (LAN testing, dev VLAN
+# bindings, a second public vhost) without rewriting nginx + DNS.
+# Hoisted OUT of the prod block (all envs) so the alias set is
+# derivable in the e2e harness (MIX_ENV=dev). Empty / unset = no extras.
+extra_origins =
+  case System.get_env("EXTRA_CHECK_ORIGINS") do
+    nil -> []
+    "" -> []
+    raw -> raw |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+  end
+
 # Public-origin URL config — ALL envs, gated on PHX_HOST presence.
 # nginx terminates TLS at https://PHX_HOST, so URLs Phoenix generates
 # (today: only `UploadsController.public_url/1`, which lands in IRC
@@ -42,6 +58,30 @@ phx_host =
 # default.
 if phx_host do
   config :grappa, GrappaWeb.Endpoint, url: [host: phx_host, scheme: "https", port: 443]
+
+  # #324 — the deployment's HTTP host aliases: every hostname nginx
+  # reverse-proxies to this ONE instance (shared /uploads store, e.g.
+  # irc.sindro.me + irc.sniffo.org). Derived from the SAME env inputs
+  # that build `check_origin` below (PHX_HOST + EXTRA_CHECK_ORIGINS) —
+  # single source of truth, no second hand-maintained list. Bare,
+  # lowercased hostnames (URI.parse drops scheme / `//` AND port).
+  # Deployment aliases that mint uploads are default-port https, whose
+  # `new URL().host` in cic is bare too → they match. A non-default-port
+  # EXTRA_CHECK_ORIGINS entry (a raw-IP LAN escape hatch) won't match a
+  # link on that explicit port — acceptable: it just falls back to the
+  # plain anchor (never a WRONG re-root, since the page origin is always
+  # admitted and the re-root always targets the page origin). Stashed
+  # into `:persistent_term` by `Grappa.HttpHosts.boot/1` at app start and
+  # advertised to cic via `ServerSettings.public_view/0`, so cic's
+  # media-link classifier opens the in-app viewer for an upload link
+  # carrying ANY alias, not just the page origin.
+  http_host_aliases =
+    [phx_host | Enum.map(extra_origins, fn origin -> URI.parse(origin).host end)]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.map(&String.downcase/1)
+    |> Enum.uniq()
+
+  config :grappa, :http_host_aliases, http_host_aliases
 end
 
 if config_env() == :prod do
@@ -170,19 +210,10 @@ if config_env() == :prod do
       (e.g. PHX_HOST=grappa.bad.ass) — see .env.example.
       """
 
-  # Extra origins accepted by the WebSocket handshake's `check_origin`
-  # gate alongside the canonical PHX_HOST. Comma-separated, full origin
-  # form (no trailing slash). Use case: operators reaching the bouncer
-  # via raw IP or a secondary hostname (LAN testing, dev VLAN bindings)
-  # without rewriting nginx + DNS. Production should pin to PHX_HOST
-  # only — this is escape-hatch, not default. Empty / unset = no extras.
-  extra_origins =
-    case System.get_env("EXTRA_CHECK_ORIGINS") do
-      nil -> []
-      "" -> []
-      raw -> raw |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
-    end
-
+  # `extra_origins` (hoisted to the top of this file, all envs) feeds
+  # both the WS `check_origin` gate here and the #324 HTTP host-alias
+  # set. Production should pin to PHX_HOST only — EXTRA_CHECK_ORIGINS is
+  # an escape-hatch (raw IP / secondary vhost), not a default.
   config :grappa, GrappaWeb.Endpoint,
     http: [ip: {0, 0, 0, 0}, port: port],
     check_origin: ["//#{phx_host}" | extra_origins],

@@ -18,8 +18,14 @@ defmodule GrappaWeb.ServerSettingsController do
           image_per_file_cap_bytes: pos_integer(),
           video_per_file_cap_bytes: pos_integer(),
           document_per_file_cap_bytes: pos_integer(),
+          audio_per_file_cap_bytes: pos_integer(),
           global_cap_bytes: pos_integer()
-        }
+        },
+        # #324 — the deployment's HTTP host aliases; cic's media-link
+        # classifier admits an upload link on ANY of them. No `kind`
+        # field here (the WS `server_settings_changed` event carries it;
+        # this REST response does not).
+        http_host_aliases: [String.t()]
       }
   """
 
@@ -31,7 +37,7 @@ defmodule GrappaWeb.ServerSettingsController do
   @doc false
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def show(conn, _) do
-    %{upload: u} = ServerSettings.public_view()
-    json(conn, %{upload: SettingsWire.upload_view(u)})
+    %{upload: u, http_host_aliases: aliases} = ServerSettings.public_view()
+    json(conn, %{upload: SettingsWire.upload_view(u), http_host_aliases: aliases})
   end
 end

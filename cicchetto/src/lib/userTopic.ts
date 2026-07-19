@@ -531,6 +531,14 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         !posInt(u.global_cap_bytes)
       )
         return null;
+      // #324 — deployment HTTP host aliases. Lenient: a malformed /
+      // absent value degrades to [] (page origin only) rather than
+      // dropping the whole settings push (which would strand the upload
+      // caps too). Filter to strings so a proxy-mangled element can't
+      // poison mediaLink's host-membership check.
+      const httpHostAliases = Array.isArray(r.http_host_aliases)
+        ? r.http_host_aliases.filter((h): h is string => typeof h === "string")
+        : [];
       return {
         kind: "server_settings_changed",
         upload: {
@@ -541,6 +549,7 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
           audio_per_file_cap_bytes: u.audio_per_file_cap_bytes,
           global_cap_bytes: u.global_cap_bytes,
         },
+        http_host_aliases: httpHostAliases,
       };
     }
     case "peer_away":
@@ -932,10 +941,14 @@ createRoot(() => {
           // setter applies in both directions (last-write-wins,
           // idempotent). Destructure to drop the `kind` discriminator
           // — `applyServerSettings` takes the `ServerSettingsWirePayload`
-          // shape (upload subtree only) so structural-typing drift
-          // (e.g. a future log site reading `raw.kind`) can't surprise
-          // the REST call site whose response has no `kind`.
-          applyServerSettings({ upload: payload.upload });
+          // shape (upload subtree + #324 http_host_aliases) so
+          // structural-typing drift (e.g. a future log site reading
+          // `raw.kind`) can't surprise the REST call site whose response
+          // has no `kind`.
+          applyServerSettings({
+            upload: payload.upload,
+            http_host_aliases: payload.http_host_aliases,
+          });
           return;
 
         case "peer_away":

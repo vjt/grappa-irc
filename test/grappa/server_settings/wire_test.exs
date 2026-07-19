@@ -3,20 +3,26 @@ defmodule Grappa.ServerSettings.WireTest do
 
   alias Grappa.ServerSettings.Wire
 
+  # A full public_view fixture — upload subtree + the #324
+  # http_host_aliases the wire builder now requires. Both params
+  # explicit (CLAUDE.md: no default args).
+  defp view(active_host, aliases) do
+    %{
+      upload: %{
+        active_host: active_host,
+        image_per_file_cap_bytes: 10_485_760,
+        video_per_file_cap_bytes: 52_428_800,
+        document_per_file_cap_bytes: 10_485_760,
+        audio_per_file_cap_bytes: 26_214_400,
+        global_cap_bytes: 10_737_418_240
+      },
+      http_host_aliases: aliases
+    }
+  end
+
   describe "server_settings_changed/1 — wire shape" do
     test "passes embedded host atom through (Jason stringifies at the edge)" do
-      view = %{
-        upload: %{
-          active_host: :embedded,
-          image_per_file_cap_bytes: 10_485_760,
-          video_per_file_cap_bytes: 52_428_800,
-          document_per_file_cap_bytes: 10_485_760,
-          audio_per_file_cap_bytes: 26_214_400,
-          global_cap_bytes: 10_737_418_240
-        }
-      }
-
-      payload = Wire.server_settings_changed(view)
+      payload = Wire.server_settings_changed(view(:embedded, ["irc.sindro.me"]))
 
       assert payload.kind == "server_settings_changed"
       # S15: the host atom passes through the term unchanged; the Jason
@@ -31,65 +37,36 @@ defmodule Grappa.ServerSettings.WireTest do
     end
 
     test "passes litterbox host atom through" do
-      view = %{
-        upload: %{
-          active_host: :litterbox,
-          image_per_file_cap_bytes: 5_000_000,
-          video_per_file_cap_bytes: 6_000_000,
-          document_per_file_cap_bytes: 7_000_000,
-          audio_per_file_cap_bytes: 8_000_000,
-          global_cap_bytes: 999_999
-        }
-      }
-
-      payload = Wire.server_settings_changed(view)
+      payload = Wire.server_settings_changed(view(:litterbox, ["irc.sindro.me"]))
 
       assert payload.upload.active_host == :litterbox
-      assert payload.upload.image_per_file_cap_bytes == 5_000_000
-      assert payload.upload.video_per_file_cap_bytes == 6_000_000
-      assert payload.upload.document_per_file_cap_bytes == 7_000_000
-      assert payload.upload.audio_per_file_cap_bytes == 8_000_000
-      assert payload.upload.global_cap_bytes == 999_999
+      assert payload.upload.image_per_file_cap_bytes == 10_485_760
+      assert payload.upload.global_cap_bytes == 10_737_418_240
     end
 
-    test "payload is Jason-encodable (no atom values other than keys)" do
-      view = %{
-        upload: %{
-          active_host: :embedded,
-          image_per_file_cap_bytes: 1,
-          video_per_file_cap_bytes: 2,
-          document_per_file_cap_bytes: 3,
-          audio_per_file_cap_bytes: 5,
-          global_cap_bytes: 4
-        }
-      }
+    test "carries the #324 http_host_aliases list through unchanged" do
+      payload = Wire.server_settings_changed(view(:embedded, ["irc.sindro.me", "irc.sniffo.org"]))
+      assert payload.http_host_aliases == ["irc.sindro.me", "irc.sniffo.org"]
+    end
 
-      payload = Wire.server_settings_changed(view)
-      json = Jason.encode!(payload)
-      decoded = Jason.decode!(json)
+    test "an empty alias set is a valid payload (single-host / no PHX_HOST deployment)" do
+      payload = Wire.server_settings_changed(view(:embedded, []))
+      assert payload.http_host_aliases == []
+    end
+
+    test "payload is Jason-encodable (no atom values other than keys), aliases survive" do
+      payload = Wire.server_settings_changed(view(:embedded, ["irc.sindro.me"]))
+      decoded = payload |> Jason.encode!() |> Jason.decode!()
 
       assert decoded["kind"] == "server_settings_changed"
       assert decoded["upload"]["active_host"] == "embedded"
-      assert decoded["upload"]["image_per_file_cap_bytes"] == 1
-      assert decoded["upload"]["video_per_file_cap_bytes"] == 2
-      assert decoded["upload"]["document_per_file_cap_bytes"] == 3
-      assert decoded["upload"]["audio_per_file_cap_bytes"] == 5
-      assert decoded["upload"]["global_cap_bytes"] == 4
+      assert decoded["upload"]["audio_per_file_cap_bytes"] == 26_214_400
+      assert decoded["http_host_aliases"] == ["irc.sindro.me"]
     end
 
     test "kind field is the discriminator cic dispatches on" do
-      view = %{
-        upload: %{
-          active_host: :embedded,
-          image_per_file_cap_bytes: 1,
-          video_per_file_cap_bytes: 2,
-          document_per_file_cap_bytes: 3,
-          audio_per_file_cap_bytes: 5,
-          global_cap_bytes: 4
-        }
-      }
-
-      assert %{kind: "server_settings_changed"} = Wire.server_settings_changed(view)
+      assert %{kind: "server_settings_changed"} =
+               Wire.server_settings_changed(view(:embedded, ["irc.sindro.me"]))
     end
   end
 
@@ -126,19 +103,9 @@ defmodule Grappa.ServerSettings.WireTest do
     end
 
     test "server_settings_changed/1 reuses the shared upload projection" do
-      view = %{
-        upload: %{
-          active_host: :litterbox,
-          image_per_file_cap_bytes: 7,
-          video_per_file_cap_bytes: 8,
-          document_per_file_cap_bytes: 9,
-          audio_per_file_cap_bytes: 11,
-          global_cap_bytes: 10
-        }
-      }
-
-      changed = Wire.server_settings_changed(view)
-      assert changed.upload == Wire.upload_view(view.upload)
+      v = view(:litterbox, ["irc.sindro.me", "irc.sniffo.org"])
+      changed = Wire.server_settings_changed(v)
+      assert changed.upload == Wire.upload_view(v.upload)
     end
   end
 end
