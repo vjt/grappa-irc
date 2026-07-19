@@ -33,6 +33,8 @@ export type SessionLogEvent =
   | "disconnected"
   | "backoff";
 
+export type WindowCountsSeverity = "mention" | "message" | "event" | "none";
+
 // === Grappa.Accounts.Wire ===
 
 export type AccountsWireUserJson = {
@@ -946,4 +948,15 @@ export type VisitorsWireT = {
   id: string;
   expires_at: string | null;
   registered: boolean;
+};
+
+// === Grappa.WindowCounts.Wire ===
+
+export type WindowCountsWireEvent = {
+  kind: string;
+  channel: string;
+  messages: number;
+  mentions: number;
+  events: number;
+  severity: WindowCountsSeverity;
 };
