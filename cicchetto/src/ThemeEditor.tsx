@@ -88,8 +88,27 @@ const ThemeEditor: Component = () => {
 
   createOverlayLock(() => themeEditorState() !== null, ".theme-editor-modal", cancel);
 
-  const errMessage = (e: unknown): string =>
-    e instanceof ApiError ? friendlyApiError(e) : "something went wrong";
+  const errMessage = (e: unknown): string => {
+    if (!(e instanceof ApiError)) return "something went wrong";
+    // #333 — the `(subject_id, name)` unique index surfaces as a
+    // `validation_failed`. Ecto attaches the unique-constraint error to the
+    // SUBJECT-id field (`user_id` for users, `visitor_id` for visitors), not
+    // `name` — and that composite index is the ONLY uniqueness a theme
+    // create/update can violate. The name input is maxlength-60 (too-long
+    // can't happen) and an empty name is guarded before save, so any of those
+    // field-errors here means the name is already taken by one of the
+    // caller's own themes — say so explicitly instead of the generic "please
+    // fix …" that leaks the raw field (the muted failure #333 item 4 flags).
+    const fieldErrors = e.info.field_errors as Record<string, string[]> | undefined;
+    const nameTaken =
+      fieldErrors?.user_id !== undefined ||
+      fieldErrors?.visitor_id !== undefined ||
+      fieldErrors?.name !== undefined;
+    if (e.code === "validation_failed" && nameTaken) {
+      return "You already own a theme with this name — pick another.";
+    }
+    return friendlyApiError(e);
+  };
 
   return (
     <Show when={themeEditorState()} keyed>
@@ -199,12 +218,6 @@ const ThemeEditor: Component = () => {
                 </button>
               </header>
 
-              <Show when={error() !== null}>
-                <p class="theme-editor-error" role="alert" data-testid="theme-editor-error">
-                  {error()}
-                </p>
-              </Show>
-
               <div class="theme-editor-body">
                 <label class="theme-editor-field">
                   <span>name</span>
@@ -212,6 +225,7 @@ const ThemeEditor: Component = () => {
                     type="text"
                     class="theme-editor-name-input"
                     data-testid="theme-editor-name"
+                    maxlength={60}
                     value={name()}
                     onInput={(e) => setName(e.currentTarget.value)}
                     placeholder="my theme"
@@ -340,6 +354,16 @@ const ThemeEditor: Component = () => {
                   </label>
                 </fieldset>
               </div>
+
+              {/* #333 — the save error renders directly ABOVE the save button
+                  (was at the modal top, off-screen from the footer on a long
+                  editor). So a rejected save — e.g. a duplicate name — is seen
+                  right where the operator just tapped. */}
+              <Show when={error() !== null}>
+                <p class="theme-editor-error" role="alert" data-testid="theme-editor-error">
+                  {error()}
+                </p>
+              </Show>
 
               <footer class="theme-editor-footer">
                 <button

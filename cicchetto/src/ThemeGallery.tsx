@@ -1,8 +1,10 @@
 import {
   type Component,
   createEffect,
+  createMemo,
   createSignal,
   For,
+  type JSX,
   Match,
   Show,
   Switch,
@@ -10,6 +12,7 @@ import {
 } from "solid-js";
 import { ApiError } from "./lib/api";
 import { token } from "./lib/auth";
+import { requestConfirm } from "./lib/confirmDialog";
 import { activateTheme, activeThemeId } from "./lib/customTheme";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { isAdmin } from "./lib/networks";
@@ -136,6 +139,14 @@ const ThemeGallery: Component<Props> = (props) => {
       await activateTheme(t, made);
       setSelectedId(made.id);
       await load();
+      // #333 — the copy lands in the "your themes" section (mine === true).
+      // Scroll there so it's immediately visible: the old flat, apply_count-
+      // ordered list buried the copy + bumped the source to the top, reading
+      // as "the copy vanished / the base disappeared". queueMicrotask lets the
+      // freshly-mounted personal section attach its ref before we scroll.
+      queueMicrotask(() =>
+        personalSectionEl?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      );
     });
 
   const publish = (theme: ThemesWireT): Promise<void> =>
@@ -155,6 +166,130 @@ const ThemeGallery: Component<Props> = (props) => {
       await deleteTheme(t, theme.id);
       await load();
     });
+
+  // #333 — delete is destructive + irreversible, so it goes through the
+  // shared confirm modal (lib/confirmDialog singleton, mounted at Shell
+  // level) instead of firing on the first tap. Cancel is the safe default;
+  // only the affirmative button runs `remove`.
+  const confirmDelete = (theme: ThemesWireT): void =>
+    requestConfirm({
+      title: "Delete theme",
+      body: `Delete "${theme.name}"? This can't be undone.`,
+      confirmLabel: "Delete",
+      onConfirm: () => void remove(theme),
+    });
+
+  // #333 — split the merged list into "your themes" (owned copies/creates)
+  // and the "gallery" (published + built-in), personal FIRST. `mine` is the
+  // server's per-viewer ownership flag (same one `canManageTheme` reads); a
+  // copied built-in surfaces in personal while the base stays in the gallery
+  // — the fix for the "copy vanished" confusion. Dedup already ran in load().
+  const personalThemes = createMemo(() => (themes() ?? []).filter((t) => t.mine));
+  const galleryThemes = createMemo(() => (themes() ?? []).filter((t) => !t.mine));
+  let personalSectionEl: HTMLElement | undefined;
+
+  // One card, rendered in both the personal + gallery sections (#333). The
+  // action row (copy + owner/admin manage) reveals only for the selected
+  // card; delete routes through the confirm modal.
+  const themeCard = (theme: ThemesWireT): JSX.Element => (
+    <li
+      class="theme-card"
+      data-testid={`theme-card-${theme.id}`}
+      classList={{
+        "theme-card-active": activeThemeId() === theme.id,
+        "theme-card-selected": selectedId() === theme.id,
+      }}
+    >
+      {/* Whole-card tap target: select (reveal actions) + apply live.
+          The action buttons below are SIBLINGS, never nested inside
+          this button (no nested-interactive, no stopPropagation). */}
+      <button
+        type="button"
+        class="theme-card-select"
+        data-testid={`theme-select-${theme.id}`}
+        aria-label={`apply theme ${theme.name}`}
+        disabled={busyId() !== null}
+        onClick={() => void selectAndApply(theme)}
+      >
+        <div class="theme-swatch" data-testid={`theme-swatch-${theme.id}`} aria-hidden="true">
+          <For each={swatchColors(theme.payload as TokenPayload)}>
+            {(c) => <span class="theme-chip" style={{ "background-color": c }} />}
+          </For>
+        </div>
+        <div class="theme-card-meta">
+          <span class="theme-card-name">{theme.name}</span>
+          <span class="theme-card-author muted">by {theme.author}</span>
+          {/* #299 item 9 — real usage: how many subjects have this
+              theme active right now (apply_count only counts copies). */}
+          <span class="theme-card-count muted" data-testid={`theme-count-${theme.id}`}>
+            {theme.in_use} in use
+          </span>
+          <Show when={activeThemeId() === theme.id}>
+            <span class="theme-card-active-marker" data-testid={`theme-active-${theme.id}`}>
+              active
+            </span>
+          </Show>
+        </div>
+      </button>
+      <Show when={selectedId() === theme.id}>
+        <div class="theme-card-actions" data-testid={`theme-actions-${theme.id}`}>
+          <button
+            type="button"
+            class="theme-action"
+            data-testid={`theme-copy-${theme.id}`}
+            disabled={busyId() !== null}
+            onClick={() => void copy(theme)}
+          >
+            copy
+          </button>
+          <Show when={canManageTheme(theme, isAdmin())}>
+            <button
+              type="button"
+              class="theme-action"
+              data-testid={`theme-edit-${theme.id}`}
+              disabled={busyId() !== null}
+              onClick={() => openThemeEditor({ mode: "edit", theme })}
+            >
+              edit
+            </button>
+            <Switch>
+              <Match when={theme.published}>
+                <button
+                  type="button"
+                  class="theme-action"
+                  data-testid={`theme-unpublish-${theme.id}`}
+                  disabled={busyId() !== null}
+                  onClick={() => void unpublish(theme)}
+                >
+                  unpublish
+                </button>
+              </Match>
+              <Match when={!theme.published}>
+                <button
+                  type="button"
+                  class="theme-action"
+                  data-testid={`theme-publish-${theme.id}`}
+                  disabled={busyId() !== null}
+                  onClick={() => void publish(theme)}
+                >
+                  publish
+                </button>
+              </Match>
+            </Switch>
+            <button
+              type="button"
+              class="theme-action theme-action-danger"
+              data-testid={`theme-delete-${theme.id}`}
+              disabled={busyId() !== null}
+              onClick={() => confirmDelete(theme)}
+            >
+              delete
+            </button>
+          </Show>
+        </div>
+      </Show>
+    </li>
+  );
 
   return (
     <section class="settings-subpage theme-gallery" data-testid="theme-gallery">
@@ -199,116 +334,33 @@ const ThemeGallery: Component<Props> = (props) => {
           </p>
         }
       >
-        <ul class="theme-gallery-list">
-          <For each={themes() ?? []}>
-            {(theme) => (
-              <li
-                class="theme-card"
-                data-testid={`theme-card-${theme.id}`}
-                classList={{
-                  "theme-card-active": activeThemeId() === theme.id,
-                  "theme-card-selected": selectedId() === theme.id,
-                }}
-              >
-                {/* Whole-card tap target: select (reveal actions) + apply live.
-                    The action buttons below are SIBLINGS, never nested inside
-                    this button (no nested-interactive, no stopPropagation). */}
-                <button
-                  type="button"
-                  class="theme-card-select"
-                  data-testid={`theme-select-${theme.id}`}
-                  aria-label={`apply theme ${theme.name}`}
-                  disabled={busyId() !== null}
-                  onClick={() => void selectAndApply(theme)}
-                >
-                  <div
-                    class="theme-swatch"
-                    data-testid={`theme-swatch-${theme.id}`}
-                    aria-hidden="true"
-                  >
-                    <For each={swatchColors(theme.payload as TokenPayload)}>
-                      {(c) => <span class="theme-chip" style={{ "background-color": c }} />}
-                    </For>
-                  </div>
-                  <div class="theme-card-meta">
-                    <span class="theme-card-name">{theme.name}</span>
-                    <span class="theme-card-author muted">by {theme.author}</span>
-                    {/* #299 item 9 — real usage: how many subjects have this
-                        theme active right now (apply_count only counts copies). */}
-                    <span class="theme-card-count muted" data-testid={`theme-count-${theme.id}`}>
-                      {theme.in_use} in use
-                    </span>
-                    <Show when={activeThemeId() === theme.id}>
-                      <span
-                        class="theme-card-active-marker"
-                        data-testid={`theme-active-${theme.id}`}
-                      >
-                        active
-                      </span>
-                    </Show>
-                  </div>
-                </button>
-                <Show when={selectedId() === theme.id}>
-                  <div class="theme-card-actions" data-testid={`theme-actions-${theme.id}`}>
-                    <button
-                      type="button"
-                      class="theme-action"
-                      data-testid={`theme-copy-${theme.id}`}
-                      disabled={busyId() !== null}
-                      onClick={() => void copy(theme)}
-                    >
-                      copy
-                    </button>
-                    <Show when={canManageTheme(theme, isAdmin())}>
-                      <button
-                        type="button"
-                        class="theme-action"
-                        data-testid={`theme-edit-${theme.id}`}
-                        disabled={busyId() !== null}
-                        onClick={() => openThemeEditor({ mode: "edit", theme })}
-                      >
-                        edit
-                      </button>
-                      <Switch>
-                        <Match when={theme.published}>
-                          <button
-                            type="button"
-                            class="theme-action"
-                            data-testid={`theme-unpublish-${theme.id}`}
-                            disabled={busyId() !== null}
-                            onClick={() => void unpublish(theme)}
-                          >
-                            unpublish
-                          </button>
-                        </Match>
-                        <Match when={!theme.published}>
-                          <button
-                            type="button"
-                            class="theme-action"
-                            data-testid={`theme-publish-${theme.id}`}
-                            disabled={busyId() !== null}
-                            onClick={() => void publish(theme)}
-                          >
-                            publish
-                          </button>
-                        </Match>
-                      </Switch>
-                      <button
-                        type="button"
-                        class="theme-action theme-action-danger"
-                        data-testid={`theme-delete-${theme.id}`}
-                        disabled={busyId() !== null}
-                        onClick={() => void remove(theme)}
-                      >
-                        delete
-                      </button>
-                    </Show>
-                  </div>
-                </Show>
-              </li>
-            )}
-          </For>
-        </ul>
+        {/* #333 — personal ("your themes") FIRST, then the gallery. Same
+            .settings-section card idiom as the vhost / identity sections.
+            Empty sections hide (a visitor with no copies sees only the
+            gallery). */}
+        <Show when={personalThemes().length > 0}>
+          <section
+            class="settings-section theme-section"
+            data-testid="theme-section-personal"
+            ref={(el) => {
+              personalSectionEl = el;
+            }}
+          >
+            <h4 class="settings-section-heading">your themes</h4>
+            <ul class="theme-gallery-list">
+              <For each={personalThemes()}>{themeCard}</For>
+            </ul>
+          </section>
+        </Show>
+
+        <Show when={galleryThemes().length > 0}>
+          <section class="settings-section theme-section" data-testid="theme-section-gallery">
+            <h4 class="settings-section-heading">gallery</h4>
+            <ul class="theme-gallery-list">
+              <For each={galleryThemes()}>{themeCard}</For>
+            </ul>
+          </section>
+        </Show>
       </Show>
     </section>
   );

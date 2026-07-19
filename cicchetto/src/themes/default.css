@@ -4975,6 +4975,17 @@ html.resize-dragging * {
   font-size: 0.85rem;
 }
 
+/* #333 — the themes personal / gallery sections reuse the .settings-section
+ * HEADING but drop its bordered-card body: each .theme-card already carries
+ * its own border (matching vhost's border-on-items, not on the section
+ * wrapper), so the section stays transparent to avoid a heavy nested
+ * double-border. */
+.theme-section {
+  padding: 0;
+  background: none;
+  border: none;
+}
+
 .settings-subpage {
   display: flex;
   flex-direction: column;

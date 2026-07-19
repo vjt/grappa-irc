@@ -75,7 +75,14 @@ test.describe("#75 — themes gallery consumer flow", () => {
 
     // #299 item 7 — no standalone apply button: tapping a card's select
     // button IS the apply (and reveals its action row).
-    const selectButtons = page.locator("[data-testid^='theme-select-']");
+    // #333 — scope to the GALLERY section: the gallery split renders owned
+    // themes in a "your themes" section FIRST, so a bare positional nth(0/1)
+    // could straddle a vjt-owned theme (created by an earlier spec in the
+    // run) whose bg happens to match a gallery card. Two gallery built-ins in
+    // gallery order are the stable distinct-bg pair this test needs.
+    const selectButtons = page
+      .getByTestId("theme-section-gallery")
+      .locator("[data-testid^='theme-select-']");
     await expect(selectButtons.first()).toBeVisible({ timeout: 5_000 });
     expect(await selectButtons.count()).toBeGreaterThanOrEqual(2);
 
