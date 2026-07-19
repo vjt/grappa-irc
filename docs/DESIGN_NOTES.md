@@ -25338,3 +25338,117 @@ re-runs neither, so the set only populates on a full restart. server + cic bundl
 **HELD** — rides the already-HELD #299 COLD batch's 4AM window
 (`deploy-m42.sh --force-cold --cic`, together with #249 / #282 / #290 / #294 /
 #301 / #302 / #304 / #305 / #306 / #307 / #318)._
+
+### 2026-07-19 — #266: per-network source_address — admin-configurable, absolute precedence (Libera go-live)
+
+**Re-scope (KEEP + admin-configure + absolute precedence, NOT remove).** The
+original #266 direction — drop `network_servers.source_address`, bind wildcard —
+was **annulled** by vjt (2026-07-17 body re-scope; the 2026-07-16 "remove the
+column" comment is dead context). New goal: keep a per-network outbound source,
+make it **admin-configurable** (set/clear), and give it **absolute precedence**.
+Going live on Libera, a user-driven rotating vhost reads as a **ban-evasion
+tool**; an admin-pinned, accountable, single egress per network is the honest
+posture.
+
+**Altitude decision (A — elevate the EXISTING per-server column, NOT a new
+network-level one).** The spec says "per-network," but the source column TODAY is
+per-SERVER (`network_servers.source_address` on `Grappa.Networks.Server`; a
+network has ≥1 server rows). Two options were weighed:
+  * (A) elevate + admin-expose the existing per-server column + flip its
+    precedence to win over the vhost layer;
+  * (B) add a network-level `networks.source_address` overriding the per-server
+    one.
+Chose **(A)**. A network's server rows ARE its endpoints; Azzurra/Libera run
+RR-DNS (one server row whose hostname resolves to multiple leaves — #271 rotates
+the leaves at the client), so one network = one server row = one source in the
+common case, and (A) delivers "one accountable egress per network" with zero
+schema churn. (B) would introduce a SECOND source column with a precedence
+between the two — exactly the "parallel structure that drifts" / "shared data
+model with a type flag" anti-pattern CLAUDE.md warns against. Multi-server
+networks (fallback endpoints) can pin per-endpoint egress under (A) — strictly
+more flexible, no new state. The admin surface + the pool-subtraction feed
+(`Servers.list_source_addresses/0`) already key on this column.
+
+**No migration (deviation from the plan's "migration expected").** (A) reuses the
+existing nullable column unchanged — nothing to migrate. This changes the
+hot/cold calculus the issue body assumed ("almost certainly COLD — schema +
+config"): the server-side change is PURE code (precedence inversion + admin
+whitelist + a boundary validation) and is HOT-reloadable on its own. It is HELD
++ batched with the coordinated COLD window only because it ships alongside a cic
+bundle + the other HELD COLD work — not because it needs a cold restart itself.
+
+**Precedence inversion (REVERSES the #251 nuance).** `Grappa.Vhosts.effective_source/2`
+is the single resolution point (threaded via `Networks.SessionPlan.base_plan/6`
+→ Session → `IRC.Client.source_bind/2`). Pre-#266 (#251), a subject's vhost
+self-selection OVERRODE `server_source` — the per-network source was only the
+no-selection default. #266 inverts: when `server_source` is set it WINS
+(returned verbatim before any selection lookup) over the vhost selection, the
+`OutboundV6Pool` rotation, AND #271 RR-DNS leaf distribution; when `nil` the
+existing selection/pool fallback is unchanged, and zero-config still binds
+nothing. The `effective_source/2` moduledoc precedence block + the SessionPlan
+call-site comment were rewritten to the new order (a stale invariant comment is a
+bug). The acceptance core is the ExUnit precedence table (assert WHICH address
+binds, not call sequences) + the SessionPlan-vhost test.
+
+**#271 override already holds at the client — proven, not rebuilt.** A pinned
+source constrains the destination-leaf FAMILY (`source_bind/2` picks fam from the
+literal; `connect_with_rotation` resolves only that family's leaves) and threads
+the SAME `ifaddr` through every rotated leaf. So a pinned source is an absolute
+bind regardless of which leaf the #271 shuffle picks or how many a connect
+failure burns through — no production change needed; a new `client_test` pins the
+cross-rotation invariant (first leaf refuses → second, distinct leaf → both dial
+the identical `ifaddr`).
+
+**Local-bindable validation (the genuinely new piece — admin boundary, NOT the
+changeset).** #266 requires "validate it's a bindable local address on the host
+(reject non-local)." The host's egressable address set already exists —
+`Grappa.Net.HostAddresses.list/0` (getifaddrs, loopback/link-local filtered) —
+so "does the infra already provide this?" → yes, REUSE it (no new injected
+resolver / process / env). The pure predicate `HostAddresses.local_bindable?/2`
+takes the universe IN (mirroring `Vhosts.effective_pool/1`), so the admin
+controller owns the single `list/0` read and the predicate is deterministically
+unit-testable with an explicit set. Enumerating interfaces is IO that does NOT
+belong in the pure `Server.changeset/2` validator, so the gate lives at the admin
+REST boundary (`ServersController` `with :ok <- validate_source_bindable/1`): a
+non-literal falls through to the changeset (`validation_failed` — literal-SHAPE
+stays the first gate); a valid literal not on the host → `{:error,
+:source_not_local}` → FallbackController 422 (distinct wire token from
+`validation_failed`); `nil`/absent (clear) is always valid. Threat test FIRST
+(non-local rejected) before the happy path. The mix-task path
+(`grappa.add_server --source`) stays UNGATED — operator-on-host is trusted; only
+the untrusted-ish REST admin surface enumerates + rejects.
+
+**Pool-subtraction safety net preserved (spec §3).** An admin-set source must
+never rotate back into the auto pool. `ServersController` already calls
+`resync_outbound_pool/0` (→ `Vhosts.resync_pool(Servers.list_source_addresses/0)`)
+on every create/update/delete; adding `source_address` to the create/update
+whitelist means an admin-set source automatically feeds the subtraction — no new
+wiring, verified by an assertion in the controller conn test.
+
+**Admin surface + cic.** `Servers.AdminWire.server_to_admin_json/1` emits
+`source_address` (hand-declared type — `admin_wire.ex` is OUTSIDE the
+`gen_wire_types` `**/wire.ex` glob, so `wireTypes.ts` is untouched, confirmed
+"in sync"). The cic admin Networks tab (`ServersDisclosure`) gains an optional
+"source" input on the add-server form + a per-row inline editor (set via PUT,
+clear via `source_address: null`); a non-local literal surfaces the 422 in the
+shared error banner (no client-side IP validation — the host's bindable set is
+server-only knowledge).
+
+**Tests.** ExUnit: `effective_source/2` precedence table (admin source wins over
+selection/pool; nil → selection; neither → nil); SessionPlan-vhost (admin source
+wins over a self-selection; nil → selection); `HostAddresses.local_bindable?/2`
+(threat-first, canonicalization, empty set); `ServersController` conn
+(set-local + feeds `list_source_addresses/0`, clear-via-null, non-local 422
+source_not_local on POST + PUT, garbage → validation_failed); `client_test`
+pinned-source-over-rotation. cic: vitest (add-with-source + inline clear wiring);
+Playwright e2e (chromium + @webkit) — non-local rejection surfaces end-to-end via
+BOTH the add-form and the inline editor (deterministic 192.0.2.1 / TEST-NET-1).
+A local-address SUCCESS round-trip is covered by the ExUnit conn test (reads
+`HostAddresses.list/0`) rather than the e2e — a guaranteed local address isn't
+tractable to discover browser-side (§3 allowance).
+
+_Deploy: server-side is **HOT-reloadable** on its own (no migration/schema/
+supervision/cluster/env change — altitude (A) reuses the existing nullable
+column), but ships with a **cic bundle**, so this delivery is **HELD** to ride the
+next coordinated **COLD** window batched with the other HELD COLD work (#299
+batch). Not deployed this session — merge to main + push + HOLD._
