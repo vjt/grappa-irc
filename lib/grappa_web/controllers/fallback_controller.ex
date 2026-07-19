@@ -221,6 +221,17 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "theme_cap_reached"})
   end
 
+  # #247 (review 2026-07-19 R1) — the /notify watch list is at its
+  # per-(subject, network) cap (`Grappa.Notify.max_entries/0`). 422 —
+  # well-formed request, semantically refused (the list is a bounded
+  # resource, not a rate) — with a distinct token so cic renders "watch
+  # list is full, remove one first" rather than a retry hint.
+  def call(conn, {:error, :list_full}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "list_full"})
+  end
+
   # #75 themes background pipeline — the source (upload or fetched URL) is not
   # a raster image (SVG, text, unknown type). 415: the request shape is valid,
   # the media type is not one we re-host. Distinct atom from

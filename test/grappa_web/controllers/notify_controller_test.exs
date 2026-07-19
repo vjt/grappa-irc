@@ -101,6 +101,32 @@ defmodule GrappaWeb.NotifyControllerTest do
            |> json_response(400)
   end
 
+  test "POST batch larger than the cap is 422 list_full", %{conn: conn, network: network} do
+    nicks = for i <- 1..(Grappa.Notify.max_entries() + 1), do: "cap#{i}"
+
+    resp =
+      conn
+      |> post("/networks/#{network.slug}/notify", %{"nicks" => nicks})
+      |> json_response(422)
+
+    assert resp["error"] == "list_full"
+
+    listed = conn |> get("/networks/#{network.slug}/notify") |> json_response(200)
+    assert listed["entries"] == []
+  end
+
+  test "POST onto a full list is 422 list_full", %{conn: conn, user: user, network: network} do
+    nicks = for i <- 1..Grappa.Notify.max_entries(), do: "cap#{i}"
+    {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, nicks, user.name)
+
+    resp =
+      conn
+      |> post("/networks/#{network.slug}/notify", %{"nicks" => ["one_too_many"]})
+      |> json_response(422)
+
+    assert resp["error"] == "list_full"
+  end
+
   test "DELETE /:nick removes fold-matched and is idempotent", %{conn: conn, network: network} do
     conn
     |> post("/networks/#{network.slug}/notify", %{"nicks" => ["Foo[1]", "Bar"]})

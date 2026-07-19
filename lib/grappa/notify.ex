@@ -41,6 +41,20 @@ defmodule Grappa.Notify do
   existing row. `remove/4` and `clear/3` return `:ok` whether or not
   rows existed.
 
+  ## Bounded list (review 2026-07-19 R1)
+
+  The list is capped at `max_entries/0` rows per (subject, network);
+  an add whose POST-state would exceed it rolls the whole batch back
+  with `{:error, :list_full}`. The bound is the post-state cardinality,
+  not the batch — an idempotent re-add against a full list still
+  succeeds. A static cap (not the ISUPPORT `MONITOR=`/`WATCH=` value)
+  because adds happen while parked/disconnected, when no 005 has been
+  seen — a dynamic per-network cap would be unknowable exactly when
+  the DB list is the only source of truth. 64 sits under every
+  mechanism limit observed in the wild (solanum `MONITOR=100`,
+  bahamut `WATCH=128`), so the end-of-MOTD arm burst can never earn a
+  734/512 rejection for a within-cap list.
+
   After every successful mutation the current full list is broadcast
   on `Topic.user(subject_label)` as the envelope built by
   `Grappa.Notify.Wire.notify_list_payload/1` — same
@@ -88,9 +102,24 @@ defmodule Grappa.Notify do
   # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment).
   require Identifier
 
+  # Post-state cardinality cap per (subject, network) — see the
+  # "Bounded list" moduledoc section for why it is static, not the
+  # ISUPPORT-advertised value.
+  @max_entries 64
+
   # ---------------------------------------------------------------------------
   # Public API
   # ---------------------------------------------------------------------------
+
+  @doc """
+  The per-(subject, network) watch-list cap enforced by `add/4`. Public
+  so the REST controller can reject over-cap batch shapes before
+  building changesets, and so tests pin behavior to the production
+  constant. The literal spec is deliberate (`:underspecs` dialyzer
+  flag): update it together with `@max_entries`.
+  """
+  @spec max_entries() :: 64
+  def max_entries, do: @max_entries
 
   @doc """
   Atomically adds `nicks` to the watch list for `(subject, network_id)`.
@@ -98,13 +127,15 @@ defmodule Grappa.Notify do
   Returns `{:ok, entries}` in input order — existing rows for
   duplicate/fold-equal nicks, freshly inserted rows otherwise. Any
   invalid nick (or missing subject/network FK) rejects the WHOLE batch
-  with `{:error, changeset}` and no partial insert (transaction).
+  with `{:error, changeset}` and no partial insert (transaction). A
+  batch whose post-state would exceed `max_entries/0` rolls back whole
+  with `{:error, :list_full}`.
 
   After a successful batch, broadcasts the full current list on
   `Topic.user(subject_label)` (`notify_list` envelope).
   """
   @spec add(Subject.t(), integer(), [String.t()], String.t()) ::
-          {:ok, [Entry.t()]} | {:error, Ecto.Changeset.t()}
+          {:ok, [Entry.t()]} | {:error, Ecto.Changeset.t() | :list_full}
   def add({_, _} = subject, network_id, nicks, subject_label)
       when is_integer(network_id) and is_list(nicks) and nicks != [] and
              is_binary(subject_label) do
@@ -220,15 +251,33 @@ defmodule Grappa.Notify do
   # N can't leave nicks 1..N-1 behind. Collect-or-bail via recursive
   # traversal (CLAUDE.md shape); each nick upserts with
   # `on_conflict: :nothing` and re-selects on conflict (idempotent add).
+  #
+  # The cap check runs AFTER the inserts, on the post-state row count,
+  # then rolls back on excess: counting first would have to reproduce
+  # the fold-dedup logic (batch nicks already present create no row),
+  # while the post-state count gets that exactly right for free.
   @spec insert_batch([Ecto.Changeset.t()], Subject.t(), integer(), [String.t()]) ::
-          {:ok, [Entry.t()]} | {:error, Ecto.Changeset.t()}
+          {:ok, [Entry.t()]} | {:error, Ecto.Changeset.t() | :list_full}
   defp insert_batch(changesets, subject, network_id, nicks) do
     Repo.transaction(fn ->
-      case traverse_inserts(Enum.zip(changesets, nicks), [], subject, network_id) do
-        {:ok, entries} -> entries
-        {:error, cs} -> Repo.rollback(cs)
+      with {:ok, entries} <- traverse_inserts(Enum.zip(changesets, nicks), [], subject, network_id),
+           :ok <- check_cap(subject, network_id) do
+        entries
+      else
+        {:error, reason} -> Repo.rollback(reason)
       end
     end)
+  end
+
+  @spec check_cap(Subject.t(), integer()) :: :ok | {:error, :list_full}
+  defp check_cap(subject, network_id) do
+    count =
+      Entry
+      |> Subject.subject_where(subject)
+      |> where([e], e.network_id == ^network_id)
+      |> Repo.aggregate(:count)
+
+    if count <= @max_entries, do: :ok, else: {:error, :list_full}
   end
 
   @spec traverse_inserts(

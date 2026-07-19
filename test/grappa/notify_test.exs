@@ -151,6 +151,78 @@ defmodule Grappa.NotifyTest do
   end
 
   # ---------------------------------------------------------------------------
+  # add/4 — per-(subject, network) cap (review 2026-07-19 R1)
+  # ---------------------------------------------------------------------------
+
+  describe "add/4 cap" do
+    defp fill_to_cap(user, net) do
+      nicks = for i <- 1..Notify.max_entries(), do: "cap#{i}"
+      {:ok, _} = Notify.add({:user, user.id}, net.id, nicks, user.name)
+      nicks
+    end
+
+    test "the entry that would exceed max_entries/0 is rejected with :list_full" do
+      user = user_fixture()
+      net = network_fixture()
+      fill_to_cap(user, net)
+
+      assert {:error, :list_full} =
+               Notify.add({:user, user.id}, net.id, ["one_too_many"], user.name)
+
+      assert length(Notify.list({:user, user.id}, net.id)) == Notify.max_entries()
+    end
+
+    test "a batch straddling the cap is rejected whole (atomic)" do
+      user = user_fixture()
+      net = network_fixture()
+      nicks = for i <- 1..(Notify.max_entries() - 1), do: "cap#{i}"
+      {:ok, _} = Notify.add({:user, user.id}, net.id, nicks, user.name)
+
+      assert {:error, :list_full} =
+               Notify.add({:user, user.id}, net.id, ["fits", "does_not"], user.name)
+
+      # Atomicity: the nick that would have fit was NOT inserted.
+      assert length(Notify.list({:user, user.id}, net.id)) == Notify.max_entries() - 1
+    end
+
+    test "idempotent re-add of an existing nick at the cap still succeeds" do
+      user = user_fixture()
+      net = network_fixture()
+      [first_nick | _] = fill_to_cap(user, net)
+
+      # The cap bounds the POST-state cardinality, not the batch: a
+      # fold-equal re-add creates no row, so a full list stays full and
+      # the add stays idempotent-ok.
+      assert {:ok, [entry]} =
+               Notify.add({:user, user.id}, net.id, [String.upcase(first_nick)], user.name)
+
+      assert entry.nick == first_nick
+      assert length(Notify.list({:user, user.id}, net.id)) == Notify.max_entries()
+    end
+
+    test "the cap is per (subject, network): a full list elsewhere doesn't block" do
+      user = user_fixture()
+      net_a = network_fixture()
+      net_b = network_fixture()
+      fill_to_cap(user, net_a)
+
+      assert {:ok, [_]} = Notify.add({:user, user.id}, net_b.id, ["fresh"], user.name)
+    end
+
+    test "no notify_list broadcast fires on a :list_full rejection" do
+      user = user_fixture()
+      net = network_fixture()
+      fill_to_cap(user, net)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      assert {:error, :list_full} =
+               Notify.add({:user, user.id}, net.id, ["one_too_many"], user.name)
+
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "notify_list"}}, 100
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # remove/4
   # ---------------------------------------------------------------------------
 
