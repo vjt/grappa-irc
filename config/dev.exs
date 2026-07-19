@@ -49,7 +49,7 @@ config :grappa, dev_routes: true
 config :grappa, :admission, default_max_per_ip_per_network: 10
 
 # #340 — send-throttle headroom for dev + e2e. Production stays at
-# config.exs's default (capacity 10, 2/s). cic splits a multi-line compose
+# config.exs's default (capacity 5, 0.5/s). cic splits a multi-line compose
 # into ONE PRIVMSG POST per line, so an e2e that seeds history with a
 # 12-line body (e.g. issue173's LONG_BODY) fires a 12-POST burst that the
 # production capacity would 429 mid-seed — leaving text in the box and

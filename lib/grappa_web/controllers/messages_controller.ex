@@ -65,11 +65,11 @@ defmodule GrappaWeb.MessagesController do
   # flood allowance (see `config :grappa, :send_throttle`). Boot-time
   # config per CLAUDE.md (`Application.get_env` at runtime is banned).
   @send_throttle_bucket :message_send
-  @send_throttle_capacity Application.compile_env(:grappa, [:send_throttle, :capacity], 10)
+  @send_throttle_capacity Application.compile_env(:grappa, [:send_throttle, :capacity], 5)
   @send_throttle_refill_per_sec Application.compile_env(
                                   :grappa,
                                   [:send_throttle, :refill_per_sec],
-                                  2
+                                  0.5
                                 )
 
   @doc """

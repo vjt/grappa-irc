@@ -119,12 +119,13 @@ config :grappa, :scrollback,
 # k-lines the connection. Read via `Application.compile_env/3` in
 # `GrappaWeb.MessagesController`.
 #
-#   * capacity — burst allowance (a paste of ~10 lines rides through).
-#   * refill_per_sec — sustained rate once the burst is spent (~2/s is
-#     comfortably human and below the upstream penalty).
+# Numbers read from the bahamut source's flood allowance (vjt):
+#   * capacity — burst allowance (5, per bahamut's flood burst).
+#   * refill_per_sec — sustained rate: 1 token every 2s = 0.5/s (bahamut's
+#     ~2s-per-line drip once the burst is spent).
 config :grappa, :send_throttle,
-  capacity: 10,
-  refill_per_sec: 2
+  capacity: 5,
+  refill_per_sec: 0.5
 
 # T31 admission control. Defaults match the design (CP11 S20 →
 # CP11 S21 brainstorm). All values configurable per-env via
