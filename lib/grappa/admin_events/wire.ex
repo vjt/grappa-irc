@@ -70,6 +70,7 @@ defmodule Grappa.AdminEvents.Wire do
           | :credential_bound
           | :credential_updated
           | :credential_unbound
+          | :login_throttled
 
   @type circuit_open_event :: %{
           kind: :circuit_open,
@@ -337,6 +338,21 @@ defmodule Grappa.AdminEvents.Wire do
           at: String.t()
         }
 
+  @typedoc """
+  S6 (review 2026-07-19) — a source IP crossed the mode-1 login
+  failure threshold and is now throttled for the rest of its window.
+  Emitted ONCE per (ip, window) — on the exact limit-crossing failure,
+  not on every subsequently rejected request — so a spray can't flood
+  the admin stream with its own rejections.
+  """
+  @type login_throttled_event :: %{
+          kind: :login_throttled,
+          source_ip: String.t() | nil,
+          failures: pos_integer(),
+          window_ms: pos_integer(),
+          at: String.t()
+        }
+
   @type event ::
           circuit_open_event()
           | circuit_close_event()
@@ -363,6 +379,7 @@ defmodule Grappa.AdminEvents.Wire do
           | credential_bound_event()
           | credential_updated_event()
           | credential_unbound_event()
+          | login_throttled_event()
 
   ## ----- Constructors --------------------------------------------------
   ##
@@ -1065,6 +1082,21 @@ defmodule Grappa.AdminEvents.Wire do
       network_slug: network_slug,
       actor_user_id: actor_user_id,
       actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec login_throttled(String.t() | nil, pos_integer(), pos_integer()) ::
+          login_throttled_event()
+  def login_throttled(source_ip, failures, window_ms)
+      when (is_binary(source_ip) or is_nil(source_ip)) and is_integer(failures) and
+             failures > 0 and is_integer(window_ms) and window_ms > 0 do
+    %{
+      kind: :login_throttled,
+      source_ip: source_ip,
+      failures: failures,
+      window_ms: window_ms,
       at: now()
     }
   end

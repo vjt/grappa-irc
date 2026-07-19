@@ -73,6 +73,22 @@ defmodule Grappa.AdminEvents.WireTest do
     end
   end
 
+  describe "login_throttled/3" do
+    test "renders the typed wire shape" do
+      event = Wire.login_throttled("203.0.113.7", 10, 900_000)
+      assert event.kind == :login_throttled
+      assert event.source_ip == "203.0.113.7"
+      assert event.failures == 10
+      assert event.window_ms == 900_000
+      assert is_binary(event.at)
+    end
+
+    test "accepts nil source_ip (unresolvable peer honesty)" do
+      event = Wire.login_throttled(nil, 10, 900_000)
+      assert event.source_ip == nil
+    end
+  end
+
   describe "visitor_deleted/4" do
     test "renders with actor" do
       event =

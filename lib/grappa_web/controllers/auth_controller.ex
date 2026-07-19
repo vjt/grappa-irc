@@ -32,8 +32,10 @@ defmodule GrappaWeb.AuthController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, Networks, Session, Visitors}
+  alias Grappa.{Accounts, AdminEvents, Networks, Session, Visitors}
+  alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias Grappa.Auth.IdentifierClassifier
+  alias Grappa.RateLimit.FailureWindow
   alias Grappa.Visitors.{Login, Visitor}
   alias GrappaWeb.RemoteIP
 
@@ -78,6 +80,7 @@ defmodule GrappaWeb.AuthController do
              | :network_ambiguous
              | :network_unconfigured
              | :invalid_credentials
+             | :too_many_attempts
              | :upstream_unreachable
              | :connect_timeout
              | :welcome_timeout
@@ -274,12 +277,14 @@ defmodule GrappaWeb.AuthController do
     # column; for now the dispatch routes by `@` presence but the lookup
     # uses the local-part as the user `name`.
     name = email |> String.split("@", parts: 2) |> List.first()
+    ip = format_ip(conn)
 
-    with {:ok, user} <- Accounts.get_user_by_credentials(name, password) do
+    with :ok <- check_mode1_throttle(ip),
+         {:ok, user} <- authenticate_mode1(name, password, ip) do
       {:ok, session} =
         Accounts.create_session(
           {:user, user.id},
-          format_ip(conn),
+          ip,
           user_agent(conn),
           client_id: conn.assigns[:current_client_id]
         )
@@ -287,6 +292,51 @@ defmodule GrappaWeb.AuthController do
       conn
       |> put_status(:ok)
       |> render(:login, token: session.id, subject: {:user, user})
+    end
+  end
+
+  # S6 (review 2026-07-19) — brute-force friction for the mode-1 branch.
+  # The visitor branch has the #171 per-IP admission cap + captcha; this
+  # branch had only bcrypt cost. Per-source-IP FAILURE counter, checked
+  # BEFORE the bcrypt compare (a throttled IP costs no hashing work) and
+  # advanced only on failed attempts — a legitimate operator's correct
+  # login never counts toward their own lockout, and a spraying attacker
+  # gets `@mode1_max_failures` bcrypt-priced guesses per window per IP.
+  # Distinct from the visitor admission machinery on purpose: same
+  # counter INFRASTRUCTURE (Grappa.RateLimit), separate bucket — merging
+  # them would couple network-capacity policy to credential-guessing
+  # policy. nginx fail2ban (#160) is defense-in-depth on top, not the
+  # primary control.
+  @mode1_bucket :mode1_login
+  @mode1_max_failures 10
+  @mode1_window_ms :timer.minutes(15)
+
+  @spec check_mode1_throttle(String.t() | nil) :: :ok | {:error, :too_many_attempts}
+  defp check_mode1_throttle(ip) do
+    case FailureWindow.check(@mode1_bucket, ip, @mode1_max_failures) do
+      :ok -> :ok
+      {:error, :limited} -> {:error, :too_many_attempts}
+    end
+  end
+
+  @spec authenticate_mode1(String.t() | nil, String.t(), String.t() | nil) ::
+          {:ok, Grappa.Accounts.User.t()} | {:error, :invalid_credentials}
+  defp authenticate_mode1(name, password, ip) do
+    case Accounts.get_user_by_credentials(name, password) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, _} = err ->
+        count = FailureWindow.record_failure(@mode1_bucket, ip, @mode1_window_ms)
+
+        # Exactly-once-per-window operator signal: emit on the crossing
+        # failure only, never on the (attacker-driven) rejected requests
+        # that follow — a spray can't flood the admin stream.
+        if count == @mode1_max_failures do
+          AdminEvents.record(AdminEventsWire.login_throttled(ip, count, @mode1_window_ms))
+        end
+
+        err
     end
   end
 
