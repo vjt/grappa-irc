@@ -25542,3 +25542,89 @@ binding constraint) and it ships with a **cic bundle** (comment-only, but a rebu
 bumps the hash). **HELD** to ride the next coordinated COLD window batched with the
 other HELD COLD work (#299 batch). Not deployed this session — merge to main +
 push + HOLD._
+
+---
+
+## #267 — server-authoritative per-window mention count (2026-07-19)
+
+**The bug, reframed.** #267 was filed as "unread/mention badges are wrong."
+By the time we got to it, #280 had already fixed the overflow-red aggregate
+and the message/event counts were cursor-derived (bucket B2). What remained
+was the **mention** count: it was a pure client bump — cic incremented a
+per-channel counter on every inbound PRIVMSG whose body word-boundary-matched
+the operator's own nick. That count was a function of what ONE connected tab
+observed live, so it (a) **never rebuilt on reconnect** — a mention that
+landed while the tab was disconnected/suspended was lost forever — and (b)
+**diverged across tabs/devices**. So the real #267 is narrow: make the
+mention count server-authoritative; leave everything else alone.
+
+**The server side — derive, don't duplicate.** `Grappa.WindowCounts.snapshot/6`
+computes `%{messages, mentions, events, severity}` for a `(subject, network,
+channel)` window PURELY from `(read_cursor, messages)`. No persisted counter,
+no per-channel state in `Session.Server`. `mentions` = the subset of unread
+content rows matching the SSOT predicate `Grappa.Mentions.mentioned?/3`
+(own_nick ∪ highlight patterns, word-boundary, case-insensitive), own-sent
+rows excluded (you can't mention yourself), sender folded through the rfc1459
+nick SSOT (#121), bounded by a `@mention_scan_cap` tail scan (SQLite has no
+REGEXP). Because it's a function of `(cursor, rows)`, it reconstructs
+identically on every (re)subscribe and stays consistent across a subject's
+tabs. Seeded into `/me` (`unread_counts` envelope) + the per-channel join
+reply (`window_counts`), and pushed live on every new message + cursor
+advance as a typed `window_counts` event.
+
+**The three blessed deviations (vjt, via AskUserQuestion).**
+1. **Only the mention count moved server-side.** message/event counts STAY
+   client-derived — the server counts unfiltered events, but cic applies the
+   presence-filter (#239); a server-authoritative event count would produce a
+   non-clearable badge. So `severity` is re-derived cic-side as a projection
+   (server mentions > client messages > client events > none), NOT read from
+   the server's `severity` field for the aggregate.
+2. **Door #4 (`mention:bool` per-row on the message Wire) DEFERRED.** The
+   COUNTING regex is removed; the cosmetic per-row `.scrollback-mention`
+   highlight (own-nick) stays a client render decision — it's deterministic
+   per-row with no cross-tab/reconnect consistency problem. Only the COUNT
+   moved. `mentionMatch.ts` now drives ONLY the live alert (beep + optimistic
+   title badge), not a count.
+3. **Covering index `messages(...,id)` DEFERRED** (measure-first).
+
+**The behaviour seam (PushSource/Pusher).** The per-message server push needed
+a seam because `Session → ReadCursor → Networks → Session` is a real Boundary
+cycle. `Grappa.WindowCounts.PushSource` (behaviour) + a `Pusher` impl break it
+— same shape as the BadgeSource precedent. The persist-arm fires from
+`Session.Server`; the cursor-advance fanout from `ReadCursorController`.
+
+**The cic focus-zero overlay.** `mentions.ts` is server-fed via
+`setServerMention` (one setter, three doors: `/me`, join reply, live
+`window_counts`). `mentionCounts()` overlays a focus-zero on the raw server
+value: the selected+visible window renders 0 (the operator is reading it) —
+a PURE projection, not an imperative clear. This replaced the pre-#267 model
+where `selection.ts` imperatively cleared mentions on focus/visibility
+transitions; that clear is GONE. A selected-but-backgrounded tab keeps its
+count so a returning operator sees the activity. The read cursor is NOT
+advanced by the overlay — the server re-pushes 0 on the next cursor-advance
+settle. cic NEVER originates the count.
+
+**The DM edge (documented gap).** An inbound peer-DM persists at
+`channel = own_nick`; the live `window_counts` push for it goes to the
+own-nick topic (self-msg narrowed → ~0), so the peer window's mention count
+re-seeds on cursor-advance/resubscribe rather than live. Rare (DM bodies
+rarely contain the own nick) and self-healing. Accepted.
+
+**e2e infra footnote — solanum nofile.** Bringing the #267 e2e up on a fresh
+`docker.io 26.1.5` aarch64 box surfaced an UNRELATED latent infra bug: the
+second-network ircd `solanum-test2` segfaulted at boot (`librb ... Out of
+Memory` → exit 139) with the host RAM near-empty. Root cause: librb sizes a
+per-fd table to `RLIMIT_NOFILE`, and modern docker daemons pass the host's
+systemd `LimitNOFILE` (~1e9) into containers; older docker-ce defaulted it to
+1024:524288, so the canonical worker + CI (identical aarch64) never hit it —
+the difference was the daemon's default fd limit, not the arch or the solanum
+ref. Fixed by capping `ulimits.nofile` to 4096 on the service — correct
+everywhere, invisible where nofile is already sane. (A separate latent gap:
+`e2e_force_rm` on a passwordless-sudo Linux host removes the runtime
+bind-mount, which docker then recreates root-owned, breaking the UID-1000
+seeder's sqlite open — worked around by pre-creating the dir vjt-owned; the
+canonical host survives only because force_rm there lacks sudo and the dir
+persists. Worth a script-side `mkdir -p` fix.)
+
+_Deploy: **COLD** (cic bundle rebuild). **HELD** — merge to main + push +
+HOLD; vjt deploys later._
