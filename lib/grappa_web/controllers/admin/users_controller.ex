@@ -71,6 +71,7 @@ defmodule GrappaWeb.Admin.UsersController do
     with {:ok, attrs} <- admin_attrs(params),
          %Grappa.Accounts.User{} = user <- Accounts.get_user(id),
          {:ok, updated} <- Accounts.update_admin_flags(user, attrs) do
+      :ok = maybe_disconnect_on_demotion(user, updated)
       :ok = maybe_emit_user_updated(user, updated, conn)
       counts = LiveIntrospection.count_sessions_by_user()
       json(conn, AdminWire.user_to_admin_json(updated, Map.get(counts, updated.id, 0)))
@@ -79,6 +80,23 @@ defmodule GrappaWeb.Admin.UsersController do
       other -> other
     end
   end
+
+  # S27 (review 2026-07-19) — a demoted admin's already-open socket kept
+  # `is_admin: true` in its connect-time assigns and went on receiving
+  # the `grappa:admin:events` stream until it happened to reconnect.
+  # Mirror the S8 rotation fix one field over: close the socket on the
+  # true→false transition; reconnect re-evaluates `is_admin` at
+  # `UserSocket.connect/3`, so AdminChannel keeps its snapshot-at-connect
+  # design with no per-message re-check. Bearer sessions are NOT revoked
+  # (demotion is a privilege change, not a credential compromise — the
+  # user stays logged in as a non-admin after the reconnect); promotion
+  # keeps the socket (no privilege to withdraw mid-flight).
+  @spec maybe_disconnect_on_demotion(Grappa.Accounts.User.t(), Grappa.Accounts.User.t()) :: :ok
+  defp maybe_disconnect_on_demotion(%{is_admin: true}, %{is_admin: false} = updated) do
+    :ok = UserSocket.disconnect_subject({:user, updated})
+  end
+
+  defp maybe_disconnect_on_demotion(_, _), do: :ok
 
   @doc """
   Admin-panel bucket 2 — create a user. Body: `name`, `password`,
