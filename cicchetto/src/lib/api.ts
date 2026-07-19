@@ -2518,6 +2518,11 @@ export type AdminServer = {
   tls: boolean;
   priority: number;
   enabled: boolean;
+  // #266 — admin-configured per-network outbound source bind (null = unset →
+  // vhost selection / pool / kernel default). Mirrors
+  // Grappa.Networks.Servers.AdminWire (hand-declared: admin_wire.ex is outside
+  // the gen_wire_types glob).
+  source_address: string | null;
   inserted_at: string;
   updated_at: string;
 };
@@ -2528,6 +2533,9 @@ export type AdminServerCreate = {
   tls?: boolean;
   priority?: number;
   enabled?: boolean;
+  // #266 — a bindable local IP literal to pin the outbound egress, or null to
+  // leave unset. Server rejects a non-local literal with 422 source_not_local.
+  source_address?: string | null;
 };
 
 export type AdminServerUpdate = Partial<AdminServerCreate>;
