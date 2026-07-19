@@ -3156,6 +3156,27 @@ defmodule Grappa.Session.Server do
 
   defp maybe_broadcast_own_nick_changed(_, _), do: :ok
 
+  # #336 — `Scrollback.persist_event/1` returns a closed error set
+  # (`Scrollback.persist_error()`): an `%Ecto.Changeset{}` on validation
+  # failure, or the `:persist_unavailable` atom when the SQLite pool
+  # saturated and the row was dropped after bounded retry. Every persist
+  # consumer in this module logs and the session CONTINUES — a slow DB
+  # degrades scrollback durability, it must never disconnect the user
+  # (mirrors the `:reply` effect's fire-and-forget hardening). The
+  # pre-#336 handlers assumed a changeset and called `.errors`, which
+  # would itself crash the session the instant it received the atom.
+  @spec log_persist_failure(Scrollback.persist_error(), keyword()) :: :ok
+  defp log_persist_failure(%Ecto.Changeset{} = changeset, metadata) do
+    Logger.error(
+      "scrollback insert failed — session continues",
+      Keyword.put(metadata, :error, inspect(changeset.errors))
+    )
+  end
+
+  defp log_persist_failure(:persist_unavailable, metadata) do
+    Logger.warning("scrollback row dropped: SQLite pool saturated — session continues", metadata)
+  end
+
   # Push notifications cluster B4 (2026-05-14) — fire-and-forget
   # trigger eval after a successful Scrollback.persist_event/1 in the
   # `:persist` apply_effects/2 arm. Subject-aware as of visitor-parity
@@ -3455,12 +3476,8 @@ defmodule Grappa.Session.Server do
         # archive_changed (cic would refetch the unchanged archive set).
         broadcast_archive_changed(state)
 
-      {:error, changeset} ->
-        Logger.error("scrollback insert failed for join_failed",
-          channel: channel,
-          numeric: numeric,
-          error: inspect(changeset.errors)
-        )
+      {:error, reason} ->
+        log_persist_failure(reason, channel: channel, numeric: numeric)
     end
 
     broadcast_window_state(
@@ -3706,12 +3723,8 @@ defmodule Grappa.Session.Server do
             own_nick: state.nick
           })
 
-      {:error, changeset} ->
-        Logger.error("scrollback insert failed",
-          command: kind,
-          channel: attrs.channel,
-          error: inspect(changeset.errors)
-        )
+      {:error, reason} ->
+        log_persist_failure(reason, command: kind, channel: attrs.channel)
     end
 
     apply_effects(rest, state)

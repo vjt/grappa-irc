@@ -109,6 +109,54 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
+  # #336 — the SQLite pool saturates under a write burst; `Repo.insert`/
+  # `Repo.preload` then RAISE `DBConnection.ConnectionError`
+  # (reason: :queue_timeout) rather than returning `{:error, _}`. Before
+  # the fix that raise escaped `persist_event/1` and crashed the calling
+  # Session.Server, disconnecting the user. Best-effort durability must
+  # degrade (retry, then drop) — never take down liveness.
+  #
+  # The sandbox pool cannot reproduce a real `queue_timeout` (it
+  # multiplexes one connection per owner, so there is no checkout queue),
+  # so the retry/degrade contract is exercised against
+  # `with_pool_retry/1` — the exact production hot-path helper that
+  # `persist_event/1` runs both its insert and its preload through — by
+  # injecting an op that raises the same exception the pool raises.
+  describe "with_pool_retry/1 — pool-saturation resilience (#336)" do
+    defp raise_queue_timeout do
+      raise %DBConnection.ConnectionError{
+        message: "connection not available and request was dropped from queue after 186ms",
+        reason: :queue_timeout
+      }
+    end
+
+    test "an op that always raises DBConnection.ConnectionError degrades to {:error, :persist_unavailable} — does NOT escape" do
+      assert {:error, :persist_unavailable} =
+               Scrollback.with_pool_retry(fn -> raise_queue_timeout() end)
+    end
+
+    test "retries transient pool exhaustion and succeeds once a checkout is served" do
+      # Fail for the first two attempts, succeed on the third — proves the
+      # bounded retry actually re-drives the op rather than degrading on the
+      # first raise.
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      op = fn ->
+        n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
+        if n < 2, do: raise_queue_timeout(), else: {:ok, :served}
+      end
+
+      assert {:ok, :served} = Scrollback.with_pool_retry(op)
+      assert Agent.get(counter, & &1) == 3
+    end
+
+    test "a plain {:error, changeset} passes through unchanged — validation errors are NOT retried" do
+      cs = Message.changeset(%Message{}, %{channel: "#x"})
+
+      assert {:error, ^cs} = Scrollback.with_pool_retry(fn -> {:error, cs} end)
+    end
+  end
+
   describe "persist_event/1" do
     test "persists :privmsg with body+meta and preloads :network", %{user: user, network: net} do
       attrs = %{

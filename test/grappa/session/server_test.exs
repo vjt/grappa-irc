@@ -1133,6 +1133,72 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # #336 — a persist failure in the `:persist` apply_effects arm must
+    # NOT crash the session. The 2026-07-19 incident: the SQLite pool
+    # saturated, `Repo.insert` RAISED `DBConnection.ConnectionError`
+    # (reason: :queue_timeout), the raise escaped `persist_event/1` and
+    # took down 17 sessions. A slow/failed DB must degrade scrollback
+    # durability, never disconnect the user.
+    #
+    # The sandbox pool can't reproduce a real `queue_timeout` (the
+    # raise→typed-error conversion is proven directly in
+    # `Grappa.ScrollbackTest`'s `with_pool_retry/1` cases). Here we drive
+    # the OTHER half end-to-end: a real persist error reaching the
+    # `:persist` arm — an inbound PRIVMSG with an empty body, which fails
+    # `Message.changeset/2`'s per-kind body-required validation → the
+    # `{:error, reason}` handler → `log_persist_failure/2` → session
+    # CONTINUES. We prove continuation by feeding a VALID PRIVMSG
+    # afterwards and asserting it persists: the session is alive AND still
+    # processing the upstream stream (the client never disconnected).
+    test "a persist failure keeps the session alive and still processing (#336)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel(user.name, network.slug, "#sniffo")
+        )
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Empty body → :privmsg is a body-required kind → changeset error →
+      # persist_event returns {:error, %Ecto.Changeset{}}. Pre-#336 the
+      # `:persist` arm called `changeset.errors` (fine for a changeset,
+      # but the arm now also has to survive the `:persist_unavailable`
+      # atom the pool-saturation path returns — same total handler). The
+      # captured log PROVES the failure arm actually ran (not that the
+      # empty line was silently dropped upstream of persist).
+      log =
+        capture_log(fn ->
+          IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :\r\n")
+
+          # A valid message fed AFTER the failing one. If the failing
+          # persist had crashed the session, the DynamicSupervisor restart
+          # would drop this line (fresh state, no live socket) and its
+          # broadcast would never arrive — the assert_receive times out.
+          IRCServer.feed(server, ":bob!~b@host PRIVMSG #sniffo :still here\r\n")
+
+          assert_receive %Phoenix.Socket.Broadcast{
+                           event: "event",
+                           payload: %{message: %{sender: "bob", body: "still here"}}
+                         },
+                         1_000
+        end)
+
+      assert log =~ "scrollback insert failed — session continues"
+
+      # The empty-body row was dropped, not persisted — degrade, not
+      # corrupt: exactly one row (the valid one) survives.
+      assert [%{body: "still here", sender: "bob"}] =
+               Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 10, nil)
+
+      assert Process.alive?(pid)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     # BUGHUNT-1 A — server-side PRIVMSG auto-split.
     #
     # Body bigger than the per-frame budget (linelen minus the relayed-

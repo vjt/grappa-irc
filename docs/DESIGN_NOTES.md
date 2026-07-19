@@ -25628,3 +25628,69 @@ persists. Worth a script-side `mkdir -p` fix.)
 
 _Deploy: **COLD** (cic bundle rebuild). **HELD** — merge to main + push +
 HOLD; vjt deploys later._
+
+---
+
+## #336 — a saturated DB pool must degrade scrollback, never disconnect the user (2026-07-19)
+
+**Incident.** At 09:17:27 server-local, ~17 live sessions disconnected in the
+same second. The SQLite `Repo` connection pool saturated for ~1s under a write
+burst and dropped queued checkouts after 186ms (`reason: :queue_timeout`).
+`Repo.insert/2` does NOT return `{:error, _}` on a checkout failure — it
+**raises** `DBConnection.ConnectionError`. `Grappa.Scrollback.persist_event/1`
+only matched `{:ok, _}` / `{:error, _}`, so the raise escaped →
+`Session.Server.apply_effects/2` (`:persist` arm) → the session GenServer
+**crashed** → client disconnected. Auto-reconnect recovered within seconds, but
+the disconnect itself is the wrong behaviour: **scrollback persistence is
+best-effort durability — it must degrade (retry / defer / drop), never take
+down session liveness.**
+
+**Crash class, not crash instance.** The raise had three reachable escape
+sites (all three `Scrollback.persist_event/1` callers in `Session.Server`), and
+two of them consumed the error as `{:error, changeset} -> changeset.errors` —
+which would ALSO crash the session the instant `persist_event` started
+returning the new typed atom. So the fix is at the class boundary, in two
+layers:
+
+1. **`persist_event/1` no longer raises.** Both the insert and the wire-shape
+   preload run through `Scrollback.with_pool_retry/1`, which catches
+   `DBConnection.ConnectionError`, retries a small bounded number of times
+   (3 attempts, short linear backoff) to ride out a transient burst, and — if
+   the pool is still saturated — logs honestly and degrades to the typed
+   `{:error, :persist_unavailable}`. Losing a scrollback row is acceptable;
+   crashing is not. The closed write-error set is now
+   `Scrollback.persist_error() :: Ecto.Changeset.t() | :persist_unavailable`.
+   (On an insert-ok-but-preload-fail the row is durably written and surfaces on
+   the next `fetch/5`; only the live broadcast is lost.)
+2. **Every `:persist` consumer is total over that set.** A shared
+   `Session.Server.log_persist_failure/2` pattern-matches `%Ecto.Changeset{}`
+   (validation) vs `:persist_unavailable` (drop) and logs + CONTINUES — mirroring
+   the `:reply` effect's fire-and-forget hardening. Dialyzer enforces totality:
+   drop the atom clause and the `persist_error()`-typed call site fails to
+   type-check.
+
+**Testing seam note.** The ExUnit sandbox pool multiplexes one connection per
+owner, so it cannot reproduce a real `queue_timeout` (there is no checkout
+queue to time out; forcing a checkout failure yields `DBConnection.OwnershipError`,
+a test-only class we deliberately do NOT catch — catching it would silently
+swallow genuine sandbox-setup bugs). So the raise→typed-error contract is
+unit-tested against `with_pool_retry/1` directly (the exact production
+hot-path helper — a fun-taking helper because insert AND preload share it — fed
+an op that raises the same exception the pool raises). The `Session.Server`
+end-to-end half is proven with a REAL persist error that the sandbox CAN
+produce: an empty-body inbound PRIVMSG fails `Message.changeset/2`'s per-kind
+body-required validation, reaches the `:persist` arm, and the session survives
+(a valid message fed afterwards still persists + broadcasts). No prod-weakening
+persister injection — that would violate "never weaken production code to make
+tests pass."
+
+**Explicitly out of scope (filed as follow-up).** Option 3 from the issue —
+decoupling persistence into a dedicated async writer process so DB backpressure
+applies to *writes* not liveness, and the reconnect wave stops re-driving
+`persist_event` under an already-saturated pool — is a real improvement but a
+SUPERVISION-TREE change, not a P0 hotfix. Filed as **#337**. The secondary
+SQLite pool-tuning follow-up (`queue_target` / `queue_interval` / `pool_size` vs
+the burst source) is noted there too.
+
+_Deploy: **COLD** (server release rebuild — new module code). **HELD** — merge
+to main + push + HOLD; joins the batch, vjt deploys later._

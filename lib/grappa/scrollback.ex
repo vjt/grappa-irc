@@ -60,8 +60,27 @@ defmodule Grappa.Scrollback do
 
   # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment, #121).
   require Identifier
+  require Logger
 
   @max_limit 500
+
+  # #336 — SQLite is single-writer; a brief write burst saturates the
+  # connection pool, and `Repo.insert`/`Repo.preload` then RAISE
+  # `DBConnection.ConnectionError` (reason: :queue_timeout) rather than
+  # returning `{:error, _}`. Persistence is best-effort durability: it
+  # must degrade under saturation, never take down the session that calls
+  # it (a raised exception here crashed the Session.Server and
+  # disconnected the user — the 2026-07-19 09:17 incident). Retry a small
+  # bounded number of times over short linear backoff to ride out a
+  # transient burst, then drop the row with an honest log + typed error.
+  @persist_max_attempts 3
+  @persist_backoff_ms 25
+
+  # Closed error set for the write path. A validation failure returns the
+  # changeset (caller inspects `.errors`); a pool-saturation drop returns
+  # the bare atom (nothing to inspect — the row never reached the DB, or
+  # the insert landed but the wire-shape preload could not).
+  @type persist_error :: Ecto.Changeset.t() | :persist_unavailable
 
   # Content-bearing kinds: the ones that carry a notification meaning.
   # S17 — derived from the schema SSOT (`Message.content_kinds/0`);
@@ -121,14 +140,66 @@ defmodule Grappa.Scrollback do
           required(:sender) => String.t(),
           required(:body) => String.t() | nil,
           required(:meta) => Meta.t()
-        }) :: {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
+        }) :: {:ok, Message.t()} | {:error, persist_error()}
   def persist_event(%{kind: kind} = attrs) when is_atom(kind) do
     changeset = Message.changeset(%Message{}, attrs)
 
-    case Repo.insert(changeset) do
-      {:ok, message} -> {:ok, Repo.preload(message, :network)}
-      {:error, _} = err -> err
+    # Insert and preload each run through `with_pool_retry/1` so a pool
+    # saturation raise on EITHER step degrades to `{:error,
+    # :persist_unavailable}` instead of escaping. The `with` also carries
+    # a plain `{:error, %Changeset{}}` validation failure straight through
+    # (that op returns, never raises, so it's not retried). On a
+    # preload-only failure the row IS durably written but has no `:network`
+    # assoc for the wire payload — degrading is correct: the row surfaces
+    # on the next `fetch/5`, the live broadcast is what's lost.
+    with {:ok, message} <- with_pool_retry(fn -> Repo.insert(changeset) end),
+         {:ok, preloaded} <- with_pool_retry(fn -> {:ok, Repo.preload(message, :network)} end) do
+      {:ok, preloaded}
     end
+  end
+
+  @doc """
+  Runs a best-effort persistence op with bounded retry over transient
+  SQLite pool saturation (#336).
+
+  `op` is a zero-arity fun returning `{:ok, term()}` or `{:error,
+  Ecto.Changeset.t()}`. When it RAISES `DBConnection.ConnectionError`
+  (the pool could not serve a checkout — `reason: :queue_timeout`), this
+  catches the exception, retries up to `#{@persist_max_attempts}` times
+  over short linear backoff, and — if the pool is still saturated —
+  degrades to `{:error, :persist_unavailable}` rather than letting the
+  raise crash the calling process. A returned `{:error, _}` (a
+  validation failure) is passed straight through: it is not a transient
+  fault, so it is never retried.
+
+  Public because `persist_event/1` runs BOTH its insert and its preload
+  through it, and the retry/degrade contract is unit-tested here directly
+  (the sandbox pool cannot reproduce a real `queue_timeout`).
+  """
+  @spec with_pool_retry((-> {:ok, result} | {:error, Ecto.Changeset.t()})) ::
+          {:ok, result} | {:error, persist_error()}
+        when result: var
+  def with_pool_retry(op) when is_function(op, 0), do: with_pool_retry(op, 1)
+
+  @spec with_pool_retry((-> {:ok, result} | {:error, Ecto.Changeset.t()}), pos_integer()) ::
+          {:ok, result} | {:error, persist_error()}
+        when result: var
+  defp with_pool_retry(op, attempt) do
+    op.()
+  rescue
+    error in DBConnection.ConnectionError ->
+      if attempt < @persist_max_attempts do
+        Process.sleep(@persist_backoff_ms * attempt)
+        with_pool_retry(op, attempt + 1)
+      else
+        Logger.warning(
+          "scrollback persist unavailable: SQLite pool saturated after " <>
+            "#{@persist_max_attempts} attempts — dropping row",
+          reason: inspect(error.reason)
+        )
+
+        {:error, :persist_unavailable}
+      end
   end
 
   @doc """
