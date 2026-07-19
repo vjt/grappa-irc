@@ -153,6 +153,15 @@ config :grappa, :scrollback,
   persist_backoff_ms: 2,
   persist_backoff_cap_ms: 10
 
+# #340 — shrink the send-throttle burst so the MessagesController 429 test
+# trips after a handful of POSTs, and slow the refill right down so no token
+# refills between the sequential POSTs of a single test (deterministic
+# burst→429 without a wall-clock sleep; refill-over-time is proven
+# deterministically at the `TokenBucket` unit level via its now_ms seam).
+config :grappa, :send_throttle,
+  capacity: 3,
+  refill_per_sec: 0.5
+
 # Push notifications cluster B2 (2026-05-14) — fixed VAPID keypair for
 # the `:web_push_elixir` library so `Push.Sender` tests don't need to
 # generate a fresh pair per run (and so the lib's

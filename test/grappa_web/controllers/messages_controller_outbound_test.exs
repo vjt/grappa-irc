@@ -23,6 +23,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
   alias Grappa.{IRCServer, PubSub.Topic, Scrollback}
+  alias Grappa.RateLimit.TokenBucket
 
   setup %{conn: conn} do
     # The bearer-token session must be for the SAME user the Session
@@ -344,6 +345,71 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG someuser"), 1_000)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  # #340 — inbound send-throttle: `POST .../messages` consumes one token
+  # from a per-`(subject, network)` token bucket; an exhausted bucket
+  # returns 429 `rate_limited` BEFORE the send reaches upstream, so cic
+  # gets a "slow down" before bahamut k-lines the user for flooding. The
+  # test config shrinks the burst to 3 (`config/test.exs :send_throttle`).
+  # Refill-over-time is proven deterministically at the `TokenBucket` unit
+  # level (its `now_ms` seam) — a wall-clock refill test here would be
+  # flaky, so this describe covers the burst→429 + per-(subject,network)
+  # keying, which is the wire contract the controller owns.
+  describe "POST send throttle (#340)" do
+    setup do
+      # Hermetic: the token bucket is an application-wide ETS singleton.
+      :ets.delete_all_objects(TokenBucket.table_name())
+      :ok
+    end
+
+    defp post_body(conn, network, body) do
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> post("/networks/#{network.slug}/channels/%23sniffo/messages", %{"body" => body})
+    end
+
+    test "a full burst succeeds (201), the next POST is throttled (429)",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      # capacity == 3 (test config): three sends ride the burst.
+      for n <- 1..3 do
+        assert json_response(post_body(conn, network, "line #{n}"), 201)
+      end
+
+      # Fourth send drains an empty bucket → 429 rate_limited, and it never
+      # reaches send_privmsg (the throttle is the gate before it).
+      assert %{"error" => "rate_limited"} = json_response(post_body(conn, network, "flood"), 429)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "the bucket is per-(subject, network): a second network is unaffected by the first's flood",
+         %{conn: conn, vjt: vjt} do
+      {server1, port1} = start_server()
+      net1 = setup_network(vjt, port1, "azzurra")
+      pid1 = start_session_for(vjt, net1)
+      :ok = await_handshake(server1)
+
+      {server2, port2} = start_server()
+      net2 = setup_network(vjt, port2, "second-net")
+      pid2 = start_session_for(vjt, net2)
+      :ok = await_handshake(server2)
+
+      # Drain net1's bucket entirely (capacity 3 + one throttled).
+      for n <- 1..3, do: assert(json_response(post_body(conn, net1, "n1-#{n}"), 201))
+      assert json_response(post_body(conn, net1, "n1-flood"), 429)
+
+      # net2's bucket is a distinct key → first send still rides its burst.
+      assert json_response(post_body(conn, net2, "n2-fresh"), 201)
+
+      :ok = GenServer.stop(pid1, :normal, 1_000)
+      :ok = GenServer.stop(pid2, :normal, 1_000)
     end
   end
 

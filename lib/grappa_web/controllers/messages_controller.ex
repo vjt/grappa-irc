@@ -51,11 +51,26 @@ defmodule GrappaWeb.MessagesController do
 
   import GrappaWeb.Validation, only: [validate_target_name: 1, validate_post_target_name: 1]
 
+  alias Grappa.RateLimit.TokenBucket
   alias Grappa.{Scrollback, Session}
   alias GrappaWeb.{BodyLimit, Subject}
 
   @default_limit 50
   @max_http_limit 200
+
+  # #340 — inbound send-throttle. Each POST consumes one token from a
+  # per-`(subject, network)` bucket; an empty bucket is a 429 BEFORE the
+  # send reaches upstream, so cic gets "slow down" before bahamut k-lines
+  # the user for flooding. Capacity/refill sit at or below the upstream
+  # flood allowance (see `config :grappa, :send_throttle`). Boot-time
+  # config per CLAUDE.md (`Application.get_env` at runtime is banned).
+  @send_throttle_bucket :message_send
+  @send_throttle_capacity Application.compile_env(:grappa, [:send_throttle, :capacity], 10)
+  @send_throttle_refill_per_sec Application.compile_env(
+                                  :grappa,
+                                  [:send_throttle, :refill_per_sec],
+                                  2
+                                )
 
   @doc """
   `GET /networks/:network_id/channels/:channel_id/messages` —
@@ -133,7 +148,7 @@ defmodule GrappaWeb.MessagesController do
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
-          | {:error, :bad_request | :no_session | :invalid_line}
+          | {:error, :bad_request | :no_session | :invalid_line | :rate_limited}
           | {:error, Ecto.Changeset.t()}
   def create(conn, %{"channel_id" => channel, "body" => body})
       when is_binary(body) and body != "" do
@@ -146,14 +161,34 @@ defmodule GrappaWeb.MessagesController do
     # The body's CRLF/NUL check happens inside Session.send_privmsg
     # and surfaces as :invalid_line. Two distinct error tags so client
     # UX can branch.
+    #
+    # #340 — the send-throttle is checked AFTER shape validation (a
+    # malformed request can't cause an upstream flood so it shouldn't burn
+    # a token) but BEFORE `send_privmsg` (the throttle's whole job is to
+    # gate the send before it hits the wire). An empty bucket short-circuits
+    # to `{:error, :rate_limited}` → FallbackController renders 429.
     with :ok <- BodyLimit.check(body),
          :ok <- validate_post_target_name(channel),
+         :ok <- take_send_token(subject, network.id),
          {:ok, result} <- Session.send_privmsg(subject, network.id, channel, body) do
       render_send_result(conn, result)
     end
   end
 
   def create(_, %{"channel_id" => _}), do: {:error, :bad_request}
+
+  # #340 — consume one send-token for `(subject, network)`. `:ok` rides
+  # through the `with`; `{:error, :rate_limited}` short-circuits it to the
+  # FallbackController 429 clause.
+  @spec take_send_token(Session.subject(), integer()) :: :ok | {:error, :rate_limited}
+  defp take_send_token(subject, network_id) do
+    TokenBucket.take(
+      @send_throttle_bucket,
+      {subject, network_id},
+      @send_throttle_capacity,
+      @send_throttle_refill_per_sec
+    )
+  end
 
   # `Session.send_privmsg/4`'s contract returns either:
   #   * `{:ok, %Scrollback.Message{}}` — channel- or user-targeted PRIVMSG
