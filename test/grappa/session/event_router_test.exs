@@ -4362,5 +4362,39 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, _, effects2} = EventRouter.route(m, base_state(%{presence: %{}}))
       assert effects2 == []
     end
+
+    test "512 honours the RESOLVED probe mechanism over the 005 advertisement" do
+      # 005-independent arm (review 2026-07-19): a probed-WATCH session
+      # has no `WATCH=` token, but its resolved mechanism makes a real
+      # ERR_TOOMANYWATCH reportable.
+      m =
+        msg(
+          {:numeric, 512},
+          ["vjt", "Foo", "Maximum size for WATCH-list is 128 entries"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, _, effects} =
+        EventRouter.route(
+          m,
+          base_state(%{presence: %{}, presence_mechanism: {:watch, :unlimited}})
+        )
+
+      assert effects == [{:presence_error, :list_full, "Foo"}]
+    end
+
+    test "421 for WATCH/MONITOR emits presence_command_unknown; other 421s do not" do
+      w = msg({:numeric, 421}, ["vjt", "WATCH", "Unknown command"], {:server, "irc.test.org"})
+      {:cont, _, ew} = EventRouter.route(w, base_state(%{presence: %{}}))
+      assert ew == [{:presence_command_unknown, :watch}]
+
+      mo = msg({:numeric, 421}, ["vjt", "MONITOR", "Unknown command"], {:server, "irc.test.org"})
+      {:cont, _, em} = EventRouter.route(mo, base_state(%{presence: %{}}))
+      assert em == [{:presence_command_unknown, :monitor}]
+
+      other = msg({:numeric, 421}, ["vjt", "BLEH", "Unknown command"], {:server, "irc.test.org"})
+      {:cont, _, eo} = EventRouter.route(other, base_state(%{presence: %{}}))
+      assert eo == []
+    end
   end
 end
