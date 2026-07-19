@@ -22,8 +22,13 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
 
   `--source <ip>` pins the outbound source address for this server.
   Must be a strict literal IPv4 or IPv6 address (no hostname, no CIDR).
-  This is the per-network FALLBACK source; a per-subject vhost pin or
-  selection (#228, admin panel) overrides it. See `Grappa.Vhosts`.
+  #266: this per-network source now takes ABSOLUTE precedence — when set
+  it WINS over a subject's vhost selection and the rotation pool (the
+  Libera go-live "one accountable egress per network" posture), reversing
+  the #251 nuance where a self-selection overrode it. See `Grappa.Vhosts`.
+  Unlike the REST admin surface, this trusted host-side path is NOT
+  local-bindable-gated: a non-local literal is accepted here and fails at
+  connect time.
 
   Valid `--auth` values: `auto | sasl | server_pass | nickserv_identify
   | none`. S29 H10: `--auth` lost its silent `auto` default — operator

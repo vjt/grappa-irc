@@ -15,7 +15,9 @@ defmodule Grappa.Vhosts do
   **Admin decides AVAILABILITY; the user decides SELECTION.** The admin
   curates which vhosts a subject *can* use (`generally_available` /
   `in_pool` / a per-subject grant); the user freely picks among that set.
-  No admin hard-pin, no admin default.
+  No admin hard-pin, no admin default — EXCEPT a network-pinned
+  `source_address`, which #266 makes an ABSOLUTE bind that overrides the
+  user's selection entirely (see the `effective_source/2` NOTE below).
 
   ## Inventory model
 
@@ -30,27 +32,29 @@ defmodule Grappa.Vhosts do
 
   ## Resolution precedence (`effective_source/2`, per connect)
 
-    1. the subject's selection (`UserSettings` `"vhost_selection"`)
+    1. the passed `server_source` (`network_servers.source_address` — the
+       admin-configured per-network bind). #266: when set, it WINS. Bind
+       it, full stop — over the subject's vhost selection, the pool, and
+       #271 RR-DNS leaf distribution.
+    2. else the subject's selection (`UserSettings` `"vhost_selection"`)
        INTERSECTED with its allowed set → random pick (spec: "random per
        connection" when >1 active).
-    2. the passed `server_source` fallback (`network_servers.source_address`
-       — the per-network fixed bind, the operator "force egress from X"
-       mechanism, admin-only; the MECHANISM + its no-selection default is
-       unchanged — or `nil` → the `Grappa.IRC.Client` DB-driven rotation
-       pool / kernel default).
+    3. else `nil` → the `Grappa.IRC.Client` DB-driven rotation pool /
+       kernel default (zero-config still binds nothing).
 
   The allowed set = generally-available ∪ in_pool ∪ granted-to-subject.
   Selection is authz-clamped to this set at write (`set_selection/2`), and
   re-clamped at read so a revoked grant can't leak a stale selection.
 
-  NOTE (#251): `server_source` is only the DEFAULT for a no-selection
-  subject. A subject who self-selects (step 1) overrides it — and with the
-  admin pin removed there is no longer a per-subject *hard* force. A
-  network with a mandated `source_address` still egresses from it for any
-  subject who has NOT self-selected, but a subject CAN now pick a pool /
-  granted address instead. If an operator needs to hard-force a specific
-  account's egress, that capability was intentionally removed with the pin
-  (#251) and is not replaced in V1.
+  NOTE (#266 — REVERSES the #251 nuance): pre-#266, a subject's vhost
+  self-selection OVERRODE `server_source` (`server_source` was only the
+  no-selection default). #266 inverts this: an admin-set per-network
+  `source_address` is an ABSOLUTE bind that wins over everything, so a
+  network with a pinned source egresses ALL its subjects from that source
+  regardless of their vhost selection. The subject's selection/pool is the
+  fallback ONLY when no admin source is pinned. Rationale (Libera go-live):
+  a user-driven rotating vhost reads as ban-evasion; an admin-pinned,
+  accountable, single egress per network is the honest posture.
 
   ## No admin hard-pin (#251)
 
@@ -306,32 +310,38 @@ defmodule Grappa.Vhosts do
 
   @doc """
   Resolves the effective source address for `subject` on this connect,
-  given the per-network `server_source` fallback
+  given the admin-configured per-network `server_source`
   (`network_servers.source_address`, or `nil`).
 
-  Precedence (#251 — the admin hard-pin was removed):
+  Precedence (#266 — INVERTS the #251 order; admin source is absolute):
 
-    1. the subject's selection (∩ allowed) → random pick (spec: "random
-       per connection" when more than one is active).
-    2. `server_source` (the per-network fixed bind — the operator "force
-       egress from X" mechanism, admin-only; MECHANISM unchanged — or
-       `nil` → `Grappa.IRC.Client` falls through to the DB-driven pool /
-       kernel default, exactly as today).
+    1. `server_source` (the admin-configured per-network bind) — when set,
+       WINS. Returns it verbatim, overriding the subject's vhost selection,
+       the pool, AND #271 RR-DNS leaf distribution.
+    2. else the subject's selection (∩ allowed) → random pick (spec:
+       "random per connection" when more than one is active).
+    3. else `nil` → `Grappa.IRC.Client` falls through to the DB-driven pool
+       / kernel default (zero-config binds nothing).
 
-  A network WITH `source_address` set still binds it verbatim for a
-  no-selection subject (the no-selection DEFAULT is preserved); a network
-  with `nil` routes the no-selection subject to `OutboundV6Pool.pick/0`
-  (the in_pool rotation). NOTE (#251): a subject who self-selects (step 1)
-  overrides `server_source` — with the pin removed there is no per-subject
-  hard-force, so a subject CAN now egress from a pool/granted address
-  instead of the mandated one. Returns a canonical IP-literal string or
-  `nil`. The connect path (`Grappa.IRC.Client.source_bind/2`) is UNCHANGED
-  — this only chooses the value that `SessionPlan` threads through.
+  A network WITH `source_address` set binds it verbatim for EVERY subject
+  on that network (the Libera go-live "one accountable egress per network"
+  posture) — the subject's self-selection no longer overrides it, reversing
+  the #251 nuance. A network with `nil` routes the subject through the vhost
+  selection, else `OutboundV6Pool.pick/0` (the in_pool rotation). Returns a
+  canonical IP-literal string or `nil`. The connect path
+  (`Grappa.IRC.Client.source_bind/2`) is UNCHANGED — this only chooses the
+  value that `SessionPlan` threads through; the actual bind (and its #271
+  leaf-family constraint) already honors whatever source it is handed.
   """
   @spec effective_source(Subject.t(), String.t() | nil) :: String.t() | nil
-  def effective_source({_, _} = subject, server_source) do
+  # #266 — an admin-set per-network source is ABSOLUTE: it wins over the
+  # subject's vhost selection and the pool. Return it before consulting the
+  # (potentially expensive) selection lookup.
+  def effective_source({_, _}, server_source) when is_binary(server_source), do: server_source
+
+  def effective_source({_, _} = subject, nil) do
     case get_selection(subject) do
-      [] -> server_source
+      [] -> nil
       selected -> Enum.random(selected)
     end
   end
