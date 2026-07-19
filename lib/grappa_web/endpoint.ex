@@ -54,10 +54,10 @@ defmodule GrappaWeb.Endpoint do
   # [:auth_token]` on the websocket transport then surfaces the decoded
   # token to `UserSocket.connect/3`.
   #
-  # The legacy `params["token"]` query-string path is retained as a
-  # fallback in `connect/3` for one deploy cycle (a stale bundle mid-cold-
-  # deploy still connects); dropping it is tracked as a follow-up gated on
-  # the auth-method telemetry showing sustained zero query-string auth.
+  # #202 dropped the legacy `params["token"]` query-string path that #95
+  # had retained as a one-deploy-cycle fallback: with prod telemetry
+  # showing sustained zero query-string auth, the subprotocol is now the
+  # SOLE bearer source and the token never rides the WS upgrade URL.
   socket "/socket", GrappaWeb.UserSocket,
     auth_token: true,
     websocket: [connect_info: [:auth_token]],

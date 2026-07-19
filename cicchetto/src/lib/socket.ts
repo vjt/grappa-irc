@@ -91,10 +91,11 @@ function getSocket(): Socket {
       // We deliberately do NOT also pass `params: {token}`: phoenix.js's
       // `endPointURL()` appends `params()` to the query string, so
       // keeping the token there would defeat the entire point of this
-      // change (the token would still sit in the URL). The server-side
-      // `params["token"]` fallback in `UserSocket.connect/3` exists for
-      // OLD bundles still in the wild mid-cold-deploy — a NEW bundle must
-      // never put the bearer in the URL.
+      // change (the token would still sit in the URL). The server
+      // (`UserSocket.connect/3`) reads the bearer ONLY from the
+      // subprotocol — #202 dropped the legacy `params["token"]`
+      // query-string fallback that once accepted OLD bundles mid-cold-
+      // deploy, so a bearer in the URL is now ignored entirely.
       //
       // `authToken` is captured ONCE at construction (unlike a `params`
       // callback, which phoenix re-evaluates every handshake), so a fresh

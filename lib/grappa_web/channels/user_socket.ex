@@ -11,30 +11,30 @@ defmodule GrappaWeb.UserSocket do
   `GrappaWeb.GrappaChannel` does the topic discrimination + per-subject
   authz on join.
 
-  ## Connect-time auth (sub-task 2i + visitor-auth Task 12 + #95)
+  ## Connect-time auth (sub-task 2i + visitor-auth Task 12 + #95 + #202)
 
   `connect/3` verifies a bearer token against
   `Grappa.Accounts.authenticate/1` — same UUID PK that the REST
-  surface consumes via `Authorization: Bearer ...`. The token source
-  (#95) is resolved subprotocol-first:
+  surface consumes via `Authorization: Bearer ...`. The bearer's ONLY
+  source is the `Sec-WebSocket-Protocol` subprotocol (#95): it rides the
+  WS handshake's subprotocol as `base64url.bearer.phx.<token>`, which
+  Phoenix's websocket transport decodes into `connect_info.auth_token`
+  (`auth_token: true` in `endpoint.ex`). This keeps the token OFF the WS
+  upgrade URL (`?token=…`, which was pre-redaction visible in access
+  logs).
 
-    * **`Sec-WebSocket-Protocol`** — the bearer rides the WS handshake's
-      subprotocol as `base64url.bearer.phx.<token>`; Phoenix's websocket
-      transport decodes it into `connect_info.auth_token`
-      (`auth_token: true` in `endpoint.ex`). This is the primary path —
-      it keeps the token OFF the WS upgrade URL (`?token=…`), which was
-      pre-redaction visible.
-    * **`params["token"]`** — the legacy query-string bearer, retained
-      as a FALLBACK for one deploy cycle so a stale bundle mid-cold-
-      deploy still connects. A follow-up drops it once the auth-method
-      telemetry (below) shows sustained zero query-string auth.
+  #95 also retained the legacy `params["token"]` query-string bearer as
+  a one-deploy-cycle fallback so a stale bundle mid-cold-deploy still
+  connected; #202 dropped it once prod telemetry showed sustained zero
+  query-string auth. A bearer supplied via the query string is now
+  ignored entirely — `connect/3`'s `params` argument is unused.
 
-  The resolved auth METHOD (`:subprotocol` | `:query_string`) is
-  recorded on a Logger line (`auth_method:` metadata) and a
-  `[:grappa, :ws, :connect]` telemetry event — METHOD ONLY, never the
-  token value (the raw bearer IS the session credential — S9), so an
-  operator can confirm zero query-string auth before the fallback is
-  removed.
+  Every authenticated connect emits a `[:grappa, :ws, :connect]`
+  telemetry counter (`%{count: 1}`, empty metadata) + a greppable Logger
+  line — a cheap ops signal for connect churn. Neither carries the token
+  value (the raw bearer IS the session credential — S9). #95's
+  `auth_method` tag is gone (#202): once the query-string fallback was
+  removed it collapsed to a constant `:subprotocol`.
 
   The authenticated `Session` row carries an XOR FK (`user_id` xor
   `visitor_id`, per Q-A). `connect/3` dispatches on that XOR:
@@ -60,8 +60,9 @@ defmodule GrappaWeb.UserSocket do
   controller-side `Subject.from_assigns/1` lift — V4 visitor-parity
   (2026-05-15).
 
-  Any failure (missing param, malformed UUID, unknown row, revoked,
-  expired user session, expired or vanished visitor) returns `:error`
+  Any failure (missing / empty subprotocol token, malformed UUID,
+  unknown row, revoked, expired user session, expired or vanished
+  visitor) returns `:error`
   — Phoenix surfaces the WS rejection with no body; distinct error
   strings would just leak enumeration info on what went wrong with
   the token.
@@ -78,52 +79,39 @@ defmodule GrappaWeb.UserSocket do
   channel "grappa:admin:events", GrappaWeb.AdminChannel
 
   @impl Phoenix.Socket
-  def connect(params, socket, connect_info) do
-    case extract_token(params, connect_info) do
-      {:ok, token, method} ->
-        authenticate_and_assign(token, method, socket)
+  def connect(_, socket, connect_info) do
+    case extract_token(connect_info) do
+      {:ok, token} ->
+        authenticate_and_assign(token, socket)
 
       :error ->
         :error
     end
   end
 
-  # #95 — token source resolution + auth-method observability.
-  #
-  # Prefer the `Sec-WebSocket-Protocol` subprotocol
-  # (`connect_info.auth_token`, decoded by Phoenix's websocket transport
-  # from `base64url.bearer.phx.<token>`); fall back to the legacy
-  # `params["token"]` query-string bearer so a stale bundle mid-cold-
-  # deploy still connects. The fallback is temporary — a follow-up drops
-  # it once the telemetry below shows sustained zero query-string auth.
-  #
-  # `method` (`:subprotocol` | `:query_string`) is recorded on BOTH a
-  # Logger line and a `[:grappa, :ws, :connect]` telemetry event so the
-  # operator can confirm zero clients still use the query string before
-  # the fallback is removed. The token VALUE is never logged or emitted —
-  # only the method — because the raw bearer IS the session credential
-  # (S9), same redaction discipline as the rest of the auth path.
-  @spec extract_token(map(), map()) ::
-          {:ok, String.t(), :subprotocol | :query_string} | :error
-  defp extract_token(params, connect_info) do
+  # #95 + #202 — the bearer's ONLY source is the `Sec-WebSocket-Protocol`
+  # subprotocol (`connect_info.auth_token`, decoded by Phoenix's websocket
+  # transport from `base64url.bearer.phx.<token>`). #95 introduced this
+  # header path and kept the legacy `params["token"]` query-string bearer
+  # as a one-deploy-cycle fallback so a stale bundle mid-cold-deploy still
+  # connected; #202 dropped that fallback once prod telemetry showed
+  # sustained zero query-string auth. A bearer in the query string is now
+  # ignored entirely, so `connect/3`'s `params` argument is unused and the
+  # token never rides the WS upgrade URL again.
+  @spec extract_token(map()) :: {:ok, String.t()} | :error
+  defp extract_token(connect_info) do
     case connect_info do
       %{auth_token: token} when is_binary(token) and token != "" ->
-        {:ok, token, :subprotocol}
+        {:ok, token}
 
       _ ->
-        case params do
-          %{"token" => token} when is_binary(token) and token != "" ->
-            {:ok, token, :query_string}
-
-          _ ->
-            :error
-        end
+        :error
     end
   end
 
-  @spec authenticate_and_assign(String.t(), :subprotocol | :query_string, Phoenix.Socket.t()) ::
+  @spec authenticate_and_assign(String.t(), Phoenix.Socket.t()) ::
           {:ok, Phoenix.Socket.t()} | :error
-  defp authenticate_and_assign(token, method, socket) do
+  defp authenticate_and_assign(token, socket) do
     with {:ok, session} <- Accounts.authenticate(token),
          {:ok, socket} <- assign_subject(socket, session) do
       socket = assign(socket, :current_session_id, session.id)
@@ -151,16 +139,16 @@ defmodule GrappaWeb.UserSocket do
       #     with long-lived tabs never saw the refresh banner trigger.
       :ok = WSPresence.register(socket.assigns.user_name, self())
 
-      # #95 — auth-method observability (method only, NEVER the token).
-      # The Logger line is greppable; the telemetry event feeds the
-      # dashboard signal that gates removing the query-string fallback.
-      Logger.info("ws connect authenticated", auth_method: method)
+      # #95 + #202 — connect observability (NEVER the token). The Logger
+      # line is greppable; the `[:grappa, :ws, :connect]` counter is a
+      # cheap ops signal (a Phase-5 exporter can aggregate connect churn).
+      # #95's `auth_method` tag is gone (#202): it had collapsed to a
+      # constant `:subprotocol` once the query-string fallback was
+      # removed, so it carried no information. The token VALUE is never
+      # logged or emitted — the raw bearer IS the session credential (S9).
+      Logger.info("ws connect authenticated")
 
-      :telemetry.execute(
-        [:grappa, :ws, :connect],
-        %{count: 1},
-        %{auth_method: method}
-      )
+      :telemetry.execute([:grappa, :ws, :connect], %{count: 1}, %{})
 
       {:ok, socket}
     else

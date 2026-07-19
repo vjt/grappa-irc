@@ -183,13 +183,15 @@ config :grappa, GrappaWeb.Endpoint,
 config :phoenix, :json_library, Jason
 
 # Phoenix.Logger redacts these keys from the params it logs on every
-# request + every Channels socket connect. The bearer token rides
-# `?token=…` on the WS upgrade URL because Phoenix.Socket transports
-# params as a query string — without this filter, the `[info] CONNECTED
-# TO …` line prints the bearer verbatim. Bearer is the entire identity
-# in this design; anything that lands in stdout persists across container
-# restarts and ships out with any log forwarder. Per CLAUDE.md Security:
-# "credentials … never logged."
+# request + every Channels socket connect. Since #95 the WS bearer rides
+# the `Sec-WebSocket-Protocol` subprotocol (and #202 dropped the legacy
+# `?token=` query-string fallback), so it no longer appears in the
+# logged connect params — but keeping `"token"` filtered is cheap
+# defense-in-depth (any REST body / future param named `token`), and
+# `"password"` still redacts the `/oper` + auth request bodies. Bearer is
+# the entire identity in this design; anything that lands in stdout
+# persists across container restarts and ships out with any log
+# forwarder. Per CLAUDE.md Security: "credentials … never logged."
 config :phoenix, :filter_parameters, ["password", "token"]
 
 config :logger, :console,
@@ -258,13 +260,6 @@ config :logger, :console,
     :affected,
     :authn_failure,
     :socket_id,
-    # #95: WS connect-time auth source — `:subprotocol` (bearer via the
-    # Sec-WebSocket-Protocol header) vs `:query_string` (legacy `?token=`
-    # fallback). METHOD ONLY, never the token value (the raw bearer IS
-    # the credential — S9). Rides the `ws connect authenticated` line so
-    # an operator grep can confirm zero query-string auth before the
-    # fallback is dropped.
-    :auth_method,
     # Client IP, post-RemoteIp plug rewrite (so what you see is the
     # real client, not the docker-bridge nginx IP). Useful for grep-
     # correlating an authn failure or captcha rejection back to the

@@ -199,7 +199,9 @@ defmodule GrappaWeb.AdminChannelTest do
       admin = user_fixture(is_admin: true)
       session = session_fixture(admin)
 
-      {:ok, socket} = Phoenix.ChannelTest.connect(UserSocket, %{"token" => session.id})
+      {:ok, socket} =
+        Phoenix.ChannelTest.connect(UserSocket, %{}, connect_info: %{auth_token: session.id})
+
       assert socket.assigns.is_admin == true
 
       assert {:ok, _, _} = subscribe_and_join(socket, "grappa:admin:events", %{})
@@ -209,7 +211,9 @@ defmodule GrappaWeb.AdminChannelTest do
       user = user_fixture(is_admin: false)
       session = session_fixture(user)
 
-      {:ok, socket} = Phoenix.ChannelTest.connect(UserSocket, %{"token" => session.id})
+      {:ok, socket} =
+        Phoenix.ChannelTest.connect(UserSocket, %{}, connect_info: %{auth_token: session.id})
+
       assert socket.assigns.is_admin == false
 
       assert {:error, %{error: "forbidden"}} =
