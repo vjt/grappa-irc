@@ -548,6 +548,7 @@ export type ServerSettingsWireUploadView = {
 export type ServerSettingsWireChangedPayload = {
   kind: string;
   upload: ServerSettingsWireUploadView;
+  http_host_aliases: string[];
 };
 
 // === Grappa.Session.Wire ===

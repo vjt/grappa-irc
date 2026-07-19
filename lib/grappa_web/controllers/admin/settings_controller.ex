@@ -5,9 +5,12 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   ## GET /admin/settings
 
-  Returns the full settings view (today: the same `public_view/0` the
-  authenticated `/api/server-settings` returns; admin-only settings,
-  when added, will land here only). Wire shape:
+  Returns the admin settings view — the `upload` subtree of
+  `public_view/0` (`render_view/1`). It deliberately OMITS the #324
+  `http_host_aliases` that the authenticated `/api/server-settings`
+  carries: those are deployment config (env-derived), not an
+  admin-editable DB setting. Admin-only settings, when added, land here
+  only. Wire shape:
 
       %{
         settings: %{

@@ -25,6 +25,17 @@ defmodule GrappaWeb.ServerSettingsControllerTest do
       assert upload["global_cap_bytes"] == 10 * 1024 * 1024 * 1024
     end
 
+    test "response carries the deployment HTTP host aliases (#324)", %{conn: conn} do
+      prior = Grappa.HttpHosts.aliases()
+      on_exit(fn -> :ok = Grappa.HttpHosts.boot(prior) end)
+      :ok = Grappa.HttpHosts.boot(["irc.sindro.me", "irc.sniffo.org"])
+
+      {_, session} = user_and_session([])
+      conn = conn |> put_bearer(session.id) |> get("/api/server-settings")
+      body = json_response(conn, 200)
+      assert body["http_host_aliases"] == ["irc.sindro.me", "irc.sniffo.org"]
+    end
+
     test "visitor gets the upload view too (parity)", %{conn: conn} do
       {_, session} = visitor_and_session([])
       conn = conn |> put_bearer(session.id) |> get("/api/server-settings")
