@@ -25452,3 +25452,93 @@ supervision/cluster/env change — altitude (A) reuses the existing nullable
 column), but ships with a **cic bundle**, so this delivery is **HELD** to ride the
 next coordinated **COLD** window batched with the other HELD COLD work (#299
 batch). Not deployed this session — merge to main + push + HOLD._
+
+### 2026-07-19 — #202: drop the WS query-string token fallback (subprotocol-only)
+
+Follow-up to #95 (`a00aed3`). #95 moved the WS bearer onto the
+`Sec-WebSocket-Protocol` subprotocol (`connect_info.auth_token`) so it no longer
+rode the WS upgrade URL as `?token=…` (pre-redaction visible in access logs), but
+RETAINED the legacy `params["token"]` query-string path as a server-side fallback
+in `GrappaWeb.UserSocket.connect/3` for one deploy cycle — so a stale bundle
+mid-cold-deploy still authenticated. That fallback was the last place the bearer
+could ride the URL. #202 removes it: the subprotocol is now the SOLE bearer
+source.
+
+**Gate (already clean — the removal precondition).** #95 shipped a
+`[:grappa, :ws, :connect]` telemetry event + a greppable Logger line tagging the
+resolved auth METHOD (`:subprotocol | :query_string`), method-only, never the
+token — precisely so an operator could confirm zero clients still used the query
+string before pulling the fallback. vjt read the prod BEAM log: **0
+`auth_method=query_string` / 26 `auth_method=subprotocol`**, INCLUDING the
+reconnect wave after a cold deploy (long-lived PWA tabs + service-worker update
+lag being the risk #95 hedged against). Clean signal, so the fallback is safe to
+remove without re-breaking a not-yet-refreshed client (the #193-class
+stuck-on-splash the issue warned about).
+
+**Server (`user_socket.ex`).** `extract_token/2` → `extract_token/1`: the
+`params["token"]` arm is gone; it reads the bearer only from
+`connect_info.auth_token`, returning `{:ok, String.t()} | :error` (the third
+`method` element is dead — only `:subprotocol` survived, so it carried no
+information). `connect/3`'s first arg (the Phoenix `params`) is now unused →
+`_params`. `authenticate_and_assign/3` → `/2` (the `method` thread is gone). The
+"any failure → `:error`, no enumeration leak" posture is unchanged.
+
+**Telemetry decision — keep the counter, drop the tag.** The
+`[:grappa, :ws, :connect]` event has NO production handler (verified: only
+`user_socket_test.exs` attaches to it; the prod handlers are session_log /
+admin_events / admission). Two coherent options: drop the event entirely
+(unused), or keep it as a bare counter. Chose to KEEP it as `%{count: 1}` with
+EMPTY metadata + a bare `Logger.info("ws connect authenticated")` — a connect-churn
+counter is a cheap, legitimate ops/Phase-5-exporter signal, and keeping the event
+avoids re-adding it later; the now-constant `auth_method` tag is what's removed,
+not the event. (The unrelated IRC-credential `auth_method` —
+sasl/server_pass/nickserv/none in bind_network / credentials — is a different
+field and was NOT touched.)
+
+**nginx (`infra/snippets/locations-api.conf`).** The `/socket` block's
+`access_log off;` existed solely to keep the pre-#95 `?token=…` bearer out of
+nginx stdout / Docker JSON logs. With the token off the URL (subprotocol since
+#95, fallback gone in #202), the WS upgrade request line carries nothing
+sensitive (Phoenix appends only `vsn=…`), so the suppression is removed —
+re-enabling the default access log aids ops/debugging of connect churn. The block
+lives in the SHARED snippet included by BOTH the prod surface (`infra/nginx.conf`)
+and the e2e surface (`cicchetto/e2e/nginx-test.conf`, :80 + :443), so the one edit
+covers every server block and the two configs stay consistent by construction.
+
+**cic (`socket.ts`).** Comment-only. cic has been subprotocol-only since #95 and
+deliberately does NOT pass `params: {token}`; the stale comment describing the
+server-side `params["token"]` fallback for old bundles was rewritten to note the
+fallback is gone. No functional cic change.
+
+**Tests.** TDD failing-assert first: "ignores a query-string token entirely
+(subprotocol-only)" — a VALID bearer in the query string with no subprotocol now
+returns `:error` (ran RED against the live fallback, GREEN after removal). The
+whole `user_socket_test.exs` + the two `admin_channel_test.exs` connects migrated
+from the query-string helper to the subprotocol helper (`connect_info:
+%{auth_token: …}`); the rejection tests use the subprotocol path too so they still
+exercise the reject REASON. The telemetry describe block asserts a bare
+`%{count: 1}` counter with `metadata == %{}` (strong assert — catches a re-added
+tag) + no event on auth failure. e2e: no NEW spec, but the #95 spec
+(`issue95-ws-token-subprotocol.spec.ts`) had a "raw `?token=` handshake still
+connects (server fallback)" test that would now go RED — it was INVERTED to assert
+the query-string handshake is REJECTED, the e2e twin of the Elixir guard. Every
+other Playwright spec already opens the socket via the subprotocol, so a green
+full `integration.sh` is the end-to-end proof that no live client path broke.
+
+**Sweep of stale references (total consistency).** The fallback narrative had
+leaked into files outside the core surface; #202 reconciled them all: the
+`config/config.exs` Logger-metadata allowlist dropped the now-dead `:auth_method`
+key (nothing emits it after the Logger line went bare) and its
+`filter_parameters` comment (the WS bearer no longer rides `?token=`, though
+`"token"`/`"password"` stay filtered as defense-in-depth); the
+`infra/nginx-tls-frontend.example.conf` reference front-door re-enabled its
+`/socket` access log (a third `/socket` block the shared-snippet edit didn't
+cover); and the stale `?token=` comments in `cicchetto/src/lib/auth.ts` +
+`socket.ts` were corrected to the subprotocol reality.
+
+_Deploy: **COLD** — the nginx conf change needs an nginx reload (the auth-path
+code alone would be HOT-reloadable on the BEAM, but the nginx reload is the
+binding constraint) and it ships with a **cic bundle** (comment-only, but a rebuild
+bumps the hash). **HELD** to ride the next coordinated COLD window batched with the
+other HELD COLD work (#299 batch). Not deployed this session — merge to main +
+push + HOLD._
