@@ -17,7 +17,14 @@ defmodule Grappa.RateLimit do
     * `FailureWindow` — per-(bucket, key) failure counter over a fixed
       window (ETS-backed GenServer), consumed by the mode-1 login
       brute-force gate (S6, codebase review 2026-07-19).
+    * `TokenBucket` — per-(bucket, key) burst-tolerant token bucket
+      (ETS-backed GenServer), consumed by the inbound message-send
+      throttle that 429s a flooding client before upstream k-lines it
+      (#340).
   """
 
-  use Boundary, top_level?: true, deps: [], exports: [JitteredCooldown, DailyQuota, FailureWindow]
+  use Boundary,
+    top_level?: true,
+    deps: [],
+    exports: [JitteredCooldown, DailyQuota, FailureWindow, TokenBucket]
 end

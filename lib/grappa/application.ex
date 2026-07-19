@@ -164,6 +164,13 @@ defmodule Grappa.Application do
         # never races a missing table. Reads are lock-free; failure
         # writes funnel through its GenServer.
         Grappa.RateLimit.FailureWindow,
+        # #340 — per-(subject, network) inbound message-send token bucket.
+        # ETS-backed singleton, sibling of DailyQuota / FailureWindow: must
+        # exist before Endpoint so MessagesController.create's send throttle
+        # never races a missing table. The refill-check-consume funnels
+        # through its GenServer for atomicity (no lock-free peek — observing
+        # a token bucket refills it).
+        Grappa.RateLimit.TokenBucket,
         # #252 — vhost reverse-DNS (PTR) name cache. ETS-backed singleton
         # sibling of Backoff / NetworkCircuit / ShareTokens: must exist
         # before Endpoint so `UserSettingsController.show_vhost/2`'s
