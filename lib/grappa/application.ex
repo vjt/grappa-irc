@@ -158,6 +158,12 @@ defmodule Grappa.Application do
         # missing table. No upstream deps; writes funnel through its
         # GenServer for atomic check-and-record.
         Grappa.RateLimit.DailyQuota,
+        # S6 (review 2026-07-19) — per-(bucket, key) failure window.
+        # ETS-backed singleton, sibling of DailyQuota above: must exist
+        # before Endpoint so AuthController's mode-1 login throttle
+        # never races a missing table. Reads are lock-free; failure
+        # writes funnel through its GenServer.
+        Grappa.RateLimit.FailureWindow,
         # #252 — vhost reverse-DNS (PTR) name cache. ETS-backed singleton
         # sibling of Backoff / NetworkCircuit / ShareTokens: must exist
         # before Endpoint so `UserSettingsController.show_vhost/2`'s

@@ -14,7 +14,10 @@ defmodule Grappa.RateLimit do
     * `DailyQuota` — per-(bucket, subject, day) creation quota
       (ETS-backed GenServer), consumed by `Grappa.Themes` for the
       ~5/day theme save+copy anti-abuse cap (#75).
+    * `FailureWindow` — per-(bucket, key) failure counter over a fixed
+      window (ETS-backed GenServer), consumed by the mode-1 login
+      brute-force gate (S6, codebase review 2026-07-19).
   """
 
-  use Boundary, top_level?: true, deps: [], exports: [JitteredCooldown, DailyQuota]
+  use Boundary, top_level?: true, deps: [], exports: [JitteredCooldown, DailyQuota, FailureWindow]
 end
