@@ -943,7 +943,11 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "no mechanism advertised: no arm lines, watched nicks stay :unknown" do
+    test "no advertisement: arms via the optimistic WATCH probe (005-independent)" do
+      # Review 2026-07-19 — /notify must work on ircds that support the
+      # WATCH command without listing `WATCH=` in 005 (common bahamut
+      # forks). No advertisement therefore probes WATCH instead of
+      # skipping the arm.
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
@@ -951,11 +955,52 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
       :ok = await_handshake(server)
       feed_registration(server, "")
+
+      assert {:ok, "WATCH +Foo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
+
+      refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "MONITOR"))
+      assert {:ok, %{"foo" => :unknown}} = Session.presence_snapshot({:user, user.id}, network.id)
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "421 for the WATCH probe falls back to a MONITOR burst" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      feed_registration(server, "")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
+
+      IRCServer.feed(server, ":irc.test.org 421 grappa-test WATCH :Unknown command\r\n")
+
+      assert {:ok, "MONITOR + Foo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MONITOR + Foo\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "421 for MONITOR too resolves :none — no third attempt, map stays :unknown" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      feed_registration(server, "")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
+      IRCServer.feed(server, ":irc.test.org 421 grappa-test WATCH :Unknown command\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MONITOR + Foo\r\n"), 1_000)
+
+      watch_count = Enum.count(IRCServer.sent_lines(server), &String.starts_with?(&1, "WATCH"))
+      IRCServer.feed(server, ":irc.test.org 421 grappa-test MONITOR :Unknown command\r\n")
       Process.sleep(100)
 
       sent = IRCServer.sent_lines(server)
-      refute Enum.any?(sent, &String.starts_with?(&1, "MONITOR"))
-      refute Enum.any?(sent, &String.starts_with?(&1, "WATCH"))
+      assert Enum.count(sent, &String.starts_with?(&1, "WATCH")) == watch_count
+      assert Enum.count(sent, &String.starts_with?(&1, "MONITOR")) == 1
 
       assert {:ok, %{"foo" => :unknown}} = Session.presence_snapshot({:user, user.id}, network.id)
       :ok = GenServer.stop(pid, :normal, 1_000)

@@ -196,6 +196,7 @@ defmodule Grappa.Session.EventRouter do
           | {:session_identity_changed, :acquired | :lost}
           | {:presence_changed, nick :: String.t(), :online | :offline, Presence.change_kind(), :monitor | :watch}
           | {:presence_error, :list_full, detail :: String.t()}
+          | {:presence_command_unknown, :monitor | :watch}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -1677,7 +1678,11 @@ defmodule Grappa.Session.EventRouter do
   # an armed WATCH mechanism; on any other network the numeric flows
   # through untouched (matrix persistence still applies either way).
   defp do_route(%Message{command: {:numeric, 512}, params: params}, state) do
-    case ISupport.presence_mechanism(Map.get(state, :isupport, ISupport.default())) do
+    resolved =
+      Map.get(state, :presence_mechanism) ||
+        ISupport.presence_mechanism(Map.get(state, :isupport, ISupport.default()))
+
+    case resolved do
       {:watch, _} ->
         detail =
           case params do
@@ -1690,6 +1695,18 @@ defmodule Grappa.Session.EventRouter do
       _ ->
         {:cont, state, []}
     end
+  end
+
+  # 421 ERR_UNKNOWNCOMMAND for WATCH/MONITOR: the 005-independent arm
+  # (review 2026-07-19) probes optimistically, so a rejection here IS
+  # the capability answer. Emit the typed effect; Server's fallback
+  # chain decides WATCH→MONITOR→:none. Gated on the command name — any
+  # other 421 stays purely matrix-routed ($server notice; 421 is
+  # deny-listed, not delegated, so that persist happens either way).
+  defp do_route(%Message{command: {:numeric, 421}, params: [_, cmd | _]}, state)
+       when cmd in ["WATCH", "MONITOR"] do
+    mech = if cmd == "WATCH", do: :watch, else: :monitor
+    {:cont, state, [{:presence_command_unknown, mech}]}
   end
 
   # 341 RPL_INVITING: `:server 341 own_nick target_nick channel`. Sent

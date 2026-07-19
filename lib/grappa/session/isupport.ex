@@ -122,10 +122,10 @@ defmodule Grappa.Session.ISupport do
       chanmodes: @default_chanmodes,
       prefix: @default_prefix,
       statusmsg: @default_statusmsg,
-      # #247 — no presence mechanism assumed pre-005: MONITOR/WATCH are
-      # armed only on an explicit advertisement, never a seed guess
-      # (arming WATCH against a server without it earns an ERR_UNKNOWNCOMMAND
-      # per reconnect for zero signal).
+      # #247 — no presence mechanism ADVERTISED pre-005. This table only
+      # records what 005 said; the arm policy (advertised pick, else an
+      # optimistic WATCH probe with a 421-driven MONITOR→:none fallback,
+      # per review 2026-07-19) lives in Session.Server.arm_presence/1.
       monitor: nil,
       watch: nil
     }
@@ -200,11 +200,14 @@ defmodule Grappa.Session.ISupport do
   def default_statusmsg, do: @default_statusmsg
 
   @doc """
-  The presence-watch mechanism to arm for `/notify` (#247), decided
+  The ADVERTISED presence-watch mechanism for `/notify` (#247), read
   from the captured `MONITOR=`/`WATCH=` tokens. MONITOR (the IRCv3
   push mechanism with typed numerics) wins over legacy WATCH when a
-  network advertises both. `:none` when neither was advertised —
-  the session arms nothing (ISON fallback is out of v1 scope).
+  network advertises both. `:none` means "005 advertised neither" —
+  NOT "don't arm": per review 2026-07-19 the arm must work
+  005-independently, so `Session.Server.arm_presence/1` treats `:none`
+  as "probe WATCH optimistically" and downgrades via the 421 fallback
+  chain (WATCH → MONITOR → `:none`). ISON polling stays out of v1.
 
   Reads via `Map.get` (not pattern match on the keys) for the same
   hot-reload safety as `statusmsg/1`: a live isupport table seeded

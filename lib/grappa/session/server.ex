@@ -523,6 +523,13 @@ defmodule Grappa.Session.Server do
           # 376 mid-session — without the latch that would re-send the
           # full MONITOR/WATCH arm burst on every /motd.
           presence_armed: boolean(),
+          # #247 — the RESOLVED watch mechanism for this connection.
+          # `nil` until the end-of-MOTD arm; advertised 005 pick, or the
+          # optimistic WATCH default that the 421 fallback chain may
+          # downgrade to MONITOR and finally `:none` (review 2026-07-19:
+          # /notify must work on ircds that support WATCH but don't
+          # advertise it).
+          presence_mechanism: ISupport.presence_mechanism() | nil,
           # #229: per-session USER-mode set (the operator's own umodes on
           # this network) — a sorted list of single-letter strings. Seeded
           # by the 221 RPL_UMODEIS reply to the bare `MODE <selfnick>` query
@@ -794,6 +801,7 @@ defmodule Grappa.Session.Server do
       # #247: /notify presence map — seeded at the end-of-MOTD arm.
       presence: %{},
       presence_armed: false,
+      presence_mechanism: nil,
       # #229: empty umode set until the 221 RPL_UMODEIS reply arrives.
       umodes: [],
       # #249: empty supported-umode set until the 004 RPL_MYINFO arrives.
@@ -3357,6 +3365,43 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # #247 — 421 ERR_UNKNOWNCOMMAND for a WATCH/MONITOR line we sent
+  # (EventRouter's gated 421 clause). The fallback chain of the
+  # 005-independent arm: WATCH rejected → re-arm the full DB list via
+  # MONITOR; MONITOR rejected too → resolve `:none` and log honestly.
+  # Stale/unrelated rejections (mechanism already moved on) are
+  # ignored. The raw 421 additionally lands on `$server` via the
+  # routing matrix (421 is deny-listed, not delegated) — visible,
+  # never silent.
+  defp apply_effects([{:presence_command_unknown, cmd} | rest], state) do
+    next_state =
+      case {cmd, Map.get(state, :presence_mechanism)} do
+        {:watch, {:watch, _}} ->
+          nicks = Enum.map(Grappa.Notify.list(state.subject, state.network_id), & &1.nick)
+
+          Logger.info(
+            "presence: WATCH unknown on this ircd — falling back to MONITOR " <>
+              "(#{length(nicks)} watched nicks)"
+          )
+
+          send_arm_burst(state, {:monitor, :unlimited}, nicks)
+          Map.put(state, :presence_mechanism, {:monitor, :unlimited})
+
+        {:monitor, {:monitor, _}} ->
+          Logger.info(
+            "presence: MONITOR also unknown — no watch mechanism on this ircd; " <>
+              "watched nicks stay :unknown until reconnect"
+          )
+
+          Map.put(state, :presence_mechanism, :none)
+
+        _ ->
+          state
+      end
+
+    apply_effects(rest, next_state)
+  end
+
   # #215 — the +r bit flipped (EventRouter self-MODE branch). Emit the
   # `:identified` / `:deidentified` session-lifecycle event. Pure side
   # effect (Logger + telemetry) — no state mutation.
@@ -4508,37 +4553,47 @@ defmodule Grappa.Session.Server do
   # ---------------------------------------------------------------------------
 
   # Arms the /notify presence watch at end-of-MOTD: reads the durable
-  # list from Grappa.Notify, picks the mechanism from the (by now
-  # complete) 005 capability table, sends the chunked MONITOR/WATCH
-  # burst, and seeds the presence map `:unknown`. The `presence_armed`
-  # latch makes a mid-session /motd's second 376 a no-op. All state
-  # access via Map.get/Map.put for the standard hot-reload-window
-  # safety (a live pre-#247 process state lacks both keys).
+  # list from Grappa.Notify, resolves the mechanism, sends the chunked
+  # MONITOR/WATCH burst, and seeds the presence map `:unknown`. The
+  # `presence_armed` latch makes a mid-session /motd's second 376 a
+  # no-op. All state access via Map.get/Map.put for the standard
+  # hot-reload-window safety (a live pre-#247 process state lacks the
+  # keys).
+  #
+  # Mechanism resolution (review 2026-07-19): /notify must work
+  # REGARDLESS of 005 — many bahamut forks support the WATCH command
+  # but omit the `WATCH=` token. An explicit advertisement wins
+  # (MONITOR over WATCH); with NO advertisement we optimistically arm
+  # WATCH (the target-family default) and let the 421
+  # ERR_UNKNOWNCOMMAND handler fall back to MONITOR, then to `:none`
+  # (see `{:presence_command_unknown, _}` in apply_effects). The
+  # resolved pick is cached on `state.presence_mechanism` so live
+  # syncs don't re-derive it; a reconnect is a fresh process, so an
+  # 005-less server costs at most two probe lines per connect.
   @spec arm_presence(t()) :: t()
   defp arm_presence(state) do
     if Map.get(state, :presence_armed, false) do
       state
     else
       nicks = Enum.map(Grappa.Notify.list(state.subject, state.network_id), & &1.nick)
-      send_arm_burst(state, presence_mechanism(state), nicks)
+
+      mechanism =
+        case presence_mechanism(state) do
+          :none -> {:watch, :unlimited}
+          advertised -> advertised
+        end
+
+      send_arm_burst(state, mechanism, nicks)
 
       state
       |> Map.put(:presence, Presence.seed(nicks))
       |> Map.put(:presence_armed, true)
+      |> Map.put(:presence_mechanism, mechanism)
     end
   end
 
   @spec send_arm_burst(t(), ISupport.presence_mechanism(), [String.t()]) :: :ok
   defp send_arm_burst(_, _, []), do: :ok
-
-  defp send_arm_burst(_, :none, nicks) do
-    # Log honesty: state what was OBSERVED — the list exists, the
-    # network offers no mechanism (v1 ships no ISON fallback).
-    Logger.info(
-      "presence arm skipped: no MONITOR/WATCH in ISUPPORT " <>
-        "(#{length(nicks)} watched nicks stay :unknown)"
-    )
-  end
 
   defp send_arm_burst(state, mechanism, nicks) do
     for line <- Presence.arm_commands(mechanism, nicks) do
@@ -4556,7 +4611,7 @@ defmodule Grappa.Session.Server do
   # eventual arm reads the DB list, which already carries the change.
   @spec sync_presence(t(), [String.t()], [String.t()]) :: t()
   defp sync_presence(state, added, removed) do
-    mechanism = presence_mechanism(state)
+    mechanism = Map.get(state, :presence_mechanism) || presence_mechanism(state)
 
     :ok =
       if Map.get(state, :presence_armed, false) and mechanism != :none do
