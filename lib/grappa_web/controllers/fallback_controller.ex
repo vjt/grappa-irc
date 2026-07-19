@@ -202,6 +202,16 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "rate_limited"})
   end
 
+  # S6 (review 2026-07-19) — mode-1 login source IP crossed the failure
+  # window (`AuthController.check_mode1_throttle/1`). 429 with a
+  # DISTINCT token: `rate_limited` carries themes-specific "try
+  # tomorrow" copy on cic; this one needs "wait a few minutes".
+  def call(conn, {:error, :too_many_attempts}) do
+    conn
+    |> put_status(:too_many_requests)
+    |> json(%{error: "too_many_attempts"})
+  end
+
   # #299 item 8 — a visitor hit the 50-total owned-theme cap. 429 like
   # :rate_limited, but a DISTINCT wire string so cic can render a
   # cap-specific "delete a theme to make room" hint (vs "try tomorrow").

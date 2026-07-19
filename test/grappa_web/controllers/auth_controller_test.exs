@@ -826,4 +826,93 @@ defmodule GrappaWeb.AuthControllerTest do
       assert is_nil(Repo.get(Visitor, visitor.id))
     end
   end
+
+  # ----- mode-1 throttle helpers (S6) — module level; ExUnit forbids
+  # defp inside describe. Each test gets its own source IP: the
+  # throttle is per-IP, so a unique address isolates the counter from
+  # the sibling describes (all on 127.0.0.1) and across reruns.
+  defp with_ip(conn, d), do: %{conn | remote_ip: {10, 66, 0, d}}
+
+  defp wrong_login(conn, user, d) do
+    conn
+    |> with_ip(d)
+    |> post("/auth/login", %{"identifier" => "#{user.name}@x.com", "password" => "WRONG-pw"})
+  end
+
+  describe "POST /auth/login mode-1 throttle (S6, review 2026-07-19)" do
+    # The counter table is a global ETS singleton; clear it so failures
+    # recorded by the sibling describes can't bleed into these
+    # assertions, and vice versa.
+    setup do
+      :ets.delete_all_objects(Grappa.RateLimit.FailureWindow.table_name())
+      :ok
+    end
+
+    test "the 11th attempt is 429 too_many_attempts even with the correct password", %{
+      conn: conn
+    } do
+      {user, password} = user_fixture_with_password()
+
+      for _ <- 1..10 do
+        assert json_response(wrong_login(conn, user, 1), 401)["error"] == "invalid_credentials"
+      end
+
+      conn =
+        conn
+        |> with_ip(1)
+        |> post("/auth/login", %{"identifier" => "#{user.name}@x.com", "password" => password})
+
+      assert json_response(conn, 429) == %{"error" => "too_many_attempts"}
+      assert session_count() == 0
+    end
+
+    test "successful logins never advance the counter", %{conn: conn} do
+      {user, password} = user_fixture_with_password()
+
+      for _ <- 1..9, do: wrong_login(conn, user, 2)
+
+      ok_conn =
+        conn
+        |> with_ip(2)
+        |> post("/auth/login", %{"identifier" => "#{user.name}@x.com", "password" => password})
+
+      assert json_response(ok_conn, 200)["token"]
+
+      # 10th FAILURE (not 11th attempt) — still 401: the success above
+      # did not count, and the limit check precedes this failure.
+      assert json_response(wrong_login(conn, user, 2), 401)["error"] == "invalid_credentials"
+    end
+
+    test "a tripped IP doesn't affect logins from another IP", %{conn: conn} do
+      {user, password} = user_fixture_with_password()
+
+      for _ <- 1..10, do: wrong_login(conn, user, 3)
+      assert json_response(wrong_login(conn, user, 3), 429)["error"] == "too_many_attempts"
+
+      other =
+        conn
+        |> with_ip(4)
+        |> post("/auth/login", %{"identifier" => "#{user.name}@x.com", "password" => password})
+
+      assert json_response(other, 200)["token"]
+    end
+
+    test "crossing the limit emits :login_throttled exactly once", %{conn: conn} do
+      {user, _} = user_fixture_with_password()
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.admin_events())
+
+      for _ <- 1..10, do: wrong_login(conn, user, 5)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       payload: %{kind: :login_throttled, source_ip: "10.66.0.5", failures: 10}
+                     },
+                     500
+
+      # Post-trip rejected requests must NOT re-emit (the spray would
+      # flood the admin stream with its own rejections).
+      _ = wrong_login(conn, user, 5)
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :login_throttled}}, 200
+    end
+  end
 end
