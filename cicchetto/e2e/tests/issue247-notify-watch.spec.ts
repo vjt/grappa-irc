@@ -78,6 +78,10 @@ test("#247 — /notify add → dots + toasts + snapshot repaint + panel remove",
     //    dot must repaint ONLINE from presence_snapshot alone (no
     //    transition occurs during the reload window).
     await page.reload();
+    // Reload's last-focused restore lands on the seed CHANNEL (Home is
+    // not a persisted selection target — review 2026-07-19), so walk
+    // back to Home before asserting the panel.
+    await page.locator(".sidebar-channel-name").filter({ hasText: /^Home$/ }).click();
     await expect(page.locator(".home-pane-registered").first()).toBeVisible({ timeout: 15_000 });
     await expect(entryRow).toHaveCount(1, { timeout: 10_000 });
     await expect(dot).toHaveAttribute("data-state", "online", { timeout: 10_000 });
