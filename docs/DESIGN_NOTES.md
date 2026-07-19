@@ -25827,3 +25827,18 @@ and rejection-surfaced.
   reload → snapshot repaint → peer quit 601 → panel remove). Not executed on
   the Windows dev host (bind-mount IO makes local e2e take hours — see
   memory/windows-host-gotchas); gate is the GH CI integration run.
+
+### #247 addendum (review 2026-07-19) — 005-independent arm
+
+Review reconciliation: the 005 advertisement is a HINT, not a gate. Arm
+policy in Session.Server.arm_presence/1: advertised pick wins (MONITOR
+over WATCH); with no advertisement the session probes WATCH optimistically
+and downgrades via a 421 ERR_UNKNOWNCOMMAND fallback chain
+(WATCH -> MONITOR -> :none, cached on state.presence_mechanism for the
+connection). Cost on a mechanism-less ircd: at most two probe lines per
+connect. The 512 list-full gate honours the RESOLVED mechanism (a
+probed-WATCH session has no WATCH= token but its ERR_TOOMANYWATCH is
+real). Also per review: the fold SQL now has a single source
+(Identifier.nick_fold_sql/1 plus a drift-pin test over the migrations),
+the Watched panel renders on parked/disconnected rows, and the live
+sync only arms genuinely-new nicks on idempotent re-adds.

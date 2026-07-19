@@ -242,6 +242,21 @@ defmodule Grappa.IRC.Identifier do
   end
 
   @doc """
+  The rfc1459 fold as a raw SQL expression over a literal column name —
+  the SINGLE SOURCE for callers that must embed the fold outside Ecto's
+  fragment path (`:unsafe_fragment` conflict targets, index-expression
+  audits). Byte-identical to `nick_fold/1`'s fragment and to the
+  folded-index migrations; the pin test in `IdentifierTest` fails if
+  either ever drifts (review 2026-07-19: three hand-copied sites meant
+  a silent-index-loss hazard — SQLite drops an expression index the
+  moment the query-side string differs by one byte).
+  """
+  @spec nick_fold_sql(String.t()) :: String.t()
+  def nick_fold_sql(column) when is_binary(column) do
+    "replace(replace(replace(replace(lower(#{column}), '[', '{'), ']', '}'), '\\', '|'), '~', '^')"
+  end
+
+  @doc """
   True iff the input is a valid Grappa network slug (lowercase
   alphanumeric + dash + underscore, 1-32 chars). Tighter than IRC
   proper because it doubles as a URL path segment and PubSub topic

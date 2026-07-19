@@ -316,10 +316,11 @@ defmodule Grappa.Notify do
 
   # The partial unique indexes carry the `WHERE <subject>_id IS NOT
   # NULL` predicate; sqlite requires the conflict_target fragment to
-  # mirror it. The rfc1459 fold expression (#121) MUST stay
-  # character-identical to the folded index in `CreateNotifyEntries`
-  # and to `Identifier.nick_fold/1`.
-  @nick_fold_sql "replace(replace(replace(replace(lower(nick), '[', '{'), ']', '}'), '\\', '|'), '~', '^')"
+  # mirror it. The rfc1459 fold expression (#121) comes from the single
+  # source `Identifier.nick_fold_sql/1` (review 2026-07-19 — was a
+  # hand-copied literal); the migration's self-contained copy is pinned
+  # byte-identical by the IdentifierTest fold-drift test.
+  @nick_fold_sql Grappa.IRC.Identifier.nick_fold_sql("nick")
 
   defp conflict_target({:user, _}),
     do: {:unsafe_fragment, "(user_id, network_id, #{@nick_fold_sql}) WHERE user_id IS NOT NULL"}
