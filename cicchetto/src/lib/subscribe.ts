@@ -10,7 +10,7 @@ import { isDocumentVisible } from "./documentVisibility";
 import { seedIsupport } from "./isupport";
 import { applyPresenceEvent, seedMembers } from "./members";
 import { mentionsUser } from "./mentionMatch";
-import { bumpMention } from "./mentions";
+import { setServerMention } from "./mentions";
 import { channelsBySlug, networks, refetchChannels, refetchNetworks, user } from "./networks";
 import { nickEquals } from "./nickEquals";
 import { isOperatorActionEcho } from "./operatorActionEcho";
@@ -231,27 +231,22 @@ createRoot(() => {
     // sidebar badge gate and the in-pane unread-marker stay aligned.
     if (isOperatorActionEcho(message)) return;
 
-    // Mention bump (P4-1) — only PRIVMSGs whose body matches the
-    // operator's own nick bump the red mention badge.
+    // Live mention alert (beep + optimistic PWA badge) — only PRIVMSGs
+    // whose body matches the operator's own nick, on a non-effectively-
+    // focused window, not from own nick.
     //
-    // Mentions stay incrementally tracked because they're body-text
-    // predicate (not pure count-after-cursor); the bump path here gates
-    // on `effectivelyFocused` so tabbing into the channel clears the
-    // count and incoming mentions on the open+focused channel don't
-    // double-signal (the line itself gets .scrollback-mention
-    // highlight). A selected-but-blurred window still bumps mentions —
-    // the user IS away.
+    // #267 — the mention COUNT is no longer bumped here. It is
+    // server-authoritative (`mentions.ts`, seeded by /me + join_reply and
+    // pushed on every new message + cursor advance via the `window_counts`
+    // event), so the client-side count regex is gone — that regex never
+    // rebuilt on reconnect / across tabs, the bug #267 fixes. What stays
+    // is the LIVE alert: `mentionsUser` (own nick) fires the in-app beep +
+    // the optimistic desktop-title badge bump the instant a mention lands
+    // on an unfocused window, before the server's window_counts push
+    // round-trips. These are transient live cues, not the count of record.
     //
-    // 2026-06-01 (unread-badges-from-cursor cluster): the own-sender
-    // gate ALSO guards the bump now. Pre-cluster, an own /msg sent
-    // from another device (same user, second cic session) would arrive
-    // here, match `mentionsUser` (your own nick in the body), and bump
-    // mentions on YOUR OWN echo. Symmetric with the cross-session own-
-    // message bump bug the cluster's whole point is to fix.
-    //
-    // UX-6-L (2026-05-20): same gate fires the in-app beep — the
-    // foreground alert path complements the SW's visibility-anywhere
-    // OS-notification suppression (`lib/pushDedup.ts`).
+    // UX-6-L (2026-05-20): the beep complements the SW's
+    // visibility-anywhere OS-notification suppression (`lib/pushDedup.ts`).
     if (
       message.kind === "privmsg" &&
       !effectivelyFocused(slug, displayName) &&
@@ -260,26 +255,16 @@ createRoot(() => {
       const u = untrack(user);
       // #211 phase 7 — mention-match on the PER-NETWORK own nick (`ownNick`,
       // already threaded into this handler), NOT the retired identity-wide
-      // `displayNick(u)` (a visitor has no single nick now). `ownNick` is
-      // the credential nick for this network — the correct "is this a
-      // mention of ME here" key. Guard on `u` so a not-yet-loaded /me still
-      // skips (same as before).
+      // `displayNick(u)` (a visitor has no single nick now). Guard on `u`
+      // so a not-yet-loaded /me still skips.
       if (u && ownNick != null && mentionsUser(message.body, ownNick)) {
-        bumpMention(key);
         playBeep();
-        // PWA icon badge: optimistic foreground bump so the desktop
-        // `document.title` moves the instant a notify-worthy MENTION
-        // lands on an unfocused window — before any read-cursor settle
-        // round-trips to the server. This reuses the same focus +
-        // own-echo gating as the mention badge above. Scope note: this
-        // covers the channel-mention case (the default-prefs notify
-        // trigger); non-mention triggers (channel-all / DM-all /
-        // whitelist) are NOT bumped optimistically — they surface on the
-        // next server sync (`read_cursor_set` / `/me`). cic has no global
-        // notification-prefs signal, so the full `shouldNotify` predicate
-        // (`pushTriggers.ts`, the parity-locked mirror) can't run here
-        // yet; the count is server-authoritative regardless, so any
-        // transient under-count self-heals on the next sync.
+        // Optimistic foreground badge bump so the desktop `document.title`
+        // moves the instant a mention lands on an unfocused window, before
+        // the server sync. The per-channel mention COUNT + the global badge
+        // are both server-authoritative (`window_counts` push +
+        // `read_cursor_set` badge_count); this only nudges the title early
+        // and self-heals on the next sync.
         incrementBadge();
       }
     }
@@ -424,6 +409,13 @@ createRoot(() => {
           // server-authoritative count on this client too.
           setBadge(payload.badge_count);
           return;
+        // #267 — server-authoritative per-window count snapshot (pushed on
+        // new message + cursor advance). cic reads the mention count from
+        // it (server owns mentions); messages/events stay client-derived
+        // for the presence-filter (#239), so they're ignored here.
+        case "window_counts":
+          setServerMention(channelKey(slug, payload.channel), payload.mentions);
+          return;
         // P-0e + P-0f: invite_ack moved to user-topic; the per-channel
         // arm is gone (and `narrowChannelEvent` no longer narrows the
         // kind so this case is unreachable at the type level).
@@ -544,6 +536,14 @@ createRoot(() => {
           // PWA icon badge door #3 (own-nick query window path).
           setBadge(payload.badge_count);
           return;
+        // #267 — window_counts on the own-nick topic keys the own-nick
+        // (self-msg) window. The server's own-nick narrowing restricts
+        // that count to self-msgs (inbound peer DMs, dm_with=peer, are
+        // excluded), so mentions here are ~always 0. Peer-DM mention
+        // counts live on each peer query window's own topic snapshot.
+        case "window_counts":
+          setServerMention(channelKey(slug, ownNick), payload.mentions);
+          return;
         case "message": {
           const message = payload.message;
           if (message.kind === "privmsg" || message.kind === "action") {
@@ -609,54 +609,55 @@ createRoot(() => {
   };
 
   // Narrower for the per-channel join reply (`%{read_cursor:
-  // <id_or_nil>, unread_count: <integer>}`). phoenix.js delivers the
-  // reply as `unknown`-shaped JSON; same boundary-validation pattern
-  // as `narrowChannelEvent`. Returns `{cursor, unreadCount}` with
-  // `cursor = null` on missing/invalid shape and `unreadCount = 0`
-  // when the field is missing or non-numeric — consumers pass
-  // `cursor` to `applyJoinReply` (which no-ops on null) and seed
-  // `serverSeedCounts` with `{messages: unreadCount, events: 0}`.
+  // <id_or_nil>, window_counts: {messages, mentions, events,
+  // severity}}`). phoenix.js delivers the reply as `unknown`-shaped
+  // JSON; same boundary-validation pattern as `narrowChannelEvent`.
+  // Returns `{cursor, messages, mentions}` with `cursor = null` on
+  // missing/invalid shape and zero counts when absent.
   //
-  // 2026-06-01 (unread-badges-from-cursor cluster, bucket B2): added
-  // unread_count extraction. The join reply doesn't split
-  // content/events — that precision comes from the `/me` envelope
-  // (bucket C). Until bucket C lands, the seed treats every unread
-  // row as messages (bold badge), which slightly overcounts the
-  // events-only case. Bounded — the moment the operator focuses the
-  // channel, cic loads scrollback and the local-derived count
-  // (split by kind in selection.ts) takes over.
-  const narrowJoinReply = (reply: unknown): { cursor: number | null; unreadCount: number } => {
-    if (typeof reply !== "object" || reply === null) {
-      return { cursor: null, unreadCount: 0 };
-    }
+  // #267 — the reply carries the full server-authoritative
+  // `WindowCounts.snapshot/6` (was the scalar `unread_count`). cic seeds
+  // `serverSeedCounts` with `{messages, events}` (message/event counts
+  // stay client-derived for the presence-filter, #239 — but the join
+  // seed uses the server split as the cold-start value) and the
+  // server-authoritative mention count into `mentions.ts`.
+  const narrowJoinReply = (
+    reply: unknown,
+  ): { cursor: number | null; messages: number; events: number; mentions: number } => {
+    const zero = { cursor: null, messages: 0, events: 0, mentions: 0 };
+    if (typeof reply !== "object" || reply === null) return zero;
     const r = reply as Record<string, unknown>;
-    let cursor: number | null = null;
-    if (typeof r.read_cursor === "number") {
-      cursor = r.read_cursor;
-    }
-    let unreadCount = 0;
-    if (typeof r.unread_count === "number" && r.unread_count >= 0) {
-      unreadCount = r.unread_count;
-    }
-    return { cursor, unreadCount };
+    const cursor = typeof r.read_cursor === "number" ? r.read_cursor : null;
+    const wc =
+      typeof r.window_counts === "object" && r.window_counts !== null
+        ? (r.window_counts as Record<string, unknown>)
+        : {};
+    const num = (v: unknown): number => (typeof v === "number" && v >= 0 ? v : 0);
+    return {
+      cursor,
+      messages: num(wc.messages),
+      events: num(wc.events),
+      mentions: num(wc.mentions),
+    };
   };
 
   // Single helper called from every per-topic join's reply callback —
-  // narrows the reply, applies the cursor to readCursor.ts, AND seeds
-  // selection.ts's per-channel server seed count. Keeps the four
+  // narrows the reply, applies the cursor to readCursor.ts, seeds
+  // selection.ts's per-channel server message/event seed AND the
+  // server-authoritative mention count (mentions.ts). Keeps the four
   // identical chains (channels, query, dm-listener, server-window) in
   // one place.
   const applyJoinReplyAndSeed = (slug: string, channelName: string, reply: unknown): void => {
-    const { cursor, unreadCount } = narrowJoinReply(reply);
+    const { cursor, messages, events, mentions } = narrowJoinReply(reply);
     applyJoinReply(slug, channelName, cursor);
+    const key = channelKey(slug, channelName);
     // Always call setServerSeedCount — a 0 seed for a channel with no
     // unread state is informative (it tells the memo "the server says
     // no unread"), and the setter short-circuits on equal-value
     // updates so a 0→0 transition won't re-fire the memo.
-    setServerSeedCount(channelKey(slug, channelName), {
-      messages: unreadCount,
-      events: 0,
-    });
+    setServerSeedCount(key, { messages, events });
+    // #267 — server-authoritative mention count seed.
+    setServerMention(key, mentions);
   };
 
   // #79 — stamp the per-real-channel WS-ready e2e seam after a join ACK.

@@ -6,7 +6,6 @@ import { isDocumentVisible } from "./documentVisibility";
 import { identityScopedStore } from "./identityScopedStore";
 import { saveLastFocused } from "./lastFocusedChannel";
 import { membersByChannel } from "./members";
-import { clearMentionsForKey } from "./mentions";
 import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
 import { channelsBySlug, networkBySlug, networks, user } from "./networks";
 import { presenceRowVisible } from "./presenceFilter";
@@ -494,30 +493,21 @@ const exports = identityScopedStore((onIdentityChange) => {
     void setReadCursor(bearer, networkSlug, channelName, candidateId);
   };
 
-  // Mention-only focus clear — counterpart to the deleted
-  // `clearBadgesForWindow`. The three unread memos derive from
-  // `(scrollbackByChannel, readCursors, serverSeedCounts)` and drop
-  // automatically as the cursor advances, so the focus arm doesn't
-  // need to touch them. `mentionCounts` IS body-text-predicate-based
-  // (`mentions.ts`) and stays incrementally tracked — clear it
-  // explicitly when the operator's eyes land on the window.
-  //
-  // Fired from both the cicchetto-select arm AND the visibility-regain
-  // arm — same "is operator actively reading?" gate, single helper.
-  const clearMentionsForFocus = (networkSlug: string, channelName: string): void => {
-    clearMentionsForKey(channelKey(networkSlug, channelName));
-  };
-
   createEffect(
     on(selectedChannel, (sel) => {
       // BUGHUNT-2: focus-leave cursor write moved to ScrollbackPane's
       // `on(key, …)` effect + `onCleanup` — the pane owns its DOM
       // geometry and writes the honest `lastFullyVisibleRowId`, not
       // the store-tail. This effect retains the orthogonal arms:
-      // mention-clear, MRU-record, scrollback hydrate.
+      // MRU-record, scrollback hydrate.
+      //
+      // #267 — mention focus-clear is GONE from here: `mentionCounts` is
+      // now server-authoritative (mentions.ts) with a focus-zero OVERLAY
+      // in its memo (selected+visible window renders 0), so no explicit
+      // per-focus clear is needed. The message/event memos likewise drop
+      // automatically as the cursor advances.
 
       if (!sel) return;
-      clearMentionsForFocus(sel.networkSlug, sel.channelName);
       // UX-4 bucket E: record channel/query focus into MRU. Only
       // channel + query enter MRU — home is the final fallback target
       // (recording it would make it the default next-pick and short-
@@ -593,31 +583,13 @@ const exports = identityScopedStore((onIdentityChange) => {
     }),
   );
 
-  // Browser visibility arm — focus-regain mention clear only. The
-  // TRUE→FALSE (browser blur) cursor-write moved to ScrollbackPane's
-  // own visibility effect (BUGHUNT-2) — the pane owns its DOM
-  // geometry and writes the honest lastFullyVisibleRowId.
-  //
-  //   FALSE → TRUE (browser focus regain): clear the selected window's
-  //     mention badge. The unread/messages/events memos derive from
-  //     cursor + scrollback and drop on their own as the cursor
-  //     advances (scroll-settle / focus-leave / send). Mentions need
-  //     an explicit clear because they're body-text predicate, not
-  //     count-after-cursor.
-  //
-  // Guards:
-  //   * `prev === undefined` → initial run on module load; not a transition.
-  //   * No selected window → nothing to act on.
-  createEffect(
-    on(isDocumentVisible, (visible, prev) => {
-      if (prev === undefined) return;
-      const sel = untrack(selectedChannel);
-      if (!sel) return;
-      if (prev === false && visible === true) {
-        clearMentionsForFocus(sel.networkSlug, sel.channelName);
-      }
-    }),
-  );
+  // #267 — the browser-visibility mention-clear arm is GONE. mentionCounts
+  // (mentions.ts) reads `isDocumentVisible` in its own focus-zero overlay
+  // memo, so a focus-regain re-renders the selected window's badge at 0
+  // without an explicit clear here. The TRUE→FALSE (browser blur)
+  // cursor-write already moved to ScrollbackPane's own visibility effect
+  // (BUGHUNT-2). This effect had no other responsibility, so it's removed
+  // rather than left as an empty shell.
 
   // UX-4 bucket D — redirect selection to home when a network the
   // user is currently looking at transitions INTO `:parked` or

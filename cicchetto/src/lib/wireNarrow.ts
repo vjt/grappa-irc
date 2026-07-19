@@ -9,7 +9,19 @@ import type {
 } from "./api";
 import type { ModesEntry, TopicEntry } from "./channelTopic";
 import type { MemberEntry } from "./memberTypes";
-import type { SessionLogEvent, SessionLogWireT } from "./wireTypes";
+import type { SessionLogEvent, SessionLogWireT, WindowCountsSeverity } from "./wireTypes";
+
+// #267 — narrow the window_counts severity to the closed union, defaulting
+// to "none" for an unknown value (defensive: a stale server mid hot-reload
+// must never null the whole event for a bad severity — the counts are the
+// load-bearing part). Kept adjacent to `narrowChannelEvent`'s window_counts
+// arm; the value set mirrors `Grappa.WindowCounts.severity/0`.
+const SEVERITIES: readonly WindowCountsSeverity[] = ["mention", "message", "event", "none"];
+function narrowSeverity(raw: unknown): WindowCountsSeverity {
+  return typeof raw === "string" && (SEVERITIES as readonly string[]).includes(raw)
+    ? (raw as WindowCountsSeverity)
+    : "none";
+}
 
 // Bucket G H4+U3 (codebase-review-2026-05-12): runtime narrowing for
 // per-channel WS events. Companion to `userTopic.ts`'s
@@ -404,6 +416,24 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
         // the load-bearing part, must never drop for a badge reason.
         badge_count: typeof r.badge_count === "number" ? r.badge_count : 0,
       };
+    // #267 — server-authoritative per-window count snapshot.
+    case "window_counts": {
+      if (
+        typeof r.channel !== "string" ||
+        typeof r.messages !== "number" ||
+        typeof r.mentions !== "number" ||
+        typeof r.events !== "number"
+      )
+        return null;
+      return {
+        kind: "window_counts",
+        channel: r.channel,
+        messages: r.messages,
+        mentions: r.mentions,
+        events: r.events,
+        severity: narrowSeverity(r.severity),
+      };
+    }
     // P-0e + P-0f: invite_ack moved from per-channel topic to
     // user-topic; narrowed in `narrowUserEvent` instead. Channel-
     // topic should never receive invite_ack post-P-0f; default arm

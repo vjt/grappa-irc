@@ -23,6 +23,7 @@ import type {
   ServerSettingsWireUploadView,
   SessionLogWireListResult,
   SessionLogWireT,
+  WindowCountsSeverity,
 } from "./wireTypes";
 
 // Exported so sibling REST clients (e.g. `themesApi.ts`) reuse the exact
@@ -132,10 +133,27 @@ export type ReadCursorsEnvelope = Record<string, Record<string, number>>;
 // split for never-focused channels. Optional in the type for the same
 // reason `read_cursors` is — older test mocks may omit it; production
 // /me always emits it.
-export type UnreadCountsEnvelope = Record<
-  string,
-  Record<string, { messages: number; events: number }>
->;
+// #267 — server-authoritative per-window count snapshot. The `mentions`
+// count + `severity` are the pieces cic renders directly (server is
+// authority for mentions — a client-side regex bump never rebuilt on
+// reconnect). `messages`/`events` are ALSO present but cic keeps deriving
+// those locally (the events badge is presence-filter-aware, #239 — the
+// server counts unfiltered). Mirror of `Grappa.WindowCounts.t/0`.
+export type ServerWindowCounts = {
+  messages: number;
+  mentions: number;
+  events: number;
+  severity: WindowCountsSeverity;
+};
+
+// `/me` `unread_counts` envelope. Nested `%{slug => %{chan =>
+// ServerWindowCounts}}` mirror of `read_cursors`, keyed only for channels
+// the subject already has a cursor on (no cursor = absent; cic falls back
+// to the per-channel join reply seed). #267 widened the per-channel value
+// from `{messages, events}` to the full snapshot (adds mentions +
+// severity). cic consumes via `selection.ts`'s `/me` effect (messages/
+// events → serverSeedCounts) + `mentions.ts`'s `/me` effect (mentions).
+export type UnreadCountsEnvelope = Record<string, Record<string, ServerWindowCounts>>;
 
 // REV-H H2 (2026-05-22) — closed enumeration of upstream IRC
 // connection states. Mirror of server-side
@@ -679,6 +697,19 @@ export type WireChannelEvent =
       // AFTER this cursor advance. Reading anywhere refreshes every live
       // client's icon badge / document.title without a `/me` round-trip.
       badge_count: number;
+    }
+  // #267 — server-authoritative per-window count snapshot. Emitted on the
+  // per-channel topic after a new message persists AND on cursor advance
+  // (re-seeds peer devices). cic reads `mentions` (server owns the mention
+  // count) + `severity`; `messages`/`events` are informational (cic keeps
+  // deriving those locally for the presence-filter, #239).
+  | {
+      kind: "window_counts";
+      channel: string;
+      messages: number;
+      mentions: number;
+      events: number;
+      severity: WindowCountsSeverity;
     };
 // P-0e + P-0f — invite_ack moved from per-channel topic to user-topic
 // (operators usually invite peers to channels they are NOT in;
