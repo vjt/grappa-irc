@@ -113,6 +113,20 @@ services:
     dns:
       - 1.1.1.1
     dns_opt: []
+    # Cap the file-descriptor limit. solanum/librb sizes its per-fd table
+    # to RLIMIT_NOFILE at boot; a container that inherits the host's
+    # systemd LimitNOFILE (≈1e9 on modern docker, e.g. Debian's
+    # docker.io 26.x) makes librb try to allocate GBs and abort with
+    # "librb has called the restart callback: Out of Memory" → SIGSEGV
+    # (exit 139), even with the box's RAM near-empty. Older docker-ce
+    # defaulted nofile to 1024:524288 so the crash never surfaced there;
+    # pinning a sane bound here makes the second-network ircd boot on any
+    # host regardless of the daemon's default. Harmless where nofile is
+    # already sane. (Diagnosed 2026-07-19 on a docker.io 26.1.5 box.)
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
     networks:
       grappa-e2e:
         # Keep the `bahamut-test2` alias (#221): the azzurra2 seed + the
