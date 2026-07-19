@@ -93,9 +93,8 @@ vi.mock("../lib/members", () => ({
 }));
 
 vi.mock("../lib/mentions", () => ({
-  bumpMention: vi.fn(),
   mentionCounts: () => ({}),
-  clearMentionsForKey: vi.fn(),
+  setServerMention: vi.fn(),
 }));
 
 vi.mock("../lib/queryWindows", () => ({

@@ -46,8 +46,7 @@ vi.mock("../lib/scrollToBottomCommand", () => ({
 
 vi.mock("../lib/mentions", () => ({
   mentionCounts: () => ({ "freenode #italia": 2, "freenode $server": 3 }),
-  bumpMention: vi.fn(),
-  clearMentionsForKey: vi.fn(),
+  setServerMention: vi.fn(),
 }));
 
 vi.mock("../lib/channelKey", () => ({
@@ -247,8 +246,7 @@ describe("BottomBar", () => {
     }));
     vi.doMock("../lib/mentions", () => ({
       mentionCounts: () => ({}),
-      bumpMention: vi.fn(),
-      clearMentionsForKey: vi.fn(),
+      setServerMention: vi.fn(),
     }));
     vi.doMock("../lib/channelKey", () => ({
       channelKey: (slug: string, name: string) => `${slug} ${name}`,
@@ -292,8 +290,7 @@ describe("BottomBar", () => {
     }));
     vi.doMock("../lib/mentions", () => ({
       mentionCounts: () => ({}),
-      bumpMention: vi.fn(),
-      clearMentionsForKey: vi.fn(),
+      setServerMention: vi.fn(),
     }));
     vi.doMock("../lib/channelKey", () => ({
       channelKey: (slug: string, name: string) => `${slug} ${name}`,

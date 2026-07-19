@@ -217,6 +217,20 @@ describe("WireChannelEvent canonical union (H3)", () => {
       event: { kind: "read_cursor_set", last_read_message_id: 42, badge_count: 0 },
       expectedKind: "read_cursor_set",
     },
+    {
+      // #267 — server-authoritative per-window count snapshot pushed on the
+      // per-channel topic (new message + cursor advance). cic reads
+      // `mentions` + `severity`; `messages`/`events` are informational.
+      event: {
+        kind: "window_counts",
+        channel: "#italia",
+        messages: 5,
+        mentions: 2,
+        events: 1,
+        severity: "mention",
+      },
+      expectedKind: "window_counts",
+    },
     // P-0e + P-0f — invite_ack moved from WireChannelEvent to
     // WireUserEvent (operators usually invite peers to channels they
     // are NOT in; per-channel routing silent-dropped). Sample removed.
@@ -239,6 +253,7 @@ describe("WireChannelEvent canonical union (H3)", () => {
         case "join_failed":
         case "kicked":
         case "read_cursor_set":
+        case "window_counts":
           expect(event.kind).toBe(expectedKind);
           break;
         default:

@@ -406,7 +406,10 @@ describe("networks resources", () => {
         read_cursors: { freenode: { "#grappa": 42 } },
         unread_counts: {
           freenode: {
-            "#grappa": { messages: 5, events: 2 },
+            // #267 — full server snapshot (was {messages, events}); adds the
+            // server-authoritative mention count + severity. 5 unread
+            // messages, no mention → severity "message".
+            "#grappa": { messages: 5, events: 2, mentions: 0, severity: "message" },
           },
         },
       });
