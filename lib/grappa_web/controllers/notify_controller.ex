@@ -59,16 +59,21 @@ defmodule GrappaWeb.NotifyController do
 
   @doc """
   `POST /networks/:network_id/notify` — body `{"nicks": ["a", "b"]}`.
-  Atomic batch add; any invalid nick rejects the whole batch (400 via
-  FallbackController changeset rendering). 201 + the added entries.
+  Atomic batch add; any invalid nick rejects the whole batch (422 via
+  FallbackController changeset rendering), and a batch that would push
+  the list past `Grappa.Notify.max_entries/0` is 422 `list_full` (the
+  over-cap batch SHAPE is rejected here before building changesets;
+  the post-state cap itself is enforced inside `Notify.add/4`'s
+  transaction). 201 + the added entries.
   """
   @spec create(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t()}
+          Plug.Conn.t() | {:error, :bad_request | :list_full | Ecto.Changeset.t()}
   def create(conn, %{"nicks" => nicks}) when is_list(nicks) and nicks != [] do
     subject = session_subject(conn)
     network = conn.assigns.network
 
-    with :ok <- validate_nicks(nicks),
+    with :ok <- validate_batch_size(nicks),
+         :ok <- validate_nicks(nicks),
          {:ok, entries} <- Notify.add(subject, network.id, nicks, subject_label(conn)) do
       :ok = Session.notify_changed(subject, network.id, nicks, [])
 
@@ -110,6 +115,18 @@ defmodule GrappaWeb.NotifyController do
     :ok = Notify.clear(subject, network.id, subject_label(conn))
     :ok = Session.notify_changed(subject, network.id, [], removed)
     json(conn, %{ok: true})
+  end
+
+  # A batch longer than the cap can never succeed — reject the shape
+  # before building N changesets. The cap itself (post-state row count,
+  # fold-dedup-aware) is enforced inside Notify.add/4's transaction.
+  @spec validate_batch_size([term()]) :: :ok | {:error, :list_full}
+  defp validate_batch_size(nicks) do
+    if length(nicks) <= Notify.max_entries() do
+      :ok
+    else
+      {:error, :list_full}
+    end
   end
 
   # Every nick must be a non-empty string; content validation
