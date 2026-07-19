@@ -28,6 +28,7 @@ defmodule GrappaWeb.Admin.UsersControllerTest do
 
   alias Grappa.{Accounts, AdminEvents, AdmissionStateHelpers}
   alias Grappa.PubSub.Topic
+  alias GrappaWeb.UserSocket
 
   setup do
     AdmissionStateHelpers.reset_session_supervisor()
@@ -136,6 +137,37 @@ defmodule GrappaWeb.Admin.UsersControllerTest do
 
       body = json_response(conn, 200)
       assert body["is_admin"] == false
+    end
+
+    test "S27: demotion broadcasts disconnect on the target's socket topic", %{conn: conn} do
+      target = user_fixture(name: "demote-#{System.unique_integer([:positive])}")
+      {:ok, promoted} = Accounts.update_admin_flags(target, %{is_admin: true})
+      :ok = GrappaWeb.Endpoint.subscribe(UserSocket.id_for_subject({:user, promoted}))
+
+      session = admin_session()
+
+      conn
+      |> put_bearer(session.id)
+      |> put_req_header("content-type", "application/json")
+      |> patch("/admin/users/#{target.id}", Jason.encode!(%{is_admin: false}))
+      |> json_response(200)
+
+      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect"}, 500
+    end
+
+    test "S27: promotion does NOT disconnect the socket", %{conn: conn} do
+      target = user_fixture(name: "promote-#{System.unique_integer([:positive])}")
+      :ok = GrappaWeb.Endpoint.subscribe(UserSocket.id_for_subject({:user, target}))
+
+      session = admin_session()
+
+      conn
+      |> put_bearer(session.id)
+      |> put_req_header("content-type", "application/json")
+      |> patch("/admin/users/#{target.id}", Jason.encode!(%{is_admin: true}))
+      |> json_response(200)
+
+      refute_receive %Phoenix.Socket.Broadcast{event: "disconnect"}, 200
     end
 
     test "404 on unknown id", %{conn: conn} do
