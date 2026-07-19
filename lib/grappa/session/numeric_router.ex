@@ -193,7 +193,32 @@ defmodule Grappa.Session.NumericRouter do
                          # 437 ERR_UNAVAILRESOURCE — nick temporarily unavailable
                          437,
                          # 461 ERR_NEEDMOREPARAMS — command missing required params
-                         461
+                         461,
+                         # #247 — presence-watch list-full errors. EventRouter's
+                         # 512/734 handlers emit a {:presence_error, :list_full}
+                         # toast and return `:cont`, so the raw numeric ALSO
+                         # falls through here — and per the #247 contract it
+                         # must land as a `$server` :notice (the durable
+                         # "list full" record; the toast is transient). Their
+                         # params carry a nick-shaped token that is NOT a
+                         # routing destination — the WATCHed nick (512) / the
+                         # rejected MONITOR target (734). Pre-fix the param scan
+                         # routed it to `{:query, <nick>}`, ghosting a query
+                         # window named after the watched nick (and leaking it
+                         # into Archive via list_archive's
+                         # COALESCE(dm_with, channel)) — the exact disease as
+                         # the 004/042 connect-storm ghosts above. Both belong
+                         # on `$server`.
+                         #
+                         # 512 ERR_TOOMANYWATCH (bahamut/Azzurra) — params:
+                         #     [own_nick, watched_nick, "Maximum size for
+                         #      WATCH-list is <n>"]. Ghosts on WATCH add once
+                         #      the list is full.
+                         # 734 ERR_MONLISTFULL (solanum MONITOR) — params:
+                         #     [own_nick, limit, targets, "Monitor list is
+                         #      full."]. Ghosts when a single target is rejected.
+                         512,
+                         734
                        ]
                    )
 
