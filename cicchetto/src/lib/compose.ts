@@ -912,7 +912,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
             result = { ok: true };
           } else if (cmd.action === "del") {
             // Sequential single-nick DELETEs (the rare multi-del case);
-            // each is idempotent server-side.
+            // each is idempotent server-side. Accepted trade-off
+            // (review 2026-07-19 R5): each DELETE triggers one
+            // full-list broadcast + one live session sync, but a batch
+            // remove verb would add a route + client + tests for a
+            // path that is one nick in practice. Revisit only if the
+            // broadcast cost ever shows up.
             for (const nick of cmd.nicks) {
               await deleteNotifyNick(t, networkSlug, nick);
             }
