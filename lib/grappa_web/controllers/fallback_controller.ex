@@ -62,6 +62,7 @@ defmodule GrappaWeb.FallbackController do
            | :invalid_message
            | :nick_in_use
            | :cannot_disconnect_self
+           | :source_not_local
            | :insufficient_storage
            | :unsupported_media_type
            | :already_exists
@@ -584,6 +585,18 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:unprocessable_entity)
     |> json(%{error: "cannot_disconnect_self"})
+  end
+
+  # #266 — admin set a per-network `source_address` that isn't a bindable
+  # local address on the host (`GrappaWeb.Admin.ServersController`
+  # local-bindability gate). 422: the request is well-formed AND authorized,
+  # the literal shape is fine, but the host can't egress from that address.
+  # Distinct wire token from `validation_failed` (bad literal shape) so cic
+  # can render "not an address this server can bind" vs "not a valid IP."
+  def call(conn, {:error, :source_not_local}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "source_not_local"})
   end
 
   # Admin-panel bucket 1 — strict-create REST surfaces. The

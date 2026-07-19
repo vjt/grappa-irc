@@ -21,6 +21,7 @@ defmodule GrappaWeb.Admin.ServersControllerTest do
   import Grappa.AuthFixtures
 
   alias Grappa.{Accounts, Networks}
+  alias Grappa.Net.HostAddresses
   alias Grappa.Networks.Servers
   alias Grappa.PubSub.Topic
 
@@ -33,6 +34,16 @@ defmodule GrappaWeb.Admin.ServersControllerTest do
   defp fresh_network do
     {:ok, net} = Networks.find_or_create_network(%{slug: "srv-c-#{System.unique_integer([:positive])}"})
     net
+  end
+
+  # A real address the host CAN bind — the container always has at least one
+  # egressable interface (docker eth0). We assert non-empty so a getifaddrs-
+  # blind environment fails loudly rather than silently skipping the check.
+  defp local_source_address do
+    case HostAddresses.list() do
+      [addr | _] -> addr
+      [] -> flunk("host has no egressable interface — cannot exercise the local-source path")
+    end
   end
 
   describe "POST /admin/networks/:id/servers — auth gate" do
@@ -180,6 +191,121 @@ defmodule GrappaWeb.Admin.ServersControllerTest do
         )
 
       assert json_response(conn, 409) == %{"error" => "already_exists"}
+    end
+  end
+
+  # #266 — admin-configurable per-network source_address: set/clear via the
+  # REST admin surface, gated on local-bindability.
+  describe "source_address (#266) — set / clear / local-bindability gate" do
+    test "POST with a local source_address persists + surfaces it", %{conn: conn} do
+      net = fresh_network()
+      session = admin_session()
+      source = local_source_address()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/networks/#{net.id}/servers",
+          Jason.encode!(%{host: "src.example.test", port: 6697, source_address: source})
+        )
+
+      body = json_response(conn, 201)
+      assert body["source_address"] == source
+      # Feeds the pool-subtraction set (spec §3): an admin source must never
+      # rotate back into the auto pool.
+      assert source in Servers.list_source_addresses()
+    end
+
+    test "POST rejects a non-local literal with 422 source_not_local", %{conn: conn} do
+      net = fresh_network()
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/networks/#{net.id}/servers",
+          # 192.0.2.1 is TEST-NET-1 — a valid literal the host never binds.
+          Jason.encode!(%{host: "src.example.test", port: 6697, source_address: "192.0.2.1"})
+        )
+
+      assert json_response(conn, 422) == %{"error" => "source_not_local"}
+    end
+
+    test "POST rejects a non-literal source with 422 validation_failed (shape gate first)",
+         %{conn: conn} do
+      net = fresh_network()
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/admin/networks/#{net.id}/servers",
+          Jason.encode!(%{host: "src.example.test", port: 6697, source_address: "not-an-ip"})
+        )
+
+      # A bad SHAPE surfaces as the changeset error, NOT source_not_local.
+      assert json_response(conn, 422)["error"] == "validation_failed"
+    end
+
+    test "PUT sets a local source on an existing server", %{conn: conn} do
+      net = fresh_network()
+      {:ok, server} = Servers.add_server(net, %{host: "h", port: 6697})
+      session = admin_session()
+      source = local_source_address()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put(
+          "/admin/networks/#{net.id}/servers/#{server.id}",
+          Jason.encode!(%{source_address: source})
+        )
+
+      assert json_response(conn, 200)["source_address"] == source
+    end
+
+    test "PUT clears the source with an explicit null", %{conn: conn} do
+      net = fresh_network()
+      source = local_source_address()
+      {:ok, server} = Servers.add_server(net, %{host: "h", port: 6697, source_address: source})
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put(
+          "/admin/networks/#{net.id}/servers/#{server.id}",
+          Jason.encode!(%{source_address: nil})
+        )
+
+      assert json_response(conn, 200)["source_address"] == nil
+      {:ok, reloaded} = Servers.get_server(net, server.id)
+      assert reloaded.source_address == nil
+    end
+
+    test "PUT rejects a non-local source with 422 source_not_local", %{conn: conn} do
+      net = fresh_network()
+      {:ok, server} = Servers.add_server(net, %{host: "h", port: 6697})
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put(
+          "/admin/networks/#{net.id}/servers/#{server.id}",
+          Jason.encode!(%{source_address: "192.0.2.1"})
+        )
+
+      assert json_response(conn, 422) == %{"error" => "source_not_local"}
     end
   end
 

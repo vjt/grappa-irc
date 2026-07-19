@@ -31,6 +31,7 @@ defmodule GrappaWeb.Admin.ServersController do
 
   alias Grappa.{AdminEvents, Admission, Networks, Vhosts}
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
+  alias Grappa.Net.{HostAddresses, IpLiteral}
   alias Grappa.Networks.Servers
   alias Grappa.Networks.Servers.AdminWire, as: ServerWire
   alias GrappaWeb.Admin.AuthPlug
@@ -61,11 +62,13 @@ defmodule GrappaWeb.Admin.ServersController do
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
-          | {:error, :not_found | :already_exists | :bad_request | Ecto.Changeset.t()}
+          | {:error, :not_found | :already_exists | :bad_request | :source_not_local | Ecto.Changeset.t()}
   def create(conn, %{"network_id" => nid} = params) do
     with {:ok, parsed_nid} <- parse_id(nid),
          {:ok, net} <- fetch_network(parsed_nid),
-         {:ok, attrs} <- server_attrs(params, ["host", "port", "tls", "priority", "enabled"]),
+         {:ok, attrs} <-
+           server_attrs(params, ["host", "port", "tls", "priority", "enabled", "source_address"]),
+         :ok <- validate_source_bindable(attrs),
          {:ok, server} <- Servers.add_server(net, attrs) do
       :ok = emit_server_event(:added, net, server, conn)
       :ok = resync_outbound_pool()
@@ -82,13 +85,15 @@ defmodule GrappaWeb.Admin.ServersController do
   """
   @spec update(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
-          | {:error, :not_found | :already_exists | :bad_request | Ecto.Changeset.t()}
+          | {:error, :not_found | :already_exists | :bad_request | :source_not_local | Ecto.Changeset.t()}
   def update(conn, %{"network_id" => nid, "id" => sid} = params) do
     with {:ok, parsed_nid} <- parse_id(nid),
          {:ok, parsed_sid} <- parse_id(sid),
          {:ok, net} <- fetch_network(parsed_nid),
          {:ok, server} <- Servers.get_server(net, parsed_sid),
-         {:ok, attrs} <- server_attrs(params, ["host", "port", "tls", "priority", "enabled"]),
+         {:ok, attrs} <-
+           server_attrs(params, ["host", "port", "tls", "priority", "enabled", "source_address"]),
+         :ok <- validate_source_bindable(attrs),
          {:ok, updated} <- Servers.update_server(server, attrs) do
       :ok = emit_server_event(:updated, net, updated, conn)
       :ok = resync_outbound_pool()
@@ -202,5 +207,43 @@ defmodule GrappaWeb.Admin.ServersController do
   # pickable until the next reboot / vhost-inventory edit.
   defp resync_outbound_pool do
     Vhosts.resync_pool(Servers.list_source_addresses())
+  end
+
+  # #266 — admin-boundary local-bindability gate. A per-network
+  # `source_address` must be an address the HOST can actually bind as an
+  # outbound source; a non-local literal (an address the jail/host doesn't
+  # own) would fail at connect time with an opaque family/bind error. We
+  # enumerate the host's egressable addresses here rather than in the pure
+  # `Server.changeset/2` because `getifaddrs/0` is an IO side-effect that
+  # doesn't belong in a changeset validator (CLAUDE.md
+  # Application.get_env / pure-changeset discipline). The changeset keeps
+  # the literal-SHAPE check as the first gate: a non-literal falls through
+  # here (`:ok`) and is rejected by `add_server`/`update_server` as
+  # `validation_failed`; a VALID literal that isn't local is rejected here
+  # as `:source_not_local` (422). `nil` (clear) / absent is always fine.
+  # This gate lives at the admin controller, NOT in the shared
+  # `Servers.update_server/2` — the mix-task path (`grappa.add_server
+  # --source`) runs on the host by the operator and is trusted; only the
+  # REST admin surface enumerates + rejects.
+  @spec validate_source_bindable(map()) :: :ok | {:error, :source_not_local}
+  defp validate_source_bindable(attrs) do
+    case Map.get(attrs, :source_address) do
+      addr when is_binary(addr) ->
+        case IpLiteral.canonicalize(addr) do
+          # Not a literal — defer shape rejection to the changeset.
+          :error -> :ok
+          {:ok, _} -> local_or_error(addr)
+        end
+
+      # nil (clear) or absent — nothing to bind, always valid.
+      _ ->
+        :ok
+    end
+  end
+
+  defp local_or_error(addr) do
+    if HostAddresses.local_bindable?(addr, HostAddresses.list()),
+      do: :ok,
+      else: {:error, :source_not_local}
   end
 end

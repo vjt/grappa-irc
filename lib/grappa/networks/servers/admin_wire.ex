@@ -22,6 +22,7 @@ defmodule Grappa.Networks.Servers.AdminWire do
           tls: boolean(),
           priority: integer(),
           enabled: boolean(),
+          source_address: String.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -42,6 +43,10 @@ defmodule Grappa.Networks.Servers.AdminWire do
       tls: server.tls,
       priority: server.priority,
       enabled: server.enabled,
+      # #266 — the admin-configured per-network outbound source bind
+      # (nil = unset → vhost selection / pool / kernel default). Surfaced
+      # so the admin console can show + set/clear it per server.
+      source_address: server.source_address,
       inserted_at: server.inserted_at,
       updated_at: server.updated_at
     }
