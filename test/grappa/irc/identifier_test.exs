@@ -483,4 +483,43 @@ defmodule Grappa.IRC.IdentifierTest do
       assert Identifier.member_prefix("@") == nil
     end
   end
+
+  describe "nick_fold_sql/1 — fold-drift pin (review 2026-07-19)" do
+    # The rfc1459 fold SQL lives in three places that MUST stay
+    # byte-identical or SQLite silently stops using the folded
+    # expression indexes (dedup then quietly breaks): the
+    # `nick_fold/1` query fragment, `nick_fold_sql/1` (used by
+    # Notify's conflict_target), and each folded-index migration's
+    # self-contained copy. This test pins them to one canonical
+    # string; a future edit to any site fails loudly here.
+    @canonical "replace(replace(replace(replace(lower(COL), '[', '{'), ']', '}'), '\\', '|'), '~', '^')"
+
+    test "nick_fold_sql/1 renders the canonical fold" do
+      assert Identifier.nick_fold_sql("COL") == @canonical
+      assert Identifier.nick_fold_sql("nick") == String.replace(@canonical, "COL", "nick")
+    end
+
+    test "every folded-index migration embeds the canonical fold verbatim" do
+      # Migration .exs SOURCE escapes the backslash (`'\\'`), so the
+      # source-side pattern doubles it before matching raw file text.
+      source_side = fn col ->
+        @canonical |> String.replace("COL", col) |> String.replace("\\", "\\\\")
+      end
+
+      candidates = [source_side.("\#{col}"), source_side.("target_nick"), source_side.("nick")]
+
+      migrations =
+        Path.wildcard("priv/repo/migrations/*.exs")
+        |> Enum.filter(&(File.read!(&1) =~ "replace(replace(replace(replace(lower("))
+
+      assert migrations != [], "no folded-index migrations found — glob broken?"
+
+      for path <- migrations do
+        source = File.read!(path)
+
+        assert Enum.any?(candidates, &String.contains?(source, &1)),
+               "#{path} embeds a fold expression that drifted from Identifier.nick_fold_sql/1"
+      end
+    end
+  end
 end

@@ -316,6 +316,10 @@ const DisconnectedRow: Component<{ row: HomeRow }> = (props) => {
           </Show>
         </div>
         <FeaturedLinks slug={props.row.slug} />
+        {/* #247 (review nit) — the watch list is durable server state,
+            so it stays visible while the network is parked/failed; dots
+            render ◌ unknown (no live session to report presence). */}
+        <WatchedPanel slug={props.row.slug} />
       </div>
     </li>
   );

@@ -31,6 +31,7 @@ defmodule GrappaWeb.NotifyController do
   use GrappaWeb, :controller
 
   alias Grappa.Accounts.User
+  alias Grappa.IRC.Identifier
   alias Grappa.{Notify, Session}
   alias Grappa.Notify.Wire
   alias Grappa.Visitors.Visitor
@@ -74,8 +75,17 @@ defmodule GrappaWeb.NotifyController do
 
     with :ok <- validate_batch_size(nicks),
          :ok <- validate_nicks(nicks),
+         # Snapshot the pre-add fold set so the live sync only arms
+         # genuinely-new nicks — an idempotent re-add must not re-emit
+         # `MONITOR +`/`WATCH +` for already-armed targets (review nit
+         # 2026-07-19). Same read the batch-size cap does; cheap.
+         pre_folds =
+           MapSet.new(Notify.list(subject, network.id), &Identifier.canonical_nick(&1.nick)),
          {:ok, entries} <- Notify.add(subject, network.id, nicks, subject_label(conn)) do
-      :ok = Session.notify_changed(subject, network.id, nicks, [])
+      added =
+        Enum.reject(nicks, &MapSet.member?(pre_folds, Identifier.canonical_nick(&1)))
+
+      :ok = Session.notify_changed(subject, network.id, added, [])
 
       conn
       |> put_status(:created)
