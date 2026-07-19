@@ -90,7 +90,7 @@ defmodule Grappa.WindowCounts do
   join-reply fall-through (deleted user / missing network / no session) so
   cic renders a zero badge instead of branching on a missing map.
   """
-  @spec zero() :: t()
+  @spec zero() :: %{messages: 0, mentions: 0, events: 0, severity: :none}
   def zero, do: %{messages: 0, mentions: 0, events: 0, severity: :none}
 
   @doc """
@@ -148,7 +148,7 @@ defmodule Grappa.WindowCounts do
           [String.t()]
         ) :: non_neg_integer()
   # No configured nick on this network — nothing to match, so no mentions.
-  defp count_mentions(_subject, _network_id, _channel, _after_id, nil, _patterns), do: 0
+  defp count_mentions(_, _, _, _, nil, _), do: 0
 
   defp count_mentions(subject, network_id, channel, after_id, own_nick, patterns) do
     own = Identifier.canonical_nick(own_nick)
@@ -162,8 +162,8 @@ defmodule Grappa.WindowCounts do
 
   # Severity ladder — mention > message > event > none.
   @spec severity(non_neg_integer(), non_neg_integer(), non_neg_integer()) :: severity()
-  defp severity(_messages, mentions, _events) when mentions > 0, do: :mention
-  defp severity(messages, _mentions, _events) when messages > 0, do: :message
-  defp severity(_messages, _mentions, events) when events > 0, do: :event
-  defp severity(_messages, _mentions, _events), do: :none
+  defp severity(_, mentions, _) when mentions > 0, do: :mention
+  defp severity(messages, _, _) when messages > 0, do: :message
+  defp severity(_, _, events) when events > 0, do: :event
+  defp severity(_, _, _), do: :none
 end

@@ -169,6 +169,7 @@ defmodule GrappaWeb.GrappaChannel do
     WindowCounts,
     WSPresence
   }
+
   alias Grappa.Cic.Bundle, as: CicBundle
   alias Grappa.Cic.Wire, as: CicWire
   alias Grappa.IRC.Identifier

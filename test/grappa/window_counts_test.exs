@@ -70,6 +70,7 @@ defmodule Grappa.WindowCountsTest do
     c = ctx()
     insert(c, "#chan", st: 1, body: "a")
     last = insert(c, "#chan", st: 2, body: "b")
+
     assert snap(c, "#chan", last.id, "vjt") ==
              %{messages: 0, mentions: 0, events: 0, severity: :none}
   end

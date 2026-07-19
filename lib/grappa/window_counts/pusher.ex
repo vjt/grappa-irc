@@ -37,19 +37,23 @@ defmodule Grappa.WindowCounts.Pusher do
       Grappa.WSPresence
     ]
 
-  alias Grappa.{ReadCursor, UserSettings, WindowCounts, WSPresence}
   alias Grappa.PubSub.Topic
+  alias Grappa.{ReadCursor, UserSettings, WindowCounts, WSPresence}
   alias Grappa.WindowCounts.{PushSource, Wire}
 
   @impl PushSource
   @spec push(PushSource.ctx()) :: :ok
   def push(%{subject_label: subject_label} = ctx) do
-    if WSPresence.ws_count(subject_label) > 0 do
-      # Fire-and-forget — the snapshot DB work stays off the Session hot
-      # path. A dead Task just means the live-render optimization is
-      # skipped for this row; the next seed re-bases the count.
-      {:ok, _} = Task.start(fn -> emit(ctx) end)
-    end
+    # `_ =` — the `if` is evaluated for its side effect (spawning the
+    # emit Task); its `{:ok, pid} | nil` value is intentionally discarded
+    # (dialyzer `:unmatched_returns`).
+    _ =
+      if WSPresence.ws_count(subject_label) > 0 do
+        # Fire-and-forget — the snapshot DB work stays off the Session hot
+        # path. A dead Task just means the live-render optimization is
+        # skipped for this row; the next seed re-bases the count.
+        {:ok, _} = Task.start(fn -> emit(ctx) end)
+      end
 
     :ok
   end

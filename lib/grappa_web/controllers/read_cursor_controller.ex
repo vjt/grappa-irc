@@ -168,14 +168,19 @@ defmodule GrappaWeb.ReadCursorController do
   @spec configured_own_nick(Grappa.Session.subject(), String.t()) :: String.t() | nil
   defp configured_own_nick(subject, slug) do
     case Map.fetch(BadgeCount.configured_nick_windows(subject), slug) do
-      {:ok, {_network_id, own_nick}} -> own_nick
+      {:ok, {_, own_nick}} -> own_nick
       :error -> nil
     end
   end
 
   # User-name segment of the per-channel topic — `user.name` for users,
   # `"visitor:" <> visitor.id` for visitors (mirrors `maybe_broadcast/5`).
-  @spec subject_label(Subject.t()) :: String.t()
+  # `user.name` is `String.t() | nil` at the schema-type level (an
+  # authenticated user always has a name in practice, but Ecto types the
+  # field nilable); the `| nil` keeps the spec honest to what dialyzer
+  # infers (`:missing_return`). The push ctx tolerates it — same stance as
+  # the sibling `configured_own_nick/2` spec below.
+  @spec subject_label(Subject.t()) :: String.t() | nil
   defp subject_label({:user, user}), do: user.name
   defp subject_label({:visitor, visitor}), do: "visitor:" <> visitor.id
 
