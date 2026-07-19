@@ -929,7 +929,10 @@ const SettingsDrawer: Component<Props> = (props) => {
               cost; a 422 renders inline. */}
             {/* #335 — identity now sits inside a titled .settings-section
                 card (was a bare, unstyled block with no wrapper). */}
-            <div class="settings-section" data-testid="settings-section-identity">
+            <div
+              class="settings-section settings-section-card"
+              data-testid="settings-section-identity"
+            >
               <h4 class="settings-section-heading">identity</h4>
               <div class="settings-identity" data-testid="settings-identity">
                 <label for="settings-nick">Nick</label>
@@ -1003,7 +1006,10 @@ const SettingsDrawer: Component<Props> = (props) => {
                 pattern — tapping it pushes into the share sub-page, which
                 mints a fresh link on mount. isVisitor()-gated (mint 403s for
                 users). */}
-            <div class="settings-section" data-testid="settings-section-share">
+            <div
+              class="settings-section settings-section-card"
+              data-testid="settings-section-share"
+            >
               <h4 class="settings-section-heading">share session</h4>
               <p class="settings-section-blurb">open this session on another device.</p>
               <button

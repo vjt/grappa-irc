@@ -25946,3 +25946,111 @@ sustained DoS-level flood reaches the drop threshold). A hard guarantee
 that user A's flood never drops user B's message needs per-subject fairness
 / reserved pool capacity — a bigger mechanism than the incident warrants.
 Filed as a follow-up, not in #340 scope.
+
+---
+
+## 2026-07-20 — cic-themes P0 cluster (#332 / #335 / #333) + the `.settings-section` retrofit
+
+Three P0 cic (cicchetto) UI enhancements vjt filed, built + shipped as one
+batch. Durable decisions worth keeping:
+
+### One section idiom: `.settings-section` (+ `-card` modifier)
+
+Before this cluster the settings surfaces each grew their own "titled group"
+shape: the drawer main page used `<fieldset>`s, the vhost sub-page used
+bespoke `.vhost-section` / `-heading` / `-list`, and the visitor identity
+block sat bare and unstyled. #335 needed a card for identity + share, #333
+needed one for the themes personal/gallery split, and both issues named the
+vhost in-pool/out-of-pool sections as the design to copy — so rather than a
+fourth variant we settled on ONE idiom:
+
+- `.settings-section` — the base: a flex-column titled group (a
+  `.settings-section-heading`, muted uppercase, + a `.settings-section-body`).
+  **Transparent by default** — no card chrome. This is the shape where the
+  ITEMS carry the borders: the vhost option buttons (`.mode-modal-toggle`)
+  and the theme cards (`.theme-card`). Bordering the section too would double
+  up.
+- `.settings-section-card` — a modifier adding `bg-alt` + a 1px border +
+  padding, for the FORM sections whose content has no bordered items of its
+  own: the visitor **identity** editor and the **share session** card.
+
+vhost was retrofitted onto this in the same batch (vjt's call, for total
+consistency — the CLAUDE.md "total consistency or nothing" rule): `.vhost-section*`
+deleted, `VhostSettingsPage` now emits `.settings-section*`. Testids
+(`vhost-section-exclusive`, …) are unchanged — the e2e selects by testid, so
+the class rename was invisible to it. The transient `.theme-section`
+transparent-override (born when `.settings-section` was briefly a bordered
+card) was dropped once the base became transparent.
+
+### #335 — share session: modal → in-panel sub-page
+
+`ShareSessionModal` was replaced by `ShareSessionPage`, a settings sub-page
+reached from a "share session" section-button (the vhost/themes nav-row
+pattern; a `"share"` arm was added to `SettingsSubPage` in `lib/settingsNav.ts`).
+Rationale: the issue asked for a section-button that opens an in-panel
+section AND mints the link — a sub-page, not a modal. The sub-page mounts
+fresh per entry (behind the drawer's `<Show>`), so the mint is a plain
+`onMount`; it closes via its own back button, leaving the #232 modal-Esc
+family (which never actually covered the share modal — issue232's ESC_MODALS
+are mode/names/server-reply/confirm). The old modal + its unit suite were
+deleted; no other consumer existed. It also gained a **native-share** button
+(Web Share API, `navigator.share`), feature-detected — hidden where absent,
+with copy-to-clipboard as the always-present fallback.
+
+`lib/settingsNav.ts` (the sub-page union + the mobile-footer deep-link
+one-shot) uses a plain module-level `let`, NOT a Solid signal: the drawer
+consumes the pending deep-link inside a `createEffect` that must track only
+`props.open` — reading a signal there would add a spurious reactive
+dependency. Imperative hand-off, imperative storage.
+
+### #333 — themes personal/gallery + the duplicate-name gotcha
+
+The "copy vanished / base disappeared" report was never data-loss (the copy
+is a separate owned row, already surfaced since #299). The confusion was two
+UI facts: the flat list was `apply_count desc` ordered (copying bumps the
+base to the top) and there was no visual owned-vs-gallery split. Fix: two
+sections — "your themes" (owned) FIRST, then "gallery" — partitioned by the
+server's **per-viewer `mine` flag** (the same one `canManageTheme` reads), so
+a copied built-in lands in personal while the base stays in the gallery. A
+copy scrolls to the personal section (`queueMicrotask` so the freshly-mounted
+section attaches its ref first).
+
+**Duplicate-name detection is client-only, keyed on the subject-id field.**
+The `(subject_id, name)` unique index is the only uniqueness a theme
+create/update can violate, and Ecto attaches its changeset error to the
+SUBJECT-id field — `user_id` for users, `visitor_id` for visitors — NOT
+`name`. So the friendly "you already own a theme with this name" message is
+produced by `ThemeEditor.errMessage` checking for a `user_id`/`visitor_id`/`name`
+key in the `validation_failed` response's `field_errors` (which
+`FallbackController` already attaches, exposed as `ApiError.info.field_errors`).
+A `maxlength=60` on the name input rules out the too-long case, so a
+subject-id field-error unambiguously means "name taken". No server change —
+the batch stayed cic-only / hot-deployable.
+
+Delete now routes through the shared confirm modal (`lib/confirmDialog`,
+already mounted at Shell level, z-index 1000 > the drawer's 100) instead of
+firing on the first tap.
+
+### #332 — mobile footer: themes launcher restored, wrap, ⚙️
+
+#299 had REMOVED the 🎨 footer launcher to dodge a 5-button overflow that
+clipped the admin launcher. #332 reversed that trade: the launcher is back
+(deep-links to the themes sub-page via `settingsNav`) and the overflow is
+handled the right way — `flex-wrap: wrap` on `.mobile-panel-actions` wraps a
+5th button instead of clipping. Restoring the button inverted two existing
+specs' premises — `issue291` (4→5 launchers) and `issue299-footer-admin-reachable`
+(themes-absent → present, admin reachable now via wrap not removal) — both
+updated to guard the new mechanism. The settings glyph became the
+emoji-presentation ⚙️ (U+2699 U+FE0F), which renders at tap size where the
+bare text-presentation ⚙ was too small.
+
+### Test-order gotcha the batch surfaced
+
+`issue75-themes-gallery` @webkit tapped theme cards by bare positional
+`nth(0/1)`. Once #333 put owned themes in a "personal first" section, a
+vjt-owned theme created by an EARLIER spec in the same run
+(`issue75-theme-editor`) interposed at nth(0), and its bg matched a gallery
+card's — the "tap flips bg" assertion broke. Fix: scope the taps to the
+gallery section. General lesson: positional card selectors are fragile across
+a per-viewer, ownership-partitioned list; scope to the section whose contents
+are stable.

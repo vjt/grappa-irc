@@ -335,12 +335,12 @@ const ThemeGallery: Component<Props> = (props) => {
         }
       >
         {/* #333 — personal ("your themes") FIRST, then the gallery. Same
-            .settings-section card idiom as the vhost / identity sections.
-            Empty sections hide (a visitor with no copies sees only the
-            gallery). */}
+            transparent .settings-section idiom as the vhost sections — the
+            theme cards carry their own borders. Empty sections hide (a
+            visitor with no copies sees only the gallery). */}
         <Show when={personalThemes().length > 0}>
           <section
-            class="settings-section theme-section"
+            class="settings-section"
             data-testid="theme-section-personal"
             ref={(el) => {
               personalSectionEl = el;
@@ -354,7 +354,7 @@ const ThemeGallery: Component<Props> = (props) => {
         </Show>
 
         <Show when={galleryThemes().length > 0}>
-          <section class="settings-section theme-section" data-testid="theme-section-gallery">
+          <section class="settings-section" data-testid="theme-section-gallery">
             <h4 class="settings-section-heading">gallery</h4>
             <ul class="theme-gallery-list">
               <For each={galleryThemes()}>{themeCard}</For>

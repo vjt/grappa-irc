@@ -115,9 +115,9 @@ const VhostSettingsPage: Component<Props> = (props) => {
   // a grant/revoke changes the bucket) instead of freezing at mount.
   const section = (testid: string, heading: string, opts: () => VhostOption[]): JSX.Element => (
     <Show when={opts().length > 0}>
-      <section class="vhost-section" data-testid={testid}>
-        <h4 class="vhost-section-heading">{heading}</h4>
-        <div class="vhost-section-list">
+      <section class="settings-section" data-testid={testid}>
+        <h4 class="settings-section-heading">{heading}</h4>
+        <div class="settings-section-body">
           <For each={opts()}>{optionButton}</For>
         </div>
       </section>

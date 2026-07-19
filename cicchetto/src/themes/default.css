@@ -4935,18 +4935,22 @@ html.resize-dragging * {
   color: var(--muted);
 }
 
-/* #335/#333 — shared titled "section card": a bordered wrapper with a
- * muted uppercase heading + a stacked body. Generalizes the vhost-section
- * heading+list shape into a reusable settings surface. Used by the visitor
- * identity block + the share sub-page (#335) and the themes personal /
- * gallery split (#333). Sharp corners + bg-alt + 1px border match the
- * .settings-nav-row and fieldset siblings (irssi aesthetic, no radius).
- * (A future consistency pass may retrofit .vhost-section onto this —
- * deferred, see #335 discussion.) */
+/* #335/#333 — the ONE titled "section" idiom across every settings surface:
+ * a muted uppercase heading + a stacked body. The BASE is transparent
+ * (heading + body, no card chrome) — the shape the vhost in-pool/out-of-pool
+ * sections + the themes personal/gallery split use, where the ITEMS (option
+ * buttons / theme cards) carry their own borders. The .settings-section-card
+ * modifier adds the bordered bg-alt card for the form sections (visitor
+ * identity + share session) whose content has no bordered items of its own.
+ * Sharp corners (irssi aesthetic, no radius) — matches .settings-nav-row +
+ * the fieldset siblings. (vhost retrofitted onto this — total consistency.) */
 .settings-section {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+}
+
+.settings-section-card {
   padding: 0.75rem;
   background: var(--bg-alt);
   border: 1px solid var(--border);
@@ -4973,17 +4977,6 @@ html.resize-dragging * {
   margin: 0;
   color: var(--muted);
   font-size: 0.85rem;
-}
-
-/* #333 — the themes personal / gallery sections reuse the .settings-section
- * HEADING but drop its bordered-card body: each .theme-card already carries
- * its own border (matching vhost's border-on-items, not on the section
- * wrapper), so the section stays transparent to avoid a heavy nested
- * double-border. */
-.theme-section {
-  padding: 0;
-  background: none;
-  border: none;
 }
 
 .settings-subpage {
@@ -5438,31 +5431,13 @@ html.resize-dragging * {
   overflow-wrap: anywhere;
 }
 
+/* #335 retrofit — the vhost sections now use the shared .settings-section /
+ * -heading / -body (total consistency). Only the outer wrapper spacing +
+ * the vhost-specific option tweaks remain vhost-named. */
 .vhost-sections {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-}
-
-.vhost-section {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.vhost-section-heading {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.8rem;
-  font-weight: normal;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.vhost-section-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
 }
 
 /* Multi-line names read top-aligned, and long cloak strings wrap in full
