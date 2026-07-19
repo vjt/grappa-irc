@@ -25728,6 +25728,7 @@ MEDIUM (S6) and the S27 demotion residual.
   AdminChannel keeps its snapshot-at-connect design. Bearer sessions
   are NOT revoked — demotion is a privilege change, not a credential
   compromise.
+
 ## 2026-07-18 — #247: /notify presence watch (MONITOR/WATCH), server-side list
 
 External contribution (gabrielemarrone). Implements the design captured in
@@ -25842,3 +25843,75 @@ real). Also per review: the fold SQL now has a single source
 (Identifier.nick_fold_sql/1 plus a drift-pin test over the migrations),
 the Watched panel renders on parked/disconnected rows, and the live
 sync only arms genuinely-new nicks on idempotent re-adds.
+
+## #340 — parallel-reliability + inbound send-throttle (2026-07-19)
+
+Follow-up to #336 (a saturated pool must degrade scrollback, never
+disconnect the user) and the #337 filed there ("decouple persistence into
+an async writer").
+
+**The serialized writer was EXPLORED and DISCARDED.** #340 originally
+proposed a single serialized batched *writer* GenServer — every session's
+persist funnels through one process that batches inserts. Built on branch
+`340-batched-scrollback-writer` (5 commits, parked as a record, NOT
+merged), then thrown away. Three reasons:
+
+1. **Latency.** Serialization adds ~25ms per message on the normal path.
+   vjt's bar is "no lag." A bouncer's send→echo loop must feel instant.
+2. **Postgres-unfriendly.** The whole point of a single-writer funnel is
+   to paper over SQLite's single-writer constraint. A future Postgres
+   migration has real concurrent writers; the funnel becomes an
+   artificial bottleneck we'd then have to tear back out.
+3. **Serialization does NOT buy reliability** — the load-bearing insight.
+   SQLite is single-writer regardless of how many Elixir processes queue
+   in front of it. `busy_timeout: 30s` already makes a contended insert
+   *wait*, not *fail* — inserts rarely error, they briefly block. The
+   ONLY real failure is POOL EXHAUSTION under a sustained flood, and a
+   serialized writer just moves that queue from the DB pool into the
+   writer's mailbox — same drop, different place. Two full e2e runs of the
+   writer confirmed it only relocated the problem.
+
+**Chosen model: keep the PARALLEL synchronous inserts (already `main` via
+#336) and tighten them so ONLY a genuinely-flooded message is ever lost.**
+Two axes, kept deliberately distinct because they are two DIFFERENT floods:
+
+* **Part A — persist-degrade (inbound FROM IRC).** Someone spamming a
+  channel is not our request; we can't 429 the IRC server. So
+  `Scrollback.with_pool_retry/1` rides it out. #336 only caught
+  `DBConnection.ConnectionError` (pool queue_timeout); a >busy_timeout
+  write-lock raises `%Exqlite.Error{}` ("busy"/"locked") which ESCAPED and
+  still crashed the session (latent #336 gap the #340 e2e surfaced). The
+  rescue now covers both classes and classifies transient (busy/locked →
+  retry) vs permanent (syntax/corruption → degrade immediately without
+  spinning, loud error log — a real bug the operator must see, never
+  silently swallowed). The retry loop runs over a generous WALL-CLOCK
+  BUDGET (1.5s prod) with capped linear backoff instead of the old fixed
+  3×25ms (~75ms, which dropped a *normal* message caught behind a burst).
+  Net: normal + bursty traffic is never lost; a row degrades to
+  `{:error, :persist_unavailable}` only when the pool stays saturated the
+  whole budget = a real sustained flood. The backoff sleep runs after the
+  failed checkout is released, so it holds no connection — bounded
+  backpressure on the flooding session, not a held-conn leak.
+
+* **Part B — send-throttle 429 (outbound TO our API).** The user/cic
+  sending too fast is our request, so we CAN push back. `POST .../messages`
+  consumes one token from a per-`(subject, network)` `TokenBucket` (new
+  ETS-backed primitive under `Grappa.RateLimit.*`, sibling of DailyQuota /
+  FailureWindow: burst-tolerant, lazy-refill, atomic check-and-consume).
+  An empty bucket returns 429 `rate_limited` via the existing
+  FallbackController clause — no new wire path. Capacity/refill (config
+  `:grappa, :send_throttle`; burst 10, 2/s) sit at or below the upstream
+  bahamut/Azzurra flood allowance, so cic gets a "slow down" BEFORE the
+  IRC server k-lines the user for flooding. THAT framing is the point:
+  protect the user from getting killed upstream, not just protect the DB.
+
+The two compose; neither replaces the other.
+
+**Known limitation (NOT built — flag, don't build unopened).** The pool is
+shared across subjects with no per-`(subject)` FAIRNESS. One user's
+SUSTAINED flood could still delay/drop ANOTHER user's message (Part A's
+generous retry makes a normal user ride out someone else's *burst*; only a
+sustained DoS-level flood reaches the drop threshold). A hard guarantee
+that user A's flood never drops user B's message needs per-subject fairness
+/ reserved pool capacity — a bigger mechanism than the incident warrants.
+Filed as a follow-up, not in #340 scope.
