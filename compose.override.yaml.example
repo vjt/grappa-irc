@@ -34,6 +34,11 @@ services:
   grappa:
     environment:
       PHX_HOST: voygrappa.bad.ass
+      # EXTRA_CHECK_ORIGINS: WS `check_origin` extras AND (with PHX_HOST,
+      # #324) the deployment's HTTP host-alias set — every hostname nginx
+      # reverse-proxies to this ONE instance. List a sibling public vhost
+      # here (comma-separated) and cic's media-link viewer opens uploads
+      # minted under it too; no cic redeploy, no second list.
       EXTRA_CHECK_ORIGINS: "http://192.168.53.12"
       # Push notifications cluster B2 (2026-05-14). Generate once per
       # deployment with `scripts/mix.sh grappa.gen_vapid` and paste
