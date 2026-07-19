@@ -131,7 +131,11 @@ defmodule Grappa.Session.NumericRouterTest do
   # acks owned by EventRouter's away_confirmed handler and must NEVER
   # persist a scrollback row (the away STATE is the signal, the numeric
   # is noise). See the delegated-numerics section below.
-  @active_numerics [4, 42, 263, 421, 432, 433, 437, 461] ++
+  # #247 — 512/734 presence-watch list-full errors folded in: nick-shaped
+  # token (watched nick / rejected MONITOR target) that is metadata, not a
+  # query destination. The EventRouter toast is transient; the raw numeric
+  # must land on $server (durable "list full" record).
+  @active_numerics [4, 42, 263, 421, 432, 433, 437, 461, 512, 734] ++
                      Enum.to_list(211..219) ++ Enum.to_list(240..250)
 
   describe "@active_numerics deny list → {:server, nil}" do
@@ -184,6 +188,25 @@ defmodule Grappa.Session.NumericRouterTest do
 
     test "461 ERR_NEEDMOREPARAMS: command name is NOT a query destination" do
       m = msg(461, ["vjt", "MODE", "Not enough parameters"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    # #247 — presence-watch list-full errors. EventRouter emits a
+    # {:presence_error, :list_full} toast (:cont) and the raw numeric ALSO
+    # falls through here. Pre-fix the param scan ghosted it to a
+    # {:query, <nick>} window named after the watched/rejected nick (leaking
+    # into Archive); it must land on $server per the #247 contract.
+    test "512 ERR_TOOMANYWATCH: watched nick is NOT a query destination (#247)" do
+      # bahamut/Azzurra WATCH list-full. params[1] "watchednick" is
+      # nick-shaped → pre-fix {:query, "watchednick"}; now $server.
+      m = msg(512, ["vjt", "watchednick", "Maximum size for WATCH-list is 128"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "734 ERR_MONLISTFULL: rejected MONITOR target is NOT a query destination (#247)" do
+      # solanum MONITOR list-full. The single rejected target "rejectednick"
+      # is nick-shaped → pre-fix {:query, "rejectednick"}; now $server.
+      m = msg(734, ["vjt", "100", "rejectednick", "Monitor list is full."])
       assert {:server, nil} = NumericRouter.route(m, state())
     end
 
