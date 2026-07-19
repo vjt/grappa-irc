@@ -58,7 +58,7 @@ export type KnownApiErrorCode =
   | "ssrf_blocked"
   | "fetch_failed"
   | "image_reencode_failed"
-  | "too_many_attempts";
+  | "too_many_attempts"
   | "list_full";
 
 const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
