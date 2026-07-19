@@ -2389,23 +2389,11 @@ export async function postNick(token: string, networkSlug: string, nick: string)
 }
 
 // #247 — /notify watch-list REST surface
-// (`GrappaWeb.NotifyController`). The GET combines both sources of
-// truth: `entries` is the durable DB list, `presence` the live session
-// map — `null` when no session is running (parked/failed), which the
-// panel renders as unknown dots rather than fabricating offline.
-
-export type NotifyIndexResponse = {
-  entries: NotifyEntry[];
-  presence: Record<string, "online" | "offline" | "unknown"> | null;
-};
-
-export async function getNotify(token: string, networkSlug: string): Promise<NotifyIndexResponse> {
-  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/notify`, {
-    headers: buildHeaders(token),
-  });
-  if (!res.ok) throw await readError(res);
-  return (await res.json()) as NotifyIndexResponse;
-}
+// (`GrappaWeb.NotifyController`). Mutations only: cic's list + dot
+// state arrive over the WS (`notify_list` snapshot broadcasts +
+// `presence_snapshot` on attach), so the REST GET has no cic consumer
+// — it exists server-side for API completeness and is deliberately
+// NOT mirrored here (review 2026-07-19 R4 removed the dead client).
 
 export async function postNotifyAdd(
   token: string,
