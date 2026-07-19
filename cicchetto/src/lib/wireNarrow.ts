@@ -849,6 +849,22 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         actor_user_name: r.actor_user_name,
         at: r.at as string,
       };
+    // S6 (review 2026-07-19) — mode-1 login throttle trip. source_ip
+    // is nullable (server RemoteIP honesty for unresolvable peers).
+    case "login_throttled":
+      if (
+        !isNullableString(r.source_ip) ||
+        typeof r.failures !== "number" ||
+        typeof r.window_ms !== "number"
+      )
+        return null;
+      return {
+        kind: "login_throttled",
+        source_ip: r.source_ip as string | null,
+        failures: r.failures,
+        window_ms: r.window_ms,
+        at: r.at as string,
+      };
     case "cap_counts_changed":
       // REV-H H5 (2026-05-22): network_slug is required non-null on
       // this arm. The server-side broadcaster early-returns when the

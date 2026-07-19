@@ -97,6 +97,9 @@ function renderEvent(ev: WireAdminEvent): string {
       return `${ev.user_name}@${ev.network_slug} credential updated (${ev.session_action})${actorSuffix(ev.actor_user_name)}`;
     case "credential_unbound":
       return `${ev.user_name} unbound from ${ev.network_slug}${actorSuffix(ev.actor_user_name)}`;
+    case "login_throttled":
+      // S6 — admin-login brute-force gate tripped for this source IP.
+      return `login throttled: ${ev.source_ip ?? "(unknown ip)"} hit ${ev.failures} failures in ${Math.round(ev.window_ms / 60000)}m`;
     default:
       return assertNever(ev);
   }

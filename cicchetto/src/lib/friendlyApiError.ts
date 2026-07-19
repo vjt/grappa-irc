@@ -57,7 +57,8 @@ export type KnownApiErrorCode =
   | "too_large"
   | "ssrf_blocked"
   | "fetch_failed"
-  | "image_reencode_failed";
+  | "image_reencode_failed"
+  | "too_many_attempts";
 
 const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "invalid_credentials",
@@ -87,6 +88,7 @@ const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "ssrf_blocked",
   "fetch_failed",
   "image_reencode_failed",
+  "too_many_attempts",
 ]);
 
 function isKnownCode(code: string): code is KnownApiErrorCode {
@@ -234,6 +236,11 @@ function friendlyKnown(err: ApiError, code: KnownApiErrorCode): string {
       return "Couldn't fetch that image URL. Check the link, or upload a file instead.";
     case "image_reencode_failed":
       return "That image couldn't be processed. Try a different file.";
+    case "too_many_attempts":
+      // S6 (review 2026-07-19) — mode-1 login failure window tripped
+      // for this source IP. Time-bounded (15 min), unlike the
+      // themes-specific rate_limited "try tomorrow" copy.
+      return "Too many login attempts. Wait a few minutes and try again.";
     default:
       // Cic M2 reviewer fix: exhaustiveness assertion. Adding a token
       // to `KnownApiErrorCode` without a `case` arm above becomes a

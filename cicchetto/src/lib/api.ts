@@ -1409,6 +1409,17 @@ export type WireAdminEvent =
       actor_user_id: string;
       actor_user_name: string;
       at: string;
+    }
+  // S6 (review 2026-07-19) — a source IP crossed the mode-1 login
+  // failure threshold. Emitted once per (ip, window), on the crossing
+  // failure only. `source_ip` null mirrors the server's RemoteIP
+  // honesty (unresolvable peer).
+  | {
+      kind: "login_throttled";
+      source_ip: string | null;
+      failures: number;
+      window_ms: number;
+      at: string;
     };
 
 export type AdminSnapshotPayload = { events: WireAdminEvent[] };
