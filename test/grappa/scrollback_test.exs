@@ -130,6 +130,19 @@ defmodule Grappa.ScrollbackTest do
       }
     end
 
+    # #340 — a >30s SQLite write-lock busy raises `%Exqlite.Error{}`, NOT a
+    # `DBConnection.ConnectionError`. Pre-#340 `with_pool_retry` only rescued
+    # the latter, so a busy Exqlite.Error ESCAPED and crashed the session (a
+    # latent #336 gap). The message text is the ONLY discriminator SQLite
+    # gives us for busy/locked vs syntax/corruption.
+    defp raise_busy do
+      raise %Exqlite.Error{message: "database is locked", statement: nil}
+    end
+
+    defp raise_syntax do
+      raise %Exqlite.Error{message: "near \"SLECT\": syntax error", statement: nil}
+    end
+
     test "an op that always raises DBConnection.ConnectionError degrades to {:error, :persist_unavailable} — does NOT escape" do
       assert {:error, :persist_unavailable} =
                Scrollback.with_pool_retry(fn -> raise_queue_timeout() end)
@@ -154,6 +167,59 @@ defmodule Grappa.ScrollbackTest do
       cs = Message.changeset(%Message{}, %{channel: "#x"})
 
       assert {:error, ^cs} = Scrollback.with_pool_retry(fn -> {:error, cs} end)
+    end
+
+    # #340 broadened catch — a busy/locked Exqlite.Error is a TRANSIENT
+    # write-lock contention (SQLite is single-writer; a burst makes a slow
+    # writer wait, occasionally past busy_timeout). It must be treated like
+    # a pool queue_timeout: retried, then degraded — never escape.
+    test "an op that always raises a busy Exqlite.Error degrades to {:error, :persist_unavailable} — does NOT escape" do
+      assert {:error, :persist_unavailable} =
+               Scrollback.with_pool_retry(fn -> raise_busy() end)
+    end
+
+    test "a busy Exqlite.Error that clears within the budget is retried then succeeds" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      op = fn ->
+        n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
+        if n < 2, do: raise_busy(), else: {:ok, :served}
+      end
+
+      assert {:ok, :served} = Scrollback.with_pool_retry(op)
+      assert Agent.get(counter, & &1) == 3
+    end
+
+    # #340 generous budget — the loop rides out MANY transient raises within
+    # its wall-clock budget, so a NORMAL message caught behind a burst is
+    # never dropped. Six consecutive busy raises exceed the pre-#340 fixed
+    # 3-attempt cap; the budget must still ride them out and succeed.
+    test "the generous budget rides out N transient raises then succeeds" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      op = fn ->
+        n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
+        if n < 6, do: raise_busy(), else: {:ok, :served}
+      end
+
+      assert {:ok, :served} = Scrollback.with_pool_retry(op)
+      assert Agent.get(counter, & &1) == 7
+    end
+
+    # #340 — a NON-transient Exqlite.Error (syntax/corruption) is not
+    # saturation: retrying only spins pointlessly. It degrades IMMEDIATELY
+    # (still never crashing the session — the #336 contract) after exactly
+    # ONE attempt.
+    test "a non-transient Exqlite.Error degrades WITHOUT spinning (exactly one attempt)" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      op = fn ->
+        Agent.update(counter, &(&1 + 1))
+        raise_syntax()
+      end
+
+      assert {:error, :persist_unavailable} = Scrollback.with_pool_retry(op)
+      assert Agent.get(counter, & &1) == 1
     end
   end
 

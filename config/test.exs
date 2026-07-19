@@ -142,6 +142,17 @@ config :grappa, :session_backoff,
   base_ms: 5,
   cap_ms: 100
 
+# #340 — scrollback persist retry: shrink the budget + backoff so the
+# `with_pool_retry/1` resilience tests (which raise a transient DB error
+# repeatedly) ride out several attempts and degrade in ~sub-second rather
+# than the 1.5s production budget. Math is identical; only magnitudes shrink,
+# so the multi-attempt / budget-exhaustion / no-spin behaviours all still
+# hold, just faster.
+config :grappa, :scrollback,
+  persist_retry_budget_ms: 300,
+  persist_backoff_ms: 2,
+  persist_backoff_cap_ms: 10
+
 # Push notifications cluster B2 (2026-05-14) — fixed VAPID keypair for
 # the `:web_push_elixir` library so `Push.Sender` tests don't need to
 # generate a fresh pair per run (and so the lib's

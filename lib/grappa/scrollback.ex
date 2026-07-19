@@ -64,17 +64,40 @@ defmodule Grappa.Scrollback do
 
   @max_limit 500
 
-  # #336 — SQLite is single-writer; a brief write burst saturates the
-  # connection pool, and `Repo.insert`/`Repo.preload` then RAISE
-  # `DBConnection.ConnectionError` (reason: :queue_timeout) rather than
-  # returning `{:error, _}`. Persistence is best-effort durability: it
-  # must degrade under saturation, never take down the session that calls
-  # it (a raised exception here crashed the Session.Server and
-  # disconnected the user — the 2026-07-19 09:17 incident). Retry a small
-  # bounded number of times over short linear backoff to ride out a
-  # transient burst, then drop the row with an honest log + typed error.
-  @persist_max_attempts 3
-  @persist_backoff_ms 25
+  # #336 / #340 — SQLite is single-writer; a write burst saturates the
+  # connection pool (`Repo.insert`/`Repo.preload` RAISE
+  # `DBConnection.ConnectionError`, reason: :queue_timeout) OR, when a slow
+  # writer holds the lock past `busy_timeout`, raises `%Exqlite.Error{}`
+  # with a "busy"/"locked" message. Both are TRANSIENT contention, not a
+  # returned `{:error, _}`. Persistence is best-effort durability: it must
+  # degrade under saturation, never take down the session that calls it (a
+  # raised exception here crashed the Session.Server and disconnected the
+  # user — the 2026-07-19 09:17 incident).
+  #
+  # #340 rejected a serialized batched writer (adds ~25ms latency per
+  # message + is Postgres-unfriendly, and serialization does NOT buy
+  # reliability — SQLite is single-writer regardless, busy_timeout already
+  # rides out lock contention). The chosen model stays PARALLEL synchronous
+  # inserts on the pool, tightened so ONLY a sustained flood ever loses a
+  # row: retry over a generous WALL-CLOCK BUDGET (not a fixed attempt
+  # count) so a normal or bursty message caught behind a burst is ridden
+  # out, and a row degrades to `{:error, :persist_unavailable}` only when
+  # the pool stays saturated the whole budget. The retry sleep runs AFTER
+  # the failed checkout is released, so it holds no connection — it is
+  # bounded backpressure on the flooding session, not a held-conn leak.
+  # A non-transient Exqlite.Error (syntax/corruption) is not saturation:
+  # retrying only spins, so it degrades immediately with a LOUD log.
+  @persist_retry_budget_ms Application.compile_env(
+                             :grappa,
+                             [:scrollback, :persist_retry_budget_ms],
+                             1_500
+                           )
+  @persist_backoff_ms Application.compile_env(:grappa, [:scrollback, :persist_backoff_ms], 25)
+  @persist_backoff_cap_ms Application.compile_env(
+                            :grappa,
+                            [:scrollback, :persist_backoff_cap_ms],
+                            200
+                          )
 
   # Closed error set for the write path. A validation failure returns the
   # changeset (caller inspects `.errors`); a pool-saturation drop returns
@@ -160,17 +183,30 @@ defmodule Grappa.Scrollback do
 
   @doc """
   Runs a best-effort persistence op with bounded retry over transient
-  SQLite pool saturation (#336).
+  SQLite write contention (#336 / #340).
 
   `op` is a zero-arity fun returning `{:ok, term()}` or `{:error,
-  Ecto.Changeset.t()}`. When it RAISES `DBConnection.ConnectionError`
-  (the pool could not serve a checkout — `reason: :queue_timeout`), this
-  catches the exception, retries up to `#{@persist_max_attempts}` times
-  over short linear backoff, and — if the pool is still saturated —
-  degrades to `{:error, :persist_unavailable}` rather than letting the
-  raise crash the calling process. A returned `{:error, _}` (a
-  validation failure) is passed straight through: it is not a transient
-  fault, so it is never retried.
+  Ecto.Changeset.t()}`. Two exception classes are caught as TRANSIENT
+  contention and retried:
+
+    * `DBConnection.ConnectionError` — the pool could not serve a
+      checkout (`reason: :queue_timeout`).
+    * a busy/locked `%Exqlite.Error{}` — a slow writer held the single
+      SQLite write-lock past `busy_timeout`.
+
+  The retry loop runs over a wall-clock BUDGET
+  (`#{@persist_retry_budget_ms}ms`), sleeping a linear backoff capped at
+  `#{@persist_backoff_cap_ms}ms` between attempts, so a normal or bursty
+  message caught behind a burst is ridden out. Only when the budget is
+  exhausted (the pool stayed saturated the whole time = a sustained
+  flood) does the row degrade to `{:error, :persist_unavailable}` — the
+  raise never crashes the calling process (#336 contract).
+
+  A NON-transient `%Exqlite.Error{}` (syntax/corruption) is not
+  saturation: it degrades IMMEDIATELY (no spin) with a loud error log,
+  since retrying a broken statement only wastes the budget. A returned
+  `{:error, _}` (a validation failure) is passed straight through — it
+  is not a fault at all, so it is never retried.
 
   Public because `persist_event/1` runs BOTH its insert and its preload
   through it, and the retry/degrade contract is unit-tested here directly
@@ -179,28 +215,64 @@ defmodule Grappa.Scrollback do
   @spec with_pool_retry((-> {:ok, result} | {:error, Ecto.Changeset.t()})) ::
           {:ok, result} | {:error, persist_error()}
         when result: var
-  def with_pool_retry(op) when is_function(op, 0), do: with_pool_retry(op, 1)
+  def with_pool_retry(op) when is_function(op, 0) do
+    deadline = System.monotonic_time(:millisecond) + @persist_retry_budget_ms
+    with_pool_retry(op, deadline, 1)
+  end
 
-  @spec with_pool_retry((-> {:ok, result} | {:error, Ecto.Changeset.t()}), pos_integer()) ::
+  @spec with_pool_retry((-> {:ok, result} | {:error, Ecto.Changeset.t()}), integer(), pos_integer()) ::
           {:ok, result} | {:error, persist_error()}
         when result: var
-  defp with_pool_retry(op, attempt) do
+  defp with_pool_retry(op, deadline, attempt) do
     op.()
   rescue
-    error in DBConnection.ConnectionError ->
-      if attempt < @persist_max_attempts do
-        Process.sleep(@persist_backoff_ms * attempt)
-        with_pool_retry(op, attempt + 1)
-      else
-        Logger.warning(
-          "scrollback persist unavailable: SQLite pool saturated after " <>
-            "#{@persist_max_attempts} attempts — dropping row",
-          reason: inspect(error.reason)
-        )
+    error in [DBConnection.ConnectionError, Exqlite.Error] ->
+      cond do
+        not transient_fault?(error) ->
+          # Syntax / corruption — retrying spins pointlessly. Degrade at
+          # once (never crash — #336), but LOUD (error level, full error):
+          # this is a real bug the operator/CI must see, not a saturation
+          # drop. Distinct from the :warning transient-drop below.
+          Logger.error(
+            "scrollback persist unavailable: non-transient DB error — dropping row",
+            error: inspect(error)
+          )
 
-        {:error, :persist_unavailable}
+          {:error, :persist_unavailable}
+
+        System.monotonic_time(:millisecond) < deadline ->
+          # The backoff sleep runs after the failed checkout was already
+          # released, so it holds no connection — bounded backpressure on
+          # the flooding session, not a held-conn leak (#340).
+          Process.sleep(min(@persist_backoff_ms * attempt, @persist_backoff_cap_ms))
+          with_pool_retry(op, deadline, attempt + 1)
+
+        true ->
+          Logger.warning(
+            "scrollback persist unavailable: SQLite pool saturated for the full " <>
+              "#{@persist_retry_budget_ms}ms retry budget (#{attempt} attempts) — dropping row",
+            error: inspect(error)
+          )
+
+          {:error, :persist_unavailable}
       end
   end
+
+  # #340 — is this caught exception TRANSIENT write contention (retry) or a
+  # permanent fault (degrade at once)? A pool queue_timeout is always
+  # transient. For an Exqlite.Error the message text is the only
+  # discriminator SQLite gives us: "busy"/"locked" = lock contention;
+  # anything else (syntax, corruption, constraint at the driver layer) is
+  # not saturation.
+  @spec transient_fault?(Exception.t()) :: boolean()
+  defp transient_fault?(%DBConnection.ConnectionError{}), do: true
+
+  defp transient_fault?(%Exqlite.Error{message: message}) when is_binary(message) do
+    downcased = String.downcase(message)
+    String.contains?(downcased, "busy") or String.contains?(downcased, "locked")
+  end
+
+  defp transient_fault?(%Exqlite.Error{}), do: false
 
   @doc """
   CP14 B3 — derive the normalized "DM peer" for a (target, sender,

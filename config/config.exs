@@ -90,6 +90,25 @@ config :grappa, :session_backoff,
 # 60s default intact (inert within existing tests' lifetimes).
 config :grappa, :session, connection_stable_ms: 60_000
 
+# #340 — scrollback persist resilience. `Grappa.Scrollback.with_pool_retry/1`
+# rides out a transient SQLite write-lock / pool-saturation burst before it
+# degrades a row to `{:error, :persist_unavailable}` (never crashing the
+# session — the #336 contract). The retry loop runs on a wall-clock BUDGET,
+# not a fixed attempt count, so a NORMAL or bursty message is never dropped:
+# only a flood that keeps the pool saturated for the whole budget sheds its
+# excess. Read via `Application.compile_env/3` in `Grappa.Scrollback`.
+#
+#   * persist_retry_budget_ms — total wall-clock the loop will spend riding
+#     out transient raises before degrading (1.5s: comfortably longer than
+#     the ~1s pool-saturation window the #336 incident measured).
+#   * persist_backoff_ms — base per-attempt linear backoff (× attempt).
+#   * persist_backoff_cap_ms — ceiling per sleep so late attempts don't
+#     stretch a single wait past a fifth of a second.
+config :grappa, :scrollback,
+  persist_retry_budget_ms: 1_500,
+  persist_backoff_ms: 25,
+  persist_backoff_cap_ms: 200
+
 # T31 admission control. Defaults match the design (CP11 S20 →
 # CP11 S21 brainstorm). All values configurable per-env via
 # config/runtime.exs at deployment time.
