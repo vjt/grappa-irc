@@ -61,7 +61,8 @@ defmodule Grappa.Session do
       Grappa.SessionLog,
       Grappa.Subject,
       Grappa.UserSettings,
-      Grappa.Version
+      Grappa.Version,
+      Grappa.WindowCounts
     ],
     exports: [Backoff, Server, Wire]
 

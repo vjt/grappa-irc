@@ -23,6 +23,14 @@ config :grappa, :max_visitors_per_ip, 5
 # may override with a stub implementing the `count/1` callback.
 config :grappa, :badge_source, Grappa.Push.BadgeCount
 
+# Per-message window_counts push source (#267 dependency-inversion seam).
+# `Grappa.Session.Server`'s persist arm resolves this at runtime via
+# `Grappa.WindowCounts.PushSource.impl/0` instead of referencing the impl
+# statically — a static `Session → WindowCounts.Pusher` edge would close the
+# boundary cycle `Session → Pusher → ReadCursor → Networks → Session`. Tests
+# may override with a stub implementing the `push/1` callback.
+config :grappa, :window_counts_push_source, Grappa.WindowCounts.Pusher
+
 # Cluster visitor-auth hotfix: pre-crash throttle for `Grappa.IRC.Client`'s
 # `handle_continue({:connect, _})` failure path. Read at compile-time via
 # `Application.compile_env/3`; production default is 30_000 ms (~2 restart

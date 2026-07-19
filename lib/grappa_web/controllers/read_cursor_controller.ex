@@ -46,7 +46,7 @@ defmodule GrappaWeb.ReadCursorController do
   import GrappaWeb.Validation, only: [validate_target_name: 1]
 
   alias Grappa.Push.BadgeCount
-  alias Grappa.ReadCursor
+  alias Grappa.{ReadCursor, WindowCounts}
   alias GrappaWeb.Subject
 
   @doc """
@@ -80,7 +80,7 @@ defmodule GrappaWeb.ReadCursorController do
 
       {:ok, _} =
         Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
-          fanout(subject, current_subject, network.slug, channel, last_read)
+          fanout(subject, current_subject, network, channel, last_read)
         end)
 
       json(conn, %{last_read_message_id: last_read})
@@ -124,23 +124,60 @@ defmodule GrappaWeb.ReadCursorController do
   @spec fanout(
           Grappa.Session.subject(),
           Subject.t(),
-          String.t(),
+          Grappa.Networks.Network.t(),
           String.t(),
           integer()
         ) :: :ok
-  defp fanout(subject, current_subject, network_slug, channel, last_read_message_id) do
+  defp fanout(subject, current_subject, network, channel, last_read_message_id) do
     badge_count = BadgeCount.count(subject)
 
-    _ = maybe_broadcast(current_subject, network_slug, channel, last_read_message_id, badge_count)
+    _ = maybe_broadcast(current_subject, network.slug, channel, last_read_message_id, badge_count)
+
+    # #267 — re-seed the fresh per-channel window_counts snapshot on cursor
+    # advance so PEER devices (that didn't originate the read) drop the
+    # channel's badge to server truth. read_cursor_set carries only the
+    # cursor + global badge; the per-channel messages/mentions/events counts
+    # need their own re-seed. Routed through the same PushSource seam as the
+    # persist-arm push — gated on live WS presence, does its DB work in a
+    # Task. own_nick resolves off-Session from the configured credential nick
+    # (nil for an unbound-but-retained network), same stance as /me.
+    own_nick = configured_own_nick(subject, network.slug)
+
+    :ok =
+      WindowCounts.PushSource.push(%{
+        subject: subject,
+        network_id: network.id,
+        network_slug: network.slug,
+        subject_label: subject_label(current_subject),
+        channel: channel,
+        own_nick: own_nick
+      })
 
     :telemetry.execute(
       [:grappa, :read_cursor, :fanout],
       %{badge_count: badge_count},
-      %{network_slug: network_slug, channel: channel}
+      %{network_slug: network.slug, channel: channel}
     )
 
     :ok
   end
+
+  # Configured own-nick for `slug` (credential nick for users,
+  # `visitor.nick` for visitors), or `nil` when the subject holds no
+  # credential there — same off-Session resolver `/me` + `BadgeCount` use.
+  @spec configured_own_nick(Grappa.Session.subject(), String.t()) :: String.t() | nil
+  defp configured_own_nick(subject, slug) do
+    case Map.fetch(BadgeCount.configured_nick_windows(subject), slug) do
+      {:ok, {_network_id, own_nick}} -> own_nick
+      :error -> nil
+    end
+  end
+
+  # User-name segment of the per-channel topic — `user.name` for users,
+  # `"visitor:" <> visitor.id` for visitors (mirrors `maybe_broadcast/5`).
+  @spec subject_label(Subject.t()) :: String.t()
+  defp subject_label({:user, user}), do: user.name
+  defp subject_label({:visitor, visitor}), do: "visitor:" <> visitor.id
 
   # Resolves the user-name segment of the per-channel topic for the
   # cross-device broadcast. User subjects use `user.name`; visitors

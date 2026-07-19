@@ -79,7 +79,7 @@ defmodule Grappa.Session.Server do
   """
   use GenServer, restart: :transient
 
-  alias Grappa.{ChannelDirectory, Log, Mentions, Scrollback, Session, SessionLog, UserSettings}
+  alias Grappa.{ChannelDirectory, Log, Mentions, Scrollback, Session, SessionLog, UserSettings, WindowCounts}
   alias Grappa.IRC.{AuthFSM, Client, CTCP, Identifier, Message}
   alias Grappa.PubSub.Topic
   alias Grappa.Push.Triggers, as: PushTriggers
@@ -3687,6 +3687,24 @@ defmodule Grappa.Session.Server do
         # `maybe_dispatch_push/2` for the user-only + non-self-echo
         # short-circuit logic.
         :ok = maybe_dispatch_push(message, state)
+
+        # #267 — push the fresh server-authoritative window_counts snapshot
+        # for this window so a connected cic renders the new count without
+        # deriving it. Fires for EVERY kind (presence events move the
+        # events/severity tier too). Routed through the PushSource config
+        # seam — a static Session → Pusher edge would close the cycle
+        # Session → ReadCursor → Networks → Session. The impl gates on live
+        # WS presence and does the snapshot DB work in its own Task, so this
+        # call is sub-microsecond on the hot path.
+        :ok =
+          WindowCounts.PushSource.push(%{
+            subject: state.subject,
+            network_id: state.network_id,
+            network_slug: state.network_slug,
+            subject_label: state.subject_label,
+            channel: message.channel,
+            own_nick: state.nick
+          })
 
       {:error, changeset} ->
         Logger.error("scrollback insert failed",

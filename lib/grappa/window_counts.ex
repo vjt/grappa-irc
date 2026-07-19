@@ -54,7 +54,7 @@ defmodule Grappa.WindowCounts do
   use Boundary,
     top_level?: true,
     deps: [Grappa.IRC, Grappa.Mentions, Grappa.Scrollback, Grappa.Subject],
-    exports: [Wire]
+    exports: [PushSource, Wire]
 
   alias Grappa.IRC.Identifier
   alias Grappa.{Mentions, Scrollback, Subject}
