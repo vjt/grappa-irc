@@ -25844,82 +25844,99 @@ real). Also per review: the fold SQL now has a single source
 the Watched panel renders on parked/disconnected rows, and the live
 sync only arms genuinely-new nicks on idempotent re-adds.
 
-## #340 — parallel-reliability + inbound send-throttle (2026-07-19)
+## #340 — persist reliability + inbound send-throttle (2026-07-19)
 
 Follow-up to #336 (a saturated pool must degrade scrollback, never
 disconnect the user) and the #337 filed there ("decouple persistence into
-an async writer").
+an async writer"). Two distinct floods, two mechanisms.
 
-**The serialized writer was EXPLORED and DISCARDED.** #340 originally
-proposed a single serialized batched *writer* GenServer — every session's
-persist funnels through one process that batches inserts. Built on branch
-`340-batched-scrollback-writer` (5 commits, parked as a record, NOT
-merged), then thrown away. Three reasons:
+### The single deferred WRITER (option-1) was BUILT, e2e-tested, and REJECTED
 
-1. **Latency.** Serialization adds ~25ms per message on the normal path.
-   vjt's bar is "no lag." A bouncer's send→echo loop must feel instant.
-2. **Postgres-unfriendly.** The whole point of a single-writer funnel is
-   to paper over SQLite's single-writer constraint. A future Postgres
-   migration has real concurrent writers; the funnel becomes an
-   artificial bottleneck we'd then have to tear back out.
-3. **Serialization does NOT buy reliability** — the load-bearing insight.
-   SQLite is single-writer regardless of how many Elixir processes queue
-   in front of it. `busy_timeout: 30s` already makes a contended insert
-   *wait*, not *fail* — inserts rarely error, they briefly block. The
-   ONLY real failure is POOL EXHAUSTION under a sustained flood, and a
-   serialized writer just moves that queue from the DB pool into the
-   writer's mailbox — same drop, different place. Two full e2e runs of the
-   writer confirmed it only relocated the problem.
+#340 first pursued the #337 direction: one serialized `Grappa.Scrollback.Writer`
+GenServer owning an in-order deferred FIFO queue. Sessions `cast`
+fire-and-forget; the writer drains oldest-first, stops at the first
+transient fault and defers the rest to a flush tick (not `Process.sleep`),
+dropping only at a hard buffer cap. It was fully implemented (parked branch
+`340-batched-scrollback-writer`), passed check.sh, and resurrected onto main
+for a real e2e run. **It failed, and the failure is FUNDAMENTAL to the
+deferred design, not a tuning issue:**
 
-**Chosen model: keep the PARALLEL synchronous inserts (already `main` via
-#336) and tighten them so ONLY a genuinely-flooded message is ever lost.**
-Two axes, kept deliberately distinct because they are two DIFFERENT floods:
+* Full e2e: **83 spec failures**, all message-render timeouts, reproduced
+  deterministically across runs.
+* Root cause (grappa-test logs, KEEP_STACK diagnostic): **48
+  `Ecto.ConstraintError` row drops** on `messages_visitor_id_fkey` /
+  `messages_network_id_fkey`. A deferred insert lands AFTER its FK parent
+  (an ephemeral visitor, or a network torn down between specs) has been
+  deleted → the row is unrecoverable → the writer drops it → the message
+  never broadcasts → the spec times out. **You cannot defer an insert past
+  the lifetime of its FK parent.**
+* **0 buffer-cap drops** — the writer was never under throughput pressure,
+  so this is NOT the "single writer is a bottleneck" story; it is purely
+  the deferral race. (The writer also measured −33% peak insert throughput
+  vs synchronous, for no reliability gain — matching the #337-era
+  observation that a funnel "just moves the problem around.")
+
+The writer trades #336's pool-contention (which #336 already survives by
+*degrading, not crashing*) for a WORSE failure — silent FK-race row loss,
+latent in prod too (a network unbind or visitor reap racing a buffered row
+drops it). Rejected.
+
+### Chosen: per-session SYNCHRONOUS insert + #336 degrade
+
+Persist stays synchronous in the `Session.Server` process (the pre-#336
+shape, hardened). This is **order-preserving with no writer**: the session
+GenServer already serializes its own persists (inbound + outbound both
+route through it), so rows insert in receipt order per window — the
+reordering that rules out *parallel* inserts / spawn-per-failure simply
+does not arise for in-process serial inserts. And because the insert
+happens while the FK parent is still alive, there are **no FK-race drops**.
+Two axes, two DIFFERENT floods:
 
 * **Part A — persist-degrade (inbound FROM IRC).** Someone spamming a
   channel is not our request; we can't 429 the IRC server. So
   `Scrollback.with_pool_retry/1` rides it out. #336 only caught
   `DBConnection.ConnectionError` (pool queue_timeout); a >busy_timeout
   write-lock raises `%Exqlite.Error{}` ("busy"/"locked") which ESCAPED and
-  still crashed the session (latent #336 gap the #340 e2e surfaced). The
-  rescue now covers both classes and classifies transient (busy/locked →
-  retry) vs permanent (syntax/corruption → degrade immediately without
-  spinning, loud error log — a real bug the operator must see, never
-  silently swallowed). The retry loop runs over a generous WALL-CLOCK
-  BUDGET (1.5s prod) with capped linear backoff instead of the old fixed
-  3×25ms (~75ms, which dropped a *normal* message caught behind a burst).
-  Net: normal + bursty traffic is never lost; a row degrades to
-  `{:error, :persist_unavailable}` only when the pool stays saturated the
-  whole budget = a real sustained flood. The backoff sleep runs after the
-  failed checkout is released, so it holds no connection — bounded
-  backpressure on the flooding session, not a held-conn leak.
+  still crashed the session (latent #336 gap). The rescue now covers both
+  classes and classifies transient (busy/locked → retry) vs permanent
+  (syntax/corruption → degrade immediately without spinning, loud error
+  log — a real bug the operator must see, never silently swallowed). The
+  retry loop runs over a generous WALL-CLOCK BUDGET (1.5s prod) with capped
+  linear backoff instead of the old fixed 3×25ms (~75ms, which dropped a
+  *normal* message caught behind a burst). Net: normal + bursty traffic is
+  never lost; a row degrades to `{:error, :persist_unavailable}` only when
+  the pool stays saturated the whole budget = a sustained flood. The
+  backoff sleep runs in the flooding session only (after its failed
+  checkout is released, so it holds no connection) — bounded per-session
+  backpressure, never a global stall.
 
 * **Part B — send-throttle 429 (outbound TO our API).** The user/cic
   sending too fast is our request, so we CAN push back. `POST .../messages`
   consumes one token from a per-`(subject, network)` `TokenBucket` (new
   ETS-backed primitive under `Grappa.RateLimit.*`, sibling of DailyQuota /
-  FailureWindow: burst-tolerant, lazy-refill, atomic check-and-consume).
-  An empty bucket returns 429 `rate_limited` via the existing
-  FallbackController clause — no new wire path. Capacity/refill (config
-  `:grappa, :send_throttle`; burst 10, 2/s) sit at or below the upstream
-  bahamut/Azzurra flood allowance, so cic gets a "slow down" BEFORE the
-  IRC server k-lines the user for flooding. THAT framing is the point:
-  protect the user from getting killed upstream, not just protect the DB.
+  FailureWindow: burst-tolerant, lazy-refill, atomic check-and-consume,
+  self-releasing, no ban-state). An empty bucket returns HTTP 429
+  `rate_limited` via the existing FallbackController clause (no new wire
+  path); within budget it accepts. The 429 is drop-with-retry — cic's
+  existing send-failed affordance renders the rate-limit copy and the user
+  can resend once a token refills. Numbers are read from the bahamut source's
+  flood allowance (config `:grappa, :send_throttle`): **capacity 5, refill
+  1 token every 2s (0.5/s)** — at/below the upstream allowance so cic gets
+  a "slow down" BEFORE the IRC server k-lines the user. THAT framing is the
+  point: protect the user from getting killed upstream, not just the DB.
 
 The two compose; neither replaces the other.
 
-**Multi-line paste consequence (discovered in e2e, prod behaviour is
-intentional).** cic splits a multi-line compose into ONE PRIVMSG POST per
-line, so a paste of >`capacity` lines fires a burst that trips the throttle
-mid-paste — lines past the burst get 429'd and cic retains the un-acked
-draft in the compose box (observed: the textarea keeps the text rather than
-silently dropping it). This is the throttle doing its job — a 12-line dump
-is exactly what bahamut would k-line the user for — but how cic drip-feeds
-or surfaces the 429 for a split send (queue at the refill rate vs. leave it
-to the user to resend) is a cic-side UX follow-up, NOT server scope. dev +
-e2e relax `:send_throttle` (config/dev.exs) so this interaction doesn't
-break the unrelated compose/caret specs that seed history with long bodies;
-production keeps capacity 10 and the 429 wire contract is unit-tested in
-`GrappaWeb.MessagesControllerOutboundTest`.
+**Multi-line paste consequence (intentional in prod).** cic splits a
+multi-line compose into ONE PRIVMSG POST per line, so a paste of >`capacity`
+lines trips the throttle mid-paste — lines past the burst get 429'd and cic
+retains the un-acked draft (it keeps the text, no silent loss). This is the
+throttle working — a big dump is what bahamut would k-line for — but how cic
+drip-feeds / surfaces the 429 for a split send is a cic-side UX follow-up,
+NOT server scope. dev + e2e relax `:send_throttle` (config/dev.exs) so this
+doesn't break unrelated compose/caret specs that seed history with long
+bodies; production keeps capacity 5 and the 429 wire contract is unit-tested
+in `GrappaWeb.MessagesControllerOutboundTest`.
 
 **Known limitation (NOT built — flag, don't build unopened).** The pool is
 shared across subjects with no per-`(subject)` FAIRNESS. One user's
