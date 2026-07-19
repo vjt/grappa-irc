@@ -25907,6 +25907,20 @@ Two axes, kept deliberately distinct because they are two DIFFERENT floods:
 
 The two compose; neither replaces the other.
 
+**Multi-line paste consequence (discovered in e2e, prod behaviour is
+intentional).** cic splits a multi-line compose into ONE PRIVMSG POST per
+line, so a paste of >`capacity` lines fires a burst that trips the throttle
+mid-paste — lines past the burst get 429'd and cic retains the un-acked
+draft in the compose box (observed: the textarea keeps the text rather than
+silently dropping it). This is the throttle doing its job — a 12-line dump
+is exactly what bahamut would k-line the user for — but how cic drip-feeds
+or surfaces the 429 for a split send (queue at the refill rate vs. leave it
+to the user to resend) is a cic-side UX follow-up, NOT server scope. dev +
+e2e relax `:send_throttle` (config/dev.exs) so this interaction doesn't
+break the unrelated compose/caret specs that seed history with long bodies;
+production keeps capacity 10 and the 429 wire contract is unit-tested in
+`GrappaWeb.MessagesControllerOutboundTest`.
+
 **Known limitation (NOT built — flag, don't build unopened).** The pool is
 shared across subjects with no per-`(subject)` FAIRNESS. One user's
 SUSTAINED flood could still delay/drop ANOTHER user's message (Part A's
