@@ -7467,3 +7467,15 @@ audio.media-viewer-media {
 .presence-toast-offline .presence-toast-dot {
   color: var(--muted);
 }
+
+/* Watch-list rejection (presence_error — review 2026-07-19 R2). Same
+   red family as .watched-panel-error; border carries the severity so
+   the toast reads as an error before the text does. */
+.presence-toast-error {
+  border-color: #e57373;
+}
+
+.presence-toast-error .presence-toast-dot {
+  color: #e57373;
+  font-weight: bold;
+}

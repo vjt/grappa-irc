@@ -23,13 +23,26 @@ import type { NotifyEntry } from "./api";
 
 export type PresenceState = "online" | "offline" | "unknown";
 
-export type PresenceToast = {
-  id: number;
-  networkId: number;
-  nick: string;
-  presence: "online" | "offline";
-  ts: string;
-};
+// Discriminated on `kind`: a genuine online/offline transition, or an
+// upstream watch-list rejection (`presence_error` — review 2026-07-19
+// R2: routed here so the failure is VISIBLE in production, not just in
+// the cic_diag ring buffer). Both share the queue, expiry, and
+// dismissal mechanics.
+export type PresenceToast =
+  | {
+      id: number;
+      kind: "transition";
+      networkId: number;
+      nick: string;
+      presence: "online" | "offline";
+      ts: string;
+    }
+  | {
+      id: number;
+      kind: "error";
+      networkId: number;
+      detail: string;
+    };
 
 // Mirror of `Grappa.IRC.Identifier.canonical_nick/1` — the server-side
 // rfc1459 fold used as the presence-map key format on the wire.
@@ -104,17 +117,33 @@ export function applyPresenceChange(payload: {
 
   if (payload.initial) return;
 
+  queueToast({
+    kind: "transition",
+    networkId: payload.network_id,
+    nick: payload.nick,
+    presence: payload.presence,
+    ts: payload.ts,
+  });
+}
+
+// `presence_error` — the upstream rejected the watch registration
+// (ERR_MONLISTFULL 734 / ERR_TOOMANYWATCH 512). Queued as an
+// error-styled toast so the half-success (DB row created, upstream
+// registration refused) is never production-invisible; the raw
+// numeric also lands as a $server notice row server-side.
+export function applyPresenceError(payload: { network_id: number; detail: string }): void {
+  queueToast({ kind: "error", networkId: payload.network_id, detail: payload.detail });
+}
+
+// Omit must distribute over the union arm-by-arm (a bare
+// Omit<PresenceToast, "id"> would collapse the discriminant).
+type ToastInput =
+  | Omit<Extract<PresenceToast, { kind: "transition" }>, "id">
+  | Omit<Extract<PresenceToast, { kind: "error" }>, "id">;
+
+function queueToast(toast: ToastInput): void {
   const id = ++toastSeq;
-  setToasts((ts) => [
-    ...ts,
-    {
-      id,
-      networkId: payload.network_id,
-      nick: payload.nick,
-      presence: payload.presence,
-      ts: payload.ts,
-    },
-  ]);
+  setToasts((ts) => [...ts, { ...toast, id }]);
   scheduleExpiry(() => dismissToast(id), TOAST_MS);
 }
 

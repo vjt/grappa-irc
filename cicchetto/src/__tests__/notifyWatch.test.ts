@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   _setScheduleExpiryForTest,
   applyPresenceChange,
+  applyPresenceError,
   applyPresenceSnapshot,
   dismissToast,
   presenceByNetwork,
@@ -72,9 +73,38 @@ describe("notifyWatch store", () => {
 
     const toasts = presenceToasts();
     expect(toasts).toHaveLength(1);
-    expect(toasts[0]).toMatchObject({ networkId: 42, nick: "Foo", presence: "offline" });
+    expect(toasts[0]).toMatchObject({
+      kind: "transition",
+      networkId: 42,
+      nick: "Foo",
+      presence: "offline",
+    });
 
     dismissToast(toasts[0]!.id);
+    expect(presenceToasts()).toEqual([]);
+  });
+
+  it("presence_error queues an error toast (review R2: production-visible)", () => {
+    applyPresenceError({ network_id: 42, detail: "aaa,bbb" });
+
+    const toasts = presenceToasts();
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toMatchObject({ kind: "error", networkId: 42, detail: "aaa,bbb" });
+
+    dismissToast(toasts[0]!.id);
+    expect(presenceToasts()).toEqual([]);
+  });
+
+  it("error toasts self-expire like transition toasts", () => {
+    const scheduled: Array<() => void> = [];
+    _setScheduleExpiryForTest((fn) => {
+      scheduled.push(fn);
+    });
+
+    applyPresenceError({ network_id: 1, detail: "" });
+
+    expect(presenceToasts()).toHaveLength(1);
+    scheduled[0]!();
     expect(presenceToasts()).toEqual([]);
   });
 

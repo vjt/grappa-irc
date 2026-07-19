@@ -59,6 +59,7 @@ export type KnownApiErrorCode =
   | "fetch_failed"
   | "image_reencode_failed"
   | "too_many_attempts";
+  | "list_full";
 
 const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "invalid_credentials",
@@ -89,6 +90,7 @@ const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "fetch_failed",
   "image_reencode_failed",
   "too_many_attempts",
+  "list_full",
 ]);
 
 function isKnownCode(code: string): code is KnownApiErrorCode {
@@ -241,6 +243,11 @@ function friendlyKnown(err: ApiError, code: KnownApiErrorCode): string {
       // for this source IP. Time-bounded (15 min), unlike the
       // themes-specific rate_limited "try tomorrow" copy.
       return "Too many login attempts. Wait a few minutes and try again.";
+    case "list_full":
+      // #247 (review 2026-07-19 R1) — the /notify watch list hit its
+      // per-network cap (`Grappa.Notify.max_entries/0`). A bounded
+      // resource, not a rate — the recourse is pruning, not waiting.
+      return "Your watch list for this network is full. Remove an entry first.";
     default:
       // Cic M2 reviewer fix: exhaustiveness assertion. Adding a token
       // to `KnownApiErrorCode` without a `case` arm above becomes a
