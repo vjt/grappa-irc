@@ -25789,3 +25789,41 @@ the server only; grappa surfaces the rejection rather than pre-clamping.
 
 _Deploy: **COLD** — new migration (`notify_entries`) + `Session.Server`
 state-shape change (presence fields) + cic bundle._
+
+## 2026-07-19 — #247 post-review hardening: bounded watch list + visible presence errors
+
+Codebase review 2026-07-19 (docs/reviews/codebase/, Bucket A of the
+remediation design) landed three fixes on the open #247 branch before
+merge. Supersedes the previous entry's "grappa surfaces the rejection
+rather than pre-clamping" note — the list is now BOTH capped locally
+and rejection-surfaced.
+
+* **Watch list capped at 64 per (subject, network)** (`Notify.max_entries/0`,
+  R1). Enforced on the POST-state row count inside `add/4`'s transaction —
+  counting after the inserts gets fold-dedup exactly right for free (an
+  idempotent re-add against a full list still succeeds), then rolls back on
+  excess with `{:error, :list_full}` → 422 `list_full` → cic copy. The cap is
+  STATIC, not the ISUPPORT `MONITOR=`/`WATCH=` value: adds happen while
+  parked/disconnected when no 005 exists, and 64 sits under every observed
+  mechanism limit (solanum MONITOR=100, bahamut WATCH=128), so a within-cap
+  arm burst can never earn 734/512 on reconnect. The controller additionally
+  rejects over-cap batch SHAPES before building changesets. The literal `64`
+  dialyzer spec on `max_entries/0` is deliberate (`:underspecs`).
+* **`presence_error` is now production-visible** (R2). The cic handler used to
+  route the typed event only to `diagPush` — a ring buffer rendered solely
+  behind the `cic_diag` flag, i.e. invisible in production, while the comment
+  claimed a toast. It now queues an error-styled toast through the shared
+  presence-toast store (`PresenceToast` grew a `kind: "transition" | "error"`
+  discriminant); `diagPush` stays as the debug trace. Toast (not banner):
+  per-action feedback tied to a command just run, same class as transition
+  toasts, unlike ErrorBanners' persistent connection-level conditions.
+* **Dead REST client removed** (R4): `getNotify`/`NotifyIndexResponse` had no
+  call sites (the WS snapshot covers the panel's cold load); the server-side
+  GET stays for API completeness. **R5 accepted**: multi-nick `/notify del`
+  stays sequential single-nick DELETEs — a batch verb is a route + client +
+  tests for a path that is one nick in practice (documented in compose.ts).
+* **e2e**: `issue247-notify-watch.spec.ts` drives the full loop (add → WATCH
+  sync → 605 baseline dot, no toast → peer connect 600 → transition toast →
+  reload → snapshot repaint → peer quit 601 → panel remove). Not executed on
+  the Windows dev host (bind-mount IO makes local e2e take hours — see
+  memory/windows-host-gotchas); gate is the GH CI integration run.
