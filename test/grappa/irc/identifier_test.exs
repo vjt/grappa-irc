@@ -509,7 +509,8 @@ defmodule Grappa.IRC.IdentifierTest do
       candidates = [source_side.("\#{col}"), source_side.("target_nick"), source_side.("nick")]
 
       migrations =
-        Path.wildcard("priv/repo/migrations/*.exs")
+        "priv/repo/migrations/*.exs"
+        |> Path.wildcard()
         |> Enum.filter(&(File.read!(&1) =~ "replace(replace(replace(replace(lower("))
 
       assert migrations != [], "no folded-index migrations found — glob broken?"
