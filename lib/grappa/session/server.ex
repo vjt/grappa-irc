@@ -114,11 +114,13 @@ defmodule Grappa.Session.Server do
   """
   @type window_ref :: %{kind: NumericRouter.window_kind(), target: String.t() | nil}
 
-  # 30-second debounce before issuing AWAY after all WS connections drop.
-  # Gives the user time to open a new tab without going away. The auto-away
-  # reason string itself lives on `AwayState.auto_away_reason/0` (moved
-  # there in cluster #7 — single injection site is `set_auto_away/1`).
-  @auto_away_debounce_ms 30_000
+  # 10-minute debounce before issuing AWAY after all WS connections drop.
+  # Gives the user generous room to close a tab / lock the phone / switch
+  # apps without the bouncer flapping them AWAY and back — 30s was too
+  # twitchy for real mobile usage (a screen-lock immediately read as away).
+  # The auto-away reason string itself lives on `AwayState.auto_away_reason/0`
+  # (moved there in cluster #7 — single injection site is `set_auto_away/1`).
+  @auto_away_debounce_ms 600_000
 
   # 10s is generous for an upstream NickServ → +r MODE round-trip; even
   # a sluggish ircd should confirm in <2s. The timer is a fail-safe so

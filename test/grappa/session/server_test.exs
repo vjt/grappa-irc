@@ -6171,7 +6171,7 @@ defmodule Grappa.Session.ServerTest do
     # exercises the FULL chain (WSPresence → PubSub → Session.Server →
     # real AWAY line), proving auto-away now transitions on "no VISIBLE
     # device" rather than "no socket": a connected-but-backgrounded device
-    # is away-eligible. The 30s debounce is driven directly via
+    # is away-eligible. The debounce is driven directly via
     # :auto_away_debounce_fire to avoid a real wait (the debounce timing
     # itself is covered by the cancel_and_drain unit tests).
     test "visibility drives auto-away: hidden arms debounce → AWAY, visible unaways (#182)" do
@@ -6190,7 +6190,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = WSPresence.register(user.name, device)
       :ok = WSPresence.set_visibility(user.name, device, true)
 
-      # Background the only visible device → :ws_all_hidden → 30s debounce
+      # Background the only visible device → :ws_all_hidden → debounce
       # ARMED (no immediate AWAY, and the socket is still connected).
       :ok = WSPresence.set_visibility(user.name, device, false)
 
@@ -6201,7 +6201,7 @@ defmodule Grappa.Session.ServerTest do
       # silence above is the debounce, not a dropped/mis-routed event).
       assert :sys.get_state(pid).auto_away_timer != nil
 
-      # Fire the debounce directly (avoids a real 30s wait) → real AWAY.
+      # Fire the debounce directly (avoids a real wait) → real AWAY.
       send(pid, :auto_away_debounce_fire)
 
       assert {:ok, away_line} =
