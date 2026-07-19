@@ -25694,3 +25694,37 @@ the burst source) is noted there too.
 
 _Deploy: **COLD** (server release rebuild — new module code). **HELD** — merge
 to main + push + HOLD; joins the batch, vjt deploys later._
+
+---
+
+## 2026-07-19 — Bucket B (review remediation): mode-1 login throttle + demotion disconnect
+
+Codebase review 2026-07-19, Bucket B. Closes the last open security
+MEDIUM (S6) and the S27 demotion residual.
+
+* **`Grappa.RateLimit.FailureWindow`** — per-(bucket, key) failure
+  counter over a fixed window. Check/record are SEPARATE verbs (unlike
+  DailyQuota's atomic pair): failure is only known after the bcrypt
+  compare, so `check/3` is a lock-free pre-gate and `record_failure/3`
+  advances only on failed attempts — successes never count, so an
+  operator cannot lock themselves out. Rows carry their own window and
+  a new-window insert sweeps every expired row (`select_delete`): keys
+  are unbounded source IPs, so the table bounds itself to keys with a
+  LIVE window rather than every IP ever seen (the DailyQuota
+  "bounded by subjects" argument doesn't transfer).
+* **Mode-1 gate** (`AuthController`): 10 failures / 15 min / source IP,
+  checked before the bcrypt work; trip → 422-sibling 429
+  `too_many_attempts` (distinct from `rate_limited`, whose cic copy is
+  themes-"try tomorrow"). The `:login_throttled` AdminEvents kind is
+  emitted ONCE per (ip, window) — on the exact crossing failure, never
+  on subsequent rejected requests — so a spray cannot flood the admin
+  stream. Kept separate from the visitor #171 admission cap on purpose:
+  same counter infrastructure, different policy axis (credential
+  guessing vs network capacity). nginx fail2ban (#160) remains
+  defense-in-depth, not the primary control.
+* **Demotion disconnect** (S27): admin `PATCH is_admin true→false` now
+  closes the target's WebSocket (mirror of the S8 rotation fix);
+  reconnect re-evaluates `is_admin` at `UserSocket.connect/3`, so
+  AdminChannel keeps its snapshot-at-connect design. Bearer sessions
+  are NOT revoked — demotion is a privilege change, not a credential
+  compromise.
