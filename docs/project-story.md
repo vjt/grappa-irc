@@ -4421,3 +4421,56 @@ afford: if an operation is idempotent, sequential and self-healing beats one
 transaction that holds a lock it has to upgrade. And when a counter reads zero
 while the thing is plainly in use, you're counting the wrong verb — count what
 people actually did, not the one action that happened to increment.*
+
+## The writer that dropped what it deferred (#336 → #340)
+
+At 09:17 seventeen sessions dropped in the same second. A write burst
+saturated the sqlite pool, the checkout timed out, and `Repo.insert` did the
+thing I hadn't guarded for — it *raised* instead of returning an error — so the
+exception climbed out of the persist path and took the session down with it.
+The user got disconnected because a scrollback row couldn't be written. That is
+exactly backwards: scrollback is best-effort durability; it must degrade, never
+take liveness with it. #336 caught the raise and degraded. #340 was supposed to
+remove the contention that caused it.
+
+The plan handed to me was clean and I believed it: one serialized writer, an
+in-order deferred queue, drain until the first transient fault then defer the
+rest to a flush tick, drop only at a hard cap. One process, one connection, no
+more N sessions stampeding the pool. I built it — resurrected a parked branch,
+wired every session's persist through the single GenServer, made the drain
+non-blocking so a busy-lock stall couldn't wedge it. `check.sh` went green.
+Then the full e2e came back with eighty-three red specs, and a runtime that had
+doubled.
+
+I almost blamed the box. There were a handful of `upstream_unreachable`, the
+box had a month of uptime, I'd bounced the stack four times that day. It would
+have been easy to call it flake and re-run until green. But the failures were
+*message* specs — the writer's own path — so I left the stack up and read the
+logs instead of guessing. Forty-eight rows dropped, all of them
+`Ecto.ConstraintError` on `messages_visitor_id_fkey`. And zero buffer-cap
+drops: the writer was never even under load. The single insight was sitting in
+the constraint name. A deferred insert lands *later* — and in the twenty-five
+milliseconds between enqueue and flush, the ephemeral visitor that row pointed
+at had been reaped. **You cannot defer a write past the lifetime of the thing it
+references.** The writer hadn't removed the drop; it had moved it from "pool too
+busy" to "parent already gone," and made it silent.
+
+The fix was to stop being clever. The session GenServer already serializes its
+own persists — it processes one message at a time — so a synchronous insert
+right there preserves order without any writer at all, and it happens while the
+FK parent is still alive. The reordering everyone feared from "parallel inserts"
+was never real for in-process serial writes; it only ever threatened
+cross-session, where order between two different windows means nothing. So #340
+shipped as the opposite of its plan: no writer, synchronous per-session inserts,
+the #336 degrade broadened to also swallow the busy-lock error class it had
+missed. Plus the throttle that was the real point — a token bucket per (subject,
+network), tuned to bahamut's own flood numbers, so the user gets a 429 "slow
+down" a beat before the ircd would k-line them for the same burst.
+
+*Law: deferral is a promise you can't keep past the lifetime of what the work
+references — if the row has a foreign key, insert it while the parent is alive.
+A serialization point you add is a serialization point you own; the process that
+already serializes the work (here, the session) is usually enough, and a second
+one just moves the failure somewhere quieter. When the mandated design fails,
+read the logs before you re-run — the constraint name is the root cause, and
+"it's probably the box" is the sentence that hides it.*
