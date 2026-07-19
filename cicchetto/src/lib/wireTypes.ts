@@ -76,7 +76,8 @@ export type AdminEventsWireEventKind =
   | "server_removed"
   | "credential_bound"
   | "credential_updated"
-  | "credential_unbound";
+  | "credential_unbound"
+  | "login_throttled";
 
 export type AdminEventsWireCircuitOpenEvent = {
   kind: "circuit_open";
@@ -325,6 +326,14 @@ export type AdminEventsWireCredentialUnboundEvent = {
   at: string;
 };
 
+export type AdminEventsWireLoginThrottledEvent = {
+  kind: "login_throttled";
+  source_ip: string | null;
+  failures: number;
+  window_ms: number;
+  at: string;
+};
+
 export type AdminEventsWireEvent =
   | AdminEventsWireCircuitOpenEvent
   | AdminEventsWireCircuitCloseEvent
@@ -350,7 +359,8 @@ export type AdminEventsWireEvent =
   | AdminEventsWireServerRemovedEvent
   | AdminEventsWireCredentialBoundEvent
   | AdminEventsWireCredentialUpdatedEvent
-  | AdminEventsWireCredentialUnboundEvent;
+  | AdminEventsWireCredentialUnboundEvent
+  | AdminEventsWireLoginThrottledEvent;
 
 // === Grappa.ChannelDirectory.Wire ===
 
