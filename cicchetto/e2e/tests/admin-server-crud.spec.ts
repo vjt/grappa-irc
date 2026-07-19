@@ -124,6 +124,82 @@ test("admin toggles TLS on an existing server", async ({ page }) => {
   }
 });
 
+// #266 — a per-network source_address must be a LOCAL bindable address on
+// the host; a non-local literal is rejected at the boundary (422
+// source_not_local) and surfaces in the shared error banner. 192.0.2.1
+// (TEST-NET-1, RFC 5737) is a valid literal the host never binds, so the
+// rejection is deterministic in any environment. A local-address SUCCESS
+// round-trip is covered by the ExUnit ServersController conn test (which reads
+// HostAddresses.list/0) + the AdminNetworksTab vitest — the value of THIS e2e
+// is proving the 422 surfaces end-to-end (nginx → phoenix → cic banner).
+test("admin sees a per-network source rejected via the add-server form (non-local)", async ({
+  page,
+}) => {
+  const admin = getSeededAdmin();
+  const slug = `e2esrv-src-${Date.now()}`;
+  let networkId: number | null = null;
+
+  try {
+    networkId = await createNetwork(admin.token, slug);
+
+    await adminLogin(page, admin);
+    await openNetworksTab(page);
+    await page.getByTestId(`admin-network-expand-${slug}`).click();
+    await expect(page.getByTestId(`admin-network-add-server-form-${slug}`)).toBeVisible();
+
+    await page.getByTestId(`admin-network-add-server-host-${slug}`).fill("src.example.test");
+    await page.getByTestId(`admin-network-add-server-port-${slug}`).fill("6697");
+    await page.getByTestId(`admin-network-add-server-source-${slug}`).fill("192.0.2.1");
+    await page.getByTestId(`admin-network-add-server-submit-${slug}`).click();
+
+    // Error banner surfaces the rejection; the create was refused (no row).
+    await expect(page.getByTestId("admin-networks-error")).toContainText("source_not_local", {
+      timeout: 5_000,
+    });
+    await expect(
+      page.locator(`[data-testid^='admin-network-server-row-${slug}-']`),
+    ).toHaveCount(0);
+  } finally {
+    if (networkId !== null) await deleteNetworkBestEffort(admin.token, networkId);
+  }
+});
+
+test("admin sees an inline source edit rejected on an existing server (non-local)", async ({
+  page,
+}) => {
+  const admin = getSeededAdmin();
+  const slug = `e2esrv-srcedit-${Date.now()}`;
+  let networkId: number | null = null;
+
+  try {
+    networkId = await createNetwork(admin.token, slug);
+
+    const sRes = await fetch(`${GRAPPA_BASE_URL}/admin/networks/${networkId}/servers`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${admin.token}` },
+      body: JSON.stringify({ host: "srcedit.example.test", port: 6697 }),
+    });
+    expect(sRes.ok).toBe(true);
+    const sBody = (await sRes.json()) as { id: number };
+    const serverId = sBody.id;
+
+    await adminLogin(page, admin);
+    await openNetworksTab(page);
+    await page.getByTestId(`admin-network-expand-${slug}`).click();
+
+    const input = page.getByTestId(`admin-network-server-source-input-${slug}-${serverId}`);
+    await expect(input).toHaveValue("");
+    await input.fill("192.0.2.1");
+    await page.getByTestId(`admin-network-server-source-save-${slug}-${serverId}`).click();
+
+    await expect(page.getByTestId("admin-networks-error")).toContainText("source_not_local", {
+      timeout: 5_000,
+    });
+  } finally {
+    if (networkId !== null) await deleteNetworkBestEffort(admin.token, networkId);
+  }
+});
+
 test("admin deletes a server via inline-confirm", async ({ page }) => {
   const admin = getSeededAdmin();
   const slug = `e2esrv-del-${Date.now()}`;

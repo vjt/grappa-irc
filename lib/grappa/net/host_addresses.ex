@@ -17,7 +17,7 @@ defmodule Grappa.Net.HostAddresses do
   egress from those, so surfacing them in the picker is a footgun.
   """
 
-  use Boundary, top_level?: true, deps: []
+  use Boundary, top_level?: true, deps: [Grappa.Net.IpLiteral]
 
   import Bitwise, only: [band: 2]
 
@@ -42,6 +42,30 @@ defmodule Grappa.Net.HostAddresses do
 
       {:error, _} ->
         []
+    end
+  end
+
+  @doc """
+  True when `address` is a strict IP literal whose canonical form is a
+  member of `local_addresses` — i.e. an address the host can actually
+  bind as an outbound source. A non-literal (hostname / CIDR / garbage)
+  or a literal not in the set → `false`.
+
+  #266 — the admin API validates an operator-set per-network
+  `source_address` against `list/0` before persisting it, so a network
+  can't be pinned to an egress the host cannot bind. Pure over the passed
+  set (the universe is passed IN, not read here) — mirrors
+  `Grappa.Vhosts.effective_pool/1`: the admin-boundary caller owns the
+  single `getifaddrs`-backed `list/0` read, keeping this predicate
+  deterministically unit-testable with an explicit set. Canonicalizes via
+  `Grappa.Net.IpLiteral` so `2001:0DB8::1` matches a stored `2001:db8::1`.
+  """
+  @spec local_bindable?(String.t(), [String.t()]) :: boolean()
+  def local_bindable?(address, local_addresses)
+      when is_binary(address) and is_list(local_addresses) do
+    case Grappa.Net.IpLiteral.canonicalize(address) do
+      {:ok, canonical} -> canonical in local_addresses
+      :error -> false
     end
   end
 

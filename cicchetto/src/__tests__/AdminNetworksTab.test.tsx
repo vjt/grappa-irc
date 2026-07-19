@@ -585,6 +585,7 @@ describe("AdminNetworksTab", () => {
           tls: true,
           priority: 0,
           enabled: true,
+          source_address: null,
           inserted_at: "2026-05-31T00:00:00Z",
           updated_at: "2026-05-31T00:00:00Z",
         },
@@ -597,6 +598,7 @@ describe("AdminNetworksTab", () => {
         tls: true,
         priority: 0,
         enabled: true,
+        source_address: null,
         inserted_at: "2026-05-31T00:00:00Z",
         updated_at: "2026-05-31T00:00:00Z",
       });
@@ -625,6 +627,85 @@ describe("AdminNetworksTab", () => {
       });
     });
 
+    // #266 — an empty source field is omitted; a filled one is sent as
+    // source_address; the inline per-row editor sets/clears it via PUT.
+    it("adds a server WITH a source_address and clears an existing one", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      vi.mocked(api.adminListServers).mockResolvedValue([
+        {
+          id: 1,
+          network_id: BAHAMUT.id,
+          host: "irc.example.test",
+          port: 6697,
+          tls: true,
+          priority: 0,
+          enabled: true,
+          source_address: "203.0.113.5",
+          inserted_at: "2026-05-31T00:00:00Z",
+          updated_at: "2026-05-31T00:00:00Z",
+        },
+      ]);
+      vi.mocked(api.adminAddServer).mockResolvedValue({
+        id: 2,
+        network_id: BAHAMUT.id,
+        host: "irc.example2.test",
+        port: 6697,
+        tls: true,
+        priority: 0,
+        enabled: true,
+        source_address: "203.0.113.9",
+        inserted_at: "2026-05-31T00:00:00Z",
+        updated_at: "2026-05-31T00:00:00Z",
+      });
+      vi.mocked(api.adminUpdateServer).mockResolvedValue({
+        id: 1,
+        network_id: BAHAMUT.id,
+        host: "irc.example.test",
+        port: 6697,
+        tls: true,
+        priority: 0,
+        enabled: true,
+        source_address: null,
+        inserted_at: "2026-05-31T00:00:00Z",
+        updated_at: "2026-05-31T00:00:00Z",
+      });
+      render(() => <AdminNetworksTab />);
+      await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
+
+      fireEvent.click(screen.getByTestId(`admin-network-expand-${BAHAMUT.slug}`));
+      await waitFor(() =>
+        expect(screen.queryByTestId(`admin-network-servers-table-${BAHAMUT.slug}`)).not.toBeNull(),
+      );
+
+      // Add a server with a source pinned.
+      fireEvent.input(screen.getByTestId(`admin-network-add-server-host-${BAHAMUT.slug}`), {
+        target: { value: "irc.example2.test" },
+      });
+      fireEvent.input(screen.getByTestId(`admin-network-add-server-source-${BAHAMUT.slug}`), {
+        target: { value: "203.0.113.9" },
+      });
+      fireEvent.click(screen.getByTestId(`admin-network-add-server-submit-${BAHAMUT.slug}`));
+      await waitFor(() => {
+        expect(api.adminAddServer).toHaveBeenCalledWith(
+          "test-bearer",
+          BAHAMUT.id,
+          expect.objectContaining({ host: "irc.example2.test", source_address: "203.0.113.9" }),
+        );
+      });
+
+      // Clear the existing server's source via the inline editor (empty → null).
+      fireEvent.input(screen.getByTestId(`admin-network-server-source-input-${BAHAMUT.slug}-1`), {
+        target: { value: "" },
+      });
+      fireEvent.click(screen.getByTestId(`admin-network-server-source-save-${BAHAMUT.slug}-1`));
+      await waitFor(() => {
+        expect(api.adminUpdateServer).toHaveBeenCalledWith("test-bearer", BAHAMUT.id, 1, {
+          source_address: null,
+        });
+      });
+    });
+
     it("delete-server inline-confirm fires adminDeleteServer", async () => {
       const api = await import("../lib/api");
       vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
@@ -637,6 +718,7 @@ describe("AdminNetworksTab", () => {
           tls: true,
           priority: 0,
           enabled: true,
+          source_address: null,
           inserted_at: "2026-05-31T00:00:00Z",
           updated_at: "2026-05-31T00:00:00Z",
         },

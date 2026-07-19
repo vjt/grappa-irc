@@ -155,7 +155,9 @@ const AdminNetworksTab: Component = () => {
     {},
   );
   const [serverForm, setServerForm] = createStore<
-    Record<number, { host: string; port: string; tls: boolean }>
+    // #266 — `source` is the optional per-network outbound source bind (empty
+    // string = unset).
+    Record<number, { host: string; port: string; tls: boolean; source: string }>
   >({});
   const [serverConfirmKey, setServerConfirmKey] = createSignal<string | null>(null);
 
@@ -326,7 +328,7 @@ const AdminNetworksTab: Component = () => {
     setServerForm(
       produce((draft) => {
         if (draft[net.id] === undefined) {
-          draft[net.id] = { host: "", port: "6697", tls: true };
+          draft[net.id] = { host: "", port: "6697", tls: true, source: "" };
         }
       }),
     );
@@ -462,11 +464,20 @@ const AdminNetworksTab: Component = () => {
       return;
     }
     setError(null);
+    // #266 — an empty source field means "unset" (omit), a filled one pins the
+    // per-network outbound egress. Non-local literals are rejected server-side
+    // (422 source_not_local) and surface in the shared error banner.
+    const source = f.source.trim();
     try {
-      await adminAddServer(t, net.id, { host: f.host.trim(), port, tls: f.tls });
+      await adminAddServer(t, net.id, {
+        host: f.host.trim(),
+        port,
+        tls: f.tls,
+        ...(source === "" ? {} : { source_address: source }),
+      });
       setServerForm(
         produce((draft) => {
-          draft[net.id] = { host: "", port: "6697", tls: true };
+          draft[net.id] = { host: "", port: "6697", tls: true, source: "" };
         }),
       );
       await refreshServers(net);
@@ -486,6 +497,31 @@ const AdminNetworksTab: Component = () => {
     } catch (err) {
       const code = err instanceof ApiError ? err.code : "request_failed";
       setError(`update server (${s.host}:${s.port}): ${code}`);
+    }
+  };
+
+  // #266 — set/clear an existing server's per-network source_address. An empty
+  // input clears it (JSON null); a filled one pins it. Non-local literals are
+  // rejected server-side and surface in the shared error banner.
+  const onSaveServerSource = async (
+    net: AdminNetwork,
+    s: AdminServer,
+    raw: string,
+  ): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    const trimmed = raw.trim();
+    // No-op if unchanged (empty stays cleared / same literal).
+    if (trimmed === (s.source_address ?? "")) return;
+    setError(null);
+    try {
+      await adminUpdateServer(t, net.id, s.id, {
+        source_address: trimmed === "" ? null : trimmed,
+      });
+      await refreshServers(net);
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "request_failed";
+      setError(`set source (${s.host}:${s.port}): ${code}`);
     }
   };
 
@@ -701,7 +737,9 @@ const AdminNetworksTab: Component = () => {
                         <ServersDisclosure
                           net={net}
                           servers={serversByNetworkId[net.id] ?? []}
-                          form={serverForm[net.id] ?? { host: "", port: "6697", tls: true }}
+                          form={
+                            serverForm[net.id] ?? { host: "", port: "6697", tls: true, source: "" }
+                          }
                           onFormChange={(patch) =>
                             setServerForm(
                               produce((draft) => {
@@ -709,6 +747,7 @@ const AdminNetworksTab: Component = () => {
                                   host: "",
                                   port: "6697",
                                   tls: true,
+                                  source: "",
                                 };
                                 draft[net.id] = { ...cur, ...patch };
                               }),
@@ -719,6 +758,9 @@ const AdminNetworksTab: Component = () => {
                           }}
                           onToggleTls={(s) => {
                             void onToggleServerTls(net, s);
+                          }}
+                          onSaveSource={(s, raw) => {
+                            void onSaveServerSource(net, s, raw);
                           }}
                           confirmingServerKey={serverConfirmKey()}
                           onArmServerDelete={(key) => setServerConfirmKey(key)}
@@ -875,10 +917,13 @@ function isDirtyAndValid(net: AdminNetwork, edit: RowEdit | undefined): boolean 
 const ServersDisclosure: Component<{
   net: AdminNetwork;
   servers: AdminServer[];
-  form: { host: string; port: string; tls: boolean };
-  onFormChange: (patch: Partial<{ host: string; port: string; tls: boolean }>) => void;
+  form: { host: string; port: string; tls: boolean; source: string };
+  onFormChange: (
+    patch: Partial<{ host: string; port: string; tls: boolean; source: string }>,
+  ) => void;
   onAddServer: (e: Event) => void;
   onToggleTls: (s: AdminServer) => void;
+  onSaveSource: (s: AdminServer, raw: string) => void;
   confirmingServerKey: string | null;
   onArmServerDelete: (key: string | null) => void;
   onDeleteServer: (s: AdminServer) => void;
@@ -921,6 +966,16 @@ const ServersDisclosure: Component<{
           />
           TLS
         </label>
+        <input
+          type="text"
+          placeholder="source (optional)"
+          value={props.form.source}
+          onInput={(e) =>
+            props.onFormChange({ source: (e.currentTarget as HTMLInputElement).value })
+          }
+          data-testid={`admin-network-add-server-source-${props.net.slug}`}
+          aria-label={`new server outbound source for ${props.net.slug}`}
+        />
         <button
           type="submit"
           disabled={props.form.host.trim() === ""}
@@ -946,6 +1001,7 @@ const ServersDisclosure: Component<{
               <th>tls</th>
               <th>priority</th>
               <th>enabled</th>
+              <th>source</th>
               <th>
                 <span class="sr-only">actions</span>
               </th>
@@ -953,33 +1009,57 @@ const ServersDisclosure: Component<{
           </thead>
           <tbody>
             <For each={props.servers}>
-              {(s) => (
-                <tr data-testid={`admin-network-server-row-${props.net.slug}-${s.id}`}>
-                  <td>{s.host}</td>
-                  <td>{s.port}</td>
-                  <td>{s.tls ? "yes" : "no"}</td>
-                  <td>{s.priority}</td>
-                  <td>{s.enabled ? "yes" : "no"}</td>
-                  <td>
-                    <button
-                      type="button"
-                      onClick={() => props.onToggleTls(s)}
-                      data-testid={`admin-network-server-toggle-tls-${props.net.slug}-${s.id}`}
-                    >
-                      {s.tls ? "Disable TLS" : "Enable TLS"}
-                    </button>
-                    <InlineConfirmButton
-                      idleLabel="Delete"
-                      confirmLabel="Confirm delete?"
-                      armed={props.confirmingServerKey === `${props.net.id}:${s.id}`}
-                      onArm={() => props.onArmServerDelete(`${props.net.id}:${s.id}`)}
-                      onConfirm={() => props.onDeleteServer(s)}
-                      testId={`admin-network-server-delete-${props.net.slug}-${s.id}`}
-                      extraClass="delete-btn"
-                    />
-                  </td>
-                </tr>
-              )}
+              {(s) => {
+                // #266 — per-row source editor. Seeded from the current source
+                // (re-seeded when a refetch replaces the row object). Empty on
+                // save clears it; a filled literal pins it (server rejects a
+                // non-local literal → shared error banner).
+                const [sourceDraft, setSourceDraft] = createSignal(s.source_address ?? "");
+                return (
+                  <tr data-testid={`admin-network-server-row-${props.net.slug}-${s.id}`}>
+                    <td>{s.host}</td>
+                    <td>{s.port}</td>
+                    <td>{s.tls ? "yes" : "no"}</td>
+                    <td>{s.priority}</td>
+                    <td>{s.enabled ? "yes" : "no"}</td>
+                    <td>
+                      <input
+                        type="text"
+                        placeholder="unset"
+                        value={sourceDraft()}
+                        onInput={(e) => setSourceDraft((e.currentTarget as HTMLInputElement).value)}
+                        data-testid={`admin-network-server-source-input-${props.net.slug}-${s.id}`}
+                        aria-label={`outbound source for ${s.host}:${s.port}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => props.onSaveSource(s, sourceDraft())}
+                        data-testid={`admin-network-server-source-save-${props.net.slug}-${s.id}`}
+                      >
+                        Save
+                      </button>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        onClick={() => props.onToggleTls(s)}
+                        data-testid={`admin-network-server-toggle-tls-${props.net.slug}-${s.id}`}
+                      >
+                        {s.tls ? "Disable TLS" : "Enable TLS"}
+                      </button>
+                      <InlineConfirmButton
+                        idleLabel="Delete"
+                        confirmLabel="Confirm delete?"
+                        armed={props.confirmingServerKey === `${props.net.id}:${s.id}`}
+                        onArm={() => props.onArmServerDelete(`${props.net.id}:${s.id}`)}
+                        onConfirm={() => props.onDeleteServer(s)}
+                        testId={`admin-network-server-delete-${props.net.slug}-${s.id}`}
+                        extraClass="delete-btn"
+                      />
+                    </td>
+                  </tr>
+                );
+              }}
             </For>
           </tbody>
         </table>

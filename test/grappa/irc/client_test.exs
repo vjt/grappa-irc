@@ -1815,6 +1815,50 @@ defmodule Grappa.IRC.ClientTest do
       assert Keyword.fetch!(opts, :ifaddr) == source
     end
 
+    # #266 precedence rule #1 — an admin-pinned per-network source OVERRIDES
+    # #271 leaf distribution: the source bind is ABSOLUTE, so every rotated
+    # leaf is dialed from the SAME pinned ifaddr regardless of which leaf the
+    # shuffle picks (or how many leaves rotation burns through on connect
+    # failure). resolve/effective_source pins the source at the plan layer;
+    # here we prove the client's leaf rotation never re-overrides it.
+    test "a pinned source binds constant across rotated leaves (#266 over #271)" do
+      resolver = fn ~c"irc.azzurra.chat", :in, :aaaa -> @azzurra_aaaa end
+      parent = self()
+      source = {0x2A03, 0x4000, 0x2, 0x33C, 0, 0, 0, 0x1}
+      attempts = :counters.new(1, [])
+
+      # First leaf refuses → rotation rolls to a second, DIFFERENT leaf. Both
+      # dials must carry the identical pinned ifaddr.
+      connect_fun = fn _, target, _, opts, _ ->
+        n = :counters.get(attempts, 1)
+        :counters.add(attempts, 1, 1)
+        send(parent, {:dialed, target, Keyword.fetch!(opts, :ifaddr)})
+        if n == 0, do: {:error, :econnrefused}, else: {:ok, :fake_socket}
+      end
+
+      assert {:ok, :fake_socket} =
+               Client.__connect_with_rotation_for_test__(
+                 ~c"irc.azzurra.chat",
+                 6697,
+                 true,
+                 [ifaddr: source],
+                 :inet6,
+                 resolver,
+                 connect_fun
+               )
+
+      assert_received {:dialed, first_leaf, first_ifaddr}
+      assert_received {:dialed, second_leaf, second_ifaddr}
+
+      # Rotation actually happened (two distinct leaves dialed)...
+      assert first_leaf != second_leaf
+      assert first_leaf in @azzurra_aaaa and second_leaf in @azzurra_aaaa
+      # ...but the pinned source is the SAME bind on both — leaf rotation never
+      # overrode it. This is #266 precedence rule #1 at the connect layer.
+      assert first_ifaddr == source
+      assert second_ifaddr == source
+    end
+
     # (d) rotate-on-connect-fail: the first-picked leaf's connect failure must
     # roll to a DIFFERENT member of the set before the :transient give-up, so a
     # single dead leaf can't park every session.

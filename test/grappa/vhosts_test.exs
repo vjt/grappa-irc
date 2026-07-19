@@ -168,16 +168,30 @@ defmodule Grappa.VhostsTest do
     end
   end
 
-  describe "effective_source/2 — resolution precedence" do
-    test "1. selection (intersected with allowed) wins over server_source" do
+  # #266 — the precedence is INVERTED from #251: an admin-set per-network
+  # `server_source` now WINS over the subject's vhost self-selection (and the
+  # pool). Libera go-live posture: an admin-pinned, accountable egress is the
+  # honest answer; a user-driven rotating vhost reads as ban-evasion. When no
+  # admin source is set the vhost selection/pool fallback is unchanged.
+  describe "effective_source/2 — resolution precedence (#266: admin source wins)" do
+    test "1. an admin server_source WINS over an active vhost selection" do
       user = user_fixture()
       {:ok, sel} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
       {:ok, _} = Vhosts.set_selection({:user, user.id}, [sel.address])
 
-      assert Vhosts.effective_source({:user, user.id}, "192.0.2.99") == sel.address
+      # Subject HAS a selection, but the network pins a source → the pin binds.
+      assert Vhosts.effective_source({:user, user.id}, "192.0.2.99") == "192.0.2.99"
     end
 
-    test "2b. multi-selection returns one of the selected (random per connection)" do
+    test "2. falls back to the vhost selection when there is no admin source" do
+      user = user_fixture()
+      {:ok, sel} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
+      {:ok, _} = Vhosts.set_selection({:user, user.id}, [sel.address])
+
+      assert Vhosts.effective_source({:user, user.id}, nil) == sel.address
+    end
+
+    test "2b. multi-selection (no admin source) returns one of the selected (random per connection)" do
       user = user_fixture()
       {:ok, a} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
       {:ok, b} = Vhosts.create_vhost(%{address: addr(), generally_available: true})
@@ -187,24 +201,25 @@ defmodule Grappa.VhostsTest do
       assert picked in [a.address, b.address]
     end
 
-    test "3. falls back to server_source when no selection" do
+    test "3. an admin server_source binds when there is no selection" do
       user = user_fixture()
       assert Vhosts.effective_source({:user, user.id}, "192.0.2.50") == "192.0.2.50"
     end
 
-    test "3b. falls back to nil (pool/kernel) when no selection, no server source" do
+    test "3b. nil (pool/kernel default) when neither an admin source nor a selection" do
       user = user_fixture()
       assert Vhosts.effective_source({:user, user.id}, nil) == nil
     end
 
-    test "a selection whose grant was revoked does NOT bind — falls through to server_source" do
+    test "a revoked-grant selection does NOT bind — nil admin source falls through to nil" do
       user = user_fixture()
       {:ok, granted} = Vhosts.create_vhost(%{address: addr(), generally_available: false})
       {:ok, grant} = Vhosts.grant_vhost(granted, {:user, user.id})
       {:ok, _} = Vhosts.set_selection({:user, user.id}, [granted.address])
       :ok = Vhosts.revoke_grant(grant)
 
-      assert Vhosts.effective_source({:user, user.id}, "192.0.2.50") == "192.0.2.50"
+      # The clamped-out selection is gone AND there is no admin source → nil.
+      assert Vhosts.effective_source({:user, user.id}, nil) == nil
     end
   end
 

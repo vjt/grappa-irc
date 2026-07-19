@@ -69,4 +69,32 @@ defmodule Grappa.Net.HostAddressesTest do
       assert Enum.all?(addrs, fn a -> match?({:ok, ^a}, Grappa.Net.IpLiteral.canonicalize(a)) end)
     end
   end
+
+  # #266 — the admin per-network source-address gate. The universe is passed
+  # IN (deterministic; no dependence on the host's real interfaces), so these
+  # are pure and stable in any container.
+  describe "local_bindable?/2" do
+    # Threat first: a valid literal that the host does NOT bind is rejected.
+    # 192.0.2.1 is TEST-NET-1 (RFC 5737) — never an interface address.
+    test "a non-local literal is NOT bindable (threat)" do
+      refute HostAddresses.local_bindable?("192.0.2.1", ["203.0.113.5", "2001:db8::1"])
+    end
+
+    test "a local literal in the set IS bindable" do
+      assert HostAddresses.local_bindable?("203.0.113.5", ["203.0.113.5", "2001:db8::1"])
+    end
+
+    test "canonicalizes before comparing (2001:0DB8::1 matches stored 2001:db8::1)" do
+      assert HostAddresses.local_bindable?("2001:0DB8::0001", ["2001:db8::1"])
+    end
+
+    test "a non-literal (hostname/garbage) is NOT bindable" do
+      refute HostAddresses.local_bindable?("not-an-ip", ["203.0.113.5"])
+      refute HostAddresses.local_bindable?("example.com", ["203.0.113.5"])
+    end
+
+    test "an empty universe binds nothing" do
+      refute HostAddresses.local_bindable?("203.0.113.5", [])
+    end
+  end
 end
