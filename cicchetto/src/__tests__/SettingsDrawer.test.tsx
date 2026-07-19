@@ -183,23 +183,21 @@ vi.mock("../lib/uploadOrchestrator", () => ({
   uploadTtlSecondsValue: () => uploadTtlHolder.current,
 }));
 
-// Visitor session-sharing — drawer mounts ShareSessionModal as a
-// sibling. Mock to a passthrough so the drawer tests don't reach into
-// fetch/clipboard for the mint flow (ShareSessionModal has its own
-// test file). The reactive `<Show>` wrapping is load-bearing — a
-// `props.open ? ... : null` ternary is evaluated ONCE at component
-// construction and never re-runs when the parent toggles the signal.
-vi.mock("../ShareSessionModal", async () => {
-  const { Show } = await import("solid-js");
+// #335 — the share surface is now an in-panel SUB-PAGE (ShareSessionPage),
+// entered from the "share session" section-button, NOT a mounted modal
+// sibling. The drawer gates it behind `<Show when={settingsPage() ===
+// "share"}>`, so the stub renders unconditionally — its mere presence in
+// the tree proves the drawer navigated to the share sub-page. Mock to a
+// passthrough so the drawer tests don't reach into fetch/clipboard for the
+// mint flow (ShareSessionPage has its own test file).
+vi.mock("../ShareSessionPage", async () => {
   return {
-    default: (props: { open: boolean; onClose: () => void }) => (
-      <Show when={props.open}>
-        <div data-testid="share-modal-stub">
-          <button type="button" onClick={props.onClose}>
-            stub close
-          </button>
-        </div>
-      </Show>
+    default: (props: { onBack: () => void }) => (
+      <div data-testid="share-subpage-stub">
+        <button type="button" onClick={props.onBack}>
+          stub back
+        </button>
+      </div>
     ),
   };
 });
@@ -635,26 +633,38 @@ describe("SettingsDrawer (share session — visitor only)", () => {
     expect(screen.getByTestId("share-session-entry")).toBeInTheDocument();
   });
 
-  it("hides share-session entry when subject is not loaded", () => {
-    subjectHolder.current = null;
-    wrap(true);
-    expect(screen.queryByTestId("share-session-entry")).toBeNull();
-  });
-
-  it("clicking the share-session entry mounts the modal", async () => {
+  it("shows the carded identity section when subject is a visitor (#335)", () => {
     subjectHolder.current = {
       kind: "visitor",
       id: "v1",
       nick: "alice",
     };
     wrap(true);
-    // Closed by default — modal stub absent.
-    expect(screen.queryByTestId("share-modal-stub")).toBeNull();
+    // #335 — identity + share both sit in titled .settings-section cards.
+    expect(screen.getByTestId("settings-section-identity")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-section-share")).toBeInTheDocument();
+  });
+
+  it("hides share-session entry when subject is not loaded", () => {
+    subjectHolder.current = null;
+    wrap(true);
+    expect(screen.queryByTestId("share-session-entry")).toBeNull();
+  });
+
+  it("clicking the share-session entry opens the share sub-page (#335)", async () => {
+    subjectHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "alice",
+    };
+    wrap(true);
+    // Drawer opens on the main page — the share sub-page (stub) is absent.
+    expect(screen.queryByTestId("share-subpage-stub")).toBeNull();
 
     fireEvent.click(screen.getByTestId("share-session-entry"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("share-modal-stub")).toBeInTheDocument();
+      expect(screen.getByTestId("share-subpage-stub")).toBeInTheDocument();
     });
   });
 });

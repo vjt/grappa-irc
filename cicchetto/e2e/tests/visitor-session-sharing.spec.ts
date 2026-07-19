@@ -2,8 +2,8 @@
 //
 // What this covers:
 //   1. Visitor logs in via /auth/login (anon, no password).
-//   2. Visitor mints a share-token from the Settings drawer → modal
-//      shows the share URL.
+//   2. Visitor mints a share-token from the Settings drawer → the share
+//      SUB-PAGE (#335, was a modal) shows the share URL.
 //   3. A second browser context opens the URL → ShareConsume route
 //      auto-consumes → cic navigates into Shell.
 //   4. BOTH contexts stay connected as the SAME visitor:
@@ -55,14 +55,15 @@ test("visitor session-sharing — mint on device A, consume on device B, both co
     );
     await pageA.goto("/");
 
-    // Open Settings drawer → click "share session" → modal mounts.
+    // Open Settings drawer → click the "share session" section-button →
+    // the share sub-page (#335) pushes in and mints on mount.
     await pageA.getByLabel(/open settings/i).click();
     await expect(pageA.getByRole("dialog", { name: /settings/i })).toBeVisible();
     await pageA.getByTestId("share-session-entry").click();
-    await expect(pageA.getByTestId("share-modal")).toBeVisible();
+    await expect(pageA.getByTestId("share-subpage")).toBeVisible();
 
     // Wait for the URL to materialize after the mint request resolves.
-    const urlInput = pageA.getByTestId("share-modal-url");
+    const urlInput = pageA.getByTestId("share-url");
     await expect(urlInput).toBeVisible();
     await expect(urlInput).not.toHaveValue("", { timeout: 10_000 });
 

@@ -4935,6 +4935,46 @@ html.resize-dragging * {
   color: var(--muted);
 }
 
+/* #335/#333 — shared titled "section card": a bordered wrapper with a
+ * muted uppercase heading + a stacked body. Generalizes the vhost-section
+ * heading+list shape into a reusable settings surface. Used by the visitor
+ * identity block + the share sub-page (#335) and the themes personal /
+ * gallery split (#333). Sharp corners + bg-alt + 1px border match the
+ * .settings-nav-row and fieldset siblings (irssi aesthetic, no radius).
+ * (A future consistency pass may retrofit .vhost-section onto this —
+ * deferred, see #335 discussion.) */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+}
+
+.settings-section-heading {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.settings-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* #335 — short muted blurb under a section heading (e.g. the share-session
+ * card's "open this session on another device"). */
+.settings-section-blurb {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .settings-subpage {
   display: flex;
   flex-direction: column;

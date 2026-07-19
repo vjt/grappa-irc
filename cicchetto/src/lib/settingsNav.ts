@@ -18,7 +18,7 @@
 // is the target; this is just the pending hand-off between the tap and
 // the drawer's open effect. (#299 removed this launcher; #332 brought it
 // back — see Shell.tsx.)
-export type SettingsSubPage = "main" | "vhost" | "themes";
+export type SettingsSubPage = "main" | "vhost" | "themes" | "share";
 
 let pendingPage: SettingsSubPage | null = null;
 

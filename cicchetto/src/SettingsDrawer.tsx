@@ -44,7 +44,7 @@ import {
   putVhostSelection,
   type VhostSettingsView,
 } from "./lib/userSettings";
-import ShareSessionModal from "./ShareSessionModal";
+import ShareSessionPage from "./ShareSessionPage";
 import ThemeGallery from "./ThemeGallery";
 import VhostSettingsPage from "./VhostSettingsPage";
 
@@ -57,9 +57,10 @@ import VhostSettingsPage from "./VhostSettingsPage";
 // open/close so onMount-loaded state (devices + prefs) doesn't refetch
 // per open. Backdrop click fires onClose; Esc closes it via the
 // keybindings drawer fallback (Shell.tsx closeDrawer) — the drawer is a
-// scroll-lock-only overlay, NOT in the #232 modal ESC stack, so a modal
-// opened FROM the drawer (share / delete-account) closes on the first Esc
-// and the drawer itself on the next.
+// scroll-lock-only overlay, NOT in the #232 modal ESC stack, so the
+// delete-account modal opened FROM the drawer closes on the first Esc and
+// the drawer itself on the next. (#335 — share is no longer a modal; it's
+// the "share" sub-page, closed by its own back button, not Esc.)
 
 export type Props = {
   open: boolean;
@@ -107,9 +108,9 @@ const SettingsDrawer: Component<Props> = (props) => {
   // originates vhost state — the sub-page reads `vhostView` + reports
   // changes up via the same save-on-change PUT flow.
   const [settingsPage, setSettingsPage] = createSignal<SettingsSubPage>("main");
-  // Visitor session-sharing modal open state. Hidden for user
-  // subjects entirely (users have passwords, no need to share).
-  const [shareOpen, setShareOpen] = createSignal(false);
+  // Visitor-only gate for the identity + share-session sections (#335 share
+  // is now the "share" sub-page). Hidden for user subjects entirely — users
+  // have passwords, no per-network identity editor, no session to share.
   const isVisitor = (): boolean => getSubject()?.kind === "visitor";
   const isUser = (): boolean => getSubject()?.kind === "user";
   // #126 — a registered (NickServ-identified) visitor is a PERSISTENT
@@ -926,80 +927,97 @@ const SettingsDrawer: Component<Props> = (props) => {
               which live-applies via internal reconnect (the session bounces
               + rejoins). The confirm-armed save communicates the reconnect
               cost; a 422 renders inline. */}
-            <div class="settings-identity" data-testid="settings-identity">
-              <label for="settings-nick">Nick</label>
-              <input
-                id="settings-nick"
-                type="text"
-                autocapitalize="none"
-                autocorrect="off"
-                spellcheck={false}
-                value={nickText()}
-                onInput={(e) => setNickText(e.currentTarget.value)}
-              />
+            {/* #335 — identity now sits inside a titled .settings-section
+                card (was a bare, unstyled block with no wrapper). */}
+            <div class="settings-section" data-testid="settings-section-identity">
+              <h4 class="settings-section-heading">identity</h4>
+              <div class="settings-identity" data-testid="settings-identity">
+                <label for="settings-nick">Nick</label>
+                <input
+                  id="settings-nick"
+                  type="text"
+                  autocapitalize="none"
+                  autocorrect="off"
+                  spellcheck={false}
+                  value={nickText()}
+                  onInput={(e) => setNickText(e.currentTarget.value)}
+                />
 
-              <label for="settings-realname">Real name</label>
-              <input
-                id="settings-realname"
-                type="text"
-                autocapitalize="none"
-                autocorrect="off"
-                spellcheck={false}
-                value={realnameText()}
-                onInput={(e) => setRealnameText(e.currentTarget.value)}
-              />
+                <label for="settings-realname">Real name</label>
+                <input
+                  id="settings-realname"
+                  type="text"
+                  autocapitalize="none"
+                  autocorrect="off"
+                  spellcheck={false}
+                  value={realnameText()}
+                  onInput={(e) => setRealnameText(e.currentTarget.value)}
+                />
 
-              <label for="settings-ident">Ident</label>
-              <input
-                id="settings-ident"
-                type="text"
-                autocapitalize="none"
-                autocorrect="off"
-                spellcheck={false}
-                value={identText()}
-                onInput={(e) => setIdentText(e.currentTarget.value)}
-              />
-              <p class="settings-identity-hint">
-                Applying reconnects your session — you'll briefly drop and rejoin your channels.
-              </p>
-
-              <InlineConfirmButton
-                idleLabel={identitySaving() ? "applying…" : "apply identity"}
-                confirmLabel="apply — this reconnects"
-                testId="settings-identity-apply"
-                armed={identityArmed()}
-                onArm={() => setIdentityArmed(true)}
-                onConfirm={() => {
-                  void onSaveIdentity();
-                }}
-              />
-
-              <Show when={identityError()}>
-                {(msg) => (
-                  <p
-                    role="alert"
-                    class="settings-identity-error"
-                    data-testid="settings-identity-error"
-                  >
-                    {msg()}
-                  </p>
-                )}
-              </Show>
-              <Show when={identitySaved()}>
-                <p class="settings-identity-ok" data-testid="settings-identity-ok">
-                  Identity applied.
+                <label for="settings-ident">Ident</label>
+                <input
+                  id="settings-ident"
+                  type="text"
+                  autocapitalize="none"
+                  autocorrect="off"
+                  spellcheck={false}
+                  value={identText()}
+                  onInput={(e) => setIdentText(e.currentTarget.value)}
+                />
+                <p class="settings-identity-hint">
+                  Applying reconnects your session — you'll briefly drop and rejoin your channels.
                 </p>
-              </Show>
+
+                <InlineConfirmButton
+                  idleLabel={identitySaving() ? "applying…" : "apply identity"}
+                  confirmLabel="apply — this reconnects"
+                  testId="settings-identity-apply"
+                  armed={identityArmed()}
+                  onArm={() => setIdentityArmed(true)}
+                  onConfirm={() => {
+                    void onSaveIdentity();
+                  }}
+                />
+
+                <Show when={identityError()}>
+                  {(msg) => (
+                    <p
+                      role="alert"
+                      class="settings-identity-error"
+                      data-testid="settings-identity-error"
+                    >
+                      {msg()}
+                    </p>
+                  )}
+                </Show>
+                <Show when={identitySaved()}>
+                  <p class="settings-identity-ok" data-testid="settings-identity-ok">
+                    Identity applied.
+                  </p>
+                </Show>
+              </div>
             </div>
 
-            <button
-              type="button"
-              class="share-session-entry"
-              data-testid="share-session-entry"
-              onClick={() => setShareOpen(true)}
-            >
-              share session
-            </button>
+            {/* #335 — share-session section: a titled card (blurb + a
+                section-button) whose button follows the vhost/themes nav-row
+                pattern — tapping it pushes into the share sub-page, which
+                mints a fresh link on mount. isVisitor()-gated (mint 403s for
+                users). */}
+            <div class="settings-section" data-testid="settings-section-share">
+              <h4 class="settings-section-heading">share session</h4>
+              <p class="settings-section-blurb">open this session on another device.</p>
+              <button
+                type="button"
+                class="settings-nav-row"
+                data-testid="share-session-entry"
+                onClick={() => setSettingsPage("share")}
+              >
+                <span class="settings-nav-row-label">create share link</span>
+                <span class="settings-nav-row-chevron" aria-hidden="true">
+                  ›
+                </span>
+              </button>
+            </div>
           </Show>
 
           {/* #126 — canonical session-lifecycle verbs ("log out" retired).
@@ -1095,8 +1113,15 @@ const SettingsDrawer: Component<Props> = (props) => {
         <Show when={settingsPage() === "themes"}>
           <ThemeGallery onBack={() => setSettingsPage("main")} />
         </Show>
+
+        {/* #335 — share-session sub-page (was ShareSessionModal). Entered
+            from the visitor "share session" section-button; mints a fresh
+            share link on mount + offers copy / native-share. Back returns
+            to main, unmounting it (discards the on-screen token). */}
+        <Show when={settingsPage() === "share"}>
+          <ShareSessionPage onBack={() => setSettingsPage("main")} />
+        </Show>
       </aside>
-      <ShareSessionModal open={shareOpen()} onClose={() => setShareOpen(false)} />
       <DeleteAccountModal
         open={deleteOpen()}
         onClose={() => setDeleteOpen(false)}
