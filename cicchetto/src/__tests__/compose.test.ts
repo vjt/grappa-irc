@@ -40,6 +40,8 @@ vi.mock("../lib/api", () => {
     ownNickForNetwork: vi.fn(),
     // T32 — required by compose.ts for /quit /disconnect /connect
     patchNetwork: vi.fn(),
+    // #356 — /notify + /watch presence add hits this REST helper.
+    postNotifyAdd: vi.fn().mockResolvedValue(undefined),
     // Required by networks.ts (transitively imported via compose.ts → networks.ts)
     listNetworks: vi.fn().mockResolvedValue([]),
     listChannels: vi.fn().mockResolvedValue([]),
@@ -1893,68 +1895,122 @@ describe("compose submit — info verbs (TODO stubs)", () => {
   });
 });
 
-describe("compose submit — watchlist verbs (C8.3)", () => {
-  it("/watch add <pattern> calls pushWatchlistAdd and returns patterns inline", async () => {
+// #356 — watch-family dispatch: keyword highlight (/hilight add, /dehilight
+// del, /highlight alias) + presence (/notify, /watch alias) as classic-IRC
+// irssi-direct verbs; a bare form opens the watch-lists settings section
+// (kind open-settings → silent ok, draft still cleared). The green-notice
+// RENDERING of the `ok: string` output is covered by ComposeBox.test.
+describe("compose submit — watch-family verbs (#356)", () => {
+  it("/hilight <pattern> calls pushWatchlistAdd and returns the highlight list inline", async () => {
     localStorage.setItem("grappa-token", "tok");
     const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/watch add myname");
+    compose.setDraft(k, "/hilight myname");
     const result = await compose.submit(k, "freenode", "#a");
 
     expect(socket.pushWatchlistAdd).toHaveBeenCalledWith("myname");
+    expect(result).toMatchObject({ ok: expect.stringContaining("highlight") });
     expect(result).toMatchObject({ ok: expect.stringContaining("myname") });
   });
 
-  it("/highlight list calls pushWatchlistList and returns patterns inline", async () => {
+  it("/highlight <pattern> (alias) also calls pushWatchlistAdd", async () => {
     localStorage.setItem("grappa-token", "tok");
     const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/highlight list");
-    const result = await compose.submit(k, "freenode", "#a");
+    compose.setDraft(k, "/highlight myname");
+    await compose.submit(k, "freenode", "#a");
 
-    expect(socket.pushWatchlistList).toHaveBeenCalled();
-    expect(result).toMatchObject({ ok: expect.stringContaining("watchlist") });
+    expect(socket.pushWatchlistAdd).toHaveBeenCalledWith("myname");
   });
 
-  it("/watch del <pattern> calls pushWatchlistDel and returns patterns inline", async () => {
+  it("/hilight keeps a multi-word pattern intact (whole rest is one pattern)", async () => {
     localStorage.setItem("grappa-token", "tok");
     const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/watch del myname");
+    compose.setDraft(k, "/hilight foo bar");
+    await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushWatchlistAdd).toHaveBeenCalledWith("foo bar");
+  });
+
+  it("/dehilight <pattern> calls pushWatchlistDel and returns the highlight list inline", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/dehilight myname");
     const result = await compose.submit(k, "freenode", "#a");
 
     expect(socket.pushWatchlistDel).toHaveBeenCalledWith("myname");
-    expect(result).toMatchObject({ ok: expect.stringContaining("watchlist") });
+    expect(result).toMatchObject({ ok: expect.stringContaining("highlight") });
   });
 
-  // C8.3 fix-up BUG #1: draft must be cleared after watchlist submit.
-  it("/watch list clears draft after submit", async () => {
+  it("/notify <nick> calls postNotifyAdd and returns a green confirmation naming the nick", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/notify gigi");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(api.postNotifyAdd).toHaveBeenCalledWith("tok", "freenode", ["gigi"]);
+    expect(result).toMatchObject({ ok: expect.stringContaining("gigi") });
+  });
+
+  it("/watch <nick> (presence alias, #356) also calls postNotifyAdd", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/watch gigi");
+    await compose.submit(k, "freenode", "#a");
+
+    expect(api.postNotifyAdd).toHaveBeenCalledWith("tok", "freenode", ["gigi"]);
+  });
+
+  it("bare /notify opens settings (silent ok) and does NOT hit the notify API", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/notify");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toEqual({ ok: true });
+    expect(api.postNotifyAdd).not.toHaveBeenCalled();
+  });
+
+  it("bare /hilight opens settings (silent ok) and does NOT hit the watchlist API", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/hilight");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toEqual({ ok: true });
+    expect(socket.pushWatchlistAdd).not.toHaveBeenCalled();
+  });
+
+  // Draft must be cleared after a watch-family submit (add + the bare
+  // open-settings path both take the post-try clear path).
+  it("/hilight <pattern> clears the draft after submit", async () => {
     localStorage.setItem("grappa-token", "tok");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/watch list");
+    compose.setDraft(k, "/hilight myname");
     await compose.submit(k, "freenode", "#a");
-    // Draft must be empty — the early-return bug skipped the post-try clear path.
     expect(compose.getDraft(k)).toBe("");
   });
 
-  it("/watch add <pattern> clears draft after submit", async () => {
+  it("bare /notify clears the draft after submit", async () => {
     localStorage.setItem("grappa-token", "tok");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/watch add myname");
-    await compose.submit(k, "freenode", "#a");
-    expect(compose.getDraft(k)).toBe("");
-  });
-
-  it("/watch del <pattern> clears draft after submit", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const compose = await import("../lib/compose");
-    const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/watch del myname");
+    compose.setDraft(k, "/notify");
     await compose.submit(k, "freenode", "#a");
     expect(compose.getDraft(k)).toBe("");
   });

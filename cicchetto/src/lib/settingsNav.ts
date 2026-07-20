@@ -1,3 +1,5 @@
+import { createSignal } from "solid-js";
+
 // #75/#252/#332 — settings-drawer sub-page routing + cross-module deep-link.
 //
 // The settings drawer is a flat "main" page that pushes into dedicated
@@ -18,7 +20,12 @@
 // is the target; this is just the pending hand-off between the tap and
 // the drawer's open effect. (#299 removed this launcher; #332 brought it
 // back — see Shell.tsx.)
-export type SettingsSubPage = "main" | "vhost" | "themes" | "share";
+//
+// #356 — "watchlists" sub-page (notify presence + keyword highlight, one
+// section). Reached from a nav row on the main page AND deep-linked by the
+// bare watch-family compose verbs (/notify, /watch, /hilight, …) via
+// `requestOpenSettings` below.
+export type SettingsSubPage = "main" | "vhost" | "themes" | "share" | "watchlists";
 
 let pendingPage: SettingsSubPage | null = null;
 
@@ -36,4 +43,19 @@ export function consumePendingSettingsPage(): SettingsSubPage | null {
   const page = pendingPage;
   pendingPage = null;
   return page;
+}
+
+// #356 — cross-module "OPEN the settings drawer (on `page`)" request. The
+// existing `requestSettingsPage` only chooses WHICH page the drawer lands on
+// once it opens; it does not open the drawer. A compose verb (a lib module)
+// can't reach Shell's local `setSettingsOpen`, so it bumps this monotonic
+// tick — Shell watches it via an effect and opens the drawer, whose open
+// transition then consumes the pending page. Tick (not boolean) so two
+// bare /notify in a row each re-open a drawer the user closed between them.
+const [openTick, setOpenTick] = createSignal(0);
+export const settingsOpenTick = openTick;
+
+export function requestOpenSettings(page: SettingsSubPage): void {
+  requestSettingsPage(page);
+  setOpenTick((n) => n + 1);
 }

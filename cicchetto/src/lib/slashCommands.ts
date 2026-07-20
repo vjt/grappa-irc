@@ -49,7 +49,8 @@
 // Aliases:
 //   - `/q` == `/query` (both produce {kind: "query"})
 //   - `/j` == `/join`  (both produce {kind: "join"})
-//   - `/watch` == `/highlight` (both produce {kind: "watchlist"})
+//   - `/watch` == `/notify` (#356: presence; was a keyword alias pre-#356)
+//   - `/highlight` == `/hilight` (both keyword-highlight add)
 //
 // Services shortcuts (issue #20) — `/<x>s <cmd>` rewrites to
 // {kind: "msg", target}; a BARE `/<x>s` (issue #290) opens the dedicated
@@ -65,9 +66,13 @@
 //   - `/quote <line>` → raw IRC frame (escape hatch)
 //   - `/oper <name> <password>` → IRC OPER (password redacted in logs)
 //
-// /watch /highlight subverbs: `add <pattern>` / `del <pattern>` / `list`.
-// Server-side /user_settings API is not yet implemented — handlers in
-// compose.ts emit inline "not yet implemented" errors as TODO stubs.
+// #356 — watch-family grammar (classic-IRC, irssi-direct):
+//   - presence: `/notify <nick> …` / `/watch <nick> …` add; bare → settings.
+//   - keyword:  `/hilight <pattern>` / `/highlight <pattern>` add,
+//               `/dehilight <pattern>` remove; bare → settings.
+// A bare form of any of them yields {kind: "open-settings"} (the unified
+// watch-lists section); compose.ts routes add/del over the existing
+// server round-trips and opens the settings drawer for the bare case.
 
 export type SlashCommand =
   | { kind: "empty" }
@@ -131,14 +136,20 @@ export type SlashCommand =
   | { kind: "rehash" }
   | { kind: "whois"; nick: string | null; server: string | null }
   | { kind: "whowas"; nick: string }
-  | { kind: "watchlist"; action: "add"; pattern: string }
-  | { kind: "watchlist"; action: "del"; pattern: string }
-  | { kind: "watchlist"; action: "list" }
-  // #247 — /notify presence watch (server-side list; NOT the
-  // client-local /watch|/highlight word-highlight list above).
-  | { kind: "notify"; action: "list" }
-  | { kind: "notify"; action: "add" | "del"; nicks: string[] }
-  | { kind: "notify"; action: "clear" }
+  // #356 — keyword highlight list (classic-IRC /hilight + /dehilight,
+  // /highlight alias). irssi-direct grammar: `/hilight <pattern>` adds,
+  // `/dehilight <pattern>` removes. A BARE form opens settings (see
+  // "open-settings" below), so there is no list action any more.
+  | { kind: "watchlist"; action: "add" | "del"; pattern: string }
+  // #247/#356 — /notify presence watch (server-side per-network list;
+  // NOT the keyword highlight list above). irssi-direct: `/notify <nick> …`
+  // adds. Removal is via the settings ×; a bare form opens settings.
+  | { kind: "notify"; action: "add"; nicks: string[] }
+  // #356 — a BARE watch-family verb (/notify, /watch, /hilight,
+  // /highlight, /dehilight) opens the unified watch-lists settings section
+  // instead of printing inline. One section holds both lists, so a single
+  // section value covers every bare form.
+  | { kind: "open-settings"; section: "watchlists" }
   | { kind: "quote"; line: string }
   | { kind: "oper"; name: string; password: string }
   | { kind: "error"; verb: string; message: string };
@@ -165,27 +176,32 @@ function parseNicksVerb(kind: NicksVerbKind, rest: string): SlashCommand {
   return { kind, nicks };
 }
 
-// Parse /watch and /highlight (alias) — same output shape.
-function parseWatchlist(verb: string, rest: string): SlashCommand {
-  const toks = tokens(rest);
-  if (toks.length === 0)
-    return err(verb, `/${verb} requires a subverb: add <pattern> | del <pattern> | list`);
-  const subverb = toks[0];
-  if (subverb === "list") {
-    return { kind: "watchlist", action: "list" };
-  }
-  if (subverb === "add") {
-    if (toks.length < 2) return err(verb, `/${verb} add requires a pattern`);
-    return { kind: "watchlist", action: "add", pattern: toks.slice(1).join(" ") };
-  }
-  if (subverb === "del") {
-    if (toks.length < 2) return err(verb, `/${verb} del requires a pattern`);
-    return { kind: "watchlist", action: "del", pattern: toks.slice(1).join(" ") };
-  }
-  return err(
-    verb,
-    `/${verb} unknown subverb '${subverb}' — use: add <pattern> | del <pattern> | list`,
-  );
+// #356 — presence-watch parser, shared by /notify + /watch (alias).
+// irssi-direct: `/notify <nick> [<nick> …]` adds each nick; a BARE form
+// opens the watch-lists settings section (removal lives there, per-entry ×).
+function parseNotify(_verb: string, rest: string): SlashCommand {
+  const nicks = tokens(rest);
+  if (nicks.length === 0) return { kind: "open-settings", section: "watchlists" };
+  return { kind: "notify", action: "add", nicks };
+}
+
+// #356 — keyword-highlight add parser, shared by /hilight + /highlight
+// (alias). irssi-direct: `/hilight <pattern>` adds the pattern (the whole
+// rest is one pattern — highlight patterns may contain spaces). A BARE form
+// opens the watch-lists settings section.
+function parseHilight(_verb: string, rest: string): SlashCommand {
+  const pattern = rest.trim();
+  if (pattern === "") return { kind: "open-settings", section: "watchlists" };
+  return { kind: "watchlist", action: "add", pattern };
+}
+
+// #356 — keyword-highlight remove parser (/dehilight). irssi spelling for
+// "stop highlighting <pattern>". A BARE form opens settings (same landing
+// as bare /hilight — the list is right there to prune from).
+function parseDehilight(_verb: string, rest: string): SlashCommand {
+  const pattern = rest.trim();
+  if (pattern === "") return { kind: "open-settings", section: "watchlists" };
+  return { kind: "watchlist", action: "del", pattern };
 }
 
 // Dispatch table: verb (lowercased) → handler(verb, rest) → SlashCommand.
@@ -519,21 +535,18 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     return { kind: "whowas", nick };
   },
 
-  watch: (verb, rest) => parseWatchlist(verb, rest),
-  highlight: (verb, rest) => parseWatchlist(verb, rest),
+  // #356 — presence watch (classic IRC WATCH/MONITOR = presence).
+  // /notify is canonical; /watch is now a presence ALIAS (was a keyword
+  // alias pre-#356). Both: irssi-direct add, or bare → open settings.
+  notify: (verb, rest) => parseNotify(verb, rest),
+  watch: (verb, rest) => parseNotify(verb, rest),
 
-  // #247 — irssi-shaped /notify. Bare form == `list`; `add`/`del` take
-  // one or more nicks; `clear` wipes the current network's list.
-  notify: (verb, rest) => {
-    const [action, ...nicks] = tokens(rest);
-    if (!action || action === "list") return { kind: "notify", action: "list" };
-    if (action === "clear") return { kind: "notify", action: "clear" };
-    if (action === "add" || action === "del") {
-      if (nicks.length === 0) return err(verb, `/notify ${action} requires at least one nick`);
-      return { kind: "notify", action, nicks };
-    }
-    return err(verb, "/notify usage: /notify [list | add <nick> … | del <nick> … | clear]");
-  },
+  // #356 — keyword highlight. /hilight is canonical (irssi spelling on the
+  // host /usr/share/irssi/help/), /dehilight removes, /highlight kept as an
+  // alias of /hilight. All: irssi-direct, or bare → open settings.
+  hilight: (verb, rest) => parseHilight(verb, rest),
+  dehilight: (verb, rest) => parseDehilight(verb, rest),
+  highlight: (verb, rest) => parseHilight(verb, rest),
 
   // Issue #20 — services shortcuts. Each one rewrites to a {kind: "msg"}
   // command targeting the canonical ServiceNick. Empty body → error (no

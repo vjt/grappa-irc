@@ -1,7 +1,5 @@
 import { createSignal } from "solid-js";
 import {
-  clearNotify,
-  deleteNotifyNick,
   ownNickForNetwork,
   patchNetwork,
   postJoin,
@@ -14,6 +12,7 @@ import { token } from "./auth";
 import { setQuery } from "./channelDirectory";
 import type { ChannelKey } from "./channelKey";
 import { friendlyError } from "./friendlyError";
+import { addHighlight, delHighlight } from "./highlightList";
 import { identityScopedStore } from "./identityScopedStore";
 import { markLusersRequested } from "./lusersBundle";
 import { membersByChannel } from "./members";
@@ -22,7 +21,6 @@ import { splitMessageLines } from "./messageLines";
 import { openModeModal } from "./modeModal";
 import { networkBySlug, networkIdBySlug, user } from "./networks";
 import { nickEquals } from "./nickEquals";
-import { presenceFor, watchByNetwork } from "./notifyWatch";
 import { ensureQueryTopicJoined } from "./queryTopicJoin";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { quitAll } from "./quit";
@@ -30,6 +28,7 @@ import { sendMessage as sendPrivmsg } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { openServiceModal } from "./serviceModal";
 import { isServicesSender } from "./servicesSender";
+import { requestOpenSettings } from "./settingsNav";
 import { parseSlash } from "./slashCommands";
 import {
   pushAwaySet,
@@ -53,9 +52,6 @@ import {
   pushOper,
   pushRaw,
   pushVersion,
-  pushWatchlistAdd,
-  pushWatchlistDel,
-  pushWatchlistList,
   pushWho,
   pushWhois,
   pushWhowas,
@@ -880,58 +876,46 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           break;
         }
         // ---------------------------------------------------------------
-        // Watchlist verbs — C8.3 real plumbing.
-        // Push on the user-level channel; server replies {patterns: string[]}.
-        // Render the current list inline so the user gets confirmation.
+        // #356 — keyword highlight (/hilight add, /dehilight del; /highlight
+        // alias). Routed through the highlightList store so the command AND
+        // the watch-lists settings section share ONE authoritative list
+        // (the server round-trip returns {patterns}, mirrored into the
+        // store). The full post-mutation list renders inline as a green
+        // auto-dismissing notice (ComposeBox #356) — the response IS the
+        // list, so this is race-free.
         // ---------------------------------------------------------------
         case "watchlist": {
-          let watchResult: { patterns: string[] };
-          if (cmd.action === "add") {
-            watchResult = await pushWatchlistAdd(cmd.pattern);
-          } else if (cmd.action === "del") {
-            watchResult = await pushWatchlistDel(cmd.pattern);
-          } else {
-            // action === "list"
-            watchResult = await pushWatchlistList();
-          }
+          const patterns =
+            cmd.action === "add"
+              ? await addHighlight(cmd.pattern)
+              : await delHighlight(cmd.pattern);
           result = {
-            ok: `watchlist (${watchResult.patterns.length}): ${watchResult.patterns.join(", ") || "(empty)"}`,
+            ok: `highlight (${patterns.length}): ${patterns.join(", ") || "(empty)"}`,
           };
           break;
         }
-        // #247 — /notify presence watch. Thin sugar over the server-side
-        // list: add/del/clear hit REST (the server broadcasts the updated
-        // notify_list back + live-syncs the session's MONITOR/WATCH);
-        // list renders the current mirror inline with each nick's dot
-        // state. Per-network — the active window's network is the context.
+        // #247/#356 — /notify + /watch presence watch (irssi-direct add).
+        // POST to the per-network REST surface; the server broadcasts the
+        // updated notify_list + live-syncs the session's MONITOR/WATCH. The
+        // green confirmation names the nicks from the COMMAND input, not the
+        // store — the notify_list broadcast that would let us re-render the
+        // full list may not have landed by the time the POST resolves, so
+        // reading watchByNetwork() here would race. Removal is the settings
+        // × (bare /notify opens it). Per-network: the active window's network.
         case "notify": {
-          const networkId = networkIdBySlug(networkSlug);
-          if (networkId === undefined) return { error: "/notify: network not found" };
-          if (cmd.action === "add") {
-            await postNotifyAdd(t, networkSlug, cmd.nicks);
-            result = { ok: true };
-          } else if (cmd.action === "del") {
-            // Sequential single-nick DELETEs (the rare multi-del case);
-            // each is idempotent server-side. Accepted trade-off
-            // (review 2026-07-19 R5): each DELETE triggers one
-            // full-list broadcast + one live session sync, but a batch
-            // remove verb would add a route + client + tests for a
-            // path that is one nick in practice. Revisit only if the
-            // broadcast cost ever shows up.
-            for (const nick of cmd.nicks) {
-              await deleteNotifyNick(t, networkSlug, nick);
-            }
-            result = { ok: true };
-          } else if (cmd.action === "clear") {
-            await clearNotify(t, networkSlug);
-            result = { ok: true };
-          } else {
-            const entries = watchByNetwork()[networkId] ?? [];
-            const rendered = entries
-              .map((e) => `${e.nick} (${presenceFor(networkId, e.nick)})`)
-              .join(", ");
-            result = { ok: `notify (${entries.length}): ${rendered || "(empty)"}` };
-          }
+          if (networkIdBySlug(networkSlug) === undefined)
+            return { error: "/notify: network not found" };
+          await postNotifyAdd(t, networkSlug, cmd.nicks);
+          result = { ok: `notify: watching ${cmd.nicks.join(", ")}` };
+          break;
+        }
+        // #356 — a bare watch-family verb (/notify, /watch, /hilight,
+        // /highlight, /dehilight) opens the unified watch-lists settings
+        // section rather than printing inline. Opening the drawer IS the
+        // feedback, so this is a silent success.
+        case "open-settings": {
+          requestOpenSettings(cmd.section);
+          result = { ok: true };
           break;
         }
         // Bundle C (#20 follow-up) — /quote <raw IRC line>. Push to

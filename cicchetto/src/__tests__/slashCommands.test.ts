@@ -653,61 +653,53 @@ describe("parseSlash — info verbs (TODO — server-side missing)", () => {
   });
 });
 
-describe("parseSlash — watchlist verbs (/watch and /highlight are aliases)", () => {
-  it("/watch add <pattern>", () => {
-    expect(parseSlash("/watch add myname")).toEqual({
+// #356 — keyword highlight is classic-IRC irssi-shaped now: /hilight
+// canonical, /highlight alias, /dehilight remove. irssi-direct (the whole
+// rest is one pattern, no add/del/list subverb). A BARE form opens the
+// unified watch-lists settings section instead of erroring.
+describe("parseSlash — keyword highlight (/hilight, /highlight alias, /dehilight) — #356", () => {
+  it("/hilight <pattern> → watchlist add", () => {
+    expect(parseSlash("/hilight myname")).toEqual({
       kind: "watchlist",
       action: "add",
       pattern: "myname",
     });
   });
 
-  it("/highlight add <pattern> — same as /watch add", () => {
-    expect(parseSlash("/highlight add myname")).toEqual({
+  it("/highlight <pattern> → same as /hilight (alias)", () => {
+    expect(parseSlash("/highlight myname")).toEqual({
       kind: "watchlist",
       action: "add",
       pattern: "myname",
     });
   });
 
-  it("/watch del <pattern>", () => {
-    expect(parseSlash("/watch del myname")).toEqual({
+  it("/hilight keeps a multi-word pattern intact (whole rest is one pattern)", () => {
+    expect(parseSlash("/hilight foo bar")).toEqual({
+      kind: "watchlist",
+      action: "add",
+      pattern: "foo bar",
+    });
+  });
+
+  it("/dehilight <pattern> → watchlist del", () => {
+    expect(parseSlash("/dehilight myname")).toEqual({
       kind: "watchlist",
       action: "del",
       pattern: "myname",
     });
   });
 
-  it("/highlight del <pattern> — same as /watch del", () => {
-    expect(parseSlash("/highlight del myname")).toEqual({
-      kind: "watchlist",
-      action: "del",
-      pattern: "myname",
-    });
+  it("bare /hilight → open-settings (watchlists)", () => {
+    expect(parseSlash("/hilight")).toEqual({ kind: "open-settings", section: "watchlists" });
   });
 
-  it("/watch list", () => {
-    expect(parseSlash("/watch list")).toEqual({ kind: "watchlist", action: "list" });
+  it("bare /highlight → open-settings (watchlists)", () => {
+    expect(parseSlash("/highlight")).toEqual({ kind: "open-settings", section: "watchlists" });
   });
 
-  it("/highlight list — same as /watch list", () => {
-    expect(parseSlash("/highlight list")).toEqual({ kind: "watchlist", action: "list" });
-  });
-
-  it("/watch bare → error (subverb required)", () => {
-    expect(parseSlash("/watch")).toMatchObject({ kind: "error", verb: "watch" });
-  });
-
-  it("/watch add missing pattern → error", () => {
-    expect(parseSlash("/watch add")).toMatchObject({ kind: "error", verb: "watch" });
-  });
-
-  it("/watch del missing pattern → error", () => {
-    expect(parseSlash("/watch del")).toMatchObject({ kind: "error", verb: "watch" });
-  });
-
-  it("/watch unknown subverb → error", () => {
-    expect(parseSlash("/watch foo")).toMatchObject({ kind: "error", verb: "watch" });
+  it("bare /dehilight → open-settings (watchlists)", () => {
+    expect(parseSlash("/dehilight")).toEqual({ kind: "open-settings", section: "watchlists" });
   });
 });
 
@@ -843,48 +835,33 @@ describe("parseSlash — /oper", () => {
   });
 });
 
-// #247 — /notify presence-watch verbs (server-side list; distinct from
-// the client-local /watch|/highlight word-highlight aliases above).
-describe("parseSlash — /notify", () => {
-  it("bare /notify is list", () => {
-    expect(parseSlash("/notify")).toEqual({ kind: "notify", action: "list" });
+// #247/#356 — /notify presence-watch (server-side per-network list; distinct
+// from the keyword highlight family above). #356 made it classic-IRC
+// irssi-direct: `/notify <nick> …` adds; /watch is a presence ALIAS (was a
+// keyword alias pre-#356); a BARE form opens the watch-lists settings
+// section (removal lives there, per-entry ×).
+describe("parseSlash — /notify + /watch presence (#356: irssi-direct, bare → settings)", () => {
+  it("/notify <nick> → notify add", () => {
+    expect(parseSlash("/notify Foo")).toEqual({ kind: "notify", action: "add", nicks: ["Foo"] });
   });
 
-  it("/notify list", () => {
-    expect(parseSlash("/notify list")).toEqual({ kind: "notify", action: "list" });
-  });
-
-  it("/notify add with one or more nicks", () => {
-    expect(parseSlash("/notify add Foo")).toEqual({
-      kind: "notify",
-      action: "add",
-      nicks: ["Foo"],
-    });
-    expect(parseSlash("/notify add Foo Bar baz")).toEqual({
+  it("/notify <nick> <nick> … → notify add all of them", () => {
+    expect(parseSlash("/notify Foo Bar baz")).toEqual({
       kind: "notify",
       action: "add",
       nicks: ["Foo", "Bar", "baz"],
     });
   });
 
-  it("/notify del with nicks", () => {
-    expect(parseSlash("/notify del Foo Bar")).toEqual({
-      kind: "notify",
-      action: "del",
-      nicks: ["Foo", "Bar"],
-    });
+  it("/watch <nick> → same as /notify (presence alias, #356)", () => {
+    expect(parseSlash("/watch gigi")).toEqual({ kind: "notify", action: "add", nicks: ["gigi"] });
   });
 
-  it("/notify clear", () => {
-    expect(parseSlash("/notify clear")).toEqual({ kind: "notify", action: "clear" });
+  it("bare /notify → open-settings (watchlists) — was `list` pre-#356", () => {
+    expect(parseSlash("/notify")).toEqual({ kind: "open-settings", section: "watchlists" });
   });
 
-  it("/notify add without nicks errors", () => {
-    expect(parseSlash("/notify add")).toMatchObject({ kind: "error", verb: "notify" });
-    expect(parseSlash("/notify del")).toMatchObject({ kind: "error", verb: "notify" });
-  });
-
-  it("unknown /notify subverb errors with usage", () => {
-    expect(parseSlash("/notify bogus")).toMatchObject({ kind: "error", verb: "notify" });
+  it("bare /watch → open-settings (watchlists) — was an error pre-#356", () => {
+    expect(parseSlash("/watch")).toEqual({ kind: "open-settings", section: "watchlists" });
   });
 });
