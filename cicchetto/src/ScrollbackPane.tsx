@@ -19,6 +19,7 @@ import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
+import { mentionsBelowViewport, type ScrollbackLineGeom } from "./lib/mentionScroll";
 import { networks, user } from "./lib/networks";
 import { senderPrefix, snapshotSenderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
@@ -343,6 +344,27 @@ const lastFullyVisibleRowId = (listRef: HTMLDivElement): number | null => {
     if (id) candidate = Number.parseInt(id, 10);
   }
   return candidate;
+};
+
+// #360 — per-row geometry read for the mention-aware scroll-to-bottom badge.
+// Mirrors `lastFullyVisibleRowId`'s offsetTop-based walk (cheap, layout-cached
+// — no getBoundingClientRect thrash) but tags each `.scrollback-line` with its
+// `.scrollback-mention` state (own-nick match, `mentionsUser`) so the pure
+// `mentionsBelowViewport` can decide which mentions sit below the fold. O(n)
+// over rendered rows; called from the (debounced-ish) onScroll + rows-effect
+// recompute paths, and once per tap — mentions are rare, the cost is bounded.
+const readMentionGeom = (listRef: HTMLDivElement): ScrollbackLineGeom[] => {
+  const out: ScrollbackLineGeom[] = [];
+  for (const row of listRef.querySelectorAll<HTMLElement>(".scrollback-line")) {
+    const idAttr = row.dataset.msgId;
+    if (idAttr === undefined) continue;
+    out.push({
+      id: Number.parseInt(idAttr, 10),
+      top: row.offsetTop,
+      isMention: row.classList.contains("scrollback-mention"),
+    });
+  }
+  return out;
 };
 
 // Wire-shape source-of-truth: the server's `Grappa.Scrollback.Message.kind()`
@@ -944,6 +966,27 @@ const ScrollbackPane: Component<Props> = (props) => {
   type ContextMenuState = { targetNick: string; x: number; y: number };
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
 
+  // #360 — mention-aware scroll-to-bottom badge. Holds the nearest-first ids
+  // of own-nick mentions currently below the fold in THIS window; its length
+  // is the badge count, its head (`[0]`) the next jump target. DERIVED from
+  // live geometry + scroll position (neither is a Solid signal), so it is
+  // recomputed at the same edges `atBottom` is: every onScroll (operator
+  // scroll AND the settle scrolls that activation / message-arrival fire) and,
+  // belt-and-suspenders, after each rows() recreation via rAF (a rows change
+  // that lands without a scroll event still refreshes the badge). Scope is
+  // MENTIONS only (`.scrollback-mention`); watchlist highlights are a separate
+  // track kept split for a follow-up (#360).
+  const [mentionsBelow, setMentionsBelow] = createSignal<number[]>([]);
+  const mentionBadgeCount = (): number => mentionsBelow().length;
+  const recomputeMentionsBelow = (): void => {
+    if (!listRef) {
+      setMentionsBelow([]);
+      return;
+    }
+    const viewportBottom = listRef.scrollTop + listRef.clientHeight;
+    setMentionsBelow(mentionsBelowViewport(readMentionGeom(listRef), viewportBottom));
+  };
+
   const key = () => channelKey(props.networkSlug, props.channelName);
   const messages = () => scrollbackByChannel()[key()];
   // #219-general — "is THIS pane frozen under a covering overlay?" A snapshot
@@ -1240,6 +1283,20 @@ const ScrollbackPane: Component<Props> = (props) => {
     return result;
   });
 
+  // #360 — refresh the mention badge after every rows() recreation (a live
+  // message, the switch-time `refreshScrollback` catch-up, a cross-device
+  // read-cursor hydration). The ref-keyed `<For>` rebuilds the list DOM on
+  // every rows change and resets scrollTop, so the settle scroll usually fires
+  // onScroll (which recomputes) — but a rows change that lands the geometry
+  // without a scroll event would leave the badge stale; the rAF read here
+  // (after the browser lays out the recreated list) closes that gap. Tracks
+  // rows() only; recompute reads geometry imperatively, no other deps.
+  createEffect(
+    on(rows, () => {
+      requestAnimationFrame(() => recomputeMentionsBelow());
+    }),
+  );
+
   // C5.0 (UX-5 BJ rewrite — 2026-05-19): own-nick JOIN auto-focus-switch.
   // Derive whether the own nick has a JOIN row for this channel from
   // the scrollback. Channel-window-only per spec #7 — query/server/list/
@@ -1406,6 +1463,13 @@ const ScrollbackPane: Component<Props> = (props) => {
     // close-edge resize.
     const onResize = () => {
       measureOverflow();
+      // #360 — a viewport resize (soft-keyboard open/close, orientation, zoom)
+      // changes `clientHeight` → moves the fold, so the mention-below-fold count
+      // can change with NO scroll event. Recompute the badge unconditionally,
+      // mirroring the #245 gate re-measure above; onScroll owns the scroll-
+      // driven recompute. Matters most on mobile: the keyboard opening while the
+      // operator is parked mid-buffer must not strand a stale badge.
+      recomputeMentionsBelow();
       if (atBottom()) scrollToActivation("tail-only", true);
     };
     window.addEventListener("resize", onResize);
@@ -1497,7 +1561,12 @@ const ScrollbackPane: Component<Props> = (props) => {
     // event-independent re-measure for the no-box-change settle.
     let overflowObserver: ResizeObserver | undefined;
     if (listRef && typeof ResizeObserver !== "undefined") {
-      overflowObserver = new ResizeObserver(() => measureOverflow());
+      overflowObserver = new ResizeObserver(() => {
+        measureOverflow();
+        // #360 — a container box change (flex-chain propagation with no `resize`
+        // event) also moves the fold; keep the mention badge in step here too.
+        recomputeMentionsBelow();
+      });
       overflowObserver.observe(listRef);
     }
 
@@ -2451,6 +2520,14 @@ const ScrollbackPane: Component<Props> = (props) => {
       visibleTailSnapshot.set(key(), tailNow);
     }
 
+    // #360 — refresh the mention badge on every scroll (operator scroll AND
+    // the settle scrolls that activation / message-arrival / the smooth
+    // mention-jump fire). The badge decrements naturally as a jumped-to
+    // mention clears past the fold. Cheap geometry read; overlay-frozen
+    // scrolls already returned above, so this only runs for real viewport
+    // changes.
+    recomputeMentionsBelow();
+
     // CP14 B2: scroll-up triggers loadMore. Delegated to the shared
     // `maybeLoadOlder` closure (also used by the #230 wheel-underfill path)
     // — the top-of-buffer gate + loadMore call + scroll-position preservation
@@ -2578,6 +2655,60 @@ const ScrollbackPane: Component<Props> = (props) => {
     }
   };
 
+  // #360 — the floating button's tap handler (replaces the raw
+  // `scrollToBottomGesture` onClick). MENTION-AWARE: when own-nick mentions
+  // sit below the fold (badge > 0) a tap SMOOTH-scrolls to the nearest one
+  // below (nearest-first, cycling down), decrementing the badge each tap as
+  // the target clears past the fold; once none remain (badge == 0) it falls
+  // back to the existing snap-to-bottom `scrollToBottomGesture` (instant tail
+  // anchor + latch release + read-cursor advance). The nearest target is
+  // re-derived FRESH from the DOM at tap time (not the `mentionsBelow` signal,
+  // which the badge reads) so a mention that arrived/scrolled between the last
+  // recompute and the tap is honoured.
+  //
+  // Smooth (not instant): the jump-to-mention feel is deliberate (#360, vjt
+  // device-verifies it). It is the ONE smooth scroll in this file; the
+  // 2026-06-02 contamination hazard (an async animation on the SHARED
+  // `.scrollback` node surviving a window switch) is neutralised by the
+  // key-change cancel effect below, which interrupts any in-flight animation
+  // synchronously at the switch, before `scrollToActivation` re-anchors.
+  //
+  // A tap is a deliberate operator navigation gesture, so it hands scroll
+  // authority back (`setMarkerActivationPending(false)`) exactly as the
+  // snap-to-bottom path does — otherwise a live message's rows() recreation
+  // would re-assert the frozen divider and yank the view off the mention
+  // (#168 latch). It does NOT advance the read cursor: a mid-buffer mention is
+  // not "read to newest"; the leave-arm's forward-only cursor write covers the
+  // read-up-to-here on the next switch.
+  const onScrollToBottomTap = (): void => {
+    if (!listRef) {
+      scrollToBottomGesture();
+      return;
+    }
+    const viewportBottom = listRef.scrollTop + listRef.clientHeight;
+    const below = mentionsBelowViewport(readMentionGeom(listRef), viewportBottom);
+    const targetId = below[0];
+    if (targetId === undefined) {
+      scrollToBottomGesture();
+      return;
+    }
+    const target = listRef.querySelector<HTMLElement>(
+      `.scrollback-line[data-msg-id="${targetId}"]`,
+    );
+    if (target === null) {
+      // The measured mention vanished between recompute and tap (a rows
+      // recreation dropped it) — degrade to the plain gesture, never no-op.
+      scrollToBottomGesture();
+      return;
+    }
+    setMarkerActivationPending(false);
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    // The badge is DERIVED: onScroll recomputes it as the smooth animation
+    // clears the target past the fold. Recompute now too so a browser that
+    // coalesces the settle scroll still refreshes it.
+    recomputeMentionsBelow();
+  };
+
   // #243 — re-tap "jump to latest". The Sidebar / BottomBar tap handler
   // bumps `scrollToBottomRequest` when the operator re-taps the window
   // they're already on; this pane is the sole subscriber and the only one
@@ -2591,6 +2722,28 @@ const ScrollbackPane: Component<Props> = (props) => {
   // machinery is untouched) PLUS the reached-bottom cursor advance + latch
   // release, since a re-tap to the bottom is the same "read to newest" intent.
   createEffect(on(scrollToBottomRequest, () => scrollToBottomGesture(), { defer: true }));
+
+  // #360 — cancel any in-flight smooth mention-jump scroll at a window switch.
+  // The mention-jump (`onScrollToBottomTap`) is the ONE smooth scroll in this
+  // file; every other path is instant precisely because `.scrollback` is a
+  // SHARED DOM node across channel↔query↔server switches (Shell's non-keyed
+  // Match), and an async animation would survive the row swap and race
+  // `scrollToActivation`, stranding the arriving pane at a stale offset
+  // (2026-06-02 contamination). A synchronous `scrollTo` to the current offset
+  // at the key boundary — this effect fires in the same reactive batch as the
+  // switch, BEFORE scrollToActivation's deferred rAF×2 — is an instant
+  // (default-behavior) scroll instruction that interrupts the native smooth
+  // animation without moving anywhere, so nothing async survives to fight the
+  // re-anchor. `defer` skips the mount run; a no-op when no animation runs.
+  createEffect(
+    on(
+      key,
+      () => {
+        if (listRef) listRef.scrollTo({ top: listRef.scrollTop });
+      },
+      { defer: true },
+    ),
+  );
 
   return (
     <div class="scrollback-pane">
@@ -2774,10 +2927,22 @@ const ScrollbackPane: Component<Props> = (props) => {
             type="button"
             class="scroll-to-bottom-btn"
             data-testid="scroll-to-bottom"
-            onClick={scrollToBottomGesture}
-            aria-label="Scroll to bottom"
+            onClick={onScrollToBottomTap}
+            aria-label={
+              mentionBadgeCount() > 0
+                ? `Jump to next mention (${mentionBadgeCount()} below)`
+                : "Scroll to bottom"
+            }
           >
             ↓
+            {/* #360 — mention-count badge. Shown only when own-nick mentions
+                sit below the fold; a tap then jumps to the nearest one instead
+                of the tail. */}
+            <Show when={mentionBadgeCount() > 0}>
+              <span class="scroll-to-bottom-badge" data-testid="scroll-to-bottom-badge">
+                {mentionBadgeCount()}
+              </span>
+            </Show>
           </button>
         </Show>
       </div>

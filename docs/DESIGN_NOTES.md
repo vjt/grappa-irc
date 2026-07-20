@@ -26536,3 +26536,78 @@ notice that auto-dismisses; bad command → sticky alert; bare `/notify` + bare
 panel; keyword add/× round-trips real server state.
 `issue247-notify-watch.spec.ts` retargeted to the settings sub-page (the
 presence dots/toasts/snapshot loop is unchanged; the list just moved).
+
+## 2026-07-20 — #360: mention-aware scroll-to-bottom badge (cic-only)
+
+The floating scroll-to-bottom button (C7.4, `ScrollbackPane`) now surfaces a
+count of own-nick mentions sitting **below the fold** in the active window, and
+a tap jumps to the next one instead of straight to the tail. cic-only, no
+server work.
+
+**Badge is DERIVED geometry, not a stored count.** A new module-singleton pure
+fn `lib/mentionScroll.ts:mentionsBelowViewport(lines, viewportBottom)` decides
+which mention lines are entirely below the fold (`top >= viewportBottom`, so a
+mention straddling the fold is treated as *seen* and excluded). ScrollbackPane
+reads per-row geometry (`readMentionGeom` — `offsetTop` + the
+`.scrollback-mention` class, mirroring `lastFullyVisibleRowId`'s layout-cached
+walk, no `getBoundingClientRect` thrash) and feeds it to the pure fn. The
+`mentionsBelow` signal (its length = the badge, its head = the next target) is
+recomputed at the SAME geometry edges `atBottom` / the touch-action gate are —
+every `onScroll` (operator scroll + the settle scrolls activation /
+message-arrival / the smooth jump fire), after each `rows()` recreation via rAF,
+AND on viewport/container resize (`onResize` + the #285 `ResizeObserver`), since
+a soft-keyboard open while parked mid-buffer moves the fold with no scroll event.
+Nothing new is persisted; the badge is a projection of live scroll position, so
+it decrements for free as a jumped-to mention clears past the fold.
+
+**Scope = mentions only.** `.scrollback-mention` (own-nick, `mentionsUser`) —
+NOT `.scrollback-highlight` (watchlist). Kept split per the existing
+mention-vs-watchlist track separation; feeding watchlist highlights into the
+badge is a deliberate follow-up decision, not this issue.
+
+**Tap semantics (`onScrollToBottomTap`).** Badge > 0 → SMOOTH
+`scrollIntoView({block:"center"})` to the nearest mention below (nearest-first
+= DOM order = chronological; the target is re-derived FRESH from the DOM at tap
+time, not the badge signal, so a mention that arrived/scrolled since the last
+recompute is honoured). Badge == 0 → the existing `scrollToBottomGesture`
+(instant tail anchor + latch release + forward-only read-cursor advance),
+unchanged. `block:"center"` gives the natural half-viewport decrement; a tap
+also `setMarkerActivationPending(false)` (deliberate operator navigation hands
+scroll authority back, exactly as the snap path does, so a live message's
+`rows()` recreation can't yank the view off the mention — #168 latch) but does
+NOT advance the cursor (a mid-buffer mention isn't "read to newest"; the
+leave-arm's forward-only write covers read-up-to-here on the next switch).
+
+**Smooth scroll + the 2026-06-02 shared-node hazard.** This is the ONE smooth
+scroll in the file; every other path is instant because `.scrollback` is a
+SHARED DOM node across channel↔query↔server switches (Shell's non-keyed Match)
+and an async animation would survive the row swap and race
+`scrollToActivation`, stranding the arriving pane (the 2026-06-02
+contamination). Smooth is deliberate here (vjt device-verifies the FEEL on
+prod; Playwright ≠ iOS), so the hazard is neutralised by a dedicated
+`on(key,…,{defer:true})` effect that fires a synchronous `scrollTo` to the
+current offset at the switch boundary — an instant scroll instruction that
+interrupts the native animation without moving, before scrollToActivation
+re-anchors. The #243 re-tap "jump to latest" command stays plain
+`scrollToBottomGesture` (issue scope = the floating button only).
+
+**Visual.** Corner pill on the button reusing the mention colour pairing
+(`--mention` bg + `--fg` text, exactly `.scrollback-mention`'s) so it reads as
+"mentions", distinct from the button's `--accent` fill; the button gains
+`position: relative` as its offset parent.
+
+**Apply.** When a UI count is a projection of live layout, DERIVE it at the
+geometry-change edges (recompute where `atBottom` recomputes) — do not add a
+parallel stored counter that needs its own housekeeping. When re-introducing a
+smooth scroll onto a shared, switch-reused node, pair it with a switch-boundary
+cancel; the "make everything instant" fix (2026-06-02) was the blunt version of
+the same invariant.
+
+**Verification.** Unit: `mentionScroll.test.ts` (below-the-fold predicate:
+nearest-first order, exclude non-mentions, exclude partially-visible, boundary
+`top == viewportBottom`, empty). Full cic suite green. E2e
+(`issue360-scroll-to-bottom-mention-badge.spec.ts`, chromium, a fresh per-run
+channel so #bofh's accumulated mentions can't skew the count): peer seeds two
+mentions separated by tall fillers; scroll to top → badge "2"; tap → MENTION_1
+in view + badge "1"; tap → MENTION_2 in view + badge gone; tap (empty badge) →
+snap to bottom + button hidden.

@@ -233,7 +233,7 @@ Typed in cicchetto's compose box, parsed client-side, dispatched to REST or IRC.
 | `/disconnect [network] [reason]` | Park one network (persists across reboots until `/connect`) |
 | `/quit [reason]` | Park all networks, QUIT upstream, log out |
 
-Per-window UI behavior — channel header, query/DM focus rule, archive section, the server-owned window-state machine, mobile layout, scrollback polish, mentions-while-away, auto-away, image upload, multi-line paste flood guard (a confirm dialog before pasting >3 lines, since each line sends as its own message) — is documented in `docs/DESIGN_NOTES.md`. cic mirrors server state; it never originates window state client-side.
+Per-window UI behavior — channel header, query/DM focus rule, archive section, the server-owned window-state machine, mobile layout, scrollback polish, the mention-aware scroll-to-bottom badge (jump to the next unseen mention below), mentions-while-away, auto-away, image upload, multi-line paste flood guard (a confirm dialog before pasting >3 lines, since each line sends as its own message) — is documented in `docs/DESIGN_NOTES.md`. cic mirrors server state; it never originates window state client-side.
 
 ## Scope
 

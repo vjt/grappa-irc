@@ -2179,10 +2179,13 @@ html.resize-dragging * {
   opacity: 0.5;
 }
 
-/* C7.4: Scroll-to-bottom button. Now an in-flow child of the float stack
-   (#280) — the stack owns the absolute anchor, so this is position:
-   static. */
+/* C7.4: Scroll-to-bottom button. An in-flow child of the float stack (#280)
+   — the stack owns the absolute anchor for POSITIONING; this is `position:
+   relative` only so the #360 mention-count badge can anchor to its corner
+   (an absolute child needs a positioned offset parent). It still flows
+   normally in the stack. */
 .scroll-to-bottom-btn {
+  position: relative;
   flex-shrink: 0;
   background: var(--accent);
   color: var(--bg);
@@ -2198,6 +2201,43 @@ html.resize-dragging * {
   justify-content: center;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
   line-height: 1;
+}
+
+/* #360 — mention-count badge on the scroll-to-bottom button. Reuses the
+   mention highlight colour pairing (`--mention` bg + `--fg` text, exactly
+   what `.scrollback-line.scrollback-mention` uses) so the badge reads as
+   "mentions", visually distinct from the button's own `--accent` fill. The
+   `--bg` hairline separates the pill from the accent circle behind it. Corner
+   pill, absolute against the `position: relative` button above. */
+.scroll-to-bottom-badge {
+  position: absolute;
+  top: -0.25rem;
+  right: -0.25rem;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.25rem;
+  box-sizing: border-box;
+  border-radius: 0.55rem;
+  background: var(--mention);
+  color: var(--fg);
+  border: 1px solid var(--bg);
+  font-size: 0.7rem;
+  font-weight: bold;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Mobile — the button is 3.5rem (#280 req 4), so bump the badge to stay
+   legible + tappable-adjacent on the larger circle. */
+.shell-mobile .scroll-to-bottom-badge {
+  top: -0.3rem;
+  right: -0.3rem;
+  min-width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 0.7rem;
+  font-size: 0.9rem;
 }
 
 /* #280 req 4 — on mobile, match the next-active circle's box so the
