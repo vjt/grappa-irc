@@ -26395,3 +26395,57 @@ sends one content line so the TARGET is the only message-active window (count
 FULLY within the `.bottom-bar` horizontal bounds. Precondition asserts the tab
 starts off-screen (else the test proves nothing). Client-side only — no cold
 deploy.
+
+---
+
+### 2026-07-20 — #283: per-network Disconnect on the home ConnectedRow
+
+**Premise correction.** The issue title framed this as "users have a
+Disconnect, visitors don't — add visitor parity." Scoping against `main`
+showed the premise was **stale**: since #211 phase 6 ruling D, the disconnect
+verb (`windowClose.disconnectNetwork` → `patchNetwork(:parked)`) is
+subject-agnostic — the sidebar / bottom-bar `×` parks the one network for user
+**and** visitor alike. So Disconnect was already at parity; the "quitAll for
+visitors" split survives only in *stale comments*. The real gap was
+**symmetric** (missing for BOTH subjects) and lived in the home panel itself:
+`HomePane`'s `ConnectedRow` had Jump + 📇 Browse but **no Disconnect**, while
+`DisconnectedRow` already had a Reconnect chip. The home panel could Reconnect
+a parked network but not Disconnect a connected one — you had to reach for the
+sidebar `×`. (vjt spec-challenge + decision, issue #283.)
+
+**What shipped.** A Disconnect button on `ConnectedRow`, symmetric with the
+Reconnect chip. It **reuses** `confirmDisconnectNetwork(slug)` (the #195
+"Disconnect from &lt;slug&gt;?" confirm modal → fire-and-forget park) — the
+SAME verb the `×` fires, NOT raw `disconnectNetwork` (accidental-tap guard).
+One shared component → identical for user + visitor, no fork.
+
+**Decision that got litigated: fire-and-forget vs pending/error chip.** The
+spec said both "reuse `confirmDisconnectNetwork`" AND "mirror
+`onReconnect`'s pending/error UX". These conflict architecturally:
+`confirmDisconnectNetwork` opens the modal and returns `void` immediately,
+firing `disconnectNetwork` (fire-and-forget, swallows the PATCH error to
+`console.warn`) — there is no promise to await and no error to surface, so
+`pending()`/`friendlyApiError` (which `onReconnect` gets from an awaited
+`patchNetwork`) cannot be wired through it. To get them you'd have to extend
+the shared verb (await-able + error-propagating) and touch every `×` call
+site. vjt chose **Option A**: match the `×` exactly — fire-and-forget behind
+the modal, no pending/error chip. The row swapping to `DisconnectedRow` on the
+`connection_state_changed` event IS the feedback. Styled as a subdued outline
+chip (secondary/destructive), distinct from the accent-filled Reconnect CTA.
+
+**Apply:** when a spec says "reuse verb X" AND "mirror behavior Y" and X is
+fire-and-forget while Y needs an awaited result, they conflict — surface the
+tension and let the owner pick before building, don't silently deliver half.
+The general rule: a home-panel affordance that *reverses* an existing one
+(Reconnect ⇄ Disconnect) should reuse the existing verb, not fork a parallel
+one with its own semantics. Client-side only — cic bundle, no cold deploy.
+
+**Verification.** `HomePane.test.tsx` #283 block: Disconnect fires
+`confirmDisconnectNetwork(slug)` and does NOT `patchNetwork`/`setSelectedChannel`
+(proves reuse, not fork/jump); identical for a visitor subject; a `:parked`
+row renders NO Disconnect (connected-only, the Reconnect counterpart). E2e
+(`issue283-home-disconnect.spec.ts`): the Disconnect button is visible on the
+connected home row → click opens the confirm modal with the right target →
+**Cancel does NOT park** (the #195 guard, asserted with a bounded settle so a
+regressed async park can't slip past a t≈0 snapshot) → confirm parks (REST is
+source-of-truth) → the row swaps to the parked card with a Reconnect chip.
