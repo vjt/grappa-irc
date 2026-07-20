@@ -26663,3 +26663,61 @@ jsdom's no-op Selection cannot cover). The FEEL on real iOS/Android
 (selection visibly appearing, magnifier, handles) is not Playwright-
 reproducible — vjt device-verifies post-ship
 (feedback_playwright_webkit_not_ios_scroll).
+
+## 2026-07-20 — #364 cicchetto S1: re-join the user topic on token rotation (rebuild ≠ reconnect)
+
+**The bug (P0, from the 2026-07-19 codebase review).** A token rotation
+that KEEPS the identity — Phase 5 refresh, admin re-issue, or a
+same-visitor `/share` consume — silently killed all user-topic traffic.
+Every user-topic push event vanished AND every user/channel push verb
+(`/whois`, `/op`, `/away`, `open_query_window`, …) rejected "not
+connected", until a logout+reload.
+
+**Root cause — a rebuild is NOT a reconnect.** `socket.ts` REBUILDS the
+Phoenix Socket on every token transition (`_socket = null` → fresh
+`getSocket().connect()`), because the bearer rides the `authToken`
+subprotocol captured ONCE at Socket construction (see the #95/#202
+history) — a plain reconnect would replay the stale ctor-time token. But
+phoenix.js's per-Channel auto-rejoin only re-runs the channels the SAME
+Socket instance still holds in `socket.channels[]`; a brand-new instance
+starts with ZERO channels, so NOTHING auto-rejoins. Every topic must be
+re-joined by the effect that owns it. `subscribe.ts` already did this
+(its `on(token)` arm clears the `joined` Map + `leave()`s each channel on
+rotation, and the join effects re-run). `userTopic.ts` did NOT: its join
+effect dedup'd on the derived IDENTITY (`socketUserName()`) and
+early-returned when the name was unchanged — so on a same-identity
+rotation it never re-joined the rebuilt socket, and `_userChannel` (the
+module-level handle every push verb writes through) stayed null.
+
+**The fix.** Track the live `Channel`, not a boolean identity guard. On
+any token transition off the value we joined under, `leave()` the
+orphaned prior Channel (H2 double-handler-leak parity with subscribe.ts)
+and re-join on the rebuilt socket — regardless of whether the identity
+changed. **The SOCKET, not the identity, is the resource the effect
+tracks.** The general rule for the whole codebase: any token-tracking
+join effect must key its dedup on the socket lifecycle, never on the
+derived identity, because a stable identity does NOT imply a stable
+socket.
+
+**Honesty fixes shipped alongside.** (1) `socket.ts`'s moduledoc claimed
+"phoenix.js auto-rejoins on the next `connect()`" — true for a reconnect,
+FALSE for the rebuild path, and precisely the mental model that let this
+ship; corrected to spell out the rebuild-requires-explicit-rejoin
+contract. (2) The `__cic_userTopicReady` e2e stamp now clears on the
+rebuild-leave and re-adds on the RE-join ack, so it mirrors the LIVE
+subscription instead of "ever subscribed" — a rotation gate awaits the
+fresh join instead of reading a stale positive.
+
+**Verification.** Unit (`userTopic-rotation.test.ts`) drives the REAL
+`auth.ts` signal — the sibling `userTopic.test.ts` mocks auth as plain
+fns and so cannot exercise the reactive rotation at all; the new file
+asserts re-join on same-identity rotation + leave-on-logout. E2e
+(`issue364-usertopic-rejoin-on-rotation.spec.ts`) mints a second
+server-valid bearer for the SAME user, rotates in-context through a
+`__cic_setTokenForTests` seam (sibling of `__cic_dropSocketForTests` — a
+test-only TRIGGER for a real production transition; there is no in-UI
+rotation path today), and proves `/whois` still round-trips afterward.
+Self-`/whois` is the proof surface because it has NO optimistic local
+render: the WhoisCard appears only if the push verb reached the server
+AND the reply event arrived on the re-joined user topic — one artifact
+for both symptoms.

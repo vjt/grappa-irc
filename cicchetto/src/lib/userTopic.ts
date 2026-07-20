@@ -1,3 +1,4 @@
+import type { Channel } from "phoenix";
 import { createEffect, createRoot, untrack } from "solid-js";
 import {
   assertNever,
@@ -74,8 +75,11 @@ import type { ServerSettingsWireUploadView } from "./wireTypes";
 // dispatch switch ends with `assertNever(payload)` so adding a new
 // server-side event kind without a handler arm fails at `tsc` time.
 //
-// Identity-scoped: re-evaluates when `user()` resolves under a fresh
-// bearer.
+// Token-scoped: the join effect tracks `token()` (the sole reactive
+// dep; `socketUserName()` reads the persisted subject non-reactively).
+// Every token transition rebuilds the socket (socket.ts), so the effect
+// leaves the orphaned prior Channel and re-joins on the fresh socket —
+// including a rotation that keeps the identity (#364 cicchetto S1).
 
 function parseWindowsMap(raw: Record<string, QueryWindowEntry[]>): Record<number, QueryWindow[]> {
   const result: Record<number, QueryWindow[]> = {};
@@ -759,41 +763,75 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
   }
 }
 
+// E2E seam: `__cic_userTopicReady` (a Set<userName>) mirrors the LIVE
+// user-topic subscription — stamped when a JOIN ack lands, cleared when
+// the socket is torn down (logout) or rebuilt (rotation). Mirror of
+// `__cic_dmListenerReady` (subscribe.ts): Playwright gates compose-driven
+// specs on the stamp so the user-topic socket is subscribed BEFORE the
+// test pushes /join (server's window_pending + join_failed broadcasts
+// fastlane only to subscribed sockets — sub-50ms WS-ack races in suite
+// context caused the pending/failed events to vanish, leaving cic with no
+// sidebar pseudo-row). Clearing on teardown/rebuild keeps the stamp
+// honest so a rotation gate awaits the RE-join, never a stale positive.
+// Production never reads it.
+function stampUserTopicReady(name: string): void {
+  if (typeof window === "undefined") return;
+  const w = window as Window & { __cic_userTopicReady?: Set<string> };
+  if (!w.__cic_userTopicReady) w.__cic_userTopicReady = new Set();
+  w.__cic_userTopicReady.add(name);
+}
+
+function clearUserTopicReady(): void {
+  if (typeof window === "undefined") return;
+  const w = window as Window & { __cic_userTopicReady?: Set<string> };
+  // At most one user identity per tab, so a full clear is correct.
+  w.__cic_userTopicReady?.clear();
+}
+
 createRoot(() => {
-  let joined = false;
-  let joinedFor: string | null = null;
+  // The user-topic Channel currently held on the live socket, or null
+  // when logged out / mid-transition. Tracked (not a boolean guard) so a
+  // rotation can `leave()` the orphaned prior Channel before re-joining —
+  // see the effect body for the full why.
+  let channel: Channel | null = null;
+  // Previous bearer value, so this effect can distinguish a rotation
+  // (a → b) / logout (a → null) from the initial run (null → a).
+  let prevToken: string | null = null;
 
   createEffect(() => {
-    // Track the bearer; identity is derived from the persisted
-    // Subject via socketUserName() (see auth.ts). Visitor sessions
-    // get the `"visitor:<uuid>"` prefix the server-side
-    // UserSocket.assign_subject expects; user sessions get the
-    // user.name. On token rotation re-derive and re-join.
+    // socket.ts rebuilds the Socket on EVERY token transition — login,
+    // logout, AND rotation. The bearer rides the `authToken` subprotocol,
+    // captured once at construction, so a fresh token means a fresh
+    // Socket instance (socket.ts moduledoc); the prior user-topic Channel
+    // is left bound to a now-dead socket on any transition off the value
+    // we joined under. Leave it (H2 double-handler-leak parity with
+    // subscribe.ts's rotation arm) and drop the ready stamp before
+    // (re)joining on the rebuilt socket.
+    //
+    // Pre-fix this effect dedup'd on the derived IDENTITY (socketUserName)
+    // and early-returned when the name was unchanged, so a rotation
+    // (Phase 5 refresh / admin re-issue / same-visitor share-consume) with
+    // a stable identity NEVER re-joined the rebuilt socket: every
+    // user-topic event was lost AND every user/channel push verb rejected
+    // "not connected" until a logout+reload. The SOCKET, not the identity,
+    // is the resource this effect tracks. (#364 cicchetto S1)
     const t = token();
-    if (!t) {
-      joined = false;
-      joinedFor = null;
-      return;
+    if (prevToken !== null && prevToken !== t) {
+      channel?.leave();
+      channel = null;
+      clearUserTopicReady();
     }
+    prevToken = t;
+    if (!t) return; // logged out — nothing to (re)join
     const name = socketUserName();
     if (name === null) return;
-    if (joined && joinedFor === name) return;
-    joined = true;
-    joinedFor = name;
+    // Re-join whenever no live Channel is held (initial join OR post-
+    // rotation, where the leave above nulled it). A redundant effect
+    // re-run under the same live socket is a no-op (channel already set).
+    if (channel !== null) return;
 
-    const channel = joinUser(name, () => {
-      // E2E seam: stamp `__cic_userTopicReady` after the JOIN ack lands.
-      // Mirror of `__cic_dmListenerReady` (subscribe.ts:733-748). Playwright
-      // gates compose-driven specs on this so the user-topic socket is
-      // subscribed BEFORE the test pushes /join (server's window_pending +
-      // join_failed broadcasts fastlane only to subscribed sockets — sub-
-      // 50ms WS-ack races in suite context caused the pending/failed events
-      // to vanish, leaving cic with no sidebar pseudo-row).
-      if (typeof window !== "undefined") {
-        const w = window as Window & { __cic_userTopicReady?: Set<string> };
-        if (!w.__cic_userTopicReady) w.__cic_userTopicReady = new Set();
-        w.__cic_userTopicReady.add(name);
-      }
+    channel = joinUser(name, () => {
+      stampUserTopicReady(name);
     });
     channel.on("event", (raw: unknown) => {
       const payload = narrowUserEvent(raw);

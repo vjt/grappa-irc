@@ -205,3 +205,25 @@ export async function logout(): Promise<void> {
   }
   clearLocalAuth();
 }
+
+// #364 cicchetto S1 e2e seam — drive a token ROTATION in-context. Sibling
+// of `socket.ts:__cic_dropSocketForTests`: a test-only TRIGGER for a real
+// production transition. Calling the real `setToken(t)` with a fresh,
+// server-valid bearer for the SAME identity fans a genuine reactive
+// rotation through the exact production path — socket.ts rebuilds the
+// Socket and userTopic.ts/subscribe.ts re-join every topic on it. There
+// is no in-UI rotation trigger today (Phase 5 refresh / admin re-issue /
+// same-visitor share-consume are the production paths), so a Playwright
+// spec needs this seam to exercise the rebuilt-socket re-join end to end.
+// Production never calls it; it grants no capability a caller lacks (an
+// XSS with a bearer already owns the session, and `login()` reaches
+// `setToken` anyway).
+declare global {
+  interface Window {
+    __cic_setTokenForTests?: (token: string | null) => void;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__cic_setTokenForTests = (t: string | null) => setToken(t);
+}

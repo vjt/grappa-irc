@@ -28,13 +28,20 @@ import { recordSocketClose, recordSocketError, recordSocketOpen } from "./socket
 // createRoot anchors the effect since module-level effects need an
 // owner.
 //
-// Rotation side-effect: dropping the socket fires `phx_close` on every
-// joined channel; phoenix.js auto-rejoins on the next `connect()`, so
-// the rotation triggers a clean tear-down + rejoin loop across all
-// active topics. Any in-flight `ch.join()` whose handshake was mid-
-// rotation either completes against the old socket then immediately
-// tears down, or errors out and rejoins under the new bearer. Phase 5
-// telemetry should observe the rejoin volume on rotation events.
+// Rotation side-effect — and its NON-obvious rejoin contract: rotation
+// REBUILDS the Socket (`_socket = null`, then a fresh `getSocket()`), it
+// does NOT reconnect the same instance. phoenix.js's per-Channel
+// auto-rejoin only fires on the SAME Socket's `connect()` (it re-runs the
+// channels it still holds in `socket.channels[]`); a brand-new instance
+// starts with ZERO channels, so nothing auto-rejoins. Every topic must be
+// re-joined by the effect that owns it — the token-tracking join effects
+// in `subscribe.ts` (per-channel/DM/query) and `userTopic.ts` (user
+// topic) each re-run on the token change and re-`joinUser`/`joinChannel`
+// on the rebuilt socket. A stale "phoenix auto-rejoins on connect"
+// mental model here is exactly what let #364 (cicchetto S1) ship: the
+// user-topic effect early-returned on the unchanged identity and never
+// re-joined the rebuilt socket. Phase 5 telemetry should observe the
+// rejoin volume on rotation events.
 //
 // Topic vocabulary mirrors `Grappa.PubSub.Topic` exactly. Don't
 // reformat segment separators or re-encode identifiers — the server's
