@@ -25,17 +25,12 @@
 // view, no `%` → no invisible chip → the test fails loudly rather than passing
 // vacuously). The halfop assertions are the #272 regression guard.
 
-import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
+import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-
-// Verbatim trailing bahamut sends for 381 RPL_YOUREOPER — the deterministic
-// signal that the OPER handshake completed and the next /who runs in the oper
-// view (matched as a regex on the stable core phrase, mirror of #148).
-const RPL_YOUREOPER_TEXT = /you are now an irc operator/i;
 
 test("#272 — an operator's /who renders a +i member as invisible, never halfop", async ({
   page,
@@ -54,25 +49,23 @@ test("#272 — an operator's /who renders a +i member as invisible, never halfop
     await peer.join(CHANNEL);
 
     // Oper up the bouncer's upstream session — the +i `%` marker appears ONLY
-    // in the operator-visible WHO. Wait for the 381 so the /who that follows
-    // is guaranteed to run in the oper view.
+    // in the operator-visible WHO. The OPER handshake is async and its 381
+    // RPL_YOUREOPER routes to $server (not this channel pane), so rather than
+    // race a notice we re-issue /who until the oper-view marker actually shows.
+    // Each /who replaces the modal roster in place; before the OPER lands the
+    // non-oper view omits the marker entirely (no chip), so this poll waits for
+    // the handshake without depending on where the 381 renders.
     await composeSend(page, "/oper testoper testoperpass");
-    await expect(scrollbackLine(page, "notice", RPL_YOUREOPER_TEXT).first()).toBeVisible({
-      timeout: 15_000,
-    });
 
-    await composeSend(page, `/who ${CHANNEL}`);
     const modal = page.getByTestId("who-modal");
-    await expect(modal).toBeVisible({ timeout: 5_000 });
-
     const peerRow = modal.locator(".who-modal-row", { hasText: peerNick });
-    await expect(peerRow).toBeVisible({ timeout: 5_000 });
-
-    // Proof the wire carried the oper-view +i marker: the row shows the honest
-    // "invisible" chip (position-2 `%` decoded as umode +i, NOT membership).
-    await expect(peerRow.locator(".who-modal-flag-tag-invisible")).toHaveText(/invisible/i, {
-      timeout: 5_000,
-    });
+    // Proof the wire carried the oper-view +i marker: once opered the peer's
+    // 352 row is "H%" and the row shows the honest "invisible" chip.
+    const invisibleChip = peerRow.locator(".who-modal-flag-tag-invisible");
+    await expect(async () => {
+      await composeSend(page, `/who ${CHANNEL}`);
+      await expect(invisibleChip).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 25_000 });
 
     // THE #272 REGRESSION GUARD: the +i member is emphatically NOT a halfop.
     // Pre-fix the `.includes("%")` scan rendered a "halfop" chip AND a `%` nick
