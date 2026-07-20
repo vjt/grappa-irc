@@ -48,21 +48,43 @@ import { isDiagEnabled } from "../DiagFloat";
 import { diagPush } from "./diagLog";
 import { isIos } from "./platform";
 
-// Selectable-text policy point — MUST stay in sync with default.css
-// (`html.is-ios .scrollback, .topic-modal-text` re-enable, minus the
-// `.scrollback-invite-join` control re-exclude). CSS can't export a TS
-// constant, so this allowlist is duplicated deliberately, same shape as
-// the nick-fold SQL/fragment invariant: a new copyable surface must be
-// added to BOTH sites or the two policies drift. Keep it small + named.
-// These are the surfaces where a mousedown's preventDefault is DURATION-
-// GATED (see LONG_PRESS_MS / handleMouseDown) instead of always firing:
-// preventDefault cancels the focus shift AND the text-selection-drag
-// start, so on copyable text we only fire it for a long-press (keep the
-// keyboard so the selection survives) and skip it for a tap (let the
-// keyboard dismiss). See docs/DESIGN_NOTES.md 2026-06-11 (Dispatch-1) +
-// 2026-07-03 (#79 v1) + 2026-07-04 (#79 long-press rework).
+// The selectable-TEXT surfaces where a mousedown's preventDefault is
+// DURATION-GATED (see LONG_PRESS_MS / handleMouseDown) instead of always
+// firing: preventDefault cancels the focus shift AND the
+// text-selection-drag start, so on copyable text we only fire it for a
+// long-press (keep the keyboard so the selection survives) and skip it
+// for a tap (let the keyboard dismiss). This list MUST stay in sync with
+// default.css's `html.is-ios .scrollback, .topic-modal-text`
+// `user-select: text` re-enable — a new copyable surface must be added to
+// BOTH sites or the two policies drift (same shape as the nick-fold
+// SQL/fragment invariant). See docs/DESIGN_NOTES.md 2026-06-11
+// (Dispatch-1) + 2026-07-03 (#79 v1) + 2026-07-04 (#79 long-press rework).
 const SELECTABLE_TEXT_SURFACES = ".scrollback, .topic-modal-text";
-const SELECTABLE_TEXT_EXCLUDE = ".scrollback-invite-join";
+// Controls that live INSIDE a selectable surface whose KEYBOARD policy is
+// "always preserve on tap" — the exclude wins in isSelectableSurface, so
+// they fall through to the always-fire preventDefault path (keyboard kept
+// on tap AND long-press, never a tap-to-close).
+//
+// This is the KEYBOARD/focus policy, which is INDEPENDENT of the CSS
+// text-selection policy (default.css's `html.is-ios` `user-select`
+// re-exclude) — do NOT assume this list mirrors the CSS one:
+//   * `.scrollback-invite-join` (the [Join] CTA) is a non-copyable
+//     control, so it is in BOTH: keyboard-preserve here AND
+//     `user-select: none` in CSS.
+//   * `.scrollback-link` (a linkified URL, #350) is a COPYABLE control —
+//     tap should keep the keyboard (it's a tap-to-navigate control, the
+//     mousedown preventDefault leaves the click's `target=_blank`
+//     navigation untouched), but its URL text must stay copyable, so it
+//     is deliberately NOT in the CSS re-exclude. Forcing `user-select:
+//     none` on an inline link would drop its URL from a drag-selection
+//     that SPANS it (a spanning selection starts on adjacent text, so the
+//     link's own mousedown preventDefault never sees it) — exactly the
+//     regression `.nick-clickable` fixed in #250 by keeping a
+//     clickable-but-copyable inline element `user-select: text`. Keyboard
+//     policy ≠ selection policy for content that is also a control.
+// `.scrollback-link` also covers media links (`.scrollback-media-link` is
+// applied alongside it, MircText.tsx). See DESIGN_NOTES 2026-07-20 (#350).
+const SELECTABLE_TEXT_EXCLUDE = ".scrollback-invite-join, .scrollback-link";
 
 // #79 (2026-07-04) — long-press threshold for the tap-vs-hold split on
 // selectable scrollback text. iOS dispatches a mousedown on finger

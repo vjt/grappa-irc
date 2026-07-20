@@ -164,6 +164,51 @@ describe("keepKeyboard — installKeyboardPreserve", () => {
     expect(pressDefaultPrevented(join, LONG_PRESS_MS - 100)).toBe(true);
   });
 
+  it("iOS: LONG-press on a .scrollback-link inside .scrollback IS prevented (it's a control, not selectable text — #350)", () => {
+    stubUserAgent(IPHONE_UA);
+    input.focus();
+    const scrollback = document.createElement("div");
+    scrollback.className = "scrollback";
+    const link = document.createElement("a");
+    link.className = "scrollback-link";
+    link.href = "https://example.com/";
+    link.textContent = "https://example.com/";
+    scrollback.append(link);
+    document.body.append(scrollback);
+    // Excluded from the selectable set → falls through to the always-fire
+    // path regardless of hold duration (same as the [Join] CTA).
+    expect(pressDefaultPrevented(link, LONG_PRESS_MS + 100)).toBe(true);
+  });
+
+  it("iOS: SHORT tap on a .scrollback-link IS prevented (link tap keeps the keyboard, never a tap-to-close — #350)", () => {
+    stubUserAgent(IPHONE_UA);
+    input.focus();
+    const scrollback = document.createElement("div");
+    scrollback.className = "scrollback";
+    const link = document.createElement("a");
+    link.className = "scrollback-link";
+    link.href = "https://example.com/";
+    link.textContent = "https://example.com/";
+    scrollback.append(link);
+    document.body.append(scrollback);
+    expect(pressDefaultPrevented(link, LONG_PRESS_MS - 100)).toBe(true);
+  });
+
+  it("iOS: SHORT tap on a .scrollback-media-link IS prevented (media links carry .scrollback-link too — #350)", () => {
+    stubUserAgent(IPHONE_UA);
+    input.focus();
+    const scrollback = document.createElement("div");
+    scrollback.className = "scrollback";
+    const link = document.createElement("a");
+    // MircText applies both classes; the exclude keys off .scrollback-link.
+    link.className = "scrollback-link scrollback-media-link";
+    link.href = "https://example.com/cat.png";
+    link.textContent = "https://example.com/cat.png";
+    scrollback.append(link);
+    document.body.append(scrollback);
+    expect(pressDefaultPrevented(link, LONG_PRESS_MS - 100)).toBe(true);
+  });
+
   it("iOS: mousedown on a different input is NOT prevented (focus transfer allowed)", () => {
     stubUserAgent(IPHONE_UA);
     input.focus();
