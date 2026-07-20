@@ -118,7 +118,9 @@ vi.mock("../lib/selection", () => ({
 
 // #283 — mock the confirm-modal disconnect verb. HomePane imports only
 // `confirmDisconnectNetwork` from windowClose (the ConnectedRow Disconnect
-// button); the modal + park semantics are unit-tested in windowClose.test.ts.
+// button); the underlying park verb (disconnectNetwork) is unit-tested in
+// windowClose.test.ts, and the confirm-modal wiring itself is covered by
+// the #283 e2e (issue283-home-disconnect.spec.ts).
 vi.mock("../lib/windowClose", () => ({
   confirmDisconnectNetwork: (slug: string) => confirmDisconnectNetworkMock(slug),
 }));

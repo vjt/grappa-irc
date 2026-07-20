@@ -121,7 +121,15 @@ test("#283 — Home ConnectedRow Disconnect: confirm modal parks the network, Ca
   await expect(confirmModalBody(page)).toContainText(`Disconnect from ${NETWORK_SLUG}?`);
   await confirmModalCancel(page);
   await expect(confirmModal(page)).toHaveCount(0, { timeout: 5_000 });
-  // Row is still connected; the network stayed up (source-of-truth REST).
+  // The negative assertion must be load-bearing: give any (regressed)
+  // async park a real window to land before asserting it did NOT. A
+  // point-in-time check at t≈0 would green even if Cancel wrongly fired a
+  // fire-and-forget park (the park + row swap only lands ~1s later, as the
+  // confirm path below shows). You cannot poll for an absence — a bounded
+  // settle is the correct tool for "nothing happened".
+  await page.waitForTimeout(1_000);
+  // Row stayed connected; the network is still up (source-of-truth REST).
+  await expect(connectedRow).toBeVisible();
   await expect(disconnectBtn).toBeVisible();
   expect(await fetchNetworkState(vjt.token, NETWORK_SLUG)).toBe("connected");
 
