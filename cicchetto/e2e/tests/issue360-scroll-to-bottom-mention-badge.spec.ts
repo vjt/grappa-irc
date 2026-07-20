@@ -58,23 +58,26 @@ const MENTION_2 = `${NETWORK_NICK}: second ping i360 mention two`;
 // MENTION_2 off the exact tail so the pane is still not-at-bottom after the
 // second jump (button stays up) and there is travel for the final snap. Each
 // filler is ~140px on a ~380px pane; counts chosen with generous margin over
-// every threshold so a small render-height variance can't flip an assertion.
+// every threshold so a small render-height variance can't flip an assertion
+// while keeping the send count (and thus the fake-lag pacing time) low — this
+// spec runs inside the 25-minute integration CI ceiling.
 const LEADING = 4;
-const MIDDLE = 3;
-const TRAILING = 3;
+const MIDDLE = 2;
+const TRAILING = 2;
 const LAST_FILLER_IDX = LEADING + MIDDLE + TRAILING - 1;
 // Short unique prefix of the last filler — a 380-char `hasText` is brittle
 // under Playwright whitespace normalisation; this token pins the tail line.
 const LAST_FILLER_TOKEN = `i360 filler ${LAST_FILLER_IDX} `;
 
-// Space peer PRIVMSGs to defeat bahamut's fake-lag flood protection. Each
-// PRIVMSG accrues a ~2s penalty that drains at ~1s wall-clock; below ~2s
-// spacing the penalty accumulates past the ~10s kill threshold (~9 messages in
-// at 800ms), and the tail of the burst is delayed indefinitely / the peer is
-// dropped (proven across runs). Pacing AT the penalty rate keeps net penalty
-// flat → immune regardless of count. Deliberate outbound rate-limiting, not a
-// wait-for-state sleep.
-const PACE_MS = 2_500;
+// Pace peer PRIVMSGs to defeat bahamut's fake-lag flood protection WITHOUT
+// wasting CI minutes. Each PRIVMSG accrues a ~2s penalty that drains at ~1s
+// wall-clock; the connection is dropped once the accrued penalty exceeds ~10s
+// (proven: an unpaced dozen dies at ~msg 9). So the FIRST `FLOOD_SAFE_BURST`
+// lines go out instantly (staying under the ~10s bank), and only the remainder
+// is paced AT the penalty rate (net-flat, immune regardless of count). This is
+// deliberate outbound rate-limiting, not a wait-for-state sleep.
+const FLOOD_SAFE_BURST = 3;
+const PACE_MS = 2_200;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function distFromBottom(page: Page): Promise<number | null> {
@@ -151,16 +154,16 @@ test.describe("#360 — mention-aware scroll-to-bottom badge", () => {
       await page.locator(".compose-box textarea").press("Enter");
       await selectChannel(page, NETWORK_SLUG, channel, { ownNick: NETWORK_NICK });
 
-      // Seed the buffer, oldest → newest, PACED (see PACE_MS).
+      // Seed the buffer, oldest → newest — burst-then-pace (see FLOOD_SAFE_BURST).
       const buffer: string[] = [];
       for (let i = 0; i < LEADING; i++) buffer.push(filler(i));
       buffer.push(MENTION_1);
       for (let i = 0; i < MIDDLE; i++) buffer.push(filler(LEADING + i));
       buffer.push(MENTION_2);
       for (let i = 0; i < TRAILING; i++) buffer.push(filler(LEADING + MIDDLE + i));
-      for (const body of buffer) {
-        peer.privmsg(channel, body);
-        await sleep(PACE_MS);
+      for (let i = 0; i < buffer.length; i++) {
+        if (i >= FLOOD_SAFE_BURST) await sleep(PACE_MS);
+        peer.privmsg(channel, buffer[i]!);
       }
 
       // Confirm the burst persisted server-side. The peer sends on ONE ordered
