@@ -26168,3 +26168,90 @@ overridden to 844×390): both rails visible (NOT collapsed) but slim (< 176px),
 center pane exceeds half the viewport, topic clamps to one line, channel name
 not ellipsis-truncated. RED pre-fix on the 256px rail + 43% center + 2-line
 clamp; green after.
+
+## 2026-07-20 — #350: tapping a scrollback link dropped the mobile keyboard
+
+**Symptom (P1, cic).** On iOS, tapping a link in scrollback dismissed the
+on-screen keyboard. It should behave like tapping any other control — the
+compose field keeps focus, the keyboard stays up.
+
+**Root cause.** `keepKeyboard.ts` keeps the iOS keyboard up by
+`preventDefault`-ing the mousedown focus-shift while the compose input is
+focused. But `.scrollback` is a **duration-gated selectable-text surface**
+(`SELECTABLE_TEXT_SURFACES`): a short TAP on scrollback text is deliberately
+let through (focus shifts → keyboard dismisses — vjt-confirmed tap-to-close
+for copyable text, #79), only a long-press preserves the keyboard. A
+linkified URL renders as `<a class="scrollback-link">` **inside**
+`.scrollback`, so `isSelectableSurface` matched it and a link tap took the
+tap-to-close path. A link is a **control**, not copyable text — the same
+category as the `.scrollback-invite-join` [Join] CTA, which was already in
+`SELECTABLE_TEXT_EXCLUDE` and therefore fell through to the always-fire
+preventDefault path (keyboard preserved regardless of hold). Links were
+simply never added to that exclude.
+
+**Fix.** `SELECTABLE_TEXT_EXCLUDE = ".scrollback-invite-join,
+.scrollback-link"`. A link tap now hits the always-fire mousedown
+preventDefault → focus never leaves compose → keyboard stays.
+`.scrollback-link` covers plain + media links (`.scrollback-media-link` is
+applied alongside it). **Navigation is untouched:** the preventDefault is on
+**mousedown**; the anchor's `target=_blank` navigation is the **click**
+default and the in-app media/escape handling is `onClick` — the same
+guarantee the existing exclude already relies on.
+
+**The CSS side — a REJECTED symmetry (the spec's open question, resolved
+by code review).** The keepKeyboard EXCLUDE and `default.css`'s
+`html.is-ios` `user-select` re-exclude look like a MUST-stay-in-sync pair,
+and the first pass treated `.scrollback-link` identically to the [Join]
+button — re-excluded on BOTH sides (`user-select: none` on the link under
+is-ios). Code review caught this as a **#250-class regression** and it was
+reverted. Why it was wrong: `user-select: none` on the keyboard side buys
+nothing (keyboard preservation is 100% the mousedown preventDefault), and
+on the CSS side it makes the URL text non-copyable — specifically, WebKit
+**excludes an inline `user-select:none` element from a drag-selection that
+SPANS it**. Selecting a whole message like `check this out https://x.com
+cool` and copying would drop the URL (it sits mid-message as an excluded
+run). The link's own mousedown preventDefault does NOT save this case: a
+spanning selection starts on adjacent text, so the link never sees that
+mousedown. This is exactly the regression `.nick-clickable` fixed in #250
+(`default.css:1858`) by forcing a clickable-but-copyable inline element
+back to `user-select: text`. **A URL is copyable content that is also a
+control — like a nick, unlike the [Join] label** (which nobody copies).
+That is the CLAUDE.md "reuse the verbs, not the nouns" boundary: the Join
+button and the link share the keyboard *verb* (tap-preserves) but not the
+selection *noun* (the link is content).
+
+**Resolution: the two lists deliberately DIVERGE on `.scrollback-link`.**
+keepKeyboard's EXCLUDE is the KEYBOARD/focus policy (controls whose tap
+preserves the keyboard); the CSS re-exclude is the SELECTION policy
+(non-copyable controls). They coincide for `.scrollback-invite-join` (a
+non-copyable control → both) but not for `.scrollback-link` (a copyable
+control → keyboard-EXCLUDE only; stays `user-select: text` via the
+`.scrollback` cascade so its URL survives a spanning copy). The keepKeyboard
+comment documents this so a future reader doesn't "restore symmetry" by
+adding the CSS re-exclude and reintroducing the bug. Net shipped change is
+**one line** — `.scrollback-link` added to `SELECTABLE_TEXT_EXCLUDE`;
+`default.css` is untouched.
+
+**Scope note.** `.scrollback-link` is MircText's class for *every* linkified
+URL, so the keyboard-preserve applies to link taps in the topic modal /
+`/list` rows / mentions too, not only `.scrollback` — consistent and
+harmless (keepKeyboard is gated on an input being focused). A sibling gap:
+`.nick-clickable` is also a clickable control inside `.scrollback` and is
+NOT in the keyboard EXCLUDE, so a nick tap still dismisses the keyboard —
+same class as #350 for links, out of #350's scope, flagged for a possible
+follow-up.
+
+**Verification.** keepKeyboard unit tests for the tap-and-long-press link
+cases — the discriminating short-tap cases (plain + media link) were RED
+pre-fix (a tap on the selectable surface was let through, not prevented);
+the long-press cases are regression guards (long-press on any selectable
+surface is prevented regardless, so they don't discriminate the fix). E2e
+(`issue350-link-tap-keyboard.spec.ts`): one @webkit test that drives the
+exact touchstart→short-mousedown sequence on the real MircText-rendered
+anchor and asserts the focus-shift is prevented + compose keeps focus
+(RED pre-fix). A page.mouse gesture would be non-discriminating (no
+touchstart → the timing degenerates to long-press; and webkit doesn't
+focus an `<a>` on mousedown), so the synthetic tap is the honest
+discriminating shape — webkit still can't simulate the OS keyboard, so
+real-device keyboard smoke stays vjt's iPhone. Client-side only — no cold
+deploy.
