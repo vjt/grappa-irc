@@ -2420,13 +2420,10 @@ export async function deleteNotifyNick(
   if (!res.ok) throw await readError(res);
 }
 
-export async function clearNotify(token: string, networkSlug: string): Promise<void> {
-  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/notify`, {
-    method: "DELETE",
-    headers: buildHeaders(token),
-  });
-  if (!res.ok) throw await readError(res);
-}
+// #356 — the `clearNotify` REST client (for the dropped `/notify clear`
+// subverb) was removed: presence removal is now per-entry (the settings ×
+// → deleteNotifyNick). The server DELETE-all route stays (the e2e cleanup
+// hits it via a raw fetch), but cic has no client for it.
 
 // Mirror of `GrappaWeb.NetworksController.update/2` (T32).
 // PATCH `/networks/:network_id` — transitions the credential's

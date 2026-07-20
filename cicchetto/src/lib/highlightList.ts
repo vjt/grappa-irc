@@ -10,38 +10,48 @@
 //
 // cic NEVER originates state here: the signal only ever holds what the last
 // server round-trip returned (CLAUDE.md window-state invariant family).
+//
+// Identity-scoped (identityScopedStore): because there is NO broadcast, a
+// logout/account-switch would otherwise leave the prior account's patterns in
+// the signal until a manual refresh — a switched-in account would briefly
+// render the previous one's list. The `onIdentityChange` reset clears it on
+// rotation, so the next account starts empty and refreshes to its own list.
 
 import { createSignal } from "solid-js";
+import { identityScopedStore } from "./identityScopedStore";
 import { pushWatchlistAdd, pushWatchlistDel, pushWatchlistList } from "./socket";
 
-const [highlightPatterns, setHighlightPatterns] = createSignal<string[]>([]);
+const exports_ = identityScopedStore((onIdentityChange) => {
+  const [highlightPatterns, setHighlightPatterns] = createSignal<string[]>([]);
 
-export { highlightPatterns };
+  // Logout / account switch — clear the mirror (no broadcast self-heals it).
+  onIdentityChange(() => setHighlightPatterns([]));
 
-// Add a pattern; mirror + return the authoritative post-mutation list.
-export async function addHighlight(pattern: string): Promise<string[]> {
-  const { patterns } = await pushWatchlistAdd(pattern);
-  setHighlightPatterns(patterns);
-  return patterns;
-}
+  // Add a pattern; mirror + return the authoritative post-mutation list.
+  const addHighlight = async (pattern: string): Promise<string[]> => {
+    const { patterns } = await pushWatchlistAdd(pattern);
+    setHighlightPatterns(patterns);
+    return patterns;
+  };
 
-// Remove a pattern; mirror + return the authoritative post-mutation list.
-export async function delHighlight(pattern: string): Promise<string[]> {
-  const { patterns } = await pushWatchlistDel(pattern);
-  setHighlightPatterns(patterns);
-  return patterns;
-}
+  // Remove a pattern; mirror + return the authoritative post-mutation list.
+  const delHighlight = async (pattern: string): Promise<string[]> => {
+    const { patterns } = await pushWatchlistDel(pattern);
+    setHighlightPatterns(patterns);
+    return patterns;
+  };
 
-// Fetch the current list (settings-section open). Mirror + return it.
-export async function refreshHighlights(): Promise<string[]> {
-  const { patterns } = await pushWatchlistList();
-  setHighlightPatterns(patterns);
-  return patterns;
-}
+  // Fetch the current list (settings-section open). Mirror + return it.
+  const refreshHighlights = async (): Promise<string[]> => {
+    const { patterns } = await pushWatchlistList();
+    setHighlightPatterns(patterns);
+    return patterns;
+  };
 
-// Identity teardown (logout / account switch) — mirror the other stores'
-// reset shape so a switched-in account never briefly shows the prior one's
-// patterns before its own refresh lands.
-export function resetHighlightPatterns(): void {
-  setHighlightPatterns([]);
-}
+  return { highlightPatterns, addHighlight, delHighlight, refreshHighlights };
+});
+
+export const highlightPatterns = exports_.highlightPatterns;
+export const addHighlight = exports_.addHighlight;
+export const delHighlight = exports_.delHighlight;
+export const refreshHighlights = exports_.refreshHighlights;

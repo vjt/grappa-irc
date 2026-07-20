@@ -376,6 +376,11 @@ const SettingsDrawer: Component<Props> = (props) => {
       popOverlay(drawerEl ?? null);
       // #252 — a reopened drawer always lands on the main page.
       setSettingsPage("main");
+      // #356 — discard any deep-link request that was set while the drawer
+      // was already open (a bump that couldn't re-open it, so its open
+      // transition never consumed the pending page). Clearing it on close
+      // stops a stranded request from hijacking the NEXT normal open.
+      consumePendingSettingsPage();
     }
   });
   onCleanup(() => {

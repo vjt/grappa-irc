@@ -982,14 +982,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     if (state.draft.trim() !== "") pushHistory(key, state.draft);
     writeState(key, (s) => ({ ...s, draft: "", historyCursor: null }));
     tabCycle = null;
-    // CP13: pre-CP13 a `result.ok: string` (e.g. /watch list output) was
-    // surfaced as an ephemeral numeric-inline row in the scrollback pane.
-    // The numericInline infrastructure is gone in CP13 (server numerics
-    // now persist as :notice rows in their routed window). Inline ok-info
-    // feedback for client-side commands is intentionally not surfaced
-    // here yet — the commands themselves either persist their own row or
-    // operate silently. Re-add via the ComposeBox `error` signal arm
-    // (with severity styling) if a future cluster needs it.
+    // #356: a string `result.ok` (the /notify + /hilight confirmation /
+    // list output) IS now surfaced — ComposeBox routes it through the
+    // severity-tagged feedback signal as a green, auto-dismissing
+    // `.compose-box-notice` (role=status). `result.ok: true` is a silent
+    // success. (Pre-#356 this string was computed then discarded: CP13
+    // removed the numericInline row that used to render it and never
+    // rewired a consumer — the gap #356 closed.)
     return result;
   };
 
