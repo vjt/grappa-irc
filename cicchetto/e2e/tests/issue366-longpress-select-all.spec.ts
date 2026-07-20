@@ -123,4 +123,10 @@ test("@webkit iOS — long-press on a scrollback message selects the ENTIRE mess
   expect(outcome.selectedAfterTap).not.toContain(MESSAGE_BODY);
   expect(outcome.longPressPrevented).toBe(true);
   expect(outcome.selectedAfterLongPress).toContain(MESSAGE_BODY);
+  // Whole-line, not body-only: the sender nick lives in a sibling button
+  // OUTSIDE `.scrollback-body`, so its presence in the serialized selection
+  // proves the entire row (not just the body) was grabbed — validating the
+  // whole-`.scrollback-line` rationale end-to-end (this message is
+  // self-sent, so the sender is the operator's own nick).
+  expect(outcome.selectedAfterLongPress).toContain(NETWORK_NICK);
 });

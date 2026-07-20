@@ -129,9 +129,12 @@ function isSelectableSurface(el: Element | null): boolean {
 // jsdom's no-op Selection (the e2e covers the real-browser selection).
 export function selectEntireMessage(target: Element | null): boolean {
   if (target === null) return false;
+  // SSR/no-DOM safety, mirroring installKeyboardPreserve — at the top so it
+  // also guards the document.createRange() below (a real Element target
+  // implies a DOM, so in practice this never trips at the mousedown callsite).
+  if (typeof document === "undefined") return false;
   const line = target.closest(".scrollback-line");
   if (line === null) return false;
-  if (typeof window === "undefined") return false;
   const selection = window.getSelection();
   if (selection === null) return false;
   const range = document.createRange();
@@ -164,11 +167,6 @@ function handleMouseDown(e: MouseEvent): void {
     // selection iOS just began. See LONG_PRESS_MS.
     const heldMs = performance.now() - touchStartAt;
     const longPress = heldMs >= LONG_PRESS_MS;
-    if (isDiagEnabled()) {
-      diagPush(
-        `kb: scrollback md held=${Math.round(heldMs)}ms → ${longPress ? "HOLD keep+select" : "tap close-kbd"}`,
-      );
-    }
     if (longPress) {
       // #79: keep the keyboard (cancel the focus-shift so its reflow can't
       // tear down the selection). #366: ALSO select the WHOLE message,
@@ -176,7 +174,16 @@ function handleMouseDown(e: MouseEvent): void {
       // no-op (returns false) for a selectable surface with no message row
       // (e.g. .topic-modal-text), which keeps its native-selection path.
       e.preventDefault();
-      selectEntireMessage(e.target as Element | null);
+      const selected = selectEntireMessage(e.target as Element | null);
+      // Log honesty: report what actually happened (select vs no message
+      // row), not just that it was a long-press.
+      if (isDiagEnabled()) {
+        diagPush(
+          `kb: scrollback md held=${Math.round(heldMs)}ms → HOLD keep+${selected ? "select" : "no-row"}`,
+        );
+      }
+    } else if (isDiagEnabled()) {
+      diagPush(`kb: scrollback md held=${Math.round(heldMs)}ms → tap close-kbd`);
     }
     return;
   }

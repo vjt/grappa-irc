@@ -63,11 +63,14 @@ function surfaceChild(className: string): HTMLSpanElement {
   return child;
 }
 
-// #366 — a realistic scrollback message row:
-// `.scrollback > .scrollback-line > (.scrollback-time, .scrollback-body)`.
-// The `.scrollback-body` span is the real long-press target; the whole
-// `.scrollback-line` is what the select-all fallback must select. Returns
-// both so a test can assert the selected range spans the entire row.
+// #366 — a realistic scrollback message row mirroring ScrollbackPane's
+// PRIVMSG DOM: `.scrollback > .scrollback-line > (.scrollback-time,
+// .scrollback-sender <button>, .scrollback-body)`. The sender is a SIBLING
+// button OUTSIDE `.scrollback-body` — the exact reason select-all targets
+// the whole `.scrollback-line` (a body-only select would drop the nick).
+// The `.scrollback-body` span is the real long-press target; the whole row
+// is what the select-all fallback must select. Returns both so a test can
+// assert the selected range spans the entire row.
 function scrollbackMessageRow(body: string): {
   bodySpan: HTMLSpanElement;
   row: HTMLDivElement;
@@ -79,10 +82,14 @@ function scrollbackMessageRow(body: string): {
   const time = document.createElement("span");
   time.className = "scrollback-time";
   time.textContent = "12:34";
+  const sender = document.createElement("button");
+  sender.type = "button";
+  sender.className = "scrollback-sender nick-clickable";
+  sender.textContent = "<vjt>";
   const bodySpan = document.createElement("span");
   bodySpan.className = "scrollback-body";
   bodySpan.textContent = body;
-  row.append(time, document.createTextNode(" "), bodySpan);
+  row.append(time, document.createTextNode(" "), sender, document.createTextNode(" "), bodySpan);
   scrollback.append(row);
   document.body.append(scrollback);
   return { bodySpan, row };
