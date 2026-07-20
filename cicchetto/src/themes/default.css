@@ -836,6 +836,53 @@ html.overlay-open #root > div {
   grid-template-columns: var(--sidebar-width, 16rem) 1fr;
 }
 
+/* #319 — landscape-compact tier. A small phone (~5") rotated to landscape
+   reports a CSS width > 768px, so `isMobile()` (theme.ts MOBILE_QUERY =
+   `(max-width: 768px)`) is false and Shell.tsx renders THIS desktop
+   three-pane shell — with rails pinned at their desktop widths (16rem /
+   14rem) — on a screen that is physically tiny and SHORT. The center
+   scrollback becomes a sliver: text wraps every 3-4 tokens, the topic bar
+   wraps to 2 lines and truncates the channel name.
+
+   The maintainer explicitly does NOT want the portrait drawer shell here
+   ("un pelo di left e right bar" — keep both rails, just narrow). So this
+   tier RE-PROPORTIONS the desktop shell rather than collapsing it: slim
+   fixed-px rails (overriding the drag-driven --sidebar-width / --members-width
+   vars) so the center gets the bulk, plus a single-line topic strip (the
+   topic-bar overrides live further down at `.topic-bar-topic-text` etc.,
+   guarded by this same media query).
+
+   Gate rationale:
+     * `orientation: landscape` + `max-height: 500px` — a short landscape
+       screen. An iPad in landscape is 768px TALL, well above 500px, so it
+       stays on the full-width desktop rails (the #319 watch-out: do NOT
+       regress iPad landscape). A phone in landscape is ~390-430px tall.
+     * `min-width: 769px` — scope to the DESKTOP shell only. At width ≤768px
+       Shell.tsx renders `.shell-mobile` (single-column, portrait drawers);
+       without this bound the rail overrides would also hit `.shell-mobile`
+       (it carries the base `.shell` class) and fork the mobile layout.
+     * No `pointer: coarse` gate (the spec left it optional). A desktop
+       window resized to a short-landscape shape gets the slim rails too —
+       an acceptable, arguably better layout there, not a regression of any
+       shipped behaviour. Omitting it keeps the tier a pure geometry
+       predicate (testable on the desktop chromium e2e project).
+
+   Pure CSS on purpose: media queries re-evaluate on orientationchange /
+   resize with no JS, so the tier flips live on rotation without a
+   matchMedia signal to wire up (the #319 fix-direction's simpler arm). */
+@media (orientation: landscape) and (max-height: 500px) and (min-width: 769px) {
+  .shell {
+    /* Slim rails; center (1fr) takes the rest. Overrides the drag-persisted
+       --sidebar-width / --members-width vars (not referenced here) so a
+       previously-widened desktop rail can't leak into the compact tier. */
+    grid-template-columns: 8rem 1fr 7rem;
+  }
+
+  .shell.shell-no-members {
+    grid-template-columns: 8rem 1fr;
+  }
+}
+
 .shell-sidebar {
   border-right: 1px solid var(--border);
   background: var(--bg-alt);
@@ -1429,6 +1476,34 @@ html.resize-dragging * {
 
 .topic-bar-namebox:hover .topic-bar-modes {
   color: var(--fg);
+}
+
+/* #319 — landscape-compact tier: topic-bar overrides. Same media gate as the
+   shell-grid tier above (~:838); split into a SECOND block placed AFTER the
+   base `.topic-bar*` rules so it wins at equal specificity — a media query
+   adds NO specificity, so a `.topic-bar-topic-text` override earlier in the
+   file loses to the base rule's source order. See the shell-grid block for the
+   full gate rationale (short landscape phone, iPad excluded by max-height). */
+@media (orientation: landscape) and (max-height: 500px) and (min-width: 769px) {
+  /* Tighten the vertical footprint so more scrollback rows fit in the short
+     viewport. */
+  .topic-bar {
+    padding: 0.25rem 0.75rem;
+  }
+
+  /* Channel name first: lift the 18% namebox cap (which truncated `#snif…` on
+     the narrow desktop bar) so the name gets the width it needs; the topic
+     strip flexes into the remainder. */
+  .topic-bar-namebox {
+    max-width: 50%;
+  }
+
+  /* One-line topic — drop the 2-line wrap that stole width from the name. */
+  .topic-bar-topic-text {
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+    max-height: 1.25em;
+  }
 }
 
 /* Topic modal (C3.1) */

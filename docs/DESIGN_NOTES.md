@@ -26096,3 +26096,75 @@ maps to throttle copy, NOT the themes arm) and end-to-end
 (`issue342-throttle-copy.spec.ts`: a mocked 429 on the send POST paints the
 throttle copy — matches `/throttl|too fast/`, explicitly NOT `/theme limit/` —
 in a real browser, draft preserved).
+
+---
+
+## 2026-07-20 — #319: landscape-compact shell tier (slim rails, not the drawer shell)
+
+**Symptom (P1, maintainer via #grappa).** A small phone (~5") rotated to
+landscape rendered the full desktop three-column shell with **desktop-width**
+rails (16rem / 14rem), leaving the center scrollback a sliver on a physically
+tiny, *short* screen: message text wrapped every 3-4 tokens, the topic bar
+wrapped to two lines and truncated the channel name to `#snif…`.
+
+**Root cause.** The mobile shell is gated on **width only** — `theme.ts`
+`MOBILE_QUERY = "(max-width: 768px)"` drives `isMobile()`, which Shell.tsx
+branches on. A 5" phone in landscape reports a CSS width **> 768px**, so
+`isMobile()` is false and the desktop `.shell` renders with both rails pinned
+at desktop widths. The breakpoint conflated "≥768px wide" with "has room for
+three desktop-width columns" — false for a short landscape phone (wide-ish,
+almost no vertical room, not enough horizontal room for desktop rails).
+
+**Decision — re-proportion, do NOT collapse.** The maintainer explicitly did
+**not** want the portrait drawer shell here ("un pelo di left e right bar" —
+keep both rails, just narrow them). So the fix adds a **dedicated
+landscape-compact CSS tier**, distinct from both desktop and the portrait
+drawer, that RE-PROPORTIONS the desktop shell rather than switching layout.
+
+**Why pure CSS, not a matchMedia signal.** The #319 fix-direction offered two
+arms: a new `matchMedia` signal applying a `.shell-landscape-compact` class, OR
+landscape-scoped CSS overrides on the existing desktop `.shell`. The CSS arm is
+the 10x-simpler one and was chosen: no JS, no signal to wire into Shell.tsx, and
+media queries **re-evaluate on `orientationchange`/`resize` for free** — the
+tier flips live on rotation with nothing to subscribe. `isMobile()` is
+deliberately left untouched (flipping it true would trigger the portrait drawer
+shell vjt does NOT want). No component change at all — this is a `default.css`
+diff.
+
+**The tier.** `@media (orientation: landscape) and (max-height: 500px) and
+(min-width: 769px)`:
+- Rails → slim fixed px: `grid-template-columns: 8rem 1fr 7rem` (and `8rem 1fr`
+  under `.shell-no-members`). Fixed px **overrides the drag-persisted**
+  `--sidebar-width` / `--members-width` vars (not referenced in the override),
+  so a previously-widened desktop rail can't leak in. Center (1fr) gets the
+  bulk.
+- Topic bar → tighter padding (`0.25rem 0.75rem`); namebox cap lifted `18% →
+  50%` so the channel name shows first instead of truncating; topic
+  `-webkit-line-clamp: 1` (drop the 2-line wrap that stole width from the name).
+
+**Gate rationale + the iPad watch-out.** `max-height: 500px` is the load-bearing
+guard: an iPad in landscape is **768px tall** — well above 500px — so it stays
+on the full-width desktop rails (iPad landscape is legitimately desktop; do NOT
+regress it). A phone in landscape is ~390-430px tall. `min-width: 769px` scopes
+the rail overrides to the DESKTOP shell only — at ≤768px Shell.tsx renders
+`.shell-mobile` (single-column, which carries the base `.shell` class), so
+without the width floor the rail template would fork the mobile layout. No
+`pointer: coarse` gate (spec left it optional): a desktop window resized to a
+short-landscape shape gets slim rails too — acceptable, arguably better, not a
+regression — and omitting it keeps the tier a pure geometry predicate (testable
+on the desktop chromium e2e project).
+
+**CSS ordering gotcha.** A media query adds **no specificity**. The rail
+overrides win because base `.shell` precedes them in source order; the
+**topic-bar** overrides had to be split into a *second* `@media` block placed
+AFTER the base `.topic-bar*` rules — an earlier `.topic-bar-topic-text` override
+(0,1,0) loses to the base rule (0,1,0) on source order. Two blocks, each
+adjacent to what it overrides.
+
+**Verification.** jsdom computes neither layout nor `@media` cascade, so the
+contract is pinned by a real-browser Playwright e2e
+(`issue319-landscape-compact-shell.spec.ts`, desktop chromium project, viewport
+overridden to 844×390): both rails visible (NOT collapsed) but slim (< 176px),
+center pane exceeds half the viewport, topic clamps to one line, channel name
+not ellipsis-truncated. RED pre-fix on the 256px rail + 43% center + 2-line
+clamp; green after.
