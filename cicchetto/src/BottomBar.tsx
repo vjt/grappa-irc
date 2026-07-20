@@ -68,15 +68,36 @@ const BottomBar: Component<Props> = (props) => {
   // Auto-scroll selected tab into view when selection changes.
   // Uses scrollIntoView with inline:"nearest" so we don't disrupt
   // vertical scroll (the bottom-bar is horizontal-scroll only).
+  //
+  // #327 — DEFER the scroll math via the codebase double-rAF idiom
+  // (ScrollbackPane.tsx ~:1569). Selecting a window zeroes its unread/
+  // mention badges in the SAME reactive flush (selection.ts perChannelUnread
+  // reads selectedChannel), so `.bottom-bar-msg-unread` / `.bottom-bar-mention`
+  // spans unmount and the tab's width changes, reflowing the strip. A
+  // synchronous scrollIntoView computes its offset against STALE pre-reflow
+  // geometry and — with behavior:"smooth" — undershoots or judges
+  // "nearest-enough" and no-ops, leaving the target tab partly/fully off
+  // screen ("not always", because it only misfires when the flush actually
+  // changes tab widths). The first rAF lands in the next frame's pre-layout
+  // phase; the second guarantees layout has settled. We RE-QUERY
+  // `.bottom-bar-tab.selected` INSIDE the deferred callback so it resolves
+  // against the settled DOM, not a ref captured pre-reflow. ALL selection
+  // changes (sidebar tap, Alt+A, Ctrl+N, tab tap) funnel through
+  // selectedChannel, so this one effect covers every trigger.
+  //
   // Guard: jsdom does not implement scrollIntoView; the guard is a
   // no-op in tests without weakening production behavior.
   createEffect(
     on(selectedChannel, () => {
       if (!navRef) return;
-      const selected = navRef.querySelector<HTMLElement>(".bottom-bar-tab.selected");
-      if (selected && typeof selected.scrollIntoView === "function") {
-        selected.scrollIntoView({ inline: "nearest", behavior: "smooth", block: "nearest" });
-      }
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          const selected = navRef?.querySelector<HTMLElement>(".bottom-bar-tab.selected");
+          if (selected && typeof selected.scrollIntoView === "function") {
+            selected.scrollIntoView({ inline: "nearest", behavior: "smooth", block: "nearest" });
+          }
+        }),
+      );
     }),
   );
 

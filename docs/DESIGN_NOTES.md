@@ -26338,3 +26338,60 @@ opers up (testoper/testoperpass), then `/who`s — the peer's real oper-view 352
 row carries `%`; asserts the honest "invisible" chip is present (anti-hollow-
 green proof the wire really carried the marker) AND no halfop chip / `%` nick
 prefix. Client-side only — no cold deploy.
+
+## 2026-07-20 — #327: BottomBar active-tab auto-scroll — defer past the badge-clear reflow (double rAF)
+
+**Symptom.** On mobile, tapping Alt+A / the next-active float button jumped
+selection to the next active window, but the bottom bar did NOT always scroll
+the newly-selected tab into view. Intermittent ("not always"): selection was
+always correct; only the horizontal auto-scroll of the tab strip sometimes
+failed to bring the target tab into the visible portion of the bar.
+
+**Root cause (traced, not guessed).** `BottomBar.tsx` auto-scrolls the selected
+tab into view via `createEffect(on(selectedChannel, …))` → `selected.
+scrollIntoView({inline:"nearest", behavior:"smooth", block:"nearest"})`. The old
+code ran that `scrollIntoView` **synchronously inside the reactive flush** that
+`setSelectedChannel` triggers. But selecting a window zeroes its unread/mention
+counts in the SAME flush: `selection.ts`'s `perChannelUnread` memo reads
+`selectedChannel()` and overwrites the focused window's entry to
+`{messages: 0, events: 0}` (the 2026-06-02 focused-window badge suppression), so
+`messagesUnread` drops that key → the tab's `<Show when={messagesUnread()[key] >
+0}>` `.bottom-bar-msg-unread` span unmounts → the tab narrows → the strip
+reflows. The synchronous `scrollIntoView` computed its offset against **stale
+pre-reflow geometry**; with `behavior:"smooth"` it targeted the stale position
+and undershot / judged "nearest-enough" and no-op'd, leaving the tab partly or
+fully off-screen. It presented as "not always" because it only misfired when the
+same flush actually changed tab widths (the target really had a badge to clear,
+or read left-neighbours narrowed too).
+
+**Fix.** Defer the scroll math past layout settle using the codebase's
+established **double-rAF idiom** (the same one `ScrollbackPane.tsx` uses for
+"read DOM geometry after the browser has settled", e.g. ~:1569): schedule
+`requestAnimationFrame(requestAnimationFrame(…))` and **re-query**
+`.bottom-bar-tab.selected` INSIDE the deferred callback so it resolves against
+the settled DOM, not a ref captured pre-reflow. First rAF lands in the next
+frame's pre-layout phase; the second guarantees layout has completed. Kept
+`inline:"nearest"` (the bar is the `overflow-x` scroller — correct axis),
+`block:"nearest"` (don't disturb page vertical scroll), and the jsdom
+`typeof … === "function"` guard.
+
+**One effect, all triggers.** Every selection change — sidebar tap, Alt+A,
+Ctrl+N/P, bottom-bar tab tap — funnels through `selectedChannel`, so the fix
+lives in ONE effect and covers every door; there is no divergent scroll path to
+keep in sync. No regression to the #243 re-tap-active → `requestScrollToBottom`
+path (that's in `handleClick`, orthogonal to the scroll-into-view effect).
+
+**Verification.** Unit (`BottomBar.test.tsx` #327 block) pins the TIMING seam
+that jsdom CAN see: after `setSelectedChannel`, `scrollIntoView` is NOT called
+synchronously, is NOT called after only one rAF, and IS called after the second
+rAF — on the element that is `.selected` at flush time (proving the re-query).
+RED pre-fix: the synchronous code scrolled 1× immediately on the change. jsdom
+is blind to layout/scroll geometry, so the VISIBLE outcome is proven by a real-
+WebKit e2e (`issue327-bottombar-scroll-into-view.spec.ts`, @webkit mobile):
+overflow the strip with several joined channels, park $server + pin the strip
+hard-left so a z-named TARGET tab starts clipped off the right edge, a peer
+sends one content line so the TARGET is the only message-active window (count
+"1"), tap next-active, then assert the TARGET `.bottom-bar-tab.selected` scrolls
+FULLY within the `.bottom-bar` horizontal bounds. Precondition asserts the tab
+starts off-screen (else the test proves nothing). Client-side only — no cold
+deploy.

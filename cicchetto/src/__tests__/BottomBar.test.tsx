@@ -410,4 +410,213 @@ describe("BottomBar", () => {
     fireEvent.click(closeBtn!);
     expect(windowCloseMod.closeQueryWindow).toHaveBeenCalledWith(1, "alice");
   });
+
+  // #327 — the active-tab auto-scroll must DEFER its scrollIntoView until
+  // AFTER layout settles. Selecting a window zeroes its unread/mention
+  // badges in the SAME reactive flush (selection.ts perChannelUnread reads
+  // selectedChannel), so the `.bottom-bar-msg-unread` / `.bottom-bar-mention`
+  // spans unmount and the tab's width changes. A synchronous scrollIntoView
+  // reads STALE pre-reflow geometry and undershoots/no-ops with smooth. The
+  // fix is the codebase's double-rAF idiom (ScrollbackPane.tsx ~:1569): schedule
+  // rAF(rAF(...)) and RE-QUERY `.bottom-bar-tab.selected` inside the deferred
+  // callback so it resolves against settled DOM.
+  describe("#327 — active-tab auto-scroll defers to settled layout (double rAF)", () => {
+    it("does not scrollIntoView synchronously; scrolls the selected tab after two rAF ticks", async () => {
+      vi.resetModules();
+      const { createSignal } = await import("solid-js");
+      const [sel, setSel] = createSignal<{
+        networkSlug: string;
+        channelName: string;
+        kind: string;
+      } | null>(null);
+
+      vi.doMock("../lib/networks", () => ({
+        networks: () => [{ id: 1, slug: "freenode", inserted_at: "", updated_at: "" }],
+        channelsBySlug: () => ({
+          freenode: [{ name: "#italia", joined: true, source: "autojoin" }],
+        }),
+      }));
+      vi.doMock("../lib/selection", () => ({
+        selectedChannel: sel,
+        setSelectedChannel: setSel,
+        isActiveSelection: () => false,
+        unreadCounts: () => ({}),
+        messagesUnread: () => ({}),
+        eventsUnread: () => ({}),
+      }));
+      vi.doMock("../lib/mentions", () => ({
+        mentionCounts: () => ({}),
+        setServerMention: vi.fn(),
+      }));
+      vi.doMock("../lib/channelKey", () => ({
+        channelKey: (slug: string, name: string) => `${slug} ${name}`,
+      }));
+      vi.doMock("../lib/queryWindows", () => ({
+        queryWindowsByNetwork: () => ({}),
+      }));
+      vi.doMock("../lib/windowClose", () => ({
+        closeQueryWindow: vi.fn(),
+        confirmLeaveChannel: vi.fn(),
+        confirmDisconnectNetwork: vi.fn(),
+      }));
+      vi.doMock("../lib/scrollToBottomCommand", () => ({
+        requestScrollToBottom: vi.fn(),
+        scrollToBottomRequest: () => 0,
+      }));
+
+      // Deterministic rAF: capture callbacks, drain them on demand. One
+      // drain = one animation frame. jsdom has no real rAF timing.
+      const rafQueue: FrameRequestCallback[] = [];
+      vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+        rafQueue.push(cb);
+        return rafQueue.length;
+      });
+      const frame = () => {
+        for (const cb of rafQueue.splice(0)) cb(0);
+      };
+
+      // jsdom does not implement scrollIntoView; record the element it is
+      // invoked on so we can prove the deferred callback re-queries the DOM.
+      const origScrollIntoView = HTMLElement.prototype.scrollIntoView;
+      const scrollSpy = vi.fn();
+      let scrolledOn: Element | null = null;
+      (HTMLElement.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView =
+        function (this: Element) {
+          scrolledOn = this;
+          scrollSpy();
+        };
+
+      try {
+        const { default: BottomBarFresh } = await import("../BottomBar");
+        const { container } = render(() => <BottomBarFresh />);
+        expect(container.querySelectorAll(".bottom-bar-tab.selected").length).toBe(0);
+
+        // Discard any frames queued during the async mount boundary — our
+        // own selection-null mount run plus leftover self-rescheduling rAF
+        // loops from earlier trees in this file. From here the block is
+        // fully synchronous, so jsdom's frame timer cannot inject more: the
+        // only rAF that lands is the one OUR effect schedules on the change.
+        rafQueue.length = 0;
+        scrollSpy.mockClear();
+        scrolledOn = null;
+
+        // Select #italia — the effect must NOT scroll synchronously.
+        setSel({ networkSlug: "freenode", channelName: "#italia", kind: "channel" });
+        expect(scrollSpy).not.toHaveBeenCalled();
+
+        // One frame is not enough — the idiom needs the SECOND rAF (layout
+        // settled) before it reads geometry.
+        frame();
+        expect(scrollSpy).not.toHaveBeenCalled();
+
+        // Second frame: now it scrolls the currently-selected tab. That this
+        // resolves the LIVE selection (not a ref captured before the rAF) is
+        // discriminated by the sibling test below.
+        frame();
+        expect(scrollSpy).toHaveBeenCalledTimes(1);
+        expect(scrolledOn).not.toBeNull();
+        expect((scrolledOn as unknown as HTMLElement).classList.contains("selected")).toBe(true);
+        expect((scrolledOn as unknown as HTMLElement).textContent).toContain("#italia");
+      } finally {
+        (HTMLElement.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView =
+          origScrollIntoView;
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("re-queries the LIVE selection inside the deferred callback — a mid-flight switch scrolls the new tab, never the stale one", async () => {
+      vi.resetModules();
+      const { createSignal } = await import("solid-js");
+      const [sel, setSel] = createSignal<{
+        networkSlug: string;
+        channelName: string;
+        kind: string;
+      } | null>(null);
+
+      vi.doMock("../lib/networks", () => ({
+        networks: () => [{ id: 1, slug: "freenode", inserted_at: "", updated_at: "" }],
+        channelsBySlug: () => ({
+          freenode: [
+            { name: "#italia", joined: true, source: "autojoin" },
+            { name: "#other", joined: true, source: "autojoin" },
+          ],
+        }),
+      }));
+      vi.doMock("../lib/selection", () => ({
+        selectedChannel: sel,
+        setSelectedChannel: setSel,
+        isActiveSelection: () => false,
+        unreadCounts: () => ({}),
+        messagesUnread: () => ({}),
+        eventsUnread: () => ({}),
+      }));
+      vi.doMock("../lib/mentions", () => ({
+        mentionCounts: () => ({}),
+        setServerMention: vi.fn(),
+      }));
+      vi.doMock("../lib/channelKey", () => ({
+        channelKey: (slug: string, name: string) => `${slug} ${name}`,
+      }));
+      vi.doMock("../lib/queryWindows", () => ({
+        queryWindowsByNetwork: () => ({}),
+      }));
+      vi.doMock("../lib/windowClose", () => ({
+        closeQueryWindow: vi.fn(),
+        confirmLeaveChannel: vi.fn(),
+        confirmDisconnectNetwork: vi.fn(),
+      }));
+      vi.doMock("../lib/scrollToBottomCommand", () => ({
+        requestScrollToBottom: vi.fn(),
+        scrollToBottomRequest: () => 0,
+      }));
+
+      const rafQueue: FrameRequestCallback[] = [];
+      vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+        rafQueue.push(cb);
+        return rafQueue.length;
+      });
+      const frame = () => {
+        for (const cb of rafQueue.splice(0)) cb(0);
+      };
+
+      const origScrollIntoView = HTMLElement.prototype.scrollIntoView;
+      // Record the data-window-name of every tab scrollIntoView lands on.
+      const scrolledNames: string[] = [];
+      (HTMLElement.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView =
+        function (this: Element) {
+          scrolledNames.push((this as HTMLElement).getAttribute("data-window-name") ?? "");
+        };
+
+      try {
+        const { default: BottomBarFresh } = await import("../BottomBar");
+        render(() => <BottomBarFresh />);
+        rafQueue.length = 0;
+        scrolledNames.length = 0;
+
+        // Select #italia, then advance ONE frame so its outer rAF has run and
+        // its inner (DOM-reading) callback is scheduled but NOT yet executed.
+        setSel({ networkSlug: "freenode", channelName: "#italia", kind: "channel" });
+        frame();
+
+        // Mid-flight switch to #other BEFORE that inner callback runs — the
+        // `.selected` class moves to #other synchronously. A fix that captured
+        // the tab ref at effect-fire time would still scroll #italia; the
+        // re-query resolves `.bottom-bar-tab.selected` to the NOW-selected
+        // #other.
+        setSel({ networkSlug: "freenode", channelName: "#other", kind: "channel" });
+
+        // Drain the #italia chain's inner + the #other chain's outer→inner.
+        frame();
+        frame();
+
+        expect(scrolledNames.length).toBeGreaterThan(0);
+        expect(scrolledNames).not.toContain("#italia");
+        expect(scrolledNames.every((n) => n === "#other")).toBe(true);
+      } finally {
+        (HTMLElement.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView =
+          origScrollIntoView;
+        vi.unstubAllGlobals();
+      }
+    });
+  });
 });
