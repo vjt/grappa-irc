@@ -26294,16 +26294,28 @@ now **roster-authoritative**:
    (authoritative "no sigil") vs `undefined` for "no snapshot / not found"
    (→ fall back); the distinction matters so a roster-plain member never
    falls through to the stray-`%` flags field.
-2. **Positional flags parse (fallback).** When no roster snapshot exists
-   (`WHO` on a non-joined channel, `WHO <nick|mask>`), `parseWhoFlags/1`
-   walks the bahamut grammar slot-by-slot, so the position-2 `%` is
-   classified as `invisible` and only the trailing status glyph is
-   membership. The one irreducible loss — a real non-invisible halfop with
-   NO other flags (`H%`) in a channel cic isn't joined to resolves to plain —
-   is inherent to the byte-collision and documented in-code; the roster path
-   covers the common/reported case.
+2. **`%`-count reconciliation for +i (both directions).** Invisibility is NOT
+   read positionally — that only mislabels the collision the OTHER way (a real
+   non-secure halfop is `H%` in the *non-oper* WHO view, where the +i marker is
+   never emitted, so a position-2 read tags every ordinary halfop "invisible";
+   caught in code review). Instead `resolveWhoRow/2` derives `+i` from the
+   count of `%` the RESOLVED membership does not account for: a halfop
+   membership consumes exactly one `%`, everything else none. So a real halfop
+   (`H%`, roster `%`) → not +i; a plain +i member (`H%`, roster plain) → +i; an
+   invisible halfop (`H%%`) → +i. This needs the roster, which is why it lives
+   in the resolver, not the parser.
+3. **Trailing-glyph fallback.** When no roster snapshot exists (`WHO` on a
+   non-joined channel, `WHO <nick|mask>`), membership is the **trailing** status
+   glyph (`parseWhoFlags/1` — bahamut emits it last), so a lone `%` reads as
+   halfop (#272 option 2) and only a non-trailing `%` (e.g. `H%@`) reads as +i.
+   Reading membership as the trailing glyph (not a strict positional walk) is
+   also robust to any unenumerated char between the oper/secure slots and the
+   membership glyph. The one irreducible residual — a rosterless *operator-view*
+   `+i` **plain** member (`H%`) reads as halfop — is inherent to the
+   byte-collision (a lone `%` is undecidable without a roster) and documented
+   in-code; the roster path covers the reported/common case.
 
-The `+i` marker is now surfaced as its own honest **"invisible"** chip (muted
+The `+i` marker is surfaced as its own honest **"invisible"** chip (muted
 italic, emphatically NOT a channel-status tier), so no wire information is
 dropped. Away / oper / secure chips (`H`/`G`/`*`/`S`) were never affected.
 
@@ -26315,13 +26327,14 @@ secure / +i). A new WHO/NAMES consumer MUST take channel membership from the
 roster, never from a `%`/`@`/`+` scan of the raw WHO flags token.
 
 **Verification.** `WhoModal.test.tsx` #272 block — RED pre-fix: a roster-plain
-`+i` member (`H%`) rendered a halfop chip + `%` prefix, and no "invisible"
-chip existed; also the rosterless positional-fallback cases (`H%` → +i,
-`H%@` → +i chanop). Guards keep the roster-halfop (`["%"]` → halfop) and
-`H*%` → oper+halfop (trailing glyph is membership) positive cases green. E2e
-(`issue272-who-invisible-not-halfop.spec.ts`): a plain peer (bahamut boots
-users `+i` by default) joins the channel, the bouncer opers up
-(testoper/testoperpass), then `/who`s — the peer's real oper-view 352 row
-carries `%`; asserts the honest "invisible" chip is present (anti-hollow-
+`+i` member (`H%`) rendered a halfop chip + `%` prefix with no "invisible"
+chip; a roster-halfop `H%` rendered a FALSE "invisible" chip (the code-review
+Finding); the rosterless fallback (`H%` → halfop, `H%@` → +i chanop). GREEN
+guards: invisible-halfop `H%%` → +i AND halfop; secure member `HS@` → secure +
+chanop with `S` never mis-bucketed to "unknown"; secure halfop `HS%` → not +i;
+`H*%` → oper + halfop. E2e (`issue272-who-invisible-not-halfop.spec.ts`): a
+plain peer (bahamut boots users `+i` by default) joins the channel, the bouncer
+opers up (testoper/testoperpass), then `/who`s — the peer's real oper-view 352
+row carries `%`; asserts the honest "invisible" chip is present (anti-hollow-
 green proof the wire really carried the marker) AND no halfop chip / `%` nick
 prefix. Client-side only — no cold deploy.

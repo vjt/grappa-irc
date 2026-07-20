@@ -240,6 +240,36 @@ describe("WhoModal (#169)", () => {
       const rowEl = screen.getByTestId("who-modal-row");
       expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).not.toBeNull();
       expect(rowEl.querySelector(".nick-prefix-halfop")).not.toBeNull();
+      // ...and the SAME `%` must NOT also render an "invisible" chip: the roster
+      // says halfop, so the token's lone `%` is membership, not the +i marker
+      // (the collision, mislabeled the OTHER direction — code-review Finding 1).
+      expect(rowEl.querySelector(".who-modal-flag-tag-invisible")).toBeNull();
+    });
+
+    it("does NOT render an invisible chip on a real halfop (non-oper view, H%)", () => {
+      focusNetwork();
+      // The non-oper WHO view never emits the +i marker, so every non-secure
+      // halfop is `H%` — the roster (%) must claim that lone `%` as membership
+      // so no bogus "invisible" chip appears on ordinary halfops.
+      seedFromTest(channelKey(SLUG, "#bofh"), [{ nick: "hop", modes: ["%"] }]);
+      setWhoReply(SLUG, roster([row({ nick: "hop", modes: "H%", channel: "#bofh" })]));
+      render(() => <WhoModal />);
+      const rowEl = screen.getByTestId("who-modal-row");
+      expect(rowEl.querySelector(".who-modal-flag-tag-invisible")).toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).not.toBeNull();
+    });
+
+    it("reconciles an invisible halfop (roster %, token H%%) as BOTH +i and halfop", () => {
+      focusNetwork();
+      // Two `%`: the roster claims one as halfop membership, the extra `%` is
+      // the oper-view +i marker.
+      seedFromTest(channelKey(SLUG, "#bofh"), [{ nick: "alice", modes: ["%"] }]);
+      setWhoReply(SLUG, roster([row({ nick: "alice", modes: "H%%", channel: "#bofh" })]));
+      render(() => <WhoModal />);
+      const rowEl = screen.getByTestId("who-modal-row");
+      expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).not.toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-invisible")).not.toBeNull();
+      expect(rowEl.querySelector(".nick-prefix-halfop")).not.toBeNull();
     });
 
     it("surfaces the +i invisible marker as its own chip, never dropped", () => {
@@ -252,16 +282,20 @@ describe("WhoModal (#169)", () => {
       expect(rowEl.textContent).toContain("invisible");
     });
 
-    it("falls back to a positional parse (%-after-H/G = +i, not halfop) with no roster", () => {
+    it("rosterless fallback: a lone trailing % reads as halfop membership, not +i", () => {
       focusNetwork();
       // No roster (WHO on a non-joined channel / WHO <nick|mask>): channel "*"
-      // has no NAMES snapshot, so the flags field is parsed positionally.
+      // has no NAMES snapshot. Per the bahamut grammar the TRAILING status
+      // glyph is membership, so a lone `%` is halfop (#272 option 2) — a lone
+      // `%` is undecidable (halfop vs +i) without a roster, and inventing an
+      // "invisible" chip would mislabel every ordinary rosterless halfop. Only
+      // a NON-trailing `%` (next test) reads as +i.
       setWhoReply(SLUG, roster([row({ nick: "ghost", modes: "H%", channel: "*" })]));
       render(() => <WhoModal />);
       const rowEl = screen.getByTestId("who-modal-row");
-      expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).toBeNull();
-      expect(rowEl.querySelector(".nick-prefix-halfop")).toBeNull();
-      expect(rowEl.querySelector(".who-modal-flag-tag-invisible")).not.toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).not.toBeNull();
+      expect(rowEl.querySelector(".nick-prefix-halfop")).not.toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-invisible")).toBeNull();
     });
 
     it("positional fallback parses H*% as oper + halfop (trailing glyph is membership)", () => {
@@ -283,6 +317,31 @@ describe("WhoModal (#169)", () => {
       expect(rowEl.querySelector(".who-modal-flag-tag-chanop")).not.toBeNull();
       expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).toBeNull();
       expect(rowEl.querySelector(".nick-prefix-op")).not.toBeNull();
+    });
+
+    it("decodes a secure member (HS@) as secure + chanop, S never lost or unknown", () => {
+      focusNetwork();
+      // Bahamut's grammar places `S` (TLS) BEFORE the trailing membership glyph
+      // (`HS@`, not `H@S`); the membership-agnostic secure scan + trailing-glyph
+      // membership decode both hold, so `S` never mis-buckets into "unknown".
+      setWhoReply(SLUG, roster([row({ nick: "tls", modes: "HS@", channel: "*" })]));
+      render(() => <WhoModal />);
+      const rowEl = screen.getByTestId("who-modal-row");
+      expect(rowEl.querySelector(".who-modal-flag-tag-secure")).not.toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-chanop")).not.toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-unknown")).toBeNull();
+      expect(rowEl.querySelector(".nick-prefix-op")).not.toBeNull();
+    });
+
+    it("reconciles a secure halfop (roster %, token HS%) as secure + halfop, not +i", () => {
+      focusNetwork();
+      seedFromTest(channelKey(SLUG, "#bofh"), [{ nick: "alice", modes: ["%"] }]);
+      setWhoReply(SLUG, roster([row({ nick: "alice", modes: "HS%", channel: "#bofh" })]));
+      render(() => <WhoModal />);
+      const rowEl = screen.getByTestId("who-modal-row");
+      expect(rowEl.querySelector(".who-modal-flag-tag-secure")).not.toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).not.toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-invisible")).toBeNull();
     });
   });
 });

@@ -42,73 +42,55 @@ import NickText, { type PrefixGlyph } from "./NickText";
 //
 // The NAMES roster (`membersByChannel`) is the authoritative, ircd-agnostic
 // source of channel membership: it carries `@`/`%`/`+` as discrete prefixes
-// with no overloading. We cross-check it first (option 1 in #272) and only
-// parse the flags field positionally when no roster snapshot exists (`WHO`
-// on a non-joined channel, `WHO <nick|mask>`).
+// with no overloading. We cross-check it first (option 1 in #272), then
+// reconcile umode +i against it: since a halfop membership accounts for
+// exactly one `%`, any `%` the resolved membership does NOT account for is the
+// +i marker. This disambiguates BOTH directions — a real halfop never shows a
+// false "invisible" chip, a plain +i member never shows a false "halfop". Only
+// when no roster snapshot exists (`WHO` on a non-joined channel,
+// `WHO <nick|mask>`) do we fall back to the token's trailing glyph, where a
+// lone `%` reads as halfop (#272 option 2). See `resolveWhoRow`.
 type Membership = "@" | "%" | "+";
 
 type WhoFlagChip = { label: string; cssMod: string };
 
+// The status chars grappa enumerates; any other byte is surfaced raw so no
+// wire information is silently dropped (bahamut can emit flags grappa never
+// enumerated — the server relays the field verbatim).
+const KNOWN_WHO_FLAGS = new Set(["H", "G", "*", "S", "@", "%", "+"]);
+
+// Structural (non-membership) attributes of a WHO row's flags token.
 type WhoFlags = {
   away: "here" | "gone";
   oper: boolean;
-  invisible: boolean;
   secure: boolean;
+  // Fallback channel membership = the TRAILING status glyph (see below). Used
+  // only when no NAMES roster resolves the row; the roster overrides it.
   membership: Membership | null;
   unknown: string[];
 };
 
 const isMembership = (ch: string): ch is Membership => ch === "@" || ch === "%" || ch === "+";
 
-// Positional parse of the raw 352 flags token per the bahamut grammar above.
-// Consumes each grammar slot in order so the position-2 invisible `%` is
-// classified as `invisible`, NEVER as membership — the position-4 `%` (the
-// trailing status glyph) is the only `%` that means halfop. Any trailing char
-// grappa never enumerated is preserved in `unknown` (never dropped — the
-// server relays the field verbatim and bahamut can emit new flags).
+// Parse the raw 352 flags token per the bahamut grammar `[H|G] [*|%] [S]
+// [@|%|+]`. Channel membership is read as the TRAILING status glyph — bahamut
+// always emits it last — so a `%` in any earlier slot (the oper-view +i
+// marker) is NEVER mistaken for halfop. `oper` (`*`) and `secure` (`S`) live
+// in fixed, disjoint slots, so a membership-agnostic `includes` scan is safe
+// AND robust to any unenumerated char that lands between them and the trailing
+// glyph (the glyph is still the last char). Invisibility is NOT decided here —
+// it is `%`-count-reconciled against the roster-resolved membership in
+// `resolveWhoRow`, because a lone `%` is undecidable (halfop vs +i) without it.
 const parseWhoFlags = (raw: string): WhoFlags => {
   const chars = [...raw];
-  const flags: WhoFlags = {
-    away: "here",
-    oper: false,
-    invisible: false,
-    secure: false,
-    membership: null,
-    unknown: [],
+  const last = chars[chars.length - 1];
+  return {
+    away: chars[0] === "G" ? "gone" : "here",
+    oper: chars.includes("*"),
+    secure: chars.includes("S"),
+    membership: last !== undefined && isMembership(last) ? last : null,
+    unknown: chars.filter((ch) => !KNOWN_WHO_FLAGS.has(ch)),
   };
-  let i = 0;
-  // pos 1 — away marker (H here / G gone), always first on the wire.
-  if (chars[i] === "H") i += 1;
-  else if (chars[i] === "G") {
-    flags.away = "gone";
-    i += 1;
-  }
-  // pos 2 — oper (*) XOR the oper-view invisible (+i) marker (%).
-  if (chars[i] === "*") {
-    flags.oper = true;
-    i += 1;
-  } else if (chars[i] === "%") {
-    flags.invisible = true;
-    i += 1;
-  }
-  // pos 3 — secure (S, TLS-connected).
-  if (chars[i] === "S") {
-    flags.secure = true;
-    i += 1;
-  }
-  // pos 4 — channel membership (the trailing status glyph). A `%` here is
-  // halfop, distinct from the position-2 invisible `%` already consumed.
-  const m = chars[i];
-  if (m !== undefined && isMembership(m)) {
-    flags.membership = m;
-    i += 1;
-  }
-  // anything left over — an unenumerated flag. Surfaced raw, never dropped.
-  for (; i < chars.length; i += 1) {
-    const ch = chars[i];
-    if (ch !== undefined) flags.unknown.push(ch);
-  }
-  return flags;
 };
 
 // Authoritative membership sigil for a WHO row, cross-checked against the
@@ -142,21 +124,61 @@ const MEMBERSHIP_CHIP: Record<Membership, WhoFlagChip> = {
   "+": { label: "voice", cssMod: "voice" },
 };
 
-// #176/#272 — decode a WHO row into human-labeled, per-flag styled chips. The
-// non-membership flags (away / oper / +i / secure / unknown) come from the
-// positional flags parse; the membership chip comes from the roster-resolved
-// sigil (so a mislabeled oper-view `%` never renders "halfop"). Labels +
-// colors are cic-owned display strings — NOT mIRC codes — so they render as
-// CSS chips, never through MircBody.
-const whoChips = (flags: WhoFlags, membership: Membership | null): WhoFlagChip[] => {
+// A fully-resolved WHO row: membership resolved against the roster, and
+// invisibility (umode +i) reconciled with it.
+type ResolvedWhoRow = {
+  away: "here" | "gone";
+  oper: boolean;
+  invisible: boolean;
+  secure: boolean;
+  membership: Membership | null;
+  unknown: string[];
+};
+
+// #272 — resolve a WHO row's rendered attributes, disambiguating the
+// overloaded `%` in BOTH directions.
+//
+// Membership is roster-authoritative: `rosterM` of `undefined` means "no
+// snapshot" → fall back to the token's trailing glyph; `null`/glyph is the
+// roster's answer and wins. Invisibility is then derived from the count of `%`
+// the RESOLVED membership does NOT account for — a halfop membership consumes
+// exactly one `%`, everything else consumes none. So:
+//   * a real halfop (`H%`, roster `%`)  → 1 `%`, membership eats it → NOT +i
+//     (no false "invisible" chip — the pre-#272-review bug);
+//   * a plain +i member (`H%`, roster plain) → 1 `%`, membership eats none →
+//     +i (the honest "invisible" chip);
+//   * an invisible halfop (`H%%`)        → 2 `%`, membership eats one → +i.
+// Rosterless, membership is the trailing glyph, so a lone `%` reads as halfop
+// (spec #272 option 2) and only a non-trailing `%` (e.g. `H%@`) reads as +i —
+// the irreducible residual (a rosterless oper-view +i *plain* member, `H%`,
+// reads as halfop) is documented in DESIGN_NOTES; the roster path covers the
+// reported/common case.
+const resolveWhoRow = (modes: string, rosterM: Membership | null | undefined): ResolvedWhoRow => {
+  const flags = parseWhoFlags(modes);
+  const membership = rosterM === undefined ? flags.membership : rosterM;
+  const percentCount = [...modes].filter((ch) => ch === "%").length;
+  return {
+    away: flags.away,
+    oper: flags.oper,
+    invisible: percentCount > (membership === "%" ? 1 : 0),
+    secure: flags.secure,
+    membership,
+    unknown: flags.unknown,
+  };
+};
+
+// #176/#272 — decode a resolved WHO row into human-labeled, per-flag styled
+// chips. Labels + colors are cic-owned display strings — NOT mIRC codes — so
+// they render as CSS chips, never through MircBody.
+const whoChips = (row: ResolvedWhoRow): WhoFlagChip[] => {
   const chips: WhoFlagChip[] = [
-    flags.away === "gone" ? { label: "gone", cssMod: "gone" } : { label: "here", cssMod: "here" },
+    row.away === "gone" ? { label: "gone", cssMod: "gone" } : { label: "here", cssMod: "here" },
   ];
-  if (flags.oper) chips.push({ label: "ircop", cssMod: "ircop" });
-  if (flags.invisible) chips.push({ label: "invisible", cssMod: "invisible" });
-  if (flags.secure) chips.push({ label: "secure", cssMod: "secure" });
-  if (membership !== null) chips.push(MEMBERSHIP_CHIP[membership]);
-  for (const ch of flags.unknown) chips.push({ label: ch, cssMod: "unknown" });
+  if (row.oper) chips.push({ label: "ircop", cssMod: "ircop" });
+  if (row.invisible) chips.push({ label: "invisible", cssMod: "invisible" });
+  if (row.secure) chips.push({ label: "secure", cssMod: "secure" });
+  if (row.membership !== null) chips.push(MEMBERSHIP_CHIP[row.membership]);
+  for (const ch of row.unknown) chips.push({ label: ch, cssMod: "unknown" });
   return chips;
 };
 
@@ -233,17 +255,13 @@ const WhoModal: Component = () => {
                       // line = nick + decoded flag chips; then realname, host,
                       // and server/hops each on their own wrapping line.
                       //
-                      // #272 — membership is roster-authoritative: the row's
-                      // NAMES snapshot decides `@`/`%`/`+`, and only the
-                      // positional flags parse is used when no roster exists.
-                      // Read as getters (calling `membersByChannel()` in JSX)
-                      // so the sigil stays correct if the roster updates while
-                      // the ephemeral modal is open.
-                      const flags = parseWhoFlags(u.modes);
-                      const membership = (): Membership | null => {
-                        const fromRoster = rosterMembership(b.network, u.channel, u.nick);
-                        return fromRoster === undefined ? flags.membership : fromRoster;
-                      };
+                      // #272 — membership is roster-authoritative and +i is
+                      // reconciled against it (see `resolveWhoRow`). Read as a
+                      // getter (calling `membersByChannel()` in JSX) so the row
+                      // stays correct if the roster updates while the ephemeral
+                      // modal is open.
+                      const resolved = (): ResolvedWhoRow =>
+                        resolveWhoRow(u.modes, rosterMembership(b.network, u.channel, u.nick));
                       return (
                         <li class="who-modal-row" data-testid="who-modal-row">
                           <div class="who-modal-line who-modal-line-head">
@@ -252,13 +270,16 @@ const WhoModal: Component = () => {
                               class="who-modal-nick"
                               onClick={() => onNickClick(b.network, u.nick)}
                             >
-                              <NickText nick={u.nick} prefix={membershipPrefix(membership())} />
+                              <NickText
+                                nick={u.nick}
+                                prefix={membershipPrefix(resolved().membership)}
+                              />
                             </button>
                             {/* #176 — decoded flag chips. cic-owned display
                               labels colored per flag via CSS — NOT mIRC codes,
                               so they do NOT route through MircBody. */}
                             <span class="who-modal-flags">
-                              <For each={whoChips(flags, membership())}>
+                              <For each={whoChips(resolved())}>
                                 {(chip) => (
                                   <span
                                     class={`who-modal-flag-tag who-modal-flag-tag-${chip.cssMod}`}
