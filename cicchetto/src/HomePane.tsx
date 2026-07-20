@@ -13,6 +13,7 @@ import { friendlyApiError } from "./lib/friendlyApiError";
 import { homeData } from "./lib/home";
 import { refetchNetworks, refetchUser, user } from "./lib/networks";
 import { setSelectedChannel } from "./lib/selection";
+import { confirmDisconnectNetwork } from "./lib/windowClose";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
 import NickText from "./NickText";
@@ -237,6 +238,18 @@ const ConnectedRow: Component<{ row: HomeRow }> = (props) => {
       kind: "list",
     });
   };
+  // #283 — per-network Disconnect, symmetric with DisconnectedRow's
+  // Reconnect chip. REUSES the #195 confirm modal (windowClose.
+  // confirmDisconnectNetwork → "Disconnect from <slug>?"), the SAME verb
+  // the sidebar/bottom-bar × fires — subject-agnostic (park-one for both
+  // user + visitor since #211 phase 6). Fire-and-forget behind the modal
+  // (no pending/error chip): the park is confirmed by the row swapping to
+  // DisconnectedRow on the connection_state_changed event, exactly like
+  // the ×. (vjt decision, issue #283 2026-07-20: match the ×, not
+  // Reconnect's awaited-PATCH UX.)
+  const onDisconnect = () => {
+    confirmDisconnectNetwork(props.row.slug);
+  };
   return (
     <li class="home-pane-network-row home-pane-network-row-connected">
       <button type="button" class="home-pane-network-btn" onClick={onJump}>
@@ -244,9 +257,19 @@ const ConnectedRow: Component<{ row: HomeRow }> = (props) => {
         <NickText nick={props.row.nick} extraClass="home-pane-network-nick" />
         <span class="home-pane-network-state">{props.row.connection_state}</span>
       </button>
-      <button type="button" class="home-pane-network-browse" onClick={onBrowse}>
-        📇 Browse channels
-      </button>
+      <div class="home-pane-network-actions">
+        <button type="button" class="home-pane-network-browse" onClick={onBrowse}>
+          📇 Browse channels
+        </button>
+        <button
+          type="button"
+          class="home-pane-network-disconnect"
+          aria-label={`Disconnect ${props.row.slug}`}
+          onClick={onDisconnect}
+        >
+          Disconnect
+        </button>
+      </div>
       <FeaturedLinks slug={props.row.slug} />
       <WatchedPanel slug={props.row.slug} />
     </li>

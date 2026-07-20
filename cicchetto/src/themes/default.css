@@ -7138,6 +7138,27 @@ html.resize-dragging * {
   cursor: progress;
 }
 
+/* #283 — per-network Disconnect on :connected home rows, symmetric with
+   the Reconnect chip. Same chip geometry as .home-pane-network-reconnect,
+   but a subdued outline (transparent fill) so it reads as a SECONDARY /
+   destructive action — not the accent-filled primary CTA. Hover tints
+   toward the accent, matching the browse affordance. */
+.home-pane-network-disconnect {
+  background: transparent;
+  color: var(--fg-muted, var(--fg));
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.3rem 0.8rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+}
+
+.home-pane-network-disconnect:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .home-pane-network-error {
   color: #d04040;
   font-size: 0.9em;

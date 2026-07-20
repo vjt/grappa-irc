@@ -56,6 +56,11 @@ const userMock = vi.fn<() => unknown>(() => null);
 // #211 phase 6 — visitorSlug() now derives from the list-shaped
 // networks() store (the singular me.network_slug is gone). Mock it.
 const networksMock = vi.fn<() => unknown[]>(() => []);
+// #283 — ConnectedRow's Disconnect button routes through the #195 confirm
+// modal (windowClose.confirmDisconnectNetwork — "Disconnect from <slug>?"),
+// the SAME verb the sidebar/bottom-bar × fires. Mock it so the unit test
+// asserts the row REUSES that path (not raw disconnectNetwork / patchNetwork).
+const confirmDisconnectNetworkMock = vi.fn<(slug: string) => void>();
 
 vi.mock("../lib/home", () => ({
   homeData: () => homeDataMock(),
@@ -111,6 +116,13 @@ vi.mock("../lib/selection", () => ({
   applySeedEnvelope: vi.fn(),
 }));
 
+// #283 — mock the confirm-modal disconnect verb. HomePane imports only
+// `confirmDisconnectNetwork` from windowClose (the ConnectedRow Disconnect
+// button); the modal + park semantics are unit-tested in windowClose.test.ts.
+vi.mock("../lib/windowClose", () => ({
+  confirmDisconnectNetwork: (slug: string) => confirmDisconnectNetworkMock(slug),
+}));
+
 vi.mock("../lib/friendlyApiError", () => ({
   // UX-5 BR: identity-stub so failure-path tests can assert the chip
   // surfaces the ApiError's message verbatim. The real mapping is unit-
@@ -132,6 +144,7 @@ describe("HomePane", () => {
     windowStateMock.mockReturnValue({});
     userMock.mockReturnValue(null);
     networksMock.mockReturnValue([]);
+    confirmDisconnectNetworkMock.mockClear();
   });
 
   afterEach(() => {
@@ -442,6 +455,54 @@ describe("HomePane", () => {
       });
       // Browse is a UI shortcut — no REST call.
       expect(patchNetworkMock).not.toHaveBeenCalled();
+    });
+
+    // #283 — per-network Disconnect on :connected rows, symmetric with the
+    // Reconnect chip on :parked/:failed rows. It REUSES the #195 confirm
+    // modal (windowClose.confirmDisconnectNetwork → "Disconnect from
+    // <slug>?"), the SAME verb the sidebar/bottom-bar × fires — NOT a raw
+    // park PATCH and NOT a jump. vjt decision (issue #283, 2026-07-20):
+    // fire-and-forget behind the modal, no pending/error chip (that path is
+    // for Reconnect's awaited PATCH; Disconnect matches the × exactly).
+    it(":connected row 'Disconnect' button fires confirmDisconnectNetwork (#283)", () => {
+      homeDataMock.mockReturnValue(connectedNetworks("azzurra"));
+      render(() => <HomePane />);
+
+      const disconnectBtn = screen.getByRole("button", { name: /disconnect azzurra/i });
+      fireEvent.click(disconnectBtn);
+
+      expect(confirmDisconnectNetworkMock).toHaveBeenCalledWith("azzurra");
+      // Reuse the #195 modal — NOT a raw park PATCH, NOT a jump.
+      expect(patchNetworkMock).not.toHaveBeenCalled();
+      expect(setSelectedChannelMock).not.toHaveBeenCalled();
+    });
+
+    it(":connected row Disconnect is identical for a VISITOR subject (#283 single path)", () => {
+      // ConnectedRow is one shared component (HomePane.tsx) — the Disconnect
+      // affordance is subject-agnostic. Rendering it for a visitor proves
+      // "no behavioral divergence between users and visitors" trivially.
+      userMock.mockReturnValue({ kind: "visitor", id: "v1", nick: "guest" });
+      homeDataMock.mockReturnValue(connectedNetworks("azzurra"));
+      render(() => <HomePane />);
+
+      const disconnectBtn = screen.getByRole("button", { name: /disconnect azzurra/i });
+      fireEvent.click(disconnectBtn);
+
+      expect(confirmDisconnectNetworkMock).toHaveBeenCalledWith("azzurra");
+    });
+
+    it(":parked row does NOT render a Disconnect button (#283 — connected-only)", () => {
+      // The Disconnect affordance is the :connected counterpart of the
+      // Reconnect chip; a :parked/:failed row already shows Reconnect and
+      // must NOT also offer Disconnect (there is no connected upstream to
+      // park).
+      homeDataMock.mockReturnValue(TWO_NETWORKS);
+      render(() => <HomePane />);
+
+      // freenode is parked in TWO_NETWORKS → no Disconnect for it.
+      expect(screen.queryByRole("button", { name: /disconnect freenode/i })).toBeNull();
+      // azzurra is connected → it DOES get one.
+      expect(screen.getByRole("button", { name: /disconnect azzurra/i })).toBeInTheDocument();
     });
 
     it("registered branch ALSO renders no compose / input affordance", () => {
