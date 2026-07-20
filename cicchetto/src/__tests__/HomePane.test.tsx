@@ -98,9 +98,9 @@ vi.mock("../lib/networks", () => ({
   networks: () => networksMock(),
   refetchUser: () => refetchUserMock(),
   refetchNetworks: () => refetchNetworksMock(),
-  // #247 — WatchedPanel (mounted in ConnectedRow) resolves the network
-  // id from the slug; the HomePane fixtures don't carry ids, so
-  // undefined (panel renders empty list + add form) is the honest mock.
+  // #356 — the "Watched" panel MOVED off the home page into the settings
+  // "watch lists" section, so HomePane no longer resolves network ids here.
+  // Kept as an inert stub in case a child in the render tree reaches for it.
   networkIdBySlug: () => undefined,
 }));
 // channelKey is a pure fn — use the real one (mock at boundaries, not

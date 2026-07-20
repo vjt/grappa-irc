@@ -7520,50 +7520,56 @@ audio.media-viewer-media {
   --nab-lift: 8rem;
 }
 
-/* #247 — /notify Watched panel (home pane, per network card). The GUI
-   face of the server-side watch list: status dot + nick + remove, plus
-   an inline add form. Dot colors: online = green-ish accent, offline =
-   muted, unknown = dimmer still (no report yet). */
-.watched-panel {
-  margin-top: 0.5rem;
-  font-size: 0.85rem;
+/* #356 — watch-lists settings sub-page. Two lists (presence notify,
+   per-network + keyword highlight) under one section header. The presence
+   dots reuse the retired home Watched-panel palette (online green, offline
+   muted, unknown dimmer). Each list: entries with an × remove + an inline
+   add form. Lives inside the .settings-subpage / .settings-section shell
+   shared with the vhost/themes/identity sections. */
+.watchlists-network {
+  margin-bottom: 0.6rem;
 }
 
-.watched-panel-title {
-  margin: 0 0 0.25rem;
+.watchlists-network-slug {
+  margin: 0.4rem 0 0.2rem;
   font-size: 0.8rem;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
-.watched-panel-list {
+.watchlists-list {
   list-style: none;
   margin: 0 0 0.35rem;
   padding: 0;
 }
 
-.watched-panel-item {
+.watchlists-item {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   padding: 0.1rem 0;
 }
 
-.watched-panel-dot[data-state="online"] {
+.watchlists-dot[data-state="online"] {
   color: #4caf50;
 }
 
-.watched-panel-dot[data-state="offline"] {
+.watchlists-dot[data-state="offline"] {
   color: var(--muted);
 }
 
-.watched-panel-dot[data-state="unknown"] {
+.watchlists-dot[data-state="unknown"] {
   color: var(--muted);
   opacity: 0.5;
 }
 
-.watched-panel-remove {
+.watchlists-keyword {
+  flex: 1;
+  font-family: var(--font-mono);
+}
+
+.watchlists-remove {
   background: none;
   border: none;
   color: var(--muted);
@@ -7571,13 +7577,30 @@ audio.media-viewer-media {
   padding: 0 0.25rem;
 }
 
-.watched-panel-remove:hover {
+.watchlists-remove:hover {
   color: var(--fg);
 }
 
-.watched-panel-error {
+.watchlists-add {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+}
+
+.watchlists-add input {
+  flex: 1;
+  min-width: 0;
+}
+
+.watchlists-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.watchlists-error {
   color: #e57373;
   margin-top: 0.25rem;
+  font-size: 0.85rem;
 }
 
 /* #247 — presence transition toasts. Fixed stack, bottom-right on

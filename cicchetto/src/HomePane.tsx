@@ -17,7 +17,6 @@ import { confirmDisconnectNetwork } from "./lib/windowClose";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
 import NickText from "./NickText";
-import WatchedPanel from "./WatchedPanel";
 
 // #85 — operator-curated featured channels for a network, fetched on
 // home DISPLAY (component mount / slug change) so an operator config
@@ -271,7 +270,6 @@ const ConnectedRow: Component<{ row: HomeRow }> = (props) => {
         </button>
       </div>
       <FeaturedLinks slug={props.row.slug} />
-      <WatchedPanel slug={props.row.slug} />
     </li>
   );
 };
@@ -339,10 +337,9 @@ const DisconnectedRow: Component<{ row: HomeRow }> = (props) => {
           </Show>
         </div>
         <FeaturedLinks slug={props.row.slug} />
-        {/* #247 (review nit) — the watch list is durable server state,
-            so it stays visible while the network is parked/failed; dots
-            render ◌ unknown (no live session to report presence). */}
-        <WatchedPanel slug={props.row.slug} />
+        {/* #356 — the "Watched" panel MOVED to the settings "watch lists"
+            section (bare /notify / the settings nav row). It is no longer
+            on the home page for either row state. */}
       </div>
     </li>
   );

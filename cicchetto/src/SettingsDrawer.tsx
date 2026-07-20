@@ -47,6 +47,7 @@ import {
 import ShareSessionPage from "./ShareSessionPage";
 import ThemeGallery from "./ThemeGallery";
 import VhostSettingsPage from "./VhostSettingsPage";
+import WatchlistsSettings from "./WatchlistsSettings";
 
 // Right-overlay drawer: theme toggle + notifications (push permission +
 // per-trigger prefs + device list) + optional "admin console" entry
@@ -819,6 +820,22 @@ const SettingsDrawer: Component<Props> = (props) => {
             </span>
           </button>
 
+          {/* #356 — watch lists sub-page nav row (presence notify + keyword
+              highlight, one section). Also deep-linked by the bare
+              /notify /watch /hilight /highlight compose verbs via
+              requestOpenSettings("watchlists"). */}
+          <button
+            type="button"
+            class="settings-nav-row"
+            data-testid="watchlists-settings-entry"
+            onClick={() => setSettingsPage("watchlists")}
+          >
+            <span class="settings-nav-row-label">watch lists</span>
+            <span class="settings-nav-row-chevron" aria-hidden="true">
+              ›
+            </span>
+          </button>
+
           <fieldset class="font-size-fieldset">
             <legend>text size</legend>
             <label>
@@ -1118,6 +1135,13 @@ const SettingsDrawer: Component<Props> = (props) => {
             active; the gallery owns its own server data loading. */}
         <Show when={settingsPage() === "themes"}>
           <ThemeGallery onBack={() => setSettingsPage("main")} />
+        </Show>
+
+        {/* #356 — watch lists sub-page (presence notify + keyword highlight).
+            Self-contained: reads the notifyWatch + highlightList stores
+            directly (like the retired home WatchedPanel), so no data props. */}
+        <Show when={settingsPage() === "watchlists"}>
+          <WatchlistsSettings onBack={() => setSettingsPage("main")} />
         </Show>
 
         {/* #335 — share-session sub-page (was ShareSessionModal). Entered

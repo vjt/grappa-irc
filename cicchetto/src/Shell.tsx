@@ -42,6 +42,7 @@ import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/ne
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { closeToPreviousWindow, selectedChannel, setSelectedChannel } from "./lib/selection";
+import { settingsOpenTick } from "./lib/settingsNav";
 import { isMobile } from "./lib/theme";
 import { loadUploadTtlSeconds } from "./lib/uploadOrchestrator";
 import {
@@ -101,6 +102,21 @@ import WhoModal from "./WhoModal";
 const Shell: Component = () => {
   const [membersOpen, setMembersOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+
+  // #356 — cross-module "open settings" request. A bare watch-family compose
+  // verb (/notify, /watch, /hilight, …) can't reach the local setSettingsOpen,
+  // so it bumps settingsOpenTick (settingsNav.requestOpenSettings, which also
+  // stashes the pending sub-page). Opening the drawer fires its own open
+  // transition, which consumes the pending page and jumps to "watchlists".
+  // The initial run (tick 0 vs prev 0) is a no-op; each later bump opens.
+  let prevSettingsTick = settingsOpenTick();
+  createEffect(() => {
+    const tick = settingsOpenTick();
+    if (tick !== prevSettingsTick) {
+      prevSettingsTick = tick;
+      setSettingsOpen(true);
+    }
+  });
 
   // BUGHUNT-3 sub-cluster D (2026-05-25) — single memo for the
   // selection-kind dispatch. Pre-fix Shell rendered nested `<Show>`
