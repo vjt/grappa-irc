@@ -2368,6 +2368,19 @@ html.resize-dragging * {
   border-top: 1px solid var(--border);
 }
 
+/* #356 — success/notice seam: the green sibling of .compose-box-error.
+   Same geometry (so the line never reflows when a submit swaps error↔notice);
+   the ONLY difference is the color token — var(--mode-voiced) is the theme's
+   green (the +voiced-nick hue), read as "success / affirmative" here. Carries
+   role=status (polite) at the markup layer; this rule is colour-only. */
+.compose-box-notice {
+  color: var(--mode-voiced);
+  margin: 0;
+  padding: 0.25rem 1rem;
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
 /* Image upload — picker button + TTL select + progress + modal.
  * Images cluster I-2 (2026-05-15). */
 

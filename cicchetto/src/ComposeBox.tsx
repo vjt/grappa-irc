@@ -77,10 +77,54 @@ export type Props = {
 const NOT_JOINED_STATES = new Set(["failed", "kicked", "parked"]);
 const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 
+// #356 — how long a green success/notice stays up before self-clearing.
+// The notice is a non-blocking confirmation (e.g. "/notify: watching gigi"),
+// so it auto-dismisses; the operator must NOT have to type or send to clear
+// it. Errors are a SEPARATE, STICKY severity (role=alert) with no timer —
+// you have to read them.
+const NOTICE_DISMISS_MS = 3_000;
+
+// #356 — the compose-box feedback line, discriminated by severity:
+//   * "error"  → red, role=alert, STICKY (survives until the next submit /
+//                input). The failure the operator must read.
+//   * "notice" → green, role=status, AUTO-DISMISSES after NOTICE_DISMISS_MS.
+//                Success / list output (the /notify + /hilight confirmation
+//                strings built in compose.ts, previously computed + discarded).
+type Feedback = { text: string; severity: "error" | "notice" };
+
 const ComposeBox: Component<Props> = (props) => {
   const key = () => channelKey(props.networkSlug, props.channelName);
-  const [error, setError] = createSignal<string | null>(null);
+  const [feedback, setFeedback] = createSignal<Feedback | null>(null);
   const [sending, setSending] = createSignal(false);
+  // Auto-dismiss handle for a shown NOTICE. Held so a new input / new submit /
+  // unmount can cancel a pending fire — otherwise a stale timer would clear a
+  // freshly-shown notice (or fire after the ComposeBox is gone).
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearNoticeTimer = (): void => {
+    if (noticeTimer !== undefined) {
+      clearTimeout(noticeTimer);
+      noticeTimer = undefined;
+    }
+  };
+  // Clear whatever feedback is up (both severities) + cancel any pending
+  // auto-dismiss. The single reset used by new input + submit-start.
+  const clearFeedback = (): void => {
+    clearNoticeTimer();
+    setFeedback(null);
+  };
+  // Show a green notice that self-clears after the timeout. Any prior timer is
+  // cancelled first so back-to-back notices each get a full window.
+  const showNotice = (text: string): void => {
+    clearNoticeTimer();
+    setFeedback({ text, severity: "notice" });
+    noticeTimer = setTimeout(() => {
+      noticeTimer = undefined;
+      // Only clear if it's still the notice we set — a later error must not be
+      // wiped by this timer (defensive; the common paths already cancel it).
+      setFeedback((f) => (f?.severity === "notice" ? null : f));
+    }, NOTICE_DISMISS_MS);
+  };
+  onCleanup(clearNoticeTimer);
   let pickerInput: HTMLInputElement | undefined;
   let textareaEl: HTMLTextAreaElement | undefined;
   let swipeStart: Point | null = null;
@@ -288,7 +332,9 @@ const ComposeBox: Component<Props> = (props) => {
   const onInput = (e: Event) => {
     const value = (e.currentTarget as HTMLTextAreaElement).value;
     setDraft(key(), value);
-    setError(null);
+    // #356 — typing dismisses any feedback (notice OR error) + kills a pending
+    // auto-dismiss timer, so the seam never lingers over a fresh draft.
+    clearFeedback();
   };
 
   // ---- Upload trigger surfaces (all categories) --------------------
@@ -418,11 +464,18 @@ const ComposeBox: Component<Props> = (props) => {
   const doSubmit = async (): Promise<void> => {
     if (sending()) return;
     setSending(true);
-    setError(null);
+    clearFeedback();
     try {
       const result = await submit(key(), props.networkSlug, props.channelName);
-      if ("error" in result && result.error !== "empty") {
-        setError(result.error);
+      // #356 — three outcomes:
+      //   {error}          → sticky red alert (except the "empty" no-op marker).
+      //   {ok: string}     → green auto-dismissing notice (the /notify + /hilight
+      //                      confirmation output, previously computed + discarded).
+      //   {ok: true}       → silent success (draft cleared upstream, no seam).
+      if ("error" in result) {
+        if (result.error !== "empty") setFeedback({ text: result.error, severity: "error" });
+      } else if (typeof result.ok === "string") {
+        showNotice(result.ok);
       }
     } finally {
       setSending(false);
@@ -619,10 +672,17 @@ const ComposeBox: Component<Props> = (props) => {
       <Show when={greyed()}>
         <p class="compose-box-not-joined muted">(not joined)</p>
       </Show>
-      <Show when={error()}>
-        {(msg) => (
-          <p class="compose-box-error" role="alert">
-            {msg()}
+      {/* #356 — feedback seam. Severity drives BOTH the class (red error vs
+          green notice) and the ARIA live role: role=alert (assertive) for
+          errors the operator must read, role=status (polite) for the
+          auto-dismissing success notice. */}
+      <Show when={feedback()}>
+        {(fb) => (
+          <p
+            class={fb().severity === "error" ? "compose-box-error" : "compose-box-notice"}
+            role={fb().severity === "error" ? "alert" : "status"}
+          >
+            {fb().text}
           </p>
         )}
       </Show>

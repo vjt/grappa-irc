@@ -325,6 +325,93 @@ describe("ComposeBox", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  // ----------------------------------------------------------------
+  // #356 — compose-box feedback seam: green NOTICE (success/list output,
+  // auto-dismiss, role=status) vs red ERROR (sticky, role=alert).
+  //
+  // A `result.ok: string` (the already-built /notify + /hilight
+  // confirmation output — compose.ts) now surfaces inline as a green
+  // notice that self-clears after ~3s so the operator need not type a
+  // command or send a message to dismiss it. Errors stay sticky (you
+  // must read them). `result.ok: true` is still a SILENT success.
+  // ----------------------------------------------------------------
+  describe("#356 — success/notice feedback seam", () => {
+    it("a string result.ok renders a GREEN notice with role=status (not alert)", async () => {
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.submit).mockResolvedValue({ ok: "notify: watching gigi" });
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i);
+      fireEvent.keyDown(ta, { key: "Enter" });
+      const notice = await screen.findByText(/watching gigi/i);
+      expect(notice).toHaveClass("compose-box-notice");
+      expect(notice.getAttribute("role")).toBe("status");
+      // It is NOT an alert (that role is reserved for sticky errors).
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("the green notice AUTO-DISMISSES after the timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const compose = await import("../lib/compose");
+        vi.mocked(compose.submit).mockResolvedValue({ ok: "highlight (1): foo" });
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i);
+        fireEvent.keyDown(ta, { key: "Enter" });
+        // Flush the submit promise + reactive DOM commit.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(screen.getByText(/highlight \(1\): foo/i)).toBeInTheDocument();
+        // Advance past the auto-dismiss window: the notice clears itself
+        // with no further user action.
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(screen.queryByText(/highlight \(1\): foo/i)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("an ERROR is STICKY — role=alert, survives the auto-dismiss window", async () => {
+      vi.useFakeTimers();
+      try {
+        const compose = await import("../lib/compose");
+        vi.mocked(compose.submit).mockResolvedValue({ error: "/notify: network not found" });
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i);
+        fireEvent.keyDown(ta, { key: "Enter" });
+        await vi.advanceTimersByTimeAsync(0);
+        const alert = screen.getByRole("alert");
+        expect(alert).toHaveClass("compose-box-error");
+        expect(alert).toHaveTextContent(/network not found/i);
+        // Errors never self-clear: still there long after the notice timeout.
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(screen.getByRole("alert")).toHaveTextContent(/network not found/i);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("typing clears a shown notice (input dismisses feedback)", async () => {
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.submit).mockResolvedValue({ ok: "notify: watching gigi" });
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i);
+      fireEvent.keyDown(ta, { key: "Enter" });
+      await screen.findByText(/watching gigi/i);
+      fireEvent.input(ta, { target: { value: "x" } });
+      expect(screen.queryByText(/watching gigi/i)).toBeNull();
+    });
+
+    it("a silent success (ok: true) renders NO feedback element", async () => {
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.submit).mockResolvedValue({ ok: true });
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i);
+      fireEvent.keyDown(ta, { key: "Enter" });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+
   it("textarea retains focus after a successful submit", async () => {
     const compose = await import("../lib/compose");
     vi.mocked(compose.submit).mockResolvedValue({ ok: true });
