@@ -112,6 +112,35 @@ function isSelectableSurface(el: Element | null): boolean {
   return el.closest(SELECTABLE_TEXT_SURFACES) !== null;
 }
 
+// #366 — companion to #79. On a LONG-PRESS with the keyboard up, native
+// char-range selection is unreliable on mobile (#79 tracks that native
+// failure), so we BYPASS it: programmatically select the ENTIRE message
+// row under the press, giving a working "grab this whole message"
+// affordance. We select the whole `.scrollback-line` (timestamp + sender +
+// body) rather than only `.scrollback-body`, so the rule is uniform across
+// every message kind — for a PRIVMSG the sender nick lives OUTSIDE
+// `.scrollback-body`, so a body-only select would drop the nick from the
+// copy. Scoped to `.scrollback-line`: the `.topic-modal-text` block has no
+// per-message structure, so a long-press there returns false and keeps the
+// #79 native-selection-preserve path unchanged.
+//
+// Returns whether a message row was found and selected — lets the caller
+// stay a one-liner and keeps the decision unit-testable independently of
+// jsdom's no-op Selection (the e2e covers the real-browser selection).
+export function selectEntireMessage(target: Element | null): boolean {
+  if (target === null) return false;
+  const line = target.closest(".scrollback-line");
+  if (line === null) return false;
+  if (typeof window === "undefined") return false;
+  const selection = window.getSelection();
+  if (selection === null) return false;
+  const range = document.createRange();
+  range.selectNodeContents(line);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
+}
+
 // Timestamp (performance.now, monotonic) of the most recent touchstart —
 // the mousedown handler reads it to classify a selectable-surface press
 // as tap vs long-press. 0 until the first touch; the desktop/no-touch
@@ -140,7 +169,15 @@ function handleMouseDown(e: MouseEvent): void {
         `kb: scrollback md held=${Math.round(heldMs)}ms → ${longPress ? "HOLD keep+select" : "tap close-kbd"}`,
       );
     }
-    if (longPress) e.preventDefault();
+    if (longPress) {
+      // #79: keep the keyboard (cancel the focus-shift so its reflow can't
+      // tear down the selection). #366: ALSO select the WHOLE message,
+      // bypassing the unreliable native partial selection on mobile. A
+      // no-op (returns false) for a selectable surface with no message row
+      // (e.g. .topic-modal-text), which keeps its native-selection path.
+      e.preventDefault();
+      selectEntireMessage(e.target as Element | null);
+    }
     return;
   }
   e.preventDefault();

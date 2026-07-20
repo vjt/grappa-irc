@@ -26611,3 +26611,55 @@ channel so #bofh's accumulated mentions can't skew the count): peer seeds two
 mentions separated by tall fillers; scroll to top → badge "2"; tap → MENTION_1
 in view + badge "1"; tap → MENTION_2 in view + badge gone; tap (empty badge) →
 snap to bottom + button hidden.
+
+## 2026-07-20 — #366 long-press selects the ENTIRE message (keyboard-open fallback for native selection)
+
+**Problem.** #79 restored scrollback text selection while the keyboard is
+open, but native CHAR-RANGE selection stays unreliable on mobile with the
+keyboard up (#79 remains the tracker for the underlying native failure).
+Users need a working "grab this whole message" path regardless.
+
+**Fix (companion to #79, NOT a new mechanism).** The long-press detector
+already exists: `keepKeyboard.ts` DURATION-GATES its mousedown
+preventDefault on selectable surfaces (iOS dispatches the mousedown on
+finger-release, so `mousedown − touchstart ≥ LONG_PRESS_MS` IS the
+long-press signal). #366 extends the long-press branch: besides preserving
+the keyboard (#79), it calls `selectEntireMessage(e.target)` which
+`selectNodeContents` the enclosing `.scrollback-line` and applies it as the
+document selection — bypassing the flaky native partial selection.
+
+**Why the WHOLE `.scrollback-line`, not just `.scrollback-body`.** The rule
+must be uniform across every message kind. For a PRIVMSG the sender nick is
+a sibling `<button>` OUTSIDE `.scrollback-body`, so a body-only select would
+drop the nick from "grab this whole message". Selecting the whole row (time
++ sender + body) is the one robust rule; the timestamp riding along is
+acceptable chrome (device-tweakable if vjt wants it trimmed post-ship).
+
+**Scope.** `.scrollback-line` only. A long-press on `.topic-modal-text` (the
+other selectable surface) finds no message row → `selectEntireMessage`
+returns false → the #79 native-selection-preserve path is unchanged. Excluded
+controls (`.scrollback-link`, `.scrollback-invite-join`) already fall through
+to the always-fire chrome branch, so select-all never runs on a control.
+
+**Non-negotiables honoured.** Detection is via time-threshold, NOT an
+aggressive `preventDefault` on touchstart (touchstart stays a passive
+timestamp read) — so vertical scroll and future #308 swipes are untouched (a
+scroll/swipe is a move gesture that iOS does not follow with a mousedown, and
+we never cancel touch defaults). iOS-scoped like #79 (`isIos()` gate);
+whether Android's native selection also fails with the keyboard up is
+untested — if it does, un-gating is a follow-up (the release-timing of the
+mousedown model is iOS-shaped, so Android needs its own verification).
+
+**Verification.** Unit (`keepKeyboard.test.ts`): long-press on a
+`.scrollback-line` selects the whole row (captured range's
+`commonAncestorContainer === row`); short tap selects nothing;
+`.topic-modal-text` + `.scrollback-link` long-press select nothing;
+`selectEntireMessage` returns false for null / no-row targets. E2e
+(`issue366-longpress-select-all.spec.ts`, @webkit iPhone-15): synthetic
+touchstart + real wall-clock hold + mousedown drives the production handler;
+asserts `window.getSelection().toString()` CONTAINS the body after a
+long-press and does NOT after a short tap (real-browser selection, which
+jsdom's no-op Selection cannot cover). The FEEL on real iOS/Android
+(selection visibly appearing, magnifier, handles) is not Playwright-
+reproducible — vjt device-verifies post-ship
+(feedback_playwright_webkit_not_ios_scroll).
