@@ -26255,3 +26255,73 @@ focus an `<a>` on mousedown), so the synthetic tap is the honest
 discriminating shape — webkit still can't simulate the OS keyboard, so
 real-device keyboard smoke stays vjt's iPhone. Client-side only — no cold
 deploy.
+
+## 2026-07-20 — #272: WHO membership is roster-authoritative, not a flags `%`-scan
+
+**Bug.** An IRC operator's `/who #chan` rendered a `%` sigil + a "halfop"
+chip on channel members carrying umode `+i` (invisible) who were **not**
+halfops. A non-oper `/who` of the same channel rendered correctly.
+
+**Root cause (source-confirmed).** The 352 `RPL_WHOREPLY` flags field's `%`
+is **overloaded** on azzurra bahamut. `src/m_who.c` builds the status token
+positionally:
+
+```
+[ H | G ] · [ * | % ] · [ S ] · [ @ | % | + ]
+  away       oper|+i     ssl     chanop|halfop|voice
+```
+
+The **position-2** `%` is the umode `+i` marker the ircd emits **only** in
+the operator-visible WHO (`IsInvisible(ac) && IsOper(sptr)`); the
+**position-4** `%` is the halfop channel-membership prefix. A plain `+i`
+member (`H%`) is **byte-identical** to a real non-invisible halfop (`H%`) —
+**undecidable from the flags string alone**. cic's `WhoModal.tsx` derived
+the membership sigil with `modes.includes("%")` (correct for a NAMES-derived
+prefix *list*, wrong for the positional WHO flags *token*), so every oper-
+view `+i` member was mislabeled halfop. grappa relays the flags field
+verbatim (`event_router.ex` 352 handler stores it as `:modes`); the stray
+`%` originates upstream.
+
+**Fix (client-side, no wire change — HOT `--cic`).** Channel membership is
+now **roster-authoritative**:
+
+1. **Roster cross-check (primary).** For each WHO row, cic looks up the
+   member in its existing NAMES store (`membersByChannel`, keyed by the row's
+   own `channel` field) — the same unambiguous prefix source `MembersPane`
+   renders — and derives `@`/`%`/`+` from `member.modes`. This is ircd-
+   agnostic and authoritative; it fixes the reported oper-`/who-#chan` case
+   completely. `rosterMembership/3` returns `null` for a roster-plain member
+   (authoritative "no sigil") vs `undefined` for "no snapshot / not found"
+   (→ fall back); the distinction matters so a roster-plain member never
+   falls through to the stray-`%` flags field.
+2. **Positional flags parse (fallback).** When no roster snapshot exists
+   (`WHO` on a non-joined channel, `WHO <nick|mask>`), `parseWhoFlags/1`
+   walks the bahamut grammar slot-by-slot, so the position-2 `%` is
+   classified as `invisible` and only the trailing status glyph is
+   membership. The one irreducible loss — a real non-invisible halfop with
+   NO other flags (`H%`) in a channel cic isn't joined to resolves to plain —
+   is inherent to the byte-collision and documented in-code; the roster path
+   covers the common/reported case.
+
+The `+i` marker is now surfaced as its own honest **"invisible"** chip (muted
+italic, emphatically NOT a channel-status tier), so no wire information is
+dropped. Away / oper / secure chips (`H`/`G`/`*`/`S`) were never affected.
+
+**General rule (invariant-adjacent).** The WHO flags string is an unreliable
+source for channel membership — `%` (and potentially future chars) are
+overloaded per-ircd and per-viewer-privilege. The NAMES roster is the
+reliable source; WHO flags carry only what the roster doesn't (away / oper /
+secure / +i). A new WHO/NAMES consumer MUST take channel membership from the
+roster, never from a `%`/`@`/`+` scan of the raw WHO flags token.
+
+**Verification.** `WhoModal.test.tsx` #272 block — RED pre-fix: a roster-plain
+`+i` member (`H%`) rendered a halfop chip + `%` prefix, and no "invisible"
+chip existed; also the rosterless positional-fallback cases (`H%` → +i,
+`H%@` → +i chanop). Guards keep the roster-halfop (`["%"]` → halfop) and
+`H*%` → oper+halfop (trailing glyph is membership) positive cases green. E2e
+(`issue272-who-invisible-not-halfop.spec.ts`): a plain peer (bahamut boots
+users `+i` by default) joins the channel, the bouncer opers up
+(testoper/testoperpass), then `/who`s — the peer's real oper-view 352 row
+carries `%`; asserts the honest "invisible" chip is present (anti-hollow-
+green proof the wire really carried the marker) AND no halfop chip / `%` nick
+prefix. Client-side only — no cold deploy.

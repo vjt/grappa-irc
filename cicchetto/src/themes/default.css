@@ -4706,6 +4706,14 @@ html.resize-dragging * {
   color: var(--muted);
 }
 
+/* #272 — umode +i (invisible) marker, surfaced ONLY in the operator WHO view.
+ * Muted + italic so it reads as a user attribute, NOT a channel-status tier
+ * (it is emphatically NOT halfop — the bug this chip replaces). */
+.who-modal-flag-tag-invisible {
+  color: var(--muted);
+  font-style: italic;
+}
+
 /* ircop = a FILLED red badge (mirror .whois-card-tag-oper) so the network-
  * operator flag reads with more weight than channel-op's text-red. */
 .who-modal-flag-tag-ircop {

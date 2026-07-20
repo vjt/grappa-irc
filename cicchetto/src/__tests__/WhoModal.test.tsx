@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WhoReply, WhoUser } from "../lib/api";
+import { channelKey } from "../lib/channelKey";
+import { seedFromTest } from "../lib/members";
 import {
   __resetForTest,
   overlayEscapeDepth,
@@ -199,5 +201,88 @@ describe("WhoModal (#169)", () => {
     await waitFor(() => expect(overlayEscapeDepth()).toBe(1));
     expect(runTopmostOverlayEscape()).toBe(true);
     await waitFor(() => expect(screen.queryByTestId("who-modal")).not.toBeInTheDocument());
+  });
+
+  // #272 — the WHO 352 flags field's `%` is OVERLOADED on azzurra bahamut
+  // (src/m_who.c status grammar `[H|G] [*|%] [S] [@|%|+]`): position-2 `%`
+  // is the umode +i (invisible) marker surfaced ONLY in the operator view,
+  // position-4 `%` is the halfop channel-membership prefix. A plain +i
+  // member (`H%`) is byte-identical to a real non-invisible halfop (`H%`) —
+  // undecidable from the flags string alone. The pre-fix `whoPrefix` /
+  // `decodeWhoFlags` used `.includes("%")`, so an operator's `/who #chan`
+  // mislabeled every +i member as a halfop. The NAMES roster
+  // (`membersByChannel`) is the authoritative, ircd-agnostic source of
+  // channel membership; the flags string is only a positional fallback.
+  describe("#272 — membership sigil is roster-authoritative, not %-scan", () => {
+    afterEach(() => {
+      // Clear the per-test roster seed so the (rosterless) tests above/below
+      // keep hitting the positional-fallback path.
+      seedFromTest(channelKey(SLUG, "#bofh"), []);
+    });
+
+    it("does NOT label a +i plain member as halfop when the roster says plain", () => {
+      focusNetwork();
+      seedFromTest(channelKey(SLUG, "#bofh"), [{ nick: "alice", modes: [] }]);
+      // Operator-view WHO: bahamut emits "H%" for a +i member (invisible
+      // marker at position 2), NOT a halfop. The roster is authoritative.
+      setWhoReply(SLUG, roster([row({ nick: "alice", modes: "H%", channel: "#bofh" })]));
+      render(() => <WhoModal />);
+      const rowEl = screen.getByTestId("who-modal-row");
+      expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).toBeNull();
+      expect(rowEl.querySelector(".nick-prefix-halfop")).toBeNull();
+    });
+
+    it("DOES label a member halfop when the roster carries the % prefix", () => {
+      focusNetwork();
+      seedFromTest(channelKey(SLUG, "#bofh"), [{ nick: "alice", modes: ["%"] }]);
+      setWhoReply(SLUG, roster([row({ nick: "alice", modes: "H%", channel: "#bofh" })]));
+      render(() => <WhoModal />);
+      const rowEl = screen.getByTestId("who-modal-row");
+      expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).not.toBeNull();
+      expect(rowEl.querySelector(".nick-prefix-halfop")).not.toBeNull();
+    });
+
+    it("surfaces the +i invisible marker as its own chip, never dropped", () => {
+      focusNetwork();
+      seedFromTest(channelKey(SLUG, "#bofh"), [{ nick: "alice", modes: [] }]);
+      setWhoReply(SLUG, roster([row({ nick: "alice", modes: "H%", channel: "#bofh" })]));
+      render(() => <WhoModal />);
+      const rowEl = screen.getByTestId("who-modal-row");
+      expect(rowEl.querySelector(".who-modal-flag-tag-invisible")).not.toBeNull();
+      expect(rowEl.textContent).toContain("invisible");
+    });
+
+    it("falls back to a positional parse (%-after-H/G = +i, not halfop) with no roster", () => {
+      focusNetwork();
+      // No roster (WHO on a non-joined channel / WHO <nick|mask>): channel "*"
+      // has no NAMES snapshot, so the flags field is parsed positionally.
+      setWhoReply(SLUG, roster([row({ nick: "ghost", modes: "H%", channel: "*" })]));
+      render(() => <WhoModal />);
+      const rowEl = screen.getByTestId("who-modal-row");
+      expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).toBeNull();
+      expect(rowEl.querySelector(".nick-prefix-halfop")).toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-invisible")).not.toBeNull();
+    });
+
+    it("positional fallback parses H*% as oper + halfop (trailing glyph is membership)", () => {
+      focusNetwork();
+      setWhoReply(SLUG, roster([row({ nick: "op", modes: "H*%", channel: "*" })]));
+      render(() => <WhoModal />);
+      const rowEl = screen.getByTestId("who-modal-row");
+      expect(rowEl.querySelector(".who-modal-flag-tag-ircop")).not.toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).not.toBeNull();
+      expect(rowEl.querySelector(".nick-prefix-halfop")).not.toBeNull();
+    });
+
+    it("positional fallback parses H%@ as +i invisible + chanop, never halfop", () => {
+      focusNetwork();
+      setWhoReply(SLUG, roster([row({ nick: "hidden", modes: "H%@", channel: "*" })]));
+      render(() => <WhoModal />);
+      const rowEl = screen.getByTestId("who-modal-row");
+      expect(rowEl.querySelector(".who-modal-flag-tag-invisible")).not.toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-chanop")).not.toBeNull();
+      expect(rowEl.querySelector(".who-modal-flag-tag-halfop")).toBeNull();
+      expect(rowEl.querySelector(".nick-prefix-op")).not.toBeNull();
+    });
   });
 });
