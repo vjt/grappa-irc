@@ -26449,3 +26449,90 @@ connected home row → click opens the confirm modal with the right target →
 **Cancel does NOT park** (the #195 guard, asserted with a bounded settle so a
 regressed async park can't slip past a t≈0 snapshot) → confirm parks (REST is
 source-of-truth) → the row swaps to the parked card with a Reconnect chip.
+
+---
+
+### 2026-07-20 — #356: /notify + /hilight feedback rewire + classic-IRC rename (cic-only)
+
+`/notify` (presence) and `/watch`|`/highlight` (keyword) executed correctly
+server-side but their SUCCESS / LIST output was computed then **discarded** —
+CP13 removed the numericInline surface that rendered it and never rewired a
+consumer (the compose.ts:1005 "intentionally not surfaced" comment). Errors
+showed (red box); success + list vanished, so the commands *felt* dead. This
+rewires the feedback, moves the watch list into settings, and renames the
+commands to classic-IRC (irssi) names. cic-only, no server work.
+
+**1. Feedback — hybrid by argument presence (ComposeBox seam).** The
+compose `error` signal became a severity-tagged `feedback`
+(`{ text, severity: "error" | "notice" }`):
+- **error** → red `.compose-box-error`, `role=alert`, STICKY (as before).
+- **notice** → green `.compose-box-notice` (`var(--mode-voiced)`, cloned
+  geometry so error↔notice never reflows), `role=status`, AUTO-DISMISSES
+  after 3s. A held `setTimeout`, cancelled on new input / new submit /
+  unmount so a stale timer can't wipe a fresh notice or fire post-teardown.
+
+`doSubmit` routes `{ok: string}` → notice, `{ok: true}` → silent, `{error}`
+→ sticky alert. WITH arg (`/notify gigi`, `/hilight foo`) → execute + notice;
+BARE → open settings (below).
+
+**2. Classic-IRC rename (irssi-direct grammar).** The spec examples
+`/notify gigi` and `/hilight foo` force **direct** form (no add/del/list
+subverb); `/dehilight` is the required irssi keyword-remove:
+- Presence (`kind:"notify"`): `/notify` canonical + `/watch` **alias** (was a
+  KEYWORD alias pre-#356; classic IRC WATCH/MONITOR = presence).
+  `/notify <nick>…` adds; bare → open settings.
+- Keyword (`kind:"watchlist"`): `/hilight` canonical (host
+  `/usr/share/irssi/help/` spelling) + `/dehilight` remove + `/highlight`
+  alias. `/hilight <pattern>` adds (whole rest = one pattern),
+  `/dehilight <pattern>` removes; bare → open settings.
+- **Dropped** the add/del/clear/list subverb grammar: `list` → bare opens the
+  settings section (the list is right there), `clear`/`del` → the per-entry ×
+  there (+ `/dehilight` for keyword). The `SlashCommand` union loses notify's
+  list/del/clear and watchlist's list; a new `{kind:"open-settings",
+  section:"watchlists"}` covers every bare form.
+- **No `/unnotify`** — the spec lists a keyword remove (`/dehilight`) but no
+  presence remove; presence removal is the settings ×. (Add `/unnotify` later
+  if wanted — trivial parser twin; deliberately out of scope here.)
+
+**3. Unified "watch lists" settings section (moved off home).** ONE new
+sub-page (`WatchlistsSettings.tsx`) holds BOTH lists under one header:
+- Presence (notify), PER NETWORK — the home "Watched" panel MOVED here (spec:
+  move, don't copy). SAME per-network source of truth (`watchByNetwork` /
+  `presenceFor` / `postNotifyAdd` / `deleteNotifyNick`); the home
+  `WatchedPanel` component is deleted, removed from both connected +
+  disconnected rows.
+- Keyword — brand new (there was no `highlight_patterns` UI). Backed by a new
+  `highlightList` store: unlike the presence list (kept fresh by the
+  `notify_list` broadcast), the keyword list has NO server broadcast, so the
+  store mirrors each `{patterns}` push response and the section refreshes on
+  open. ONE cic-side source of truth shared by the `/hilight` command AND the
+  section — no drift.
+
+Deep-link: a bare watch-family verb calls `settingsNav.requestOpenSettings`
+(a monotonic open-tick a lib module can bump; Shell's effect opens the drawer,
+whose open transition consumes the pending `"watchlists"` page). This is the
+existing `requestSettingsPage` pattern extended to also *open* the drawer.
+
+**Apply:** when a spec's confirmation output is "computed then discarded",
+the fix is a *consumer*, not new plumbing — the data was already built
+(compose.ts:898/:933). When renaming commands to a domain convention, follow
+the convention's grammar (irssi-direct), not the codebase's prior subverb
+shape — a bad grammar doesn't become right by being the incumbent. When a
+"list/manage" verb and a rich settings surface both exist, the settings
+surface absorbs list/clear/bulk and the command keeps only the quick-add;
+don't keep both (two ways to do one thing → drift).
+
+**Verification.** Unit: `ComposeBox.test` (notice role=status + auto-dismiss;
+error role=alert sticky; typing clears; `ok:true` silent),
+`slashCommands.test` (direct add + bare→open-settings + `/watch`/`/highlight`
+aliases + `/dehilight`), `compose.test` (notify/hilight/dehilight dispatch +
+notice strings + bare→open-settings silent-ok + draft-clear),
+`WatchlistsSettings.test` (both lists under one header; presence ×/add hit the
+per-network REST; keyword ×/add hit the store; refresh-on-mount; empty-network
+still offers add). Full cic suite green. E2e
+(`issue356-notify-highlight-feedback.spec.ts`): `/notify <nick>` → green
+notice that auto-dismisses; bad command → sticky alert; bare `/notify` + bare
+`/hilight` → the watch-lists section (both lists); home shows no watched
+panel; keyword add/× round-trips real server state.
+`issue247-notify-watch.spec.ts` retargeted to the settings sub-page (the
+presence dots/toasts/snapshot loop is unchanged; the list just moved).

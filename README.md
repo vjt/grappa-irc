@@ -227,7 +227,8 @@ Typed in cicchetto's compose box, parsed client-side, dispatched to REST or IRC.
 | `/ns <cmd>` · `/cs` `/ms` `/os` `/hs` `/rs` `<cmd>` | Send a command to a network service (NickServ / ChanServ / MemoServ / OperServ / HelpServ / RootServ); the reply shows inline in the server window |
 | `/ns` · `/cs` `/ms` … (bare) | With NO args: open the dedicated **services console** modal (titled by the service) and fire `help` — the service's NOTICEs mirror into the modal (nick stripped, service in the title) with a `>` command prompt, instead of flooding the server window. The notices also stay in the server window (mirror, not move). Display-only: the modal never drives an auth action off notice content (the source nick is spoofable) |
 | `/away [reason]` | Set away; bare `/away` clears explicit away |
-| `/watch add\|del\|list <pattern>` | Watchlist / highlight (alias `/highlight`) |
+| `/notify <nick>…` · `/watch <nick>…` | Watch nicks for presence (online/offline dots + toasts); bare opens the **watch lists** settings section |
+| `/hilight <pattern>` · `/dehilight <pattern>` | Add / remove a highlight keyword (alias `/highlight`); bare opens the **watch lists** settings section |
 | `/connect <network>` | Unpark + respawn a network |
 | `/disconnect [network] [reason]` | Park one network (persists across reboots until `/connect`) |
 | `/quit [reason]` | Park all networks, QUIT upstream, log out |

@@ -2,32 +2,39 @@
 //
 // The unit layers cover the store mechanics (notifyWatch vitest), the
 // slash-command parse, and the server context/controller contracts —
-// but none of them see the full loop: compose /notify add → REST →
+// but none of them see the full loop: compose /notify → REST →
 // Grappa.Notify → live WATCH + sync on the armed session → bahamut
-// 604/605 baseline + 600/601 transitions → typed wire events → Watched
-// panel dots + transition toasts. This spec drives that loop against
+// 604/605 baseline + 600/601 transitions → typed wire events → watch
+// list dots + transition toasts. This spec drives that loop against
 // the real testnet (bahamut advertises WATCH=, so the WATCH mechanism
 // is the one exercised; MONITOR shares the same session plumbing and
 // is pinned at the unit layer in presence_test.exs).
 //
+// #356 — the watch list MOVED off the home page into the settings
+// "watch lists" section (WatchlistsSettings sub-page); /notify is now
+// classic-IRC irssi-direct (`/notify <nick>` adds, no `add` subverb).
+// The presence loop is unchanged — this spec observes the dots in the
+// settings sub-page now, and the transition toasts (bottom-right, panel-
+// independent) exactly as before.
+//
 // Assertions, in order:
-//   1. /notify add of an offline peer → Watched panel entry with an
-//      OFFLINE dot (605 RPL_NOWOFF baseline — dot painted, NO toast:
-//      the baseline-vs-transition rule).
+//   1. /notify of an offline peer → watch-lists entry with an OFFLINE
+//      dot (605 RPL_NOWOFF baseline — dot painted, NO toast: the
+//      baseline-vs-transition rule).
 //   2. Peer connects → ONLINE transition toast + dot flips (600).
 //   3. Reload mid-session → dot repaints ONLINE from the
 //      presence_snapshot after-join push (snapshot-on-attach contract)
 //      with the peer still connected.
 //   4. Peer quits → OFFLINE transition toast + dot flips (601).
-//   5. Panel × removes the entry (server round-trip: DELETE → WATCH -
-//      sync → notify_list broadcast re-renders the panel empty).
+//   5. × removes the entry (server round-trip: DELETE → WATCH - sync →
+//      notify_list broadcast re-renders the list empty).
 //
 // Cleanup is REST (DELETE /networks/:slug/notify) in finally so a
 // mid-spec failure can't strand the watch entry in vjt's durable list
 // for later specs.
 
-import { expect, test } from "../fixtures/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { expect, test } from "../fixtures/test";
 import { GRAPPA_BASE_URL } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -40,24 +47,32 @@ const SEED_CHANNEL = AUTOJOIN_CHANNELS[0];
 // by the sibling session-lifecycle specs.
 test.setTimeout(90_000);
 
-test("#247 — /notify add → dots + toasts + snapshot repaint + panel remove", async ({ page }) => {
+test("#247 — /notify → dots + toasts + snapshot repaint + settings remove", async ({ page }) => {
   const vjt = getSeededVjt();
   let peer: IrcPeer | null = null;
 
-  const panel = page.getByTestId(`watched-panel-${NETWORK_SLUG}`);
-  const entryRow = panel.locator(".watched-panel-item", { hasText: PEER_NICK });
-  const dot = entryRow.locator(".watched-panel-dot");
+  const entryRow = page
+    .getByTestId(`watchlists-notify-${NETWORK_SLUG}`)
+    .locator(".watchlists-item", { hasText: PEER_NICK });
+  const dot = entryRow.locator(".watchlists-dot");
+
+  // #356 — the list lives in the settings "watch lists" sub-page now.
+  // Open it (cog → nav row) whenever a dot must be observed; the drawer
+  // resets closed across a reload, so this is called again after step 3.
+  const openWatchLists = async (): Promise<void> => {
+    await page.getByLabel(/open settings/i).click();
+    await page.getByTestId("watchlists-settings-entry").click();
+    await expect(page.getByTestId("watchlists-subpage")).toBeVisible({ timeout: 10_000 });
+  };
 
   try {
     await loginAs(page, vjt);
 
-    // Compose lives on channel windows (the home pane is input-free by
-    // design) — issue the add from the seed channel, then walk back to
-    // Home where the Watched panel renders.
+    // Compose lives on channel windows — issue the add from the seed
+    // channel, then open the settings watch-lists section to observe it.
     await selectChannel(page, NETWORK_SLUG, SEED_CHANNEL, { ownNick: NETWORK_NICK });
-    await composeSend(page, `/notify add ${PEER_NICK}`);
-
-    await page.locator(".sidebar-channel-name").filter({ hasText: /^Home$/ }).click();
+    await composeSend(page, `/notify ${PEER_NICK}`);
+    await openWatchLists();
 
     // 1. Entry present; dot settles OFFLINE via the 605 baseline (the
     //    peer isn't connected yet). Baseline must NOT toast.
@@ -76,13 +91,11 @@ test("#247 — /notify add → dots + toasts + snapshot repaint + panel remove",
 
     // 3. Snapshot-on-attach: reload with the peer still online — the
     //    dot must repaint ONLINE from presence_snapshot alone (no
-    //    transition occurs during the reload window).
+    //    transition occurs during the reload window). The drawer resets
+    //    closed on reload, so reopen the watch-lists section.
     await page.reload();
-    // Reload's last-focused restore lands on the seed CHANNEL (Home is
-    // not a persisted selection target — review 2026-07-19), so walk
-    // back to Home before asserting the panel.
-    await page.locator(".sidebar-channel-name").filter({ hasText: /^Home$/ }).click();
-    await expect(page.locator(".home-pane-registered").first()).toBeVisible({ timeout: 15_000 });
+    await selectChannel(page, NETWORK_SLUG, SEED_CHANNEL, { ownNick: NETWORK_NICK });
+    await openWatchLists();
     await expect(entryRow).toHaveCount(1, { timeout: 10_000 });
     await expect(dot).toHaveAttribute("data-state", "online", { timeout: 10_000 });
 
@@ -94,9 +107,11 @@ test("#247 — /notify add → dots + toasts + snapshot repaint + panel remove",
     await offlineToastSeen;
     await expect(dot).toHaveAttribute("data-state", "offline", { timeout: 10_000 });
 
-    // 5. Remove from the panel — server round-trip, panel re-renders
+    // 5. Remove from the settings list — server round-trip, list re-renders
     //    from the notify_list broadcast (cic never edits its own store).
-    await entryRow.getByRole("button", { name: `Stop watching ${PEER_NICK}` }).click();
+    await entryRow
+      .getByRole("button", { name: `Stop watching ${PEER_NICK} on ${NETWORK_SLUG}` })
+      .click();
     await expect(entryRow).toHaveCount(0, { timeout: 10_000 });
   } finally {
     if (peer !== null) {
