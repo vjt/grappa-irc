@@ -111,15 +111,21 @@ EOF
     [ ! -s "$SSH_LOG" ]   # died before any ssh
 }
 
-# --- existing single-ssh modes stay unchanged (full-restart is additive) -----
+# --- passthrough modes: app deploy + nginx self-heal, no bounce, no marker ---
 
-@test "--force-cold still does a single passthrough ssh (no bounce, no marker)" {
+@test "--force-cold: app deploy + nginx refresh, no bounce, no marker" {
     run_m42 --force-cold
     [ "$status" -eq 0 ]
     grep -q "deploy.sh --force-cold" "$SSH_LOG"
+    # #74355599 — refresh_nginx runs on EVERY path (self-heals the jail
+    # /admin/* allowlist), so a passthrough deploy is now TWO ssh calls:
+    # the app deploy + the nginx reinstall. What still distinguishes
+    # --force-cold from --full-restart is the ABSENCE of a bastille bounce
+    # and a marker write.
+    grep -q "jail_install_nginx.sh" "$SSH_LOG"
     ! grep -q "bastille restart" "$SSH_LOG"
     ! grep -q "last-deployed-sha" "$SSH_LOG"
-    [ "$(grep -c '^ssh ' "$SSH_LOG")" -eq 1 ]   # exactly one ssh invocation
+    [ "$(grep -c '^ssh ' "$SSH_LOG")" -eq 2 ]   # app deploy + nginx refresh
 }
 
 @test "unknown flag is a usage error (64)" {
