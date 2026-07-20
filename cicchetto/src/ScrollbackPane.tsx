@@ -1199,16 +1199,41 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (props.kind === "channel") {
       const tjl = topicJoinLine(props.channelName, topicByChannel()[key()] ?? null);
       if (tjl !== null && ownNick !== null) {
-        let lastJoinIdx = -1;
-        for (let i = result.length - 1; i >= 0; i -= 1) {
-          const r = result[i];
-          if (r?.type === "message" && r.msg.kind === "join" && nickEquals(r.msg.sender, ownNick)) {
-            lastJoinIdx = i;
-            break;
+        // #325 — anchor to the newest own-JOIN in the UNFILTERED buffer, NOT
+        // the visible JOIN row. When presence is hidden (#222) the own-JOIN row
+        // is dropped from `result`, so scanning the rendered rows found no
+        // anchor and the topic line vanished as collateral. Locate the newest
+        // own-JOIN in `allMsgs`, then splice the line after the last surviving
+        // message row at-or-before that timeline point ([server_time, id]
+        // order) — which degrades to the buffer head when every row before the
+        // JOIN was filtered out. When presence is shown the anchor JOIN is
+        // itself the last such row, so the line still lands right after the
+        // own-JOIN row (behaviour unchanged).
+        let anchor: ScrollbackMessage | null = null;
+        for (const m of allMsgs) {
+          if (
+            m.kind === "join" &&
+            nickEquals(m.sender, ownNick) &&
+            (anchor === null ||
+              m.server_time > anchor.server_time ||
+              (m.server_time === anchor.server_time && m.id > anchor.id))
+          ) {
+            anchor = m;
           }
         }
-        if (lastJoinIdx !== -1) {
-          result.splice(lastJoinIdx + 1, 0, { type: "topic-join", line: tjl, id: "topic-join" });
+        if (anchor !== null) {
+          let insertAt = 0;
+          for (let i = 0; i < result.length; i += 1) {
+            const r = result[i];
+            if (
+              r?.type === "message" &&
+              (r.msg.server_time < anchor.server_time ||
+                (r.msg.server_time === anchor.server_time && r.msg.id <= anchor.id))
+            ) {
+              insertAt = i + 1;
+            }
+          }
+          result.splice(insertAt, 0, { type: "topic-join", line: tjl, id: "topic-join" });
         }
       }
     }

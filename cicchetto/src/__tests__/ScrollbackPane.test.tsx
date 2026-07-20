@@ -219,6 +219,10 @@ vi.mock("../lib/auth", () => ({
 }));
 
 import type { ChannelKey } from "../lib/channelKey";
+// #325 — the REAL channelTopic store (not mocked). `seedTopic` stages a topic
+// entry so ScrollbackPane derives the #237 on-JOIN topic-join line; the #325
+// block proves that line survives the #222 presence-hide filter.
+import { seedTopic } from "../lib/channelTopic";
 // #222 — the REAL presence-filter module (not mocked). Its per-channel pref
 // signal drives the rows() render filter; these imports let the wiring test
 // seed/clear explicit prefs. `channelKey` is mocked above to `${slug} ${name}`
@@ -3686,6 +3690,201 @@ describe("ScrollbackPane", () => {
       render(() => <ScrollbackPane networkSlug="n" channelName="#pf" kind="channel" />);
       expect(screen.getByText("real content")).toBeInTheDocument();
       expect(document.querySelector('[data-kind="join"]')).toBeNull();
+    });
+  });
+
+  // #325 — the presence toggle (🙈, #222) must suppress join/part/quit churn
+  // ONLY; it must NOT take the #237 on-JOIN topic line down with it. The bug:
+  // the topic-join anchor scanned the FILTERED rows for the operator's own-JOIN
+  // row, so when presence-hide dropped that JOIN the anchor vanished and the
+  // topic line was never spliced in. The fix anchors to the newest own-JOIN in
+  // the UNFILTERED buffer and splices after the last surviving row at-or-before
+  // that timeline point (falling back to the buffer head).
+  describe("#325 topic-join line survives the presence-hide filter", () => {
+    const k325 = "freenode #t325" as ChannelKey; // channelKey mock shape: `${slug} ${name}`
+    const topicText = "topic set before vjt joined — #325 witness";
+    const seededTopic = () => seedTopic(k325, { text: topicText, set_by: "alice", set_at: null });
+
+    beforeEach(() => {
+      setUserNick("vjt");
+      clearChannelPresencePref(k325);
+      mockMembersByChannel.mockReturnValue({});
+      seededTopic();
+    });
+
+    afterEach(() => {
+      clearChannelPresencePref(k325);
+      setUserNick(null);
+      // Reset the module-singleton topic store so the seed can't leak into
+      // sibling suites (a null-text entry renders no topic-join line).
+      seedTopic(k325, { text: null, set_by: null, set_at: null });
+    });
+
+    // Regression guard: presence SHOWN (unset pref, small channel) — the line
+    // still lands immediately AFTER the operator's own-JOIN row, unchanged.
+    it("presence shown: topic-join line renders right after the own-JOIN row", () => {
+      setScrollback({
+        [k325]: [
+          {
+            id: 100,
+            network: "freenode",
+            channel: "#t325",
+            server_time: 100,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello",
+            meta: {},
+          },
+          {
+            id: 101,
+            network: "freenode",
+            channel: "#t325",
+            server_time: 101,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#t325" kind="channel" />);
+      const ownJoin = document.querySelector('[data-kind="join"]');
+      const topicJoin = screen.getByTestId("topic-join-line");
+      expect(ownJoin).not.toBeNull();
+      expect(topicJoin).toHaveTextContent(topicText);
+      // topic-join follows the own-JOIN row in DOM order.
+      expect(
+        (ownJoin as Node).compareDocumentPosition(topicJoin) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    // THE #325 BUG: presence HIDDEN — the own-JOIN row is filtered out, but the
+    // topic line MUST still render (pre-fix it vanished as collateral).
+    it("presence hidden: own-JOIN suppressed yet the topic-join line still shows", () => {
+      setChannelPresencePref(k325, "hide");
+      setScrollback({
+        [k325]: [
+          {
+            id: 100,
+            network: "freenode",
+            channel: "#t325",
+            server_time: 100,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello",
+            meta: {},
+          },
+          {
+            id: 101,
+            network: "freenode",
+            channel: "#t325",
+            server_time: 101,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#t325" kind="channel" />);
+      // #222 filter drops the own-JOIN churn row...
+      expect(document.querySelector('[data-kind="join"]')).toBeNull();
+      // ...but the #237 topic line survives (the whole point of #325).
+      expect(screen.getByTestId("topic-join-line")).toHaveTextContent(topicText);
+    });
+
+    // Anchor sanity under hide: own-JOIN sandwiched between two visible rows.
+    // The line lands between them — after the last surviving row at-or-before
+    // the (hidden) JOIN, before the row that came after it.
+    it("presence hidden: topic-join line anchors at the JOIN's timeline slot", () => {
+      setChannelPresencePref(k325, "hide");
+      setScrollback({
+        [k325]: [
+          {
+            id: 200,
+            network: "freenode",
+            channel: "#t325",
+            server_time: 200,
+            kind: "privmsg",
+            sender: "alice",
+            body: "before join",
+            meta: {},
+          },
+          {
+            id: 201,
+            network: "freenode",
+            channel: "#t325",
+            server_time: 201,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+          {
+            id: 202,
+            network: "freenode",
+            channel: "#t325",
+            server_time: 202,
+            kind: "privmsg",
+            sender: "carol",
+            body: "after join",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#t325" kind="channel" />);
+      const before = screen.getByText("before join");
+      const after = screen.getByText("after join");
+      const topicJoin = screen.getByTestId("topic-join-line");
+      // before → topic-join → after
+      expect(
+        before.compareDocumentPosition(topicJoin) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        topicJoin.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    // part/rejoin cycle with presence hidden: two own-JOINs in the buffer, both
+    // filtered out. Still EXACTLY ONE topic-join line, anchored to the newest.
+    it("presence hidden: exactly one topic-join line after a part/rejoin cycle", () => {
+      setChannelPresencePref(k325, "hide");
+      setScrollback({
+        [k325]: [
+          {
+            id: 300,
+            network: "freenode",
+            channel: "#t325",
+            server_time: 300,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+          {
+            id: 301,
+            network: "freenode",
+            channel: "#t325",
+            server_time: 301,
+            kind: "privmsg",
+            sender: "alice",
+            body: "mid",
+            meta: {},
+          },
+          {
+            id: 302,
+            network: "freenode",
+            channel: "#t325",
+            server_time: 302,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#t325" kind="channel" />);
+      expect(screen.getAllByTestId("topic-join-line")).toHaveLength(1);
     });
   });
 });
