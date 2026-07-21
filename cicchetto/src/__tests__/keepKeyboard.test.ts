@@ -50,6 +50,34 @@ function pressDefaultPrevented(target: Element, heldMs: number): boolean {
   return e.defaultPrevented;
 }
 
+// #366 real-iOS path — drive a long-press via TOUCH events only (touchstart
+// → hold → touchend), dispatching NO mousedown. Real iOS Safari withholds
+// the synthetic mouse events on a long-press that enters native text
+// selection (only TAPS synthesize them), so the select-all must ride
+// touchend, not mousedown. Mirrors `pressDefaultPrevented`'s fake clock.
+function longPressTouch(target: Element, heldMs: number): void {
+  fakeNow = 1_000_000;
+  target.dispatchEvent(new Event("touchstart", { bubbles: true }));
+  fakeNow = 1_000_000 + heldMs;
+  target.dispatchEvent(new Event("touchend", { bubbles: true }));
+}
+
+// A held touch that MOVES past the tolerance mid-press (a scroll, not a
+// hold) — must cancel the select-all. jsdom Events carry no TouchList, so
+// attach a synthetic one for the move-distance read.
+function scrollTouch(target: Element, heldMs: number): void {
+  fakeNow = 1_000_000;
+  target.dispatchEvent(new Event("touchstart", { bubbles: true }));
+  const move = new Event("touchmove", { bubbles: true });
+  Object.defineProperty(move, "touches", {
+    value: [{ clientX: 999, clientY: 999 }],
+    configurable: true,
+  });
+  target.dispatchEvent(move);
+  fakeNow = 1_000_000 + heldMs;
+  target.dispatchEvent(new Event("touchend", { bubbles: true }));
+}
+
 // Builds `<div class="{className}"><span>…</span></div>`, appends it to
 // the body, and returns the inner span — the real mousedown target when
 // a user long-presses text inside a selectable surface.
@@ -331,6 +359,68 @@ describe("keepKeyboard — installKeyboardPreserve", () => {
     // select-all fallback never runs (a link long-press is copy-link, not
     // grab-message).
     expect(pressDefaultPrevented(link, LONG_PRESS_MS + 100)).toBe(true);
+    expect(sel.addRange).not.toHaveBeenCalled();
+  });
+
+  // #366 real-iOS path — the SELECT-ALL must ride TOUCH events, not the
+  // synthetic mousedown. On real iOS Safari a long-press that enters native
+  // text-selection dispatches NO mousedown/click (only taps do), so the
+  // mousedown-gated select-all did "absolutely nothing" on device (vjt
+  // 2026-07-21). These drive the real gesture (touchstart → hold →
+  // touchend) with NO mousedown and assert the whole-row selection fires.
+  it("iOS: LONG-press via TOUCH (no mousedown) selects the ENTIRE row (#366 real-iOS path)", () => {
+    stubUserAgent(IPHONE_UA);
+    input.focus();
+    const sel = stubSelection();
+    const { bodySpan, row } = scrollbackMessageRow("grab this whole message on iOS");
+    longPressTouch(bodySpan, LONG_PRESS_MS + 150);
+    expect(sel.removeAllRanges).toHaveBeenCalled();
+    expect(sel.addRange).toHaveBeenCalledTimes(1);
+    expect(sel.ranges[0]?.commonAncestorContainer).toBe(row);
+  });
+
+  it("iOS: SHORT touch (< threshold) does NOT select-all (a tap, #366)", () => {
+    stubUserAgent(IPHONE_UA);
+    input.focus();
+    const sel = stubSelection();
+    const { bodySpan } = scrollbackMessageRow("a quick tap must not grab it");
+    longPressTouch(bodySpan, LONG_PRESS_MS - 150);
+    expect(sel.addRange).not.toHaveBeenCalled();
+  });
+
+  it("iOS: a touch that MOVES past tolerance (a scroll) does NOT select-all even if held long (#366)", () => {
+    stubUserAgent(IPHONE_UA);
+    input.focus();
+    const sel = stubSelection();
+    const { bodySpan } = scrollbackMessageRow("scrolling must not grab a message");
+    scrollTouch(bodySpan, LONG_PRESS_MS + 150);
+    expect(sel.addRange).not.toHaveBeenCalled();
+  });
+
+  it("iOS: LONG-press via touch with the keyboard DOWN (compose blurred) does NOT select-all (#366 keyboard-up scope)", () => {
+    stubUserAgent(IPHONE_UA);
+    input.blur();
+    const sel = stubSelection();
+    const { bodySpan } = scrollbackMessageRow("keyboard-down long-press is out of scope");
+    longPressTouch(bodySpan, LONG_PRESS_MS + 150);
+    expect(sel.addRange).not.toHaveBeenCalled();
+  });
+
+  it("iOS: LONG-press via touch on .topic-modal-text does NOT select-all (no message row, #366)", () => {
+    stubUserAgent(IPHONE_UA);
+    input.focus();
+    const sel = stubSelection();
+    const topic = surfaceChild("topic-modal-text");
+    longPressTouch(topic, LONG_PRESS_MS + 150);
+    expect(sel.addRange).not.toHaveBeenCalled();
+  });
+
+  it("desktop: LONG-press via touch does NOT select-all (iOS-gated, #366)", () => {
+    stubUserAgent(DESKTOP_UA);
+    input.focus();
+    const sel = stubSelection();
+    const { bodySpan } = scrollbackMessageRow("desktop uses native selection");
+    longPressTouch(bodySpan, LONG_PRESS_MS + 150);
     expect(sel.addRange).not.toHaveBeenCalled();
   });
 });

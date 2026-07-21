@@ -1,24 +1,28 @@
 // #366 (companion to #79) — when the keyboard is up, a LONG-PRESS on a
 // scrollback message must SELECT THE ENTIRE message, bypassing the
 // unreliable native char-range selection on mobile (#79 tracks that native
-// failure). keepKeyboard's document-level mousedown handler already
-// DURATION-GATES a tap from a long-press (iOS dispatches the mousedown on
-// finger-release, so `mousedown - touchstart` is the held time). #366
-// extends the long-press branch: besides preserving the keyboard (#79) it
-// programmatically selects the whole `.scrollback-line` row.
+// failure).
+//
+// REAL-iOS fix (vjt 2026-07-21): the select-all rides `touchend`, NOT the
+// synthetic mousedown. The prior mousedown-gated path assumed iOS
+// dispatches a mousedown on finger-release even for a long-press, but real
+// iOS Safari synthesizes mouse events ONLY for taps — a long-press that
+// enters native text-selection fires none, so the select-all did
+// "absolutely nothing" on device. keepKeyboard now detects the long-press
+// from touchstart→touchend timing (with a move-cancel so a scroll doesn't
+// grab text).
 //
 // This is a WIRING/CONTRACT guard, not a device-feel test. Real iOS
 // long-press physics (magnifier, handles) are NOT reproducible on
 // Playwright webkit-iphone-15 (feedback_playwright_webkit_not_ios_scroll),
-// so the determinism here is JS-level: synthetic touchstart/mousedown
-// dispatch plus a real wall-clock hold drives the production handler, and
-// the assertion reads the REAL browser `window.getSelection()` — which,
-// unlike jsdom's no-op Selection, actually serializes the selected text.
-// The two selection assertions only go green TOGETHER if the select-all
-// fires on the long-press AND stays off on the tap: dropping the
-// `selectEntireMessage` call reds the long-press half; calling it
-// unconditionally (ignoring the duration gate) reds the tap half. The FEEL
-// (selection visibly appearing on a real device) is vjt post-ship.
+// so the determinism here is JS-level: synthetic touchstart/touchend
+// dispatch — and NO mousedown, matching the real gesture — plus a real
+// wall-clock hold drives the production handler, and the assertion reads
+// the REAL browser `window.getSelection()`, which (unlike jsdom's no-op
+// Selection) actually serializes the selected text. The two selection
+// assertions only go green TOGETHER if the select-all fires on the
+// long-press AND stays off on the tap. The FEEL (selection visibly
+// appearing on a real device) is vjt post-ship.
 
 import { test, expect } from "../fixtures/test";
 import {
@@ -69,10 +73,8 @@ test("@webkit iOS — long-press on a scrollback message selects the ENTIRE mess
       function touchStart(el: Element): void {
         el.dispatchEvent(new Event("touchstart", { bubbles: true }));
       }
-      function mouseDown(el: Element): boolean {
-        const e = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
-        el.dispatchEvent(e);
-        return e.defaultPrevented;
+      function touchEnd(el: Element): void {
+        el.dispatchEvent(new Event("touchend", { bubbles: true }));
       }
       const selectedText = (): string => window.getSelection()?.toString() ?? "";
 
@@ -86,26 +88,27 @@ test("@webkit iOS — long-press on a scrollback message selects the ENTIRE mess
 
       window.getSelection()?.removeAllRanges();
 
-      // SHORT tap: touchstart → immediate mousedown (held ≈ 0). Not a
-      // long-press → no select-all → the message must NOT be selected.
+      // SHORT tap: touchstart → immediate touchend (held ≈ 0). NO mousedown
+      // is dispatched — real iOS Safari withholds it on this gesture, which
+      // is precisely why #366's select-all had to move onto touchend. Below
+      // the threshold → no select-all → the message must NOT be selected.
       touchStart(scrollbackRow);
-      const shortTapPrevented = mouseDown(scrollbackRow);
+      touchEnd(scrollbackRow);
       const selectedAfterTap = selectedText();
 
-      // LONG press: touchstart → hold past the threshold → mousedown.
+      // LONG press: touchstart → hold past the threshold → touchend, again
+      // with NO mousedown (the production gesture real iOS actually fires).
       // Long-press → select-all → the WHOLE row's text is selected.
       touchStart(scrollbackRow);
       await sleep(holdMs);
-      const longPressPrevented = mouseDown(scrollbackRow);
+      touchEnd(scrollbackRow);
       const selectedAfterLongPress = selectedText();
 
       return {
         activeIsTextarea,
         isIos,
         missing: false,
-        shortTapPrevented,
         selectedAfterTap,
-        longPressPrevented,
         selectedAfterLongPress,
       } as const;
     },
@@ -118,10 +121,11 @@ test("@webkit iOS — long-press on a scrollback message selects the ENTIRE mess
   expect(outcome.isIos).toBe(true);
   expect(outcome.activeIsTextarea).toBe(true);
 
-  // The #366 contract: a short tap grabs nothing (keyboard dismisses), a
-  // long-press selects the ENTIRE message and keeps the keyboard up.
+  // The #366 contract: a short touch grabs nothing (a tap → keyboard
+  // dismisses), a long-press selects the ENTIRE message. Driven purely by
+  // touchstart/touchend — NO synthetic mousedown — so this reds if the
+  // select-all regresses to the mousedown path that real iOS never triggers.
   expect(outcome.selectedAfterTap).not.toContain(MESSAGE_BODY);
-  expect(outcome.longPressPrevented).toBe(true);
   expect(outcome.selectedAfterLongPress).toContain(MESSAGE_BODY);
   // Whole-line, not body-only: the sender nick lives in a sibling button
   // OUTSIDE `.scrollback-body`, so its presence in the serialized selection

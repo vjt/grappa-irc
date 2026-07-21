@@ -86,15 +86,17 @@ const SELECTABLE_TEXT_SURFACES = ".scrollback, .topic-modal-text";
 // applied alongside it, MircText.tsx). See DESIGN_NOTES 2026-07-20 (#350).
 const SELECTABLE_TEXT_EXCLUDE = ".scrollback-invite-join, .scrollback-link";
 
-// #79 (2026-07-04) — long-press threshold for the tap-vs-hold split on
-// selectable scrollback text. iOS dispatches a mousedown on finger
-// RELEASE, so `mousedown - touchstart` is the held duration: below the
-// threshold is a TAP (let the keyboard dismiss — vjt-confirmed
-// tap-to-close, KEEP), at/above is a LONG-PRESS (iOS has begun a
-// selection; preventDefault the focus-shift so the keyboard-close reflow
-// doesn't tear it down). 500ms matches iOS's own long-press convention —
-// below it iOS would not have started a selection anyway. Feel change
-// accepted by vjt 2026-07-04; device-judged post-ship.
+// #79 (2026-07-04) — long-press threshold, shared by BOTH the mousedown
+// tap-vs-hold split and the #366 touchend select-all. For a TAP, iOS
+// dispatches a mousedown on finger RELEASE, so `mousedown - touchstart` is
+// the held duration: below the threshold is a TAP (let the keyboard
+// dismiss — vjt-confirmed tap-to-close, KEEP). At/above WOULD be a
+// long-press — but note (2026-07-21, #366): on a real long-press iOS
+// synthesizes NO mousedown at all (only taps do), so the long-press
+// select-all is detected on `touchend` instead (see handleTouchEnd); the
+// mousedown long-press arm survives only as a cross-platform net. 500ms
+// matches iOS's own long-press convention. Feel accepted by vjt
+// 2026-07-04; device-judged post-ship.
 export const LONG_PRESS_MS = 500;
 
 function isTextEntry(el: Element | null): boolean {
@@ -150,8 +152,77 @@ export function selectEntireMessage(target: Element | null): boolean {
 // path never reaches the duration check (gated by isIos() upstream).
 let touchStartAt = 0;
 
-function handleTouchStart(): void {
+// #366 real-iOS path — long-press detection driven by TOUCH events, not the
+// synthetic mousedown. The #79/#366 mousedown model assumed iOS dispatches a
+// mousedown on finger-RELEASE even for a long-press, but on real iOS Safari
+// a long-press that the OS routes into native text-selection/callout
+// synthesizes NO mouse events (only TAPS do) — so the mousedown-gated
+// select-all fired "absolutely nothing" on device (vjt 2026-07-21). Touch
+// events fire regardless of that routing, so select-all rides `touchend`: a
+// hold at/after LONG_PRESS_MS that did NOT move (a press, not a scroll)
+// selects the whole message row. The mousedown branch stays as-is — it still
+// carries the tap keyboard-preserve/close policy AND is a harmless net for
+// any platform that DOES emit a long-press mousedown (idempotent with this).
+//
+// Passive throughout: we only READ timing/coords + set the selection, never
+// preventDefault a touch (that would block scroll; and a long-press does not
+// shift focus, so the keyboard stays up without intervention — the reflow
+// #79 fought never happens because no focus-shifting mousedown is dispatched).
+const TOUCH_MOVE_TOLERANCE_PX = 10;
+let touchStartTarget: Element | null = null;
+let touchStartX = 0;
+let touchStartY = 0;
+let touchMoved = false;
+// Keyboard-up gate (#366 scope) captured at touchstart, BEFORE the native
+// long-press can blur the compose to begin selection — reading
+// document.activeElement at touchend would already be stale.
+let composeFocusedAtStart = false;
+
+function firstTouchPoint(e: Event): { x: number; y: number } | null {
+  const te = e as TouchEvent;
+  const t = te.touches?.[0] ?? te.changedTouches?.[0];
+  return t ? { x: t.clientX, y: t.clientY } : null;
+}
+
+function handleTouchStart(e: Event): void {
   touchStartAt = performance.now();
+  touchStartTarget = e.target as Element | null;
+  touchMoved = false;
+  composeFocusedAtStart = isTextEntry(document.activeElement);
+  const p = firstTouchPoint(e);
+  touchStartX = p?.x ?? 0;
+  touchStartY = p?.y ?? 0;
+}
+
+function handleTouchMove(e: Event): void {
+  if (touchMoved) return;
+  const p = firstTouchPoint(e);
+  if (p === null) return; // no coords available — can't measure, stay lenient
+  if (
+    Math.abs(p.x - touchStartX) > TOUCH_MOVE_TOLERANCE_PX ||
+    Math.abs(p.y - touchStartY) > TOUCH_MOVE_TOLERANCE_PX
+  ) {
+    touchMoved = true; // a scroll/pan, not a stationary long-press
+  }
+}
+
+function handleTouchEnd(): void {
+  if (!isIos()) return;
+  if (!composeFocusedAtStart) return; // #366 scope: keyboard-up only
+  if (touchMoved) return; // scrolled — not a hold
+  if (!isSelectableSurface(touchStartTarget)) return;
+  const heldMs = performance.now() - touchStartAt;
+  if (heldMs < LONG_PRESS_MS) return; // a tap, not a long-press
+  // Select the WHOLE message row (bypasses the unreliable native mobile
+  // char-range selection). Returns false for a selectable surface with no
+  // message row (e.g. .topic-modal-text) — its native-selection path is
+  // left untouched.
+  const selected = selectEntireMessage(touchStartTarget);
+  if (isDiagEnabled()) {
+    diagPush(
+      `kb: scrollback touchend held=${Math.round(heldMs)}ms → HOLD ${selected ? "select" : "no-row"}`,
+    );
+  }
 }
 
 function handleMouseDown(e: MouseEvent): void {
@@ -159,12 +230,14 @@ function handleMouseDown(e: MouseEvent): void {
   if (!isTextEntry(document.activeElement)) return;
   if (isTextEntry(e.target as Element | null)) return;
   if (isSelectableSurface(e.target as Element | null)) {
-    // Copyable text: iOS dispatches this mousedown on finger-RELEASE, so
-    // the held duration (touchstart → now) already tells a tap from a
-    // long-press. Tap → leave the default (focus shift → keyboard
-    // dismisses, vjt-confirmed tap-to-close). Long-press → preventDefault
-    // the focus-shift so the keyboard-close reflow can't tear down the
-    // selection iOS just began. See LONG_PRESS_MS.
+    // Copyable text: for a TAP, iOS dispatches this mousedown on
+    // finger-RELEASE, so the held duration (touchstart → now) tells a tap
+    // from a (would-be) long-press. Tap → leave the default (focus shift →
+    // keyboard dismisses, vjt-confirmed tap-to-close). The long-press arm
+    // preventDefaults the focus-shift — but on real iOS a long-press
+    // synthesizes NO mousedown (this branch never runs for it), so the
+    // #366 select-all lives on touchend (handleTouchEnd); this arm remains
+    // only as a cross-platform net. See LONG_PRESS_MS.
     const heldMs = performance.now() - touchStartAt;
     const longPress = heldMs >= LONG_PRESS_MS;
     if (longPress) {
@@ -195,8 +268,12 @@ export function installKeyboardPreserve(
 ): void {
   if (!target) return;
   target.addEventListener("mousedown", handleMouseDown, { capture: true });
-  // Passive: we only READ the timestamp, never preventDefault a
-  // touchstart — that would block scroll/pan and the native selection
-  // gesture (the same reason the header hooks mousedown not pointerdown).
+  // Passive: we only READ the timestamp/coords + set the selection, never
+  // preventDefault a touch — that would block scroll/pan and the native
+  // selection gesture (the same reason the header hooks mousedown not
+  // pointerdown). touchmove feeds the scroll-vs-hold discrimination;
+  // touchend fires the #366 real-iOS select-all (see handleTouchEnd).
   target.addEventListener("touchstart", handleTouchStart, { capture: true, passive: true });
+  target.addEventListener("touchmove", handleTouchMove, { capture: true, passive: true });
+  target.addEventListener("touchend", handleTouchEnd, { capture: true, passive: true });
 }

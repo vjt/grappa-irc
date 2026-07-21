@@ -26721,3 +26721,55 @@ Self-`/whois` is the proof surface because it has NO optimistic local
 render: the WhoisCard appears only if the push verb reached the server
 AND the reply event arrived on the re-joined user topic — one artifact
 for both symptoms.
+
+## 2026-07-21 — #360 iOS: mention-jump anchors on msg+1, not the mention (keyboard-clip fix)
+
+**Problem (vjt real-iOS report).** Tapping the mention-aware
+scroll-to-bottom badge jumped to the next mention but anchored the scroll
+ON the mention (`scrollIntoView({block:"center"})`), leaving it clipped
+behind the on-screen keyboard. Root cause: `scrollIntoView` aligns against
+the LAYOUT viewport, which extends the full height under the keyboard; the
+mention "centered" in the layout viewport lands in the region the keyboard
+visually covers (the visual viewport is only the top slice). Same class as
+every other "iOS keyboard shrinks the visual viewport" gotcha.
+
+**Fix.** Anchor the scroll on the message immediately AFTER the mention
+(msg+1) instead of the mention itself, so the mention sits fully visible
+ABOVE the anchor, clear of the keyboard. Pure decision extracted to
+`mentionScroll.mentionJumpTargetId(lines, mentionId)` (returns the next
+DOM-order line's id, or the mention's own id when it is the last line —
+nothing below to anchor on); `ScrollbackPane.onScrollToBottomTap` scrolls
+that anchor. Kept the split that #360 established (mentionScroll owns the
+geometry decision, ScrollbackPane owns the DOM), so the anchor choice is
+unit-tested without a layout. The webkit e2e cannot reproduce the keyboard
+(feedback_playwright_webkit_not_ios_scroll) — the existing #360 e2e still
+asserts the mention lands visible after each tap; the anchor decision is
+guarded by the unit test; vjt device-verifies the iOS feel.
+
+## 2026-07-21 — #366 iOS: long-press select-all rides touchend, not the synthetic mousedown
+
+**Problem (vjt real-iOS report).** Long-press select-all did "absolutely
+nothing" on real iOS Safari. The #79/#366 mechanism DURATION-GATED its
+select-all on a `mousedown` (assuming iOS dispatches a mousedown on
+finger-RELEASE even for a long-press, so `mousedown − touchstart` is the
+held time). That assumption is FALSE on device: iOS Safari synthesizes
+mouse events ONLY for taps — a long-press the OS routes into native
+text-selection/callout fires NO mousedown/click, so the handler never ran.
+The #366 e2e passed as a FALSE GREEN because it SYNTHETICALLY dispatched
+the very mousedown real iOS withholds (webkit ≠ iOS).
+
+**Fix.** Drive the long-press from TOUCH events, which fire regardless of
+how iOS routes the gesture: `keepKeyboard` now records the touchstart
+clock/target/coords + keyboard-up state, cancels on a touchmove past a
+10px tolerance (a scroll, not a hold), and on `touchend` — held ≥
+LONG_PRESS_MS, no move, compose focused at start, on a selectable surface
+— calls `selectEntireMessage`. All passive (we only read + set the
+selection; a long-press shifts no focus, so the keyboard stays up with no
+preventDefault). The mousedown handler is untouched — it still carries the
+tap keyboard-preserve/close policy and is a harmless idempotent net for any
+platform that DOES emit a long-press mousedown (Android, untested). The
+e2e was rewritten to drive the REAL gesture (touchstart → hold → touchend,
+NO mousedown) so it would red if the select-all regressed to the
+mousedown-only path; the real-device FEEL (magnifier/handles, and whether
+the programmatic selection shows its copy callout with the keyboard up) is
+vjt post-ship — this fix makes the handler FIRE, which it never did before.
