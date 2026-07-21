@@ -33,3 +33,21 @@ export const mentionsBelowViewport = (
   lines: ScrollbackLineGeom[],
   viewportBottom: number,
 ): number[] => lines.filter((l) => l.isMention && l.top >= viewportBottom).map((l) => l.id);
+
+// #360 iOS fix — the anchor id for a mention JUMP. Tapping the badge jumps
+// to the next mention below the fold; anchoring the scroll ON the mention
+// (block:"center") left it clipped by the on-screen keyboard on iOS (the
+// keyboard shrinks the VISUAL viewport, but scrollIntoView aligns against
+// the taller LAYOUT viewport, so "center" lands behind the keyboard).
+// Instead we anchor on the message immediately AFTER the mention (msg+1),
+// so the mention itself sits fully visible ABOVE the anchor, clear of the
+// keyboard. `lines` is DOM order (== chronological), so msg+1 is the next
+// element. Fallbacks: the mention itself when it is the last line (nothing
+// below to anchor on) or when it's absent from the list (defensive — the
+// caller still holds the element). vjt device-verifies the feel on iOS.
+export const mentionJumpTargetId = (lines: ScrollbackLineGeom[], mentionId: number): number => {
+  const idx = lines.findIndex((l) => l.id === mentionId);
+  if (idx === -1) return mentionId;
+  const next = lines[idx + 1];
+  return next ? next.id : mentionId;
+};

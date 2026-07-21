@@ -19,7 +19,11 @@ import { isDocumentVisible } from "./lib/documentVisibility";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
-import { mentionsBelowViewport, type ScrollbackLineGeom } from "./lib/mentionScroll";
+import {
+  mentionJumpTargetId,
+  mentionsBelowViewport,
+  type ScrollbackLineGeom,
+} from "./lib/mentionScroll";
 import { networks, user } from "./lib/networks";
 import { senderPrefix, snapshotSenderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
@@ -2686,23 +2690,32 @@ const ScrollbackPane: Component<Props> = (props) => {
       return;
     }
     const viewportBottom = listRef.scrollTop + listRef.clientHeight;
-    const below = mentionsBelowViewport(readMentionGeom(listRef), viewportBottom);
-    const targetId = below[0];
-    if (targetId === undefined) {
+    const geom = readMentionGeom(listRef);
+    const mentionId = mentionsBelowViewport(geom, viewportBottom)[0];
+    if (mentionId === undefined) {
       scrollToBottomGesture();
       return;
     }
-    const target = listRef.querySelector<HTMLElement>(
-      `.scrollback-line[data-msg-id="${targetId}"]`,
+    // #360 iOS fix — anchor the scroll on the message AFTER the mention
+    // (msg+1), not the mention itself. Anchoring ON the mention left it
+    // clipped behind the on-screen keyboard on iOS (scrollIntoView aligns
+    // against the LAYOUT viewport, which extends under the keyboard; the
+    // mention "centered" there is behind the keyboard). Anchoring on msg+1
+    // keeps the mention fully visible ABOVE the anchor, clear of the
+    // keyboard. `mentionJumpTargetId` returns the mention's own id when it
+    // is the last line (nothing below to anchor on).
+    const anchorId = mentionJumpTargetId(geom, mentionId);
+    const anchor = listRef.querySelector<HTMLElement>(
+      `.scrollback-line[data-msg-id="${anchorId}"]`,
     );
-    if (target === null) {
-      // The measured mention vanished between recompute and tap (a rows
+    if (anchor === null) {
+      // The measured row vanished between recompute and tap (a rows
       // recreation dropped it) — degrade to the plain gesture, never no-op.
       scrollToBottomGesture();
       return;
     }
     setMarkerActivationPending(false);
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    anchor.scrollIntoView({ behavior: "smooth", block: "center" });
     // The badge is DERIVED: onScroll recomputes it as the smooth animation
     // clears the target past the fold. Recompute now too so a browser that
     // coalesces the settle scroll still refreshes it.
