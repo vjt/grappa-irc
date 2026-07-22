@@ -1,0 +1,7 @@
+# DESIGN_NOTES.md is an append-mostly decision log: every PR appends to the
+# tail, so concurrent PRs conflict there constantly. The built-in `union`
+# merge driver keeps lines from BOTH sides of a conflicting hunk (no
+# markers), which auto-resolves the append-vs-append case. Caveat (#114):
+# only safe while the file stays append-mostly — a PR that edits or
+# reorders existing entries can interleave oddly and must be checked by hand.
+docs/DESIGN_NOTES.md merge=union
