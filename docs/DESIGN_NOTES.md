@@ -26865,3 +26865,48 @@ left as a separate low-priority pass. `uploads.user_id` is the same
 unindexed-CASCADE-FK class as `visitor_id` but only bites the rare manual
 user-delete op (not the 60s Reaper's visitor path) — a one-line
 follow-up, not part of this P0.
+
+---
+
+## 2026-07-23 — #364 S6: the last fire-and-forget WS pushes now surface rejections (invite + read-query verbs)
+
+**Problem (codebase review 2026-07-19 S6/H3).** `/invite` and the
+read-query verbs (`whois`/`whowas`/`who`/`names`/`lusers`/`info`/
+`version`/`motd`) were the last channel pushes still shipped as
+fire-and-forget `: void`. `compose.ts` set `result = { ok: true }`
+synchronously right after the push, so a server `{:error, %{error}}`
+(invalid_channel/invalid_nick/no_session/upstream_unavailable) OR a
+WS-down dropped frame silently reported a false green ✓. `/invite` is a
+write verb — this is exactly the class #154(1) fixed for op/deop/voice/
+devoice/kick/ban/unban/mode/umode but explicitly deferred ("invite left
+as-is (follow-up)"). The read-query verbs had a worse UX twist: their
+server-side validation reject fires BEFORE the upstream write, so on a
+malformed target NO reply bundle and NO `$server` numeric ever arrive —
+the operator got literally nothing.
+
+**Fix (cic-only).** All nine now route through the same #154(1)
+`pushUserChannelVerb` Promise helper (`: void` → `Promise<void>`) and are
+`await`ed in `compose.ts`, so a rejection hits the shared catch →
+`friendlyChannelError` inline banner (mirror of kick/ban/mode + the S21
+`/topic -delete` fix). No server change was needed: every one of these
+verbs already replies `{:reply, :ok | {:error, %{error}}}` via
+`GrappaChannel.dispatch_subject_verb/3`, so awaiting confirms the command
+was ACCEPTED (validation + upstream write succeeded) and NEVER hangs; the
+reply bundle/modal still arrives asynchronously on the user topic,
+unchanged.
+
+**Deliberately exempt: `banlist`.** It stays fire-and-forget because its
+errors surface via the 367/368 numerics — that rationale does not hold
+for the read-query verbs (a pre-write validation reject emits no
+numeric). Also deleted the dead `pushChannelTopicSet` helper (no call
+sites; compose uses the `postTopic` REST path) so it can't be wired up
+later and silently swallow `persist_failed`.
+
+**Test.** A parameterized `compose.test.ts` spec drives each of the nine
+verbs through a rejected push and asserts the failure surfaces as
+`{ error }` (not a green ✓) with the draft preserved for retry — the same
+shape as the S21 `topic_clear` test. Known follow-up (out of S6 scope):
+`UserContextMenu`'s right-click WHOIS now returns an ignored Promise that
+can reject unhandled when the socket is down — but that is
+pattern-consistent with the op/deop/kick/ban context-menu actions already
+there, and the menu has no inline error surface regardless.
