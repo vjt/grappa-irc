@@ -115,8 +115,7 @@ defmodule Grappa.Session.GhostRecovery do
         %Message{command: {:numeric, 401}, params: [_, queried | _]}
       ) do
     if nick_match?(queried, orig) do
-      {:stop, %{s | phase: :succeeded},
-       ["NICK #{orig}\r\n", "PRIVMSG NickServ :IDENTIFY #{pwd}\r\n"]}
+      {:stop, %{s | phase: :succeeded}, ["NICK #{orig}\r\n", "PRIVMSG NickServ :IDENTIFY #{pwd}\r\n"]}
     else
       {:cont, s, []}
     end
