@@ -631,7 +631,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           }
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/invite: network not found" };
-          pushChannelInvite(networkId, chan, cmd.nick);
+          // S6 (#364): await the verb-ack so a server {:error,_} / WS-down
+          // surfaces inline (shared catch → friendlyChannelError), not a
+          // false green ✓. Mirror of kick/ban.
+          await pushChannelInvite(networkId, chan, cmd.nick);
           result = { ok: true };
           break;
         }
@@ -728,7 +731,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           if (typeof target !== "string") return target;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/who: network not found" };
-          pushWho(networkId, target);
+          await pushWho(networkId, target); // S6 (#364): await verb-ack
           result = { ok: true };
           break;
         }
@@ -744,7 +747,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           if (typeof target !== "string") return target;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/names: network not found" };
-          pushNames(networkId, target);
+          await pushNames(networkId, target); // S6 (#364): await verb-ack
           result = { ok: true };
           break;
         }
@@ -776,7 +779,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // auto-emit), so an operator /lusers that skipped this mark
           // would show nothing.
           markLusersRequested(networkSlug);
-          pushLusers(networkId);
+          await pushLusers(networkId); // S6 (#364): await verb-ack
           result = { ok: true };
           break;
         }
@@ -787,21 +790,21 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "info": {
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/info: network not found" };
-          pushInfo(networkId);
+          await pushInfo(networkId); // S6 (#364): await verb-ack
           result = { ok: true };
           break;
         }
         case "version": {
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/version: network not found" };
-          pushVersion(networkId);
+          await pushVersion(networkId); // S6 (#364): await verb-ack
           result = { ok: true };
           break;
         }
         case "motd": {
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/motd: network not found" };
-          pushMotd(networkId);
+          await pushMotd(networkId); // S6 (#364): await verb-ack
           result = { ok: true };
           break;
         }
@@ -859,7 +862,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // <nick>` form; null for single-arg + bare. The bouncer emits
           // `WHOIS <server> <nick>` upstream when present, plain `WHOIS
           // <nick>` otherwise.
-          pushWhois(networkId, nick, cmd.server);
+          // S6 (#364): await so a validation reject (e.g. invalid_nick, which
+          // fires BEFORE the upstream write → no bundle, no numeric) surfaces
+          // inline instead of leaving the operator with nothing.
+          await pushWhois(networkId, nick, cmd.server);
           result = { ok: true };
           break;
         }
@@ -871,7 +877,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "whowas": {
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/whowas: network not found" };
-          pushWhowas(networkId, cmd.nick);
+          await pushWhowas(networkId, cmd.nick); // S6 (#364): await verb-ack
           result = { ok: true };
           break;
         }

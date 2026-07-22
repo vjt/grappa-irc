@@ -75,6 +75,8 @@ vi.mock("../lib/socket", () => ({
   pushWatchlistList: vi.fn().mockResolvedValue({ patterns: ["myname"] }),
   // C2 — /whois bridge.
   pushWhois: vi.fn(),
+  // P-0c — /whowas bridge.
+  pushWhowas: vi.fn(),
   // CP22 cluster B (channel-client-polish #14) — /who bridge.
   pushWho: vi.fn(),
   // CP22 cluster B (channel-client-polish #14) — /names bridge.
@@ -1607,6 +1609,67 @@ describe("compose submit — /topic branches", () => {
     const result = await compose.submit(k, "freenode", "#a");
 
     expect(result).toMatchObject({ error: expect.stringContaining("C3") });
+  });
+});
+
+// Codebase review 2026-07-19 S6 (#364) — no-silent-drop for the last
+// fire-and-forget WS pushes. `/invite` (a WRITE verb whose server handler
+// replies invalid_channel/invalid_nick/no_session/upstream_unavailable) and
+// the read-query verbs (whois/whowas/who/names/lusers/info/version/motd)
+// pushed `: void` and compose painted { ok: true } synchronously — so a
+// server {:error,_} OR a WS-down dropped frame reported a false green ✓.
+// The query verbs had the worse UX twist: their server-side validation reject
+// (e.g. /whois <malformed> → invalid_nick) fires BEFORE the upstream write, so
+// no bundle and no $server numeric ever arrive — the operator gets literally
+// nothing. All nine now route through the #154(1) `pushUserChannelVerb`
+// Promise and are AWAITED in compose, exactly like op/deop/kick/ban/mode and
+// the S21 /topic -delete above. `dispatch_subject_verb/3` always replies
+// `{:reply, :ok | {:error, %{error}}}` for every one, so awaiting never hangs.
+// (banlist stays fire-and-forget by design — its errors surface via the
+// 367/368 numerics; that rationale does not hold for these.)
+describe("compose submit — S6 no-silent-drop: invite + query verbs surface rejections", () => {
+  // Each case drives one verb through a REJECTED push and asserts the failure
+  // surfaces inline as { error } — NOT a green ✓ — and the draft is preserved
+  // for retry. `pick` selects the freshly-imported mock (resetModules per test
+  // means a captured reference would be stale); `typeof import(...)` keeps it
+  // type-safe with no string-indexed cast.
+  const cases: Array<{
+    verb: string;
+    draft: string;
+    pick: (s: typeof import("../lib/socket")) => (...args: never[]) => Promise<void>;
+  }> = [
+    { verb: "/invite", draft: "/invite alice", pick: (s) => s.pushChannelInvite },
+    { verb: "/whois", draft: "/whois alice", pick: (s) => s.pushWhois },
+    { verb: "/whowas", draft: "/whowas alice", pick: (s) => s.pushWhowas },
+    { verb: "/who", draft: "/who #a", pick: (s) => s.pushWho },
+    { verb: "/names", draft: "/names #a", pick: (s) => s.pushNames },
+    { verb: "/lusers", draft: "/lusers", pick: (s) => s.pushLusers },
+    { verb: "/info", draft: "/info", pick: (s) => s.pushInfo },
+    { verb: "/version", draft: "/version", pick: (s) => s.pushVersion },
+    { verb: "/motd", draft: "/motd", pick: (s) => s.pushMotd },
+  ];
+
+  it.each(cases)("$verb surfaces the push rejection as { error } (no false success)", async ({
+    draft,
+    pick,
+  }) => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const socket = await import("../lib/socket");
+    const friendly = await import("../lib/friendlyChannelError");
+    const compose = await import("../lib/compose");
+
+    const err = new api.ChannelPushError("no_session");
+    vi.mocked(pick(socket)).mockRejectedValueOnce(err);
+
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, draft);
+    const result = await compose.submit(k, "freenode", "#a");
+
+    // Failure surfaces as the friendly inline error — NOT { ok: true }.
+    expect(result).toEqual({ error: friendly.friendlyChannelError(err) });
+    // Draft preserved so the operator can retry without re-typing.
+    expect(compose.getDraft(k)).toBe(draft);
   });
 });
 

@@ -531,9 +531,16 @@ export function pushChannelBanlist(networkId: number, channel: string): void {
 }
 
 // /invite <nick> [#chan] → INVITE nick #chan
-export function pushChannelInvite(networkId: number, channel: string, nick: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("invite", { network_id: networkId, channel, nick });
+//
+// S6 (#364) — no-silent-drop. INVITE is a WRITE verb: the server replies
+// invalid_channel/invalid_nick/no_session/upstream_unavailable via
+// `dispatch_subject_verb/3`. Pre-fix this was fire-and-forget `: void`, so a
+// rejected or WS-down frame was swallowed and compose painted a green ✓.
+// Routed through the #154(1) `pushUserChannelVerb` Promise (mirror of
+// kick/ban) so compose can `await` and surface the failure inline. banlist
+// stays fire-and-forget (its errors surface via the 367/368 numerics).
+export function pushChannelInvite(networkId: number, channel: string, nick: string): Promise<void> {
+  return pushUserChannelVerb("invite", { network_id: networkId, channel, nick });
 }
 
 // /umode <modes> → MODE own_nick <modes> (no channel context required).
@@ -558,14 +565,6 @@ export function pushChannelMode(
 // so a WS-down / server rejection now rejects instead of being swallowed.
 export function pushChannelTopicClear(networkId: number, channel: string): Promise<void> {
   return pushUserChannelVerb("topic_clear", { network_id: networkId, channel });
-}
-
-// /topic <text> → TOPIC #chan :text (pushed via channel event, not REST postTopic).
-// Note: compose.ts uses the existing postTopic REST path for topic-set; this helper
-// is provided for completeness and alternative call sites.
-export function pushChannelTopicSet(networkId: number, channel: string, text: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("topic_set", { network_id: networkId, channel, text });
 }
 
 // Bundle C (#20 follow-up) — /oper <name> <password>. The password
@@ -609,6 +608,20 @@ export function pushRaw(networkId: number, line: string): Promise<void> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// S6 (#364) — read-query verbs: no-silent-drop.
+//
+// whois/whowas/who/names/lusers/info/version/motd were fire-and-forget
+// `: void`. Their server handlers reply `{:reply, :ok | {:error, %{error}}}`
+// via `dispatch_subject_verb/3` (validation rejects like invalid_nick fire
+// BEFORE the upstream write, so NO bundle and NO $server numeric ever arrive
+// — a swallowed reject left the operator with literally nothing). All now
+// route through the #154(1) `pushUserChannelVerb` Promise so compose can
+// `await` and surface the reject inline. Awaiting only confirms the command
+// was ACCEPTED (validation + upstream write); the actual reply bundle/modal
+// still arrives asynchronously on the user topic, unchanged.
+// ---------------------------------------------------------------------------
+
 // /whois [<server>] <nick> → WHOIS — pushes on the user-level channel.
 // `server` is the optional RFC 2812 §3.6.2 target-server (#198): non-null
 // for the two-arg `/whois <server> <nick>` form (bouncer emits `WHOIS
@@ -616,9 +629,8 @@ export function pushRaw(networkId: number, line: string): Promise<void> {
 // `WHOIS <nick>`). Sent explicitly (never omitted) so the server clause
 // selection is unambiguous — a null server binary-fails the two-arg
 // handle_in guard and falls through to the single-arg clause.
-export function pushWhois(networkId: number, nick: string, server: string | null): void {
-  if (_userChannel === null) return;
-  _userChannel.push("whois", { network_id: networkId, nick, server });
+export function pushWhois(networkId: number, nick: string, server: string | null): Promise<void> {
+  return pushUserChannelVerb("whois", { network_id: networkId, nick, server });
 }
 
 // P-0c — /whowas <nick> → WHOWAS nick — pushes on the user-level
@@ -626,9 +638,8 @@ export function pushWhois(networkId: number, nick: string, server: string | null
 // 314/312/369/406 fold into the bundle which broadcasts as
 // `whowas_bundle` on Topic.user/1. cic dispatches in userTopic.ts
 // and the WhowasCard renders inline above the active window.
-export function pushWhowas(networkId: number, nick: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("whowas", { network_id: networkId, nick });
+export function pushWhowas(networkId: number, nick: string): Promise<void> {
+  return pushUserChannelVerb("whowas", { network_id: networkId, nick });
 }
 
 // #169 — /who <#channel|nick>. Pushes on the user-level channel; server
@@ -636,9 +647,8 @@ export function pushWhowas(networkId: number, nick: string): void {
 // (each also upserting userhost_cache) and 315 RPL_ENDOFWHO drains into ONE
 // ephemeral `who_reply` event on the user topic (WhoModal renders it) — NOT
 // persisted to scrollback. Mirrors `pushNames`.
-export function pushWho(networkId: number, channel: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("who", { network_id: networkId, channel });
+export function pushWho(networkId: number, channel: string): Promise<void> {
+  return pushUserChannelVerb("who", { network_id: networkId, channel });
 }
 
 // P-0d — /lusers → LUSERS upstream — bare verb, no args. Pushes on
@@ -646,9 +656,8 @@ export function pushWho(networkId: number, channel: string): void {
 // EventRouter folds and 266 RPL_GLOBALUSERS flushes into a typed
 // :lusers_bundle wire event on Topic.user/1. cic dispatches in
 // userTopic.ts and renders the LusersCard in the current window (#231).
-export function pushLusers(networkId: number): void {
-  if (_userChannel === null) return;
-  _userChannel.push("lusers", { network_id: networkId });
+export function pushLusers(networkId: number): Promise<void> {
+  return pushUserChannelVerb("lusers", { network_id: networkId });
 }
 
 // #127 — /info, /version, /motd. Push on the user-level channel; server
@@ -656,28 +665,24 @@ export function pushLusers(networkId: number): void {
 // The reply burst drains ONE ephemeral `server_reply` event on Topic.user/1
 // which userTopic.ts routes into the serverReplyModal store (ServerReplyModal
 // renders it). Connect-time MOTD is unaffected (no pending flag → $server).
-export function pushInfo(networkId: number): void {
-  if (_userChannel === null) return;
-  _userChannel.push("info", { network_id: networkId });
+export function pushInfo(networkId: number): Promise<void> {
+  return pushUserChannelVerb("info", { network_id: networkId });
 }
 
-export function pushVersion(networkId: number): void {
-  if (_userChannel === null) return;
-  _userChannel.push("version", { network_id: networkId });
+export function pushVersion(networkId: number): Promise<void> {
+  return pushUserChannelVerb("version", { network_id: networkId });
 }
 
-export function pushMotd(networkId: number): void {
-  if (_userChannel === null) return;
-  _userChannel.push("motd", { network_id: networkId });
+export function pushMotd(networkId: number): Promise<void> {
+  return pushUserChannelVerb("motd", { network_id: networkId });
 }
 
 // #140 — /names <#channel>. Pushes on the user-level channel; server
 // primes names_pending + emits NAMES upstream. The 353/366 burst drains
 // into ONE ephemeral `names_reply` event on the user topic (NamesModal
 // renders it) — NOT persisted. Network-scoped modal, so no origin window.
-export function pushNames(networkId: number, channel: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("names", { network_id: networkId, channel });
+export function pushNames(networkId: number, channel: string): Promise<void> {
+  return pushUserChannelVerb("names", { network_id: networkId, channel });
 }
 
 // C8.3 — Watchlist verbs (/watch /highlight). All push on the user-level
