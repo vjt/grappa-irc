@@ -747,6 +747,82 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_push("event", ^payload)
     end
 
+    # #364 web S4 — the #247 after-join snapshot pushes (push_notify_list +
+    # push_presence_if_live) had zero channel-test coverage. These pin the
+    # three contract branches: the full notify_list snapshot always fires;
+    # presence_snapshot fires per bound network with a live, non-empty map;
+    # it is skipped when no session is running.
+    test "user-topic join pushes the notify_list snapshot (#364 web S4)" do
+      user_name = "ch-notify-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
+
+      {:ok, network} =
+        Networks.find_or_create_network(%{slug: "notify-snap-#{System.unique_integer([:positive])}"})
+
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user_name)
+
+      topic = Topic.user(user_name)
+
+      {:ok, _, _} =
+        user_name
+        |> build_socket(subject: {:user, user.id})
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{kind: "notify_list", networks: networks})
+      assert [%{nick: "Foo"}] = networks[network.id]
+    end
+
+    test "user-topic join skips presence_snapshot when no session is live (#364 web S4)" do
+      user_name = "ch-nopres-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
+
+      {:ok, network} =
+        Networks.find_or_create_network(%{slug: "nopres-#{System.unique_integer([:positive])}"})
+
+      # A watch entry exists but NO Session.Server runs (parked/absent), so
+      # presence_snapshot has nothing live to read → must be skipped.
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user_name)
+
+      topic = Topic.user(user_name)
+
+      {:ok, _, _} =
+        user_name
+        |> build_socket(subject: {:user, user.id})
+        |> subscribe_and_join(topic, %{})
+
+      # notify_list still fires (DB read); presence_snapshot never does.
+      assert_push("event", %{kind: "notify_list"})
+      refute_push("event", %{kind: :presence_snapshot}, 100)
+    end
+
+    test "user-topic join pushes presence_snapshot for a live non-empty map (#364 web S4)" do
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+
+      # Seed the watch list BEFORE end-of-MOTD so arm_presence reads it.
+      {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
+
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 grappa-snap :Welcome\r\n")
+      IRCServer.feed(irc_server, ":irc.test.org 005 grappa-snap WATCH=128 :are supported\r\n")
+      IRCServer.feed(irc_server, ":irc.test.org 376 grappa-snap :End of MOTD\r\n")
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "WATCH +Foo\r\n"), 1_000)
+
+      # Baseline: Foo already online — populates the session presence map.
+      IRCServer.feed(irc_server, ":irc.test.org 604 grappa-snap Foo user host 0 :is online\r\n")
+      flush_server(irc_server)
+
+      topic = Topic.user(user.name)
+
+      {:ok, _, _} =
+        user.name
+        |> build_socket(subject: {:user, user.id})
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{kind: :presence_snapshot, network_id: nid, nicks: %{"foo" => :online}})
+      assert nid == network.id
+    end
+
     # BUG 6 regression: every channel topic used to have TWO subscribers
     # (the channel pid registered twice — manual subscribe with no metadata
     # AND the framework's auto-installed fastlane), so a single broadcast

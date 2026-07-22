@@ -24,7 +24,7 @@ defmodule Grappa.NotifyTest do
 
   import ExUnit.CaptureLog
 
-  alias Grappa.{Accounts, Networks, Notify}
+  alias Grappa.{Accounts, Networks, Notify, Visitors}
   alias Grappa.Notify.Entry
   alias Grappa.PubSub.Topic
 
@@ -42,6 +42,17 @@ defmodule Grappa.NotifyTest do
     slug = "notify-net-#{System.unique_integer([:positive])}"
     {:ok, network} = Networks.find_or_create_network(%{slug: slug})
     network
+  end
+
+  defp visitor_fixture(network_slug) do
+    {:ok, visitor} =
+      Visitors.find_or_provision_anon(
+        "notify-visitor-#{System.unique_integer([:positive])}",
+        network_slug,
+        "127.0.0.1"
+      )
+
+    visitor
   end
 
   # ---------------------------------------------------------------------------
@@ -362,6 +373,75 @@ defmodule Grappa.NotifyTest do
     test "returns %{} for a subject with no entries" do
       user = user_fixture()
       assert Notify.list_for_subject({:user, user.id}) == %{}
+    end
+  end
+
+  # S3 (#364 codebase review 2026-07-19) — the moduledoc sells subject parity
+  # ("Both registered users and visitors may keep watch lists") but every
+  # other test uses {:user, _}. These exercise the visitor arm end-to-end:
+  # the distinct `conflict_target({:visitor, _})` :unsafe_fragment against the
+  # visitor partial unique index, the visitor branch of `check_subject_exists`,
+  # and the visitor-reap CASCADE — the fragment class that breaks silently
+  # when it drifts from the index would otherwise have zero coverage.
+  describe "visitor subject (#364 persistence S3)" do
+    test "idempotent add exercises the visitor conflict target" do
+      net = network_fixture()
+      visitor = visitor_fixture(net.slug)
+      label = "visitor:" <> visitor.id
+
+      assert {:ok, [%Entry{id: id, visitor_id: vid, user_id: nil}]} =
+               Notify.add({:visitor, visitor.id}, net.id, ["Foobar"], label)
+
+      assert vid == visitor.id
+
+      # Re-add resolves to the SAME row via the visitor partial unique
+      # expression index — proves the :unsafe_fragment conflict target
+      # matches the index (a drift would raise "ON CONFLICT clause does not
+      # match any … unique constraint").
+      assert {:ok, [%Entry{id: ^id}]} =
+               Notify.add({:visitor, visitor.id}, net.id, ["Foobar"], label)
+
+      assert [%Entry{id: ^id}] = Notify.list({:visitor, visitor.id}, net.id)
+    end
+
+    test "rfc1459 fold collapses FooBar/foobar to one visitor entry" do
+      net = network_fixture()
+      visitor = visitor_fixture(net.slug)
+      label = "visitor:" <> visitor.id
+
+      assert {:ok, [%Entry{id: id}]} =
+               Notify.add({:visitor, visitor.id}, net.id, ["FooBar"], label)
+
+      # Case-different re-add folds onto the same row (first case wins).
+      assert {:ok, [%Entry{id: ^id, nick: "FooBar"}]} =
+               Notify.add({:visitor, visitor.id}, net.id, ["foobar"], label)
+
+      assert [%Entry{id: ^id}] = Notify.list({:visitor, visitor.id}, net.id)
+    end
+
+    test "add for an unknown visitor rejects with a changeset error" do
+      net = network_fixture()
+      ghost = "00000000-0000-4000-8000-000000000000"
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Notify.add({:visitor, ghost}, net.id, ["Foobar"], "visitor:" <> ghost)
+
+      refute cs.valid?
+    end
+
+    test "deleting the visitor CASCADEs its watch entries" do
+      net = network_fixture()
+      visitor = visitor_fixture(net.slug)
+      label = "visitor:" <> visitor.id
+
+      {:ok, _} = Notify.add({:visitor, visitor.id}, net.id, ["Foobar", "Baz"], label)
+      assert length(Notify.list({:visitor, visitor.id}, net.id)) == 2
+
+      :ok = Visitors.delete(visitor.id)
+
+      # The ON DELETE CASCADE on visitor_id (migration 20260718140000) wipes
+      # the rows with the visitor — no orphaned watch entries survive.
+      assert Notify.list({:visitor, visitor.id}, net.id) == []
     end
   end
 end
