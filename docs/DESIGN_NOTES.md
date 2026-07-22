@@ -26910,3 +26910,53 @@ shape as the S21 `topic_clear` test. Known follow-up (out of S6 scope):
 can reject unhandled when the socket is down — but that is
 pattern-consistent with the op/deop/kick/ban context-menu actions already
 there, and the menu has no inline error surface regardless.
+
+---
+
+## 2026-07-23 — #364 bucket A: #247 notify-hardening cluster (lifecycle S2/S3, persistence S1/S3, web S4/S5, cicchetto S3)
+
+The 2026-07-19 codebase review's "bucket A" grouped the fresh #247
+`/notify` presence-watch surface's rough edges. Burned down as one cluster
+(the two HIGH riders — lifecycle S1 numeric routing and cicchetto S1 topic
+re-join — were already fixed on main, `36476d99` / `7ce908be`, verified
+no-op). The six that still reproduced:
+
+* **lifecycle S2** — `GhostRecovery` compared the 401/311 nick echo with a
+  bare `==` guard. The echo comes from the ghost holder's server record and
+  can differ in case / rfc1459 bracket-fold; a miss stranded the FSM on the
+  no-op catch-all until the 8s `:ghost_timeout`. Now folds both sides via
+  `Identifier.canonical_nick/1` (GH #121).
+
+* **lifecycle S3** — `arm_presence/1` + the 421-fallback read the watch list
+  with a raw `Notify.list/2` inside `handle_info`; a saturated SQLite pool at
+  a reconnect storm would raise and crash the session (the #336
+  slow-DB→disconnect class, reintroduced). Added `Notify.list_available/2`
+  (degrade-aware, `{:ok, entries} | {:error, :unavailable}`) + the
+  closure-taking `Notify.degrade_on_db_fault/1` (public for unit test, mirror
+  of `Scrollback.with_pool_retry/1`; no retry — a ≤64-row read skips and lets
+  reconnect retry). Controllers keep `list/2` (a DB fault → 500 is correct
+  there). The arm leaves `presence_armed: false` on `:unavailable`.
+
+* **persistence S1** — `Notify.clear_all_for_user/1` was written "for
+  SubjectReset only" but never wired; the e2e reset left watch rows that
+  re-armed MONITOR/WATCH on the respawn and flaked later specs. Wired the
+  drain alongside its siblings.
+
+* **persistence S3 / web S4 / web S5** — zero test coverage on fresh #247
+  surfaces: the visitor-subject Notify arm (conflict target / CASCADE), the
+  after-join `notify_list` + `presence_snapshot` channel pushes, and the
+  controller's `pre_folds` quiet-re-add diff. Added real tests for each
+  (a fold-duplicate re-add now provably emits no second `WATCH +` upstream).
+
+* **cicchetto S3** — `notifyWatch` was the one per-network store NOT built
+  via `identityScopedStore`; `resetNotifyWatch` was dead prod code, so a
+  same-browser account switch leaked the previous identity's watch list +
+  presence dots + toasts (network ids are global — slugs collide across
+  accounts) until the new `notify_list` snapshot landed. Now wired through
+  `identityScopedStore` like every sibling.
+
+The general lesson threaded through S2/S3/persistence-S1: fresh code copied
+the SHAPE of adjacent verbs (a nick compare, a DB read, a reset helper) but
+not their invariants (rfc1459 fold, the #336 degrade contract, the reset
+wiring) — the "Claude copies whichever pattern is closest" trap CLAUDE.md
+warns about. Each fix routes the new site through the established primitive.
