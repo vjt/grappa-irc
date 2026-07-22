@@ -2191,4 +2191,120 @@ defmodule Grappa.ScrollbackTest do
              """
     end
   end
+
+  # #379 (P0, 2026-07-22) — CP29 R-2 index regression. R-2 switched the
+  # scrollback since-cursor key from `server_time` to monotonic `id`, so
+  # every incremental read path — `fetch_after/6`, `count_after/5`,
+  # `count_after_split/5`, `unread_content_tail/6` — now filters
+  # `id > cursor ORDER BY id`. But the `messages` composites all still
+  # END in `server_time`, so `id > ?` was NOT index-eligible: SQLite fell
+  # back to scanning the busiest network's post-cursor rows (via
+  # `messages_network_id_index`) and filtering `channel`/subject row by
+  # row, sometimes with a TEMP B-TREE sort. Those reads fire on every
+  # channel join + unread-count (×~18 topics per WS reconnect), so it was
+  # a near-constant SQLite dirty-scheduler burn — the "periodic multi-core
+  # CPU spike" the operator reported.
+  #
+  # Fix = the id-twin composites (KEEP the `server_time` twins; `fetch/6`
+  # still orders `server_time DESC`). Proven on a prod DB copy: the
+  # channel path flips to a clean index seek / COVERING scan, no sort.
+  # These EXPLAIN tests pin that the id-cursor read is index-eligible and
+  # is a regression guard against a future table-rebuild migration
+  # dropping the id-twins (the exact drift class that caused this bug).
+  describe "#379 — id-cursor composite indexes (CP29 R-2 regression)" do
+    test "visitor channel since-cursor read seeks the id-composite, no sort",
+         %{network: net} do
+      {:ok, visitor} =
+        Grappa.Visitors.find_or_provision_anon("v-#{uniq()}", net.slug, "1.2.3.4")
+
+      # Seed a few rows so the query runs against a realistic non-empty
+      # table. (EXPLAIN QUERY PLAN is static — without ANALYZE it reports
+      # the same plan empty or full — but a non-empty fixture keeps the
+      # test honest about what the query actually walks.)
+      for st <- 1..8 do
+        {:ok, _} =
+          Scrollback.persist_event(%{
+            visitor_id: visitor.id,
+            network_id: net.id,
+            channel: "#chan",
+            server_time: st,
+            kind: :privmsg,
+            sender: "vjt",
+            body: "m#{st}"
+          })
+      end
+
+      # Mirrors `fetch_after/6` / `count_after/5`'s channel-shape query
+      # verbatim: WHERE visitor_id AND network_id AND channel AND id > ?
+      # ORDER BY id.
+      %Exqlite.Result{rows: rows} =
+        Repo.query!(
+          """
+          EXPLAIN QUERY PLAN
+          SELECT * FROM messages
+          WHERE visitor_id = ? AND network_id = ? AND channel = ? AND id > ?
+          ORDER BY id ASC
+          LIMIT 50
+          """,
+          [visitor.id, net.id, "#chan", 0]
+        )
+
+      plan = Enum.map_join(rows, "\n", fn [_, _, _, detail] -> detail end)
+
+      assert plan =~ "messages_visitor_id_network_id_channel_id_index",
+             "expected the id-cursor composite (clean seek), got:\n#{plan}"
+
+      refute plan =~ "USE TEMP B-TREE",
+             "id-cursor read must not sort in memory, got:\n#{plan}"
+
+      refute plan =~ "messages_network_id_index",
+             "must not fall back to the network-only scan, got:\n#{plan}"
+    end
+
+    test "user channel since-cursor read seeks the id-composite, no sort",
+         %{user: user, network: net} do
+      for st <- 1..8, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, st, %{channel: "#chan"}))
+
+      %Exqlite.Result{rows: rows} =
+        Repo.query!(
+          """
+          EXPLAIN QUERY PLAN
+          SELECT * FROM messages
+          WHERE user_id = ? AND network_id = ? AND channel = ? AND id > ?
+          ORDER BY id ASC
+          LIMIT 50
+          """,
+          [user.id, net.id, "#chan", 0]
+        )
+
+      plan = Enum.map_join(rows, "\n", fn [_, _, _, detail] -> detail end)
+
+      assert plan =~ "messages_user_id_network_id_channel_id_index",
+             "expected the id-cursor composite (clean seek), got:\n#{plan}"
+
+      refute plan =~ "USE TEMP B-TREE",
+             "id-cursor read must not sort in memory, got:\n#{plan}"
+
+      refute plan =~ "messages_network_id_index",
+             "must not fall back to the network-only scan, got:\n#{plan}"
+    end
+
+    test "all four id-cursor composites exist (anti-drift guard)" do
+      %Exqlite.Result{rows: rows} =
+        Repo.query!("SELECT name FROM sqlite_master WHERE type = 'index'")
+
+      names = List.flatten(rows)
+
+      for idx <- [
+            "messages_visitor_id_network_id_channel_id_index",
+            "messages_user_id_network_id_channel_id_index",
+            "messages_visitor_id_network_id_dm_with_id_index",
+            "messages_user_id_network_id_dm_with_id_index"
+          ] do
+        assert idx in names,
+               "#{idx} missing — CP29 R-2-class drift (a table-rebuild migration " <>
+                 "must re-create the id-twin composites); see #379"
+      end
+    end
+  end
 end

@@ -528,4 +528,31 @@ defmodule Grappa.UploadsTest do
       assert Uploads.list_all() == []
     end
   end
+
+  # #379 (P0, 2026-07-22) — `uploads.visitor_id` is a `ON DELETE CASCADE`
+  # child of `visitors` but shipped WITHOUT an index on the column
+  # (`20260520215304_create_uploads_and_server_settings.exs`). Every
+  # visitor delete (the Reaper's per-row reap CASCADEs across ~13 tables)
+  # therefore full-scans `uploads` to enforce that FK. The index turns
+  # the enforcement lookup into a seek.
+  describe "#379 — uploads.visitor_id cascade-FK index" do
+    test "the FK-enforcement lookup seeks uploads_visitor_id_index, not SCAN" do
+      # Mirrors the child-key lookup SQLite runs to enforce the
+      # `ON DELETE CASCADE` when a visitor row is deleted.
+      %Exqlite.Result{rows: rows} =
+        Repo.query!(
+          "EXPLAIN QUERY PLAN SELECT 1 FROM uploads WHERE visitor_id = ? LIMIT 1",
+          [Ecto.UUID.generate()]
+        )
+
+      plan = Enum.map_join(rows, "\n", fn [_, _, _, detail] -> detail end)
+
+      assert plan =~ "uploads_visitor_id_index",
+             """
+             Expected EXPLAIN QUERY PLAN to SEARCH via uploads_visitor_id_index
+             (not SCAN uploads), got:
+             #{plan}
+             """
+    end
+  end
 end

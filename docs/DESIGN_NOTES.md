@@ -26773,3 +26773,95 @@ NO mousedown) so it would red if the select-all regressed to the
 mousedown-only path; the real-device FEEL (magnifier/handles, and whether
 the programmatic selection shows its copy callout with the keyboard up) is
 vjt post-ship — this fix makes the handler FIRE, which it never did before.
+
+---
+
+### 2026-07-22 — #379: the periodic multi-core CPU spike was a lost scrollback index, not the reapers (P0, code-freeze blocker)
+
+**Symptom.** grappa periodically pinned more than one full core for
+several seconds, then dropped to idle — a periodic cadence pointing at a
+scheduled job. The issue's leading hypothesis blamed the 60s reapers
+(`Visitors.Reaper` per-row reap: Cloak decrypt + N+1 + a 13-table
+CASCADE delete).
+
+**The reapers were innocent on prod.** A live prod BEAM profile
+(`bin/grappa rpc` + `:recon`) + prod DB inspection cleared them:
+`Visitors.list_expired` correctly excludes the "expired-looking" rows
+that hold a NickServ credential (`registered_ids_subquery` filters
+`password_encrypted IS NOT NULL`) — those are live registered visitors,
+not garbage. The reaper swept 1 tiny visitor per 90s window; N≈0, no
+Cloak/N+1 cost. The reaper hypothesis was a plausible read of the source
+that a live profile refuted — evidence over source-reasoning.
+
+**Root cause — CP29 R-2 index regression.** An Ecto query-time profile
+over 35s attributed ~88% of ALL DB query time (4.76s, avg 170ms/call,
+worst 730ms) to `SELECT … FROM messages` — the since-cursor read paths
+`Scrollback.fetch_after/6`, `count_after/5`, `count_after_split/5`,
+`unread_content_tail/6`. CP29 R-2 had switched the scrollback cursor
+from `server_time` to monotonic `id` (to kill same-ms tie
+loss/duplication across a page boundary), so those paths now filter
+`WHERE subject=? AND network_id=? AND channel=? AND id>? ORDER BY id`.
+But every `messages` composite still ENDS in `server_time` (kept for the
+`fetch/6` `server_time DESC` display order). So `id > ?` was not
+index-eligible and SQLite fell back to `messages_network_id_index`:
+
+```
+EXPLAIN (prod):  SEARCH messages USING INDEX messages_network_id_index (network_id=? AND rowid>?)
+```
+
+— scanning ALL of the busiest network's post-cursor rows (~570k rows,
+most on network 1 = azzurra), filtering `channel`/`visitor_id` row by
+row. These reads fire on every channel join + unread-count, ×~18 topics
+per WebSocket (re)join (clients reconnect often), so it was a
+near-constant SQLite **dirty-scheduler** burn. `:recon.scheduler_usage`
+hides it (it excludes dirty schedulers); host `top` showed the
+`erts_dios_*` dirty-IO threads dominating cumulative CPU. That is the
+"constant CPU" the operator saw as periodic spikes.
+
+**Fix — the id-twin composites.** Add the id-cursor twin of each
+existing `…server_time` composite (KEEP the server_time twins;
+`fetch/6` still orders `server_time DESC`):
+
+```elixir
+create index(:messages, [:visitor_id, :network_id, :channel, :id])
+create index(:messages, [:user_id,    :network_id, :channel, :id])
+create index(:messages, [:visitor_id, :network_id, :dm_with, :id])
+create index(:messages, [:user_id,    :network_id, :dm_with, :id])
+create index(:uploads,  [:visitor_id])
+```
+
+Verified on a copy of the prod DB — the channel path flips from the full
+network scan to a clean seek (`SEARCH USING INDEX
+messages_visitor_id_network_id_channel_id_index (…, id>?)`, no TEMP
+B-TREE), and `count_after/5` is COVERING on the same index. The
+`ScrollbackTest`/`UploadsTest` `EXPLAIN QUERY PLAN` guards pin this and
+reproduce the exact pre-fix prod plan in RED — they also guard against a
+future `messages` table-rebuild migration dropping the id-twins, which
+is precisely the CP29-R-2-class drift that caused this.
+
+**`uploads.visitor_id`.** The one genuinely-missing index the issue
+already flagged: `uploads` is an `ON DELETE CASCADE` child of `visitors`
+that shipped without an index on the FK column, so every visitor delete
+full-scanned `uploads` (`EXPLAIN → SCAN uploads`). Added the index.
+
+**Residual (separate follow-up).** The DM-peer view filters `(channel=?
+OR dm_with=?) ORDER BY id` — an OR across two indexes → still filesorts
+even with the id-twins. Rewrite as a UNION of two index-seekable halves;
+lower volume than the channel path, deferred. The `dm_with` id-twins are
+added now for symmetry (they make the `dm_with=?` arm and the own-nick
+self-msg path seekable).
+
+**Deploy.** COLD deploy — a new `priv/repo/migrations/*` file is Class 5
+in `Grappa.Deploy.Preflight`, and the hot path skips `mix ecto.migrate`,
+so `--force-hot` would silently NOT build the indexes (the CPU burn would
+persist while the operator believed it fixed). The `CREATE INDEX` DDL is
+itself online-safe for the running old code (expand-class — no
+schema-shape change), but the four `messages` builds share one migration
+transaction, so the write lock is held across their cumulative ~4-pass
+scan of the ~570k-row table — the operator (orch owns this call)
+schedules it off a traffic peak. The reaper Cloak/N+1 hardening from the
+issue body is real but only bites the high-churn e2e testnet, not prod —
+left as a separate low-priority pass. `uploads.user_id` is the same
+unindexed-CASCADE-FK class as `visitor_id` but only bites the rare manual
+user-delete op (not the 60s Reaper's visitor path) — a one-line
+follow-up, not part of this P0.
