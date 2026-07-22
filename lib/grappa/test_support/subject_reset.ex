@@ -72,6 +72,7 @@ if Mix.env() in [:dev, :test] do
         Grappa.Admission,
         Grappa.IRC,
         Grappa.Networks,
+        Grappa.Notify,
         Grappa.Push,
         Grappa.QueryWindows,
         Grappa.ReadCursor,
@@ -89,6 +90,7 @@ if Mix.env() in [:dev, :test] do
       Admission.NetworkCircuit,
       Networks,
       Networks.Credential,
+      Notify,
       Push,
       QueryWindows,
       ReadCursor,
@@ -165,6 +167,13 @@ if Mix.env() in [:dev, :test] do
       :ok = Push.subscription_clear_all_for_user(user.id)
       :ok = UserSettings.reset_for_user(user.id)
       :ok = Uploads.delete_all_for_user(user.id)
+      # S1 (#364) — drain the #247 watch list too. Without this, a spec's
+      # `/notify add` rows survive the reset baseline AND re-arm MONITOR/WATCH
+      # on the respawned Session.Server (which reads Notify.list/2 at
+      # end-of-MOTD), flaking later specs with stray presence events/toasts.
+      # `clear_all_for_user/1` existed for exactly this call site but was never
+      # wired (dead code until now).
+      :ok = Notify.clear_all_for_user(user.id)
       :ok = WSPresence.reset_for_user(user.name)
 
       baseline_autojoin = Map.get(opts, :baseline_autojoin, %{})

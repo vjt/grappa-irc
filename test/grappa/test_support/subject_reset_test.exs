@@ -13,7 +13,7 @@ defmodule Grappa.TestSupport.SubjectResetTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{QueryWindows, ReadCursor, ScrollbackHelpers, UserSettings}
+  alias Grappa.{Notify, QueryWindows, ReadCursor, ScrollbackHelpers, UserSettings}
   alias Grappa.TestSupport.SubjectReset
 
   defp insert_message(subject_attrs, network_id, channel, server_time, body \\ "msg") do
@@ -50,6 +50,8 @@ defmodule Grappa.TestSupport.SubjectResetTest do
     {:ok, _} = ReadCursor.set({:user, user.id}, network.id, "#bofh", msg.id)
     {:ok, _} = QueryWindows.open({:user, user.id}, network.id, "alice", user.name)
     {:ok, _} = UserSettings.set_highlight_patterns({:user, user.id}, ["foo"])
+    # #364 S1 — a watch entry must be drained too (else it re-arms the respawn).
+    {:ok, _} = Notify.add({:user, user.id}, network.id, ["watched-nick"], user.name)
 
     %{user: user, network: network, message: msg}
   end
@@ -61,6 +63,9 @@ defmodule Grappa.TestSupport.SubjectResetTest do
       assert ReadCursor.get({:user, user.id}, network.id, "#bofh") == nil
       assert QueryWindows.list_for_subject({:user, user.id}) == %{}
       assert UserSettings.get_highlight_patterns({:user, user.id}) == []
+      # #364 S1 — the watch list is drained (was left behind pre-fix,
+      # re-arming MONITOR/WATCH on the respawn and flaking later specs).
+      assert Notify.list({:user, user.id}, network.id) == []
     end
 
     test "does not touch other users", %{user: user, network: network} do
@@ -71,6 +76,7 @@ defmodule Grappa.TestSupport.SubjectResetTest do
 
       {:ok, _} = ReadCursor.set({:user, other.id}, network.id, "#bofh", other_msg.id)
       {:ok, _} = UserSettings.set_highlight_patterns({:user, other.id}, ["keep-me"])
+      {:ok, _} = Notify.add({:user, other.id}, network.id, ["other-watched"], other.name)
 
       assert :ok = SubjectReset.reset!(user.name, %{})
 
@@ -78,6 +84,8 @@ defmodule Grappa.TestSupport.SubjectResetTest do
       assert other_cursor != nil
       assert other_cursor.last_read_message_id == other_msg.id
       assert UserSettings.get_highlight_patterns({:user, other.id}) == ["keep-me"]
+      # #364 S1 — the drain is user-scoped: the other user's watch list stays.
+      assert [%{nick: "other-watched"}] = Notify.list({:user, other.id}, network.id)
     end
 
     test "returns {:error, :user_not_found} for unknown user_name" do
