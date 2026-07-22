@@ -102,20 +102,35 @@ defmodule Grappa.Session.GhostRecovery do
     end
   end
 
+  # S2 (#364) — the 401/311 echo (`params[1]`) comes from the ghost holder's
+  # server-side user record and can differ in case (or bracket-fold) from the
+  # configured `orig_nick`. Fold BOTH sides via `Identifier.canonical_nick/1`
+  # (GH #121, mirror of `EventRouter.nick_eq?/2`) — a bare `==` guard missed a
+  # `kazam`-for-`Kazam` echo, stranding the FSM on the no-op catch-all until
+  # the 8s `:ghost_timeout` forced `:failed`. A non-matching queried nick
+  # (a stray WHOIS reply for another target) falls through to `{:cont, s, []}`,
+  # preserving the "ignore unrelated" behaviour the guards used to give.
   def step(
         %__MODULE__{phase: :awaiting_whois, orig_nick: orig, password: pwd} = s,
         %Message{command: {:numeric, 401}, params: [_, queried | _]}
-      )
-      when queried == orig do
-    {:stop, %{s | phase: :succeeded}, ["NICK #{orig}\r\n", "PRIVMSG NickServ :IDENTIFY #{pwd}\r\n"]}
+      ) do
+    if nick_match?(queried, orig) do
+      {:stop, %{s | phase: :succeeded},
+       ["NICK #{orig}\r\n", "PRIVMSG NickServ :IDENTIFY #{pwd}\r\n"]}
+    else
+      {:cont, s, []}
+    end
   end
 
   def step(
         %__MODULE__{phase: :awaiting_whois, orig_nick: orig} = s,
         %Message{command: {:numeric, 311}, params: [_, queried | _]}
-      )
-      when queried == orig do
-    {:stop, %{s | phase: :failed}, []}
+      ) do
+    if nick_match?(queried, orig) do
+      {:stop, %{s | phase: :failed}, []}
+    else
+      {:cont, s, []}
+    end
   end
 
   def step(%__MODULE__{phase: phase} = s, :timeout)
@@ -127,4 +142,8 @@ defmodule Grappa.Session.GhostRecovery do
 
   defp nickserv?({:nick, nick, _, _}), do: Identifier.canonical_nick(nick) == "nickserv"
   defp nickserv?(_), do: false
+
+  # rfc1459-folded nick equality (GH #121) — mirror of EventRouter.nick_eq?/2.
+  @spec nick_match?(String.t(), String.t()) :: boolean()
+  defp nick_match?(a, b), do: Identifier.canonical_nick(a) == Identifier.canonical_nick(b)
 end

@@ -104,6 +104,44 @@ defmodule Grappa.Session.GhostRecoveryTest do
       assert {:cont, ^state, []} = GhostRecovery.step(state, unrelated_311)
     end
 
+    # S2 (#364 codebase review 2026-07-19) — the 401/311 echo comes from the
+    # ghost holder's server-side user record and can differ in CASE (or the
+    # rfc1459 bracket-fold `[]\~` → `{}|^`) from the configured orig_nick.
+    # Pre-fix these guarded `when queried == orig` (bare ==), so a folded
+    # echo missed the clause, fell to the no-op catch-all, and stalled the FSM
+    # until the 8s :ghost_timeout forced :failed — a one-round-trip recovery
+    # silently degraded. Both sides must fold via Identifier.canonical_nick/1
+    # (GH #121), mirroring EventRouter.nick_eq?/2.
+    test ":awaiting_whois on 401 for a CASE-differing echo still succeeds (#364 S2)" do
+      state = %GhostRecovery{
+        phase: :awaiting_whois,
+        orig_nick: "Kazam",
+        try_nick: "Kazam_",
+        password: "s3cret"
+      }
+
+      # Server echoes the folded/downcased form in params[1].
+      msg = %Message{command: {:numeric, 401}, params: ["Kazam_", "kazam", "No such nick"]}
+
+      assert {:stop, next, lines} = GhostRecovery.step(state, msg)
+      assert next.phase == :succeeded
+      assert "NICK Kazam\r\n" in lines
+      assert "PRIVMSG NickServ :IDENTIFY s3cret\r\n" in lines
+    end
+
+    test ":awaiting_whois on 311 for a bracket-fold echo still fails-fast (#364 S2)" do
+      # rfc1459: orig `foo[x]` folds to `foo{x}` — the server's 311 echo.
+      state = %GhostRecovery{phase: :awaiting_whois, orig_nick: "foo[x]"}
+
+      msg = %Message{
+        command: {:numeric, 311},
+        params: ["foo[x]_", "foo{x}", "user", "host", "*", "Real"]
+      }
+
+      assert {:stop, next, []} = GhostRecovery.step(state, msg)
+      assert next.phase == :failed
+    end
+
     test ":timeout in any non-terminal phase → :failed" do
       for phase <- [:idle, :awaiting_ghost_notice, :awaiting_whois] do
         state = %GhostRecovery{phase: phase, orig_nick: "vjt"}
