@@ -1,6 +1,6 @@
 // #247 — notifyWatch store: rfc1459 key folding, snapshot/list
 // ingestion, and the baseline-vs-transition toast gate.
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   _setScheduleExpiryForTest,
   applyPresenceChange,
@@ -143,5 +143,57 @@ describe("notifyWatch store", () => {
     expect(watchByNetwork()).toEqual({});
     expect(presenceByNetwork()).toEqual({});
     expect(presenceToasts()).toEqual([]);
+  });
+});
+
+// #364 cicchetto S3 — the store is now built inside `identityScopedStore`,
+// so a logout / account switch auto-clears it. Pre-fix `resetNotifyWatch`
+// was never wired to the token effect (dead prod code), so the previous
+// account's watch list + presence dots + toasts leaked across a same-browser
+// account switch. Drive rotation via `auth.setToken(...)` like the sibling
+// awayStatus.test.ts; dynamic imports + resetModules so each test gets a
+// fresh store instance bound to a fresh token signal.
+describe("notifyWatch store — identity-rotation cleanup (#364 S3)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    localStorage.clear();
+  });
+
+  it("clears watch list, presence dots, and toasts on rotation (tokA → tokB)", async () => {
+    localStorage.setItem("grappa-token", "tokA");
+    const auth = await import("../lib/auth");
+    const nw = await import("../lib/notifyWatch");
+    nw._setScheduleExpiryForTest(() => {});
+
+    nw.setNotifyList({ "42": [{ network_id: 42, nick: "Foo", added_at: "2026-07-18T00:00:00Z" }] });
+    nw.applyPresenceSnapshot(42, { foo: "online" });
+    nw.applyPresenceError({ network_id: 42, detail: "Monitor list is full" });
+
+    expect(nw.watchByNetwork()[42]).toBeDefined();
+    expect(nw.presenceByNetwork()[42]).toBeDefined();
+    expect(nw.presenceToasts().length).toBe(1);
+
+    auth.setToken("tokB");
+
+    await vi.waitFor(() => {
+      expect(nw.watchByNetwork()).toEqual({});
+      expect(nw.presenceByNetwork()).toEqual({});
+      expect(nw.presenceToasts()).toEqual([]);
+    });
+  });
+
+  it("clears the store on logout (token → null)", async () => {
+    localStorage.setItem("grappa-token", "tokA");
+    const auth = await import("../lib/auth");
+    const nw = await import("../lib/notifyWatch");
+
+    nw.setNotifyList({ "7": [{ network_id: 7, nick: "Bar", added_at: "2026-07-18T00:00:00Z" }] });
+    expect(nw.watchByNetwork()[7]).toBeDefined();
+
+    auth.setToken(null);
+
+    await vi.waitFor(() => {
+      expect(nw.watchByNetwork()).toEqual({});
+    });
   });
 });
