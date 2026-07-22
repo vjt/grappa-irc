@@ -22,6 +22,8 @@ defmodule Grappa.NotifyTest do
   use Grappa.DataCase, async: true
   use ExUnitProperties
 
+  import ExUnit.CaptureLog
+
   alias Grappa.{Accounts, Networks, Notify}
   alias Grappa.Notify.Entry
   alias Grappa.PubSub.Topic
@@ -291,6 +293,55 @@ defmodule Grappa.NotifyTest do
 
       assert [%Entry{nick: "Zeta"}, %Entry{nick: "Alpha"}] =
                Notify.list({:user, user.id}, net.id)
+    end
+  end
+
+  # S3 (#364 codebase review 2026-07-19) — the end-of-MOTD presence arm and
+  # its 421-fallback read the watch list inside Session.Server's handle_info.
+  # A raw `Notify.list/2` there raises DBConnection.ConnectionError under pool
+  # saturation and CRASHES the session (the slow-DB→disconnect class #336
+  # closed for persist). `list_available/2` degrades instead; the raise→degrade
+  # conversion is proven directly against `degrade_on_db_fault/1` because the
+  # sandbox pool can't reproduce a real queue_timeout (mirror of
+  # Grappa.ScrollbackTest's with_pool_retry cases).
+  describe "list_available/2 + degrade_on_db_fault/1 (DB-fault degrade, #364 S3)" do
+    test "list_available returns {:ok, entries} in insertion order on a healthy DB" do
+      user = user_fixture()
+      net = network_fixture()
+
+      assert {:ok, []} = Notify.list_available({:user, user.id}, net.id)
+
+      {:ok, _} = Notify.add({:user, user.id}, net.id, ["Zeta"], user.name)
+      {:ok, _} = Notify.add({:user, user.id}, net.id, ["Alpha"], user.name)
+
+      assert {:ok, [%Entry{nick: "Zeta"}, %Entry{nick: "Alpha"}]} =
+               Notify.list_available({:user, user.id}, net.id)
+    end
+
+    test "degrade_on_db_fault passes a healthy result through as {:ok, result}" do
+      assert {:ok, :served} = Notify.degrade_on_db_fault(fn -> :served end)
+    end
+
+    test "a DBConnection.ConnectionError degrades to {:error, :unavailable} — does NOT escape" do
+      log =
+        capture_log(fn ->
+          assert {:error, :unavailable} =
+                   Notify.degrade_on_db_fault(fn ->
+                     raise %DBConnection.ConnectionError{
+                       message: "connection not available and request was dropped from queue",
+                       reason: :queue_timeout
+                     }
+                   end)
+        end)
+
+      assert log =~ "watch-list read unavailable"
+    end
+
+    test "a busy/locked Exqlite.Error degrades to {:error, :unavailable} — does NOT escape" do
+      assert {:error, :unavailable} =
+               Notify.degrade_on_db_fault(fn ->
+                 raise %Exqlite.Error{message: "database is locked", statement: nil}
+               end)
     end
   end
 

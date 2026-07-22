@@ -101,6 +101,7 @@ defmodule Grappa.Notify do
 
   # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment).
   require Identifier
+  require Logger
 
   # Post-state cardinality cap per (subject, network) — see the
   # "Bounded list" moduledoc section for why it is static, not the
@@ -206,6 +207,55 @@ defmodule Grappa.Notify do
     |> where([e], e.network_id == ^network_id)
     |> order_by([e], asc: e.id)
     |> Repo.all()
+  end
+
+  @doc """
+  Degrade-aware `list/2` for the crash-sensitive callers — the session
+  GenServer's end-of-MOTD presence arm and its 421-fallback re-arm.
+
+  Returns `{:ok, entries}` normally, or `{:error, :unavailable}` when the
+  SQLite pool is saturated / the DB is unreachable, instead of letting a
+  `DBConnection.ConnectionError` / `Exqlite.Error` escape. The arm runs
+  inside `Session.Server`'s `handle_info`; a saturated pool at a reconnect
+  storm (deploy / upstream netsplit — exactly when pool pressure peaks)
+  would otherwise crash every reconnecting session and feed the Backoff
+  ladder — the slow-DB→disconnect class #336 closed for the persist path.
+  The caller skips arming on `{:error, :unavailable}` (leaving
+  `presence_armed: false`) so a later `/notify` mutation or the next
+  reconnect retries.
+
+  Controllers keep using `list/2` — there a DB fault → 500 is the correct,
+  observable outcome, not a degrade (#364 lifecycle S3).
+  """
+  @spec list_available(Subject.t(), integer()) :: {:ok, [Entry.t()]} | {:error, :unavailable}
+  def list_available({_, _} = subject, network_id) when is_integer(network_id) do
+    degrade_on_db_fault(fn -> list(subject, network_id) end)
+  end
+
+  @doc """
+  Runs `op` and converts a SQLite pool / busy-lock DB fault
+  (`DBConnection.ConnectionError`, `Exqlite.Error`) to `{:error, :unavailable}`
+  instead of letting it escape; a healthy result passes through as
+  `{:ok, result}`.
+
+  Public so the raise→degrade conversion is unit-testable directly — the
+  sandbox pool can't reproduce a real `queue_timeout` end-to-end (mirror of
+  `Grappa.Scrollback.with_pool_retry/1`'s test posture). Unlike that helper,
+  this does NOT retry: the arm-time read is a ≤64-row SELECT, and re-driving
+  it in the exact pressure window helps nobody — skip and let reconnect retry.
+  """
+  @spec degrade_on_db_fault((-> result)) :: {:ok, result} | {:error, :unavailable}
+        when result: var
+  def degrade_on_db_fault(op) when is_function(op, 0) do
+    {:ok, op.()}
+  rescue
+    error in [DBConnection.ConnectionError, Exqlite.Error] ->
+      Logger.warning(
+        "notify: watch-list read unavailable (DB fault) — degrading, session continues",
+        error: inspect(error)
+      )
+
+      {:error, :unavailable}
   end
 
   @doc """

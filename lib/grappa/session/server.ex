@@ -3379,14 +3379,29 @@ defmodule Grappa.Session.Server do
     next_state =
       case {cmd, Map.get(state, :presence_mechanism)} do
         {:watch, {:watch, _}} ->
-          nicks = Enum.map(Grappa.Notify.list(state.subject, state.network_id), & &1.nick)
+          # S3 (#364) — WATCH is genuinely dead, so record the MONITOR
+          # fallback regardless; only the ≤64-row re-arm read is degrade-
+          # guarded so a saturated pool can't crash the session. On a DB
+          # fault we skip the burst; the nicks re-arm on the next /notify
+          # sync or reconnect (which reads the DB again).
+          case Grappa.Notify.list_available(state.subject, state.network_id) do
+            {:ok, entries} ->
+              nicks = Enum.map(entries, & &1.nick)
 
-          Logger.info(
-            "presence: WATCH unknown on this ircd — falling back to MONITOR " <>
-              "(#{length(nicks)} watched nicks)"
-          )
+              Logger.info(
+                "presence: WATCH unknown on this ircd — falling back to MONITOR " <>
+                  "(#{length(nicks)} watched nicks)"
+              )
 
-          send_arm_burst(state, {:monitor, :unlimited}, nicks)
+              send_arm_burst(state, {:monitor, :unlimited}, nicks)
+
+            {:error, :unavailable} ->
+              Logger.warning(
+                "presence: WATCH unknown on this ircd — falling back to MONITOR, but " <>
+                  "watch-list read unavailable; nicks re-arm on next /notify or reconnect"
+              )
+          end
+
           Map.put(state, :presence_mechanism, {:monitor, :unlimited})
 
         {:monitor, {:monitor, _}} ->
@@ -4577,20 +4592,30 @@ defmodule Grappa.Session.Server do
     if Map.get(state, :presence_armed, false) do
       state
     else
-      nicks = Enum.map(Grappa.Notify.list(state.subject, state.network_id), & &1.nick)
+      # S3 (#364) — degrade-aware read: a saturated SQLite pool at a reconnect
+      # storm must NOT crash the session (the slow-DB→disconnect class #336
+      # closed for persist). On {:error, :unavailable} leave presence_armed
+      # false so a later /notify sync or the next reconnect re-attempts.
+      case Grappa.Notify.list_available(state.subject, state.network_id) do
+        {:ok, entries} ->
+          nicks = Enum.map(entries, & &1.nick)
 
-      mechanism =
-        case presence_mechanism(state) do
-          :none -> {:watch, :unlimited}
-          advertised -> advertised
-        end
+          mechanism =
+            case presence_mechanism(state) do
+              :none -> {:watch, :unlimited}
+              advertised -> advertised
+            end
 
-      send_arm_burst(state, mechanism, nicks)
+          send_arm_burst(state, mechanism, nicks)
 
-      state
-      |> Map.put(:presence, Presence.seed(nicks))
-      |> Map.put(:presence_armed, true)
-      |> Map.put(:presence_mechanism, mechanism)
+          state
+          |> Map.put(:presence, Presence.seed(nicks))
+          |> Map.put(:presence_armed, true)
+          |> Map.put(:presence_mechanism, mechanism)
+
+        {:error, :unavailable} ->
+          state
+      end
     end
   end
 
