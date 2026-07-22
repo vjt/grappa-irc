@@ -54,7 +54,7 @@ defmodule GrappaWeb.NotifyControllerLiveTest do
     {network, _} = network_with_server(port: port, slug: slug)
     _ = credential_fixture(user, network, %{nick: "grappa-test", autojoin_channels: []})
 
-    _pid = start_session_for(user, network)
+    _ = start_session_for(user, network)
 
     # Welcome past 005 (WATCH advertised) + end-of-MOTD. The DB watch list
     # is empty here, so arm_presence sends no burst — the WATCH lines below

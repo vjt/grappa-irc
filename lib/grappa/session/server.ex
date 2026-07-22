@@ -4597,26 +4597,31 @@ defmodule Grappa.Session.Server do
       # closed for persist). On {:error, :unavailable} leave presence_armed
       # false so a later /notify sync or the next reconnect re-attempts.
       case Grappa.Notify.list_available(state.subject, state.network_id) do
-        {:ok, entries} ->
-          nicks = Enum.map(entries, & &1.nick)
-
-          mechanism =
-            case presence_mechanism(state) do
-              :none -> {:watch, :unlimited}
-              advertised -> advertised
-            end
-
-          send_arm_burst(state, mechanism, nicks)
-
-          state
-          |> Map.put(:presence, Presence.seed(nicks))
-          |> Map.put(:presence_armed, true)
-          |> Map.put(:presence_mechanism, mechanism)
-
-        {:error, :unavailable} ->
-          state
+        {:ok, entries} -> arm_presence_with(state, entries)
+        {:error, :unavailable} -> state
       end
     end
+  end
+
+  # Arm the resolved mechanism for the watch-list entries + seed the presence
+  # map. Split out of `arm_presence/1` so the mechanism-resolution `case` stays
+  # within the max-2 nesting depth (Credo).
+  @spec arm_presence_with(t(), [Grappa.Notify.Entry.t()]) :: t()
+  defp arm_presence_with(state, entries) do
+    nicks = Enum.map(entries, & &1.nick)
+
+    mechanism =
+      case presence_mechanism(state) do
+        :none -> {:watch, :unlimited}
+        advertised -> advertised
+      end
+
+    send_arm_burst(state, mechanism, nicks)
+
+    state
+    |> Map.put(:presence, Presence.seed(nicks))
+    |> Map.put(:presence_armed, true)
+    |> Map.put(:presence_mechanism, mechanism)
   end
 
   @spec send_arm_burst(t(), ISupport.presence_mechanism(), [String.t()]) :: :ok
