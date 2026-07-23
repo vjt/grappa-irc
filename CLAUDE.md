@@ -578,8 +578,14 @@ is due. Don't just look at todo.md.
   change touches more than ~10 files unexpectedly, stop and confirm
   before continuing.
 - **Don't iterate through 10 wrong approaches.** Stop, think, ask.
-- **Don't propose split environments.** One Docker Compose stack. No
-  systemd, no bare `mix run`, no `infra/dev` vs `infra/prod`.
+- **Don't propose split dev environments.** Local dev is one Docker
+  Compose stack — no `infra/dev` vs `infra/prod` for development.
+  Production is substrate-plural by design: the FreeBSD bastille jail
+  (`infra/freebsd/`, prod since the m42 deploy) and the native Linux
+  systemd host (`infra/linux/`) are both supported, Docker-free
+  production paths — systemd and `mix release` for prod are not
+  off-limits, they're already how this ships. Don't propose a *third*
+  production substrate without discussing it first.
 - **NEVER run raw `docker compose`** — use `scripts/*.sh`. Always.
 - **NEVER `mix` on the host** — the container is the runtime.
 - **NEVER install hex packages on the host.** Add them to `mix.exs`,
