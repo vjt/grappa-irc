@@ -183,7 +183,7 @@ say "6/10 first migration"
 # FULL boot, i.e. exactly what systemd's ExecStart uses) both work
 # fine — it's isolated to the release's minimal "start_clean" boot
 # variant specifically. Root cause not yet fully identified (see
-# LINUX.md); `mix ecto.migrate` sidesteps it entirely and matches
+# infra/linux/README.md "Day-2 operations"); `mix ecto.migrate` sidesteps it entirely and matches
 # what Docker's own deploy path already does (docs/OPERATIONS.md:
 # "Docker via `mix ecto.migrate`, the jail via
 # `Grappa.Release.migrate()`") — this substrate keeps the full mix
