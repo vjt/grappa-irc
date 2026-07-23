@@ -53,11 +53,16 @@ import type {
   HomeNetworkRow,
   MentionsBundleMessage,
   MessageKind,
+  NamesReply,
   NotifyEntry,
   QueryWindowEntry,
   ScrollbackMessage,
   ServerReplySource,
+  WhoisBundle,
+  WhoReply,
+  WhowasBundle,
   WhoUser,
+  WireUserEvent,
 } from "./api";
 import type { ModesEntry, TopicEntry } from "./channelTopic";
 import type { MemberEntry } from "./memberTypes";
@@ -73,10 +78,18 @@ import type {
   ScrollbackMessageKind,
   ScrollbackWireT,
   SessionWireChannelModesWire,
+  SessionWireLusersBundlePayload,
   SessionWireMember,
   SessionWireMentionsBundleMessage,
+  SessionWireNamesReplyPayload,
+  SessionWirePresenceChangedPayload,
+  SessionWirePresenceErrorPayload,
+  SessionWirePresenceSnapshotPayload,
   SessionWireServerReplySource,
   SessionWireTopicEntryWire,
+  SessionWireWhoisBundlePayload,
+  SessionWireWhoReplyPayload,
+  SessionWireWhowasBundlePayload,
   SessionWireWhoUser,
 } from "./wireTypes";
 
@@ -140,3 +153,41 @@ export type _Assert_NotifyEntry = Assert<Equal<NotifyEntry, NotifyWireEntry>>;
 export type _Assert_HomeNetworkRow = Assert<Equal<HomeNetworkRow, NetworksWireHomeNetworkRow>>;
 export type _Assert_HomeData = Assert<Equal<HomeData, NetworksWireHomeData>>;
 export type _Assert_CredentialJson = Assert<Equal<CredentialJson, NetworksWireCredentialJson>>;
+
+// === cross-surface S7 (2026-07-19 review) — the biggest boundary payloads ===
+// The assert list above stated the rule "per-arm PAYLOADS that have a flat
+// counterpart are pinned below", but the LARGEST payloads on the wire had
+// no pin: WhoisBundle (27 fields — it has already grown twice, P-0a + #221),
+// WhowasBundle, LusersBundle, the NamesReply/WhoReply envelopes, and the
+// #247 presence arms. A server-side field add/rename in any of these
+// regenerates wireTypes.ts cleanly and would leave the api.ts hand mirror +
+// its runtime narrower (userTopic.ts) silently stale — dropping every such
+// bundle at runtime with only console noise. These pins make that drift a
+// `tsc` error instead.
+//
+// Standalone hand-rolled types (the shape cic actually reuses in its stores)
+// are pinned against `Omit<SessionWireXPayload, "kind">`; the union-inline
+// arms (no standalone type) are pinned via `Extract<WireUserEvent, {kind}>`
+// against the full generated payload (kind included).
+export type _Assert_WhoisBundle = Assert<
+  Equal<WhoisBundle, Omit<SessionWireWhoisBundlePayload, "kind">>
+>;
+export type _Assert_WhowasBundle = Assert<
+  Equal<WhowasBundle, Omit<SessionWireWhowasBundlePayload, "kind">>
+>;
+export type _Assert_NamesReply = Assert<
+  Equal<NamesReply, Omit<SessionWireNamesReplyPayload, "kind">>
+>;
+export type _Assert_WhoReply = Assert<Equal<WhoReply, Omit<SessionWireWhoReplyPayload, "kind">>>;
+export type _Assert_LusersBundle = Assert<
+  Equal<Extract<WireUserEvent, { kind: "lusers_bundle" }>, SessionWireLusersBundlePayload>
+>;
+export type _Assert_PresenceChanged = Assert<
+  Equal<Extract<WireUserEvent, { kind: "presence_changed" }>, SessionWirePresenceChangedPayload>
+>;
+export type _Assert_PresenceError = Assert<
+  Equal<Extract<WireUserEvent, { kind: "presence_error" }>, SessionWirePresenceErrorPayload>
+>;
+export type _Assert_PresenceSnapshot = Assert<
+  Equal<Extract<WireUserEvent, { kind: "presence_snapshot" }>, SessionWirePresenceSnapshotPayload>
+>;
