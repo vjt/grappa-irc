@@ -2860,4 +2860,51 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert Process.alive?(chan_pid), "channel must survive a malformed away payload"
     end
   end
+
+  # #364 bucket G / web S3 — every specific `handle_in/3` clause is tightly
+  # guarded (`is_integer(network_id)` etc.) and, pre-fix, there was no
+  # terminal catch-all. An unknown event name — or a known event carrying a
+  # wrong-typed field — matched no clause, so Phoenix's default raised
+  # FunctionClauseError and crashed the channel pid. The catch-all now
+  # replies `unknown_event`, mirroring AdminChannel's documented posture.
+  describe "#364 web/S3 — handle_in catch-all keeps the channel alive" do
+    setup do
+      user_name = "ch-catchall-#{System.unique_integer([:positive])}"
+      _ = user_fixture(name: user_name)
+
+      {:ok, _, socket} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(Topic.user(user_name), %{})
+
+      %{socket: socket}
+    end
+
+    test "an unknown event is rejected, channel survives", %{socket: socket} do
+      chan_pid = socket.channel_pid
+
+      ref = push(socket, "totally_unknown_event", %{"junk" => true})
+      assert_reply(ref, :error, %{error: "unknown_event"})
+
+      assert Process.alive?(chan_pid), "channel must survive an unknown event"
+    end
+
+    test "a known event with a wrong-typed field is rejected, channel survives", %{
+      socket: socket
+    } do
+      chan_pid = socket.channel_pid
+
+      # `op`'s clause guard is `is_integer(network_id)`; a string network_id
+      # matches no clause and, pre-fix, crashed the pid.
+      ref =
+        push(socket, "op", %{
+          "network_id" => "not-an-integer",
+          "channel" => "#snap",
+          "nicks" => ["alice"]
+        })
+
+      assert_reply(ref, :error, %{error: "unknown_event"})
+      assert Process.alive?(chan_pid), "channel must survive a wrong-typed known event"
+    end
+  end
 end

@@ -997,6 +997,18 @@ defmodule GrappaWeb.GrappaChannel do
     watchlist_del(socket.assigns.current_subject, pattern, socket)
   end
 
+  # #364 web/S3 — terminal catch-all for any inbound frame that matched no
+  # specific clause above: an unknown event name, or a KNOWN event carrying a
+  # wrong-typed field that fails its guard (e.g. a string `network_id`
+  # against the `is_integer(network_id)` guard). Without this clause Phoenix's
+  # default `handle_in/3` raises FunctionClauseError and crashes the channel
+  # pid, so a hostile or buggy cic can repeatedly take down its own socket
+  # and flood operator crash reports. Reply a typed error rather than crash,
+  # mirroring AdminChannel's documented catch-all posture.
+  def handle_in(_, _, socket) do
+    {:reply, {:error, %{error: "unknown_event"}}, socket}
+  end
+
   # Watchlist add helper — extracted to keep handle_in nesting ≤ 2 levels.
   @spec watchlist_add(Grappa.Subject.t(), String.t(), Phoenix.Socket.t()) ::
           {:reply, {:ok, map()} | {:error, map()}, Phoenix.Socket.t()}
