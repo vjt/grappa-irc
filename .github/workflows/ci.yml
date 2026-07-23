@@ -91,8 +91,13 @@ jobs:
       - name: Tests with coverage
         run: mix coveralls.json --warnings-as-errors
 
-      - name: Bats (bin/grappa dispatcher)
-        run: vendor/bats-core/bin/bats test/bin/
+      - name: Bats (bin/grappa dispatcher + debug-attach scripts)
+        # Mirror scripts/bats.sh's discovery set so the CI gate matches the
+        # local check.sh gate (#364 docker S2 added test/scripts/). Run the
+        # bats binary directly (submodule already checked out in CI) rather
+        # than scripts/bats.sh, which would drag in _lib.sh's docker-compose
+        # arg wiring the bare runner doesn't need.
+        run: vendor/bats-core/bin/bats test/bin/ test/scripts/
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7
