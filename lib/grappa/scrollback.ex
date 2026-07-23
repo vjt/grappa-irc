@@ -736,15 +736,28 @@ defmodule Grappa.Scrollback do
   Target derivation: `COALESCE(dm_with, channel)` — DM rows (CP14 B3)
   carry `dm_with = peer` regardless of which side `channel` points at
   (inbound = own_nick, outbound = peer); channel rows carry
-  `dm_with = nil` so the COALESCE picks the channel name. The result
-  collapses to one row per logical "window" the user has talked in.
+  `dm_with = nil` so the COALESCE picks the channel name. The GROUP BY
+  folds that key via `Identifier.nick_fold/1` (rfc1459, #372) so a DM
+  peer that differs only in casing — the service `DebugServ` replying
+  to an opened `debugserv` window — collapses to ONE archive entry
+  instead of splitting. `dm_with` is stored case-PRESERVED (nick display
+  rule, `message.ex`); the fold applies at the MATCH, exactly as the DM
+  read (`channel_or_dm_where/3`) and delete (`delete_for_dm/3`) do. The
+  selected `target` is a bare `COALESCE` (not the folded key) so the
+  display casing is preserved; SQLite picks it from the row carrying the
+  single `max(server_time)` aggregate (documented bare-column rule), i.e.
+  the most-recent spelling. Channels fold idempotently (already canonical
+  at write) so this is a no-op for them; non-ASCII case variants stay
+  distinct (ASCII-only fold, matching the ircd).
 
   `active_keyset` is a `MapSet` of currently-active target strings —
   joined channels (from `Grappa.Session.list_channels/2`) plus open
   query window targets (from `Grappa.QueryWindows.list_for_subject/1`).
-  Members of the set are filtered OUT of the archive so the active +
-  archive sets are disjoint per intent doc. Empty set means everything
-  with rows qualifies.
+  Members are filtered OUT so the active + archive sets are disjoint per
+  intent doc. The exclusion compares on the rfc1459 fold of BOTH sides
+  (#372) — an open `debugserv` window MUST suppress the proper-case
+  `DebugServ` inbound rows, not leave them as a phantom archived split.
+  Empty set means everything with rows qualifies.
 
   The `$server` pseudo-channel is ALWAYS excluded — system surface,
   never archived per intent doc `Active/Archive boundary`. Mirrors
@@ -756,17 +769,21 @@ defmodule Grappa.Scrollback do
   @spec list_archive(subject(), integer(), MapSet.t(String.t())) :: [archive_entry()]
   def list_archive(subject, network_id, %MapSet{} = active_keyset)
       when is_integer(network_id) do
+    folded_active = MapSet.new(active_keyset, &Identifier.canonical_nick/1)
+
     Message
     |> subject_where(subject)
     |> where([m], m.network_id == ^network_id)
-    |> group_by([m], fragment("COALESCE(?, ?)", m.dm_with, m.channel))
+    |> group_by([m], Identifier.nick_fold(fragment("COALESCE(?, ?)", m.dm_with, m.channel)))
     |> select([m], %{
       target: fragment("COALESCE(?, ?)", m.dm_with, m.channel),
       last_activity: max(m.server_time),
       row_count: count(m.id)
     })
     |> Repo.all()
-    |> Enum.reject(fn %{target: t} -> t == "$server" or MapSet.member?(active_keyset, t) end)
+    |> Enum.reject(fn %{target: t} ->
+      t == "$server" or MapSet.member?(folded_active, Identifier.canonical_nick(t))
+    end)
     |> Enum.map(fn entry -> Map.put(entry, :kind, target_kind(entry.target)) end)
     |> Enum.sort_by(& &1.last_activity, :desc)
   end
@@ -859,10 +876,15 @@ defmodule Grappa.Scrollback do
 
       # Peer DM target (nick-shaped, NOT own-nick): outbound `/msg peer`
       # lands at `channel = peer`; inbound `<peer> PRIVMSG ownnick` lands
-      # at `channel = ownnick AND dm_with = peer`. The OR matches both,
-      # giving the conversation view the user expects.
+      # at `channel = ownnick AND dm_with = peer`. Match on the rfc1459
+      # FOLD of the peer (#372) so a reply from a differently-cased sender
+      # (service `DebugServ` vs the opened `debugserv` window) resolves to
+      # the SAME window — `dm_with` is stored case-PRESERVED (nick display
+      # rule, message.ex) so the MATCH must fold, exactly like the nick
+      # invariant demands (#121). Shared `where_dm_peer/2` with
+      # `delete_for_dm/3` so read + delete pick one identical window key.
       dm_eligible?(channel) ->
-        where(query, [m], m.channel == ^channel or m.dm_with == ^channel)
+        where_dm_peer(query, Identifier.canonical_nick(channel))
 
       # Channel-shaped target (#chan, &local, etc.) — no DM aggregation.
       true ->
@@ -877,6 +899,29 @@ defmodule Grappa.Scrollback do
   # :query, but it can never carry DM history by intent doc).
   defp dm_eligible?("$server"), do: false
   defp dm_eligible?(name) when is_binary(name), do: target_kind(name) == :query
+
+  # `where_dm_peer/2` — the SINGLE rfc1459-folded DM-peer match: "rows
+  # belonging to the DM window whose peer folds to `folded_peer`". Shared
+  # by the read path (`channel_or_dm_where/3`) and the delete path
+  # (`delete_for_dm/3`) so a nick that folds identically (ASCII case +
+  # the four rfc1459 bracket chars) resolves to ONE window everywhere
+  # (#372). `dm_with` is stored case-PRESERVED (nick display rule,
+  # `message.ex`), so every MATCH folds via `Identifier.nick_fold/1` —
+  # the same query-side twin the WHOIS / query_windows lookups use (#121).
+  # Orphan rows (`dm_with IS NULL` — e.g. a server NOTICE 401 routed to a
+  # query window via numeric_router) match on the folded `channel`
+  # column, mirroring the archive `COALESCE(dm_with, channel)` grouping.
+  # `folded_peer` MUST already be `Identifier.canonical_nick/1`-folded by
+  # the caller (the value side of the fold).
+  @spec where_dm_peer(Ecto.Query.t(), String.t()) :: Ecto.Query.t()
+  defp where_dm_peer(query, folded_peer) when is_binary(folded_peer) do
+    where(
+      query,
+      [m],
+      Identifier.nick_fold(m.dm_with) == ^folded_peer or
+        (is_nil(m.dm_with) and Identifier.nick_fold(m.channel) == ^folded_peer)
+    )
+  end
 
   defp subject_where(query, {:user, user_id}) when is_binary(user_id),
     do: where(query, [m], m.user_id == ^user_id)
@@ -904,9 +949,10 @@ defmodule Grappa.Scrollback do
 
   @doc """
   UX-1 (2026-05-17) — deletes all scrollback rows for a DM peer in a
-  `(subject, network_id)` pair. Case-insensitive on the peer nick to
-  match the IRC-side lowercase normalization (`dm_with` is stored
-  verbatim but compared lowered, mirroring `channel_or_dm_where/3`).
+  `(subject, network_id)` pair. Folds the peer nick under rfc1459 to
+  match the IRC-side normalization (`dm_with` is stored case-preserved
+  but MATCHED folded, via the shared `where_dm_peer/2` — the same window
+  key `channel_or_dm_where/3` reads, #372).
 
   Symmetric: drops both outbound (`channel = peer`) and inbound
   (`channel = own_nick, dm_with = peer`) sides because both rows
@@ -933,40 +979,25 @@ defmodule Grappa.Scrollback do
     # REV-B / H17 (2026-05-22 codebase review): route through
     # `Identifier.canonical_channel/1` for boundary single-sourcing
     # consistency with `delete_for_channel/3` + the controller. The
-    # call is a no-op on nick-shaped input (no sigil → pass-through),
-    # so the rfc1459 fold comparison (#121) stays correct: `dm_with`
-    # is intentionally case-preserved at write time (see
-    # `lib/grappa/scrollback/message.ex:252-254`), and `dm_with` is
-    # the nick comparator. The orphan-channel arm
-    # (`is_nil(m.dm_with) and channel = peer`) compares against the
-    # canonical-cased `channel` column — write-time canonical guarantees
-    # the lowercase form, so the fold is redundant but harmless.
+    # call is a no-op on nick-shaped input (no sigil → pass-through);
+    # `canonical_nick/1` then folds it to the value side of the match.
     canonical_peer = Identifier.canonical_channel(peer)
     folded_peer = Identifier.canonical_nick(canonical_peer)
 
-    # UX-3 Z (2026-05-18): match the same coalescing rule `list_archive/3`
-    # uses on the read side. The read-side groups by
-    # `COALESCE(dm_with, channel)` so any row with EITHER `dm_with = peer`
-    # OR (`dm_with IS NULL` AND `channel = peer`) surfaces under target =
-    # peer. The pre-fix write side only matched `dm_with = peer`, so
-    # orphan rows — typically server NOTICEs like "No such nick/channel"
-    # routed to the query window via `numeric_router.scan_params/2` with
-    # `dm_with = NULL` because no PRIVMSG-direction sender/recipient pair
-    # existed — appeared in archive but `delete_for_dm` returned a silent
-    # `{:ok, 0}` and the operator's "really delete" tap did nothing.
-    #
-    # vjt 2026-05-18: ghost-* nicks vjt /msg'd that don't exist on the
-    # upstream → server NOTICE 401 → persisted as channel=nick,
-    # dm_with=NULL → archive shows them, delete never removed them.
+    # `where_dm_peer/2` (shared with the read path, #372) matches both
+    # DM directions AND the orphan-channel arm. UX-3 Z (2026-05-18): the
+    # orphan arm (`dm_with IS NULL` AND folded `channel` = peer) is why a
+    # ghost-* nick vjt /msg'd that doesn't exist upstream — server NOTICE
+    # 401 persisted as channel=nick, dm_with=NULL via
+    # `numeric_router.scan_params/2` — is deletable; pre-fix it appeared
+    # in archive (surfaced by `list_archive/3`'s COALESCE) yet
+    # `delete_for_dm` returned a silent `{:ok, 0}` and the operator's
+    # "really delete" tap did nothing.
     {count, _} =
       Message
       |> subject_where(subject)
       |> where([m], m.network_id == ^network_id)
-      |> where(
-        [m],
-        Identifier.nick_fold(m.dm_with) == ^folded_peer or
-          (is_nil(m.dm_with) and Identifier.nick_fold(m.channel) == ^folded_peer)
-      )
+      |> where_dm_peer(folded_peer)
       |> Repo.delete_all()
 
     {:ok, count}

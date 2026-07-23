@@ -18,6 +18,7 @@ defmodule Grappa.ScrollbackTest do
   import Grappa.AuthFixtures
 
   alias Grappa.{Accounts, Networks, Repo, Scrollback, ScrollbackHelpers}
+  alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.{Message, Wire}
 
@@ -1308,12 +1309,12 @@ defmodule Grappa.ScrollbackTest do
       assert Enum.map(page, & &1.body) == ["self note"]
     end
 
-    test "fetch/5 wrapper preserves pre-fix peer-DM OR shape (own_nick = nil)",
+    test "own_nick=nil DM fetch folds on the peer — no channel-match leak (#372)",
          %{user: user, network: net} do
-      # When the caller doesn't pass own_nick (e.g. tests, or the rare
-      # path where Session.current_nick returns :no_session), the OR
-      # filter still applies for nick-shaped targets. This test pins
-      # the back-compat behaviour of fetch/5.
+      # No live session (Session.current_nick → :no_session) means the
+      # controller threads own_nick = nil. Inbound peer→own persists as
+      # channel = own_nick, dm_with = peer — the row belongs to the
+      # "peer" window, NOT the own-nick window.
       {:ok, _} =
         Scrollback.persist_event(%{
           user_id: user.id,
@@ -1327,10 +1328,20 @@ defmodule Grappa.ScrollbackTest do
           dm_with: "peer"
         })
 
-      # Without own_nick, the legacy OR shape includes the inbound row
-      # because channel == "vjt-grappa" matches.
-      page = Scrollback.fetch({:user, user.id}, net.id, "vjt-grappa", nil, 10, nil)
-      assert Enum.map(page, & &1.body) == ["inbound"]
+      # #372: the DM fetch resolves by the FOLDED peer (dm_with), never a
+      # raw `channel == target` arm. Fetching the "peer" window returns
+      # the inbound row even with no session...
+      peer_page = Scrollback.fetch({:user, user.id}, net.id, "peer", nil, 10, nil)
+      assert Enum.map(peer_page, & &1.body) == ["inbound"]
+
+      # ...and fetching "vjt-grappa" (the own-nick window) does NOT leak
+      # the peer's inbound row. Pre-#372 the raw `channel == "vjt-grappa"`
+      # arm returned ["inbound"] here — the CP14-B3 leak that own_nick
+      # narrowing closed for live sessions, now closed for the no-session
+      # path too (folding on the peer shows self-msgs only, no own_nick
+      # needed).
+      own_page = Scrollback.fetch({:user, user.id}, net.id, "vjt-grappa", nil, 10, nil)
+      assert own_page == []
     end
 
     test "DM fetch is per-subject — alice's DMs are not visible when fetching as vjt",
@@ -2355,6 +2366,147 @@ defmodule Grappa.ScrollbackTest do
 
       assert [%{body: "lower"}] =
                Scrollback.fetch({:user, user.id}, net.id, "#café", nil, 50, nil)
+    end
+  end
+
+  # #372 — rfc1459 DM-peer window convergence. Bug: a query window opened
+  # as `debugserv` (lowercase) split from the service's proper-case
+  # `DebugServ` replies. The inbound row persists `dm_with = "DebugServ"`
+  # RAW (display-case, like every nick — message.ex canonicalize_channel
+  # deliberately leaves dm_with untouched), but the bidirectional DM read
+  # (`channel_or_dm_where/3`) AND the archive grouping (`list_archive/3`)
+  # matched/grouped the peer RAW instead of folding, so the reply fell out
+  # of the window's fetch and resurfaced as an archived `DebugServ` split.
+  # `delete_for_dm/3` already folded — hence "delete either → deletes both"
+  # while the window stayed split, the exact inconsistency #372 reports.
+  # Every peer MATCH now folds via `Identifier.nick_fold/1` (the same
+  # primitive delete_for_dm + WHOIS/query_windows use, #121).
+  describe "#372 — rfc1459 DM peer window convergence" do
+    test "fetch/6 merges an inbound reply from a differently-cased peer into the window",
+         %{user: user, network: net} do
+      # Outbound: vjt-grappa → debugserv (channel = peer, dm_with = peer).
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          sample(user, net, 100, %{
+            channel: "debugserv",
+            sender: "vjt-grappa",
+            body: "HELP",
+            dm_with: "debugserv"
+          })
+        )
+
+      # Inbound: DebugServ (proper case) → vjt-grappa (channel = own_nick,
+      # dm_with = sender, RAW casing).
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          sample(user, net, 200, %{
+            channel: "vjt-grappa",
+            sender: "DebugServ",
+            body: "usage",
+            dm_with: "DebugServ"
+          })
+        )
+
+      # A fetch under EITHER casing returns BOTH directions — one window,
+      # exactly as the ircd (rfc1459) sees the nick.
+      for spelling <- ["debugserv", "DebugServ", "DEBUGSERV"] do
+        bodies =
+          {:user, user.id}
+          |> Scrollback.fetch(net.id, spelling, nil, 50, nil)
+          |> Enum.map(& &1.body)
+          |> Enum.sort()
+
+        assert bodies == ["HELP", "usage"], "spelling #{spelling} did not converge"
+      end
+    end
+
+    test "fetch/6 folds rfc1459 bracket chars in the DM peer",
+         %{user: user, network: net} do
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          sample(user, net, 100, %{
+            channel: "Foo[1]",
+            sender: "vjt-grappa",
+            body: "out",
+            dm_with: "Foo[1]"
+          })
+        )
+
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          sample(user, net, 200, %{
+            channel: "vjt-grappa",
+            sender: "Foo{1}",
+            body: "in",
+            dm_with: "Foo{1}"
+          })
+        )
+
+      bodies =
+        {:user, user.id}
+        |> Scrollback.fetch(net.id, "Foo[1]", nil, 50, nil)
+        |> Enum.map(& &1.body)
+        |> Enum.sort()
+
+      assert bodies == ["in", "out"]
+    end
+
+    test "list_archive/3 collapses casing-variant DM targets into ONE entry",
+         %{user: user, network: net} do
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          sample(user, net, 100, %{
+            channel: "debugserv",
+            sender: "vjt-grappa",
+            body: "out",
+            dm_with: "debugserv"
+          })
+        )
+
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          sample(user, net, 200, %{
+            channel: "vjt-grappa",
+            sender: "DebugServ",
+            body: "in",
+            dm_with: "DebugServ"
+          })
+        )
+
+      assert [entry] = Scrollback.list_archive({:user, user.id}, net.id, MapSet.new())
+      assert entry.kind == :query
+      assert entry.row_count == 2
+      assert entry.last_activity == 200
+      # Representative display casing is incidental; the fold is the identity.
+      assert Identifier.canonical_nick(entry.target) == "debugserv"
+    end
+
+    test "list_archive/3 excludes a folded-active query window (no archived split)",
+         %{user: user, network: net} do
+      # Window opened as `debugserv`; the service replied as `DebugServ`.
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          sample(user, net, 100, %{
+            channel: "debugserv",
+            sender: "vjt-grappa",
+            body: "out",
+            dm_with: "debugserv"
+          })
+        )
+
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          sample(user, net, 200, %{
+            channel: "vjt-grappa",
+            sender: "DebugServ",
+            body: "in",
+            dm_with: "DebugServ"
+          })
+        )
+
+      # active_keyset carries the open query window's canonical target
+      # only; the proper-case inbound rows MUST NOT resurface as archived.
+      assert [] = Scrollback.list_archive({:user, user.id}, net.id, MapSet.new(["debugserv"]))
     end
   end
 end
