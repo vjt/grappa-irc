@@ -895,6 +895,141 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "autojoin gated on upstream +r for :nickserv_identify (#347)" do
+    # NickServ IDENTIFY is sent async at 001 and the upstream sets the self
+    # `+r` umode only AFTER 001 / end-of-MOTD. Firing the autojoin loop on
+    # 001 races the identify: +R (registered-only) channels reject the JOIN
+    # (477) and ChanServ won't +o an unidentified user. So for
+    # :nickserv_identify the JOINs must wait for the EARLIER of the self-MODE
+    # +r echo OR a ~0.5s fallback timeout. SASL/:none identify before (or
+    # need no) 001, so they keep firing on 001 — proven unregressed below.
+    defp nickserv_plan(user, network, credential, defer_ms) do
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+      plan = Map.put(base_plan, :autojoin_defer_ms, defer_ms)
+      {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+      pid
+    end
+
+    test "does NOT fire autojoin on 001 — waits for the +r self-MODE echo" do
+      {server, port} = start_server()
+
+      {user, network, credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: ["#sniffo", "#other"]
+        })
+
+      # Long fallback so ONLY the +r echo can trigger the JOINs in-window.
+      pid = nickserv_plan(user, network, credential, 60_000)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      # 001 alone must NOT fire autojoin: identify is still async, no +r yet.
+      Process.sleep(150)
+      refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN"))
+
+      # NickServ confirms IDENTIFY → the server echoes the self +r umode.
+      IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
+
+      assert {:ok, "JOIN #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
+
+      assert {:ok, "JOIN #other\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #other\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "fires autojoin on the ~0.5s fallback when no +r ever arrives" do
+      {server, port} = start_server()
+
+      {user, network, credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: ["#sniffo"]
+        })
+
+      # Feed NO +r echo — the timeout is the ONLY trigger here. A 400ms
+      # fallback lets us prove BOTH halves of the timeout path: the JOIN is
+      # deferred (still absent well after 001) AND fires best-effort once the
+      # timer elapses, so a silent/slow NickServ never hangs autojoin.
+      pid = nickserv_plan(user, network, credential, 400)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      # Deferred: no JOIN on 001, and none before the fallback elapses.
+      Process.sleep(150)
+      refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN"))
+
+      # Fallback fires the JOIN best-effort (non-+R channels still work).
+      assert {:ok, "JOIN #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "deferred autojoin fires EXACTLY once when +r and the timeout race" do
+      {server, port} = start_server()
+
+      {user, network, credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: ["#sniffo"]
+        })
+
+      # Short fallback AND a +r echo — the two triggers race. The one-shot
+      # latch must ensure the JOIN is emitted once, never twice.
+      pid = nickserv_plan(user, network, credential, 120)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+      IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
+
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
+
+      # Let the fallback timer elapse too — it must find the latch cleared.
+      Process.sleep(200)
+
+      joins = Enum.count(IRCServer.sent_lines(server), &(&1 == "JOIN #sniffo\r\n"))
+      assert joins == 1
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "SASL is unaffected: autojoin still fires immediately on 001 (no +r needed)" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :sasl,
+          password: "s3cr3t-sasl",
+          autojoin_channels: ["#sniffo"]
+        })
+
+      # SASL identifies BEFORE 001, so the 001 autojoin already sees +r.
+      # No autojoin_defer_ms override, no +r echo fed: the JOIN must land
+      # on 001 exactly as it did pre-#347.
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      assert {:ok, "JOIN #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "presence arm at end-of-MOTD (#247)" do
     # The full 001 → 005 → 376 registration tail. The mechanism pick
     # needs the 005 tokens, so the arm rides 376/422 — NOT the 001

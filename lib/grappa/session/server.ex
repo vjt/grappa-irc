@@ -147,6 +147,18 @@ defmodule Grappa.Session.Server do
   # services outage holding the FSM open indefinitely.
   @ghost_recovery_timeout_ms 8_000
 
+  # #347 — deferred-autojoin fallback for `:nickserv_identify`. NickServ
+  # IDENTIFY is sent async at 001 and the upstream sets the self `+r` umode
+  # only AFTER 001/end-of-MOTD, so firing the autojoin JOINs on 001 races the
+  # identify: +R (registered-only) channels reject the JOIN (477) and ChanServ
+  # won't +o an unidentified user. We defer the JOINs until the EARLIER of the
+  # self-MODE +r echo (EventRouter's `:session_identity_changed, :acquired` —
+  # NOT NickServ NOTICE-text parsing) OR this ~0.5s timeout — bounded so a
+  # silent/slow NickServ never hangs autojoin (JOIN best-effort on elapse).
+  # Opts-overridable (`:autojoin_defer_ms`) as a test seam; production inherits
+  # this default.
+  @autojoin_defer_ms 500
+
   # Channel directory (#84) refresh tunables — compile-time defaults
   # sourced from `config :grappa, Grappa.ChannelDirectory`. Injected into
   # state in `do_init/1` so later tasks (refresh trigger, streamed-322
@@ -401,7 +413,10 @@ defmodule Grappa.Session.Server do
           optional(:refresh_plan) => refresh_plan_check(),
           # #100 sustained-reconnect reset gate — test seam. Production
           # omits it and inherits `@connection_stable_ms`.
-          optional(:connection_stable_ms) => pos_integer()
+          optional(:connection_stable_ms) => pos_integer(),
+          # #347 deferred-autojoin fallback window — test seam. Production
+          # omits it and inherits `@autojoin_defer_ms`.
+          optional(:autojoin_defer_ms) => pos_integer()
         }
 
   @type t :: %{
@@ -452,7 +467,16 @@ defmodule Grappa.Session.Server do
           # key) does not crash — same defensive contract as
           # in_flight_joins (event_router.ex:1323).
           awaiting_invite: MapSet.t(String.t()),
+          auth_method: AuthFSM.auth_method(),
           autojoin: [String.t()],
+          # #347 — deferred-autojoin fallback window (config default
+          # @autojoin_defer_ms, opts-overridable for tests) + the one-shot
+          # latch timer. Non-nil timer = JOINs deferred (waiting on the +r
+          # self-MODE echo or this fallback); nil = fired already / never
+          # deferred (SASL/:none fire on 001). Only `:nickserv_identify` with
+          # a non-empty autojoin set arms it. See `maybe_autojoin_or_defer/1`.
+          autojoin_defer_ms: pos_integer(),
+          autojoin_defer_timer: reference() | nil,
           client: pid() | nil,
           notify_pid: pid() | nil,
           notify_ref: reference() | nil,
@@ -787,7 +811,12 @@ defmodule Grappa.Session.Server do
       # Symmetric with `Session.send_join/4`'s entry-point canonical
       # rebind. Sigil-aware: nick-shape entries (not valid here, but
       # the predicate is defensive) pass through unchanged.
+      auth_method: opts.auth_method,
       autojoin: Enum.map(opts.autojoin_channels, &Grappa.IRC.Identifier.canonical_channel/1),
+      # #347 — deferred-autojoin fallback window + one-shot latch. Timer stays
+      # nil until 001 arms it (only for :nickserv_identify with autojoin).
+      autojoin_defer_ms: Map.get(opts, :autojoin_defer_ms, @autojoin_defer_ms),
+      autojoin_defer_timer: nil,
       client: nil,
       notify_pid: Map.get(opts, :notify_pid),
       notify_ref: Map.get(opts, :notify_ref),
@@ -2079,36 +2108,8 @@ defmodule Grappa.Session.Server do
       )
       when is_binary(welcomed_nick) do
     state =
-      state.autojoin
-      |> Enum.reduce(state, fn channel, acc ->
-        # Autojoin channels are operator-configured (or persisted from
-        # last_joined_channels at reboot). Keys are NOT persisted —
-        # operator must re-join with /join #chan key for +k channels.
-        # UX-4 bucket F: explicit nil here keeps the autojoin wire
-        # frame shape stable (`JOIN #chan\r\n` only).
-        case Client.send_join(acc.client, channel, nil) do
-          :ok ->
-            record_in_flight_join(acc, channel)
-
-          {:error, :invalid_line} ->
-            Logger.warning("autojoin skipped: invalid channel name", channel: inspect(channel))
-            acc
-
-          # Transport gone between RPL_WELCOME and this iteration of
-          # the autojoin reduce — extremely rare (we just received a
-          # 001 numeric ON this socket) but possible if upstream tore
-          # the connection down between the 001 reply and the autojoin
-          # loop tick. Skip + log; next reconnect's RPL_WELCOME will
-          # re-fire the autojoin loop from scratch.
-          {:error, reason} ->
-            Logger.warning("autojoin skipped: transport unavailable",
-              channel: inspect(channel),
-              reason: inspect(reason)
-            )
-
-            acc
-        end
-      end)
+      state
+      |> maybe_autojoin_or_defer()
       |> maybe_fire_notify()
       |> maybe_stage_pending_password()
 
@@ -2172,6 +2173,15 @@ defmodule Grappa.Session.Server do
   def handle_info(:connection_stable, state) do
     Backoff.record_success(state.subject, state.network_id)
     {:noreply, %{state | connection_stable_timer: nil}}
+  end
+
+  # #347 — the ~0.5s fallback elapsed before the self-MODE +r echo arrived
+  # (silent/slow NickServ, or a network that doesn't echo +r). Fire the
+  # deferred `:nickserv_identify` autojoin best-effort: non-+R channels join
+  # fine; a +R channel may 477 (473/475 route through the ChanServ-INVITE
+  # retry path). No-op if the +r echo already fired the JOINs (latch nil).
+  def handle_info(:autojoin_defer, state) do
+    {:noreply, fire_deferred_autojoin(state)}
   end
 
   # #247 — end-of-MOTD (376 RPL_ENDOFMOTD / 422 ERR_NOMOTD): arm the
@@ -3445,6 +3455,14 @@ defmodule Grappa.Session.Server do
   defp apply_effects([{:session_identity_changed, transition} | rest], state) do
     event = if transition == :acquired, do: :identified, else: :deidentified
     SessionLog.emit(event, state, [])
+
+    # #347 — +r acquisition is the identify-confirmed signal the deferred
+    # `:nickserv_identify` autojoin waits for. Fire the JOINs now (cancelling
+    # the fallback timer) so they land AFTER identify — +R channels accept and
+    # ChanServ ops. No-op for any path that didn't defer (latch nil): SASL/:none
+    # fired on 001, and a `:lost` transition never triggers it.
+    state = if transition == :acquired, do: fire_deferred_autojoin(state), else: state
+
     apply_effects(rest, state)
   end
 
@@ -4106,6 +4124,78 @@ defmodule Grappa.Session.Server do
   end
 
   defp maybe_request_chanserv_invite(state, _, _), do: state
+
+  # #347 — at 001, either fire the autojoin JOINs now or defer them.
+  #
+  # `:nickserv_identify` sends IDENTIFY async at 001 and the upstream sets the
+  # self `+r` umode only AFTER 001/end-of-MOTD, so JOINing on 001 races the
+  # identify (+R channels 477-reject; ChanServ won't +o an unidentified user).
+  # For that method (with a non-empty autojoin set) arm the fallback timer and
+  # defer: the JOINs fire on the EARLIER of the +r self-MODE echo
+  # (`fire_deferred_autojoin/1` via `:session_identity_changed, :acquired`) or
+  # the `:autojoin_defer` timeout — no NickServ NOTICE-text parsing.
+  #
+  # Every other method fires immediately, unchanged: SASL identifies BEFORE 001
+  # (so the 001 autojoin already sees +r), and `:none`/`:server_pass`/`:auto`
+  # have no identify step to wait on. An empty autojoin set also fires now (the
+  # loop is a no-op) rather than arming a pointless timer.
+  @spec maybe_autojoin_or_defer(t()) :: t()
+  defp maybe_autojoin_or_defer(%{auth_method: :nickserv_identify, autojoin: [_ | _]} = state) do
+    timer = Process.send_after(self(), :autojoin_defer, state.autojoin_defer_ms)
+    %{state | autojoin_defer_timer: timer}
+  end
+
+  defp maybe_autojoin_or_defer(state), do: fire_autojoin(state)
+
+  # Single funnel for the two deferred-autojoin triggers (#347): the +r
+  # self-MODE echo and the `:autojoin_defer` fallback timer.
+  # `autojoin_defer_timer` is the one-shot latch — a non-nil ref means the
+  # JOINs are still pending, so fire them and clear the latch (cancelling +
+  # draining the fallback so it can't double-fire). A nil ref means the other
+  # trigger already fired the loop; no-op. Guarantees exactly-once JOINs.
+  @spec fire_deferred_autojoin(t()) :: t()
+  defp fire_deferred_autojoin(%{autojoin_defer_timer: nil} = state), do: state
+
+  defp fire_deferred_autojoin(%{autojoin_defer_timer: timer} = state)
+       when is_reference(timer) do
+    :ok = cancel_and_drain(timer, :autojoin_defer)
+    fire_autojoin(%{state | autojoin_defer_timer: nil})
+  end
+
+  # The autojoin JOIN loop — records each JOIN in-flight (CP15 window-state
+  # tracking) and tolerates transport loss / invalid names. Single source of
+  # truth for "put the autojoin JOINs on the wire," called from the 001 handler
+  # for identify-before-001 methods and from the deferred triggers for
+  # `:nickserv_identify` (#347).
+  @spec fire_autojoin(t()) :: t()
+  defp fire_autojoin(state) do
+    Enum.reduce(state.autojoin, state, fn channel, acc ->
+      # Autojoin channels are operator-configured (or persisted from
+      # last_joined_channels at reboot). Keys are NOT persisted — operator must
+      # re-join with /join #chan key for +k channels. UX-4 bucket F: explicit
+      # nil here keeps the autojoin wire frame shape stable (`JOIN #chan\r\n`).
+      case Client.send_join(acc.client, channel, nil) do
+        :ok ->
+          record_in_flight_join(acc, channel)
+
+        {:error, :invalid_line} ->
+          Logger.warning("autojoin skipped: invalid channel name", channel: inspect(channel))
+          acc
+
+        # Transport gone between RPL_WELCOME and this iteration — extremely
+        # rare (we just received a 001 numeric ON this socket) but possible if
+        # upstream tore the connection down. Skip + log; next reconnect's
+        # RPL_WELCOME will re-fire the autojoin loop from scratch.
+        {:error, reason} ->
+          Logger.warning("autojoin skipped: transport unavailable",
+            channel: inspect(channel),
+            reason: inspect(reason)
+          )
+
+          acc
+      end
+    end)
+  end
 
   # One-shot send + clear of the synchronous-login readiness signal
   # (Task 8). Pattern-matches both fields populated to avoid

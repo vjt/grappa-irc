@@ -27817,3 +27817,67 @@ track the line-height. Every future line-height edit on the topic strip must
 re-touch all its max-height overrides (base + every media tier) in the same
 commit, or a tier silently clips. The clamp is decoration; the max-height is the
 contract.*
+
+---
+
+## 2026-07-23 — Autojoin waits for upstream +r on `:nickserv_identify` (GH #347)
+
+**The bug.** For a credential using `auth_method: :nickserv_identify`, the
+autojoin JOIN loop fired on `001 RPL_WELCOME` (`Session.Server`'s numeric-1
+handler). But that method sends `PRIVMSG NickServ :IDENTIFY <pw>` on 001 too
+(`IRC.AuthFSM.maybe_nickserv_identify/1`), and the upstream processes it
+**asynchronously** — the identity confirmation (self umode `+r`) lands *after*
+001. So the JOINs went out while still unidentified: on Libera-class networks
+`+R` (registered-only) channels reject with `477 ERR_NEEDREGGEDNICK`, and
+ChanServ won't grant `+o` (ops only for identified users). SASL is unaffected —
+it identifies *before* 001, so the 001 autojoin already sees `+r`.
+
+**Decision (vjt, 2026-07-20) — identify-first + short bounded wait, NO NickServ
+NOTICE-text parsing.** For `:nickserv_identify` credentials, defer the autojoin
+JOINs until the **earlier** of:
+- the self-`MODE +r` echo — surfaced by EventRouter's existing self-MODE fold as
+  `{:session_identity_changed, :acquired}` (the `+r` *umode*, not NickServ
+  text-scraping — the same bit `#215` already watches for the identity
+  session-log event); or
+- a **~0.5s** fallback timeout (`@autojoin_defer_ms 500`, opts-overridable via
+  `:autojoin_defer_ms`) — so a silent/slow/`+r`-less NickServ never hangs
+  autojoin: on elapse, JOIN best-effort (non-`+R` channels still work).
+
+**Mechanism.** `Session.Server` gains three state fields: `auth_method` (the
+honest discriminator — the change is scoped to `:nickserv_identify` only),
+`autojoin_defer_ms` (config default + test seam), and `autojoin_defer_timer`
+(the one-shot latch). At 001, `maybe_autojoin_or_defer/1` either fires
+immediately (SASL/`:none`/`:server_pass`/`:auto`, or an empty autojoin set) or
+arms the fallback timer and defers. Both deferred triggers — the `:acquired`
+`apply_effects` arm and the `:autojoin_defer` `handle_info` — funnel through
+`fire_deferred_autojoin/1`, whose latch (non-nil timer ⇒ still pending; the
+first trigger cancels-and-drains the other) guarantees the JOINs fire **exactly
+once**. The 001-path JOIN reduce was extracted to `fire_autojoin/1` so both the
+immediate and deferred paths share one wire emitter (implement-once).
+
+**Alternatives rejected.** (1) *Strict `+r` gate, no timer* — deferring solely
+on `+r` hangs autojoin forever if NickServ never answers; the ~0.5s fallback is
+exactly that fix. (2) *Retry on `477`* — keep firing at 001 and re-JOIN rejected
+`+R` channels post-identify: more moving parts, and it eats an initial reject
+per `+R` channel; superseded by identify-first, which avoids the reject entirely.
+(3) *Parse the NickServ IDENTIFY NOTICE* — banned; NOTICE-scraping is accepted
+only for the auto-registration wizard (#349), never for identify.
+
+**SASL non-regression is structural**, not a special case: only
+`auth_method == :nickserv_identify` arms the timer, so every other method leaves
+`autojoin_defer_timer` nil and `fire_deferred_autojoin/1` no-ops even if a stray
+`+r` echo arrives later. A `:lost` transition never triggers autojoin.
+
+Server-side change → **cold deploy**. Covered by four deterministic
+`Grappa.IRCServer`-fake tests (real TCP + real `IRC.Client` + real
+`Session.Server`): deferral-past-001, `+r`-trigger, fallback-timeout-trigger,
+exactly-once dedup, plus explicit SASL-fires-on-001. Per vjt (2026-07-23) the
+fake tests are the integration coverage for this server-only change (no cic
+surface); the full browser integration suite runs as the post-merge GH CI gate.
+
+*Lesson: an async identity handshake is a HAPPENS-AFTER edge the connect-time
+fast path can't assume away. When a downstream action (autojoin) depends on an
+upstream state (`+r`) that arrives on its own schedule, gate on the state's
+own signal with a bounded fallback — never on a proxy event (001) that merely
+tends to precede it, and never by scraping human-readable NOTICE text when a
+structured protocol bit (the umode) already carries the fact.*
