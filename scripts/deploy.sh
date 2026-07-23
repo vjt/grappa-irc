@@ -148,10 +148,40 @@ if [ "$mode" = "hot" ]; then
     # `:code.modified_modules/0` and purges + reloads modified beams in
     # place. Sessions (Session.Server, IRC.Client, etc.) keep state.
     echo "Reloading modules in live BEAM..."
-    in_container curl -fsS -X POST http://localhost:4000/admin/reload
-    echo
-    echo "✓ hot-deploy complete (sessions preserved, container ID unchanged)"
-    exit 0
+    if ! response="$(in_container curl -fsS -X POST http://localhost:4000/admin/reload)"; then
+        die "hot-deploy: POST /admin/reload failed — is grappa up? scripts/healthcheck.sh"
+    fi
+    echo "reload response: $response"
+
+    # HTTP 200 is NOT success — /admin/reload reports per-module failures
+    # in-band (`{"reloaded":[...],"failed":[[mod,reason],...]}` —
+    # :old_code_in_use / :not_purged). Declaring "✓ complete" over a
+    # failed reload leaves the stack silently on stale code. This mirrors
+    # infra/freebsd/deploy.sh's jail path exactly (#364 docker S6,
+    # CLAUDE.md no-silent-swallow). The empty-list glob is the same one
+    # the jail path relies on in prod.
+    case "$response" in
+        *'"failed":[]'*) ;;
+        *)
+            echo "ERROR: hot-deploy reload reported per-module failures (see response above)" >&2
+            echo "  old code still in use? retry once processes settle, or scripts/deploy.sh --force-cold" >&2
+            exit 1
+            ;;
+    esac
+
+    # Post-reload healthcheck (the jail path does one). Probe /healthz on
+    # the live grappa node — 2xx only (`curl -f`) means the reloaded code
+    # is serving. Bounded, short loop (reload is fast; this is not the
+    # cold-boot recompile window below). Overridable for tests.
+    echo "Verifying /healthz after reload..."
+    for _ in $(seq 1 "${HOT_HEALTHCHECK_RETRIES:-30}"); do
+        if in_container curl -fsS -o /dev/null http://localhost:4000/healthz; then
+            echo "✓ hot-deploy complete (sessions preserved, container ID unchanged)"
+            exit 0
+        fi
+        sleep "${HOT_HEALTHCHECK_SLEEP:-1}"
+    done
+    die "hot-deploy: /healthz never returned 200 within $(( ${HOT_HEALTHCHECK_RETRIES:-30} * ${HOT_HEALTHCHECK_SLEEP:-1} ))s post-reload. Check: scripts/monitor.sh"
 fi
 
 # ---- Cold deploy ----
