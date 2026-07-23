@@ -745,9 +745,10 @@ defmodule Grappa.UserSettings do
   # occurrence. The fold is identity-key-correct per list type (#121):
   # `private_messages_only` is a nick list → canonical_nick/1 (rfc1459,
   # folds `[ ] \ ~` → `{ } | ^`); `channel_messages_only` is a channel
-  # list → canonical_channel/1 (sigil-gated downcase). A bare
-  # String.downcase would fork foo[bar]/foo{bar} on bahamut and never
-  # match the folded sender in Triggers.sender_in_whitelist?/2.
+  # list → canonical_channel/1 (sigil-gated rfc1459 fold, #364 — folds
+  # `[ ] \ ~` like nicks). A bare String.downcase would fork
+  # foo[bar]/foo{bar} on bahamut and never match the folded sender in
+  # Triggers.sender_in_whitelist?/2.
   defp normalize_list(list, key) do
     fold = list_fold(key)
 

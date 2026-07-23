@@ -338,9 +338,11 @@ defmodule Grappa.Session.Server do
   @typedoc """
   In-flight JOIN tracking entry (CP15 B2). Recorded on every outbound
   JOIN — both cic-initiated `Session.send_join/4` calls and the 001
-  RPL_WELCOME autojoin loop — keyed by `String.downcase/1` of the
-  channel so a 471/473/474/475/403/405 failure numeric can correlate
-  even when the upstream echoes a case-folded channel name.
+  RPL_WELCOME autojoin loop — keyed by `Identifier.canonical_channel/1`
+  (rfc1459, #364) of the channel so a 471/473/474/475/403/405 failure
+  numeric can correlate even when the upstream echoes a case-folded
+  channel name — including the rfc1459 bracket fold (`[ ] \\ ~`), which a
+  bare `String.downcase` missed.
 
   - `channel` — case-preserved as written by the caller (the form we
     use when broadcasting `kind: "join_failed"`, so cic addresses the
@@ -1447,7 +1449,7 @@ defmodule Grappa.Session.Server do
   # send error doesn't strand the WHO flow because no numerics will
   # arrive to drain it; harmless until the next /who replaces the entry.
   def handle_call({:send_who, target}, _, state) when is_binary(target) do
-    chan_key = String.downcase(target)
+    chan_key = Identifier.canonical_channel(target)
     next_pending = prime_pending(state.who_pending, chan_key, %{target_display: target, replies: []})
     next_state = %{state | who_pending: next_pending}
     {:reply, Client.send_who(state.client, target), next_state}
@@ -1467,7 +1469,7 @@ defmodule Grappa.Session.Server do
   # operator's focused window is irrelevant, so no origin_window is
   # threaded (the modal renders network-scoped, last-write-wins).
   def handle_call({:send_names, target}, _, state) when is_binary(target) do
-    chan_key = String.downcase(target)
+    chan_key = Identifier.canonical_channel(target)
 
     next_pending =
       prime_pending(state.names_pending, chan_key, %{target_display: target, names: []})
@@ -1648,7 +1650,11 @@ defmodule Grappa.Session.Server do
   # Returns a snapshot of the topic cache for `channel`. Serves from cache —
   # no upstream query. Public via `Grappa.Session.get_topic/3`.
   def handle_call({:get_topic, channel}, _, state) when is_binary(channel) do
-    chan_key = String.downcase(channel)
+    # #364: the topic cache is WRITTEN with the rfc1459 canonical key
+    # (event_router `normalize_channel`), so the read MUST fold the same
+    # way — a bare `String.downcase` missed the cache for any non-ASCII
+    # channel (`#CAFÉ` → downcase `#café` ≠ canonical `#cafÉ`).
+    chan_key = Identifier.canonical_channel(channel)
 
     case Map.get(state.topics, chan_key) do
       nil -> {:reply, {:error, :no_topic}, state}
@@ -1659,7 +1665,9 @@ defmodule Grappa.Session.Server do
   # Returns a snapshot of the channel_modes cache for `channel`. Serves from
   # cache — no upstream query. Public via `Grappa.Session.get_channel_modes/3`.
   def handle_call({:get_channel_modes, channel}, _, state) when is_binary(channel) do
-    chan_key = String.downcase(channel)
+    # #364: read the modes cache with the SAME rfc1459 canonical key the
+    # write side uses (see get_topic) — a bare downcase missed non-ASCII.
+    chan_key = Identifier.canonical_channel(channel)
 
     case Map.get(state.channel_modes, chan_key) do
       nil -> {:reply, {:error, :no_modes}, state}
@@ -3564,7 +3572,7 @@ defmodule Grappa.Session.Server do
     state = %{
       state
       | window_state: WindowState.set_joined(state.window_state, channel),
-        in_flight_joins: Map.delete(state.in_flight_joins, String.downcase(channel))
+        in_flight_joins: Map.delete(state.in_flight_joins, Identifier.canonical_channel(channel))
     }
 
     apply_effects(rest, state)
@@ -4021,7 +4029,7 @@ defmodule Grappa.Session.Server do
   @spec maybe_request_chanserv_invite(t(), String.t(), pos_integer()) :: t()
   defp maybe_request_chanserv_invite(state, channel, numeric)
        when numeric in @chanserv_invitable_numerics do
-    key = String.downcase(channel)
+    key = Identifier.canonical_channel(channel)
     awaiting = Map.get(state, :awaiting_invite, MapSet.new())
     in_autojoin? = key in state.autojoin
 
@@ -4088,7 +4096,7 @@ defmodule Grappa.Session.Server do
       |> Enum.reject(fn {_, {_, at_ms, _}} -> at_ms < cutoff end)
       |> Map.new()
 
-    key = String.downcase(channel)
+    key = Identifier.canonical_channel(channel)
     entry = {channel, now_ms, nil}
     in_flight_joins = Map.put(swept, key, entry)
 

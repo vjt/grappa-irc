@@ -1485,7 +1485,7 @@ defmodule Grappa.Session.EventRouter do
        )
        when is_binary(target) do
     pending = Map.get(state, :who_pending, %{})
-    chan_key = String.downcase(target)
+    chan_key = normalize_channel(target)
 
     case Map.fetch(pending, chan_key) do
       {:ok, accum} ->
@@ -1575,7 +1575,7 @@ defmodule Grappa.Session.EventRouter do
          state
        )
        when code in @join_failure_numerics and is_binary(channel) and is_binary(reason) do
-    key = String.downcase(channel)
+    key = normalize_channel(channel)
     in_flight = Map.get(state, :in_flight_joins, %{})
 
     case Map.fetch(in_flight, key) do
@@ -2089,7 +2089,7 @@ defmodule Grappa.Session.EventRouter do
        when is_binary(channel) do
     awaiting = Map.get(state, :awaiting_invite, MapSet.new())
 
-    if MapSet.member?(awaiting, String.downcase(channel)) do
+    if MapSet.member?(awaiting, normalize_channel(channel)) do
       {:cont, state, [{:rejoin_invited, channel}]}
     else
       # #78: an inbound INVITE we did NOT request (not a ChanServ relay of
@@ -3122,7 +3122,7 @@ defmodule Grappa.Session.EventRouter do
   @spec who_fold(state(), String.t(), map()) :: state()
   defp who_fold(state, channel, reply) when is_binary(channel) and is_map(reply) do
     pending = Map.get(state, :who_pending, %{})
-    chan_key = String.downcase(channel)
+    chan_key = normalize_channel(channel)
 
     fold_key =
       cond do
@@ -3176,7 +3176,7 @@ defmodule Grappa.Session.EventRouter do
   defp names_fold(state, channel, tokens)
        when is_binary(channel) and is_list(tokens) do
     pending = Map.get(state, :names_pending, %{})
-    chan_key = String.downcase(channel)
+    chan_key = normalize_channel(channel)
 
     case Map.fetch(pending, chan_key) do
       :error ->
@@ -3204,7 +3204,7 @@ defmodule Grappa.Session.EventRouter do
           {state(), [effect()]}
   defp drain_names_pending(state, channel) when is_binary(channel) do
     pending = Map.get(state, :names_pending, %{})
-    chan_key = String.downcase(channel)
+    chan_key = normalize_channel(channel)
 
     case Map.fetch(pending, chan_key) do
       :error ->

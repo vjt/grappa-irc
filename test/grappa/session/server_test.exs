@@ -5401,6 +5401,33 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    test "channel-key rfc1459 fold: 332 via #foo[1], get via #foo{1} (#364)" do
+      # The topic cache is WRITTEN with the rfc1459 canonical key (`[`→`{`);
+      # get_topic MUST read with the SAME fold. Pre-#364 the read used a
+      # bare String.downcase, which leaves `[` intact — so a get under
+      # either bracket spelling missed the cache the 332 populated under
+      # the folded key.
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#foo[1]"]})
+
+      pid = start_session_for(user, network)
+      welcome_session_on_channel(server, "#foo[1]")
+
+      IRCServer.feed(server, ":irc.test.org 332 grappa-test #foo[1] :Bracket topic\r\n")
+      flush_server(server)
+
+      # Both bracket spellings resolve to the one cached entry.
+      for spelling <- ["#foo[1]", "#foo{1}"] do
+        assert {:ok, %{text: "Bracket topic"}} =
+                 Session.get_topic({:user, user.id}, network.id, spelling),
+               "get_topic missed the rfc1459-folded cache for #{spelling}"
+      end
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   describe "S2.3 — channel_modes cache (324/MODE events)" do
