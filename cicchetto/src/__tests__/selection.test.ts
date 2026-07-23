@@ -1497,4 +1497,85 @@ describe("selection store", () => {
       ).toBe(false);
     });
   });
+
+  describe("followQueryNick (#373 — focus follows a peer NICK)", () => {
+    it("migrates the selection when the exact query window is focused", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      selection.setSelectedChannel({
+        networkSlug: "azzurra",
+        channelName: "Guest87449",
+        kind: "query",
+      });
+
+      selection.followQueryNick("azzurra", "Guest87449", "NickTemporaneo");
+
+      expect(selection.selectedChannel()).toEqual({
+        networkSlug: "azzurra",
+        channelName: "NickTemporaneo",
+        kind: "query",
+      });
+    });
+
+    it("matches the old nick case-insensitively (rfc1459)", async () => {
+      // The persisted selection casing can differ from the NICK line's sender.
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      selection.setSelectedChannel({
+        networkSlug: "azzurra",
+        channelName: "guest87449",
+        kind: "query",
+      });
+
+      selection.followQueryNick("azzurra", "Guest87449", "NickTemporaneo");
+
+      expect(selection.selectedChannel()?.channelName).toBe("NickTemporaneo");
+    });
+
+    it("does nothing when a DIFFERENT query window is focused", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      selection.setSelectedChannel({
+        networkSlug: "azzurra",
+        channelName: "someone-else",
+        kind: "query",
+      });
+
+      selection.followQueryNick("azzurra", "Guest87449", "NickTemporaneo");
+
+      expect(selection.selectedChannel()?.channelName).toBe("someone-else");
+    });
+
+    it("does nothing when a same-named CHANNEL (not query) is focused", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      selection.setSelectedChannel({
+        networkSlug: "azzurra",
+        channelName: "Guest87449",
+        kind: "channel",
+      });
+
+      selection.followQueryNick("azzurra", "Guest87449", "NickTemporaneo");
+
+      expect(selection.selectedChannel()).toEqual({
+        networkSlug: "azzurra",
+        channelName: "Guest87449",
+        kind: "channel",
+      });
+    });
+
+    it("does nothing when the network slug differs", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      selection.setSelectedChannel({
+        networkSlug: "libera",
+        channelName: "Guest87449",
+        kind: "query",
+      });
+
+      selection.followQueryNick("azzurra", "Guest87449", "NickTemporaneo");
+
+      expect(selection.selectedChannel()?.networkSlug).toBe("libera");
+    });
+  });
 });

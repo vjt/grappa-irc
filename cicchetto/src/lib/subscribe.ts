@@ -19,8 +19,8 @@ import { setEnsureQueryTopicJoined } from "./queryTopicJoin";
 import { canonicalQueryNick, openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { applyJoinReply, applyReadCursorSet } from "./readCursor";
 import { recordSeen } from "./reconnectBackfill";
-import { appendToScrollback, refreshScrollback } from "./scrollback";
-import { selectedChannel, setServerSeedCount } from "./selection";
+import { appendToScrollback, refreshScrollback, renameScrollbackKey } from "./scrollback";
+import { followQueryNick, selectedChannel, setServerSeedCount } from "./selection";
 import { joinChannel } from "./socket";
 import { socketHealth } from "./socketHealth";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
@@ -450,6 +450,29 @@ createRoot(() => {
           }
 
           routeMessage(slug, key, name, message, ownNick);
+
+          // #373: a PEER's NICK migrates that peer's query-window cic-owned
+          // caches — the live scrollback under (slug, oldNick) → (slug,
+          // newNick) and, if THIS device has that query focused, the
+          // selection — so a focused query keeps routing to the live nick
+          // (an outbound send would otherwise 401 on the vanished old nick).
+          // The sidebar row LIST stays server-authoritative: the server
+          // renames the QueryWindows row and broadcasts query_windows_list
+          // (#373 server half). Fires once per shared channel; both verbs are
+          // idempotent no-ops when nothing matches (a plain member rename
+          // with no query window). Own self-rename (sender == ownNick) is
+          // skipped — own nick rides own_nick_changed, not a query window.
+          if (message.kind === "nick_change" && !nickEquals(message.sender, ownNick)) {
+            const newNick =
+              typeof message.meta.new_nick === "string" ? message.meta.new_nick : null;
+            // Guard genuine rename: a case-only shift (old ≡ new under
+            // rfc1459) needs no key move (canonicalQueryNick already resolves
+            // casing) and the server row stays put (`:noop`).
+            if (newNick !== null && !nickEquals(message.sender, newNick)) {
+              renameScrollbackKey(channelKey(slug, message.sender), channelKey(slug, newNick));
+              followQueryNick(slug, message.sender, newNick);
+            }
+          }
 
           // #200: tear down the per-channel WS subscription on OWN-part.
           // Pre-#200 `joined` was only `.leave()`d on token rotation, so an

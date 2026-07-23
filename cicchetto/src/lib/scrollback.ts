@@ -84,6 +84,15 @@ import { getResumeCursor, recordSeen } from "./reconnectBackfill";
 //     channel — the cursor advances and the now-read rows become evictable.
 export const SCROLLBACK_RING_CAP = 1000;
 
+// Canonical scrollback ordering: `server_time` ASC, `id` ASC tie-break —
+// the client mirror of the server's `[desc: server_time, desc: id]`
+// (`Scrollback.fetch/5`). Single source so `mergeIntoScrollback` and
+// `renameScrollbackKey` (#373) can never drift on the tie-break rule.
+const byServerTimeThenId = (a: ScrollbackMessage, b: ScrollbackMessage): number => {
+  if (a.server_time !== b.server_time) return a.server_time - b.server_time;
+  return a.id - b.id;
+};
+
 // Trim `rows` (ASC by id) to the ring cap by dropping the OLDEST, but NEVER a
 // row at/after the read cursor: the in-pane `── XX unread ──` divider anchors
 // on the cursor and its unread rows (CLAUDE.md "Read state is server-owned"),
@@ -220,11 +229,33 @@ const exports = identityScopedStore((onIdentityChange) => {
       const ids = new Set(existing.map((m) => m.id));
       const fresh = page.filter((m) => !ids.has(m.id));
       if (fresh.length === 0) return prev;
-      const merged = [...existing, ...fresh].sort((a, b) => {
-        if (a.server_time !== b.server_time) return a.server_time - b.server_time;
-        return a.id - b.id;
-      });
+      const merged = [...existing, ...fresh].sort(byServerTimeThenId);
       return { ...prev, [key]: merged };
+    });
+  };
+
+  // #373 — a query window's peer renamed; move its in-memory scrollback
+  // from `oldKey` (slug, oldNick) to `newKey` (slug, newNick), merging into
+  // any rows already under the new key (dedup by id, canonical order). The
+  // server migrated the DM rows in the DB (`Scrollback.rename_dm_peer/4`)
+  // and broadcasts the new window list; this keeps the LIVE Solid cache in
+  // step so the relabeled window shows its history instantly instead of
+  // flickering empty until the next refresh. cic-owned cache maintenance —
+  // the sidebar row list stays server-authoritative. No-op when the old key
+  // holds nothing (a member rename with no query window costs one lookup).
+  const renameScrollbackKey = (oldKey: ChannelKey, newKey: ChannelKey): void => {
+    if (oldKey === newKey) return;
+    setScrollbackByChannel((prev) => {
+      if (!(oldKey in prev)) return prev;
+      const oldRows = prev[oldKey] ?? [];
+      const { [oldKey]: _drop, ...rest } = prev;
+      if (oldRows.length === 0) return rest;
+      const existing = rest[newKey] ?? [];
+      const ids = new Set(existing.map((m) => m.id));
+      const merged = [...existing, ...oldRows.filter((m) => !ids.has(m.id))].sort(
+        byServerTimeThenId,
+      );
+      return { ...rest, [newKey]: merged };
     });
   };
 
@@ -646,6 +677,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     loadMore,
     loadNewer,
     purgeScrollback,
+    renameScrollbackKey,
     refreshScrollback,
     sendMessage,
     lastOwnSend,
@@ -659,6 +691,7 @@ export const loadInitialScrollback = exports.loadInitialScrollback;
 export const loadMore = exports.loadMore;
 export const loadNewer = exports.loadNewer;
 export const purgeScrollback = exports.purgeScrollback;
+export const renameScrollbackKey = exports.renameScrollbackKey;
 export const refreshScrollback = exports.refreshScrollback;
 export const sendMessage = exports.sendMessage;
 export const lastOwnSend = exports.lastOwnSend;

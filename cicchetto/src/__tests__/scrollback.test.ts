@@ -1318,3 +1318,71 @@ describe("appendToScrollback — S20 per-channel ring cap", () => {
     expect(api.listMessages).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("renameScrollbackKey (#373 — DM history follows a peer NICK)", () => {
+  const row = (id: number, server_time: number, body: string): ScrollbackMessage => ({
+    id,
+    network: "azzurra",
+    channel: "peer",
+    server_time,
+    kind: "privmsg",
+    sender: "peer",
+    body,
+    meta: {},
+  });
+
+  it("moves rows from the old key to the new key and drops the old bucket", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const scrollback = await import("../lib/scrollback");
+    const oldKey = channelKey("azzurra", "Guest87449");
+    const newKey = channelKey("azzurra", "NickTemporaneo");
+    scrollback.appendToScrollback(oldKey, row(1, 100, "ciao"));
+
+    scrollback.renameScrollbackKey(oldKey, newKey);
+
+    expect(scrollback.scrollbackByChannel()[oldKey]).toBeUndefined();
+    expect(scrollback.scrollbackByChannel()[newKey]?.map((m) => m.id)).toEqual([1]);
+    expect(scrollback.scrollbackByChannel()[newKey]?.[0]?.body).toBe("ciao");
+  });
+
+  it("merges into existing rows under the new key (dedup by id, canonical order)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const scrollback = await import("../lib/scrollback");
+    const oldKey = channelKey("azzurra", "old");
+    const newKey = channelKey("azzurra", "new");
+    // New key already holds id 2 + id 3.
+    scrollback.appendToScrollback(newKey, row(2, 200, "existing-2"));
+    scrollback.appendToScrollback(newKey, row(3, 300, "existing-3"));
+    // Old key holds id 1 + a duplicate id 3 (must lose to the existing row).
+    scrollback.appendToScrollback(oldKey, row(1, 100, "old-1"));
+    scrollback.appendToScrollback(oldKey, row(3, 300, "old-3-dup"));
+
+    scrollback.renameScrollbackKey(oldKey, newKey);
+
+    expect(scrollback.scrollbackByChannel()[oldKey]).toBeUndefined();
+    const merged = scrollback.scrollbackByChannel()[newKey];
+    expect(merged?.map((m) => m.id)).toEqual([1, 2, 3]);
+    // Dup id 3: the pre-existing row wins (first-wins dedup).
+    expect(merged?.find((m) => m.id === 3)?.body).toBe("existing-3");
+  });
+
+  it("is a no-op that drops an empty old bucket", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const scrollback = await import("../lib/scrollback");
+    const oldKey = channelKey("azzurra", "ghost");
+    const newKey = channelKey("azzurra", "phantom");
+    // No rows ever appended under oldKey → nothing to move, newKey untouched.
+    scrollback.renameScrollbackKey(oldKey, newKey);
+    expect(scrollback.scrollbackByChannel()[oldKey]).toBeUndefined();
+    expect(scrollback.scrollbackByChannel()[newKey]).toBeUndefined();
+  });
+
+  it("no-ops when oldKey === newKey (leaves rows intact)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const scrollback = await import("../lib/scrollback");
+    const key = channelKey("azzurra", "peer");
+    scrollback.appendToScrollback(key, row(1, 100, "keep"));
+    scrollback.renameScrollbackKey(key, key);
+    expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([1]);
+  });
+});
