@@ -2801,4 +2801,63 @@ defmodule GrappaWeb.GrappaChannelTest do
       refute WSPresence.any_visible?(user_name)
     end
   end
+
+  # #364 bucket G / web S2 — a hostile or buggy cic must not be able to
+  # crash its channel pid by sending a malformed `origin_window`. Pre-fix
+  # `dispatch_set_away/4` / `dispatch_unset_away/3` had clauses only for
+  # `nil` and `is_map/1`; a string/number/list `origin_window` raised
+  # FunctionClauseError and killed the channel process. The boundary now
+  # rejects it loudly (mirroring the sibling "visibility" handler).
+  describe "#364 web/S2 — away rejects a malformed origin_window" do
+    setup do
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+      welcome_session_on_channel(irc_server, "#snap")
+
+      {:ok, _, socket} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(Topic.user(user.name), %{})
+
+      %{socket: socket, network: network}
+    end
+
+    test "away set: non-map origin_window is rejected, channel survives", %{
+      socket: socket,
+      network: network
+    } do
+      chan_pid = socket.channel_pid
+
+      for bad <- ["main", 42, ["a"]] do
+        ref =
+          push(socket, "away", %{
+            "action" => "set",
+            "network" => network.slug,
+            "reason" => "brb",
+            "origin_window" => bad
+          })
+
+        assert_reply(ref, :error, %{error: "invalid_payload"})
+      end
+
+      assert Process.alive?(chan_pid), "channel must survive a malformed away payload"
+    end
+
+    test "away unset: non-map origin_window is rejected, channel survives", %{
+      socket: socket,
+      network: network
+    } do
+      chan_pid = socket.channel_pid
+
+      ref =
+        push(socket, "away", %{
+          "action" => "unset",
+          "network" => network.slug,
+          "origin_window" => "main"
+        })
+
+      assert_reply(ref, :error, %{error: "invalid_payload"})
+      assert Process.alive?(chan_pid), "channel must survive a malformed away payload"
+    end
+  end
 end

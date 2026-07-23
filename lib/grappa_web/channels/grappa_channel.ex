@@ -395,8 +395,15 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_binary(slug) and is_binary(reason) do
-    origin_window = Map.get(payload, "origin_window")
-    with_body_check(socket, reason, fn -> away_set_dispatch(socket, slug, reason, origin_window) end)
+    case validate_origin_window(payload) do
+      {:ok, origin_window} ->
+        with_body_check(socket, reason, fn ->
+          away_set_dispatch(socket, slug, reason, origin_window)
+        end)
+
+      {:error, :invalid_payload} ->
+        {:reply, {:error, %{error: "invalid_payload"}}, socket}
+    end
   end
 
   # S3.4 — /away slash-command: unset explicit away.
@@ -409,13 +416,13 @@ defmodule GrappaWeb.GrappaChannel do
   # S4.3: reads `origin_window` from payload and passes to Session facade.
   def handle_in("away", %{"action" => "unset", "network" => slug} = payload, socket)
       when is_binary(slug) do
-    origin_window = Map.get(payload, "origin_window")
-
-    with {:ok, subject} <- resolve_subject(socket.assigns.user_name),
+    with {:ok, origin_window} <- validate_origin_window(payload),
+         {:ok, subject} <- resolve_subject(socket.assigns.user_name),
          {:ok, %Network{} = network} <- Networks.get_network_by_slug(slug),
          :ok <- dispatch_unset_away(subject, network, origin_window) do
       {:reply, :ok, socket}
     else
+      {:error, :invalid_payload} -> {:reply, {:error, %{error: "invalid_payload"}}, socket}
       :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
       {:error, :not_found} -> {:reply, {:error, %{error: "network_not_found"}}, socket}
       {:error, :no_session} -> {:reply, {:error, %{error: "no_session"}}, socket}
@@ -1472,6 +1479,25 @@ defmodule GrappaWeb.GrappaChannel do
     end
   end
 
+  # #364 web/S2 — boundary validation for the OPTIONAL `origin_window`
+  # payload field. `origin_window` is the cicchetto window that originated
+  # the /away command, used to route the 305/306 reply numerics back. It
+  # is a wire-untrusted field: a legit client omits it (→ `nil`, the
+  # pre-C-bucket path) or sends a map; a hostile/buggy client sending a
+  # string/number/list must be rejected here, not passed to
+  # `dispatch_set_away/4`/`dispatch_unset_away/3` (whose only clauses are
+  # `nil` and `is_map/1`) where a non-map raises FunctionClauseError and
+  # kills the channel pid. Mirrors the sibling "visibility" handler's
+  # reject-loudly posture.
+  @spec validate_origin_window(map()) :: {:ok, map() | nil} | {:error, :invalid_payload}
+  defp validate_origin_window(payload) do
+    case Map.get(payload, "origin_window") do
+      nil -> {:ok, nil}
+      m when is_map(m) -> {:ok, m}
+      _ -> {:error, :invalid_payload}
+    end
+  end
+
   # Extracted from `handle_in("away", action: "set", ...)` to keep
   # that clause below Credo's nesting depth gate after the
   # `with_body_check` wrapper landed (HIGH-19).
@@ -1479,7 +1505,7 @@ defmodule GrappaWeb.GrappaChannel do
           Phoenix.Socket.t(),
           String.t(),
           String.t(),
-          String.t() | nil
+          map() | nil
         ) :: {:reply, term(), Phoenix.Socket.t()}
   defp away_set_dispatch(socket, slug, reason, origin_window) do
     with {:ok, subject} <- resolve_subject(socket.assigns.user_name),
