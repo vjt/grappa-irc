@@ -55,14 +55,17 @@ defmodule GrappaWeb.FallbackController do
            | :network_ambiguous
            | :network_unconfigured
            | :upstream_unreachable
+           | :resolve_failed
            | :connect_timeout
            | :welcome_timeout
            | :probe_timeout
+           | :timeout
            | :internal
            | :invalid_message
            | :nick_in_use
            | :cannot_disconnect_self
            | :source_not_local
+           | :body_too_large
            | :insufficient_storage
            | :unsupported_media_type
            | :already_exists
@@ -72,7 +75,9 @@ defmodule GrappaWeb.FallbackController do
            | :share_token_expired
            | :share_token_consumed
            | :rate_limited
+           | :too_many_attempts
            | :theme_cap_reached
+           | :list_full
            | :not_raster
            | :too_large
            | :ssrf_blocked
@@ -83,6 +88,7 @@ defmodule GrappaWeb.FallbackController do
            | {:metadata_strip, String.t()}
            | {:anon_collision, non_neg_integer()}
            | {:credentials_present, non_neg_integer()}
+           | {:start_failed, term()}
            | Grappa.Admission.error()
            | Ecto.Changeset.t()}
         ) :: Plug.Conn.t()

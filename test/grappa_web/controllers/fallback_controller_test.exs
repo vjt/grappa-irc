@@ -258,6 +258,116 @@ defmodule GrappaWeb.FallbackControllerTest do
   # alongside the existing `site_key`/`provider`/`retry_after`
   # convention (cic's `ApiError.info` already reads body's top-level
   # keys directly — see `Login.tsx`'s `err.info.provider` access).
+  # web S1 (codebase-review 2026-07-19): the moduledoc mandates "add a
+  # clause here and update the spec in lockstep," but the `@spec call/2`
+  # error union had drifted six tags behind its clause heads
+  # (`:body_too_large`, `:too_many_attempts`, `:list_full`, `:timeout`,
+  # `:resolve_failed`, `{:start_failed, _}`). Dialyzer can't catch a
+  # CALLER passing a narrowed-away tag, so the lockstep rule silently
+  # rotted. This canary walks every `def call(conn, {:error, TAG})`
+  # clause head parsed from source AND the atom set of the `@spec`
+  # error union, and fails loud on any drift in either direction —
+  # closing the drift class the way the capacity_error matrix above
+  # closes the admission class.
+  describe "@spec ↔ clause lockstep drift gate (web S1)" do
+    test "call/2 @spec error union stays in lockstep with the clause heads" do
+      clause_tags = MapSet.new(clause_error_tags())
+      spec_tags = MapSet.new(spec_error_tags())
+      admission = MapSet.new(admission_error_atoms())
+
+      # Every clause head must be declared: directly in the spec, or via
+      # the `Grappa.Admission.error()` remote type. (The `%Ecto.Changeset{}`
+      # clause carries no atom tag, so it never appears in clause_tags.)
+      missing_from_spec =
+        MapSet.difference(clause_tags, MapSet.union(spec_tags, admission))
+
+      assert MapSet.equal?(missing_from_spec, MapSet.new()),
+             "call/2 clauses missing from @spec union (add them to the spec): " <>
+               inspect(Enum.sort(MapSet.to_list(missing_from_spec)))
+
+      # No phantom spec entries: every directly-declared atom/tuple tag
+      # must have a real clause head.
+      phantom = MapSet.difference(spec_tags, clause_tags)
+
+      assert MapSet.equal?(phantom, MapSet.new()),
+             "@spec tags with no call/2 clause (remove them from the spec): " <>
+               inspect(Enum.sort(MapSet.to_list(phantom)))
+    end
+  end
+
+  # --- web S1 drift-gate helpers ------------------------------------------
+
+  # Parse the tag atom out of every `def call(conn, {:error, TAG})` clause
+  # head in the source file. TAG is either a bare atom (`:bad_request`) or
+  # a tuple whose first element is the discriminator atom
+  # (`{:file_too_large, _}` → `:file_too_large`). The changeset binding
+  # clause (`{:error, %Ecto.Changeset{} = cs}`) yields no atom tag.
+  defp clause_error_tags do
+    {:ok, ast} =
+      "lib/grappa_web/controllers/fallback_controller.ex"
+      |> File.read!()
+      |> Code.string_to_quoted()
+
+    {_, tags} =
+      Macro.prewalk(ast, [], fn
+        {:def, _, [head | _]} = node, acc ->
+          case call_error_pattern(head) do
+            {:ok, tag} -> {node, [clause_tag(tag) | acc]}
+            :error -> {node, acc}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    tags |> Enum.reject(&is_nil/1) |> Enum.uniq()
+  end
+
+  defp call_error_pattern({:when, _, [inner | _]}), do: call_error_pattern(inner)
+  defp call_error_pattern({:call, _, [_conn, {:error, tag}]}), do: {:ok, tag}
+  defp call_error_pattern(_), do: :error
+
+  defp clause_tag(tag) when is_atom(tag), do: tag
+  defp clause_tag({first, _}) when is_atom(first), do: first
+  defp clause_tag(_), do: nil
+
+  # Collect the atom + tuple-discriminator tags directly declared in the
+  # `@spec call/2` error union. Remote types (`Grappa.Admission.error()`,
+  # `Ecto.Changeset.t()`) are intentionally skipped — the admission atoms
+  # are expanded separately via the production canon.
+  defp spec_error_tags do
+    {:ok, specs} = Code.Typespec.fetch_specs(FallbackController)
+
+    {_, [spec_ast]} =
+      Enum.find(specs, fn {{name, arity}, _} -> name == :call and arity == 2 end)
+
+    {:type, _, :fun, [{:type, _, :product, [_conn, err_tuple]}, _ret]} = spec_ast
+    {:type, _, :tuple, [{:atom, _, :error}, union]} = err_tuple
+
+    collect_spec_tags(union)
+  end
+
+  defp collect_spec_tags({:type, _, :union, members}),
+    do: Enum.flat_map(members, &collect_spec_tags/1)
+
+  defp collect_spec_tags({:atom, _, atom}) when is_atom(atom), do: [atom]
+  defp collect_spec_tags({:type, _, :tuple, [{:atom, _, tag} | _]}), do: [tag]
+  defp collect_spec_tags(_), do: []
+
+  # `Grappa.Admission.error() = capacity_error() | Captcha.error()`.
+  # capacity_error atoms come from the production canon the matrix above
+  # already pins; the captcha atoms are read from the Captcha type so the
+  # gate tracks the source rather than a hand-copy.
+  defp admission_error_atoms do
+    Grappa.Admission.capacity_error_atoms() ++ captcha_error_atoms()
+  end
+
+  defp captcha_error_atoms do
+    {:ok, types} = Code.Typespec.fetch_types(Grappa.Admission.Captcha)
+    {_, {_, ast, _}} = Enum.find(types, fn {_, {name, _, _}} -> name == :error end)
+    collect_spec_tags(ast)
+  end
+
   describe "validation errors (H2+U4 unified envelope)" do
     test "{:error, %Ecto.Changeset{}} → 422 validation_failed + field_errors" do
       changeset =
