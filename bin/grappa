@@ -44,6 +44,20 @@ set -euo pipefail
 # fake scripts/mix.sh. Production calls inherit the real scripts/.
 SCRIPTS_DIR="${SCRIPTS_DIR:-$SRC_ROOT/scripts}"
 
+# Run every `docker compose` from the MAIN repo root, like every sibling
+# script. Two things break otherwise when invoked from a worktree (this
+# dispatcher's docstring promises "run from any worktree"):
+#   1. compose has no top-level `name:`, so the project defaults to the
+#      CWD basename — from a worktree that's the worktree dir, a DIFFERENT
+#      project than the live container (created under the main-repo name),
+#      so `exec grappa` can't find it.
+#   2. COMPOSE_ARGS carries a RELATIVE `-f compose.override.yaml` resolved
+#      against CWD; the gitignored override lives only at the main repo,
+#      so from a worktree docker errors "no such file".
+# `cd "$REPO_ROOT"` (the main repo, resolved via git-common-dir in _lib.sh)
+# fixes both. SCRIPTS_DIR is already absolute, so boot verbs are unaffected.
+cd "$REPO_ROOT"
+
 # --- verb table -----------------------------------------------------------
 #
 # kebab-name → kind|target|group|description
