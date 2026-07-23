@@ -99,7 +99,7 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   server fold. **A peer NICK change is an identity MIGRATION, not a fold
   (GH #373).** When `old ≢ new` (a genuine rename, not a casing) EVERY
   store of the old nick moves old→new, folding only to MATCH the old:
-  the `query_windows` row (`QueryWindows.rename/5` — UPDATE, or MERGE on
+  the `query_windows` row (`QueryWindows.rename/4` — UPDATE, or MERGE on
   a fold-collision with an existing `new` window), the DM scrollback
   (`Scrollback.rename_dm_peer/4` — `dm_with` + outbound/orphan `channel`),
   the DM read cursor (`ReadCursor.rename_dm_peer/4` — else the migrated
@@ -108,11 +108,17 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   + `selection.followQueryNick`, driven by the per-channel `nick_change`,
   mirroring `members.ts`). Server-driven: `EventRouter` emits
   `{:peer_nick_renamed, old, new}`, `Session.Server.apply_effects/2`
-  renames the row (broadcasts `query_windows_list`) then migrates history
-  on `:renamed` only. A NEW nick-keyed store MUST be added to this
-  migration set or a rename silently strands its old-nick rows. Boundary
-  limit: IRC delivers a NICK only to channel-sharing peers, so a query
-  with someone in no shared channel cannot follow.
+  renames the row (`QueryWindows.rename/4`, no broadcast), migrates the
+  DM history + read cursor on `:renamed` only, and THEN broadcasts
+  `query_windows_list` (`QueryWindows.broadcast_windows_list/2`) — the
+  broadcast is a truthful "rename fully applied" barrier, so a consumer
+  reacting to the event is guaranteed the history has already moved
+  old→new (broadcasting mid-migration raced a follow-on
+  `Scrollback.fetch`; #373 rename-order fix). A NEW nick-keyed store MUST
+  be added to this migration set or a rename silently strands its
+  old-nick rows. Boundary limit: IRC delivers a NICK only to
+  channel-sharing peers, so a query with someone in no shared channel
+  cannot follow.
 - **Read state is server-owned, per (subject, network, channel).**
   Cursor = `last_read_message_id` (FK to `messages.id`). Removing
   server-side cursor is a breaking change. The write cadence (settle

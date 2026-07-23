@@ -1496,7 +1496,12 @@ defmodule Grappa.Session.ServerTest do
       # The peer renames.
       IRCServer.feed(server, ":Guest87449!~g@host NICK :NickTemporaneo\r\n")
 
-      # Server broadcasts the migrated window list (deterministic sync point).
+      # The `query_windows_list` broadcast is emitted by apply_effects
+      # AFTER it migrates the DM scrollback + read cursor (#373 rename-order
+      # fix), so receiving it is a TRUTHFUL barrier: the history reads below
+      # are guaranteed to see the migrated rows. Pre-fix `rename/4`
+      # broadcast mid-migration, so this assert_receive could unblock before
+      # `Scrollback.rename_dm_peer/4` ran → the fetch below raced to [].
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{kind: :query_windows_list, windows: windows}

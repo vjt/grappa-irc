@@ -1031,7 +1031,7 @@ defmodule Grappa.Scrollback do
   `where_dm_peer/2`); `0` on empty / noop.
 
   Sole production caller: `Grappa.Session.Server.apply_effects/2` on the
-  `{:peer_nick_renamed, old, new}` effect, AFTER `QueryWindows.rename/5`
+  `{:peer_nick_renamed, old, new}` effect, AFTER `QueryWindows.rename/4`
   reports `:renamed` — so history migrates exactly when the window moved.
   """
   @spec rename_dm_peer(subject(), integer(), String.t(), String.t()) ::

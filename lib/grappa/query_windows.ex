@@ -99,7 +99,7 @@ defmodule Grappa.QueryWindows do
     # mirroring `Grappa.Scrollback` / `Grappa.ReadCursor`: a real
     # `QueryWindows → Networks` edge would close the cycle
     # `Session → QueryWindows → Networks → Session` once #373 made
-    # Session depend on QueryWindows (for `rename/5` on a peer NICK).
+    # Session depend on QueryWindows (for `rename/4` on a peer NICK).
     # The struct-only reference carries no behaviour Boundary could gate.
     dirty_xrefs: [Grappa.Networks.Network, Grappa.Visitors.Visitor],
     exports: [Window, Wire]
@@ -238,28 +238,30 @@ defmodule Grappa.QueryWindows do
       caller migrates the scrollback rows old -> new via
       `Scrollback.rename_dm_peer/4` on this result.
 
-  Broadcasts the updated `query_windows_list` on
-  `Topic.user(subject_label)` ONLY on `:renamed` (a `:noop` changed
-  nothing, so a redundant identical broadcast is suppressed).
+  Does NOT broadcast: on `:renamed` the caller
+  (`Session.Server.apply_effects/2`) migrates the DM scrollback + read
+  cursor and THEN calls `broadcast_windows_list/2`, so the
+  `query_windows_list` event is a truthful "rename fully applied"
+  barrier rather than firing mid-migration (a `:noop` changed nothing,
+  so the caller broadcasts nothing).
   """
-  @spec rename(Subject.t(), integer(), String.t(), String.t(), String.t()) ::
+  @spec rename(Subject.t(), integer(), String.t(), String.t()) ::
           {:ok, :renamed | :noop}
-  def rename({_, _} = subject, network_id, old_nick, new_nick, subject_label)
-      when is_integer(network_id) and is_binary(old_nick) and is_binary(new_nick) and
-             is_binary(subject_label) do
+  def rename({_, _} = subject, network_id, old_nick, new_nick)
+      when is_integer(network_id) and is_binary(old_nick) and is_binary(new_nick) do
     folded_old = Identifier.canonical_nick(old_nick)
     folded_new = Identifier.canonical_nick(new_nick)
 
     if folded_old == folded_new do
       {:ok, :noop}
     else
-      do_rename(subject, network_id, folded_old, folded_new, new_nick, subject_label)
+      do_rename(subject, network_id, folded_old, folded_new, new_nick)
     end
   end
 
-  @spec do_rename(Subject.t(), integer(), String.t(), String.t(), String.t(), String.t()) ::
+  @spec do_rename(Subject.t(), integer(), String.t(), String.t(), String.t()) ::
           {:ok, :renamed | :noop}
-  defp do_rename(subject, network_id, folded_old, folded_new, new_nick, subject_label) do
+  defp do_rename(subject, network_id, folded_old, folded_new, new_nick) do
     old_query =
       Window
       |> Subject.subject_where(subject)
@@ -289,7 +291,9 @@ defmodule Grappa.QueryWindows do
         end
       end
 
-      broadcast_windows_list(subject, subject_label)
+      # NB: no broadcast here — the caller broadcasts AFTER migrating the
+      # DM scrollback + read cursor, so the `query_windows_list` event is
+      # a truthful "rename fully applied" barrier (#373 rename-order fix).
       {:ok, :renamed}
     else
       {:ok, :noop}
@@ -414,8 +418,21 @@ defmodule Grappa.QueryWindows do
     end
   end
 
+  @doc """
+  Broadcasts the full current window list for `subject` on
+  `Topic.user(subject_label)` as a `query_windows_list` event.
+
+  Public because `rename/4` deliberately does NOT broadcast (#373): the
+  caller (`Session.Server.apply_effects/2`) must migrate the DM
+  scrollback + read cursor FIRST, then call this — so the broadcast is a
+  truthful "the rename is fully applied" barrier. If `rename/4`
+  broadcast internally (as `open/4` / `close/4` do, which have no
+  follow-on migration), a client reacting to the event could read the
+  DM history before its rows moved old -> new. `open/4` / `close/4` call
+  the same helper inline since they have nothing to order it against.
+  """
   @spec broadcast_windows_list(Subject.t(), String.t()) :: :ok
-  defp broadcast_windows_list(subject, subject_label) do
+  def broadcast_windows_list(subject, subject_label) do
     payload =
       subject
       |> list_for_subject()

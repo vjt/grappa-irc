@@ -4032,23 +4032,29 @@ defmodule Grappa.Session.Server do
   # Migrate every store of the old peer nick old -> new so the query window
   # follows the rename and outbound sends stop routing to the vanished old
   # nick (401 no-such-nick). Server-authoritative: the window LIST is
-  # server-owned, so `QueryWindows.rename/5` renames the row and broadcasts
-  # the updated `query_windows_list` (cic mirrors, never originates). The DM
-  # scrollback history + read cursor migrate ONLY when a window actually
-  # moved (`:renamed`), so a peer we never queried costs one indexed lookup
-  # and no writes. `:noop` (no window, or a case-only fold) is silent.
+  # server-owned, so `QueryWindows.rename/4` renames the row (cic mirrors,
+  # never originates). The DM scrollback history + read cursor migrate ONLY
+  # when a window actually moved (`:renamed`), so a peer we never queried
+  # costs one indexed lookup and no writes. `:noop` (no window, or a
+  # case-only fold) is silent.
   #
-  # Effect ordering is immaterial: this effect trails the per-channel
-  # `:persist` nick_change rows in the list, but those are `channel=#chan,
-  # dm_with=nil` and never match the DM fold, so migrating after them is a
-  # no-op interaction.
+  # Broadcast ordering is LOAD-BEARING (#373 rename-order fix): the
+  # `query_windows_list` event fires AFTER the scrollback + cursor
+  # migration, not inside `rename/4`. A client (or a test) reacting to the
+  # event is guaranteed the DM history has already moved old -> new — the
+  # event is a truthful "rename fully applied" barrier. Broadcasting mid-
+  # migration (the pre-fix behaviour) raced a follow-on `Scrollback.fetch`
+  # against the not-yet-migrated rows.
+  #
+  # Effect ordering vs the per-channel `:persist` nick_change rows is
+  # immaterial: those are `channel=#chan, dm_with=nil` and never match the
+  # DM fold, so migrating after them is a no-op interaction.
   defp apply_effects([{:peer_nick_renamed, old_nick, new_nick} | rest], state) do
     case QueryWindows.rename(
            state.subject,
            state.network_id,
            old_nick,
-           new_nick,
-           state.subject_label
+           new_nick
          ) do
       {:ok, :renamed} ->
         {:ok, migrated} =
@@ -4057,6 +4063,9 @@ defmodule Grappa.Session.Server do
         # Read cursor follows too, else the migrated history reads as fully
         # unread under the new window (no cursor row → count from 0).
         :ok = ReadCursor.rename_dm_peer(state.subject, state.network_id, old_nick, new_nick)
+
+        # Broadcast LAST — the event is the "everything migrated" barrier.
+        :ok = QueryWindows.broadcast_windows_list(state.subject, state.subject_label)
 
         Logger.info("query window followed peer NICK",
           old_nick: old_nick,

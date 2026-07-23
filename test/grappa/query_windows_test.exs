@@ -3,7 +3,9 @@ defmodule Grappa.QueryWindowsTest do
   Context tests for `Grappa.QueryWindows` — per-user persisted DM (query)
   windows. Exercises the idempotent `open/4` upsert, `close/4` idempotent
   delete, `list_for_user/1` grouped-by-network return, and the PubSub
-  broadcast that fires on every successful mutation.
+  broadcast that fires on `open/4` / `close/4` (but NOT `rename/4`,
+  which is deliberately broadcast-free — its caller broadcasts after
+  migrating the DM history, #373 rename-order fix).
 
   Property tests cover the two invariants that are easy to break
   accidentally:
@@ -297,10 +299,10 @@ defmodule Grappa.QueryWindowsTest do
   end
 
   # ---------------------------------------------------------------------------
-  # rename/5 (#373 — query window follows a peer NICK change)
+  # rename/4 (#373 — query window follows a peer NICK change)
   # ---------------------------------------------------------------------------
 
-  describe "rename/5" do
+  describe "rename/4" do
     test "genuine rename moves the window old -> new (same row id, new target_nick)" do
       user = user_fixture()
       net = network_fixture()
@@ -313,15 +315,22 @@ defmodule Grappa.QueryWindowsTest do
                  {:user, user.id},
                  net.id,
                  "Guest87449",
-                 "NickTemporaneo",
-                 user.name
+                 "NickTemporaneo"
                )
 
       result = QueryWindows.list_for_subject({:user, user.id})
       assert [%Window{id: ^id, target_nick: "NickTemporaneo"}] = result[net.id]
     end
 
-    test "broadcasts the updated list on rename" do
+    test "does NOT broadcast on rename — the caller broadcasts after migrating history" do
+      # #373 rename-order fix: rename/4 only does the DB write and returns
+      # :renamed; Session.Server.apply_effects/2 migrates the DM scrollback +
+      # read cursor and THEN calls broadcast_windows_list/2, so the
+      # query_windows_list event is a truthful "rename fully applied"
+      # barrier. Broadcasting inside rename/4 (the pre-fix behaviour) raced a
+      # client's follow-on Scrollback.fetch against the not-yet-migrated
+      # rows. The broadcast-after-migration path is covered end-to-end by
+      # Grappa.Session.ServerTest ("#373 — query window follows a peer NICK").
       user = user_fixture()
       net = network_fixture()
 
@@ -330,22 +339,23 @@ defmodule Grappa.QueryWindowsTest do
       topic = Topic.user(user.name)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
-      {:ok, :renamed} =
-        QueryWindows.rename(
-          {:user, user.id},
-          net.id,
-          "Guest87449",
-          "NickTemporaneo",
-          user.name
-        )
+      assert {:ok, :renamed} =
+               QueryWindows.rename(
+                 {:user, user.id},
+                 net.id,
+                 "Guest87449",
+                 "NickTemporaneo"
+               )
 
-      assert_receive %Phoenix.Socket.Broadcast{
-                       event: "event",
-                       payload: %{kind: :query_windows_list, windows: windows}
+      # The DB row moved to the new nick...
+      result = QueryWindows.list_for_subject({:user, user.id})
+      assert [%{target_nick: "NickTemporaneo"}] = result[net.id]
+
+      # ...but rename/4 itself is broadcast-free.
+      refute_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :query_windows_list}
                      },
-                     1_000
-
-      assert [%{target_nick: "NickTemporaneo"}] = Map.fetch!(windows, net.id)
+                     200
     end
 
     test "no window for old nick returns {:ok, :noop} and broadcasts nothing" do
@@ -356,7 +366,7 @@ defmodule Grappa.QueryWindowsTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       assert {:ok, :noop} =
-               QueryWindows.rename({:user, user.id}, net.id, "ghost", "phantom", user.name)
+               QueryWindows.rename({:user, user.id}, net.id, "ghost", "phantom")
 
       refute_receive %Phoenix.Socket.Broadcast{
                        payload: %{kind: :query_windows_list}
@@ -371,7 +381,7 @@ defmodule Grappa.QueryWindowsTest do
       {:ok, %Window{id: id}} = QueryWindows.open({:user, user.id}, net.id, "Foo", user.name)
 
       assert {:ok, :noop} =
-               QueryWindows.rename({:user, user.id}, net.id, "Foo", "FOO", user.name)
+               QueryWindows.rename({:user, user.id}, net.id, "Foo", "FOO")
 
       # Row untouched (display casing preserved; fold-match already resolves).
       result = QueryWindows.list_for_subject({:user, user.id})
@@ -386,7 +396,7 @@ defmodule Grappa.QueryWindowsTest do
 
       # bahamut folds [ -> {, so "nick{1}" matches the "nick[1]" row.
       assert {:ok, :renamed} =
-               QueryWindows.rename({:user, user.id}, net.id, "nick{1}", "renamed", user.name)
+               QueryWindows.rename({:user, user.id}, net.id, "nick{1}", "renamed")
 
       result = QueryWindows.list_for_subject({:user, user.id})
       assert [%Window{id: ^id, target_nick: "renamed"}] = result[net.id]
@@ -400,7 +410,7 @@ defmodule Grappa.QueryWindowsTest do
       {:ok, %Window{id: new_id}} = QueryWindows.open({:user, user.id}, net.id, "new", user.name)
 
       assert {:ok, :renamed} =
-               QueryWindows.rename({:user, user.id}, net.id, "old", "new", user.name)
+               QueryWindows.rename({:user, user.id}, net.id, "old", "new")
 
       # One window survives — the pre-existing "new" row (scrollback rows
       # coalesce under it on the read path; consistent with #372 fold-dedup).
@@ -415,7 +425,7 @@ defmodule Grappa.QueryWindowsTest do
       {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "alice", user.name)
       {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "bob", user.name)
 
-      {:ok, :renamed} = QueryWindows.rename({:user, user.id}, net.id, "alice", "alice2", user.name)
+      {:ok, :renamed} = QueryWindows.rename({:user, user.id}, net.id, "alice", "alice2")
 
       result = QueryWindows.list_for_subject({:user, user.id})
       nicks = result[net.id] |> Enum.map(& &1.target_nick) |> Enum.sort()

@@ -317,7 +317,7 @@ defmodule Grappa.ReadCursor do
   `Scrollback.rename_dm_peer/4`. `fold(old) == fold(new)` (a case-only
   change) is a noop — the fold already resolves. A nick-collision (a
   cursor already folds to `new`, i.e. a merge into an existing DM) keeps
-  the `new` cursor and drops the `old` one (mirrors `QueryWindows.rename/5`
+  the `new` cursor and drops the `old` one (mirrors `QueryWindows.rename/4`
   keep-new merge; a rare imperfection if `old` was read further, self-heals
   on the next settle). The `Ecto.ConstraintError` rescue covers the (rare)
   race where a concurrent `set/4` from the channel process lands a `new`
@@ -326,7 +326,7 @@ defmodule Grappa.ReadCursor do
 
   Returns `:ok`. Sole caller: `Grappa.Session.Server.apply_effects/2` on
   `{:peer_nick_renamed, old, new}`, alongside `Scrollback.rename_dm_peer/4`
-  and after `QueryWindows.rename/5` reports `:renamed`.
+  and after `QueryWindows.rename/4` reports `:renamed`.
   """
   @spec rename_dm_peer(subject(), integer(), String.t(), String.t()) :: :ok
   def rename_dm_peer(subject, network_id, old_nick, new_nick)
