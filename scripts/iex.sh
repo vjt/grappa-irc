@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Open an IEx shell inside the running grappa container.
+# Attach an interactive IEx shell to the LIVE grappa node via Erlang
+# distribution (remsh).
 #
 # Usage:
-#   scripts/iex.sh                # iex -S mix (loads project)
+#   scripts/iex.sh                      # iex --remsh into the running node
+#   scripts/iex.sh --batch -e '<expr>'  # eval one expr on the live node
 #
-# Post-CP23 the image is single-stage `mix phx.server` everywhere, so
-# `iex -S mix` is the only attach path — `bin/grappa remote` is gone
-# along with `mix release`.
+# #364 docker S2: this used to run `iex -S mix`, which boots a WHOLE NEW
+# Grappa.Application inside the container — Bootstrap re-reads the DB
+# credentials and spawns a DUPLICATE Session.Server + upstream IRC
+# connection per binding (nick collisions upstream), and the second node
+# contends with the live one for the same sqlite WAL ("Database busy").
+# The correct attach path already exists: `bin/grappa remote-shell` (T-2 —
+# `iex --remsh grappa@grappa` gated by RELEASE_COOKIE) joins the LIVE
+# node's shell WITHOUT starting a second application. This script is a thin
+# alias so the familiar `scripts/iex.sh` entry point keeps working — one
+# attach path, one code path (bin/grappa remote-shell).
+#
+# No worktree guard needed (unlike the old `iex -S mix` code-loading path):
+# remsh always attaches to the LIVE node, which runs main's source, so
+# there is no "am I poking main or my worktree" ambiguity to warn about.
 
-. "$(dirname "$0")/_lib.sh"
-
-# Worktree guard (mirrors in_container's): the live container has MAIN's
-# source mounted, so attaching IEx from a worktree would silently poke
-# main's code, not the worktree's. We can't route through in_container
-# itself — it runs `exec -T` (no TTY) and IEx needs an interactive TTY —
-# so replicate just the guard and keep the interactive exec.
-if [ "$SRC_ROOT" != "$REPO_ROOT" ]; then
-    die "iex.sh called from a worktree — the live container runs main's source, not this worktree's. Run it from $REPO_ROOT."
-fi
-
-cd "$REPO_ROOT"
-
-docker compose "${COMPOSE_ARGS[@]}" exec grappa iex -S mix
+exec "$(dirname "$0")/../bin/grappa" remote-shell "$@"

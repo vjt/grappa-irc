@@ -2,7 +2,7 @@
 # Run the bats-core test suite for host-side bash dispatchers (bin/*).
 #
 # Usage:
-#   scripts/bats.sh                       # all tests under test/bin/
+#   scripts/bats.sh                       # all tests: test/bin/ test/infra/ test/scripts/
 #   scripts/bats.sh test/bin/grappa_test.bats
 #
 # Bats lives at vendor/bats-core (git submodule pinned to v1.9.0).
@@ -37,7 +37,7 @@ if [ ! -x "$bats_bin" ]; then
 fi
 
 if [ $# -eq 0 ]; then
-    set -- test/bin/ test/infra/
+    set -- test/bin/ test/infra/ test/scripts/
 fi
 
 exec "$bats_bin" "$@"
