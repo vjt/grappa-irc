@@ -18,15 +18,27 @@ defmodule Mix.Tasks.Grappa.Boot do
   tasks call `start_app_silent/0` and stay focused on their domain
   work.
 
-  See `Grappa.Application.bootstrap_child/0` for the
-  `:start_bootstrap` flag's contract.
+  Also suppresses `GrappaWeb.Endpoint` (2026-07-23) — these tasks
+  mutate the DB, never serve HTTP, so there was never a reason for one
+  to bind port 4000. Before this fix it did anyway, which meant every
+  admin task (`create_user`, `bind_network`, `seed_themes`, ...) had to
+  `systemctl stop grappa` first against a live host or crash
+  `:eaddrinuse` — found live running `grappa.seed_themes` against a
+  live install while the service was up. An app built around hot code
+  reload has no business demanding a full stop/start cycle for a
+  one-off DB mutation.
+
+  See `Grappa.Application.bootstrap_child/0` and `endpoint_child/0` for
+  the `:start_bootstrap` / `:start_endpoint` flags' contracts.
   """
   use Boundary, top_level?: true
 
   @doc """
-  Starts the `:grappa` application with the Bootstrap supervisor
-  child suppressed, so the IRC supervision tree boots empty (no
-  upstream connections). Returns `:ok` on success.
+  Starts the `:grappa` application with the Bootstrap supervisor child
+  AND `GrappaWeb.Endpoint` both suppressed, so the app boots with just
+  Repo + Vault + the domain contexts — no upstream IRC connections, no
+  HTTP port bound (so it never conflicts with an already-running
+  release on the same host). Returns `:ok` on success.
 
   Runs `mix app.config` first — found live 2026-07-22 (native Linux
   systemd deploy, first `MIX_ENV=prod` install): a bare
@@ -60,6 +72,7 @@ defmodule Mix.Tasks.Grappa.Boot do
   def start_app_silent do
     Mix.Task.run("app.config")
     Application.put_env(:grappa, :start_bootstrap, false)
+    Application.put_env(:grappa, :start_endpoint, false)
 
     case Application.ensure_all_started(:grappa) do
       {:ok, _} -> :ok
