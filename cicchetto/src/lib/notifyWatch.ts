@@ -57,8 +57,21 @@ export type PresenceToast =
 
 // Mirror of `Grappa.IRC.Identifier.canonical_nick/1` — the server-side
 // rfc1459 fold used as the presence-map key format on the wire.
+//
+// ASCII-byte-level by design (#364 cicchetto S4): the server folds
+// bytes `A-Z` only (SQLite `lower()` + the four bracket replaces), NOT
+// Unicode. `String.prototype.toLowerCase()` is Unicode-aware
+// (`É`→`é`, `İ`→`i̇`) and would over-fold non-ASCII nicks the server
+// keeps distinct — silently lighting the wrong presence row. Fold the
+// `A-Z` range by char code so multibyte sequences pass through
+// untouched, byte-for-byte with `fold_nick_byte/1`.
 export const rfc1459Fold = (nick: string): string =>
-  nick.toLowerCase().replace(/\[/g, "{").replace(/\]/g, "}").replace(/\\/g, "|").replace(/~/g, "^");
+  nick
+    .replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32))
+    .replace(/\[/g, "{")
+    .replace(/\]/g, "}")
+    .replace(/\\/g, "|")
+    .replace(/~/g, "^");
 
 // How long a transition toast stays up. Non-intrusive: it self-expires;
 // the Watched panel keeps the durable signal (the dot).

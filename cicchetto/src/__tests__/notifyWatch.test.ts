@@ -22,6 +22,27 @@ describe("rfc1459Fold", () => {
     expect(rfc1459Fold("BAR]x")).toBe("bar}x");
     expect(rfc1459Fold("a\\b~c")).toBe("a|b^c");
   });
+
+  // #364 cicchetto S4 — the fold must be ASCII-byte-level, EXACTLY
+  // mirroring Grappa.IRC.Identifier.canonical_nick/1 (folds bytes A-Z
+  // only). JS String.prototype.toLowerCase() is Unicode-aware and
+  // OVER-folds non-ASCII, which the server never does — so a
+  // Unicode-only-equal nick pair the server keeps distinct must stay
+  // distinct here, or bracket/accented presence dots light the wrong row.
+  it("case/bracket-differing nicks fold EQUAL under rfc1459", () => {
+    expect(rfc1459Fold("Foo[1]")).toBe(rfc1459Fold("foo{1}"));
+    expect(rfc1459Fold("Ni[k")).toBe(rfc1459Fold("ni{k"));
+  });
+
+  it("leaves non-ASCII bytes untouched (no Unicode over-fold)", () => {
+    // Unicode toLowerCase would map É→é and merge these two into one
+    // key; the server (ASCII lower()) keeps É, so we must too.
+    expect(rfc1459Fold("CAFÉ")).toBe("cafÉ");
+    expect(rfc1459Fold("CAFÉ")).not.toBe(rfc1459Fold("café"));
+    // Turkish dotted capital-I: Unicode toLowerCase → "i̇" (i + combining
+    // dot); the ASCII fold leaves it verbatim.
+    expect(rfc1459Fold("İ")).toBe("İ");
+  });
 });
 
 describe("notifyWatch store", () => {
