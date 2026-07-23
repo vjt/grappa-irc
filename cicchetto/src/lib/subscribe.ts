@@ -90,8 +90,9 @@ import { narrowChannelEvent } from "./wireNarrow";
 // channel in the channelsBySlug response — which never happens in
 // production (channels list is real IRC channels only). The dedicated
 // DM-listener loop subscribes to the own-nick topic explicitly and
-// re-keys the append to `channelKey(slug, sender)` so the message
-// lands where the user looks for it.
+// re-keys the append to `channelKey(slug, canonicalQueryNick(sender))`
+// (#372) so the message lands in the window the user opened, regardless
+// of the sender's casing.
 
 // Bucket G H3: the canonical 6-kind WireChannelEvent union now lives
 // in `lib/api.ts` next to its sibling `WireUserEvent` (line 381 there).
@@ -484,9 +485,18 @@ createRoot(() => {
   //       sender = ownNick).
   // Both are handled uniformly: auto-open the sender's query window
   // (idempotent inside queryWindows.ts) and re-key the append to
-  // `channelKey(slug, sender)`. Self-msg: sender = ownNick → appends
-  // to the own-nick key. Inbound: sender = other → appends to
-  // sender's key. Correct for both cases with no special-casing.
+  // `channelKey(slug, canonicalQueryNick(sender))` (#372). Self-msg:
+  // sender = ownNick → appends to the own-nick key. Inbound: sender =
+  // other → appends to the sender's window, resolved to the open
+  // window's stored casing so a differently-cased reply doesn't fork.
+  //
+  // #372 known limitation (strictly narrower than the pre-fix bug): if an
+  // inbound reply lands BEFORE the `query_windows_list` broadcast for a
+  // just-`/q`'d window arrives, `canonicalQueryNick` can't see the window
+  // yet and falls back to the raw sender casing → the reply parks in an
+  // in-memory bucket until the next `refreshScrollback` (whose server
+  // read path folds, #372). No phantom sidebar row (the server's
+  // folded-unique index dedups the open).
   //
   // Non-PRIVMSG/ACTION events on the own-nick topic (NOTICE from
   // services, mode, join, part, etc.) are DROPPED here. They belong
