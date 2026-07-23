@@ -27029,3 +27029,39 @@ image shrinks 985MB → 777MB; a toolchain image with `hex_installed=no`
 bootstraps 67 deps (incl the ecto_sqlite3 C-NIF) from an empty tree; the
 dev stack boots green on the new image with the self-heal correctly
 skipped when deps are warm.
+
+## 2026-07-23 — #364 bucket G: GrappaChannel boundary robustness (web S2/S3)
+
+Two MEDIUMs from the 2026-07-19 review — both are the same class: a
+hostile or buggy cicchetto could crash its OWN user channel pid with a
+malformed frame, spamming operator crash reports and letting the client
+repeatedly take down its socket. Server-side, ride the next deploy.
+
+**web S2 — `away` crashed on a non-map `origin_window`.** The set/unset
+handlers read `origin_window` straight from the payload and passed it to
+`dispatch_set_away/4` / `dispatch_unset_away/3`, whose only clauses are
+`nil` and `is_map/1`. A string/number/list raised FunctionClauseError.
+`origin_window` is OPTIONAL wire-untrusted metadata (routes the 305/306
+reply numerics back to the originating window), so a new shared
+`validate_origin_window/1` normalizes at the boundary: absent → `nil`
+(the pre-C-bucket path), map → passed through, anything else → reject
+loudly with `invalid_payload` — mirroring the sibling `visibility`
+handler's documented "reject rather than crash" posture. Also fixed the
+`away_set_dispatch/4` `@spec`, which declared `origin_window ::
+String.t() | nil` while the implementation has always required
+`map() | nil` (Dialyzer couldn't catch it — the caller passed the raw
+`Map.get` result typed as `any()`).
+
+**web S3 — no `handle_in` catch-all.** Every specific clause is tightly
+guarded (`is_integer(network_id)` etc.); an unknown event, or a known
+event with a wrong-typed field that fails its guard (a string
+`network_id`), matched no clause and Phoenix's default `handle_in/3`
+raised. Added a terminal `handle_in(_, _, socket)` replying
+`unknown_event`, mirroring AdminChannel's already-documented catch-all
+(same problem, now the same solution per the CLAUDE.md consistency rule).
+
+Both fixes ship a failing-first channel test asserting the malformed
+frame is rejected AND the channel pid survives (`Process.alive?`). The
+sibling bucket-A findings (lifecycle S2/S3) were already resolved by
+`340c22db` / `635352a9` in the notify-hardening cluster above — verified
+still-fixed, no re-implementation.
