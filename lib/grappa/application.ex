@@ -23,8 +23,9 @@ defmodule Grappa.Application do
       Grappa.Visitors.Reaper,
       Grappa.Visitors.ShareTokens,
       # #364 J/cross-module-S2: start/2 calls WindowCounts.PushSource.boot/0
-      # to inject the per-message window_counts push DI-seam at boot.
+      # + Themes.boot/0 to inject the two remaining DI-seams at boot.
       Grappa.WindowCounts,
+      Grappa.Themes,
       Grappa.WSPresence,
       GrappaWeb
     ]
@@ -67,6 +68,12 @@ defmodule Grappa.Application do
     # resolves it lock-free from the Session.Server persist arm instead of a
     # runtime `Application.get_env/2` read. Mirrors `BadgeSource.boot/0`.
     :ok = Grappa.WindowCounts.PushSource.boot()
+
+    # #364 J/cross-module-S2: stash the theme background image-fetcher DI-seam
+    # in `:persistent_term` so `Themes.BackgroundImage` resolves it lock-free
+    # instead of a runtime `Application.get_env(:grappa, :themes)` read.
+    # Delegates to BackgroundImage.boot/0 (kept internal to the Themes context).
+    :ok = Grappa.Themes.boot()
 
     # Outbound v6 source-address pool. Initialize an EMPTY pool at boot;
     # `Grappa.Bootstrap` installs the DB-curated `in_pool` vhosts via

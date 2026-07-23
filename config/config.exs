@@ -193,9 +193,11 @@ config :grappa, Grappa.ChannelDirectory,
   progress_throttle_ms: 1_000,
   ingest_batch: 200
 
-# Themes (#75). `image_fetcher` is the fetch-by-URL implementation resolved by
-# `Grappa.Themes.BackgroundImage` at runtime; prod uses the real Req+SSRF impl,
-# tests inject a Mox mock. `daily_quota` (default 5, read via compile_env in
+# Themes (#75). `image_fetcher` is the fetch-by-URL implementation read ONCE at
+# boot into `:persistent_term` by `Grappa.Themes.boot/0` and resolved lock-free
+# by `Grappa.Themes.BackgroundImage` (#364 J/cross-module-S2); prod uses the
+# real Req+SSRF impl, tests inject a Mox mock via config/test.exs (boot reads
+# it). `daily_quota` (default 5, read via compile_env in
 # Grappa.Themes) is the per-user/day save+copy cap. `image_ssrf_resolver`
 # (default `Grappa.Net.Ssrf`, read via compile_env in ImageFetcher.Req) is the
 # rebind-safe resolver seam — test.exs swaps in a loopback-permitting resolver

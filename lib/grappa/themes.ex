@@ -87,6 +87,17 @@ defmodule Grappa.Themes do
   @typedoc "Rich subject as carried in `conn.assigns.current_subject`."
   @type subject :: {:user, User.t()} | {:visitor, Visitor.t()}
 
+  @doc """
+  Boot-time injection of the theme background image-fetcher DI-seam into
+  `:persistent_term` (#364 J/cross-module-S2). Called once from
+  `Grappa.Application.start/2`; delegates to
+  `Grappa.Themes.BackgroundImage.boot/0` (which stays internal — not a
+  context export). Off the per-call `Application.get_env/2` read banned at
+  runtime by CLAUDE.md.
+  """
+  @spec boot() :: :ok
+  defdelegate boot(), to: BackgroundImage
+
   @doc "The reserved user name that owns built-in themes."
   @spec system_user_name() :: String.t()
   def system_user_name, do: @system_user_name

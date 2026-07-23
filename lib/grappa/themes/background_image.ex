@@ -40,9 +40,29 @@ defmodule Grappa.Themes.BackgroundImage do
 
   @max_bytes 8 * 1024 * 1024
   @reencode_timeout_s 30
+  @fetcher_key {__MODULE__, :image_fetcher}
 
   @type source :: {:upload, Plug.Upload.t()} | {:url, String.t()}
   @type error :: :not_raster | :too_large | :ssrf_blocked | :fetch_failed | :image_reencode_failed
+
+  @doc """
+  Reads the injected `image_fetcher` from `config :grappa, :themes` once and
+  stashes it in `:persistent_term` for lock-free runtime reads (#364
+  J/cross-module-S2). Called from `Grappa.Application.start/2` via
+  `Grappa.Themes.boot/0` (the CLAUDE.md-designated boot-time boundary;
+  mirrors `Grappa.Admission.Config.boot/0`). Off the per-call
+  `Application.get_env/2` read banned at runtime.
+  """
+  @spec boot() :: :ok
+  def boot do
+    fetcher =
+      :grappa
+      |> Application.get_env(:themes, [])
+      |> Keyword.get(:image_fetcher, ImageFetcher.Req)
+
+    :persistent_term.put(@fetcher_key, fetcher)
+    :ok
+  end
 
   @doc """
   Take a raster source, re-encode it to a canonical PNG, re-host it, and return
@@ -76,17 +96,14 @@ defmodule Grappa.Themes.BackgroundImage do
     end
   end
 
-  # DI seam resolved at RUNTIME (mirrors Grappa.Push.BadgeSource.impl/0): reading
-  # the injected impl from config here — rather than baking it via
-  # `compile_env` into a module attribute — keeps a runtime-generated Mox mock
-  # (test) from becoming a compile-time "module not available" warning, and
-  # degrades gracefully to the real impl in the transient hot-deploy window
-  # before `config.exs` re-runs.
-  defp fetcher do
-    :grappa
-    |> Application.get_env(:themes, [])
-    |> Keyword.get(:image_fetcher, ImageFetcher.Req)
-  end
+  # DI seam read at BOOT into `:persistent_term` by `boot/0` and resolved
+  # lock-free here (mirrors Grappa.Push.BadgeSource.impl/0, #364
+  # J/cross-module-S2). The config value stays a module atom read from env —
+  # never a `compile_env` module attribute — so a runtime-generated Mox mock
+  # (test) never becomes a compile-time "module not available" warning. `get/2`
+  # defaults to the real impl, degrading gracefully in the transient hot-deploy
+  # window before `boot/0` re-runs.
+  defp fetcher, do: :persistent_term.get(@fetcher_key, ImageFetcher.Req)
 
   defp validate_raster(content_type) when is_binary(content_type) do
     normalized =
