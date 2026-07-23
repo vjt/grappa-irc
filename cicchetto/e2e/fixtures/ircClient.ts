@@ -124,6 +124,25 @@ export class IrcPeer {
     this.client.action(target, body);
   }
 
+  // Await an inbound PRIVMSG to this peer from `fromNick` whose message
+  // contains `body`. Attaches the listener synchronously, so callers set
+  // it up BEFORE triggering the send:
+  //   const got = peer.waitForPrivmsg(nick, body); await composeSend(...);
+  //   await got;
+  // #373 — proves grappa routed an operator's DM to the LIVE (renamed)
+  // nick with NO 401: if routing had followed the stale old nick the peer
+  // never receives it and this times out.
+  waitForPrivmsg(fromNick: string, body: string): Promise<void> {
+    return onceMatching(
+      this.client,
+      "privmsg",
+      (event: { nick: string; message: string }) =>
+        event.nick === fromNick && event.message.includes(body),
+      NICK_TIMEOUT_MS,
+      `privmsg from ${fromNick} containing "${body}"`,
+    );
+  }
+
   // Send a raw NOTICE to a target. `target` may be a nick, a channel, or
   // a STATUSMSG-prefixed channel (`@#chan` ops-only, `+#chan` voice) —
   // used by the #218 spec to verify grappa routes a statusmsg-targeted

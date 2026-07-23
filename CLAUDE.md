@@ -96,7 +96,21 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   `nickEquals` — including the INCOMING DM re-key
   (`subscribe.ts` → `canonicalQueryNick`) and the archive-visibility
   filter (`archive.ts` → `normalizeNick`), the client twins of the #372
-  server fold.
+  server fold. **A peer NICK change is an identity MIGRATION, not a fold
+  (GH #373).** When `old ≢ new` (a genuine rename, not a casing) EVERY
+  store of the old nick moves old→new, folding only to MATCH the old:
+  the `query_windows` row (`QueryWindows.rename/5` — UPDATE, or MERGE on
+  a fold-collision with an existing `new` window), the DM scrollback
+  (`Scrollback.rename_dm_peer/4` — `dm_with` + outbound/orphan `channel`),
+  and cic's own caches (`scrollback.renameScrollbackKey` +
+  `selection.followQueryNick`, driven by the per-channel `nick_change`,
+  mirroring `members.ts`). Server-driven: `EventRouter` emits
+  `{:peer_nick_renamed, old, new}`, `Session.Server.apply_effects/2`
+  renames the row (broadcasts `query_windows_list`) then migrates history
+  on `:renamed` only. A NEW nick-keyed store MUST be added to this
+  migration set or a rename silently strands its old-nick rows. Boundary
+  limit: IRC delivers a NICK only to channel-sharing peers, so a query
+  with someone in no shared channel cannot follow.
 - **Read state is server-owned, per (subject, network, channel).**
   Cursor = `last_read_message_id` (FK to `messages.id`). Removing
   server-side cursor is a breaking change. The write cadence (settle

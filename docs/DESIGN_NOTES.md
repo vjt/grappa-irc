@@ -27483,3 +27483,101 @@ match folds. A single raw `==` on a fold-identity column silently forks
 the window — and one that folds on delete but not on read is worse than
 one that never folds, because the operator sees "delete removed both" and
 assumes one window while the data is two.*
+
+## 2026-07-23 — Query window follows a peer NICK change (GH #373)
+
+Third query-window-identity bug after #371 (services allowlist) and #372
+(incoming casing fold), but **distinct from the fold family**: the peer
+genuinely RENAMES (`old ≢ new` — different identity, not a casing of one),
+and nothing migrated the window `old → new`. So an open query kept the
+stale nick, and outbound sends routed to the vanished nick →
+401 ERR_NOSUCHNICK. #372's fold does not help (old and new fold to
+different keys). The repro: open a query with `Guest87449`; the peer
+renames `Guest87449 → NickTemporaneo`; the window stays on `Guest87449`
+and every send bounces.
+
+**Server-authoritative, per the window-state invariant.** Query windows
+are server-owned ("cic NEVER originates state"), so the server observes
+the NICK and drives the migration; cic mirrors the sidebar via the
+existing `query_windows_list` broadcast and only migrates its OWN
+in-memory caches. A cic-first optimistic rename would have forked the
+pattern into a parallel client state machine.
+
+  * **`Grappa.QueryWindows.rename/5`** — fold-matches (#121) the `old`
+    row. `fold(old) == fold(new)` (a case-only NICK) is `:noop`: the
+    row already resolves via the fold and IRC routing is
+    case-insensitive, so nothing moves (#372 owns the display dedup). No
+    row folding to `old` is `:noop` too (a peer we never queried). A
+    genuine rename is an `UPDATE target_nick = new`; a **nick-collision**
+    (a window already folds to `new`) instead MERGES — delete the `old`
+    row, keep the existing `new` — because the two DM histories coalesce
+    under one folded key on the read path anyway (the #372 fold-dedup:
+    one window per folded identity). Broadcasts `query_windows_list` only
+    on `:renamed`.
+  * **`Grappa.Scrollback.rename_dm_peer/4`** — migrates the DM rows so
+    history survives under the new window (else `channel_or_dm_where/3`,
+    which reads the peer window by the fold of the peer nick, returns
+    nothing and the conversation vanishes on reload). Two scoped UPDATEs
+    keyed off the DM row shapes from `dm_peer/4`: `dm_with := new` where
+    `fold(dm_with) == fold(old)` (the peer column on BOTH inbound
+    `channel=own_nick,dm_with=peer` and outbound `channel=peer,dm_with=
+    peer` rows) and `channel := new` where `fold(channel) == fold(old)`
+    (outbound + orphan `dm_with IS NULL,channel=peer` rows — e.g. a 401
+    NOTICE). Inbound rows keep `channel=own_nick` (folds ≠ old); channels
+    carry a sigil so `#old` never cross-hits a bare nick. The distinct
+    migrated-row count comes from the shared `where_dm_peer/2` predicate
+    (the union of the two UPDATEs), so the two column writes don't
+    double-count.
+  * **Wiring:** `EventRouter.do_route(:nick)` emits
+    `{:peer_nick_renamed, old, new}` for a PEER rename with a shared
+    channel (`not nick_eq?(old, state.nick) and channels != []` — the
+    only case IRC delivers the NICK, mirroring the per-channel fan-out
+    gate). `Session.Server.apply_effects/2` renames the window, then
+    migrates the scrollback ONLY on `:renamed` — so a peer we never
+    queried costs one indexed lookup and no writes.
+  * **cic:** the server broadcast relabels the sidebar row (server-owned
+    list). But two cic-OWNED caches don't ride that broadcast — the live
+    in-memory scrollback (keyed `(slug, nick)`) and THIS device's focus.
+    On the per-channel `nick_change`, `subscribe.ts` calls
+    `scrollback.renameScrollbackKey` (move + merge the live rows) and
+    `selection.followQueryNick` (re-point focus if that query is
+    selected — the focused-window case is the repro: without it the next
+    send still targets the stale nick and 401s). Gated to a PEER
+    (`sender ≠ ownNick`) genuine rename (`old ≢ new` under rfc1459).
+    Mirrors `members.ts` renaming a member on NICK — cic-owned cache
+    maintenance, NOT window-list origination. Own self-rename rides
+    `own_nick_changed`.
+
+**Boundary knock-on:** `Session` now depends on `QueryWindows` (for
+`rename/5`), which would close the cycle `Session → QueryWindows →
+Networks → Session`. Fixed by demoting `QueryWindows`'s `Networks`
+dependency to a struct-only `dirty_xref` — the `Network` reference is a
+`belongs_to` FK + an existence `Repo.exists?` only, exactly the shape
+`Scrollback` / `ReadCursor` already declare as dirty xrefs for the same
+cycle-avoidance reason.
+
+**Out-of-scope boundaries (documented, not bugs):**
+  * No shared channel → IRC never delivers the peer NICK → the window
+    cannot follow. Protocol limit, not a defect.
+  * A CLOSED window's archive (row deleted, history remains) does NOT
+    follow a later rename (`:noop`, no scrollback migration) — the
+    primary fix targets the OPEN window.
+  * Own-nick self-msg window following an OWN rename is handled via
+    `own_nick_changed`, not here (peer renames only).
+
+Coverage: server ExUnit (`QueryWindows.rename/5` — genuine/merge/case-
+only/fold/scoped; `Scrollback.rename_dm_peer/4` — both directions +
+orphan + own-nick-channel-untouched + fold; `EventRouter` peer-vs-own
+emit; a `Session.Server` end-to-end NICK→window+history), cic vitest
+(`renameScrollbackKey` move/merge/no-op; `followQueryNick` selected/
+not-selected/kind/slug), and an e2e (`nick-follow-query.spec.ts`:
+relabel + history + a post-rename send that REACHES the renamed peer,
+proving no 401).
+
+*Lesson: the fold family taught "match folded" — but a RENAME is a
+different problem than a CASING. `old ≢ new` means the identity actually
+moved, so the fix is a MIGRATION (rename the row + its history), not a
+match. Reusing #372's fold here would have been a category error; the
+right question was "what stores the OLD nick, and does it move?" —
+QueryWindows row, DM `dm_with`/`channel`, cic scrollback key, cic
+selection. Enumerate every store of the moved identity, migrate each.*
