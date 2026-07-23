@@ -16,7 +16,7 @@ import { nickEquals } from "./nickEquals";
 import { isOperatorActionEcho } from "./operatorActionEcho";
 import { isOwnPresenceEvent } from "./ownPresenceEvent";
 import { setEnsureQueryTopicJoined } from "./queryTopicJoin";
-import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
+import { canonicalQueryNick, openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { applyJoinReply, applyReadCursorSet } from "./readCursor";
 import { recordSeen } from "./reconnectBackfill";
 import { appendToScrollback, refreshScrollback } from "./scrollback";
@@ -552,24 +552,35 @@ createRoot(() => {
             // (sender = ownNick), this lands in the own-nick window;
             // for inbound (sender = other), it lands in sender's window.
             openQueryWindowState(networkId, message.sender, new Date().toISOString());
-            const senderKey = channelKey(slug, message.sender);
+            // #372: re-key on the CANONICAL peer, not the raw sender
+            // casing. A service replying as `DebugServ` to a window the
+            // user opened as `debugserv` must land in THAT window, not a
+            // phantom `DebugServ` duplicate. canonicalQueryNick returns
+            // the open window's stored casing (the sidebar/scrollback
+            // ChannelKey), or the raw sender on first contact — where the
+            // server then mints the window at that same casing, so the key
+            // stays consistent. The server folds the DM peer on the read +
+            // archive paths too (Scrollback.channel_or_dm_where/list_archive);
+            // this is the live-WS mirror of that single window key.
+            const peer = canonicalQueryNick(networkId, message.sender);
+            const senderKey = channelKey(slug, peer);
             // UX-6-L (2026-05-20) — inbound DM is operator-targeted by
             // definition; beep at the call site so routeMessage's
             // signature stays narrow (DM-specific audio policy is a
             // DM-listener concern, not a shared-routing concern).
             // `effectivelyFocused` is the single-source focus predicate
             // (see helper at top of createRoot); anchor on the peer's
-            // window name (= message.sender for DMs).
+            // canonical window name.
             //
             // sender !== ownNick gate: own self-msg echoes ride this
             // topic too; suppress the audible alert for own typing.
-            if (!nickEquals(message.sender, ownNick) && !effectivelyFocused(slug, message.sender)) {
+            if (!nickEquals(message.sender, ownNick) && !effectivelyFocused(slug, peer)) {
               playBeep();
             }
-            routeMessage(slug, senderKey, message.sender, message, ownNick);
+            routeMessage(slug, senderKey, peer, message, ownNick);
             return;
           }
-          if (message.kind === "notice" && message.sender !== ownNick) {
+          if (message.kind === "notice" && !nickEquals(message.sender, ownNick)) {
             // Peer-to-peer NOTICE on the own-nick topic — i.e. landed at
             // `channel == ownNick` because the sender targeted our nick
             // directly. CP23 cluster `code-reload` shipped the canonical
@@ -587,13 +598,15 @@ createRoot(() => {
             // hit this branch — our server routes those to "$server"
             // not the own-nick channel.
             openQueryWindowState(networkId, message.sender, new Date().toISOString());
-            const senderKey = channelKey(slug, message.sender);
+            // #372: canonical peer re-key — see the PRIVMSG/ACTION arm.
+            const peer = canonicalQueryNick(networkId, message.sender);
+            const senderKey = channelKey(slug, peer);
             // UX-6-L (2026-05-20): peer NOTICEs are inbound DM-shaped
             // traffic — same beep policy as the PRIVMSG/ACTION arm.
             // The sender !== ownNick check above already gates this
             // branch.
-            if (!effectivelyFocused(slug, message.sender)) playBeep();
-            routeMessage(slug, senderKey, message.sender, message, ownNick);
+            if (!effectivelyFocused(slug, peer)) playBeep();
+            routeMessage(slug, senderKey, peer, message, ownNick);
             return;
           }
           // mode, join, part, quit, kick, nick_change, topic, etc. on

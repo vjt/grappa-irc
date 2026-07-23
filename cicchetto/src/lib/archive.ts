@@ -4,6 +4,7 @@ import { token } from "./auth";
 import { type ChannelKey, decodeChannelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
 import { channelsBySlug } from "./networks";
+import { normalizeNick } from "./nickEquals";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { windowStateByChannel } from "./windowState";
 
@@ -102,19 +103,28 @@ export const setArchiveModalNetwork = exports_.setArchiveModalNetwork;
 export function visibleArchiveForNetwork(slug: string, networkId: number): ArchiveEntry[] {
   const entries = archivedBySlug()[slug] ?? [];
   if (entries.length === 0) return entries;
-  const liveChannels = new Set((channelsBySlug()?.[slug] ?? []).map((c) => c.name));
+  // #372: fold every comparison key under rfc1459 (`normalizeNick` — the
+  // single client mirror of the server fold, letters + bracket chars). A
+  // service that replied as `DebugServ` archives under that casing while
+  // the open window is `debugserv`; a raw `Set.has` would leave the
+  // archived split visible. Folding both sides collapses the casing so an
+  // active window suppresses its archived variant. Idempotent on channel
+  // names (already server-canonical) and ASCII-only (non-ASCII case
+  // variants stay distinct, matching the ircd + the server's fold).
+  const liveChannels = new Set((channelsBySlug()?.[slug] ?? []).map((c) => normalizeNick(c.name)));
   const liveQueries = new Set(
-    (queryWindowsByNetwork()[networkId] ?? []).map((qw) => qw.targetNick),
+    (queryWindowsByNetwork()[networkId] ?? []).map((qw) => normalizeNick(qw.targetNick)),
   );
   const pseudoNames = new Set<string>();
   for (const key of Object.keys(windowStateByChannel())) {
     const decoded = decodeChannelKey(key as ChannelKey);
     if (decoded === null || decoded.slug !== slug) continue;
-    pseudoNames.add(decoded.name);
+    pseudoNames.add(normalizeNick(decoded.name));
   }
   return entries.filter((entry) => {
-    if (pseudoNames.has(entry.target)) return false;
-    if (entry.kind === "channel") return !liveChannels.has(entry.target);
-    return !liveQueries.has(entry.target);
+    const folded = normalizeNick(entry.target);
+    if (pseudoNames.has(folded)) return false;
+    if (entry.kind === "channel") return !liveChannels.has(folded);
+    return !liveQueries.has(folded);
   });
 }

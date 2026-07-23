@@ -191,6 +191,40 @@ describe("archive.visibleArchiveForNetwork", () => {
     ]);
   });
 
+  // #372 — an open query window suppresses its differently-cased
+  // archived variant. A service replied as `DebugServ` (archived under
+  // that casing) while the user's open window is `debugserv`; a raw
+  // Set.has left the archived split visible. The filter folds both sides
+  // under rfc1459 (`normalizeNick`) so the active window releases it.
+  it("filters out an archived query whose casing folds to an active window (#372)", async () => {
+    vi.doMock("../lib/networks", () => ({
+      channelsBySlug: () => ({ freenode: [] }),
+    }));
+    vi.doMock("../lib/queryWindows", () => ({
+      queryWindowsByNetwork: () => ({
+        1: [{ targetNick: "debugserv", openedAt: "2026-07-23T10:00:00Z" }],
+      }),
+    }));
+    vi.doMock("../lib/windowState", () => ({
+      windowStateByChannel: () => ({}),
+    }));
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listArchive).mockResolvedValue([
+      { target: "DebugServ", kind: "query", last_activity: 200, row_count: 3 },
+      { target: "alice-peer", kind: "query", last_activity: 100, row_count: 4 },
+    ]);
+
+    const archive = await import("../lib/archive");
+    await archive.loadArchive("freenode");
+
+    // `DebugServ` folds to the active `debugserv` → suppressed; the
+    // unrelated peer survives.
+    expect(archive.visibleArchiveForNetwork("freenode", 1)).toEqual([
+      { target: "alice-peer", kind: "query", last_activity: 100, row_count: 4 },
+    ]);
+  });
+
   // UX-5 bucket BK (2026-05-19) — pseudo-row dedup: any (slug, name) in
   // windowStateByChannel renders as a Sidebar pseudo-row (pending /
   // failed / kicked / parked); the matching archive entry MUST be

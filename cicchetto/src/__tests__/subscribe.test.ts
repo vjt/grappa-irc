@@ -134,6 +134,10 @@ vi.mock("../lib/queryWindows", () => ({
   closeQueryWindowState: vi.fn(),
   queryWindowsByNetwork: vi.fn(() => ({})),
   setQueryWindowsByNetwork: vi.fn(),
+  // #372: incoming DM re-key resolves the sender against open windows.
+  // Default = identity (cold path / no existing window); tests override
+  // to simulate an existing differently-cased window.
+  canonicalQueryNick: vi.fn((_networkId: number, nick: string) => nick),
 }));
 
 // documentVisibility — controllable via setVisibleForTest(). Defaults to
@@ -180,6 +184,9 @@ beforeEach(async () => {
   // produces an extra unexpected join.
   const qw = await import("../lib/queryWindows");
   vi.mocked(qw.queryWindowsByNetwork).mockImplementation(() => ({}));
+  // #372: restore the identity default so a prior test's canonical-nick
+  // override doesn't leak into the next (same reason as above).
+  vi.mocked(qw.canonicalQueryNick).mockImplementation((_networkId, nick) => nick);
 });
 
 const seedStubs = async () => {
@@ -1240,6 +1247,49 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
     // code calls it; idempotency is enforced inside queryWindows.ts
     // (already tested in queryWindows.test.ts). The key invariant here
     // is focus-neutrality.
+  });
+
+  it("incoming PRIVMSG from a differently-cased sender re-keys to the existing window casing (#372)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmStubs();
+    const qw = await import("../lib/queryWindows");
+    // Window opened lowercase as "bob"; canonicalQueryNick resolves any
+    // casing to that stored casing (what the real impl returns against
+    // the open-window list). Seeded window adds the query-window join, so:
+    // 1 channel + 1 query(bob) + 1 DM-listener + 1 $server = 4 installs.
+    vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
+      1: [{ targetNick: "bob", openedAt: "2026-05-04T10:00:00Z" }],
+    });
+    vi.mocked(qw.canonicalQueryNick).mockReturnValue("bob");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(4);
+    });
+    // DM-listener handler (own-nick topic) is index 2 — the service
+    // replies from the PROPER-case "Bob".
+    fireAtHandlerIndex(2, {
+      kind: "message",
+      message: {
+        id: 202,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "Bob",
+        body: "usage",
+        meta: {},
+      },
+    });
+    // The append lands in the EXISTING lowercase "bob" window, NOT a
+    // phantom "Bob" bucket the opened window never renders.
+    expect(store.scrollbackByChannel()[channelKey("freenode", "bob")]?.map((m) => m.body)).toEqual([
+      "usage",
+    ]);
+    expect(store.scrollbackByChannel()[channelKey("freenode", "Bob")]).toBeUndefined();
   });
 
   it("incoming PRIVMSG to a channel (not own nick) does NOT open query window", async () => {
@@ -2956,6 +3006,7 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
       closeQueryWindowState: vi.fn(),
       queryWindowsByNetwork: vi.fn(() => ({})),
       setQueryWindowsByNetwork: vi.fn(),
+      canonicalQueryNick: vi.fn((_networkId: number, nick: string) => nick),
     }));
     vi.doMock("../lib/documentVisibility", () => ({
       isDocumentVisible: () => true,
