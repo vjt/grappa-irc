@@ -149,8 +149,10 @@ run_as_grappa '
 '
 
 if [ "${mode}" = "hot" ]; then
-	# Hot path: tell the live BEAM to walk :code.modified_modules/0 and
-	# reload via :code.load_file/1. No systemctl call, no cic rebuild
+	# Hot path: tell the live BEAM to md5-walk the release's ebin and reload
+	# the changed modules via :code.load_abs/1 (Grappa.HotReload — never
+	# :code.load_file/1, and not :code.modified_modules/0, which is blind to
+	# modules added after boot). No systemctl call, no cic rebuild
 	# (preflight only returns HOT when neither changed), no migration
 	# (a new migration file classifies COLD on its own).
 	echo "[deploy] POST ${RELOAD_URL}"
