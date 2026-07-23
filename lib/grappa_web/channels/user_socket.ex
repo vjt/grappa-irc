@@ -72,6 +72,7 @@ defmodule GrappaWeb.UserSocket do
   alias Grappa.{Accounts, Visitors, WSPresence}
   alias Grappa.Accounts.Session
   alias Grappa.Visitors.Visitor
+  alias GrappaWeb.Subject
 
   require Logger
 
@@ -166,23 +167,22 @@ defmodule GrappaWeb.UserSocket do
   goes through this helper so a future change to the id shape
   automatically propagates to disconnect.
 
-  Subject inference:
+  The user_name segment comes from `Subject.topic_label/1` (the single
+  source of the "user → `user.name`, visitor → `"visitor:" <> id`"
+  invariant, bucket I web/S7), wrapped in the `"user_socket:"` id-topic
+  prefix:
 
     * `{:user, %Accounts.User{name: name}}` → `"user_socket:" <> name`
-    * `{:visitor, %Visitor{id: id}}` →
-      `"user_socket:visitor:" <> id`
+    * `{:visitor, %Visitor{id: id}}` → `"user_socket:visitor:" <> id`
 
   Both shapes match the `user_name` assignment that `assign_subject/2`
-  installs on the socket at connect time. Symmetric with the
-  `id/1` callback above so the runtime topic Phoenix subscribes the
-  transport process to is the topic the disconnect publishes on.
+  installs on the socket at connect time (same `topic_label/1` source).
+  Symmetric with the `id/1` callback above so the runtime topic Phoenix
+  subscribes the transport process to is the topic the disconnect
+  publishes on.
   """
-  @spec id_for_subject(GrappaWeb.Subject.t()) :: String.t()
-  def id_for_subject({:user, %Accounts.User{name: name}}) when is_binary(name),
-    do: id_for_user_name(name)
-
-  def id_for_subject({:visitor, %Visitor{id: id}}) when is_binary(id),
-    do: id_for_user_name("visitor:" <> id)
+  @spec id_for_subject(Subject.t()) :: String.t()
+  def id_for_subject(subject), do: id_for_user_name(Subject.topic_label(subject))
 
   @doc """
   Close the live WebSocket for `subject` by broadcasting `"disconnect"`
@@ -232,7 +232,7 @@ defmodule GrappaWeb.UserSocket do
 
     socket =
       socket
-      |> assign(:user_name, user.name)
+      |> assign(:user_name, Subject.topic_label({:user, user}))
       |> assign(:current_subject, {:user, user.id})
       # M-11: surface the `is_admin` bit at the socket boundary so
       # `GrappaWeb.AdminChannel.authorize/1` can gate on it without
@@ -252,7 +252,7 @@ defmodule GrappaWeb.UserSocket do
       {:ok, %Visitor{} = visitor} ->
         socket =
           socket
-          |> assign(:user_name, "visitor:" <> visitor.id)
+          |> assign(:user_name, Subject.topic_label({:visitor, visitor}))
           |> assign(:current_visitor_id, visitor.id)
           |> assign(:current_visitor, visitor)
           |> assign(:current_subject, {:visitor, visitor.id})

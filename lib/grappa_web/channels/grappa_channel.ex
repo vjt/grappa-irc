@@ -180,7 +180,7 @@ defmodule GrappaWeb.GrappaChannel do
   alias Grappa.ServerSettings
   alias Grappa.ServerSettings.Wire, as: ServerSettingsWire
   alias Grappa.Session.Wire, as: SessionWire
-  alias GrappaWeb.BodyLimit
+  alias GrappaWeb.{BodyLimit, Subject}
 
   require Logger
 
@@ -1607,16 +1607,22 @@ defmodule GrappaWeb.GrappaChannel do
 
   # `user_name` carries `"visitor:" <> visitor.id` for visitor sockets
   # (assigned by `UserSocket.connect/3`) and `user.name` for authenticated
-  # user sockets. Strip the prefix on visitor decode; user-side decode
-  # delegates to `safe_get_user/1` so a deleted-row race surfaces as
-  # `{:error, :not_found}` → `user_not_found` reply.
+  # user sockets. `Subject.from_topic_label/1` — the inverse of the
+  # `topic_label/1` producer, sharing its `"visitor:"` prefix (bucket I
+  # web/S7) — classifies the label; the user branch then delegates to
+  # `safe_get_user/1` so a deleted-row race surfaces as `:error` →
+  # `user_not_found` reply.
   @spec resolve_subject(String.t()) :: {:ok, Session.subject()} | :error
-  defp resolve_subject("visitor:" <> visitor_id), do: {:ok, {:visitor, visitor_id}}
-
   defp resolve_subject(user_name) do
-    case safe_get_user(user_name) do
-      {:ok, user} -> {:ok, {:user, user.id}}
-      :error -> :error
+    case Subject.from_topic_label(user_name) do
+      {:visitor, visitor_id} ->
+        {:ok, {:visitor, visitor_id}}
+
+      {:user, name} ->
+        case safe_get_user(name) do
+          {:ok, user} -> {:ok, {:user, user.id}}
+          :error -> :error
+        end
     end
   end
 

@@ -30,11 +30,9 @@ defmodule GrappaWeb.NotifyController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.Accounts.User
   alias Grappa.IRC.Identifier
   alias Grappa.{Notify, Session}
   alias Grappa.Notify.Wire
-  alias Grappa.Visitors.Visitor
   alias GrappaWeb.Subject, as: WebSubject
 
   @doc """
@@ -154,15 +152,11 @@ defmodule GrappaWeb.NotifyController do
   @spec session_subject(Plug.Conn.t()) :: Grappa.Session.subject()
   defp session_subject(conn), do: WebSubject.to_session(conn.assigns.current_subject)
 
-  # Same subject-label derivation as `ArchiveController` /
-  # `ReadCursorController`: user → `user.name`, visitor →
-  # `"visitor:" <> id` (the shape `UserSocket` assigns to `:user_name`,
-  # so the notify_list broadcast reaches the subject's own topic).
+  # The user-rooted topic label comes from `Subject.topic_label/1` — the
+  # single source of the "user → `user.name`, visitor → `"visitor:" <>
+  # id`" invariant (bucket I web/S7), matching the `:user_name`
+  # `UserSocket` assigns so the notify_list broadcast reaches the
+  # subject's own topic.
   @spec subject_label(Plug.Conn.t()) :: String.t()
-  defp subject_label(conn) do
-    case conn.assigns.current_subject do
-      {:user, %User{name: name}} -> name
-      {:visitor, %Visitor{id: id}} -> "visitor:" <> id
-    end
-  end
+  defp subject_label(conn), do: WebSubject.topic_label(conn.assigns.current_subject)
 end

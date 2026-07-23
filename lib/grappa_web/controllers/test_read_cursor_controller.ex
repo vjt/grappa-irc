@@ -77,26 +77,15 @@ if Mix.env() in [:dev, :test] do
 
     def force(_, _), do: {:error, :bad_request}
 
-    @spec maybe_broadcast(
-            {:user, Grappa.Accounts.User.t()} | {:visitor, Grappa.Visitors.Visitor.t()},
-            String.t(),
-            String.t(),
-            integer(),
-            non_neg_integer()
-          ) :: :ok | {:error, term()}
-    defp maybe_broadcast({:user, user}, network_slug, channel, last_read_message_id, badge_count) do
-      ReadCursor.broadcast_set(user.name, network_slug, channel, last_read_message_id, badge_count)
-    end
-
-    defp maybe_broadcast(
-           {:visitor, visitor},
-           network_slug,
-           channel,
-           last_read_message_id,
-           badge_count
-         ) do
+    # Mirrors `ReadCursorController.maybe_broadcast/5` — the user-rooted
+    # topic label comes from `Subject.topic_label/1`, the single source
+    # of the "user → `user.name`, visitor → `"visitor:" <> id`"
+    # invariant (bucket I web/S7).
+    @spec maybe_broadcast(Subject.t(), String.t(), String.t(), integer(), non_neg_integer()) ::
+            :ok | {:error, term()}
+    defp maybe_broadcast(subject, network_slug, channel, last_read_message_id, badge_count) do
       ReadCursor.broadcast_set(
-        "visitor:" <> visitor.id,
+        Subject.topic_label(subject),
         network_slug,
         channel,
         last_read_message_id,

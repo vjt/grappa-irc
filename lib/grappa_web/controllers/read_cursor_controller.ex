@@ -148,7 +148,7 @@ defmodule GrappaWeb.ReadCursorController do
         subject: subject,
         network_id: network.id,
         network_slug: network.slug,
-        subject_label: subject_label(current_subject),
+        subject_label: Subject.topic_label(current_subject),
         channel: channel,
         own_nick: own_nick
       })
@@ -173,37 +173,17 @@ defmodule GrappaWeb.ReadCursorController do
     end
   end
 
-  # User-name segment of the per-channel topic — `user.name` for users,
-  # `"visitor:" <> visitor.id` for visitors (mirrors `maybe_broadcast/5`).
-  # `user.name` is `String.t() | nil` at the schema-type level (an
-  # authenticated user always has a name in practice, but Ecto types the
-  # field nilable); the `| nil` keeps the spec honest to what dialyzer
-  # infers (`:missing_return`). The push ctx tolerates it — same stance as
-  # the sibling `configured_own_nick/2` spec below.
-  @spec subject_label(Subject.t()) :: String.t() | nil
-  defp subject_label({:user, user}), do: user.name
-  defp subject_label({:visitor, visitor}), do: "visitor:" <> visitor.id
-
   # Resolves the user-name segment of the per-channel topic for the
-  # cross-device broadcast. User subjects use `user.name`; visitors
-  # use `"visitor:" <> visitor.id` — same shape `UserSocket` assigns
-  # to `:user_name` so visitor cic instances subscribed to their
-  # user-rooted topic see the broadcast (V4 visitor-parity,
-  # 2026-05-15).
-  @spec maybe_broadcast(
-          {:user, Grappa.Accounts.User.t()} | {:visitor, Grappa.Visitors.Visitor.t()},
-          String.t(),
-          String.t(),
-          integer(),
-          non_neg_integer()
-        ) :: :ok | {:error, term()}
-  defp maybe_broadcast({:user, user}, network_slug, channel, last_read_message_id, badge_count) do
-    ReadCursor.broadcast_set(user.name, network_slug, channel, last_read_message_id, badge_count)
-  end
-
-  defp maybe_broadcast({:visitor, visitor}, network_slug, channel, last_read_message_id, badge_count) do
+  # cross-device broadcast via `Subject.topic_label/1` — the single
+  # source of the "user → `user.name`, visitor → `"visitor:" <> id`"
+  # invariant (bucket I web/S7), matching the `:user_name` `UserSocket`
+  # assigns so visitor cic instances subscribed to their user-rooted
+  # topic see the broadcast (V4 visitor-parity, 2026-05-15).
+  @spec maybe_broadcast(Subject.t(), String.t(), String.t(), integer(), non_neg_integer()) ::
+          :ok | {:error, term()}
+  defp maybe_broadcast(subject, network_slug, channel, last_read_message_id, badge_count) do
     ReadCursor.broadcast_set(
-      "visitor:" <> visitor.id,
+      Subject.topic_label(subject),
       network_slug,
       channel,
       last_read_message_id,

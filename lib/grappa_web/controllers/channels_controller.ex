@@ -260,25 +260,18 @@ defmodule GrappaWeb.ChannelsController do
     end
   end
 
-  # UX-3 Z2 — mirror of `ArchiveController.broadcast_archive_changed/2`.
-  # Same subject-label derivation: users → `user.name`; visitors →
-  # `"visitor:" <> visitor.id`. cic's userTopic dispatcher (case
-  # "archive_changed") re-fetches `loadArchive(slug)` so chip count +
-  # sidebar archive section update without waiting for a page reload.
-  @spec broadcast_archive_changed(
-          {:user, User.t()} | {:visitor, Grappa.Visitors.Visitor.t()},
-          String.t()
-        ) :: :ok | {:error, term()}
-  defp broadcast_archive_changed({:user, %User{name: name}}, network_slug) do
-    PubSub.broadcast_event(Topic.user(name), ScrollbackWire.archive_changed_payload(network_slug))
-  end
+  # UX-3 Z2 — the user-rooted topic label comes from
+  # `Subject.topic_label/1`, the single source of the "user →
+  # `user.name`, visitor → `"visitor:" <> id`" invariant (bucket I
+  # web/S7). cic's userTopic dispatcher (case "archive_changed")
+  # re-fetches `loadArchive(slug)` so chip count + sidebar archive
+  # section update without waiting for a page reload.
+  @spec broadcast_archive_changed(Subject.t(), String.t()) :: :ok | {:error, term()}
+  defp broadcast_archive_changed(subject, network_slug) do
+    label = Subject.topic_label(subject)
 
-  defp broadcast_archive_changed(
-         {:visitor, %Grappa.Visitors.Visitor{id: visitor_id}},
-         network_slug
-       ) do
     PubSub.broadcast_event(
-      Topic.user("visitor:" <> visitor_id),
+      Topic.user(label),
       ScrollbackWire.archive_changed_payload(network_slug)
     )
   end

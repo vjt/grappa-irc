@@ -189,10 +189,10 @@ defmodule GrappaWeb.ArchiveController do
     |> Enum.map(& &1.target_nick)
   end
 
-  # Mirrors `ReadCursorController.maybe_broadcast/4`'s subject-label
-  # derivation: user subjects use `user.name`; visitors use
-  # `"visitor:" <> visitor.id` — same shape `UserSocket` assigns to
-  # `:user_name` so visitor cic instances subscribed to their
+  # The user-rooted topic label comes from `Subject.topic_label/1` — the
+  # single source of the "user → `user.name`, visitor → `"visitor:" <>
+  # id`" invariant (bucket I web/S7), which MUST match the `:user_name`
+  # `UserSocket` assigns so visitor cic instances subscribed to their
   # user-rooted topic see the broadcast (V4 visitor-parity).
   #
   # UX-7-B (2026-05-22): event kind flipped from `archive_changed` to
@@ -202,21 +202,12 @@ defmodule GrappaWeb.ArchiveController do
   # pre-delete rows linger in the live Solid store and re-appear on
   # re-JOIN (refreshScrollback fetches `?after=cursor`, which is past
   # every deleted row).
-  @spec broadcast_archive_purged(
-          {:user, User.t()} | {:visitor, Visitor.t()},
-          String.t(),
-          String.t()
-        ) :: :ok | {:error, term()}
-  defp broadcast_archive_purged({:user, %User{name: name}}, network_slug, target) do
-    PubSub.broadcast_event(
-      Topic.user(name),
-      Wire.archive_purged_payload(network_slug, target)
-    )
-  end
+  @spec broadcast_archive_purged(Subject.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  defp broadcast_archive_purged(subject, network_slug, target) do
+    label = Subject.topic_label(subject)
 
-  defp broadcast_archive_purged({:visitor, %Visitor{id: visitor_id}}, network_slug, target) do
     PubSub.broadcast_event(
-      Topic.user("visitor:" <> visitor_id),
+      Topic.user(label),
       Wire.archive_purged_payload(network_slug, target)
     )
   end
