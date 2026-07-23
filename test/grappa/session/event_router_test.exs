@@ -1358,16 +1358,21 @@ defmodule Grappa.Session.EventRouterTest do
 
       persist_channels =
         effects
+        |> Enum.filter(&match?({:persist, :nick_change, _}, &1))
         |> Enum.map(fn {:persist, :nick_change, a} -> a.channel end)
         |> Enum.sort()
 
       assert persist_channels == ["#italia", "#italia.lib"]
 
-      Enum.each(effects, fn {:persist, :nick_change, attrs} ->
+      for {:persist, :nick_change, attrs} <- effects do
         assert attrs.sender == "alice"
         assert attrs.body == nil
         assert attrs.meta == %{new_nick: "alice_"}
-      end)
+      end
+
+      # #373: a peer rename ALSO emits the query-window-follow effect so
+      # Session.Server can migrate an open query window + its DM history.
+      assert {:peer_nick_renamed, "alice", "alice_"} in effects
 
       # Modes preserved on rename:
       assert new_state.members["#italia"] == %{"vjt" => [], "alice_" => ["@"]}
@@ -1375,6 +1380,14 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.members["#empty"] == %{"vjt" => []}
       # state.nick unchanged for NICK-other:
       assert new_state.nick == "vjt"
+    end
+
+    test "NICK-self does NOT emit {:peer_nick_renamed} (own nick is not a peer, #373)" do
+      state = base_state(%{members: %{"#italia" => %{"vjt" => ["@"], "alice" => []}}})
+      m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, _new_state, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:peer_nick_renamed, _, _}, &1))
     end
 
     test "NICK-self updates state.nick + fans out per channel PLUS a $server row (#61)" do

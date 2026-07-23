@@ -1004,6 +1004,70 @@ defmodule Grappa.Scrollback do
   end
 
   @doc """
+  #373 — migrates every DM scrollback row for `old_nick` to `new_nick`
+  in `(subject, network_id)`, so a query window that followed a peer's
+  NICK change keeps its history (`channel_or_dm_where/3` reads a peer
+  window by the rfc1459 fold of the peer nick).
+
+  Case-insensitive on both nicks (rfc1459 fold, #121). A case-only
+  change (`fold(old) == fold(new)`) is a noop (`{:ok, 0}`): the read
+  path already resolves both to one folded window, and `dm_with` /
+  `channel` are stored case-preserved for display (#372), so nothing
+  needs rewriting.
+
+  Two scoped column updates (the DM row shapes are `dm_peer/4`'s):
+
+    * `dm_with := new_nick` where `fold(dm_with) == fold(old)` — the peer
+      column on BOTH inbound (`channel = own_nick, dm_with = peer`) AND
+      outbound (`channel = peer, dm_with = peer`) rows.
+    * `channel := new_nick` where `fold(channel) == fold(old)` — the
+      outbound + orphan (`dm_with IS NULL, channel = peer`, e.g. a 401
+      NOTICE) rows. Inbound rows carry `channel = own_nick` (folds to
+      own_nick, not `old`) so they are left untouched; channels carry a
+      sigil so `#old` never folds to a bare nick — no cross-hit.
+
+  Returns `{:ok, count}` where `count` is the number of DISTINCT DM rows
+  migrated (the row-set `delete_for_dm/3` matches via the shared
+  `where_dm_peer/2`); `0` on empty / noop.
+
+  Sole production caller: `Grappa.Session.Server.apply_effects/2` on the
+  `{:peer_nick_renamed, old, new}` effect, AFTER `QueryWindows.rename/5`
+  reports `:renamed` — so history migrates exactly when the window moved.
+  """
+  @spec rename_dm_peer(subject(), integer(), String.t(), String.t()) ::
+          {:ok, non_neg_integer()}
+  def rename_dm_peer(subject, network_id, old_nick, new_nick)
+      when is_integer(network_id) and is_binary(old_nick) and is_binary(new_nick) do
+    folded_old = Identifier.canonical_nick(old_nick)
+    folded_new = Identifier.canonical_nick(new_nick)
+
+    if folded_old == folded_new do
+      {:ok, 0}
+    else
+      base =
+        Message
+        |> subject_where(subject)
+        |> where([m], m.network_id == ^network_id)
+
+      # DISTINCT migrated-row count via the shared DM-peer predicate — the
+      # union of the two column updates below, so no double-count.
+      count = base |> where_dm_peer(folded_old) |> Repo.aggregate(:count)
+
+      if count > 0 do
+        base
+        |> where([m], Identifier.nick_fold(m.dm_with) == ^folded_old)
+        |> Repo.update_all(set: [dm_with: new_nick])
+
+        base
+        |> where([m], Identifier.nick_fold(m.channel) == ^folded_old)
+        |> Repo.update_all(set: [channel: new_nick])
+      end
+
+      {:ok, count}
+    end
+  end
+
+  @doc """
   UX-1 (2026-05-17) — deletes all scrollback rows for a channel in a
   `(subject, network_id)` pair. Case-insensitive on the channel name
   (IRC channels are case-insensitive per RFC 1459 §2.2).

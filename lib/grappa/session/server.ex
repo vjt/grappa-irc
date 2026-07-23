@@ -79,7 +79,18 @@ defmodule Grappa.Session.Server do
   """
   use GenServer, restart: :transient
 
-  alias Grappa.{ChannelDirectory, Log, Mentions, Scrollback, Session, SessionLog, UserSettings, WindowCounts}
+  alias Grappa.{
+    ChannelDirectory,
+    Log,
+    Mentions,
+    QueryWindows,
+    Scrollback,
+    Session,
+    SessionLog,
+    UserSettings,
+    WindowCounts
+  }
+
   alias Grappa.IRC.{AuthFSM, Client, CTCP, Identifier, Message}
   alias Grappa.PubSub.Topic
   alias Grappa.Push.Triggers, as: PushTriggers
@@ -4011,6 +4022,40 @@ defmodule Grappa.Session.Server do
 
       {{:user, _}, _} ->
         Logger.warning("visitor_nick_changed effect on user session — ignored")
+    end
+
+    apply_effects(rest, state)
+  end
+
+  # #373: a PEER renamed (EventRouter observed a NICK for a tracked peer).
+  # Migrate that peer's open query window + its DM scrollback old -> new so
+  # the window follows the rename and outbound sends stop routing to the
+  # vanished old nick (401 no-such-nick). Server-authoritative: the window
+  # LIST is server-owned, so `QueryWindows.rename/5` renames the row and
+  # broadcasts the updated `query_windows_list` (cic mirrors, never
+  # originates). Scrollback history migrates ONLY when a window actually
+  # moved (`:renamed`), so a peer we never queried costs one indexed lookup
+  # and no writes. `:noop` (no window, or a case-only fold) is silent.
+  defp apply_effects([{:peer_nick_renamed, old_nick, new_nick} | rest], state) do
+    case QueryWindows.rename(
+           state.subject,
+           state.network_id,
+           old_nick,
+           new_nick,
+           state.subject_label
+         ) do
+      {:ok, :renamed} ->
+        {:ok, migrated} =
+          Scrollback.rename_dm_peer(state.subject, state.network_id, old_nick, new_nick)
+
+        Logger.info("query window followed peer NICK",
+          old_nick: old_nick,
+          new_nick: new_nick,
+          rows_migrated: migrated
+        )
+
+      {:ok, :noop} ->
+        :ok
     end
 
     apply_effects(rest, state)

@@ -79,9 +79,11 @@ defmodule Grappa.QueryWindows do
     * `Grappa.IRC` — `Identifier.nick_fold/1` (rfc1459 DM-target key).
     * `Grappa.Subject` — XOR FK helper.
     * `Grappa.Accounts` (via `User` association — FK reference only).
-    * `Grappa.Networks` (via `Network` association — FK reference only).
-    * `Grappa.Visitors` (via `Visitor` association — FK reference only).
     * `Grappa.PubSub` — `Topic.user/1` for the `query_windows_list` broadcast.
+
+  Plus two struct-only **dirty xrefs** (schema refs, not real deps — see
+  the `use Boundary` note): `Grappa.Networks.Network` and
+  `Grappa.Visitors.Visitor`, each a `belongs_to` FK association.
 
   The `Window` schema module is internal; callers receive `%Window{}`
   structs by type but MUST NOT alias or import the schema module
@@ -90,8 +92,16 @@ defmodule Grappa.QueryWindows do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Networks, Grappa.PubSub, Grappa.Repo, Grappa.Subject],
-    dirty_xrefs: [Grappa.Visitors.Visitor],
+    deps: [Grappa.Accounts, Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Subject],
+    # `Networks.Network` is referenced ONLY as a schema — the
+    # `belongs_to :network` association + the FK-existence `Repo.exists?`
+    # query in `check_exists/4`. Declared a dirty xref (NOT a real dep),
+    # mirroring `Grappa.Scrollback` / `Grappa.ReadCursor`: a real
+    # `QueryWindows → Networks` edge would close the cycle
+    # `Session → QueryWindows → Networks → Session` once #373 made
+    # Session depend on QueryWindows (for `rename/5` on a peer NICK).
+    # The struct-only reference carries no behaviour Boundary could gate.
+    dirty_xrefs: [Grappa.Networks.Network, Grappa.Visitors.Visitor],
     exports: [Window, Wire]
 
   import Ecto.Query
@@ -205,6 +215,85 @@ defmodule Grappa.QueryWindows do
 
     broadcast_windows_list(subject, subject_label)
     :ok
+  end
+
+  @doc """
+  Renames the DM (query) window for `old_nick` to `new_nick` on
+  `(subject, network_id)` — the server-authoritative half of #373 (a
+  query window following a peer's NICK change).
+
+  Case-insensitive on `old_nick` (rfc1459 fold, #121). Returns:
+
+    * `{:ok, :noop}` when `old_nick` and `new_nick` fold to the SAME
+      identity (a case-only change — the fold-keyed row already resolves
+      to `new_nick`, and IRC nick routing is case-insensitive, so nothing
+      moves; #372 covers the display dedup), OR when no window folds to
+      `old_nick` (a peer we never queried renamed — nothing to follow).
+    * `{:ok, :renamed}` when a window folding to `old_nick` moved to
+      `new_nick`. If a window folding to `new_nick` ALREADY exists
+      (nick-collision), the `old_nick` row is DELETED and the existing
+      `new_nick` row kept — the two DM histories coalesce under one
+      window on the read path (`Scrollback.channel_or_dm_where/3`
+      aggregates every row folding to the peer; #372 fold-dedup). The
+      caller migrates the scrollback rows old -> new via
+      `Scrollback.rename_dm_peer/4` on this result.
+
+  Broadcasts the updated `query_windows_list` on
+  `Topic.user(subject_label)` ONLY on `:renamed` (a `:noop` changed
+  nothing, so a redundant identical broadcast is suppressed).
+  """
+  @spec rename(Subject.t(), integer(), String.t(), String.t(), String.t()) ::
+          {:ok, :renamed | :noop}
+  def rename({_, _} = subject, network_id, old_nick, new_nick, subject_label)
+      when is_integer(network_id) and is_binary(old_nick) and is_binary(new_nick) and
+             is_binary(subject_label) do
+    folded_old = Identifier.canonical_nick(old_nick)
+    folded_new = Identifier.canonical_nick(new_nick)
+
+    if folded_old == folded_new do
+      {:ok, :noop}
+    else
+      do_rename(subject, network_id, folded_old, folded_new, new_nick, subject_label)
+    end
+  end
+
+  @spec do_rename(Subject.t(), integer(), String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, :renamed | :noop}
+  defp do_rename(subject, network_id, folded_old, folded_new, new_nick, subject_label) do
+    old_query =
+      Window
+      |> Subject.subject_where(subject)
+      |> where([w], w.network_id == ^network_id)
+      |> where([w], Identifier.nick_fold(w.target_nick) == ^folded_old)
+
+    if Repo.exists?(old_query) do
+      if new_window_exists?(subject, network_id, folded_new) do
+        # Nick-collision merge: the target identity already has a window.
+        # Drop the old row; the read path coalesces both DM histories
+        # under the survivor (no row duplication — distinct message rows
+        # simply aggregate to one folded key).
+        Repo.delete_all(old_query)
+      else
+        # Session.Server serializes per (subject, network_id) and there is
+        # exactly one such process, so no concurrent open can race a row
+        # into `folded_new` between the check above and this update.
+        Repo.update_all(old_query, set: [target_nick: new_nick])
+      end
+
+      broadcast_windows_list(subject, subject_label)
+      {:ok, :renamed}
+    else
+      {:ok, :noop}
+    end
+  end
+
+  @spec new_window_exists?(Subject.t(), integer(), String.t()) :: boolean()
+  defp new_window_exists?(subject, network_id, folded_new) do
+    Window
+    |> Subject.subject_where(subject)
+    |> where([w], w.network_id == ^network_id)
+    |> where([w], Identifier.nick_fold(w.target_nick) == ^folded_new)
+    |> Repo.exists?()
   end
 
   @doc """

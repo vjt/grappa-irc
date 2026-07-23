@@ -57,6 +57,7 @@ defmodule Grappa.Session do
       Grappa.Mentions,
       Grappa.PubSub,
       Grappa.Push,
+      Grappa.QueryWindows,
       Grappa.Scrollback,
       Grappa.SessionLog,
       Grappa.Subject,

@@ -1471,6 +1471,53 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "#373 — query window follows a peer NICK change" do
+    test "peer NICK migrates the open query window + its DM scrollback old -> new" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      own = "grappa-test"
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # The session processes its mailbox serially in arrival order, so
+      # these two lines are fully applied before the NICK below: the peer
+      # is in #sniffo (the only case IRC delivers a NICK) and the inbound
+      # DM row is persisted (channel=own_nick, dm_with=peer).
+      IRCServer.feed(server, ":Guest87449!~g@host JOIN #sniffo\r\n")
+      IRCServer.feed(server, ":Guest87449!~g@host PRIVMSG #{own} :ciao\r\n")
+
+      # The operator opened a query window with the peer (cic pushes this).
+      {:ok, _} = Grappa.QueryWindows.open({:user, user.id}, network.id, "Guest87449", user.name)
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      # The peer renames.
+      IRCServer.feed(server, ":Guest87449!~g@host NICK :NickTemporaneo\r\n")
+
+      # Server broadcasts the migrated window list (deterministic sync point).
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :query_windows_list, windows: windows}
+                     },
+                     1_000
+
+      assert [%{target_nick: "NickTemporaneo"}] = Map.fetch!(windows, network.id)
+
+      # The window row followed the rename.
+      result = Grappa.QueryWindows.list_for_subject({:user, user.id})
+      assert [%{target_nick: "NickTemporaneo"}] = result[network.id]
+
+      # History reads under the NEW window; the OLD nick is empty.
+      assert [row] = Scrollback.fetch({:user, user.id}, network.id, "NickTemporaneo", nil, 10, own)
+      assert row.body == "ciao"
+      assert Scrollback.fetch({:user, user.id}, network.id, "Guest87449", nil, 10, own) == []
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "push notifications (B4) — trigger dispatch on inbound PRIVMSG" do
     # Real P-256 client public key + auth secret — mirrors push/sender_test
     # + push/triggers_test (lib's ECDH path crashes on random bytes).

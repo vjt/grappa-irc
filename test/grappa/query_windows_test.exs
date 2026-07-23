@@ -297,6 +297,133 @@ defmodule Grappa.QueryWindowsTest do
   end
 
   # ---------------------------------------------------------------------------
+  # rename/5 (#373 — query window follows a peer NICK change)
+  # ---------------------------------------------------------------------------
+
+  describe "rename/5" do
+    test "genuine rename moves the window old -> new (same row id, new target_nick)" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, %Window{id: id}} =
+        QueryWindows.open({:user, user.id}, net.id, "Guest87449", user.name)
+
+      assert {:ok, :renamed} =
+               QueryWindows.rename(
+                 {:user, user.id},
+                 net.id,
+                 "Guest87449",
+                 "NickTemporaneo",
+                 user.name
+               )
+
+      result = QueryWindows.list_for_subject({:user, user.id})
+      assert [%Window{id: ^id, target_nick: "NickTemporaneo"}] = result[net.id]
+    end
+
+    test "broadcasts the updated list on rename" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "Guest87449", user.name)
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      {:ok, :renamed} =
+        QueryWindows.rename(
+          {:user, user.id},
+          net.id,
+          "Guest87449",
+          "NickTemporaneo",
+          user.name
+        )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :query_windows_list, windows: windows}
+                     },
+                     1_000
+
+      assert [%{target_nick: "NickTemporaneo"}] = Map.fetch!(windows, net.id)
+    end
+
+    test "no window for old nick returns {:ok, :noop} and broadcasts nothing" do
+      user = user_fixture()
+      net = network_fixture()
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      assert {:ok, :noop} =
+               QueryWindows.rename({:user, user.id}, net.id, "ghost", "phantom", user.name)
+
+      refute_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :query_windows_list}
+                     },
+                     200
+    end
+
+    test "case-only change (fold(old) == fold(new)) is a noop — the window already follows" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, %Window{id: id}} = QueryWindows.open({:user, user.id}, net.id, "Foo", user.name)
+
+      assert {:ok, :noop} =
+               QueryWindows.rename({:user, user.id}, net.id, "Foo", "FOO", user.name)
+
+      # Row untouched (display casing preserved; fold-match already resolves).
+      result = QueryWindows.list_for_subject({:user, user.id})
+      assert [%Window{id: ^id, target_nick: "Foo"}] = result[net.id]
+    end
+
+    test "rfc1459 fold: 'nick[1]' window renames when matched via 'nick{1}'" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, %Window{id: id}} = QueryWindows.open({:user, user.id}, net.id, "nick[1]", user.name)
+
+      # bahamut folds [ -> {, so "nick{1}" matches the "nick[1]" row.
+      assert {:ok, :renamed} =
+               QueryWindows.rename({:user, user.id}, net.id, "nick{1}", "renamed", user.name)
+
+      result = QueryWindows.list_for_subject({:user, user.id})
+      assert [%Window{id: ^id, target_nick: "renamed"}] = result[net.id]
+    end
+
+    test "collision merge: renaming old -> new when a new window already exists deletes old, keeps new" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, %Window{id: _old_id}} = QueryWindows.open({:user, user.id}, net.id, "old", user.name)
+      {:ok, %Window{id: new_id}} = QueryWindows.open({:user, user.id}, net.id, "new", user.name)
+
+      assert {:ok, :renamed} =
+               QueryWindows.rename({:user, user.id}, net.id, "old", "new", user.name)
+
+      # One window survives — the pre-existing "new" row (scrollback rows
+      # coalesce under it on the read path; consistent with #372 fold-dedup).
+      result = QueryWindows.list_for_subject({:user, user.id})
+      assert [%Window{id: ^new_id, target_nick: "new"}] = result[net.id]
+    end
+
+    test "rename is scoped to (subject, network, nick) — leaves sibling windows intact" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "alice", user.name)
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "bob", user.name)
+
+      {:ok, :renamed} = QueryWindows.rename({:user, user.id}, net.id, "alice", "alice2", user.name)
+
+      result = QueryWindows.list_for_subject({:user, user.id})
+      nicks = result[net.id] |> Enum.map(& &1.target_nick) |> Enum.sort()
+      assert nicks == ["alice2", "bob"]
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # list_for_user/1
   # ---------------------------------------------------------------------------
 

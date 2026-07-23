@@ -197,6 +197,7 @@ defmodule Grappa.Session.EventRouter do
           | {:presence_changed, nick :: String.t(), :online | :offline, Presence.change_kind(), :monitor | :watch}
           | {:presence_error, :list_full, detail :: String.t()}
           | {:presence_command_unknown, :monitor | :watch}
+          | {:peer_nick_renamed, old_nick :: String.t(), new_nick :: String.t()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -788,7 +789,22 @@ defmodule Grappa.Session.EventRouter do
           []
       end
 
-    {:cont, new_state, persist_effects ++ self_server_effects ++ visitor_persist_effects}
+    # #373: a PEER rename (not our own) must migrate that peer's open query
+    # window + its DM scrollback old -> new, so the window follows the nick
+    # and outbound sends stop routing to the now-vanished old nick (401).
+    # Emitted only when the renamer is a tracked member (`channels != []`) —
+    # that is the only case IRC delivers a peer's NICK to us, and it mirrors
+    # the per-channel fan-out gate above. `Session.Server.apply_effects/2`
+    # gates the actual DB migration on a query window existing (no-op
+    # otherwise), so a peer we never queried costs one indexed lookup.
+    peer_rename_effects =
+      if not nick_eq?(old_nick, state.nick) and channels != [] do
+        [{:peer_nick_renamed, old_nick, new_nick}]
+      else
+        []
+      end
+
+    {:cont, new_state, persist_effects ++ self_server_effects ++ visitor_persist_effects ++ peer_rename_effects}
   end
 
   # Unsolicited TOPIC: a channel operator changed the topic mid-session.

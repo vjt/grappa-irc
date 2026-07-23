@@ -2011,6 +2011,120 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
+  describe "rename_dm_peer/4 (#373 — DM history follows a peer NICK change)" do
+    # Read the migrated window the SAME way production does, so the tests
+    # assert the observable outcome (history under the new nick) rather
+    # than raw column values.
+    defp read_dm(user, net, peer, own_nick) do
+      Scrollback.fetch({:user, user.id}, net.id, peer, nil, 100, own_nick)
+    end
+
+    test "outbound + inbound rows migrate old -> new so history reads under the new window",
+         %{user: user, network: net} do
+      own = "vjt"
+
+      # Outbound vjt -> Guest87449 (channel = peer, dm_with = peer)
+      {:ok, out} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "Guest87449", sender: own, dm_with: "Guest87449"}))
+
+      # Inbound Guest87449 -> vjt (channel = own, dm_with = peer)
+      {:ok, inb} =
+        Scrollback.persist_event(sample(user, net, 110, %{channel: own, sender: "Guest87449", dm_with: "Guest87449"}))
+
+      # Sanity: BEFORE the rename the NEW window is empty and the OLD one has both.
+      assert read_dm(user, net, "NickTemporaneo", own) == []
+
+      assert read_dm(user, net, "Guest87449", own) |> Enum.map(& &1.id) |> Enum.sort() ==
+               Enum.sort([out.id, inb.id])
+
+      assert {:ok, 2} =
+               Scrollback.rename_dm_peer({:user, user.id}, net.id, "Guest87449", "NickTemporaneo")
+
+      # AFTER: both rows read under the NEW window; the OLD nick reads empty.
+      assert read_dm(user, net, "NickTemporaneo", own) |> Enum.map(& &1.id) |> Enum.sort() ==
+               Enum.sort([out.id, inb.id])
+
+      assert read_dm(user, net, "Guest87449", own) == []
+    end
+
+    test "does NOT rename the own-nick inbound channel column", %{user: user, network: net} do
+      own = "vjt"
+
+      {:ok, inb} =
+        Scrollback.persist_event(sample(user, net, 110, %{channel: own, sender: "peer", dm_with: "peer"}))
+
+      {:ok, 1} = Scrollback.rename_dm_peer({:user, user.id}, net.id, "peer", "peer2")
+
+      # The inbound row's channel stays own-nick (only dm_with moved).
+      row = Repo.get!(Message, inb.id)
+      assert row.channel == own
+      assert row.dm_with == "peer2"
+    end
+
+    test "migrates orphan rows (dm_with IS NULL, channel == peer)", %{user: user, network: net} do
+      {:ok, orphan} =
+        Scrollback.persist_event(
+          sample(user, net, 200, %{
+            channel: "Guest87449",
+            sender: "server.azzurra.chat",
+            kind: :notice,
+            body: "No such nick/channel",
+            dm_with: nil
+          })
+        )
+
+      {:ok, 1} = Scrollback.rename_dm_peer({:user, user.id}, net.id, "Guest87449", "NickTemporaneo")
+
+      row = Repo.get!(Message, orphan.id)
+      assert row.channel == "NickTemporaneo"
+      assert row.dm_with == nil
+    end
+
+    test "rfc1459-folded match: 'nick[1]' rows migrate when matched via 'nick{1}'",
+         %{user: user, network: net} do
+      {:ok, out} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "nick[1]", sender: "vjt", dm_with: "nick[1]"}))
+
+      {:ok, _} = Scrollback.rename_dm_peer({:user, user.id}, net.id, "nick{1}", "renamed")
+
+      row = Repo.get!(Message, out.id)
+      assert row.channel == "renamed"
+      assert row.dm_with == "renamed"
+    end
+
+    test "case-only fold (old == new) is a noop, returns {:ok, 0}", %{user: user, network: net} do
+      {:ok, out} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "Foo", sender: "vjt", dm_with: "Foo"}))
+
+      assert {:ok, 0} = Scrollback.rename_dm_peer({:user, user.id}, net.id, "Foo", "FOO")
+
+      row = Repo.get!(Message, out.id)
+      assert row.channel == "Foo"
+      assert row.dm_with == "Foo"
+    end
+
+    test "isolated by subject and network", %{user: user, network: net} do
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "other-#{uniq()}"})
+      {:ok, alice} = Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      {:ok, other_net_row} =
+        Scrollback.persist_event(sample(user, other_net, 100, %{channel: "peer", sender: "vjt", dm_with: "peer"}))
+
+      {:ok, alice_row} =
+        Scrollback.persist_event(sample(alice, net, 100, %{channel: "peer", sender: "alice", dm_with: "peer"}))
+
+      assert {:ok, 0} = Scrollback.rename_dm_peer({:user, user.id}, net.id, "peer", "peer2")
+
+      # Sibling rows untouched.
+      assert Repo.get!(Message, other_net_row.id).dm_with == "peer"
+      assert Repo.get!(Message, alice_row.id).dm_with == "peer"
+    end
+
+    test "idempotent — returns {:ok, 0} on empty matches", %{user: user, network: net} do
+      assert {:ok, 0} = Scrollback.rename_dm_peer({:user, user.id}, net.id, "ghost", "phantom")
+    end
+  end
+
   describe "delete_for_channel/3 (UX-1)" do
     test "drops all rows for (subject, network, channel) — channel-shaped", %{
       user: user,
