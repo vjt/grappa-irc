@@ -24,6 +24,13 @@ const CASES: Array<{ code: string; matches: RegExp }> = [
   { code: "invalid_line", matches: /characters that aren't allowed/i },
   { code: "upstream_unavailable", matches: /connection may be down/i },
   { code: "body_too_large", matches: /too long to send/i },
+  // #364 bucket H (cross-surface S5) — the awaited watchlist verbs
+  // (/hilight add|del via pushWatchlistAdd/Del, compose.ts:893-897) reply
+  // these tokens; both routed through friendlyChannelError with no arm, so
+  // an ordinary `/hilight del <missing>` showed "channel push error:
+  // not_found".
+  { code: "not_found", matches: /highlight list|not in your/i },
+  { code: "save_failed", matches: /couldn't save|try again/i },
 ];
 
 describe("friendlyChannelError", () => {

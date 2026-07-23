@@ -13,17 +13,21 @@ import { assertNever, type ChannelPushError } from "./api";
 //
 // Codes are the `error:` wire tokens emitted by the user-level
 // `GrappaChannel.handle_in` arms that cicchetto pushes WITH a reply and
-// awaits: `away` set/unset (socket.ts `pushAwaySet` / `pushAwayUnset`) and,
+// awaits: `away` set/unset (socket.ts `pushAwaySet` / `pushAwayUnset`);
 // since #154(1), the state-changing ops verbs (op/deop/voice/devoice/kick/
-// ban/unban/mode/umode) which now await via `pushUserChannelVerb`. Those
+// ban/unban/mode/umode) which now await via `pushUserChannelVerb`; and the
+// keyword-watchlist verbs `/hilight add|del` (socket.ts `pushWatchlistAdd` /
+// `pushWatchlistDel`, awaited via highlightList.ts in compose.ts). The ops
 // verbs route through `dispatch_subject_verb/3` (+ the `with_body_check`
 // wrapper for kick/umode/mode), whose `else` arms emit `invalid_channel`,
 // `invalid_nick`, `invalid_mask`, `invalid_line`, `no_session`,
-// `user_not_found`, `upstream_unavailable`, and `body_too_large`. Adding a
-// token: add it to the union, add a `case`, ship the vitest arm. Tokens the
-// server no longer emits (e.g. `visitor_no_away`) MUST NOT be mapped — a dead
-// arm is silent UX rot (see friendlyApiError's `captcha_provider_unavailable`
-// history). One arm, one contract.
+// `user_not_found`, `upstream_unavailable`, and `body_too_large`; the
+// watchlist verbs emit `not_found` (`/hilight del <missing pattern>` — an
+// ordinary user action) and `save_failed` (the user_settings DB write
+// failed). Adding a token: add it to the union, add a `case`, ship the
+// vitest arm. Tokens the server no longer emits (e.g. `visitor_no_away`)
+// MUST NOT be mapped — a dead arm is silent UX rot (see friendlyApiError's
+// `captcha_provider_unavailable` history). One arm, one contract.
 
 export type KnownChannelErrorCode =
   | "no_session"
@@ -36,7 +40,9 @@ export type KnownChannelErrorCode =
   | "invalid_mask"
   | "invalid_line"
   | "upstream_unavailable"
-  | "body_too_large";
+  | "body_too_large"
+  | "not_found"
+  | "save_failed";
 
 const KNOWN_CODES: ReadonlySet<KnownChannelErrorCode> = new Set<KnownChannelErrorCode>([
   "no_session",
@@ -50,6 +56,8 @@ const KNOWN_CODES: ReadonlySet<KnownChannelErrorCode> = new Set<KnownChannelErro
   "invalid_line",
   "upstream_unavailable",
   "body_too_large",
+  "not_found",
+  "save_failed",
 ]);
 
 function isKnownCode(code: string): code is KnownChannelErrorCode {
@@ -102,6 +110,17 @@ function friendlyKnown(code: KnownChannelErrorCode): string {
       // `BodyLimit.check/1` rejected an oversize kick reason / mode string
       // before it reached the upstream write.
       return "That's too long to send.";
+    case "not_found":
+      // #364 H (S5) — `/hilight del <pattern>` where the pattern isn't in
+      // the keyword watchlist (`watchlist_del` → `{:error, :not_found}`).
+      // An ordinary user action, so it needs friendly copy — distinct from
+      // friendlyApiError's REST `not_found` ("network or resource").
+      return "That pattern isn't in your highlight list.";
+    case "save_failed":
+      // #364 H (S5) — the `user_settings` write behind `/hilight add|del`
+      // failed (`set_highlight_patterns` → `{:error, _}`). Rare (DB-side),
+      // but a state-changing verb MUST NOT report a raw token.
+      return "Couldn't save your highlight list — try again.";
     default:
       // Exhaustiveness: adding a token to `KnownChannelErrorCode` without a
       // `case` arm narrows `code` to `never` only when every member is
