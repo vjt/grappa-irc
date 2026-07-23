@@ -1,47 +1,51 @@
-// Case-insensitive IRC nickname comparison.
+// Case-insensitive IRC nickname comparison — the SINGLE client-side
+// nick fold + equality helper.
 //
-// RFC 2812 §2.2 declares nicknames case-insensitive and specifies a
-// custom case-fold mapping where `[`, `]`, `\` are uppercase forms of
-// `{`, `}`, `|` (the "rfc1459" / "ascii" casemapping). We use ASCII
-// `.toLowerCase()` here — the simplification is acceptable for the
-// bouncer scope because:
+// ## One fold, pinned to the server (#364 cross-surface S13)
 //
-//   * subscribe.ts already uses bare `.toLowerCase()` for the same
-//     comparisons (lines 183, 319, 328, 556) and has been correct in
-//     production for months. Going stricter here would create a
-//     two-policy split and silently fail on networks where one
-//     comparison passes and the other doesn't.
-//   * Users on networks that distinguish `{` vs `[` in nicks are
-//     vanishingly rare; the false-equal class (`{user}` matches
-//     `[user]` under our rule but not under strict RFC 2812) is
-//     a shrug-worthy false positive vs. the demonstrated bug class
-//     this helper closes (members store growing phantom rows on
-//     JOIN→QUIT casing mismatches like `Alice` then `alice`).
-//   * If a future network needs strict RFC 2812 casemapping we extend
-//     this helper and migrate all callsites — single source of truth
-//     means no drift class.
+// Azzurra runs bahamut (`CASEMAPPING=rfc1459`): besides ASCII `A-Z` it
+// folds the four "national" chars `[ ] \ ~` → `{ } | ^`. The server's
+// single source of truth is `Grappa.IRC.Identifier.canonical_nick/1`
+// (byte-level ASCII). `rfc1459Fold` below is the ONE client mirror of
+// that fold; `normalizeNick` and `nickEquals` are layered on it so the
+// whole cic codebase folds nicks exactly as the server does — no
+// two-policy drift class. `nickEquals.test.ts` enumerates the fold
+// table as a drift gate.
 //
-// Bucket F H3 fix: pre-fix members.ts (lines 57, 62, 69, 76) and
-// ScrollbackPane.tsx (lines 461, 562) used bare `===` for nick
-// comparison while subscribe.ts already used `.toLowerCase()`. The
-// drift produced phantom member entries (server emits `Alice` on JOIN,
-// `alice` on QUIT — pre-fix the QUIT didn't match the JOIN row and
-// `Alice` lingered forever), missed self-JOIN banners (server emits
-// JOIN with original-casing nick, banner check compared against lowered
-// own-nick), and ownModes lookup misses (members store had server-cased
-// nick, ownModes compared against own-nick — mismatch → no @ → ops
-// items disabled even when the operator IS an op).
+// Pre-#364 this module folded ASCII-downcase-only (no bracket fold) as
+// a documented simplification, while `notifyWatch.ts` carried a SECOND
+// (Unicode-`toLowerCase`) fold for presence keys. Two folds for one
+// identity invariant is exactly the "half-migrated creates two
+// patterns" failure CLAUDE.md forbids: a `[user]`/`{user}` pair the
+// server treats as ONE nick would fork here (members store phantoms,
+// DM windows, own-nick checks). Consolidated onto `rfc1459Fold`.
 //
-// Per CLAUDE.md "Total consistency or nothing": every nick comparison
-// in the cic codebase goes through this helper. subscribe.ts callsites
-// also delegate to it for single-source-of-truth, even though their
-// `.toLowerCase()` form was already correct — the goal is one rule,
-// one knob.
+// Bucket F H3 (retained): pre-fix members.ts and ScrollbackPane.tsx
+// used bare `===` for nick comparison, producing phantom member entries
+// (server emits `Alice` on JOIN, `alice` on QUIT — the QUIT didn't
+// match the JOIN row and `Alice` lingered forever), missed self-JOIN
+// banners, and ownModes lookup misses. Per CLAUDE.md "Total
+// consistency or nothing" every nick comparison in cic goes through
+// this helper.
+
+// ASCII-byte-level rfc1459 fold — the single client mirror of
+// `Grappa.IRC.Identifier.canonical_nick/1`. Folds `A-Z` + `[ ] \ ~` →
+// `{ } | ^` by char code so multibyte (non-ASCII) sequences pass
+// through untouched, byte-for-byte with the server's `fold_nick_byte/1`
+// (JS `toLowerCase()` is Unicode-aware and would over-fold, e.g.
+// `CAFÉ`→`café`, forking keys the server keeps distinct).
+export const rfc1459Fold = (nick: string): string =>
+  nick
+    .replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32))
+    .replace(/\[/g, "{")
+    .replace(/\]/g, "}")
+    .replace(/\\/g, "|")
+    .replace(/~/g, "^");
 
 // Normalize a nick to its case-folded comparison form. Use directly
 // when storing a nick into a Map/Set keyed for case-insensitive lookup;
 // for binary equality checks prefer `nickEquals`.
-export const normalizeNick = (nick: string): string => nick.toLowerCase();
+export const normalizeNick = (nick: string): string => rfc1459Fold(nick);
 
 // Case-insensitive nick equality. Returns false when either side is
 // null or undefined — the existing call sites (members.ts presence

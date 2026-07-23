@@ -22,15 +22,15 @@
 //
 // `presence_snapshot` keys and the server's presence map are
 // rfc1459-folded (`Grappa.IRC.Identifier.canonical_nick/1`: A-Z plus
-// `[ ] \ ~` → `{ } | ^`). `rfc1459Fold` reproduces that fold EXACTLY —
-// it is a wire-key format mirror, NOT a nick-equality helper: general
-// nick comparison stays on `nickEquals`/`normalizeNick` (ascii, by
-// documented tradeoff). Presence lookups must use the server's fold or
-// bracket-nick dots (`Foo[1]`) silently never light up.
+// `[ ] \ ~` → `{ } | ^`). Presence lookups fold via `rfc1459Fold` — the
+// SINGLE client nick fold, shared with `nickEquals`/`normalizeNick`
+// (#364 S13 consolidated the two former client folds into one). Without
+// the fold, bracket-nick dots (`Foo[1]`) silently never light up.
 
 import { createSignal } from "solid-js";
 import type { NotifyEntry } from "./api";
 import { identityScopedStore } from "./identityScopedStore";
+import { rfc1459Fold } from "./nickEquals";
 
 export type PresenceState = "online" | "offline" | "unknown";
 
@@ -54,24 +54,6 @@ export type PresenceToast =
       networkId: number;
       detail: string;
     };
-
-// Mirror of `Grappa.IRC.Identifier.canonical_nick/1` — the server-side
-// rfc1459 fold used as the presence-map key format on the wire.
-//
-// ASCII-byte-level by design (#364 cicchetto S4): the server folds
-// bytes `A-Z` only (SQLite `lower()` + the four bracket replaces), NOT
-// Unicode. `String.prototype.toLowerCase()` is Unicode-aware
-// (`É`→`é`, `İ`→`i̇`) and would over-fold non-ASCII nicks the server
-// keeps distinct — silently lighting the wrong presence row. Fold the
-// `A-Z` range by char code so multibyte sequences pass through
-// untouched, byte-for-byte with `fold_nick_byte/1`.
-export const rfc1459Fold = (nick: string): string =>
-  nick
-    .replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32))
-    .replace(/\[/g, "{")
-    .replace(/\]/g, "}")
-    .replace(/\\/g, "|")
-    .replace(/~/g, "^");
 
 // How long a transition toast stays up. Non-intrusive: it self-expires;
 // the Watched panel keeps the durable signal (the dot).
