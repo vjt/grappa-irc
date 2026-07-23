@@ -5,9 +5,9 @@
 # #364 docker S6: the Docker hot path just POSTed /admin/reload and printed
 # "✓ hot-deploy complete" unconditionally. /admin/reload returns HTTP 200
 # even when it reports per-module failures in-band
-# (`{"reloaded":[...],"failed":[[mod,reason],...]}` — :old_code_in_use /
-# :not_purged), so a half-failed reload was declared a success and left the
-# stack silently on stale code. The jail twin (infra/freebsd/deploy.sh)
+# (`{"reloaded":[...],"failed":[{"module":..,"reason":..},...]}` —
+# :old_code_in_use / :not_purged), so a half-failed reload was declared a
+# success and left the stack on stale code. The jail twin (infra/freebsd/deploy.sh)
 # already fails the deploy on a non-empty "failed" list and runs a
 # post-reload healthcheck. This ports that behavior to the Docker path
 # (CLAUDE.md no-silent-swallow).
@@ -98,7 +98,9 @@ run_hot() {
 }
 
 @test "reload reporting per-module failures FAILS the deploy (no success, no healthcheck)" {
-    export RELOAD_RESPONSE='{"reloaded":["Elixir.Foo"],"failed":[["Elixir.Bar","old_code_in_use"]]}'
+    # Production shape from AdminController.reload/2: failed entries are
+    # `%{module: "...", reason: "..."}` maps, not [mod,reason] pairs.
+    export RELOAD_RESPONSE='{"reloaded":["Elixir.Foo"],"failed":[{"module":"Elixir.Bar","reason":":old_code_in_use"}]}'
     export HEALTHZ_RC=0
 
     run_hot

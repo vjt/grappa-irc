@@ -39,6 +39,21 @@ defmodule GrappaWeb.AdminControllerTest do
       assert Enum.all?(body["reloaded"], &is_binary/1)
     end
 
+    test "success body carries the literal \"failed\":[] both deploy paths grep for", %{
+      conn: conn
+    } do
+      # Both scripts/deploy.sh (#364 docker S6) and infra/freebsd/deploy.sh
+      # discriminate a successful hot reload with the byte-exact glob
+      # `*'"failed":[]'*` against this raw response. Jason emits compact
+      # JSON (no space after the colon) and no committed code changed in the
+      # sandbox, so `failed` is empty — pin the exact substring so a future
+      # encoder/whitespace change that would break both shell paths reddens
+      # HERE instead of aborting every clean deploy.
+      conn = post(conn, "/admin/reload")
+      assert conn.status == 200
+      assert conn.resp_body =~ ~s("failed":[])
+    end
+
     test "allows ::1 with 200 JSON response", %{conn: conn} do
       conn = post(%{conn | remote_ip: {0, 0, 0, 0, 0, 0, 0, 1}}, "/admin/reload")
       body = json_response(conn, 200)

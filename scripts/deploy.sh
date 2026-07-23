@@ -154,8 +154,8 @@ if [ "$mode" = "hot" ]; then
     echo "reload response: $response"
 
     # HTTP 200 is NOT success — /admin/reload reports per-module failures
-    # in-band (`{"reloaded":[...],"failed":[[mod,reason],...]}` —
-    # :old_code_in_use / :not_purged). Declaring "✓ complete" over a
+    # in-band (`{"reloaded":[...],"failed":[{"module":..,"reason":..},...]}`
+    # — :old_code_in_use / :not_purged). Declaring "✓ complete" over a
     # failed reload leaves the stack silently on stale code. This mirrors
     # infra/freebsd/deploy.sh's jail path exactly (#364 docker S6,
     # CLAUDE.md no-silent-swallow). The empty-list glob is the same one
