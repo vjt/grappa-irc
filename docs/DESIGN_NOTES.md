@@ -27656,3 +27656,57 @@ latency), not the client allowlist — filed as its own look.
 report, not a scope boundary. When the symptom is inbound routing, the
 SoT is the server — challenge a client-only fix direction against where
 the behavior actually lives before building.*
+
+## 2026-07-23 — #373 peer-NICK migration: broadcast AFTER migrating history (rename-order fix)
+
+The #373 peer-NICK migration (`Session.Server.apply_effects/2` on
+`{:peer_nick_renamed, old, new}`) broadcast the `query_windows_list`
+event from **inside** `QueryWindows.rename/5`, BEFORE it migrated the DM
+scrollback + read cursor. The broadcast is a PubSub message, so any
+consumer reacting to it — a cic client OR the #373 Session.Server test —
+raced its follow-on `Scrollback.fetch(new_nick)` against the
+not-yet-migrated rows and could read `[]`.
+
+**How it surfaced:** the #373 test `server_test.exs` "peer NICK migrates
+the open query window + its DM scrollback old -> new" failed in CI
+(`ci` run on #371's merge, amid a bahamut-autokill `tcp_closed` storm)
+AND reproduced deterministically in isolation locally (`--repeat-until-
+failure` failed on iteration 1), while passing under full-suite
+scheduling load. That iso-fail / full-suite-pass split is the fingerprint
+of a real process-scheduling race, NOT a load flake — the test's
+`assert_receive query_windows_list` was an INVALID sync point for the
+scrollback read because the broadcast preceded the migration.
+
+**Fix — decouple the broadcast from the DB rename:**
+  * `QueryWindows.rename/5` → `rename/4`: does the DB write only, returns
+    `{:ok, :renamed | :noop}`, no broadcast. Dropped the now-unused
+    `subject_label` param (it existed only to feed the internal
+    broadcast).
+  * `broadcast_windows_list/2` made public.
+  * `apply_effects/2` on `:renamed`: migrate scrollback → migrate cursor
+    → THEN `QueryWindows.broadcast_windows_list/2`. The
+    `query_windows_list` event is now a truthful "rename fully applied"
+    barrier: any consumer reacting to it is guaranteed the DM history has
+    already moved old→new.
+  * `open/4` / `close/4` keep broadcasting inline — they have no
+    follow-on migration to order the broadcast against.
+
+**Verification:** the existing #373 Session.Server test becomes the
+regression proof (racy-fail → deterministic-pass across 200 iso
+`--repeat-until-failure` runs). The QueryWindows unit test that asserted
+`rename` broadcasts now asserts it is broadcast-free (the new contract);
+broadcast-after-migration is covered end-to-end by the Session.Server
+test. Full `check.sh` green (4046 tests, dialyzer 0 errors).
+
+**Provenance:** pre-existing race in the #373 code (commit `8ef221d7`),
+NOT introduced by #371 — #371's diff is orthogonal (services allowlist;
+`server.ex`/`scrollback.ex`/`query_windows.ex` untouched). Surfaced by
+#371's post-merge CI, root-caused, and fixed here.
+
+*Lesson: a PubSub broadcast is only a valid test/consumer sync point for
+state the broadcaster has ALREADY committed before emitting it. When an
+effect handler broadcasts mid-sequence and then keeps mutating, the
+event lies about "done." Emit the broadcast LAST, as a barrier — or the
+consumer races the tail of your own callback. "Passes in the suite, fails
+in isolation" is a race signature, not spec-rot: investigate before
+masking.*
