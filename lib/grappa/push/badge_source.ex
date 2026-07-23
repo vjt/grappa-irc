@@ -56,11 +56,11 @@ defmodule Grappa.Push.BadgeSource do
 
   @doc """
   Resolves the `Grappa.Push.BadgeSource` implementation from
-  `:persistent_term` (populated by `boot/0`), or `nil` when the key is
-  absent. `nil` is the transient HOT-DEPLOY window: a hot module reload
-  swaps the new `Triggers` / `BadgeCount` code into the live node but does
-  NOT re-run `Grappa.Application.start/2`, so `boot/0` hasn't re-populated
-  the key. `get/2` (default `nil`) instead of `get/1` so that window
+  `:persistent_term` (populated by `boot/0`), or `nil` when the key was
+  never populated. `:persistent_term` survives hot code reloads, so a
+  running node keeps the value it booted with; `nil` only surfaces for a
+  brand-new seam whose `boot/0` is hot-loaded BEFORE any cold restart has
+  run it. `get/2` (default `nil`) instead of `get/1` so that window
   degrades gracefully (see `count/1`) instead of crashing the push hot
   path.
   """

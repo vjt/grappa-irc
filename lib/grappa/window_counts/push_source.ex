@@ -19,8 +19,10 @@ defmodule Grappa.WindowCounts.PushSource do
   stashed in `:persistent_term`, and resolved lock-free via `impl/0` (the
   config value is a module atom read from env, never a literal in the
   caller), so Session carries no static edge onto the implementation. The
-  `nil` fallthrough (absent key — the transient HOT-DEPLOY window before
-  `boot/0` re-runs) is a no-op: the push is a live-render optimization, and
+  `nil` fallthrough (key never populated — `:persistent_term` survives hot
+  code reloads, so this only surfaces for a brand-new seam hot-loaded before
+  a cold restart runs `boot/0`) is a no-op: the push is a live-render
+  optimization, and
   the next `join_reply` / `/me` / `read_cursor_set` re-seeds the absolute
   snapshot regardless.
 
