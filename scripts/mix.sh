@@ -38,9 +38,17 @@ if [ -z "$env" ]; then
     fi
 fi
 
-# DATABASE_PATH is injected here (not left to compose.yaml's host-MIX_ENV
-# interpolation) so the DB file always matches the env this script
-# resolved — otherwise `--env=prod` on a dev host migrates/reads the DEV
-# db (#364 docker S5). db_path_for_env is the shell-side SoT for the path
-# shape; it must stay identical to compose.yaml's DATABASE_PATH.
-in_container_or_oneshot env MIX_ENV="$env" DATABASE_PATH="$(db_path_for_env "$env")" mix "$@"
+# DATABASE_PATH is read ONLY by config/runtime.exs's prod branch —
+# config/{dev,test}.exs hardcode the DB path and ignore the env var. So
+# only prod needs an override here: compose.yaml interpolates
+# DATABASE_PATH from the HOST's MIX_ENV, which diverges from the env this
+# script resolved, and `--env=prod` on a dev host would otherwise
+# migrate/read the DEV db (#364 docker S5). Inject the matching prod path
+# via the db_path_for_env SoT; leave dev/test to their compile-time
+# config (injecting there would be inert theater — and grappa_test.db
+# doesn't even match config/test.exs's MIX_TEST_PARTITION suffix).
+db_env=()
+if [ "$env" = "prod" ]; then
+    db_env=(DATABASE_PATH="$(db_path_for_env prod)")
+fi
+in_container_or_oneshot env MIX_ENV="$env" "${db_env[@]}" mix "$@"

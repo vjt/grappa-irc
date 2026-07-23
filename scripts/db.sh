@@ -14,7 +14,9 @@
 cd "$REPO_ROOT"
 
 env="$(in_container printenv MIX_ENV 2>/dev/null || echo dev)"
-DB="/app/runtime/grappa_${env}.db"
+# Path shape via the _lib.sh SoT so this can't drift from compose.yaml /
+# scripts/mix.sh (#364 docker S5 reuse).
+DB="$(db_path_for_env "$env")"
 MODE_ARG=""
 if [ "$env" = "prod" ]; then
     MODE_ARG="-readonly"

@@ -197,14 +197,14 @@ detect_mix_env() {
     docker compose "${COMPOSE_ARGS[@]}" exec -T grappa printenv MIX_ENV 2>/dev/null | tr -d '\r' || true
 }
 
-# The container DB file path for a given MIX_ENV. The path shape MUST stay
+# The container DB file path for a given MIX_ENV. The shape MUST stay
 # character-identical to compose.yaml's `DATABASE_PATH:` interpolation
-# (`/app/runtime/grappa_${MIX_ENV:-dev}.db`) — this is the shell-side
-# source of truth. compose.yaml derives DATABASE_PATH from the HOST's
-# MIX_ENV at container-create time; any caller that overrides MIX_ENV
-# *in-process* (scripts/mix.sh --env=<env>) MUST inject a matching
-# DATABASE_PATH via this helper, or runtime.exs reads the wrong DB file
-# for the selected env (#364 docker S5).
+# (`/app/runtime/grappa_${MIX_ENV:-dev}.db`) — the shell-side source of
+# truth for the path shape. Consumed by scripts/mix.sh (prod override —
+# the only env config/runtime.exs reads DATABASE_PATH for; #364 docker S5)
+# and scripts/db.sh (open the active env's DB). NB: config/test.exs adds a
+# MIX_TEST_PARTITION suffix for parallel `mix test` — out of scope here;
+# neither consumer opens a partitioned test DB.
 db_path_for_env() {
     printf '/app/runtime/grappa_%s.db' "$1"
 }
