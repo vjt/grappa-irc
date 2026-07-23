@@ -27207,6 +27207,65 @@ envelopes, and the #247 presence arms had generated counterparts but no
 `Omit<SessionWireXPayload, "kind">`, inline union arms via
 `Extract<WireUserEvent, {kind}>`.
 
+## 2026-07-23 — #364 bucket D: deploy-safety tooling (docker S5/S6/S10)
+
+Three findings from the 2026-07-19 review, all in host-side shell tooling
+(`scripts/*.sh`), all guarded by new host-side bats suites under
+`test/scripts/` (docker stubbed on PATH; real git for the SRC/REPO
+derivation). No behavior change was tested against a real deploy — the
+suites assert the invocation SHAPE / control flow.
+
+**docker S5 — `mix.sh --env=<env>` injects a matching DATABASE_PATH.**
+`compose.yaml` interpolates `DATABASE_PATH: /app/runtime/grappa_${MIX_ENV:-dev}.db`
+from the HOST shell at container-create time. `mix.sh --env=prod` only
+overrode MIX_ENV *inside* the mix process, so a oneshot (or live exec)
+still carried `grappa_dev.db` whenever the host MIX_ENV was dev/unset —
+runtime.exs's prod branch then migrated/read the DEV db believing it was
+prod (and the reverse for host=prod, `--env=dev`). Fix: mix.sh is the
+policy layer that authoritatively resolves the env, so it now injects
+`DATABASE_PATH` alongside MIX_ENV via the new `_lib.sh db_path_for_env/1`
+(the shell-side SoT for the path shape — kept character-identical to
+compose.yaml). The two can no longer disagree for a mix.sh invocation.
+Chose injection over the review's alternative (derive in `bin/start.sh`,
+drop the compose interpolation) because runtime.exs *raises* without
+DATABASE_PATH and oneshots bypass start.sh entirely — a start.sh default
+wouldn't cover the exact path that reported the bug. **Rule: any caller
+that overrides MIX_ENV in-process MUST inject a matching DATABASE_PATH via
+`db_path_for_env`.**
+
+**docker S6 — the Docker hot path verifies the reload result +
+healthchecks.** `scripts/deploy.sh`'s hot branch POSTed `/admin/reload`
+and printed "✓ hot-deploy complete" unconditionally. But HTTP 200 is NOT
+success: `/admin/reload` reports per-module failures in-band
+(`{"reloaded":[...],"failed":[[mod,reason],...]}` — `:old_code_in_use` /
+`:not_purged`), so a half-failed reload was declared a success, leaving
+the dev/e2e stack silently on stale code — the no-silent-swallow boundary
+class, already solved once in the jail twin (`infra/freebsd/deploy.sh`).
+Ported that behavior: capture the response, fail on a non-empty `"failed"`
+list (same `*'"failed":[]'*` glob the jail path relies on in prod against
+the identical endpoint), then run a bounded post-reload `/healthz` probe on
+the live node before claiming success. The hot healthcheck loop is
+overridable via `HOT_HEALTHCHECK_{RETRIES,SLEEP}` (prod defaults 30×1s) —
+deliberately distinct from the cold path's much longer recompile-boot
+window.
+
+**docker S10 — deploy scripts guard worktree/branch BEFORE side effects.**
+Both scripts side-effected first and only tripped `in_container`'s
+worktree guard afterwards. `deploy-cic.sh` had NO branch guard at all and
+rebuilt `runtime/cicchetto-dist` (the bundle nginx serves — swapped on
+disk) before dying at the broadcast POST: dist deployed from a worktree /
+feature branch, non-zero exit, no refresh banner. `deploy.sh` ran
+`git pull` in REPO_ROOT then died at the same late guard — tree updated,
+BEAM stale; worse, its own branch guard ran AFTER `cd REPO_ROOT`, so it
+checked main's branch and never caught a worktree at all. Fix: a shared
+`_lib.sh require_main_checkout/1` (asserts `SRC_ROOT == REPO_ROOT` AND
+`branch == main`, `ALLOW_DEPLOY_FROM_BRANCH=1` overrides the branch check)
+called as the FIRST step of both scripts, before any pull/build. Replaces
+deploy.sh's ineffective inline branch guard; gives deploy-cic.sh the
+branch guard it never had. **Rule: deploy scripts assert the main-checkout
+invariant up front — a guard that fires after the side effect is not a
+guard.**
+
 **web S1 — FallbackController @spec ↔ clause lockstep is now a canary.**
 The `@spec call/2` error union had drifted six tags behind its clauses.
 Beyond adding them, `FallbackControllerTest` now parses every
