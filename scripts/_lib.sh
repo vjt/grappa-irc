@@ -122,6 +122,30 @@ die() {
     exit 1
 }
 
+# Guard: refuse to run from a worktree or a non-main branch BEFORE any
+# side effect. Deploy scripts (deploy.sh, deploy-cic.sh) MUST call this
+# as their FIRST step (#364 docker S10). Deploys ship main's code path: a
+# worktree's source is NOT what the live container has mounted, and a
+# feature branch is not what should reach the dev/prod stack. Pre-fix the
+# scripts side-effected first (git pull in REPO_ROOT / cicchetto-dist
+# rebuild — the bundle nginx serves, swapped on disk) and only tripped
+# in_container's worktree check afterwards: tree/dist mutated, non-zero
+# exit. Note deploy.sh's own branch guard used to run AFTER `cd REPO_ROOT`,
+# so it checked main's branch and never caught a worktree at all.
+# ALLOW_DEPLOY_FROM_BRANCH=1 overrides the branch check (pre-existing knob).
+# $1 is the caller's name, only for the error message.
+require_main_checkout() {
+    local script="$1"
+    if [ "$SRC_ROOT" != "$REPO_ROOT" ]; then
+        die "$script must run from the main checkout, not a worktree ($SRC_ROOT). cd $REPO_ROOT and deploy from there."
+    fi
+    local branch
+    branch="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
+    if [ "$branch" != "main" ] && [ "${ALLOW_DEPLOY_FROM_BRANCH:-}" != "1" ]; then
+        die "$script refuses to run on branch '$branch'. Set ALLOW_DEPLOY_FROM_BRANCH=1 to override."
+    fi
+}
+
 # Export CONTAINER_UID/GID for the e2e compose stack on Linux. macOS lets
 # Docker Desktop translate ownership transparently, so leaving the
 # defaults (1000) is fine; on Linux the bind-mounts to runtime/bun-cache

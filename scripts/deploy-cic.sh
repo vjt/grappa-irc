@@ -29,6 +29,13 @@ set -euo pipefail
 
 . "$(dirname "$0")/_lib.sh"
 
+# #364 docker S10: assert main-checkout + main-branch BEFORE the dist
+# rebuild swaps the on-disk bundle nginx serves. Pre-fix this script had
+# NO branch guard (it shipped whatever the main checkout's branch held)
+# and only hit in_container's worktree check AFTER the build — dist
+# deployed, then a non-zero exit at the broadcast POST.
+require_main_checkout "deploy-cic.sh"
+
 cd "$REPO_ROOT"
 
 mkdir -p runtime/cicchetto-dist

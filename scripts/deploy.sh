@@ -47,6 +47,11 @@ set -euo pipefail
 
 . "$(dirname "$0")/_lib.sh"
 
+# #364 docker S10: assert main-checkout + main-branch BEFORE any side
+# effect (the git pull below mutates REPO_ROOT). in_container's own
+# worktree guard fires too late — the pull already happened.
+require_main_checkout "deploy.sh"
+
 cd "$REPO_ROOT"
 
 mode="${1:-auto}"
@@ -56,11 +61,6 @@ case "$mode" in
     auto|"")       mode=auto ;;
     *) die "usage: scripts/deploy.sh [--force-hot|--force-cold]" ;;
 esac
-
-branch="$(git rev-parse --abbrev-ref HEAD)"
-if [ "$branch" != "main" ] && [ "${ALLOW_DEPLOY_FROM_BRANCH:-}" != "1" ]; then
-    die "deploy.sh refuses to run on branch '$branch'. Set ALLOW_DEPLOY_FROM_BRANCH=1 to override."
-fi
 
 # Pull first so the preflight diffs against what we're ABOUT to deploy,
 # not against the previous HEAD. `--ff-only` keeps us out of the merge
