@@ -170,7 +170,7 @@ defmodule GrappaWeb.AdminChannelTest do
       :ok = Grappa.PubSub.broadcast_event(Topic.session_log(), SessionLog.Wire.entry_payload(event))
 
       assert_push "session_log_event",
-                  %{kind: "session_log_event", entry: %{session_id: "user:x:7", event: :disconnected}},
+                  %{kind: :session_log_event, entry: %{session_id: "user:x:7", event: :disconnected}},
                   500
     end
   end

@@ -59,13 +59,13 @@ defmodule Grappa.QueryWindows.WireTest do
       windows = %{1 => [%{network_id: 1, target_nick: "x", opened_at: "2026-05-12T00:00:00Z"}]}
 
       assert Wire.windows_list_payload(windows) == %{
-               kind: "query_windows_list",
+               kind: :query_windows_list,
                windows: windows
              }
     end
 
     test "kind is always the string literal 'query_windows_list'" do
-      assert Wire.windows_list_payload(%{}).kind == "query_windows_list"
+      assert Wire.windows_list_payload(%{}).kind == :query_windows_list
     end
 
     test "windows passes through verbatim (no transformation)" do
@@ -74,7 +74,7 @@ defmodule Grappa.QueryWindows.WireTest do
     end
 
     test "empty windows map yields a valid envelope" do
-      assert Wire.windows_list_payload(%{}) == %{kind: "query_windows_list", windows: %{}}
+      assert Wire.windows_list_payload(%{}) == %{kind: :query_windows_list, windows: %{}}
     end
   end
 end

@@ -148,7 +148,7 @@ defmodule Grappa.QueryWindowsTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "query_windows_list", windows: windows}
+                       payload: %{kind: :query_windows_list, windows: windows}
                      },
                      1_000
 
@@ -174,7 +174,7 @@ defmodule Grappa.QueryWindowsTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "query_windows_list", windows: windows}
+                       payload: %{kind: :query_windows_list, windows: windows}
                      },
                      1_000
 
@@ -267,7 +267,7 @@ defmodule Grappa.QueryWindowsTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "query_windows_list", windows: windows}
+                       payload: %{kind: :query_windows_list, windows: windows}
                      },
                      1_000
 
@@ -288,7 +288,7 @@ defmodule Grappa.QueryWindowsTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "query_windows_list", windows: windows}
+                       payload: %{kind: :query_windows_list, windows: windows}
                      },
                      1_000
 

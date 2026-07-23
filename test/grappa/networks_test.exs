@@ -687,7 +687,7 @@ defmodule Grappa.NetworksTest do
   # post-PATCH).
   #
   # Fix: route through `Grappa.PubSub.broadcast_event/2` with payload
-  # `%{kind: "connection_state_changed", ...}` — the existing wire-event
+  # `%{kind: :connection_state_changed, ...}` — the existing wire-event
   # contract every other CP15 typed event uses. Fastlane delivers the
   # payload as `phx_msg{event: "event"}` exactly once per WS, AND plain
   # `Phoenix.PubSub.subscribe/2` subscribers (test processes) receive a
@@ -722,7 +722,7 @@ defmodule Grappa.NetworksTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          from: :parked,
                          to: :connected,
                          network_slug: slug
@@ -760,7 +760,7 @@ defmodule Grappa.NetworksTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          from: :connected,
                          to: :parked,
                          network_slug: slug,
@@ -806,7 +806,7 @@ defmodule Grappa.NetworksTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          from: :parked,
                          to: :connected,
                          network: %{slug: ^slug, connection_state: :connected, nick: "vjt"}
@@ -837,7 +837,7 @@ defmodule Grappa.NetworksTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          from: :connected,
                          to: :parked,
                          reason: ^reason,
@@ -871,7 +871,7 @@ defmodule Grappa.NetworksTest do
 
       {:ok, _} = Networks.connect(cred)
 
-      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "connection_state_changed"}}, 100
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :connection_state_changed}}, 100
     end
   end
 

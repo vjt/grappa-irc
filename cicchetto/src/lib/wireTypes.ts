@@ -382,7 +382,7 @@ export type ChannelDirectoryWireIndexPayload = {
 // === Grappa.Cic.Wire ===
 
 export type CicWireBundleHashPayload = {
-  kind: string;
+  kind: "bundle_hash";
   hash: string;
   version?: string;
 };
@@ -468,7 +468,7 @@ export type NetworksWireHomeData = {
 };
 
 export type NetworksWireConnectionStateEvent = {
-  kind: string;
+  kind: "connection_state_changed";
   user_id: string | null;
   network_id: number;
   network_slug: string;
@@ -481,7 +481,8 @@ export type NetworksWireConnectionStateEvent = {
 
 export type WireNetworksEvent =
   | NetworksWireNetworkWithNickJson
-  | NetworksWireVisitorNetworkWithNickJson;
+  | NetworksWireVisitorNetworkWithNickJson
+  | NetworksWireConnectionStateEvent;
 
 // === Grappa.Notify.Wire ===
 
@@ -494,7 +495,7 @@ export type NotifyWireEntry = {
 };
 
 export type NotifyWireNotifyListPayload = {
-  kind: string;
+  kind: "notify_list";
   networks: NotifyWireEntriesMap;
 };
 
@@ -509,14 +510,14 @@ export type QueryWindowsWireWindowsEntry = {
 };
 
 export type QueryWindowsWireWindowsListPayload = {
-  kind: string;
+  kind: "query_windows_list";
   windows: QueryWindowsWireWindowsMap;
 };
 
 // === Grappa.ReadCursor.Wire ===
 
 export type ReadCursorWireReadCursorSet = {
-  kind: string;
+  kind: "read_cursor_set";
   last_read_message_id: number;
   badge_count: number;
 };
@@ -535,7 +536,7 @@ export type ScrollbackWireT = {
 };
 
 export type ScrollbackWireEvent = {
-  kind: string;
+  kind: "message";
   message: ScrollbackWireT;
 };
 
@@ -551,15 +552,20 @@ export type ScrollbackWireArchiveWireIndex = {
 };
 
 export type ScrollbackWireArchiveChangedPayload = {
-  kind: string;
+  kind: "archive_changed";
   network_slug: string;
 };
 
 export type ScrollbackWireArchivePurgedPayload = {
-  kind: string;
+  kind: "archive_purged";
   network_slug: string;
   target: string;
 };
+
+export type WireScrollbackEvent =
+  | ScrollbackWireEvent
+  | ScrollbackWireArchiveChangedPayload
+  | ScrollbackWireArchivePurgedPayload;
 
 // === Grappa.ServerSettings.Wire ===
 
@@ -573,7 +579,7 @@ export type ServerSettingsWireUploadView = {
 };
 
 export type ServerSettingsWireChangedPayload = {
-  kind: string;
+  kind: "server_settings_changed";
   upload: ServerSettingsWireUploadView;
   http_host_aliases: string[];
 };
@@ -754,28 +760,28 @@ export type SessionWireJoinedPayload = {
   kind: "joined";
   network: string;
   channel: string;
-  state: string;
+  state: "joined";
 };
 
 export type SessionWireWindowPendingPayload = {
   kind: "window_pending";
   network: string;
   channel: string;
-  state: string;
+  state: "pending";
 };
 
 export type SessionWireWindowInvitedPayload = {
   kind: "window_invited";
   network: string;
   channel: string;
-  state: string;
+  state: "invited";
 };
 
 export type SessionWireJoinFailedPayload = {
   kind: "join_failed";
   network: string;
   channel: string;
-  state: string;
+  state: "failed";
   reason: string | null;
   numeric: number | null;
 };
@@ -784,7 +790,7 @@ export type SessionWireKickedPayload = {
   kind: "kicked";
   network: string;
   channel: string;
-  state: string;
+  state: "kicked";
   by: string | null;
   reason: string | null;
 };
@@ -792,7 +798,7 @@ export type SessionWireKickedPayload = {
 export type SessionWireAwayConfirmedPayload = {
   kind: "away_confirmed";
   network: string;
-  state: string;
+  state: "present" | "away";
 };
 
 export type SessionWireMentionsBundleMessage = {
@@ -913,7 +919,7 @@ export type SessionWireDirectoryFailedPayload = {
 export type SessionWireConnectionProgressPayload = {
   kind: "connection_progress";
   network: string;
-  state: string;
+  state: "connecting" | "connected";
 };
 
 export type WireSessionEvent =
@@ -968,7 +974,7 @@ export type SessionLogWireT = {
 };
 
 export type SessionLogWireEvent = {
-  kind: string;
+  kind: "session_log_event";
   entry: SessionLogWireT;
 };
 
@@ -1007,7 +1013,7 @@ export type VisitorsWireT = {
 // === Grappa.WindowCounts.Wire ===
 
 export type WindowCountsWireEvent = {
-  kind: string;
+  kind: "window_counts";
   channel: string;
   messages: number;
   mentions: number;

@@ -85,7 +85,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          user_id: ^uid,
                          network_id: ^nid,
                          network_slug: ^slug,
@@ -121,7 +121,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          from: :failed,
                          to: :connected
                        }
@@ -173,7 +173,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          from: :connected,
                          to: :parked,
                          reason: "user-disconnect"
@@ -195,7 +195,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          from: :connected,
                          to: :parked
                        }
@@ -252,7 +252,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          from: :connected,
                          to: :failed,
                          reason: "k-line: G:Lined"

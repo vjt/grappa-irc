@@ -147,7 +147,7 @@ defmodule GrappaWeb.AdminControllerTest do
 
           assert_receive %Phoenix.Socket.Broadcast{
             event: "event",
-            payload: %{kind: "bundle_hash", hash: ^expected_hash}
+            payload: %{kind: :bundle_hash, hash: ^expected_hash}
           }
       end
     end
@@ -176,7 +176,7 @@ defmodule GrappaWeb.AdminControllerTest do
 
           assert_receive %Phoenix.Socket.Broadcast{
             event: "event",
-            payload: %{kind: "bundle_hash", hash: ^expected_hash}
+            payload: %{kind: :bundle_hash, hash: ^expected_hash}
           }
       end
     end

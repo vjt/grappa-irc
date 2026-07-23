@@ -355,28 +355,28 @@ defmodule Grappa.Session.Wire do
           kind: :joined,
           network: String.t(),
           channel: String.t(),
-          state: String.t()
+          state: :joined
         }
 
   @type window_pending_payload :: %{
           kind: :window_pending,
           network: String.t(),
           channel: String.t(),
-          state: String.t()
+          state: :pending
         }
 
   @type window_invited_payload :: %{
           kind: :window_invited,
           network: String.t(),
           channel: String.t(),
-          state: String.t()
+          state: :invited
         }
 
   @type join_failed_payload :: %{
           kind: :join_failed,
           network: String.t(),
           channel: String.t(),
-          state: String.t(),
+          state: :failed,
           reason: String.t() | nil,
           numeric: pos_integer() | nil
         }
@@ -385,7 +385,7 @@ defmodule Grappa.Session.Wire do
           kind: :kicked,
           network: String.t(),
           channel: String.t(),
-          state: String.t(),
+          state: :kicked,
           by: String.t() | nil,
           reason: String.t() | nil
         }
@@ -393,7 +393,7 @@ defmodule Grappa.Session.Wire do
   @type away_confirmed_payload :: %{
           kind: :away_confirmed,
           network: String.t(),
-          state: String.t()
+          state: :present | :away
         }
 
   @type mentions_bundle_message :: %{
@@ -639,7 +639,7 @@ defmodule Grappa.Session.Wire do
   @type connection_progress_payload :: %{
           kind: :connection_progress,
           network: String.t(),
-          state: String.t()
+          state: :connecting | :connected
         }
 
   @doc """
@@ -981,7 +981,7 @@ defmodule Grappa.Session.Wire do
   @spec joined(String.t(), String.t()) :: joined_payload()
   def joined(network_slug, channel)
       when is_binary(network_slug) and is_binary(channel) do
-    %{kind: :joined, network: network_slug, channel: channel, state: "joined"}
+    %{kind: :joined, network: network_slug, channel: channel, state: :joined}
   end
 
   @doc """
@@ -1002,7 +1002,7 @@ defmodule Grappa.Session.Wire do
   @spec window_pending(String.t(), String.t()) :: window_pending_payload()
   def window_pending(network_slug, channel)
       when is_binary(network_slug) and is_binary(channel) do
-    %{kind: :window_pending, network: network_slug, channel: channel, state: "pending"}
+    %{kind: :window_pending, network: network_slug, channel: channel, state: :pending}
   end
 
   @doc """
@@ -1017,7 +1017,7 @@ defmodule Grappa.Session.Wire do
   @spec window_invited(String.t(), String.t()) :: window_invited_payload()
   def window_invited(network_slug, channel)
       when is_binary(network_slug) and is_binary(channel) do
-    %{kind: :window_invited, network: network_slug, channel: channel, state: "invited"}
+    %{kind: :window_invited, network: network_slug, channel: channel, state: :invited}
   end
 
   @doc """
@@ -1033,7 +1033,7 @@ defmodule Grappa.Session.Wire do
       kind: :join_failed,
       network: network_slug,
       channel: channel,
-      state: "failed",
+      state: :failed,
       reason: reason,
       numeric: numeric
     }
@@ -1054,7 +1054,7 @@ defmodule Grappa.Session.Wire do
       kind: :kicked,
       network: network_slug,
       channel: channel,
-      state: "kicked",
+      state: :kicked,
       by: by,
       reason: reason
     }
@@ -1065,17 +1065,16 @@ defmodule Grappa.Session.Wire do
 
   Caller passes the closed-set `:present | :away` atom (the
   EventRouter effect-tuple shape — `{:away_confirmed, :present |
-  :away}`). The atom-to-string conversion happens HERE at the wire
-  boundary mirroring `Scrollback.Wire.to_json/1`'s
-  `Atom.to_string(m.kind)` — keeps Session.Server free of
-  presentation-shape concerns, and a fourth `:away`-class atom
-  surfaces as a FunctionClauseError at the boundary instead of
-  silently shipping `to_string(:unexpected)` over the wire.
+  :away}`). The atom passes through unchanged (Jason stringifies at
+  the JSON edge — the S14 atom-out convention), and the `state in
+  [:present, :away]` guard makes a fourth `:away`-class atom a
+  FunctionClauseError at the boundary instead of silently shipping an
+  unexpected value over the wire.
   """
   @spec away_confirmed(String.t(), :present | :away) :: away_confirmed_payload()
   def away_confirmed(network_slug, state)
       when is_binary(network_slug) and state in [:present, :away] do
-    %{kind: :away_confirmed, network: network_slug, state: Atom.to_string(state)}
+    %{kind: :away_confirmed, network: network_slug, state: state}
   end
 
   @doc """
@@ -1321,6 +1320,6 @@ defmodule Grappa.Session.Wire do
           connection_progress_payload()
   def connection_progress(network_slug, state)
       when is_binary(network_slug) and state in [:connecting, :connected] do
-    %{kind: :connection_progress, network: network_slug, state: Atom.to_string(state)}
+    %{kind: :connection_progress, network: network_slug, state: state}
   end
 end

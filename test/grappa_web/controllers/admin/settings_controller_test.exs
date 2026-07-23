@@ -254,7 +254,7 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
       assert_receive %Phoenix.Socket.Broadcast{
         event: "event",
         payload: %{
-          kind: "server_settings_changed",
+          kind: :server_settings_changed,
           upload: %{active_host: :litterbox}
         }
       }
@@ -278,7 +278,7 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
       assert_receive %Phoenix.Socket.Broadcast{
         event: "event",
         payload: %{
-          kind: "server_settings_changed",
+          kind: :server_settings_changed,
           upload: %{image_per_file_cap_bytes: 4_000_000}
         }
       }

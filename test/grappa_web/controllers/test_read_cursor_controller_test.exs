@@ -106,7 +106,7 @@ defmodule GrappaWeb.TestReadCursorControllerTest do
       assert_receive %Phoenix.Socket.Broadcast{
         topic: ^topic,
         event: "event",
-        payload: %{kind: "read_cursor_set", last_read_message_id: ^m1_id}
+        payload: %{kind: :read_cursor_set, last_read_message_id: ^m1_id}
       }
     end
   end

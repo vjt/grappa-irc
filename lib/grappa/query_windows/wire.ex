@@ -32,7 +32,7 @@ defmodule Grappa.QueryWindows.Wire do
   `windows_list_payload/1` rather than rolling the map at the
   broadcast / push site.
   """
-  @type windows_list_payload :: %{kind: String.t(), windows: windows_map()}
+  @type windows_list_payload :: %{kind: :query_windows_list, windows: windows_map()}
 
   @doc """
   Render one `%Window{}` to the wire shape.
@@ -70,6 +70,6 @@ defmodule Grappa.QueryWindows.Wire do
   """
   @spec windows_list_payload(windows_map()) :: windows_list_payload()
   def windows_list_payload(windows) when is_map(windows) do
-    %{kind: "query_windows_list", windows: windows}
+    %{kind: :query_windows_list, windows: windows}
   end
 end

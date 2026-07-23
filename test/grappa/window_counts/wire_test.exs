@@ -13,7 +13,7 @@ defmodule Grappa.WindowCounts.WireTest do
     snapshot = %{messages: 3, mentions: 1, events: 2, severity: :mention}
 
     assert Wire.window_counts_payload("#chan", snapshot) == %{
-             kind: "window_counts",
+             kind: :window_counts,
              channel: "#chan",
              messages: 3,
              mentions: 1,

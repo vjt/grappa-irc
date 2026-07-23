@@ -149,7 +149,7 @@ defmodule Grappa.ServerSettingsTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
         event: "event",
-        payload: %{kind: "server_settings_changed", upload: %{active_host: :litterbox}}
+        payload: %{kind: :server_settings_changed, upload: %{active_host: :litterbox}}
       }
     end
 
@@ -159,7 +159,7 @@ defmodule Grappa.ServerSettingsTest do
       assert_receive %Phoenix.Socket.Broadcast{
         event: "event",
         payload: %{
-          kind: "server_settings_changed",
+          kind: :server_settings_changed,
           upload: %{video_per_file_cap_bytes: 7_777_777}
         }
       }
@@ -170,7 +170,7 @@ defmodule Grappa.ServerSettingsTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
         event: "event",
-        payload: %{kind: "server_settings_changed", upload: %{global_cap_bytes: 99_999}}
+        payload: %{kind: :server_settings_changed, upload: %{global_cap_bytes: 99_999}}
       }
     end
 
@@ -180,7 +180,7 @@ defmodule Grappa.ServerSettingsTest do
       assert_receive %Phoenix.Socket.Broadcast{
         event: "event",
         payload: %{
-          kind: "server_settings_changed",
+          kind: :server_settings_changed,
           upload: %{audio_per_file_cap_bytes: 7_654_321}
         }
       }

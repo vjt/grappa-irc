@@ -928,7 +928,7 @@ defmodule Grappa.Session do
             required(:kind) => :joined | :join_failed | :kicked,
             required(:network) => String.t(),
             required(:channel) => String.t(),
-            required(:state) => String.t(),
+            required(:state) => :joined | :failed | :kicked,
             optional(:reason) => String.t() | nil,
             optional(:numeric) => pos_integer(),
             optional(:by) => String.t()

@@ -24,7 +24,7 @@ defmodule Grappa.ServerSettings.WireTest do
     test "passes embedded host atom through (Jason stringifies at the edge)" do
       payload = Wire.server_settings_changed(view(:embedded, ["irc.sindro.me"]))
 
-      assert payload.kind == "server_settings_changed"
+      assert payload.kind == :server_settings_changed
       # S15: the host atom passes through the term unchanged; the Jason
       # boundary (see the encodable test below) stringifies it to
       # "embedded" so the wire bytes are identical.
@@ -65,7 +65,7 @@ defmodule Grappa.ServerSettings.WireTest do
     end
 
     test "kind field is the discriminator cic dispatches on" do
-      assert %{kind: "server_settings_changed"} =
+      assert %{kind: :server_settings_changed} =
                Wire.server_settings_changed(view(:embedded, ["irc.sindro.me"]))
     end
   end

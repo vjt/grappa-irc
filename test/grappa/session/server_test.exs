@@ -1174,7 +1174,7 @@ defmodule Grappa.Session.ServerTest do
       # sees its (non-)effect deterministically.
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: :away_confirmed, network: net_slug, state: "away"}
+                       payload: %{kind: :away_confirmed, network: net_slug, state: :away}
                      },
                      1_000
 
@@ -1207,7 +1207,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: :away_confirmed, network: net_slug, state: "present"}
+                       payload: %{kind: :away_confirmed, network: net_slug, state: :present}
                      },
                      1_000
 
@@ -2105,7 +2105,7 @@ defmodule Grappa.Session.ServerTest do
                          kind: :joined,
                          network: net_slug,
                          channel: "#test",
-                         state: "joined"
+                         state: :joined
                        }
                      },
                      1_000
@@ -2760,7 +2760,7 @@ defmodule Grappa.Session.ServerTest do
                          kind: :window_pending,
                          network: net_slug,
                          channel: "#sniffo",
-                         state: "pending"
+                         state: :pending
                        }
                      },
                      1_000
@@ -2798,7 +2798,7 @@ defmodule Grappa.Session.ServerTest do
                          kind: :window_invited,
                          network: net_slug,
                          channel: "#random",
-                         state: "invited"
+                         state: :invited
                        }
                      },
                      1_000
@@ -2880,13 +2880,13 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: :window_pending, channel: "#sniffo", state: "pending"}
+                       payload: %{kind: :window_pending, channel: "#sniffo", state: :pending}
                      },
                      1_000
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: :window_pending, channel: "#other", state: "pending"}
+                       payload: %{kind: :window_pending, channel: "#other", state: :pending}
                      },
                      1_000
 
@@ -3036,7 +3036,7 @@ defmodule Grappa.Session.ServerTest do
       # upstream 473 → EventRouter emits {:join_failed, ...} → Server
       # apply_effects arm persists :notice + flips window state + broadcasts
       # the typed `join_failed` event on Topic.user/1 (F1, 2026-05-15) and
-      # the persisted notice row as a `kind: "message"` event on the
+      # the persisted notice row as a `kind: :message` event on the
       # per-channel topic. Subscribe to BOTH topics so we can assert each
       # path lands in one cycle for cic to render the failure correctly.
       {server, port} = start_server()
@@ -3062,7 +3062,7 @@ defmodule Grappa.Session.ServerTest do
                          kind: :join_failed,
                          network: net_slug,
                          channel: "#sniffo",
-                         state: "failed",
+                         state: :failed,
                          reason: "Cannot join channel (+i)",
                          numeric: 473
                        }
@@ -3133,7 +3133,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "archive_changed", network_slug: net_slug}
+                       payload: %{kind: :archive_changed, network_slug: net_slug}
                      },
                      1_000
 
@@ -3335,7 +3335,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, "PING :flush\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
-      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "parted"}}, 200
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :parted}}, 200
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3381,7 +3381,7 @@ defmodule Grappa.Session.ServerTest do
                          kind: :kicked,
                          network: net_slug,
                          channel: "#test",
-                         state: "kicked",
+                         state: :kicked,
                          by: "alice",
                          reason: "behave"
                        }
@@ -3718,7 +3718,7 @@ defmodule Grappa.Session.ServerTest do
       # window since the persist+broadcast is fully synchronous.
       refute_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :topic}}
+                       payload: %{kind: :message, message: %{kind: :topic}}
                      },
                      150
 
@@ -4063,7 +4063,7 @@ defmodule Grappa.Session.ServerTest do
                        payload: %{
                          kind: :connection_progress,
                          network: network_slug,
-                         state: "connecting"
+                         state: :connecting
                        }
                      },
                      1_000
@@ -4079,7 +4079,7 @@ defmodule Grappa.Session.ServerTest do
                        payload: %{
                          kind: :connection_progress,
                          network: ^network_slug,
-                         state: "connected"
+                         state: :connected
                        }
                      },
                      1_000
@@ -4943,7 +4943,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          to: :failed,
                          reason: "k-line: You are banned from this server."
                        }
@@ -4987,7 +4987,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "connection_state_changed",
+                         kind: :connection_state_changed,
                          to: :failed,
                          reason: "sasl: SASL authentication failed"
                        }
@@ -7057,7 +7057,7 @@ defmodule Grappa.Session.ServerTest do
       # Ephemeral: NOT persisted — no :notice row reaches the $server window.
       refute_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice}}
+                       payload: %{kind: :message, message: %{kind: :notice}}
                      },
                      200
 
@@ -7113,7 +7113,7 @@ defmodule Grappa.Session.ServerTest do
       # Nothing persisted: the old 2-notice scrollback dump is gone.
       refute_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice}}
+                       payload: %{kind: :message, message: %{kind: :notice}}
                      },
                      200
 
@@ -7187,7 +7187,7 @@ defmodule Grappa.Session.ServerTest do
       # Ephemeral: NOT persisted — no :notice row reaches scrollback.
       refute_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice}}
+                       payload: %{kind: :message, message: %{kind: :notice}}
                      },
                      200
 

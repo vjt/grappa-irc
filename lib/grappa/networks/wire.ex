@@ -219,7 +219,7 @@ defmodule Grappa.Networks.Wire do
   `home_network_state_changed_event/2` retired.
   """
   @type connection_state_event :: %{
-          kind: String.t(),
+          kind: :connection_state_changed,
           user_id: String.t() | nil,
           network_id: integer(),
           network_slug: String.t(),
@@ -383,7 +383,7 @@ defmodule Grappa.Networks.Wire do
       )
       when is_binary(nick) and nick != "" do
     %{
-      kind: "connection_state_changed",
+      kind: :connection_state_changed,
       user_id: c.user_id,
       network_id: c.network_id,
       network_slug: slug,

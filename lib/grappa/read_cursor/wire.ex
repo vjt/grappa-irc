@@ -46,7 +46,7 @@ defmodule Grappa.ReadCursor.Wire do
   `lib/userTopic.ts`'s `narrowReadCursorSet`.
   """
   @type read_cursor_set :: %{
-          kind: String.t(),
+          kind: :read_cursor_set,
           last_read_message_id: integer(),
           badge_count: integer()
         }
@@ -63,7 +63,7 @@ defmodule Grappa.ReadCursor.Wire do
   def read_cursor_set(last_read_message_id, badge_count)
       when is_integer(last_read_message_id) and is_integer(badge_count) do
     %{
-      kind: "read_cursor_set",
+      kind: :read_cursor_set,
       last_read_message_id: last_read_message_id,
       badge_count: badge_count
     }

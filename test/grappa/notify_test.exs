@@ -139,7 +139,7 @@ defmodule Grappa.NotifyTest do
       net_id = net.id
 
       assert_receive %Phoenix.Socket.Broadcast{
-        payload: %{kind: "notify_list", networks: %{^net_id => [entry]}}
+        payload: %{kind: :notify_list, networks: %{^net_id => [entry]}}
       }
 
       assert entry.nick == "Foobar"
@@ -231,7 +231,7 @@ defmodule Grappa.NotifyTest do
       assert {:error, :list_full} =
                Notify.add({:user, user.id}, net.id, ["one_too_many"], user.name)
 
-      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "notify_list"}}, 100
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :notify_list}}, 100
     end
   end
 
@@ -262,7 +262,7 @@ defmodule Grappa.NotifyTest do
       assert :ok = Notify.remove({:user, user.id}, net.id, ["foobar"], user.name)
 
       assert_receive %Phoenix.Socket.Broadcast{
-        payload: %{kind: "notify_list", networks: networks}
+        payload: %{kind: :notify_list, networks: networks}
       }
 
       assert networks == %{}

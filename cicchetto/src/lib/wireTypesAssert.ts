@@ -62,22 +62,37 @@ import type {
   WhoReply,
   WhowasBundle,
   WhoUser,
+  WireChannelEvent,
   WireUserEvent,
 } from "./api";
 import type { ModesEntry, TopicEntry } from "./channelTopic";
 import type { MemberEntry } from "./memberTypes";
 import type {
   ChannelDirectoryWireEntry,
+  CicWireBundleHashPayload,
   NetworksCredentialConnectionState,
   NetworksFeaturedChannelsWireLink,
+  NetworksWireConnectionStateEvent,
   NetworksWireCredentialJson,
   NetworksWireHomeData,
   NetworksWireHomeNetworkRow,
   NotifyWireEntry,
+  NotifyWireNotifyListPayload,
   QueryWindowsWireWindowsEntry,
+  QueryWindowsWireWindowsListPayload,
+  ReadCursorWireReadCursorSet,
   ScrollbackMessageKind,
+  ScrollbackWireArchiveChangedPayload,
+  ScrollbackWireArchivePurgedPayload,
+  ScrollbackWireEvent,
   ScrollbackWireT,
+  ServerSettingsWireChangedPayload,
+  SessionWireAwayConfirmedPayload,
   SessionWireChannelModesWire,
+  SessionWireConnectionProgressPayload,
+  SessionWireJoinedPayload,
+  SessionWireJoinFailedPayload,
+  SessionWireKickedPayload,
   SessionWireLusersBundlePayload,
   SessionWireMember,
   SessionWireMentionsBundleMessage,
@@ -91,6 +106,9 @@ import type {
   SessionWireWhoReplyPayload,
   SessionWireWhowasBundlePayload,
   SessionWireWhoUser,
+  SessionWireWindowInvitedPayload,
+  SessionWireWindowPendingPayload,
+  WindowCountsWireEvent,
 } from "./wireTypes";
 
 // Bi-directional subtype assert helper. `Equal<A, B>` is `true` when
@@ -190,4 +208,92 @@ export type _Assert_PresenceError = Assert<
 >;
 export type _Assert_PresenceSnapshot = Assert<
   Equal<Extract<WireUserEvent, { kind: "presence_snapshot" }>, SessionWirePresenceSnapshotPayload>
+>;
+
+// === cross-surface S1 (2026-07-19 review) — envelope discriminator pins ===
+// The envelope `kind` (and Session `state`) discriminators of ~10 Wire
+// modules were typed `String.t()` server-side, so codegen emitted
+// `kind: string` and cic restated each literal by hand with zero
+// compile-time gate — a server rename of any discriminator shipped
+// silently past codegen + tsc, then every event of that kind was dropped
+// at the cic narrower with only a console.warn. S1 tightened the
+// typespecs to literal atoms (Dialyzer now pins the builders; codegen
+// emits `kind: "literal"`); these pins tie cic's hand-rolled union arms
+// to the generated literal payloads so a future rename is a `tsc` error.
+// Each `Extract<Union, {kind}>` also revalidates the arm's full field
+// shape (kind + body) against the generated type — the same guarantee as
+// the S7 pins above.
+export type _Assert_ScrollbackMessageEvent = Assert<
+  Equal<Extract<WireChannelEvent, { kind: "message" }>, ScrollbackWireEvent>
+>;
+export type _Assert_ReadCursorSet = Assert<
+  Equal<Extract<WireChannelEvent, { kind: "read_cursor_set" }>, ReadCursorWireReadCursorSet>
+>;
+export type _Assert_WindowCounts = Assert<
+  Equal<Extract<WireChannelEvent, { kind: "window_counts" }>, WindowCountsWireEvent>
+>;
+export type _Assert_NotifyList = Assert<
+  Equal<Extract<WireUserEvent, { kind: "notify_list" }>, NotifyWireNotifyListPayload>
+>;
+export type _Assert_QueryWindowsList = Assert<
+  Equal<
+    Extract<WireUserEvent, { kind: "query_windows_list" }>,
+    QueryWindowsWireWindowsListPayload
+  >
+>;
+export type _Assert_ArchiveChanged = Assert<
+  Equal<Extract<WireUserEvent, { kind: "archive_changed" }>, ScrollbackWireArchiveChangedPayload>
+>;
+export type _Assert_ArchivePurged = Assert<
+  Equal<Extract<WireUserEvent, { kind: "archive_purged" }>, ScrollbackWireArchivePurgedPayload>
+>;
+export type _Assert_ServerSettingsChanged = Assert<
+  Equal<
+    Extract<WireUserEvent, { kind: "server_settings_changed" }>,
+    ServerSettingsWireChangedPayload
+  >
+>;
+export type _Assert_ConnectionStateChanged = Assert<
+  Equal<
+    Extract<WireUserEvent, { kind: "connection_state_changed" }>,
+    NetworksWireConnectionStateEvent
+  >
+>;
+
+// bundle_hash: cic's arm carries the deliberate post-narrow enrichment
+// `version: string | null` (absent → null) vs the wire's `version?:
+// string` (cross-surface S2), so a full-shape Equal cannot hold. Pin the
+// `kind` discriminator only — that is the rename gap S1 closes.
+export type _Assert_BundleHashKind = Assert<
+  Equal<
+    Extract<WireUserEvent, { kind: "bundle_hash" }>["kind"],
+    CicWireBundleHashPayload["kind"]
+  >
+>;
+
+// Session window-state arms — the `state` discriminator was `String.t()`
+// too; now a literal atom union. Pin each arm (kind + state + body).
+export type _Assert_Joined = Assert<
+  Equal<Extract<WireChannelEvent, { kind: "joined" }>, SessionWireJoinedPayload>
+>;
+export type _Assert_JoinFailed = Assert<
+  Equal<Extract<WireChannelEvent, { kind: "join_failed" }>, SessionWireJoinFailedPayload>
+>;
+export type _Assert_Kicked = Assert<
+  Equal<Extract<WireChannelEvent, { kind: "kicked" }>, SessionWireKickedPayload>
+>;
+export type _Assert_WindowPending = Assert<
+  Equal<Extract<WireUserEvent, { kind: "window_pending" }>, SessionWireWindowPendingPayload>
+>;
+export type _Assert_WindowInvited = Assert<
+  Equal<Extract<WireUserEvent, { kind: "window_invited" }>, SessionWireWindowInvitedPayload>
+>;
+export type _Assert_AwayConfirmed = Assert<
+  Equal<Extract<WireUserEvent, { kind: "away_confirmed" }>, SessionWireAwayConfirmedPayload>
+>;
+export type _Assert_ConnectionProgress = Assert<
+  Equal<
+    Extract<WireUserEvent, { kind: "connection_progress" }>,
+    SessionWireConnectionProgressPayload
+  >
 >;

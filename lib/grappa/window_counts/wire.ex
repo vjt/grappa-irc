@@ -25,7 +25,7 @@ defmodule Grappa.WindowCounts.Wire do
   window key; the four count fields mirror `t:Grappa.WindowCounts.t/0`.
   """
   @type event :: %{
-          kind: String.t(),
+          kind: :window_counts,
           channel: String.t(),
           messages: non_neg_integer(),
           mentions: non_neg_integer(),
@@ -47,7 +47,7 @@ defmodule Grappa.WindowCounts.Wire do
       })
       when is_binary(channel) and is_atom(severity) do
     %{
-      kind: "window_counts",
+      kind: :window_counts,
       channel: channel,
       messages: messages,
       mentions: mentions,

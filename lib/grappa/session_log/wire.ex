@@ -31,7 +31,7 @@ defmodule Grappa.SessionLog.Wire do
         }
 
   @typedoc "Broadcast / channel-push envelope for a single new entry."
-  @type event :: %{kind: String.t(), entry: t()}
+  @type event :: %{kind: :session_log_event, entry: t()}
 
   @typedoc "REST list envelope — `GET /admin/session_log`."
   @type list_result :: %{session_log: [t()]}
@@ -58,7 +58,7 @@ defmodule Grappa.SessionLog.Wire do
 
   @doc "Wraps one new `Event` as the `\"event\"` channel-push payload."
   @spec entry_payload(Event.t()) :: event()
-  def entry_payload(%Event{} = e), do: %{kind: "session_log_event", entry: to_json(e)}
+  def entry_payload(%Event{} = e), do: %{kind: :session_log_event, entry: to_json(e)}
 
   @doc "Wraps a list of `Event` rows as the REST `%{session_log: [...]}` envelope."
   @spec list_payload([Event.t()]) :: list_result()

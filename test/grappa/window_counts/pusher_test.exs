@@ -67,7 +67,7 @@ defmodule Grappa.WindowCounts.PusherTest do
     assert_receive %Phoenix.Socket.Broadcast{
                      event: "event",
                      payload: %{
-                       kind: "window_counts",
+                       kind: :window_counts,
                        channel: "#chan",
                        messages: 2,
                        mentions: 1,
@@ -83,7 +83,7 @@ defmodule Grappa.WindowCounts.PusherTest do
 
     :ok = Pusher.push(push_ctx(ctx))
 
-    refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "window_counts"}}, 300
+    refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :window_counts}}, 300
   end
 
   test "push/1 broadcasts when a WS is connected for the subject", ctx do
@@ -94,7 +94,7 @@ defmodule Grappa.WindowCounts.PusherTest do
 
     assert_receive %Phoenix.Socket.Broadcast{
                      event: "event",
-                     payload: %{kind: "window_counts", messages: 1, mentions: 1, severity: :mention}
+                     payload: %{kind: :window_counts, messages: 1, mentions: 1, severity: :mention}
                    },
                    1_000
   end

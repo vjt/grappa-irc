@@ -209,7 +209,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
       assert_receive %Phoenix.Socket.Broadcast{
         topic: ^topic,
         event: "event",
-        payload: %{kind: "read_cursor_set", last_read_message_id: ^msg_id}
+        payload: %{kind: :read_cursor_set, last_read_message_id: ^msg_id}
       }
     end
 
@@ -244,7 +244,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
         topic: ^topic,
         event: "event",
         payload: %{
-          kind: "read_cursor_set",
+          kind: :read_cursor_set,
           last_read_message_id: ^anchor_id,
           badge_count: 2
         }
@@ -271,7 +271,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
       assert_receive %Phoenix.Socket.Broadcast{
         topic: ^topic,
         event: "event",
-        payload: %{kind: "read_cursor_set", last_read_message_id: ^msg_id}
+        payload: %{kind: :read_cursor_set, last_read_message_id: ^msg_id}
       }
     end
 
@@ -314,7 +314,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
       assert_receive %Phoenix.Socket.Broadcast{
         topic: ^topic,
         event: "event",
-        payload: %{kind: "read_cursor_set", last_read_message_id: ^msg_id}
+        payload: %{kind: :read_cursor_set, last_read_message_id: ^msg_id}
       }
     end
   end

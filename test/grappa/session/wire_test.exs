@@ -387,7 +387,7 @@ defmodule Grappa.Session.WireTest do
                kind: :joined,
                network: "azzurra",
                channel: "#grappa",
-               state: "joined"
+               state: :joined
              }
     end
   end
@@ -405,7 +405,7 @@ defmodule Grappa.Session.WireTest do
                kind: :window_pending,
                network: "azzurra",
                channel: "#grappa",
-               state: "pending"
+               state: :pending
              }
     end
   end
@@ -419,7 +419,7 @@ defmodule Grappa.Session.WireTest do
                kind: :window_invited,
                network: "azzurra",
                channel: "#grappa",
-               state: "invited"
+               state: :invited
              }
     end
   end
@@ -430,7 +430,7 @@ defmodule Grappa.Session.WireTest do
                kind: :join_failed,
                network: "azzurra",
                channel: "#grappa",
-               state: "failed",
+               state: :failed,
                reason: "Cannot join (+i)",
                numeric: 473
              }
@@ -443,7 +443,7 @@ defmodule Grappa.Session.WireTest do
                kind: :kicked,
                network: "azzurra",
                channel: "#grappa",
-               state: "kicked",
+               state: :kicked,
                by: "op-vjt",
                reason: "be quiet"
              }
@@ -454,7 +454,7 @@ defmodule Grappa.Session.WireTest do
                kind: :kicked,
                network: "azzurra",
                channel: "#grappa",
-               state: "kicked",
+               state: :kicked,
                by: nil,
                reason: nil
              }
@@ -466,13 +466,13 @@ defmodule Grappa.Session.WireTest do
       assert Wire.away_confirmed("azzurra", :present) == %{
                kind: :away_confirmed,
                network: "azzurra",
-               state: "present"
+               state: :present
              }
 
       assert Wire.away_confirmed("azzurra", :away) == %{
                kind: :away_confirmed,
                network: "azzurra",
-               state: "away"
+               state: :away
              }
     end
 
@@ -494,13 +494,13 @@ defmodule Grappa.Session.WireTest do
       assert Wire.connection_progress("azzurra", :connecting) == %{
                kind: :connection_progress,
                network: "azzurra",
-               state: "connecting"
+               state: :connecting
              }
 
       assert Wire.connection_progress("azzurra", :connected) == %{
                kind: :connection_progress,
                network: "azzurra",
-               state: "connected"
+               state: :connected
              }
     end
 

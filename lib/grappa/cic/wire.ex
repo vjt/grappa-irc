@@ -41,7 +41,7 @@ defmodule Grappa.Cic.Wire do
   advertises a semver.
   """
   @type bundle_hash_payload :: %{
-          required(:kind) => String.t(),
+          required(:kind) => :bundle_hash,
           required(:hash) => String.t(),
           optional(:version) => String.t()
         }
@@ -54,7 +54,7 @@ defmodule Grappa.Cic.Wire do
   """
   @spec bundle_hash(String.t(), String.t() | nil) :: bundle_hash_payload()
   def bundle_hash(hash, version) when is_binary(hash) do
-    base = %{kind: "bundle_hash", hash: hash}
+    base = %{kind: :bundle_hash, hash: hash}
 
     case version do
       v when is_binary(v) and v != "" -> Map.put(base, :version, v)

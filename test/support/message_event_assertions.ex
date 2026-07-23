@@ -1,13 +1,13 @@
 defmodule Grappa.MessageEventAssertions do
   @moduledoc """
   Test assertions for the canonical PubSub broadcast event payload
-  `%{kind: "message", message: wire_shape}` produced by
+  `%{kind: :message, message: wire_shape}` produced by
   `Grappa.Scrollback.Wire.message_payload/1` and broadcast via
   `Grappa.PubSub.broadcast_event/2`.
 
   Test processes that subscribe with `Phoenix.PubSub.subscribe(Grappa.PubSub,
   topic)` receive the wrapping `%Phoenix.Socket.Broadcast{event: "event",
-  payload: %{kind: "message", message: wire}}` struct (because
+  payload: %{kind: :message, message: wire}}` struct (because
   `Grappa.PubSub.broadcast_event/2` goes through the framework-native
   `Phoenix.Channel.Server.broadcast/4` dispatcher, which sends the
   `Broadcast` struct to plain subscribers and uses the fastlane for
@@ -27,7 +27,7 @@ defmodule Grappa.MessageEventAssertions do
 
   @doc """
   Receives a `%Phoenix.Socket.Broadcast{event: "event", payload:
-  %{kind: "message", message: wire}}` struct from the test process
+  %{kind: :message, message: wire}}` struct from the test process
   mailbox within `timeout` ms, asserts each `expected_attrs`
   key/value matches the corresponding field of the wire payload,
   and returns the wire map for further inspection (e.g. `assert
@@ -59,7 +59,7 @@ defmodule Grappa.MessageEventAssertions do
     quote do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: msg}
+                       payload: %{kind: :message, message: msg}
                      },
                      unquote(timeout)
 

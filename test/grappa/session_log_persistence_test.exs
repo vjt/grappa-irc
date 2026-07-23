@@ -95,7 +95,7 @@ defmodule Grappa.SessionLogPersistenceTest do
     assert_receive %Phoenix.Socket.Broadcast{
                      topic: "grappa:session_log",
                      event: "event",
-                     payload: %{kind: "session_log_event", entry: entry}
+                     payload: %{kind: :session_log_event, entry: entry}
                    },
                    1_000
 

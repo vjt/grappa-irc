@@ -98,7 +98,7 @@ defmodule Grappa.Scrollback.WireTest do
       {:ok, msg} = ScrollbackHelpers.insert(sample(user, network, 1))
       preloaded = Repo.preload(msg, :network)
 
-      assert %{kind: "message", message: wire} = Wire.message_payload(preloaded)
+      assert %{kind: :message, message: wire} = Wire.message_payload(preloaded)
       assert wire == Wire.to_json(preloaded)
     end
   end
@@ -151,7 +151,7 @@ defmodule Grappa.Scrollback.WireTest do
   describe "archive_purged_payload/2" do
     test "carries network_slug and target so cic can invalidate the right scrollback key" do
       assert Wire.archive_purged_payload("bahamut-test", "#bofh") == %{
-               kind: "archive_purged",
+               kind: :archive_purged,
                network_slug: "bahamut-test",
                target: "#bofh"
              }
@@ -159,7 +159,7 @@ defmodule Grappa.Scrollback.WireTest do
 
     test "preserves nick-shaped targets verbatim for query-kind purges" do
       assert Wire.archive_purged_payload("freenode", "alice") == %{
-               kind: "archive_purged",
+               kind: :archive_purged,
                network_slug: "freenode",
                target: "alice"
              }

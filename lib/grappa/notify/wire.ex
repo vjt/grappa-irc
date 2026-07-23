@@ -31,7 +31,7 @@ defmodule Grappa.Notify.Wire do
   the per-socket after_join. Call `notify_list_payload/1` rather than
   rolling the map at the broadcast / push site.
   """
-  @type notify_list_payload :: %{kind: String.t(), networks: entries_map()}
+  @type notify_list_payload :: %{kind: :notify_list, networks: entries_map()}
 
   @doc """
   Render one `%Entry{}` to the wire shape. `added_at` is normalised to
@@ -61,6 +61,6 @@ defmodule Grappa.Notify.Wire do
   """
   @spec notify_list_payload(entries_map()) :: notify_list_payload()
   def notify_list_payload(networks) when is_map(networks) do
-    %{kind: "notify_list", networks: networks}
+    %{kind: :notify_list, networks: networks}
   end
 end

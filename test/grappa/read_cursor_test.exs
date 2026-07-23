@@ -460,7 +460,7 @@ defmodule Grappa.ReadCursorTest do
         topic: ^topic,
         event: "event",
         payload: %{
-          kind: "read_cursor_set",
+          kind: :read_cursor_set,
           last_read_message_id: ^message_id,
           badge_count: ^badge_count
         }

@@ -79,7 +79,7 @@ defmodule Grappa.ServerSettings.Wire do
   settings, OR observed at after-join (snapshot push).
   """
   @type changed_payload :: %{
-          kind: String.t(),
+          kind: :server_settings_changed,
           upload: upload_view(),
           http_host_aliases: [String.t()]
         }
@@ -119,7 +119,7 @@ defmodule Grappa.ServerSettings.Wire do
   def server_settings_changed(%{upload: %{} = upload, http_host_aliases: aliases})
       when is_list(aliases) do
     %{
-      kind: "server_settings_changed",
+      kind: :server_settings_changed,
       upload: upload_view(upload),
       http_host_aliases: aliases
     }

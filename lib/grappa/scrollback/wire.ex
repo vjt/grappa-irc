@@ -46,7 +46,7 @@ defmodule Grappa.Scrollback.Wire do
           meta: Meta.t()
         }
 
-  @type event :: %{kind: String.t(), message: t()}
+  @type event :: %{kind: :message, message: t()}
 
   @typedoc """
   Per-target archive entry — public wire shape returned by
@@ -129,7 +129,7 @@ defmodule Grappa.Scrollback.Wire do
   """
   @spec message_payload(Message.t()) :: event()
   def message_payload(%Message{} = m) do
-    %{kind: "message", message: to_json(m)}
+    %{kind: :message, message: to_json(m)}
   end
 
   @doc """
@@ -184,7 +184,7 @@ defmodule Grappa.Scrollback.Wire do
   kind so cic can fan into the cache-invalidation arm WITHOUT widening
   this envelope.
   """
-  @type archive_changed_payload :: %{kind: String.t(), network_slug: String.t()}
+  @type archive_changed_payload :: %{kind: :archive_changed, network_slug: String.t()}
 
   @doc """
   Build the `archive_changed` event envelope for a network slug —
@@ -193,7 +193,7 @@ defmodule Grappa.Scrollback.Wire do
   """
   @spec archive_changed_payload(String.t()) :: archive_changed_payload()
   def archive_changed_payload(network_slug) when is_binary(network_slug) do
-    %{kind: "archive_changed", network_slug: network_slug}
+    %{kind: :archive_changed, network_slug: network_slug}
   end
 
   @typedoc """
@@ -218,7 +218,7 @@ defmodule Grappa.Scrollback.Wire do
   target would leak ghosts — the original bug).
   """
   @type archive_purged_payload :: %{
-          kind: String.t(),
+          kind: :archive_purged,
           network_slug: String.t(),
           target: String.t()
         }
@@ -231,6 +231,6 @@ defmodule Grappa.Scrollback.Wire do
   @spec archive_purged_payload(String.t(), String.t()) :: archive_purged_payload()
   def archive_purged_payload(network_slug, target)
       when is_binary(network_slug) and is_binary(target) do
-    %{kind: "archive_purged", network_slug: network_slug, target: target}
+    %{kind: :archive_purged, network_slug: network_slug, target: target}
   end
 end

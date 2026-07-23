@@ -85,7 +85,7 @@ defmodule GrappaWeb.GrappaChannelTest do
 
   defp drain_for_query_windows_list(remaining, last_windows) do
     receive do
-      %Phoenix.Socket.Message{event: "event", payload: %{kind: "query_windows_list", windows: w}} ->
+      %Phoenix.Socket.Message{event: "event", payload: %{kind: :query_windows_list, windows: w}} ->
         drain_for_query_windows_list(remaining - 1, w)
     after
       200 ->
@@ -244,7 +244,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(joined, %{})
 
-      Grappa.PubSub.broadcast_event(other, %{kind: "message"})
+      Grappa.PubSub.broadcast_event(other, %{kind: :message})
 
       refute_push("event", _, 50)
     end
@@ -411,7 +411,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_push("event", %{
         kind: :joined,
         channel: "#snap",
-        state: "joined"
+        state: :joined
       })
     end
 
@@ -438,7 +438,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_push("event", %{
         kind: :kicked,
         channel: "#snap",
-        state: "kicked",
+        state: :kicked,
         by: "alice",
         reason: "behave"
       })
@@ -528,7 +528,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_push("event", %{
         kind: :join_failed,
         channel: "#snap",
-        state: "failed",
+        state: :failed,
         reason: "Cannot join channel (+i)",
         numeric: 473
       })
@@ -768,7 +768,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket(subject: {:user, user.id})
         |> subscribe_and_join(topic, %{})
 
-      assert_push("event", %{kind: "notify_list", networks: networks})
+      assert_push("event", %{kind: :notify_list, networks: networks})
       assert [%{nick: "Foo"}] = networks[network.id]
     end
 
@@ -791,7 +791,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       # notify_list still fires (DB read); presence_snapshot never does.
-      assert_push("event", %{kind: "notify_list"})
+      assert_push("event", %{kind: :notify_list})
       refute_push("event", %{kind: :presence_snapshot}, 100)
     end
 
@@ -862,7 +862,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      payload = %{kind: "message", message: %{body: "ciao"}}
+      payload = %{kind: :message, message: %{body: "ciao"}}
       Grappa.PubSub.broadcast_event(topic, payload)
 
       assert_push("event", ^payload, 200)
@@ -882,7 +882,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert_push("event", %{kind: "query_windows_list", windows: %{}}, 200)
+      assert_push("event", %{kind: :query_windows_list, windows: %{}}, 200)
     end
 
     test "after-join snapshot: authenticated user receives query_windows_list (empty when no windows)" do
@@ -896,7 +896,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       # Must receive query_windows_list with empty map
-      assert_push("event", %{kind: "query_windows_list", windows: windows})
+      assert_push("event", %{kind: :query_windows_list, windows: windows})
       assert windows == %{}
     end
 
@@ -913,7 +913,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert_push("event", %{kind: "query_windows_list", windows: windows})
+      assert_push("event", %{kind: :query_windows_list, windows: windows})
       assert is_map(windows)
       nicks = windows |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
       assert "alice" in nicks
@@ -965,14 +965,14 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       # Drain query_windows_list snapshot first (always pushed for users).
-      assert_push("event", %{kind: "query_windows_list"})
+      assert_push("event", %{kind: :query_windows_list})
 
       case Grappa.Cic.Bundle.current_hash() do
         nil ->
-          refute_push("event", %{kind: "bundle_hash"}, 100)
+          refute_push("event", %{kind: :bundle_hash}, 100)
 
         hash when is_binary(hash) ->
-          assert_push("event", %{kind: "bundle_hash", hash: ^hash})
+          assert_push("event", %{kind: :bundle_hash, hash: ^hash})
       end
     end
 
@@ -987,10 +987,10 @@ defmodule GrappaWeb.GrappaChannelTest do
 
       case Grappa.Cic.Bundle.current_hash() do
         nil ->
-          refute_push("event", %{kind: "bundle_hash"}, 100)
+          refute_push("event", %{kind: :bundle_hash}, 100)
 
         hash when is_binary(hash) ->
-          assert_push("event", %{kind: "bundle_hash", hash: ^hash})
+          assert_push("event", %{kind: :bundle_hash, hash: ^hash})
       end
     end
 
@@ -1011,7 +1011,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       assert_push("event", %{
-        kind: "server_settings_changed",
+        kind: :server_settings_changed,
         upload: %{
           active_host: active_host,
           image_per_file_cap_bytes: image_cap,
@@ -1040,7 +1040,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       assert_push("event", %{
-        kind: "server_settings_changed",
+        kind: :server_settings_changed,
         upload: %{active_host: active_host}
       })
 
@@ -1064,7 +1064,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert_push("event", %{kind: "query_windows_list", windows: windows} = payload)
+      assert_push("event", %{kind: :query_windows_list, windows: windows} = payload)
       # Push through Jason — Window schema would raise Protocol.UndefinedError.
       assert {:ok, json} = Jason.encode(payload)
       assert is_binary(json)
@@ -2327,7 +2327,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       # Flush the after_join query_windows_list snapshot
-      assert_push("event", %{kind: "query_windows_list"})
+      assert_push("event", %{kind: :query_windows_list})
 
       %{socket: socket, user: user, network: network}
     end
@@ -2343,7 +2343,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      assert_push("event", %{kind: "query_windows_list", windows: windows})
+      assert_push("event", %{kind: :query_windows_list, windows: windows})
       nicks = windows |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
       assert "alice" in nicks
     end
@@ -2359,7 +2359,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref1, :ok)
-      assert_push("event", %{kind: "query_windows_list"})
+      assert_push("event", %{kind: :query_windows_list})
 
       ref2 =
         push(socket, "open_query_window", %{
@@ -2368,7 +2368,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref2, :ok)
-      assert_push("event", %{kind: "query_windows_list", windows: windows})
+      assert_push("event", %{kind: :query_windows_list, windows: windows})
       nicks = windows |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
       assert Enum.count(nicks, &(&1 == "bob")) == 1
     end
@@ -2382,7 +2382,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # to set up state without going through the inbound event path.
       # QueryWindows.open/4 broadcasts query_windows_list — flush it.
       {:ok, _} = QueryWindows.open({:user, user.id}, network.id, "carol", user.name)
-      assert_push("event", %{kind: "query_windows_list"})
+      assert_push("event", %{kind: :query_windows_list})
 
       ref =
         push(socket, "close_query_window", %{
@@ -2411,7 +2411,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      assert_push("event", %{kind: "query_windows_list"})
+      assert_push("event", %{kind: :query_windows_list})
     end
 
     # V2 — visitor parity: visitors persist DM windows alongside users.
@@ -2432,7 +2432,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert_push("event", %{kind: "query_windows_list"})
+      assert_push("event", %{kind: :query_windows_list})
 
       ref =
         push(visitor_socket, "open_query_window", %{
@@ -2441,7 +2441,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      assert_push("event", %{kind: "query_windows_list", windows: windows})
+      assert_push("event", %{kind: :query_windows_list, windows: windows})
       nicks = windows |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
       assert "alice" in nicks
 
@@ -2464,13 +2464,13 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert_push("event", %{kind: "query_windows_list"})
+      assert_push("event", %{kind: :query_windows_list})
 
       # Pre-open via context (mirrors the user variant's setup pattern).
       {:ok, _} =
         QueryWindows.open({:visitor, visitor.id}, network.id, "carol", visitor_name)
 
-      assert_push("event", %{kind: "query_windows_list"})
+      assert_push("event", %{kind: :query_windows_list})
 
       ref =
         push(visitor_socket, "close_query_window", %{

@@ -174,7 +174,7 @@ defmodule GrappaWeb.ArchiveControllerTest do
 
       assert_received %Phoenix.Socket.Broadcast{
         event: "event",
-        payload: %{kind: "archive_purged", network_slug: slug, target: "#a"}
+        payload: %{kind: :archive_purged, network_slug: slug, target: "#a"}
       }
 
       assert slug == net.slug
@@ -198,7 +198,7 @@ defmodule GrappaWeb.ArchiveControllerTest do
 
       assert_received %Phoenix.Socket.Broadcast{
         event: "event",
-        payload: %{kind: "archive_purged", network_slug: slug, target: "vjt-peer"}
+        payload: %{kind: :archive_purged, network_slug: slug, target: "vjt-peer"}
       }
 
       assert slug == net.slug
@@ -214,7 +214,7 @@ defmodule GrappaWeb.ArchiveControllerTest do
 
       assert_received %Phoenix.Socket.Broadcast{
         event: "event",
-        payload: %{kind: "archive_purged", target: "#ghost"}
+        payload: %{kind: :archive_purged, target: "#ghost"}
       }
     end
 

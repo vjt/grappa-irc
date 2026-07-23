@@ -328,7 +328,7 @@ defmodule Grappa.Networks.WireTest do
         Wire.connection_state_changed_event(cred, :connected, :parked, "operator paused", "vjt-live")
 
       assert payload == %{
-               kind: "connection_state_changed",
+               kind: :connection_state_changed,
                user_id: cred.user_id,
                network_id: cred.network_id,
                network_slug: network.slug,
@@ -365,7 +365,7 @@ defmodule Grappa.Networks.WireTest do
       assert payload.reason == nil
       assert payload.from == :parked
       assert payload.to == :connected
-      assert payload.kind == "connection_state_changed"
+      assert payload.kind == :connection_state_changed
       assert payload.network.nick == "vjt"
     end
   end

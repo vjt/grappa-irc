@@ -360,7 +360,7 @@ if Mix.env() in [:dev, :test] do
       remaining =
         Enum.reduce(pending, pending, fn channel, acc ->
           case Session.get_window_state(subject, network_id, channel) do
-            {:ok, %{state: "joined"}} -> MapSet.delete(acc, channel)
+            {:ok, %{state: :joined}} -> MapSet.delete(acc, channel)
             _ -> acc
           end
         end)
