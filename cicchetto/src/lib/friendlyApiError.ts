@@ -59,7 +59,11 @@ export type KnownApiErrorCode =
   | "fetch_failed"
   | "image_reencode_failed"
   | "too_many_attempts"
-  | "list_full";
+  | "list_full"
+  | "session_timeout"
+  | "invalid_message"
+  | "already_attached"
+  | "theme_cap_reached";
 
 const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "invalid_credentials",
@@ -91,6 +95,10 @@ const KNOWN_CODES: ReadonlySet<KnownApiErrorCode> = new Set<KnownApiErrorCode>([
   "image_reencode_failed",
   "too_many_attempts",
   "list_full",
+  "session_timeout",
+  "invalid_message",
+  "already_attached",
+  "theme_cap_reached",
 ]);
 
 function isKnownCode(code: string): code is KnownApiErrorCode {
@@ -248,6 +256,30 @@ function friendlyKnown(err: ApiError, code: KnownApiErrorCode): string {
       // per-network cap (`Grappa.Notify.max_entries/0`). A bounded
       // resource, not a rate — the recourse is pruning, not waiting.
       return "Your watch list for this network is full. Remove an entry first.";
+    // #364 bucket H (cross-surface S3) — four FallbackController tokens
+    // whose server comments assert cic copy exists, but KnownApiErrorCode
+    // had no arm, so they leaked the raw `<status> <code>` string into
+    // operator-visible alerts.
+    case "session_timeout":
+      // REV-J M14 — 504 from any REST IRC-verb path (POST /messages, join,
+      // part) when the Session.Server mailbox is blocked on a slow upstream
+      // numeric. Retry-After: 10s; the recourse is a short retry.
+      return "The network is taking too long to respond. Try again in a few seconds.";
+    case "invalid_message":
+      // 422 from `ReadCursor.set/4` — the message_id exists but doesn't
+      // belong to this (subject, network, channel). Request shape was
+      // valid; the referenced row is out of scope for the read cursor.
+      return "Couldn't update your read position — that message isn't in this conversation.";
+    case "already_attached":
+      // #211 phase 4c — 409 from `POST /session/networks` accreting a
+      // network the identity already holds a credential for. Not an error
+      // the user must fix; the network is already there.
+      return "You're already connected to that network.";
+    case "theme_cap_reached":
+      // #299 item 8 — 429 when a visitor hits the 50-total owned-theme cap.
+      // The server comment promises "a cap-specific 'delete a theme to make
+      // room' hint (vs 'try tomorrow')" — distinct from `rate_limited`.
+      return "You've reached your theme limit. Delete a theme to make room.";
     default:
       // Cic M2 reviewer fix: exhaustiveness assertion. Adding a token
       // to `KnownApiErrorCode` without a `case` arm above becomes a

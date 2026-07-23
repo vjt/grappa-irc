@@ -69,6 +69,20 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   { code: "too_many_attempts", matches: /too many login attempts/i },
   // #247 (review 2026-07-19 R1) — /notify watch-list cap.
   { code: "list_full", matches: /watch list.*is full/i },
+  // #364 bucket H (cross-surface S3) — FallbackController tokens that
+  // reached operator-visible alerts as raw `<status> <code>` because
+  // KnownApiErrorCode had no arm, despite the server comments promising
+  // cic copy.
+  // 504 — REST IRC-verb path hit an upstream-stuck Session.Server.
+  { code: "session_timeout", matches: /taking too long|try again/i },
+  // 422 — ReadCursor.set referenced a message outside (subject, network,
+  // channel) scope.
+  { code: "invalid_message", matches: /read position|this conversation/i },
+  // 409 — visitor accretion of a network the identity already holds.
+  { code: "already_attached", matches: /already connected/i },
+  // 429 — visitor hit the 50-total owned-theme cap (distinct from the
+  // daily rate_limited "try tomorrow" copy).
+  { code: "theme_cap_reached", matches: /theme limit.*make room|make room/i },
 ];
 
 describe("friendlyApiError", () => {
