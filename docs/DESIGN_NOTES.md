@@ -27710,3 +27710,65 @@ event lies about "done." Emit the broadcast LAST, as a barrier — or the
 consumer races the tail of your own callback. "Passes in the suite, fails
 in isolation" is a race signature, not spec-rot: investigate before
 masking.*
+
+## 2026-07-23 — #327 reopen: the deferred scroll still landed the tab UNDER the sticky header
+
+**Premise correction.** The reopen prompt framed the remaining work as "apply
+the double-rAF defer." Scoping against `main` showed that fix was **already
+merged AND deployed** (`5d44b7f8`, prod `--cic` 2026-07-20, bundle `CM2Tel4n`)
+— with its unit + e2e proof. The issue had been **reopened the same day** for a
+DIFFERENT symptom: after the shipped defer, tapping next-active still left the
+target channel tab **occluded under/behind the network tab**. Not the
+stale-geometry bug — a second, orthogonal one. (Directions over code: the spec
+inherited a stale premise; the fix is not what it said.)
+
+**Root cause (traced, not guessed).** The network header is
+`position: sticky; left: 0; z-index: 1` (#260, 2026-07-16 — landed AFTER the
+original #327 design). `scrollIntoView({inline:"nearest"})` brings the selected
+tab **flush to the scroller's leading edge** — which is exactly where the sticky
+header is pinned — so the tab ends up UNDER it, z-index'd behind. `scrollIntoView`
+has no notion of a sticky element's occupied strip; `inline:"nearest"` treats the
+container edge as the target, not "edge + header width." The original e2e never
+caught it because it drives a RIGHT-edge overflow (tab lands at the right, far
+from the left-pinned header) and its `withinLeft` check only asserts the tab is
+within the bar's bounds, not that it clears the header.
+
+**Fix — compute scrollLeft manually inside the (kept) double-rAF.** Drop
+`scrollIntoView`; the effect now reads geometry and nudges `scrollLeft` itself.
+The visible region EXCLUDING the pinned header is
+`[scrollerLeft + headerWidth, scrollerRight]`; bring the selected tab's near edge
+to that boundary: if `tabRect.left < scrollerLeft + headerWidth` it's occluded →
+scroll it clear past the header; else if `tabRect.right > scrollerRight` it's
+clipped right → reveal at the right edge; else (already visible) `delta 0`, no
+scroll. `headerWidth` is read from the target tab's OWN
+`.bottom-bar-network`'s header (sticky is per containing block, so the header
+pinned over a visible tab is that tab's group header) — robust to variable slug
+widths, no magic constant. Horizontal only (`scroller.scrollTo({left, behavior:
+"smooth"})`) so page vertical scroll is never touched — the job `block:"nearest"`
+used to do. The defer + re-query of `.bottom-bar-tab.selected` inside the settled
+callback are UNCHANGED (still needed for the badge-reflow width change).
+
+**One effect, all triggers** (unchanged): every selection change funnels through
+`selectedChannel`; the manual scroll lives in the one effect and covers every
+door. No regression to the #243 re-tap → `requestScrollToBottom` path.
+
+**Verification.** Unit (`BottomBar.test.tsx` #327 block, rewritten): jsdom does
+no layout, so we inject geometry via `getBoundingClientRect` stubs and prove the
+effect (1) does NOT scroll synchronously, (2) does NOT scroll after one rAF, (3)
+after the second rAF scrolls the selected tab CLEAR of a 60px sticky header
+(occluded tab at `left:10` under `visibleLeft:60` → `scrollTo({left:50})` from
+`scrollLeft:100`), and (4) re-queries the LIVE selection — a mid-flight switch
+scrolls the NEW tab's geometry (`left:100`), never the stale one's (`left:-50`).
+RED pre-fix: the `scrollIntoView` code never calls `scrollTo`. Full cic gate green
+(`bun run check` 0 errors, `bun run build` real tsc, `vitest` 3096/3096). The
+VISIBLE occlusion outcome — tab left edge clears the sticky header on a device —
+is **owed a real-iOS verify** (Playwright WebKit ≠ iOS scroll timing; a
+left-jump next-active e2e would be flake-prone on the shared bahamut stack, so it
+is deferred to device verify, not faked green). Client-side only — no cold deploy.
+
+*Lesson: `scrollIntoView` is blind to `position: sticky`. When a scroll container
+has a sticky leading-edge element, "scroll into view" must subtract that element's
+occupied strip — `scrollIntoView({inline:"nearest"})` will faithfully park the
+target UNDER it. Compute the scroll manually against the sticky-excluded visible
+region. And: a green e2e that asserts "within bounds" does NOT assert "not
+occluded" — bounds ≠ visibility when something is painted on top.*

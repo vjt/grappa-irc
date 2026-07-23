@@ -65,36 +65,64 @@ const BottomBar: Component<Props> = (props) => {
     props.onSelect?.();
   };
 
-  // Auto-scroll selected tab into view when selection changes.
-  // Uses scrollIntoView with inline:"nearest" so we don't disrupt
-  // vertical scroll (the bottom-bar is horizontal-scroll only).
+  // Auto-scroll the selected tab into view when selection changes. The
+  // bottom-bar is horizontal-scroll only, so we only ever touch scrollLeft —
+  // never the page's vertical scroll.
   //
-  // #327 — DEFER the scroll math via the codebase double-rAF idiom
-  // (ScrollbackPane.tsx ~:1569). Selecting a window zeroes its unread/
-  // mention badges in the SAME reactive flush (selection.ts perChannelUnread
-  // reads selectedChannel), so `.bottom-bar-msg-unread` / `.bottom-bar-mention`
-  // spans unmount and the tab's width changes, reflowing the strip. A
-  // synchronous scrollIntoView computes its offset against STALE pre-reflow
-  // geometry and — with behavior:"smooth" — undershoots or judges
-  // "nearest-enough" and no-ops, leaving the target tab partly/fully off
-  // screen ("not always", because it only misfires when the flush actually
-  // changes tab widths). The first rAF lands in the next frame's pre-layout
-  // phase; the second guarantees layout has settled. We RE-QUERY
-  // `.bottom-bar-tab.selected` INSIDE the deferred callback so it resolves
-  // against the settled DOM, not a ref captured pre-reflow. ALL selection
-  // changes (sidebar tap, Alt+A, Ctrl+N, tab tap) funnel through
-  // selectedChannel, so this one effect covers every trigger.
+  // #327 — this stacks TWO fixes:
   //
-  // Guard: jsdom does not implement scrollIntoView; the guard is a
-  // no-op in tests without weakening production behavior.
+  //   1. DEFER (5d44b7f8). Selecting a window zeroes its unread/mention
+  //      badges in the SAME reactive flush (selection.ts perChannelUnread
+  //      reads selectedChannel), so `.bottom-bar-msg-unread` /
+  //      `.bottom-bar-mention` spans unmount and the tab's width changes,
+  //      reflowing the strip. Reading geometry synchronously sees STALE
+  //      pre-reflow widths. So we defer via the codebase double-rAF idiom
+  //      (ScrollbackPane.tsx ~:1569): the first rAF lands in the next frame's
+  //      pre-layout phase, the second guarantees layout has settled. We
+  //      RE-QUERY `.bottom-bar-tab.selected` INSIDE the deferred callback so
+  //      it resolves against the settled DOM, not a ref captured pre-reflow.
+  //
+  //   2. STICKY-HEADER-AWARE scroll (#327 reopen, 2026-07-20). The network
+  //      header is `position: sticky; left: 0; z-index: 1` (#260), pinned to
+  //      the scroller's leading edge. `scrollIntoView({inline:"nearest"})`
+  //      brings the tab flush to that same edge — i.e. UNDER the pinned
+  //      header — so it stays occluded; scrollIntoView has no notion of the
+  //      sticky offset. Instead compute scrollLeft manually: the visible
+  //      region EXCLUDING the pinned header is [scrollerLeft + headerWidth,
+  //      scrollerRight]; nudge scrollLeft only far enough to bring the tab's
+  //      near edge to that boundary (left-occluded → reveal past the header;
+  //      right-overflow → reveal at the right edge). Already-visible tabs
+  //      (delta 0) don't scroll.
+  //
+  // ALL selection changes (sidebar tap, Alt+A, Ctrl+N, tab tap) funnel
+  // through selectedChannel, so this one effect covers every trigger.
+  //
+  // Guard: jsdom implements neither scrollTo nor layout; the typeof guard +
+  // zero-geometry no-op keep tests from weakening production behavior.
   createEffect(
     on(selectedChannel, () => {
       if (!navRef) return;
+      const scroller = navRef;
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
-          const selected = navRef?.querySelector<HTMLElement>(".bottom-bar-tab.selected");
-          if (selected && typeof selected.scrollIntoView === "function") {
-            selected.scrollIntoView({ inline: "nearest", behavior: "smooth", block: "nearest" });
+          if (typeof scroller.scrollTo !== "function") return;
+          const selected = scroller.querySelector<HTMLElement>(".bottom-bar-tab.selected");
+          if (!selected) return;
+          const header = selected
+            .closest(".bottom-bar-network")
+            ?.querySelector<HTMLElement>(".bottom-bar-network-header");
+          const scRect = scroller.getBoundingClientRect();
+          const tabRect = selected.getBoundingClientRect();
+          const headerWidth = header ? header.getBoundingClientRect().width : 0;
+          const visibleLeft = scRect.left + headerWidth;
+          let delta = 0;
+          if (tabRect.left < visibleLeft) {
+            delta = tabRect.left - visibleLeft; // occluded under the sticky header
+          } else if (tabRect.right > scRect.right) {
+            delta = tabRect.right - scRect.right; // clipped off the right edge
+          }
+          if (delta !== 0) {
+            scroller.scrollTo({ left: scroller.scrollLeft + delta, behavior: "smooth" });
           }
         }),
       );

@@ -411,17 +411,37 @@ describe("BottomBar", () => {
     expect(windowCloseMod.closeQueryWindow).toHaveBeenCalledWith(1, "alice");
   });
 
-  // #327 — the active-tab auto-scroll must DEFER its scrollIntoView until
-  // AFTER layout settles. Selecting a window zeroes its unread/mention
-  // badges in the SAME reactive flush (selection.ts perChannelUnread reads
-  // selectedChannel), so the `.bottom-bar-msg-unread` / `.bottom-bar-mention`
-  // spans unmount and the tab's width changes. A synchronous scrollIntoView
-  // reads STALE pre-reflow geometry and undershoots/no-ops with smooth. The
-  // fix is the codebase's double-rAF idiom (ScrollbackPane.tsx ~:1569): schedule
-  // rAF(rAF(...)) and RE-QUERY `.bottom-bar-tab.selected` inside the deferred
-  // callback so it resolves against settled DOM.
-  describe("#327 — active-tab auto-scroll defers to settled layout (double rAF)", () => {
-    it("does not scrollIntoView synchronously; scrolls the selected tab after two rAF ticks", async () => {
+  // #327 — the active-tab auto-scroll must (1) DEFER its geometry read until
+  // AFTER layout settles and (2) account for the STICKY network header that
+  // pins to the scroller's leading edge (#260 — position:sticky;left:0;
+  // z-index:1). The original defer (5d44b7f8) fixed the stale-badge-reflow
+  // read; the reopen (2026-07-20) is that scrollIntoView({inline:"nearest"})
+  // lands the tab flush to that same edge — i.e. UNDER the pinned header —
+  // leaving it occluded. scrollIntoView has no notion of the sticky offset.
+  // The fix computes scrollLeft manually inside the double-rAF idiom
+  // (ScrollbackPane.tsx ~:1569): the visible region EXCLUDING the header is
+  // [scrollerLeft + headerWidth, scrollerRight]; nudge scrollLeft only far
+  // enough to bring the selected tab's near edge to that boundary, re-querying
+  // `.bottom-bar-tab.selected` INSIDE the deferred callback so it resolves
+  // against the settled DOM.
+  describe("#327 — active-tab auto-scroll: deferred + sticky-header-aware", () => {
+    // jsdom does no layout, so we inject geometry via getBoundingClientRect
+    // stubs and prove the effect computes the correct scrollLeft nudge.
+    const rectOf = (o: Partial<DOMRect>): DOMRect =>
+      ({
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+        width: 0,
+        height: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+        ...o,
+      }) as DOMRect;
+
+    it("does not scroll synchronously; after two rAF ticks it scrolls the selected tab clear of the sticky header", async () => {
       vi.resetModules();
       const { createSignal } = await import("solid-js");
       const [sel, setSel] = createSignal<{
@@ -475,53 +495,52 @@ describe("BottomBar", () => {
         for (const cb of rafQueue.splice(0)) cb(0);
       };
 
-      // jsdom does not implement scrollIntoView; record the element it is
-      // invoked on so we can prove the deferred callback re-queries the DOM.
-      const origScrollIntoView = HTMLElement.prototype.scrollIntoView;
-      const scrollSpy = vi.fn();
-      let scrolledOn: Element | null = null;
-      (HTMLElement.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView =
-        function (this: Element) {
-          scrolledOn = this;
-          scrollSpy();
-        };
+      const { default: BottomBarFresh } = await import("../BottomBar");
+      const { container } = render(() => <BottomBarFresh />);
 
-      try {
-        const { default: BottomBarFresh } = await import("../BottomBar");
-        const { container } = render(() => <BottomBarFresh />);
-        expect(container.querySelectorAll(".bottom-bar-tab.selected").length).toBe(0);
+      const scroller = container.querySelector(".bottom-bar") as HTMLElement;
+      const scrollToSpy = vi.fn();
+      // jsdom implements neither scrollTo nor layout — inject both.
+      (scroller as unknown as { scrollTo: () => void }).scrollTo = scrollToSpy;
+      Object.defineProperty(scroller, "scrollLeft", {
+        value: 100,
+        writable: true,
+        configurable: true,
+      });
+      scroller.getBoundingClientRect = () => rectOf({ left: 0, right: 300, width: 300 });
 
-        // Discard any frames queued during the async mount boundary — our
-        // own selection-null mount run plus leftover self-rescheduling rAF
-        // loops from earlier trees in this file. From here the block is
-        // fully synchronous, so jsdom's frame timer cannot inject more: the
-        // only rAF that lands is the one OUR effect schedules on the change.
-        rafQueue.length = 0;
-        scrollSpy.mockClear();
-        scrolledOn = null;
+      // The tab + header render regardless of selection; inject a geometry
+      // where the tab sits UNDER the 60px-wide sticky header (tab.left 10 <
+      // visibleLeft 60) so the effect MUST scroll it clear.
+      const tab = container.querySelector(
+        '.bottom-bar-tab[data-window-name="#italia"]',
+      ) as HTMLElement;
+      tab.getBoundingClientRect = () => rectOf({ left: 10, right: 90, width: 80 });
+      const header = container.querySelector(".bottom-bar-network-header") as HTMLElement;
+      header.getBoundingClientRect = () => rectOf({ left: 0, right: 60, width: 60 });
 
-        // Select #italia — the effect must NOT scroll synchronously.
-        setSel({ networkSlug: "freenode", channelName: "#italia", kind: "channel" });
-        expect(scrollSpy).not.toHaveBeenCalled();
+      // Discard any frames queued during the async mount boundary; from here
+      // the block is synchronous so the only rAF that lands is OUR effect's.
+      rafQueue.length = 0;
+      scrollToSpy.mockClear();
 
-        // One frame is not enough — the idiom needs the SECOND rAF (layout
-        // settled) before it reads geometry.
-        frame();
-        expect(scrollSpy).not.toHaveBeenCalled();
+      // Select #italia — the effect must NOT scroll synchronously.
+      setSel({ networkSlug: "freenode", channelName: "#italia", kind: "channel" });
+      expect(scrollToSpy).not.toHaveBeenCalled();
 
-        // Second frame: now it scrolls the currently-selected tab. That this
-        // resolves the LIVE selection (not a ref captured before the rAF) is
-        // discriminated by the sibling test below.
-        frame();
-        expect(scrollSpy).toHaveBeenCalledTimes(1);
-        expect(scrolledOn).not.toBeNull();
-        expect((scrolledOn as unknown as HTMLElement).classList.contains("selected")).toBe(true);
-        expect((scrolledOn as unknown as HTMLElement).textContent).toContain("#italia");
-      } finally {
-        (HTMLElement.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView =
-          origScrollIntoView;
-        vi.unstubAllGlobals();
-      }
+      // One frame is not enough — the idiom needs the SECOND rAF (layout
+      // settled) before it reads geometry.
+      frame();
+      expect(scrollToSpy).not.toHaveBeenCalled();
+
+      // Second frame: now it scrolls the selected tab clear of the header.
+      // delta = tab.left(10) - (scroller.left(0) + headerWidth(60)) = -50;
+      // scrollLeft(100) + delta = 50.
+      frame();
+      expect(scrollToSpy).toHaveBeenCalledTimes(1);
+      expect(scrollToSpy).toHaveBeenCalledWith({ left: 50, behavior: "smooth" });
+
+      vi.unstubAllGlobals();
     });
 
     it("re-queries the LIVE selection inside the deferred callback — a mid-flight switch scrolls the new tab, never the stale one", async () => {
@@ -579,44 +598,60 @@ describe("BottomBar", () => {
         for (const cb of rafQueue.splice(0)) cb(0);
       };
 
-      const origScrollIntoView = HTMLElement.prototype.scrollIntoView;
-      // Record the data-window-name of every tab scrollIntoView lands on.
-      const scrolledNames: string[] = [];
-      (HTMLElement.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView =
-        function (this: Element) {
-          scrolledNames.push((this as HTMLElement).getAttribute("data-window-name") ?? "");
-        };
+      const { default: BottomBarFresh } = await import("../BottomBar");
+      const { container } = render(() => <BottomBarFresh />);
 
-      try {
-        const { default: BottomBarFresh } = await import("../BottomBar");
-        render(() => <BottomBarFresh />);
-        rafQueue.length = 0;
-        scrolledNames.length = 0;
+      const scroller = container.querySelector(".bottom-bar") as HTMLElement;
+      const scrollToCalls: Array<{ left: number }> = [];
+      (scroller as unknown as { scrollTo: (o: { left: number }) => void }).scrollTo = (o) => {
+        scrollToCalls.push(o);
+      };
+      Object.defineProperty(scroller, "scrollLeft", {
+        value: 0,
+        writable: true,
+        configurable: true,
+      });
+      scroller.getBoundingClientRect = () => rectOf({ left: 0, right: 300, width: 300 });
 
-        // Select #italia, then advance ONE frame so its outer rAF has run and
-        // its inner (DOM-reading) callback is scheduled but NOT yet executed.
-        setSel({ networkSlug: "freenode", channelName: "#italia", kind: "channel" });
-        frame();
+      const header = container.querySelector(".bottom-bar-network-header") as HTMLElement;
+      header.getBoundingClientRect = () => rectOf({ left: 0, right: 60, width: 60 });
 
-        // Mid-flight switch to #other BEFORE that inner callback runs — the
-        // `.selected` class moves to #other synchronously. A fix that captured
-        // the tab ref at effect-fire time would still scroll #italia; the
-        // re-query resolves `.bottom-bar-tab.selected` to the NOW-selected
-        // #other.
-        setSel({ networkSlug: "freenode", channelName: "#other", kind: "channel" });
+      // #italia occluded under the header → would compute left = 0 + (10 - 60) = -50.
+      const italia = container.querySelector(
+        '.bottom-bar-tab[data-window-name="#italia"]',
+      ) as HTMLElement;
+      italia.getBoundingClientRect = () => rectOf({ left: 10, right: 90, width: 80 });
+      // #other off the RIGHT edge → computes left = 0 + (400 - 300) = +100.
+      const other = container.querySelector(
+        '.bottom-bar-tab[data-window-name="#other"]',
+      ) as HTMLElement;
+      other.getBoundingClientRect = () => rectOf({ left: 320, right: 400, width: 80 });
 
-        // Drain the #italia chain's inner + the #other chain's outer→inner.
-        frame();
-        frame();
+      rafQueue.length = 0;
+      scrollToCalls.length = 0;
 
-        expect(scrolledNames.length).toBeGreaterThan(0);
-        expect(scrolledNames).not.toContain("#italia");
-        expect(scrolledNames.every((n) => n === "#other")).toBe(true);
-      } finally {
-        (HTMLElement.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView =
-          origScrollIntoView;
-        vi.unstubAllGlobals();
-      }
+      // Select #italia, then advance ONE frame so its outer rAF has run and
+      // its inner (DOM-reading) callback is scheduled but NOT yet executed.
+      setSel({ networkSlug: "freenode", channelName: "#italia", kind: "channel" });
+      frame();
+
+      // Mid-flight switch to #other BEFORE that inner callback runs — the
+      // `.selected` class moves to #other synchronously. A fix that captured
+      // the tab ref at effect-fire time would still scroll #italia (left -50);
+      // the re-query resolves `.bottom-bar-tab.selected` to the NOW-selected
+      // #other (left 100).
+      setSel({ networkSlug: "freenode", channelName: "#other", kind: "channel" });
+
+      // Drain the #italia chain's inner + the #other chain's outer→inner.
+      frame();
+      frame();
+
+      expect(scrollToCalls.length).toBeGreaterThan(0);
+      // Every scroll targets #other's geometry (left 100), never #italia's (-50).
+      expect(scrollToCalls.every((c) => c.left === 100)).toBe(true);
+      expect(scrollToCalls.some((c) => c.left === -50)).toBe(false);
+
+      vi.unstubAllGlobals();
     });
   });
 });
