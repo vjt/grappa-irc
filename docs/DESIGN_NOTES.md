@@ -27743,9 +27743,14 @@ clipped right → reveal at the right edge; else (already visible) `delta 0`, no
 scroll. `headerWidth` is read from the target tab's OWN
 `.bottom-bar-network`'s header (sticky is per containing block, so the header
 pinned over a visible tab is that tab's group header) — robust to variable slug
-widths, no magic constant. Horizontal only (`scroller.scrollTo({left, behavior:
-"smooth"})`) so page vertical scroll is never touched — the job `block:"nearest"`
-used to do. The defer + re-query of `.bottom-bar-tab.selected` inside the settled
+widths, no magic constant. Two guards from code review: when the selected tab IS
+the header (the server-window tab is itself `.bottom-bar-network-header`) it is
+its OWN occluder, so `headerWidth` is 0 — never self-subtract, or selecting a
+server window jerks the strip left by the header width; and sub-pixel deltas
+(`Math.abs(delta) < 1`) don't scroll, so a fractional `getBoundingClientRect`
+diff can't fire a smooth animation for a visually-zero move. Horizontal only
+(`scroller.scrollTo({left, behavior: "smooth"})`) so page vertical scroll is
+never touched — the job `block:"nearest"` used to do. The defer + re-query of `.bottom-bar-tab.selected` inside the settled
 callback are UNCHANGED (still needed for the badge-reflow width change).
 
 **One effect, all triggers** (unchanged): every selection change funnels through

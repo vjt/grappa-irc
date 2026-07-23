@@ -653,5 +653,89 @@ describe("BottomBar", () => {
 
       vi.unstubAllGlobals();
     });
+
+    it("selecting the network/server header does NOT spuriously scroll — the header is its OWN sticky occluder", async () => {
+      vi.resetModules();
+      const { createSignal } = await import("solid-js");
+      const [sel, setSel] = createSignal<{
+        networkSlug: string;
+        channelName: string;
+        kind: string;
+      } | null>(null);
+
+      vi.doMock("../lib/networks", () => ({
+        networks: () => [{ id: 1, slug: "freenode", inserted_at: "", updated_at: "" }],
+        channelsBySlug: () => ({ freenode: [] }),
+      }));
+      vi.doMock("../lib/selection", () => ({
+        selectedChannel: sel,
+        setSelectedChannel: setSel,
+        isActiveSelection: () => false,
+        unreadCounts: () => ({}),
+        messagesUnread: () => ({}),
+        eventsUnread: () => ({}),
+      }));
+      vi.doMock("../lib/mentions", () => ({
+        mentionCounts: () => ({}),
+        setServerMention: vi.fn(),
+      }));
+      vi.doMock("../lib/channelKey", () => ({
+        channelKey: (slug: string, name: string) => `${slug} ${name}`,
+      }));
+      vi.doMock("../lib/queryWindows", () => ({
+        queryWindowsByNetwork: () => ({}),
+      }));
+      vi.doMock("../lib/windowClose", () => ({
+        closeQueryWindow: vi.fn(),
+        confirmLeaveChannel: vi.fn(),
+        confirmDisconnectNetwork: vi.fn(),
+      }));
+      vi.doMock("../lib/scrollToBottomCommand", () => ({
+        requestScrollToBottom: vi.fn(),
+        scrollToBottomRequest: () => 0,
+      }));
+
+      const rafQueue: FrameRequestCallback[] = [];
+      vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+        rafQueue.push(cb);
+        return rafQueue.length;
+      });
+      const frame = () => {
+        for (const cb of rafQueue.splice(0)) cb(0);
+      };
+
+      const { default: BottomBarFresh } = await import("../BottomBar");
+      const { container } = render(() => <BottomBarFresh />);
+
+      const scroller = container.querySelector(".bottom-bar") as HTMLElement;
+      const scrollToSpy = vi.fn();
+      (scroller as unknown as { scrollTo: () => void }).scrollTo = scrollToSpy;
+      // Scrolled well to the right so a bogus header-width subtraction WOULD
+      // move the strip (guards against a false pass at scrollLeft 0 → clamp).
+      Object.defineProperty(scroller, "scrollLeft", {
+        value: 200,
+        writable: true,
+        configurable: true,
+      });
+      scroller.getBoundingClientRect = () => rectOf({ left: 0, right: 300, width: 300 });
+
+      // The header is the sticky element pinned at the leading edge (left 0,
+      // width 60). Selecting it must NOT scroll: header === selected, so the
+      // fix zeroes headerWidth → delta 0. Pre-fix this subtracted 60 against
+      // itself → delta -60 → a spurious leftward jerk.
+      const header = container.querySelector(".bottom-bar-network-header") as HTMLElement;
+      header.getBoundingClientRect = () => rectOf({ left: 0, right: 60, width: 60 });
+
+      rafQueue.length = 0;
+      scrollToSpy.mockClear();
+
+      setSel({ networkSlug: "freenode", channelName: "$server", kind: "server" });
+      frame();
+      frame();
+
+      expect(scrollToSpy).not.toHaveBeenCalled();
+
+      vi.unstubAllGlobals();
+    });
   });
 });

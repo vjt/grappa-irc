@@ -113,7 +113,12 @@ const BottomBar: Component<Props> = (props) => {
             ?.querySelector<HTMLElement>(".bottom-bar-network-header");
           const scRect = scroller.getBoundingClientRect();
           const tabRect = selected.getBoundingClientRect();
-          const headerWidth = header ? header.getBoundingClientRect().width : 0;
+          // The target can itself BE the sticky header (the server-window
+          // tab IS `.bottom-bar-network-header`). It is its own occluder —
+          // never subtract its own width, or selecting it jerks the strip
+          // left by headerWidth.
+          const headerWidth =
+            header && header !== selected ? header.getBoundingClientRect().width : 0;
           const visibleLeft = scRect.left + headerWidth;
           let delta = 0;
           if (tabRect.left < visibleLeft) {
@@ -121,7 +126,9 @@ const BottomBar: Component<Props> = (props) => {
           } else if (tabRect.right > scRect.right) {
             delta = tabRect.right - scRect.right; // clipped off the right edge
           }
-          if (delta !== 0) {
+          // Ignore sub-pixel deltas — a fractional getBoundingClientRect diff
+          // must not fire a smooth-scroll animation for a visually-zero move.
+          if (Math.abs(delta) >= 1) {
             scroller.scrollTo({ left: scroller.scrollLeft + delta, behavior: "smooth" });
           }
         }),
