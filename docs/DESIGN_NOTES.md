@@ -27777,3 +27777,43 @@ occupied strip — `scrollIntoView({inline:"nearest"})` will faithfully park the
 target UNDER it. Compute the scroll manually against the sticky-excluded visible
 region. And: a green e2e that asserts "within bounds" does NOT assert "not
 occluded" — bounds ≠ visibility when something is painted on top.*
+
+## 2026-07-23 — #344 TopicBar: topic line-height bump + column top-align (cic)
+
+vjt dogfood (#grappa): the two-line topic strip read too cramped. Raised
+`.topic-bar-topic` `line-height` 1.25 → 1.5 for breathing room, and top-aligned
+the two columns (`.topic-bar` `align-items` center → flex-start) so topic
+line-1 sits beside the channel name and topic line-2 beside the +modes line
+instead of both columns centering as whole blocks.
+
+**The coupling (re-application of the #262/#307 gotcha — the reason this note
+exists):** the topic strip's real height bound is NOT `-webkit-line-clamp`. The
+strip is a `<button>` wrapping `<MircBody>`, and WebKit wraps a button's
+children in an internal box that defeats the clamp — so the clamp only paints
+the trailing … on the inner `.topic-bar-topic-text` span, while the actual
+height cap is a HAND-COMPUTED `max-height` = N-lines × line-height. Any
+line-height change MUST therefore be mirrored into EVERY manual max-height, in
+lockstep, or the last line clips:
+- base `.topic-bar-topic-text` `max-height` 2.5em → 3em (2 × 1.5)
+- landscape-compact 1-line override `max-height` 1.25em → 1.5em (1 × 1.5) — the
+  `@media (orientation: landscape) and (max-height: 500px)` tier overrides the
+  clamp count + height but NOT the line-height, so its single line inherits lh
+  1.5 and needs the matching 1.5em cap.
+
+The #262 e2e witness (`issue262-topic-clamp-mobile.spec.ts`) still passes
+unchanged: the taller strip is now 2 × 1.5 × 14px = 42px, comfortably under its
+60/120/50 caps (the caps were generous-slack bounds, not exact-fit), so only its
+explanatory comments were retargeted to the new calc — no threshold moved.
+
+Part 2 (top-align) is the "il top sarebbe" stretch: fine baseline rhythm between
+the two columns (bold base name + border-bottom vs 0.85rem mode vs 2× mono topic
+@ lh 1.5) is a tune-by-eye visual match, **device-verify owed** (Playwright
+WebKit ≠ iOS). Pure CSS, client-side — no cold deploy. cic gate green (biome +
+tsc + vite build + vitest 3097/3097).
+
+*Lesson: when a manual `max-height` stands in for a clamp the engine won't
+honour, that number is line-height × N frozen at author time — it does not
+track the line-height. Every future line-height edit on the topic strip must
+re-touch all its max-height overrides (base + every media tier) in the same
+commit, or a tier silently clips. The clamp is decoration; the max-height is the
+contract.*
