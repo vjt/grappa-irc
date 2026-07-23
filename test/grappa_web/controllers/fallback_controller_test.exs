@@ -324,7 +324,7 @@ defmodule GrappaWeb.FallbackControllerTest do
   end
 
   defp call_error_pattern({:when, _, [inner | _]}), do: call_error_pattern(inner)
-  defp call_error_pattern({:call, _, [_conn, {:error, tag}]}), do: {:ok, tag}
+  defp call_error_pattern({:call, _, [_, {:error, tag}]}), do: {:ok, tag}
   defp call_error_pattern(_), do: :error
 
   defp clause_tag(tag) when is_atom(tag), do: tag
@@ -341,7 +341,7 @@ defmodule GrappaWeb.FallbackControllerTest do
     {_, [spec_ast]} =
       Enum.find(specs, fn {{name, arity}, _} -> name == :call and arity == 2 end)
 
-    {:type, _, :fun, [{:type, _, :product, [_conn, err_tuple]}, _ret]} = spec_ast
+    {:type, _, :fun, [{:type, _, :product, [_, err_tuple]}, _]} = spec_ast
     {:type, _, :tuple, [{:atom, _, :error}, union]} = err_tuple
 
     collect_spec_tags(union)
