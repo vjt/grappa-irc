@@ -425,6 +425,33 @@ at restart time — `--full-restart` does NOT touch it.** Never rehearsed
 against prod (it bounces the live jail + drops every session); bats-proven
 only — first real run is operator-driven.
 
+### Linux (systemd) — no host wrapper needed
+
+A third production substrate for a plain Ubuntu/Debian host, no
+Docker, no jail. Full setup + day-2 ops runbook lives in
+`infra/linux/README.md`; summary here for parity with the m42 section
+above:
+
+```
+infra/linux/install.sh   # first install, idempotent (see README.md for env)
+infra/linux/deploy.sh    # update: pull, rebuild, migrate, restart, healthcheck
+infra/linux/release.sh   # bin/grappa wrapper: version / eval / remote
+```
+
+No SSH-to-a-separate-host indirection — run these directly on the
+target box as root. `deploy.sh` is preflight-driven, same as the
+Docker/jail substrates: `Grappa.Deploy.Preflight` classifies each
+deploy's diff and picks hot (rebuild + `POST /admin/reload`, sessions
+preserved) or cold (full stop → rebuild → migrate → start cycle)
+automatically — see `infra/linux/README.md` "Day-2 operations".
+
+Stop/start synchronization (the FreeBSD jail's `jail_beam_wait.sh`
+problem, defect #9) is solved differently here: the systemd unit runs
+`bin/grappa start` in the **foreground** under `Type=exec`, so
+`systemctl stop`/`restart` block natively until the BEAM actually
+exits — no custom wrapper needed. See
+`infra/linux/systemd/grappa.service`'s comments for the full rationale.
+
 ### Running operator actions against the live jail (prod)
 
 Prod is a **bastille jail** (name `grappa`, `/usr/local/bastille/jails/grappa/root`,
@@ -753,7 +780,9 @@ don't hardcode hostnames there.
   the daemon), driven by `RELEASE_TMP=runtime` exported by
   `infra/freebsd/rc.d/grappa`. The rotation set survives
   `mix release --overwrite` (which would otherwise blow away
-  `_build/.../tmp/log/`).
+  `_build/.../tmp/log/`). On the Linux/systemd substrate, `bin/grappa
+  start` runs in the foreground (no `run_erl`), so logs go to
+  `journalctl -u grappa` instead — no `runtime/log/` file story there.
 - **Config**: DB-driven (Phase 2 sub-task 2j replaced the TOML loader).
   Operator binds users + networks via mix tasks: `mix grappa.create_user`
   creates a `User` row, `mix grappa.bind_network --auth ...` writes a
@@ -762,11 +791,21 @@ don't hardcode hostnames there.
   `Networks.list_credentials_for_all_users/0` and spawns one
   `Session.Server` per row. Adding a binding requires no config edit —
   next reboot picks it up.
+  **Safe to run against a live host without stopping the service**
+  (2026-07-23): every `grappa.*` operator mix task boots via
+  `Mix.Tasks.Grappa.Boot.start_app_silent/0`, which suppresses both
+  `Grappa.Bootstrap` (no upstream IRC connections) and
+  `GrappaWeb.Endpoint` (no HTTP port bind) — so it no longer conflicts
+  with an already-running release on the same port. Before this fix
+  every admin task required `systemctl stop grappa` first.
 
 ## Monitoring
 
-- **Health**: `scripts/healthcheck.sh` (curl `/healthz`) — dev. Prod:
-  `ssh m42 "sudo bastille cmd grappa curl -fsS http://127.0.0.1:4000/healthz"`.
+- **Health**: `scripts/healthcheck.sh` (curl `/healthz`) — dev. Prod
+  (m42 jail): `ssh m42 "sudo bastille cmd grappa curl -fsS http://127.0.0.1:4000/healthz"`.
+  Prod (Linux/systemd host): `curl -fsS http://127.0.0.1:4000/healthz`
+  directly (no ssh-and-exec indirection needed), or
+  `systemctl status grappa` + `journalctl -u grappa -f`.
 - **Logs**: `scripts/monitor.sh` (docker compose logs -f) — dev. Prod:
   tail `runtime/log/erlang.log.*` inside the jail (see Runtime Data).
 - **Runtime introspection**: `scripts/observer.sh` (observer_cli — see

@@ -4,7 +4,7 @@ defmodule Grappa.Deploy.PreflightTest do
 
   alias Grappa.Deploy.Preflight
 
-  @substrates [:docker, :jail]
+  @substrates [:docker, :jail, :linux]
 
   describe "classify_paths/2 — Class 1: dep / build config (substrate-independent)" do
     test "mix.lock → cold with :mix_deps reason on both substrates" do
@@ -55,6 +55,10 @@ defmodule Grappa.Deploy.PreflightTest do
       test "#{file} → hot on jail (jail never reads Docker image files)" do
         assert {:hot, []} = Preflight.classify_paths([unquote(file)], :jail)
       end
+
+      test "#{file} → hot on linux (linux never reads Docker image files)" do
+        assert {:hot, []} = Preflight.classify_paths([unquote(file)], :linux)
+      end
     end
   end
 
@@ -74,6 +78,27 @@ defmodule Grappa.Deploy.PreflightTest do
 
     test "#{@rc_d} → hot on docker (no rc(8) in the container)" do
       assert {:hot, []} = Preflight.classify_paths([@rc_d], :docker)
+    end
+
+    test "#{@rc_d} → hot on linux (no rc(8) on a systemd host either)" do
+      assert {:hot, []} = Preflight.classify_paths([@rc_d], :linux)
+    end
+  end
+
+  describe "classify_paths/2 — Class 4c: Linux systemd unit (COLD linux / HOT docker+jail)" do
+    @systemd_unit "infra/linux/systemd/grappa.service"
+
+    test "#{@systemd_unit} → cold (:systemd_unit) on linux (unit read only at service (re)start)" do
+      assert {:cold, reasons} = Preflight.classify_paths([@systemd_unit], :linux)
+      assert {:systemd_unit, [@systemd_unit]} = List.keyfind(reasons, :systemd_unit, 0)
+    end
+
+    test "#{@systemd_unit} → hot on docker (no systemd in the container)" do
+      assert {:hot, []} = Preflight.classify_paths([@systemd_unit], :docker)
+    end
+
+    test "#{@systemd_unit} → hot on jail (FreeBSD has no systemd)" do
+      assert {:hot, []} = Preflight.classify_paths([@systemd_unit], :jail)
     end
   end
 

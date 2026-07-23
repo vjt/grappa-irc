@@ -4,15 +4,23 @@ defmodule GrappaWeb.AdminController do
 
   ## `POST /admin/reload`
 
-  Delegates to `Grappa.HotReload.reload_modified/0`: walks
-  `:code.modified_modules/0` (Erlang built-in: modules whose .beam on
-  disk has a different hash than the loaded BEAM) and reloads each
-  via `:code.soft_purge/1` + `:code.load_file/1` — see that module
-  for why soft-purge (the 2026-06-10 double-hot-deploy `:not_purged`
-  live repro, and why hard purge would drop IRC sessions). Returns
-  `200 OK` with JSON `%{"reloaded" => ["Elixir.Mod.Name", ...]}` —
-  the list is empty when nothing changed, useful as positive
-  evidence in deploy scripts.
+  Delegates to `Grappa.HotReload.reload_modified/0`: walks the app's
+  own `ebin` dir by absolute path and, per `.beam` file, reloads it
+  if it's new (module never loaded) or changed (on-disk md5 differs
+  from the loaded version's `module_info(:md5)`) via
+  `:code.soft_purge/1` + `:code.load_abs/1` — see that module's
+  moduledoc for why NOT `:code.modified_modules/0` +
+  `:code.load_file/1` (both were tried first and both have live-repro'd
+  blind spots: `modified_modules/0` never sees a module that's brand
+  new, and OTP's cached code path is blind to files added after boot),
+  and for why soft-purge (the 2026-06-10 double-hot-deploy
+  `:not_purged` live repro, and why hard purge would drop IRC
+  sessions). Returns `200 OK` with JSON
+  `%{"reloaded" => ["Elixir.Mod.Name", ...], "failed" => [%{"module" =>
+  ..., "reason" => ...}, ...]}` — both empty when nothing changed;
+  a non-empty `failed` is NOT itself surfaced as a non-200 status, so
+  callers (deploy scripts) MUST inspect the body, not just the HTTP
+  status.
 
   ### Why not `Phoenix.CodeReloader`
 
@@ -25,10 +33,11 @@ defmodule GrappaWeb.AdminController do
   no-ops. The previous shape "POST → :ok → trust it" hid the
   failure (see `feedback_hot_deploy_silent_noop_prod`).
 
-  `:code.modified_modules/0` is a release-friendly OTP built-in
-  that compares BEAM hash on disk vs in memory — no Mix dependency,
-  no compile-time config requirement. Works identically in dev,
-  Docker prod, and FreeBSD jail.
+  `Grappa.HotReload`'s own md5-walk is release-friendly by
+  construction — no Mix dependency, no compile-time config
+  requirement, and (unlike `:code.modified_modules/0`) it also
+  catches brand-new modules. Works identically in dev, Docker prod,
+  the FreeBSD jail, and this substrate's systemd unit.
 
   ### Hot-deploy responsibilities split
 
@@ -37,9 +46,10 @@ defmodule GrappaWeb.AdminController do
 
     * Docker (mix phx.server): `docker exec grappa mix compile`
       writes new .beam to `_build/${MIX_ENV}/lib/grappa/ebin/`.
-    * FreeBSD jail (release): `mix release --overwrite` writes new
-      .beam to `_build/prod/rel/grappa/lib/grappa-X.Y/ebin/` (the
-      path that the daemon's `code:get_path/0` includes).
+    * FreeBSD jail (release) and native Linux/systemd (release): both
+      run `mix release --overwrite`, writing new .beam to
+      `_build/prod/rel/grappa/lib/grappa-X.Y/ebin/` (the path that
+      the daemon's `code:get_path/0` includes).
 
   Either path → POST /admin/reload → live BEAM picks up the new
   .beam. Sessions (Session.Server, IRC.Client, etc.) keep state
@@ -54,12 +64,17 @@ defmodule GrappaWeb.AdminController do
       # Bastille jail
       sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/deploy.sh
 
+      # Native Linux/systemd
+      infra/linux/deploy.sh
+
   Module-shape changes that can't be hot-swapped (mix.lock bump,
   supervision tree restructure, struct shape change in long-lived
   GenServer state) require the cold path —
-  `scripts/deploy.sh` (Docker) or
-  `infra/freebsd/deploy.sh --force-cold` (jail). Both auto-detect
-  unsafe diffs via the shared `Grappa.Deploy.Preflight` classifier.
+  `scripts/deploy.sh` (Docker), `infra/freebsd/deploy.sh --force-cold`
+  (jail), or `infra/linux/deploy.sh` (Linux — always cold when the
+  diff needs it, no force flag exists yet on this substrate). All
+  three auto-detect unsafe diffs via the shared
+  `Grappa.Deploy.Preflight` classifier.
 
   ## `POST /admin/cic-bundle-changed`
 

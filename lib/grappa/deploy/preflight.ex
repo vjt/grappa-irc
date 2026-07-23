@@ -29,13 +29,16 @@ defmodule Grappa.Deploy.Preflight do
 
   Classification is per-substrate (`:docker` for the dev/CI compose
   stack via `scripts/deploy.sh`, `:jail` for the m42 bastille jail via
-  `infra/freebsd/deploy.sh`). Most classes are substrate-independent
+  `infra/freebsd/deploy.sh`, `:linux` for a native systemd host via
+  `infra/linux/deploy.sh`). Most classes are substrate-independent
   (deps, supervision tree, migrations, nginx, config, state-shape),
   but the boot-substrate files are not: a `Dockerfile` diff is COLD
-  on Docker and irrelevant to the jail, and `infra/freebsd/rc.d/grappa`
-  is COLD on the jail and irrelevant to Docker. The 2026-06-10
-  metadata-strip deploy cold-restarted prod (ALL IRC sessions dropped)
-  for a Dockerfile diff the jail never reads — on an always-on bouncer
+  on Docker and irrelevant to the jail or a systemd host,
+  `infra/freebsd/rc.d/grappa` is COLD on the jail and irrelevant
+  elsewhere, and `infra/linux/systemd/grappa.service` is COLD on
+  `:linux` and irrelevant elsewhere. The 2026-06-10 metadata-strip
+  deploy cold-restarted prod (ALL IRC sessions dropped) for a
+  Dockerfile diff the jail never reads — on an always-on bouncer
   every needless restart is incident-grade, so the substrate is an
   explicit required argument, never a default.
 
@@ -56,13 +59,14 @@ defmodule Grappa.Deploy.Preflight do
 
   alias Grappa.HotReload.LongLivedModules
 
-  @type substrate :: :docker | :jail
+  @type substrate :: :docker | :jail | :linux
 
   @type reason ::
           {:mix_deps, [String.t()]}
           | {:application, [String.t()]}
           | {:image_substrate, [String.t()]}
           | {:rc_d, [String.t()]}
+          | {:systemd_unit, [String.t()]}
           | {:migration, [String.t()]}
           | {:nginx, [String.t()]}
           | {:config, [String.t()]}
@@ -70,7 +74,7 @@ defmodule Grappa.Deploy.Preflight do
 
   @type verdict :: {:hot, []} | {:cold, [reason()]}
 
-  @substrates [:docker, :jail]
+  @substrates [:docker, :jail, :linux]
   # CLI-boundary mirror of @substrates — derived, not hand-kept, so a
   # third substrate can't be accepted by classify_paths/2 yet rejected
   # at the cli/1 guard (or vice versa).
@@ -95,6 +99,7 @@ defmodule Grappa.Deploy.Preflight do
       |> add_reason(:application, Enum.filter(paths, &application?/1))
       |> add_reason(:image_substrate, filter_on(:docker, substrate, paths, &docker_image?/1))
       |> add_reason(:rc_d, filter_on(:jail, substrate, paths, &rc_d?/1))
+      |> add_reason(:systemd_unit, filter_on(:linux, substrate, paths, &systemd_unit?/1))
       |> add_reason(:migration, Enum.filter(paths, &migration?/1))
       |> add_reason(:nginx, Enum.filter(paths, &nginx?/1))
       |> add_reason(:config, Enum.filter(paths, &config?/1))
@@ -176,7 +181,7 @@ defmodule Grappa.Deploy.Preflight do
   @doc """
   CLI entry point invoked by the deploy orchestrators
   (`scripts/deploy.sh` passes `"docker"`, `infra/freebsd/deploy.sh`
-  passes `"jail"`).
+  passes `"jail"`, `infra/linux/deploy.sh` passes `"linux"`).
 
   Expects exactly three args: `from_sha`, `to_sha`, and the substrate
   string. A missing or unknown substrate is a usage error (exit 2) —
@@ -218,7 +223,7 @@ defmodule Grappa.Deploy.Preflight do
   def cli(_) do
     IO.puts(
       :stderr,
-      "usage: mix run -e 'Grappa.Deploy.Preflight.cli([from_sha, to_sha, \"docker\" | \"jail\"])'"
+      "usage: mix run -e 'Grappa.Deploy.Preflight.cli([from_sha, to_sha, \"docker\" | \"jail\" | \"linux\"])'"
     )
 
     System.halt(2)
@@ -332,6 +337,16 @@ defmodule Grappa.Deploy.Preflight do
   # cold path runs before every restart.
   defp rc_d?("infra/freebsd/rc.d/grappa"), do: true
   defp rc_d?(_), do: false
+
+  # Class 4c: Linux systemd unit — applies ONLY when classifying for
+  # :linux. Sibling of rc_d?/1 (4b) and docker_image?/1 (4a): a changed
+  # unit file needs `systemctl daemon-reload` + a restart to take
+  # effect (there is no hot-reload of a running unit's own
+  # definition), and neither Docker nor the jail read this file at
+  # all, so the rule must stay :linux-scoped via filter_on/4 the same
+  # way rc_d? is :jail-scoped.
+  defp systemd_unit?("infra/linux/systemd/grappa.service"), do: true
+  defp systemd_unit?(_), do: false
 
   # Class 5: migrations. The hot path skips `mix ecto.migrate`; new
   # tables/columns 500 on first query post-reload (REV-B repro'd this).
