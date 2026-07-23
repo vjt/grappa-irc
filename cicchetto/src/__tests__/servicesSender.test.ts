@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { isServicesSender } from "../lib/servicesSender";
 
 describe("isServicesSender", () => {
-  it("accepts the seven well-known services nicks (case-insensitive)", () => {
+  it("accepts the eleven well-known services nicks (case-insensitive)", () => {
     for (const nick of [
       "NickServ",
       "ChanServ",
@@ -17,6 +17,10 @@ describe("isServicesSender", () => {
       "BotServ",
       "HostServ",
       "HelpServ",
+      "RootServ",
+      "SeenServ",
+      "StatServ",
+      "DebugServ",
     ]) {
       expect(isServicesSender(nick), `expected ${nick} to classify`).toBe(true);
       expect(isServicesSender(nick.toLowerCase())).toBe(true);

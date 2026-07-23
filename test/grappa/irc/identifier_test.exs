@@ -428,8 +428,9 @@ defmodule Grappa.IRC.IdentifierTest do
   # allowlist intentionally rejects ops nicks like `Conserv` / `Reserv`
   # — bucket H/S4 closed the same misclassification class for outbound.
   describe "services_sender?/1" do
-    test "accepts the eight well-known services nicks (case-insensitive)" do
-      for nick <- ~w(NickServ ChanServ MemoServ OperServ BotServ HostServ HelpServ RootServ) do
+    test "accepts the eleven well-known services nicks (case-insensitive)" do
+      for nick <-
+            ~w(NickServ ChanServ MemoServ OperServ BotServ HostServ HelpServ RootServ SeenServ StatServ DebugServ) do
         assert Identifier.services_sender?(nick), "expected #{nick} to classify as services"
         assert Identifier.services_sender?(String.downcase(nick))
         assert Identifier.services_sender?(String.upcase(nick))
@@ -466,8 +467,14 @@ defmodule Grappa.IRC.IdentifierTest do
       # Generate binaries that explicitly do NOT match the allowlist
       # (case-insensitive). Property: services_sender?/1 is false for
       # every such input.
+      # Mirrors the production `@services` allowlist exactly — keep in
+      # lockstep with `Grappa.IRC.Identifier` (and the cic-side twin in
+      # `cicchetto/src/lib/servicesSender.ts`). A divergence here makes
+      # the property vacuously wrong for a generated allowlist member.
       allowlist =
-        MapSet.new(~w(nickserv chanserv memoserv operserv botserv hostserv helpserv))
+        MapSet.new(
+          ~w(nickserv chanserv memoserv operserv botserv hostserv helpserv rootserv seenserv statserv debugserv)
+        )
 
       check all(s <- StreamData.string(:ascii, min_length: 1, max_length: 20)) do
         if String.downcase(s) in allowlist do

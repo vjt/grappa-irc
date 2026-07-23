@@ -27,6 +27,13 @@ const SERVICES = new Set([
   "hostserv",
   "helpserv",
   "rootserv",
+  // #371: Azzurra (bahamut) pseudo-services. Added in lockstep with the
+  // server allowlist (`Grappa.IRC.Identifier` `@services`) — the server
+  // decides inbound NOTICE routing, so both doors must agree or a service
+  // NOTICE opens a stray query window instead of landing on `$server`.
+  "seenserv",
+  "statserv",
+  "debugserv",
 ]);
 
 export function isServicesSender(s: string): boolean {

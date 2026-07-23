@@ -741,6 +741,31 @@ defmodule Grappa.Session.EventRouterTest do
                EventRouter.route(m, state)
     end
 
+    # #371 — Azzurra (bahamut) pseudo-services SeenServ / StatServ /
+    # DebugServ were absent from the allowlist, so their NOTICE replies
+    # fell through to the peer-nick query-window arm (a stray empty
+    # window) instead of the synthetic `$server` channel. Added to
+    # `Grappa.IRC.Identifier` `@services` in lockstep with the cic-side
+    # twin (`cicchetto/src/lib/servicesSender.ts`). The `Conserv` guard
+    # above proves a non-allowlist -serv nick still routes to a query
+    # window, so this asserts the allowlist membership is what flips it.
+    test "#371 SeenServ / StatServ / DebugServ NOTICEs route to $server" do
+      state = base_state()
+
+      for nick <- ~w(SeenServ StatServ DebugServ) do
+        m =
+          msg(
+            :notice,
+            ["vjt", "service reply from #{nick}"],
+            {:nick, nick, "service", "azzurra.chat"}
+          )
+
+        assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+        assert attrs.channel == "$server", "expected #{nick} NOTICE to route to $server"
+        assert attrs.sender == nick
+      end
+    end
+
     # UX-4 bucket G — closed-allowlist regression guard: ops nicks that
     # end in "serv" (Conserv, Dataserv, Reserv on real networks) used to
     # match the `~r/Serv$/i` regex and route to $server, swallowing the

@@ -75,7 +75,13 @@ defmodule Grappa.IRC.Identifier do
   # `Conserv` / `Dataserv` / `Reserv` are real ops nicks that MUST NOT
   # be misclassified as services). Bucket G unifies on the allowlist so
   # every door uses the same predicate.
-  @services ~w(nickserv chanserv memoserv operserv botserv hostserv helpserv rootserv)
+  # #371: seenserv / statserv / debugserv are Azzurra (bahamut)
+  # pseudo-services. Absent from the allowlist their inbound NOTICEs
+  # fell through `route_non_channel_notice_non_chanserv/2`'s `valid_nick?`
+  # arm and opened a stray per-nick query window instead of landing on
+  # the synthetic `$server` channel. Added in lockstep with the cic-side
+  # twin in `cicchetto/src/lib/servicesSender.ts`.
+  @services ~w(nickserv chanserv memoserv operserv botserv hostserv helpserv rootserv seenserv statserv debugserv)
 
   @doc "True iff the input is a syntactically valid IRC nickname."
   @spec valid_nick?(term()) :: boolean()
@@ -380,8 +386,8 @@ defmodule Grappa.IRC.Identifier do
 
   @doc """
   True iff `s` is the nick of a well-known IRC services entity (NickServ,
-  ChanServ, MemoServ, OperServ, BotServ, HostServ, HelpServ).
-  Case-insensitive. Channel-sigil targets (`#`, `&`, `+`, `!`) are by
+  ChanServ, MemoServ, OperServ, BotServ, HostServ, HelpServ, RootServ,
+  SeenServ, StatServ, DebugServ). Case-insensitive. Channel-sigil targets (`#`, `&`, `+`, `!`) are by
   definition NOT services (PRIVMSG to a channel goes to the room, not a
   service bot) and return `false` without further inspection.
 
