@@ -91,6 +91,17 @@ defmodule Grappa.Application do
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a
     # reorder is a deliberate choice.
+    # Endpoint after PubSub + Registry — HTTP requests (REST controller,
+    # WS Channel join) reach into both at request time. Conditional on
+    # :start_endpoint (mirrors :start_bootstrap below): the `grappa.*`
+    # one-shot operator mix tasks (Mix.Tasks.Grappa.Boot.start_app_silent/0)
+    # need Repo + the domain contexts but NOT the HTTP surface — starting
+    # it anyway used to force "stop the live service first" for every
+    # admin task (create_user, bind_network, seed_themes, ...), since a
+    # second bind of the same port crashes `:eaddrinuse`. An app that
+    # ships hot code-reload has no business demanding a full stop/start
+    # cycle just to run a one-off DB mutation alongside it. Found live
+    # 2026-07-23 running `grappa.seed_themes` against a live host.
     children =
       [
         # Vault before Repo: Cloak's Ecto types (Grappa.EncryptedBinary)
@@ -234,17 +245,6 @@ defmodule Grappa.Application do
         {DynamicSupervisor,
          name: Grappa.SessionSupervisor, strategy: :one_for_one, max_restarts: 10_000, max_seconds: 60}
       ] ++
-        # Endpoint after PubSub + Registry — HTTP requests (REST controller,
-        # WS Channel join) reach into both at request time. Conditional on
-        # :start_endpoint (mirrors :start_bootstrap below): the `grappa.*`
-        # one-shot operator mix tasks (Mix.Tasks.Grappa.Boot.start_app_silent/0)
-        # need Repo + the domain contexts but NOT the HTTP surface — starting
-        # it anyway used to force "stop the live service first" for every
-        # admin task (create_user, bind_network, seed_themes, ...), since a
-        # second bind of the same port crashes `:eaddrinuse`. An app that
-        # ships hot code-reload has no business demanding a full stop/start
-        # cycle just to run a one-off DB mutation alongside it. Found live
-        # 2026-07-23 running `grappa.seed_themes` against a live host.
         endpoint_child() ++
         [
           # Reaper after Repo (it queries Visitors via Repo) and after
