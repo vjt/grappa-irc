@@ -393,13 +393,14 @@ defmodule Grappa.UserSettingsTest do
       assert result.private_messages_only == ["alice", "bob"]
     end
 
-    test "folds nick whitelist under rfc1459, channels under plain downcase (#121)" do
+    test "folds BOTH nick and channel whitelists under rfc1459 (#121, #364)" do
       user = user_fixture()
 
       prefs = %{
         channel_messages_all: false,
-        # Channels fold via canonical_channel (sigil-gated downcase). `[`/`~`
-        # are NOT national chars for channels, so `#Foo[X]` only lowercases.
+        # #364: channels now fold via canonical_channel under the SAME
+        # rfc1459 casemapping as nicks (bahamut casemaps channels too), so
+        # `#Foo[X]` folds `[`→`{` + case → `#foo{x}` (was plain downcase).
         channel_messages_only: ["#Foo[X]"],
         channel_mentions: true,
         private_messages_all: false,
@@ -410,7 +411,7 @@ defmodule Grappa.UserSettingsTest do
       assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
 
       result = UserSettings.get_notification_prefs({:user, user.id})
-      assert result.channel_messages_only == ["#foo[x]"]
+      assert result.channel_messages_only == ["#foo{x}"]
       assert result.private_messages_only == ["foo{bar}", "quux^"]
     end
 
