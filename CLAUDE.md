@@ -355,7 +355,19 @@ not the surrounding code.**
   callback, controller, context function, plug body, or release task.
   Pass config via `start_link/1` opts; the supervisor reads env at
   boot and injects. Lets tests substitute values without runtime
-  config tricks.
+  config tricks. **Non-process DI-seams** (stateless resolver modules
+  reached from controllers / context fns / hot paths — no `start_link`
+  of their own) use the sibling boot boundary instead: a `boot/0`
+  called from `application.ex` `start/2` reads env ONCE into
+  `:persistent_term`; the runtime resolver reads
+  `:persistent_term.get(key, default)` (the default preserves any
+  hot-deploy graceful-degradation contract); tests inject via a
+  `Mix.env() == :test`-gated `put_test_*/1` helper. Precedent:
+  `Grappa.Admission.Config`, `Grappa.Uploads`, `Grappa.HttpHosts`,
+  `Grappa.Push.BadgeSource` / `WindowCounts.PushSource` /
+  `Themes.BackgroundImage` (#364 J/cross-module-S2). `start_link` opts
+  is for GenServers; `:persistent_term` is for everything else — never
+  a per-call `Application.get_env/2`.
 
 ### Phoenix / Ecto patterns
 

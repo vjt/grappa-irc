@@ -27341,3 +27341,72 @@ don't share. The right move was to read how channels are ALREADY stored
 (canonical + backfill) and extend THAT, not copy the nick mechanism. A
 pattern doesn't transfer just because the two problems rhyme; check
 which invariant forced the original shape first.*
+
+## 2026-07-23 — #364 bucket J: runtime DI-seam `Application.get_env` → `:persistent_term` boot boundary (cross-module S2)
+
+The codebase review's cross-module S2 finding: three dependency-inversion
+seams resolved their injected impl via a **per-call `Application.get_env/2`
+read at runtime** — the pattern CLAUDE.md bans ("Application.{put,get}_env:
+boot-time only, runtime banned"). Left as-is it propagates: the next seam
+copies the closest example. vjt resolved: **migrate clean.**
+
+The three seams:
+
+  * `Grappa.Push.BadgeSource.impl/0` — `:badge_source` (door #1 PWA badge
+    count, resolved on the Session→Push hot path via `Push.Triggers`).
+  * `Grappa.WindowCounts.PushSource.impl/0` — `:window_counts_push_source`
+    (#267 per-message push, called from BOTH `Session.Server`'s persist arm
+    AND `ReadCursorController`).
+  * `Grappa.Themes.BackgroundImage.fetcher/0` — `:themes[:image_fetcher]`
+    (theme background fetch-by-URL, called from the `Themes` context ← a
+    controller).
+
+**Why NOT `start_link` opts (the rule's headline mechanism).** The rule's
+"pass config via `start_link/1` opts" prescription is written for
+GenServers. All three seams are **stateless resolver modules** reached from
+controllers / context functions / a hot path threaded through other
+processes — none has a `start_link` of its own, and two are reached from
+per-request controller/context code with no process to inject into. Forcing
+`start_link` would mean either a half-migration (two patterns — the exact
+"total consistency or nothing" trap) or an invasive refactor threading the
+impl through `Session.Server` state + controller conns. That is the "casino
+totale" vjt's HALT gate was set to catch.
+
+**The clean fit already existed: the `:persistent_term` boot boundary.**
+`Grappa.Admission.Config` / `Grappa.Uploads` / `Grappa.HttpHosts` /
+`Grappa.Push` already read their env ONCE at boot into `:persistent_term`
+and read it lock-free at runtime — the review named this exact target ("the
+boot-time `:persistent_term` rule"). Each seam now has a `boot/0` called
+from `Grappa.Application.start/2` (before the supervision tree) that stashes
+`Application.get_env(...)` into a `{Module, :key}` persistent_term entry; the
+runtime resolver reads `:persistent_term.get(key, default)`. The config
+value stays a **module atom read from env**, never a literal — so the
+Boundary cycles the seams break (`Push → BadgeCount → …`, `Session → Pusher
+→ …`) stay broken. The `get/2` **default preserves each seam's documented
+degradation**: `nil` (BadgeSource/PushSource → hot-deploy no-op / omit
+badge) or the real `ImageFetcher.Req` (BackgroundImage → graceful real
+impl) in the transient window after a hot code load but before `boot/0`
+re-runs.
+
+**Test injection: helper, not `Application.put_env`.** BadgeSource +
+PushSource expose a `Mix.env() == :test`-gated `put_test_impl/1` (mirrors
+`Admission.Config.put_test_config/1`); tests set/restore the seam through it.
+BackgroundImage needs no helper — its one test impl (`ImageFetcherMock`) is
+injected via `config/test.exs`, which `boot/0` reads at app start; the
+existing url-path tests resolve the mock through boot→persistent_term and are
+the behavioral guard.
+
+**Boundary.** `Grappa.WindowCounts` + `Grappa.Themes` join
+`Grappa.Application`'s boundary deps for their boot calls (acyclic — nothing
+deps the top-level app). `BackgroundImage` stays INTERNAL to the Themes
+context: its boot is exposed via a context-level `Grappa.Themes.boot/0`
+delegate rather than widening Themes' exports with a security-sensitive
+module. No call site changed — only the internal resolution mechanism.
+
+*Lesson: the rule's headline mechanism (`start_link` opts) is not the rule
+— the INTENT is "read config once at boot, never per-call at runtime; let
+tests inject without runtime config tricks." For non-process seams the
+codebase's OWN `:persistent_term` boot boundary satisfies that intent; the
+review even named it. When the literal instruction doesn't fit the shape,
+check whether the codebase already has a blessed pattern for that shape
+before forcing the instruction into a mess.*
