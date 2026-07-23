@@ -141,7 +141,21 @@ createRoot(() => {
         // network HTTP shows fresh POST /auth/login + GET /networks,
         // but the BEAM log shows zero `CONNECTED TO GrappaWeb.UserSocket`
         // and zero JOINED grappa:user:... events for the new visitor id.
-        if (_socket?.isConnected()) _socket.disconnect();
+        //
+        // #364 bucket B — disconnect UNCONDITIONALLY, not gated on
+        // `isConnected()`. A socket mid-backoff (WS torn after a BEAM
+        // restart / network blip, or a handshake that never completed) is
+        // NOT `isConnected()`, yet phoenix keeps a live `reconnectTimer`
+        // firing `connect()` under the STALE ctor-time `authToken`. Gating
+        // the disconnect on `isConnected()` skipped the teardown and then
+        // `_socket = null` ORPHANED that instance — its reconnectTimer kept
+        // reconnecting with the old bearer, unstoppable because the
+        // reference was gone (zombie loop + stale identity). `disconnect()`
+        // is the app-callable that resets phoenix's reconnectTimer while the
+        // WS is down (as haltForOffline/kickReconnect already rely on) and is
+        // a safe no-op on a non-open socket, so it MUST run before dropping
+        // the reference.
+        _socket?.disconnect();
         _socket = null;
         _userChannel = null;
         return;
@@ -157,7 +171,14 @@ createRoot(() => {
         // callback would refresh on its own, but the server prefers the
         // subprotocol, so the subprotocol MUST carry the fresh token —
         // hence the rebuild, not a reconnect.
-        if (s.isConnected()) s.disconnect();
+        //
+        // #364 bucket B — disconnect UNCONDITIONALLY (same reason as the
+        // logout arm above): a rotation that lands while the old socket is
+        // mid-backoff (not `isConnected()`) would otherwise skip the
+        // teardown and orphan an instance whose reconnectTimer keeps
+        // replaying the stale bearer. `disconnect()` resets that timer and
+        // is a safe no-op on a non-open socket.
+        s.disconnect();
         _socket = null;
         _userChannel = null;
         getSocket().connect();

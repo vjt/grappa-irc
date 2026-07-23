@@ -166,6 +166,54 @@ describe("socket singleton", () => {
     expect(opts2.params).toBeUndefined();
   });
 
+  // #364 bucket B — the phoenix Socket auto-reconnect backoff loop keeps a
+  // live `reconnectTimer` firing `connect()` while the WS is DOWN (post-BEAM
+  // restart, network blip, or a handshake that never completed). In that
+  // window `isConnected()` is FALSE. Pre-fix, both the logout and rotation
+  // arms gated `disconnect()` on `isConnected()`, so a mid-backoff socket was
+  // never disconnected — the code just nulled `_socket`, ORPHANING an instance
+  // whose reconnectTimer kept re-firing `connect()` with the STALE ctor-time
+  // `authToken` (a zombie reconnect loop under the old bearer, unstoppable
+  // because the reference was dropped). `disconnect()` is the only call that
+  // resets phoenix's reconnectTimer (haltForOffline/kickReconnect already rely
+  // on this) and it is safe to call on a non-open socket, so it MUST run
+  // unconditionally before the reference is dropped.
+  it("logout disconnects a mid-backoff (not-connected) socket to kill the zombie reconnect loop (#364)", async () => {
+    localStorage.setItem("grappa-token", "tok-A");
+    const auth = await import("../lib/auth");
+    await import("../lib/socket");
+    expect(h.socketCtor).toHaveBeenCalledTimes(1);
+    // Socket is mid-backoff: connect() was scheduled but the handshake never
+    // completed, so isConnected() stays false (the beforeEach default).
+    expect(h.mockSocketInstance.isConnected()).toBe(false);
+
+    auth.setToken(null);
+
+    // Even though the socket is not connected, disconnect() MUST fire so
+    // phoenix's reconnectTimer is reset and the stale-bearer instance can't
+    // keep reconnecting after the reference is dropped.
+    expect(h.mockSocketInstance.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("rotation disconnects a mid-backoff (not-connected) socket before rebuilding it (#364)", async () => {
+    localStorage.setItem("grappa-token", "tok-A");
+    const auth = await import("../lib/auth");
+    await import("../lib/socket");
+    expect(h.socketCtor).toHaveBeenCalledTimes(1);
+    // Mid-backoff: isConnected() is false (beforeEach default) — no completed
+    // handshake on the tok-A instance.
+    expect(h.mockSocketInstance.isConnected()).toBe(false);
+
+    auth.setToken("tok-B");
+
+    // The old (not-connected) instance MUST be disconnected before the rebuild
+    // so its reconnectTimer stops replaying the stale tok-A authToken.
+    expect(h.mockSocketInstance.disconnect).toHaveBeenCalledTimes(1);
+    expect(h.socketCtor).toHaveBeenCalledTimes(2);
+    const opts2 = h.socketCtor.mock.calls[1]?.[1] as { authToken: string };
+    expect(opts2.authToken).toBe("tok-B");
+  });
+
   it("joinChannel builds the topic-vocabulary string and calls channel.join()", async () => {
     localStorage.setItem("grappa-token", "tok-1");
     const socket = await import("../lib/socket");

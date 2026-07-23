@@ -27127,3 +27127,35 @@ Each finding ships failing-first: S4/S13 assert bracket-fold equality AND
 non-ASCII distinctness (the Unicode over-fold the old path broke); S5
 proves the fixed sites treat `Nick`/`nick`/`ni[k`/`ni{k` as one identity;
 S2's pin goes RED if any runtime module re-introduces a hand-copied fold.
+
+## 2026-07-23 — #364 cicchetto S2: logout/rotation must disconnect() a mid-backoff socket (no zombie reconnect / stale bearer)
+
+**The bug (from the 2026-07-19 codebase review).** Both the logout arm
+(token → null) and the rotation arm (a → b) in `socket.ts` gated their
+`disconnect()` on `_socket.isConnected()` before dropping the reference
+(`_socket = null`). But phoenix.js's native auto-reconnect keeps a live
+`reconnectTimer` firing `connect()` while the WS is DOWN — after a BEAM
+restart, a network blip, or a handshake that never completed — and in
+that window `isConnected()` is FALSE. So a logout/rotation that landed
+mid-backoff SKIPPED the teardown and then nulled `_socket`, **orphaning**
+an instance whose reconnectTimer kept reconnecting under the STALE
+ctor-time `authToken` (the bearer rides the `authToken` subprotocol,
+captured ONCE at construction — see the #95/#202 history). Unstoppable,
+because the reference was gone: a zombie reconnect loop under the old
+identity.
+
+**Root cause — `isConnected()` is the wrong predicate for "should I tear
+this down?".** `disconnect()` is the app-callable that resets phoenix's
+`reconnectTimer` while the WS is down, and it is a safe no-op on a
+non-open socket (its `teardown` handles a null/closed conn). `haltForOffline` and
+`kickReconnect` in the same module already rely on exactly this — they
+call `disconnect()` on a not-connected socket to cancel the futile
+backoff. The two lifecycle arms were the odd ones out.
+
+**The fix.** Drop the `isConnected()` guard in both arms — call
+`disconnect()` unconditionally before `_socket = null`. Sibling of the S1
+"rebuild ≠ reconnect" fix: S1 made the effects re-JOIN on the rebuilt
+socket; S2 makes the old socket actually DIE first. Pinned by two
+socket.test.ts cases that hold the mock `isConnected()` at false (the
+mid-backoff state) and assert `disconnect()` still fires on logout and on
+rotation.
