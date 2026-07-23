@@ -27514,6 +27514,16 @@ pattern into a parallel client state machine.
     under one folded key on the read path anyway (the #372 fold-dedup:
     one window per folded identity). Broadcasts `query_windows_list` only
     on `:renamed`.
+  * **`Grappa.ReadCursor.rename_dm_peer/4`** — migrates the DM read
+    cursor row (`channel = peer`, stored case-preserved, matched folded)
+    old→new, else the migrated history reads FULLY unread under the new
+    window (no cursor row → `WindowCounts` derives from `cursor || 0`).
+    Same keep-new merge + `Ecto.ConstraintError`-rescue-to-merge as
+    `QueryWindows.rename/5`. Missed in the first cut, caught in code
+    review: adding it keeps the "migrate every store of the moved
+    identity" invariant honest. Its `Networks` dep demoted to a
+    struct-only `dirty_xref` for the same `Session → ReadCursor →
+    Networks → Session` cycle reason as `QueryWindows`.
   * **`Grappa.Scrollback.rename_dm_peer/4`** — migrates the DM rows so
     history survives under the new window (else `channel_or_dm_where/3`,
     which reads the peer window by the fold of the peer nick, returns
@@ -27536,25 +27546,30 @@ pattern into a parallel client state machine.
     migrates the scrollback ONLY on `:renamed` — so a peer we never
     queried costs one indexed lookup and no writes.
   * **cic:** the server broadcast relabels the sidebar row (server-owned
-    list). But two cic-OWNED caches don't ride that broadcast — the live
-    in-memory scrollback (keyed `(slug, nick)`) and THIS device's focus.
-    On the per-channel `nick_change`, `subscribe.ts` calls
-    `scrollback.renameScrollbackKey` (move + merge the live rows) and
-    `selection.followQueryNick` (re-point focus if that query is
+    list). But cic-OWNED caches don't ride that broadcast — the live
+    in-memory scrollback (keyed `(slug, nick)`), the read-cursor cache,
+    and THIS device's focus. On the per-channel `nick_change`,
+    `subscribe.ts` calls `scrollback.renameScrollbackKey` (move + merge
+    the live rows), `readCursor.renameReadCursorChannel` (move the cursor
+    — the server `rename_dm_peer` does NOT broadcast a `read_cursor_set`),
+    and `selection.followQueryNick` (re-point focus if that query is
     selected — the focused-window case is the repro: without it the next
-    send still targets the stale nick and 401s). Gated to a PEER
-    (`sender ≠ ownNick`) genuine rename (`old ≢ new` under rfc1459).
-    Mirrors `members.ts` renaming a member on NICK — cic-owned cache
-    maintenance, NOT window-list origination. Own self-rename rides
-    `own_nick_changed`.
+    send still targets the stale nick and 401s). The old key is resolved
+    via `canonicalQueryNick` first, because the caches key on the window's
+    STORED casing which can differ from the NICK line's sender casing
+    (#372). Gated to a PEER (`sender ≠ ownNick`) genuine rename
+    (`old ≢ new` under rfc1459). Mirrors `members.ts` renaming a member on
+    NICK — cic-owned cache maintenance, NOT window-list origination. Own
+    self-rename rides `own_nick_changed`.
 
-**Boundary knock-on:** `Session` now depends on `QueryWindows` (for
-`rename/5`), which would close the cycle `Session → QueryWindows →
-Networks → Session`. Fixed by demoting `QueryWindows`'s `Networks`
-dependency to a struct-only `dirty_xref` — the `Network` reference is a
-`belongs_to` FK + an existence `Repo.exists?` only, exactly the shape
-`Scrollback` / `ReadCursor` already declare as dirty xrefs for the same
-cycle-avoidance reason.
+**Boundary knock-on:** `Session` now depends on `QueryWindows` +
+`ReadCursor` (for their `rename`s), which would close the cycle
+`Session → {QueryWindows,ReadCursor} → Networks → Session`. Fixed by
+demoting BOTH contexts' `Networks` dependency to a struct-only
+`dirty_xref` — the `Network` reference is a `belongs_to` FK + a schema
+query only, exactly the shape `Scrollback` already declares as a dirty
+xref for the same cycle-avoidance reason (`ReadCursor` had `Networks` as
+a real dep pre-#373; #373 demotes it too).
 
 **Out-of-scope boundaries (documented, not bugs):**
   * No shared channel → IRC never delivers the peer NICK → the window
@@ -27567,9 +27582,11 @@ cycle-avoidance reason.
 
 Coverage: server ExUnit (`QueryWindows.rename/5` — genuine/merge/case-
 only/fold/scoped; `Scrollback.rename_dm_peer/4` — both directions +
-orphan + own-nick-channel-untouched + fold; `EventRouter` peer-vs-own
-emit; a `Session.Server` end-to-end NICK→window+history), cic vitest
-(`renameScrollbackKey` move/merge/no-op; `followQueryNick` selected/
+orphan + own-nick-channel-untouched + fold; `ReadCursor.rename_dm_peer/4`
+— migrate/fold/case-only/merge/scoped + a visitor parity case;
+`EventRouter` peer-vs-own emit; a `Session.Server` end-to-end
+NICK→window+history), cic vitest (`renameScrollbackKey` move/merge/no-op;
+`renameReadCursorChannel` move/merge/no-op; `followQueryNick` selected/
 not-selected/kind/slug), and an e2e (`nick-follow-query.spec.ts`:
 relabel + history + a post-rename send that REACHES the renamed peer,
 proving no 401).

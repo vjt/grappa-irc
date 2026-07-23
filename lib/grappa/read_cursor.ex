@@ -66,13 +66,16 @@ defmodule Grappa.ReadCursor do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Networks, Grappa.PubSub, Grappa.Repo, Grappa.Scrollback],
-    # `Visitors.Visitor` is referenced by `ReadCursor.Cursor` (the
-    # `belongs_to :visitor` association) in struct-only form.
-    # Mirrors Scrollback's identical handling — see
-    # `Grappa.Scrollback`'s `dirty_xrefs` rationale: the FK reference
-    # carries no behaviour we'd want Boundary to gate.
-    dirty_xrefs: [Grappa.Visitors.Visitor],
+    deps: [Grappa.Accounts, Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Scrollback],
+    # `Networks.Network` is referenced ONLY as a schema — the
+    # `belongs_to :network` FK association + the `join: n in Network`
+    # slug lookup in `bulk_for_subject/1` (field access, no Networks
+    # context call). Demoted from a real dep to a struct-only dirty xref
+    # (#373) so `Session → ReadCursor → Networks → Session` doesn't close
+    # once Session depends on ReadCursor for `rename_dm_peer/4`; mirrors
+    # `Grappa.Scrollback` / `Grappa.QueryWindows`. `Visitors.Visitor` is
+    # the `belongs_to :visitor` FK, same rationale.
+    dirty_xrefs: [Grappa.Networks.Network, Grappa.Visitors.Visitor],
     exports: [Cursor, Wire]
 
   import Ecto.Query
@@ -83,6 +86,10 @@ defmodule Grappa.ReadCursor do
   alias Grappa.ReadCursor.{Cursor, Wire}
   alias Grappa.Repo
   alias Grappa.Scrollback.Message
+
+  # Identifier.nick_fold/1 is a query macro (rfc1459 fold fragment) used by
+  # rename_dm_peer/4 to match a DM cursor by the fold of the peer nick.
+  require Identifier
 
   # ---------------------------------------------------------------------------
   # Types
@@ -295,6 +302,80 @@ defmodule Grappa.ReadCursor do
     else
       {:error, :invalid_message}
     end
+  end
+
+  @doc """
+  #373 — migrates the DM read cursor for `old_nick` to `new_nick` in
+  `(subject, network_id)`, so a query window that followed a peer's NICK
+  keeps its read state. Without this the migrated history reads as fully
+  UNREAD: the `new` window has no cursor row (the old row is stranded at
+  `old`), so `WindowCounts` derives the count from `cursor || 0`.
+
+  Case-insensitive on both nicks (rfc1459 fold, #121). The cursor
+  `channel` is stored case-preserved (`canonical_channel/1` is a no-op for
+  a bare nick) and matched fold-wise here, mirroring
+  `Scrollback.rename_dm_peer/4`. `fold(old) == fold(new)` (a case-only
+  change) is a noop — the fold already resolves. A nick-collision (a
+  cursor already folds to `new`, i.e. a merge into an existing DM) keeps
+  the `new` cursor and drops the `old` one (mirrors `QueryWindows.rename/5`
+  keep-new merge; a rare imperfection if `old` was read further, self-heals
+  on the next settle). The `Ecto.ConstraintError` rescue covers the (rare)
+  race where a concurrent `set/4` from the channel process lands a `new`
+  cursor between the exists-check and the update — the unique index would
+  otherwise reject the rename and crash the caller.
+
+  Returns `:ok`. Sole caller: `Grappa.Session.Server.apply_effects/2` on
+  `{:peer_nick_renamed, old, new}`, alongside `Scrollback.rename_dm_peer/4`
+  and after `QueryWindows.rename/5` reports `:renamed`.
+  """
+  @spec rename_dm_peer(subject(), integer(), String.t(), String.t()) :: :ok
+  def rename_dm_peer(subject, network_id, old_nick, new_nick)
+      when is_integer(network_id) and is_binary(old_nick) and is_binary(new_nick) do
+    folded_old = Identifier.canonical_nick(old_nick)
+    folded_new = Identifier.canonical_nick(new_nick)
+
+    if folded_old == folded_new do
+      :ok
+    else
+      old_query =
+        Cursor
+        |> subject_filter(subject)
+        |> where(
+          [c],
+          c.network_id == ^network_id and Identifier.nick_fold(c.channel) == ^folded_old
+        )
+
+      cond do
+        not Repo.exists?(old_query) ->
+          :ok
+
+        cursor_folds_to?(subject, network_id, folded_new) ->
+          Repo.delete_all(old_query)
+          :ok
+
+        true ->
+          try do
+            Repo.update_all(old_query, set: [channel: new_nick])
+          rescue
+            Ecto.ConstraintError ->
+              # A concurrent set/4 (channel process, NOT the serialized
+              # Session.Server) raced a `new` cursor in between the check
+              # and the update → the unique index rejects the rename.
+              # Degrade to the merge path: keep the new, drop the old.
+              Repo.delete_all(old_query)
+          end
+
+          :ok
+      end
+    end
+  end
+
+  @spec cursor_folds_to?(subject(), integer(), String.t()) :: boolean()
+  defp cursor_folds_to?(subject, network_id, folded) do
+    Cursor
+    |> subject_filter(subject)
+    |> where([c], c.network_id == ^network_id and Identifier.nick_fold(c.channel) == ^folded)
+    |> Repo.exists?()
   end
 
   # ---------------------------------------------------------------------------

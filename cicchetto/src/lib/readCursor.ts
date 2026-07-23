@@ -240,6 +240,34 @@ export const clearReadCursors = (): void => {
   setCursors({});
 };
 
+/**
+ * #373 — a query window's peer renamed; move its read cursor from
+ * `(networkSlug, oldChannel)` to `(networkSlug, newChannel)`. The server
+ * migrates its `read_cursors` row (`ReadCursor.rename_dm_peer/4`) but does
+ * NOT broadcast a `read_cursor_set` for it, so this keeps THIS device's
+ * cache in step — else the relabeled window derives its unread from a
+ * missing cursor (whole history flips unread) until the next settle POST.
+ * On a merge (the new key already has a cursor) the existing new cursor
+ * wins (mirrors the server keep-new merge). No-op when the old key holds
+ * nothing (a member rename with no DM cursor).
+ */
+export const renameReadCursorChannel = (
+  networkSlug: string,
+  oldChannel: string,
+  newChannel: string,
+): void => {
+  if (oldChannel === newChannel) return;
+  setCursors((prev) => {
+    const oldKey = cacheKey(networkSlug, oldChannel);
+    const oldVal = prev[oldKey];
+    if (oldVal === undefined) return prev;
+    const newKey = cacheKey(networkSlug, newChannel);
+    const { [oldKey]: _drop, ...rest } = prev;
+    // Merge: keep the pre-existing new cursor (drop old); else adopt old.
+    return newKey in rest ? rest : { ...rest, [newKey]: oldVal };
+  });
+};
+
 // One-shot purge of the legacy localStorage backend. The pre-flip
 // module persisted under `rc:<slug>:<chan>` keys; delete them so a
 // freshly-flipped browser doesn't carry stale bytes no code reads.

@@ -17,7 +17,7 @@ import { isOperatorActionEcho } from "./operatorActionEcho";
 import { isOwnPresenceEvent } from "./ownPresenceEvent";
 import { setEnsureQueryTopicJoined } from "./queryTopicJoin";
 import { canonicalQueryNick, openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
-import { applyJoinReply, applyReadCursorSet } from "./readCursor";
+import { applyJoinReply, applyReadCursorSet, renameReadCursorChannel } from "./readCursor";
 import { recordSeen } from "./reconnectBackfill";
 import { appendToScrollback, refreshScrollback, renameScrollbackKey } from "./scrollback";
 import { followQueryNick, selectedChannel, setServerSeedCount } from "./selection";
@@ -469,8 +469,19 @@ createRoot(() => {
             // rfc1459) needs no key move (canonicalQueryNick already resolves
             // casing) and the server row stays put (`:noop`).
             if (newNick !== null && !nickEquals(message.sender, newNick)) {
-              renameScrollbackKey(channelKey(slug, message.sender), channelKey(slug, newNick));
-              followQueryNick(slug, message.sender, newNick);
+              // The scrollback + cursor caches are keyed by the query
+              // window's STORED casing, which can differ from the NICK
+              // line's sender casing (#372: window opened `guest`, peer is
+              // `Guest`). Resolve the old key via canonicalQueryNick so the
+              // exact-keyed cache moves hit; falls back to the raw sender
+              // when no window exists (then all three are no-ops anyway).
+              // followQueryNick fold-matches on its own but takes the same
+              // resolved value for consistency.
+              const net = networks()?.find((n) => n.slug === slug);
+              const oldNick = net ? canonicalQueryNick(net.id, message.sender) : message.sender;
+              renameScrollbackKey(channelKey(slug, oldNick), channelKey(slug, newNick));
+              renameReadCursorChannel(slug, oldNick, newNick);
+              followQueryNick(slug, oldNick, newNick);
             }
           }
 

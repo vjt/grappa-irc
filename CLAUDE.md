@@ -102,8 +102,10 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   the `query_windows` row (`QueryWindows.rename/5` — UPDATE, or MERGE on
   a fold-collision with an existing `new` window), the DM scrollback
   (`Scrollback.rename_dm_peer/4` — `dm_with` + outbound/orphan `channel`),
-  and cic's own caches (`scrollback.renameScrollbackKey` +
-  `selection.followQueryNick`, driven by the per-channel `nick_change`,
+  the DM read cursor (`ReadCursor.rename_dm_peer/4` — else the migrated
+  history reads fully unread), and cic's own caches
+  (`scrollback.renameScrollbackKey` + `readCursor.renameReadCursorChannel`
+  + `selection.followQueryNick`, driven by the per-channel `nick_change`,
   mirroring `members.ts`). Server-driven: `EventRouter` emits
   `{:peer_nick_renamed, old, new}`, `Session.Server.apply_effects/2`
   renames the row (broadcasts `query_windows_list`) then migrates history

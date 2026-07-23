@@ -274,10 +274,19 @@ defmodule Grappa.QueryWindows do
         # simply aggregate to one folded key).
         Repo.delete_all(old_query)
       else
-        # Session.Server serializes per (subject, network_id) and there is
-        # exactly one such process, so no concurrent open can race a row
-        # into `folded_new` between the check above and this update.
-        Repo.update_all(old_query, set: [target_nick: new_nick])
+        # This rename runs in the (per-subject-serialized) Session.Server,
+        # but `open/4` runs in the Phoenix channel process, so a concurrent
+        # `open(new_nick)` CAN race a row into `folded_new` between the
+        # check above and this update — the fold unique index would then
+        # reject the UPDATE (and `update_all` has no changeset to attach a
+        # `unique_constraint/2` to, so it raises rather than returns an
+        # error). Rescue that race and degrade to the merge path: the
+        # target identity now has a window, so drop the old row.
+        try do
+          Repo.update_all(old_query, set: [target_nick: new_nick])
+        rescue
+          Ecto.ConstraintError -> Repo.delete_all(old_query)
+        end
       end
 
       broadcast_windows_list(subject, subject_label)

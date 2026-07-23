@@ -317,4 +317,53 @@ describe("readCursor", () => {
       expect(localStorage.getItem("grappa-token")).toBe("tokABC");
     });
   });
+
+  describe("renameReadCursorChannel (#373 — cursor follows a peer NICK)", () => {
+    it("moves the cursor old -> new and drops the old key", async () => {
+      const { applyMeEnvelope, getReadCursor, renameReadCursorChannel } = await import(
+        "../lib/readCursor"
+      );
+      applyMeEnvelope({ azzurra: { Guest87449: 100 } });
+
+      renameReadCursorChannel("azzurra", "Guest87449", "NickTemporaneo");
+
+      expect(getReadCursor("azzurra", "NickTemporaneo")).toBe(100);
+      expect(getReadCursor("azzurra", "Guest87449")).toBeNull();
+    });
+
+    it("merge: keeps the pre-existing new cursor, drops the old", async () => {
+      const { applyMeEnvelope, getReadCursor, renameReadCursorChannel } = await import(
+        "../lib/readCursor"
+      );
+      applyMeEnvelope({ azzurra: { old: 100, new: 200 } });
+
+      renameReadCursorChannel("azzurra", "old", "new");
+
+      expect(getReadCursor("azzurra", "new")).toBe(200);
+      expect(getReadCursor("azzurra", "old")).toBeNull();
+    });
+
+    it("no-op when the old key has no cursor (leaves others intact)", async () => {
+      const { applyMeEnvelope, getReadCursor, renameReadCursorChannel } = await import(
+        "../lib/readCursor"
+      );
+      applyMeEnvelope({ azzurra: { other: 100 } });
+
+      renameReadCursorChannel("azzurra", "ghost", "phantom");
+
+      expect(getReadCursor("azzurra", "phantom")).toBeNull();
+      expect(getReadCursor("azzurra", "other")).toBe(100);
+    });
+
+    it("no-op when old === new", async () => {
+      const { applyMeEnvelope, getReadCursor, renameReadCursorChannel } = await import(
+        "../lib/readCursor"
+      );
+      applyMeEnvelope({ azzurra: { peer: 100 } });
+
+      renameReadCursorChannel("azzurra", "peer", "peer");
+
+      expect(getReadCursor("azzurra", "peer")).toBe(100);
+    });
+  });
 });

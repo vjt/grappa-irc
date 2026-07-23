@@ -604,4 +604,116 @@ defmodule Grappa.ReadCursorTest do
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # rename_dm_peer/4 (#373 — DM read cursor follows a peer NICK)
+  # ---------------------------------------------------------------------------
+
+  describe "rename_dm_peer/4" do
+    # Seed a DM cursor for `peer` (inbound shape: channel=own_nick,
+    # dm_with=peer) and return {message, cursor}.
+    defp seed_dm_cursor(subject_attrs, subject, network_id, peer, own_nick, server_time) do
+      {:ok, msg} =
+        ScrollbackHelpers.insert(
+          Map.merge(subject_attrs, %{
+            network_id: network_id,
+            channel: own_nick,
+            dm_with: peer,
+            server_time: server_time,
+            kind: :privmsg,
+            sender: peer,
+            body: "hi #{server_time}"
+          })
+        )
+
+      {:ok, _} = ReadCursor.set(subject, network_id, peer, msg.id)
+      msg
+    end
+
+    test "migrates the cursor old -> new so the new window keeps its read state" do
+      user = user_fixture()
+      net = network_fixture()
+      subject = {:user, user.id}
+      msg = seed_dm_cursor(%{user_id: user.id}, subject, net.id, "Guest87449", "vjt-grappa", 1)
+
+      assert :ok = ReadCursor.rename_dm_peer(subject, net.id, "Guest87449", "NickTemporaneo")
+
+      assert %Cursor{last_read_message_id: id} =
+               ReadCursor.get(subject, net.id, "NickTemporaneo")
+
+      assert id == msg.id
+      assert ReadCursor.get(subject, net.id, "Guest87449") == nil
+    end
+
+    test "rfc1459 fold: a 'nick[1]' cursor migrates when matched via 'nick{1}'" do
+      user = user_fixture()
+      net = network_fixture()
+      subject = {:user, user.id}
+      msg = seed_dm_cursor(%{user_id: user.id}, subject, net.id, "nick[1]", "vjt-grappa", 1)
+
+      assert :ok = ReadCursor.rename_dm_peer(subject, net.id, "nick{1}", "renamed")
+
+      assert %Cursor{last_read_message_id: id} = ReadCursor.get(subject, net.id, "renamed")
+      assert id == msg.id
+      assert ReadCursor.get(subject, net.id, "nick[1]") == nil
+    end
+
+    test "case-only fold (old == new) is a noop — cursor untouched" do
+      user = user_fixture()
+      net = network_fixture()
+      subject = {:user, user.id}
+      _ = seed_dm_cursor(%{user_id: user.id}, subject, net.id, "Foo", "vjt-grappa", 1)
+
+      assert :ok = ReadCursor.rename_dm_peer(subject, net.id, "Foo", "FOO")
+
+      assert %Cursor{} = ReadCursor.get(subject, net.id, "Foo")
+    end
+
+    test "no cursor for old nick is a noop" do
+      user = user_fixture()
+      net = network_fixture()
+      assert :ok = ReadCursor.rename_dm_peer({:user, user.id}, net.id, "ghost", "phantom")
+    end
+
+    test "collision merge: renaming old -> new when a new cursor exists keeps new, drops old" do
+      user = user_fixture()
+      net = network_fixture()
+      subject = {:user, user.id}
+      _ = seed_dm_cursor(%{user_id: user.id}, subject, net.id, "old", "vjt-grappa", 1)
+      new_msg = seed_dm_cursor(%{user_id: user.id}, subject, net.id, "new", "vjt-grappa", 2)
+
+      assert :ok = ReadCursor.rename_dm_peer(subject, net.id, "old", "new")
+
+      # One cursor survives — the pre-existing "new" (keep-new merge).
+      assert %Cursor{last_read_message_id: id} = ReadCursor.get(subject, net.id, "new")
+      assert id == new_msg.id
+      assert ReadCursor.get(subject, net.id, "old") == nil
+    end
+
+    test "isolated by subject — alice's cursor survives a vjt rename" do
+      vjt = user_fixture()
+      alice = user_fixture()
+      net = network_fixture()
+      _ = seed_dm_cursor(%{user_id: alice.id}, {:user, alice.id}, net.id, "peer", "alice", 1)
+
+      assert :ok = ReadCursor.rename_dm_peer({:user, vjt.id}, net.id, "peer", "peer2")
+
+      assert %Cursor{} = ReadCursor.get({:user, alice.id}, net.id, "peer")
+    end
+
+    # Parity-matrix (feedback_e2e_user_class_parity_matrix): the effect fires
+    # for any subject; one visitor case proves the XOR-FK path.
+    test "visitor subject: cursor migrates old -> new (parity)" do
+      net = network_fixture()
+      visitor = visitor_fixture(net.slug)
+      subject = {:visitor, visitor.id}
+      msg = seed_dm_cursor(%{visitor_id: visitor.id}, subject, net.id, "Guest99", "guest-nick", 1)
+
+      assert :ok = ReadCursor.rename_dm_peer(subject, net.id, "Guest99", "RealNick")
+
+      assert %Cursor{last_read_message_id: id} = ReadCursor.get(subject, net.id, "RealNick")
+      assert id == msg.id
+      assert ReadCursor.get(subject, net.id, "Guest99") == nil
+    end
+  end
 end

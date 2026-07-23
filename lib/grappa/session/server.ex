@@ -84,6 +84,7 @@ defmodule Grappa.Session.Server do
     Log,
     Mentions,
     QueryWindows,
+    ReadCursor,
     Scrollback,
     Session,
     SessionLog,
@@ -4028,14 +4029,19 @@ defmodule Grappa.Session.Server do
   end
 
   # #373: a PEER renamed (EventRouter observed a NICK for a tracked peer).
-  # Migrate that peer's open query window + its DM scrollback old -> new so
-  # the window follows the rename and outbound sends stop routing to the
-  # vanished old nick (401 no-such-nick). Server-authoritative: the window
-  # LIST is server-owned, so `QueryWindows.rename/5` renames the row and
-  # broadcasts the updated `query_windows_list` (cic mirrors, never
-  # originates). Scrollback history migrates ONLY when a window actually
+  # Migrate every store of the old peer nick old -> new so the query window
+  # follows the rename and outbound sends stop routing to the vanished old
+  # nick (401 no-such-nick). Server-authoritative: the window LIST is
+  # server-owned, so `QueryWindows.rename/5` renames the row and broadcasts
+  # the updated `query_windows_list` (cic mirrors, never originates). The DM
+  # scrollback history + read cursor migrate ONLY when a window actually
   # moved (`:renamed`), so a peer we never queried costs one indexed lookup
   # and no writes. `:noop` (no window, or a case-only fold) is silent.
+  #
+  # Effect ordering is immaterial: this effect trails the per-channel
+  # `:persist` nick_change rows in the list, but those are `channel=#chan,
+  # dm_with=nil` and never match the DM fold, so migrating after them is a
+  # no-op interaction.
   defp apply_effects([{:peer_nick_renamed, old_nick, new_nick} | rest], state) do
     case QueryWindows.rename(
            state.subject,
@@ -4047,6 +4053,10 @@ defmodule Grappa.Session.Server do
       {:ok, :renamed} ->
         {:ok, migrated} =
           Scrollback.rename_dm_peer(state.subject, state.network_id, old_nick, new_nick)
+
+        # Read cursor follows too, else the migrated history reads as fully
+        # unread under the new window (no cursor row → count from 0).
+        :ok = ReadCursor.rename_dm_peer(state.subject, state.network_id, old_nick, new_nick)
 
         Logger.info("query window followed peer NICK",
           old_nick: old_nick,

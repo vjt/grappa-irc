@@ -183,6 +183,58 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         {:visitor_nick_changed, nick} ->
           assert is_binary(nick)
 
+        # Remaining `@type effect` arms — the allowlist had drifted narrower
+        # than the type union again (this seed surfaced `:umode_changed`
+        # from a generated 221 RPL_UMODEIS). Mirror the FULL union at
+        # `lib/grappa/session/event_router.ex` so no legitimate typed
+        # effect flunks on a future seed (the recurring maintenance the
+        # bucket-H comment above anticipated).
+        {:names_reply, channel, roster} ->
+          assert is_binary(channel)
+          assert is_list(roster)
+
+        {:who_reply, target, users} ->
+          assert is_binary(target)
+          assert is_list(users)
+
+        {:server_reply, source, lines} ->
+          assert source in [:info, :version, :motd]
+          assert is_list(lines)
+
+        {:rejoin_invited, channel} ->
+          assert is_binary(channel)
+
+        {:invited, channel} ->
+          assert is_binary(channel)
+
+        {:umode_changed, modes} ->
+          assert is_list(modes)
+          assert Enum.all?(modes, &is_binary/1)
+
+        {:supported_umodes_changed, modes} ->
+          assert is_list(modes)
+          assert Enum.all?(modes, &is_binary/1)
+
+        {:session_identity_changed, transition} ->
+          assert transition in [:acquired, :lost]
+
+        {:presence_changed, nick, presence, _, source} ->
+          assert is_binary(nick)
+          assert presence in [:online, :offline]
+          assert source in [:monitor, :watch]
+
+        {:presence_error, reason, detail} ->
+          assert reason == :list_full
+          assert is_binary(detail)
+
+        {:presence_command_unknown, cmd} ->
+          assert cmd in [:monitor, :watch]
+
+        # #373 — a peer NICK migrates its query window; both nicks binary.
+        {:peer_nick_renamed, old_nick, new_nick} ->
+          assert is_binary(old_nick)
+          assert is_binary(new_nick)
+
         other ->
           flunk("malformed effect: #{inspect(other)}")
       end)
