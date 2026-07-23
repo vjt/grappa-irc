@@ -6,6 +6,7 @@ defmodule Grappa.ChannelDirectory.Wire do
   Same convention as `Grappa.QueryWindows.Wire`.
   """
   alias Grappa.ChannelDirectory
+  alias Grappa.IRC.Identifier
 
   @type entry :: %{
           name: String.t(),
@@ -25,12 +26,13 @@ defmodule Grappa.ChannelDirectory.Wire do
   @doc """
   Render a `ChannelDirectory.page()` to the JSON wire envelope,
   converting the `status` atom to a string and `captured_at` to
-  ISO-8601. Each entry is marked `featured: true` when its (downcased)
-  name is in `featured_names` — the network's enabled
-  `network_featured_channels` set (GH #85). Channel fold ==
-  `String.downcase` for channel-sigil names (`Identifier.canonical_channel/1`),
-  so a bare downcase is the correct channel-keyed compare here; no
-  top-pinning, the sort order is unchanged.
+  ISO-8601. Each entry is marked `featured: true` when its
+  rfc1459-folded name is in `featured_names` — the network's enabled
+  `network_featured_channels` set (GH #85). Directory names are stored
+  VERBATIM (case-preserving display), the featured set canonical, so the
+  compare MUST fold the directory name via `Identifier.canonical_channel/1`
+  (#364 — a bare `String.downcase` left `#foo[1]` unfolded and missed
+  the canonical `#foo{1}` on bahamut). Sort order is unchanged.
   """
   @spec index_payload(ChannelDirectory.page(), MapSet.t(String.t())) :: index_payload()
   def index_payload(%{captured_at: ca} = page, featured_names) do
@@ -44,6 +46,7 @@ defmodule Grappa.ChannelDirectory.Wire do
   end
 
   defp mark_featured(entry, featured_names) do
-    Map.put(entry, :featured, MapSet.member?(featured_names, String.downcase(entry.name)))
+    featured? = MapSet.member?(featured_names, Identifier.canonical_channel(entry.name))
+    Map.put(entry, :featured, featured?)
   end
 end

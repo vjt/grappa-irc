@@ -12,7 +12,10 @@ defmodule Grappa.ChannelDirectory do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Repo, Grappa.Subject],
+    # `Grappa.IRC` — `Wire.mark_featured/2` folds directory names via
+    # `Identifier.canonical_channel/1` (rfc1459, #364) to key them against
+    # the canonical featured set.
+    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Subject],
     # `Networks.Network` is referenced ONLY by `Entry`'s
     # `belongs_to :network` (struct/schema access — no `Grappa.Networks`
     # function call anywhere in this boundary). A full `Grappa.Networks`

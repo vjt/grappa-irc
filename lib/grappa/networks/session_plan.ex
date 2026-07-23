@@ -18,7 +18,7 @@ defmodule Grappa.Networks.SessionPlan do
   """
   alias Grappa.{Accounts, Networks, Session}
   alias Grappa.Accounts.User
-  alias Grappa.IRC.Identity
+  alias Grappa.IRC.{Identifier, Identity}
   alias Grappa.Networks.{Credential, Credentials, Network, NoServerError, Server, Servers}
   alias Grappa.Repo
 
@@ -218,17 +218,19 @@ defmodule Grappa.Networks.SessionPlan do
   # CP22 cluster B (channel-client-polish #14, B-restart) — merge
   # operator autojoin (stable) with last-live snapshot (runtime). Order:
   # operator entries first to preserve operator-intent join order; then
-  # snapshot entries the operator didn't already cover. Dedupe is RFC
-  # 2812 §2.2 case-insensitive (channel names fold), but we preserve the
+  # snapshot entries the operator didn't already cover. Dedupe folds via
+  # `Identifier.canonical_channel/1` (rfc1459, #364) — NOT bare
+  # `String.downcase`, which left `#foo[1]`/`#foo{1}` distinct and forked
+  # the snapshot into a duplicate autojoin on bahamut. We preserve the
   # case of the EARLIER entry (operator wins on case style).
   @spec merge_autojoin([String.t()], [String.t()]) :: [String.t()]
   defp merge_autojoin(autojoin, last_joined) when is_list(autojoin) and is_list(last_joined) do
     seen =
       autojoin
-      |> Enum.map(&String.downcase/1)
+      |> Enum.map(&Identifier.canonical_channel/1)
       |> MapSet.new()
 
-    extras = Enum.reject(last_joined, &MapSet.member?(seen, String.downcase(&1)))
+    extras = Enum.reject(last_joined, &MapSet.member?(seen, Identifier.canonical_channel(&1)))
     autojoin ++ extras
   end
 
