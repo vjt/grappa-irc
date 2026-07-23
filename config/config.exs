@@ -16,11 +16,12 @@ config :grappa,
 config :grappa, :max_visitors_per_ip, 5
 
 # PWA icon-badge count source (door #1 dependency-inversion seam, 2026-06-21).
-# `Grappa.Push.Triggers` resolves this at runtime via
-# `Grappa.Push.BadgeSource.impl/0` instead of referencing the
-# implementation statically — a static `Push → BadgeCount` edge would close
-# the boundary cycle `Push → BadgeCount → Networks → Session → Push`. Tests
-# may override with a stub implementing the `count/1` callback.
+# Read ONCE at boot into `:persistent_term` by `Grappa.Push.BadgeSource.boot/0`
+# and resolved lock-free via `impl/0` (#364 J/cross-module-S2) instead of
+# referencing the implementation statically — a static `Push → BadgeCount` edge
+# would close the boundary cycle `Push → BadgeCount → Networks → Session →
+# Push`. Tests inject a stub (implementing `count/1`) via
+# `BadgeSource.put_test_impl/1`, not `Application.put_env`.
 config :grappa, :badge_source, Grappa.Push.BadgeCount
 
 # Per-message window_counts push source (#267 dependency-inversion seam).

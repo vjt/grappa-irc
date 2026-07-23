@@ -15,15 +15,21 @@ defmodule Grappa.Push.BadgeSource do
   would close the cycle `Push → BadgeCount → Networks → Session → Push`.
 
   This behaviour is the inversion: Push defines + owns the seam, the
-  implementation is resolved at RUNTIME from application config (default
-  wired in `config/config.exs`, never as a module literal in Push
-  source), so Push carries no static edge onto the implementation.
-  Doors #2/#3 (web layer) call `BadgeCount.count/1` directly and never
-  touch this seam.
+  implementation is read from application config ONCE at boot (`boot/0`),
+  stashed in `:persistent_term`, and resolved lock-free at runtime via
+  `impl/0` (the config value is a module atom read from env, never a
+  literal in Push source), so Push carries no static edge onto the
+  implementation. Doors #2/#3 (web layer) call `BadgeCount.count/1`
+  directly and never touch this seam.
 
-  Tests that want to decouple from the DB can override
-  `config :grappa, :badge_source, SomeStub` (the stub implements
-  `count/1`).
+  ## Boot-time injection (#364 J/cross-module-S2)
+
+  Resolution moved off a per-call `Application.get_env/2` read (banned at
+  runtime by CLAUDE.md) onto the `:persistent_term` boot boundary that
+  `Grappa.Admission.Config` / `Grappa.Uploads` / `Grappa.HttpHosts`
+  already use: `Grappa.Application.start/2` calls `boot/0` once before the
+  supervision tree. Tests substitute via `put_test_impl/1`, not
+  `Application.put_env`.
   """
 
   alias Grappa.Subject
@@ -34,20 +40,32 @@ defmodule Grappa.Push.BadgeSource do
   """
   @callback count(Subject.t()) :: non_neg_integer()
 
+  @key {__MODULE__, :impl}
+
   @doc """
-  Resolves the configured `Grappa.Push.BadgeSource` implementation, or
-  `nil` when the key is absent. Wired in `config/config.exs` — present
-  under every normal boot (and in tests). `nil` is the transient
-  HOT-DEPLOY window: a hot module reload swaps the new `Triggers` /
-  `BadgeCount` code into the live node but does NOT re-run `config.exs`,
-  so the freshly-added `:badge_source` key isn't in the running node's
-  application env until the next cold restart (or an rpc `put_env`).
-  `get_env` (default `nil`) instead of `fetch_env!` so that window
+  Reads `config :grappa, :badge_source` once and stashes it in
+  `:persistent_term` for lock-free runtime reads. Called from
+  `Grappa.Application.start/2` (the CLAUDE.md-designated boot-time
+  boundary; mirrors `Grappa.Admission.Config.boot/0`).
+  """
+  @spec boot() :: :ok
+  def boot do
+    :persistent_term.put(@key, Application.get_env(:grappa, :badge_source))
+    :ok
+  end
+
+  @doc """
+  Resolves the `Grappa.Push.BadgeSource` implementation from
+  `:persistent_term` (populated by `boot/0`), or `nil` when the key is
+  absent. `nil` is the transient HOT-DEPLOY window: a hot module reload
+  swaps the new `Triggers` / `BadgeCount` code into the live node but does
+  NOT re-run `Grappa.Application.start/2`, so `boot/0` hasn't re-populated
+  the key. `get/2` (default `nil`) instead of `get/1` so that window
   degrades gracefully (see `count/1`) instead of crashing the push hot
   path.
   """
   @spec impl() :: module() | nil
-  def impl, do: Application.get_env(:grappa, :badge_source)
+  def impl, do: :persistent_term.get(@key, nil)
 
   @doc """
   Resolves the implementation and counts in one call — the shape door #1
@@ -65,5 +83,11 @@ defmodule Grappa.Push.BadgeSource do
       nil -> nil
       mod -> mod.count(subject)
     end
+  end
+
+  if Mix.env() == :test do
+    @doc false
+    @spec put_test_impl(module() | nil) :: :ok
+    def put_test_impl(impl), do: :persistent_term.put(@key, impl)
   end
 end

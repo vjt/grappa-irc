@@ -1,12 +1,15 @@
 defmodule Grappa.Push.BadgeSourceTest do
   @moduledoc """
-  Door #1 injection seam (2026-06-21). Covers the resilience contract:
-  when `:badge_source` is unconfigured (the transient hot-deploy window —
-  new code loaded, `config.exs` not yet re-applied), `count/1` returns
-  `nil` so the push path omits the badge instead of crashing the
-  fire-and-forget `Task`.
+  Door #1 injection seam (2026-06-21). #364 J/cross-module-S2 migrated the
+  resolution from a runtime `Application.get_env` read to a boot-time
+  `:persistent_term` read (mirrors `Grappa.Admission.Config`).
 
-  `async: false` — mutates the global `:grappa, :badge_source` app env.
+  Covers the resilience contract: when `:badge_source` resolves to `nil`
+  (the transient hot-deploy window — new code loaded, `boot/0` not yet
+  re-run), `count/1` returns `nil` so the push path omits the badge instead
+  of crashing the fire-and-forget `Task`.
+
+  `async: false` — mutates the node-global `:persistent_term` seam key.
   """
   use ExUnit.Case, async: false
 
@@ -20,38 +23,31 @@ defmodule Grappa.Push.BadgeSourceTest do
   end
 
   setup do
-    original = Application.get_env(:grappa, :badge_source)
-
-    on_exit(fn ->
-      if original do
-        Application.put_env(:grappa, :badge_source, original)
-      else
-        Application.delete_env(:grappa, :badge_source)
-      end
-    end)
-
+    original = BadgeSource.impl()
+    on_exit(fn -> BadgeSource.put_test_impl(original) end)
     :ok
   end
 
-  test "impl/0 returns the configured module" do
-    Application.put_env(:grappa, :badge_source, StubSource)
+  test "boot/0 loads the config.exs default (Grappa.Push.BadgeCount) into persistent_term" do
+    # config/config.exs wires the real implementation; boot/0 reads it once.
+    # Guards against a dropped default leaving door #1 permanently badge-less.
+    :ok = BadgeSource.boot()
+    assert BadgeSource.impl() == Grappa.Push.BadgeCount
+  end
+
+  test "impl/0 returns the injected module" do
+    BadgeSource.put_test_impl(StubSource)
     assert BadgeSource.impl() == StubSource
   end
 
-  test "count/1 delegates to the configured implementation" do
-    Application.put_env(:grappa, :badge_source, StubSource)
+  test "count/1 delegates to the injected implementation" do
+    BadgeSource.put_test_impl(StubSource)
     assert BadgeSource.count({:user, Ecto.UUID.generate()}) == 42
   end
 
   test "count/1 returns nil when no implementation is configured (hot-deploy window)" do
-    Application.delete_env(:grappa, :badge_source)
+    BadgeSource.put_test_impl(nil)
     assert BadgeSource.impl() == nil
     assert BadgeSource.count({:user, Ecto.UUID.generate()}) == nil
-  end
-
-  test "the production default resolves to Grappa.Push.BadgeCount" do
-    # config/config.exs wires the real implementation; guards against a
-    # dropped default leaving door #1 permanently badge-less.
-    assert Application.get_env(:grappa, :badge_source) == Grappa.Push.BadgeCount
   end
 end

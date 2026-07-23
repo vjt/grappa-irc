@@ -53,6 +53,12 @@ defmodule Grappa.Application do
     # guaranteed by the time `Application.start/2` is invoked.
     :ok = Grappa.Push.boot()
 
+    # #364 J/cross-module-S2: stash the door #1 badge-count DI-seam impl in
+    # `:persistent_term` so `Grappa.Push.BadgeSource.impl/0` resolves it
+    # lock-free on the push hot path instead of a runtime `Application.get_env/2`
+    # read (banned by CLAUDE.md). Mirrors `Grappa.Admission.Config.boot/0`.
+    :ok = Grappa.Push.BadgeSource.boot()
+
     # Outbound v6 source-address pool. Initialize an EMPTY pool at boot;
     # `Grappa.Bootstrap` installs the DB-curated `in_pool` vhosts via
     # `apply_pool/1` before spawning any session (#228 — DB-driven, no
