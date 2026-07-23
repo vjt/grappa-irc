@@ -27410,3 +27410,76 @@ codebase's OWN `:persistent_term` boot boundary satisfies that intent; the
 review even named it. When the literal instruction doesn't fit the shape,
 check whether the codebase already has a blessed pattern for that shape
 before forcing the instruction into a mess.*
+
+## 2026-07-23 — DM peer folds rfc1459 on EVERY match (GH #372)
+
+Bug (reported on #grappa, testnet): `/msg debugserv HELP` opened a query
+window keyed `debugserv`; the service replied as `DebugServ` (proper case)
+and the reply landed in a SEPARATE, archived `DebugServ` window — a phantom
+split by nick casing. The opened window "looked dead" (no replies), and
+deleting EITHER window deleted both while their contents stayed unmerged.
+
+Root cause spanned server + cic (the report framed it cic-only; the
+evidence — a HALT + vjt ruling — said fix both). `dm_with` is stored
+case-PRESERVED at write (`Scrollback.Message.canonicalize_channel/1`
+deliberately leaves it raw — it is a NICK column, display-case-meaningful,
+exactly like `query_windows.target_nick` under #121). The design is
+therefore **store raw, MATCH folded**. But only `delete_for_dm/3` folded
+(via `Identifier.nick_fold/1`); the two READ paths matched RAW:
+
+  * `Scrollback.channel_or_dm_where/3` peer-DM branch — `m.dm_with ==
+    ^channel` (raw). A `debugserv` REST fetch missed the `DebugServ`-cased
+    inbound rows → the window's scrollback was empty on reload.
+  * `Scrollback.list_archive/3` — `GROUP BY COALESCE(dm_with, channel)`
+    (raw) → `debugserv` + `DebugServ` split into TWO archive entries, and
+    the active-keyset exclusion (`MapSet.member?`) was case-sensitive so an
+    OPEN `debugserv` window failed to suppress its `DebugServ` variant.
+  * cic `subscribe.ts installDmListenerHandler` re-keyed the live append on
+    the RAW sender (`channelKey(slug, message.sender)`) → the inbound reply
+    landed in a phantom in-memory bucket the opened window never rendered.
+  * cic `archive.ts visibleArchiveForNetwork` compared live windows with a
+    raw `Set.has` → left the archived split visible in the sidebar.
+
+That "delete folds, read/display don't" asymmetry IS the "delete either
+deletes both, yet contents split" inconsistency the report pinpointed —
+and a straight violation of the CLAUDE.md nick invariant ("EVERY
+server-side nick compare routes through `canonical_nick`/`nick_fold`,
+never a bare `==`"). `delete_for_dm` even *claimed* in its docstring to
+mirror `channel_or_dm_where/3`; it didn't.
+
+Fix — fold the peer on ALL match sites, one shared primitive per surface:
+
+  * server: extracted `Scrollback.where_dm_peer/2` — the single
+    rfc1459-folded DM-peer WHERE (both DM directions + the `dm_with IS
+    NULL` orphan-channel arm for 401 NOTICEs) — now shared by
+    `channel_or_dm_where/3` (read) AND `delete_for_dm/3` (delete), so read
+    + delete pick ONE identical window key. Bonus: the no-session
+    (`own_nick = nil`) own-nick fetch now shows self-msgs only (folds on
+    the peer) instead of leaking every inbound DM via the raw
+    `channel == own_nick` arm — the CP14-B3 leak, closed for the
+    no-session path too.
+  * server: `list_archive/3` groups by `nick_fold(COALESCE(dm_with,
+    channel))` (casing variants collapse to ONE entry; the displayed
+    `target` is the bare COALESCE from the `max(server_time)` row via
+    SQLite's documented bare-column rule, so display casing = the most
+    recent spelling) and excludes on the fold of BOTH sides.
+  * cic: `installDmListenerHandler` re-keys via
+    `queryWindows.canonicalQueryNick` (the existing OUTGOING-side helper,
+    #364 E/S5) — the live-WS mirror of the server window key; the beep
+    focus check + `routeMessage` displayName use the same canonical peer.
+    The peer-NOTICE own-echo guard moved from raw `!==` to `!nickEquals`.
+  * cic: `visibleArchiveForNetwork` folds every comparison via
+    `normalizeNick` (idempotent on server-canonical channels; ASCII-only,
+    so non-ASCII variants stay distinct — matching the ircd + the server).
+
+Coverage: server ExUnit (`#372` describe — fetch converges across casings
++ rfc1459 brackets; archive collapses + excludes a folded-active window),
+cic vitest (`subscribe.test.ts` canonical re-key; `archive.test.ts` fold
+exclusion), and an incoming-direction e2e (`nick-case-incoming.spec.ts`,
+sibling of the OUTGOING `nick-case-sensitivity.spec.ts`).
+
+*Lesson: "store raw for display, match folded" is only correct if EVERY
+match folds. A single raw `==` on a fold-identity column silently forks
+the window — and one that folds on delete but not on read is worse than
+one that never folds, because the operator sees "delete removed both" and
+assumes one window while the data is two.*
