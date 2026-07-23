@@ -1386,7 +1386,7 @@ defmodule Grappa.Session.EventRouterTest do
       state = base_state(%{members: %{"#italia" => %{"vjt" => ["@"], "alice" => []}}})
       m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
 
-      assert {:cont, _new_state, effects} = EventRouter.route(m, state)
+      assert {:cont, _, effects} = EventRouter.route(m, state)
       refute Enum.any?(effects, &match?({:peer_nick_renamed, _, _}, &1))
     end
 

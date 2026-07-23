@@ -396,7 +396,7 @@ defmodule Grappa.QueryWindowsTest do
       user = user_fixture()
       net = network_fixture()
 
-      {:ok, %Window{id: _old_id}} = QueryWindows.open({:user, user.id}, net.id, "old", user.name)
+      {:ok, %Window{}} = QueryWindows.open({:user, user.id}, net.id, "old", user.name)
       {:ok, %Window{id: new_id}} = QueryWindows.open({:user, user.id}, net.id, "new", user.name)
 
       assert {:ok, :renamed} =

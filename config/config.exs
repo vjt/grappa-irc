@@ -446,7 +446,15 @@ config :logger, :console,
     :session_id,
     :event,
     :duration_ms,
-    :clean
+    :clean,
+    # #373 — `Grappa.Session.Server.apply_effects/2` logs when a query
+    # window follows a peer NICK: `:old_nick` + `:new_nick` (the rename)
+    # and `:rows_migrated` (DM scrollback rows moved). Logger-only
+    # diagnostics — NOT scrollback `Meta` keys, so they extend the
+    # allowlist beyond `Meta.known_keys/0` (the sync test is a subset
+    # check: known_keys ⊆ metadata). `:new_nick` pre-exists above.
+    :old_nick,
+    :rows_migrated
   ]
 
 import_config "#{config_env()}.exs"

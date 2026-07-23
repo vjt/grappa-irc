@@ -2031,19 +2031,18 @@ defmodule Grappa.ScrollbackTest do
       {:ok, inb} =
         Scrollback.persist_event(sample(user, net, 110, %{channel: own, sender: "Guest87449", dm_with: "Guest87449"}))
 
+      both = Enum.sort([out.id, inb.id])
+      sorted_ids = fn rows -> rows |> Enum.map(& &1.id) |> Enum.sort() end
+
       # Sanity: BEFORE the rename the NEW window is empty and the OLD one has both.
       assert read_dm(user, net, "NickTemporaneo", own) == []
-
-      assert read_dm(user, net, "Guest87449", own) |> Enum.map(& &1.id) |> Enum.sort() ==
-               Enum.sort([out.id, inb.id])
+      assert sorted_ids.(read_dm(user, net, "Guest87449", own)) == both
 
       assert {:ok, 2} =
                Scrollback.rename_dm_peer({:user, user.id}, net.id, "Guest87449", "NickTemporaneo")
 
       # AFTER: both rows read under the NEW window; the OLD nick reads empty.
-      assert read_dm(user, net, "NickTemporaneo", own) |> Enum.map(& &1.id) |> Enum.sort() ==
-               Enum.sort([out.id, inb.id])
-
+      assert sorted_ids.(read_dm(user, net, "NickTemporaneo", own)) == both
       assert read_dm(user, net, "Guest87449", own) == []
     end
 
