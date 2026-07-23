@@ -793,6 +793,13 @@ don't hardcode hostnames there.
   `Networks.list_credentials_for_all_users/0` and spawns one
   `Session.Server` per row. Adding a binding requires no config edit —
   next reboot picks it up.
+  **Safe to run against a live host without stopping the service**
+  (2026-07-23): every `grappa.*` operator mix task boots via
+  `Mix.Tasks.Grappa.Boot.start_app_silent/0`, which suppresses both
+  `Grappa.Bootstrap` (no upstream IRC connections) and
+  `GrappaWeb.Endpoint` (no HTTP port bind) — so it no longer conflicts
+  with an already-running release on the same port. Before this fix
+  every admin task required `systemctl stop grappa` first.
 
 ## Monitoring
 

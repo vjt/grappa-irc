@@ -232,52 +232,62 @@ defmodule Grappa.Application do
         # rather than the front-line tolerance. See DESIGN_NOTES
         # 2026-05-02.
         {DynamicSupervisor,
-         name: Grappa.SessionSupervisor, strategy: :one_for_one, max_restarts: 10_000, max_seconds: 60},
-
+         name: Grappa.SessionSupervisor, strategy: :one_for_one, max_restarts: 10_000, max_seconds: 60}
+      ] ++
         # Endpoint after PubSub + Registry — HTTP requests (REST controller,
-        # WS Channel join) reach into both at request time.
-        GrappaWeb.Endpoint,
+        # WS Channel join) reach into both at request time. Conditional on
+        # :start_endpoint (mirrors :start_bootstrap below): the `grappa.*`
+        # one-shot operator mix tasks (Mix.Tasks.Grappa.Boot.start_app_silent/0)
+        # need Repo + the domain contexts but NOT the HTTP surface — starting
+        # it anyway used to force "stop the live service first" for every
+        # admin task (create_user, bind_network, seed_themes, ...), since a
+        # second bind of the same port crashes `:eaddrinuse`. An app that
+        # ships hot code-reload has no business demanding a full stop/start
+        # cycle just to run a one-off DB mutation alongside it. Found live
+        # 2026-07-23 running `grappa.seed_themes` against a live host.
+        endpoint_child() ++
+        [
+          # Reaper after Repo (it queries Visitors via Repo) and after
+          # Endpoint, WHEN PRESENT (so a slow boot doesn't sweep before the
+          # public surface is up — Reaper's sweep deletes rows that REST/WS
+          # might reach for; ordering it after Endpoint keeps the
+          # "everything visible to clients is also visible to Reaper"
+          # invariant honest). The default 60s interval is far longer
+          # than boot, so the first sweep waits anyway — ordering is
+          # belt-and-braces. Reaper consumes Grappa.Visitors; the
+          # Application boundary has it listed in deps for that reason.
+          Grappa.Visitors.Reaper,
 
-        # Reaper after Repo (it queries Visitors via Repo) and after
-        # Endpoint (so a slow boot doesn't sweep before the public
-        # surface is up — Reaper's sweep deletes rows that REST/WS
-        # might reach for; ordering it after Endpoint keeps the
-        # "everything visible to clients is also visible to Reaper"
-        # invariant honest). The default 60s interval is far longer
-        # than boot, so the first sweep waits anyway — ordering is
-        # belt-and-braces. Reaper consumes Grappa.Visitors; the
-        # Application boundary has it listed in deps for that reason.
-        Grappa.Visitors.Reaper,
+          # UX-6-B1 (2026-05-20): embedded image uploader Reaper. Same
+          # rationale as Visitors.Reaper for the ordering: after Repo
+          # (it queries `uploads`) + after Endpoint, when present (so the
+          # GET surface is up before sweeps remove rows + files clients
+          # might be reaching for). The Reaper also mkdir_p's the
+          # storage_root in `init/1` so a fresh deploy needs no separate
+          # bootstrap. `:storage_root` is read from
+          # `:grappa, :uploads_storage_root` at THIS boot-time boundary —
+          # the controller + Reaper read from `:persistent_term`
+          # thereafter (CLAUDE.md "Application.{put,get}_env: boot-time
+          # only").
+          {Grappa.Uploads.Reaper, storage_root: uploads_storage_root()},
 
-        # UX-6-B1 (2026-05-20): embedded image uploader Reaper. Same
-        # rationale as Visitors.Reaper for the ordering: after Repo
-        # (it queries `uploads`) + after Endpoint (so the GET surface
-        # is up before sweeps remove rows + files clients might be
-        # reaching for). The Reaper also mkdir_p's the storage_root
-        # in `init/1` so a fresh deploy needs no separate bootstrap.
-        # `:storage_root` is read from `:grappa, :uploads_storage_root`
-        # at THIS boot-time boundary — the controller + Reaper read
-        # from `:persistent_term` thereafter (CLAUDE.md
-        # "Application.{put,get}_env: boot-time only").
-        {Grappa.Uploads.Reaper, storage_root: uploads_storage_root()},
+          # #223: auth-session housekeeping GC. Sibling of Visitors.Reaper
+          # / Uploads.Reaper — a THIRD domain (Accounts) gets its OWN
+          # periodic sweep rather than folding into an unrelated reaper
+          # (CLAUDE.md rule 6 — reuse the verb, not the noun). Same
+          # ordering rationale: after Repo (it queries `sessions`) and
+          # after Endpoint, when present (so the auth surface is up before
+          # the sweep removes idle-expired rows). Bulk `delete_all` over
+          # USER sessions past the 7-day idle window that `authenticate/1`
+          # already rejects; visitor sessions are out of scope (they
+          # CASCADE from the visitor row via Visitors.Reaper). Default
+          # 60s interval >> boot, so the first sweep waits anyway.
+          Grappa.Accounts.Reaper
 
-        # #223: auth-session housekeeping GC. Sibling of Visitors.Reaper
-        # / Uploads.Reaper — a THIRD domain (Accounts) gets its OWN
-        # periodic sweep rather than folding into an unrelated reaper
-        # (CLAUDE.md rule 6 — reuse the verb, not the noun). Same
-        # ordering rationale: after Repo (it queries `sessions`) and
-        # after Endpoint (so the auth surface is up before the sweep
-        # removes idle-expired rows). Bulk `delete_all` over USER
-        # sessions past the 7-day idle window that `authenticate/1`
-        # already rejects; visitor sessions are out of scope (they
-        # CASCADE from the visitor row via Visitors.Reaper). Default
-        # 60s interval >> boot, so the first sweep waits anyway.
-        Grappa.Accounts.Reaper
-
-        # Bootstrap is appended LAST below: it depends on Registry +
-        # SessionSupervisor existing so it can spawn sessions. Conditional
-        # on :start_bootstrap so test boots empty.
-      ] ++ bootstrap_child()
+          # Bootstrap is appended LAST below: it depends on Registry +
+          # SessionSupervisor existing so it can spawn sessions. Conditional
+          # on :start_bootstrap so test boots empty.
+        ] ++ bootstrap_child()
 
     opts = [strategy: :one_for_one, name: Grappa.Supervisor]
 
@@ -304,6 +314,22 @@ defmodule Grappa.Application do
   defp bootstrap_child do
     if Application.get_env(:grappa, :start_bootstrap, true) do
       [Grappa.Bootstrap]
+    else
+      []
+    end
+  end
+
+  # Endpoint is opt-out via the `:start_endpoint` flag (true everywhere
+  # except when a one-shot operator mix task flips it off via
+  # `Mix.Tasks.Grappa.Boot.start_app_silent/0` — see that module).
+  # Mirrors `bootstrap_child/0` exactly: same shape, same reason (a
+  # caller that only needs the Repo-backed supervision tree shouldn't
+  # be forced to also take on a side effect it never asked for — here,
+  # binding the HTTP port a live release already owns).
+  @spec endpoint_child() :: [] | [GrappaWeb.Endpoint]
+  defp endpoint_child do
+    if Application.get_env(:grappa, :start_endpoint, true) do
+      [GrappaWeb.Endpoint]
     else
       []
     end
