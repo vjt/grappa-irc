@@ -27159,3 +27159,58 @@ socket; S2 makes the old socket actually DIE first. Pinned by two
 socket.test.ts cases that hold the mock `isConnected()` at false (the
 mid-backoff state) and assert `disconnect()` still fires on logout and on
 rotation.
+
+## 2026-07-23 — #364 bucket F: wire-contract drift gates (xsurface S1/S2/S7 + web S1)
+
+Four findings from the 2026-07-19 review, all one class: a contract seam
+whose drift NO gate would catch. Each is now closed at compile time
+(Dialyzer / tsc / a canary test) rather than at runtime with a
+console.warn.
+
+**xsurface S1 — envelope discriminators are LITERAL ATOMS, pinned
+end-to-end.** ~10 Wire modules typed their envelope `kind` (and
+Session.Wire its window `state`) as `String.t()`. Consequences: codegen
+emitted `kind: string`, no literal `WireXEvent` union was pinnable, and
+cic restated every literal (`"notify_list"`, `"query_windows_list"`, …,
+`state: "pending" | …`) by hand with ZERO compile-time gate — a
+server-side rename shipped silently past codegen + `wireTypesAssert.ts` +
+tsc, then every event of that kind was dropped at the cic narrower. The
+fix is the S14/S15 precedent (already in force for Scrollback
+message-kind + ServerSettings `active_host`) applied to the DISCRIMINATOR
+field itself: typespec `kind: :notify_list`, builder passes the atom
+(Jason stringifies at the JSON edge — WIRE bytes unchanged). Dialyzer now
+pins each builder to the literal; the typespec is the single source, so a
+rename must edit it. **Rule going forward: a Wire envelope `kind`/`state`
+discriminator is a literal atom, never `String.t()`.** cic's hand-rolled
+union arms are pinned to the generated literal payloads in
+`wireTypesAssert.ts` via `Extract<Union, {kind}>` (kind + full field
+shape) — a server rename is now a tsc error. The one production
+pre-serialization consumer (`test_support/subject_reset.ex`, matched
+`%{state: "joined"}`) moved to the atom in lockstep; test consumers that
+matched the Elixir map (`%{kind: "..."}`) moved too, while post-JSON
+string-key checks (`"kind" => "..."`) and Phoenix event NAMES stayed
+(the wire is unchanged).
+
+**xsurface S2 — codegen preserves `optional(...)`.** `gen_wire_types`'s
+`strip_atom_keyed_field/1` matched `:map_field_exact` and
+`:map_field_assoc` identically, so `optional(:k) => T` rendered `k: T` —
+the generated type OVER-CLAIMED an omitted-when-absent key as required
+(`CicWireBundleHashPayload.version` was the live case). Fixed at the
+root: the assoc clause tags the key `{:optional, k}` and `do_render`
+emits `k?: T`. **Rule: `optional(...)` in a Wire typespec is the
+contract for a server-omitted key; codegen renders it `k?:`.**
+
+**xsurface S7 — the biggest payloads are pinned.** WhoisBundle (27
+fields, grown twice), WhowasBundle, LusersBundle, Names/WhoReply
+envelopes, and the #247 presence arms had generated counterparts but no
+`_Assert_`. Added; standalone hand types pin against
+`Omit<SessionWireXPayload, "kind">`, inline union arms via
+`Extract<WireUserEvent, {kind}>`.
+
+**web S1 — FallbackController @spec ↔ clause lockstep is now a canary.**
+The `@spec call/2` error union had drifted six tags behind its clauses.
+Beyond adding them, `FallbackControllerTest` now parses every
+`def call(conn, {:error, TAG})` head from source AST and the atom set of
+the spec union (expanding `Admission.error()` via the production canon +
+the Captcha type) and fails loud on drift in either direction — the same
+shape as the existing capacity_error matrix.
