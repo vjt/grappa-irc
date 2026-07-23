@@ -439,13 +439,11 @@ infra/linux/release.sh   # bin/grappa wrapper: version / eval / remote
 ```
 
 No SSH-to-a-separate-host indirection — run these directly on the
-target box as root. **Cold-only in v1 scope** (per `LINUX.md`'s
-original decision): `deploy.sh` always does a full stop → rebuild →
-migrate → start cycle, no hot/cold `Preflight` classification like the
-Docker/jail substrates. If that gap starts to hurt (frequent deploys,
-session-drop-sensitive usage), port `Grappa.Deploy.Preflight` here
-following the same pattern — not done yet because a first install
-should stay simple.
+target box as root. `deploy.sh` is preflight-driven, same as the
+Docker/jail substrates: `Grappa.Deploy.Preflight` classifies each
+deploy's diff and picks hot (rebuild + `POST /admin/reload`, sessions
+preserved) or cold (full stop → rebuild → migrate → start cycle)
+automatically — see `infra/linux/README.md` "Day-2 operations".
 
 Stop/start synchronization (the FreeBSD jail's `jail_beam_wait.sh`
 problem, defect #9) is solved differently here: the systemd unit runs

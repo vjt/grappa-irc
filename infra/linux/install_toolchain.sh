@@ -19,7 +19,7 @@
 # git-clone-the-repo-and-source-a-shell-function) — this downloads the
 # latest release binary + shims, verified against the published md5.
 # Installed into ~grappa's scope, not system-wide — builds run as
-# grappa (isolation-without-root, per LINUX.md).
+# grappa (isolation-without-root).
 #
 # Erlang is built from source (no prebuilt asdf-erlang binary for an
 # arbitrary pin) — expect ~10-20 minutes on first run. This is a
