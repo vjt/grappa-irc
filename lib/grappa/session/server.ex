@@ -4141,6 +4141,12 @@ defmodule Grappa.Session.Server do
   # loop is a no-op) rather than arming a pointless timer.
   @spec maybe_autojoin_or_defer(t()) :: t()
   defp maybe_autojoin_or_defer(%{auth_method: :nickserv_identify, autojoin: [_ | _]} = state) do
+    # Cancel + drain any prior fallback for the defensive re-welcome case (a
+    # second 001 without an intervening crash) so we never leak a stale fire —
+    # symmetric with the sibling `:connection_stable` timer armed just above in
+    # the numeric-1 handler. The latch already makes an orphaned timer a no-op,
+    # but re-arming cleanly keeps the two 001 timers on one pattern.
+    :ok = cancel_and_drain(state.autojoin_defer_timer, :autojoin_defer)
     timer = Process.send_after(self(), :autojoin_defer, state.autojoin_defer_ms)
     %{state | autojoin_defer_timer: timer}
   end
