@@ -38,4 +38,9 @@ if [ -z "$env" ]; then
     fi
 fi
 
-in_container_or_oneshot env MIX_ENV="$env" mix "$@"
+# DATABASE_PATH is injected here (not left to compose.yaml's host-MIX_ENV
+# interpolation) so the DB file always matches the env this script
+# resolved — otherwise `--env=prod` on a dev host migrates/reads the DEV
+# db (#364 docker S5). db_path_for_env is the shell-side SoT for the path
+# shape; it must stay identical to compose.yaml's DATABASE_PATH.
+in_container_or_oneshot env MIX_ENV="$env" DATABASE_PATH="$(db_path_for_env "$env")" mix "$@"
