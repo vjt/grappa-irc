@@ -28,6 +28,24 @@ defmodule Mix.Tasks.Grappa.Boot do
   child suppressed, so the IRC supervision tree boots empty (no
   upstream connections). Returns `:ok` on success.
 
+  Runs `mix app.config` first — found live 2026-07-22 (native Linux
+  systemd deploy, first `MIX_ENV=prod` install): a bare
+  `Application.ensure_all_started/1`, unlike `mix run`/`mix
+  phx.server`, does NOT evaluate `config/runtime.exs` on its own. This
+  was invisible under Docker's default `MIX_ENV=dev` (where
+  `config/dev.exs` hardcodes `uploads_storage_root`/`database_path`,
+  no runtime.exs needed for those), but under `MIX_ENV=prod` — where
+  those values exist ONLY in runtime.exs — every one of the six
+  `grappa.*` operator tasks that call this function
+  (`create_user` included) crashed with `Application.fetch_env!/2`
+  raising "configuration ... was not set", not a Grappa bug in the
+  fetched key itself. `mix app.config` is Mix's own task for
+  "load app config, including runtime.exs, without starting the app"
+  — exactly what was missing. Idempotent within a single `mix`
+  invocation (`Mix.Task.run/2` only runs a given task once unless
+  `Mix.Task.rerun/2` is used), so this is safe even if a caller
+  already triggered it some other way.
+
   The list of started applications from
   `Application.ensure_all_started/1` is discarded — operator tasks
   don't act on it. Returning `:ok` (instead of `[Application.app()]`)
@@ -40,6 +58,7 @@ defmodule Mix.Tasks.Grappa.Boot do
   """
   @spec start_app_silent() :: :ok
   def start_app_silent do
+    Mix.Task.run("app.config")
     Application.put_env(:grappa, :start_bootstrap, false)
 
     case Application.ensure_all_started(:grappa) do

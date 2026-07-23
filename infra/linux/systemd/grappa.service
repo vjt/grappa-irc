@@ -1,0 +1,65 @@
+# Grappa IRC bouncer — systemd unit for the native Linux deploy
+# substrate (mix release build, no Docker).
+#
+# Template: install_systemd.sh substitutes @REPO_ROOT@, @RELEASE_ROOT@,
+# @ENV_FILE@ via sed before installing to
+# /etc/systemd/system/grappa.service.
+#
+# Design note (see infra/linux/README.md for the full rationale): this
+# deliberately does NOT replicate infra/freebsd/rc.d/grappa's custom
+# stop/start synchronization wrapper. `ExecStart=... bin/grappa start`
+# runs the release in the FOREGROUND (not `daemon`, which backgrounds
+# via run_erl — the FreeBSD substrate needed that because rc.d isn't a
+# process supervisor). Under Type=exec, systemd tracks that PID
+# directly: `systemctl stop`/`restart` send SIGTERM and BLOCK until the
+# process actually exits (bounded by TimeoutStopSec) before proceeding.
+# lib/grappa/session/server.ex's terminate/2 already handles SIGTERM
+# with a clean upstream QUIT (issue #215) — so this closes the FreeBSD
+# defect #9 stop/start race (2026-06-11 outage: an async stop let a
+# restart collide with a still-draining old node's epmd registration)
+# at the root cause, without a custom ExecStop wrapper.
+#
+# grappa_beam_wait.sh's wait-name-free is kept as a defense-in-depth
+# ExecStartPre guard for restart-cycling edge cases, not as the primary
+# sync mechanism.
+
+[Unit]
+Description=Grappa IRC bouncer
+Documentation=https://github.com/vjt/grappa-irc
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=grappa
+Group=grappa
+WorkingDirectory=@REPO_ROOT@
+
+# Root reads this before dropping to User=grappa — the file itself
+# need not be world/grappa-readable (see infra/linux/grappa.env.example
+# header, chmod 640 root:grappa is fine).
+EnvironmentFile=@ENV_FILE@
+
+# Explicit PATH, belt-and-braces parity with the FreeBSD PATH-gap
+# incident (rc(8)/systemd both strip custom bin dirs by default;
+# exiftool/ffmpeg became invisible to System.find_executable/1,
+# fail-closed 422ing every upload). Debian/Ubuntu package exiftool
+# (libimage-exiftool-perl) and ffmpeg into /usr/bin by default, so this
+# is currently redundant — kept anyway as documented defense-in-depth,
+# not because it's known to be needed on this substrate.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ExecStartPre=@REPO_ROOT@/infra/linux/grappa_beam_wait.sh wait-name-free grappa 15
+ExecStart=@RELEASE_ROOT@/bin/grappa start
+
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# New capability vs. rc.d (which has no auto-restart at all) — safe to
+# add because systemd's restart sequencing (stop fully, then start) is
+# synchronous by construction under Type=exec.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
