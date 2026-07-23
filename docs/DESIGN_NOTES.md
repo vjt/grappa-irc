@@ -27278,3 +27278,66 @@ Beyond adding them, `FallbackControllerTest` now parses every
 the spec union (expanding `Admission.error()` via the production canon +
 the Captcha type) and fails loud on drift in either direction — the same
 shape as the existing capacity_error matrix.
+
+## 2026-07-23 — Channels fold rfc1459 like nicks (GH #364 E/irc-S4)
+
+**Reverses the channels-are-Unicode-downcase decision.** UX-4 bucket A
+(2026-05-18) case-folded channels with Unicode `String.downcase/1` and
+#121 (2026-06-28) folded *nicks* with rfc1459 — leaving the server with
+TWO casemappers and `canonical_channel/1`'s own docstring stating it was
+"distinct from `canonical_nick/1`". The 2026-07-19 codebase review
+(irc S4) flagged the split as a decision needed, because the ircd does
+NOT split it: bahamut (azzurra) runs `CASEMAPPING=rfc1459` for **channel
+names too**, not just nicks. The Unicode downcase was wrong two ways at
+once against the ircd's own rule:
+
+  * it FAILED to fold the four rfc1459 national chars `[ ] \ ~` →
+    `{ } | ^`, so `#chan[1]` and `#chan{1}` — one channel to the ircd —
+    forked into two windows / scrollback streams / read-cursors.
+  * it OVER-folded non-ASCII (`#CAFÉ` → `#café`), MERGING two channels
+    the ircd's ASCII casemapping keeps distinct.
+
+vjt resolved the design call: **converge, honour the ircd.**
+`canonical_channel/1` now shares ONE byte-level `fold_rfc1459/1`
+primitive with `canonical_nick/1` (sigils sit outside the fold set, so
+folding the whole name leaves the sigil intact and folds the body
+identically to a nick). One casemapping for every server-side
+identifier — "total consistency or nothing".
+
+**Channel pattern ≠ nick pattern — deliberately NOT #121's expression
+index.** #121 used a UNIQUE **expression index** on the rfc1459 fold of
+`query_windows.target_nick` *because a nick is stored RAW* (case is
+display-meaningful — sender badges, `dm_with`). Channels are the
+opposite: they have always been stored **canonical** (folded at write in
+the changesets) with a **plain `==`** lookup + plain index, corrected by
+a one-shot backfill (`backfill_lowercase_channels`). Grafting the nick
+expression-index pattern onto channels would have converted them AWAY
+from their own established pattern (and added fold-in-lookup churn + new
+indexes on the hot `messages` write path) for zero benefit, since
+canonical storage already makes new writes converge. So #364 extends the
+**channel** pattern: `canonical_channel/1` folds rfc1459 at every write
+boundary, lookups stay plain `==`, and `20260723120000_fold_channels_rfc1459`
+re-folds historical bracket rows (messages UPDATE; read_cursors +
+network_featured_channels collapse bracket-collisions then UPDATE; the
+two JSON channel arrays rebuild via `json_each`). Non-ASCII merges from
+the old downcase are NOT un-merged — the original case is unrecoverable,
+and the stop-merging fix is the going-forward ASCII-only fold, not a
+historical rewrite. The fold SQL is byte-identical to
+`Identifier.nick_fold_sql/1` (the `IdentifierTest` drift pin covers the
+new migration). Cold deploy (new migration).
+
+**Two bare-`String.downcase` channel compares folded too.**
+`SessionPlan.merge_autojoin/2` (dedup of operator autojoin vs last-live
+snapshot) and `ChannelDirectory.Wire.mark_featured/2` (featured-label
+join) both keyed on `String.downcase`, which silently diverges from the
+new byte-fold on bracket channels; both now fold via
+`canonical_channel/1`. `channel_directory.name` itself STAYS verbatim
+(case-preserving /LIST display, like a nick) — only the featured compare
+folds.
+
+*Lesson: "do it like #121" was the spec, but #121's expression-index
+shape was FORCED by raw nick storage for display — a constraint channels
+don't share. The right move was to read how channels are ALREADY stored
+(canonical + backfill) and extend THAT, not copy the nick mechanism. A
+pattern doesn't transfer just because the two problems rhyme; check
+which invariant forced the original shape first.*
