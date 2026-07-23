@@ -106,6 +106,12 @@ set_env_if_blank() {
 		grep -v "^${key}=" "${ENV_FILE}" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "${ENV_FILE}"
 	fi
 	printf '%s=%s\n' "${key}" "${val}" >> "${ENV_FILE}"
+	# The grep -v >tmp && mv above replaces ENV_FILE with a fresh inode born
+	# under root's umask (0644 root:root), dropping the 0640 root:grappa set
+	# at creation — re-lock, or the secrets this file holds go world-readable
+	# (chmod alone is not enough: the grappa daemon reads it via the group).
+	chown "root:${GRAPPA_USER}" "${ENV_FILE}"
+	chmod 0640 "${ENV_FILE}"
 }
 
 # Unlike secrets (never silently regenerate — set_env_if_blank), these
@@ -122,6 +128,11 @@ force_set_env() {
 		grep -v "^${key}=" "${ENV_FILE}" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "${ENV_FILE}"
 	fi
 	printf '%s=%s\n' "${key}" "${val}" >> "${ENV_FILE}"
+	# Re-lock after the tmp+mv rewrite (see set_env_if_blank). force_set_env
+	# runs last (config values, after the secrets), so without this the final
+	# ENV_FILE is left 0644 root:root with every secret world-readable.
+	chown "root:${GRAPPA_USER}" "${ENV_FILE}"
+	chmod 0640 "${ENV_FILE}"
 }
 
 # Generated under MIX_ENV=dev on purpose: prod-env mix tasks read
