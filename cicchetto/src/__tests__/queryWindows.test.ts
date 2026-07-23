@@ -126,6 +126,19 @@ describe("queryWindows state", () => {
     expect(socket.pushOpenQueryWindow).toHaveBeenCalledWith(1, "dave");
   });
 
+  // #364 E/S5 — dedup must fold rfc1459 (server keys the window on
+  // canonical_nick/1), not ASCII-downcase-only: `Foo[1]` and `foo{1}`
+  // are ONE window server-side, so a second open must not round-trip.
+  it("openQueryWindowState dedups on the rfc1459 fold (bracket range)", async () => {
+    const socket = await import("../lib/socket");
+    const { setQueryWindowsByNetwork, openQueryWindowState } = await import("../lib/queryWindows");
+    setQueryWindowsByNetwork({
+      1: [{ targetNick: "Foo[1]", openedAt: "2026-05-04T10:00:00Z" }],
+    });
+    openQueryWindowState(1, "foo{1}", "2026-05-04T12:00:00Z");
+    expect(socket.pushOpenQueryWindow).not.toHaveBeenCalled();
+  });
+
   // Nick case-sensitivity fix (post-U): canonicalQueryNick resolves
   // user-input casing to the existing window's stored casing so the
   // sidebar/scrollback ChannelKey ("slug nick") stays stable across
@@ -141,6 +154,16 @@ describe("queryWindows state", () => {
       expect(canonicalQueryNick(1, "GRAPPA")).toBe("grappa");
       expect(canonicalQueryNick(1, "Grappa")).toBe("grappa");
       expect(canonicalQueryNick(1, "grappa")).toBe("grappa");
+    });
+
+    it("resolves via the rfc1459 fold (bracket range), not ASCII downcase (#364 E/S5)", async () => {
+      const { setQueryWindowsByNetwork, canonicalQueryNick } = await import("../lib/queryWindows");
+      setQueryWindowsByNetwork({
+        1: [{ targetNick: "Foo[1]", openedAt: "2026-05-04T10:00:00Z" }],
+      });
+      // `foo{1}` is the same nick to the server; resolve to stored casing.
+      expect(canonicalQueryNick(1, "foo{1}")).toBe("Foo[1]");
+      expect(canonicalQueryNick(1, "FOO{1}")).toBe("Foo[1]");
     });
 
     it("returns the input unchanged when no window matches", async () => {

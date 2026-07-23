@@ -1,4 +1,5 @@
 import { createRoot, createSignal, untrack } from "solid-js";
+import { nickEquals } from "./nickEquals";
 import { pushCloseQueryWindow, pushOpenQueryWindow } from "./socket";
 
 // Query-window state — which DM (query) windows are currently open.
@@ -76,9 +77,8 @@ const exports = createRoot(() => {
    * rule).
    */
   const openQueryWindowState = (networkId: number, targetNick: string, _openedAt: string): void => {
-    const lowerNick = targetNick.toLowerCase();
     const existing = untrack(queryWindowsByNetwork)[networkId] ?? [];
-    const alreadyOpen = existing.some((w) => w.targetNick.toLowerCase() === lowerNick);
+    const alreadyOpen = existing.some((w) => nickEquals(w.targetNick, targetNick));
     if (alreadyOpen) return;
     pushOpenQueryWindow(networkId, targetNick);
   };
@@ -87,12 +87,12 @@ const exports = createRoot(() => {
    * Returns the canonical casing for `nick` if a query window for it is
    * already open on `networkId`, otherwise returns `nick` unchanged.
    *
-   * IRC nicks are case-insensitive (RFC 2812 §2.2); the server-side
+   * IRC nicks are case-insensitive (rfc1459); the server-side
    * `Grappa.QueryWindows` row is unique on `(subject, network_id,
-   * lower(target_nick))` and the stored `target_nick` preserves the
-   * first-opened casing. cic mirrors that: the row's `targetNick`
-   * value is the canonical casing for sidebar/scrollback ChannelKey
-   * derivation.
+   * rfc1459-fold(target_nick))` and the stored `target_nick` preserves
+   * the first-opened casing. cic mirrors that via `nickEquals` (the
+   * shared rfc1459 fold): the row's `targetNick` value is the canonical
+   * casing for sidebar/scrollback ChannelKey derivation.
    *
    * Without this helper, typing `/q GRAPPA` when a `grappa` window
    * already exists would `setSelectedChannel({channelName: "GRAPPA"})`,
@@ -106,9 +106,8 @@ const exports = createRoot(() => {
    * costs nothing measurable.
    */
   const canonicalQueryNick = (networkId: number, nick: string): string => {
-    const lower = nick.toLowerCase();
     const existing = untrack(queryWindowsByNetwork)[networkId] ?? [];
-    const match = existing.find((w) => w.targetNick.toLowerCase() === lower);
+    const match = existing.find((w) => nickEquals(w.targetNick, nick));
     return match ? match.targetNick : nick;
   };
 

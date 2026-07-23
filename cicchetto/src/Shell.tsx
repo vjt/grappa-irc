@@ -39,6 +39,7 @@ import {
   toggleMembersPanel,
 } from "./lib/mobilePanel";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
+import { nickEquals } from "./lib/nickEquals";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { closeToPreviousWindow, selectedChannel, setSelectedChannel } from "./lib/selection";
@@ -500,8 +501,7 @@ const Shell: Component = () => {
       const net = networkBySlug(slug);
       if (net) {
         const qs = queryWindowsByNetwork()[net.id] ?? [];
-        const lower = saved.channelName.toLowerCase();
-        const match = qs.find((q) => q.targetNick.toLowerCase() === lower);
+        const match = qs.find((q) => nickEquals(q.targetNick, saved.channelName));
         if (match !== undefined) {
           setSelectedChannel({
             networkSlug: slug,

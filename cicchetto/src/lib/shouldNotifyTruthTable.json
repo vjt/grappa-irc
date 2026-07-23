@@ -84,6 +84,20 @@
     "expected": true
   },
   {
+    "name": "DM: whitelist folds the rfc1459 bracket range on sender (#364 E/S5)",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "Foo[1]", "body": "ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": ["foo{1}"]
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
     "name": "DM does NOT consider channel flags",
     "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
     "own_nick": "vjt",

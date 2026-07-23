@@ -8,6 +8,7 @@ import { saveLastFocused } from "./lastFocusedChannel";
 import { membersByChannel } from "./members";
 import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
 import { channelsBySlug, networkBySlug, networks, user } from "./networks";
+import { nickEquals } from "./nickEquals";
 import { presenceRowVisible } from "./presenceFilter";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { getReadCursor, readCursors, setReadCursor } from "./readCursor";
@@ -201,8 +202,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       const net = networkBySlug(slug);
       if (net) {
         const qs = qwbn[net.id] ?? [];
-        const lower = name.toLowerCase();
-        if (qs.some((q) => q.targetNick.toLowerCase() === lower)) return true;
+        if (qs.some((q) => nickEquals(q.targetNick, name))) return true;
       }
       return false;
     };
@@ -219,8 +219,7 @@ const exports = identityScopedStore((onIdentityChange) => {
         const net = networkBySlug(slug);
         if (net) {
           const qs = qwbn[net.id] ?? [];
-          const lower = name.toLowerCase();
-          const match = qs.find((q) => q.targetNick.toLowerCase() === lower);
+          const match = qs.find((q) => nickEquals(q.targetNick, name));
           if (match !== undefined) {
             return { networkSlug: slug, channelName: match.targetNick, kind: "query" };
           }
@@ -272,8 +271,7 @@ const exports = identityScopedStore((onIdentityChange) => {
         const net = networkBySlug(sel.networkSlug);
         if (net) {
           const qs = queryWindowsByNetwork()[net.id] ?? [];
-          const lower = sel.channelName.toLowerCase();
-          if (qs.some((q) => q.targetNick.toLowerCase() === lower)) return true;
+          if (qs.some((q) => nickEquals(q.targetNick, sel.channelName))) return true;
         }
         return false;
       }
@@ -734,8 +732,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       const net = networkBySlug(sel.networkSlug);
       if (!net) return false;
       const queries = qwbn[net.id] ?? [];
-      const lower = sel.channelName.toLowerCase();
-      return queries.some((q) => q.targetNick.toLowerCase() === lower);
+      return queries.some((q) => nickEquals(q.targetNick, sel.channelName));
     })();
 
     const wasLive = lastSeenLive.get(selKey) ?? false;

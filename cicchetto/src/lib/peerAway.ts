@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import { identityScopedStore } from "./identityScopedStore";
+import { normalizeNick } from "./nickEquals";
 
 // P-0b — peer-away ephemeral store. Holds at most one away message per
 // (network slug, peer-nick lowercased) pair. Populated by the
@@ -31,7 +32,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   onIdentityChange(() => setPeerAwayBySlug({}));
 
   const setPeerAway = (networkSlug: string, peer: string, message: string): void => {
-    const peerKey = peer.toLowerCase();
+    const peerKey = normalizeNick(peer);
     setPeerAwayBySlug((prev) => ({
       ...prev,
       [networkSlug]: { ...(prev[networkSlug] ?? {}), [peerKey]: message },
@@ -39,7 +40,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   };
 
   const dismissPeerAway = (networkSlug: string, peer: string): void => {
-    const peerKey = peer.toLowerCase();
+    const peerKey = normalizeNick(peer);
     setPeerAwayBySlug((prev) => {
       const networkEntries = prev[networkSlug];
       if (!networkEntries || !(peerKey in networkEntries)) return prev;

@@ -1,4 +1,5 @@
 import { type Component, Show } from "solid-js";
+import { normalizeNick } from "./lib/nickEquals";
 import { dismissPeerAway, peerAwayBySlug } from "./lib/peerAway";
 import NickText from "./NickText";
 
@@ -23,7 +24,7 @@ export type Props = {
 
 const PeerAwayBanner: Component<Props> = (props) => {
   const message = (): string | undefined => {
-    const peerKey = props.peer.toLowerCase();
+    const peerKey = normalizeNick(props.peer);
     return peerAwayBySlug()[props.networkSlug]?.[peerKey];
   };
 

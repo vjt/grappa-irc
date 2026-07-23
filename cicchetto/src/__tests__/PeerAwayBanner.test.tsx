@@ -10,6 +10,7 @@ describe("PeerAwayBanner", () => {
   afterEach(() => {
     dismissPeerAway("azzurra", "alice");
     dismissPeerAway("azzurra", "ALICE");
+    dismissPeerAway("azzurra", "Foo[1]");
   });
 
   it("renders no DOM node when no entry exists for (slug, peer)", () => {
@@ -29,11 +30,21 @@ describe("PeerAwayBanner", () => {
 
   it("matches case-insensitively on peer nick", () => {
     // Server emits the peer's nick in whatever case upstream sent it;
-    // the store keys lowercased, the banner lookups lowercased.
+    // the store keys via rfc1459Fold, the banner lookups via the same
+    // fold, so casing never matters.
     setPeerAway("azzurra", "Alice", "AFK");
     render(() => <PeerAwayBanner networkSlug="azzurra" peer="ALICE" />);
     const banner = screen.getByTestId("peer-away-banner");
     expect(banner.textContent).toContain("AFK");
+  });
+
+  // #364 E/S5 — store key + banner lookup fold the rfc1459 bracket
+  // range, so `Foo[1]` (set) and `foo{1}` (lookup) are one peer.
+  it("matches on the rfc1459 fold (bracket range) between store and lookup", () => {
+    setPeerAway("azzurra", "Foo[1]", "brb");
+    render(() => <PeerAwayBanner networkSlug="azzurra" peer="foo{1}" />);
+    const banner = screen.getByTestId("peer-away-banner");
+    expect(banner.textContent).toContain("brb");
   });
 
   it("dismiss button removes the banner", () => {

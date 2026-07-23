@@ -21,6 +21,7 @@
 // `Grappa.Mentions.mentioned?/3`.
 
 import { mentionsUser } from "./mentionMatch";
+import { rfc1459Fold } from "./nickEquals";
 import type { NotificationPrefs } from "./userSettings";
 
 // Minimal structural shape the predicate needs — a subset of the wire
@@ -45,7 +46,8 @@ const NOTIFY_KINDS = new Set(["privmsg", "action"]);
  * Faithful transcription of `Grappa.Push.Triggers.should_notify?/4`:
  *   1. kind gate — non-(privmsg|action) → false.
  *   2. DM (channel === ownNick): private_messages_all OR
- *      lower(sender) in private_messages_only.
+ *      rfc1459Fold(sender) in private_messages_only (mirrors the
+ *      server's `canonical_nick(sender) in ...`).
  *   3. channel: channel_messages_all OR lower(channel) in
  *      channel_messages_only OR (channel_mentions AND mention).
  */
@@ -64,8 +66,12 @@ export function shouldNotify(
 }
 
 function dmMatch(message: ShouldNotifyMessage, prefs: NotificationPrefs): boolean {
+  // rfc1459 fold on the sender, mirroring the server's
+  // `Identifier.canonical_nick(sender) in private_messages_only` — the
+  // whitelist entries are stored server-folded. A bare `.toLowerCase()`
+  // here would miss a bracket-range nick the server folds.
   return (
-    prefs.private_messages_all || prefs.private_messages_only.includes(message.sender.toLowerCase())
+    prefs.private_messages_all || prefs.private_messages_only.includes(rfc1459Fold(message.sender))
   );
 }
 
