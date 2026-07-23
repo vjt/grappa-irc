@@ -27598,3 +27598,61 @@ match. Reusing #372's fold here would have been a category error; the
 right question was "what stores the OLD nick, and does it move?" —
 QueryWindows row, DM `dm_with`/`channel`, cic scrollback key, cic
 selection. Enumerate every store of the moved identity, migrate each.*
+
+## 2026-07-23 — Services allowlist gains Azzurra pseudo-services (GH #371)
+
+Azzurra (bahamut) exposes three pseudo-services absent from the closed
+services allowlist: **SeenServ**, **StatServ**, **DebugServ**. Their
+inbound NOTICE/PRIVMSG replies therefore fell through
+`EventRouter.route_non_channel_notice_non_chanserv/2`'s `valid_nick?`
+arm and opened a stray per-nick query window instead of landing on the
+synthetic `$server` channel — they looked like they "went into the void"
+from cic while working normally from weechat. Added to the allowlist so
+they route identically to NickServ et al.
+
+**The issue was filed as cic-only; that framing is incomplete.** The
+routing source of truth is server-side —
+`Grappa.IRC.Identifier.services_sender?/1`, consumed by EventRouter's
+inbound NOTICE (`route_non_channel_notice_non_chanserv/2`) and PRIVMSG
+(`privmsg_default/3`) arms — NOT cic. The cic `SERVICES` set
+(`servicesSender.ts`) only governs the OUTBOUND compose path (suppress
+the optimistic query-window open for `/msg SeenServ ...`). Fixing the
+INBOUND symptom the issue describes REQUIRES the server allowlist; a
+cic-only change cannot move a service NOTICE to `$server`. Both are
+extended in lockstep — as the code comments in both files have always
+demanded ("future *serv variants need an explicit add here AND on the
+server in lockstep") and as RootServ ("already works") demonstrates by
+being in both. This is the UX-4 bucket G "one predicate, every door"
+contract: outbound no-persist (Session.Server), inbound `$server`
+(EventRouter), REST classification (MessagesController) all read the
+same closed allowlist.
+
+**Interaction with #372.** #372 used `DebugServ` as a *fixture* for the
+DM-peer casing-fold bug (a window OPENED as `debugserv`, the service
+replying as `DebugServ`, folding to one archive entry). Now that
+DebugServ is a service, its inbound replies route to `$server`, never a
+query window — which is the DELIBERATE #371 outcome ("a services query
+window would just sit empty"). The #372 tests operate at the Scrollback
+layer (not routing), so they stay green; the fold family still applies
+to genuine peer nicks.
+
+**Deploy:** server change → needs a COLD deploy (the `@services` module
+attribute is compiled in). cic bundle ships the mirror. No integration/
+e2e coverage is possible for the new nicks (the testnet has no live
+pseudo-service responder); proof is unit-level on both doors —
+`EventRouter` routing test (`#371 SeenServ / StatServ / DebugServ
+NOTICEs route to $server`, exercising production routing, with the
+`Conserv` guard proving allowlist membership is what flips it) + the
+`services_sender?/1` accept test + the cic `isServicesSender` accept
+test. Also closed two pre-existing gaps found while here: the identifier
+property-test allowlist mirror was missing `rootserv`, and both accept
+tests now cover the full 11-entry set.
+
+**Out of scope (separate observation in the issue):** a ~10s lag on the
+StatServ reply itself smells server/services-side (routing / StatServ
+latency), not the client allowlist — filed as its own look.
+
+*Lesson: "cicchetto: X is missing from cic's allowlist" is a symptom
+report, not a scope boundary. When the symptom is inbound routing, the
+SoT is the server — challenge a client-only fix direction against where
+the behavior actually lives before building.*
