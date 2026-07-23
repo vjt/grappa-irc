@@ -132,31 +132,51 @@ defmodule Grappa.IRC.Identifier do
   def valid_ident?(_), do: false
 
   @doc """
-  Returns the canonical lowercase form of a channel name. Non-channel
+  Returns the canonical rfc1459-folded form of a channel name — the
+  single source of truth for case-insensitive channel matching. Shares
+  ONE fold primitive with `canonical_nick/1` (`fold_rfc1459/1`, #364),
+  so the whole server casemaps channels and nicks one way. Non-channel
   input (nicks, the synthetic `$server` pseudo-channel, anything not
-  prefixed with a RFC-2812 sigil `#&+!`) is passed through verbatim —
-  case is meaningful for nicks (CTCP visibility row's `dm_with`, sender
-  badge display) and the `$server` marker is fixed-case by intent.
+  prefixed with a chanstring sigil `#&+!`) is passed through verbatim —
+  case is meaningful for nicks (`dm_with`, sender badge display) and the
+  `$server` marker is fixed-case by intent.
 
-  UX-4 bucket A: IRC channel names are case-insensitive per RFC 2812
-  §1.3; storing them case-sensitive caused `#Chan` and `#chan` to route
-  to different windows, scrollback rows, read-cursors, and PubSub
-  topics. Canonicalize at every channel-bearing boundary
-  (`Grappa.Session` entry API, `Grappa.Session.EventRouter` channel
-  param extraction, schema changesets defense-in-depth, PubSub
-  topic builder, backfill migration) so the rest of the codebase
-  observes a single key per channel regardless of upstream-or-input
-  casing.
+  ## Why rfc1459 (#364 — reverses the UX-4-A Unicode downcase)
 
-  The sigil-aware predicate is shared with `Grappa.Scrollback.target_kind/1`
-  (M7 2026-05-08) — promoting this to the IRC identifier namespace so
-  every channel-touching context can apply it without depending on
-  Scrollback. Non-binary input returns unchanged.
+  UX-4 bucket A first case-folded channels with Unicode
+  `String.downcase/1` (RFC 2812 §1.3, ASCII-plus-Unicode). That
+  diverged from bahamut (azzurra, `CASEMAPPING=rfc1459`) TWO ways, both
+  forking or merging windows against the ircd's own rule:
+
+    * it FAILED to fold the four rfc1459 "national" chars `[ ] \\ ~` →
+      `{ } | ^`, so `#chan[1]` and `#chan{1}` — one channel to the
+      ircd — forked into two windows / scrollback streams / cursors.
+    * it OVER-folded non-ASCII (`#CAFÉ` → `#café`), merging two
+      channels the ircd's ASCII casemapping keeps distinct.
+
+  #364 converges channels onto the ircd's casemapping: the EXACT
+  byte-level ASCII fold nicks already use (#121), sigil-gated. Sigils
+  (`# & ! +`) sit outside the fold set, so folding the whole name
+  leaves the sigil intact and folds the body identically to a nick.
+
+  ## ASCII-only, by design
+
+  Byte-level ASCII (`A-Z` + the four brackets), NOT Unicode
+  `String.downcase/1` — see `canonical_nick/1` for the full rationale.
+  UTF-8 multibyte (≥ `0x80`) passes untouched, so the fold matches the
+  ASCII-only SQLite `lower()` the backfill migration uses in pure SQL.
+
+  Canonicalize at every channel-bearing boundary (`Grappa.Session`
+  entry API, `Grappa.Session.EventRouter` channel-param extraction,
+  schema changesets defense-in-depth, PubSub topic builder, the
+  rfc1459 fold backfill migration) so the rest of the codebase observes
+  one key per channel regardless of upstream-or-input casing.
+  Non-binary input returns unchanged.
   """
   @spec canonical_channel(term()) :: term()
   def canonical_channel(<<sigil::utf8, _::binary>> = name)
       when sigil in [?#, ?&, ?!, ?+],
-      do: String.downcase(name)
+      do: fold_rfc1459(name)
 
   def canonical_channel(name), do: name
 
@@ -175,8 +195,9 @@ defmodule Grappa.IRC.Identifier do
   the ircd, so the bouncer must treat them identically or it forks
   windows / spawns duplicate visitor sessions.
 
-  Distinct from `canonical_channel/1`, which applies RFC 2812 channel
-  casemapping (Unicode `String.downcase/1`, sigil-gated).
+  Shares ONE fold primitive (`fold_rfc1459/1`) with `canonical_channel/1`
+  (#364): channels converge onto the SAME rfc1459 casemapping, since
+  bahamut applies it to channel names as well as nicks.
 
   ## ASCII-only, by design
 
@@ -197,17 +218,26 @@ defmodule Grappa.IRC.Identifier do
   `nil`).
   """
   @spec canonical_nick(term()) :: term()
-  def canonical_nick(nick) when is_binary(nick),
-    do: for(<<c <- nick>>, into: "", do: <<fold_nick_byte(c)>>)
+  def canonical_nick(nick) when is_binary(nick), do: fold_rfc1459(nick)
 
   def canonical_nick(other), do: other
 
-  defp fold_nick_byte(c) when c in ?A..?Z, do: c + 32
-  defp fold_nick_byte(?[), do: ?{
-  defp fold_nick_byte(?]), do: ?}
-  defp fold_nick_byte(?\\), do: ?|
-  defp fold_nick_byte(?~), do: ?^
-  defp fold_nick_byte(c), do: c
+  # The shared rfc1459 byte fold — the SINGLE in-memory casemapping for
+  # both nicks (#121) and channels (#364). ASCII `A-Z` → lower, plus the
+  # four "national" chars `[ ] \\ ~` → `{ } | ^`. Byte-level so UTF-8
+  # multibyte (≥ 0x80) passes untouched, matching the ASCII-only SQLite
+  # `lower()` the fold migrations embed. `canonical_nick/1` folds the
+  # whole nick; `canonical_channel/1` folds the sigil-prefixed name (the
+  # sigils are outside the fold set, so they pass straight through).
+  @spec fold_rfc1459(binary()) :: binary()
+  defp fold_rfc1459(s), do: for(<<c <- s>>, into: "", do: <<fold_rfc1459_byte(c)>>)
+
+  defp fold_rfc1459_byte(c) when c in ?A..?Z, do: c + 32
+  defp fold_rfc1459_byte(?[), do: ?{
+  defp fold_rfc1459_byte(?]), do: ?}
+  defp fold_rfc1459_byte(?\\), do: ?|
+  defp fold_rfc1459_byte(?~), do: ?^
+  defp fold_rfc1459_byte(c), do: c
 
   @doc """
   Ecto query fragment applying the rfc1459 nick fold to a column

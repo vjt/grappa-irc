@@ -175,8 +175,8 @@ defmodule Grappa.IRC.IdentifierTest do
     end
   end
 
-  describe "canonical_channel/1" do
-    test "lowercases sigil-prefixed channel names" do
+  describe "canonical_channel/1 (rfc1459 casemapping — GH #364)" do
+    test "ASCII-downcases sigil-prefixed channel names" do
       assert Identifier.canonical_channel("#Chan") == "#chan"
       assert Identifier.canonical_channel("#CHAN") == "#chan"
       assert Identifier.canonical_channel("#cHaN") == "#chan"
@@ -185,7 +185,42 @@ defmodule Grappa.IRC.IdentifierTest do
       assert Identifier.canonical_channel("+Modeless") == "+modeless"
     end
 
-    test "passes already-lowercase channels through verbatim" do
+    test "folds rfc1459 bracket chars [ ] \\ ~ -> { } | ^ in the channel body" do
+      # #364 E/irc-S4: channels converge to bahamut's CASEMAPPING=rfc1459,
+      # the SAME fold nicks use (#121). `#chan[1]` and `#chan{1}` are ONE
+      # channel to the ircd, so they must resolve to one window.
+      assert Identifier.canonical_channel("#chan[1]") == "#chan{1}"
+      assert Identifier.canonical_channel("#a\\b") == "#a|b"
+      assert Identifier.canonical_channel("&tilde~") == "&tilde^"
+      assert Identifier.canonical_channel("#Foo[Bar]") == "#foo{bar}"
+    end
+
+    test "does NOT touch the fold targets { } | ^ (collision-free)" do
+      assert Identifier.canonical_channel("#chan{1}") == "#chan{1}"
+      assert Identifier.canonical_channel("#a|b") == "#a|b"
+      assert Identifier.canonical_channel("&caret^") == "&caret^"
+    end
+
+    test "is ASCII-only — does NOT merge non-ASCII case variants (rfc1459 is byte-level)" do
+      # The old Unicode `String.downcase/1` folded É->é so `#CAFÉ` and
+      # `#café` merged into one window — WRONG for bahamut, whose ASCII
+      # casemapping leaves both distinct. rfc1459 is byte-level: the
+      # multibyte É (>= 0x80) passes through untouched.
+      assert Identifier.canonical_channel("#café") == "#café"
+      assert Identifier.canonical_channel("#CAFÉ") == "#cafÉ"
+      refute Identifier.canonical_channel("#CAFÉ") == Identifier.canonical_channel("#café")
+    end
+
+    test "shares ONE fold primitive with canonical_nick/1 (sigils are fold-invariant)" do
+      # #364: canonical_channel and canonical_nick MUST fold identically.
+      # Sigils (# & ! +) are outside the fold set, so folding the whole
+      # channel string equals sigil <> fold(body).
+      for body <- ["Foo[Bar]", "CHAN", "a\\b", "tilde~", "café", "MiXeD{ok}"] do
+        assert Identifier.canonical_channel("#" <> body) == "#" <> Identifier.canonical_nick(body)
+      end
+    end
+
+    test "passes already-canonical channels through verbatim" do
       assert Identifier.canonical_channel("#chan") == "#chan"
       assert Identifier.canonical_channel("&local") == "&local"
     end
@@ -205,19 +240,31 @@ defmodule Grappa.IRC.IdentifierTest do
     end
 
     test "is idempotent" do
-      assert Identifier.canonical_channel(Identifier.canonical_channel("#Chan")) == "#chan"
+      assert Identifier.canonical_channel(Identifier.canonical_channel("#Chan[1]")) == "#chan{1}"
     end
 
-    property "lowercases any sigil-prefixed channel-shape input" do
-      # Channel body chars: anything but space, comma, BELL, and ASCII
-      # uppercase (so the lowercase predicate has something to fold).
+    property "folds any sigil-prefixed ASCII channel per rfc1459, and is idempotent" do
       sigils = StreamData.member_of([?#, ?&, ?!, ?+])
-      body = StreamData.string([?A..?Z, ?a..?z, ?0..?9, ?-], min_length: 1, max_length: 20)
+      # Body bytes: printable ASCII incl. the bracket chars so the
+      # rfc1459 fold is exercised. Channel-legality is irrelevant here —
+      # comma/etc. are fold-invariant, so they pass through both the
+      # implementation and the oracle identically (same generator shape
+      # as the canonical_nick property below).
+      body_bytes = StreamData.list_of(StreamData.integer(?!..?~), min_length: 1, max_length: 20)
 
-      check all(sigil <- sigils, name <- body) do
-        input = <<sigil>> <> name
+      check all(sigil <- sigils, cs <- body_bytes) do
+        input = <<sigil>> <> :binary.list_to_bin(cs)
         canon = Identifier.canonical_channel(input)
-        assert canon == String.downcase(input)
+
+        expected =
+          input
+          |> String.downcase()
+          |> String.replace("[", "{")
+          |> String.replace("]", "}")
+          |> String.replace("\\", "|")
+          |> String.replace("~", "^")
+
+        assert canon == expected
         # Round-trip stability.
         assert Identifier.canonical_channel(canon) == canon
       end
