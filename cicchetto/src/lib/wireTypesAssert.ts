@@ -60,8 +60,8 @@ import type {
   ServerReplySource,
   WhoisBundle,
   WhoReply,
-  WhowasBundle,
   WhoUser,
+  WhowasBundle,
   WireChannelEvent,
   WireUserEvent,
 } from "./api";
@@ -104,8 +104,8 @@ import type {
   SessionWireTopicEntryWire,
   SessionWireWhoisBundlePayload,
   SessionWireWhoReplyPayload,
-  SessionWireWhowasBundlePayload,
   SessionWireWhoUser,
+  SessionWireWhowasBundlePayload,
   SessionWireWindowInvitedPayload,
   SessionWireWindowPendingPayload,
   WindowCountsWireEvent,
@@ -236,10 +236,7 @@ export type _Assert_NotifyList = Assert<
   Equal<Extract<WireUserEvent, { kind: "notify_list" }>, NotifyWireNotifyListPayload>
 >;
 export type _Assert_QueryWindowsList = Assert<
-  Equal<
-    Extract<WireUserEvent, { kind: "query_windows_list" }>,
-    QueryWindowsWireWindowsListPayload
-  >
+  Equal<Extract<WireUserEvent, { kind: "query_windows_list" }>, QueryWindowsWireWindowsListPayload>
 >;
 export type _Assert_ArchiveChanged = Assert<
   Equal<Extract<WireUserEvent, { kind: "archive_changed" }>, ScrollbackWireArchiveChangedPayload>
@@ -265,10 +262,7 @@ export type _Assert_ConnectionStateChanged = Assert<
 // string` (cross-surface S2), so a full-shape Equal cannot hold. Pin the
 // `kind` discriminator only — that is the rename gap S1 closes.
 export type _Assert_BundleHashKind = Assert<
-  Equal<
-    Extract<WireUserEvent, { kind: "bundle_hash" }>["kind"],
-    CicWireBundleHashPayload["kind"]
-  >
+  Equal<Extract<WireUserEvent, { kind: "bundle_hash" }>["kind"], CicWireBundleHashPayload["kind"]>
 >;
 
 // Session window-state arms — the `state` discriminator was `String.t()`
