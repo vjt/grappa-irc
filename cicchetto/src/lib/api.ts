@@ -1108,9 +1108,13 @@ export type WireUserEvent =
       by: string | null;
       reason: string | null;
     }
-  // #292 — `version` is the deployed bundle's semver (server omits the wire
-  // key when unknown; the narrower normalises absent → null). Drives the
-  // refresh bar's "current X → available Y" display.
+  // #292 — `version` is the deployed bundle's semver. The server OMITS the
+  // wire key when unknown, so the generated `CicWireBundleHashPayload` now
+  // types it `version?: string` (cross-surface S2 fixed codegen to preserve
+  // `optional(...)` instead of over-claiming it required). The narrower
+  // normalises absent / malformed → null, so this post-narrow consumer
+  // shape is `string | null`. Drives the refresh bar's "current X →
+  // available Y" display.
   | { kind: "bundle_hash"; hash: string; version: string | null }
   // UX-6-B2 (2026-05-21) — operator-visible server-settings reactive
   // signal. Fired on `Admin.SettingsController.update/2` fan-out AND

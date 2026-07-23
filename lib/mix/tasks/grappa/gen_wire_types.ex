@@ -25,6 +25,8 @@ defmodule Mix.Tasks.Grappa.GenWireTypes do
     * `[T]` → `T[]`
     * `T | nil` → `T | null`
     * nested `%{...}` → `{ ... }`
+    * `required(:k) => T` (and `k: T` shorthand) → `k: T`
+    * `optional(:k) => T` → `k?: T` (server may omit the key)
     * `DateTime.t()` → `string` (Jason → ISO-8601)
     * `term()` → `unknown`
     * bare `map()` → `Record<string, unknown>` (WARNING — defeats codegen purpose)
@@ -373,7 +375,15 @@ defmodule Mix.Tasks.Grappa.GenWireTypes do
     end
   end
 
-  defp strip_atom_keyed_field({:type, _, _, [k, v]}) do
+  # `optional(:k) => T` carries `:map_field_assoc`; `required(:k) => T`
+  # (and the `k: T` shorthand) carries `:map_field_exact`. Preserve the
+  # distinction so an omitted-when-absent key renders `k?: T`, not the
+  # over-claiming `k: T`. See cross-surface S2.
+  defp strip_atom_keyed_field({:type, _, :map_field_assoc, [k, v]}) do
+    {{:optional, literal_key(k)}, strip_typespec_metadata(v)}
+  end
+
+  defp strip_atom_keyed_field({:type, _, :map_field_exact, [k, v]}) do
     {literal_key(k), strip_typespec_metadata(v)}
   end
 
@@ -469,7 +479,10 @@ defmodule Mix.Tasks.Grappa.GenWireTypes do
 
   defp do_render({:%{}, _, fields}) do
     body =
-      Enum.map_join(fields, "\n", fn {k, v} when is_atom(k) -> "  #{k}: #{do_render(v)};" end)
+      Enum.map_join(fields, "\n", fn
+        {{:optional, k}, v} when is_atom(k) -> "  #{k}?: #{do_render(v)};"
+        {k, v} when is_atom(k) -> "  #{k}: #{do_render(v)};"
+      end)
 
     "{\n#{body}\n}"
   end

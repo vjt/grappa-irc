@@ -15,4 +15,12 @@ defmodule Grappa.WireFixture do
           items: [String.t()],
           tags: [subject_kind()]
         }
+
+  # Exercises the codegen's `optional(...)` handling: a server-omitted
+  # key must render `key?: T`, not `key: T` (which over-claims the field
+  # as always present). See gen_wire_types cross-surface S2.
+  @type optional_field_payload :: %{
+          required(:always) => String.t(),
+          optional(:sometimes) => String.t()
+        }
 end

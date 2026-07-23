@@ -96,6 +96,29 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
       assert output =~ ~s(  tags: WireFixtureSubjectKind[];)
     end
 
+    # cross-surface S2 (codebase-review 2026-07-19): `optional(...)` map
+    # keys were rendered identically to `required(...)` — the generated
+    # type over-claimed an omitted key as always-present, type-lying to
+    # any cic code that trusts wireTypes.ts. The server deliberately
+    # omits such keys (e.g. Cic.Wire's `version`), so the wire shape is
+    # `key?: T`, not `key: T`.
+    test "renders optional(...) map key as key?: T, required as key: T" do
+      output = GenWireTypes.render_module_for_test(Grappa.WireFixture)
+      assert output =~ ~s(export type WireFixtureOptionalFieldPayload = {)
+      assert output =~ ~s(  always: string;)
+      assert output =~ ~s(  sometimes?: string;)
+      refute output =~ ~s(  sometimes: string;)
+    end
+
+    # Pins the real production deliverable: Cic.Wire's `version` is
+    # `optional(:version) => String.t()`, so the generated
+    # CicWireBundleHashPayload must carry `version?: string`.
+    test "Cic.Wire bundle_hash renders version as optional" do
+      output = GenWireTypes.render_module_for_test(Grappa.Cic.Wire)
+      assert output =~ ~s(  version?: string;)
+      refute output =~ ~s(  version: string;)
+    end
+
     test "emits discriminated union when 2+ payloads carry literal kind" do
       output = GenWireTypes.render_module_for_test(Grappa.WireFixture)
       # WireFixture has simple_payload + collection_payload, both with kind literals
