@@ -441,6 +441,64 @@ describe("upload lifecycle", () => {
 });
 
 // --------------------------------------------------------------------
+// #364 bucket H (cross-surface S4) — the embedded upload host
+// (/api/uploads) rejects with a JSON body `{error: "<token>", ...}` the
+// FallbackController comments promise cic renders per-token. Pre-fix the
+// `http` arm branched only on numeric status: every 4xx → "try a
+// different file" (wrong for metadata_strip_failed), 507 → "Retry?"
+// (retry can't fix a full disk). These assert the token now drives the
+// copy, and a token-less body still falls through to the status generic.
+// --------------------------------------------------------------------
+
+describe("embedded-host token error copy (#364 S4)", () => {
+  beforeEach(() => {
+    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+  });
+
+  const rejectWith = async (body: string, status: number): Promise<void> => {
+    triggerUpload(key, slug, channel, sampleImage());
+    const r = pendingResolvers[0];
+    if (!r) throw new Error("expected resolver");
+    r.reject({ kind: "http", status, body });
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  it("file_too_large renders the server max_bytes threshold", async () => {
+    await rejectWith(JSON.stringify({ error: "file_too_large", max_bytes: 5 * 1024 * 1024 }), 413);
+    expect(uploadState(key)?.error).toMatch(/too large/i);
+    expect(uploadState(key)?.error).toMatch(/max 5 MB/i);
+  });
+
+  it("insufficient_storage points at the admin — never suggests retry", async () => {
+    await rejectWith(JSON.stringify({ error: "insufficient_storage" }), 507);
+    expect(uploadState(key)?.error).toMatch(/full|admin/i);
+    expect(uploadState(key)?.error).not.toMatch(/retry/i);
+  });
+
+  it("metadata_strip_failed explains metadata — not 'try a different file'", async () => {
+    await rejectWith(JSON.stringify({ error: "metadata_strip_failed" }), 422);
+    expect(uploadState(key)?.error).toMatch(/metadata/i);
+    expect(uploadState(key)?.error).not.toMatch(/try a different file/i);
+  });
+
+  it("unsupported_media_type names the type problem", async () => {
+    await rejectWith(JSON.stringify({ error: "unsupported_media_type" }), 415);
+    expect(uploadState(key)?.error).toMatch(/type/i);
+  });
+
+  it("a token-less / non-JSON 4xx body falls through to the status generic", async () => {
+    await rejectWith("Payload Too Large", 413);
+    expect(uploadState(key)?.error).toMatch(/reject|too large|file/i);
+  });
+
+  it("a token-less 5xx body falls through to the service-unavailable generic", async () => {
+    await rejectWith("", 503);
+    expect(uploadState(key)?.error).toMatch(/service|unavailable|server/i);
+  });
+});
+
+// --------------------------------------------------------------------
 // Cancel + dismiss + retry
 // --------------------------------------------------------------------
 

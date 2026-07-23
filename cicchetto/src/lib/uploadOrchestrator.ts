@@ -233,6 +233,68 @@ function mbLabel(bytes: number): string {
   return mb.toFixed(1);
 }
 
+// #364 bucket H (cross-surface S4) — the embedded upload host
+// (/api/uploads) rejects with a JSON body `{error: "<token>", ...}` whose
+// FallbackController comments each promise cic renders per-token copy. The
+// litterbox host emits plain-text error bodies (no token), so a non-JSON /
+// token-less body falls through to the status-based generic below. Parsing
+// the token lets us give the RIGHT recourse: 507 is admin action (retrying
+// can't fix a full disk), metadata_strip_failed fails identically for any
+// file of the same kind (so "try a different file" misleads), file_too_large
+// carries the actionable max_bytes threshold. Per
+// `feedback_no_localized_strings_server_side`.
+function parseUploadErrorToken(body: string): { error?: string; max_bytes?: number } | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed === "object" && parsed !== null) {
+      return parsed as { error?: string; max_bytes?: number };
+    }
+  } catch {
+    /* plain-text host body (litterbox) or empty — no token */
+  }
+  return null;
+}
+
+function httpUploadMessage(status: number, body: string): string {
+  const token = parseUploadErrorToken(body);
+  switch (token?.error) {
+    case "insufficient_storage": {
+      // 507 — the store is at capacity. Mirrors network_busy's admin
+      // affordance (friendlyApiError): the recourse is the operator, NOT a
+      // retry that can't free disk.
+      return "The upload store is full. Ask your server admin to free space, then try again.";
+    }
+    case "file_too_large": {
+      // 413 — server per-file cap. Render the max_bytes the server threads
+      // "so cic can render the actionable threshold" (same MB spelling as
+      // the client-side pre-check); fall back to a capless message if the
+      // field is absent.
+      const cap =
+        typeof token?.max_bytes === "number" ? ` (max ${mbLabel(token.max_bytes)} MB)` : "";
+      return `File is too large${cap}.`;
+    }
+    case "metadata_strip_failed": {
+      // 422 — EXIF/QuickTime strip failed and the boundary fails CLOSED. A
+      // different file of the SAME kind fails identically, so the generic
+      // "try a different file" is wrong advice.
+      return "Couldn't remove metadata from that file, so it wasn't uploaded.";
+    }
+    case "unsupported_media_type": {
+      // 415 — belt-and-braces vs dispatchUpload's client-side accept gate;
+      // a cap/host drift or proxy path can still surface it.
+      return "That file type isn't supported.";
+    }
+    default: {
+      // Token-less body (litterbox plain text, empty, or an unknown token)
+      // → status-based generic. Loud, never silent.
+      if (status >= 400 && status < 500) {
+        return `Upload rejected (${status}) — try a different file.`;
+      }
+      return `Upload service unavailable (${status}). Retry?`;
+    }
+  }
+}
+
 function friendlyErrorMessage(err: UploadError, lastProgress: UploadProgress | null): string {
   switch (err.kind) {
     case "network": {
@@ -257,10 +319,7 @@ function friendlyErrorMessage(err: UploadError, lastProgress: UploadProgress | n
       // for exhaustiveness only.
       return "Upload cancelled.";
     case "http":
-      if (err.status >= 400 && err.status < 500) {
-        return `Upload rejected (${err.status}) — try a different file.`;
-      }
-      return `Upload service unavailable (${err.status}). Retry?`;
+      return httpUploadMessage(err.status, err.body);
     case "invalid_response":
       return "Upload completed but the server returned an invalid response.";
     case "provider":
