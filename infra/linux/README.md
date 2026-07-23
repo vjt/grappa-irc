@@ -125,8 +125,22 @@ see `README.md` "Bind a network".
 systemctl status grappa
 systemctl restart grappa
 journalctl -u grappa -f              # live logs (no file-based log on this substrate)
-infra/linux/deploy.sh                # pull + rebuild + migrate + restart
+infra/linux/deploy.sh                # pull + rebuild, then hot-reload or cold-restart
 ```
+
+`deploy.sh` is preflight-driven: `Grappa.Deploy.Preflight` (the same
+classifier `scripts/deploy.sh` uses for Docker and
+`infra/freebsd/deploy.sh` uses for the jail — see its moduledoc for
+the full class list and the "in doubt, COLD" bias) classifies the
+diff since the last completed deploy and picks HOT (`mix release
+--overwrite`, no stop, then `POST /admin/reload` — Erlang's 2-version
+code-loading guarantee means already-running IRC sessions keep their
+state, only newly-called code paths pick up the change) or COLD (the
+full migrate → systemd-unit-refresh → `systemctl stop`/`start` cycle,
+sessions reset) automatically. A diff touching
+`infra/linux/systemd/grappa.service` always forces COLD on this
+substrate — a changed unit file needs `daemon-reload` + a restart to
+take effect, there's no hot-reload of a systemd unit's own definition.
 
 **`infra/linux/release.sh eval`/`remote`/`rpc` are currently broken on
 this substrate** (found live 2026-07-22) — even a trivial `eval '1 +
@@ -171,8 +185,6 @@ Deliberately out of v1 scope (to keep the first install simple) — add
 these later against the same conventions once the base install is
 proven, using the FreeBSD equivalents as the pattern to follow:
 
-- Hot/cold `Grappa.Deploy.Preflight` classification (`deploy.sh` here
-  is always a full cold cycle).
 - Cic-only hot bundle deploys (`infra/freebsd/jail_deploy_cic.sh`).
 - DB query/write helpers (`infra/freebsd/jail_db_query.sh` /
   `jail_db_write.sh`).
