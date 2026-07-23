@@ -182,12 +182,15 @@ docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm cicchetto-build
 # see .gitignore L44-46). Restore it so `git status` stays clean.
 touch runtime/cicchetto-dist/.gitkeep
 
-# Sync host deps/ to mix.lock. The bind-mount `./:/app` shadows the
-# image-baked deps with whatever's on the host; previous deploys
-# against a different mix.lock leave host deps/ out of sync.
-# `mix deps.get` is idempotent + cheap when already in sync.
-echo "Syncing deps to mix.lock..."
-docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm --no-deps grappa mix deps.get
+# Sync host deps/ to mix.lock. The image is toolchain-only (#364 docker
+# S1 — no baked hex/deps), and the bind-mount `./:/app` means deps/ +
+# HEX_HOME live on the host; a fresh checkout has neither, and previous
+# deploys against a different mix.lock leave host deps/ out of sync. So
+# install hex/rebar first (a no-op once present) then deps.get — all
+# idempotent + cheap when already in sync.
+echo "Syncing hex + deps to mix.lock..."
+docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm --no-deps grappa \
+  mix do local.hex --force, local.rebar --force, deps.get
 
 # Apply pending migrations BEFORE bringing the long-running container
 # up. Pre-S3 the order was reversed (up -d first, then exec migrate in

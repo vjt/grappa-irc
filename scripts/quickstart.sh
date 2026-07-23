@@ -76,14 +76,18 @@ set_env GRAPPA_PUBLISH 127.0.0.1:4000
 set_env NGINX_PUBLISH "${HTTP_BIND}:80"
 
 # ---- 3. build the image -----------------------------------------------
-# First build pulls the elixir alpine base + compiles deps (~5-10 min).
-say "Building the grappa image (first run downloads + compiles — be patient)"
+# Toolchain image (#364 docker S1) — just the base + apk packages, no
+# deps baked, so the first build only pulls/extracts layers (~1-2 min).
+say "Building the grappa toolchain image (first run downloads the base — be patient)"
 "${COMPOSE[@]}" build grappa
 
 # ---- 4. bootstrap toolchain + deps against the bind-mount -------------
-# compose mounts ./:/app, shadowing the image's baked hex/deps with the
-# host tree. A fresh clone has neither, so install them into the mounted
-# tree once (dev env — these tasks never read prod secrets).
+# compose mounts ./:/app, and hex/deps/_build all live under /app. The
+# image ships no baked deps (they would be shadowed by the mount), so a
+# fresh clone must install them into the mounted tree once here (dev env —
+# these tasks never read prod secrets). This is the standalone twin of the
+# bin/start.sh first-boot self-heal; running it up front keeps the later
+# `up` fast + healthy inside the health-timeout.
 say "Installing hex/rebar + fetching deps into the checkout"
 "${COMPOSE[@]}" run --rm --no-deps -T -e MIX_ENV=dev grappa \
   mix do local.hex --force, local.rebar --force, deps.get, compile

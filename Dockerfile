@@ -43,21 +43,24 @@ ENV LANG=C.UTF-8 \
 
 WORKDIR /app
 
-# Build as root (alpine `elixir` ships no non-root user); compose
-# `user:` directive drops to host UID at runtime so bind-mounted source
-# stays writable by the operator.
-RUN mix local.hex --force && mix local.rebar --force
-
-# Pre-fetch + compile deps so subsequent rebuilds skip network and
-# C-NIF compilation unless mix.lock or config/* change.
-COPY mix.exs mix.lock ./
-RUN mix deps.get
-
-COPY config/ config/
-RUN mix deps.compile
-
-COPY . .
-RUN mix compile
+# Toolchain image ONLY — no baked hex/rebar, deps, or _build (#364 docker
+# S1). Every runtime shape bind-mounts the repo over /app (dev compose
+# `./:/app`; deploy.sh + quickstart.sh; both e2e services `../..:/app`),
+# and MIX_HOME/HEX_HOME + deps/ + _build/ all live UNDER /app — so any
+# image-baked `mix local.hex` / `COPY mix.exs mix.lock` / `mix deps.get` /
+# `mix compile` layer is 100% SHADOWED by that mount at runtime. It buys
+# nothing (it cannot seed the host tree), yet it made every `docker
+# compose build` re-run C-NIF dep compilation and invalidated the
+# `COPY . .` layer on any repo edit — and it made the "clone-and-go"
+# claim false (a fresh clone has no host-side hex/deps, and the baked
+# ones are invisible). Deps are installed into the BIND-MOUNTED tree at
+# first boot instead:
+#   - dev `docker compose up` → bin/start.sh self-heals (hex + deps.get
+#     when deps/ is empty), so it is genuinely clone-and-go;
+#   - scripts/quickstart.sh → installs them explicitly (standalone path);
+#   - scripts/deploy.sh → syncs deps on every deploy;
+#   - the e2e seeder → installs before grappa-test boots.
+# Result: image builds drop from minutes to seconds and the image shrinks.
 
 EXPOSE 4000
 

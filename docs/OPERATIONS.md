@@ -190,7 +190,7 @@ cache and operator state stay single-source.
 
 ```
 scripts/mix.sh <task>        # mix task in container (--env=dev|prod|test override)
-scripts/iex.sh               # IEx shell in container
+scripts/iex.sh               # iex --remsh into the LIVE node (alias for bin/grappa remote-shell)
 scripts/test.sh              # mix test --warnings-as-errors
 scripts/credo.sh             # mix credo --strict
 scripts/dialyzer.sh          # mix dialyzer
@@ -204,7 +204,7 @@ scripts/integration.sh       # full e2e suite (testnet + grappa + nginx + Playwr
 scripts/db.sh                # sqlite3 RO against runtime/grappa_dev.db
 scripts/healthcheck.sh       # curl /healthz
 scripts/monitor.sh           # docker compose logs -f
-scripts/observer.sh          # observer_cli runtime introspection
+scripts/observer.sh          # observer_cli against the LIVE node (no second app boot)
 scripts/deploy.sh            # DEV (local Docker stack): auto-detects hot-vs-cold via git-diff preflight
 scripts/deploy.sh --force-hot   # dev, bypass preflight, hot-deploy unconditionally
 scripts/deploy.sh --force-cold  # dev, skip preflight, cold-deploy (rebuild + recreate)
@@ -224,6 +224,18 @@ discipline, see **`docs/TESTING.md`**.
 `mix deps.get`. All commands run inside the `grappa` container. NEVER run
 `mix` or `iex` on the host. NEVER install hex packages on the host.
 NEVER raw `docker compose` — use the scripts.
+
+**Toolchain image (#364 docker S1).** The Docker image is toolchain-only
+— base + apk packages, no baked hex/deps/`_build`. Every runtime shape
+bind-mounts the repo over `/app`, and hex/deps/`_build` all live under
+`/app`, so anything baked would be shadowed by the mount. Deps are
+installed into the bind-mounted tree at first boot instead: a fresh
+`docker compose up` self-heals via `bin/start.sh` (installs hex + runs
+`deps.get` when `deps/` is empty), `scripts/quickstart.sh` does it
+explicitly, `scripts/deploy.sh` syncs on every deploy, and the e2e seeder
+installs before `grappa-test` boots. Image builds are seconds, not
+minutes; the first `up` on a fresh clone is the one slow boot (deps
+fetch + compile), warm reboots finish in seconds.
 
 **Bash 4+ required.** Scripts use `declare -ag` (associative-global
 arrays) which macOS's `/bin/bash` 3.2 rejects. Shebangs are

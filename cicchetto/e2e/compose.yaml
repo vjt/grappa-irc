@@ -185,13 +185,17 @@ services:
       - "-c"
       - |
         set -e
-        # Bind-mount `../..:/app` shadows the image-baked `.mix/`, `.hex/`,
-        # `deps/`, `_build/`. CP23 S1 lessons (memories
-        # `feedback_named_volume_uid_trap` + `feedback_bind_mount_shadows_image`):
-        # named volumes for these dirs init root-owned and trip the dropped UID;
-        # bind-mount with explicit `mix local.hex` + `mix deps.get` is the
-        # idempotent fix. First run is cold (compile from scratch), subsequent
-        # runs reuse the bind-mounted host `_build/`.
+        # `.mix/`, `.hex/`, `deps/`, `_build/` all live under the
+        # bind-mounted `../..:/app`; the image is toolchain-only (#364
+        # docker S1) and bakes none of them, so this seeder installs them
+        # into the mounted tree — and MUST run before grappa-test boots
+        # (enforced by scripts/integration.sh's two-phase up). CP23 S1
+        # lessons (memories `feedback_named_volume_uid_trap` +
+        # `feedback_bind_mount_shadows_image`): named volumes for these
+        # dirs init root-owned and trip the dropped UID; a bind-mount with
+        # explicit `mix local.hex` + `mix deps.get` is the idempotent fix.
+        # First run is cold (compile from scratch), subsequent runs reuse
+        # the bind-mounted host `_build/`.
         mix local.hex --force
         mix local.rebar --force
         mix deps.get

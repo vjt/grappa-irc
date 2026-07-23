@@ -54,6 +54,9 @@ services:
       # runtime"), there's nothing to contaminate. Using bind mounts
       # avoids the named-volume root-owned-init permission trap (fresh
       # named volume = root, container drops to UID 1000, can't write).
+      # The image is toolchain-only (#364 docker S1 — it can't bake deps
+      # under a path this mount shadows), so on a fresh clone bin/start.sh
+      # installs hex + deps into this tree on first boot.
       - ./:/app
       # Per-env state lives in runtime/ (sqlite, logs).
       - ./runtime:/app/runtime
@@ -103,11 +106,14 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
       interval: 5s
       timeout: 5s
-      # Probe early + often. `mix phx.server` cold boot recompiles when
-      # bind-mounted source has no `_build/${MIX_ENV}/` cached on host
-      # disk yet — first-deploy boot can take 2-3 min. start_period
-      # suppresses failure-counts-toward-unhealthy during that window;
-      # actual healthy-flip happens on the first /healthz 200 regardless.
+      # Probe early + often. First boot on a fresh clone is the slow one:
+      # bin/start.sh fetches deps (toolchain image, #364 docker S1) and
+      # `mix phx.server` then compiles from the bind-mounted source with
+      # no `_build/${MIX_ENV}/` cached on host disk yet — allow a few
+      # minutes. start_period suppresses failure-counts-toward-unhealthy
+      # during that window; the healthy-flip happens on the first /healthz
+      # 200 regardless. Warm reboots (deps + _build already on disk) finish
+      # in seconds.
       start_period: 180s
       retries: 5
     logging:

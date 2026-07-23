@@ -58,4 +58,19 @@ GRAPPA_MAX_PROCS=$((GRAPPA_MAX_USERS * 100))
 
 export ELIXIR_ERL_OPTIONS="+Q ${GRAPPA_MAX_PORTS} +P ${GRAPPA_MAX_PROCS} +SDcpu ${GRAPPA_DIRTY_SCHEDULERS} +SDio ${GRAPPA_DIRTY_SCHEDULERS} -sname grappa -setcookie ${RELEASE_COOKIE}"
 
+# First-boot dep bootstrap (#364 docker S1 — toolchain image). The image
+# ships only the toolchain; hex/rebar + deps live in the bind-mounted tree
+# (MIX_HOME/HEX_HOME/deps all under /app) and are installed here on the
+# first boot, then reused. Idempotent: skipped once deps/ is populated, so
+# every subsequent boot is a cheap dir check. This is what makes a fresh
+# `docker compose up` genuinely clone-and-go — it self-heals the same way
+# scripts/bun.sh + scripts/bats.sh do. `mix phx.server` below compiles
+# from the bind-mounted source on top of these deps.
+if [ ! -d deps ] || [ -z "$(ls -A deps 2>/dev/null)" ]; then
+    echo "start.sh: deps/ empty — first-boot bootstrap (mix local.hex + deps.get)"
+    mix local.hex --force
+    mix local.rebar --force
+    mix deps.get
+fi
+
 exec mix phx.server

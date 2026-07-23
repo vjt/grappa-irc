@@ -26960,3 +26960,72 @@ the SHAPE of adjacent verbs (a nick compare, a DB read, a reset helper) but
 not their invariants (rfc1459 fold, the #336 degrade contract, the reset
 wiring) — the "Claude copies whichever pattern is closest" trap CLAUDE.md
 warns about. Each fix routes the new site through the established primitive.
+
+## 2026-07-23 — #364 docker S1/S2: toolchain image + live-node debug attach
+
+Two DEV-INFRA HIGHs from the 2026-07-19 review. Both are LOCAL dev/e2e
+tooling — the FreeBSD prod jail (`deploy-m42.sh`) stages a `mix release` +
+rc.d wrappers and never reads the Dockerfile / `bin/start.sh`, so neither
+change rides anything to prod.
+
+**docker S2 — `iex.sh`/`observer.sh` booted a SECOND application instead of
+attaching.** `scripts/iex.sh` ran `iex -S mix`; `scripts/observer.sh` ran
+`in_container iex -S mix run -e ':observer_cli.start()'`. Both boot a whole
+new `Grappa.Application` inside the running container: Bootstrap re-reads
+the DB credentials and spawns a DUPLICATE `Session.Server` + upstream IRC
+connection per binding (nick collisions), and the second node writes the
+same sqlite file the live node owns (the WAL "Database busy" flake).
+`observer.sh` was doubly broken — `in_container` = `docker compose exec -T`
+gave the TUI no TTY, and even with one it would introspect the
+freshly-booted node, not the live one.
+
+- `iex.sh` is now a thin alias for `bin/grappa remote-shell` (T-2 —
+  `iex --remsh grappa@grappa` gated by `RELEASE_COOKIE`), the attach path
+  that already existed (the old "remote is gone" comment was stale). One
+  attach path, one code path.
+- `observer.sh` spins a THROWAWAY local node (`obs-$$`) and runs
+  `observer_cli.start(:"grappa@grappa")` AGAINST the live node.
+  `mix run --no-start --no-compile` loads the project + deps code path (so
+  `:observer_cli`, an `only: [:dev]` dep, resolves) WITHOUT starting the
+  app — no second boot, no sqlite handle — while `observer_cli.start/1`
+  renders the live tree over an interactive (no `-T`) exec.
+- Dropped `iex.sh`'s worktree guard: remsh always joins the LIVE node
+  (main's source), so the "poking main vs my worktree" ambiguity of the
+  old code-loading path is gone. That surfaced a latent `bin/grappa` bug —
+  it never `cd`s to `REPO_ROOT`, so from a worktree the compose *project*
+  defaults to the worktree dirname (a different project than the live
+  container) and a main-side `compose.override.yaml` resolves to a
+  nonexistent worktree path. Fixed `bin/grappa` to `cd "$REPO_ROOT"` like
+  every sibling script (honors its "run from any worktree" docstring).
+- Verified against a live dev node (web-only, empty DB): `iex.sh --batch
+  -e 'node()'` → `grappa@grappa`, `Registry.count(SessionRegistry)` → 0
+  (no duplicate sessions); observer mechanism → `local_grappa_started=false`,
+  `observer_cli_loaded=true`, `connected_to_live=true`, live proc count via
+  RPC = the live tree. `test/scripts/iex_observer_test.bats` guards the
+  invocation shape (remsh / `--no-start` / no `exec -T`).
+
+**docker S1 — the Dockerfile dep-bake was 100% shadowed.** Every runtime
+shape bind-mounts the repo over `/app` (`./:/app`, `../..:/app`), and
+`MIX_HOME`/`HEX_HOME`/`deps/`/`_build/` all live under `/app`, so the
+image-baked `mix local.hex` / `COPY mix.exs mix.lock` / `mix deps.get` /
+`mix deps.compile` / `COPY . .` / `mix compile` layers were invisible at
+runtime — pure build waste that re-ran C-NIF dep compilation on every
+context change, invalidated `COPY . .` on any edit, and made "clone-and-go
+`docker compose up`" a lie (a fresh clone has no host-side hex/deps and the
+baked ones are shadowed — which is why quickstart + the e2e seeder already
+re-install into the mount). Single-stage is still right (the CP23 rationale
+holds); only the vestigial bake was wrong.
+
+Reduced the Dockerfile to a toolchain image (base + `apk add` + `ENV` +
+`WORKDIR` + `EXPOSE` + `HEALTHCHECK` + `CMD`). Deps install into the
+bind-mounted tree at first boot: `bin/start.sh` self-heals (installs hex +
+`deps.get` when `deps/` is empty; idempotent — a cheap dir check on every
+subsequent boot), the same pattern `scripts/bun.sh` + `scripts/bats.sh`
+use, so a fresh `docker compose up` is genuinely clone-and-go.
+`quickstart.sh` (standalone), `deploy.sh` (per-deploy sync — now installs
+hex too since the image no longer bakes it), and the e2e seeder already
+cover their paths. Verified: image build drops to seconds (no dep layers);
+image shrinks 985MB → 777MB; a toolchain image with `hex_installed=no`
+bootstraps 67 deps (incl the ecto_sqlite3 C-NIF) from an empty tree; the
+dev stack boots green on the new image with the self-heal correctly
+skipped when deps are warm.
