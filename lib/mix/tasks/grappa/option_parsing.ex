@@ -13,8 +13,30 @@ defmodule Mix.Tasks.Grappa.OptionParsing do
   """
   use Boundary, top_level?: true
 
-  @auth_methods ~w(auto sasl server_pass nickserv_identify none)a
-  @auth_strings Enum.map(@auth_methods, &Atom.to_string/1)
+  # Explicit string->atom map, NOT `~w(...)a` + `String.to_existing_atom/1`.
+  # Found live 2026-07-23 (native Linux, MIX_ENV=prod mix task
+  # invocation): `~w(...)a` only exists as atoms during THIS module's
+  # own compile-time attribute evaluation — since the runtime function
+  # body below only ever touches the derived STRINGS, the atoms
+  # themselves never get compiled into this module's bytecode, so
+  # loading `OptionParsing` does not register them in the atom table.
+  # `to_existing_atom("nickserv_identify")` then raises unless some
+  # OTHER module that references that literal atom (e.g. the
+  # NetworkCredential schema's changeset validation) happened to load
+  # first — true under a full release boot (everything gets referenced
+  # eventually) but not guaranteed for a bare `mix grappa.bind_network`
+  # invocation. Writing the atoms as literal map values here makes them
+  # part of THIS module's own compiled bytecode, so they exist the
+  # moment `OptionParsing` itself loads — no dependency on load order
+  # elsewhere.
+  @auth_map %{
+    "auto" => :auto,
+    "sasl" => :sasl,
+    "server_pass" => :server_pass,
+    "nickserv_identify" => :nickserv_identify,
+    "none" => :none
+  }
+  @auth_strings Map.keys(@auth_map)
 
   @doc """
   Parses a `host:port` server spec into `{host, port}`. Raises on
@@ -43,10 +65,9 @@ defmodule Mix.Tasks.Grappa.OptionParsing do
   @spec parse_auth(String.t()) ::
           :auto | :sasl | :server_pass | :nickserv_identify | :none
   def parse_auth(str) when is_binary(str) do
-    if str in @auth_strings do
-      String.to_existing_atom(str)
-    else
-      Mix.raise("--auth must be one of #{Enum.join(@auth_strings, "|")} (got #{inspect(str)})")
+    case Map.fetch(@auth_map, str) do
+      {:ok, atom} -> atom
+      :error -> Mix.raise("--auth must be one of #{Enum.join(@auth_strings, "|")} (got #{inspect(str)})")
     end
   end
 
