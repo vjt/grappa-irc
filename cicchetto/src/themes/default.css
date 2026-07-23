@@ -901,6 +901,55 @@ html.overlay-open #root > div {
   min-width: 0;
 }
 
+/* #351 — whole-message-pane drag-and-drop upload zone. A transparent
+   pass-through flex column occupying the exact slot the TopicBar +
+   ScrollbackPane + ComposeBox stack used to fill directly inside
+   `.shell-main` (also a flex column), so `.scrollback-pane`'s `flex: 1`
+   still grows within it and the surrounding rows keep their natural
+   heights — layout is unchanged. `position: relative` anchors the
+   drag-over overlay. Applies on both desktop and mobile (both
+   `.shell-main` variants are flex columns). */
+.drop-upload-zone {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
+/* #351 — drag-over affordance ("Drop to upload"). Covers the whole pane
+   while a FILE drag is over it. `pointer-events: none` so the drag events
+   keep reaching the underlying children (whose per-child dragenter/
+   dragleave feed the zone's depth counter) and the drop lands on the zone.
+   z-index sits above all in-pane content (scrollback floats z≤100, WHOIS
+   cards z≤301) but below modals (z≥1000), so a media-viewer or other
+   overlay with its own drag semantics is never covered. */
+.drop-upload-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: 4px;
+}
+
+.drop-upload-overlay-label {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0.5rem 1rem;
+  color: var(--accent);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+}
+
 .shell-members {
   border-left: 1px solid var(--border);
   background: var(--bg-alt);

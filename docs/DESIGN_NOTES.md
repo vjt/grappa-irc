@@ -27881,3 +27881,66 @@ upstream state (`+r`) that arrives on its own schedule, gate on the state's
 own signal with a bounded fallback — never on a proxy event (001) that merely
 tends to precede it, and never by scraping human-readable NOTICE text when a
 structured protocol bit (the umode) already carries the fact.*
+
+## 2026-07-24 — Whole message pane is the file-drop target (GH #351, cic)
+
+**The gap.** File-upload drag-drop was scoped to the ComposeBox `<form>` only
+(`onDragOver`/`onDrop` on the compose element). A file dropped over the
+**scrollback** — the large part of the screen — did nothing; the operator had
+to aim at the small compose strip.
+
+**Decision.** Hoist the drop target up to the whole conversation pane. A new
+`DropUploadZone` component (in `Shell.tsx`) wraps the vertical `TopicBar +
+ScrollbackPane + ComposeBox` stack in **both** the desktop and mobile Match
+blocks; a file dropped anywhere over it uploads exactly as a compose-box drop
+did before.
+
+**One drop target, not two.** The compose-form `onDragOver`/`onDrop` handlers
+were **removed**, not kept alongside the zone. Keeping both would (a)
+double-fire the upload on a compose-area drop (the drop bubbles to both the
+form and the enclosing zone) and (b) `stopPropagation` on the form to fix
+that would then **strand the zone's overlay** — its dragenter/dragleave depth
+counter would never see the balancing drop-reset. So the zone owns the single
+drop path; ComposeBox keeps only clipboard **paste** (a textarea-scoped
+surface the pane can't observe).
+
+**Shared wiring (implement-once).** Both the zone's drop and ComposeBox's
+paste funnel through one `lib/dropUpload.ts` helper (`dropUpload(files, slug,
+channel)` — filter to uploadable categories, then `triggerUploads`), so the
+orchestrator wiring is not duplicated. `dragHasFiles(dataTransfer)` is the
+shared guard.
+
+**Guards.** (1) *File-drag only* — the overlay arms + `preventDefault` fire
+only when `dataTransfer.types` includes `"Files"`, so dragging selected text /
+an in-app element over the pane is left to native handling (no overlay, no
+swallowed drop). (2) *Depth counter* — dragenter(+1)/dragleave(−1) with the
+overlay shown while depth > 0, because enter/leave fire once per child element
+the cursor crosses; a naive boolean flickers the overlay off between scrollback
+rows. Known edge: an external drag abandoned without a dragleave reaching the
+zone could leave the overlay up until the next drag; Chromium fires dragleave
+on viewport exit so it self-clears, and a global `dragend`/blur reset was
+judged heavier than the marginal, self-recovering problem.
+
+**Layout is unchanged.** `.drop-upload-zone` is a transparent pass-through
+flex column (`flex: 1; min-height: 0`) occupying the exact slot the four
+children filled directly inside `.shell-main` (also a flex column), so
+`.scrollback-pane`'s `flex: 1` still grows and the surrounding rows keep their
+natural heights. The `min-height: 0` chain (shell-main → zone → scrollback-pane
+→ scrollback) is preserved so the scroller still scrolls on iOS. The overlay is
+`position: absolute; inset: 0; pointer-events: none` at `z-index: 500` — above
+in-pane content (scrollback floats, WHOIS cards) but below modals (≥1000), so a
+media-viewer / other overlay with its own drag semantics is never covered.
+
+Client-side only → **no cold deploy**. Covered by `dropUpload` +
+`DropUploadZone` vitest units (filter / guard / overlay / depth / drop→upload),
+the ComposeBox drop tests collapsed to a "form is NOT a drop target"
+regression guard, and a real Chromium e2e (`uploads4-pane-drop`) that drops a
+PNG over the **scrollback** and asserts the auto-sent 📸 upload lands — the
+browser gate for a browser feature (chromium-scoped: an OS file drag is a
+desktop-pointer gesture, and WebKit's programmatic `DragEvent`/`DataTransfer`
+is unreliable).
+
+*Lesson: when hoisting an event handler to an enclosing container, the nested
+handler must be removed, not layered — two live handlers for one gesture
+double-fire, and papering over that with `stopPropagation` silently breaks a
+sibling concern (here, the container's own drag-overlay bookkeeping).*

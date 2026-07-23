@@ -5,6 +5,7 @@ import { getDraft, recallNext, recallPrev, setDraft, submit, tabComplete } from 
 import { composePlaceholder } from "./lib/composePlaceholder";
 import { requestConfirm } from "./lib/confirmDialog";
 import { diagPush } from "./lib/diagLog";
+import { dropUpload } from "./lib/dropUpload";
 import { networkBySlug } from "./lib/networks";
 import { pastedLineCount, shouldGuardPaste } from "./lib/pasteFlood";
 import {
@@ -53,13 +54,21 @@ import { windowStateByChannel } from "./lib/windowState";
 // Images cluster I-2 (2026-05-15): three trigger surfaces for upload
 // — file picker (paperclip-icon button; iOS Safari's native picker
 // still exposes "Take Photo" / "Choose File" so a separate
-// camera-capture button would be redundant), drag-drop (whole-form),
-// clipboard paste
-// (textarea). All converge on `triggerUpload()` from
+// camera-capture button would be redundant), drag-drop, clipboard
+// paste (textarea). All converge on `triggerUpload()` from
 // uploadOrchestrator; the orchestrator handles privacy modal
 // gating, MIME pre-check, TTL dropdown wiring, progress state,
 // auto-send. ComposeBox is the trigger surface only — no upload
 // logic lives here.
+//
+// #351 — drag-drop is NO LONGER wired on the compose form. The whole
+// message pane is the drop target now (`DropUploadZone` in Shell wraps
+// ScrollbackPane + ComposeBox), so a nested form-level drop handler would
+// double-fire the upload on a compose-area drop AND strand the pane
+// overlay (its depth counter never sees the balancing drop). The compose
+// area is covered by the pane zone; both go through the SAME shared
+// `dropUpload` helper. Clipboard paste stays here (a textarea-scoped
+// surface the pane can't observe).
 //
 // Uploads cluster Task 7 (2026-06-09): the trigger surfaces widened
 // from image-only to every categorized MIME — `categoryOf()` is the
@@ -339,13 +348,13 @@ const ComposeBox: Component<Props> = (props) => {
 
   // ---- Upload trigger surfaces (all categories) --------------------
 
-  // Drop/paste: filter to uploadable categories before handing the batch
-  // to the orchestrator (a mixed drop of files + plain text uploads only
-  // the files). #118 uploads ALL of them, sequentially.
+  // Paste: hand the clipboard's file items to the shared upload helper,
+  // which filters to uploadable categories (a mixed paste of files + plain
+  // text uploads only the files) and enqueues the batch. #118 uploads ALL
+  // of them, sequentially. #351 — this is the SAME helper the pane-level
+  // DropUploadZone uses; the drop path is no longer wired here.
   const handleFiles = (files: File[]): void => {
-    const uploadable = files.filter((f) => categoryOf(f.type) !== null);
-    if (uploadable.length === 0) return;
-    triggerUploads(key(), props.networkSlug, props.channelName, uploadable);
+    dropUpload(files, props.networkSlug, props.channelName);
   };
 
   const onPickerChange = (e: Event) => {
@@ -363,16 +372,6 @@ const ComposeBox: Component<Props> = (props) => {
 
   const onPickerClick = () => {
     pickerInput?.click();
-  };
-
-  const onDragOver = (e: DragEvent) => {
-    e.preventDefault();
-  };
-
-  const onDrop = (e: DragEvent) => {
-    e.preventDefault();
-    const files = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
-    handleFiles(files);
   };
 
   // #80 — insert a confirmed multi-line paste at the caret, replacing any
@@ -520,8 +519,6 @@ const ComposeBox: Component<Props> = (props) => {
           e.preventDefault();
           void doSubmit();
         }}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
       >
         <input
           ref={pickerInput}

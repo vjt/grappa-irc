@@ -19,6 +19,7 @@ import ConfirmModal from "./ConfirmModal";
 import CrtSplash from "./CrtSplash";
 import DiagFloat from "./DiagFloat";
 import DirectoryPane from "./DirectoryPane";
+import DropUploadZone from "./DropUploadZone";
 import ErrorBanners from "./ErrorBanners";
 import HomePane from "./HomePane";
 import { jumpToNextActiveWindow, jumpToPrevActiveWindow } from "./lib/activeWindows";
@@ -629,27 +630,40 @@ const Shell: Component = () => {
                     be stale at the dispose tick). TopicBar is gated
                     inside on the channel-only kind to preserve its
                     channel-window-only contract. */}
-                <Show when={selKind() === "channel"}>
-                  <TopicBar
+                {/* #351 — the whole conversation pane is one drag-and-drop
+                    file-upload target. DropUploadZone wraps the vertical
+                    TopicBar + ScrollbackPane + ComposeBox stack; a file
+                    dropped anywhere over it uploads via the SAME shared
+                    `dropUpload` helper the compose box's paste path uses.
+                    It's a transparent pass-through flex column, so the
+                    scrollback still grows (flex:1) and compose keeps its
+                    natural height — layout is unchanged. */}
+                <DropUploadZone
+                  networkSlug={selectedChannel()?.networkSlug ?? ""}
+                  channelName={selectedChannel()?.channelName ?? ""}
+                >
+                  <Show when={selKind() === "channel"}>
+                    <TopicBar
+                      networkSlug={selectedChannel()?.networkSlug ?? ""}
+                      channelName={selectedChannel()?.channelName ?? ""}
+                      onToggleMembers={() => setMembersOpen((v) => !v)}
+                    />
+                  </Show>
+                  <ScrollbackPane
                     networkSlug={selectedChannel()?.networkSlug ?? ""}
                     channelName={selectedChannel()?.channelName ?? ""}
-                    onToggleMembers={() => setMembersOpen((v) => !v)}
+                    kind={(selKind() as "channel" | "query" | "server") ?? "channel"}
                   />
-                </Show>
-                <ScrollbackPane
-                  networkSlug={selectedChannel()?.networkSlug ?? ""}
-                  channelName={selectedChannel()?.channelName ?? ""}
-                  kind={(selKind() as "channel" | "query" | "server") ?? "channel"}
-                />
-                {/* GH #115 — docked audio mini-player, above compose.
-                    Inside this Match so it survives channel↔query↔server
-                    switches (the kindHasScrollback Match stays mounted);
-                    leaving chat for home/list/mentions stops playback. */}
-                <AudioMiniPlayer />
-                <ComposeBox
-                  networkSlug={selectedChannel()?.networkSlug ?? ""}
-                  channelName={selectedChannel()?.channelName ?? ""}
-                />
+                  {/* GH #115 — docked audio mini-player, above compose.
+                      Inside this Match so it survives channel↔query↔server
+                      switches (the kindHasScrollback Match stays mounted);
+                      leaving chat for home/list/mentions stops playback. */}
+                  <AudioMiniPlayer />
+                  <ComposeBox
+                    networkSlug={selectedChannel()?.networkSlug ?? ""}
+                    channelName={selectedChannel()?.channelName ?? ""}
+                  />
+                </DropUploadZone>
               </Match>
               <Match when={selKind() === "mentions"}>
                 {/* C8.1 — mentions window. Rendered instead of ScrollbackPane+ComposeBox.
@@ -788,43 +802,53 @@ const Shell: Component = () => {
               {/* BUGHUNT-3 D — channel + query + server share ONE Match
                   so ScrollbackPane stays mounted across kind transitions.
                   See desktop branch comment for details. */}
-              <Show when={selKind() === "channel"}>
-                {/* C6.3 / UX-5 bucket A: TopicBar's
-                    `.topic-bar-hamburger` is the single
-                    members-drawer toggle on mobile (CSS-hidden
-                    on desktop via @media). ShellChrome above no
-                    longer renders its own hamburger.
-                    UX-5 bucket BM (2026-05-20) — `inlineChromeSlot`
-                    dropped on mobile-channel: archive + cog
-                    buttons moved INTO the members drawer footer
-                    (see below). TopicBar's right edge now hosts
-                    ONLY the hamburger. onToggleMembers routes
-                    through `toggleMembersPanel` to enforce the
-                    members | settings | archive | none mutex —
-                    opening members closes the sibling surfaces. */}
-                <TopicBar
+              {/* #351 — whole-pane drag-and-drop upload target (mobile).
+                  Same DropUploadZone wrapper as desktop; see that branch's
+                  comment. It wraps the channel-gated TopicBar Show plus the
+                  scrollback + compose stack, so a drop over the topic header,
+                  the scrollback, or the compose strip all upload identically. */}
+              <DropUploadZone
+                networkSlug={selectedChannel()?.networkSlug ?? ""}
+                channelName={selectedChannel()?.channelName ?? ""}
+              >
+                <Show when={selKind() === "channel"}>
+                  {/* C6.3 / UX-5 bucket A: TopicBar's
+                      `.topic-bar-hamburger` is the single
+                      members-drawer toggle on mobile (CSS-hidden
+                      on desktop via @media). ShellChrome above no
+                      longer renders its own hamburger.
+                      UX-5 bucket BM (2026-05-20) — `inlineChromeSlot`
+                      dropped on mobile-channel: archive + cog
+                      buttons moved INTO the members drawer footer
+                      (see below). TopicBar's right edge now hosts
+                      ONLY the hamburger. onToggleMembers routes
+                      through `toggleMembersPanel` to enforce the
+                      members | settings | archive | none mutex —
+                      opening members closes the sibling surfaces. */}
+                  <TopicBar
+                    networkSlug={selectedChannel()?.networkSlug ?? ""}
+                    channelName={selectedChannel()?.channelName ?? ""}
+                    onToggleMembers={() =>
+                      toggleMembersPanel({
+                        membersOpen,
+                        setMembersOpen,
+                        setSettingsOpen,
+                      })
+                    }
+                  />
+                </Show>
+                <ScrollbackPane
                   networkSlug={selectedChannel()?.networkSlug ?? ""}
                   channelName={selectedChannel()?.channelName ?? ""}
-                  onToggleMembers={() =>
-                    toggleMembersPanel({
-                      membersOpen,
-                      setMembersOpen,
-                      setSettingsOpen,
-                    })
-                  }
+                  kind={(selKind() as "channel" | "query" | "server") ?? "channel"}
                 />
-              </Show>
-              <ScrollbackPane
-                networkSlug={selectedChannel()?.networkSlug ?? ""}
-                channelName={selectedChannel()?.channelName ?? ""}
-                kind={(selKind() as "channel" | "query" | "server") ?? "channel"}
-              />
-              {/* GH #115 — docked audio mini-player, above compose (mobile). */}
-              <AudioMiniPlayer />
-              <ComposeBox
-                networkSlug={selectedChannel()?.networkSlug ?? ""}
-                channelName={selectedChannel()?.channelName ?? ""}
-              />
+                {/* GH #115 — docked audio mini-player, above compose (mobile). */}
+                <AudioMiniPlayer />
+                <ComposeBox
+                  networkSlug={selectedChannel()?.networkSlug ?? ""}
+                  channelName={selectedChannel()?.channelName ?? ""}
+                />
+              </DropUploadZone>
             </Match>
             <Match when={selKind() === "mentions"}>
               <MentionsWindow

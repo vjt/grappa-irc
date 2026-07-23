@@ -682,61 +682,22 @@ describe("ComposeBox", () => {
       ]);
     });
 
-    it("dropping an image file onto the form calls triggerUpload", async () => {
+    // #351 — the compose form is NO LONGER a drop target. Drag-drop was
+    // hoisted to the whole message pane (`DropUploadZone`, wrapping
+    // ScrollbackPane + ComposeBox in Shell); a form-level handler would
+    // double-fire the upload on a compose-area drop and strand the pane
+    // overlay. Regression guard: a drop on `.compose-box` does nothing here.
+    // Drop coverage now lives in dropUpload.test.ts (filtering),
+    // DropUploadZone.test.tsx (guard/overlay/depth/drop→upload), and the
+    // whole-pane e2e (uploads4-pane-drop). Paste (below) stays on the form.
+    it("#351 — the compose form is NOT a drop target (drop hoisted to the pane)", async () => {
       const orch = await import("../lib/uploadOrchestrator");
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const form = document.querySelector(".compose-box") as HTMLFormElement;
 
-      const file = sampleImage();
-      fireEvent.drop(form, { dataTransfer: makeDataTransfer(file) });
-
-      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
-        file,
-      ]);
-    });
-
-    it("dropping a video file calls triggerUpload (Task 7 — drop accepts all categories)", async () => {
-      const orch = await import("../lib/uploadOrchestrator");
-      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const form = document.querySelector(".compose-box") as HTMLFormElement;
-
-      const file = sampleVideo();
-      fireEvent.drop(form, { dataTransfer: makeDataTransfer(file) });
-
-      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
-        file,
-      ]);
-    });
-
-    it("dropping a document file calls triggerUpload (Task 7 — drop accepts all categories)", async () => {
-      const orch = await import("../lib/uploadOrchestrator");
-      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const form = document.querySelector(".compose-box") as HTMLFormElement;
-
-      const file = sampleDocument();
-      fireEvent.drop(form, { dataTransfer: makeDataTransfer(file) });
-
-      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
-        file,
-      ]);
-    });
-
-    it("dropping a category-less MIME is ignored — triggerUpload NOT called", async () => {
-      const orch = await import("../lib/uploadOrchestrator");
-      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const form = document.querySelector(".compose-box") as HTMLFormElement;
-
-      fireEvent.drop(form, { dataTransfer: makeDataTransfer(sampleUnknownType()) });
+      fireEvent.drop(form, { dataTransfer: makeDataTransfer(sampleImage()) });
 
       expect(orch.triggerUploads).not.toHaveBeenCalled();
-    });
-
-    it("ondragover prevents default to allow drop", () => {
-      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const form = document.querySelector(".compose-box") as HTMLFormElement;
-      const event = new Event("dragover", { bubbles: true, cancelable: true });
-      form.dispatchEvent(event);
-      expect(event.defaultPrevented).toBe(true);
     });
 
     it("pasting an image file calls triggerUpload + does NOT modify textarea", async () => {
@@ -824,20 +785,6 @@ describe("ComposeBox", () => {
       ta.dispatchEvent(pasteEvent);
 
       expect(orch.triggerUploads).not.toHaveBeenCalled();
-    });
-
-    it("dropping multiple files uploads ALL of them (filtered to uploadable) — #118", async () => {
-      const orch = await import("../lib/uploadOrchestrator");
-      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const form = document.querySelector(".compose-box") as HTMLFormElement;
-      const a = sampleImage();
-      const b = sampleVideo();
-      const junk = sampleUnknownType();
-      fireEvent.drop(form, { dataTransfer: makeMultiDataTransfer([a, junk, b]) });
-      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
-        a,
-        b,
-      ]);
     });
 
     it("pasting multiple files uploads ALL of them (filtered to uploadable) — #118", async () => {
