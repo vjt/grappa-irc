@@ -522,5 +522,30 @@ defmodule Grappa.IRC.IdentifierTest do
                "#{path} embeds a fold expression that drifted from Identifier.nick_fold_sql/1"
       end
     end
+
+    test "no lib/ module hand-copies the fold literal outside the single source (#364 E/S2)" do
+      # Migrations must embed the literal verbatim (they run before the
+      # app is loaded, so they can't call nick_fold_sql/1) — but runtime
+      # `lib/` code has NO such excuse. Every runtime caller MUST derive
+      # the conflict-target / index fold via `Identifier.nick_fold_sql/1`
+      # so a fold change can't leave one module's `:unsafe_fragment` out
+      # of step with the index (SQLite drops an expression index the
+      # moment the query-side string differs by one byte → "ON CONFLICT
+      # clause does not match" at the first contended upsert). The fold
+      # literal is therefore allowed in exactly ONE lib/ file: Identifier
+      # itself (the source of nick_fold_sql/1 + the nick_fold/1 fragment).
+      fold_marker = "replace(replace(replace(replace(lower("
+
+      offenders =
+        "lib/**/*.ex"
+        |> Path.wildcard()
+        |> Enum.filter(fn path ->
+          File.read!(path) =~ fold_marker and not (path =~ "grappa/irc/identifier.ex")
+        end)
+
+      assert offenders == [],
+             "these lib/ modules hand-copy the rfc1459 fold literal instead of " <>
+               "Grappa.IRC.Identifier.nick_fold_sql/1: #{inspect(offenders)}"
+    end
   end
 end
