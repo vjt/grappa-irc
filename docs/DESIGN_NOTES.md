@@ -27065,3 +27065,65 @@ frame is rejected AND the channel pid survives (`Process.alive?`). The
 sibling bucket-A findings (lifecycle S2/S3) were already resolved by
 `340c22db` / `635352a9` in the notify-hardening cluster above — verified
 still-fixed, no re-implementation.
+
+## 2026-07-23 — #364 bucket E: rfc1459 fold-consistency (cic + persistence)
+
+The 2026-07-19 review flagged the rfc1459 nick fold (GH #121) as
+half-migrated across four surfaces. All four are the same disease the
+nick invariant exists to prevent — a nick the server treats as ONE
+identity forking into two on a surface that folds differently — plus the
+drift gate that would have caught it. The `canonical_channel/1` vs
+rfc1459 **channel** casemapping question (irc S4) is a separate design
+decision and is deliberately OUT of this cluster; only the nick surfaces
+ship here.
+
+**Server invariant recap.** The single source of truth is
+`Grappa.IRC.Identifier.canonical_nick/1` — byte-level ASCII, folding
+`A-Z` + the four national chars `[ ] \ ~` → `{ } | ^`. Its query-side
+twin is `nick_fold/1` (Ecto fragment) and `nick_fold_sql/1` (raw SQL for
+`:unsafe_fragment` conflict targets). The fold literal MUST stay
+byte-identical everywhere or SQLite silently drops the expression index.
+
+**cicchetto S4 — `rfc1459Fold` used Unicode `toLowerCase()`.** The cic
+presence-key mirror over-folded non-ASCII the server never touches
+(`CAFÉ`→`café`, `İ`→`i̇`), so two nicks the server keeps as distinct
+presence keys collapsed to one client key. Rewritten to fold the `A-Z`
+range by char code, byte-for-byte with `fold_nick_byte/1`.
+
+**cross-surface S13 — two client folds, neither pinned.** The client
+carried `rfc1459Fold` (presence) AND `nickEquals`/`normalizeNick`
+(ASCII-downcase-only, no bracket fold) for one identity invariant — the
+"half-migrated creates two patterns" split. Consolidated onto a single
+`rfc1459Fold` in the nick-identity module (`nickEquals.ts`), with
+`normalizeNick`/`nickEquals` layered on it, so cic now folds nicks
+exactly as the server does (this STRENGTHENS the "cic mirrors with
+nickEquals" note in the invariant — nickEquals now folds the bracket
+range too). `nickEquals.test.ts` enumerates the fold table as the drift
+gate, mirroring the server's `nick_fold_sql/1` migration pin.
+
+**cicchetto S5 — bare `.toLowerCase()` compare sites.** Every nick
+compare/key that bypassed the fold was migrated onto the shared helper:
+queryWindows open-dedup + `canonicalQueryNick`, selection.ts (MRU / live
+/ restore query lookups) + Shell.tsx query restore, peerAway store key +
+banner lookup, and the pushTriggers DM sender (→ `rfc1459Fold`, mirroring
+the server's `canonical_nick(sender) in private_messages_only`). The DM
+bracket case landed in the SHARED `shouldNotifyTruthTable` fixture, so
+one row pins both the cic mirror and the ExUnit `should_notify?/4` parity
+test. Channel-keyed sites (pushTriggers channel, `channelKey.ts`) stay on
+Unicode downcase — they mirror `canonical_channel/1`; the channel
+casemapping decision (irc S4) is deferred.
+
+**persistence S2 — QueryWindows fold SQL hand-copied.** `Grappa.QueryWindows`
+still carried a hand-copied `@nick_fold_sql` literal (the one runtime copy
+the 2026-07-19 Notify migration missed), and the fold-drift pin scanned
+only migrations — so a fold change would fail loudly on migrations + Notify
+yet leave this conflict target drifted, erroring at runtime on the first
+contended DM-window open. Now derived from `Identifier.nick_fold_sql("target_nick")`;
+the pin test gained a `lib/`-wide scan asserting the fold literal lives in
+exactly ONE runtime module (Identifier). Migrations still embed it verbatim
+(they run before the app is loaded — no `nick_fold_sql/1` available).
+
+Each finding ships failing-first: S4/S13 assert bracket-fold equality AND
+non-ASCII distinctness (the Unicode over-fold the old path broke); S5
+proves the fixed sites treat `Nick`/`nick`/`ni[k`/`ni{k` as one identity;
+S2's pin goes RED if any runtime module re-introduces a hand-copied fold.
