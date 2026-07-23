@@ -2307,4 +2307,54 @@ defmodule Grappa.ScrollbackTest do
       end
     end
   end
+
+  describe "#364 E/irc-S4 — rfc1459 channel window convergence" do
+    test "channels differing only by rfc1459 bracket chars resolve to ONE window",
+         %{user: user, network: net} do
+      {:ok, m1} =
+        ScrollbackHelpers.insert(sample(user, net, 1, %{channel: "#chan[1]", body: "bracket"}))
+
+      {:ok, m2} =
+        ScrollbackHelpers.insert(sample(user, net, 2, %{channel: "#chan{1}", body: "brace"}))
+
+      # Stored canonical (rfc1459-folded) — both land on the same key, the
+      # SAME fold bahamut applies ([ -> {).
+      assert m1.channel == "#chan{1}"
+      assert m2.channel == "#chan{1}"
+
+      # A fetch under EITHER spelling (incl. mixed case) returns both rows:
+      # one window, exactly as the ircd sees the channel.
+      for spelling <- ["#chan[1]", "#chan{1}", "#CHAN[1]"] do
+        bodies =
+          {:user, user.id}
+          |> Scrollback.fetch(net.id, spelling, nil, 50, nil)
+          |> Enum.map(& &1.body)
+          |> Enum.sort()
+
+        assert bodies == ["brace", "bracket"], "spelling #{spelling} did not converge"
+      end
+    end
+
+    test "non-ASCII case variants do NOT merge (ASCII-only rfc1459)",
+         %{user: user, network: net} do
+      {:ok, upper} =
+        ScrollbackHelpers.insert(sample(user, net, 1, %{channel: "#CAFÉ", body: "upper"}))
+
+      {:ok, lower} =
+        ScrollbackHelpers.insert(sample(user, net, 2, %{channel: "#café", body: "lower"}))
+
+      # ASCII-only fold leaves the multibyte É untouched, so the two stay
+      # distinct — the old Unicode String.downcase merged them (WRONG for
+      # bahamut, whose ASCII casemapping keeps them apart).
+      assert upper.channel == "#cafÉ"
+      assert lower.channel == "#café"
+      refute upper.channel == lower.channel
+
+      assert [%{body: "upper"}] =
+               Scrollback.fetch({:user, user.id}, net.id, "#CAFÉ", nil, 50, nil)
+
+      assert [%{body: "lower"}] =
+               Scrollback.fetch({:user, user.id}, net.id, "#café", nil, 50, nil)
+    end
+  end
 end
