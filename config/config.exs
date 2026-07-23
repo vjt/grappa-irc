@@ -25,11 +25,13 @@ config :grappa, :max_visitors_per_ip, 5
 config :grappa, :badge_source, Grappa.Push.BadgeCount
 
 # Per-message window_counts push source (#267 dependency-inversion seam).
-# `Grappa.Session.Server`'s persist arm resolves this at runtime via
-# `Grappa.WindowCounts.PushSource.impl/0` instead of referencing the impl
-# statically — a static `Session → WindowCounts.Pusher` edge would close the
-# boundary cycle `Session → Pusher → ReadCursor → Networks → Session`. Tests
-# may override with a stub implementing the `push/1` callback.
+# Read ONCE at boot into `:persistent_term` by
+# `Grappa.WindowCounts.PushSource.boot/0` and resolved lock-free via `impl/0`
+# (#364 J/cross-module-S2) instead of referencing the impl statically — a
+# static `Session → WindowCounts.Pusher` edge would close the boundary cycle
+# `Session → Pusher → ReadCursor → Networks → Session`. Tests inject a stub
+# (implementing `push/1`) via `PushSource.put_test_impl/1`, not
+# `Application.put_env`.
 config :grappa, :window_counts_push_source, Grappa.WindowCounts.Pusher
 
 # Cluster visitor-auth hotfix: pre-crash throttle for `Grappa.IRC.Client`'s

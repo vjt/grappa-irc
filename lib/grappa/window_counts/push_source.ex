@@ -15,15 +15,22 @@ defmodule Grappa.WindowCounts.PushSource do
 
   This behaviour is the inversion: `Grappa.WindowCounts` owns the seam,
   the implementation (`Grappa.WindowCounts.Pusher`, which DOES dep
-  ReadCursor) is resolved at RUNTIME from application config (wired in
-  `config/config.exs`, never a module literal in the caller), so Session
-  carries no static edge onto the implementation. The `nil` fallthrough
-  (absent config — the transient HOT-DEPLOY window before `config.exs`
-  re-runs) is a no-op: the push is a live-render optimization, and the
-  next `join_reply` / `/me` / `read_cursor_set` re-seeds the absolute
+  ReadCursor) is read from application config ONCE at boot (`boot/0`),
+  stashed in `:persistent_term`, and resolved lock-free via `impl/0` (the
+  config value is a module atom read from env, never a literal in the
+  caller), so Session carries no static edge onto the implementation. The
+  `nil` fallthrough (absent key — the transient HOT-DEPLOY window before
+  `boot/0` re-runs) is a no-op: the push is a live-render optimization, and
+  the next `join_reply` / `/me` / `read_cursor_set` re-seeds the absolute
   snapshot regardless.
 
-  Tests override `config :grappa, :window_counts_push_source, SomeStub`.
+  ## Boot-time injection (#364 J/cross-module-S2)
+
+  Resolution moved off a per-call `Application.get_env/2` read (banned at
+  runtime by CLAUDE.md) onto the `:persistent_term` boot boundary that
+  `Grappa.Admission.Config` already uses: `Grappa.Application.start/2`
+  calls `boot/0` once before the supervision tree. Tests substitute via
+  `put_test_impl/1`, not `Application.put_env`.
   """
 
   alias Grappa.Subject
@@ -50,12 +57,28 @@ defmodule Grappa.WindowCounts.PushSource do
   """
   @callback push(ctx()) :: :ok
 
+  @key {__MODULE__, :impl}
+
   @doc """
-  Resolves the configured implementation, or `nil` when the key is absent
-  (hot-deploy window — see moduledoc).
+  Reads `config :grappa, :window_counts_push_source` once and stashes it in
+  `:persistent_term` for lock-free runtime reads. Called from
+  `Grappa.Application.start/2` (the CLAUDE.md-designated boot-time
+  boundary; mirrors `Grappa.Admission.Config.boot/0`).
+  """
+  @spec boot() :: :ok
+  def boot do
+    :persistent_term.put(@key, Application.get_env(:grappa, :window_counts_push_source))
+    :ok
+  end
+
+  @doc """
+  Resolves the configured implementation from `:persistent_term`
+  (populated by `boot/0`), or `nil` when the key is absent (hot-deploy
+  window — see moduledoc). `get/2` (default `nil`) instead of `get/1` so
+  the window degrades to a no-op instead of raising.
   """
   @spec impl() :: module() | nil
-  def impl, do: Application.get_env(:grappa, :window_counts_push_source)
+  def impl, do: :persistent_term.get(@key, nil)
 
   @doc """
   Resolves the implementation and pushes in one call — the shape the
@@ -68,5 +91,11 @@ defmodule Grappa.WindowCounts.PushSource do
       nil -> :ok
       mod -> mod.push(ctx)
     end
+  end
+
+  if Mix.env() == :test do
+    @doc false
+    @spec put_test_impl(module() | nil) :: :ok
+    def put_test_impl(impl), do: :persistent_term.put(@key, impl)
   end
 end

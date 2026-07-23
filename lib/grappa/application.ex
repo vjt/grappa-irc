@@ -22,6 +22,9 @@ defmodule Grappa.Application do
       Grappa.Accounts.Reaper,
       Grappa.Visitors.Reaper,
       Grappa.Visitors.ShareTokens,
+      # #364 J/cross-module-S2: start/2 calls WindowCounts.PushSource.boot/0
+      # to inject the per-message window_counts push DI-seam at boot.
+      Grappa.WindowCounts,
       Grappa.WSPresence,
       GrappaWeb
     ]
@@ -58,6 +61,12 @@ defmodule Grappa.Application do
     # lock-free on the push hot path instead of a runtime `Application.get_env/2`
     # read (banned by CLAUDE.md). Mirrors `Grappa.Admission.Config.boot/0`.
     :ok = Grappa.Push.BadgeSource.boot()
+
+    # #364 J/cross-module-S2: stash the #267 per-message window_counts push
+    # DI-seam impl in `:persistent_term` so `WindowCounts.PushSource.impl/0`
+    # resolves it lock-free from the Session.Server persist arm instead of a
+    # runtime `Application.get_env/2` read. Mirrors `BadgeSource.boot/0`.
+    :ok = Grappa.WindowCounts.PushSource.boot()
 
     # Outbound v6 source-address pool. Initialize an EMPTY pool at boot;
     # `Grappa.Bootstrap` installs the DB-curated `in_pool` vhosts via
