@@ -1316,7 +1316,13 @@ html.resize-dragging * {
 
 .topic-bar {
   display: flex;
-  align-items: center;
+  /* #344 — top-align the two columns (namebox left / topic strip right) so
+     topic line-1 sits beside the channel name and topic line-2 beside the
+     +modes line, instead of both blocks centered as wholes. Was
+     `align-items: center`. Fine baseline rhythm between the columns (bold base
+     name vs 0.85rem mode vs 2× mono topic @ line-height 1.5) is a tune-by-eye
+     stretch — dogfood/device-verify owed (webkit != iOS). */
+  align-items: flex-start;
   gap: 0.5rem;
   padding: 0.5rem 1rem;
   border-bottom: 1px solid var(--border);
@@ -1422,7 +1428,12 @@ html.resize-dragging * {
   padding-left: 0.5rem;
   font-family: var(--font-mono);
   font-size: var(--font-size);
-  line-height: 1.25;
+  /* #344 — was 1.25; the 2-line topic strip read too cramped. Bumped for
+     breathing room. COUPLED (do NOT change one without the other): the real
+     height bound is the manual max-height on `.topic-bar-topic-text` below —
+     -webkit-line-clamp does NOT engage on the <button>-wrapped MircBody
+     (#262/#307), so that max-height MUST track 2× this value or line 2 clips. */
+  line-height: 1.5;
   text-align: left;
   cursor: pointer;
   min-width: 0;
@@ -1445,16 +1456,18 @@ html.resize-dragging * {
    ellipsis. MircBody emits its runs with no block wrapper, so making this
    span the `-webkit-box` puts those runs as its direct children → the clamp
    engages and paints the trailing … natively at 2 lines (mid-word, as
-   desired). The #262 max-height:2.5em (2 lines × line-height 1.25) + overflow
-   is RETAINED as belt-and-suspenders: it caps the strip whether or not the
-   clamp engages, so the mobile-height guarantee survives even on an engine
-   where the clamp fails. */
+   desired). The max-height:3em (2 lines × line-height 1.5 — #344 raised BOTH
+   in lockstep; was 2.5em @ lh 1.25 in #262) + overflow is RETAINED as
+   belt-and-suspenders: it caps the strip whether or not the clamp engages, so
+   the mobile-height guarantee survives even on an engine where the clamp
+   fails. This manual max-height IS the real height bound on WebKit, so it MUST
+   track 2× the `.topic-bar-topic` line-height or line 2 gets clipped. */
 .topic-bar-topic-text {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
-  max-height: 2.5em;
+  max-height: 3em; /* #344 — 2 × line-height 1.5 (see comment); was 2.5em @ lh 1.25 */
   overflow: hidden;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -1498,11 +1511,15 @@ html.resize-dragging * {
     max-width: 50%;
   }
 
-  /* One-line topic — drop the 2-line wrap that stole width from the name. */
+  /* One-line topic — drop the 2-line wrap that stole width from the name.
+     #344 — max-height tracks the base line-height (now 1.5): 1 line × 1.5 =
+     1.5em (was 1.25em @ lh 1.25). This block overrides the CLAMP + height, not
+     the line-height, so the single line inherits lh 1.5 and its box is 1.5em —
+     capping at the old 1.25em would clip it. */
   .topic-bar-topic-text {
     -webkit-line-clamp: 1;
     line-clamp: 1;
-    max-height: 1.25em;
+    max-height: 1.5em;
   }
 }
 

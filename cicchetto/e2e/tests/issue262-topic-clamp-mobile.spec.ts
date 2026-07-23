@@ -5,8 +5,9 @@
 // wraps a button's children in an internal box, so the line-clamp never
 // engages and the strip grows to the topic's FULL height, eating up to ½
 // the mobile viewport (field report: iPhone 17 Pro, #linux ~11 wrapped
-// lines). The fix is a HARD `max-height: 2.5em` (2 lines × line-height 1.25)
-// bound on `.topic-bar-topic`, independent of `-webkit-line-clamp`.
+// lines). The fix is a HARD `max-height: 3em` (2 lines × line-height 1.5 —
+// #344 raised BOTH; was 2.5em @ lh 1.25) bound on `.topic-bar-topic-text`,
+// independent of `-webkit-line-clamp`.
 //
 // This is a CSS-layout witness, so it MUST run on a real WebKit layout
 // engine (`@webkit` → webkit-iphone-15, 393×852 = the mobile branch AND the
@@ -34,8 +35,9 @@ import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
 
-// Height caps. The clamped strip is 2 lines × line-height 1.25 × 14px =
-// 35px; the cap leaves generous slack for sub-pixel/metric variance while
+// Height caps. The clamped strip is 2 lines × line-height 1.5 × 14px =
+// 42px (#344 raised the line-height 1.25 → 1.5; was 35px); the cap leaves
+// generous slack for sub-pixel/metric variance while
 // staying far below the broken-clamp height (many wrapped lines → 150px+ in
 // the ~130px-wide flex strip). The bar's floor is the 48px chrome-button tap
 // target (#305 --chrome-tap-min, was 44px) + 0.5rem×2 padding ≈ 62px; a
@@ -124,8 +126,8 @@ test("#262/#307 @webkit — a long topic clamps to 2 lines with a native ellipsi
       node.style.maxHeight = prev; // restore
       return h;
     });
-    // 2 lines × line-height 1.25 × 14px = 35px; slack for sub-pixel/metrics,
-    // far below the unclamped full-topic height (200px+).
+    // 2 lines × line-height 1.5 × 14px = 42px (#344; was 35px @ lh 1.25);
+    // slack for sub-pixel/metrics, far below the unclamped full-topic height (200px+).
     expect(
       clampOnlyHeight,
       `with the max-height backstop removed, -webkit-line-clamp must STILL bound the strip ` +
