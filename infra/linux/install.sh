@@ -185,10 +185,36 @@ fi
 if ! grep -qE "^GRAPPA_ENCRYPTION_KEY=.+$" "${ENV_FILE}" || grep -qE "^GRAPPA_ENCRYPTION_KEY=REPLACE_ME$" "${ENV_FILE}"; then
 	set_env_if_blank GRAPPA_ENCRYPTION_KEY "$(gen 'mix grappa.gen_encryption_key' | tail -n1)"
 fi
-if ! grep -qE "^VAPID_PUBLIC_KEY=.+$" "${ENV_FILE}" || grep -qE "^VAPID_PUBLIC_KEY=REPLACE_ME$" "${ENV_FILE}"; then
+# Regeneration trigger checks BOTH keys, not just the public one — a
+# guard on VAPID_PUBLIC_KEY alone would leave a
+# public-set/private-blank state (however it arose) permanently stuck,
+# since install.sh's idempotency means this block would never run
+# again once the public half looked fine.
+vapid_key_needs_gen() {
+	! grep -qE "^${1}=.+$" "${ENV_FILE}" || grep -qE "^${1}=REPLACE_ME$" "${ENV_FILE}"
+}
+
+if vapid_key_needs_gen VAPID_PUBLIC_KEY || vapid_key_needs_gen VAPID_PRIVATE_KEY; then
 	vapid="$(gen_raw 'mix grappa.gen_vapid')"
-	set_env_if_blank VAPID_PUBLIC_KEY "$(printf '%s\n' "${vapid}" | sed -n 's/^VAPID_PUBLIC_KEY=//p')"
-	set_env_if_blank VAPID_PRIVATE_KEY "$(printf '%s\n' "${vapid}" | sed -n 's/^VAPID_PRIVATE_KEY=//p')"
+	vapid_public="$(printf '%s\n' "${vapid}" | sed -n 's/^VAPID_PUBLIC_KEY=//p')"
+	vapid_private="$(printf '%s\n' "${vapid}" | sed -n 's/^VAPID_PRIVATE_KEY=//p')"
+	# Belt-and-braces: `gen_raw` already fails loud on a non-zero exit,
+	# but a future change to gen_vapid's output shape (or a truncated
+	# capture) could still hand back exit 0 with an empty match here —
+	# catch that explicitly rather than silently writing a blank key.
+	if [ -z "${vapid_public}" ] || [ -z "${vapid_private}" ]; then
+		echo "[install] ERROR: 'mix grappa.gen_vapid' produced an empty key — raw output:" >&2
+		echo "${vapid}" >&2
+		exit 1
+	fi
+	# force_set_env (not set_env_if_blank): once regeneration is
+	# triggered, the fresh pair MUST land as a matched unit. If only one
+	# key needed regenerating, set_env_if_blank would skip the
+	# already-valid half and keep it paired with a brand-new,
+	# unrelated other half — a mismatched public/private pair is
+	# unusable, worse than either being blank.
+	force_set_env VAPID_PUBLIC_KEY "${vapid_public}"
+	force_set_env VAPID_PRIVATE_KEY "${vapid_private}"
 fi
 if ! grep -qE "^RELEASE_COOKIE=.+$" "${ENV_FILE}" || grep -qE "^RELEASE_COOKIE=REPLACE_ME$" "${ENV_FILE}"; then
 	set_env_if_blank RELEASE_COOKIE "$(openssl rand -hex 32)"
