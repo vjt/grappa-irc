@@ -147,14 +147,33 @@ force_set_env() {
 # written as empty strings with zero indication anything had failed).
 # Fail loud instead: print the captured error and exit non-zero rather
 # than let a blank secret slip into the env file.
-gen() {
+#
+# `gen_raw` is the shared run+fail-loud+strip-warnings step; `gen`
+# additionally takes only the LAST line, which is correct for the
+# single-line generators (phx.gen.secret, gen_encryption_key) but
+# WRONG for `mix grappa.gen_vapid` — that task prints FOUR lines
+# (VAPID_PUBLIC_KEY=, VAPID_PRIVATE_KEY=, then two comment lines), so
+# routing it through `gen`'s `tail -n1` silently kept only the last
+# comment line and discarded BOTH keys — found live 2026-07-24:
+# VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY ended up empty in grappa.env,
+# `Grappa.Push.boot/0`'s `System.get_env(...) || raise` didn't catch
+# it either (an env var set to `""` is not `nil`, so the `||` never
+# fires), so the app booted "fine" with a broken Web Push config —
+# no crash, no log line, subscriptions just silently never worked.
+# VAPID generation now calls `gen_raw` directly and greps each key
+# out of the full multi-line output instead of going through `gen`.
+gen_raw() {
 	local out
 	if ! out="$(run_as_grappa "${asdf_path_export}; cd '${REPO_ROOT}'; MIX_ENV=dev $1" 2>&1)"; then
 		echo "[install] ERROR: 'MIX_ENV=dev $1' failed:" >&2
 		echo "${out}" >&2
 		exit 1
 	fi
-	printf '%s' "${out}" | tr -d '\r' | grep -v '^warning:' | tail -n1
+	printf '%s' "${out}" | tr -d '\r' | grep -v '^warning:'
+}
+
+gen() {
+	gen_raw "$1" | tail -n1
 }
 
 if ! grep -qE "^SECRET_KEY_BASE=.+$" "${ENV_FILE}" || grep -qE "^SECRET_KEY_BASE=REPLACE_ME$" "${ENV_FILE}"; then
@@ -167,7 +186,7 @@ if ! grep -qE "^GRAPPA_ENCRYPTION_KEY=.+$" "${ENV_FILE}" || grep -qE "^GRAPPA_EN
 	set_env_if_blank GRAPPA_ENCRYPTION_KEY "$(gen 'mix grappa.gen_encryption_key' | tail -n1)"
 fi
 if ! grep -qE "^VAPID_PUBLIC_KEY=.+$" "${ENV_FILE}" || grep -qE "^VAPID_PUBLIC_KEY=REPLACE_ME$" "${ENV_FILE}"; then
-	vapid="$(gen 'mix grappa.gen_vapid')"
+	vapid="$(gen_raw 'mix grappa.gen_vapid')"
 	set_env_if_blank VAPID_PUBLIC_KEY "$(printf '%s\n' "${vapid}" | sed -n 's/^VAPID_PUBLIC_KEY=//p')"
 	set_env_if_blank VAPID_PRIVATE_KEY "$(printf '%s\n' "${vapid}" | sed -n 's/^VAPID_PRIVATE_KEY=//p')"
 fi
