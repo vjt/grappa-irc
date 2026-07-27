@@ -166,7 +166,7 @@ defmodule Grappa.MixProject do
       {:boundary, "~> 0.10", runtime: false},
       {:ex_doc, "~> 0.34", only: [:dev], runtime: false},
       {:mix_test_watch, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:observer_cli, "~> 1.8", only: [:dev]},
+      {:observer_cli, "~> 2.0", only: [:dev]},
 
       # ── Test
       {:stream_data, "~> 1.3", only: [:dev, :test]},
