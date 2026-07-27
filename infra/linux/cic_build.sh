@@ -39,5 +39,8 @@ if ! run_as_grappa "cd '${CIC_DIR}' && bun install && bun run build -- --outDir 
 	cat "${log}" >&2
 	exit 1
 fi
+# Vite's `emptyOutDir` wipes .gitkeep on every build. Restore the
+# tracked placeholder so a cold deploy leaves the worktree clean.
+run_as_grappa "touch '${OUT_DIR}/.gitkeep'"
 
 echo "[cic_build] done — ${OUT_DIR}"
