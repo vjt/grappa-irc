@@ -137,11 +137,40 @@ docker compose -f compose.yaml --profile prod logs -f grappa
 # Stop / start
 docker compose -f compose.yaml --profile prod down
 scripts/quickstart.sh                       # idempotent: brings it back up
-
-# Update to a newer checkout
-git pull
-docker compose -f compose.yaml --profile prod up -d --build
 ```
+
+### Updating an installed box
+
+```sh
+scripts/quickstart-update.sh                # pull, then update
+scripts/quickstart-update.sh --no-pull      # update from the working tree as-is
+```
+
+`quickstart.sh` never touches git — re-running it can only re-install what
+is already on disk. `deploy.sh` is the production path and its
+`require_main_checkout` guard refuses any checkout that is not the main one
+sitting on `main`, which rules out a staging box parked on a branch. This
+script covers the gap in between.
+
+It refuses before it touches anything: a missing `.env` (the box was never
+installed), no docker, not a git checkout, or — when pulling — a dirty
+tree, all abort with the reason. The pull is `--ff-only`, so a diverged
+branch stops the run rather than being merged by a script. Nothing in the
+stack has moved at that point. It then reads the diff to decide which of
+the expensive steps are actually needed:
+
+| Changed | Triggers |
+| --- | --- |
+| `Dockerfile`, `.dockerignore` | image rebuild |
+| `mix.lock`, `mix.exs` | `mix deps.get` |
+| `priv/repo/migrations/` | `mix ecto.migrate` |
+| `cicchetto/` | frontend bundle |
+
+Everything else is a plain recreate: the tree is bind-mounted into the
+container and the image is toolchain-only, so ordinary code changes compile
+at boot with no rebuild. The stack is then recreated (never hot-reloaded —
+a staging box exists to be restarted), `/healthz` is polled until it
+answers, and the URL is printed from `.env`.
 
 ## Exposing it beyond localhost (TLS)
 
