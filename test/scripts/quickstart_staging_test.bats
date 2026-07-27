@@ -92,6 +92,52 @@ EOF
     grep -q 'server_name pinned.example.org;' "$BOX/runtime/nginx-frontend.conf"
 }
 
+@test "an explicitly passed HTTP_BIND wins over what .env already carries" {
+    # .env.example publishes on every interface; a fresh .env must not
+    # inherit that when the caller asked for a specific bind.
+    HTTP_BIND=127.0.0.1:3100 run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^NGINX_PUBLISH=' "$BOX/.env")" -eq 1 ]
+    grep -qE '^NGINX_PUBLISH=127\.0\.0\.1:3100:80$' "$BOX/.env"
+
+    HTTP_BIND=127.0.0.1:3200 run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^NGINX_PUBLISH=' "$BOX/.env")" -eq 1 ]
+    grep -qE '^NGINX_PUBLISH=127\.0\.0\.1:3200:80$' "$BOX/.env"
+    [[ "$output" == *"http://127.0.0.1:3200/"* ]]
+}
+
+@test "a fresh .env does not inherit the example's all-interfaces publish" {
+    run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+    grep -qE '^NGINX_PUBLISH=127\.0\.0\.1:3000:80$' "$BOX/.env"
+}
+
+@test "a bind pinned by an earlier run is reported and proxied to, not silently replaced" {
+    HTTP_BIND=127.0.0.1:3100 run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+
+    PHX_HOST=staging.example.org run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+    grep -qE '^NGINX_PUBLISH=127\.0\.0\.1:3100:80$' "$BOX/.env"
+    [[ "$output" == *"http://127.0.0.1:3100/"* ]]
+    grep -q 'server 127.0.0.1:3100;' "$BOX/runtime/nginx-frontend.conf"
+}
+
+@test "a bare-port publish from .env is normalised to loopback in output and upstream" {
+    run "$BOX/scripts/quickstart.sh"   # creates .env
+    [ "$status" -eq 0 ]
+    # Simulate the compose short form a hand-edited .env may carry.
+    grep -v '^NGINX_PUBLISH=' "$BOX/.env" > "$BOX/.env.tmp"
+    mv "$BOX/.env.tmp" "$BOX/.env"
+    printf 'NGINX_PUBLISH=8080:80\n' >> "$BOX/.env"
+
+    PHX_HOST=staging.example.org run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"http://127.0.0.1:8080/"* ]]
+    grep -q 'server 127.0.0.1:8080;' "$BOX/runtime/nginx-frontend.conf"
+}
+
 @test "front-door config is rendered with hostname, upstream and cert paths filled in" {
     PHX_HOST=staging.example.org HTTP_BIND=127.0.0.1:3100 \
         FRONTEND_SSL_CERT=/tmp/cert.pem FRONTEND_SSL_KEY=/tmp/key.pem \

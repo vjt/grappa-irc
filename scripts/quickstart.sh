@@ -68,7 +68,12 @@ cd "$REPO_ROOT"
 COMPOSE=(docker compose -f compose.yaml)
 
 # Host port the PWA is served on (nginx → grappa). Loopback-only by
-# default; override before running to expose on a LAN IP.
+# default; override before running to expose on a LAN IP. Same rule as
+# PHX_HOST below: a value passed on this run must win over whatever a
+# previous run (or .env.example, which publishes on ALL interfaces) left
+# behind, otherwise the box quietly serves somewhere else than asked.
+HTTP_BIND_EXPLICIT=0
+[ -n "${HTTP_BIND+x}" ] && HTTP_BIND_EXPLICIT=1
 HTTP_BIND="${HTTP_BIND:-127.0.0.1:3000}"
 
 # Public hostname the box is served under. `localhost` keeps the plain
@@ -162,7 +167,20 @@ else
   PHX_HOST="${PHX_HOST:-localhost}"
 fi
 set_env GRAPPA_PUBLISH 127.0.0.1:4000
-set_env NGINX_PUBLISH "${HTTP_BIND}:80"
+if [ "$HTTP_BIND_EXPLICIT" -eq 1 ] || [ "$ENV_CREATED_NOW" -eq 1 ]; then
+  force_env NGINX_PUBLISH "${HTTP_BIND}:80"
+else
+  set_env NGINX_PUBLISH "${HTTP_BIND}:80"
+  # Report (and proxy to) the port the stack will really publish, which an
+  # earlier run may have pinned elsewhere.
+  published="$(sed -n 's/^NGINX_PUBLISH=//p' .env | tail -n1)"
+  published="${published%:80}"
+  case "$published" in
+    '')      ;;                                   # nothing pinned — keep ours
+    *:*)     HTTP_BIND="$published" ;;            # addr:port, as-is
+    *)       HTTP_BIND="127.0.0.1:${published}" ;;  # bare port (compose's short form)
+  esac
+fi
 
 # ---- 3. build the image -----------------------------------------------
 # Toolchain image (#364 docker S1) — just the base + apk packages, no
