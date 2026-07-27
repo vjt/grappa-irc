@@ -73,3 +73,49 @@ updates:
     labels:
       - dependencies
       - docker
+
+  # ── Bun (cicchetto PWA frontend)
+  #    bun, not npm: cicchetto ships package.json + bun.lock and no
+  #    package-lock.json, so an npm ecosystem would bump package.json
+  #    without ever regenerating the lockfile the CI actually installs from.
+  - package-ecosystem: bun
+    directory: "/cicchetto"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      solid:
+        patterns:
+          - "solid-js"
+          - "@solidjs/*"
+        exclude-patterns:
+          - "@solidjs/testing-library"
+      fonts:
+        patterns:
+          - "@fontsource/*"
+          - "hack-font"
+      tooling:
+        patterns:
+          - "@biomejs/biome"
+          - "typescript"
+          - "vite"
+          - "vite-plugin-*"
+          - "vitest"
+      testing:
+        patterns:
+          - "@solidjs/testing-library"
+          - "@testing-library/*"
+          - "jsdom"
+          - "@types/jsdom"
+      workbox:
+        patterns:
+          - "workbox-*"
+    labels:
+      - dependencies
+      - cicchetto
