@@ -16,7 +16,7 @@
 #   scripts/quickstart.sh           # install + start + validate
 #
 # After it finishes the bouncer's web UI is at http://localhost:3000.
-# Tear down with:  docker compose -f compose.yaml --profile prod down
+# Tear down with:  scripts/quickstart-stop.sh
 #
 # ---- Serving it under a real hostname (staging box) -------------------
 #
@@ -131,7 +131,7 @@ for cname in $(sed -n 's/^[[:space:]]*container_name:[[:space:]]*//p' compose.ya
   if [ -n "$owner" ] && [ "$owner" != "$REPO_ROOT" ]; then
     warn "container '$cname' is already up, but it belongs to another checkout:"
     warn "  $owner"
-    die "one box per host: update that one with $owner/scripts/quickstart-update.sh, or stop it first (docker compose -f compose.yaml --profile prod down)."
+    die "one box per host: update that one with $owner/scripts/quickstart-update.sh, or stop it first ($owner/scripts/quickstart-stop.sh)."
   fi
 done
 
@@ -425,5 +425,5 @@ fi
 
 cat <<EOF
 
-  Stop the stack:      ${COMPOSE[*]} --profile prod down
+  Stop the stack:      scripts/quickstart-stop.sh
 EOF

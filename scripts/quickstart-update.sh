@@ -79,7 +79,7 @@ for cname in $(sed -n 's/^[[:space:]]*container_name:[[:space:]]*//p' compose.ya
   if [ -n "$owner" ] && [ "$owner" != "$REPO_ROOT" ]; then
     warn "container '$cname' is already up, but it belongs to another checkout:"
     warn "  $owner"
-    die "run scripts/quickstart-update.sh from $owner, or stop that box first (docker compose -f compose.yaml --profile prod down)."
+    die "run scripts/quickstart-update.sh from $owner, or stop that box first ($owner/scripts/quickstart-stop.sh)."
   fi
 done
 
@@ -190,5 +190,5 @@ cat <<EOF
   Health:   curl http://${published}/healthz
 
   Logs:     ${COMPOSE[*]} --profile prod logs -f grappa
-  Stop:     ${COMPOSE[*]} --profile prod down
+  Stop:     scripts/quickstart-stop.sh
 EOF

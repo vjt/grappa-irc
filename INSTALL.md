@@ -135,9 +135,19 @@ to the committed config (no local overrides).
 docker compose -f compose.yaml --profile prod logs -f grappa
 
 # Stop / start
-docker compose -f compose.yaml --profile prod down
+scripts/quickstart-stop.sh                  # takes the prod profile down too
 scripts/quickstart.sh                       # idempotent: brings it back up
 ```
+
+Use the script rather than a bare `docker compose down`: nginx lives
+behind the `prod` profile, so a down without `--profile prod` walks past
+it, leaves it running, and then fails to remove the project network with
+`Resource is still in use` — a half-stopped box under a command that
+reads like it stopped everything. `scripts/quickstart-stop.sh` also
+refuses to stop a box that belongs to a different checkout, and takes
+`--volumes` when you want the build caches gone as well. `runtime/` is a
+bind mount in the checkout, so no flag of this script can touch the
+database.
 
 ### Updating an installed box
 
