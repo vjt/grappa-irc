@@ -116,6 +116,25 @@ docker compose version >/dev/null 2>&1 || die "docker compose v2 not found — i
 docker info >/dev/null 2>&1 || die "cannot talk to the Docker daemon — is it running / do you have permission?"
 [ -f compose.yaml ] || die "compose.yaml not in $REPO_ROOT — run this from a grappa checkout."
 
+# compose.yaml pins `container_name`, so those names belong to the docker
+# daemon and not to a compose project: a second checkout that installs its
+# own box collides with the first at `up` — "The container name /grappa is
+# already in use" — after this script has already written .env, built the
+# image and seeded an account. Say who owns it now, while nothing has
+# happened yet. Asking the container for its own compose label beats
+# guessing the project name, which is the directory basename and can
+# coincide across checkouts.
+for cname in $(sed -n 's/^[[:space:]]*container_name:[[:space:]]*//p' compose.yaml); do
+  owner="$(docker inspect --format \
+    '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' \
+    "$cname" 2>/dev/null)" || continue      # not running: nothing to clash with
+  if [ -n "$owner" ] && [ "$owner" != "$REPO_ROOT" ]; then
+    warn "container '$cname' is already up, but it belongs to another checkout:"
+    warn "  $owner"
+    die "one box per host: update that one with $owner/scripts/quickstart-update.sh, or stop it first (docker compose -f compose.yaml --profile prod down)."
+  fi
+done
+
 # ---- 1. host-owned runtime dirs (avoid root-owned bind-mount mkdir) ---
 # Compose would auto-create missing bind-mount sources as root; pre-make
 # them so the container (UID = you) can write.

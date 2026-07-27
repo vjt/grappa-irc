@@ -21,20 +21,35 @@ setup() {
     cp "$REPO_SRC/scripts/quickstart.sh" "$BOX/scripts/"
     cp "$REPO_SRC/infra/nginx-tls-frontend.example.conf" "$BOX/infra/"
     cp "$REPO_SRC/.env.example" "$BOX/.env.example"
-    # Only its presence is checked (preflight), never its content.
-    : > "$BOX/compose.yaml"
+    # Preflight checks its presence, and also reads the pinned container
+    # names out of it — those pins are what makes two checkouts collide on
+    # one docker daemon.
+    cat > "$BOX/compose.yaml" <<'EOF'
+services:
+  grappa:
+    container_name: grappa
+  nginx:
+    container_name: grappa-nginx
+EOF
 
     FAKE_DIR="$BATS_TEST_TMPDIR/fake"
     mkdir -p "$FAKE_DIR"
     ARGV_LOG="$FAKE_DIR/argv.log"
     : > "$ARGV_LOG"
 
-    # Fake `docker` — records every invocation, exits 0.
+    # Fake `docker` — records every invocation, exits 0. `inspect` is the
+    # exception: it has to answer, because the ownership guard reads a
+    # compose label off the running container. Unset FAKE_OWNER_DIR means
+    # "no such container", which is what an empty host looks like.
     cat > "$FAKE_DIR/docker" <<EOF
 #!/usr/bin/env bash
 printf 'docker' >> "$ARGV_LOG"
 for a in "\$@"; do printf ' %q' "\$a" >> "$ARGV_LOG"; done
 printf '\n' >> "$ARGV_LOG"
+if [ "\$1" = inspect ]; then
+    [ -n "\${FAKE_OWNER_DIR:-}" ] || exit 1
+    printf '%s\n' "\$FAKE_OWNER_DIR"
+fi
 exit 0
 EOF
     chmod +x "$FAKE_DIR/docker"
@@ -284,4 +299,25 @@ EOF
     # exists; the summary must not present it as usable.
     [[ "$output" == *"already exists"* ]]
     [[ "$output" == *"password shown above does not apply"* ]]
+}
+
+@test "installing next to a box owned by another checkout is refused before anything is written" {
+    export FAKE_OWNER_DIR="$BATS_TEST_TMPDIR/the-other-checkout"
+
+    run "$BOX/scripts/quickstart.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$FAKE_OWNER_DIR"* ]]
+    # docker's own error would only arrive at `up`, after .env exists and
+    # the image is built. Nothing may have been written yet, and the only
+    # docker calls allowed so far are the read-only preflight probes.
+    [ ! -f "$BOX/.env" ]
+    ! grep -qE 'compose .*(up|build|run)' "$ARGV_LOG"
+}
+
+@test "a box owned by this checkout does not block a re-run" {
+    export FAKE_OWNER_DIR="$BOX"
+
+    run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+    grep -q 'up -d' "$ARGV_LOG"
 }

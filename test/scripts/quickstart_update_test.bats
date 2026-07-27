@@ -24,11 +24,20 @@ setup() {
     : > "$ARGV_LOG"
 
     # Fake `docker` — records every invocation, exits 0.
+    #
+    # `docker inspect` is the one subcommand that has to answer rather
+    # than only record: the ownership guard reads a compose label off the
+    # container. Default is "no such container" (exit 1, as the real one
+    # does), and FAKE_OWNER_DIR makes it exist, owned by that directory.
     cat > "$FAKE_DIR/docker" <<EOF
 #!/usr/bin/env bash
 printf 'docker' >> "$ARGV_LOG"
 for a in "\$@"; do printf ' %q' "\$a" >> "$ARGV_LOG"; done
 printf '\n' >> "$ARGV_LOG"
+if [ "\$1" = inspect ]; then
+    [ -n "\${FAKE_OWNER_DIR:-}" ] || exit 1
+    printf '%s\n' "\$FAKE_OWNER_DIR"
+fi
 exit 0
 EOF
     chmod +x "$FAKE_DIR/docker"
@@ -45,7 +54,16 @@ EOF
     mkdir -p "$UPSTREAM/scripts" "$UPSTREAM/cicchetto" \
              "$UPSTREAM/priv/repo/migrations"
     cp "$REPO_SRC/scripts/quickstart-update.sh" "$UPSTREAM/scripts/" 2>/dev/null || true
-    : > "$UPSTREAM/compose.yaml"
+    # The real compose.yaml pins container_name on both long-lived
+    # services; that pin is what makes two checkouts collide, so the
+    # fixture has to carry it.
+    cat > "$UPSTREAM/compose.yaml" <<'EOF'
+services:
+  grappa:
+    container_name: grappa
+  nginx:
+    container_name: grappa-nginx
+EOF
     printf 'FROM alpine\n'          > "$UPSTREAM/Dockerfile"
     printf '%%{}\n'                 > "$UPSTREAM/mix.lock"
     printf 'defmodule A do end\n'   > "$UPSTREAM/lib_a.ex"
@@ -189,6 +207,42 @@ upstream_commit() {
     [[ "$output" == *"http://127.0.0.1:3100/"* ]]
 }
 
+@test "a box owned by another checkout is refused, and the owner is named" {
+    # compose.yaml pins container_name, so the names are global rather
+    # than project-scoped: the second checkout would get docker's bare
+    # "container name /grappa is already in use", which names neither the
+    # owner nor the fix.
+    export FAKE_OWNER_DIR="$BATS_TEST_TMPDIR/some-other-checkout"
+    upstream_commit "code" lib_a.ex 'defmodule A do def x, do: 6 end'
+
+    run "$BOX/scripts/quickstart-update.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$FAKE_OWNER_DIR"* ]]
+    # Refused BEFORE any side effect: nothing pulled, nothing recreated.
+    [ "$(git -C "$BOX" rev-parse HEAD)" != "$(git -C "$UPSTREAM" rev-parse HEAD)" ]
+    ! grep -q 'force-recreate' "$ARGV_LOG"
+}
+
+@test "a box owned by this very checkout is updated, not refused" {
+    export FAKE_OWNER_DIR="$BOX"
+    upstream_commit "code" lib_a.ex 'defmodule A do def x, do: 7 end'
+
+    run "$BOX/scripts/quickstart-update.sh"
+    [ "$status" -eq 0 ]
+    grep -q 'force-recreate' "$ARGV_LOG"
+}
+
+@test "no running box at all is not mistaken for a foreign one" {
+    # FAKE_OWNER_DIR unset — `docker inspect` exits non-zero, the way it
+    # does when the container does not exist. A first update after a
+    # `down` must still work.
+    upstream_commit "code" lib_a.ex 'defmodule A do def x, do: 8 end'
+
+    run "$BOX/scripts/quickstart-update.sh"
+    [ "$status" -eq 0 ]
+    grep -q 'force-recreate' "$ARGV_LOG"
+}
+
 @test "a dirty working tree is refused before anything is pulled or recreated" {
     printf 'scribble\n' >> "$BOX/lib_a.ex"
     upstream_commit "code" mix.lock '%{"phoenix" => "1.9.0"}'
@@ -196,5 +250,10 @@ upstream_commit() {
     run "$BOX/scripts/quickstart-update.sh"
     [ "$status" -ne 0 ]
     [[ "$output" == *"uncommitted"* ]]
-    [ ! -s "$ARGV_LOG" ]
+    # The ownership guard reads a label off the running container before
+    # this check, so the docker log is not empty — but it must contain
+    # nothing that CHANGES anything.
+    # (the guard's own inspect mentions the compose label namespace, so
+    # match the invocation shape, not the word)
+    ! grep -q '^docker compose' "$ARGV_LOG"
 }

@@ -59,6 +59,30 @@ esac
 command -v docker >/dev/null 2>&1 || die "docker not found."
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git checkout — nothing to update from."
 
+# compose.yaml pins `container_name` on the long-lived services, so those
+# names are global to the docker daemon and not scoped by project. Two
+# checkouts of grappa therefore cannot both have a box up: the second one
+# dies at `up` with
+#
+#   Error response from daemon: Conflict. The container name "/grappa" is
+#   already in use by container "…"
+#
+# which names neither who owns it nor what to do about it — and by then
+# the pull has already happened. Refuse here instead, pointing at the
+# directory the running box actually belongs to. The label is docker's own
+# bookkeeping (`com.docker.compose.project.working_dir`), so this asks the
+# running container who owns it rather than guessing from the project name.
+for cname in $(sed -n 's/^[[:space:]]*container_name:[[:space:]]*//p' compose.yaml); do
+  owner="$(docker inspect --format \
+    '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' \
+    "$cname" 2>/dev/null)" || continue      # not running: nothing to clash with
+  if [ -n "$owner" ] && [ "$owner" != "$REPO_ROOT" ]; then
+    warn "container '$cname' is already up, but it belongs to another checkout:"
+    warn "  $owner"
+    die "run scripts/quickstart-update.sh from $owner, or stop that box first (docker compose -f compose.yaml --profile prod down)."
+  fi
+done
+
 if [ "$PULL" -eq 1 ]; then
   # A fast-forward onto a dirty tree either fails halfway or silently
   # carries local edits into what you are about to call "the latest
