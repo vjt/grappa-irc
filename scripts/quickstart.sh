@@ -98,6 +98,12 @@ SEED_NICK="${SEED_NICK:-$SEED_USER}"
 SEED_AUTH="${SEED_AUTH:-none}"
 SEED_NICK_PASSWORD="${SEED_NICK_PASSWORD:-}"
 SEED_AUTOJOIN="${SEED_AUTOJOIN:-}"
+# #475 — the seeded account is an admin by DEFAULT. The admin console is
+# the only place some install-level switches live (visitor access, chiefly),
+# so a box seeded without it is one you cannot finish configuring from the
+# UI it just handed you. SEED_ADMIN=0 for a box that should deliberately
+# start with no administrator.
+SEED_ADMIN="${SEED_ADMIN:-1}"
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
@@ -250,11 +256,25 @@ if [ -n "$SEED_USER" ]; then
     SEED_PASSWORD="$(head -c 18 /dev/urandom | base64 | tr -d '\n/+=' | cut -c1-20)"
   fi
 
-  say "Seeding account '${SEED_USER}'"
-  if ! "${COMPOSE[@]}" run --rm --no-deps -T grappa \
-      mix grappa.create_user --name "$SEED_USER" --password "$SEED_PASSWORD"; then
+  # #475 — `--admin` is part of the same command, not a second step:
+  # `create_user` grants the bit through `Accounts.update_admin_flags/2`
+  # right after creation. Note this only fires on CREATION — an account
+  # that already exists keeps whatever flags it has, which is why the
+  # re-run path below cannot promote anything.
+  create_args=(mix grappa.create_user --name "$SEED_USER" --password "$SEED_PASSWORD")
+  [ "$SEED_ADMIN" != "0" ] && create_args+=(--admin)
+
+  if [ "$SEED_ADMIN" != "0" ]; then
+    say "Seeding account '${SEED_USER}' (admin)"
+  else
+    say "Seeding account '${SEED_USER}'"
+  fi
+
+  SEED_ACCOUNT_EXISTED=0
+  if ! "${COMPOSE[@]}" run --rm --no-deps -T grappa "${create_args[@]}"; then
+    SEED_ACCOUNT_EXISTED=1
     warn "account '${SEED_USER}' was not created (it most likely already exists) — keeping the existing one."
-    warn "the password printed below is then NOT the account's password."
+    warn "the password printed below is then NOT the account's password, and its admin flag is unchanged."
   fi
 
   say "Binding ${SEED_USER} → ${SEED_NETWORK} (${SEED_SERVER}) as ${SEED_NICK}"
@@ -267,6 +287,23 @@ if [ -n "$SEED_USER" ]; then
     warn "binding not created — ${SEED_USER} is probably already bound to ${SEED_NETWORK}."
     warn "change an existing binding with: ${COMPOSE[*]} run --rm grappa mix grappa.update_network_credential --help"
   fi
+fi
+
+# ---- 6c. seed the built-in theme gallery ------------------------------
+# #475 — deliberately OUTSIDE the SEED_USER block: the curated gallery is
+# a property of the install, not of the optional seeded account, so a box
+# with no seeded user still ships its themes instead of landing with an
+# empty picker. Idempotent by construction — the task upserts each
+# built-in on `(system owner, name)`, so re-running refreshes rows in
+# place and adds new schemes without duplicating anything.
+#
+# Not fatal: an empty gallery is a cosmetic defect, and failing the whole
+# install over it would be a worse trade than a warning on a box that is
+# otherwise healthy.
+say "Seeding the built-in theme gallery"
+if ! "${COMPOSE[@]}" run --rm --no-deps -T grappa mix grappa.seed_themes; then
+  warn "theme seeding failed — the box works, but the gallery starts empty."
+  warn "retry with: ${COMPOSE[*]} run --rm grappa mix grappa.seed_themes"
 fi
 
 # ---- 7. bring up the full stack ---------------------------------------
@@ -334,12 +371,29 @@ EOF
 fi
 
 if [ -n "$SEED_USER" ]; then
-  cat <<EOF
+  # #475 — on a re-run the account already existed, so `create_user` never
+  # ran and the password above is one this script invented and threw away.
+  # Printing it as "the credentials" is how someone spends ten minutes
+  # failing to log into their own box.
+  if [ "${SEED_ACCOUNT_EXISTED:-0}" -eq 1 ]; then
+    cat <<EOF
+
+  Account:         ${SEED_USER} — already exists, left untouched.
+                   The password shown above does not apply to it, and its
+                   admin flag was not changed. Rotate the password with:
+                     ${COMPOSE[*]} run --rm grappa mix run -e \\
+                       'Grappa.Accounts.get_user_by_name("${SEED_USER}") |> Grappa.Accounts.update_password(%{password: "new-one"})'
+  Seeded network:  ${SEED_NETWORK} → ${SEED_SERVER} as ${SEED_NICK}${SEED_AUTOJOIN:+ (autojoin ${SEED_AUTOJOIN})}
+EOF
+  else
+    cat <<EOF
 
   Seeded account:  ${SEED_USER} / ${SEED_PASSWORD}
+  Account role:    $([ "$SEED_ADMIN" != "0" ] && printf 'admin — the console is at the cog, "admin console"' || printf 'plain user (SEED_ADMIN=0)')
   Seeded network:  ${SEED_NETWORK} → ${SEED_SERVER} as ${SEED_NICK}${SEED_AUTOJOIN:+ (autojoin ${SEED_AUTOJOIN})}
   Test-grade credentials — the account is a login for this box, nothing else.
 EOF
+  fi
 else
   cat <<EOF
 

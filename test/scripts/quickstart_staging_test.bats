@@ -221,3 +221,67 @@ EOF
     run "$BOX/scripts/quickstart.sh"
     [ "$status" -eq 0 ]
 }
+
+# ── #475: an install you can actually administer and theme ─────────────
+#
+# The box the staging mode produces was unusable in two ways vjt hit on a
+# real install: the seeded account was not an admin (so the console — the
+# ONLY place `visitor_enabled` can be flipped — was unreachable), and the
+# theme gallery was empty because nothing ever called `grappa.seed_themes`.
+# Both fixes call mix tasks that already existed; these tests pin that the
+# script actually calls them.
+
+@test "the seeded account is an admin, so the console is reachable" {
+    SEED_USER=tester SEED_PASSWORD=hunter2222 run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+
+    grep -q -- "grappa.create_user --name tester --password hunter2222 --admin" "$ARGV_LOG"
+}
+
+@test "SEED_ADMIN=0 opts out of the admin grant" {
+    SEED_USER=tester SEED_PASSWORD=hunter2222 SEED_ADMIN=0 \
+        run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+
+    grep -q -- "grappa.create_user --name tester --password hunter2222" "$ARGV_LOG"
+    ! grep -q -- "grappa.create_user .* --admin" "$ARGV_LOG"
+}
+
+@test "built-in themes are seeded, before the stack comes up" {
+    run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+
+    grep -q 'grappa.seed_themes' "$ARGV_LOG"
+
+    themes_line="$(grep -n 'grappa.seed_themes' "$ARGV_LOG" | head -n1 | cut -d: -f1)"
+    up_line="$(grep -n 'up -d' "$ARGV_LOG" | head -n1 | cut -d: -f1)"
+    [ -n "$themes_line" ] && [ -n "$up_line" ] && [ "$themes_line" -lt "$up_line" ]
+}
+
+@test "themes are seeded even when no account is seeded" {
+    # The gallery belongs to the install, not to the optional SEED_USER
+    # block — a box with no seeded account still ships its themes.
+    run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+    grep -q 'grappa.seed_themes' "$ARGV_LOG"
+    ! grep -q 'grappa.create_user' "$ARGV_LOG"
+}
+
+@test "a theme seeding failure is a warning, not a failed install" {
+    stub_docker_failing_on grappa.seed_themes
+
+    run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+    grep -q 'up -d' "$ARGV_LOG"
+}
+
+@test "an existing account is told, in the summary, that the password shown does not apply" {
+    stub_docker_failing_on grappa.create_user
+
+    SEED_USER=tester run "$BOX/scripts/quickstart.sh"
+    [ "$status" -eq 0 ]
+    # The generated password is meaningless for an account that already
+    # exists; the summary must not present it as usable.
+    [[ "$output" == *"already exists"* ]]
+    [[ "$output" == *"password shown above does not apply"* ]]
+}
