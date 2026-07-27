@@ -15,10 +15,10 @@
     "gen:emoji": "bun scripts/gen-emoji.ts"
   },
   "dependencies": {
-    "@solidjs/router": "^0.16.1",
+    "@solidjs/router": "^0.16.2",
     "mediabunny": "^1.46.0",
     "phoenix": "^1.8.5",
-    "solid-js": "^1.9.12",
+    "solid-js": "^1.9.14",
     "uqr": "^0.1.3"
   },
   "devDependencies": {
