@@ -17,6 +17,45 @@
 #
 # After it finishes the bouncer's web UI is at http://localhost:3000.
 # Tear down with:  docker compose -f compose.yaml --profile prod down
+#
+# ---- Serving it under a real hostname (staging box) -------------------
+#
+# The stack's own nginx listens on plain HTTP on HTTP_BIND — that IS the
+# listener you put your own TLS front door in front of. Nothing here
+# terminates TLS or installs a vhost on your host; the script only RENDERS
+# a ready-to-include front-door config from the shipped example, with your
+# values filled in, and tells you where it wrote it.
+#
+#   PHX_HOST=grappa.example.org scripts/quickstart.sh
+#
+# PHX_HOST is load-bearing: it is the source of the host-alias set the app
+# derives upload links and origin checks from (lib/grappa/http_hosts.ex).
+# Leaving it at `localhost` while serving the box under a real name mints
+# links pointing at the wrong host, silently (#468). Pass it explicitly and
+# it overwrites a previously-written value in .env.
+#
+# ---- Seeding a network + user (optional) ------------------------------
+#
+# Set SEED_USER to get an instance that is already connected when you log
+# in, instead of an empty one you have to wire by hand:
+#
+#   PHX_HOST=grappa.example.org SEED_USER=you SEED_AUTOJOIN='#grappa' \
+#     scripts/quickstart.sh
+#
+# Knobs (all optional except SEED_USER):
+#   SEED_USER      account name — setting it enables seeding
+#   SEED_PASSWORD  account password (generated and printed when unset)
+#   SEED_NETWORK   network slug            (default: azzurra)
+#   SEED_SERVER    host:port               (default: irc.azzurra.chat:6697)
+#   SEED_NICK      IRC nick                (default: $SEED_USER)
+#   SEED_AUTH      auto|sasl|server_pass|nickserv_identify|none (default: none)
+#   SEED_NICK_PASSWORD  upstream auth password, when SEED_AUTH needs one
+#   SEED_AUTOJOIN  comma-separated channels (default: none)
+#
+# Seeding is idempotent in the sense that re-running never breaks a live
+# box: an existing account or an existing binding is reported and skipped,
+# not overwritten. The seeded account is test-grade — do not reuse a
+# password you care about.
 
 set -euo pipefail
 
@@ -31,6 +70,29 @@ COMPOSE=(docker compose -f compose.yaml)
 # Host port the PWA is served on (nginx → grappa). Loopback-only by
 # default; override before running to expose on a LAN IP.
 HTTP_BIND="${HTTP_BIND:-127.0.0.1:3000}"
+
+# Public hostname the box is served under. `localhost` keeps the plain
+# localhost install working (browsers treat http://localhost as a secure
+# context, so the PWA works without TLS). Anything else means a front door
+# is in play — remember whether the caller asked for it, because a value
+# passed explicitly must WIN over what a previous run left in .env.
+PHX_HOST_EXPLICIT=0
+[ -n "${PHX_HOST+x}" ] && PHX_HOST_EXPLICIT=1
+PHX_HOST="${PHX_HOST:-localhost}"
+
+# Front-door rendering: cert paths are placeholders in the shipped example
+# and get substituted here so the emitted file is directly includable.
+FRONTEND_SSL_CERT="${FRONTEND_SSL_CERT:-/etc/ssl/grappa/fullchain.pem}"
+FRONTEND_SSL_KEY="${FRONTEND_SSL_KEY:-/etc/ssl/grappa/privkey.pem}"
+
+# Optional seeding (see the header). SEED_USER is the switch.
+SEED_USER="${SEED_USER:-}"
+SEED_NETWORK="${SEED_NETWORK:-azzurra}"
+SEED_SERVER="${SEED_SERVER:-irc.azzurra.chat:6697}"
+SEED_NICK="${SEED_NICK:-$SEED_USER}"
+SEED_AUTH="${SEED_AUTH:-none}"
+SEED_NICK_PASSWORD="${SEED_NICK_PASSWORD:-}"
+SEED_AUTOJOIN="${SEED_AUTOJOIN:-}"
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
@@ -62,16 +124,43 @@ set_env() {
   printf '%s=%s\n' "$key" "$val" >> .env
 }
 
+# force_env KEY VALUE — set KEY unconditionally, replacing any existing
+# value. Used only for what the caller passed on this run: a second run
+# with a different PHX_HOST must actually move the box, not silently keep
+# the first run's hostname (the #468 failure mode is a stale, wrong host).
+force_env() {
+  local key="$1" val="$2"
+  if grep -qE "^${key}=" .env 2>/dev/null; then
+    grep -v "^${key}=" .env > .env.tmp && mv .env.tmp .env
+  fi
+  printf '%s=%s\n' "$key" "$val" >> .env
+}
+
+ENV_CREATED_NOW=0
 if [ ! -f .env ]; then
   say "Creating .env from .env.example"
   cp .env.example .env
+  ENV_CREATED_NOW=1
 fi
 
-say "Configuring .env for a localhost full-stack run"
+say "Configuring .env for a full-stack run under ${PHX_HOST}"
 set_env MIX_ENV prod
 set_env CONTAINER_UID "$(id -u)"
 set_env CONTAINER_GID "$(id -g)"
-set_env PHX_HOST localhost
+if [ "$PHX_HOST_EXPLICIT" -eq 1 ] || [ "$ENV_CREATED_NOW" -eq 1 ]; then
+  # A .env just copied from the example carries the example's hostname,
+  # which is someone else's host — inheriting it is the copy-trap that
+  # mints upload links pointing away from this box (#468). Whatever this
+  # run resolved to (the caller's value, or `localhost`) wins over it.
+  force_env PHX_HOST "$PHX_HOST"
+else
+  set_env PHX_HOST "$PHX_HOST"
+  # An earlier run (or a hand-edited .env) may already pin a different
+  # host; the rendered front-door config below must describe the box as it
+  # will actually behave, not as this invocation defaulted.
+  PHX_HOST="$(sed -n 's/^PHX_HOST=//p' .env | tail -n1)"
+  PHX_HOST="${PHX_HOST:-localhost}"
+fi
 set_env GRAPPA_PUBLISH 127.0.0.1:4000
 set_env NGINX_PUBLISH "${HTTP_BIND}:80"
 
@@ -129,6 +218,39 @@ fi
 say "Running database migrations"
 "${COMPOSE[@]}" run --rm --no-deps grappa mix ecto.migrate
 
+# ---- 6b. seed an account + network (optional) -------------------------
+# Runs BEFORE the stack comes up on purpose: Bootstrap reads the binding at
+# boot, so seeding first means the very first `up` already dials out and the
+# operator's first login lands on a connected session.
+#
+# Neither task is destructive on a second run — `create_user` fails on a
+# duplicate name and `bind_network` fails on an existing (user, network)
+# credential — so both failures are downgraded to a note instead of
+# aborting an otherwise healthy install.
+if [ -n "$SEED_USER" ]; then
+  if [ -z "${SEED_PASSWORD:-}" ]; then
+    SEED_PASSWORD="$(head -c 18 /dev/urandom | base64 | tr -d '\n/+=' | cut -c1-20)"
+  fi
+
+  say "Seeding account '${SEED_USER}'"
+  if ! "${COMPOSE[@]}" run --rm --no-deps -T grappa \
+      mix grappa.create_user --name "$SEED_USER" --password "$SEED_PASSWORD"; then
+    warn "account '${SEED_USER}' was not created (it most likely already exists) — keeping the existing one."
+    warn "the password printed below is then NOT the account's password."
+  fi
+
+  say "Binding ${SEED_USER} → ${SEED_NETWORK} (${SEED_SERVER}) as ${SEED_NICK}"
+  bind_args=(mix grappa.bind_network
+    --user "$SEED_USER" --network "$SEED_NETWORK"
+    --server "$SEED_SERVER" --nick "$SEED_NICK" --auth "$SEED_AUTH")
+  [ -n "$SEED_NICK_PASSWORD" ] && bind_args+=(--password "$SEED_NICK_PASSWORD")
+  [ -n "$SEED_AUTOJOIN" ] && bind_args+=(--autojoin "$SEED_AUTOJOIN")
+  if ! "${COMPOSE[@]}" run --rm --no-deps -T grappa "${bind_args[@]}"; then
+    warn "binding not created — ${SEED_USER} is probably already bound to ${SEED_NETWORK}."
+    warn "change an existing binding with: ${COMPOSE[*]} run --rm grappa mix grappa.update_network_credential --help"
+  fi
+fi
+
 # ---- 7. bring up the full stack ---------------------------------------
 say "Starting the stack (grappa + cicchetto build + nginx)"
 "${COMPOSE[@]}" --profile prod up -d
@@ -149,16 +271,68 @@ until "${COMPOSE[@]}" exec -T nginx wget -qO- http://127.0.0.1/healthz >/dev/nul
 done
 printf '\n'
 
+# ---- 8b. render the front-door config ---------------------------------
+# The shipped example carries <placeholders>; fill them with what this box
+# actually runs so the file can be included as-is. The upstream is the
+# published HTTP port — a wildcard bind is rewritten to loopback, since a
+# proxy on the same host must not dial 0.0.0.0.
+FRONTEND_CONF="runtime/nginx-frontend.conf"
+UPSTREAM="$HTTP_BIND"
+case "$UPSTREAM" in
+  0.0.0.0:*) UPSTREAM="127.0.0.1:${UPSTREAM##*:}" ;;
+  '[::]:'*)  UPSTREAM="127.0.0.1:${UPSTREAM##*:}" ;;
+esac
+
+sed -e "s|<your-domain>|${PHX_HOST}|g" \
+    -e "s|^  server 127\.0\.0\.1:3000;|  server ${UPSTREAM};|" \
+    -e "s|^  ssl_certificate     .*|  ssl_certificate     ${FRONTEND_SSL_CERT};|" \
+    -e "s|^  ssl_certificate_key .*|  ssl_certificate_key ${FRONTEND_SSL_KEY};|" \
+    infra/nginx-tls-frontend.example.conf > "$FRONTEND_CONF"
+
 # ---- 9. done ----------------------------------------------------------
 say "grappa is up and healthy 🎉"
 cat <<EOF
 
   Web UI:   http://${HTTP_BIND}/
   Health:   curl http://${HTTP_BIND}/healthz
+  PHX_HOST: ${PHX_HOST}
+
+  Front-door config rendered for ${PHX_HOST} → ${UPSTREAM}:
+    ${REPO_ROOT}/${FRONTEND_CONF}
+  Include it from your own nginx (this script installs nothing on the
+  host) and point the certificate lines at a certificate your browser
+  trusts.
+EOF
+
+if [ "$PHX_HOST" != "localhost" ]; then
+  cat <<EOF
+  Serving it over plain HTTP under that name will look like it works and
+  will not: service workers refuse to register off-localhost without TLS,
+  and an untrusted certificate is refused too — so push, offline and
+  install silently disappear, which is exactly what a staging box is
+  supposed to let you test. Use a trusted cert (mkcert on a LAN, ACME in
+  public).
+EOF
+fi
+
+if [ -n "$SEED_USER" ]; then
+  cat <<EOF
+
+  Seeded account:  ${SEED_USER} / ${SEED_PASSWORD}
+  Seeded network:  ${SEED_NETWORK} → ${SEED_SERVER} as ${SEED_NICK}${SEED_AUTOJOIN:+ (autojoin ${SEED_AUTOJOIN})}
+  Test-grade credentials — the account is a login for this box, nothing else.
+EOF
+else
+  cat <<EOF
 
   Create your first user (then log in via the web UI):
     ${COMPOSE[*]} run --rm grappa mix grappa.create_user --name you --password 'change-me'
 
   Bind an IRC network: see README.md "Bind a network".
+EOF
+fi
+
+cat <<EOF
+
   Stop the stack:      ${COMPOSE[*]} --profile prod down
 EOF
