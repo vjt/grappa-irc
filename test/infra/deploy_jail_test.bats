@@ -110,6 +110,18 @@ run_deploy() {
     run "$REPO_ROOT/infra/freebsd/deploy.sh" "$@"
 }
 
+# --- dependency sync before preflight ---------------------------------------
+
+@test "dependencies are fetched before the Mix preflight" {
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -eq 0 ]
+    deps_line=$(grep -n "mix deps.get --only prod" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    preflight_line=$(grep -n "mix run --no-start" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    [ "$deps_line" -lt "$preflight_line" ]
+}
+
 # --- #7: preflight range base ----------------------------------------------
 
 @test "no marker: preflight falls back to pre-pull HEAD as range base" {

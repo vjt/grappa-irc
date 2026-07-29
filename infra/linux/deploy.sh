@@ -62,6 +62,14 @@ if [ "${prev_sha}" = "${new_sha}" ]; then
 	echo "[deploy] HEAD unchanged (${new_sha}) — proceeding anyway (no nothing-to-do fast path: this substrate has no separate cic-only deploy path, so a no-op pull cannot hide a pending change)"
 fi
 
+echo "[deploy] mix deps.get --only prod"
+# Preflight runs through Mix too, so dependencies must match the newly
+# pulled lockfile before it can classify a dependency-changing deploy.
+run_as_grappa '
+	export MIX_ENV=prod
+	mix deps.get --only prod
+'
+
 # ---- Preflight ----
 #
 # Source of truth: lib/grappa/deploy/preflight.ex (shared with
@@ -132,7 +140,7 @@ esac
 
 echo "[deploy] ==> mode: ${mode}"
 
-echo "[deploy] mix deps.get --only prod / compile / release --overwrite"
+echo "[deploy] mix compile / release --overwrite"
 # MIX_ENV=prod required — see install.sh's matching comment: without
 # it mix defaults to :dev and compile fails on missing dev-only deps
 # that --only prod deliberately never fetched.
@@ -143,7 +151,6 @@ echo "[deploy] mix deps.get --only prod / compile / release --overwrite"
 # it the hot path's reload POST below would have nothing new to load.
 run_as_grappa '
 	export MIX_ENV=prod
-	mix deps.get --only prod
 	mix compile --warnings-as-errors
 	mix release --overwrite
 '

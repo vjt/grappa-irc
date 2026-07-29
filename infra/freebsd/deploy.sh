@@ -145,6 +145,11 @@ if [ -z "${DEPLOY_REEXECED:-}" ] \
 	exec "${REPO_ROOT}/infra/freebsd/deploy.sh" "$@"
 fi
 
+echo "[deploy] mix deps.get --only prod"
+# Preflight runs through Mix too, so dependencies must match the newly
+# pulled lockfile before it can classify a dependency-changing deploy.
+run_as_grappa 'mix deps.get --only prod'
+
 # ---- Preflight (auto mode only; explicit --force-* skips) ----
 #
 # Source of truth: `lib/grappa/deploy/preflight.ex` (the Elixir module
@@ -246,9 +251,6 @@ fi
 echo
 echo "[deploy] ==> mode: ${mode}"
 echo
-
-echo "[deploy] mix deps.get --only prod"
-run_as_grappa 'mix deps.get --only prod'
 
 echo "[deploy] mix compile --warnings-as-errors"
 run_as_grappa 'mix compile --warnings-as-errors'
