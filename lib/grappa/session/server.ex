@@ -2677,6 +2677,51 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  # Operator KILL / services AKILL — terminal, non-recoverable (GH #554).
+  # The upstream delivers a KILL to the victim with the victim's own nick
+  # as the target (`:killer KILL <victim> :<comment>`, hybrid/ratbox
+  # m_kill), then FINs the socket. Without this clause the KILL falls to
+  # the generic delegate (persists a $server_event) and the follow-on
+  # tcp_closed hands the drop to Backoff, which reconnects straight into
+  # the just-applied ban — the exact shape 465 already treats as terminal.
+  #
+  # We match on TARGET only (sender-agnostic): an AKILL arrives from a
+  # server or service prefix, not an oper nick, so keying on
+  # `target == own_nick` is the general rule. The self-match folds via
+  # `fold_key/2` (network-aware canonical_target, #537/#121) so a cased
+  # target still matches; never a bare `==` / downcase.
+  #
+  # `handle_terminal_failure/2` marks the credential :failed (Bootstrap
+  # then skips it next deploy) with a DISTINCT "killed: " reason (≠
+  # "k-line: " / "sasl: ") so cic can render "killed by an operator", and
+  # returns {:stop, :normal} — terminate/2 excludes :normal from Backoff,
+  # so no respawn. A KILL on ANY other nick is ordinary traffic and
+  # delegates unchanged (still persists its $server_event, socket stays).
+  #
+  # Ordering: IRC.Client (packet: :line, active: :once) forwards each
+  # parsed line to us BEFORE re-arming the socket (client.ex:1483→:1500),
+  # so {:irc, kill} is enqueued strictly before the tcp_closed-driven
+  # {:EXIT}; FIFO guarantees we stop here before the Backoff clause runs.
+  def handle_info(
+        {:irc, %Message{command: :kill, params: [target | rest]} = msg},
+        state
+      )
+      when is_binary(target) do
+    if fold_key(state, target) == fold_key(state, state.nick) do
+      comment = List.last(rest) || "killed"
+      reason = "killed: #{comment}"
+
+      Logger.error(
+        "operator KILL received — session marked :failed (network_id=#{state.network_id})",
+        reason: reason
+      )
+
+      handle_terminal_failure(reason, state)
+    else
+      delegate(msg, state)
+    end
+  end
+
   # S4.2 — CAP ACK: detect labeled-response being granted by the upstream.
   # IRC.Client dispatches ALL parsed messages to Session.Server (including
   # CAP messages that AuthFSM also processes). This handler fires for any

@@ -6174,7 +6174,7 @@ defmodule Grappa.Session.ServerTest do
       # `Topic.user` (not `Topic.network`) and arrives as a
       # `%Phoenix.Socket.Broadcast{}` envelope from
       # `Grappa.PubSub.broadcast_event/2`.
-      topic = Grappa.PubSub.Topic.user(user.name)
+      topic = Topic.user(user.name)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
@@ -6221,11 +6221,145 @@ defmodule Grappa.Session.ServerTest do
       assert reloaded.connection_state_reason == "k-line: You are banned from this server."
     end
 
+    # #554 — an operator KILL / services AKILL on our OWN nick is terminal,
+    # same class as 465: the upstream delivers `:killer KILL <victim>
+    # :<comment>` to the victim then FINs. Without this the KILL fell to the
+    # generic delegate (persist $server_event) and the tcp_closed handed the
+    # drop to Backoff, which reconnected straight into the just-applied ban.
+    test "KILL targeting own nick: marks :failed with 'killed:' reason, session exits :normal" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+      ref = Process.monitor(pid)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      # params = [target, comment]; target == our own nick.
+      msg = %Message{
+        command: :kill,
+        params: ["grappa-test", "Killed (testoper (spam))"],
+        prefix: {:nick, "testoper", "op", "irc.test.org"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, msg})
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :connection_state_changed,
+                         to: :failed,
+                         reason: "killed: Killed (testoper (spam))"
+                       }
+                     },
+                     3_000
+
+      reloaded =
+        Grappa.Repo.get_by!(Grappa.Networks.Credential,
+          user_id: user.id,
+          network_id: network.id
+        )
+
+      assert reloaded.connection_state == :failed
+      assert reloaded.connection_state_reason == "killed: Killed (testoper (spam))"
+    end
+
+    test "KILL targeting own nick with different case still terminal (fold match)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+      ref = Process.monitor(pid)
+
+      :ok = await_handshake(server)
+
+      # state.nick == "grappa-test"; "GRAPPA-TEST" folds equal (ascii).
+      msg = %Message{
+        command: :kill,
+        params: ["GRAPPA-TEST", "Killed (testoper (bye))"],
+        prefix: {:server, "irc.test.org"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, msg})
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :connection_state_changed, to: :failed}
+                     },
+                     3_000
+    end
+
+    test "KILL targeting another nick keeps flowing: session stays alive, DB :connected" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      msg = %Message{
+        command: :kill,
+        params: ["someone-else", "Killed (testoper (unrelated))"],
+        prefix: {:nick, "testoper", "op", "irc.test.org"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, msg})
+
+      # PING/PONG flush confirms the KILL was processed via FIFO.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      assert Process.alive?(pid)
+
+      reloaded =
+        Grappa.Repo.get_by!(Grappa.Networks.Credential,
+          user_id: user.id,
+          network_id: network.id
+        )
+
+      assert reloaded.connection_state == :connected
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "malformed KILL (no params) is non-terminal, session stays alive" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      msg = %Message{command: :kill, params: [], prefix: {:server, "irc.test.org"}, tags: %{}}
+      send(pid, {:irc, msg})
+
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      assert Process.alive?(pid)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "904 with 'SASL authentication failed' (permanent cred error): marks :failed, session exits :normal" do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
 
-      topic = Grappa.PubSub.Topic.user(user.name)
+      topic = Topic.user(user.name)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
