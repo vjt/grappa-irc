@@ -661,6 +661,26 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           result = { ok: true };
           break;
         }
+        // #557 — /kill <nick> [reason]: first-class operator KILL. Unlike
+        // /kick/kb this targets a NICK (no channel, no requireChannel) and
+        // ships a RAW frame via pushRaw, mirroring /quote — the server already
+        // accepts KILL through the raw passthrough (that is what operators do
+        // today with `/quote KILL ...`). The whole win is the trailing colon
+        // being composed HERE, downstream: `KILL <nick> :<reason>` keeps a
+        // multi-word reason intact instead of the /quote foot-gun where a
+        // forgotten `:` truncates the reason at its first space. A bare /kill
+        // (empty reason) sends `KILL <nick>` and lets the server answer (481
+        // for a non-oper, or the ircd's own missing-comment error). AWAIT the
+        // push so a WS-down / server {:error,_} surfaces as an inline compose
+        // alert, never a silent green ✓ (the #154 no-silent-drop lesson).
+        case "kill": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/kill: network not found" };
+          const line = cmd.reason === "" ? `KILL ${cmd.nick}` : `KILL ${cmd.nick} :${cmd.reason}`;
+          await pushRaw(networkId, line);
+          result = { ok: true };
+          break;
+        }
         case "unban": {
           const chanOrErr = requireChannel("unban");
           if (typeof chanOrErr !== "string") return chanOrErr;

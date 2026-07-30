@@ -547,6 +547,31 @@ describe("parseSlash — channel ops verbs", () => {
     });
   });
 
+  // #557 — /kill <nick> [reason]: first-class operator KILL. Same grammar as
+  // /kick (first token = nick, remainder = reason), but the target is a NICK
+  // with NO channel — compose.ts composes `KILL <nick> :<reason>` and the
+  // trailing colon is added downstream, never typed by the user. Non-oper
+  // feedback is the server's 481; cic does NOT client-gate.
+  it("/kill <nick> bare (no reason)", () => {
+    expect(parseSlash("/kill spammer")).toEqual({ kind: "kill", nick: "spammer", reason: "" });
+  });
+
+  it("/kill <nick> <reason with spaces> (full reason, colon composed downstream)", () => {
+    expect(parseSlash("/kill spammer flooding the channel")).toEqual({
+      kind: "kill",
+      nick: "spammer",
+      reason: "flooding the channel",
+    });
+  });
+
+  it("/kill missing nick → error", () => {
+    expect(parseSlash("/kill")).toMatchObject({
+      kind: "error",
+      verb: "kill",
+      message: "/kill requires a nick",
+    });
+  });
+
   it("/banlist bare → banlist for the current channel (null)", () => {
     expect(parseSlash("/banlist")).toEqual({ kind: "banlist", channel: null });
   });

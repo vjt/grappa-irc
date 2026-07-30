@@ -437,6 +437,36 @@ describe("compose submit — slash command dispatch", () => {
     expect(result).toEqual({ ok: true });
   });
 
+  // #557 — /kill <nick> <reason> composes `KILL <nick> :<reason>` and ships it
+  // via pushRaw (mirror of /quote/rehash). The trailing colon is added HERE,
+  // downstream — so a multi-word reason stays ONE param instead of truncating
+  // at the first space (the `/quote KILL nick reason` foot-gun #557 fixes). A
+  // regression in the ternary would ship green without this assertion.
+  it("/kill <nick> <reason> pushes KILL nick :reason via pushRaw (downstream colon)", async () => {
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/kill spammer flooding the channel");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushRaw).toHaveBeenCalledWith(1, "KILL spammer :flooding the channel");
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #557 — bare /kill <nick> (no reason) ships EXACTLY `KILL <nick>`: the
+  // empty-reason branch of the ternary must NOT leak a trailing `:` or a
+  // stringified null into the frame.
+  it("/kill <nick> bare pushes KILL nick (no trailing colon) via pushRaw", async () => {
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/kill spammer");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushRaw).toHaveBeenCalledWith(1, "KILL spammer");
+    expect(result).toEqual({ ok: true });
+  });
+
   // #290 — a BARE services command opens the dedicated services console
   // modal (pinned to the active window's network) AND fires `help` so the
   // service's multi-NOTICE help wall lands confined in the modal instead of

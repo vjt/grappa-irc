@@ -118,6 +118,12 @@ export type SlashCommand =
   // from the server's userhost_cache, `*!*@host` fail-closed) followed by a
   // KICK — two frames, ban first, attempt both (vjt decisions #1/#4).
   | { kind: "kb"; nick: string; reason: string }
+  // #557 — /kill <nick> [reason]: first-class operator KILL, same grammar as
+  // /kick/kb (first token = nick, remainder = reason). Target is a NICK with
+  // NO channel; compose.ts composes `KILL <nick> :<reason>` and adds the
+  // trailing colon downstream (never typed by the user — the /quote foot-gun
+  // #557 fixes). No client permission-probe: the server's 481 is the feedback.
+  | { kind: "kill"; nick: string; reason: string }
   | { kind: "ban"; mask: string }
   | { kind: "unban"; mask: string }
   // #386 /banlist opens the ban-management modal. #536 — the list-mode
@@ -212,6 +218,23 @@ function parseNicksVerb(kind: NicksVerbKind, rest: string): SlashCommand {
   const nicks = tokens(rest);
   if (nicks.length === 0) return err(kind, `/${kind} requires at least one nick`);
   return { kind, nicks };
+}
+
+// #557 — shared grammar for the nick-then-optional-reason verbs (/kick, /kb,
+// /kill): first whitespace-delimited token is the nick, the trimmed remainder
+// is the (optional) reason. `kind` is the discriminated-union literal (as
+// `parseNicksVerb` does) so we never re-cast the loose `verb` string back to the
+// narrow set; `verb` supplies the error copy so an alias (/kickban) names what
+// the user typed. #557 collapsed the three copy-pasted handlers into this one
+// (kick/kb predate it — the divergent copy-paste CLAUDE.md forbids).
+type NickReasonKind = "kick" | "kb" | "kill";
+
+function parseNickReason(kind: NickReasonKind, verb: string, rest: string): SlashCommand {
+  if (rest === "") return err(verb, `/${verb} requires a nick`);
+  const sp = rest.search(/\s/);
+  const nick = sp === -1 ? rest : rest.slice(0, sp);
+  const reason = sp === -1 ? "" : rest.slice(sp + 1).trim();
+  return { kind, nick, reason };
 }
 
 // #356 — presence-watch parser, shared by /notify + /watch (alias).
@@ -402,24 +425,19 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   voice: (_verb, rest) => parseNicksVerb("voice", rest),
   devoice: (_verb, rest) => parseNicksVerb("devoice", rest),
 
-  kick: (verb, rest) => {
-    const sp = rest.search(/\s/);
-    if (rest === "") return err(verb, "/kick requires a nick");
-    const nick = sp === -1 ? rest : rest.slice(0, sp);
-    const reason = sp === -1 ? "" : rest.slice(sp + 1).trim();
-    return { kind: "kick", nick, reason };
-  },
+  kick: (verb, rest) => parseNickReason("kick", verb, rest),
 
   // #386 — /kb <nick> [reason] kickban. First token is the nick, the rest is
   // the (optional) reason — identical grammar to /kick. The ban-mask build
   // (`*!*@host` fail-closed) + MODE+KICK sequencing live in compose.ts.
-  kb: (verb, rest) => {
-    const sp = rest.search(/\s/);
-    if (rest === "") return err(verb, "/kb requires a nick");
-    const nick = sp === -1 ? rest : rest.slice(0, sp);
-    const reason = sp === -1 ? "" : rest.slice(sp + 1).trim();
-    return { kind: "kb", nick, reason };
-  },
+  kb: (verb, rest) => parseNickReason("kb", verb, rest),
+
+  // #557 — /kill <nick> [reason] operator KILL. Same nick-then-reason grammar
+  // as /kick/kb, but no channel — the target is a NICK. compose.ts composes
+  // `KILL <nick> :<reason>` (trailing colon added downstream) and ships it via
+  // pushRaw, mirroring /quote. A non-oper gets the server's 481; cic does not
+  // client-gate (issue #557 out-of-scope: no /gline, no confirm dialog).
+  kill: (verb, rest) => parseNickReason("kill", verb, rest),
 
   ban: (verb, rest) => {
     const [mask] = tokens(rest);
