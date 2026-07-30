@@ -23900,3 +23900,69 @@ migrations; the `IdentifierTest` pin test fails on one byte of drift). Shipped
 as separate reviewable INCs on the `537-identifier-fold-casemapping` branch
 (INC-1 boundary folds → INC-2a/b/c + 2.2/2.3/2.4 the network-aware ingress →
 INC-3 the mechanical collapse), never a big-bang.
+
+## 2026-07-31 — #554: operator KILL/AKILL is terminal, not a Backoff reconnect
+
+**Problem.** An oper-initiated `KILL` (and an AKILL, which the upstream delivers
+as a `KILL` + socket close) was NOT modelled as terminal. `KILL` parses
+(`parser.ex` → `:kill`, typed in `message.ex`) but no `handle_info/2` in
+`Session.Server` matched `command: :kill`, so a self-KILL fell to the generic
+`delegate` → `EventRouter` catch-all `route_unhandled_command` → a
+`:server_event` row on `$server` (visible but non-terminal). The follow-on
+`tcp_closed` then handed the drop to `Backoff` — exactly the shape it retries —
+so the session respawned and reconnected straight into the just-applied ban.
+The ban surfaced only on the NEXT connect via numeric 465 (already terminal),
+costing one extra full connect per akill; reconnecting against a banned address
+is precisely what upstream throttling punishes, so recovery made it worse.
+
+**Decision.** Treat a `KILL` whose target folds equal to our own current nick
+as terminal, on the SAME path as 465 (Decision C family). A new
+`handle_info({:irc, %Message{command: :kill, params: [target | rest]}}, state)`
+clause sits next to the 465/904 handlers:
+
+- **Self-match, sender-agnostic.** Match on `target` only (folded via
+  `fold_key/2`, the network-aware `canonical_target`, #537/#121 — never a bare
+  `==`/`downcase`). An AKILL arrives from a server or service prefix, not an
+  oper nick, so keying on `target == own_nick` is the general rule, not the
+  oper example.
+- **`handle_terminal_failure/2`** marks the credential `:failed` (so Bootstrap
+  skips it on the next deploy, matching 465) with a DISTINCT `"killed: "` reason
+  (≠ `"k-line: "` 465, ≠ `"sasl: "` 904) carrying the KILL comment verbatim, and
+  returns `{:stop, :normal}` — `terminate/2` excludes `:normal` from
+  `Backoff.record_failure`, and `:transient` does not restart on a normal exit.
+  The reason ships to cic verbatim through the existing `Networks.mark_failed/2`
+  → `broadcast_state_change/4` → `{:connection_state_changed}` on `Topic.user`,
+  so cic shows a "killed" reason instead of a reconnect spinner (cic's dedicated
+  rendering of the prefix is a follow-up).
+- **KILL on any OTHER nick** delegates unchanged — ordinary traffic, still
+  persists its `$server_event`, socket stays open. Malformed KILL (empty/
+  non-binary params) falls to the generic clause; non-terminal.
+- **No user lockout.** `:failed` is not a dead end: `Networks.connect/2` accepts
+  `:parked | :failed → :connected` (clearing the reason), so a manual `/connect`
+  from cic still works. Terminal = no AUTO retry (Backoff + Bootstrap), not
+  "user shut out."
+
+**Mailbox-ordering proof (KILL beats the tcp_closed→Backoff EXIT).** The worry
+was that the disconnect signal could be processed before the KILL. It cannot,
+from `IRC.Client`: the socket is `packet: :line, active: :once`, and
+`process_line/2` `send`s each parsed line to the Session BEFORE re-arming the
+socket (`client.ex` forward-then-setopts), so the Client cannot even observe
+`{:tcp_closed}` until the KILL has been forwarded. `{:tcp_closed}` →
+`{:stop, :tcp_closed}` → the linked Client's `{:EXIT}` reaches the Session
+STRICTLY AFTER `{:irc, kill}` is already enqueued; FIFO means the Session
+processes the KILL (→ `{:stop, :normal}`) before it ever dequeues the EXIT, so
+the abnormal-EXIT clause that calls `Backoff.record_failure` never runs. ERROR
+is not terminal (no `handle_info` for `command: :error`; it delegates to a
+`$server_event`), so its order relative to the KILL is irrelevant — the only
+Backoff trigger is `tcp_closed`, which is strictly last.
+
+**Domain assumption — PROVEN.** The design rests on the upstream delivering the
+KILL to the victim with the victim's own nick as target. hybrid (bahamut) and
+ratbox (solanum) `m_kill` both `sendto_one(target, ":<killer> KILL <victim>
+:<comment>")` to the local victim before `exit_client`. The real integration
+e2e confirms it end-to-end against live bahamut (`bahamut(perimeter)-1.4(34)-
+azzurra`, `CASEMAPPING=ascii`, prod-identical): an opered peer KILLs the seeded
+session's upstream nick, and the credential goes `connection_state=failed` with
+a `killed:` reason and STAYS failed (no reconnect for 8s). If a future ircd did
+NOT deliver the KILL to the victim, the fallback would key off the
+`ERROR :Closing Link ... (Killed ...)` line — out of scope unless disproved.
