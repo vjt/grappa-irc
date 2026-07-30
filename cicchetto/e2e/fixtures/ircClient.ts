@@ -362,6 +362,17 @@ export class IrcPeer {
     await kicked;
   }
 
+  // Issue a raw KILL <target> :<reason> (oper-only upstream) — #554 e2e:
+  // an opered peer KILLs the grappa session's upstream nick to prove the
+  // KILL-terminal path. Fire-and-forget: irc-framework doesn't echo own
+  // commands, and the victim's disconnect is observed SERVER-side (the
+  // credential goes connection_state :failed), not on this peer.
+  // `raw(array)` adds the trailing-param `:` itself, so the reason ships
+  // as one token. Requires a prior `oper(...)`.
+  kill(targetNick: string, reason: string): void {
+    this.client.raw(["KILL", targetNick, reason]);
+  }
+
   // /OPER up to ircop. Required to bypass bahamut's "no ops on new
   // channels in split-mode" gate that otherwise locks every freshly
   // created channel out of any kind of mode-setting (including +i, +k,
