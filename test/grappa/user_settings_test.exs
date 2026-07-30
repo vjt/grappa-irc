@@ -810,4 +810,77 @@ defmodule Grappa.UserSettingsTest do
       assert UserSettings.get_aliases({:visitor, visitor.id}) == %{"wii" => "whois $1 $1"}
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # last_client_prefix64 accessors (#543 INC-3 — dumb base16 string store)
+  # ---------------------------------------------------------------------------
+
+  describe "get/put_last_client_prefix64 — opaque base16 string store" do
+    test "round-trips a base16 string" do
+      user = user_fixture()
+      hex = Base.encode16(<<0x20, 0x01, 0x0D, 0xB8, 0, 1, 0, 2>>)
+
+      assert {:ok, _} = UserSettings.put_last_client_prefix64({:user, user.id}, hex)
+      assert UserSettings.get_last_client_prefix64({:user, user.id}) == hex
+    end
+
+    test "last write wins (roam) — the putter replaces, not appends" do
+      user = user_fixture()
+      first = Base.encode16(<<1, 2, 3, 4>>)
+      second = Base.encode16(<<5, 6, 7, 8>>)
+
+      {:ok, _} = UserSettings.put_last_client_prefix64({:user, user.id}, first)
+      {:ok, _} = UserSettings.put_last_client_prefix64({:user, user.id}, second)
+      assert UserSettings.get_last_client_prefix64({:user, user.id}) == second
+    end
+
+    test "get returns nil when no settings row exists" do
+      user = user_fixture()
+      assert UserSettings.get_last_client_prefix64({:user, user.id}) == nil
+    end
+
+    test "get returns nil when the row exists but the key is absent" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.get_or_init({:user, user.id})
+      assert UserSettings.get_last_client_prefix64({:user, user.id}) == nil
+    end
+
+    test "get returns nil for a malformed (non-string) stored value" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+      # Bypass the typed putter to inject a bad shape (a miscoded writer).
+      {:ok, _} =
+        Repo.update(Settings.changeset(settings, %{data: %{"last_client_prefix64" => 123}}))
+
+      assert UserSettings.get_last_client_prefix64({:user, user.id}) == nil
+    end
+
+    test "put rejects an empty string" do
+      user = user_fixture()
+      assert {:error, %Ecto.Changeset{}} = UserSettings.put_last_client_prefix64({:user, user.id}, "")
+    end
+
+    test "put rejects a non-base16 string" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{}} =
+               UserSettings.put_last_client_prefix64({:user, user.id}, "not-hex-zz")
+    end
+
+    test "put preserves other data keys (highlight_patterns)" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.set_highlight_patterns({:user, user.id}, ["foo", "bar"])
+
+      {:ok, _} = UserSettings.put_last_client_prefix64({:user, user.id}, Base.encode16(<<9, 9>>))
+      assert UserSettings.get_highlight_patterns({:user, user.id}) == ["foo", "bar"]
+    end
+
+    test "works for visitor subjects (visitor-parity)" do
+      visitor = visitor_fixture()
+      hex = Base.encode16(<<0xCA, 0xFE>>)
+
+      assert {:ok, _} = UserSettings.put_last_client_prefix64({:visitor, visitor.id}, hex)
+      assert UserSettings.get_last_client_prefix64({:visitor, visitor.id}) == hex
+    end
+  end
 end

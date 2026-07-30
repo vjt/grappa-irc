@@ -62,6 +62,9 @@ defmodule Grappa.UserSettings do
   |                        |                        | `put_display_prefs/2`,          |
   |                        |                        | `display_prefs_persisted?/1`    |
   |                        |                        | (#449)                          |
+  | `"last_client_prefix64"`| `String.t() \\| nil`  | `get_last_client_prefix64/1`,   |
+  |                        | (opaque base16)        | `put_last_client_prefix64/2`    |
+  |                        |                        | (#543)                          |
 
   ## Boundary
 
@@ -157,6 +160,14 @@ defmodule Grappa.UserSettings do
   @display_prefs_key "display_prefs"
   @display_time_formats ~w(hms hm)
   @display_presence_values ~w(show hide)
+
+  # #543 — the subject's last-known client network prefix key, sampled at
+  # client-connect and read at upstream-connect for the static_mapping
+  # addressing mode. The value is an OPAQUE base16 string here (a raw
+  # `client_key` binary is not JSON-safe); `Grappa.Vhosts` owns the
+  # client_key/base16 domain logic — this module is a dumb string store,
+  # mirroring the `vhost_selection` split.
+  @last_client_prefix64_key "last_client_prefix64"
 
   # Structural bounds for aliases — a user-writable JSON blob needs a boundary
   # or it becomes an unbounded storage/DOS vector (same rationale as
@@ -523,6 +534,70 @@ defmodule Grappa.UserSettings do
         %Settings{}
         |> Settings.changeset(attrs)
         |> Ecto.Changeset.add_error(:data, "vhost_selection elements must be non-empty strings")
+
+      {:error, cs}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # last_client_prefix64 accessor (#543 — dumb base16 string store)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Returns the subject's last-known client prefix key as the RAW opaque
+  base16 string, or `nil` when no row exists, the key is absent, or the
+  stored value is malformed (not a non-empty binary).
+
+  This is a dumb string store — decoding the base16 back to the raw
+  `client_key` binary is `Grappa.Vhosts.last_client_prefix64/1`'s job.
+  Side-effect-free; reads the string key (`:map` JSON round-trip).
+  """
+  @spec get_last_client_prefix64(Subject.t()) :: String.t() | nil
+  def get_last_client_prefix64({_, _} = subject) do
+    case fetch_existing_or_nil(subject) do
+      nil ->
+        nil
+
+      %Settings{data: data} ->
+        case data[@last_client_prefix64_key] do
+          s when is_binary(s) and byte_size(s) > 0 -> s
+          _ -> nil
+        end
+    end
+  end
+
+  @doc """
+  Persists the subject's last-known client prefix key (an opaque base16
+  string), preserving other keys in `data` (merge semantics). Validates
+  the value is a non-empty base16 string; the client_key → base16
+  encoding is `Grappa.Vhosts.record_client_source/2`'s responsibility.
+  Last-write-wins (a roam replaces the stored key).
+  """
+  @spec put_last_client_prefix64(Subject.t(), String.t()) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t()}
+  def put_last_client_prefix64({_, _} = subject, hex) when is_binary(hex) do
+    with :ok <- validate_base16(hex, subject),
+         {:ok, settings} <- get_or_init(subject) do
+      merged_data = Map.put(settings.data, @last_client_prefix64_key, hex)
+      cs = Settings.changeset(settings, %{data: merged_data})
+      Repo.update(cs)
+    end
+  end
+
+  @spec validate_base16(String.t(), Subject.t()) :: :ok | {:error, Ecto.Changeset.t()}
+  defp validate_base16(hex, subject) do
+    if byte_size(hex) > 0 and match?({:ok, _}, Base.decode16(hex)) do
+      :ok
+    else
+      attrs = Subject.put_subject_id(%{data: %{}}, subject)
+
+      cs =
+        %Settings{}
+        |> Settings.changeset(attrs)
+        |> Ecto.Changeset.add_error(
+          :last_client_prefix64,
+          "must be a non-empty base16 string"
+        )
 
       {:error, cs}
     end

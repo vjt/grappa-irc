@@ -81,7 +81,9 @@ defmodule Grappa.Vhosts do
   import Ecto.Query
 
   alias Grappa.{Repo, Subject, UserSettings}
-  alias Grappa.Vhosts.{Grant, Vhost}
+  alias Grappa.Vhosts.{Grant, SourceMapping, Vhost}
+
+  require Logger
 
   # ---------------------------------------------------------------------------
   # Inventory CRUD
@@ -343,6 +345,68 @@ defmodule Grappa.Vhosts do
     case get_selection(subject) do
       [] -> nil
       selected -> Enum.random(selected)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Client-source capture (#543 INC-3 — last-known client /64 per subject)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Records the subject's client network prefix, sampled from `remote_ip`
+  at client-connect.
+
+  Normalises the IP to its `/64` (v6) or `/32` (v4) mapping key via
+  `SourceMapping.client_key/1` (interface id dropped, RFC 8981) and
+  persists it base16 in `UserSettings`. Idempotent per connect;
+  last-write-wins on roam. Read back at upstream-connect by
+  `last_client_prefix64/1` when no client is attached then — the #543
+  mode-2 (`static_mapping_with_reservations`) "last-known /64" fallback.
+
+  Always returns `:ok`: a capture failure must never fail the client
+  connect. A persist error (e.g. the subject row vanished mid-connect)
+  is best-effort but LOGGED, never silently swallowed (CLAUDE.md
+  boundary rule).
+  """
+  @spec record_client_source(Subject.t(), :inet.ip_address()) :: :ok
+  def record_client_source({_, _} = subject, remote_ip) do
+    hex = Base.encode16(SourceMapping.client_key(remote_ip))
+
+    case UserSettings.put_last_client_prefix64(subject, hex) do
+      {:ok, _} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.warning(
+          "record_client_source: failed to persist client prefix for " <>
+            "#{inspect(subject)} — #{inspect(changeset.errors)}"
+        )
+
+        :ok
+    end
+  end
+
+  @doc """
+  The subject's last-known client prefix key — the RAW decoded `/64`|`/32`
+  binary — or `nil` when the subject was never seen OR the stored value is
+  malformed.
+
+  Decodes the base16 string `record_client_source/2` persisted. A decode
+  failure (a miscoded writer) falls back to `nil` rather than raising
+  (`Base.decode16/1`, never `decode16!/1`). The returned binary equals
+  `SourceMapping.client_key/1` of the originally-recorded IP.
+  """
+  @spec last_client_prefix64(Subject.t()) :: binary() | nil
+  def last_client_prefix64({_, _} = subject) do
+    case UserSettings.get_last_client_prefix64(subject) do
+      nil ->
+        nil
+
+      hex ->
+        case Base.decode16(hex) do
+          {:ok, key} -> key
+          :error -> nil
+        end
     end
   end
 

@@ -7,8 +7,11 @@ defmodule Grappa.VhostsTest do
   use Grappa.DataCase, async: true
 
   import Grappa.AuthFixtures
+  import ExUnit.CaptureLog
 
-  alias Grappa.Vhosts
+  alias Grappa.{Repo, UserSettings, Vhosts}
+  alias Grappa.UserSettings.Settings
+  alias Grappa.Vhosts.SourceMapping
 
   # Unique v6 literal — mask the counter into a single valid hextet
   # (0..0xffff) so the strict-literal changeset always accepts it.
@@ -254,6 +257,75 @@ defmodule Grappa.VhostsTest do
     test "an empty fixed-source list is the full in_pool set" do
       {:ok, a} = Vhosts.create_vhost(%{address: addr(), in_pool: true})
       assert a.address in Vhosts.effective_pool([])
+    end
+  end
+
+  # #543 INC-3 — capture the subject's last-known client /64 at connect so the
+  # mode-2 (static_mapping) derivation has a source when no client is attached
+  # at upstream-connect. Vhosts owns the domain logic (client_key + base16);
+  # UserSettings stays a dumb string store.
+  describe "record_client_source/2 + last_client_prefix64/1" do
+    test "record_client_source persists the /64 key and last write wins" do
+      subject = {:user, user_fixture().id}
+
+      :ok = Vhosts.record_client_source(subject, {0x2001, 0xDB8, 1, 2, 9, 9, 9, 9})
+      # Interface id (last 4 hextets) is dropped — the stored key is the /64.
+      assert Vhosts.last_client_prefix64(subject) ==
+               SourceMapping.client_key({0x2001, 0xDB8, 1, 2, 0, 0, 0, 0})
+
+      # Roam to a different /64 → last write wins.
+      :ok = Vhosts.record_client_source(subject, {0x2001, 0xDB8, 1, 3, 0, 0, 0, 0})
+
+      assert Vhosts.last_client_prefix64(subject) ==
+               SourceMapping.client_key({0x2001, 0xDB8, 1, 3, 0, 0, 0, 0})
+    end
+
+    test "record_client_source stores the /32 for a v4 client" do
+      subject = {:user, user_fixture().id}
+
+      :ok = Vhosts.record_client_source(subject, {203, 0, 113, 7})
+      assert Vhosts.last_client_prefix64(subject) == SourceMapping.client_key({203, 0, 113, 7})
+    end
+
+    test "last_client_prefix64 is nil for a never-seen subject" do
+      assert Vhosts.last_client_prefix64({:user, user_fixture().id}) == nil
+    end
+
+    test "last_client_prefix64 is nil when the stored value is not valid base16" do
+      subject = {:user, user_fixture().id}
+      {:ok, settings} = UserSettings.get_or_init(subject)
+
+      # A miscoded writer bypasses the validated putter — a non-empty, non-base16
+      # string reaches Vhosts, whose Base.decode16/1 (never decode16!/1) must
+      # fall back to nil rather than raise.
+      {:ok, _} =
+        Repo.update(Settings.changeset(settings, %{data: %{"last_client_prefix64" => "ZZZZ"}}))
+
+      assert Vhosts.last_client_prefix64(subject) == nil
+    end
+
+    test "record_client_source returns :ok and LOGS when the subject row is gone" do
+      # No backing row → put_last_client_prefix64 returns {:error, cs}. The
+      # capture must NEVER fail the connect (returns :ok), but must not silently
+      # swallow the error (CLAUDE.md boundary rule → LOGGED).
+      subject = {:user, Ecto.UUID.generate()}
+
+      log =
+        capture_log(fn ->
+          assert :ok = Vhosts.record_client_source(subject, {203, 0, 113, 7})
+        end)
+
+      assert log =~ "record_client_source"
+      assert Vhosts.last_client_prefix64(subject) == nil
+    end
+
+    test "works for visitor subjects (visitor-parity)" do
+      subject = {:visitor, visitor_fixture().id}
+
+      :ok = Vhosts.record_client_source(subject, {0x2001, 0xDB8, 0xCAFE, 1, 0, 0, 0, 1})
+
+      assert Vhosts.last_client_prefix64(subject) ==
+               SourceMapping.client_key({0x2001, 0xDB8, 0xCAFE, 1, 0, 0, 0, 0})
     end
   end
 end
