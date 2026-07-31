@@ -5440,7 +5440,8 @@ html.resize-dragging * {
   width: 2.5rem;
   height: 0.55rem;
   border-radius: 0.28rem;
-  background: linear-gradient(90deg, hsl(190 68% 58%), hsl(350 68% 58%));
+  /* The gradient is set inline from depthColor() (LinksModal.tsx) so the ramp
+     has one source; no hsl() stops duplicated here. */
 }
 
 .links-modal-detail {

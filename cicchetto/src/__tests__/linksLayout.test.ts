@@ -110,6 +110,9 @@ describe("radialLayout (#238) — empty + single-node degenerate cases", () => {
     expect(layout.width).toBeGreaterThan(0);
     expect(layout.height).toBeGreaterThan(0);
     expectContained(layout);
+    // The box hugs the lone glyph+label too (a loose degenerate-path box would
+    // still "contain" the glyph, so pin the tightness here as well).
+    expect(minExtremity(layout)).toBeCloseTo(margin, 6);
     // Its label always survives the declutter (root is placed first).
     expect(root?.labelVisible).toBe(true);
   });

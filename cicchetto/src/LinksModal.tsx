@@ -366,7 +366,13 @@ const LinksModal: Component = () => {
                             // true), with the hovered/selected node forced on
                             // top. The pure layout guarantees no two BASELINE
                             // labels overlap; a transient active label is the
-                            // one the user asked for, so it always shows.
+                            // one the user asked for, so it always shows. Only
+                            // baseline-visible labels feed the fitted extent, so
+                            // hovering a DECLUTTERED edge node can push its label
+                            // a few units past the box edge (clipped on the fill
+                            // axis); it's transient and a pan recovers it —
+                            // reserving extent for every possible hover would
+                            // undo the fit.
                             const labelled = (): boolean => node.labelVisible || isActive();
                             return (
                               // biome-ignore lint/a11y/noStaticElementInteractions: SVG node glyph is a pointer-first inspect target (tap/hover), not a control; keyboard nav is a documented INC-3 follow-up
@@ -437,7 +443,16 @@ const LinksModal: Component = () => {
                   <div class="links-modal-legend" data-testid="links-modal-legend">
                     <span class="links-modal-legend-you">◎ you are here</span>
                     <span class="links-modal-legend-ramp">
-                      <span class="links-modal-legend-swatch" aria-hidden="true" />
+                      {/* Gradient stops come from the SAME depthColor ramp the
+                          nodes use (root→leaf), so a ramp tuning stays one
+                          source — no hardcoded hsl() duplicated in the CSS. */}
+                      <span
+                        class="links-modal-legend-swatch"
+                        aria-hidden="true"
+                        style={{
+                          background: `linear-gradient(90deg, ${depthColor(0, 1)}, ${depthColor(1, 1)})`,
+                        }}
+                      />
                       colour = hops from your server
                     </span>
                   </div>
