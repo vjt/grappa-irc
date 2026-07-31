@@ -378,18 +378,18 @@ body {
    textarea { font-size: max(16px, var(--font-size)) }` — #508 removed it pending
    vjt's device check. */
 input:where(
-    :not(
-        [type="radio"],
-        [type="checkbox"],
-        [type="range"],
-        [type="file"],
-        [type="color"],
-        [type="submit"],
-        [type="reset"],
-        [type="button"],
-        [type="image"]
-      )
-  ),
+  :not(
+    [type="radio"],
+    [type="checkbox"],
+    [type="range"],
+    [type="file"],
+    [type="color"],
+    [type="submit"],
+    [type="reset"],
+    [type="button"],
+    [type="image"]
+  )
+),
 textarea {
   box-sizing: border-box;
   min-height: var(--tap-min);
@@ -407,18 +407,18 @@ textarea {
 }
 
 input:where(
-    :not(
-        [type="radio"],
-        [type="checkbox"],
-        [type="range"],
-        [type="file"],
-        [type="color"],
-        [type="submit"],
-        [type="reset"],
-        [type="button"],
-        [type="image"]
-      )
-  ):focus,
+  :not(
+    [type="radio"],
+    [type="checkbox"],
+    [type="range"],
+    [type="file"],
+    [type="color"],
+    [type="submit"],
+    [type="reset"],
+    [type="button"],
+    [type="image"]
+  )
+):focus,
 textarea:focus {
   outline: none;
   border-color: var(--accent);
@@ -627,21 +627,21 @@ html.overlay-open #root > div {
   pointer-events: none;
   overflow: hidden;
   background-image: /* FAR drift layer — slow, sparse, dim (depth: farthest back). */
-      repeating-linear-gradient(
-        0deg,
-        color-mix(in srgb, var(--accent) 9%, transparent) 0px,
-        color-mix(in srgb, var(--accent) 9%, transparent) 2px,
-        transparent 2px,
-        transparent 16px
-      ),
-      /* Static accent glow bloom behind the card — the "glow" half of the
+    repeating-linear-gradient(
+      0deg,
+      color-mix(in srgb, var(--accent) 9%, transparent) 0px,
+      color-mix(in srgb, var(--accent) 9%, transparent) 2px,
+      transparent 2px,
+      transparent 16px
+    ),
+    /* Static accent glow bloom behind the card — the "glow" half of the
        vjt pick. Not animated (its background-position is held in the far
        keyframes). */
-      radial-gradient(
-        65% 55% at 50% 42%,
-        color-mix(in srgb, var(--accent) 14%, transparent),
-        transparent 72%
-      );
+    radial-gradient(
+      65% 55% at 50% 42%,
+      color-mix(in srgb, var(--accent) 14%, transparent),
+      transparent 72%
+    );
   background-size:
     100% 340px,
     100% 100%;

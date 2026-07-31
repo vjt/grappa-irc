@@ -1846,28 +1846,28 @@ describe("compose submit — S6 no-silent-drop: invite + query verbs surface rej
     { verb: "/motd", draft: "/motd", pick: (s) => s.pushMotd },
   ];
 
-  it.each(cases)("$verb surfaces the push rejection as { error } (no false success)", async ({
-    draft,
-    pick,
-  }) => {
-    localStorage.setItem("grappa-token", "tok");
-    const api = await import("../lib/api");
-    const socket = await import("../lib/socket");
-    const friendly = await import("../lib/friendlyChannelError");
-    const compose = await import("../lib/compose");
+  it.each(cases)(
+    "$verb surfaces the push rejection as { error } (no false success)",
+    async ({ draft, pick }) => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      const socket = await import("../lib/socket");
+      const friendly = await import("../lib/friendlyChannelError");
+      const compose = await import("../lib/compose");
 
-    const err = new api.ChannelPushError("no_session");
-    vi.mocked(pick(socket)).mockRejectedValueOnce(err);
+      const err = new api.ChannelPushError("no_session");
+      vi.mocked(pick(socket)).mockRejectedValueOnce(err);
 
-    const k = channelKey("freenode", "#a");
-    compose.setDraft(k, draft);
-    const result = await compose.submit(k, "freenode", "#a");
+      const k = channelKey("freenode", "#a");
+      compose.setDraft(k, draft);
+      const result = await compose.submit(k, "freenode", "#a");
 
-    // Failure surfaces as the friendly inline error — NOT { ok: true }.
-    expect(result).toEqual({ error: friendly.friendlyChannelError(err) });
-    // Draft preserved so the operator can retry without re-typing.
-    expect(compose.getDraft(k)).toBe(draft);
-  });
+      // Failure surfaces as the friendly inline error — NOT { ok: true }.
+      expect(result).toEqual({ error: friendly.friendlyChannelError(err) });
+      // Draft preserved so the operator can retry without re-typing.
+      expect(compose.getDraft(k)).toBe(draft);
+    },
+  );
 });
 
 describe("compose submit — info verbs (TODO stubs)", () => {

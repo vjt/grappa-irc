@@ -728,33 +728,31 @@ describe("embeddedHost.upload — wire shape", () => {
     });
   });
 
-  it.each([
-    "3600",
-    "43200",
-    "86400",
-    "259200",
-  ])("wires TTL %s into the expire= field", async (ttl) => {
-    const upload = embeddedHost.upload(
-      sampleFile(),
-      { ttl },
-      () => {},
-      new AbortController().signal,
-    );
-    const xhr = MockXMLHttpRequest.instances[0];
-    if (!xhr) throw new Error("expected XHR");
+  it.each(["3600", "43200", "86400", "259200"])(
+    "wires TTL %s into the expire= field",
+    async (ttl) => {
+      const upload = embeddedHost.upload(
+        sampleFile(),
+        { ttl },
+        () => {},
+        new AbortController().signal,
+      );
+      const xhr = MockXMLHttpRequest.instances[0];
+      if (!xhr) throw new Error("expected XHR");
 
-    expect(formDataEntries(xhr.body).expire).toBe(ttl);
+      expect(formDataEntries(xhr.body).expire).toBe(ttl);
 
-    xhr.triggerLoad(
-      201,
-      JSON.stringify({
-        slug: "x",
-        url: "https://grappa.test/uploads/x",
-        expires_at: "2026-05-22T00:00:00Z",
-      }),
-    );
-    await upload;
-  });
+      xhr.triggerLoad(
+        201,
+        JSON.stringify({
+          slug: "x",
+          url: "https://grappa.test/uploads/x",
+          expires_at: "2026-05-22T00:00:00Z",
+        }),
+      );
+      await upload;
+    },
+  );
 
   it("falls back to defaultTtl when no ttl supplied", async () => {
     const upload = embeddedHost.upload(sampleFile(), {}, () => {}, new AbortController().signal);
