@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, on, untrack } from "solid-js";
-import { isContentKind } from "./api";
+import { isContentKind, ownNickForNetwork } from "./api";
 import { token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { isDocumentVisible } from "./documentVisibility";
@@ -379,6 +379,11 @@ const exports = identityScopedStore((onIdentityChange) => {
     // the memo re-run when membership crosses the large-channel threshold, in
     // lock-step with `presenceRowVisible`'s pref-signal dependency below.
     const members = membersByChannel();
+    // #576 — resolve the operator's per-network own nick to strip own-authored
+    // CONTENT from the count (see the content-row loop below). Read reactively
+    // so a NICK change / login re-runs the count. Per-key resolution uses
+    // `networkBySlug(slug)` inside the loop (a nick is per-network).
+    const me = user();
 
     const result: Record<ChannelKey, Computed> = {};
 
@@ -403,6 +408,16 @@ const exports = identityScopedStore((onIdentityChange) => {
       const cursorMapKey = `${decoded.slug} ${decoded.name}`;
       const cursor = cursors[cursorMapKey] ?? 0;
       const memberCount = (members[key] ?? []).length;
+      // #576 — the per-network own nick for this key's network. A nick is
+      // per-network (`net.nick`), so resolve it per key; null when the
+      // network isn't known yet (nickEquals is null-safe → no exclusion).
+      const net = networkBySlug(decoded.slug);
+      const ownNick = net ? ownNickForNetwork(net, me) : null;
+      // The own-nick SELF window (pane keyed to your own nick) is the ONE
+      // window where own content is legitimate payload — a note-to-self —
+      // so it is NOT excluded there (#396). Mirrors the server self-window
+      // carve-out in `Scrollback.exclude_own_authored/3`.
+      const isSelfWindow = nickEquals(decoded.name, ownNick);
 
       let msgs = 0;
       let evts = 0;
@@ -413,8 +428,21 @@ const exports = identityScopedStore((onIdentityChange) => {
         // operator can never clear by reading. Same predicate the pane's
         // `rows()` filter uses (reconcile-to-one, not a forked filter).
         if (!presenceRowVisible(key, memberCount, row.kind)) continue;
-        if (isContentKind(row.kind)) msgs++;
-        else evts++;
+        if (isContentKind(row.kind)) {
+          // #576 — a content row the operator authored is read BY DEFINITION;
+          // outside the self-window it must not inflate the badge (the
+          // content-row twin of the #532 A own-presence exclusion, mirrored
+          // server-side in `Scrollback.exclude_own_authored/3`). `sender` is
+          // compared via the ASCII nick fold (#372 `nickEquals`) — display
+          // stays raw, the MATCH folds. Belt-and-braces over the optimistic
+          // send-time cursor advance (scrollback.ts), which has gaps (the #50
+          // empty-pane gate; a cross-device / out-of-order cursor landing
+          // below your own line).
+          if (!isSelfWindow && nickEquals(row.sender, ownNick)) continue;
+          msgs++;
+        } else {
+          evts++;
+        }
       }
       result[key] = { messages: msgs, events: evts };
     }

@@ -282,10 +282,16 @@ defmodule Grappa.ReadCursor do
   def bulk_unread_split(subject, own_nicks) when is_map(own_nicks) do
     content = Message.content_kinds()
     {sub_field, sub_id} = subject_pair(subject)
-    own_presence = own_presence_dynamic(own_nicks)
+    own_authored = own_authored_dynamic(own_nicks, content)
 
-    # Full JOIN on-clause built as a dynamic so the per-network own-presence
-    # OR (`^own_presence`) can be interpolated into it (#532 A).
+    # Full JOIN on-clause built as a dynamic so the per-network own-authored
+    # exclusion (`^own_authored`) can be interpolated into it (#532 A + #576).
+    # An own-authored row — own CONTENT (a line the operator sent, #576) OR
+    # own PRESENCE (self-part / kick-issued / terminal self-rename, #532 A) —
+    # does not join, so it lands in NEITHER bucket. The kind gate for the
+    # presence-only `new_nick` clause now lives INSIDE `own_authored_dynamic`
+    # (the `sender` clause applies to every kind), so the wrap is a bare
+    # `not ^own_authored`.
     join_on =
       dynamic(
         [rc, _, m],
@@ -294,7 +300,7 @@ defmodule Grappa.ReadCursor do
           Identifier.nick_fold(fragment("COALESCE(?, ?)", m.dm_with, m.channel)) ==
             Identifier.nick_fold(rc.channel) and
           m.id > rc.last_read_message_id and
-          not (m.kind not in ^content and ^own_presence)
+          not (^own_authored)
       )
 
     query =
@@ -416,23 +422,38 @@ defmodule Grappa.ReadCursor do
   defp subject_pair({:user, user_id}) when is_binary(user_id), do: {:user_id, user_id}
   defp subject_pair({:visitor, visitor_id}) when is_binary(visitor_id), do: {:visitor_id, visitor_id}
 
-  # #532 A — a dynamic OR flagging a `messages` row as the subject's OWN
-  # presence for ITS network: `rc.network_id == nid AND (nick_fold(sender)
-  # == canonical_nick(own_nick) OR nick_fold(meta.new_nick) ==
-  # canonical_nick(own_nick))`, OR'd across every network in `own_nicks`
-  # (`%{slug => {network_id, own_nick}}`). Two clauses because a genuine
-  # self-rename's `:nick_change` row carries `sender = OLD nick` +
-  # `meta.new_nick = NEW`; the live `own_nick` is the NEW one, so only the
-  # `new_nick` clause catches the terminal rename (see
-  # `Scrollback.exclude_own_presence/2` for the full rationale + boundary).
-  # The fold is per-network because a subject may hold a different nick on
-  # each. Interpolated into `bulk_unread_split/2`'s join on-clause so an own
-  # presence row is dropped from the `events` bucket. Empty map / a `nil`
-  # nick entry contributes nothing → `dynamic(false)` = "no row is mine",
-  # which leaves that network's presence counts unchanged.
-  @spec own_presence_dynamic(%{String.t() => {integer(), String.t()}}) ::
+  # #532 A + #576 — a dynamic OR flagging a `messages` row as the subject's
+  # OWN (authored) row that should NOT count in ITS window, for ITS network,
+  # OR'd across every network in `own_nicks` (`%{slug => {network_id,
+  # own_nick}}`). Two match clauses because a rename splits identity:
+  #
+  #   * `nick_fold(sender) == folded` — own CONTENT (a line the operator
+  #     sent — #576, the DM-badge-of-your-own-lines bug), own self-PART /
+  #     KICK-issued, and a case-only self-rename (`sender` is the live nick).
+  #   * `kind not in content AND nick_fold(meta.new_nick) == folded` —
+  #     PRESENCE-only terminal self-rename (`sender = OLD`, live nick is the
+  #     NEW one, so only this clause catches it; content rows carry no
+  #     `new_nick`, so the kind gate is intent + belt-and-braces).
+  #
+  # ## Self-window carve-out (#576 × #396)
+  #
+  # `Identifier.nick_fold(rc.channel) != ^folded` is the PER-ROW self-window
+  # test: the own-nick SELF window (cursor keyed to own nick) is the ONE
+  # window where own content is legitimate payload (a note-to-self, #396), so
+  # there own CONTENT is NOT dropped — only own PRESENCE is. The `sender`
+  # clause therefore fires for a content row ONLY when it is NOT the
+  # self-window (`m.kind not in ^content OR nick_fold(rc.channel) != folded`);
+  # own presence (`kind not in content`) is dropped in EVERY window (#532 A).
+  # This is the per-row twin of `Scrollback.exclude_own_authored/3`'s
+  # `self_window?` branch — count_after_split knows the single `channel` it
+  # counts, but bulk_unread_split spans all windows so the test lives in the
+  # JOIN on-clause. `rc.channel` is stored canonical (#532 D). The fold is
+  # per-network because a subject may hold a different nick on each. Empty
+  # map / a `nil` nick entry contributes nothing → `dynamic(false)` = "no row
+  # is mine", leaving that network's counts unchanged.
+  @spec own_authored_dynamic(%{String.t() => {integer(), String.t()}}, [Message.kind()]) ::
           Ecto.Query.dynamic_expr()
-  defp own_presence_dynamic(own_nicks) do
+  defp own_authored_dynamic(own_nicks, content) do
     Enum.reduce(own_nicks, dynamic(false), fn
       {_, {network_id, own_nick}}, acc when is_binary(own_nick) ->
         folded = Identifier.canonical_target(own_nick)
@@ -441,8 +462,10 @@ defmodule Grappa.ReadCursor do
           [rc, _, m],
           ^acc or
             (rc.network_id == ^network_id and
-               (Identifier.nick_fold(m.sender) == ^folded or
-                  (not is_nil(fragment("json_extract(?, '$.new_nick')", m.meta)) and
+               ((Identifier.nick_fold(m.sender) == ^folded and
+                   (m.kind not in ^content or Identifier.nick_fold(rc.channel) != ^folded)) or
+                  (m.kind not in ^content and
+                     not is_nil(fragment("json_extract(?, '$.new_nick')", m.meta)) and
                      Identifier.nick_fold(fragment("json_extract(?, '$.new_nick')", m.meta)) ==
                        ^folded)))
         )

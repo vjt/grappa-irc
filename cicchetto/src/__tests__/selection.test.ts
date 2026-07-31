@@ -326,6 +326,137 @@ describe("selection store", () => {
     });
   });
 
+  // #576 — own-authored CONTENT is read BY DEFINITION and must not inflate the
+  // badge. `perChannelUnread` resolves the per-network own nick
+  // (`ownNickForNetwork` + `nickEquals`, the #372 client fold twin) and skips
+  // own-sender content rows — the client twin of the server
+  // `Scrollback.exclude_own_authored/3`. These seed the networks resource via
+  // setToken (the own nick is per-network, resolved through
+  // `networkBySlug(slug)`), UNLIKE the memo-derivation block above which leaves
+  // networks unhydrated → ownNick null → no exclusion (why those rows all count
+  // regardless of sender). The mocked `me().name` is "alice", so the own nick
+  // for the sole `nick: "alice"` network is "alice".
+  describe("own-authored content excluded from the badge (#576)", () => {
+    const aliceNet = {
+      kind: "user" as const,
+      id: 1,
+      slug: "freenode",
+      nick: "alice",
+      connection_state: "connected" as const,
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    };
+
+    it("skips own-sender content; a peer line still counts (peer window)", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([aliceNet]);
+      const auth = await import("../lib/auth");
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const networks = await import("../lib/networks");
+      auth.setToken("tok576-peer");
+      // Wait until the own nick resolves — requires both the me() and the
+      // networks resource hydrated (perChannelUnread reads both).
+      await vi.waitFor(() => {
+        expect(networks.networkBySlug("freenode")?.nick).toBe("alice");
+      });
+
+      const key = channelKey("freenode", "bob");
+      const row = (id: number, sender: string) =>
+        scrollback.appendToScrollback(key, {
+          id,
+          network: "freenode",
+          channel: "bob",
+          server_time: id,
+          kind: "privmsg",
+          sender,
+          body: "x",
+          meta: {},
+        });
+      row(1, "alice"); // own outbound — read by definition, excluded
+      row(2, "bob"); // peer reply — counts
+
+      await vi.waitFor(() => {
+        expect(selection.messagesUnread()[key]).toBe(1);
+      });
+    });
+
+    it("folds the own-nick match (ASCII A-Z): a differently-cased own line is still skipped", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([aliceNet]);
+      const auth = await import("../lib/auth");
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const networks = await import("../lib/networks");
+      auth.setToken("tok576-fold");
+      await vi.waitFor(() => {
+        expect(networks.networkBySlug("freenode")?.nick).toBe("alice");
+      });
+
+      const key = channelKey("freenode", "#chan");
+      const row = (id: number, sender: string) =>
+        scrollback.appendToScrollback(key, {
+          id,
+          network: "freenode",
+          channel: "#chan",
+          server_time: id,
+          kind: "privmsg",
+          sender,
+          body: "x",
+          meta: {},
+        });
+      row(1, "ALICE"); // own, upper-cased — nickEquals folds it to own → skipped
+      row(2, "bob"); // peer — counts
+
+      await vi.waitFor(() => {
+        expect(selection.messagesUnread()[key]).toBe(1);
+      });
+    });
+
+    it("KEEPS own content in the own-nick SELF window (#576 × #396 carve-out)", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([aliceNet]);
+      const auth = await import("../lib/auth");
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const networks = await import("../lib/networks");
+      auth.setToken("tok576-self");
+      await vi.waitFor(() => {
+        expect(networks.networkBySlug("freenode")?.nick).toBe("alice");
+      });
+
+      // Window keyed to the operator's OWN nick: a note-to-self is that
+      // window's legitimate payload (#396), so own content is NOT excluded
+      // here (isSelfWindow gate). Mirrors the server self-window carve-out.
+      const key = channelKey("freenode", "alice");
+      const row = (id: number) =>
+        scrollback.appendToScrollback(key, {
+          id,
+          network: "freenode",
+          channel: "alice",
+          server_time: id,
+          kind: "privmsg",
+          sender: "alice",
+          body: "x",
+          meta: {},
+        });
+      row(1);
+      row(2);
+
+      await vi.waitFor(() => {
+        expect(selection.messagesUnread()[key]).toBe(2);
+      });
+    });
+  });
+
   // #239 — hidden/control messages must NOT leave the unread counter stuck.
   // Regression from #222: the render-layer presence filter hides
   // join/part/quit/nick_change on large / pref-hidden channels, but the

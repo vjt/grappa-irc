@@ -951,7 +951,15 @@ describe("subscribe — WS join effect", () => {
         kind: "channel",
       });
 
-      fireMessageToAllHandlers("#grappa", { id: 100, body: "first-after-rotation" });
+      // #576 — an explicit PEER sender: the default "bob" is the current
+      // identity's own nick, and own-authored content is now excluded from
+      // the unread count. This test measures handler MULTIPLICITY (one
+      // handler ⟹ +1), so the bumping message must come from someone else.
+      fireMessageToAllHandlers("#grappa", {
+        id: 100,
+        sender: "alice",
+        body: "first-after-rotation",
+      });
 
       // Single message dispatched to ALL registered "event" handlers
       // for the channel. With the fix, exactly one handler runs —

@@ -53,6 +53,12 @@ defmodule Grappa.ReadCursorTest do
     network
   end
 
+  # Generic unread-content inserter: `sender: "peer"` so a row stands for
+  # someone ELSE's message. #576 excludes the subject's OWN content from the
+  # unread count, and every `bulk_unread_split/2` test here threads
+  # `own_nicks` as "vjt" — a "vjt" sender would fold to own and drop out,
+  # silently zeroing the very counts these tests assert. Own-authored rows
+  # are inserted explicitly (see the #532 A / #576 tests).
   defp insert_message(subject_attrs, network_id, channel, server_time, body \\ "msg") do
     attrs =
       Map.merge(subject_attrs, %{
@@ -60,7 +66,7 @@ defmodule Grappa.ReadCursorTest do
         channel: channel,
         server_time: server_time,
         kind: :privmsg,
-        sender: "vjt",
+        sender: "peer",
         body: body
       })
 
@@ -922,6 +928,121 @@ defmodule Grappa.ReadCursorTest do
 
       assert ReadCursor.bulk_unread_split(subject, own_nicks)[net.slug]["#chan"] ==
                %{messages: 0, events: 1}
+    end
+
+    test "excludes the subject's OWN content rows from messages (#576)" do
+      user = user_fixture()
+      subject = {:user, user.id}
+      attrs = %{user_id: user.id}
+      net = network_fixture()
+
+      # DM window "peer": anchor the cursor, then the operator's OWN
+      # outbound line + a peer reply. The reported bug is a DM badge whose
+      # count is only the operator's own lines — content is read BY
+      # DEFINITION, so the #396 cold-load twin must strip it exactly as
+      # count_after_split/5 does (one rule, both count doors).
+      a = dm_row(attrs, net.id, "vjt", "peer", 1, "anchor")
+      {:ok, _} = ReadCursor.set(subject, net.id, "peer", a.id)
+
+      # Own outbound (channel = peer ⟹ sender = own_nick) — must NOT count.
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          Map.merge(attrs, %{
+            network_id: net.id,
+            channel: "peer",
+            server_time: 2,
+            kind: :privmsg,
+            sender: "vjt",
+            body: "my line",
+            dm_with: "peer"
+          })
+        )
+
+      # Peer reply (channel = own_nick, dm_with = peer) — counts.
+      dm_row(attrs, net.id, "vjt", "peer", 3, "their line")
+
+      own_nicks = %{net.slug => {net.id, "vjt"}}
+
+      assert ReadCursor.bulk_unread_split(subject, own_nicks)[net.slug]["peer"] ==
+               %{messages: 1, events: 0}
+    end
+
+    test "own-content exclusion folds the nick (ASCII A-Z, #576/#372)" do
+      user = user_fixture()
+      subject = {:user, user.id}
+      attrs = %{user_id: user.id}
+      net = network_fixture()
+
+      a = insert_message(attrs, net.id, "#chan", 1)
+      {:ok, _} = ReadCursor.set(subject, net.id, "#chan", a.id)
+
+      # Own content with a DIFFERENT casing than the live own_nick — the
+      # fold MATCH (`nick_fold(sender)`) must still drop it (`sender` is
+      # stored RAW for display).
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          Map.merge(attrs, %{
+            network_id: net.id,
+            channel: "#chan",
+            server_time: 2,
+            kind: :privmsg,
+            sender: "VJT",
+            body: "shout"
+          })
+        )
+
+      # A peer line still counts.
+      insert_message(attrs, net.id, "#chan", 3, "peer line")
+
+      own_nicks = %{net.slug => {net.id, "vjt"}}
+
+      assert ReadCursor.bulk_unread_split(subject, own_nicks)[net.slug]["#chan"] ==
+               %{messages: 1, events: 0}
+    end
+
+    test "own content COUNTS in the own-nick SELF window (#576 × #396 carve-out)" do
+      user = user_fixture()
+      subject = {:user, user.id}
+      attrs = %{user_id: user.id}
+      net = network_fixture()
+
+      # Self window (cursor keyed to own nick "vjt"): a note-to-self is
+      # legitimate payload that must still count (#396). The per-row
+      # self-window test in `own_authored_dynamic` (`nick_fold(rc.channel) !=
+      # folded`) spares own content HERE while dropping it in peer / channel
+      # windows.
+      {:ok, a} =
+        ScrollbackHelpers.insert(
+          Map.merge(attrs, %{
+            network_id: net.id,
+            channel: "vjt",
+            server_time: 1,
+            kind: :privmsg,
+            sender: "vjt",
+            body: "self anchor",
+            dm_with: "vjt"
+          })
+        )
+
+      {:ok, _} = ReadCursor.set(subject, net.id, "vjt", a.id)
+
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          Map.merge(attrs, %{
+            network_id: net.id,
+            channel: "vjt",
+            server_time: 2,
+            kind: :privmsg,
+            sender: "vjt",
+            body: "note to self",
+            dm_with: "vjt"
+          })
+        )
+
+      own_nicks = %{net.slug => {net.id, "vjt"}}
+
+      assert ReadCursor.bulk_unread_split(subject, own_nicks)[net.slug]["vjt"] ==
+               %{messages: 1, events: 0}
     end
   end
 

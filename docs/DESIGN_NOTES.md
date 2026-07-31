@@ -24431,3 +24431,75 @@ through `Ecto.Migrator.with_repo` (the seeder's `mix ecto.migrate`,
 e2e-only `pool_size` hack. Verified: the faithful repro went from LOCK 15/16 to
 **PASS 16/16** (both pool sizes) with the fix in place. A new migrate/boot path
 that bypasses `with_repo`/repo start would not inherit the pre-init.
+## 2026-07-31 — #576: own-authored CONTENT is excluded from the unread count (the content-row twin of #532 A)
+
+**Problem.** The unread badge counted the operator's OWN content rows. Nothing
+filtered the count by sender: a line you typed was "unread" until some later
+event moved the read cursor past it. The optimistic send-time cursor advance
+(`cicchetto/src/lib/scrollback.ts`) normally masks this, but it has gaps — the
+#50 empty-pane gate skips the advance for a `/msg` window written into
+immediately, and a `read_cursor_set` arriving from another session
+(`applyReadCursorSet` is last-write-wins, no forward-only gate — deliberate for
+cross-device) can pull the local cursor BELOW your own last message. Both leave
+a badge whose count is only your own lines, with no peer line after them, that
+the operator cannot clear by reading (F5 fixed it: the server cursor was
+already ahead, the client copy had fallen behind). Reported on IRC.
+
+**Fix — a row you authored is read BY DEFINITION.** Exclude own-authored
+CONTENT from the count, mirroring #532 A (which already excludes own PRESENCE),
+on BOTH count doors, "one feature every door":
+
+  * **client** — `perChannelUnread` (`selection.ts`): a content row whose
+    `sender` folds to the per-network own nick (`ownNickForNetwork` +
+    `nickEquals`, the #372 client fold twin) no longer increments `messages`.
+    Reads `user()` reactively so a NICK change re-runs the count; the own nick
+    is resolved per key via `networkBySlug(slug)` (a nick is per-network).
+  * **server** — the cold-load seed twins that already stripped own presence
+    now strip own content too, EXCEPT in the self-window (below).
+    `Scrollback.exclude_own_presence/2` → **`exclude_own_authored/3`** (used by
+    `count_after_split/5`) and `ReadCursor.own_presence_dynamic/1` →
+    **`own_authored_dynamic/2`** (used by `bulk_unread_split/2`). Exclude a row
+    when `nick_fold(sender) == fold(own_nick)` (own content, own self-PART/kick,
+    case-only self-rename) OR `kind not in content AND nick_fold(meta.new_nick)
+    == fold(own_nick)` (presence-only terminal self-rename, `sender = OLD`).
+    NICK-FOLD MATCH site: `sender` stays RAW (display), only the compare folds
+    (`Identifier.nick_fold/1` / `canonical_target/1` server, `nickEquals`
+    client).
+
+**Belt-and-braces, not a replacement.** The optimistic send-time cursor advance
+STAYS — it keeps the in-pane divider honest. #576 makes the COUNT independent of
+cursor timing: own content is never counted whether or not the cursor has moved.
+Mentions are a SEPARATE predicate (own content never mentions self) and are
+untouched. `count_after/5` (the non-split total) has NO production caller — the
+join-reply + `/me` cold-load both route through `WindowCounts.snapshot/6` →
+`count_after_split/5` and `WindowCounts.bulk_snapshot/3` →
+`bulk_unread_split/2`, the two doors fixed here — so it was left as-is (no gap).
+
+**Self-window carve-out (#576 × #396) — restrict the predicate, not the tests.**
+#396 (DESIGN_NOTES 2026-07-25) deliberately made the own-nick SELF window
+(`channel == own_nick`) count self rows — a note-to-self (`/msg <ownnick>`) is
+that window's legitimate payload. A first cut of #576 used a UNIFORM
+`sender`-fold predicate (no window carve-out) and silently zeroed the
+self-window, which would have forced rewriting #396's asserts. That is the wrong
+move — the self-window IS a legitimate case, so the PREDICATE is restricted, not
+the assert (per the review directive). `exclude_own_authored/3` takes a
+`self_window?` boolean (`canonical(channel) == canonical(own_nick)`) and in the
+self-window strips own PRESENCE ONLY (byte-for-byte the pre-#576 #532 A
+predicate); own content still counts. `bulk_unread_split/2` spans all windows at
+once, so its per-row twin lives in the JOIN on-clause: the `sender`-content
+clause fires only when `Identifier.nick_fold(rc.channel) != folded` (i.e. NOT
+the self-window for that row's cursor). The client mirrors with an `isSelfWindow
+= nickEquals(name, ownNick)` gate in `perChannelUnread`. Net: own content is
+dropped in peer / channel windows (the reported bug) and KEPT in the self-window
+(#396 unchanged, its tests untouched). #532 A own-presence exclusion applies in
+BOTH.
+
+**Tests.** Server: `count_after_split` (own content excluded in a channel +
+ASCII-fold match + `own_nick=nil` boundary + COUNTS in the self-window),
+`bulk_unread_split` (own outbound DM excluded + fold + COUNTS in the
+self-window), `window_counts` (channel own-msg excluded; #396 self-window counts
+UNCHANGED). Client: `subscribe.test.ts` (a peer line bumps unread +1 — the
+own-sender default that used to lazily equal own nick is now an explicit peer).
+e2e (`issue576-own-msg-unread-badge.spec.ts`): send own lines in a peer DM, force
+the read cursor back below them (the reported cross-device regress), badge shows
+NOTHING; a later peer line makes it "1".

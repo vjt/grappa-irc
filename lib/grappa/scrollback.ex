@@ -665,13 +665,20 @@ defmodule Grappa.Scrollback do
   def count_after_split(subject, network_id, channel, after_id, own_nick)
       when is_integer(network_id) and is_integer(after_id) and
              (is_binary(own_nick) or is_nil(own_nick)) do
+    # #576 — the own-nick SELF window (channel keyed to your own nick) is the
+    # ONE window where own content is legitimate payload (notes-to-self, #396),
+    # so own content is NOT excluded there — only in peer / channel windows.
+    self_window? =
+      is_binary(own_nick) and
+        Identifier.canonical_target(channel) == Identifier.canonical_target(own_nick)
+
     query =
       Message
       |> subject_where(subject)
       |> where([m], m.network_id == ^network_id)
       |> channel_or_dm_where(channel, own_nick)
       |> where([m], m.id > ^after_id)
-      |> exclude_own_presence(own_nick)
+      |> exclude_own_authored(own_nick, self_window?)
       # S17: the content bucket derives from `@content_kinds` (schema
       # SSOT) via Ecto's `in` — which renders the same
       # `kind IN (?, ?, ?)` predicate the hand-maintained raw-SQL list
@@ -689,39 +696,54 @@ defmodule Grappa.Scrollback do
     end)
   end
 
-  # #532 A — the subject's OWN presence/control rows are never "unread" to
-  # them: leaving a channel (self-PART), a KICK they issued, or renaming
-  # themselves is an action they performed, not something to catch up on.
-  # Excludes rows that are BOTH non-content (`kind not in @content_kinds`)
-  # AND the subject's own presence, matched two ways because a rename splits
+  # #532 A + #576 — the subject's OWN rows are never "unread" to them: a
+  # line they typed is read BY DEFINITION (#576 content), and leaving a
+  # channel (self-PART), a KICK they issued, or renaming themselves is an
+  # action they performed, not something to catch up on (#532 A presence).
+  # The two matched clauses in each branch below, because a rename splits
   # identity across the row:
   #
-  #   * `nick_fold(sender) == canonical_nick(own_nick)` — a self-PART or a
-  #     KICK the subject issued (`sender` is the current/live nick), and a
-  #     case-only self-rename (folds to the live nick).
-  #   * `nick_fold(meta.new_nick) == canonical_nick(own_nick)` — a genuine
-  #     self-rename's `:nick_change` row is persisted with `sender = OLD
-  #     nick` and `meta.new_nick = NEW nick` (EventRouter fan-out to every
-  #     shared channel + `$server`); the live nick is the NEW one, so the
-  #     `sender` clause misses it. Matching `new_nick` catches the TERMINAL
-  #     rename (`new_nick` == live nick), killing the recurring `$server`
-  #     "+1" every `/nick` left behind and the rename-then-part strand.
+  #   * `nick_fold(sender) == canonical_nick(own_nick)` — own CONTENT (a
+  #     PRIVMSG/ACTION/NOTICE the operator sent, #576), a self-PART or a KICK
+  #     the subject issued, and a case-only self-rename (`sender` is the
+  #     current/live nick in all of these).
+  #   * `nick_fold(meta.new_nick) == canonical_nick(own_nick)` — PRESENCE
+  #     ONLY: a genuine self-rename's `:nick_change` row is persisted with
+  #     `sender = OLD nick` and `meta.new_nick = NEW nick`; the live nick is
+  #     the NEW one, so only the `new_nick` clause catches the TERMINAL
+  #     rename, killing the recurring `$server` "+1" every `/nick` left
+  #     behind. Content rows carry no `new_nick`, so the `kind not in
+  #     @content_kinds` guard is intent + belt-and-braces.
   #
-  # so the `events` bucket no longer strands a permanent "1" behind an own
-  # leave. CONTENT rows are untouched (own content still counts toward
-  # `messages`; C's notify predicate — a separate concern — handles own
-  # content for the badge). Derive-don't-duplicate: no cursor is moved, so
-  # any legitimate unread CONTENT that arrived before the leave survives
-  # (and #532 B surfaces it), and it is timing-independent — the self-PART
-  # audit row is never counted whether or not the upstream echo has landed.
-  # Same rule applied in `ReadCursor.bulk_unread_split/2` (the #396
-  # cold-load twin). Boundary: an INTERMEDIATE row of a multi-hop rename
-  # (`alice→bob→vjt`: the `alice→bob` row folds to neither `alice`'s old
-  # sender nor `vjt`'s live nick) still counts and self-heals on the next
-  # view — a rare, narrow gap. `own_nick == nil` (unbound network) → no
-  # nick to match → no exclusion.
-  @spec exclude_own_presence(Ecto.Query.t(), String.t() | nil) :: Ecto.Query.t()
-  defp exclude_own_presence(query, own_nick) when is_binary(own_nick) do
+  # ## Self-window carve-out (#576 × #396)
+  #
+  # `self_window?` is TRUE when the window being counted is keyed to the
+  # subject's OWN nick (`channel == own_nick`). That is the ONE window where
+  # own content is legitimate payload — a note-to-self (`/msg <ownnick>`) —
+  # so #396 deliberately counts it. There, we strip own PRESENCE ONLY (the
+  # original #532 A predicate); own content still counts. Everywhere else (a
+  # peer DM or a channel) own content is read by definition and #576 strips
+  # it too. #532 A presence exclusion applies in BOTH branches. This keeps a
+  # DM/channel badge from being made of your own lines (the reported bug —
+  # the optimistic send-time cursor advance has gaps) WITHOUT silently
+  # zeroing the self-window's notes-to-self.
+  #
+  # Derive-don't-duplicate: no cursor is moved, so any legitimate unread PEER
+  # row that arrived before the own row survives, and it is timing-
+  # independent. Same rule applied in `ReadCursor.bulk_unread_split/2` (the
+  # #396 cold-load twin — the self-window test there is per-row on
+  # `rc.channel`). Boundary: an INTERMEDIATE row of a multi-hop rename
+  # (`alice→bob→vjt`) still counts and self-heals on the next view — a rare,
+  # narrow gap. `own_nick == nil` (unbound network / no live session) → no
+  # nick to match → no exclusion. Mentions stay a SEPARATE predicate (own
+  # content never mentions self), untouched here.
+  @spec exclude_own_authored(Ecto.Query.t(), String.t() | nil, boolean()) :: Ecto.Query.t()
+  defp exclude_own_authored(query, nil, _), do: query
+
+  # Self-window: own content is a legitimate note-to-self (#396) → count it;
+  # strip own PRESENCE only (#532 A). This is byte-for-byte the pre-#576
+  # exclusion.
+  defp exclude_own_authored(query, own_nick, true) when is_binary(own_nick) do
     folded = Identifier.canonical_target(own_nick)
 
     where(
@@ -735,7 +757,21 @@ defmodule Grappa.Scrollback do
     )
   end
 
-  defp exclude_own_presence(query, nil), do: query
+  # Peer / channel window: own CONTENT (#576) AND own PRESENCE (#532 A) both
+  # excluded.
+  defp exclude_own_authored(query, own_nick, false) when is_binary(own_nick) do
+    folded = Identifier.canonical_target(own_nick)
+
+    where(
+      query,
+      [m],
+      not (Identifier.nick_fold(m.sender) == ^folded or
+             (m.kind not in ^@content_kinds and
+                not is_nil(fragment("json_extract(?, '$.new_nick')", m.meta)) and
+                Identifier.nick_fold(fragment("json_extract(?, '$.new_nick')", m.meta)) ==
+                  ^folded))
+    )
+  end
 
   @doc """
   Returns up to `limit` unread CONTENT rows (`id > after_id`) for the

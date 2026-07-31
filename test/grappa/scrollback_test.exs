@@ -1270,9 +1270,88 @@ defmodule Grappa.ScrollbackTest do
         })
 
       # 3 content (outbound privmsg + inbound privmsg + inbound notice),
-      # 1 event (orphan server_event). own_nick threads the narrowing rule.
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "peer", 0, "vjt-grappa") ==
+      # 1 event (orphan server_event). `own_nick = nil` on purpose: this
+      # test proves the #393 COALESCE arm-invariance (the predicate matches
+      # inbound/outbound/orphan alike), and the outbound arm is own-authored
+      # BY CONSTRUCTION (channel = peer ⟹ sender = own_nick). Threading a
+      # live own_nick would let #576's own-content exclusion drop the
+      # outbound row and confound the arm-count — that exclusion has its own
+      # tests below.
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "peer", 0, nil) ==
                %{messages: 3, events: 1}
+    end
+
+    # #576 — own-authored CONTENT rows are read BY DEFINITION: a line the
+    # operator typed must never inflate the `messages` badge. This is the
+    # content-row twin of #532 A (which already strips own PRESENCE from
+    # `events`). Only fires when `own_nick` is threaded (the live cold-load
+    # / join-reply seed path); `own_nick = nil` (no live session) counts
+    # everything, as before.
+    test "excludes the subject's OWN content rows from the messages count (#576)",
+         %{user: user, network: net} do
+      # Two own-authored content rows (the DM lines the operator sent) plus
+      # one peer reply — the exact reported shape (a DM badge of only your
+      # own lines).
+      {:ok, _} =
+        ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg, sender: "vjt-grappa"}))
+
+      {:ok, _} =
+        ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :action, sender: "vjt-grappa"}))
+
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :privmsg, sender: "peer"}))
+
+      # own_nick threaded → only the peer content row counts.
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, "vjt-grappa") ==
+               %{messages: 1, events: 0}
+    end
+
+    test "own-content exclusion folds the nick (ASCII A-Z, #576/#372)",
+         %{user: user, network: net} do
+      # `sender` is stored RAW (display); the MATCH folds. A differently
+      # cased live own_nick must still drop the operator's own row.
+      {:ok, _} =
+        ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg, sender: "VJT-Grappa"}))
+
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :privmsg, sender: "peer"}))
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, "vjt-grappa") ==
+               %{messages: 1, events: 0}
+    end
+
+    test "own_nick=nil applies NO own-content exclusion (#576 boundary)",
+         %{user: user, network: net} do
+      {:ok, _} =
+        ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg, sender: "vjt-grappa"}))
+
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :privmsg, sender: "peer"}))
+
+      # Unbound network / no live session → nothing to fold → both count.
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil) ==
+               %{messages: 2, events: 0}
+    end
+
+    test "own content COUNTS in the own-nick SELF window (#576 × #396 carve-out)",
+         %{user: user, network: net} do
+      # `channel == own_nick` is the ONE window where own content is
+      # legitimate payload — a note-to-self (`/msg <ownnick>`). #576 excludes
+      # own content ONLY in peer / channel windows, never here (else #396's
+      # self-window count would silently zero). Stored at channel = dm_with =
+      # own_nick, sender = own_nick.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 0,
+          kind: :privmsg,
+          sender: "vjt-grappa",
+          body: "note to self",
+          meta: %{},
+          dm_with: "vjt-grappa"
+        })
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "vjt-grappa", 0, "vjt-grappa") ==
+               %{messages: 1, events: 0}
     end
   end
 

@@ -246,7 +246,10 @@ defmodule Grappa.WindowCountsTest do
     insert(c, "#chan", st: 3, sender: "bob", body: "vjt you there")
 
     result = snap(c, "#chan", anchor.id, "vjt")
-    assert result.messages == 2
+    # #576 — the own message is read BY DEFINITION and no longer counts; only
+    # bob's peer line does. mentions were already own-excluded (an own line
+    # naming own nick is not a self-mention), so this test's point stands.
+    assert result.messages == 1
     assert result.mentions == 1
     assert result.severity == :mention
   end
@@ -371,6 +374,11 @@ defmodule Grappa.WindowCountsTest do
       assert bulk[net.slug]["#chan"].mentions == 1
     end
 
+    # #576 self-window carve-out: the own-nick window is the ONE window where
+    # own content is legitimate payload (a note-to-self), so #576 does NOT
+    # exclude it there — #396's counts stand unchanged. (Own content IS
+    # excluded in peer / channel windows; see the #576 tests in
+    # scrollback_test / read_cursor_test and "own-sent message …" above.)
     test "own-nick self window: legacy (channel=own, dm_with NULL) rows now COUNT (#396)" do
       user = AuthFixtures.user_fixture()
       subject = {:user, user.id}
