@@ -27,8 +27,20 @@ defmodule Grappa.Net.SourceAliasManagerTest do
     stub(Grappa.Net.SourceAliasMock, :arm_check, fn @prefix -> :ok end)
     stub(Grappa.Net.SourceAliasMock, :list_aliases, fn @prefix -> {:ok, []} end)
 
-    start_supervised!({Manager, adapter: Grappa.Net.SourceAliasMock, prefix: @prefix})
+    pid = start_supervised!({Manager, adapter: Grappa.Net.SourceAliasMock, prefix: @prefix})
+    drain_boot_reconcile(pid)
+    pid
   end
+
+  # Barrier between "manager started" and "expectations declared". `init/1`
+  # returns `{:continue, :reconcile}`, so `handle_continue(:reconcile, …)` — and
+  # its `adapter.list_aliases/1` boot call — runs ASYNC after `start_supervised!`
+  # returns. A synchronous `:sys.get_state/1` is answered only from the receive
+  # loop, which the gen_server reaches strictly AFTER `handle_continue` finishes,
+  # so returning here proves the boot reconcile is done. Without it the boot
+  # `list_aliases` can land after a test's `expect/3` and consume it, making the
+  # explicit `Manager.reconcile()` a second (unexpected) call (#585).
+  defp drain_boot_reconcile(pid), do: :sys.get_state(pid)
 
   describe "acquire/release ref-counting" do
     test "binds once on 0→1, stays bound across a second acquire, unbinds on last release" do
@@ -84,9 +96,12 @@ defmodule Grappa.Net.SourceAliasManagerTest do
       stub(Grappa.Net.SourceAliasMock, :list_aliases, fn @prefix -> {:ok, []} end)
 
       # A live session holds @addr; the refcount table is empty (restart).
-      start_supervised!(
-        {Manager, adapter: Grappa.Net.SourceAliasMock, prefix: @prefix, held_source_fn: fn -> [@addr] end}
-      )
+      pid =
+        start_supervised!(
+          {Manager, adapter: Grappa.Net.SourceAliasMock, prefix: @prefix, held_source_fn: fn -> [@addr] end}
+        )
+
+      drain_boot_reconcile(pid)
 
       expect(Grappa.Net.SourceAliasMock, :list_aliases, fn @prefix -> {:ok, [@addr, @addr2]} end)
       # ONLY the orphan @addr2 is released; the live-held @addr survives even
@@ -101,9 +116,12 @@ defmodule Grappa.Net.SourceAliasManagerTest do
       stub(Grappa.Net.SourceAliasMock, :list_aliases, fn @prefix -> {:ok, []} end)
 
       # @addr2 is live-held (from the fn); @addr is ref-counted (acquired here).
-      start_supervised!(
-        {Manager, adapter: Grappa.Net.SourceAliasMock, prefix: @prefix, held_source_fn: fn -> [@addr2] end}
-      )
+      pid =
+        start_supervised!(
+          {Manager, adapter: Grappa.Net.SourceAliasMock, prefix: @prefix, held_source_fn: fn -> [@addr2] end}
+        )
+
+      drain_boot_reconcile(pid)
 
       expect(Grappa.Net.SourceAliasMock, :ensure_source, fn @addr, @prefix -> :ok end)
       assert :ok = Manager.acquire(@addr)
@@ -131,7 +149,8 @@ defmodule Grappa.Net.SourceAliasManagerTest do
         {:error, :wrapper_unavailable}
       end)
 
-      start_supervised!({Manager, adapter: Grappa.Net.SourceAliasMock, prefix: @prefix})
+      pid = start_supervised!({Manager, adapter: Grappa.Net.SourceAliasMock, prefix: @prefix})
+      drain_boot_reconcile(pid)
 
       assert Manager.armed?() == false
       assert Manager.disarm_reason() == :wrapper_unavailable
@@ -140,7 +159,8 @@ defmodule Grappa.Net.SourceAliasManagerTest do
     test "armed? false with :no_static_prefix when no prefix is configured" do
       stub(Grappa.Net.SourceAliasMock, :list_aliases, fn _ -> {:ok, []} end)
       # arm_check is NEVER invoked with a nil prefix — the manager short-circuits.
-      start_supervised!({Manager, adapter: Grappa.Net.SourceAliasMock, prefix: nil})
+      pid = start_supervised!({Manager, adapter: Grappa.Net.SourceAliasMock, prefix: nil})
+      drain_boot_reconcile(pid)
 
       assert Manager.armed?() == false
       assert Manager.disarm_reason() == :no_static_prefix
