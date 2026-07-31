@@ -150,7 +150,7 @@ describe("ensurePushSubscription — #181: renew a dropped-but-wanted subscripti
         (call[1] as RequestInit | undefined)?.method === "POST",
     );
     expect(post).toBeDefined();
-    const body = JSON.parse((post?.[1] as RequestInit).body as string);
+    const body = JSON.parse((post![1] as RequestInit).body as string);
     expect(body.endpoint).toBe("https://push.example/NEW");
     expect(body.supersedes).toBe("https://push.example/OLD");
     // fresh server id + endpoint stashed for the next cycle

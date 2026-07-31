@@ -369,7 +369,7 @@ describe("mountDisplayPrefsSync — clear-on-logout (no cross-account bleed)", (
     );
     expect(putCall).toBeDefined();
     // The seed-up carries DEFAULTS, never A's residual "hm"/true/{#a:hide}.
-    expect(JSON.parse((putCall?.[1] as RequestInit).body as string)).toEqual({
+    expect(JSON.parse((putCall![1] as RequestInit).body as string)).toEqual({
       display_prefs: DEFAULTS,
     });
     dispose();
@@ -426,7 +426,7 @@ describe("mountDisplayPrefsSync — an unconfirmed local write survives a reload
     );
     expect(putCall).toBeDefined();
     expect(
-      JSON.parse((putCall?.[1] as RequestInit).body as string).display_prefs.presence_filter,
+      JSON.parse((putCall![1] as RequestInit).body as string).display_prefs.presence_filter,
     ).toEqual({ [KEY_A]: "hide" });
     dispose();
   });
