@@ -5359,7 +5359,19 @@ html.resize-dragging * {
 
 .links-modal-node-root .links-modal-label {
   font-weight: bold;
-  text-anchor: middle;
+  /* #578 — text-anchor is now driven by the per-node `labelAnchor` attribute
+     (angle-derived; root resolves to "middle" in the layout), so no CSS
+     override here — a CSS `text-anchor` would win over the attribute and pin
+     every node to one side. */
+}
+
+/* #578 — "you are here" halo ring around the root glyph so the eye lands there
+   first (the depth-ramp's teal root only reads once you know the ramp). */
+.links-modal-you-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  opacity: 0.7;
 }
 
 .links-modal-node-active .links-modal-label {
@@ -5399,6 +5411,36 @@ html.resize-dragging * {
 
 .links-modal-hint {
   color: var(--muted);
+}
+
+/* #578 (polish 3+4) — the colour-ramp key + "you" marker. One muted line above
+   the hint/detail swap; the swatch mirrors the depthColor ramp (hue 190→350). */
+.links-modal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1rem;
+  margin-bottom: 0.35rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.links-modal-legend-you {
+  color: var(--accent);
+}
+
+.links-modal-legend-ramp {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.links-modal-legend-swatch {
+  display: inline-block;
+  width: 2.5rem;
+  height: 0.55rem;
+  border-radius: 0.28rem;
+  background: linear-gradient(90deg, hsl(190 68% 58%), hsl(350 68% 58%));
 }
 
 .links-modal-detail {

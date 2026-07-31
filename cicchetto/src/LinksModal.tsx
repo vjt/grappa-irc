@@ -12,6 +12,7 @@ import {
   clampPan,
   clientToViewBox,
   DEFAULT_LAYOUT_OPTS,
+  glyphRadius,
   type LayoutNode,
   radialLayout,
   viewBoxFit,
@@ -45,31 +46,16 @@ import { MircBody } from "./MircText";
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 6;
 
-// #238 fix — node glyph radii (viewBox units), bumped from 11/7 so the dots read
-// against the shortened edges (ringGap cut in lib/linksLayout). LABEL_GAP is the
-// clearance between a glyph edge and its label so text never sits on the dot.
-const ROOT_RADIUS = 14;
-const NODE_RADIUS = 10;
-const LABEL_GAP = 4;
-// Above this node count, per-node labels are shown only for the root + the
-// hovered/selected node (avoids an unreadable label pile-up on large nets like
-// Libera). Pan+zoom + tap-to-inspect cover the rest.
-const LABEL_ALL_THRESHOLD = 22;
+// #578 — radial gap between the root glyph and its "you are here" halo ring.
+const LABEL_HALO = 5;
 
 // Depth → hue ramp (teal root → violet leaves). Display-only; the layout is
 // pure geometry. cic owns all colour/label strings (no server display text).
+// The footer legend spells this out — the ramp keys "hops from your server".
 const depthColor = (depth: number, maxDepth: number): string => {
   const t = maxDepth === 0 ? 0 : depth / maxDepth;
   const hue = 190 + t * 160; // 190 (teal) → 350 (magenta)
   return `hsl(${hue} 68% 58%)`;
-};
-
-// Short label: the leftmost DNS label of the server name (irc.azzurra.org →
-// "irc"), which reads better in the dense tree. The full name + description
-// live in the detail footer on select/hover.
-const shortLabel = (server: string): string => {
-  const dot = server.indexOf(".");
-  return dot === -1 ? server : server.slice(0, dot);
 };
 
 const LinksModal: Component = () => {
@@ -229,7 +215,6 @@ const LinksModal: Component = () => {
         // `entries.length`, so sourcing the heading / aria-label / label
         // threshold from the layout keeps the "N servers" count honest.
         const nodeCount = (): number => layout().nodes.length;
-        const showAllLabels = (): boolean => nodeCount() <= LABEL_ALL_THRESHOLD;
         const detail = (): LayoutNode | null => {
           const sel = selected();
           if (sel !== null) return sel;
@@ -376,8 +361,13 @@ const LinksModal: Component = () => {
                           {(node) => {
                             const isActive = (): boolean =>
                               selected()?.server === node.server || hovered() === node.server;
-                            const labelled = (): boolean =>
-                              node.isRoot || showAllLabels() || isActive();
+                            // #578 — label visibility is the layout's greedy
+                            // declutter verdict (`labelVisible`, root always
+                            // true), with the hovered/selected node forced on
+                            // top. The pure layout guarantees no two BASELINE
+                            // labels overlap; a transient active label is the
+                            // one the user asked for, so it always shows.
+                            const labelled = (): boolean => node.labelVisible || isActive();
                             return (
                               // biome-ignore lint/a11y/noStaticElementInteractions: SVG node glyph is a pointer-first inspect target (tap/hover), not a control; keyboard nav is a documented INC-3 follow-up
                               <g
@@ -401,19 +391,31 @@ const LinksModal: Component = () => {
                                 <title>
                                   {node.server}
                                   {node.hopcount !== null ? ` (${node.hopcount} hops)` : ""}
+                                  {node.isRoot ? " — you are here" : ""}
                                 </title>
+                                {/* #578 — a "you are here" halo ring around the
+                                    root so the eye lands there first (the ramp's
+                                    teal root is only legible once you know the
+                                    ramp; the ring needs no key). */}
+                                <Show when={node.isRoot}>
+                                  <circle
+                                    class="links-modal-you-ring"
+                                    r={glyphRadius(node, DEFAULT_LAYOUT_OPTS) + LABEL_HALO}
+                                  />
+                                </Show>
                                 <circle
                                   class="links-modal-dot"
-                                  r={node.isRoot ? ROOT_RADIUS : NODE_RADIUS}
+                                  r={glyphRadius(node, DEFAULT_LAYOUT_OPTS)}
                                   style={{ fill: depthColor(node.depth, layout().maxDepth) }}
                                 />
                                 <Show when={labelled()}>
                                   <text
                                     class="links-modal-label"
-                                    x={node.isRoot ? 0 : NODE_RADIUS + LABEL_GAP}
-                                    y={-((node.isRoot ? ROOT_RADIUS : NODE_RADIUS) + LABEL_GAP)}
+                                    text-anchor={node.labelAnchor}
+                                    x={node.labelX}
+                                    y={node.labelY}
                                   >
-                                    {shortLabel(node.server)}
+                                    {node.label}
                                   </text>
                                 </Show>
                               </g>
@@ -427,6 +429,19 @@ const LinksModal: Component = () => {
               </div>
 
               <footer class="links-modal-footer">
+                {/* #578 (polish 3+4) — a one-line colour-ramp key + "you"
+                    marker so the teal-root / hop-ramp is legible without a full
+                    legend. Persistent while a topology is drawn; sits above the
+                    hint/detail swap. */}
+                <Show when={nodeCount() > 0}>
+                  <div class="links-modal-legend" data-testid="links-modal-legend">
+                    <span class="links-modal-legend-you">◎ you are here</span>
+                    <span class="links-modal-legend-ramp">
+                      <span class="links-modal-legend-swatch" aria-hidden="true" />
+                      colour = hops from your server
+                    </span>
+                  </div>
+                </Show>
                 <Show
                   when={detail()}
                   fallback={

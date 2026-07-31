@@ -4,6 +4,10 @@ import {
   clampPan,
   clientToViewBox,
   DEFAULT_LAYOUT_OPTS,
+  glyphRadius,
+  type LayoutNode,
+  labelBox,
+  placeLabel,
   radialLayout,
   viewBoxFit,
 } from "../lib/linksLayout";
@@ -43,6 +47,40 @@ const serverSet = (layout: ReturnType<typeof radialLayout>): string[] =>
 const nodeBy = (layout: ReturnType<typeof radialLayout>, server: string) =>
   layout.nodes.find((n) => n.server === server);
 
+// #578 — the fitted-box invariants, expressed with the PRODUCTION geometry
+// helpers (glyphRadius / labelBox) so they track a tuning change instead of
+// re-deriving the box formula (which would be a mirror of the impl).
+
+// Every node glyph sits fully inside the fitted [0,width]×[0,height] box.
+const expectContained = (layout: ReturnType<typeof radialLayout>): void => {
+  for (const n of layout.nodes) {
+    const r = glyphRadius(n, DEFAULT_LAYOUT_OPTS);
+    expect(n.x - r).toBeGreaterThanOrEqual(-1e-6);
+    expect(n.y - r).toBeGreaterThanOrEqual(-1e-6);
+    expect(n.x + r).toBeLessThanOrEqual(layout.width + 1e-6);
+    expect(n.y + r).toBeLessThanOrEqual(layout.height + 1e-6);
+  }
+};
+
+// The distance from the box's left/top edge (x=0 / y=0) to the nearest node
+// extremity — glyph edge OR visible-label box edge. A tight fit puts this at
+// exactly one `margin` (the layout's requested padding).
+const minExtremity = (layout: ReturnType<typeof radialLayout>): number => {
+  let min = Number.POSITIVE_INFINITY;
+  for (const n of layout.nodes) {
+    const r = glyphRadius(n, DEFAULT_LAYOUT_OPTS);
+    min = Math.min(min, n.x - r, n.y - r);
+    if (n.labelVisible) {
+      const b = labelBox(n, DEFAULT_LAYOUT_OPTS);
+      min = Math.min(min, b.minX, b.minY);
+    }
+  }
+  return min;
+};
+
+const visibleLabels = (layout: ReturnType<typeof radialLayout>): LayoutNode[] =>
+  layout.nodes.filter((n) => n.labelVisible);
+
 describe("radialLayout (#238) — empty + single-node degenerate cases", () => {
   it("returns an empty layout for zero entries", () => {
     const layout = radialLayout([], DEFAULT_LAYOUT_OPTS);
@@ -53,7 +91,7 @@ describe("radialLayout (#238) — empty + single-node degenerate cases", () => {
     expect(layout.maxDepth).toBe(0);
   });
 
-  it("places a single self-linked node as the root, dead centre, with no edges", () => {
+  it("places a single self-linked node as the root, fully inside a fitted box, no edges", () => {
     const layout = radialLayout(
       [entry({ server: "hub", linked_to: "hub", hopcount: 0 })],
       DEFAULT_LAYOUT_OPTS,
@@ -65,12 +103,15 @@ describe("radialLayout (#238) — empty + single-node degenerate cases", () => {
     expect(root?.parent).toBeNull();
     expect(root?.depth).toBe(0);
     expect(root?.radius).toBe(0);
-    // Root sits at the exact canvas centre (width/2 == height/2).
-    expect(layout.width).toBe(sizeFor(0));
-    expect(layout.height).toBe(sizeFor(0));
-    expect(root?.x).toBe(layout.width / 2);
-    expect(root?.y).toBe(layout.height / 2);
-    expect(root?.x).toBe(centreFor(0));
+    // #578 — the box is FITTED to the node's real extent (glyph + label + margin),
+    // NOT the full-disc `2*outer` any more. A lone root can't fill a disc: the
+    // fitted box is strictly smaller than the old sizeFor(0) would demand once a
+    // label is measured in, and the glyph sits fully inside it.
+    expect(layout.width).toBeGreaterThan(0);
+    expect(layout.height).toBeGreaterThan(0);
+    expectContained(layout);
+    // Its label always survives the declutter (root is placed first).
+    expect(root?.labelVisible).toBe(true);
   });
 
   it("treats a lone node with no self-link as the root anyway (no entry dropped)", () => {
@@ -157,11 +198,19 @@ describe("radialLayout (#238) — depth, edges, and geometry", () => {
     expect(layout.edges).toHaveLength(2);
     expect(edgeSet(layout)).toEqual(new Set([edgeKey("hub", "mid"), edgeKey("mid", "leaf")]));
 
-    // Canvas fits maxDepth; root centred.
-    expect(layout.width).toBe(sizeFor(2));
-    expect(layout.height).toBe(sizeFor(2));
-    expect(nodeBy(layout, "hub")?.x).toBe(centreFor(2));
-    expect(nodeBy(layout, "hub")?.y).toBe(centreFor(2));
+    // #578 — a single-child chain is COLLINEAR (each internal node inherits its
+    // one child's angle), so the tree occupies a thin line, not a disc. The
+    // fitted box hugs that extent: strictly smaller than the old full-disc
+    // sizeFor(2) on BOTH axes, and much thinner across the line than along it.
+    expect(layout.width).toBeLessThan(sizeFor(2));
+    expect(layout.height).toBeLessThan(sizeFor(2));
+    expect(layout.height).toBeLessThan(layout.width);
+    // Every glyph is fully inside the fitted box.
+    expectContained(layout);
+    // Tightness: the extreme node (glyph or its visible label) is exactly one
+    // margin from the box edge — computed with the SAME production helpers the
+    // layout fits with, so this is not a mirror of the impl.
+    expect(minExtremity(layout)).toBeCloseTo(margin, 6);
   });
 
   it("reconstructs a star: one root with N leaf edges", () => {
@@ -364,5 +413,175 @@ describe("clampPan (#238 fix) — the map can't be dragged off-frame", () => {
   it("clamps the two axes independently", () => {
     // ty in range, tx over the high edge (k<1).
     expect(clampPan(9999, 42, 0.5, layout)).toEqual({ tx: 300, ty: 42 });
+  });
+});
+
+describe("placeLabel (#578) — label anchor is derived from the node ANGLE", () => {
+  const o = DEFAULT_LAYOUT_OPTS;
+
+  it("anchors an EAST (right-half) node to the start, label placed to its RIGHT", () => {
+    const p = placeLabel(0, false, o); // angle 0 = due east
+    expect(p.anchor).toBe("start");
+    expect(p.x).toBeGreaterThan(0);
+  });
+
+  it("anchors a WEST (left-half) node to the end, label placed to its LEFT", () => {
+    const p = placeLabel(Math.PI, false, o); // angle π = due west
+    expect(p.anchor).toBe("end");
+    expect(p.x).toBeLessThan(0);
+  });
+
+  it("centres a NORTH node above the glyph (middle, negative y)", () => {
+    const p = placeLabel(-Math.PI / 2, false, o); // straight up (SVG y grows down)
+    expect(p.anchor).toBe("middle");
+    expect(p.x).toBe(0);
+    expect(p.y).toBeLessThan(0);
+  });
+
+  it("centres a SOUTH node below the glyph (middle, positive y)", () => {
+    const p = placeLabel(Math.PI / 2, false, o); // straight down
+    expect(p.anchor).toBe("middle");
+    expect(p.x).toBe(0);
+    expect(p.y).toBeGreaterThan(0);
+  });
+
+  it("always centres the ROOT above, regardless of its (meaningless) angle", () => {
+    // Root radius 0 → its angle is arbitrary; the label must not swing sides.
+    for (const a of [0, Math.PI, Math.PI / 2, -Math.PI / 2, 1.234]) {
+      const p = placeLabel(a, true, o);
+      expect(p.anchor).toBe("middle");
+      expect(p.x).toBe(0);
+      expect(p.y).toBeLessThan(0);
+    }
+  });
+
+  it("gives a COLLINEAR parent/child pair non-stacked labels (the #578 overlap)", () => {
+    // The screenshot bug: a one-child internal node inherits its child's angle
+    // exactly, so both sit on the same ray one ring apart. A single leaf under
+    // the root lands due WEST (angle π); the root stays centred-above while the
+    // leaf swings to its LEFT — different anchors, so the labels no longer pile.
+    const layout = radialLayout(
+      [
+        entry({ server: "root", linked_to: "root", hopcount: 0 }),
+        entry({ server: "devel", linked_to: "root", hopcount: 1 }),
+      ],
+      DEFAULT_LAYOUT_OPTS,
+    );
+    const root = nodeBy(layout, "root");
+    const devel = nodeBy(layout, "devel");
+    expect(root?.labelAnchor).toBe("middle");
+    expect(devel?.labelAnchor).toBe("end"); // west → left side, not centred-above
+    // Both labels survive (a 2-node tree is nowhere near crowded)...
+    expect(root?.labelVisible).toBe(true);
+    expect(devel?.labelVisible).toBe(true);
+    // ...and their measured boxes do NOT overlap (the whole point of the fix).
+    const rb = labelBox(root as LayoutNode, DEFAULT_LAYOUT_OPTS);
+    const db = labelBox(devel as LayoutNode, DEFAULT_LAYOUT_OPTS);
+    const overlap =
+      rb.minX < db.maxX && db.minX < rb.maxX && rb.minY < db.maxY && db.minY < rb.maxY;
+    expect(overlap).toBe(false);
+  });
+});
+
+describe("radialLayout (#578) — the viewBox fits the real node extent", () => {
+  // A star: N leaves equally spaced around one self-linked hub.
+  const star = (leaves: number): LinksEntry[] => [
+    entry({ server: "hub", linked_to: "hub", hopcount: 0 }),
+    ...Array.from({ length: leaves }, (_, i) =>
+      entry({ server: `leaf-${i}`, linked_to: "hub", hopcount: 1 }),
+    ),
+  ];
+
+  it("fits TIGHTLY — the extreme node is exactly one margin from the edge", () => {
+    // The property that pins the whole fix: the nearest node extremity (glyph OR
+    // visible label) is exactly `margin` from x=0 / y=0. The old full-disc box
+    // left a half-canvas of dead black around a small mesh — this forbids it for
+    // ANY topology, and every glyph stays inside the box.
+    const layout = radialLayout(star(6), DEFAULT_LAYOUT_OPTS);
+    expectContained(layout);
+    expect(minExtremity(layout)).toBeCloseTo(margin, 6);
+  });
+
+  it("includes visible LABELS in the fitted extent (the old box clipped them)", () => {
+    // A single east/west leaf swings its label OUTWARD past the glyph; the fitted
+    // box must contain that label box, not just the glyph disc. This is exactly
+    // what the old glyph-only full-disc bound got wrong (labels clipped at the
+    // ring). Assert the leftmost VISIBLE label sits no further left than x=0.
+    const layout = radialLayout(star(6), DEFAULT_LAYOUT_OPTS);
+    for (const n of visibleLabels(layout)) {
+      const b = labelBox(n, DEFAULT_LAYOUT_OPTS);
+      expect(b.minX).toBeGreaterThanOrEqual(-1e-6);
+      expect(b.maxX).toBeLessThanOrEqual(layout.width + 1e-6);
+      expect(b.minY).toBeGreaterThanOrEqual(-1e-6);
+      expect(b.maxY).toBeLessThanOrEqual(layout.height + 1e-6);
+    }
+  });
+
+  it("collapses the box for a collinear CHAIN (the dead-space win)", () => {
+    // A single-child chain is a thin LINE, not a disc. The fitted box hugs it:
+    // strictly under the old full-disc bound on both axes, and much thinner
+    // across the line than along it — the exact dead black the bug reported.
+    const layout = radialLayout(
+      [
+        entry({ server: "hub", linked_to: "hub", hopcount: 0 }),
+        entry({ server: "aa", linked_to: "hub", hopcount: 1 }),
+        entry({ server: "bb", linked_to: "aa", hopcount: 2 }),
+        entry({ server: "cc", linked_to: "bb", hopcount: 3 }),
+      ],
+      DEFAULT_LAYOUT_OPTS,
+    );
+    expectContained(layout);
+    expect(layout.width).toBeLessThan(sizeFor(3));
+    expect(layout.height).toBeLessThan(sizeFor(3));
+    expect(layout.height).toBeLessThan(layout.width);
+  });
+
+  it("degrades to an empty box for an empty topology (unchanged)", () => {
+    const layout = radialLayout([], DEFAULT_LAYOUT_OPTS);
+    expect(layout.width).toBe(0);
+    expect(layout.height).toBe(0);
+  });
+});
+
+describe("radialLayout (#578) — greedy label declutter", () => {
+  const star = (leaves: number): LinksEntry[] => [
+    entry({ server: "hub", linked_to: "hub", hopcount: 0 }),
+    ...Array.from({ length: leaves }, (_, i) =>
+      entry({ server: `leaf-${i}`, linked_to: "hub", hopcount: 1 }),
+    ),
+  ];
+
+  it("shows ALL labels on a sparse star (angular gaps are wide)", () => {
+    const layout = radialLayout(star(3), DEFAULT_LAYOUT_OPTS);
+    expect(visibleLabels(layout)).toHaveLength(layout.nodes.length);
+  });
+
+  it("DROPS colliding labels on a dense star (angular distance, not node count)", () => {
+    // 40 leaves crammed onto one ring → adjacent labels overlap → most are
+    // dropped. The axis is ANGULAR crowding, which a node-count threshold missed.
+    const layout = radialLayout(star(40), DEFAULT_LAYOUT_OPTS);
+    const visible = visibleLabels(layout);
+    expect(visible.length).toBeLessThan(layout.nodes.length); // some dropped
+    expect(visible.length).toBeGreaterThanOrEqual(1); // not all dropped
+  });
+
+  it("ALWAYS keeps the root label (placed first, never decluttered away)", () => {
+    const layout = radialLayout(star(40), DEFAULT_LAYOUT_OPTS);
+    expect(nodeBy(layout, "hub")?.isRoot).toBe(true);
+    expect(nodeBy(layout, "hub")?.labelVisible).toBe(true);
+  });
+
+  it("never lets two VISIBLE labels overlap (the declutter guarantee)", () => {
+    const layout = radialLayout(star(40), DEFAULT_LAYOUT_OPTS);
+    const boxes = visibleLabels(layout).map((n) => labelBox(n, DEFAULT_LAYOUT_OPTS));
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i];
+        const b = boxes[j];
+        if (a === undefined || b === undefined) continue;
+        const overlap = a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY;
+        expect(overlap).toBe(false);
+      }
+    }
   });
 });
