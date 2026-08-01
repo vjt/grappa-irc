@@ -1010,9 +1010,24 @@ html.overlay-open #root > div {
    longer suppressed: it narrows to `max-content`, sizing to the labelled
    button drawer instead of a 14rem members void. Was `… 1fr` (column dropped);
    now `… 1fr max-content` (narrow rail stays). Mobile-only .shell-mobile
-   is single-column so the modifier is a no-op there. */
+   is single-column so the modifier is a no-op there.
+
+   #605 — CAP the max-content track with `fit-content(14rem)`. On a SERVER
+   window the rail content (RailContext → ServerInfoCard) drives this
+   track, and a long `connection.server` (a real IPv6 peer — the #609
+   cutover) or a long disconnect reason has NO wrap point under bare
+   `max-content`, so the rail ballooned and starved the centre scrollback
+   on small desktop-class viewports (iPad Pro 11" 834px — morph's report,
+   2026-08-01). `fit-content` still sizes to content (a short card stays
+   narrow — no empty rail column), but never past 14rem, the members-rail's
+   declared width: a server window's context card can't claim more
+   horizontal space than a channel's member list would. NOT the issue's
+   suggested `min(--members-width, Nvw)` — `--members-width` is not in THIS
+   track (it's `max-content` here, not the base `var()` track), and at the
+   14px root (--font-size) any sane `Nvw` is ≥ 14rem across the whole
+   desktop range (≥769px), so the vw clause would be dead code. */
 .shell.shell-no-members {
-  grid-template-columns: var(--sidebar-width, 16rem) 1fr max-content;
+  grid-template-columns: var(--sidebar-width, 16rem) 1fr fit-content(14rem);
 }
 
 /* #319 — landscape-compact tier. A small phone (~5") rotated to landscape
@@ -1059,8 +1074,12 @@ html.overlay-open #root > div {
 
   .shell.shell-no-members {
     /* #71 INC-2 / #473 — narrow rail stays (RailActions buttons everywhere),
-       not a dropped column. Was `8rem 1fr`. */
-    grid-template-columns: 8rem 1fr max-content;
+       not a dropped column. Was `8rem 1fr`. #605 — same server-card cap as
+       the base tier, but pinned to THIS tier's 7rem members width: a server
+       window's `max-content` card would otherwise blow straight past the
+       slim rails this compact tier exists to enforce, re-creating the
+       centre-starve inside the tier meant to prevent it. */
+    grid-template-columns: 8rem 1fr fit-content(7rem);
   }
 }
 
