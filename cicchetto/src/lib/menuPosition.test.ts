@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeMenuPosition, placeAxis } from "./menuPosition";
+import { computeMenuPosition, placeAxis, spaceAbove } from "./menuPosition";
 
 // #487 — the member-list right-click context menu must stay inside the
 // viewport. The positioning math is a PURE fn so the arithmetic is
@@ -107,5 +107,36 @@ describe("computeMenuPosition (both axes)", () => {
       viewportHeight: 180,
     });
     expect(p.top).toBe(0);
+  });
+});
+
+// #588 — the rail actions menu opens UPWARD from a launcher pinned at the
+// bottom of the rail (`.rail-actions-menu { bottom: 100% }`). Its usable
+// height is NOT the whole viewport — it is only the space ABOVE the anchor
+// (the `.rail-actions` container top). Capping `max-height` at that space is
+// what makes the already-present `overflow-y: auto` engage instead of the
+// menu growing off the top of the screen (the #588 defect). `spaceAbove` is
+// that one-number cap: px available above `anchorTop`, minus a top gap for
+// breathing room, clamped at 0 so a launcher near y=0 never yields a NEGATIVE
+// max-height (invalid CSS → ignored → the bug returns). Pure fn, same
+// jsdom-hollow reasoning as `placeAxis`; the visible proof is the Playwright
+// e2e (issue500-rail-launcher-overflow.spec.ts short-viewport variant).
+describe("spaceAbove (rail upward-menu max-height cap)", () => {
+  it("returns the space above the anchor minus the top gap", () => {
+    // launcher top at 500px, keep 8px clear → menu may be 492px tall.
+    expect(spaceAbove(500, 8)).toBe(492);
+  });
+
+  it("clamps to 0 when the anchor sits within the gap of the top", () => {
+    // launcher near y=0 (tiny viewport) → 4 - 8 = -4 must NOT be negative.
+    expect(spaceAbove(4, 8)).toBe(0);
+  });
+
+  it("returns 0 when the anchor is exactly one gap below the top", () => {
+    expect(spaceAbove(8, 8)).toBe(0);
+  });
+
+  it("returns 0 for an anchor flush with the viewport top", () => {
+    expect(spaceAbove(0, 8)).toBe(0);
   });
 });

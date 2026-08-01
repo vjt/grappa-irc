@@ -3,6 +3,7 @@ import { archiveSlugForSelection } from "./lib/archiveContext";
 import { channelKey } from "./lib/channelKey";
 import { syncedSetChannelPresencePref } from "./lib/displayPrefs";
 import { membersByChannel } from "./lib/members";
+import { spaceAbove } from "./lib/menuPosition";
 import {
   type MobilePanelSetters,
   openAdminPanel,
@@ -88,6 +89,11 @@ export type Props = {
   setters: MobilePanelSetters;
 };
 
+// #588 — px kept clear at the viewport top when the menu is capped to the space
+// above the launcher, so the topmost row isn't flush against the screen edge
+// (notch / status bar breathing room). Fed to `spaceAbove`.
+const RAIL_MENU_TOP_GAP = 8;
+
 const RailActions: Component<Props> = (props) => {
   // The channel this rail is currently showing, or null on non-channel windows
   // — drives the channel-gated denoise toggle (any channel: the toggle writes a
@@ -127,6 +133,39 @@ const RailActions: Component<Props> = (props) => {
     onCleanup(() => document.removeEventListener("pointerdown", onPointerDown, true));
   });
 
+  // #588 — the menu opens UPWARD from the launcher (`bottom: 100%`), so its
+  // usable height is ONLY the space above `rootRef` (the `.rail-actions`
+  // container the absolute menu anchors to), NOT the whole viewport. The CSS
+  // `max-height: var(--viewport-height)` capped it at the viewport, so on a
+  // short viewport the overflowing rows grew off the top of the screen with no
+  // scroll (menu shorter than its own oversized cap → `overflow-y: auto` never
+  // engaged) and the top actions were unreachable. Measure the real space above
+  // on open and cap `max-height` to it via the shared `menuPosition` seam
+  // (`spaceAbove`) — the same clamp `UserContextMenu` uses, rather than a
+  // second, differently-buggy CSS-only guess. Re-measure on `resize` /
+  // `visualViewport` resize: that is where the mobile-keyboard-up case lives
+  // (the visual viewport shrinks, the launcher rides up, the space above
+  // changes). Null while closed → the menu isn't mounted anyway, and the JSX
+  // falls back to the CSS var.
+  const [menuMaxHeight, setMenuMaxHeight] = createSignal<number | null>(null);
+  createEffect(() => {
+    if (!open()) {
+      setMenuMaxHeight(null);
+      return;
+    }
+    const measure = (): void => {
+      if (!rootRef) return;
+      setMenuMaxHeight(spaceAbove(rootRef.getBoundingClientRect().top, RAIL_MENU_TOP_GAP));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("resize", measure);
+    onCleanup(() => {
+      window.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("resize", measure);
+    });
+  });
+
   return (
     // biome-ignore lint/a11y/useSemanticElements: role="group" gives the button cluster an accessible name; biome suggests <fieldset>, a form-control grouping (needs <legend>, paints a border) — wrong for a rail toolbar of action buttons.
     <div class="rail-actions" role="group" aria-label="window actions" ref={rootRef}>
@@ -135,7 +174,16 @@ const RailActions: Component<Props> = (props) => {
             Holds every action, unchanged. `createOverlayLock` targets this
             element's selector; outside-click dismiss is the pointerdown listener
             above (no covering scrim). */}
-        <div class="rail-actions-menu" role="menu">
+        <div
+          class="rail-actions-menu"
+          role="menu"
+          style={
+            // #588 — cap to the space above the launcher (JS-measured); the CSS
+            // `max-height: var(--viewport-height)` stays as the pre-measure
+            // fallback. undefined → the CSS rule applies.
+            menuMaxHeight() !== null ? { "max-height": `${menuMaxHeight()}px` } : undefined
+          }
+        >
           {/* #291 — home launcher. Always visible; leftmost/topmost. */}
           <button
             type="button"

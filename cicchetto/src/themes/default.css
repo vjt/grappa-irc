@@ -1674,7 +1674,14 @@ html.resize-dragging * {
    inside a short viewport (e.g. mobile keyboard up); `overscroll-behavior:
    contain` stops the scroll chaining to the list behind. z-index sits at the
    context-menu layer so it clears the rail chrome; the fixed backdrop below is
-   one step under it. */
+   one step under it.
+   #588 — the `max-height: var(--viewport-height)` here is now only the
+   PRE-MEASURE FALLBACK. `var(--viewport-height)` is the WHOLE viewport, but a
+   menu opening upward only has the space ABOVE the launcher; capping at the
+   viewport let the overflowing rows grow off the top of the screen with no
+   scroll. RailActions.tsx measures the real space above on open (+ on resize /
+   visualViewport) and overrides `max-height` inline via `spaceAbove` — only
+   then does the `overflow-y: auto` below actually engage. */
 .rail-actions-menu {
   position: absolute;
   bottom: 100%;

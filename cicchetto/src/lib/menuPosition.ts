@@ -39,3 +39,18 @@ export function computeMenuPosition(m: MenuMeasurement): MenuPlacement {
     top: placeAxis(m.clickY, m.menuHeight, m.viewportHeight),
   };
 }
+
+// #588 — max-height cap for a menu that opens UPWARD from a bottom-pinned
+// anchor (the rail actions launcher: `.rail-actions-menu { bottom: 100% }`).
+// The space such a menu actually has is only what lies ABOVE the anchor —
+// NOT the whole viewport, which is what the CSS `max-height:
+// var(--viewport-height)` wrongly capped it at (the menu then grew off the
+// top of the screen instead of scrolling). `anchorTop` is the anchor's
+// distance from the viewport top (getBoundingClientRect().top); `gap` keeps
+// a few px clear at the top for breathing room. Clamped at 0: an anchor near
+// y=0 must never produce a NEGATIVE max-height (invalid CSS → rule ignored →
+// the overflow bug returns). Sibling of `placeAxis`'s viewport-oversize
+// pin — both hand the CSS `overflow-y: auto` a valid, in-viewport box.
+export function spaceAbove(anchorTop: number, gap: number): number {
+  return Math.max(0, anchorTop - gap);
+}

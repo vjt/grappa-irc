@@ -92,3 +92,57 @@ test("#500 — an overflowing member list keeps the rail launcher reachable and 
   await expect(page.locator(".rail-actions-menu")).toBeVisible();
   await expect(page.locator(".rail-actions-menu [data-testid='action-cluster-cog']")).toBeVisible();
 });
+
+// #588 — sibling guarantee to #500. #500 keeps the LAUNCHER reachable; this
+// covers what the launcher OPENS. The menu opens UPWARD from the bottom-pinned
+// launcher, but pre-fix it capped `max-height` at the WHOLE viewport height,
+// not the space that actually lies above the launcher. On a short viewport the
+// overflowing rows therefore grew straight off the top of the screen with NO
+// scroll (the menu was shorter than its own oversized cap, so `overflow-y:
+// auto` never engaged) — the topmost actions unreachable by any gesture.
+//
+// The trap the issue calls out: a menu that fits (tall viewport, few rows)
+// false-passes. So shrink the viewport until the menu GENUINELY overflows the
+// space above the launcher, then assert the topmost row (home) sits INSIDE the
+// viewport. No peers needed — menu overflow is a function of row count vs the
+// space above the launcher, independent of the member list length.
+//
+// A jsdom test cannot catch this (0-sized rects → any y is 0), which is exactly
+// why the cap is a pure unit (`spaceAbove` in menuPosition.test.ts) and the
+// visible proof lives here in a real layout.
+test("#588 — an overflowing rail menu keeps its topmost action inside the viewport", async ({
+  page,
+}) => {
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+  // Short viewport: the collapsed action rows (home · rooms · themes · archive
+  // · settings · denoise) cannot all fit in the space above the bottom-pinned
+  // launcher, forcing the overflow this test is about.
+  await page.setViewportSize(VIEWPORT);
+  await openRailMenu(page);
+
+  const menu = page.locator(".rail-actions-menu");
+  await expect(menu).toBeVisible();
+
+  // Precondition — the menu ACTUALLY overflows its box (more rows than fit).
+  // Without this a tall-viewport run would prove nothing (the issue's trap).
+  const overflows = await menu.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
+  expect(overflows, "rail menu must overflow for this test to be meaningful").toBe(true);
+
+  // THE DEFECT: the topmost action (home) must be INSIDE the viewport, not
+  // grown off the top of the screen. boundingBox is viewport-relative and does
+  // NOT scroll; a pre-#588 menu capped at the full viewport height reports a
+  // NEGATIVE y here (the row sits above y=0, unreachable). Once the cap is the
+  // space above the launcher, the row lands at ~gap and `overflow-y: auto`
+  // scrolls the rest into reach.
+  const topRow = menu.locator("[data-testid='mobile-panel-home']");
+  await expect(topRow).toBeVisible();
+  const box = await topRow.boundingBox();
+  expect(box, "top menu row must have a layout box").not.toBeNull();
+  if (box) {
+    expect(box.y, "topmost menu row must not be above the viewport top").toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(VIEWPORT.height + 1);
+  }
+});
