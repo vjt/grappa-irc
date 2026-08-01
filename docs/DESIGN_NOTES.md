@@ -25056,3 +25056,52 @@ asserts the VISIBLE terminal `recover-modal-success` after RECOVER frees the
 hold — no API-return assertion, no success-or-failure soft-assert (D4). A server
 integration test masking a critical behind an unrealistic mock is exactly why the
 happy-path e2e is mandatory: a feature without one is hollow green.
+
+## 2026-08-01 — #589: the admin pane joins the iOS user-select allowlist (CSS-only)
+
+On iOS NO text in the admin pane was selectable, keyboard up or down. The admin
+tables are the surfaces an operator most needs to copy off the device (IPs,
+session/visitor ids, vhosts, UA strings, error text), so the bug forced retyping
+by hand.
+
+Root cause is the Dispatch-1 (2026-06-11) iOS selection policy: `html.is-ios`
+applies a blanket `-webkit-user-select: none` (the Telegram Web K pattern) that
+inherits to every descendant, paired with an explicit re-enable allowlist
+(`.scrollback`, `.topic-modal-text`, `input`, `textarea`, plus #508's `select`).
+The admin pane was never added to that list, so `.admin-tab-panel` and every
+table cell inherited `none`. Admin form fields already worked — they are
+`input`/`textarea`, already on the allowlist — which is exactly the report shape:
+the fields fine, the tables and labels dead.
+
+Fix (`themes/default.css`): re-enable `html.is-ios .admin-tab-panel` — the single
+wrapper `AdminPane.tsx` puts around every tab's content, so ONE selector covers
+all ten tabs — and re-exclude `html.is-ios .admin-tab-panel button` so a
+long-press on a refresh/action button does not pop the selection magnifier over a
+control. That re-exclude is the twin of the `.scrollback-invite-join` carve-out
+for the `[Join]` CTA. Buttons ONLY: `input`/`select` stay selectable via the
+global re-enables, and anchors keep their URL text copyable (the
+`.scrollback-link` reasoning in `keepKeyboard.ts` — a clickable-but-copyable
+inline control stays `user-select: text`).
+
+The decision that mattered: `keepKeyboard.ts`'s `SELECTABLE_TEXT_SURFACES` was
+deliberately NOT touched, even though the CSS re-enable allowlist and that list
+must otherwise stay in sync. That list is compose-focus KEYBOARD policy — it only
+does anything while a text input holds focus (`handleMouseDown` bails on
+`!isTextEntry(document.activeElement)`). The AdminPane `<Match>` arm UNMOUNTS
+ComposeBox (`Shell.tsx` `<Switch>` renders AdminPane INSTEAD of the
+TopicBar/Scrollback/ComposeBox stack), so no text input can be focused behind the
+pane; and on real iOS a long-press synthesizes no mousedown at all (#366). So the
+pane's selection is governed purely by the `user-select` CSS. The issue's "open
+question" (could compose stay focused behind the pane, forcing a TS change too?)
+resolves to no — CSS-only is complete, and adding the admin pane to
+`SELECTABLE_TEXT_SURFACES` would be dead code the file's own comment warns
+against.
+
+Test: e2e (`@webkit` iPhone-15), not jsdom — jsdom is blind to CSS and has a
+no-op `Selection`, so a unit test passes against the broken CSS. Asserts the
+computed `user-select` on a real `.admin-visitors-table` cell is `text` and on a
+control inside the panel is `none`, under the active is-ios kill, mirroring
+`text-selection-restored.spec.ts`'s @webkit half. RED→GREEN verified locally
+(without the fix the panel computes `none`). Real long-press selection is not
+emulatable on Playwright webkit, so computed style is the testable boundary;
+device dogfood is the final iOS check.

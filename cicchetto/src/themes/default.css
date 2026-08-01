@@ -506,6 +506,32 @@ html.is-ios .scrollback-invite-join {
   user-select: none;
 }
 
+/* #589 — admin pane content selectable on iOS. The blanket `html.is-ios`
+   user-select:none above kills selection on every admin table — exactly the
+   surfaces (IPs, session/visitor ids, vhosts, UA strings, error text) an
+   operator needs to copy off the device. `.admin-tab-panel` is the single
+   wrapper around every tab's content (AdminPane.tsx), so ONE selector
+   re-enables all ten tabs. Mirrors the .scrollback re-enable above; NOT
+   mirrored into keepKeyboard.ts's SELECTABLE_TEXT_SURFACES — that list is
+   compose-focus KEYBOARD policy, and the AdminPane <Match> arm UNMOUNTS
+   ComposeBox (Shell.tsx <Switch>), so no text input holds focus behind the
+   pane (handleMouseDown bails on document.activeElement). iOS native
+   long-press selection here is pure CSS. See DESIGN_NOTES 2026-08-01. */
+html.is-ios .admin-tab-panel {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Re-exclude controls inside the panel — a long-press on a refresh/action
+   button must not pop the selection magnifier over a control (same carve-out
+   as .scrollback-invite-join). Buttons only: <input>/<select> stay selectable
+   via the global input/select re-enables above, and anchors keep their URL
+   text copyable (the .scrollback-link reasoning in keepKeyboard.ts). */
+html.is-ios .admin-tab-panel button {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 html.is-ios body {
   height: calc(var(--vh, 1vh) * 100);
 }
