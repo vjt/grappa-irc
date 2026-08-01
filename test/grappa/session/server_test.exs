@@ -33,7 +33,7 @@ defmodule Grappa.Session.ServerTest do
   alias Grappa.IRC.Message
   alias Grappa.{IRCServer, PubSub.Topic, QueryWindows, Repo, Scrollback, Session, WSPresence}
   alias Grappa.Networks.{Credentials, SessionPlan}
-  alias Grappa.Session.{AwayState, Backoff, GhostRecovery, ISupport, Server, WindowState}
+  alias Grappa.Session.{AwayState, Backoff, GhostRecovery, ISupport, RecoverIdentity, Server, WindowState}
   alias Grappa.SessionStateHelpers
   alias Grappa.WindowCounts.PushSource
 
@@ -10460,11 +10460,14 @@ defmodule Grappa.Session.ServerTest do
                      1_000
     end
 
-    test "nick held (433) → RECOVER; then settle → +r → succeeded" do
+    test "nick held (433) → RECOVER → settle → re-NICK observed → +r → succeeded" do
       %{server: server, pid: pid, subject: subject, network: network, label: label} =
         start_recover_visitor("s3cret")
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(label))
+      # Parked-on-Guest: force a Guest nick so the reclaim NICK to the
+      # credential nick is a genuine, observable transition (#623 sequencing).
+      _ = :sys.replace_state(pid, fn state -> %{state | nick: "guestx"} end)
 
       assert :ok = Session.recover_identity(subject, network.id)
 
@@ -10478,9 +10481,18 @@ defmodule Grappa.Session.ServerTest do
                  1_000
                )
 
-      # Drive the post-verb settle tick deterministically (no 800ms sleep) →
-      # the ONE final NICK+IDENTIFY; then +r closes it succeeded.
+      # #623 — the settle tick sends the re-NICK ALONE; the IDENTIFY waits for
+      # the nick change to be OBSERVED. Drive the settle deterministically (no
+      # 800ms sleep); the :sys.get_state read is a FIFO barrier ensuring the
+      # settle landed (FSM at :awaiting_nick) BEFORE the self-NICK echo. Then
+      # the self-NICK + the +r ride the socket FIFO in order → IDENTIFY
+      # (sameNick) → +r → success.
       send(pid, :recover_settle)
+
+      assert SessionStateHelpers.recover_identity(SessionStateHelpers.fetch(pid)).phase ==
+               :awaiting_nick
+
+      IRCServer.feed(server, ":guestx!u@h NICK :#{@recover_nick}\r\n")
       IRCServer.feed(server, ":irc.test.org MODE #{@recover_nick} :+r\r\n")
 
       assert_receive %Phoenix.Socket.Broadcast{
@@ -10566,6 +10578,152 @@ defmodule Grappa.Session.ServerTest do
                      1_000
 
       assert Process.alive?(pid)
+    end
+
+    # #623 — a 433 on the re-NICK is a BOUNDED RETRY (the hold has not cleared
+    # yet), NOT a one-shot terminal failure (reverses F2). Distinguishing
+    # observable: after the 433 the recover FSM is STILL ARMED (pre-#623 it was
+    # cleared to nil at a terminal :failed). PING/PONG is a FIFO barrier proving
+    # the socket-fed 433 was processed before we read state.
+    test "reclaim leg: a 433 on the re-NICK RETRIES (FSM stays armed), not a one-shot fail" do
+      %{server: server, pid: pid, subject: subject, network: network} =
+        start_recover_visitor("s3cret")
+
+      _ = :sys.replace_state(pid, fn state -> %{state | nick: "guestx"} end)
+
+      assert :ok = Session.recover_identity(subject, network.id)
+
+      IRCServer.feed(server, ":irc.test.org 433 * #{@recover_nick} :Nickname is already in use\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(
+                 server,
+                 &(&1 == "PRIVMSG NickServ :RECOVER #{@recover_nick} s3cret\r\n"),
+                 1_000
+               )
+
+      send(pid, :recover_settle)
+
+      assert SessionStateHelpers.recover_identity(SessionStateHelpers.fetch(pid)).phase ==
+               :awaiting_nick
+
+      # The re-NICK still 433s — the hold is not clear yet. Barrier a PONG
+      # AFTER it (FIFO) so the 433 is provably processed before we read state.
+      IRCServer.feed(server, ":irc.test.org 433 * #{@recover_nick} :Nickname is already in use\r\n")
+      IRCServer.feed(server, "PING :b623\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.contains?(&1, "b623"), 1_000)
+
+      # STILL ARMED — a retry, not a terminal fail — back at the settle phase
+      # so the host's re-armed settle beat re-sends the NICK.
+      fsm = SessionStateHelpers.recover_identity(SessionStateHelpers.fetch(pid))
+      assert %RecoverIdentity{phase: :awaiting_verb_settle} = fsm
+    end
+
+    # #623 pt3 — leg (b): the nick WAS reclaimed and the sameNick IDENTIFY went
+    # out, but +r never confirmed by the deadline. The terminal broadcast must
+    # RECONCILE the still-running identify step to :failed (pre-#623 it was left
+    # :running forever — the "hang" in the trace) with the DISTINCT reason
+    # :identify_unconfirmed. The full sequencing INTO :awaiting_final_r (settle →
+    # NICK → self-NICK observed → IDENTIFY) is proven end-to-end by the "nick
+    # held (433) → RECOVER → settle → re-NICK observed → +r → succeeded" test
+    # above; here we INJECT the FSM parked at :awaiting_final_r so the terminal
+    # reconciliation is isolated from the socket sequencing (the :timeout path
+    # flushes no lines, so it never touches the client).
+    test "terminal from :awaiting_final_r reconciles identify=failed + :identify_unconfirmed (leg b)" do
+      %{pid: pid, label: label} = start_recover_visitor("s3cret")
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(label))
+
+      # Parked ON-nick, IDENTIFY sent, awaiting +r.
+      _ =
+        :sys.replace_state(pid, fn state ->
+          %{
+            state
+            | recover_identity: %RecoverIdentity{
+                phase: :awaiting_final_r,
+                cred_nick: @recover_nick,
+                secret: "s3cret",
+                verb: :recover
+              }
+          }
+        end)
+
+      # Deadline fires with no +r.
+      send(pid, :recover_timeout)
+
+      # The identify step is reconciled to :failed (NOT left running).
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :recover_progress,
+                         step: :identify,
+                         status: :failed,
+                         reason: :identify_unconfirmed
+                       }
+                     },
+                     1_000
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :recover_result,
+                         outcome: :failed,
+                         reason: :identify_unconfirmed
+                       }
+                     },
+                     1_000
+    end
+
+    # #623 pt3 — leg (a): the re-NICK never landed (the hold never cleared). The
+    # terminal broadcast marks the nick step :failed with :nick_unavailable —
+    # DISTINCT from leg (b) in BOTH the failed step and the reason.
+    test "terminal from :awaiting_nick marks nick=failed + :nick_unavailable (leg a)" do
+      %{server: server, pid: pid, subject: subject, network: network, label: label} =
+        start_recover_visitor("s3cret")
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(label))
+      _ = :sys.replace_state(pid, fn state -> %{state | nick: "guestx"} end)
+
+      assert :ok = Session.recover_identity(subject, network.id)
+      IRCServer.feed(server, ":irc.test.org 433 * #{@recover_nick} :Nickname is already in use\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(
+                 server,
+                 &(&1 == "PRIVMSG NickServ :RECOVER #{@recover_nick} s3cret\r\n"),
+                 1_000
+               )
+
+      # Settle → NICK alone; no self-NICK ever observed → stuck at :awaiting_nick.
+      send(pid, :recover_settle)
+
+      assert SessionStateHelpers.recover_identity(SessionStateHelpers.fetch(pid)).phase ==
+               :awaiting_nick
+
+      send(pid, :recover_timeout)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :recover_progress,
+                         step: :nick,
+                         status: :failed,
+                         reason: :nick_unavailable
+                       }
+                     },
+                     1_000
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :recover_result,
+                         outcome: :failed,
+                         reason: :nick_unavailable
+                       }
+                     },
+                     1_000
     end
   end
 end

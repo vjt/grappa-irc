@@ -48,6 +48,11 @@ const STATUS_GLYPH: Record<RecoverStatus, string> = {
 // (a future server reason token, additive-only) falls back to generic copy —
 // the friendlyChannelError posture (known → copy, unknown → fallback), never a
 // dropped/blank failure.
+//
+// #623 — `identify_unconfirmed` (leg b: nick reclaimed, sameNick IDENTIFY sent,
+// but +r never confirmed) has NO bespoke case yet and intentionally hits the
+// generic fallback ("Recovery couldn't be completed. Try again.") — apt, since a
+// retry often succeeds. Bespoke copy is a product decision, not shipped here.
 function reasonCopy(reason: string | null): string {
   switch (reason) {
     case "wrong_password":

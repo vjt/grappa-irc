@@ -917,11 +917,17 @@ export type LinksReply = Omit<SessionWireLinksBundlePayload, "kind">;
 // can never drop a TERMINAL result event (unknown-is-never-fatal, #447) — the
 // modal localizes the known tokens (`wrong_password` / `nick_unavailable` /
 // `services_declined`) and shows generic copy otherwise, the friendlyChannelError
-// posture.
+// posture. #623 adds `identify_unconfirmed` (leg b) as a KNOWN token but with NO
+// bespoke copy yet — it deliberately renders the generic fallback until copy is
+// decided.
 export type RecoverStep = "identify" | "register" | "nick" | "recover" | "release";
 export type RecoverStatus = "running" | "ok" | "failed";
 export type RecoverOutcome = "succeeded" | "failed";
-export type RecoverResultReason = "wrong_password" | "nick_unavailable" | "services_declined";
+export type RecoverResultReason =
+  | "wrong_password"
+  | "nick_unavailable"
+  | "services_declined"
+  | "identify_unconfirmed";
 
 // Mirror of the events fanned out on the user-level PubSub topic
 // (`Topic.user(user_name)`), pinned by:

@@ -27,35 +27,69 @@ defmodule Grappa.Session.RecoverIdentity do
   ON the reclaimed nick is what commits.
 
   So `+r` cannot arrive while on a Guest nick. You must be ON the
-  credential nick AND `IDENTIFY` (sameNick) to get `+r`. The sequence
-  therefore sends `NICK` and `IDENTIFY` TOGETHER (mirroring
-  `GhostRecovery`'s `:succeeded` `["NICK …", "IDENTIFY …"]` emit) and
-  waits for `+r` as the SUCCESS signal:
+  credential nick AND `IDENTIFY` (sameNick) to get `+r`.
 
-  1. `:start` → `NICK <cred_nick>` + `IDENTIFY <cred_nick> <secret>`,
-     transition `:awaiting_r`.
+  ## The RECLAIM leg is SEQUENCED, not raced (GH #623, 2026-08-01)
+
+  The reclaim leg (after a held-nick `RECOVER`/`RELEASE`) used to flush
+  `NICK` + `IDENTIFY` together, then wait a fixed 800ms and re-flush both
+  together. Against real, contended services that races two ways:
+
+    * the `IDENTIFY` is evaluated by services BEFORE the `NICK` change has
+      propagated → a foreign-nick (Guest) identify → NOTICE, **no `+r`**
+      (the sameNick rule); and
+    * the single fixed-800ms re-`NICK` can hit a `433` because `RECOVER`
+      freed the hold asynchronously and the hold is not clear YET — a
+      one-shot failure with no retry.
+
+  #623 fixes both without inflating any timing constant:
+
+  1. `:idle` → `NICK <cred_nick>` + `IDENTIFY <cred_nick> <secret>`,
+     transition `:awaiting_r`. (The INITIAL leg keeps them together: a
+     FREE nick lands with no hold to propagate, so the trailing IDENTIFY
+     is sameNick.)
   2. `:r_observed` (the `+r` umode landed — fed by the host from
      `EventRouter`'s identity signal, NOT parsed here) → `:succeeded`.
   3. `{:nick_error, 433}` (nick in use) → `RECOVER`; `{:nick_error, 437}`
      (services hold) → `RELEASE`; transition `:awaiting_verb_settle`. (The
      `IDENTIFY` sent in step 1 was a foreign-nick identify — no `+r`, per
      the sameNick rule; it is harmless and re-sent below.)
-  4. `:settle` (host's short post-verb settle tick) → `NICK <cred_nick>` +
-     `IDENTIFY <cred_nick> <secret>`, transition `:awaiting_final_r`.
-  5. `:r_observed` → `:succeeded`. A refused final `NICK` (`{:nick_error,
-     _}`) is **terminal `:failed`** — F2 (vjt 2026-07-31): an empty retry
-     never wins the nick, which is exactly why the verb is `RECOVER`. No
-     retry loop.
-  6. `:timeout` (host's overall deadline) in any non-terminal phase →
-     `:failed`, phase-appropriate reason (`:wrong_password` if `+r` never
-     came after a clean NICK; `:services_declined` if the verb went
-     unanswered; `:nick_unavailable` if the reclaimed NICK still failed).
+  4. `:settle` (host's short post-verb settle tick) → `NICK <cred_nick>`
+     **ALONE**, transition `:awaiting_nick`. The IDENTIFY is deliberately
+     withheld until the nick change is OBSERVED.
+  5. `:nick_observed` (the host saw `state.nick` become the credential
+     nick) → `IDENTIFY <cred_nick> <secret>` (now provably sameNick),
+     transition `:awaiting_final_r`.
+  6. `{:nick_error, 433 | 437}` on the re-NICK (`:awaiting_nick`) → the
+     hold has not cleared YET → a bounded **RETRY**: transition back to
+     `:awaiting_verb_settle` (no line — the host re-arms the settle beat,
+     which re-sends the `NICK`). `RECOVER` is NOT re-issued. The loop is
+     bounded by the host's overall 15s deadline, NOT this FSM. This
+     REVERSES the earlier F2 "one shot, terminal" rule: an empty retry
+     never wins the nick, but a re-NICK as an async hold clears does.
+  7. `:r_observed` → `:succeeded`.
+
+  ### Terminal legs are DISTINCT + trace-diagnosable (GH #623 pt3)
+
+  `:timeout` (host's overall deadline) in any non-terminal phase →
+  `:failed`, phase-appropriate reason:
+
+    * `:awaiting_r` → `:wrong_password` (a clean NICK with no `+r` — the
+      IDENTIFY was rejected).
+    * `:awaiting_verb_settle` → `:services_declined` (the verb went
+      unanswered).
+    * `:awaiting_nick` → `:nick_unavailable` (**leg a**: the re-NICK never
+      landed — the hold never cleared / services kept renaming us).
+    * `:awaiting_final_r` → `:identify_unconfirmed` (**leg b**: the nick
+      WAS reclaimed and the sameNick IDENTIFY went out, but `+r` never
+      confirmed). Distinct from `:wrong_password` — `RECOVER` already
+      password-authenticated, so the password is proven correct.
 
   Wire lines carry the credential nick **RAW** — its case is
   presentation (the key/display/wire split, GH #121/#537). The FSM emits
   no broadcasts and arms no timers: the host (`Grappa.Session.Server`)
-  owns I/O, the overall deadline, the settle tick, and the progress
-  broadcasts.
+  owns I/O, the overall deadline, the settle tick, the `:nick_observed`
+  feed, and the progress broadcasts.
 
   Boundary: inherits the parent `Grappa.Session` boundary — same pattern
   as sibling submodules `Server`, `EventRouter`, `GhostRecovery`. No `use
@@ -68,19 +102,26 @@ defmodule Grappa.Session.RecoverIdentity do
           :idle
           | :awaiting_r
           | :awaiting_verb_settle
+          | :awaiting_nick
           | :awaiting_final_r
           | :succeeded
           | :failed
 
   @type verb :: :recover | :release | nil
 
-  @type reason :: :wrong_password | :nick_unavailable | :services_declined | nil
+  @type reason ::
+          :wrong_password
+          | :nick_unavailable
+          | :services_declined
+          | :identify_unconfirmed
+          | nil
 
   @type input ::
           :start
           | :r_observed
           | {:nick_error, 433 | 437}
           | :settle
+          | :nick_observed
           | :timeout
 
   @type t :: %__MODULE__{
@@ -115,7 +156,7 @@ defmodule Grappa.Session.RecoverIdentity do
   @spec step(t(), input()) :: {:cont, t(), [String.t()]} | {:stop, t(), [String.t()]}
 
   def step(%__MODULE__{phase: :idle} = s, :start) do
-    {:cont, %{s | phase: :awaiting_r}, take_and_identify(s)}
+    {:cont, %{s | phase: :awaiting_r}, take(s) ++ identify(s)}
   end
 
   def step(%__MODULE__{phase: :awaiting_r} = s, :r_observed) do
@@ -136,37 +177,56 @@ defmodule Grappa.Session.RecoverIdentity do
     {:stop, %{s | phase: :failed, reason: :wrong_password}, []}
   end
 
+  # #623: the settle tick sends the re-NICK ALONE — the IDENTIFY waits for
+  # `:nick_observed` so it can never land under the old (Guest) nick.
   def step(%__MODULE__{phase: :awaiting_verb_settle} = s, :settle) do
-    {:cont, %{s | phase: :awaiting_final_r}, take_and_identify(s)}
+    {:cont, %{s | phase: :awaiting_nick}, take(s)}
   end
 
   def step(%__MODULE__{phase: :awaiting_verb_settle} = s, :timeout) do
     {:stop, %{s | phase: :failed, reason: :services_declined}, []}
   end
 
+  # #623: the re-NICK landed AND was observed → we are provably on the
+  # credential nick, so this IDENTIFY is sameNick and commits `+r`.
+  def step(%__MODULE__{phase: :awaiting_nick} = s, :nick_observed) do
+    {:cont, %{s | phase: :awaiting_final_r}, identify(s)}
+  end
+
+  # #623: a refused re-NICK means the hold has NOT cleared yet (RECOVER
+  # freed it asynchronously). Bounded RETRY — go back to
+  # `:awaiting_verb_settle` so the host re-arms the settle beat and
+  # re-sends the NICK. No line here (RECOVER is NOT re-issued); the loop is
+  # bounded by the host's 15s overall deadline. Reverses F2.
+  def step(%__MODULE__{phase: :awaiting_nick} = s, {:nick_error, code}) when code in [433, 437] do
+    {:cont, %{s | phase: :awaiting_verb_settle}, []}
+  end
+
+  def step(%__MODULE__{phase: :awaiting_nick} = s, :timeout) do
+    # leg (a): the re-NICK never landed within the deadline.
+    {:stop, %{s | phase: :failed, reason: :nick_unavailable}, []}
+  end
+
   def step(%__MODULE__{phase: :awaiting_final_r} = s, :r_observed) do
     {:stop, %{s | phase: :succeeded}, []}
   end
 
-  # F2 (vjt 2026-07-31): the post-verb NICK gets ONE shot. A refusal is
-  # TERMINAL — no retry line, no loop. An empty retry never wins the nick.
-  def step(%__MODULE__{phase: :awaiting_final_r} = s, {:nick_error, _}) do
-    {:stop, %{s | phase: :failed, reason: :nick_unavailable}, []}
-  end
-
   def step(%__MODULE__{phase: :awaiting_final_r} = s, :timeout) do
-    {:stop, %{s | phase: :failed, reason: :nick_unavailable}, []}
+    # leg (b): the nick WAS reclaimed and the sameNick IDENTIFY went out,
+    # but `+r` never confirmed. NOT `:wrong_password` — RECOVER already
+    # proved the password correct.
+    {:stop, %{s | phase: :failed, reason: :identify_unconfirmed}, []}
   end
 
   def step(state, _), do: {:cont, state, []}
 
-  # NICK to the credential nick + IDENTIFY for it, in ONE flush. Order
-  # matters: NICK first so the IDENTIFY that follows is `sameNick` and
-  # thus commits `+r` (mirrors `GhostRecovery`'s `:succeeded` emit). If
-  # the NICK fails, the IDENTIFY is a harmless foreign-nick identify (no
-  # `+r`) and the sequence reclaims off the 433/437.
-  @spec take_and_identify(t()) :: [String.t()]
-  defp take_and_identify(%__MODULE__{cred_nick: nick, secret: secret}) do
-    ["NICK #{nick}\r\n", "PRIVMSG NickServ :IDENTIFY #{nick} #{secret}\r\n"]
-  end
+  # NICK to the credential nick. RAW case (key/display/wire split).
+  @spec take(t()) :: [String.t()]
+  defp take(%__MODULE__{cred_nick: nick}), do: ["NICK #{nick}\r\n"]
+
+  # IDENTIFY for the credential nick. RAW case. Only ever sameNick — the
+  # initial leg (NICK just sent, free nick) or after `:nick_observed`.
+  @spec identify(t()) :: [String.t()]
+  defp identify(%__MODULE__{cred_nick: nick, secret: secret}),
+    do: ["PRIVMSG NickServ :IDENTIFY #{nick} #{secret}\r\n"]
 end

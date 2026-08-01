@@ -4030,6 +4030,10 @@ defmodule Grappa.Session.Server do
         %{state | recover_identity: nil, recover_timer: nil, recover_settle_timer: nil}
 
       :awaiting_verb_settle ->
+        # #623 — the reclaim RETRY re-enters this phase (a 433/437 on the
+        # re-NICK). Drain any spent/pending settle timer before re-arming so a
+        # retry never double-arms a stale :recover_settle.
+        :ok = cancel_and_drain(state.recover_settle_timer, :recover_settle)
         settle = Process.send_after(self(), :recover_settle, @recover_settle_ms)
         %{state | recover_identity: next, recover_settle_timer: settle}
 
@@ -4085,26 +4089,60 @@ defmodule Grappa.Session.Server do
   defp recover_progress_steps(:awaiting_r, %{phase: :awaiting_verb_settle, verb: verb}),
     do: [{:nick, :failed, nil}, {verb, :running, nil}]
 
-  defp recover_progress_steps(:awaiting_verb_settle, %{phase: :awaiting_final_r, verb: verb}),
-    do: [{verb, :ok, nil}, {:nick, :running, nil}, {:identify, :running, nil}]
+  # #623 — the verb settled; the re-NICK goes out ALONE. Only the nick step
+  # runs now — the identify step waits for `:nick_observed` (the sequencing
+  # barrier), so the modal never shows identify running before the nick lands.
+  defp recover_progress_steps(:awaiting_verb_settle, %{phase: :awaiting_nick, verb: verb}),
+    do: [{verb, :ok, nil}, {:nick, :running, nil}]
+
+  # #623 — the re-NICK was observed on-nick; the sameNick IDENTIFY goes out now.
+  defp recover_progress_steps(:awaiting_nick, %{phase: :awaiting_final_r}),
+    do: [{:nick, :ok, nil}, {:identify, :running, nil}]
 
   defp recover_progress_steps(_, %{phase: :succeeded}),
     do: [{:nick, :ok, nil}, {:identify, :ok, nil}, {:register, :ok, nil}]
 
+  # #623 pt3 — RECONCILE every in-flight step on terminal :failed (not just one)
+  # so the modal never strands a step at :running (the trace "hang"), keyed on
+  # the phase we failed OUT of.
   defp recover_progress_steps(old, %{phase: :failed, reason: reason, verb: verb}),
-    do: [{recover_failed_step(old, verb), :failed, reason}]
+    do: recover_terminal_steps(old, verb, reason)
 
+  # #623 — the retry (`:awaiting_nick` → `:awaiting_verb_settle`) and every
+  # other transition are SILENT: no visible retry churn.
   defp recover_progress_steps(_, _), do: []
 
-  # The step that FAILED, keyed on the phase we failed OUT of: a clean
-  # NICK with no `+r` is an IDENTIFY (wrong password) failure; an
-  # unanswered verb is the verb; a reclaimed NICK that still can't land is
-  # the NICK.
-  @spec recover_failed_step(RecoverIdentity.phase(), RecoverIdentity.verb()) :: SessionWire.recover_step()
-  defp recover_failed_step(:awaiting_r, _), do: :identify
-  defp recover_failed_step(:awaiting_verb_settle, verb) when verb in [:recover, :release], do: verb
-  defp recover_failed_step(:awaiting_final_r, _), do: :nick
-  defp recover_failed_step(_, _), do: :nick
+  # #623 pt3 — the reconciled terminal step list, keyed on the phase we failed
+  # OUT of. Every step still :running at that phase is flipped to its terminal
+  # status, and the two reclaim legs stay DISTINCT + trace-diagnosable:
+  #   * `:awaiting_r` — a clean NICK but `+r` never came → the IDENTIFY failed
+  #     (`:wrong_password`); the nick itself landed clean (`:ok`).
+  #   * `:awaiting_verb_settle` — the reclaim verb went unanswered → the verb
+  #     failed (`:services_declined`).
+  #   * `:awaiting_nick` — leg (a): the re-NICK never landed → the nick failed
+  #     (`:nick_unavailable`); the identify step never started.
+  #   * `:awaiting_final_r` — leg (b): the re-NICK landed but `+r` never
+  #     confirmed → the identify failed (`:identify_unconfirmed`); the nick is
+  #     already `:ok`.
+  @spec recover_terminal_steps(
+          RecoverIdentity.phase(),
+          RecoverIdentity.verb(),
+          RecoverIdentity.reason()
+        ) :: [{SessionWire.recover_step(), SessionWire.recover_status(), SessionWire.recover_reason() | nil}]
+  defp recover_terminal_steps(:awaiting_r, _verb, reason),
+    do: [{:nick, :ok, nil}, {:identify, :failed, reason}]
+
+  defp recover_terminal_steps(:awaiting_verb_settle, verb, reason) when verb in [:recover, :release],
+    do: [{verb, :failed, reason}]
+
+  defp recover_terminal_steps(:awaiting_nick, _verb, reason),
+    do: [{:nick, :failed, reason}]
+
+  defp recover_terminal_steps(:awaiting_final_r, _verb, reason),
+    do: [{:nick, :ok, nil}, {:identify, :failed, reason}]
+
+  defp recover_terminal_steps(_old, _verb, reason),
+    do: [{:nick, :failed, reason}]
 
   # Build the IRC.Client opts map from the pre-resolved primitive
   # plan. Nick-fallback + Cloak password decryption already happened
@@ -4301,6 +4339,10 @@ defmodule Grappa.Session.Server do
     next_state = effects |> apply_effects(derived_state) |> prune_seeded_channels()
     maybe_broadcast_channels_changed(state, next_state)
     maybe_broadcast_own_nick_changed(state, next_state)
+    # #623 — a self-NICK arrives as a :nick command → this delegate path (never
+    # the numeric path). Feed the recover FSM `:nick_observed` when our nick
+    # just landed on the credential nick the reclaim leg is chasing.
+    next_state = maybe_advance_recover_on_nick(state, next_state)
     {:noreply, next_state}
   end
 
@@ -4426,6 +4468,30 @@ defmodule Grappa.Session.Server do
   end
 
   defp maybe_broadcast_own_nick_changed(_, _), do: :ok
+
+  # #623 — feed the recover FSM `:nick_observed` when our OWN nick just changed
+  # to the credential nick the reclaim leg is chasing. This is the sequencing
+  # barrier: the FSM withholds the reclaim IDENTIFY until the NICK is provably
+  # landed, so a services-side ordering lag can never leave the IDENTIFY under
+  # the old (Guest) nick, where sameNick fails and `+r` never arrives. Only
+  # fires in `:awaiting_nick`; every other phase — and a non-recover nick change
+  # — is a no-op. `Map.get` for #229 hot-reload safety (a proc predating the
+  # `:recover_identity` field has no such key). The compare folds both sides
+  # (nick KEYs fold, GH #121/#537).
+  @spec maybe_advance_recover_on_nick(t(), t()) :: t()
+  defp maybe_advance_recover_on_nick(%{nick: prev}, %{nick: next} = state) when prev != next do
+    case Map.get(state, :recover_identity) do
+      %RecoverIdentity{phase: :awaiting_nick, cred_nick: cred} ->
+        if fold_key(state, next) == fold_key(state, cred),
+          do: advance_recover(state, :nick_observed),
+          else: state
+
+      _ ->
+        state
+    end
+  end
+
+  defp maybe_advance_recover_on_nick(_prev, state), do: state
 
   # #498 — mirror `state.nick` into this session's own SessionRegistry entry
   # value. The ONE writer of the cheap live-nick copy: it always writes

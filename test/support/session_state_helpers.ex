@@ -139,6 +139,12 @@ defmodule Grappa.SessionStateHelpers do
   @spec ghost_timer(snapshot()) :: term()
   def ghost_timer(state), do: state.ghost_timer
 
+  # --- recover identity (#581/#623) --------------------------------------
+
+  @doc "Recover-identity driver state (`Grappa.Session.RecoverIdentity`), or `nil`."
+  @spec recover_identity(snapshot()) :: term()
+  def recover_identity(state), do: state.recover_identity
+
   # --- away --------------------------------------------------------------
 
   @doc "Away state machine value (`Grappa.Session.AwayState`)."

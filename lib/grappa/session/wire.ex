@@ -737,7 +737,14 @@ defmodule Grappa.Session.Wire do
 
   @type recover_status :: :running | :ok | :failed
 
-  @type recover_reason :: :wrong_password | :nick_unavailable | :services_declined
+  # #623 — `:identify_unconfirmed` (leg b): the nick WAS reclaimed and the
+  # sameNick IDENTIFY went out, but `+r` never confirmed by the deadline.
+  # DISTINCT from `:nick_unavailable` (leg a: the nick never landed) and from
+  # `:wrong_password` (RECOVER already proved the password correct). Additive
+  # per the wire contract — cic falls back to generic failure copy for an
+  # unrecognised token.
+  @type recover_reason ::
+          :wrong_password | :nick_unavailable | :services_declined | :identify_unconfirmed
 
   @type recover_progress_payload :: %{
           kind: :recover_progress,
@@ -1536,7 +1543,8 @@ defmodule Grappa.Session.Wire do
       when is_binary(network_slug) and
              step in [:identify, :register, :nick, :recover, :release] and
              status in [:running, :ok, :failed] and
-             (is_nil(reason) or reason in [:wrong_password, :nick_unavailable, :services_declined]) do
+             (is_nil(reason) or
+                reason in [:wrong_password, :nick_unavailable, :services_declined, :identify_unconfirmed]) do
     %{kind: :recover_progress, network: network_slug, step: step, status: status, reason: reason}
   end
 
@@ -1549,7 +1557,8 @@ defmodule Grappa.Session.Wire do
           recover_result_payload()
   def recover_result(network_slug, outcome, reason)
       when is_binary(network_slug) and outcome in [:succeeded, :failed] and
-             (is_nil(reason) or reason in [:wrong_password, :nick_unavailable, :services_declined]) do
+             (is_nil(reason) or
+                reason in [:wrong_password, :nick_unavailable, :services_declined, :identify_unconfirmed]) do
     %{kind: :recover_result, network: network_slug, outcome: outcome, reason: reason}
   end
 end
