@@ -1025,7 +1025,16 @@ html.overlay-open #root > div {
    suggested `min(--members-width, Nvw)` — `--members-width` is not in THIS
    track (it's `max-content` here, not the base `var()` track), and at the
    14px root (--font-size) any sane `Nvw` is ≥ 14rem across the whole
-   desktop range (≥769px), so the vw clause would be dead code. */
+   desktop range (≥769px), so the vw clause would be dead code.
+
+   Coupling (keep in sync): `fit-content` never shrinks a track BELOW its
+   min-content, so this cap only binds while the rail's content is
+   character-breakable — today via `.rail-server-info-fields dd`
+   (word-break: break-word) + `.rail-server-info-title` (break-all). A
+   future RailContext card (the deferred /whois card is earmarked for the
+   same slot, RailContext.tsx) that renders a `white-space: nowrap` value
+   or a long unbreakable token WITHOUT break-word would floor `fit-content`
+   at that min-content and re-starve the centre. */
 .shell.shell-no-members {
   grid-template-columns: var(--sidebar-width, 16rem) 1fr fit-content(14rem);
 }
@@ -1075,10 +1084,11 @@ html.overlay-open #root > div {
   .shell.shell-no-members {
     /* #71 INC-2 / #473 — narrow rail stays (RailActions buttons everywhere),
        not a dropped column. Was `8rem 1fr`. #605 — same server-card cap as
-       the base tier, but pinned to THIS tier's 7rem members width: a server
-       window's `max-content` card would otherwise blow straight past the
-       slim rails this compact tier exists to enforce, re-creating the
-       centre-starve inside the tier meant to prevent it. */
+       the base tier, capped near THIS tier's 7rem members width (fit-content
+       floors at the RailActions launcher's min-content, a few px over 7rem):
+       a server window's `max-content` card would otherwise blow straight
+       past the slim rails this compact tier exists to enforce, re-creating
+       the centre-starve inside the tier meant to prevent it. */
     grid-template-columns: 8rem 1fr fit-content(7rem);
   }
 }

@@ -25231,3 +25231,19 @@ both handled at the rebase onto `96bedfdd`:
    CTCP parser on the server" cleanup, but it touches another author's
    just-landed code plus a pre-existing helper, so it is proposed to vjt
    rather than folded silently into #591's send-side scope.
+
+## 2026-08-01 — #605 server-window rail width cap: the issue premise was wrong
+
+The issue proposed capping `var(--members-width, 14rem)`, but a SERVER window
+is `.shell-no-members` (kind !== "channel" → `isActiveChannelJoined()` false),
+whose right grid track is **`max-content`** — it never references
+`--members-width`. So the balloon is the ServerInfoCard's widest UNWRAPPED line
+(a long IPv6 `connection.server`, the #609 cutover; or a long disconnect
+reason), and the suggested `min(--members-width, Nvw)` cap would have missed the
+track entirely. Fix: cap the `max-content` track itself —
+`fit-content(14rem)` (base) / `fit-content(7rem)` (the #319 short-landscape
+tier). `fit-content` grows-to-content then caps (a short card stays narrow — no
+empty rail column, the concern that only applied to a *fixed* track), and binds
+only while the card content is character-breakable (word-break on the dd). The
+issue's `vw` term is dead on desktop: at the 14px root, 14rem < any sane `Nvw`
+for width ≥769px.
