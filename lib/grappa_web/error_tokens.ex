@@ -102,6 +102,9 @@ defmodule GrappaWeb.ErrorTokens do
           | :not_connected
           | :forbidden_vhost
           | :invalid_credentials
+          | :invalid_two_factor
+          | :two_factor_challenge_expired
+          | :already_enabled
           | :too_many_sessions
           | :network_busy
           | :network_unreachable

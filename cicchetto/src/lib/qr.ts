@@ -25,6 +25,11 @@ const QUIET = 2;
  * controls the rendered size while modules stay crisp at any scale.
  */
 export function qrSvg(text: string): string {
+  return qrSvgWithLabel(text, "session QR code");
+}
+
+/** Same QR renderer with a caller-owned accessible label. */
+export function qrSvgWithLabel(text: string, ariaLabel: string): string {
   const { data, size } = encode(text, { ecc: "M" });
   const dim = size + QUIET * 2;
 
@@ -42,8 +47,16 @@ export function qrSvg(text: string): string {
 
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${dim} ${dim}" ` +
-    `shape-rendering="crispEdges" role="img" aria-label="session QR code">` +
+    `shape-rendering="crispEdges" role="img" aria-label="${escapeAttribute(ariaLabel)}">` +
     `<rect width="${dim}" height="${dim}" fill="#fff"/>` +
     `<g fill="#000">${rects}</g></svg>`
   );
+}
+
+function escapeAttribute(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }

@@ -40,6 +40,7 @@ defmodule GrappaWeb.AuthController do
   use GrappaWeb, :controller
 
   alias Grappa.{Accounts, AdminEvents, Networks, Session, Visitors}
+  alias Grappa.Accounts.TOTP
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias Grappa.Auth.IdentifierClassifier
   alias Grappa.RateLimit.FailureWindow
@@ -65,6 +66,10 @@ defmodule GrappaWeb.AuthController do
   # anything larger is abuse-shaped and should be rejected at the
   # boundary so the upstream HTTP client never sees it.
   @captcha_token_max_bytes 4096
+  @totp_challenge_salt "account-totp-login-v1"
+  @totp_challenge_max_age_seconds 300
+  @totp_max_failures 10
+  @totp_window_ms :timer.minutes(15)
 
   @doc """
   `POST /auth/login` — `{identifier, password?}` →
@@ -126,6 +131,25 @@ defmodule GrappaWeb.AuthController do
   end
 
   def login(_, _), do: {:error, :bad_request}
+
+  @doc "Consumes a short-lived post-password TOTP challenge and mints the bearer."
+  @spec verify_totp(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, term()}
+  def verify_totp(conn, %{"challenge_token" => challenge, "code" => code})
+      when is_binary(challenge) and is_binary(code) do
+    with {:ok, user_id} <- verify_totp_challenge(challenge),
+         %Accounts.User{} = user <- Accounts.get_user(user_id),
+         :ok <- check_totp_throttle(conn, user_id),
+         {:ok, _} <- verify_second_factor(user, code, conn) do
+      mint_user_session(conn, user)
+    else
+      nil -> {:error, :invalid_two_factor}
+      {:error, :expired} -> {:error, :two_factor_challenge_expired}
+      {:error, :invalid} -> {:error, :invalid_two_factor}
+      {:error, _} = err -> err
+    end
+  end
+
+  def verify_totp(_, _), do: {:error, :bad_request}
 
   # #138 — sanitize the login identifier at the HTTP boundary before
   # classification. Mobile Chrome/Android soft keyboards inject a
@@ -354,20 +378,58 @@ defmodule GrappaWeb.AuthController do
     ip = format_ip(conn)
 
     with :ok <- check_mode1_throttle(ip),
-         {:ok, user} <- authenticate_mode1(name, password, ip),
-         # #523/#518 — a transient SQLITE_BUSY on the token mint degrades to a
-         # clean 503 (FallbackController) instead of a MatchError→500, keeping
-         # this door coherent with the visitor-provision path on the same login.
-         {:ok, session} <-
+         {:ok, user} <- authenticate_mode1(name, password, ip) do
+      if TOTP.enabled?(user) do
+        challenge = Phoenix.Token.sign(GrappaWeb.Endpoint, @totp_challenge_salt, user.id)
+
+        conn
+        |> put_status(:accepted)
+        |> json(%{two_factor_required: true, challenge_token: challenge})
+      else
+        mint_user_session(conn, user)
+      end
+    end
+  end
+
+  defp mint_user_session(conn, user) do
+    with {:ok, session} <-
            Accounts.create_session(
              {:user, user.id},
-             ip,
+             format_ip(conn),
              user_agent(conn),
              client_id: conn.assigns[:current_client_id]
            ) do
       conn
       |> put_status(:ok)
       |> render(:login, token: session.id, subject: {:user, user})
+    end
+  end
+
+  defp verify_totp_challenge(challenge) do
+    Phoenix.Token.verify(GrappaWeb.Endpoint, @totp_challenge_salt, challenge, max_age: @totp_challenge_max_age_seconds)
+  end
+
+  defp check_totp_throttle(conn, user_id) do
+    case FailureWindow.check(:totp_login, {format_ip(conn), user_id}, @totp_max_failures) do
+      :ok -> :ok
+      {:error, :limited} -> {:error, :too_many_attempts}
+    end
+  end
+
+  defp verify_second_factor(user, code, conn) do
+    case TOTP.verify(user, code, System.system_time(:second)) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, _} ->
+        _ =
+          FailureWindow.record_failure(
+            :totp_login,
+            {format_ip(conn), user.id},
+            @totp_window_ms
+          )
+
+        {:error, :invalid_two_factor}
     end
   end
 

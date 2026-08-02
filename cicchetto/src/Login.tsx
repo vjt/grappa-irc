@@ -148,6 +148,8 @@ const Login: Component = () => {
   const [connecting, setConnecting] = createSignal(false);
   const [msgIndex, setMsgIndex] = createSignal(0);
   const [captcha, setCaptcha] = createSignal<CaptchaChallenge | null>(null);
+  const [totpChallenge, setTotpChallenge] = createSignal<string | null>(null);
+  const [totpCode, setTotpCode] = createSignal("");
   const navigate = useNavigate();
 
   // Cosmetic reassurance rotation. There is no server progress stream to
@@ -214,9 +216,23 @@ const Login: Component = () => {
       // the captcha token only when present, so the plain path stays a
       // 2-arg call (the captcha retry is the only 3-arg caller).
       if (captchaToken === undefined) {
-        await auth.login(id, pwd, undefined, advancedFields);
+        const result = await auth.login(id, pwd, undefined, advancedFields);
+        if (result.kind === "totp") {
+          stopRotation();
+          setConnecting(false);
+          setTotpChallenge(result.challengeToken);
+          setPassword("");
+          return;
+        }
       } else {
-        await auth.login(id, pwd, captchaToken, advancedFields);
+        const result = await auth.login(id, pwd, captchaToken, advancedFields);
+        if (result.kind === "totp") {
+          stopRotation();
+          setConnecting(false);
+          setTotpChallenge(result.challengeToken);
+          setPassword("");
+          return;
+        }
       }
       // Stop the cosmetic rotation before we leave — navigation unmounts
       // Login (onCleanup would catch it too), but being explicit means a
@@ -276,6 +292,25 @@ const Login: Component = () => {
     await attemptLogin(classified.value, pwd === "" ? null : pwd);
   };
 
+  const onTotpSubmit = async (e: Event): Promise<void> => {
+    e.preventDefault();
+    const challenge = totpChallenge();
+    if (challenge === null) return;
+
+    setError(null);
+    setConnecting(true);
+    startRotation();
+    try {
+      await auth.verifyTotp(challenge, totpCode());
+      stopRotation();
+      navigate("/", { replace: true });
+    } catch (err) {
+      setConnecting(false);
+      stopRotation();
+      handleError(err);
+    }
+  };
+
   let nickInput: HTMLInputElement | undefined;
   onMount(() => {
     // Nick-first: focus the one field the minimal view shows.
@@ -317,25 +352,29 @@ const Login: Component = () => {
         <Show
           when={connecting()}
           fallback={
-            <form class="login-form" onSubmit={onSubmit}>
-              <Brand />
-              <label for="login-identifier">Nick or email</label>
-              <input
-                ref={(el) => {
-                  nickInput = el;
-                }}
-                id="login-identifier"
-                type="text"
-                autocomplete="username"
-                autocapitalize="none"
-                autocorrect="off"
-                spellcheck={false}
-                value={identifier()}
-                onInput={(e) => setIdentifier(e.currentTarget.value)}
-                required
-              />
+            <Show
+              when={totpChallenge()}
+              keyed
+              fallback={
+                <form class="login-form" onSubmit={onSubmit}>
+                  <Brand />
+                  <label for="login-identifier">Nick or email</label>
+                  <input
+                    ref={(el) => {
+                      nickInput = el;
+                    }}
+                    id="login-identifier"
+                    type="text"
+                    autocomplete="username"
+                    autocapitalize="none"
+                    autocorrect="off"
+                    spellcheck={false}
+                    value={identifier()}
+                    onInput={(e) => setIdentifier(e.currentTarget.value)}
+                    required
+                  />
 
-              {/* #284 — password lives on the MAIN form, always visible and
+                  {/* #284 — password lives on the MAIN form, always visible and
                 labelled optional (supersedes the password-behind-Advanced
                 layout). Empty → anonymous/guest login; non-empty is fired to
                 NickServ as an IDENTIFY at numeric 001. That server path
@@ -343,108 +382,150 @@ const Login: Component = () => {
                 session_plan.with_login_identify → auth_fsm.maybe_nickserv_identify),
                 so prompting up-front wastes nothing: no login branch ever
                 drops the password. */}
-              <label for="login-password">Password (optional)</label>
-              <input
-                id="login-password"
-                type="password"
-                autocomplete="current-password"
-                value={password()}
-                onInput={(e) => setPassword(e.currentTarget.value)}
-              />
-              <p class="login-advanced-hint">
-                Leave blank to join as a guest. Enter your account password to log into a registered
-                account.
-              </p>
-
-              {/* Advanced toggle sits BETWEEN the password and Connect (vjt
-                layout fix). Real button + aria-expanded + conditional render
-                (not display:none) so a11y + tests see the truth. */}
-              <button
-                type="button"
-                class="login-advanced-toggle"
-                aria-expanded={advanced() ? "true" : "false"}
-                aria-controls="login-advanced"
-                onClick={() => setAdvanced((v) => !v)}
-              >
-                {advanced() ? "▾ Advanced" : "▸ Advanced"}
-              </button>
-              <Show when={advanced()}>
-                <div id="login-advanced" class="login-advanced">
-                  {/* #152 — realname + ident, optional. Blank = server
-                    defaults (nick for ident, "Grappa Visitor" for
-                    realname). ident is the `user` slot of nick!user@host. */}
-                  <label for="login-realname">Real name</label>
+                  <label for="login-password">Password (optional)</label>
                   <input
-                    id="login-realname"
-                    type="text"
-                    autocomplete="off"
-                    autocapitalize="none"
-                    autocorrect="off"
-                    spellcheck={false}
-                    value={realname()}
-                    onInput={(e) => setRealname(e.currentTarget.value)}
-                  />
-
-                  <label for="login-ident">Ident</label>
-                  <input
-                    id="login-ident"
-                    type="text"
-                    autocomplete="off"
-                    autocapitalize="none"
-                    autocorrect="off"
-                    spellcheck={false}
-                    value={ident()}
-                    onInput={(e) => setIdent(e.currentTarget.value)}
+                    id="login-password"
+                    type="password"
+                    autocomplete="current-password"
+                    value={password()}
+                    onInput={(e) => setPassword(e.currentTarget.value)}
                   />
                   <p class="login-advanced-hint">
-                    Real name and ident are optional and shown to other users. Leave blank to use
-                    the defaults.
+                    Leave blank to join as a guest. Enter your account password to log into a
+                    registered account.
                   </p>
 
-                  {/* #363 — incognito (ephemeral) session. Visitor-path only:
+                  {/* Advanced toggle sits BETWEEN the password and Connect (vjt
+                layout fix). Real button + aria-expanded + conditional render
+                (not display:none) so a11y + tests see the truth. */}
+                  <button
+                    type="button"
+                    class="login-advanced-toggle"
+                    aria-expanded={advanced() ? "true" : "false"}
+                    aria-controls="login-advanced"
+                    onClick={() => setAdvanced((v) => !v)}
+                  >
+                    {advanced() ? "▾ Advanced" : "▸ Advanced"}
+                  </button>
+                  <Show when={advanced()}>
+                    <div id="login-advanced" class="login-advanced">
+                      {/* #152 — realname + ident, optional. Blank = server
+                    defaults (nick for ident, "Grappa Visitor" for
+                    realname). ident is the `user` slot of nick!user@host. */}
+                      <label for="login-realname">Real name</label>
+                      <input
+                        id="login-realname"
+                        type="text"
+                        autocomplete="off"
+                        autocapitalize="none"
+                        autocorrect="off"
+                        spellcheck={false}
+                        value={realname()}
+                        onInput={(e) => setRealname(e.currentTarget.value)}
+                      />
+
+                      <label for="login-ident">Ident</label>
+                      <input
+                        id="login-ident"
+                        type="text"
+                        autocomplete="off"
+                        autocapitalize="none"
+                        autocorrect="off"
+                        spellcheck={false}
+                        value={ident()}
+                        onInput={(e) => setIdent(e.currentTarget.value)}
+                      />
+                      <p class="login-advanced-hint">
+                        Real name and ident are optional and shown to other users. Leave blank to
+                        use the defaults.
+                      </p>
+
+                      {/* #363 — incognito (ephemeral) session. Visitor-path only:
                     hidden when the identifier is an email (an account login is
                     never ephemeral; the server also drops the flag there).
                     Copy lives in INCOGNITO_LABEL/HINT (one swap point, pending
                     vjt's final wording); the e2e keys off data-testid. */}
-                  <Show when={!identifier().includes("@")}>
-                    <label class="login-incognito" for="login-incognito">
-                      <input
-                        id="login-incognito"
-                        type="checkbox"
-                        data-testid="login-incognito"
-                        checked={incognito()}
-                        onChange={(e) => setIncognito(e.currentTarget.checked)}
-                      />
-                      <span class="login-incognito-label">{INCOGNITO_LABEL}</span>
-                    </label>
-                    <p class="login-advanced-hint" data-testid="login-incognito-hint">
-                      {INCOGNITO_HINT}
-                    </p>
+                      <Show when={!identifier().includes("@")}>
+                        <label class="login-incognito" for="login-incognito">
+                          <input
+                            id="login-incognito"
+                            type="checkbox"
+                            data-testid="login-incognito"
+                            checked={incognito()}
+                            onChange={(e) => setIncognito(e.currentTarget.checked)}
+                          />
+                          <span class="login-incognito-label">{INCOGNITO_LABEL}</span>
+                        </label>
+                        <p class="login-advanced-hint" data-testid="login-incognito-hint">
+                          {INCOGNITO_HINT}
+                        </p>
+                      </Show>
+                    </div>
                   </Show>
-                </div>
-              </Show>
 
-              <button type="submit" class="login-connect" disabled={connecting()}>
-                Connect
-              </button>
+                  <button type="submit" class="login-connect" disabled={connecting()}>
+                    Connect
+                  </button>
 
-              <Show when={captcha()} keyed>
-                {(c) => (
-                  <CaptchaMount
-                    challenge={c}
-                    onSolve={handleCaptchaSolve}
-                    onMountFailure={handleCaptchaMountFailure}
+                  <Show when={captcha()} keyed>
+                    {(c) => (
+                      <CaptchaMount
+                        challenge={c}
+                        onSolve={handleCaptchaSolve}
+                        onMountFailure={handleCaptchaMountFailure}
+                      />
+                    )}
+                  </Show>
+                  <Show when={error()}>
+                    {(msg) => (
+                      <p role="alert" class="login-error">
+                        {msg()}
+                      </p>
+                    )}
+                  </Show>
+                </form>
+              }
+            >
+              {(_challenge) => (
+                <form class="login-form" onSubmit={onTotpSubmit} data-testid="totp-login-form">
+                  <Brand />
+                  <h2>two-factor authentication</h2>
+                  <label for="login-totp-code">Authenticator or recovery code</label>
+                  <input
+                    id="login-totp-code"
+                    type="text"
+                    inputmode="numeric"
+                    autocomplete="one-time-code"
+                    autocapitalize="none"
+                    value={totpCode()}
+                    onInput={(e) => setTotpCode(e.currentTarget.value)}
+                    required
+                    autofocus
                   />
-                )}
-              </Show>
-              <Show when={error()}>
-                {(msg) => (
-                  <p role="alert" class="login-error">
-                    {msg()}
-                  </p>
-                )}
-              </Show>
-            </form>
+                  <button type="submit" class="login-connect">
+                    Verify
+                  </button>
+                  <button
+                    type="button"
+                    class="login-advanced-toggle"
+                    onClick={() => {
+                      setTotpChallenge(null);
+                      setTotpCode("");
+                      setError(null);
+                    }}
+                  >
+                    Back
+                  </button>
+                  <Show when={error()}>
+                    {(msg) => (
+                      <p role="alert" class="login-error">
+                        {msg()}
+                      </p>
+                    )}
+                  </Show>
+                </form>
+              )}
+            </Show>
           }
         >
           {/* Connecting view — replaces the form in place. Spinner + rotating

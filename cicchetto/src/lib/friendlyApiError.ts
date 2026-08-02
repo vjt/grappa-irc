@@ -56,6 +56,12 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
   switch (code) {
     case "invalid_credentials":
       return "Invalid name or password.";
+    case "invalid_two_factor":
+      return "Invalid or already-used authenticator/recovery code.";
+    case "two_factor_challenge_expired":
+      return "Two-factor challenge expired. Enter your password again.";
+    case "already_enabled":
+      return "Two-factor authentication is already enabled.";
     case "too_many_sessions":
       // U-3 (UD3): ip_cap_exceeded — this source IP already holds
       // its allotted session(s) for this network (`max_per_ip`,

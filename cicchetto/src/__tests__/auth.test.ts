@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/api", () => ({
   login: vi.fn(),
+  verifyTotpLogin: vi.fn(),
   me: vi.fn(),
   logout: vi.fn(),
   setOn401Handler: vi.fn(),
@@ -67,6 +68,33 @@ describe("auth signal store", () => {
     expect(api.login).toHaveBeenCalledWith({ identifier: "alice", password: "secret" });
     expect(auth.token()).toBe("tok-123");
     expect(localStorage.getItem("grappa-token")).toBe("tok-123");
+  });
+
+  it("login() returns a TOTP challenge without authenticating", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.login).mockResolvedValue({
+      two_factor_required: true,
+      challenge_token: "challenge-123",
+    });
+    const auth = await import("../lib/auth");
+    await expect(auth.login("alice", "secret")).resolves.toEqual({
+      kind: "totp",
+      challengeToken: "challenge-123",
+    });
+    expect(auth.token()).toBeNull();
+    expect(localStorage.getItem("grappa-token")).toBeNull();
+  });
+
+  it("verifyTotp() stores the authenticated session", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.verifyTotpLogin).mockResolvedValue({
+      token: "tok-2fa",
+      subject: { kind: "user", id: "u1", name: "alice" },
+    });
+    const auth = await import("../lib/auth");
+    await auth.verifyTotp("challenge-123", "123456");
+    expect(api.verifyTotpLogin).toHaveBeenCalledWith("challenge-123", "123456");
+    expect(auth.token()).toBe("tok-2fa");
   });
 
   it("logout() calls api.logout with current token and clears state", async () => {

@@ -30,6 +30,9 @@ defmodule Grappa.Accounts.User do
           name: String.t() | nil,
           password_hash: String.t() | nil,
           password: String.t() | nil,
+          totp_secret_encrypted: binary() | nil,
+          totp_enabled_at: DateTime.t() | nil,
+          totp_last_used_step: integer() | nil,
           is_admin: boolean(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
@@ -40,6 +43,9 @@ defmodule Grappa.Accounts.User do
     field :name, :string
     field :password_hash, :string, redact: true
     field :password, :string, virtual: true, redact: true
+    field :totp_secret_encrypted, Grappa.EncryptedBinary, redact: true
+    field :totp_enabled_at, :utc_datetime_usec
+    field :totp_last_used_step, :integer
     field :is_admin, :boolean, default: false
 
     timestamps(type: :utc_datetime_usec)

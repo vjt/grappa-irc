@@ -152,9 +152,22 @@ export type Subject =
   // fresh logins always carry it. Server-derived from `visitors.incognito`.
   | { kind: "visitor"; id: string; registered?: boolean; incognito?: boolean };
 
-export type LoginResponse = {
+export type AuthenticatedLoginResponse = {
   token: string;
   subject: Subject;
+};
+
+export type TotpChallengeResponse = {
+  two_factor_required: true;
+  challenge_token: string;
+};
+
+export type LoginResponse = AuthenticatedLoginResponse | TotpChallengeResponse;
+
+export type TotpEnrollment = {
+  enrollment_token: string;
+  secret: string;
+  provisioning_uri: string;
 };
 
 // Mirror of `GrappaWeb.MeJSON.show/1` (Task 30). Discriminated union
@@ -1398,6 +1411,58 @@ export async function login(req: LoginRequest): Promise<LoginResponse> {
   });
   if (!res.ok) throw await readError(res);
   return (await res.json()) as LoginResponse;
+}
+
+export async function verifyTotpLogin(
+  challengeToken: string,
+  code: string,
+): Promise<AuthenticatedLoginResponse> {
+  const res = await fetch("/auth/totp/verify", {
+    method: "POST",
+    headers: buildHeaders(),
+    body: JSON.stringify({ challenge_token: challengeToken, code }),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AuthenticatedLoginResponse;
+}
+
+export async function getTotpStatus(token: string): Promise<{ enabled: boolean }> {
+  const res = await fetch("/me/totp", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as { enabled: boolean };
+}
+
+export async function startTotpEnrollment(token: string): Promise<TotpEnrollment> {
+  const res = await fetch("/me/totp/enrollment", {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: "{}",
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as TotpEnrollment;
+}
+
+export async function confirmTotpEnrollment(
+  token: string,
+  enrollmentToken: string,
+  code: string,
+): Promise<{ enabled: true; recovery_codes: string[] }> {
+  const res = await fetch("/me/totp/enrollment/confirm", {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ enrollment_token: enrollmentToken, code }),
+  });
+  if (!res.ok) throw await readError(res, false);
+  return (await res.json()) as { enabled: true; recovery_codes: string[] };
+}
+
+export async function disableTotp(token: string, password: string): Promise<void> {
+  const res = await fetch("/me/totp", {
+    method: "DELETE",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) throw await readError(res, false);
 }
 
 export async function me(token: string): Promise<MeResponse> {
@@ -2668,7 +2733,7 @@ export async function mintShareToken(token: string): Promise<ShareTokenMintRespo
 // the signed token IS the auth credential. Returns the same shape as
 // /auth/login so the caller can hand it to localStorage symmetric with
 // the regular login flow.
-export type ShareTokenConsumeResponse = LoginResponse;
+export type ShareTokenConsumeResponse = AuthenticatedLoginResponse;
 
 export async function consumeShareToken(shareToken: string): Promise<ShareTokenConsumeResponse> {
   const res = await fetch("/auth/share/consume", {

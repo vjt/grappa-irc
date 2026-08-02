@@ -91,7 +91,7 @@ export async function login(
   // #363 — `incognito` rides the same advanced bundle; only a literal true
   // is sent (absent → an ordinary persistent session).
   advanced?: { ident?: string | null; realname?: string | null; incognito?: boolean },
-): Promise<void> {
+): Promise<{ kind: "authenticated" } | { kind: "totp"; challengeToken: string }> {
   const req: api.LoginRequest =
     password !== null && password !== "" ? { identifier, password } : { identifier };
   if (captchaToken !== undefined) req.captcha_token = captchaToken;
@@ -104,7 +104,18 @@ export async function login(
   if (advanced?.incognito === true) {
     req.incognito = true;
   }
-  const { token: t, subject } = await api.login(req);
+  const response = await api.login(req);
+  if ("two_factor_required" in response) {
+    return { kind: "totp", challengeToken: response.challenge_token };
+  }
+  const { token: t, subject } = response;
+  localStorage.setItem(SUBJECT_KEY, JSON.stringify(subject));
+  setToken(t);
+  return { kind: "authenticated" };
+}
+
+export async function verifyTotp(challengeToken: string, code: string): Promise<void> {
+  const { token: t, subject } = await api.verifyTotpLogin(challengeToken, code);
   localStorage.setItem(SUBJECT_KEY, JSON.stringify(subject));
   setToken(t);
 }

@@ -54,6 +54,7 @@ import {
 } from "./lib/userSettings";
 import PerformSettings from "./PerformSettings";
 import ThemeGallery from "./ThemeGallery";
+import TotpSettings from "./TotpSettings";
 import VhostSettingsPage from "./VhostSettingsPage";
 import WatchlistsSettings from "./WatchlistsSettings";
 
@@ -736,6 +737,26 @@ const SettingsDrawer: Component<Props> = (props) => {
           </Show>
 
           {/* display — text size, timestamp format, colored nicklist (#443). */}
+          <Show when={getSubject()?.kind === "user"}>
+            <button
+              type="button"
+              class="settings-nav-row"
+              data-testid="security-settings-entry"
+              onClick={() => setSettingsPage("security")}
+            >
+              <span class="settings-nav-row-text">
+                <span class="settings-nav-row-label">security</span>
+                <span class="settings-nav-row-subtitle">
+                  password and two-factor authentication
+                </span>
+              </span>
+              <span class="settings-nav-row-chevron" aria-hidden="true">
+                ›
+              </span>
+            </button>
+          </Show>
+
+          {/* display — text size, timestamp format, colored nicklist (#443). */}
           <button
             type="button"
             class="settings-nav-row"
@@ -961,6 +982,10 @@ const SettingsDrawer: Component<Props> = (props) => {
           >
             done
           </button>
+        </Show>
+
+        <Show when={settingsPage() === "security"}>
+          <TotpSettings onBack={() => setSettingsPage("main")} />
         </Show>
 
         {/* #460 — general sub-page: upload retention (host-gated) + visitor

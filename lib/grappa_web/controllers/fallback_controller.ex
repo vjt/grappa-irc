@@ -45,6 +45,9 @@ defmodule GrappaWeb.FallbackController do
            | :no_session
            | :not_connected
            | :invalid_credentials
+           | :invalid_two_factor
+           | :two_factor_challenge_expired
+           | :already_enabled
            | :invalid_line
            | :unauthorized
            | :malformed_nick
@@ -380,6 +383,24 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:unauthorized)
     |> json(%{error: "invalid_credentials"})
+  end
+
+  def call(conn, {:error, :invalid_two_factor}) do
+    conn
+    |> put_status(:unauthorized)
+    |> json(%{error: "invalid_two_factor"})
+  end
+
+  def call(conn, {:error, :two_factor_challenge_expired}) do
+    conn
+    |> put_status(:unauthorized)
+    |> json(%{error: "two_factor_challenge_expired"})
+  end
+
+  def call(conn, {:error, :already_enabled}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "already_enabled"})
   end
 
   # T31 admission errors. Status-code split:

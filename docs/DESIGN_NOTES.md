@@ -26531,6 +26531,23 @@ type and was left untouched.
 
 ---
 
+### 2026-08-02 — #442 — account TOTP second factor
+
+Durable accounts can arm RFC 6238 TOTP from Settings → Security. Password
+authentication for an armed account returns a signed five-minute challenge,
+not a bearer; a valid six-digit TOTP or one-shot recovery code completes login.
+TOTP uses SHA-1, six digits, a 30-second period, and a ±1-step clock window.
+The last accepted step is advanced with a conditional DB update, preventing
+replay even across concurrent requests.
+
+The 160-bit TOTP secret is encrypted with the existing Cloak vault. Enrollment
+returns ten 128-bit recovery codes once; only SHA-256 hashes are persisted.
+Enabling or disabling TOTP revokes every other web session. Disabling requires
+the account password. TOTP failures share one public error and are limited to
+ten failures per IP/account over fifteen minutes.
+
+Passkeys, recovery-code regeneration, and email recovery remain out of scope.
+
 ### 2026-08-02 — #666 — multi-line paste is resumable + self-pacing; the send-door 429 carries a retry-after (P0, cross-stack)
 
 Sonic + Mezmerize: pasting more than a handful of lines into the composer lost

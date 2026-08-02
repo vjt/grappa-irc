@@ -209,6 +209,7 @@ defmodule GrappaWeb.Router do
     pipe_through :api
 
     post "/login", AuthController, :login
+    post "/totp/verify", AuthController, :verify_totp
     # Visitor session-sharing consume — unauthenticated by design. The
     # signed one-shot token IS the auth credential. Verified +
     # one-shot-checked + visitor-existence-checked inside the
@@ -263,6 +264,10 @@ defmodule GrappaWeb.Router do
     post "/session/networks", SessionController, :add_network
 
     get "/me", MeController, :show
+    get "/me/totp", TotpController, :show
+    post "/me/totp/enrollment", TotpController, :start_enrollment
+    post "/me/totp/enrollment/confirm", TotpController, :confirm_enrollment
+    delete "/me/totp", TotpController, :delete
 
     # #157 — self-service account deletion: an explicit, IRREVERSIBLE
     # total wipe of the caller's OWN account + all state. Subject-routed

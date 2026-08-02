@@ -10,6 +10,7 @@ import { ApiError } from "../lib/api";
 // auth.test.ts.
 vi.mock("../lib/auth", () => ({
   login: vi.fn(),
+  verifyTotp: vi.fn(),
   logout: vi.fn(),
   token: vi.fn(() => null),
   isAuthenticated: vi.fn(() => false),
@@ -108,7 +109,7 @@ describe("Login — #284 main-form view (password always visible, optional)", ()
 
 describe("Login — #204 on-submit nick sanitization", () => {
   it("substitutes spaces with underscores and submits the sanitized nick", async () => {
-    vi.mocked(auth.login).mockResolvedValue(undefined);
+    vi.mocked(auth.login).mockResolvedValue({ kind: "authenticated" });
     renderLogin();
     fireEvent.input(nickField(), { target: { value: "my nick" } });
     fireEvent.click(connectBtn());
@@ -140,7 +141,7 @@ describe("Login — #204 on-submit nick sanitization", () => {
   });
 
   it("submits the password entered on the main form (#284, no Advanced needed)", async () => {
-    vi.mocked(auth.login).mockResolvedValue(undefined);
+    vi.mocked(auth.login).mockResolvedValue({ kind: "authenticated" });
     renderLogin();
     fireEvent.input(nickField(), { target: { value: "alice" } });
     // No openAdvanced() — the password is right there on the main form.
@@ -156,7 +157,7 @@ describe("Login — #204 on-submit nick sanitization", () => {
   });
 
   it("submits login-Advanced realname + ident (#152)", async () => {
-    vi.mocked(auth.login).mockResolvedValue(undefined);
+    vi.mocked(auth.login).mockResolvedValue({ kind: "authenticated" });
     renderLogin();
     fireEvent.input(nickField(), { target: { value: "alice" } });
     openAdvanced();
@@ -180,7 +181,7 @@ describe("Login — #204 on-submit nick sanitization", () => {
   });
 
   it("#363 submits incognito: true when the box is checked", async () => {
-    vi.mocked(auth.login).mockResolvedValue(undefined);
+    vi.mocked(auth.login).mockResolvedValue({ kind: "authenticated" });
     renderLogin();
     fireEvent.input(nickField(), { target: { value: "ghost" } });
     openAdvanced();
@@ -214,7 +215,7 @@ describe("Login — #204 on-submit nick sanitization", () => {
   });
 
   it("treats an @-bearing value as an email and submits it verbatim", async () => {
-    vi.mocked(auth.login).mockResolvedValue(undefined);
+    vi.mocked(auth.login).mockResolvedValue({ kind: "authenticated" });
     renderLogin();
     fireEvent.input(nickField(), { target: { value: "alice@example.com" } });
     fireEvent.click(connectBtn());
@@ -243,7 +244,9 @@ describe("Login — #204 connecting feedback", () => {
   it("replaces the form with a spinner + connecting copy while the request is in flight", async () => {
     // A never-resolving login keeps the form in the connecting state so we
     // can observe the spinner + the anchor reassurance line.
-    vi.mocked(auth.login).mockReturnValue(new Promise<void>(() => {}));
+    vi.mocked(auth.login).mockReturnValue(
+      new Promise<Awaited<ReturnType<typeof auth.login>>>(() => {}),
+    );
     renderLogin();
     fireEvent.input(nickField(), { target: { value: "alice" } });
     fireEvent.click(connectBtn());
@@ -266,6 +269,29 @@ describe("Login — #204 connecting feedback", () => {
     // Back to the form — the nick field is visible again.
     expect(nickField()).toBeInTheDocument();
     expect(screen.queryByTestId("login-connecting")).toBeNull();
+  });
+});
+
+describe("Login — TOTP", () => {
+  it("asks for second factor, then verifies the challenge", async () => {
+    vi.mocked(auth.login).mockResolvedValue({
+      kind: "totp",
+      challengeToken: "challenge-123",
+    });
+    vi.mocked(auth.verifyTotp).mockResolvedValue(undefined);
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice@example.com" } });
+    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
+    fireEvent.click(connectBtn());
+
+    const code = await screen.findByLabelText(/authenticator or recovery code/i);
+    expect(auth.verifyTotp).not.toHaveBeenCalled();
+    fireEvent.input(code, { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: /verify/i }));
+
+    await waitFor(() => {
+      expect(auth.verifyTotp).toHaveBeenCalledWith("challenge-123", "123456");
+    });
   });
 });
 
@@ -351,7 +377,7 @@ describe("Login — captcha flow (carried forward)", () => {
       .mockRejectedValueOnce(
         new ApiError(400, "captcha_required", { site_key: "k", provider: "turnstile" }),
       )
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce({ kind: "authenticated" });
     vi.mocked(mountCaptchaWidget).mockResolvedValue(() => undefined);
     renderLogin();
     fireEvent.input(nickField(), { target: { value: "alice" } });

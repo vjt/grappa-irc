@@ -48,6 +48,7 @@ import { createSignal } from "solid-js";
 export type SettingsSubPage =
   | "main"
   | "general"
+  | "security"
   | "display"
   | "vhost"
   | "themes"

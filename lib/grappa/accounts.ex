@@ -46,12 +46,12 @@ defmodule Grappa.Accounts do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Ecto.Like, Grappa.Repo, Grappa.Visitors.Visitor],
-    exports: [User, Session, Wire, AdminWire]
+    deps: [Grappa.Ecto.Like, Grappa.EncryptedBinary, Grappa.Repo, Grappa.Visitors.Visitor],
+    exports: [User, Session, Wire, AdminWire, TOTP, TOTPRecoveryCode]
 
   import Ecto.Query
 
-  alias Grappa.Accounts.{Session, User}
+  alias Grappa.Accounts.{Session, TOTP, User}
   alias Grappa.Ecto.Like
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
@@ -579,6 +579,52 @@ defmodule Grappa.Accounts do
     )
 
     :ok
+  end
+
+  @doc "Revokes every live bearer for `user` except the current session."
+  @spec revoke_other_sessions_for_user(User.t(), Ecto.UUID.t()) ::
+          :ok | {:error, :db_unavailable}
+  def revoke_other_sessions_for_user(%User{id: user_id}, current_session_id)
+      when is_binary(current_session_id) do
+    query =
+      from(s in Session,
+        where: s.user_id == ^user_id and s.id != ^current_session_id and is_nil(s.revoked_at)
+      )
+
+    case Repo.BusyRetry.run(fn ->
+           {:ok, Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])}
+         end) do
+      {:ok, {_, _}} -> :ok
+      {:error, :db_unavailable} = error -> error
+    end
+  end
+
+  @doc "Atomically enables TOTP and revokes every other bearer session."
+  @spec confirm_totp_enrollment(User.t(), Ecto.UUID.t(), String.t(), String.t(), integer()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def confirm_totp_enrollment(user, current_session_id, secret, code, unix_seconds) do
+    Repo.transaction(fn ->
+      with {:ok, recovery_codes} <- TOTP.confirm_enrollment(user, secret, code, unix_seconds),
+           :ok <- revoke_other_sessions_for_user(user, current_session_id) do
+        recovery_codes
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc "Atomically disables TOTP and revokes every other bearer session."
+  @spec disable_totp(User.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, User.t()} | {:error, term()}
+  def disable_totp(user, current_session_id, password) do
+    Repo.transaction(fn ->
+      with {:ok, disabled_user} <- TOTP.disable(user, password),
+           :ok <- revoke_other_sessions_for_user(user, current_session_id) do
+        disabled_user
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
   end
 
   @doc """
