@@ -3,7 +3,8 @@ defmodule Grappa.Accounts.TOTPTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, Accounts.TOTP, Accounts.TOTPRecoveryCode, Accounts.User, Repo}
+  alias Grappa.{Accounts, Accounts.Session, Accounts.TOTP, Accounts.TOTPRecoveryCode, Accounts.User, Repo}
+  alias Grappa.Repo.BusyRetry
 
   @rfc_secret "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 
@@ -27,6 +28,12 @@ defmodule Grappa.Accounts.TOTPTest do
 
     armed = Repo.get!(User, user.id)
     assert armed.totp_secret_encrypted == @rfc_secret
+
+    [[stored_secret]] =
+      Repo.query!("SELECT totp_secret_encrypted FROM users WHERE id = ?", [user.id]).rows
+
+    assert is_binary(stored_secret)
+    refute stored_secret == @rfc_secret
     assert %DateTime{} = armed.totp_enabled_at
     assert armed.totp_last_used_step == div(now, 30)
     assert Repo.aggregate(TOTPRecoveryCode, :count, :id) == 10
@@ -56,6 +63,36 @@ defmodule Grappa.Accounts.TOTPTest do
     assert {:ok, disabled} = TOTP.disable(user, password)
     refute TOTP.enabled?(disabled)
     assert Repo.aggregate(TOTPRecoveryCode, :count, :id) == 0
+  end
+
+  test "enrollment retries the complete transaction after transient contention" do
+    user = user_fixture()
+    current = session_fixture(user)
+    other = session_fixture(user)
+    now = 1_700_000_000
+    {:ok, code} = TOTP.code_at(@rfc_secret, now)
+    :ok = BusyRetry.inject_transient_faults(1)
+
+    assert {:ok, recovery_codes} =
+             Accounts.confirm_totp_enrollment(user, current.id, @rfc_secret, code, now)
+
+    assert length(recovery_codes) == 10
+    assert is_nil(Repo.get!(Session, current.id).revoked_at)
+    assert %DateTime{} = Repo.get!(Session, other.id).revoked_at
+  end
+
+  test "disable retries the complete transaction after transient contention" do
+    {user, password} = user_fixture_with_password()
+    {armed, _} = arm(user)
+    current = session_fixture(armed)
+    other = session_fixture(armed)
+    :ok = BusyRetry.inject_transient_faults(1)
+
+    assert {:ok, disabled} = Accounts.disable_totp(armed, current.id, password)
+
+    refute TOTP.enabled?(disabled)
+    assert is_nil(Repo.get!(Session, current.id).revoked_at)
+    assert %DateTime{} = Repo.get!(Session, other.id).revoked_at
   end
 
   test "new enrollment URI contains issuer, account, and secret" do

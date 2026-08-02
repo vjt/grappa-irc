@@ -30,6 +30,14 @@ defmodule Grappa.RateLimit.FailureWindowTest do
     assert counts == [1, 2, 3]
   end
 
+  test "clear/2 removes the live counter" do
+    key = "10.0.0.7"
+    FailureWindow.record_failure(:test_bucket, key, @window)
+
+    assert :ok = FailureWindow.clear(:test_bucket, key)
+    assert :ok = FailureWindow.check(:test_bucket, key, 1)
+  end
+
   test "a window expires: blocked key is clean again past window_ms" do
     key = "10.0.0.4"
     for _ <- 1..10, do: FailureWindow.record_failure(:test_bucket, key, @window, 0)

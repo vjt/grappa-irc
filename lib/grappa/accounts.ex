@@ -582,8 +582,7 @@ defmodule Grappa.Accounts do
   end
 
   @doc "Revokes every live bearer for `user` except the current session."
-  @spec revoke_other_sessions_for_user(User.t(), Ecto.UUID.t()) ::
-          :ok | {:error, :db_unavailable}
+  @spec revoke_other_sessions_for_user(User.t(), Ecto.UUID.t()) :: :ok
   def revoke_other_sessions_for_user(%User{id: user_id}, current_session_id)
       when is_binary(current_session_id) do
     query =
@@ -591,25 +590,25 @@ defmodule Grappa.Accounts do
         where: s.user_id == ^user_id and s.id != ^current_session_id and is_nil(s.revoked_at)
       )
 
-    case Repo.BusyRetry.run(fn ->
-           {:ok, Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])}
-         end) do
-      {:ok, {_, _}} -> :ok
-      {:error, :db_unavailable} = error -> error
-    end
+    Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
+    :ok
   end
 
   @doc "Atomically enables TOTP and revokes every other bearer session."
   @spec confirm_totp_enrollment(User.t(), Ecto.UUID.t(), String.t(), String.t(), integer()) ::
           {:ok, [String.t()]} | {:error, term()}
   def confirm_totp_enrollment(user, current_session_id, secret, code, unix_seconds) do
-    Repo.transaction(fn ->
-      with {:ok, recovery_codes} <- TOTP.confirm_enrollment(user, secret, code, unix_seconds),
-           :ok <- revoke_other_sessions_for_user(user, current_session_id) do
-        recovery_codes
-      else
-        {:error, reason} -> Repo.rollback(reason)
-      end
+    Repo.BusyRetry.run(fn ->
+      Repo.transaction(fn ->
+        case TOTP.confirm_enrollment(user, secret, code, unix_seconds) do
+          {:ok, recovery_codes} ->
+            :ok = revoke_other_sessions_for_user(user, current_session_id)
+            recovery_codes
+
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end)
     end)
   end
 
@@ -617,14 +616,17 @@ defmodule Grappa.Accounts do
   @spec disable_totp(User.t(), Ecto.UUID.t(), String.t()) ::
           {:ok, User.t()} | {:error, term()}
   def disable_totp(user, current_session_id, password) do
-    Repo.transaction(fn ->
-      with {:ok, disabled_user} <- TOTP.disable(user, password),
-           :ok <- revoke_other_sessions_for_user(user, current_session_id) do
-        disabled_user
-      else
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
+    if Argon2.verify_pass(password, user.password_hash) do
+      Repo.BusyRetry.run(fn ->
+        Repo.transaction(fn ->
+          disabled_user = TOTP.disable(user)
+          :ok = revoke_other_sessions_for_user(user, current_session_id)
+          disabled_user
+        end)
+      end)
+    else
+      {:error, :invalid_credentials}
+    end
   end
 
   @doc """

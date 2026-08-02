@@ -136,7 +136,7 @@ defmodule GrappaWeb.AuthController do
   @spec verify_totp(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, term()}
   def verify_totp(conn, %{"challenge_token" => challenge, "code" => code})
       when is_binary(challenge) and is_binary(code) do
-    with {:ok, user_id} <- verify_totp_challenge(challenge),
+    with {:ok, user_id} <- verify_totp_challenge(challenge, conn),
          %Accounts.User{} = user <- Accounts.get_user(user_id),
          :ok <- check_totp_throttle(conn, user_id),
          {:ok, _} <- verify_second_factor(user, code, conn) do
@@ -380,7 +380,12 @@ defmodule GrappaWeb.AuthController do
     with :ok <- check_mode1_throttle(ip),
          {:ok, user} <- authenticate_mode1(name, password, ip) do
       if TOTP.enabled?(user) do
-        challenge = Phoenix.Token.sign(GrappaWeb.Endpoint, @totp_challenge_salt, user.id)
+        challenge =
+          Phoenix.Token.sign(
+            GrappaWeb.Endpoint,
+            @totp_challenge_salt,
+            {user.id, format_ip(conn), conn.assigns[:current_client_id]}
+          )
 
         conn
         |> put_status(:accepted)
@@ -405,8 +410,16 @@ defmodule GrappaWeb.AuthController do
     end
   end
 
-  defp verify_totp_challenge(challenge) do
-    Phoenix.Token.verify(GrappaWeb.Endpoint, @totp_challenge_salt, challenge, max_age: @totp_challenge_max_age_seconds)
+  defp verify_totp_challenge(challenge, conn) do
+    expected_binding = {format_ip(conn), conn.assigns[:current_client_id]}
+
+    case Phoenix.Token.verify(GrappaWeb.Endpoint, @totp_challenge_salt, challenge,
+           max_age: @totp_challenge_max_age_seconds
+         ) do
+      {:ok, {user_id, ip, client_id}} when {ip, client_id} == expected_binding -> {:ok, user_id}
+      {:ok, _} -> {:error, :invalid}
+      {:error, _} = error -> error
+    end
   end
 
   defp check_totp_throttle(conn, user_id) do
@@ -419,6 +432,7 @@ defmodule GrappaWeb.AuthController do
   defp verify_second_factor(user, code, conn) do
     case TOTP.verify(user, code, System.system_time(:second)) do
       {:ok, _} = ok ->
+        :ok = FailureWindow.clear(:totp_login, {format_ip(conn), user.id})
         ok
 
       {:error, _} ->

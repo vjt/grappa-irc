@@ -26,6 +26,7 @@ defmodule GrappaWeb.AuthControllerTest do
   alias Grappa.Accounts.TOTP
   alias Grappa.AdmissionStateHelpers
   alias Grappa.Networks.Credential
+  alias Grappa.RateLimit.FailureWindow
   alias Grappa.Session.Server, as: SessionServer
   alias Grappa.Visitors.Visitor
 
@@ -222,6 +223,54 @@ defmodule GrappaWeb.AuthControllerTest do
 
       assert json_response(rejected, 401) == %{"error" => "invalid_two_factor"}
       assert session_count() == 0
+    end
+
+    test "challenge is bound to source client", %{conn: conn} do
+      {user, password} = user_fixture_with_password()
+      secret = arm_totp(user)
+
+      pending =
+        conn
+        |> put_req_header("x-grappa-client-id", "11111111-1111-4111-8111-111111111111")
+        |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+        |> json_response(202)
+
+      {:ok, code} = TOTP.code_at(secret, System.system_time(:second))
+
+      rejected =
+        conn
+        |> put_req_header("x-grappa-client-id", "22222222-2222-4222-8222-222222222222")
+        |> post("/auth/totp/verify", %{
+          "challenge_token" => pending["challenge_token"],
+          "code" => code
+        })
+
+      assert json_response(rejected, 401) == %{"error" => "invalid_two_factor"}
+      assert session_count() == 0
+    end
+
+    test "valid TOTP clears its failure window", %{conn: conn} do
+      {user, password} = user_fixture_with_password()
+      secret = arm_totp(user)
+      key = {"127.0.0.1", user.id}
+
+      for _ <- 1..9, do: FailureWindow.record_failure(:totp_login, key, :timer.minutes(15))
+
+      pending =
+        conn
+        |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+        |> json_response(202)
+
+      {:ok, code} = TOTP.code_at(secret, System.system_time(:second))
+
+      conn
+      |> post("/auth/totp/verify", %{
+        "challenge_token" => pending["challenge_token"],
+        "code" => code
+      })
+      |> json_response(200)
+
+      assert :ok = FailureWindow.check(:totp_login, key, 1)
     end
 
     test "replayed TOTP is rejected", %{conn: conn} do
