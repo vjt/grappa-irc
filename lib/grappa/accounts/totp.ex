@@ -66,38 +66,6 @@ defmodule Grappa.Accounts.TOTP do
     end)
   end
 
-  @doc "Disables TOTP after verifying the account password."
-  @spec disable(User.t(), String.t()) :: {:ok, User.t()} | {:error, :invalid_credentials}
-  def disable(%User{} = user, password) when is_binary(password) do
-    if Argon2.verify_pass(password, user.password_hash) do
-      Repo.transaction(fn -> disable(user) end)
-    else
-      {:error, :invalid_credentials}
-    end
-  end
-
-  @doc false
-  @spec disable(User.t()) :: User.t()
-  def disable(%User{} = user) do
-    now = DateTime.utc_now()
-    user_query = from(u in User, where: u.id == ^user.id)
-
-    {1, _} =
-      Repo.update_all(
-        user_query,
-        set: [
-          totp_secret_encrypted: nil,
-          totp_enabled_at: nil,
-          totp_last_used_step: nil,
-          updated_at: now
-        ]
-      )
-
-    recovery_query = from(r in TOTPRecoveryCode, where: r.user_id == ^user.id)
-    Repo.delete_all(recovery_query)
-    Repo.get!(User, user.id)
-  end
-
   @doc "Returns whether TOTP is armed for the user."
   @spec enabled?(User.t()) :: boolean()
   def enabled?(%User{totp_enabled_at: enabled_at, totp_secret_encrypted: secret}),

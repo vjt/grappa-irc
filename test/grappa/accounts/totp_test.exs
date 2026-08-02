@@ -57,10 +57,13 @@ defmodule Grappa.Accounts.TOTPTest do
 
   test "disable requires password and removes secret plus recovery codes" do
     {user, password} = user_fixture_with_password()
-    {_, _} = arm(user)
+    {armed, _} = arm(user)
+    current = session_fixture(armed)
 
-    assert {:error, :invalid_credentials} = TOTP.disable(user, "wrong-password")
-    assert {:ok, disabled} = TOTP.disable(user, password)
+    assert {:error, :invalid_credentials} =
+             Accounts.disable_totp(armed, current.id, "wrong-password")
+
+    assert {:ok, disabled} = Accounts.disable_totp(armed, current.id, password)
     refute TOTP.enabled?(disabled)
     assert Repo.aggregate(TOTPRecoveryCode, :count, :id) == 0
   end

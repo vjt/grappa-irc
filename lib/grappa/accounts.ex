@@ -51,7 +51,7 @@ defmodule Grappa.Accounts do
 
   import Ecto.Query
 
-  alias Grappa.Accounts.{Session, TOTP, User}
+  alias Grappa.Accounts.{Session, TOTP, TOTPRecoveryCode, User}
   alias Grappa.Ecto.Like
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
@@ -600,14 +600,7 @@ defmodule Grappa.Accounts do
   def confirm_totp_enrollment(user, current_session_id, secret, code, unix_seconds) do
     Repo.BusyRetry.run(fn ->
       Repo.transaction(fn ->
-        case TOTP.confirm_enrollment(user, secret, code, unix_seconds) do
-          {:ok, recovery_codes} ->
-            :ok = revoke_other_sessions_for_user(user, current_session_id)
-            recovery_codes
-
-          {:error, reason} ->
-            Repo.rollback(reason)
-        end
+        confirm_totp_transaction(user, current_session_id, secret, code, unix_seconds)
       end)
     end)
   end
@@ -617,16 +610,48 @@ defmodule Grappa.Accounts do
           {:ok, User.t()} | {:error, term()}
   def disable_totp(user, current_session_id, password) do
     if Argon2.verify_pass(password, user.password_hash) do
-      Repo.BusyRetry.run(fn ->
-        Repo.transaction(fn ->
-          disabled_user = TOTP.disable(user)
-          :ok = revoke_other_sessions_for_user(user, current_session_id)
-          disabled_user
-        end)
-      end)
+      run_disable_totp_transaction(user, current_session_id)
     else
       {:error, :invalid_credentials}
     end
+  end
+
+  defp confirm_totp_transaction(user, current_session_id, secret, code, unix_seconds) do
+    case TOTP.confirm_enrollment(user, secret, code, unix_seconds) do
+      {:ok, recovery_codes} ->
+        :ok = revoke_other_sessions_for_user(user, current_session_id)
+        recovery_codes
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp run_disable_totp_transaction(user, current_session_id) do
+    Repo.BusyRetry.run(fn ->
+      Repo.transaction(fn -> disable_totp_transaction(user, current_session_id) end)
+    end)
+  end
+
+  defp disable_totp_transaction(user, current_session_id) do
+    now = DateTime.utc_now()
+    user_query = from(u in User, where: u.id == ^user.id)
+
+    {1, _} =
+      Repo.update_all(
+        user_query,
+        set: [
+          totp_secret_encrypted: nil,
+          totp_enabled_at: nil,
+          totp_last_used_step: nil,
+          updated_at: now
+        ]
+      )
+
+    recovery_query = from(r in TOTPRecoveryCode, where: r.user_id == ^user.id)
+    Repo.delete_all(recovery_query)
+    :ok = revoke_other_sessions_for_user(user, current_session_id)
+    Repo.get!(User, user.id)
   end
 
   @doc """
